@@ -399,3 +399,36 @@ until phase 4 automates it).
   3.493987, possession balance 0.429692 → 0.427794, drought 11.355556 →
   10.936111, and decided-late 0.651684 → 0.605511. The noisier 30-seed sample is
   retained exactly; the 100-match audit above is the calibration decision.
+
+- **2026-07-25 — personal decision cadence and scored carrier choices.**
+  AI outfielders now retain intent on a stat-derived 0.45–0.15 s cadence and
+  select deterministic shoot/cross/pass/dribble candidates from distance,
+  angle, coverage, space, progress, lane, and interception inputs. Live
+  pressure/reception/loose-ball pursuit keeps its existing urgent refresh, and
+  lower-composure sampling advances a serialized per-player decision stream
+  rather than perturbing physical execution RNG.
+
+  The final 30-seed signature measured fun 0.500, goals 2.067,
+  shots/goal 21.273, save rate 0.846, pass completion 0.585,
+  turnovers/min 3.589, possession balance 0.411, drought 11.163 s, and
+  decided-late 0.545. Controlled/team-AI sprint shares were 0.310/0.093,
+  touches per carry-minute were 91.717/85.263, and heavy losses were
+  0.592/0.992. The fixed-seed sample therefore catches the intended carrier
+  and loose-ball behavior shift, but is too small to decide whether the
+  apparent scoring gain is systemic.
+
+  The required 100-match audit measured fun 0.428, goals 1.850,
+  shots/goal 23.381, save rate 0.871, pass completion 0.589,
+  turnovers/min 3.743, possession balance 0.416, drought 11.550 s, and
+  decided-late 0.575. Controlled/team-AI sprint shares were 0.283/0.103,
+  touches per carry-minute were 89.194/80.790, and heavy losses were
+  0.842/1.278. No target band collapsed; the larger sample keeps the prior
+  overall envelope while showing the intended change from blindly continuing
+  a carry to reconsidering scored alternatives.
+
+  The refreshed 30-seed guardrail is deliberately selective. It accepts only
+  the eight fields that breached tolerance and are directly coupled to the
+  new behavior: fun, goals, shots-per-goal, decided-late, controlled
+  sprint/heavy losses, and AI sprint/heavy losses. Unrelated or
+  still-in-tolerance signatures retain their previous values so the refresh
+  cannot hide other gameplay drift.

@@ -14,19 +14,19 @@ final hash `9a71cd09b246d6f6`, sequence digest `623e771bb00362e1`,
 and rollback tape digest `881917e3ba798703`. It is not presented as current
 acceptance evidence.
 
-The current issue-111 campaign freezes a mixed artifact matrix at 60 Hz:
+The current campaign freezes a mixed artifact matrix at 60 Hz:
 
 - every case uses InputFrame v2 and network-profile digest `5fbf1e0d51a6f4d5`;
-- soccer cases use InputTape v1 / MatchSnapshot v5, final hash
-  `31162b19919e8777`, sequence digest `1a11d2c705980a29`, and live tape digest
-  `d89f7fc53d660ab7`;
-- combat cases use InputTape v2 / MatchSnapshot v6, initial hash
-  `28b7bc6393447100`, final hash `49b2a6d0255a0825`, and tape digest
-  `ef9d425396654839`; and
+- soccer cases use InputTape v1 / MatchSnapshot v7, final hash
+  `2ea2e090ce56d99b`, sequence digest `3dc2ef59e573b5a1`, and live tape digest
+  `c203a244b09dff1d`;
+- combat cases use InputTape v2 / MatchSnapshot v8, initial hash
+  `a3b79ff3435760cd`, final hash `0aaee09c7e08348c`, and tape digest
+  `dd3b492759ed0af1`; and
 - stable rollback-event identity and confirmation semantics apply to both.
 
 Runtime provenance therefore declares InputFrame v2 plus tape versions 1/2
-and snapshot versions 5/6; every case repeats and validates its exact artifact
+and snapshot versions 7/8; every case repeats and validates its exact artifact
 versions. Any merge that changes simulation, gameplay data or tuning,
 input/snapshot/event schemas, a pinned fixture, or network profiles invalidates
 the current evidence. The historical artifact remains an archive rather than
@@ -156,8 +156,8 @@ not a 60 Hz acceptance profile. Numeric measurements are emitted as
 `GC_ROLLBACK_VALIDATION` rows so two fresh native executions can be compared byte for byte
 without confusing wall-clock noise for logical drift.
 
-Snapshot bytes are exact per-case MatchSnapshot v5 or v6 canonical encodings;
-the v6 count includes its authoritative combat companion. Input, output, and
+Snapshot bytes are exact per-case MatchSnapshot v7 or v8 canonical encodings;
+the v8 count includes its authoritative combat companion. Input, output, and
 speculative event bytes use their documented deterministic retained-history
 encodings. They are logical payload counts, not estimates of Lua allocator
 overhead. The soak measures allocator behavior separately: Lua heap in-process,
@@ -170,9 +170,9 @@ Lua heap, process-tree RSS, and Chrome JS heap all include the final fifth-fixtu
 Native holds at that terminal marker until the evidence process acknowledges its RSS sample, so
 the runtime cannot exit between marker delivery and measurement.
 
-Issue #111 keeps the current soccer campaign on MatchSnapshot v5/InputTape v1
-without appending a synthetic combat-identity segment, and adds bounded
-composite combat coverage on MatchSnapshot v6/InputTape v2. The current soccer
+The current contract keeps the soccer campaign on MatchSnapshot v7/InputTape v1
+without appending a synthetic combat-identity segment, and keeps bounded
+composite combat coverage on MatchSnapshot v8/InputTape v2. The current soccer
 digest is pinned separately from the historical InputFrame-v1 artifact.
 The 768-KiB snapshot gate is an explicit revision from 600 KiB: the previous
 peak was 611,274 bytes, leaving only 3,126 bytes for 31 retained boundaries,
@@ -183,13 +183,13 @@ projectile flight/expiry, stagger, knockback, and immunity; a dense delayed
 authority campaign additionally proves composite convergence and confirmed
 combat-event equality. A pinned 80-tick combat fixture now joins every native
 profile/common-seed pair, every browser full/stress case, and each soak seed,
-so MatchSnapshot v6/InputTape v2 crosses clean, fixed delay/loss, playable
+so MatchSnapshot v8/InputTape v2 crosses clean, fixed delay/loss, playable
 jitter/loss/duplication/burst/reordering, and stress paths in fresh processes.
-The clean 2001 baseline records 14 confirmed combat events, a 688,660-byte
-31-snapshot peak, and 743,170 bytes of retained history; both remain below the
+The clean 2001 baseline records 14 confirmed combat events, a 776,979-byte
+31-snapshot peak, and 831,489 bytes of retained history; both remain below the
 revised gates. The playable 2001 case performs eight rollbacks and 20
-resimulated ticks, peaks at 688,660 snapshot bytes and 742,367 history bytes,
-and records 1.998037 ms p95 work plus 2.614 ms p99.9/max rollback time. Each
+resimulated ticks, peaks at 776,979 snapshot bytes and 830,686 history bytes,
+and records 1.855320 ms p95 work plus 1.789 ms p99.9/max rollback time. Each
 case emits its exact snapshot/history/resimulation values and the validator
 rejects a combat impaired-network case that performs no resimulation.
 Browser evidence waits inside the page for newly appended console entries and returns only the

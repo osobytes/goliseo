@@ -118,7 +118,6 @@ local AI_PASS_MAX_DIST = 420 -- or to someone the other side of the pitch
 -- closing shooters down, and conceding space concedes goals.
 local AI_CHARGE_MIN_SPACE = 25 -- no power bonus with a defender this close
 local AI_CHARGE_SPACE_RANGE = 120 -- space beyond that for the full charge bonus
-local AI_PASS_RISK_PENALTY = 80 -- scoring malus when a chaser could cut the ground ball
 
 -- Player tackle: the same button does a standing poke when slow, or a committed
 -- slide when moving (slide speed scales off current velocity). Slides reach
@@ -287,6 +286,9 @@ local SPRINT_ENGAGE = 0.25 -- min meter to start a sprint (hysteresis: no flicke
 ---@field header_skill number  -- 0..1 header contact quality
 ---@field volley_skill number  -- 0..1 volley contact quality
 ---@field bicycle_skill number  -- 0..1 bicycle-kick contact quality
+---@field scan_rate number  -- 0..1 cadence refresh rate derived from the canonical stats
+---@field composure number  -- 0..1 carrier-choice sharpness derived from mental
+---@field outfield_decision OutfieldDecisionState  -- serializable retained AI intent/cadence
 ---@field is_keeper boolean
 ---@field radius number
 ---@field dash_cd number  -- AI tackle cooldown (seconds until it can challenge again)
@@ -547,6 +549,9 @@ local function build_team(
             header_skill = stats.header(effective_stats),
             volley_skill = stats.volley(effective_stats),
             bicycle_skill = stats.bicycle(effective_stats),
+            scan_rate = stats.scan_rate(effective_stats),
+            composure = stats.composure(effective_stats),
+            outfield_decision = require("sim.outfield_decision").new_state(),
             is_keeper = pd.position == "keeper",
             radius = PLAYER_RADIUS,
             dash_cd = 0,
@@ -692,6 +697,7 @@ local function place_kickoff(s, kicking)
         p.aerial_outcome = nil
         p.aerial_jump = 0
         p.aerial_recovery = 0
+        p.outfield_decision = require("sim.outfield_decision").reset(p.outfield_decision)
         p.charge = 0
         p.pass_charge = 0
         p.pass_target = nil
@@ -807,6 +813,10 @@ function match.new(opts)
     end
     for _, p in ipairs(away) do
         players[#players + 1] = p
+    end
+    for index, player in ipairs(players) do
+        player.outfield_decision =
+            require("sim.outfield_decision").new_state(rng.seed(rstate + index * 104729))
     end
 
     local slot_players = {}
@@ -1449,13 +1459,12 @@ local function keeper_throw(s, keeper_idx, range, aim)
     keeper.throw_timer = KEEPER_THROW_POSE
 end
 
--- AI carrier under pressure: pick the most open, most progressive teammate with
--- a workable lane and play it to them (lobbed if the lane is blocked). Returns
--- true if a pass was released. Deterministic; ties resolve to the lowest index.
+-- Build the existing one-per-teammate pass set with its openness, progress,
+-- distance, lane and interception inputs. No RNG is consumed here.
 ---@param s MatchState
 ---@param owner_idx integer
----@return boolean passed
-local function ai_try_pass(s, owner_idx)
+---@return OutfieldPassOption[]
+local function ai_pass_options(s, owner_idx)
     local owner = s.players[owner_idx]
     local fwd = (owner.team == "home") and 1 or -1
     local opp_positions = {}
@@ -1465,7 +1474,7 @@ local function ai_try_pass(s, owner_idx)
         end
     end
     local threats = pass_threats(s, owner.team)
-    local best, best_score, best_f
+    local options = {}
     for i, p in ipairs(s.players) do
         if p.team == owner.team and i ~= owner_idx and not p.is_keeper then
             local d = owner.pos:dist(p.pos)
@@ -1474,42 +1483,38 @@ local function ai_try_pass(s, owner_idx)
                 open = math.min(open, qp:dist(p.pos))
             end
             if d >= AI_PASS_MIN_DIST and d <= AI_PASS_MAX_DIST and open >= AI_PASS_MIN_OPEN then
-                -- Openness, upfield progress, and a mild preference for short. A
-                -- statically clear lane a chaser could still cut is penalized; a
-                -- blocked lane gets lobbed anyway, so it carries no extra malus.
                 local blocked = ai.lane_blocker(owner.pos, p.pos, opp_positions, POSSESS_DIST)
                 local risk = not blocked and pass_risk(owner.pos, p.pos, threats) or nil
-                local score = open
-                    + (p.pos.x - owner.pos.x) * fwd * 0.6
-                    - d * 0.25
-                    - (risk and AI_PASS_RISK_PENALTY or 0)
-                if not best_score or score > best_score then
-                    -- Lob over a static blocker — or over the point where a
-                    -- chaser would step onto a ground ball.
-                    best_score, best, best_f = score, i, blocked or risk
-                end
+                options[#options + 1] = {
+                    player_index = i,
+                    openness = open,
+                    forward_progress = (p.pos.x - owner.pos.x) * fwd,
+                    distance = d,
+                    lane_blocked = blocked ~= nil,
+                    interception_risk = risk ~= nil,
+                    lane_fraction = blocked or risk,
+                }
             end
         end
     end
-    if not best then
-        return false
-    end
-    release_pass(s, owner_idx, best, best_f)
-    return true
+    return options
 end
 
--- AI cross: from the flank, loft the ball to the teammate best placed in the
--- box. Returns true if a cross was released.
+-- Resolve the existing cross receiver and count all legitimate box targets.
+-- The selected action still releases through the established pass/cross path.
 ---@param s MatchState
 ---@param owner_idx integer
----@return boolean
-local function ai_try_cross(s, owner_idx)
+---@return integer? target
+---@return integer box_targets
+local function ai_cross_target(s, owner_idx)
     local owner = s.players[owner_idx]
     local best, best_d
+    local box_targets = 0
     for i, p in ipairs(s.players) do
         if p.team == owner.team and i ~= owner_idx and not p.is_keeper then
             local depth = (owner.team == "home") and (s.field.w - p.pos.x) or p.pos.x
             if depth < 220 and math.abs(p.pos.y - s.field.h / 2) < 140 then
+                box_targets = box_targets + 1
                 local gd = depth + math.abs(p.pos.y - s.field.h / 2)
                 if not best_d or gd < best_d then
                     best_d, best = gd, i
@@ -1517,11 +1522,7 @@ local function ai_try_cross(s, owner_idx)
             end
         end
     end
-    if not best then
-        return false
-    end
-    release_pass(s, owner_idx, best, 0.5, CROSS_CLEAR_H)
-    return true
+    return best, box_targets
 end
 
 ---@param s MatchState
@@ -2026,6 +2027,50 @@ local function offball_targets(s, pos)
     return targets, urgent
 end
 
+-- Retain an AI outfielder's chosen movement point until its personal cadence
+-- expires. A designated receiver and anyone close enough to contest a loose
+-- ball within one slow cadence interval keep reacting to its live trajectory.
+---@param s MatchState
+---@param targets table<integer, Vec2>
+---@param urgent table<integer, boolean>
+---@param combat_state CombatMatchState?
+local function retain_offball_targets(s, targets, urgent, combat_state)
+    local decisions = require("sim.outfield_decision")
+    local combat_module = combat_state and require("sim.combat") or nil
+    for index, player in ipairs(s.players) do
+        local blocked = combat_module and combat_module.blocks_actions(combat_state, index) or false
+        local ineligible = player.is_keeper
+            or is_human_player(s, index)
+            or blocked
+            or player.stun_timer > 0
+        if ineligible then
+            if player.outfield_decision.context ~= "ineligible" then
+                player.outfield_decision = decisions.reset(player.outfield_decision)
+            end
+        elseif index ~= s.owner and targets[index] then
+            local contest_reach = TUNE.LOOSE_MAGNET
+                + player.move_speed * decisions.SLOW_REFRESH_SECONDS
+            local loose_contest = s.owner == nil and player.pos:dist(s.ball) <= contest_reach
+            local must_refresh = urgent[index] or player.receive_timer > 0 or loose_contest
+            if decisions.should_refresh(player.outfield_decision, "offball", must_refresh) then
+                local target = targets[index]
+                player.outfield_decision = decisions.refresh(
+                    player.outfield_decision,
+                    "offball",
+                    "move",
+                    player.scan_rate,
+                    target.x,
+                    target.y
+                )
+            else
+                local target_x = assert(player.outfield_decision.target_x)
+                local target_y = assert(player.outfield_decision.target_y)
+                targets[index] = Vec2.new(target_x, target_y)
+            end
+        end
+    end
+end
+
 -- Resolve player-vs-player overlaps so bodies block instead of passing through.
 -- Each pair pushed apart by its penetration; a sliding player barges through
 -- (takes less of the push) and knocks the other off balance (stun). O(n^2)=45
@@ -2178,6 +2223,7 @@ local function move_players(s, dt, inputs, combat_state)
         prev[i] = p.pos
     end
     local targets, urgent = offball_targets(s, prev)
+    retain_offball_targets(s, targets, urgent, combat_state)
 
     for i, p in ipairs(s.players) do
         local combat_scale = combat_module and combat_module.movement_multiplier(combat_state, i)
@@ -3240,103 +3286,144 @@ local function human_outfield_actions(s, dt, input, owner)
     end
 end
 
--- AI outfield owner decision: shoot (with wind-up), cross, or pass out of pressure.
+-- AI outfield owner decision: build the legitimate scored option set without
+-- RNG, then select only when this player's personal cadence refreshes.
 -- Extracted to keep update_ball under the LuaJIT 60-upvalue cap.
 ---@param s MatchState
 ---@param owner_idx integer
 ---@param owner MatchPlayer
 local function ai_outfield_decision(s, owner_idx, owner)
+    local decisions = require("sim.outfield_decision")
+    if not decisions.should_refresh(owner.outfield_decision, "carrier") then
+        return
+    end
+
     local g = attack_goal(s, owner.team)
     local gc = Vec2.new((owner.team == "home") and g.x or (g.x + g.w), g.y + g.h / 2)
-    if owner.pos:dist(gc) < TUNE.AI_SHOOT_RANGE then
+    local keeper_player = team_keeper(s, owner.team == "home" and "away" or "home")
+    local space = s.field.w
+    for _, opponent in ipairs(s.players) do
+        if opponent.team ~= owner.team and not opponent.is_keeper then
+            space = math.min(space, opponent.pos:dist(owner.pos))
+        end
+    end
+
+    local attack_depth = owner.team == "home" and owner.pos.x / s.field.w
+        or (s.field.w - owner.pos.x) / s.field.w
+    local width = math.abs(owner.pos.y - s.field.h / 2) / (s.field.h / 2)
+    local third = attack_depth > 0.62
+    local wide = math.abs(owner.pos.y - s.field.h / 2) > 130
+    local cross_target, box_targets = ai_cross_target(s, owner_idx)
+    if not third or not wide or owner.settle_timer > 0 or space <= TUNE.CROSS_MIN_SPACE then
+        cross_target = nil
+        box_targets = 0
+    end
+    local passes = owner.settle_timer <= 0 and ai_pass_options(s, owner_idx) or {}
+    local keeper_coverage = 0
+    if keeper_player then
+        keeper_coverage = 1 - math.min(1, math.abs(keeper_player.pos.y - gc.y) / math.max(1, g.h))
+    end
+    local options = decisions.carrier_options({
+        goal_distance = owner.pos:dist(gc),
+        shoot_range = TUNE.AI_SHOOT_RANGE,
+        angle_quality = 1 - math.min(1, math.abs(owner.pos.y - gc.y) / (s.field.h / 2)),
+        keeper_coverage = keeper_coverage,
+        space = math.min(1, space / AI_CHARGE_SPACE_RANGE),
+        flank_depth = math.min(1, math.max(0, (attack_depth - 0.5) / 0.3))
+            * math.min(1, width / 0.7),
+        cross_target = cross_target,
+        box_targets = box_targets,
+        cross_space = math.min(1, space / math.max(1, TUNE.CROSS_MIN_SPACE * 2)),
+        goal_progress = attack_depth,
+        dribble_space = math.min(1, space / math.max(1, TUNE.AI_SPRINT_SPACE)),
+        passes = passes,
+    })
+    local selected, next_decision_rng = decisions.decide_carrier(
+        options,
+        owner.composure,
+        1 - math.min(1, space / math.max(1, TUNE.AI_PASS_PRESSURE)),
+        owner.outfield_decision.rng_state
+    )
+    owner.outfield_decision = decisions.with_rng_state(owner.outfield_decision, next_decision_rng)
+
+    if selected.kind == "pass" or selected.kind == "cross" then
+        local target_player = assert(selected.reference)
+        assert(type(target_player) == "number", "carrier target player must be numeric")
+        owner.outfield_decision = decisions.refresh(
+            owner.outfield_decision,
+            "carrier",
+            selected.kind,
+            owner.scan_rate,
+            nil,
+            nil,
+            target_player
+        )
+    elseif selected.kind == "shoot" then
+        owner.outfield_decision =
+            decisions.refresh(owner.outfield_decision, "carrier", "shoot", owner.scan_rate)
+    else
+        assert(selected.kind == "dribble", "unknown carrier option")
+        owner.outfield_decision =
+            decisions.refresh(owner.outfield_decision, "carrier", "dribble", owner.scan_rate)
+    end
+
+    if selected.kind == "pass" then
+        local lane_fraction = selected.payload and selected.payload.lane_fraction or nil
+        assert(lane_fraction == nil or type(lane_fraction) == "number")
+        ---@cast lane_fraction number?
+        local target_player = assert(selected.reference)
+        assert(type(target_player) == "number")
+        ---@cast target_player integer
+        release_pass(s, owner_idx, target_player, lane_fraction)
+    elseif selected.kind == "cross" then
+        local target_player = assert(selected.reference)
+        assert(type(target_player) == "number")
+        ---@cast target_player integer
+        release_pass(s, owner_idx, target_player, 0.5, CROSS_CLEAR_H)
+    elseif selected.kind == "shoot" then
         -- Shoot to the corner away from the defending keeper, with power
         -- scaled by the space the striker has been given (see constants).
-        local keeper_player = team_keeper(s, owner.team == "home" and "away" or "home")
         local vbias = 0.85
         if keeper_player then
             vbias = (keeper_player.pos.y < gc.y) and 0.85 or -0.85
         end
-        local space = math.huge
-        for _, q in ipairs(s.players) do
-            if q.team ~= owner.team and not q.is_keeper then
-                space = math.min(space, q.pos:dist(owner.pos))
-            end
+        local frac = math.max(0, math.min(1, (space - AI_CHARGE_MIN_SPACE) / AI_CHARGE_SPACE_RANGE))
+        local speed = owner.shot_speed * (1 + frac * CHARGE_POWER)
+        local shot_end = shot_target(s, owner, vbias)
+        local sdir = shot_end:sub(owner.pos)
+        local vz = 0
+        if
+            keeper_player
+            and owner.settle_timer <= 0
+            and owner.pos:dist(s.ball) <= DRIBBLE_TOUCH_REACH
+            and keeper.chip_is_visible(keeper_player.pos, keeper_player.team, g)
+        then
+            vz = keeper.chip_launch({
+                origin = owner.pos,
+                target = shot_end,
+                keeper_pos = keeper_player.pos,
+                defending_team = keeper_player.team,
+                goal = g,
+                horizontal_speed = speed,
+                friction = AIR_FRICTION,
+                gravity = GRAVITY,
+                keeper_clearance = KEEPER_AIR_GRAB,
+                crossbar = CROSSBAR,
+                desired_goal_height = CHIP_LINE_Z,
+            }) or 0
         end
-        -- Closed down with no power available: look for the square ball
-        -- to a better-placed teammate first; only shoot if nobody's on.
-        local passed = false
-        if space < AI_CHARGE_MIN_SPACE and owner.settle_timer <= 0 then
-            passed = ai_try_pass(s, owner_idx)
-        end
-        if not passed then
-            local frac =
-                math.max(0, math.min(1, (space - AI_CHARGE_MIN_SPACE) / AI_CHARGE_SPACE_RANGE))
-            local speed = owner.shot_speed * (1 + frac * CHARGE_POWER)
-            local shot_end = shot_target(s, owner, vbias)
-            local sdir = shot_end:sub(owner.pos)
-            local vz = 0
-            if
-                keeper_player
-                and owner.settle_timer <= 0
-                and owner.pos:dist(s.ball) <= DRIBBLE_TOUCH_REACH
-                and keeper.chip_is_visible(keeper_player.pos, keeper_player.team, g)
-            then
-                vz = keeper.chip_launch({
-                    origin = owner.pos,
-                    target = shot_end,
-                    keeper_pos = keeper_player.pos,
-                    defending_team = keeper_player.team,
-                    goal = g,
-                    horizontal_speed = speed,
-                    friction = AIR_FRICTION,
-                    gravity = GRAVITY,
-                    keeper_clearance = KEEPER_AIR_GRAB,
-                    crossbar = CROSSBAR,
-                    desired_goal_height = CHIP_LINE_Z,
-                }) or 0
-            end
-            owner.windup_timer = TUNE.SHOT_WINDUP
-            owner.windup_shot = {
-                dir = sdir,
-                speed = speed,
-                vz = vz,
-                spin = 0,
-                shot_type = vz > 0 and "chip" or "ground",
-            }
-        end
+        owner.windup_timer = TUNE.SHOT_WINDUP
+        owner.windup_shot = {
+            dir = sdir,
+            speed = speed,
+            vz = vz,
+            spin = 0,
+            shot_type = vz > 0 and "chip" or "ground",
+        }
     else
-        -- From wide in the attacking third, swing a CROSS to a teammate
-        -- in the box (who can meet it with a header).
-        local crossed = false
-        local third = (owner.team == "home") and (owner.pos.x > s.field.w * 0.62)
-            or (owner.team == "away" and owner.pos.x < s.field.w * 0.38)
-        local wide = math.abs(owner.pos.y - s.field.h / 2) > 130
-        if third and wide and owner.settle_timer <= 0 then
-            -- Only with a step of space: a pressured winger shouldn't spam
-            -- hopeful crosses.
-            local space = math.huge
-            for _, q in ipairs(s.players) do
-                if q.team ~= owner.team and not q.is_keeper then
-                    space = math.min(space, q.pos:dist(owner.pos))
-                end
-            end
-            if space > TUNE.CROSS_MIN_SPACE then
-                crossed = ai_try_cross(s, owner_idx)
-            end
-        end
-        if not crossed then
-            -- Out of range: pass out of pressure rather than dribble
-            -- into a challenge. If nobody is open, keep carrying.
-            local pressure = math.huge
-            for _, q in ipairs(s.players) do
-                if q.team ~= owner.team and not q.is_keeper then
-                    pressure = math.min(pressure, q.pos:dist(owner.pos))
-                end
-            end
-            if pressure <= TUNE.AI_PASS_PRESSURE and owner.settle_timer <= 0 then
-                ai_try_pass(s, owner_idx)
-            end
-        end
+        -- Dribble is the retained carrier intent; movement continues through
+        -- the established touch, sprint and juke paths until the next refresh.
+        assert(selected.kind == "dribble", "carrier selection did not resolve")
     end
 end
 
@@ -3960,6 +4047,9 @@ function match.step(s, dt, input, combat_state)
         if p.jockey_timer > 0 then
             p.jockey_timer = math.max(0, p.jockey_timer - dt)
         end
+        -- MatchPlayer is already mutable state. Tick the scalar countdown in
+        -- place instead of allocating ten short-lived decision tables per frame.
+        p.outfield_decision.remaining = math.max(0, p.outfield_decision.remaining - dt)
     end
 
     if
@@ -3993,8 +4083,29 @@ function match.step(s, dt, input, combat_state)
         assert(combat_module).resolve_contacts(s, combat_state, combat_contacts)
     end
     update_ball(s, dt, inputs, combat_state)
+    if s.owner ~= prev_owner then
+        local decisions = require("sim.outfield_decision")
+        if prev_owner and not s.players[prev_owner].is_keeper then
+            local previous = s.players[prev_owner]
+            previous.outfield_decision = decisions.reset(previous.outfield_decision)
+        end
+        if s.owner and not s.players[s.owner].is_keeper then
+            local current = s.players[s.owner]
+            current.outfield_decision = decisions.reset(current.outfield_decision)
+        end
+    end
     if combat_state then
         assert(combat_module).sanitize_forced_players(s, combat_state)
+        local decisions = require("sim.outfield_decision")
+        for index, player in ipairs(s.players) do
+            if
+                not player.is_keeper
+                and assert(combat_module).blocks_actions(combat_state, index)
+                and player.outfield_decision.context ~= "ineligible"
+            then
+                player.outfield_decision = decisions.reset(player.outfield_decision)
+            end
+        end
         assert(combat_module).finish_tick(combat_state)
     end
 
