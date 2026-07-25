@@ -1,6 +1,7 @@
 local Vec2 = require("core.vec2")
-local player_pose = require("game.presentation.player_pose")
-local player_renderer = require("game.render.player_renderer")
+local pitch = require("game.render.pitch")
+local match = require("sim.match")
+local teams = require("data.teams")
 
 ---@class KeeperPoseSnapshotScenario
 ---@field id "central_dive_catch"|"stretch_dive_parry"
@@ -12,8 +13,8 @@ local player_renderer = require("game.render.player_renderer")
 ---@class KeeperPoseSnapshotsModule
 local snapshots = {}
 
-local WIDTH = 360
-local HEIGHT = 240
+local WIDTH = 960
+local HEIGHT = 540
 local BASELINE_DIR = "spec/visual/baselines"
 
 ---@type KeeperPoseSnapshotScenario[]
@@ -37,46 +38,36 @@ local SCENARIOS = {
 ---@param scenario KeeperPoseSnapshotScenario
 ---@return love.ImageData
 local function render(scenario)
+    local state = match.new({
+        home = teams.nebula,
+        away = teams.orion,
+        field = { w = WIDTH, h = HEIGHT },
+    })
+    local keeper = state.players[1]
+    keeper.pos = Vec2.new(24, scenario.holding and 250 or 290)
+    keeper.run_vel = Vec2.new(0, 0)
+    keeper.dive_timer = scenario.dive * 0.3
+    keeper.dive_dir = scenario.direction
+    keeper.save_style = scenario.pose == "keeper_central" and "central" or "stretch"
+    if scenario.holding then
+        state.owner = 1
+        keeper.feet_ball = false
+        state.ball = keeper.pos
+    else
+        state.owner = nil
+        state.ball = Vec2.new(keeper.pos.x + 45, keeper.pos.y)
+    end
+
     local canvas = love.graphics.newCanvas(WIDTH, HEIGHT)
     love.graphics.setCanvas(canvas)
-    love.graphics.clear(0.025, 0.045, 0.09, 1)
-
-    love.graphics.setColor(0.06, 0.2, 0.24, 1)
-    love.graphics.rectangle("fill", 0, 145, WIDTH, HEIGHT - 145)
-    love.graphics.setColor(0.35, 0.72, 1, 0.8)
-    love.graphics.setLineWidth(3)
-    love.graphics.line(48, 184, 48, 84, WIDTH - 48, 84, WIDTH - 48, 184)
-    love.graphics.setColor(0.35, 0.72, 1, 0.25)
-    love.graphics.line(48, 116, WIDTH - 48, 116)
-
-    player_renderer.draw(180, 194, 28, { 0.2, 0.72, 1 }, nil, {
-        facing = Vec2.new(1, 0),
-        is_keeper = true,
-        controlled = true,
-        dive = scenario.dive,
-        dive_dir = scenario.direction,
-        holding = scenario.holding,
-        grab = scenario.holding and 0.8 or 0,
-        species_shape = "round",
-        species_color = { 1, 0.72, 0.24 },
-        team = "home",
-        pose = {
-            id = scenario.pose,
-            priority = player_pose.PRIORITY[scenario.pose],
-            source = "soccer",
-        },
+    pitch.draw(state, { w = WIDTH, h = HEIGHT }, {
+        home_color = teams.nebula.color,
+        away_color = teams.orion.color,
     })
-
-    if not scenario.holding then
-        love.graphics.setColor(1, 0.95, 0.7, 1)
-        love.graphics.circle("fill", 275, 126, 10)
-        love.graphics.setColor(1, 0.45, 0.3, 0.8)
-        love.graphics.setLineWidth(3)
-        love.graphics.line(286, 121, 315, 107)
-    end
 
     love.graphics.setColor(0.92, 0.97, 1, 1)
     love.graphics.print(scenario.id:gsub("_", " "):upper(), 14, 14)
+    love.graphics.print("LIVE PITCH SCALE · 960×540", 14, 30)
     love.graphics.setCanvas()
     love.graphics.flushBatch()
     return canvas:newImageData()

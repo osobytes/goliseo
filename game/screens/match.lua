@@ -18,6 +18,7 @@ local match_hud_render = require("game.render.match_hud")
 local view_state = require("game.render.view_state")
 local combat_presentation = require("game.presentation.combat")
 local combat_feedback = require("game.presentation.combat_feedback")
+local match_event_batch = require("game.presentation.match_event_batch")
 local audio = require("game.audio")
 local match_hud = require("game.match_hud")
 local onboarding = require("game.match_onboarding")
@@ -332,35 +333,9 @@ end
 
 ---@param self MatchScreen
 local function consume_rollback_presentation(self)
-    ---@type table<string, RollbackWrappedMatchEvent>
-    local frame_match_events = {}
+    append_values(self._frame_events, match_event_batch.surviving(self._rollback_event_diffs))
     for _, diff in ipairs(self._rollback_event_diffs) do
-        for _, event in ipairs(diff.revoked) do
-            frame_match_events[event.id] = nil
-        end
-        for _, replacement in ipairs(diff.replaced) do
-            frame_match_events[replacement.before.id] = nil
-            local event = replacement.after
-            if event.domain:sub(1, 6) == "match/" then
-                ---@cast event RollbackWrappedMatchEvent
-                frame_match_events[event.id] = event
-            end
-        end
-        for _, event in ipairs(diff.added) do
-            if event.domain:sub(1, 6) == "match/" then
-                ---@cast event RollbackWrappedMatchEvent
-                frame_match_events[event.id] = event
-            end
-        end
         self:consume_rollback_event_diff(diff)
-    end
-    local event_ids = {}
-    for id in pairs(frame_match_events) do
-        event_ids[#event_ids + 1] = id
-    end
-    table.sort(event_ids)
-    for _, id in ipairs(event_ids) do
-        self._frame_events[#self._frame_events + 1] = frame_match_events[id].payload
     end
     for _, step in ipairs(self._rollback_confirmed_steps) do
         self:consume_confirmed_step(step)
