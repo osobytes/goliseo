@@ -13,6 +13,13 @@ local SHOT_PER_STRENGTH = 50 -- px/s per strength point
 
 local MAX_EXECUTION_ERROR_RADIANS = math.pi / 15 -- 12 degrees at technique 0
 
+---@param technique number
+---@return number radians
+local function execution_error_for_technique(technique)
+    technique = math.max(0, math.min(10, technique))
+    return (1 - technique / 10) * MAX_EXECUTION_ERROR_RADIANS
+end
+
 ---@param s StatBlock
 ---@return number px_per_second
 function stats.move_speed(s)
@@ -105,8 +112,20 @@ end
 ---@param s StatBlock
 ---@return number radians  -- 0..pi/15 (0..12 degrees) maximum angular execution error
 function stats.execution_error(s)
-    local technique = math.max(0, math.min(10, s.technique))
-    return (1 - technique / 10) * MAX_EXECUTION_ERROR_RADIANS
+    return execution_error_for_technique(s.technique)
+end
+
+-- MatchPlayer already serializes the exact outputs of first_touch() and
+-- composure(). Reverse those original operations in the same order so kick
+-- execution can consume the effective technique without adding duplicate
+-- immutable state to snapshots.
+---@param first_touch number  -- stats.first_touch() result for effective stats
+---@param composure number  -- stats.composure() result for effective stats
+---@return number radians  -- 0..pi/15 maximum angular execution error
+function stats.execution_error_from_outfield(first_touch, composure)
+    local mental = composure * 10
+    local technique = (first_touch * 10 - mental * 0.25) / 0.75
+    return execution_error_for_technique(technique)
 end
 
 -- Keeper-specific derivations. Mental represents composure and positioning (reach),
