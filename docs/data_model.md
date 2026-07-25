@@ -74,11 +74,10 @@ loadout receive a neutral combat runtime and ignore equipment intent.
 
 Presentation, cosmetic, theme, and equipment-appearance ids never enter the
 companion. `data/action_families.lua` remains the sole tuning authority.
-Combat-active snapshot/hash/rollback integration deliberately returns an
-unsupported error until issue #111 versions every new authoritative field and
-event together. Creating the companion marks the paired match state so both
-public and rollback-owned snapshot capture fail loudly instead of accepting
-only the base soccer half.
+Combat-active snapshot/hash/rollback integration uses match snapshot version 6,
+combat snapshot version 1, and input tape version 2. A combat-enabled match
+must supply the companion at capture; passing only the soccer half fails
+loudly.
 
 Kickoff resets clear action, forced-state, and projectile runtime, but preserve
 the scoring tick's event batch and the match-lifetime action sequence. The next
@@ -97,6 +96,13 @@ catalog's 300 px/s (5 px per fixed tick) for exactly 60 travel ticks. The
 initial forced-state presentation threshold classifies displacement below
 12 px as stagger and 12 px or more as knockback; either state still obeys the
 same 30-tick chain cap and 45-tick immunity floor.
+
+The versioned combat metric dictionary, current-field inventory, and explicit
+ownership for missing intent, lifecycle, AI-reason, and soccer-attribution
+telemetry live in
+[`docs/design/combat_fun_evidence_contract.md`](design/combat_fun_evidence_contract.md).
+Research-session and participant data stay outside simulation and replay
+identity.
 
 ### TacticData (`data/tactics.lua`)
 

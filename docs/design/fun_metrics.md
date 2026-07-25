@@ -2,6 +2,11 @@
 
 **Scope:** `sim/metrics.lua`, `sim/bot.lua`, `sim/headless.lua`, `sim/sweep.lua`, `main.lua`, `spec/sim/*`
 
+Combat evidence is governed separately by
+[`combat_fun_evidence_contract.md`](combat_fun_evidence_contract.md). The
+soccer-only tripwire and its historical `fun` name remain regression tools;
+neither is a measurement of human enjoyment or a combat-active baseline.
+
 CLI (all headless, exit when done):
 
 ```
