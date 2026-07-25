@@ -11,8 +11,8 @@ lobby.
 Each host/guest link keeps the OMP-0 topology:
 
 - one reliable, ordered control channel carries this protocol; and
-- one unordered, loss-tolerant channel carries the tick-numbered input bundles
-  owned by #162.
+- one unordered, loss-tolerant channel carries the tick-numbered
+  [input bundles and canonical host batches](input_packets.md).
 
 Control messages are pure Lua records. Their canonical `GCOP;1;...` encoding
 is bounded to 8,192 bytes and never invokes simulation code while parsing.

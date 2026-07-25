@@ -82,6 +82,7 @@ input_frame.FIXTURE_TEAM_SIZE = input_frame.HOME_SLOT_COUNT + 1
 input_frame.MOVE_SCALE = 127
 input_frame.MAX_TICK = 2147483647
 input_frame.MAX_PLAYER_ID_BYTES = 64
+input_frame.MAX_SAMPLE_WIRE_BYTES = 8 -- ASCII bytes: two hex characters per sample byte.
 input_frame.MAX_WIRE_BYTES = 156
 
 ---@type table<InputHeldAction, integer>
@@ -279,6 +280,54 @@ function input_frame.validate_sample(sample)
         return failure("malformed", "input sample equipment transition combination is invalid")
     end
     return true
+end
+
+-- The compact packet codec uses one explicit byte for each version-2 sample
+-- component. Axes are biased into [0, 254]; held and edge masks retain their
+-- complete canonical bytes. Lowercase hexadecimal keeps the result ASCII-safe
+-- without allowing a transport to infer or repeat combat edges.
+---@param sample InputSample
+---@return string?, string?, InputFrameErrorCode?
+function input_frame.encode_sample(sample)
+    local ok, err, code = input_frame.validate_sample(sample)
+    if not ok then
+        return nil, err, code
+    end
+    return ("%02x%02x%02x%02x"):format(
+        sample.move_x + input_frame.MOVE_SCALE,
+        sample.move_y + input_frame.MOVE_SCALE,
+        sample.held,
+        sample.edges
+    )
+end
+
+---@param wire any
+---@return InputSample?, string?, InputFrameErrorCode?
+function input_frame.decode_sample(wire)
+    if
+        type(wire) ~= "string"
+        or #wire ~= input_frame.MAX_SAMPLE_WIRE_BYTES
+        or not wire:match("^[0-9a-f]+$")
+    then
+        return failure(
+            "malformed",
+            "input sample wire must be eight lowercase hex characters encoding four bytes"
+        )
+    end
+    local sample = {
+        move_x = assert(tonumber(wire:sub(1, 2), 16)) - input_frame.MOVE_SCALE,
+        move_y = assert(tonumber(wire:sub(3, 4), 16)) - input_frame.MOVE_SCALE,
+        held = assert(tonumber(wire:sub(5, 6), 16)),
+        edges = assert(tonumber(wire:sub(7, 8), 16)),
+    }
+    local ok, err, code = input_frame.validate_sample(sample)
+    if not ok then
+        return nil, err, code
+    end
+    if input_frame.encode_sample(sample) ~= wire then
+        return failure("malformed", "input sample wire is not canonical")
+    end
+    return sample
 end
 
 ---@param options InputSample|InputSampleOptions|nil
@@ -747,7 +796,7 @@ end
 
 ---@param sample InputSample
 ---@return string
-local function encode_sample(sample)
+local function encode_frame_sample(sample)
     return table.concat({
         tostring(sample.move_x),
         tostring(sample.move_y),
@@ -765,7 +814,7 @@ function input_frame.encode(frame)
     end
     local fields = { tostring(frame.version), tostring(frame.tick) }
     for index = 1, input_frame.SLOT_COUNT do
-        fields[#fields + 1] = encode_sample(frame.slots[index])
+        fields[#fields + 1] = encode_frame_sample(frame.slots[index])
     end
     local wire = table.concat(fields, "|")
     if #wire > input_frame.MAX_WIRE_BYTES then
