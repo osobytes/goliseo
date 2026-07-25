@@ -597,11 +597,11 @@ until phase 4 automates it).
 
   A separate paired 60-seed audit kept the required tactic lever live:
   Press High won 45.0% at home versus Counter Attack's 33.3%, a +11.7
-  percentage-point difference, with goals, save rate, and shots/goal all moving
-  by at least one band width. The formation comparison measured -21.7
-  percentage points, beyond its 20-point upper gate. That residual is
-  non-causal to these three target-validity guards and outside issue 56's
-  tactic acceptance; this refresh neither changes nor hides its gate.
+  percentage-point difference. Goals, save rate, and shots/goal had raw
+  band-width deltas of +0.65, -0.64, and -4.04; all cleared the 0.5-band moved
+  threshold. The separately measured formation comparison is explicitly
+  disclosed at -21.7 percentage points, remains beyond its 20-point upper
+  gate, and is not addressed by this target-validity correction.
 
   The selective refresh accepts only the six causally coupled fields that
   crossed tolerance: goals, save rate, drought, decided-late, controlled
