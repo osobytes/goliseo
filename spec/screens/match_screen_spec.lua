@@ -88,6 +88,24 @@ t.describe("match screen fixed simulation clock (tier 2)", function()
 end)
 
 t.describe("match screen contextual controls (tier 2)", function()
+    t.it("constructs and drives combat only behind the explicit option", function()
+        local showcase = Match.new()
+        t.is_true(showcase._combat_state == nil)
+
+        local prototype = Match.new({ combat_enabled = true })
+        local combat_state = assert(prototype._combat_state)
+        prototype.state.kickoff_hold = 0
+        prototype:event({
+            kind = "action",
+            action = "equipment",
+            pressed = true,
+        })
+        prototype:update(fixed_clock.TICK_SECONDS)
+        local runtime = combat_state.players[prototype.state.controlled]
+        t.eq(runtime.phase, "windup")
+        t.is_true(runtime.source_sequence ~= nil)
+    end)
+
     t.it("K never switches while carrying the ball (it charges a pass)", function()
         local m = Match.new() -- at kickoff the controlled player has the ball
         m:event({ kind = "key", key = "k" })

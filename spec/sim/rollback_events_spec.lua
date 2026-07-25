@@ -1,5 +1,6 @@
 local t = require("spec.support.runner")
 local Vec2 = require("core.vec2")
+local combat = require("sim.combat")
 local input_frame = require("sim.input_frame")
 local match = require("sim.match")
 local match_snapshot = require("sim.match_snapshot")
@@ -196,6 +197,56 @@ local function lifecycle_additions(diffs)
 end
 
 t.describe("rollback events", function()
+    t.it("revokes corrected-away combat events and confirms the replacement once", function()
+        local state = new_state()
+        state.kickoff_hold = 0
+        local combat_state = combat.new_state(state)
+        local source_player = nil
+        for index, runtime in ipairs(combat_state.players) do
+            if runtime.family_id == "light_melee" then
+                source_player = index
+                break
+            end
+        end
+        source_player = assert(source_player, "fixture requires one melee player")
+        local source_slot = assert(state.slot_for_player[source_player])
+        local initial = match_snapshot.capture(state, combat_state)
+
+        local function run(attack)
+            local session = rollback_session.new(initial, sources())
+            for slot = 1, input_frame.SLOT_COUNT do
+                local row = input_frame.neutral_sample()
+                if attack and slot == source_slot then
+                    row = assert(input_frame.new_sample({
+                        held = input_frame.HELD_BITS.equipment,
+                        edges = input_frame.EDGE_BITS.equipment_pressed,
+                    }))
+                end
+                assert(rollback_session.add_authoritative(session, 0, slot, row))
+            end
+            return assert(rollback_session.step(session)),
+                rollback_session.current_snapshot(session)
+        end
+
+        local attack_output, attack_snapshot = run(true)
+        local neutral_output, neutral_snapshot = run(false)
+        local timeline = rollback_events.new(initial)
+        local added = assert(rollback_events.apply(timeline, 0, 0, {
+            { output = attack_output, snapshot = attack_snapshot },
+        }))
+        t.eq(#added.added, 1)
+        t.is_true(added.added[1].domain:match("^combat/commit/1$") ~= nil)
+
+        local corrected = assert(rollback_events.apply(timeline, 0, 0, {
+            { output = neutral_output, snapshot = neutral_snapshot },
+        }))
+        t.eq(#corrected.revoked, 1)
+        t.eq(corrected.revoked[1].id, added.added[1].id)
+        t.eq(#corrected.added, 0)
+        t.eq(#rollback_events.confirm(timeline, 0), 1)
+        t.eq(#rollback_events.confirm(timeline, 0), 0)
+    end)
+
     t.it("keeps per-domain ordinals stable and identical reapplication silent", function()
         local initial = initial_snapshot()
         local timeline = rollback_events.new(initial)

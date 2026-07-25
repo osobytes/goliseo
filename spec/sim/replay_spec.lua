@@ -1,6 +1,8 @@
 local t = require("spec.support.runner")
 local short_match_tape = require("spec.fixtures.short_match_tape")
 local Vec2 = require("core.vec2")
+local combat = require("sim.combat")
+local combat_identity = require("sim.combat_identity")
 local fixed_clock = require("sim.fixed_clock")
 local input_frame = require("sim.input_frame")
 local input_tape = require("sim.input_tape")
@@ -21,6 +23,98 @@ local function copy_frames(tape)
 end
 
 t.describe("input tape replay", function()
+    t.it("pins combat mechanics in a v2 tape and replays every composite boundary", function()
+        local ownership = match.ownership_for_teams(teams.nebula, teams.orion)
+        local state = match.new({
+            home = teams.nebula,
+            away = teams.orion,
+            field = { w = 960, h = 540 },
+            duration = 2,
+            max_goals = 3,
+            seed = 811,
+            input_ownership = ownership,
+        })
+        state.kickoff_hold = 0
+        local combat_state = combat.new_state(state)
+        local source_player = nil
+        for index, runtime in ipairs(combat_state.players) do
+            if runtime.family_id == "ranged" then
+                source_player = index
+                break
+            end
+        end
+        source_player = assert(source_player, "fixture requires one ranged player")
+        local source_slot = assert(state.slot_for_player[source_player])
+        local frames = {}
+        for tick = 0, 5 do
+            frames[tick + 1] = assert(input_frame.neutral(tick))
+        end
+        frames[1].slots[source_slot] = assert(input_frame.new_sample({
+            held = input_frame.HELD_BITS.equipment,
+            edges = input_frame.EDGE_BITS.equipment_pressed,
+        }))
+        for index = 2, #frames do
+            frames[index].slots[source_slot] = assert(input_frame.new_sample({
+                held = input_frame.HELD_BITS.equipment,
+            }))
+        end
+        local identity = {
+            tape_version = input_tape.COMBAT_VERSION,
+            input_version = input_frame.VERSION,
+            snapshot_version = match_snapshot.COMBAT_VERSION,
+            build = "combat-v2-spec",
+            source = "combat-v2-spec",
+            content = "nebula-orion-showcase-content-v1",
+            tuning = tuning.serialize(),
+            config = "field=960x540;duration=2;max_goals=3;tick_rate=60",
+            fixture = "combat-v2-spec",
+            seed = 811,
+            tick_rate = fixed_clock.TICK_RATE,
+            ownership = ownership,
+            combat = combat_identity.for_state(combat_state),
+        }
+        local tape = input_tape.new(identity, match_snapshot.capture(state, combat_state), frames)
+        local replayed = assert(replay.run(tape, identity))
+        t.eq(tape.version, input_tape.COMBAT_VERSION)
+        t.eq(#replayed.boundaries, #frames + 1)
+        t.eq(assert(replayed.combat_state).players[source_player].phase, "windup")
+        for index, row in ipairs(replayed.boundaries) do
+            t.eq(row.hash, tape.boundary_hashes[index])
+        end
+        local mirror_state, mirror_combat = match_snapshot.restore(tape.initial)
+        local mirror = input_tape.new(
+            identity,
+            match_snapshot.capture(mirror_state, mirror_combat),
+            copy_frames(tape)
+        )
+        local compared = assert(replay.compare(tape, mirror, identity))
+        t.is_true(compared.equal)
+        for index, hash in ipairs(tape.boundary_hashes) do
+            t.eq(mirror.boundary_hashes[index], hash)
+        end
+
+        local mismatched = input_tape.copy_identity(identity)
+        mismatched.combat = mismatched.combat .. ";changed"
+        local result, failure = replay.run(tape, mismatched)
+        t.eq(result, nil)
+        local mismatch = assert(failure)
+        t.eq(mismatch.code, "identity_mismatch")
+        t.eq(mismatch.path, "identity.combat")
+
+        local soccer_identity = input_tape.copy_identity(identity)
+        soccer_identity.tape_version = input_tape.VERSION
+        soccer_identity.snapshot_version = match_snapshot.VERSION
+        soccer_identity.combat = nil
+        t.is_true(
+            not pcall(
+                input_tape.new,
+                soccer_identity,
+                match_snapshot.capture(state, combat_state),
+                frames
+            )
+        )
+    end)
+
     t.it("converges through a v5 goal, kickoff reset, and post-kickoff boundary", function()
         local ownership = match.ownership_for_teams(teams.nebula, teams.orion)
         local state = match.new({

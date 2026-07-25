@@ -8,10 +8,12 @@
 local Vec2 = require("core.vec2")
 local fnv1a64 = require("core.fnv1a64")
 local input_frame = require("sim.input_frame")
+local combat_snapshot = require("sim.combat_snapshot")
 
 ---@class MatchSnapshot
 ---@field version integer
 ---@field state MatchState
+---@field combat CombatMatchState?
 
 ---@class MatchSnapshotDifference
 ---@field path string
@@ -22,6 +24,25 @@ local input_frame = require("sim.input_frame")
 local match_snapshot = {}
 
 match_snapshot.VERSION = 5
+match_snapshot.COMBAT_VERSION = 6
+
+---@type table<MatchState, string>
+local unsupported_states = setmetatable({}, { __mode = "k" })
+
+---@param state MatchState
+---@param reason string
+function match_snapshot.mark_unsupported(state, reason)
+    assert(type(state) == "table", "match state is required")
+    assert(type(reason) == "string" and reason ~= "", "snapshot rejection reason is required")
+    unsupported_states[state] = reason
+end
+
+---@param state MatchState
+---@param combat_state CombatMatchState?
+local function assert_snapshot_supported(state, combat_state)
+    local reason = unsupported_states[state]
+    assert(reason == nil or combat_state ~= nil, reason)
+end
 
 match_snapshot.MATCH_FIELDS = {
     "field",
@@ -212,7 +233,7 @@ local EVENT_FIELD_SET = field_set(EVENT_FIELDS)
 local WINDUP_FIELD_SET = field_set(WINDUP_FIELDS)
 local OWNERSHIP_FIELD_SET = field_set({ "version", "rosters", "slots" })
 local ASSIGNMENT_FIELD_SET = field_set(ASSIGNMENT_FIELDS)
-local SNAPSHOT_FIELD_SET = field_set({ "version", "state" })
+local SNAPSHOT_FIELD_SET = field_set({ "version", "state", "combat" })
 
 ---@param value any
 ---@return boolean
@@ -638,44 +659,96 @@ local function copy_owned_state(source, make_vec)
 end
 
 ---@param state MatchState
+---@param combat_state CombatMatchState?
 ---@return MatchSnapshot
-function match_snapshot.capture(state)
-    return {
-        version = match_snapshot.VERSION,
-        state = copy_state(state, "state", false),
-    }
+function match_snapshot.capture(state, combat_state)
+    assert_snapshot_supported(state, combat_state)
+    local copied_state = copy_state(state, "state", false)
+    if combat_state then
+        return {
+            version = match_snapshot.COMBAT_VERSION,
+            state = copied_state,
+            combat = combat_snapshot.copy(combat_state, "combat", copied_state, false),
+        }
+    end
+    return { version = match_snapshot.VERSION, state = copied_state }
 end
 
 -- Internal ownership-transfer copy for a MatchState previously produced by a
 -- validated snapshot or by sim.match. Arbitrary/external states must use
 -- capture() so schema drift and malformed values still fail loudly.
 ---@param state MatchState
+---@param combat_state CombatMatchState?
 ---@return MatchSnapshot
-function match_snapshot.capture_owned(state)
+function match_snapshot.capture_owned(state, combat_state)
     assert(type(state) == "table", "owned match state is required")
-    return {
-        version = match_snapshot.VERSION,
-        state = copy_owned_state(state, false),
-    }
+    assert_snapshot_supported(state, combat_state)
+    local copied_state = copy_owned_state(state, false)
+    if combat_state then
+        if copied_state.slot_mode then
+            assert(
+                combat_state.tick == copied_state.input_tick,
+                "combat tick must match input tick"
+            )
+        end
+        return {
+            version = match_snapshot.COMBAT_VERSION,
+            state = copied_state,
+            combat = combat_snapshot.copy_owned(combat_state, false),
+        }
+    end
+    return { version = match_snapshot.VERSION, state = copied_state }
 end
 
 ---@param snapshot MatchSnapshot
 ---@return MatchState
+---@return CombatMatchState?
 function match_snapshot.restore(snapshot)
     assert_fields(snapshot, SNAPSHOT_FIELD_SET, "snapshot")
-    assert(snapshot.version == match_snapshot.VERSION, "unsupported match snapshot version")
-    return copy_state(snapshot.state, "snapshot.state", true)
+    assert(
+        snapshot.version == match_snapshot.VERSION
+            or snapshot.version == match_snapshot.COMBAT_VERSION,
+        "unsupported match snapshot version"
+    )
+    local state = copy_state(snapshot.state, "snapshot.state", true)
+    if snapshot.version == match_snapshot.VERSION then
+        assert(snapshot.combat == nil, "soccer-only snapshots cannot contain combat state")
+        return state, nil
+    end
+    assert(type(snapshot.combat) == "table", "combat snapshot companion is required")
+    local combat_state = combat_snapshot.copy(snapshot.combat, "snapshot.combat", state, true)
+    match_snapshot.mark_unsupported(
+        state,
+        "combat-active match snapshots require their CombatMatchState companion"
+    )
+    return state, combat_state
 end
 
 -- Internal restore for a canonical snapshot already owned by rollback. Public
 -- and external snapshots must use restore() for full validation.
 ---@param snapshot MatchSnapshot
 ---@return MatchState
+---@return CombatMatchState?
 function match_snapshot.restore_owned(snapshot)
     assert(type(snapshot) == "table", "owned match snapshot is required")
-    assert(snapshot.version == match_snapshot.VERSION, "unsupported owned match snapshot version")
+    assert(
+        snapshot.version == match_snapshot.VERSION
+            or snapshot.version == match_snapshot.COMBAT_VERSION,
+        "unsupported owned match snapshot version"
+    )
     assert(type(snapshot.state) == "table", "owned match snapshot state is required")
-    return copy_owned_state(snapshot.state, true)
+    local state = copy_owned_state(snapshot.state, true)
+    if snapshot.version == match_snapshot.VERSION then
+        assert(snapshot.combat == nil, "owned soccer-only snapshot cannot contain combat state")
+        return state, nil
+    end
+    assert(type(snapshot.combat) == "table", "owned combat snapshot companion is required")
+    local combat_state = combat_snapshot.copy_owned(snapshot.combat, true)
+    match_snapshot.mark_unsupported(
+        state,
+        "combat-active match snapshots require their CombatMatchState companion"
+    )
+    return state, combat_state
 end
 
 ---@param number number
@@ -950,19 +1023,48 @@ end
 
 ---@param version integer
 ---@param state MatchState
----@return string
-local function encode_state(version, state)
-    local encoder = { parts = {}, bytes = 0 }
+---@param combat_state CombatMatchState?
+---@param encoder MatchSnapshotEncoder
+local function append_snapshot(encoder, version, state, combat_state)
     append_state(encoder, version, state)
+    if version == match_snapshot.COMBAT_VERSION then
+        append_name(encoder, "combat")
+        append_literal(encoder, "c;")
+        local writer = {
+            literal = function(value)
+                append_literal(encoder, value)
+            end,
+            name = function(value)
+                append_name(encoder, value)
+            end,
+            scalar = function(value)
+                append_scalar(encoder, value)
+            end,
+            vec = function(value)
+                append_vec(encoder, value)
+            end,
+        }
+        combat_snapshot.append(writer, assert(combat_state))
+    end
+end
+
+---@param version integer
+---@param state MatchState
+---@param combat_state CombatMatchState?
+---@return string
+local function encode_snapshot(version, state, combat_state)
+    local encoder = { parts = {}, bytes = 0 }
+    append_snapshot(encoder, version, state, combat_state)
     return table.concat(assert(encoder.parts))
 end
 
 ---@param version integer
 ---@param state MatchState
+---@param combat_state CombatMatchState?
 ---@return integer
-local function encoded_state_size(version, state)
+local function encoded_snapshot_size(version, state, combat_state)
     local encoder = { parts = nil, bytes = 0 }
-    append_state(encoder, version, state)
+    append_snapshot(encoder, version, state, combat_state)
     return encoder.bytes
 end
 
@@ -971,8 +1073,8 @@ end
 function match_snapshot.encode(snapshot)
     -- Restore performs the full explicit allowlist/type validation and gives
     -- serialization a normalized independent source.
-    local state = match_snapshot.restore(snapshot)
-    return encode_state(snapshot.version, state)
+    local state, combat_state = match_snapshot.restore(snapshot)
+    return encode_snapshot(snapshot.version, state, combat_state)
 end
 
 -- Encode a snapshot just returned by capture(), or an equally canonical
@@ -981,9 +1083,13 @@ end
 ---@return string
 function match_snapshot.encode_canonical(snapshot)
     assert(type(snapshot) == "table", "canonical match snapshot is required")
-    assert(snapshot.version == match_snapshot.VERSION, "unsupported canonical snapshot version")
+    assert(
+        snapshot.version == match_snapshot.VERSION
+            or snapshot.version == match_snapshot.COMBAT_VERSION,
+        "unsupported canonical snapshot version"
+    )
     assert(type(snapshot.state) == "table", "canonical match snapshot state is required")
-    return encode_state(snapshot.version, snapshot.state)
+    return encode_snapshot(snapshot.version, snapshot.state, snapshot.combat)
 end
 
 -- Count the exact canonical wire bytes for an owned snapshot without
@@ -992,9 +1098,13 @@ end
 ---@return integer
 function match_snapshot.encoded_size_canonical(snapshot)
     assert(type(snapshot) == "table", "canonical match snapshot is required")
-    assert(snapshot.version == match_snapshot.VERSION, "unsupported canonical snapshot version")
+    assert(
+        snapshot.version == match_snapshot.VERSION
+            or snapshot.version == match_snapshot.COMBAT_VERSION,
+        "unsupported canonical snapshot version"
+    )
     assert(type(snapshot.state) == "table", "canonical match snapshot state is required")
-    return encoded_state_size(snapshot.version, snapshot.state)
+    return encoded_snapshot_size(snapshot.version, snapshot.state, snapshot.combat)
 end
 
 ---@param snapshot MatchSnapshot
@@ -1210,15 +1320,17 @@ local function first_difference_canonical(a, b)
             return difference(path, av, bv)
         end
     end
-    return nil
+    return combat_snapshot.first_difference(a.combat, b.combat, "combat")
 end
 
 ---@param left MatchSnapshot
 ---@param right MatchSnapshot
 ---@return MatchSnapshotDifference?
 function match_snapshot.first_difference(left, right)
-    local a = match_snapshot.capture(match_snapshot.restore(left))
-    local b = match_snapshot.capture(match_snapshot.restore(right))
+    local left_state, left_combat = match_snapshot.restore(left)
+    local right_state, right_combat = match_snapshot.restore(right)
+    local a = match_snapshot.capture(left_state, left_combat)
+    local b = match_snapshot.capture(right_state, right_combat)
     return first_difference_canonical(a, b)
 end
 

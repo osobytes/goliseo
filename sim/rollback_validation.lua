@@ -7,6 +7,8 @@ local Vec2 = require("core.vec2")
 local config = require("data.omp2_rollback_validation")
 local network_profiles = require("data.network_profiles")
 local teams = require("data.teams")
+local combat = require("sim.combat")
+local combat_identity = require("sim.combat_identity")
 local determinism_evidence = require("sim.determinism_evidence")
 local fixed_clock = require("sim.fixed_clock")
 local input_frame = require("sim.input_frame")
@@ -92,12 +94,13 @@ end
 ---@param source InputTape
 ---@param first_boundary integer
 ---@return MatchState
+---@return CombatMatchState?
 local function state_at(source, first_boundary)
-    local state = match_snapshot.restore(source.initial)
+    local state, combat_state = match_snapshot.restore(source.initial)
     for index = 1, first_boundary do
-        match.step(state, fixed_clock.TICK_SECONDS, source.frames[index])
+        match.step(state, fixed_clock.TICK_SECONDS, source.frames[index], combat_state)
     end
-    return state
+    return state, combat_state
 end
 
 ---@param source InputTape
@@ -110,10 +113,14 @@ local function normalized_window(source, first_boundary, last_boundary, scenario
         first_boundary >= 0 and last_boundary > first_boundary and last_boundary <= #source.frames,
         "rollback validation window is outside the frozen tape"
     )
-    local state = state_at(source, first_boundary)
+    local state, combat_state = state_at(source, first_boundary)
     state.input_tick = 0
     state.events = {}
-    local initial = match_snapshot.capture(state)
+    if combat_state then
+        combat_state.tick = 0
+        combat_state.events = {}
+    end
+    local initial = match_snapshot.capture(state, combat_state)
     local frames = {}
     for boundary = first_boundary, last_boundary - 1 do
         local frame = assert(input_frame.copy(source.frames[boundary + 1]))
@@ -176,6 +183,72 @@ local function synthetic_goal_tape()
         ownership = ownership,
     }
     return input_tape.new(identity, match_snapshot.capture(state), frames)
+end
+
+---@return InputTape
+local function combat_validation_tape()
+    local fixture = config.combat_fixture
+    local ownership = match.ownership_for_teams(teams.nebula, teams.orion)
+    local state = match.new({
+        home = teams.nebula,
+        away = teams.orion,
+        field = { w = 960, h = 540 },
+        duration = 20,
+        max_goals = 99,
+        seed = fixture.seed,
+        input_ownership = ownership,
+    })
+    state.kickoff_hold = 0
+    local combat_state = combat.new_state(state)
+    local initial = match_snapshot.capture(state, combat_state)
+    local frames = {}
+    for tick = 0, fixture.frame_count - 1 do
+        local frame = assert(input_frame.neutral(tick))
+        for slot = 1, input_frame.SLOT_COUNT do
+            if tick == 0 then
+                frame.slots[slot] = assert(input_frame.new_sample({
+                    held = input_frame.HELD_BITS.equipment,
+                    edges = input_frame.EDGE_BITS.equipment_pressed,
+                }))
+            elseif tick < 20 then
+                frame.slots[slot] = assert(input_frame.new_sample({
+                    held = input_frame.HELD_BITS.equipment,
+                }))
+            elseif tick == 20 then
+                frame.slots[slot] = assert(input_frame.new_sample({
+                    edges = input_frame.EDGE_BITS.equipment_released,
+                }))
+            end
+        end
+        frames[#frames + 1] = frame
+    end
+    local identity = {
+        tape_version = input_tape.COMBAT_VERSION,
+        input_version = input_frame.VERSION,
+        snapshot_version = match_snapshot.COMBAT_VERSION,
+        build = "omp2-combat-rollback-v1",
+        source = "issue-111-bounded-combat-v1",
+        content = "nebula-orion-showcase-content-v1",
+        tuning = tuning.serialize(),
+        config = ("field=960x540;duration=20;max_goals=99;tick_rate=60;ticks=%d"):format(
+            fixture.frame_count
+        ),
+        fixture = fixture.id,
+        seed = fixture.seed,
+        tick_rate = fixed_clock.TICK_RATE,
+        ownership = ownership,
+        combat = combat_identity.for_state(combat_state),
+    }
+    local tape = input_tape.new(identity, initial, frames)
+    assert(
+        tape.boundary_hashes[1] == fixture.initial_hash,
+        "combat validation initial hash changed"
+    )
+    assert(
+        tape.boundary_hashes[#tape.boundary_hashes] == fixture.final_hash,
+        "combat validation final hash changed"
+    )
+    return tape
 end
 
 ---@return InputTape
@@ -277,6 +350,7 @@ end
 local function plan_cases(suite, options)
     local cases = {}
     local full = determinism_evidence.fixture_tape()
+    local combat_tape = combat_validation_tape()
     if suite == "native" then
         for _, profile_name in ipairs(config.full_profiles) do
             for _, network_seed in ipairs(config.network_seeds) do
@@ -286,12 +360,24 @@ local function plan_cases(suite, options)
                     full,
                     lab_options(profile_name, network_seed, options.measure)
                 )
+                cases[#cases + 1] = case_spec(
+                    ("combat-%s-%d"):format(profile_name, network_seed),
+                    "combat",
+                    combat_tape,
+                    lab_options(profile_name, network_seed, options.measure)
+                )
             end
         end
         for _, network_seed in ipairs(config.network_seeds) do
             append_cases(
                 cases,
                 scenario_cases(options.measure, config.stress_profile, network_seed)
+            )
+            cases[#cases + 1] = case_spec(
+                ("combat-stress-evidence-%d"):format(network_seed),
+                "combat",
+                combat_tape,
+                lab_options(config.stress_profile, network_seed, options.measure)
             )
         end
     elseif suite == "browser-full" then
@@ -303,10 +389,22 @@ local function plan_cases(suite, options)
             full,
             lab_options(profile_name, network_seed, options.measure)
         )
+        cases[2] = case_spec(
+            ("combat-%s-%d"):format(profile_name, network_seed),
+            "combat",
+            combat_tape,
+            lab_options(profile_name, network_seed, options.measure)
+        )
     elseif suite == "browser-stress" then
         local profile_name = options.profile_name or config.stress_profile
         local network_seed = assert(options.network_seed, "browser-stress requires a network seed")
         append_cases(cases, scenario_cases(options.measure, profile_name, network_seed))
+        cases[#cases + 1] = case_spec(
+            ("combat-stress-evidence-%d"):format(network_seed),
+            "combat",
+            combat_tape,
+            lab_options(profile_name, network_seed, options.measure)
+        )
     elseif suite == "late-window" then
         local tape = late_window_tape()
         for _, delay in ipairs({ 30, 31 }) do
@@ -327,6 +425,12 @@ local function plan_cases(suite, options)
     elseif suite == "soak" then
         for index, network_seed in ipairs(config.soak_network_seeds) do
             cases[#cases + 1] = case_spec(
+                ("combat-soak-%d-%d"):format(index, network_seed),
+                "combat",
+                combat_tape,
+                lab_options("playable", network_seed, options.measure)
+            )
+            cases[#cases + 1] = case_spec(
                 ("soak-%d-%d"):format(index, network_seed),
                 "complete_fixture",
                 full,
@@ -346,6 +450,16 @@ end
 local function scenario_covered(result, scenario)
     if scenario == "complete_fixture" or scenario == "late_window" then
         return true
+    end
+    if scenario == "combat" then
+        local fixture = config.combat_fixture
+        return result.input_ticks == fixture.frame_count
+            and result.initial_hash == fixture.initial_hash
+            and result.reference_final_hash == fixture.final_hash
+            and result.tape_digest == fixture.tape_digest
+            and result.event_metrics.confirmed_combat_events > 0
+            and result.reference_final_snapshot.version == match_snapshot.COMBAT_VERSION
+            and result.client_final_snapshot.version == match_snapshot.COMBAT_VERSION
     end
     if scenario == "repeated_rollback" then
         return result.metrics.rollback_count >= 2
@@ -490,6 +604,9 @@ function rollback_validation.case_marker(completed)
     local result = completed.result
     local metrics = result.metrics
     local events = result.event_metrics
+    local tape_version = completed.initial_snapshot.version == match_snapshot.COMBAT_VERSION
+            and input_tape.COMBAT_VERSION
+        or input_tape.VERSION
     return table.concat({
         "GC_ROLLBACK_VALIDATION",
         "case",
@@ -506,7 +623,10 @@ function rollback_validation.case_marker(completed)
         "late_tick=" .. tostring(result.late_input_tick or "none"),
         "hidden_progress=" .. (completed.hidden_progress and "1" or "0"),
         "scenario_pass=" .. (completed.scenario_pass and "1" or "0"),
+        "tape_version=" .. tape_version,
+        "snapshot_version=" .. completed.result.reference_final_snapshot.version,
         "tape_digest=" .. result.tape_digest,
+        "initial_hash=" .. result.initial_hash,
         "reference_hash=" .. result.reference_final_hash,
         "client_hash=" .. result.client_final_hash,
         "rollbacks=" .. metrics.rollback_count,
@@ -517,6 +637,7 @@ function rollback_validation.case_marker(completed)
         "peak_history_bytes=" .. metrics.peaks.history_bytes,
         "event_reference_digest=" .. events.reference_digest,
         "event_confirmed_digest=" .. events.confirmed_digest,
+        "event_confirmed_combat=" .. events.confirmed_combat_events,
         "event_residue=" .. events.speculative_residue,
         "sample=" .. tostring(completed.sample or "none"),
     }, "|")

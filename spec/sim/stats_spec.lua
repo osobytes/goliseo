@@ -36,6 +36,108 @@ t.describe("stats", function()
         t.is_true(stats.move_speed(block(0, 0)) > 0)
     end)
 
+    t.it("maps outfield scan rate exactly and clamps it to the unit interval", function()
+        t.eq(stats.scan_rate(block(5, 5, 0, 5, 0)), 0)
+        t.eq(stats.scan_rate(block(5, 5, 5, 5, 5)), 0.5)
+        t.eq(stats.scan_rate(block(5, 5, 10, 5, 10)), 1)
+        t.eq(stats.scan_rate(block(5, 5, -2, 5, -2)), 0)
+        t.eq(stats.scan_rate(block(5, 5, 12, 5, 12)), 1)
+    end)
+
+    t.it("weights mental and stamina independently in outfield scan rate", function()
+        t.eq(stats.scan_rate(block(5, 5, 8, 5, 4)), 0.7)
+        t.eq(stats.scan_rate(block(5, 5, 4, 5, 8)), 0.5)
+    end)
+
+    t.it("never lowers outfield scan rate as mental or stamina increases", function()
+        local previous_mental = stats.scan_rate(block(5, 5, 0, 5, 5))
+        local previous_stamina = stats.scan_rate(block(5, 5, 5, 5, 0))
+        for value = 1, 10 do
+            local current_mental = stats.scan_rate(block(5, 5, value, 5, 5))
+            local current_stamina = stats.scan_rate(block(5, 5, 5, 5, value))
+            t.is_true(current_mental >= previous_mental)
+            t.is_true(current_stamina >= previous_stamina)
+            previous_mental = current_mental
+            previous_stamina = current_stamina
+        end
+    end)
+
+    t.it("maps outfield composure and press discipline from mental only", function()
+        local functions = { stats.composure, stats.press_discipline }
+        for _, derive in ipairs(functions) do
+            t.eq(derive(block(5, 5, 0)), 0)
+            t.eq(derive(block(5, 5, 5)), 0.5)
+            t.eq(derive(block(5, 5, 10)), 1)
+            t.eq(derive(block(5, 5, -2)), 0)
+            t.eq(derive(block(5, 5, 12)), 1)
+            t.eq(derive(block(0, 0, 5, 0, 0)), 0.5)
+            t.eq(derive(block(10, 10, 5, 10, 10)), 0.5)
+        end
+    end)
+
+    t.it("never lowers outfield composure or press discipline as mental increases", function()
+        local previous_composure = stats.composure(block(5, 5, 0))
+        local previous_discipline = stats.press_discipline(block(5, 5, 0))
+        for mental = 1, 10 do
+            local current_composure = stats.composure(block(5, 5, mental))
+            local current_discipline = stats.press_discipline(block(5, 5, mental))
+            t.is_true(current_composure >= previous_composure)
+            t.is_true(current_discipline >= previous_discipline)
+            previous_composure = current_composure
+            previous_discipline = current_discipline
+        end
+    end)
+
+    t.it("maps outfield run drive exactly and clamps it to the unit interval", function()
+        t.eq(stats.run_drive(block(0, 5, 0)), 0)
+        t.eq(stats.run_drive(block(5, 5, 5)), 0.5)
+        t.eq(stats.run_drive(block(10, 5, 10)), 1)
+        t.eq(stats.run_drive(block(-2, 5, -2)), 0)
+        t.eq(stats.run_drive(block(12, 5, 12)), 1)
+        t.eq(stats.run_drive(block(8, 5, 4)), 0.64)
+    end)
+
+    t.it("never lowers outfield run drive as pace or mental increases", function()
+        local previous_pace = stats.run_drive(block(0, 5, 5))
+        local previous_mental = stats.run_drive(block(5, 5, 0))
+        for value = 1, 10 do
+            local current_pace = stats.run_drive(block(value, 5, 5))
+            local current_mental = stats.run_drive(block(5, 5, value))
+            t.is_true(current_pace >= previous_pace)
+            t.is_true(current_mental >= previous_mental)
+            previous_pace = current_pace
+            previous_mental = current_mental
+        end
+    end)
+
+    t.it("maps technique to a bounded maximum execution error in radians", function()
+        local maximum = math.pi / 15
+        t.eq(stats.execution_error(block(5, 5, 5, 0)), maximum)
+        t.eq(stats.execution_error(block(5, 5, 5, 5)), maximum / 2)
+        t.eq(stats.execution_error(block(5, 5, 5, 10)), 0)
+        t.eq(stats.execution_error(block(5, 5, 5, -2)), maximum)
+        t.eq(stats.execution_error(block(5, 5, 5, 12)), 0)
+    end)
+
+    t.it("never increases execution error as technique increases", function()
+        local previous = stats.execution_error(block(5, 5, 5, 0))
+        for technique = 1, 10 do
+            local current = stats.execution_error(block(5, 5, 5, technique))
+            t.is_true(current <= previous)
+            previous = current
+        end
+    end)
+
+    t.it("keeps unrelated stats out of outfield behavior derivations", function()
+        local low = block(4, 0, 6, 7, 8)
+        local high = block(4, 10, 6, 7, 8)
+        t.eq(stats.scan_rate(low), stats.scan_rate(high))
+        t.eq(stats.composure(low), stats.composure(high))
+        t.eq(stats.press_discipline(low), stats.press_discipline(high))
+        t.eq(stats.run_drive(low), stats.run_drive(high))
+        t.eq(stats.execution_error(low), stats.execution_error(high))
+    end)
+
     t.it("derives keeper reach from mental and pace", function()
         local composed = stats.keeper_reach(block(4, 5, 8))
         local unsettled = stats.keeper_reach(block(4, 5, 2))

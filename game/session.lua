@@ -9,6 +9,7 @@ local teams = require("data.teams")
 ---@field last_result ProductMatchResult?
 ---@field first_match boolean
 ---@field match_number integer
+---@field combat_enabled boolean
 
 ---@alias ResultAction "rematch"|"change_plan"|"change_lineup"|"main_menu"
 
@@ -35,6 +36,7 @@ function session.new()
         last_result = nil,
         first_match = true,
         match_number = 0,
+        combat_enabled = false,
     }
 end
 
@@ -63,6 +65,12 @@ function session.set_tactic(state, tactic_id)
 end
 
 ---@param state GameSession
+---@param enabled boolean
+function session.set_combat_enabled(state, enabled)
+    state.combat_enabled = enabled
+end
+
+---@param state GameSession
 ---@param seed integer?
 ---@return ProductMatchRequest?, string?
 function session.build_request(state, seed)
@@ -74,6 +82,7 @@ function session.build_request(state, seed)
         tactic_id = state.tactic_id,
         arena_id = "helios_crown",
         show_onboarding = state.first_match,
+        combat_enabled = state.combat_enabled,
         seed = seed,
     })
 end

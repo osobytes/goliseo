@@ -97,6 +97,7 @@ local rollback_snapshot_history = require("sim.rollback_snapshot_history")
 ---@field replaced integer
 ---@field confirmed_steps integer
 ---@field confirmed_match_events integer
+---@field confirmed_combat_events integer
 ---@field confirmed_lifecycle_events integer
 ---@field speculative_residue integer
 ---@field reference_digest string
@@ -163,6 +164,7 @@ local rollback_snapshot_history = require("sim.rollback_snapshot_history")
 ---@field session RollbackSession
 ---@field network NetworkConditions
 ---@field reference MatchState
+---@field reference_combat CombatMatchState?
 ---@field reference_history RollbackSnapshotHistory
 ---@field reference_events RollbackEventTimeline
 ---@field events RollbackEventTimeline
@@ -300,6 +302,7 @@ local function event_metrics(state)
         replaced = 0,
         confirmed_steps = 0,
         confirmed_match_events = 0,
+        confirmed_combat_events = 0,
         confirmed_lifecycle_events = 0,
         speculative_residue = rollback_events.diagnostics(state.events).retained_step_count,
         reference_digest = "",
@@ -318,6 +321,8 @@ local function event_metrics(state)
             local step = assert(row.step, "rollback lab confirmed trace row is empty")
             metrics.confirmed_steps = metrics.confirmed_steps + 1
             metrics.confirmed_match_events = metrics.confirmed_match_events + #step.match_events
+            metrics.confirmed_combat_events = metrics.confirmed_combat_events
+                + #(step.combat_events or {})
             metrics.confirmed_lifecycle_events = metrics.confirmed_lifecycle_events
                 + #step.lifecycle_events
             digest_value(confirmed, step)
@@ -356,6 +361,9 @@ local function tape_digest(tape)
     }) do
         digest_segment(state, identity[field])
     end
+    if identity.combat then
+        digest_segment(state, identity.combat)
+    end
     digest_segment(state, match_snapshot.encode(tape.initial))
     for _, frame in ipairs(tape.frames) do
         digest_segment(state, assert(input_frame.encode(frame)))
@@ -364,6 +372,13 @@ local function tape_digest(tape)
         digest_segment(state, hash)
     end
     return fnv1a64.hex(state)
+end
+
+---@param tape InputTape
+---@return string
+function rollback_lab.tape_digest(tape)
+    assert(input_tape.validate_structure(tape))
+    return tape_digest(tape)
 end
 
 ---@param measure RollbackSessionMeasure?
@@ -431,7 +446,7 @@ local function reference_output(frame, sources, snapshot)
     for index, event in ipairs(snapshot.state.events) do
         events[index] = copy_match_event(event)
     end
-    return {
+    local output = {
         tick = frame.tick,
         start_boundary = frame.tick,
         end_boundary = frame.tick + 1,
@@ -447,6 +462,22 @@ local function reference_output(frame, sources, snapshot)
         },
         finished = snapshot.state.finished,
     }
+    if snapshot.combat then
+        local combat_events = {}
+        for index, event in ipairs(snapshot.combat.events) do
+            local copied = {}
+            for key, value in pairs(event) do
+                assert(
+                    type(value) ~= "table",
+                    "rollback lab combat events must contain canonical scalars"
+                )
+                copied[key] = value
+            end
+            combat_events[index] = copied
+        end
+        output.combat_events = combat_events
+    end
+    return output
 end
 
 ---@param state RollbackLabRunState
@@ -894,7 +925,7 @@ end
 ---@return RollbackLabResult
 local function finish_result(state, tape, profile_name, profile, network_seed, drain)
     local session = rollback_session.diagnostics(state.session)
-    local reference_snapshot = match_snapshot.capture_owned(state.reference)
+    local reference_snapshot = match_snapshot.capture_owned(state.reference, state.reference_combat)
     local client_snapshot = rollback_session.current_snapshot(state.session)
     local final_comparison =
         rollback_session.compare(state.session, reference_snapshot, state.late_input_tick)
@@ -1046,7 +1077,7 @@ function rollback_lab.new_campaign(tape, options)
         )
     end
 
-    local reference = match_snapshot.restore(tape.initial)
+    local reference, reference_combat = match_snapshot.restore(tape.initial)
     local reference_history = rollback_snapshot_history.new(max_rollback_ticks)
     assert(rollback_snapshot_history.store(reference_history, tape.initial))
     local session = rollback_session.new(tape.initial, sources, max_rollback_ticks, options.measure)
@@ -1056,6 +1087,7 @@ function rollback_lab.new_campaign(tape, options)
         session = session,
         network = network,
         reference = reference,
+        reference_combat = reference_combat,
         reference_history = reference_history,
         reference_events = rollback_events.new(tape.initial, math.max(1, max_rollback_ticks)),
         events = rollback_events.new(tape.initial, math.max(1, max_rollback_ticks)),
@@ -1115,9 +1147,9 @@ local function advance_frame(campaign, frame)
         frame.tick == state.reference.input_tick,
         "rollback lab tape and reference boundary disagree"
     )
-    match.step(state.reference, 1 / tape.identity.tick_rate, frame)
+    match.step(state.reference, 1 / tape.identity.tick_rate, frame, state.reference_combat)
     local reference_boundary = capture(options.measure, function()
-        return match_snapshot.capture_owned(state.reference)
+        return match_snapshot.capture_owned(state.reference, state.reference_combat)
     end)
     ---@cast reference_boundary MatchSnapshot
     local reference_hash = match_snapshot.hash_canonical(reference_boundary)

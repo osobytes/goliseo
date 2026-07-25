@@ -29,7 +29,24 @@ release-state, movement, shot-kind, and depth fields. Wind-up payloads now carry
 the shot type; shot/save events may carry shot type, on-target status, keeper
 state, and depth for deterministic telemetry. Snapshots and tapes carrying
 snapshot version 4 or earlier are intentionally rejected rather than silently
-restored without this behavior state. The input-tape envelope remains version 1.
+restored without this behavior state. Soccer-only snapshots remain version 5
+and soccer-only input-tape envelopes remain version 1. The current soccer
+fixture uses InputFrame v2 and is pinned at tape digest `d89f7fc53d660ab7`;
+the published historical InputFrame-v1/InputTape-v1 artifact remains archived
+at `881917e3ba798703`. Version 5 preserves the soccer snapshot schema and
+version-1 tape envelope, not byte identity across an input/ownership-schema
+upgrade.
+
+Combat-capable boundaries use MatchSnapshot version 6. The top-level snapshot
+owns `MatchState` and a version-1 `CombatMatchState` companion atomically;
+capture and restore pass both halves. The combat schema includes fixture player
+IDs, mechanical loadout/family IDs, every action and forced-state timer/latch,
+projectiles, the current one-tick combat event batch, and the monotonic source
+sequence. Projectile vectors are deep-copied and restored as `Vec2`.
+Presentation equipment IDs, animation, particles, audio, camera, and other
+cosmetic state are excluded. Version 5 rejects a combat companion, version 6
+requires one, and a combat-enabled match cannot be captured without passing
+its companion.
 
 The allowlists reject unknown fields, and a spec compares them with the
 LuaCATS declarations in `sim/match.lua`. Adding a state field must therefore
@@ -42,12 +59,13 @@ different match.
 
 ## Canonical bytes and hash
 
-The byte stream starts with `GCMS;` and snapshot version 5. Record names and
+The byte stream starts with `GCMS;` and the snapshot version. Record names and
 strings are length-prefixed; nil, booleans, strings, and numbers have distinct
 tags. Arrays and sparse index maps are emitted in their declared numeric
 ranges. Records use the checked-in field arrays, never `pairs` iteration.
 Changing a field name, order, numeric format, or nested shape requires a new
-snapshot version.
+snapshot version. Version 6 appends an explicit `combat` record and `GCCS;`
+schema header after the unchanged version-5 match payload.
 
 Every finite Lua number is encoded exactly from `math.frexp` as:
 
@@ -76,6 +94,14 @@ Input tape version 1 owns deep copies of:
 - immutable identity values for tape/input/snapshot versions, build, source,
   content, exact tuning, configuration, fixture, seed, 60 Hz tick rate, roster,
   and slot ownership.
+
+Combat tapes use envelope/identity version 2 and require snapshot version 6.
+Their identity adds a canonical combat-mechanics string covering every
+action-family timing, geometry, movement, and outcome field plus the ordered
+player-ID to mechanical-loadout/family mapping. Presentation IDs are
+deliberately absent. Replay rejects a missing or mismatched combat identity
+before stepping and returns the final combat companion alongside `MatchState`.
+Arbitrary old schemas are not migrated at runtime.
 
 Callers choose the identity strings and must derive them from immutable build
 and content artifacts. The exact `sim.tuning.serialize()` value is mandatory:

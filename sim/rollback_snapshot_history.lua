@@ -91,13 +91,14 @@ end
 ---@param snapshot MatchSnapshot
 ---@return MatchSnapshot
 local function copy_snapshot(snapshot)
-    return match_snapshot.capture(match_snapshot.restore(snapshot))
+    local state, combat_state = match_snapshot.restore(snapshot)
+    return match_snapshot.capture(state, combat_state)
 end
 
 ---@param snapshot MatchSnapshot
 ---@return MatchSnapshot
 local function copy_owned_snapshot(snapshot)
-    return match_snapshot.capture_owned(snapshot.state)
+    return match_snapshot.capture_owned(snapshot.state, snapshot.combat)
 end
 
 ---@param history RollbackSnapshotHistory
@@ -339,7 +340,31 @@ function rollback_snapshot_history.restore(history, tick)
     end
     local entry = assert(history._entries[ring_index(history, tick)])
     assert(entry.tick == tick, "rollback snapshot ring restore is inconsistent")
-    return match_snapshot.restore_owned(entry.snapshot), status
+    local state = match_snapshot.restore_owned(entry.snapshot)
+    return state, status
+end
+
+-- Restore both authoritative halves of a retained simulation boundary. The
+-- legacy restore() shape keeps status as return #2 for soccer-only callers.
+---@param history RollbackSnapshotHistory
+---@param tick integer
+---@return MatchState?
+---@return CombatMatchState?
+---@return RollbackSnapshotLookupStatus
+function rollback_snapshot_history.restore_simulation(history, tick)
+    assert_history(history)
+    assert(
+        is_integer(tick) and tick >= 0 and tick <= input_frame.MAX_TICK,
+        "rollback simulation restore tick must be a bounded non-negative integer"
+    )
+    local status = lookup_status(history, tick)
+    if status == "missing" or status == "outside_window" then
+        return nil, nil, status
+    end
+    local entry = assert(history._entries[ring_index(history, tick)])
+    assert(entry.tick == tick, "rollback snapshot ring restore is inconsistent")
+    local state, combat_state = match_snapshot.restore_owned(entry.snapshot)
+    return state, combat_state, status
 end
 
 -- Hashing and canonical wire materialization are diagnostic and deliberately

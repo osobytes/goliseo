@@ -171,6 +171,10 @@ function App:handle_action(action)
             self.request_quit()
         end
     elseif route == "title" and action.go == "play" then
+        session_model.set_combat_enabled(self.session, false)
+        self:show_squad()
+    elseif route == "title" and action.go == "combat_prototype" then
+        session_model.set_combat_enabled(self.session, true)
         self:show_squad()
     elseif route == "title" and action.go == "help" then
         self:_push("help", self:_menu(Help))

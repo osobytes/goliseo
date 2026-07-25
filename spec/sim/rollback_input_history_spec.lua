@@ -117,6 +117,22 @@ t.describe("OMP-2 rollback input history", function()
         t.eq(predicted_record.slots[1].status, "predicted")
     end)
 
+    t.it("finds the exact release edge after predicting only the equipment hold", function()
+        local history = rollback_input_history.new(sources())
+        local pressed =
+            sample(0, 0, input_frame.HELD_BITS.equipment, input_frame.EDGE_BITS.equipment_pressed)
+        assert(rollback_input_history.add_authoritative(history, 0, 1, pressed))
+        rollback_input_history.materialize(history, 0)
+        local predicted = rollback_input_history.materialize(history, 1)
+        t.is_true(input_frame.is_held(predicted.slots[1], "equipment") == true)
+        t.eq(predicted.slots[1].edges, 0)
+
+        local released = sample(0, 0, 0, input_frame.EDGE_BITS.equipment_released)
+        local arrival = assert(rollback_input_history.add_authoritative(history, 1, 1, released))
+        t.eq(arrival.earliest_divergence, 1)
+        t.eq(rollback_input_history.earliest_divergence(history), 1)
+    end)
+
     t.it("reports divergence only against an effective sample already used", function()
         local history = rollback_input_history.new(sources())
         rollback_input_history.materialize(history, 2)

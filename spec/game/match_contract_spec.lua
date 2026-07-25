@@ -17,7 +17,18 @@ t.describe("match contracts", function()
         t.eq(request.home_starter_ids[1], "ozzo")
         t.eq(request.arena_id, "helios_crown")
         t.eq(request.show_onboarding, false)
+        t.eq(request.combat_enabled, false)
         t.eq(request.seed, 42)
+
+        local combat_request = assert(contract.new_request({
+            home_team_id = "nebula",
+            away_team_id = "orion",
+            home_starter_ids = { "ozzo", "brakka", "veil_nyx", "rok_tann", "zyro_vex" },
+            formation_id = "1-2-1",
+            tactic_id = "counter",
+            combat_enabled = true,
+        }))
+        t.eq(combat_request.combat_enabled, true)
     end)
 
     t.it("rejects unknown arena presentation records", function()

@@ -18,13 +18,15 @@ t.describe("OMP-2 rollback validation campaign", function()
         t.eq(config.soak_network_seeds[4], 2001)
         t.eq(config.soak_network_seeds[5], 2002)
         t.eq(#config.soak_samples, 5)
+        t.eq(config.combat_fixture.id, "omp2-combat-rollback-v1")
+        t.eq(config.combat_fixture.frame_count, 80)
         t.eq(config.soak_samples[1], "warmup")
         t.eq(config.soak_samples[2], "120")
         t.eq(config.soak_samples[3], "360")
         t.eq(config.soak_samples[4], "600")
         t.eq(config.soak_samples[5], "final")
         t.eq(config.budgets.snapshot_count, 31)
-        t.eq(config.budgets.snapshot_bytes, 600 * 1024)
+        t.eq(config.budgets.snapshot_bytes, 768 * 1024)
         t.eq(config.budgets.history_bytes, 1024 * 1024)
         t.eq(config.budgets.memory_growth_ratio, 0.10)
         t.eq(rollback_validation.profile_digest(), "5fbf1e0d51a6f4d5")
@@ -33,7 +35,7 @@ t.describe("OMP-2 rollback validation campaign", function()
             profile_name = "stress",
             network_seed = 2001,
         })
-        t.eq(#browser.cases, 9)
+        t.eq(#browser.cases, 10)
         local seen = {}
         for _, case in ipairs(browser.cases) do
             seen[case.scenario] = true
@@ -41,6 +43,7 @@ t.describe("OMP-2 rollback validation campaign", function()
         for _, scenario in ipairs(config.scenarios) do
             t.is_true(seen[scenario.id], "missing scenario " .. scenario.id)
         end
+        t.is_true(seen.combat, "missing bounded combat scenario")
     end)
 
     t.it("accepts delay thirty and classifies delay thirty-one as the explicit terminal", function()

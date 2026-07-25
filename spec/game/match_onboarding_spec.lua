@@ -13,6 +13,8 @@ local function context(values)
         shot = values.shot == true,
         passed = values.passed == true,
         defended = values.defended == true,
+        equipment_available = values.equipment_available == true,
+        equipment_used = values.equipment_used == true,
     }
 end
 
@@ -53,5 +55,20 @@ t.describe("first-match onboarding", function()
         state =
             onboarding.update(state, context({ moved = true, carrying = true, passed = true }), 10)
         t.is_true(onboarding.prompt(state) == nil)
+    end)
+
+    t.it("teaches equipment only in the explicit combat prototype", function()
+        local combat = onboarding.new(false, true)
+        t.eq(assert(onboarding.prompt(combat)).id, "equipment")
+        combat = onboarding.update(
+            combat,
+            context({ equipment_available = true, equipment_used = true }),
+            0.1
+        )
+        t.is_true(onboarding.prompt(combat) == nil)
+
+        local showcase = onboarding.new(false, false)
+        showcase = onboarding.update(showcase, context({ equipment_available = true }), 0.1)
+        t.is_true(onboarding.prompt(showcase) == nil)
     end)
 end)

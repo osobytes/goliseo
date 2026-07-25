@@ -126,6 +126,23 @@ t.describe("real match adapter", function()
         t.eq(match_adapter.real().kind, "real")
     end)
 
+    t.it("constructs combat only for the explicit post-showcase request", function()
+        local showcase = RealMatch.new(request(92), {
+            on_finished = function() end,
+            on_cancelled = function() end,
+        })
+        t.is_true(showcase.match._combat_state == nil)
+
+        local combat_request = request(93)
+        combat_request.combat_enabled = true
+        local prototype = RealMatch.new(combat_request, {
+            on_finished = function() end,
+            on_cancelled = function() end,
+        })
+        t.is_true(prototype.match._combat_state ~= nil)
+        t.eq(#assert(prototype.match._combat_state).players, 10)
+    end)
+
     t.it("allows confirmation to advance the full-time hold after its safety beat", function()
         local completed = false
         local screen = RealMatch.new(request(91), {

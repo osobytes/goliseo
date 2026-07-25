@@ -3,6 +3,7 @@ local audio = require("game.audio")
 local Match = require("game.screens.match")
 local Vec2 = require("core.vec2")
 local teams = require("data.teams")
+local combat = require("sim.combat")
 local sim_match = require("sim.match")
 local match_snapshot = require("sim.match_snapshot")
 local rollback_events = require("sim.rollback_events")
@@ -109,6 +110,22 @@ local function replay_state(source, boundary, ball_x)
 end
 
 t.describe("rollback validation", function()
+    t.it("seeds its event audit from an atomic combat boundary", function()
+        local state = new_state()
+        local combat_state = combat.new_state(state)
+        local initial, initial_combat =
+            match_snapshot.restore(match_snapshot.capture(state, combat_state))
+        local report = rollback_validation.run(initial, {}, {
+            home_team_id = "nebula",
+            away_team_id = "orion",
+            initial_combat_state = assert(initial_combat),
+            reference_final_state = initial,
+            impaired_final_state = initial,
+        })
+
+        t.is_true(report.passed, table.concat(report.errors, "; "))
+    end)
+
     t.it("audits corrected presentation consumers against independent authority", function()
         local initial = new_state()
         local home_player = initial.players[2].id

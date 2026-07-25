@@ -58,6 +58,46 @@ attacking-right frame; `sim/placement.lua` converts to absolute coords and mirro
 The full pure 5v5 simulation: per-player runtime entity, the whole match state (players, ball,
 owner, score, timer), and per-step input. See the `---@class` annotations in the file.
 
+### CombatMatchState (`sim/combat.lua`)
+
+Combat is an explicit fixed-tick opt-in carried beside, rather than hidden
+inside, the existing soccer state. `CombatMatchState` owns one runtime per
+stable match-player index, deterministic projectile state, a monotonic action
+sequence, and typed combat events. Each player runtime records only its
+mechanical family, action phase/ticks, cooldown, contact guard, forced
+stagger/knockback, the 30-tick chain cap, and recovery immunity.
+
+`match.step` accepts this companion as an optional fourth argument. Omitting it
+preserves the existing `MatchState`, `MatchPlayer`, `MatchEvent`, and
+soccer-only snapshot/hash contract exactly. Keepers and players without a
+loadout receive a neutral combat runtime and ignore equipment intent.
+
+Presentation, cosmetic, theme, and equipment-appearance ids never enter the
+companion. `data/action_families.lua` remains the sole tuning authority.
+Combat-active snapshot/hash/rollback integration deliberately returns an
+unsupported error until issue #111 versions every new authoritative field and
+event together. Creating the companion marks the paired match state so both
+public and rollback-owned snapshot capture fail loudly instead of accepting
+only the base soccer half.
+
+Kickoff resets clear action, forced-state, and projectile runtime, but preserve
+the scoring tick's event batch and the match-lifetime action sequence. The next
+tick's normal event clear still bounds presentation events to one simulation
+tick without reusing confirmation identity.
+
+Forced players are ineligible for loose-ball collection and aerial candidate
+selection. Their pending soccer commitments are cleared on impact and sanitized
+again after ball actions, so a same-tick pass cannot re-arm a staggered receiver.
+
+Phase counters use inclusive fixed-tick windows: a six-tick wind-up committed
+on tick 0 is active first on tick 6. Melee reach is measured from the source
+center to the target collision circle and ties use forward projection then
+stable player index. Ranged actions use swept point-projectile contact at the
+catalog's 300 px/s (5 px per fixed tick) for exactly 60 travel ticks. The
+initial forced-state presentation threshold classifies displacement below
+12 px as stagger and 12 px or more as knockback; either state still obeys the
+same 30-tick chain cap and 45-tick immunity floor.
+
 ### TacticData (`data/tactics.lua`)
 
 `id, name, press` (how many off-ball players hunt the ball), `line_shift` (anchor depth

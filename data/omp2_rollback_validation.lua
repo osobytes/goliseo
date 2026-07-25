@@ -15,6 +15,14 @@
 ---@field history_bytes integer
 ---@field memory_growth_ratio number
 
+---@class Omp2RollbackCombatFixture
+---@field id string
+---@field seed integer
+---@field frame_count integer
+---@field initial_hash string
+---@field final_hash string
+---@field tape_digest string
+
 ---@class Omp2RollbackValidationData
 ---@field schema integer
 ---@field fixture_seed integer
@@ -24,6 +32,7 @@
 ---@field browser_full_profiles string[]
 ---@field stress_profile string
 ---@field scenarios Omp2RollbackScenario[]
+---@field combat_fixture Omp2RollbackCombatFixture
 ---@field budgets Omp2RollbackBudgets
 ---@field soak_network_seeds integer[]
 ---@field soak_samples string[]
@@ -97,11 +106,19 @@ return {
             lifecycle_kind = "full_time",
         },
     },
+    combat_fixture = {
+        id = "omp2-combat-rollback-v1",
+        seed = 733,
+        frame_count = 80,
+        initial_hash = "28b7bc6393447100",
+        final_hash = "49b2a6d0255a0825",
+        tape_digest = "ef9d425396654839",
+    },
     budgets = {
         p95_work_ms = 16.67,
         rollback_p999_ms = 33.3,
         snapshot_count = 31,
-        snapshot_bytes = 600 * 1024,
+        snapshot_bytes = 768 * 1024,
         history_bytes = 1024 * 1024,
         memory_growth_ratio = 0.10,
     },

@@ -1,5 +1,7 @@
 local t = require("spec.support.runner")
 local Vec2 = require("core.vec2")
+local combat = require("sim.combat")
+local combat_snapshot = require("sim.combat_snapshot")
 local fixed_clock = require("sim.fixed_clock")
 local input_frame = require("sim.input_frame")
 local match = require("sim.match")
@@ -21,9 +23,10 @@ end
 
 ---@param class_name string
 ---@param end_marker string
+---@param source_path string?
 ---@return string[]
-local function declared_fields(class_name, end_marker)
-    local source = assert(love.filesystem.read("sim/match.lua"))
+local function declared_fields(class_name, end_marker, source_path)
+    local source = assert(love.filesystem.read(source_path or "sim/match.lua"))
     local start_at = assert(source:find("---@class " .. class_name, 1, true))
     local end_at = assert(source:find(end_marker, start_at, true))
     local fields = {}
@@ -49,6 +52,255 @@ t.describe("canonical match snapshots", function()
             match_snapshot.PLAYER_FIELDS
         )
         same_fields(declared_fields("MatchState", "local match = {}"), match_snapshot.MATCH_FIELDS)
+        same_fields(
+            declared_fields("CombatMatchState", "---@class CombatContact", "sim/combat.lua"),
+            combat_snapshot.STATE_FIELDS
+        )
+        same_fields(
+            declared_fields("CombatPlayerState", "---@class CombatProjectile", "sim/combat.lua"),
+            combat_snapshot.PLAYER_FIELDS
+        )
+        same_fields(
+            declared_fields("CombatProjectile", "---@class CombatEvent", "sim/combat.lua"),
+            combat_snapshot.PROJECTILE_FIELDS
+        )
+        same_fields(
+            declared_fields("CombatEvent", "---@class CombatMatchState", "sim/combat.lua"),
+            combat_snapshot.EVENT_FIELDS
+        )
+    end)
+
+    t.it("captures combat as one owned, canonical, versioned boundary", function()
+        local state = new_state()
+        state.kickoff_hold = 0
+        local combat_state = combat.new_state(state)
+        local source_index = nil
+        for index, runtime in ipairs(combat_state.players) do
+            if runtime.family_id == "ranged" then
+                source_index = index
+                break
+            end
+        end
+        source_index = assert(source_index, "fixture requires one ranged loadout")
+        local runtime = combat_state.players[source_index]
+        runtime.phase = "windup"
+        runtime.phase_ticks = 7
+        runtime.cooldown_ticks = 42
+        runtime.source_sequence = 7
+        runtime.control_held = true
+        combat_state.projectiles[1] = {
+            family_id = "ranged",
+            source_index = source_index,
+            source_sequence = 7,
+            pos = Vec2.new(111, 222),
+            dir = Vec2.new(0.5, -0.5),
+            remaining_ticks = 12,
+        }
+        combat_state.events[1] = {
+            kind = "projectile_spawn",
+            tick = 0,
+            family_id = "ranged",
+            source_index = source_index,
+            target_index = nil,
+            source_sequence = 7,
+            result = nil,
+            x = 111,
+            y = 222,
+            interruption_ticks = nil,
+            displacement_px = nil,
+        }
+        combat_state.next_source_sequence = 8
+        state.input_tick = 1
+        combat_state.tick = 1
+
+        local snapshot = match_snapshot.capture(state, combat_state)
+        t.eq(snapshot.version, match_snapshot.COMBAT_VERSION)
+        t.eq(assert(snapshot.combat).version, combat_snapshot.VERSION)
+        t.eq(snapshot.combat.players[source_index].loadout_id, runtime.loadout_id)
+        local restored, restored_combat = match_snapshot.restore(snapshot)
+        restored_combat = assert(restored_combat)
+        t.eq(restored_combat.players[source_index].phase_ticks, 7)
+        t.eq(restored_combat.projectiles[1].pos.x, 111)
+        t.eq(restored_combat.events[1].source_sequence, 7)
+        t.eq(
+            match_snapshot.hash(match_snapshot.capture(restored, restored_combat)),
+            match_snapshot.hash(snapshot)
+        )
+
+        state.players[source_index].pos.x = -1
+        combat_state.players[source_index].phase_ticks = 1
+        combat_state.projectiles[1].pos.x = -2
+        combat_state.events[1].x = -3
+        t.eq(snapshot.state.players[source_index].pos.x ~= -1, true)
+        t.eq(snapshot.combat.players[source_index].phase_ticks, 7)
+        t.eq(snapshot.combat.projectiles[1].pos.x, 111)
+        t.eq(snapshot.combat.events[1].x, 111)
+
+        snapshot.combat.players[source_index].phase_ticks = 6
+        local changed = match_snapshot.capture(restored, restored_combat)
+        local found = assert(match_snapshot.first_difference(snapshot, changed))
+        t.eq(found.path, "combat.players." .. source_index .. ".phase_ticks")
+
+        local malformed = match_snapshot.capture(restored, restored_combat)
+        ---@type table<string, any>
+        local malformed_player = assert(malformed.combat).players[source_index]
+        malformed_player.unknown = true
+        t.is_true(not pcall(match_snapshot.restore, malformed))
+        t.is_true(not pcall(match_snapshot.capture, restored))
+    end)
+
+    t.it("rejects holes in authoritative combat projectile and event arrays", function()
+        local state = new_state()
+        state.kickoff_hold = 0
+        local combat_state = combat.new_state(state)
+        local source_index = nil
+        for index, runtime in ipairs(combat_state.players) do
+            if runtime.family_id == "ranged" then
+                source_index = index
+                break
+            end
+        end
+        source_index = assert(source_index, "fixture requires one ranged loadout")
+        combat_state.projectiles[1] = {
+            family_id = "ranged",
+            source_index = source_index,
+            source_sequence = 1,
+            pos = Vec2.new(111, 222),
+            dir = Vec2.new(1, 0),
+            remaining_ticks = 12,
+        }
+        combat_state.events[1] = {
+            kind = "projectile_spawn",
+            tick = 0,
+            family_id = "ranged",
+            source_index = source_index,
+            target_index = nil,
+            source_sequence = 1,
+            result = nil,
+            x = 111,
+            y = 222,
+            interruption_ticks = nil,
+            displacement_px = nil,
+        }
+        combat_state.next_source_sequence = 2
+        state.input_tick = 1
+        combat_state.tick = 1
+
+        for _, field in ipairs({ "projectiles", "events" }) do
+            local malformed = match_snapshot.capture(state, combat_state)
+            local values = assert(malformed.combat)[field]
+            values[2] = values[1]
+            values[3] = values[1]
+            values[4] = values[1]
+            values[2] = nil
+            t.eq(#values, 4, "hole fixture must retain its authoritative tail")
+            t.is_true(not pcall(match_snapshot.restore, malformed), field .. " hole was accepted")
+        end
+    end)
+
+    t.it("replays combat phase boundaries exactly after restore", function()
+        ---@type { name: string, configure: fun(combat_state: CombatMatchState, family: table<string, integer>, state: MatchState) }[]
+        local cases = {
+            {
+                name = "windup",
+                configure = function(combat_state, family, _)
+                    local runtime = combat_state.players[family.light_melee]
+                    runtime.phase = "windup"
+                    runtime.phase_ticks = 3
+                    runtime.cooldown_ticks = 20
+                    runtime.source_sequence = 1
+                end,
+            },
+            {
+                name = "active",
+                configure = function(combat_state, family, _)
+                    local runtime = combat_state.players[family.light_melee]
+                    runtime.phase = "active"
+                    runtime.phase_ticks = 2
+                    runtime.cooldown_ticks = 20
+                    runtime.source_sequence = 1
+                end,
+            },
+            {
+                name = "guard",
+                configure = function(combat_state, family, _)
+                    local runtime = combat_state.players[family.guard]
+                    runtime.phase = "guard"
+                    runtime.control_held = true
+                    runtime.source_sequence = 1
+                end,
+            },
+            {
+                name = "projectile",
+                configure = function(combat_state, family, state)
+                    combat_state.projectiles[1] = {
+                        family_id = "ranged",
+                        source_index = family.ranged,
+                        source_sequence = 1,
+                        pos = state.players[family.ranged].pos,
+                        dir = Vec2.new(1, 0),
+                        remaining_ticks = 2,
+                    }
+                    combat_state.next_source_sequence = 2
+                end,
+            },
+            {
+                name = "stagger",
+                configure = function(combat_state, family, _)
+                    local runtime = combat_state.players[family.unarmed]
+                    runtime.forced_state = "stagger"
+                    runtime.forced_ticks = 2
+                    runtime.chain_ticks = 4
+                end,
+            },
+            {
+                name = "knockback",
+                configure = function(combat_state, family, _)
+                    local runtime = combat_state.players[family.light_melee]
+                    runtime.forced_state = "knockback"
+                    runtime.forced_ticks = 2
+                    runtime.chain_ticks = 4
+                end,
+            },
+            {
+                name = "immunity",
+                configure = function(combat_state, family, _)
+                    combat_state.players[family.ranged].immunity_ticks = 2
+                end,
+            },
+        }
+        for _, case in ipairs(cases) do
+            local state = new_state()
+            state.kickoff_hold = 0
+            local combat_state = combat.new_state(state)
+            local family = {}
+            for index, runtime in ipairs(combat_state.players) do
+                if runtime.family_id and family[runtime.family_id] == nil then
+                    family[runtime.family_id] = index
+                end
+            end
+            case.configure(combat_state, family, state)
+            local start = match_snapshot.capture(state, combat_state)
+            match.step(
+                state,
+                fixed_clock.TICK_SECONDS,
+                assert(input_frame.neutral(0)),
+                combat_state
+            )
+            local expected = match_snapshot.capture(state, combat_state)
+            local restored, restored_combat = match_snapshot.restore(start)
+            match.step(
+                restored,
+                fixed_clock.TICK_SECONDS,
+                assert(input_frame.neutral(0)),
+                assert(restored_combat)
+            )
+            t.eq(
+                match_snapshot.hash(match_snapshot.capture(restored, restored_combat)),
+                match_snapshot.hash(expected),
+                case.name
+            )
+        end
     end)
 
     t.it("captures and restores every nested payload as independent state", function()

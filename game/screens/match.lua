@@ -2,6 +2,7 @@
 -- `sim.match`, and renders the result. Drawing lives ONLY here (AGENTS.md §2).
 
 local sim_match = require("sim.match")
+local combat_sim = require("sim.combat")
 local fixed_clock = require("sim.fixed_clock")
 local match_snapshot = require("sim.match_snapshot")
 local rollback_playable_lab = require("sim.rollback_playable_lab")
@@ -15,6 +16,7 @@ local correction_smoothing = require("game.render.correction_smoothing")
 local effects = require("game.render.effects")
 local match_hud_render = require("game.render.match_hud")
 local view_state = require("game.render.view_state")
+local combat_presentation = require("game.presentation.combat")
 local audio = require("game.audio")
 local match_hud = require("game.match_hud")
 local onboarding = require("game.match_onboarding")
@@ -50,11 +52,13 @@ local FIELD_H = 540
 ---@field seed integer?
 ---@field arena_id string?
 ---@field show_onboarding boolean?
+---@field combat_enabled boolean? -- Explicit post-showcase prototype opt-in.
 ---@field profile "product"|"playtest"?
 ---@field rollback_lab MatchRollbackLabOptions? -- Explicit development-only opt-in.
 
 ---@class MatchScreen : Screen
 ---@field state MatchState
+---@field _combat_state CombatMatchState?
 ---@field home_color number[]
 ---@field away_color number[]
 ---@field home_name string
@@ -92,6 +96,7 @@ local FIELD_H = 540
 ---@field _confirmed_lifecycle_ids table<string, boolean>
 ---@field _render_smoothing CorrectionSmoothingState
 ---@field _render_pose CorrectionSmoothingPose
+---@field _replay_state ReplayFrame?
 local Match = {}
 Match.__index = Match
 
@@ -273,19 +278,40 @@ function Match:consume_rollback_event_diff(diff)
     return true
 end
 
+-- Publish one stable rollback step to presentation consumers. Match and combat
+-- action records share the same confirmation ledger; lifecycle records retain
+-- their screen-owned transitions on top.
+---@param step RollbackEventStep
+---@return integer consumed_count
+function Match:consume_confirmed_step(step)
+    local consumed_count = 0
+    for _, event in ipairs(step.match_events) do
+        effects.confirm_event(event.id)
+        if audio.consume_confirmed(event) then
+            consumed_count = consumed_count + 1
+        end
+    end
+    for _, event in ipairs(step.combat_events or {}) do
+        effects.confirm_event(event.id)
+        if audio.consume_confirmed(event) then
+            consumed_count = consumed_count + 1
+        end
+    end
+    for _, event in ipairs(step.lifecycle_events) do
+        if self:consume_confirmed_lifecycle(event) then
+            consumed_count = consumed_count + 1
+        end
+    end
+    return consumed_count
+end
+
 ---@param self MatchScreen
 local function consume_rollback_presentation(self)
     for _, diff in ipairs(self._rollback_event_diffs) do
         self:consume_rollback_event_diff(diff)
     end
     for _, step in ipairs(self._rollback_confirmed_steps) do
-        for _, event in ipairs(step.match_events) do
-            effects.confirm_event(event.id)
-            audio.consume_confirmed(event)
-        end
-        for _, event in ipairs(step.lifecycle_events) do
-            self:consume_confirmed_lifecycle(event)
-        end
+        self:consume_confirmed_step(step)
     end
     if self._pending_confirmed_kickoff and not replay.active() then
         self._kickoff_banner = 1.15
@@ -324,10 +350,12 @@ function Match:restart()
     local away = self._opts.away or teams.orion
     local rollback_options = self._opts.rollback_lab
     local ownership = rollback_options and sim_match.ownership_for_teams(home, away) or nil
-    local initial = rollback_options
-            and rollback_options.initial_snapshot
-            and match_snapshot.restore(rollback_options.initial_snapshot)
-        or sim_match.new({
+    local initial ---@type MatchState
+    local initial_combat ---@type CombatMatchState?
+    if rollback_options and rollback_options.initial_snapshot then
+        initial, initial_combat = match_snapshot.restore(rollback_options.initial_snapshot)
+    else
+        initial = sim_match.new({
             home = home,
             away = away,
             field = { w = FIELD_W, h = FIELD_H },
@@ -338,17 +366,27 @@ function Match:restart()
             max_goals = rollback_options and rollback_options.max_goals or nil,
             input_ownership = ownership,
         })
+        if self._opts.combat_enabled then
+            initial_combat = combat_sim.new_state(initial)
+        end
+    end
+    assert(
+        (initial_combat ~= nil) == (self._opts.combat_enabled == true),
+        initial_combat ~= nil and "combat-bearing rollback snapshots require combat_enabled = true"
+            or "combat-enabled matches require a CombatMatchState companion"
+    )
     if rollback_options then
-        self._rollback_lab = rollback_playable_lab.new(match_snapshot.capture(initial), {
-            local_slot = rollback_options.local_slot,
-            profile_name = rollback_options.profile_name,
-            profile = rollback_options.network_profile,
-            network_seed = rollback_options.network_seed,
-            bot_seed = rollback_options.bot_seed,
-            max_rollback_ticks = rollback_options.max_rollback_ticks,
-            settlement_ticks = rollback_options.settlement_ticks,
-        })
-        self.state =
+        self._rollback_lab =
+            rollback_playable_lab.new(match_snapshot.capture(initial, initial_combat), {
+                local_slot = rollback_options.local_slot,
+                profile_name = rollback_options.profile_name,
+                profile = rollback_options.network_profile,
+                network_seed = rollback_options.network_seed,
+                bot_seed = rollback_options.bot_seed,
+                max_rollback_ticks = rollback_options.max_rollback_ticks,
+                settlement_ticks = rollback_options.settlement_ticks,
+            })
+        self.state, self._combat_state =
             match_snapshot.restore(rollback_playable_lab.current_snapshot(self._rollback_lab))
         local debug = rollback_playable_lab.debug_model(self._rollback_lab)
         ---@cast debug MatchRollbackDebugModel
@@ -357,6 +395,7 @@ function Match:restart()
         self._rollback_lab = nil
         self._rollback_debug = nil
         self.state = initial
+        self._combat_state = initial_combat
     end
     self._render_smoothing = correction_smoothing.new(self.state)
     self._render_pose = correction_smoothing.pose(self._render_smoothing)
@@ -384,11 +423,11 @@ function Match:restart()
     self._last_home = 0
     self._last_scoring_team = nil
     self._kickoff_banner = 1.15
-    self._onboarding = onboarding.new(self._opts.show_onboarding == true)
+    self._onboarding = onboarding.new(self._opts.show_onboarding == true, self._combat_state ~= nil)
     self._replay_state = nil
     replay.reset()
     if self._rollback_lab then
-        replay.record_boundary(0, self.state)
+        replay.record_boundary(0, self.state, self._combat_state)
     end
     view_state.reset()
     effects.reset()
@@ -703,7 +742,8 @@ function Match:update(dt)
             append_values(self._rollback_event_diffs, batch.event_diffs)
             append_values(self._rollback_confirmed_steps, batch.confirmed_steps)
             append_values(self._rollback_corrections, batch.corrections)
-            self.state = match_snapshot.restore(rollback_playable_lab.current_snapshot(lab))
+            self.state, self._combat_state =
+                match_snapshot.restore(rollback_playable_lab.current_snapshot(lab))
             return batch.status == "active" or batch.status == "settling"
         end)
         local debug = rollback_playable_lab.debug_model(lab)
@@ -720,9 +760,9 @@ function Match:update(dt)
             self._input_adapter = next
             return tick_input
         end, function(_, tick_input)
-            replay.record(self.state) -- Pre-step, so the goal flight remains in the buffer.
+            replay.record(self.state, self._combat_state) -- Pre-step, so the goal flight remains in the buffer.
             local score_before = self.state.score.home + self.state.score.away
-            sim_match.step(self.state, fixed_clock.TICK_SECONDS, tick_input)
+            sim_match.step(self.state, fixed_clock.TICK_SECONDS, tick_input, self._combat_state)
             for _, event in ipairs(self.state.events) do
                 self._frame_events[#self._frame_events + 1] = event
             end
@@ -771,6 +811,9 @@ function Match:update(dt)
         shot = frame_input.shoot or frame_input.shoot_held,
         passed = frame_input.pass or frame_input.pass_held,
         defended = frame_input.jockey or frame_input.dash or frame_input.switch,
+        equipment_available = self._combat_state ~= nil
+            and assert(self._combat_state.players[self.state.controlled]).family_id ~= nil,
+        equipment_used = frame_input.equipment_pressed,
     }, dt)
 
     -- A goal just went in (score edge, match still live): celebrate, then roll
@@ -809,7 +852,9 @@ end
 
 ---@param s MatchState
 ---@param vp { w: number, h: number }
-function Match:draw_frame(s, vp)
+---@param combat_state CombatMatchState?
+function Match:draw_frame(s, vp, combat_state)
+    local combat_model = combat_presentation.model(s, combat_state)
     -- World: 2.5D perspective pitch + billboard players.
     pitch.draw(s, vp, {
         home_color = self.home_color,
@@ -817,6 +862,7 @@ function Match:draw_frame(s, vp)
         arena = self.arena,
         arena_pulse = math.min(1, self._kickoff_banner),
         render_pose = s == self.state and self._render_pose or nil,
+        combat = combat_model,
     })
 
     local phase = self:broadcast_phase()
@@ -831,6 +877,7 @@ function Match:draw_frame(s, vp)
         prompt = onboarding.prompt(self._onboarding),
         phase = phase,
         scoring_team = self._last_scoring_team,
+        combat_enabled = combat_model.enabled,
     })
     match_hud_render.draw(model, vp)
 
@@ -899,14 +946,17 @@ function Match:draw_rollback_overlay(vp)
 end
 
 function Match:draw()
-    local s = self.state
-    if replay.active() and self._replay_state then
-        s = self._replay_state --[[@as MatchState]]
-    end
     local vp = { w = love.graphics.getWidth(), h = love.graphics.getHeight() }
-    bloom.draw(function()
-        self:draw_frame(s, vp)
-    end)
+    if replay.active() and self._replay_state then
+        local replay_state = assert(self._replay_state)
+        bloom.draw(function()
+            self:draw_frame(replay_state, vp, replay_state._combat_state)
+        end)
+    else
+        bloom.draw(function()
+            self:draw_frame(self.state, vp, self._combat_state)
+        end)
+    end
     self:draw_rollback_overlay(vp)
 end
 

@@ -100,6 +100,10 @@ Equipment input likewise preserves held state plus distinct press and release ed
 fixed-tick boundary. A fast tap between ticks reaches the simulation as an ordered press and
 release on the next tick. Gamepad B remains the Back action outside a live match.
 
+Equipment is active only after choosing **Combat Prototype** on the title screen. **Play
+Showcase** remains the committed release path and constructs no combat state; its match rules
+and onboarding are unchanged.
+
 ## Goal replays
 
 Every goal rolls an automatic **slow-motion replay** of the last few seconds

@@ -4,7 +4,9 @@
 
 local camera = require("game.render.camera")
 local arena_render = require("game.render.arena")
+local combat_render = require("game.render.combat")
 local player_renderer = require("game.render.player_renderer")
+local player_pose = require("game.presentation.player_pose")
 local identity = require("game.presentation.identity")
 local view_state = require("game.render.view_state")
 local effects = require("game.render.effects")
@@ -22,6 +24,7 @@ local NET_BACK_FRAC = 0.55 -- back frame height as a fraction of the crossbar
 ---@field arena ArenaData?
 ---@field arena_pulse number?
 ---@field render_pose CorrectionSmoothingPose?
+---@field combat CombatPresentationModel?
 
 ---@param player MatchPlayer
 ---@param pose CorrectionSmoothingPose?
@@ -306,6 +309,9 @@ function pitch.draw(s, vp, opts)
 
     -- Ball trail sits on the ground, under the entities.
     effects.draw_trail(project)
+    if opts.combat then
+        combat_render.draw_under(opts.combat, project, render_pose)
+    end
 
     -- Depth-sorted drawables (far first).
     local items = {}
@@ -332,6 +338,7 @@ function pitch.draw(s, vp, opts)
             local color = (p.team == "home") and opts.home_color or opts.away_color
             local presentation =
                 assert(identity.for_player(p.id), "missing pitch identity for " .. p.id)
+            local combat_sample = opts.combat and opts.combat.players[it.idx] or nil
             local aerial_duration = 0.22
             if p.aerial_style == "bicycle" then
                 aerial_duration = 0.6
@@ -364,6 +371,8 @@ function pitch.draw(s, vp, opts)
                 species_shape = presentation.shape,
                 species_color = presentation.palette,
                 team = p.team,
+                combat = combat_sample,
+                pose = player_pose.select(p, combat_sample),
             })
         elseif not keeper_holds then
             -- Loose / dribbled ball. (A keeper-held ball is drawn in its hands by the
@@ -377,6 +386,10 @@ function pitch.draw(s, vp, opts)
             love.graphics.setColor(1, 0.95, 0.7)
             love.graphics.circle("fill", sx, sy - (z + 4) * scale, 5 * scale)
         end
+    end
+
+    if opts.combat then
+        combat_render.draw_over(opts.combat, project)
     end
 
     -- Landing reticle: a lofted, loose ball projects where it will come down, so

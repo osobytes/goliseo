@@ -51,6 +51,32 @@ local function wrapped_lifecycle_event(id, tick, kind)
     }
 end
 
+---@param id string
+---@param tick integer
+---@param sequence integer
+---@return RollbackWrappedCombatEvent
+local function wrapped_combat_event(id, tick, sequence)
+    return {
+        id = id,
+        tick = tick,
+        domain = "combat/contact/" .. sequence,
+        ordinal = 1,
+        payload = {
+            kind = "contact",
+            tick = tick,
+            family_id = "light_melee",
+            source_index = 1,
+            target_index = 2,
+            source_sequence = sequence,
+            result = "hit",
+            x = 100 + tick,
+            y = 200 + tick,
+            interruption_ticks = nil,
+            displacement_px = nil,
+        },
+    }
+end
+
 ---@param tick integer
 ---@param events RollbackWrappedMatchEvent[]
 ---@param owner_team InputTeam?
@@ -92,6 +118,39 @@ t.describe("rollback presentation consumers", function()
         t.eq(counts.goal, 1)
         t.eq(counts.kickoff, 1)
         t.eq(counts.full_time, 1)
+    end)
+
+    t.it("publishes only the confirmed combat replacement exactly once", function()
+        audio.reset()
+        effects.reset()
+        local screen = Match.new({
+            rollback_lab = {
+                profile_name = "clean",
+                duration = 2,
+            },
+        })
+        local predicted = wrapped_combat_event("predicted-combat", 8, 1)
+        local authoritative = wrapped_combat_event("authoritative-combat", 8, 2)
+        t.is_true(screen:consume_rollback_event_diff({
+            added = { predicted },
+            revoked = {},
+            replaced = {},
+        }))
+        t.is_true(screen:consume_rollback_event_diff({
+            added = {},
+            revoked = {},
+            replaced = { { before = predicted, after = authoritative } },
+        }))
+
+        local step = confirmed_step(8, {}, nil)
+        step.combat_events = { authoritative }
+        t.eq(screen:consume_confirmed_step(step), 1)
+        t.eq(screen:consume_confirmed_step(step), 0)
+        t.is_true(audio.consume_confirmed(predicted), "corrected-away combat ID was not published")
+        t.is_true(
+            not audio.consume_confirmed(authoritative),
+            "confirmed combat replacement was already published"
+        )
     end)
 
     t.it("adds, replaces, and revokes speculative effects by event ID", function()

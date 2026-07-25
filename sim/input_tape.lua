@@ -5,6 +5,7 @@
 -- policy or producer RNG: those have already been materialized into frames.
 
 local fixed_clock = require("sim.fixed_clock")
+local combat_identity = require("sim.combat_identity")
 local input_frame = require("sim.input_frame")
 local match = require("sim.match")
 local match_snapshot = require("sim.match_snapshot")
@@ -23,6 +24,7 @@ local tuning = require("sim.tuning")
 ---@field seed integer
 ---@field tick_rate integer
 ---@field ownership InputOwnership
+---@field combat string?
 
 ---@class InputTape
 ---@field version integer
@@ -40,6 +42,7 @@ local tuning = require("sim.tuning")
 local input_tape = {}
 
 input_tape.VERSION = 1
+input_tape.COMBAT_VERSION = 2
 
 input_tape.IDENTITY_FIELDS = {
     "tape_version",
@@ -54,6 +57,7 @@ input_tape.IDENTITY_FIELDS = {
     "seed",
     "tick_rate",
     "ownership",
+    "combat",
 }
 
 local IDENTITY_FIELD_SET = {}
@@ -228,10 +232,15 @@ end
 ---@return InputTapeIdentity
 function input_tape.copy_identity(identity)
     assert_fields(identity, IDENTITY_FIELD_SET, "identity")
-    assert(identity.tape_version == input_tape.VERSION, "unsupported input tape identity version")
+    assert(
+        identity.tape_version == input_tape.VERSION
+            or identity.tape_version == input_tape.COMBAT_VERSION,
+        "unsupported input tape identity version"
+    )
     assert(identity.input_version == input_frame.VERSION, "unsupported identity input version")
     assert(
-        identity.snapshot_version == match_snapshot.VERSION,
+        identity.snapshot_version == match_snapshot.VERSION
+            or identity.snapshot_version == match_snapshot.COMBAT_VERSION,
         "unsupported identity snapshot version"
     )
     for _, field in ipairs({ "build", "source", "content", "tuning", "config", "fixture" }) do
@@ -249,6 +258,22 @@ function input_tape.copy_identity(identity)
         "identity.seed must be a finite integer"
     )
     assert(identity.tick_rate == fixed_clock.TICK_RATE, "identity tick rate is unsupported")
+    if identity.tape_version == input_tape.VERSION then
+        assert(
+            identity.snapshot_version == match_snapshot.VERSION,
+            "soccer tape identity requires the soccer snapshot version"
+        )
+        assert(identity.combat == nil, "soccer tape identity cannot contain combat identity")
+    else
+        assert(
+            identity.snapshot_version == match_snapshot.COMBAT_VERSION,
+            "combat tape identity requires the combat snapshot version"
+        )
+        assert(
+            type(identity.combat) == "string" and identity.combat ~= "",
+            "combat tape identity is required"
+        )
+    end
     return {
         tape_version = identity.tape_version,
         input_version = identity.input_version,
@@ -262,6 +287,7 @@ function input_tape.copy_identity(identity)
         seed = identity.seed,
         tick_rate = identity.tick_rate,
         ownership = copy_ownership(identity.ownership, "identity.ownership"),
+        combat = identity.combat,
     }
 end
 
@@ -318,6 +344,7 @@ end
 ---@param frames InputFrame[]
 ---@return InputTapeIdentity
 ---@return MatchState
+---@return CombatMatchState?
 ---@return MatchSnapshot
 ---@return InputFrame[]
 local function copy_components(identity, initial, frames)
@@ -326,14 +353,14 @@ local function copy_components(identity, initial, frames)
         copied_identity.tuning == tuning.serialize(),
         "identity tuning does not match active simulation tuning"
     )
-    local initial_state = match_snapshot.restore(initial)
+    local initial_state, initial_combat = match_snapshot.restore(initial)
     assert(initial_state.slot_mode, "input tapes require a fixed-slot match")
     assert(initial_state.input_ownership, "input tape snapshot has no ownership")
     assert_ownership_routes(copied_identity.ownership, initial_state, "identity.ownership")
     local snapshot_identity = {
-        tape_version = input_tape.VERSION,
+        tape_version = initial_combat and input_tape.COMBAT_VERSION or input_tape.VERSION,
         input_version = input_frame.VERSION,
-        snapshot_version = match_snapshot.VERSION,
+        snapshot_version = initial.version,
         build = copied_identity.build,
         source = copied_identity.source,
         content = copied_identity.content,
@@ -343,6 +370,7 @@ local function copy_components(identity, initial, frames)
         seed = copied_identity.seed,
         tick_rate = copied_identity.tick_rate,
         ownership = initial_state.input_ownership,
+        combat = initial_combat and combat_identity.for_state(initial_combat) or nil,
     }
     local ownership_diff = input_tape.identity_difference(copied_identity, snapshot_identity)
     assert(
@@ -359,8 +387,8 @@ local function copy_components(identity, initial, frames)
         )
         copied_frames[index] = frame
     end
-    local normalized_initial = match_snapshot.capture(initial_state)
-    return copied_identity, initial_state, normalized_initial, copied_frames
+    local normalized_initial = match_snapshot.capture(initial_state, initial_combat)
+    return copied_identity, initial_state, initial_combat, normalized_initial, copied_frames
 end
 
 ---@param identity InputTapeIdentity
@@ -368,17 +396,18 @@ end
 ---@param frames InputFrame[]
 ---@return InputTape
 function input_tape.new(identity, initial, frames)
-    local copied_identity, _, normalized_initial, copied_frames =
+    local copied_identity, _, _, normalized_initial, copied_frames =
         copy_components(identity, initial, frames)
     local boundary_hashes = { match_snapshot.hash(normalized_initial) }
-    local replay_state = match_snapshot.restore(normalized_initial)
+    local replay_state, replay_combat = match_snapshot.restore(normalized_initial)
     for index = 1, #copied_frames do
         assert(not replay_state.finished, "input tape contains a frame after the match finished")
-        match.step(replay_state, fixed_clock.TICK_SECONDS, copied_frames[index])
-        boundary_hashes[index + 1] = match_snapshot.hash(match_snapshot.capture(replay_state))
+        match.step(replay_state, fixed_clock.TICK_SECONDS, copied_frames[index], replay_combat)
+        boundary_hashes[index + 1] =
+            match_snapshot.hash(match_snapshot.capture(replay_state, replay_combat))
     end
     return {
-        version = input_tape.VERSION,
+        version = copied_identity.tape_version,
         identity = copied_identity,
         initial = normalized_initial,
         frames = copied_frames,
@@ -395,7 +424,7 @@ end
 ---@param boundary_hashes string[]
 ---@return InputTape
 function input_tape.from_frozen_recording(identity, initial, frames, boundary_hashes)
-    local copied_identity, _, normalized_initial, copied_frames =
+    local copied_identity, _, _, normalized_initial, copied_frames =
         copy_components(identity, initial, frames)
     assert_array(boundary_hashes, "boundary_hashes", #copied_frames + 1)
     local copied_hashes = {}
@@ -412,7 +441,7 @@ function input_tape.from_frozen_recording(identity, initial, frames, boundary_ha
         "frozen input tape initial boundary hash disagrees with its snapshot"
     )
     return {
-        version = input_tape.VERSION,
+        version = copied_identity.tape_version,
         identity = copied_identity,
         initial = normalized_initial,
         frames = copied_frames,
@@ -424,14 +453,22 @@ end
 ---@return boolean
 function input_tape.validate_structure(tape)
     assert_fields(tape, TAPE_FIELD_SET, "tape")
-    assert(tape.version == input_tape.VERSION, "unsupported input tape version")
-    input_tape.copy_identity(tape.identity)
-    local state = match_snapshot.restore(tape.initial)
+    assert(
+        tape.version == input_tape.VERSION or tape.version == input_tape.COMBAT_VERSION,
+        "unsupported input tape version"
+    )
+    local identity = input_tape.copy_identity(tape.identity)
+    assert(tape.version == identity.tape_version, "tape and identity versions differ")
+    local state, combat_state = match_snapshot.restore(tape.initial)
     assert(state.slot_mode, "input tape snapshot is not a fixed-slot match")
     assert(state.input_ownership, "input tape snapshot has no ownership")
     local snapshot_identity = input_tape.copy_identity(tape.identity)
     snapshot_identity.ownership =
         copy_ownership(state.input_ownership, "tape.initial.state.input_ownership")
+    snapshot_identity.snapshot_version = tape.initial.version
+    snapshot_identity.tape_version = combat_state and input_tape.COMBAT_VERSION
+        or input_tape.VERSION
+    snapshot_identity.combat = combat_state and combat_identity.for_state(combat_state) or nil
     local ownership_diff = input_tape.identity_difference(tape.identity, snapshot_identity)
     assert(
         not ownership_diff,
@@ -466,10 +503,10 @@ end
 ---@return boolean
 function input_tape.validate(tape)
     assert(input_tape.validate_structure(tape))
-    local state = match_snapshot.restore(tape.initial)
+    local state, combat_state = match_snapshot.restore(tape.initial)
     for index = 1, #tape.frames do
         assert(not state.finished, "input tape contains a frame after the match finished")
-        match.step(state, fixed_clock.TICK_SECONDS, tape.frames[index])
+        match.step(state, fixed_clock.TICK_SECONDS, tape.frames[index], combat_state)
     end
     return true
 end

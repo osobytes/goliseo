@@ -1,4 +1,5 @@
 local t = require("spec.support.runner")
+local combat = require("sim.combat")
 local input_frame = require("sim.input_frame")
 local match = require("sim.match")
 local match_snapshot = require("sim.match_snapshot")
@@ -92,6 +93,32 @@ t.describe("bounded rollback snapshot history", function()
         t.eq(unchanged.players[1].pos.x, original_x)
         t.eq(rollback_snapshot_history.status(history, 0), "present")
         t.eq(rollback_snapshot_history.status(history, 1), "missing")
+    end)
+
+    t.it("stores, accounts, and restores the combat companion atomically", function()
+        local history = rollback_snapshot_history.new()
+        local state = new_state()
+        state.kickoff_hold = 0
+        local combat_state = combat.new_state(state)
+        local supplied = match_snapshot.capture(state, combat_state)
+        local expected_bytes = match_snapshot.encoded_size_canonical(supplied)
+        assert(rollback_snapshot_history.store(history, supplied))
+        assert(supplied.combat).next_source_sequence = 99
+
+        local lookup = rollback_snapshot_history.lookup(history, 0)
+        t.eq(lookup.canonical_bytes, expected_bytes)
+        t.eq(assert(lookup.snapshot).version, match_snapshot.COMBAT_VERSION)
+        t.eq(assert(lookup.snapshot.combat).next_source_sequence, 1)
+
+        local restored, restored_combat, status =
+            rollback_snapshot_history.restore_simulation(history, 0)
+        t.eq(status, "present")
+        t.eq(assert(restored).input_tick, 0)
+        t.eq(assert(restored_combat).next_source_sequence, 1)
+        restored_combat.next_source_sequence = 55
+        local _, unchanged = rollback_snapshot_history.restore_simulation(history, 0)
+        t.eq(assert(unchanged).next_source_sequence, 1)
+        t.eq(rollback_snapshot_history.diagnostics(history).canonical_bytes, expected_bytes)
     end)
 
     t.it("compares retained boundaries and materializes hashes only for divergence", function()

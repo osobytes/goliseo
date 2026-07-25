@@ -112,7 +112,10 @@ from `snapshot.state.input_tick`; callers cannot provide a second tick that
 could disagree. Advancing the present boundary deterministically evicts every
 stored tick below `present - 30`. Lookup identifies the present boundary, an
 older retained boundary, a gap inside the supported range, or a tick outside
-the window. Stored snapshots and lookup results are independent copies.
+the window. Stored snapshots and lookup results are independent copies. A
+version-6 entry owns its `MatchState` and `CombatMatchState` together;
+`restore_simulation` returns both without changing the legacy soccer-only
+`restore` return order.
 
 The history canonically encodes each insertion to maintain exact retained-byte
 accounting. Hashes remain lazy and cached: ordinary storage does not hash or
@@ -206,7 +209,8 @@ measurable, not a production internet latency promise.
 ## Session restore and resimulation
 
 `sim.rollback_session` is the pure coordinator that owns the mutable slot-mode
-`MatchState`; callers receive only canonical snapshot and output copies. Its
+`MatchState` and optional combat companion; callers receive only canonical
+snapshot and output copies. Its
 constructor accepts a tick-zero `MatchSnapshot`, the eight input sources, and
 an optional rollback-window override. It creates both bounded histories and
 stores boundary zero before simulation begins.
@@ -280,6 +284,14 @@ per-domain ordinal. Interleaving another event kind therefore cannot renumber
 shots, tackles, or keeper events at the same tick. Actor, position, style,
 outcome, team, and post-goal score remain payload rather than identity.
 
+Combat events are authoritative snapshot data and use
+`combat/<kind>/<source_sequence>` domains. The restored monotonic source
+sequence keeps an action's ID stable when unrelated same-tick events are
+inserted or removed; the causal tick still changes the ID when corrected input
+moves the action. Rollback outputs and event steps include combat batches only
+for combat-capable snapshots, preserving the soccer-only retained payload.
+Match, combat, and lifecycle events are diffed in that order.
+
 When corrected play retains an identity but changes its payload, the event
 timeline reports one explicit replacement. A changed kind/domain reports a
 revocation plus an addition. Additions and replacements follow corrected
@@ -312,7 +324,7 @@ time remaining, finished flag, owner player ID/team, and wrapped events needed
 by downstream observers. The stable player-index-to-ID/team mapping is copied
 once from boundary zero. At the 30-tick default rollback depth, this keeps the
 event seam to at most 30 compact step records rather than another set of
-18-KiB match snapshots.
+match snapshots.
 
 Confirmation is also the event-retention bound. If an unconfirmed oldest step
 would grow the timeline beyond its configured window, `apply` changes the

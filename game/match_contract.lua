@@ -14,6 +14,7 @@ local teams = require("data.teams")
 ---@field tactic_id string
 ---@field arena_id string
 ---@field show_onboarding boolean
+---@field combat_enabled boolean
 ---@field seed integer?
 
 ---@class TeamResultStats
@@ -44,6 +45,7 @@ local teams = require("data.teams")
 ---@field tactic_id string
 ---@field arena_id string?
 ---@field show_onboarding boolean?
+---@field combat_enabled boolean?
 ---@field seed integer?
 
 ---@class ProductMatchResultOptions
@@ -157,6 +159,7 @@ function contract.new_request(opts)
         tactic_id = opts.tactic_id,
         arena_id = arena_id,
         show_onboarding = opts.show_onboarding == true,
+        combat_enabled = opts.combat_enabled == true,
         seed = opts.seed,
     }
 end

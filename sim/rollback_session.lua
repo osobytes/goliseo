@@ -22,6 +22,7 @@ local rollback_snapshot_history = require("sim.rollback_snapshot_history")
 ---@field end_boundary integer
 ---@field input RollbackInputTickRecord
 ---@field events MatchEvent[]
+---@field combat_events CombatEvent[]?
 ---@field state RollbackOutputStateView
 ---@field finished boolean
 
@@ -93,6 +94,7 @@ local rollback_snapshot_history = require("sim.rollback_snapshot_history")
 
 ---@class RollbackSession
 ---@field _state MatchState
+---@field _combat_state CombatMatchState?
 ---@field _input_history RollbackInputHistory
 ---@field _snapshot_history RollbackSnapshotHistory
 ---@field _outputs table<integer, RollbackTickOutput>
@@ -214,6 +216,22 @@ local function copy_events(events)
     return result
 end
 
+---@param events CombatEvent[]
+---@return CombatEvent[]
+local function copy_combat_events(events)
+    local result = {}
+    for index, event in ipairs(events) do
+        local copied = {}
+        for key, value in pairs(event) do
+            assert(type(value) ~= "table", "rollback combat events must contain canonical scalars")
+            copied[key] = value
+        end
+        result[index] = copied
+    end
+    ---@cast result CombatEvent[]
+    return result
+end
+
 ---@param value any
 ---@return string
 local function canonical_payload(value)
@@ -264,7 +282,7 @@ end
 ---@param output RollbackTickOutput
 ---@return RollbackTickOutput
 local function copy_output(output)
-    return {
+    local result = {
         tick = output.tick,
         start_boundary = output.start_boundary,
         end_boundary = output.end_boundary,
@@ -277,6 +295,10 @@ local function copy_output(output)
         },
         finished = output.finished,
     }
+    if output.combat_events then
+        result.combat_events = copy_combat_events(output.combat_events)
+    end
+    return result
 end
 
 ---@param comparison RollbackComparison
@@ -329,7 +351,7 @@ end
 ---@return RollbackTickOutput
 local function make_output(tick, record, snapshot)
     local state = snapshot.state
-    return {
+    local result = {
         tick = tick,
         start_boundary = tick,
         end_boundary = tick + 1,
@@ -342,6 +364,10 @@ local function make_output(tick, record, snapshot)
         },
         finished = state.finished,
     }
+    if snapshot.combat then
+        result.combat_events = copy_combat_events(snapshot.combat.events)
+    end
+    return result
 end
 
 ---@param session RollbackSession
@@ -352,9 +378,9 @@ local function execute_tick(session, tick)
     assert(session._state.input_tick == tick, "rollback session boundary is inconsistent")
     local frame, record = rollback_input_history.materialize(session._input_history, tick)
     count_predictions(session, record)
-    match.step(session._state, fixed_clock.TICK_SECONDS, frame)
+    match.step(session._state, fixed_clock.TICK_SECONDS, frame, session._combat_state)
     local boundary = measured(session, "capture", function()
-        return match_snapshot.capture_owned(session._state)
+        return match_snapshot.capture_owned(session._state, session._combat_state)
     end)
     ---@cast boundary MatchSnapshot
     assert(
@@ -388,15 +414,16 @@ end
 ---@param measure RollbackSessionMeasure? Optional observer; it cannot change logical results.
 ---@return RollbackSession
 function rollback_session.new(initial_snapshot, sources, max_rollback_ticks, measure)
-    local state = match_snapshot.restore(initial_snapshot)
+    local state, combat_state = match_snapshot.restore(initial_snapshot)
     assert(state.slot_mode, "rollback session requires a slot-mode match snapshot")
     assert(state.input_tick == 0, "rollback session requires the tick-zero boundary")
     assert(not state.finished, "rollback session tick-zero boundary must be active")
-    local canonical = match_snapshot.capture_owned(state)
+    local canonical = match_snapshot.capture_owned(state, combat_state)
     local snapshots = rollback_snapshot_history.new(max_rollback_ticks)
     assert(rollback_snapshot_history.store_owned(snapshots, canonical))
     return {
         _state = state,
+        _combat_state = combat_state,
         _input_history = rollback_input_history.new(sources),
         _snapshot_history = snapshots,
         _outputs = {},
@@ -521,7 +548,7 @@ local function reconcile_changed(session, causal_tick, detailed_diagnostics)
     local old_hash = nil
     if detailed_diagnostics then
         old_snapshot = measured(session, "capture", function()
-            return match_snapshot.capture_owned(session._state)
+            return match_snapshot.capture_owned(session._state, session._combat_state)
         end)
         old_hash =
             assert(rollback_snapshot_history.boundary_hash(session._snapshot_history, old_present))
@@ -531,10 +558,13 @@ local function reconcile_changed(session, causal_tick, detailed_diagnostics)
         "rollback divergence changed before restore"
     )
     local restored = measured(session, "restore", function()
-        return assert(rollback_snapshot_history.restore(session._snapshot_history, causal_tick))
+        local restored_state, restored_combat =
+            rollback_snapshot_history.restore_simulation(session._snapshot_history, causal_tick)
+        return { state = assert(restored_state), combat = restored_combat }
     end)
-    ---@cast restored MatchState
-    session._state = restored
+    ---@cast restored { state: MatchState, combat: CombatMatchState? }
+    session._state = restored.state
+    session._combat_state = restored.combat
 
     local corrected_outputs = {}
     measured(session, "resimulation", function()
@@ -636,7 +666,7 @@ end
 ---@return MatchSnapshot
 function rollback_session.current_snapshot(session)
     assert_session(session)
-    return match_snapshot.capture_owned(session._state)
+    return match_snapshot.capture_owned(session._state, session._combat_state)
 end
 
 ---@param session RollbackSession
@@ -671,7 +701,7 @@ end
 ---@return RollbackComparison
 function rollback_session.compare(session, expected, causal_tick)
     assert_session(session)
-    local actual = match_snapshot.capture_owned(session._state)
+    local actual = match_snapshot.capture_owned(session._state, session._combat_state)
     local actual_hash = match_snapshot.hash(actual)
     local expected_hash = match_snapshot.hash(expected)
     local matched = actual_hash == expected_hash
@@ -722,7 +752,7 @@ function rollback_session.diagnostics(session)
 end
 
 -- Exact logical payload retained by the rollback coordinator. Snapshot bytes
--- use MatchSnapshot v5 canonical encoding; input/output bytes use the versioned
+-- use the MatchSnapshot versioned canonical encoding; input/output bytes use their versioned
 -- canonical encodings owned by their respective modules.
 ---@param session RollbackSession
 ---@return RollbackSessionAccounting

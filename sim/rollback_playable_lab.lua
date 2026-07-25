@@ -93,6 +93,7 @@ local slot_input = require("sim.slot_input")
 
 ---@class RollbackPlayableLab
 ---@field _reference MatchState
+---@field _reference_combat CombatMatchState?
 ---@field _reference_history RollbackSnapshotHistory
 ---@field _session RollbackSession
 ---@field _events RollbackEventTimeline
@@ -170,12 +171,12 @@ end
 ---@param local_slot integer
 ---@return MatchSnapshot
 local function controlled_initial_snapshot(initial_snapshot, local_slot)
-    local state = match_snapshot.restore(initial_snapshot)
+    local state, combat_state = match_snapshot.restore(initial_snapshot)
     assert(state.slot_mode, "playable rollback lab requires a slot-mode match")
     assert(state.input_tick == 0, "playable rollback lab requires boundary zero")
     assert(not state.finished, "playable rollback lab requires an active initial match")
     state.controlled = assert(state.slot_players[local_slot], "local rollback slot is unmapped")
-    return match_snapshot.capture(state)
+    return match_snapshot.capture(state, combat_state)
 end
 
 ---@param local_slot integer
@@ -476,8 +477,8 @@ local function advance_reference(lab, local_sample)
     slots[lab._local_slot] = copy_sample(local_sample)
     local base = assert(input_frame.new(lab._transport_tick, slots))
     local frame = slot_input.materialize(lab._producer, lab._reference, base)
-    match.step(lab._reference, fixed_clock.TICK_SECONDS, frame)
-    local boundary = match_snapshot.capture_owned(lab._reference)
+    match.step(lab._reference, fixed_clock.TICK_SECONDS, frame, lab._reference_combat)
+    local boundary = match_snapshot.capture_owned(lab._reference, lab._reference_combat)
     assert(rollback_snapshot_history.store_owned(lab._reference_history, boundary))
 
     add_authority(lab, frame.tick, lab._local_slot, frame.slots[lab._local_slot])
@@ -522,7 +523,7 @@ local function finish_settlement_if_ready(lab)
     then
         return
     end
-    local expected = match_snapshot.capture_owned(lab._reference)
+    local expected = match_snapshot.capture_owned(lab._reference, lab._reference_combat)
     local comparison = rollback_session.compare(lab._session, expected, final_tick)
     lab._latest_convergence = {
         status = comparison.matched and "matched" or "diverged",
@@ -562,7 +563,7 @@ function rollback_playable_lab.new(initial_snapshot, options)
     )
     local profile, profile_name = selected_profile(options)
     local canonical = controlled_initial_snapshot(initial_snapshot, local_slot)
-    local reference = match_snapshot.restore(canonical)
+    local reference, reference_combat = match_snapshot.restore(canonical)
     local reference_history = rollback_snapshot_history.new(maximum)
     assert(rollback_snapshot_history.store_owned(reference_history, canonical))
     local sources = new_sources(local_slot)
@@ -570,6 +571,7 @@ function rollback_playable_lab.new(initial_snapshot, options)
     local initial_hash = match_snapshot.hash(canonical)
     return {
         _reference = reference,
+        _reference_combat = reference_combat,
         _reference_history = reference_history,
         _session = session,
         _events = rollback_events.new(canonical, maximum),
@@ -658,7 +660,7 @@ end
 ---@param lab RollbackPlayableLab
 ---@return MatchSnapshot
 function rollback_playable_lab.reference_snapshot(lab)
-    return match_snapshot.capture_owned(lab._reference)
+    return match_snapshot.capture_owned(lab._reference, lab._reference_combat)
 end
 
 ---@param lab RollbackPlayableLab

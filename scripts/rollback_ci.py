@@ -20,22 +20,19 @@ from typing import Any, Callable, Sequence, TypeVar
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ".github/workflows/ci.yml"
-GATE_CONTRACT = 4
-FINGERPRINT_FORMAT = 1
+GATE_CONTRACT = 5
+FINGERPRINT_FORMAT = 2
 MAX_ARTIFACT_BYTES = 10 * 1024 * 1024
 HEX_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 ARTIFACT_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 GIT_REVISION = re.compile(r"^[0-9a-f]{40}$")
 RUN_ID = re.compile(r"^[1-9][0-9]*$")
 
-ROLLBACK_PATHS = (
+DIRECT_RELEVANT_PATHS = (
     WORKFLOW_PATH,
     "conf.lua",
     "main.lua",
-    "core",
-    "data",
-    "game",
-    "sim",
+    "docs/online/evidence/omp2_rollback_linux_2026-07-24.json",
     "scripts/browser_determinism.py",
     "scripts/browser_matrix.py",
     "scripts/browser_matrix-requirements.txt",
@@ -45,11 +42,19 @@ ROLLBACK_PATHS = (
     "scripts/rollback_validation.py",
     "scripts/web_build.py",
     "scripts/web_build.sh",
+    "scripts/web_report.py",
     "scripts/web_serve.py",
     "scripts/webrtc_proof_host.js",
     "scripts/webrtc_proof_runner.js",
     "scripts/webrtc_proof_suite.js",
 )
+
+LUA_VALIDATION_ROOTS = (
+    "sim.rollback_validation",
+    "game.rollback_validation",
+)
+
+LUA_MODULE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 
 EXPECTED_JOB_STEPS = {
     "OMP-2 rollback impact filter": ("Detect rollback-impacting changes",),
@@ -122,6 +127,13 @@ class DiscoveryContext:
     current_run_id: str
 
 
+@dataclass(frozen=True)
+class GitTreeEntry:
+    mode: str
+    kind: str
+    object_id: str
+
+
 T = TypeVar("T")
 
 
@@ -143,11 +155,211 @@ def require_git(repo: Path, arguments: Sequence[str]) -> bytes:
     return completed.stdout
 
 
-def relevant_fingerprint(repo: Path, revision: str = "HEAD") -> str:
-    records = require_git(
-        repo,
-        ["ls-tree", "-r", "-z", "--full-tree", revision, "--", *ROLLBACK_PATHS],
+def revision_tree(repo: Path, revision: str) -> dict[str, GitTreeEntry]:
+    raw = require_git(repo, ["ls-tree", "-r", "-z", "--full-tree", revision])
+    entries: dict[str, GitTreeEntry] = {}
+    for raw_record in raw.split(b"\0"):
+        if not raw_record:
+            continue
+        try:
+            metadata, raw_path = raw_record.split(b"\t", 1)
+            mode, kind, object_id = metadata.decode("ascii").split(" ")
+            path = raw_path.decode("utf-8")
+        except (UnicodeDecodeError, ValueError) as error:
+            raise DiscoveryError(
+                f"{revision} contains an unsafe Git tree record"
+            ) from error
+        if path in entries:
+            raise DiscoveryError(f"{revision} contains duplicate path {path}")
+        if kind != "blob" or not re.fullmatch(r"[0-7]{6}", mode):
+            raise DiscoveryError(f"{revision}:{path} is not an ordinary Git blob")
+        if not re.fullmatch(r"[0-9a-f]{40,64}", object_id):
+            raise DiscoveryError(f"{revision}:{path} has a malformed object id")
+        entries[path] = GitTreeEntry(mode, kind, object_id)
+    return entries
+
+
+def revision_blob(repo: Path, revision: str, path: str) -> bytes:
+    return require_git(repo, ["cat-file", "blob", f"{revision}:{path}"])
+
+
+def long_bracket_end(source: str, start: int) -> tuple[str, int] | None:
+    if source[start] != "[":
+        return None
+    cursor = start + 1
+    while cursor < len(source) and source[cursor] == "=":
+        cursor += 1
+    if cursor >= len(source) or source[cursor] != "[":
+        return None
+    return "]" + source[start + 1 : cursor] + "]", cursor + 1
+
+
+def lua_tokens(source: bytes, path: str) -> list[tuple[str, str | None]]:
+    try:
+        text = source.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise DiscoveryError(f"{path} is not valid UTF-8 Lua source") from error
+
+    tokens: list[tuple[str, str | None]] = []
+    cursor = 0
+    while cursor < len(text):
+        character = text[cursor]
+        if character.isspace():
+            cursor += 1
+            continue
+        if text.startswith("--", cursor):
+            long_comment = (
+                long_bracket_end(text, cursor + 2)
+                if cursor + 2 < len(text)
+                else None
+            )
+            if long_comment is None:
+                newline = text.find("\n", cursor + 2)
+                cursor = len(text) if newline < 0 else newline + 1
+                continue
+            terminator, content_start = long_comment
+            end = text.find(terminator, content_start)
+            if end < 0:
+                raise DiscoveryError(f"{path} has an unterminated long comment")
+            cursor = end + len(terminator)
+            continue
+        if character in ("'", '"'):
+            quote = character
+            cursor += 1
+            value: list[str] = []
+            escaped = False
+            while cursor < len(text):
+                character = text[cursor]
+                if character == quote:
+                    cursor += 1
+                    tokens.append(
+                        ("escaped_string" if escaped else "string", "".join(value))
+                    )
+                    break
+                if character in ("\n", "\r"):
+                    raise DiscoveryError(f"{path} has an unterminated quoted string")
+                if character == "\\":
+                    escaped = True
+                    cursor += 1
+                    if cursor >= len(text):
+                        raise DiscoveryError(f"{path} has an unterminated escape")
+                    value.append(text[cursor])
+                    cursor += 1
+                    continue
+                value.append(character)
+                cursor += 1
+            else:
+                raise DiscoveryError(f"{path} has an unterminated quoted string")
+            continue
+        long_string = long_bracket_end(text, cursor)
+        if long_string is not None:
+            terminator, content_start = long_string
+            end = text.find(terminator, content_start)
+            if end < 0:
+                raise DiscoveryError(f"{path} has an unterminated long string")
+            tokens.append(("long_string", None))
+            cursor = end + len(terminator)
+            continue
+        if character.isalpha() or character == "_":
+            start = cursor
+            cursor += 1
+            while cursor < len(text) and (
+                text[cursor].isalnum() or text[cursor] == "_"
+            ):
+                cursor += 1
+            tokens.append(("identifier", text[start:cursor]))
+            continue
+        tokens.append(("symbol", character))
+        cursor += 1
+    return tokens
+
+
+def static_lua_requires(source: bytes, path: str) -> tuple[str, ...]:
+    tokens = lua_tokens(source, path)
+    required: list[str] = []
+    for index, token in enumerate(tokens):
+        if token != ("identifier", "require"):
+            continue
+        if index > 0 and tokens[index - 1] in (
+            ("symbol", "."),
+            ("symbol", ":"),
+        ):
+            continue
+        argument = index + 1
+        parenthesized = argument < len(tokens) and tokens[argument] == (
+            "symbol",
+            "(",
+        )
+        if parenthesized:
+            argument += 1
+        if argument >= len(tokens) or tokens[argument][0] != "string":
+            raise DiscoveryError(
+                f"{path} uses a non-literal or escaped require; "
+                "cannot prove rollback reachability"
+            )
+        module = tokens[argument][1]
+        if module is None or not LUA_MODULE.fullmatch(module):
+            raise DiscoveryError(f"{path} requires unsafe module name {module!r}")
+        if parenthesized:
+            close = argument + 1
+            if close >= len(tokens) or tokens[close] != ("symbol", ")"):
+                raise DiscoveryError(
+                    f"{path} has a require call that cannot be parsed safely"
+                )
+        required.append(module)
+    return tuple(required)
+
+
+def resolve_lua_module(
+    tree: dict[str, GitTreeEntry], module: str, revision: str
+) -> str:
+    prefix = module.replace(".", "/")
+    candidates = tuple(
+        path for path in (f"{prefix}.lua", f"{prefix}/init.lua") if path in tree
     )
+    if len(candidates) != 1:
+        detail = "missing" if not candidates else "ambiguous"
+        raise DiscoveryError(
+            f"{revision} has {detail} reachable Lua module {module!r}"
+        )
+    return candidates[0]
+
+
+def reachable_lua_paths(
+    repo: Path, revision: str, tree: dict[str, GitTreeEntry]
+) -> frozenset[str]:
+    pending = list(LUA_VALIDATION_ROOTS)
+    visited_modules: set[str] = set()
+    visited_paths: set[str] = set()
+    while pending:
+        module = pending.pop()
+        if module in visited_modules:
+            continue
+        visited_modules.add(module)
+        path = resolve_lua_module(tree, module, revision)
+        if path in visited_paths:
+            raise DiscoveryError(
+                f"{revision} maps multiple module names to reachable path {path}"
+            )
+        visited_paths.add(path)
+        pending.extend(static_lua_requires(revision_blob(repo, revision, path), path))
+    return frozenset(visited_paths)
+
+
+def relevant_manifest(
+    repo: Path, revision: str = "HEAD"
+) -> dict[str, GitTreeEntry]:
+    tree = revision_tree(repo, revision)
+    selected: set[str] = set()
+    for path in DIRECT_RELEVANT_PATHS:
+        if path not in tree:
+            raise DiscoveryError(f"{revision} is missing required rollback root {path}")
+        selected.add(path)
+    selected.update(reachable_lua_paths(repo, revision, tree))
+    return {path: tree[path] for path in sorted(selected)}
+
+
+def fingerprint_manifest(manifest: dict[str, GitTreeEntry]) -> str:
     digest = hashlib.sha256()
     digest.update(
         (
@@ -155,11 +367,28 @@ def relevant_fingerprint(repo: Path, revision: str = "HEAD") -> str:
             f"contract-{GATE_CONTRACT}\0"
         ).encode()
     )
-    for pathspec in ROLLBACK_PATHS:
-        digest.update(pathspec.encode("utf-8"))
+    for path in DIRECT_RELEVANT_PATHS:
+        digest.update(b"direct\0")
+        digest.update(path.encode("utf-8"))
         digest.update(b"\0")
-    digest.update(records)
+    for module in LUA_VALIDATION_ROOTS:
+        digest.update(b"lua-root\0")
+        digest.update(module.encode("utf-8"))
+        digest.update(b"\0")
+    for path, entry in manifest.items():
+        digest.update(entry.mode.encode("ascii"))
+        digest.update(b" ")
+        digest.update(entry.kind.encode("ascii"))
+        digest.update(b" ")
+        digest.update(entry.object_id.encode("ascii"))
+        digest.update(b"\t")
+        digest.update(path.encode("utf-8"))
+        digest.update(b"\0")
     return digest.hexdigest()
+
+
+def relevant_fingerprint(repo: Path, revision: str = "HEAD") -> str:
+    return fingerprint_manifest(relevant_manifest(repo, revision))
 
 
 def valid_comparison_base(repo: Path, revision: str) -> bool:
@@ -168,21 +397,14 @@ def valid_comparison_base(repo: Path, revision: str) -> bool:
     return run_git(repo, ["cat-file", "-e", f"{revision}^{{commit}}"]).returncode == 0
 
 
-def compare_relevant_paths(
-    repo: Path, revision_range: str
-) -> tuple[int, tuple[str, ...]]:
-    quiet = run_git(repo, ["diff", "--quiet", revision_range, "--", *ROLLBACK_PATHS])
-    if quiet.returncode != 1:
-        return quiet.returncode, ()
-    names = run_git(repo, ["diff", "--name-only", revision_range, "--", *ROLLBACK_PATHS])
-    if names.returncode != 0:
-        return 2, ()
-    changed = tuple(
-        line
-        for line in names.stdout.decode("utf-8", errors="surrogateescape").splitlines()
-        if line
+def changed_manifest_paths(
+    before: dict[str, GitTreeEntry], after: dict[str, GitTreeEntry]
+) -> tuple[str, ...]:
+    return tuple(
+        path
+        for path in sorted(set(before) | set(after))
+        if before.get(path) != after.get(path)
     )
-    return 1, changed
 
 
 def decide_scope(
@@ -193,8 +415,10 @@ def decide_scope(
 ) -> ScopeDecision:
     fingerprint = "unavailable"
     fingerprint_error = ""
+    current_manifest: dict[str, GitTreeEntry] | None = None
     try:
-        fingerprint = relevant_fingerprint(repo)
+        current_manifest = relevant_manifest(repo)
+        fingerprint = fingerprint_manifest(current_manifest)
     except DiscoveryError as error:
         fingerprint_error = str(error)
 
@@ -227,32 +451,35 @@ def decide_scope(
         )
 
     revision_range = f"{base}{separator}HEAD"
-    status, changed_paths = compare_relevant_paths(repo, revision_range)
-    if status == 0:
-        return ScopeDecision(
-            False,
-            fingerprint,
-            f"no rollback-impacting changes in {revision_range}",
-            (),
-        )
-    if status > 1:
-        return ScopeDecision(
-            True,
-            fingerprint,
-            f"comparison failed for {revision_range}; fail-open full campaign",
-            (),
-        )
-    if fingerprint_error:
+    if fingerprint_error or current_manifest is None:
         return ScopeDecision(
             True,
             fingerprint,
             f"fingerprint failed ({fingerprint_error}); fail-open full campaign",
-            changed_paths,
+            (),
         )
+    try:
+        base_manifest = relevant_manifest(repo, base)
+        base_fingerprint = fingerprint_manifest(base_manifest)
+    except DiscoveryError as error:
+        return ScopeDecision(
+            True,
+            fingerprint,
+            f"base fingerprint failed ({error}); fail-open full campaign",
+            (),
+        )
+    if base_fingerprint == fingerprint:
+        return ScopeDecision(
+            False,
+            fingerprint,
+            f"rollback-reachable content is unchanged in {revision_range}",
+            (),
+        )
+    changed_paths = changed_manifest_paths(base_manifest, current_manifest)
     return ScopeDecision(
         True,
         fingerprint,
-        f"rollback-impacting changes found in {revision_range}",
+        f"rollback-reachable content changed in {revision_range}",
         changed_paths,
     )
 
@@ -713,36 +940,93 @@ def validate_workflow_wiring() -> None:
     assert "pointer-write" not in workflow[gate:]
 
 
+def initialize_scope_fixture(repo: Path) -> str:
+    git(repo, "init", "-q")
+    for path in DIRECT_RELEVANT_PATHS:
+        if path.endswith(".lua"):
+            contents = "return {}\n"
+        elif path.endswith(".json"):
+            contents = "{}\n"
+        else:
+            contents = f"fixture root: {path}\n"
+        write_fixture(repo, path, contents)
+    write_fixture(
+        repo,
+        "sim/rollback_validation.lua",
+        'local runtime = require("sim.runtime")\nreturn runtime\n',
+    )
+    write_fixture(
+        repo,
+        "game/rollback_validation.lua",
+        'local runtime = require("sim.runtime")\nreturn runtime\n',
+    )
+    write_fixture(repo, "sim/runtime.lua", "return { value = 1 }\n")
+    write_fixture(repo, "docs/readme.md", "base\n")
+    return commit_fixture(repo, "base")
+
+
 def run_self_test() -> None:
     validate_workflow_wiring()
+    parser_fixture = b"""
+-- require("sim.line_comment")
+--[=[
+require("sim.long_comment")
+]=]
+local message = 'require("sim.quoted_string")'
+local template = [==[require("sim.long_string")]==]
+local runtime = require("sim.runtime")
+return runtime, message, template
+"""
+    assert static_lua_requires(parser_fixture, "parser_fixture.lua") == ("sim.runtime",)
     with tempfile.TemporaryDirectory(prefix="rollback-ci-self-test-") as directory:
         repo = Path(directory)
-        git(repo, "init", "-q")
-        write_fixture(repo, WORKFLOW_PATH, "name: fixture\n")
-        write_fixture(repo, "scripts/rollback_ci.py", "fixture manifest\n")
-        write_fixture(repo, "sim/runtime.lua", "return 1\n")
-        write_fixture(repo, "docs/readme.md", "base\n")
-        base = commit_fixture(repo, "base")
+        base = initialize_scope_fixture(repo)
+        base_fingerprint = relevant_fingerprint(repo, base)
 
         write_fixture(repo, "docs/readme.md", "unrelated\n")
-        commit_fixture(repo, "docs only")
+        write_fixture(repo, "sim/brain.lua", "return { unrelated = true }\n")
+        write_fixture(
+            repo,
+            "spec/sim/rollback_validation_spec.lua",
+            'local brain = require("sim.brain")\nreturn brain\n',
+        )
+        commit_fixture(repo, "unreferenced module and spec")
         unrelated = decide_scope(repo, "pull_request", pr_base_sha=base)
-        assert not unrelated.run
+        assert not unrelated.run and unrelated.fingerprint == base_fingerprint
 
-        write_fixture(repo, "sim/runtime.lua", "return 2\n")
+        write_fixture(repo, "sim/runtime.lua", "return { value = 2 }\n")
         producer_revision = commit_fixture(repo, "relevant")
         relevant = decide_scope(repo, "pull_request", pr_base_sha=base)
         assert relevant.run and HEX_DIGEST.fullmatch(relevant.fingerprint)
+        assert relevant.changed_paths == ("sim/runtime.lua",)
 
         write_fixture(repo, "docs/readme.md", "follow-up\n")
         follow_up_revision = commit_fixture(repo, "docs follow-up")
         follow_up = decide_scope(repo, "pull_request", pr_base_sha=base)
         assert follow_up.run and follow_up.fingerprint == relevant.fingerprint
 
-        write_fixture(repo, "sim/runtime.lua", "return 3\n")
-        commit_fixture(repo, "changed relevant content")
-        changed = decide_scope(repo, "pull_request", pr_base_sha=base)
-        assert changed.run and changed.fingerprint != relevant.fingerprint
+        write_fixture(
+            repo,
+            "sim/rollback_validation.lua",
+            'local runtime = require("sim.runtime")\n'
+            'local extension = require("sim.rollback_extension")\n'
+            "return { runtime = runtime, extension = extension }\n",
+        )
+        write_fixture(repo, "sim/rollback_extension.lua", "return { enabled = true }\n")
+        wired_revision = commit_fixture(repo, "wire new rollback dependency")
+        wired = decide_scope(repo, "pull_request", pr_base_sha=follow_up_revision)
+        assert wired.run and wired.fingerprint != relevant.fingerprint
+        assert wired.changed_paths == (
+            "sim/rollback_extension.lua",
+            "sim/rollback_validation.lua",
+        )
+
+        write_fixture(
+            repo, "sim/rollback_extension.lua", "return { enabled = false }\n"
+        )
+        commit_fixture(repo, "change new rollback dependency")
+        changed = decide_scope(repo, "pull_request", pr_base_sha=wired_revision)
+        assert changed.run and changed.changed_paths == ("sim/rollback_extension.lua",)
         assert decide_scope(repo, "workflow_dispatch").run
         assert decide_scope(repo, "push", event_before=base).run
         assert decide_scope(repo, "pull_request", pr_base_sha="0" * 40).run
@@ -816,6 +1100,46 @@ def run_self_test() -> None:
             lambda: (_ for _ in ()).throw(RecursionError("deep hostile JSON"))
         )
         assert not reusable and "failed open" in message
+
+        git(repo, "checkout", "-q", "-b", "changed-direct-root", producer_revision)
+        write_fixture(repo, WORKFLOW_PATH, "name: changed fixture\n")
+        commit_fixture(repo, "change workflow root")
+        direct = decide_scope(repo, "pull_request", pr_base_sha=producer_revision)
+        assert direct.run and direct.changed_paths == (WORKFLOW_PATH,)
+
+        git(repo, "checkout", "-q", "-b", "unsafe-dynamic", producer_revision)
+        write_fixture(
+            repo,
+            "sim/rollback_validation.lua",
+            'local module = "sim.runtime"\nreturn require(module)\n',
+        )
+        commit_fixture(repo, "dynamic require")
+        dynamic = decide_scope(repo, "pull_request", pr_base_sha=producer_revision)
+        assert dynamic.run and dynamic.fingerprint == "unavailable"
+        assert "non-literal" in dynamic.reason
+
+        git(repo, "checkout", "-q", "-b", "unsafe-missing", producer_revision)
+        git(repo, "rm", "sim/runtime.lua")
+        commit_fixture(repo, "missing reachable module")
+        missing = decide_scope(repo, "pull_request", pr_base_sha=producer_revision)
+        assert missing.run and missing.fingerprint == "unavailable"
+        assert "missing reachable Lua module" in missing.reason
+
+        git(repo, "checkout", "-q", "-b", "unsafe-ambiguous", producer_revision)
+        write_fixture(repo, "sim/runtime/init.lua", "return { duplicate = true }\n")
+        commit_fixture(repo, "ambiguous reachable module")
+        ambiguous = decide_scope(repo, "pull_request", pr_base_sha=producer_revision)
+        assert ambiguous.run and ambiguous.fingerprint == "unavailable"
+        assert "ambiguous reachable Lua module" in ambiguous.reason
+
+        git(repo, "checkout", "-q", "-b", "unsafe-root", producer_revision)
+        git(repo, "rm", "conf.lua")
+        commit_fixture(repo, "missing direct root")
+        missing_root = decide_scope(
+            repo, "pull_request", pr_base_sha=producer_revision
+        )
+        assert missing_root.run and missing_root.fingerprint == "unavailable"
+        assert "missing required rollback root" in missing_root.reason
 
     print("rollback CI self-test passed")
 

@@ -500,12 +500,14 @@ end
 
 ---@param s MatchState
 ---@param inputs table<integer, MatchInput>
+---@param ineligible table<integer, boolean>?
 ---@return MatchAerialCandidate?
-local function choose_candidate(s, inputs)
+local function choose_candidate(s, inputs, ineligible)
     local best ---@type MatchAerialCandidate?
     for i, player in ipairs(s.players) do
         if
-            not player.is_keeper
+            not (ineligible and ineligible[i])
+            and not player.is_keeper
             and player.header_cd <= 0
             and player.aerial_recovery <= 0
             and player.stun_timer <= 0
@@ -728,8 +730,9 @@ end
 ---@param s MatchState
 ---@param inputs table<integer, MatchInput>
 ---@param config AerialMatchConfig
+---@param ineligible table<integer, boolean>?
 ---@return boolean trajectory_changed
-function aerial.resolve_play(s, inputs, config)
+function aerial.resolve_play(s, inputs, config, ineligible)
     if
         s.ball_z <= config.ground_grab_height
         or s.ball_vz >= 0
@@ -738,7 +741,7 @@ function aerial.resolve_play(s, inputs, config)
     then
         return false
     end
-    local candidate = choose_candidate(s, inputs)
+    local candidate = choose_candidate(s, inputs, ineligible)
     if not candidate then
         return false
     end

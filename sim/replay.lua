@@ -24,6 +24,7 @@ local tuning = require("sim.tuning")
 
 ---@class ReplayResult
 ---@field state MatchState
+---@field combat_state CombatMatchState?
 ---@field boundaries ReplayBoundary[]
 ---@field divergence ReplayDivergence?
 
@@ -113,9 +114,10 @@ local function validate_context(tape, expected_identity)
 end
 
 ---@param state MatchState
+---@param combat_state CombatMatchState?
 ---@return ReplayBoundary
-local function boundary(state)
-    local snapshot = match_snapshot.capture(state)
+local function boundary(state, combat_state)
+    local snapshot = match_snapshot.capture(state, combat_state)
     return { tick = state.input_tick, hash = match_snapshot.hash(snapshot) }
 end
 
@@ -147,17 +149,22 @@ function replay.run(tape, expected_identity)
     if not valid then
         return nil, failure
     end
-    local state = match_snapshot.restore(tape.initial)
-    local boundaries = { boundary(state) }
+    local state, combat_state = match_snapshot.restore(tape.initial)
+    local boundaries = { boundary(state, combat_state) }
     local divergence = nil
     if boundaries[1].hash ~= tape.boundary_hashes[1] then
         divergence = self_divergence(state, tape.boundary_hashes[1], boundaries[1].hash, nil, nil)
-        return { state = state, boundaries = boundaries, divergence = divergence }
+        return {
+            state = state,
+            combat_state = combat_state,
+            boundaries = boundaries,
+            divergence = divergence,
+        }
     end
     for index = 1, #tape.frames do
         local frame = tape.frames[index]
-        match.step(state, fixed_clock.TICK_SECONDS, frame)
-        boundaries[index + 1] = boundary(state)
+        match.step(state, fixed_clock.TICK_SECONDS, frame, combat_state)
+        boundaries[index + 1] = boundary(state, combat_state)
         if boundaries[index + 1].hash ~= tape.boundary_hashes[index + 1] then
             divergence = self_divergence(
                 state,
@@ -169,11 +176,18 @@ function replay.run(tape, expected_identity)
             break
         end
     end
-    return { state = state, boundaries = boundaries, divergence = divergence }
+    return {
+        state = state,
+        combat_state = combat_state,
+        boundaries = boundaries,
+        divergence = divergence,
+    }
 end
 
 ---@param expected_state MatchState
 ---@param actual_state MatchState
+---@param expected_combat CombatMatchState?
+---@param actual_combat CombatMatchState?
 ---@param causal_input_tick integer?
 ---@param expected_input string?
 ---@param actual_input string?
@@ -181,12 +195,14 @@ end
 local function compare_states(
     expected_state,
     actual_state,
+    expected_combat,
+    actual_combat,
     causal_input_tick,
     expected_input,
     actual_input
 )
-    local expected_snapshot = match_snapshot.capture(expected_state)
-    local actual_snapshot = match_snapshot.capture(actual_state)
+    local expected_snapshot = match_snapshot.capture(expected_state, expected_combat)
+    local actual_snapshot = match_snapshot.capture(actual_state, actual_combat)
     local expected_hash = match_snapshot.hash(expected_snapshot)
     local actual_hash = match_snapshot.hash(actual_snapshot)
     local found = match_snapshot.first_difference(expected_snapshot, actual_snapshot)
@@ -221,14 +237,30 @@ function replay.compare(reference, candidate, expected_identity)
         return identity_failure(identity_diff.path, identity_diff.expected, identity_diff.actual)
     end
 
-    local expected_state = match_snapshot.restore(reference.initial)
-    local actual_state = match_snapshot.restore(candidate.initial)
-    local expected_boundaries = { boundary(expected_state) }
-    local actual_boundaries = { boundary(actual_state) }
-    local expected_result = { state = expected_state, boundaries = expected_boundaries }
-    local actual_result = { state = actual_state, boundaries = actual_boundaries }
+    local expected_state, expected_combat = match_snapshot.restore(reference.initial)
+    local actual_state, actual_combat = match_snapshot.restore(candidate.initial)
+    local expected_boundaries = { boundary(expected_state, expected_combat) }
+    local actual_boundaries = { boundary(actual_state, actual_combat) }
+    local expected_result = {
+        state = expected_state,
+        combat_state = expected_combat,
+        boundaries = expected_boundaries,
+    }
+    local actual_result = {
+        state = actual_state,
+        combat_state = actual_combat,
+        boundaries = actual_boundaries,
+    }
     if expected_boundaries[1].hash ~= actual_boundaries[1].hash then
-        local divergence = compare_states(expected_state, actual_state, nil, nil, nil)
+        local divergence = compare_states(
+            expected_state,
+            actual_state,
+            expected_combat,
+            actual_combat,
+            nil,
+            nil,
+            nil
+        )
         expected_result.divergence = divergence
         actual_result.divergence = divergence
         return {
@@ -245,14 +277,16 @@ function replay.compare(reference, candidate, expected_identity)
         local actual_frame = candidate.frames[index]
         local expected_wire = assert(input_frame.encode(expected_frame))
         local actual_wire = assert(input_frame.encode(actual_frame))
-        match.step(expected_state, fixed_clock.TICK_SECONDS, expected_frame)
-        match.step(actual_state, fixed_clock.TICK_SECONDS, actual_frame)
-        expected_boundaries[index + 1] = boundary(expected_state)
-        actual_boundaries[index + 1] = boundary(actual_state)
+        match.step(expected_state, fixed_clock.TICK_SECONDS, expected_frame, expected_combat)
+        match.step(actual_state, fixed_clock.TICK_SECONDS, actual_frame, actual_combat)
+        expected_boundaries[index + 1] = boundary(expected_state, expected_combat)
+        actual_boundaries[index + 1] = boundary(actual_state, actual_combat)
         if expected_boundaries[index + 1].hash ~= actual_boundaries[index + 1].hash then
             local divergence = compare_states(
                 expected_state,
                 actual_state,
+                expected_combat,
+                actual_combat,
                 expected_frame.tick,
                 expected_wire,
                 actual_wire

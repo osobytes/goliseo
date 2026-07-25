@@ -1,4 +1,7 @@
 local Vec2 = require("core.vec2")
+local combat = require("sim.combat")
+local combat_identity = require("sim.combat_identity")
+local determinism_evidence = require("sim.determinism_evidence")
 local fixed_clock = require("sim.fixed_clock")
 local input_frame = require("sim.input_frame")
 local input_tape = require("sim.input_tape")
@@ -83,6 +86,51 @@ local function varying_tape(count, name)
     return input_tape.new(identity(name or ("varying-" .. count), initial), initial, frames)
 end
 
+---@return InputTape
+local function combat_tape()
+    local state = new_state()
+    state.kickoff_hold = 0
+    local combat_state = combat.new_state(state)
+    local initial = match_snapshot.capture(state, combat_state)
+    local frames = {}
+    for tick = 0, 79 do
+        local frame = assert(input_frame.neutral(tick))
+        for slot = 1, input_frame.SLOT_COUNT do
+            if tick == 0 then
+                frame.slots[slot] = assert(input_frame.new_sample({
+                    held = input_frame.HELD_BITS.equipment,
+                    edges = input_frame.EDGE_BITS.equipment_pressed,
+                }))
+            elseif tick < 20 then
+                frame.slots[slot] = assert(input_frame.new_sample({
+                    held = input_frame.HELD_BITS.equipment,
+                }))
+            elseif tick == 20 then
+                frame.slots[slot] = assert(input_frame.new_sample({
+                    edges = input_frame.EDGE_BITS.equipment_released,
+                }))
+            end
+        end
+        frames[#frames + 1] = frame
+    end
+    local tape_identity = {
+        tape_version = input_tape.COMBAT_VERSION,
+        input_version = input_frame.VERSION,
+        snapshot_version = match_snapshot.COMBAT_VERSION,
+        build = "rollback-lab-combat-spec",
+        source = "materialized-combat-spec-fixture",
+        content = "nebula-orion-spec-content",
+        tuning = tuning.serialize(),
+        config = "field=960x540;duration=20;max_goals=99;tick_rate=60",
+        fixture = "combat-rollback-80",
+        seed = 733,
+        tick_rate = fixed_clock.TICK_RATE,
+        ownership = assert(initial.state.input_ownership),
+        combat = combat_identity.for_state(combat_state),
+    }
+    return input_tape.new(tape_identity, initial, frames)
+end
+
 ---@param remote_slot integer?
 ---@return RollbackInputSource[]
 local function one_remote(remote_slot)
@@ -154,6 +202,29 @@ local function early_finish_tape()
 end
 
 t.describe("OMP-2 authoritative-reference rollback laboratory", function()
+    t.it("pins the live soccer tape digest without a synthetic combat segment", function()
+        t.eq(rollback_lab.tape_digest(determinism_evidence.fixture_tape()), "d89f7fc53d660ab7")
+    end)
+
+    t.it("converges combat state and confirmed events through delayed authority", function()
+        local tape = combat_tape()
+        local result = rollback_lab.run(tape, {
+            profile_name = "combat-delay-spec",
+            profile = profile({ base_delay_ticks = 3 }),
+            network_seed = 2001,
+            sources = one_remote(),
+        })
+        t.is_true(result.success)
+        t.eq(result.status, "converged")
+        t.is_true(result.metrics.rollback_count > 0)
+        t.is_true(result.event_metrics.confirmed_combat_events > 0)
+        t.eq(result.event_metrics.reference_digest, result.event_metrics.confirmed_digest)
+        t.eq(assert(result.reference_final_snapshot.combat).tick, 80)
+        t.eq(assert(result.client_final_snapshot.combat).tick, 80)
+        t.is_true(result.metrics.peaks.snapshot_bytes < 768 * 1024)
+        t.is_true(result.metrics.peaks.history_bytes < 1024 * 1024)
+    end)
+
     t.it("matches every clean boundary without prediction or rollback", function()
         local tape = varying_tape(40)
         local result = rollback_lab.run(tape, {

@@ -1598,7 +1598,9 @@ end
 -- toward the challenger so a clean tackle tends to win possession; a slide also
 -- knocks the carrier down.
 ---@param s MatchState
-local function attempt_steals(s)
+---@param combat_state CombatMatchState?
+local function attempt_steals(s, combat_state)
+    local combat_module = combat_state and require("sim.combat") or nil
     if not s.owner then
         return
     end
@@ -1637,7 +1639,12 @@ local function attempt_steals(s)
         end
     end
     for i, p in ipairs(s.players) do
-        if p.team ~= owner.team and not p.is_keeper and p.stun_timer <= 0 then
+        if
+            p.team ~= owner.team
+            and not p.is_keeper
+            and p.stun_timer <= 0
+            and (not combat_module or not combat_module.blocks_actions(combat_state, i))
+        then
             local human = is_human_player(s, i)
             local d = p.pos:dist(s.ball) -- reach for the ball: shielding matters
             local species_reach = species.collision_reach(p.owned_verb)
@@ -2144,9 +2151,25 @@ local function update_sprint(p, want, dt)
 end
 
 ---@param s MatchState
+---@param player_index integer
+---@param input MatchInput
+---@return boolean
+function match._aerial_active_for_input(s, player_index, input)
+    local player = s.players[player_index]
+    return player_index ~= s.owner
+        and player.aerial_recovery <= 0
+        and s.ball_z > GROUND_GRAB_HEIGHT
+        and s.ball_vz < 0
+        and player.pos:dist(s.ball) <= AERIAL_ANTICIPATE
+        and (aerial.strike_requested(input) or player.receive_timer > 0)
+end
+
+---@param s MatchState
 ---@param dt number
 ---@param inputs table<integer, MatchInput>
-local function move_players(s, dt, inputs)
+---@param combat_state CombatMatchState?
+local function move_players(s, dt, inputs, combat_state)
+    local combat_module = combat_state and require("sim.combat") or nil
     -- Snapshot positions so role targets read one consistent world state and we
     -- can derive each player's realized velocity after everyone has moved. Vec2 is
     -- immutable, so aliasing p.pos here is safe.
@@ -2157,6 +2180,10 @@ local function move_players(s, dt, inputs)
     local targets, urgent = offball_targets(s, prev)
 
     for i, p in ipairs(s.players) do
+        local combat_scale = combat_module and combat_module.movement_multiplier(combat_state, i)
+            or 1
+        local combat_blocked = combat_module and combat_module.blocks_actions(combat_state, i)
+            or false
         if p.is_keeper and s.owner == i then
             p.keeper_state = "base"
             p.keeper_state_timer = 0
@@ -2167,13 +2194,7 @@ local function move_players(s, dt, inputs)
         end
         if is_human_player(s, i) then
             local input = inputs[i] or slot_input.neutral_match_input()
-            local aerial_requested = aerial.strike_requested(input)
-            local aerial_active = i ~= s.owner
-                and p.aerial_recovery <= 0
-                and s.ball_z > GROUND_GRAB_HEIGHT
-                and s.ball_vz < 0
-                and p.pos:dist(s.ball) <= AERIAL_ANTICIPATE
-                and (aerial_requested or p.receive_timer > 0)
+            local aerial_active = match._aerial_active_for_input(s, i, input)
             -- Tackle button: a committed slide while SPRINTING, else a standing
             -- poke — one legible rule (sprint + tackle = the big slide). Slide
             -- speed scales off current velocity (p.vel) so it feels relative.
@@ -2249,7 +2270,7 @@ local function move_players(s, dt, inputs)
                 -- on and off at the refill rate.
                 local want = input.sprint and moving and p.stun_timer <= 0 and not jockeying
                 update_sprint(p, want, dt)
-                local mv = p.move_speed * (p.stun_timer > 0 and STUN_SLOW or 1)
+                local mv = p.move_speed * (p.stun_timer > 0 and STUN_SLOW or 1) * combat_scale
                 if jockeying then
                     mv = mv * TUNE.JOCKEY_SLOW
                 elseif p.sprinting then
@@ -2365,6 +2386,7 @@ local function move_players(s, dt, inputs)
                 if
                     threat_committed
                     and threat ~= nil
+                    and not combat_blocked
                     and pressure <= TUNE.AI_JUKE_DIST
                     and p.dodge_cd <= 0
                     and p.dodge_timer <= 0
@@ -2386,12 +2408,13 @@ local function move_players(s, dt, inputs)
                 end
                 local goal_dist = p.pos:dist(gc)
                 local want_sprint = pressure >= TUNE.AI_SPRINT_SPACE
+                    and not combat_blocked
                     and goal_dist > TUNE.AI_SHOOT_RANGE
                     and p.windup_timer <= 0
                     and p.dodge_timer <= 0
                     and p.stun_timer <= 0
                 update_sprint(p, want_sprint, dt)
-                local mv = p.move_speed * (p.stun_timer > 0 and STUN_SLOW or 1)
+                local mv = p.move_speed * (p.stun_timer > 0 and STUN_SLOW or 1) * combat_scale
                 if p.sprinting then
                     mv = mv * TUNE.SPRINT_MULT * species.burst_speed(p.owned_verb)
                 end
@@ -2654,7 +2677,7 @@ local function move_players(s, dt, inputs)
             -- deadband, and once standing, stay planted until the spot drifts
             -- beyond the wake radius — no robotic shuffling on the spot.
             local target = targets[i] or p.anchor
-            local mv = p.move_speed * (p.stun_timer > 0 and STUN_SLOW or 1)
+            local mv = p.move_speed * (p.stun_timer > 0 and STUN_SLOW or 1) * combat_scale
             local dist = p.pos:dist(target)
             local standing = p.run_vel:length() < STAND_STILL_SPEED
             local desired = Vec2.new(0, 0)
@@ -3320,7 +3343,9 @@ end
 ---@param s MatchState
 ---@param dt number
 ---@param inputs table<integer, MatchInput>
-local function update_ball(s, dt, inputs)
+---@param combat_state CombatMatchState?
+local function update_ball(s, dt, inputs, combat_state)
+    local combat_module = combat_state and require("sim.combat") or nil
     -- Controller transients belong to the input owner. Losing possession
     -- cancels that player's charge, preview, and any committed wind-up; a
     -- later possession can never inherit stale state from another slot.
@@ -3472,10 +3497,16 @@ local function update_ball(s, dt, inputs)
             -- promises); release fires early at the current charge.
             -- During wind-up: inputs are locked out (shot is committed, params
             -- already captured), so skip all action logic this frame.
-            if owner.windup_timer == 0 then
+            if
+                owner.windup_timer == 0
+                and (not combat_module or not combat_module.blocks_actions(combat_state, s.owner))
+            then
                 human_outfield_actions(s, dt, input, owner)
             end
-        elseif owner.windup_timer == 0 then
+        elseif
+            owner.windup_timer == 0
+            and (not combat_module or not combat_module.blocks_actions(combat_state, s.owner))
+        then
             -- AI owner: decide what to do (shoot/cross/pass/carry).
             -- Guarded: while winding up, the shot is already committed; no re-decisions.
             ai_outfield_decision(s, s.owner, owner)
@@ -3637,6 +3668,13 @@ local function update_ball(s, dt, inputs)
 
     -- Descending high-ball reception and first-time strikes. Geometry,
     -- difficulty, and seeded quality live in sim.aerial.
+    local aerial_ineligible
+    if combat_state then
+        aerial_ineligible = {}
+        for player_index, runtime in ipairs(combat_state.players) do
+            aerial_ineligible[player_index] = runtime.forced_ticks > 0
+        end
+    end
     local aerial_redirected = aerial.resolve_play(s, inputs, {
         ground_grab_height = GROUND_GRAB_HEIGHT,
         stick_ahead = STICK_AHEAD,
@@ -3644,7 +3682,7 @@ local function update_ball(s, dt, inputs)
         release_cd = RELEASE_CD,
         clear_header_speed = CLEAR_HEADER_SPEED,
         volley_speed = VOLLEY_SPEED,
-    })
+    }, aerial_ineligible)
     if aerial_redirected then
         -- A successful first touch or strike owns a new presentation trajectory.
         -- Clear style and the one-shot guard even when x direction is unchanged,
@@ -3667,6 +3705,7 @@ local function update_ball(s, dt, inputs)
         for i, p in ipairs(s.players) do
             if
                 p.is_keeper
+                and (not combat_state or assert(combat_state.players[i]).forced_ticks == 0)
                 and not p.save_pending -- a committed save resolves on contact instead
                 and p.receive_timer <= 0 -- a teammate's pass is taken with the FEET below
                 and in_claim_zone(s, p)
@@ -3688,6 +3727,7 @@ local function update_ball(s, dt, inputs)
                 -- first touch is theirs); everyone else needs it slowed down.
                 local eligible = (p.is_keeper or p.receive_timer > 0 or speed < POSSESS_MAX_SPEED)
                     and s.ball_z <= GROUND_GRAB_HEIGHT
+                    and (not combat_state or assert(combat_state.players[i]).forced_ticks == 0)
                 local d = p.pos:dist(s.ball)
                 if eligible and d <= reach and (not best_dist or d < best_dist) then
                     best_dist = d
@@ -3771,13 +3811,21 @@ end
 ---@param s MatchState
 ---@param dt number
 ---@param input InputFrame|MatchInput
+---@param combat_state CombatMatchState?
 ---@return MatchState
-function match.step(s, dt, input)
+function match.step(s, dt, input, combat_state)
     if s.finished then
         for _, player in ipairs(s.players) do
             player.keeper_set = 0
         end
         return s
+    end
+    local combat_module = combat_state and require("sim.combat") or nil
+    if combat_state then
+        assert(dt == fixed_clock.TICK_SECONDS, "combat matches require the canonical fixed tick")
+        if s.slot_mode then
+            assert(combat_state.tick == s.input_tick, "combat boundary does not match input tick")
+        end
     end
 
     local inputs ---@type table<integer, MatchInput>
@@ -3804,11 +3852,17 @@ function match.step(s, dt, input)
     for i = #s.events, 1, -1 do
         s.events[i] = nil
     end
+    if combat_state then
+        assert(combat_module).clear_events(combat_state)
+    end
 
     s.time_left = s.time_left - dt
     if s.time_left <= 0 then
         s.time_left = 0
         s.finished = true
+        if combat_state then
+            assert(combat_module).advance_boundary(combat_state)
+        end
         for _, player in ipairs(s.players) do
             player.keeper_set = 0
         end
@@ -3908,19 +3962,41 @@ function match.step(s, dt, input)
         end
     end
 
-    if not s.slot_mode and s.human_controlled and input.switch then
+    if
+        not s.slot_mode
+        and s.human_controlled
+        and input.switch
+        and (not combat_module or not combat_module.blocks_actions(combat_state, s.controlled))
+    then
         s.controlled = next_home_outfield(s, s.controlled)
     end
     if not s.slot_mode then
         inputs[s.controlled] = input
     end
+    if combat_state then
+        local equipment_ineligible = {}
+        for player_index, player_input in pairs(inputs) do
+            equipment_ineligible[player_index] =
+                match._aerial_active_for_input(s, player_index, player_input)
+        end
+        inputs = assert(combat_module).prepare_inputs(s, combat_state, inputs, equipment_ineligible)
+    end
 
     local prev_ball_x = s.ball.x -- for edge-triggered goal-line crossing
     local prev_owner = s.owner
     local prev_owner_team = s.owner and s.players[s.owner].team or nil
-    move_players(s, dt, inputs)
-    attempt_steals(s)
-    update_ball(s, dt, inputs)
+    move_players(s, dt, inputs, combat_state)
+    local combat_contacts = combat_state and assert(combat_module).collect_contacts(s, combat_state)
+        or nil
+    attempt_steals(s, combat_state)
+    if combat_state and combat_contacts then
+        assert(combat_module).resolve_contacts(s, combat_state, combat_contacts)
+    end
+    update_ball(s, dt, inputs, combat_state)
+    if combat_state then
+        assert(combat_module).sanitize_forced_players(s, combat_state)
+        assert(combat_module).finish_tick(combat_state)
+    end
 
     -- A gained ball resolves any in-flight pass: nobody is "running onto" it
     -- any more. In particular an INTERCEPTED back-pass ends the keeper's
@@ -3988,6 +4064,9 @@ function match.step(s, dt, input)
 
     local scorer = check_goal(s, prev_ball_x)
     if scorer then
+        if combat_state then
+            assert(combat_module).reset_for_kickoff(combat_state)
+        end
         for _, player in ipairs(s.players) do
             player.keeper_set = 0
             player.save_style = nil

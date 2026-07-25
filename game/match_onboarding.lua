@@ -1,4 +1,4 @@
----@alias OnboardingPromptId "move"|"possession"|"defending"|"keeper"
+---@alias OnboardingPromptId "move"|"equipment"|"possession"|"defending"|"keeper"
 
 ---@class OnboardingPrompt
 ---@field id OnboardingPromptId
@@ -13,12 +13,15 @@
 ---@field shot boolean
 ---@field passed boolean
 ---@field defended boolean
+---@field equipment_available boolean
+---@field equipment_used boolean
 
 ---@class MatchOnboardingState
 ---@field enabled boolean
 ---@field current OnboardingPromptId?
 ---@field remaining number
 ---@field shown table<string, boolean>
+---@field combat_enabled boolean
 
 ---@class MatchOnboardingModule
 local onboarding = {}
@@ -31,6 +34,11 @@ local PROMPTS = {
         id = "move",
         title = "YOU CONTROL THE DOUBLE-RINGED PLAYER",
         body = "MOVE [LS / WASD]     SPRINT [LB / SHIFT]",
+    },
+    equipment = {
+        id = "equipment",
+        title = "COMBAT PROTOTYPE · EQUIPMENT",
+        body = "FACE YOUR TARGET     HOLD / TAP [B / J] TO USE EQUIPMENT",
     },
     possession = {
         id = "possession",
@@ -60,13 +68,18 @@ local function copy_shown(shown)
 end
 
 ---@param enabled boolean
+---@param combat_enabled boolean?
 ---@return MatchOnboardingState
-function onboarding.new(enabled)
+function onboarding.new(enabled, combat_enabled)
+    local combat = combat_enabled == true
+    local active = enabled or combat
+    local first = enabled and "move" or (combat and "equipment" or nil)
     return {
-        enabled = enabled,
-        current = enabled and "move" or nil,
-        remaining = enabled and PROMPT_SECONDS or 0,
-        shown = enabled and { move = true } or {},
+        enabled = active,
+        current = first,
+        remaining = active and PROMPT_SECONDS or 0,
+        shown = first and { [first] = true } or {},
+        combat_enabled = combat,
     }
 end
 
@@ -76,6 +89,8 @@ end
 local function taught_action_used(current, context)
     if current == "move" then
         return context.moved
+    elseif current == "equipment" then
+        return context.equipment_used
     elseif current == "possession" then
         return context.shot or context.passed
     elseif current == "defending" then
@@ -100,6 +115,7 @@ function onboarding.update(state, context, dt)
         current = state.current,
         remaining = state.remaining,
         shown = copy_shown(state.shown),
+        combat_enabled = state.combat_enabled,
     }
     if next.current then
         next.remaining = math.max(0, next.remaining - dt)
@@ -110,7 +126,9 @@ function onboarding.update(state, context, dt)
 
     local candidate = nil
     if not next.current then
-        if context.keeper_holding and not next.shown.keeper then
+        if next.combat_enabled and context.equipment_available and not next.shown.equipment then
+            candidate = "equipment"
+        elseif context.keeper_holding and not next.shown.keeper then
             candidate = "keeper"
         elseif context.carrying and not next.shown.possession then
             candidate = "possession"

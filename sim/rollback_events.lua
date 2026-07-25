@@ -32,7 +32,17 @@ local rollback_input_history = require("sim.rollback_input_history")
 ---@field ordinal integer
 ---@field payload RollbackLifecyclePayload
 
----@alias RollbackWrappedEvent RollbackWrappedMatchEvent|RollbackWrappedLifecycleEvent
+---@class RollbackWrappedCombatEvent
+---@field id string
+---@field tick integer
+---@field domain RollbackEventDomain
+---@field ordinal integer
+---@field payload CombatEvent
+
+---@alias RollbackWrappedEvent
+---| RollbackWrappedMatchEvent
+---| RollbackWrappedCombatEvent
+---| RollbackWrappedLifecycleEvent
 
 ---@class RollbackEventReplacement
 ---@field before RollbackWrappedEvent
@@ -67,6 +77,7 @@ local rollback_input_history = require("sim.rollback_input_history")
 ---@field end_boundary integer
 ---@field state RollbackConfirmedStateView
 ---@field match_events RollbackWrappedMatchEvent[]
+---@field combat_events RollbackWrappedCombatEvent[]?
 ---@field lifecycle_events RollbackWrappedLifecycleEvent[]
 
 ---@class RollbackEventTimeline
@@ -236,6 +247,17 @@ local function copy_match_wrappers(events)
     return result
 end
 
+---@param events RollbackWrappedCombatEvent[]
+---@return RollbackWrappedCombatEvent[]
+local function copy_combat_wrappers(events)
+    local result = {}
+    for index, event in ipairs(events) do
+        result[index] = copy_wrapped_event(event)
+    end
+    ---@cast result RollbackWrappedCombatEvent[]
+    return result
+end
+
 ---@param events RollbackWrappedLifecycleEvent[]
 ---@return RollbackWrappedLifecycleEvent[]
 local function copy_lifecycle_wrappers(events)
@@ -262,7 +284,7 @@ end
 ---@param step RollbackEventStep
 ---@return RollbackEventStep
 local function copy_step(step)
-    return {
+    local result = {
         tick = step.tick,
         start_boundary = step.start_boundary,
         end_boundary = step.end_boundary,
@@ -270,6 +292,10 @@ local function copy_step(step)
         match_events = copy_match_wrappers(step.match_events),
         lifecycle_events = copy_lifecycle_wrappers(step.lifecycle_events),
     }
+    if step.combat_events then
+        result.combat_events = copy_combat_wrappers(step.combat_events)
+    end
+    return result
 end
 
 ---@param tick integer
@@ -288,6 +314,31 @@ local function wrap_match_events(tick, events)
             domain = domain,
             ordinal = ordinal,
             payload = copy_match_event(event),
+        }
+    end
+    return wrapped
+end
+
+---@param tick integer
+---@param events CombatEvent[]
+---@return RollbackWrappedCombatEvent[]
+local function wrap_combat_events(tick, events)
+    local counts = {}
+    local wrapped = {}
+    for index, event in ipairs(events) do
+        local sequence = assert(
+            event.source_sequence,
+            "rollback combat event is missing its stable source sequence"
+        )
+        local domain = "combat/" .. event.kind .. "/" .. tostring(sequence)
+        local ordinal = (counts[domain] or 0) + 1
+        counts[domain] = ordinal
+        wrapped[index] = {
+            id = event_id(tick, domain, ordinal),
+            tick = tick,
+            domain = domain,
+            ordinal = ordinal,
+            payload = copy_value(event),
         }
     end
     return wrapped
@@ -353,7 +404,8 @@ end
 
 ---@param output RollbackTickOutput
 ---@param state MatchState
-local function assert_step_coherent(output, state)
+---@param combat_state CombatMatchState?
+local function assert_step_coherent(output, state, combat_state)
     assert(type(output) == "table", "rollback event output is required")
     assert(output.tick == output.start_boundary, "rollback event output start boundary is invalid")
     assert(output.end_boundary == output.tick + 1, "rollback event output must advance one tick")
@@ -370,6 +422,14 @@ local function assert_step_coherent(output, state)
         equal_value(output.events, state.events),
         "rollback output events differ from post-step snapshot"
     )
+    if combat_state then
+        assert(
+            equal_value(output.combat_events, combat_state.events),
+            "rollback output combat events differ from post-step snapshot"
+        )
+    else
+        assert(output.combat_events == nil, "soccer output cannot contain combat events")
+    end
 end
 
 ---@param state MatchState
@@ -442,10 +502,10 @@ end
 ---@param players table<integer, RollbackEventPlayerIdentity>
 ---@return RollbackEventStep
 local function make_step(output, snapshot, before, players)
-    local canonical_state = match_snapshot.restore(snapshot)
-    assert_step_coherent(output, canonical_state)
+    local canonical_state, canonical_combat = match_snapshot.restore(snapshot)
+    assert_step_coherent(output, canonical_state, canonical_combat)
     local post = state_view(canonical_state, players)
-    return {
+    local result = {
         tick = output.tick,
         start_boundary = output.start_boundary,
         end_boundary = output.end_boundary,
@@ -453,6 +513,10 @@ local function make_step(output, snapshot, before, players)
         match_events = wrap_match_events(output.tick, output.events),
         lifecycle_events = derive_lifecycle_events(output.tick, before, post),
     }
+    if output.combat_events then
+        result.combat_events = wrap_combat_events(output.tick, output.combat_events)
+    end
+    return result
 end
 
 ---@param steps table<integer, RollbackEventStep>
@@ -465,6 +529,9 @@ local function ordered_events(steps, from_tick, through_tick)
         local step = steps[tick]
         if step then
             for _, event in ipairs(step.match_events) do
+                events[#events + 1] = event
+            end
+            for _, event in ipairs(step.combat_events or {}) do
                 events[#events + 1] = event
             end
             for _, event in ipairs(step.lifecycle_events) do
@@ -740,7 +807,10 @@ function rollback_events.diagnostics(timeline)
     local latest = nil
     for tick, step in pairs(timeline._steps) do
         step_count = step_count + 1
-        event_count = event_count + #step.match_events + #step.lifecycle_events
+        event_count = event_count
+            + #step.match_events
+            + #(step.combat_events or {})
+            + #step.lifecycle_events
         oldest = oldest and math.min(oldest, tick) or tick
         latest = latest and math.max(latest, tick) or tick
     end
