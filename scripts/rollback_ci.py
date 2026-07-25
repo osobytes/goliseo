@@ -872,7 +872,7 @@ def write_fixture(repo: Path, relative: str, contents: str) -> None:
 def fixture_context(fingerprint: str, base_sha: str) -> DiscoveryContext:
     return DiscoveryContext(
         fingerprint,
-        "osobytes/galactic-cup",
+        "osobytes/goliseo",
         1001,
         124,
         "codex/issue-123",

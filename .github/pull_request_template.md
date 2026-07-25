@@ -21,4 +21,4 @@ employer or other legal entity require a separate written agreement.
 
 Legal name: <!-- Required for an external contributor. -->
 
-[cla]: https://github.com/osobytes/galactic-cup/blob/main/CONTRIBUTOR_LICENSE_AGREEMENT.md
+[cla]: https://github.com/osobytes/goliseo/blob/main/CONTRIBUTOR_LICENSE_AGREEMENT.md

@@ -3,13 +3,13 @@
 - **Status:** preregistration contract, pending multidisciplinary design review
 - **Contract version:** `combat_fun_evidence_contract/v1`
 - **Decision owner:** issue
-  [#114](https://github.com/osobytes/galactic-cup/issues/114)
+  [#114](https://github.com/osobytes/goliseo/issues/114)
 - **Instrumentation owner:** issue
-  [#148](https://github.com/osobytes/galactic-cup/issues/148)
+  [#148](https://github.com/osobytes/goliseo/issues/148)
 - **Calibration owner:** issue
-  [#149](https://github.com/osobytes/galactic-cup/issues/149)
+  [#149](https://github.com/osobytes/goliseo/issues/149)
 - **Human-study owner:** issue
-  [#151](https://github.com/osobytes/galactic-cup/issues/151)
+  [#151](https://github.com/osobytes/goliseo/issues/151)
 - **Related contracts:** [combat interaction](combat_interaction_contract.md),
   [soccer-shape metrics](fun_metrics.md), [snapshot/replay](../online/snapshot_replay.md)
 
@@ -1909,5 +1909,5 @@ thresholds remain project decisions.
 [lakens-equivalence]: https://doi.org/10.1177/1948550617697177
 [vuorre]: https://doi.org/10.1098/rsos.220411
 [pxi-guide]: https://playerexperienceinventory.org/docs
-[i131]: https://github.com/osobytes/galactic-cup/issues/131
-[i135]: https://github.com/osobytes/galactic-cup/issues/135
+[i131]: https://github.com/osobytes/goliseo/issues/131
+[i135]: https://github.com/osobytes/goliseo/issues/135

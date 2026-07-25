@@ -7,7 +7,7 @@
   "gate_contract": 4,
   "github_actions": {
     "run_id": 30060058593,
-    "run_url": "https://github.com/osobytes/galactic-cup/actions/runs/30060058593",
+    "run_url": "https://github.com/osobytes/goliseo/actions/runs/30060058593",
     "conclusion": "success",
     "jobs": {
       "native": "success",

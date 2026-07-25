@@ -5,7 +5,7 @@ Chrome and Firefox pass the automated flow, pacing, keyboard/input,
 persistence, and letterboxing gates. Physical gamepad A/B and Firefox
 JavaScript heap remain unverified, so this is not broader browser release
 certification. Windows 11 is deferred to issue
-[#30](https://github.com/osobytes/galactic-cup/issues/30). Missing evidence is
+[#30](https://github.com/osobytes/goliseo/issues/30). Missing evidence is
 not treated as a pass.
 
 ## Artifact and durable evidence
@@ -13,21 +13,21 @@ not treated as a pass.
 - Original full-matrix source: `5f8e76cf46ce85f488be7a3ee8e88105cd43ab19`;
   package SHA-256:
   `c939d74873cb49fe8d587c66af9d7363c15580a3523846ee2ea210921c5aaef5`;
-  [raw Linux baseline](https://github.com/osobytes/galactic-cup/releases/tag/omp0-issue-16-evidence-5f8e76c).
+  [raw Linux baseline](https://github.com/osobytes/goliseo/releases/tag/omp0-issue-16-evidence-5f8e76c).
 - Reviewed Chrome audio/geometry probe:
-  [source `806f7a3`](https://github.com/osobytes/galactic-cup/releases/tag/omp0-issue-16-review-evidence-806f7a3).
+  [source `806f7a3`](https://github.com/osobytes/goliseo/releases/tag/omp0-issue-16-review-evidence-806f7a3).
 - Corrected exact-source Chrome/Firefox audio probes:
-  [source `c451727`](https://github.com/osobytes/galactic-cup/releases/tag/omp0-issue-16-pr29-final-c451727)
+  [source `c451727`](https://github.com/osobytes/goliseo/releases/tag/omp0-issue-16-pr29-final-c451727)
   (supersedes the
-  [intermediate `ee56d8a` packet](https://github.com/osobytes/galactic-cup/releases/tag/omp0-issue-16-pr29-ee56d8a)).
+  [intermediate `ee56d8a` packet](https://github.com/osobytes/goliseo/releases/tag/omp0-issue-16-pr29-ee56d8a)).
 - Persistence remediation:
-  [#20 evidence](https://github.com/osobytes/galactic-cup/releases/tag/omp0-issue-20-evidence-d2b175b).
+  [#20 evidence](https://github.com/osobytes/goliseo/releases/tag/omp0-issue-20-evidence-d2b175b).
 - Letterboxing and pointer remediation:
-  [#24 evidence](https://github.com/osobytes/galactic-cup/releases/tag/omp0-issue-24-evidence-5813c53).
+  [#24 evidence](https://github.com/osobytes/goliseo/releases/tag/omp0-issue-24-evidence-5813c53).
 - Authoritative Chrome heap remediation:
-  [#22 evidence](https://github.com/osobytes/galactic-cup/releases/tag/omp0-issue-22-evidence-dab866b).
+  [#22 evidence](https://github.com/osobytes/goliseo/releases/tag/omp0-issue-22-evidence-dab866b).
 - Final Linux pacing/input campaign:
-  [#21 evidence](https://github.com/osobytes/galactic-cup/releases/tag/omp0-issue-21-evidence-d7fc8cf),
+  [#21 evidence](https://github.com/osobytes/goliseo/releases/tag/omp0-issue-21-evidence-d7fc8cf),
   clean source `d7fc8cfcd3ebf6bfc8a4ad6e54ed86c2afb1df75`, package
   `3542846f22b64249bdef454ddbfce07d84c9ccbe620435dc68c2bf557f2f8daa`.
 
@@ -92,15 +92,15 @@ Mozilla sources are in [`browser_build.md`](browser_build.md).
 
 ## Deferred validation
 
-- Issue [#30](https://github.com/osobytes/galactic-cup/issues/30) retains the
+- Issue [#30](https://github.com/osobytes/goliseo/issues/30) retains the
   serialized Windows 11 Chrome/Firefox campaign, physical controller, audible
   playback, and Firefox heap requirements for a later support expansion.
 - Linux physical standard-gamepad coverage and Firefox t0/t5/t10 heap evidence
   are still required before making a broader public browser-support claim.
-- Issue [#31](https://github.com/osobytes/galactic-cup/issues/31) tracks a
+- Issue [#31](https://github.com/osobytes/goliseo/issues/31) tracks a
   self-contained Linux download separately from browser certification.
 
-Issue [#16](https://github.com/osobytes/galactic-cup/issues/16) completed the
+Issue [#16](https://github.com/osobytes/goliseo/issues/16) completed the
 repository-owned evidence tooling and is closed. The owner-accepted delivery
 policy and its narrower current support scope are recorded in
 [`platform_decision.md`](platform_decision.md).

@@ -96,15 +96,15 @@ temporal shared-runner drift without adding a case or weakening exact seed pairi
 
 The thresholds are calibrated from the complete Chrome and Firefox distributions in accepted
 exact runs
-[`30060058593`](https://github.com/osobytes/galactic-cup/actions/runs/30060058593) and
-[`30065880550`](https://github.com/osobytes/galactic-cup/actions/runs/30065880550).
+[`30060058593`](https://github.com/osobytes/goliseo/actions/runs/30060058593) and
+[`30065880550`](https://github.com/osobytes/goliseo/actions/runs/30065880550).
 Across their 12 seed pairs, p95-work ratios ranged from 5.328 to 5.799 and rollback-p99.9 ratios
 from 8.529 to 10.164. Each contract-5 threshold is the corresponding accepted maximum plus 15%,
 rounded upward to one decimal: 6.7 and 11.7. This is intentionally not a boundary fitted to the
 next observed sample.
 
 Failed exact run
-[`30075505461`](https://github.com/osobytes/galactic-cup/actions/runs/30075505461)
+[`30075505461`](https://github.com/osobytes/goliseo/actions/runs/30075505461)
 provides the external-noise cross-check. Its complete Chrome pairs were 5.161--5.430 for p95 work
 and 7.817--8.494 for rollback p99.9. Firefox seeds 2001 and 2002 were 5.068 and 5.264 for p95 work
 and 7.826 and 8.264 for rollback p99.9; the old per-case absolute gate stopped the job before the
@@ -358,7 +358,7 @@ seconds per ordinary browser run and 5,400 seconds for the soak, while the brows
 ## Final pinned evidence
 
 GitHub Actions run
-[`30060058593`](https://github.com/osobytes/galactic-cup/actions/runs/30060058593)
+[`30060058593`](https://github.com/osobytes/goliseo/actions/runs/30060058593)
 passed the native campaign, Chrome and Firefox runtime matrices, Chrome and Firefox persistent
 soaks, and the stable aggregate gate on exact clean source
 `78076d9d005a6e2a1a68a4ac155c4d49b67bc530`.
@@ -380,7 +380,7 @@ trusting the emitted percentiles.
 ## Contract 5 targeted-gate producer
 
 GitHub Actions run
-[`30139012436`](https://github.com/osobytes/galactic-cup/actions/runs/30139012436)
+[`30139012436`](https://github.com/osobytes/goliseo/actions/runs/30139012436)
 is the first-attempt producer for relevance fingerprint
 `1b48815006c8419055cbab16bcc71f700f671e2f00a79f1851677a6d5279a778` on exact clean source
 `cba1706303409f95524364d1836b0080871cc355`. The native campaign, Chrome and Firefox runtime

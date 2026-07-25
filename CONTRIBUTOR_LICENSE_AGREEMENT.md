@@ -15,7 +15,7 @@ your Contributions and may use them for any other purpose.
 ## 1. Definitions
 
 **Project** means the GOLISEO repository at
-<https://github.com/osobytes/galactic-cup> and its maintained successors.
+<https://github.com/osobytes/goliseo> and its maintained successors.
 
 **Project Owner** means Oscar Obeso and any person or legal entity that later
 receives the Project Owner's rights under this Agreement by a valid assignment

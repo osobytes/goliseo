@@ -11,10 +11,10 @@ preserving native LÖVE execution on Linux.
   online client path.
 - `love .` remains the native Linux development and compatibility path.
 - A self-contained Linux download is planned in
-  [issue #31](https://github.com/osobytes/galactic-cup/issues/31), but it does
+  [issue #31](https://github.com/osobytes/goliseo/issues/31), but it does
   not block gameplay development.
 - Windows browser certification remains in
-  [issue #30](https://github.com/osobytes/galactic-cup/issues/30). Windows and
+  [issue #30](https://github.com/osobytes/goliseo/issues/30). Windows and
   macOS native packages are deferred until after the Linux package is proven.
 
 The fixed acceptance matrix in
@@ -45,15 +45,15 @@ development continues.
 
 | Area | Evidence | Status |
 | --- | --- | --- |
-| Historical criteria | [Issue #1](https://github.com/osobytes/galactic-cup/issues/1), [`omp0_acceptance.md`](omp0_acceptance.md) | Fixed before implementation; thresholds unchanged |
-| Browser artifact | [PR #8](https://github.com/osobytes/galactic-cup/pull/8), [`browser_build.md`](browser_build.md) | Reproducible and pinned |
-| Browser matrix | [Issue #16](https://github.com/osobytes/galactic-cup/issues/16), [`browser_compatibility.md`](browser_compatibility.md) | Linux automated gates pass; broader certification deferred |
-| Linux remediations | [#20 persistence](https://github.com/osobytes/galactic-cup/releases/tag/omp0-issue-20-evidence-d2b175b), [#21 pacing/input](https://github.com/osobytes/galactic-cup/releases/tag/omp0-issue-21-evidence-d7fc8cf), [#22 Chrome heap](https://github.com/osobytes/galactic-cup/releases/tag/omp0-issue-22-evidence-dab866b), [#24 letterboxing](https://github.com/osobytes/galactic-cup/releases/tag/omp0-issue-24-evidence-5813c53) | Pass |
-| Corrected audio | [Focused Chrome 151/Firefox 152 source `c451727`](https://github.com/osobytes/galactic-cup/releases/tag/omp0-issue-16-pr29-final-c451727) | Pass on Linux; audio scope only |
-| Transport seam | [PR #10](https://github.com/osobytes/galactic-cup/pull/10), [`transport_bridge.md`](transport_bridge.md) | Bounded asynchronous contract available |
-| WebRTC proof | [Issue #5](https://github.com/osobytes/galactic-cup/issues/5), [PR #14](https://github.com/osobytes/galactic-cup/pull/14), [`webrtc_input_proof.md`](webrtc_input_proof.md) | Both 10-minute network profiles pass |
+| Historical criteria | [Issue #1](https://github.com/osobytes/goliseo/issues/1), [`omp0_acceptance.md`](omp0_acceptance.md) | Fixed before implementation; thresholds unchanged |
+| Browser artifact | [PR #8](https://github.com/osobytes/goliseo/pull/8), [`browser_build.md`](browser_build.md) | Reproducible and pinned |
+| Browser matrix | [Issue #16](https://github.com/osobytes/goliseo/issues/16), [`browser_compatibility.md`](browser_compatibility.md) | Linux automated gates pass; broader certification deferred |
+| Linux remediations | [#20 persistence](https://github.com/osobytes/goliseo/releases/tag/omp0-issue-20-evidence-d2b175b), [#21 pacing/input](https://github.com/osobytes/goliseo/releases/tag/omp0-issue-21-evidence-d7fc8cf), [#22 Chrome heap](https://github.com/osobytes/goliseo/releases/tag/omp0-issue-22-evidence-dab866b), [#24 letterboxing](https://github.com/osobytes/goliseo/releases/tag/omp0-issue-24-evidence-5813c53) | Pass |
+| Corrected audio | [Focused Chrome 151/Firefox 152 source `c451727`](https://github.com/osobytes/goliseo/releases/tag/omp0-issue-16-pr29-final-c451727) | Pass on Linux; audio scope only |
+| Transport seam | [PR #10](https://github.com/osobytes/goliseo/pull/10), [`transport_bridge.md`](transport_bridge.md) | Bounded asynchronous contract available |
+| WebRTC proof | [Issue #5](https://github.com/osobytes/goliseo/issues/5), [PR #14](https://github.com/osobytes/goliseo/pull/14), [`webrtc_input_proof.md`](webrtc_input_proof.md) | Both 10-minute network profiles pass |
 | Native runtime | `README.md`, native LÖVE test and simulation commands | Maintained on the Linux development machine |
-| Native/browser comparison | [Issue #3](https://github.com/osobytes/galactic-cup/issues/3) | Complete side-by-side product-flow comparison is missing and owner-deferred |
+| Native/browser comparison | [Issue #3](https://github.com/osobytes/goliseo/issues/3) | Complete side-by-side product-flow comparison is missing and owner-deferred |
 
 ## Historical criterion evaluation
 

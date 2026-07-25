@@ -95,7 +95,7 @@ repository root is enough to start the game. This is the native desktop path;
 it does not use a browser.
 
 A self-contained Linux download is planned in
-[issue #31](https://github.com/osobytes/galactic-cup/issues/31), but is not
+[issue #31](https://github.com/osobytes/goliseo/issues/31), but is not
 published yet. Windows and macOS native packages are deferred until after the
 Linux packaging path is proven.
 
