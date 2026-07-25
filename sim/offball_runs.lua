@@ -41,6 +41,7 @@ offball_runs.RUN_LIFETIME_SECONDS = outfield_decision.RUN_LIFETIME_SECONDS
 offball_runs.TELEGRAPH_SECONDS = 0.2
 offball_runs.MAX_ACTIVE_PER_TEAM = 2
 offball_runs.RUN_DRIVE_THRESHOLD = 0.55
+offball_runs.MIN_RUN_PROGRESS = 24
 offball_runs.MIN_SUPPORT_DISTANCE = 80
 offball_runs.MAX_SUPPORT_DISTANCE = 250
 
@@ -148,6 +149,7 @@ local function in_behind_target(context, player)
     if
         (target.x - last_defender) * attack <= 0
         or (target.x - context.field.w / 2) * attack <= 0
+        or (target.x - player.pos.x) * attack < offball_runs.MIN_RUN_PROGRESS
         or ai.lane_blocker(
                 context.carrier_pos,
                 target,
@@ -181,7 +183,8 @@ local function come_short_target(context, player)
     end
 
     local to_runner = player.pos:sub(context.carrier_pos)
-    local direction = to_runner:length() > 0 and to_runner:normalized()
+    local runner_distance = to_runner:length()
+    local direction = runner_distance > 0 and to_runner:normalized()
         or Vec2.new(attack_direction(context), 0)
     local target = context.carrier_pos:add(direction:scale(COME_SHORT_DISTANCE))
     local marker = nil
@@ -211,6 +214,10 @@ local function come_short_target(context, player)
         return nil
     end
     target = bounded_target
+    local target_distance = context.carrier_pos:dist(target)
+    if runner_distance - target_distance < offball_runs.MIN_RUN_PROGRESS then
+        return nil
+    end
     local pressure_factor = 1
         - clamp(context.carrier_pressure / math.max(1, context.pressure_distance), 0, 1)
     return {
@@ -234,6 +241,12 @@ local function hold_width_target(context, player)
         upper_lane and context.field.h / 6 or context.field.h * 5 / 6
     )
     lane = clamp_target(context, lane)
+    if
+        math.abs(context.carrier_pos.x - lane.x) < HOLD_WIDTH_OCCUPIED_X
+        and math.abs(context.carrier_pos.y - lane.y) < HOLD_WIDTH_OCCUPIED_Y
+    then
+        return nil
+    end
     for _, teammate in ipairs(context.teammates) do
         if
             teammate.player_index ~= player.player_index

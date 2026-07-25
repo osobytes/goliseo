@@ -98,6 +98,56 @@ t.describe("role-gated off-ball runs", function()
         t.near(home.score, away.score)
     end)
 
+    t.it("rejects backward or immaterial in-behind targets for both teams", function()
+        local home = context("home", {
+            players = {
+                {
+                    player_index = 4,
+                    role = "fwd",
+                    run_drive = 0.8,
+                    pos = Vec2.new(730, 240),
+                    anchor_y = 0.5,
+                },
+                {
+                    player_index = 5,
+                    role = "fwd",
+                    run_drive = 0.8,
+                    pos = Vec2.new(695, 300),
+                    anchor_y = 0.5,
+                },
+            },
+            teammates = {
+                { player_index = 4, pos = Vec2.new(730, 240) },
+                { player_index = 5, pos = Vec2.new(695, 300) },
+            },
+        })
+        local away = context("away", {
+            players = {
+                {
+                    player_index = 9,
+                    role = "fwd",
+                    run_drive = 0.8,
+                    pos = Vec2.new(230, 240),
+                    anchor_y = 0.5,
+                },
+                {
+                    player_index = 10,
+                    role = "fwd",
+                    run_drive = 0.8,
+                    pos = Vec2.new(265, 300),
+                    anchor_y = 0.5,
+                },
+            },
+            teammates = {
+                { player_index = 9, pos = Vec2.new(230, 240) },
+                { player_index = 10, pos = Vec2.new(265, 300) },
+            },
+        })
+
+        t.eq(#offball_runs.grant(home, {}, 0), 0)
+        t.eq(#offball_runs.grant(away, {}, 0), 0)
+    end)
+
     t.it("requires the conservative drive threshold and a clear settled lane", function()
         local function authored_drive(pace, mental)
             return stats.run_drive({
@@ -187,6 +237,64 @@ t.describe("role-gated off-ball runs", function()
         t.near(home_slot.target_x + away_slot.target_x, 960)
         t.near(home_slot.target_y, away_slot.target_y)
         t.near(home_slot.score, away_slot.score)
+    end)
+
+    t.it("rejects come-short targets without meaningful carrier progress", function()
+        local projected_home = context("home", {
+            players = {
+                {
+                    player_index = 4,
+                    role = "mid",
+                    run_drive = 0.5,
+                    pos = Vec2.new(390, 270),
+                    anchor_y = 0.5,
+                },
+            },
+            teammates = { { player_index = 4, pos = Vec2.new(390, 270) } },
+        })
+        local projected_away = context("away", {
+            players = {
+                {
+                    player_index = 9,
+                    role = "mid",
+                    run_drive = 0.5,
+                    pos = Vec2.new(570, 270),
+                    anchor_y = 0.5,
+                },
+            },
+            teammates = { { player_index = 9, pos = Vec2.new(570, 270) } },
+        })
+        t.eq(#offball_runs.grant(projected_home, {}, 0), 0)
+        t.eq(#offball_runs.grant(projected_away, {}, 0), 0)
+
+        local marked_home = context("home", {
+            players = {
+                {
+                    player_index = 4,
+                    role = "mid",
+                    run_drive = 0.5,
+                    pos = Vec2.new(445, 270),
+                    anchor_y = 0.5,
+                },
+            },
+            teammates = { { player_index = 4, pos = Vec2.new(445, 270) } },
+        })
+        marked_home.opponents[1].pos = Vec2.new(415, 270)
+        local marked_away = context("away", {
+            players = {
+                {
+                    player_index = 9,
+                    role = "mid",
+                    run_drive = 0.5,
+                    pos = Vec2.new(515, 270),
+                    anchor_y = 0.5,
+                },
+            },
+            teammates = { { player_index = 9, pos = Vec2.new(515, 270) } },
+        })
+        marked_away.opponents[1].pos = Vec2.new(545, 270)
+        t.eq(#offball_runs.grant(marked_home, {}, 0), 0)
+        t.eq(#offball_runs.grant(marked_away, {}, 0), 0)
     end)
 
     t.it("mirrors multi-candidate grant order while enforcing the two-run cap", function()
@@ -291,6 +399,40 @@ t.describe("role-gated off-ball runs", function()
             pos = Vec2.new(fixture.carrier_pos.x + 70, fixture.field.h / 6),
         }
         t.eq(#offball_runs.grant(fixture, {}, 0), 0)
+    end)
+
+    t.it("treats a mirrored wide carrier as occupying the same width lane", function()
+        local home = context("home", {
+            carrier_pos = Vec2.new(300, 90),
+            carrier_pressure = 200,
+            players = {
+                {
+                    player_index = 3,
+                    role = "wide",
+                    run_drive = 0.5,
+                    pos = Vec2.new(500, 150),
+                    anchor_y = 0.3,
+                },
+            },
+            teammates = { { player_index = 3, pos = Vec2.new(500, 150) } },
+        })
+        local away = context("away", {
+            carrier_pos = Vec2.new(660, 450),
+            carrier_pressure = 200,
+            players = {
+                {
+                    player_index = 8,
+                    role = "wide",
+                    run_drive = 0.5,
+                    pos = Vec2.new(460, 390),
+                    anchor_y = 0.7,
+                },
+            },
+            teammates = { { player_index = 8, pos = Vec2.new(460, 390) } },
+        })
+
+        t.eq(#offball_runs.grant(home, {}, 0), 0)
+        t.eq(#offball_runs.grant(away, {}, 0), 0)
     end)
 
     t.it(

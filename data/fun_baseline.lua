@@ -20,7 +20,7 @@ return {
     controlled_dribble_touches_per_min = 90.937915,
     controlled_dribble_heavy_losses_per_min = 0.700681,
     ai_dribble_close_share = 0.871426,
-    ai_dribble_sprint_share = 0.089440,
+    ai_dribble_sprint_share = 0.072217,
     ai_dribble_juke_share = 0.040012,
     ai_dribble_touches_per_min = 76.299346,
     ai_dribble_heavy_losses_per_min = 1.281173,

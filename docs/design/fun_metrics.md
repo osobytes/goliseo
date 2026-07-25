@@ -568,3 +568,42 @@ until phase 4 automates it).
   that crossed tolerance: goals, drought, decided-late, controlled heavy
   losses, and team-AI sprint share and heavy losses. Every in-tolerance
   signature retains its previous pin.
+
+- **2026-07-25 — exact-head off-ball run geometry review corrections.**
+  Gameplay review found three invalid target cases in the issue-56 resolver:
+  an in-behind target could sit behind an already advanced runner, a projected
+  or marker-adjusted come-short target could move a nearby runner away from the
+  carrier, and hold-width occupancy omitted the carrier. The correction
+  requires 24 px of directional progress for in-behind and come-short runs and
+  treats the carrier as occupying its current wide lane. Mirrored home/away
+  regression scenarios pin each rule.
+
+  Before refreshing the tripwire, the corrected 30-match signature measured
+  fun 0.438, goals 1.900, shots/goal 25.256, save rate 0.875, pass completion
+  0.579, turnovers/min 3.747, possession balance 0.405, drought 11.554 s, and
+  decided-late 0.521. Controlled/team-AI sprint shares were 0.276/0.080,
+  touches per carry-minute were 88.599/74.494, and heavy losses were
+  1.479/0.471.
+
+  The repeated 100-match audit measured fun 0.451, goals 1.900,
+  shots/goal 23.733, save rate 0.855, pass completion 0.571,
+  turnovers/min 3.768, possession balance 0.398, drought 10.824 s, and
+  decided-late 0.581. Controlled/team-AI sprint shares were 0.276/0.085,
+  touches per carry-minute were 85.933/71.322, and heavy losses were
+  1.068/0.937. Pass completion, turnovers, possession, drought, and
+  decided-late remain in their declared milestone bands. Goals remain 0.100
+  below the 2–5 good band; high save rate and shots/goal remain the inherited
+  quality exceptions already owned by hands-on review.
+
+  A separate paired 60-seed audit kept the required tactic lever live:
+  Press High won 45.0% at home versus Counter Attack's 33.3%, a +11.7
+  percentage-point difference, with goals, save rate, and shots/goal all moving
+  by at least one band width. The formation comparison measured -21.7
+  percentage points, beyond its 20-point upper gate. That residual is
+  non-causal to these three target-validity guards and outside issue 56's
+  tactic acceptance; this refresh neither changes nor hides its gate.
+
+  The selective refresh accepts only the six causally coupled fields that
+  crossed tolerance: goals, save rate, drought, decided-late, controlled
+  touches, and team-AI heavy losses. Every in-tolerance signature retains its
+  previous pin.
