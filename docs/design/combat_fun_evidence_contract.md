@@ -1791,8 +1791,42 @@ pass-7 audit at the new exact head.
 | Experimental statistics and reproducibility | GUR/stats/accessibility council | approve | pass-5 exact simulation, operating points, and max-T family remain accepted | no new change; pass-7 exact-head regression audit pending |
 | Accessibility, readability, and inclusive participant design | GUR/stats/accessibility council | approve | pass-5 accommodations, exposure, and structural-missingness rules remain accepted | no new change; pass-7 exact-head regression audit pending |
 
-Pass 7 must review the next pushed exact head. No pass-7 disposition is
-inferred from these author responses.
+Pass 7 reviewed exact head
+`7fc68b680e8b065621eafabca61c70238c1c3dc5` on
+`2026-07-25T07:39:39Z`. All prior blocker dispositions were accepted. Seven
+perspectives returned `approve`; netcode and privacy returned
+`approve with changes` for nonblocking downstream ownership. There is no
+unresolved dissent or blocker.
+
+| Perspective | Reviewer | Final status | Accepted disposition / final finding |
+| --- | --- | --- | --- |
+| Soccer tactics and arcade-sports design | gameplay/AI council | approve | four-family matched opportunities and the threat-derived finite guard cap preserve soccer-purpose denominators |
+| Competitive combat/fighting counterplay | gameplay/AI council | approve | unarmed, melee, ranged, and guard schedules, geometry, reconciliation, availability, and terminals are executable |
+| AI human-proxy and adversarial behavior | gameplay/AI council | approve | reasons and family feasibility use only the ordered public observation; no future input, hidden state, RNG, outcome, or presentation field enters representative AI |
+| Telemetry/data engineering and deterministic replay | data/netcode/privacy council | approve | collision-free identity, ordering, canonical encoding, allowlists, digests, and independent reconciliation are complete |
+| Games user research and psychometrics | GUR/stats/accessibility council | approve | B-only accepted/rejected constructs, masks, scoring, accommodations, and evidence boundaries are complete |
+| Experimental statistics and reproducibility | GUR/stats/accessibility council | approve | exact simulation, compatible operating points, max-T family, missingness, and decision rules are complete |
+| Accessibility, readability, and inclusive participant design | GUR/stats/accessibility council | approve | functional coverage, assistance, accessible replay, exposure strata, and structural-missingness rules are complete |
+| Netcode, performance, and latency | data/netcode/privacy council | approve with changes | v1 is approved; the issue refresh must add the nonblocking runtime-cost and participant/device imports below before downstream implementation |
+| Privacy, responsible engagement, and player advocacy | data/netcode/privacy council | approve with changes | v1 is approved; the issue refresh must add the nonblocking publication-disclosure controls below before publication |
+
+The two `approve with changes` dispositions do not block #128 or PR #155.
+They are owned by the recommended downstream issue refresh before
+implementation or publication:
+
+- refresh #150 with cue/device/network/tick-clock response windows and runtime
+  cost evidence for observation production/hashing, reachability search, and
+  guard projection; import the participant/device strata into #151; and
+- refresh #151 with publication disclosure controls: a frozen minimum cell
+  size and suppression of rare crossed access strata, review/redaction of
+  distinctive replay exemplars, and no participant-level external trace
+  packages.
+
+**Final council disposition:** approve
+`combat_fun_evidence_contract/v1` at reviewed head
+`7fc68b680e8b065621eafabca61c70238c1c3dc5`. This log-only response does not
+change the approved contract. Its exact commit hash is posted in the PR
+comment, not self-referenced here, and receives a pass-8 log-integrity audit.
 
 Each reviewer record uses this category template:
 
