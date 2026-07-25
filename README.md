@@ -138,7 +138,8 @@ use requires a separate license from the copyright holders.
 
 Unless a file states otherwise, repository-owned code, documentation, and
 assets use the same license. Third-party material retains its own license and
-notices.
+notices; see [THIRD_PARTY.md](THIRD_PARTY.md) for the current inventory and
+release requirements.
 
 Versions previously published under the GNU General Public License v3.0 or
 later remain available to their recipients under those terms. This change does

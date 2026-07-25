@@ -768,7 +768,7 @@ def write_manifest(output: Path, package_hash: str) -> None:
             "repository": RUNTIME_REPOSITORY,
             "commit": RUNTIME_COMMIT,
             "archive_sha256": RUNTIME_ARCHIVE_SHA256,
-            "license": "MIT with included upstream notices",
+            "license": "mixed upstream licenses; full notices included",
         },
         "files": files,
     }

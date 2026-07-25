@@ -172,8 +172,12 @@ Runtime source and license:
 - Pinned commit: `495c5eb7eb55b54aaadfc21405c58f50a6d819c4`
 - Download archive SHA-256:
   `89b56e7953935d6cb06c454d0ee0c0d8903e433b9a94d1d6d501fb8b516f5ff6`
-- Runtime license: MIT, copied into `third_party/lovejs.LICENSE.txt` in the
+- Runtime licenses: zlib, permissive, and LGPL terms recorded in the complete
+  upstream `license.txt`, copied into `third_party/lovejs.LICENSE.txt` in the
   generated artifact
+
+See [`THIRD_PARTY.md`](../../THIRD_PARTY.md) for the repository audit and the
+release obligations that apply to separately licensed runtime files.
 
 The upstream player documents its LÖVE 11.5 support, direct `.love` loading,
 browser limitations, and required server headers in its own README. The
