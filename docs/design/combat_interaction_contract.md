@@ -5,7 +5,9 @@
 - **Delivery:** post-showcase combat-soccer proof
 - **Related:** `docs/design/goliseo_theme_pivot.md`,
   `docs/design/prototype_theme_roster.md`, `docs/controls.md`,
-  `docs/online/input_frame.md`, and milestone 11 issue #107
+  `docs/online/input_frame.md`,
+  [`docs/design/combat_fun_evidence_contract.md`](combat_fun_evidence_contract.md),
+  and milestone 11 issue #107
 
 ## Purpose
 
