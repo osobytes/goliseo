@@ -153,6 +153,8 @@ for every message kind. The verifier decodes and re-encodes the literal vector
 as well as comparing freshly encoded fixtures with those checked-in bytes and
 digests. Tests therefore fail when encoder and decoder drift together; they do
 not derive their expected values from the implementation under test.
+The conformance fixture exercises protocol schema only; its illustrative
+loadout/family mappings need not match the current executable content catalog.
 
 The native test suite calls the same verifier directly. In addition,
 `love . --determinism` runs it before the OMP-1 replay and emits a

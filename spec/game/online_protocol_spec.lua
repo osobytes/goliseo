@@ -26,6 +26,43 @@ local function bounded_id(prefix, length)
     return prefix .. string.rep("x", length - #prefix)
 end
 
+---@param value any
+---@return string
+local function encode_raw_test_value(value)
+    local kind = type(value)
+    if kind == "boolean" then
+        return value and "b1" or "b0"
+    elseif kind == "number" then
+        local text = tostring(value)
+        return "i" .. tostring(#text) .. ":" .. text
+    elseif kind == "string" then
+        return "s" .. tostring(#value) .. ":" .. value
+    end
+    assert(kind == "table")
+    local keys = {}
+    for key in pairs(value) do
+        keys[#keys + 1] = key
+    end
+    table.sort(keys, function(left, right)
+        if type(left) ~= type(right) then
+            return type(left) == "number"
+        end
+        return left < right
+    end)
+    local parts = { "t", tostring(#keys), ":" }
+    for _, key in ipairs(keys) do
+        parts[#parts + 1] = encode_raw_test_value(key)
+        parts[#parts + 1] = encode_raw_test_value(value[key])
+    end
+    return table.concat(parts)
+end
+
+---@param message SessionControlMessage
+---@return string
+local function encode_raw_test_wire(message)
+    return "GCOP;" .. tostring(protocol.VERSION) .. ";" .. encode_raw_test_value(message)
+end
+
 ---@param manifest SessionManifest
 ---@param team_index integer
 ---@param roster_index integer
@@ -153,6 +190,86 @@ t.describe("OMP-3 online protocol", function()
         local ok, err = pcall(protocol.transcript_id, sparse_transcript)
         t.eq(ok, false)
         t.is_true(tostring(err):find("canonical message array", 1, true) ~= nil)
+    end)
+
+    t.it("rejects sparse numeric-key arrays parsed from independent raw wires", function()
+        local cases = {
+            {
+                name = "runtime capabilities",
+                message_index = 1,
+                mutate = function(message)
+                    local capabilities = message.body.runtime.capabilities
+                    message.body.runtime.capabilities = {
+                        [1] = capabilities[1],
+                        [3] = capabilities[3],
+                    }
+                end,
+            },
+            {
+                name = "manifest teams",
+                message_index = 2,
+                mutate = function(message)
+                    local teams = message.body.manifest.teams
+                    message.body.manifest.teams = { [1] = teams[1], [3] = teams[2] }
+                end,
+            },
+            {
+                name = "manifest roster",
+                message_index = 2,
+                mutate = function(message)
+                    local roster = message.body.manifest.teams[1].roster
+                    message.body.manifest.teams[1].roster = {
+                        [1] = roster[1],
+                        [2] = roster[2],
+                        [3] = roster[3],
+                        [4] = roster[4],
+                        [6] = roster[5],
+                    }
+                end,
+            },
+            {
+                name = "manifest slots",
+                message_index = 2,
+                mutate = function(message)
+                    local slots = message.body.manifest.slots
+                    message.body.manifest.slots = {
+                        [1] = slots[1],
+                        [2] = slots[2],
+                        [3] = slots[3],
+                        [4] = slots[4],
+                        [5] = slots[5],
+                        [6] = slots[6],
+                        [7] = slots[7],
+                        [9] = slots[8],
+                    }
+                end,
+            },
+            {
+                name = "producer assignments",
+                message_index = 5,
+                mutate = function(message)
+                    local assignments = message.body.assignments
+                    message.body.assignments = {
+                        [1] = assignments[1],
+                        [2] = assignments[2],
+                        [3] = assignments[3],
+                        [4] = assignments[4],
+                        [5] = assignments[5],
+                        [6] = assignments[6],
+                        [7] = assignments[7],
+                        [9] = assignments[8],
+                    }
+                end,
+            },
+        }
+        local messages = fixture.messages()
+        for _, case in ipairs(cases) do
+            local message = deep_copy(messages[case.message_index])
+            case.mutate(message)
+            local decoded, _, code = protocol.decode(encode_raw_test_wire(message))
+            t.eq(decoded, nil, case.name)
+            t.eq(code, "malformed", case.name)
+        end
     end)
 
     t.it("round-trips every control message through one canonical bounded codec", function()
@@ -755,6 +872,7 @@ t.describe("OMP-3 online protocol", function()
     t.it("keeps an all-applicable-max proposal within the 8 KiB record bound", function()
         local manifest = fixture.manifest()
         manifest.session_id = bounded_id("session", protocol.MAX_SESSION_ID_BYTES)
+        manifest.combat_status = "accepted_revision"
         manifest.seed = protocol.MAX_SEED
         manifest.duration_ticks = protocol.MAX_DURATION_TICKS
         manifest.max_goals = protocol.MAX_GOALS
@@ -785,6 +903,7 @@ t.describe("OMP-3 online protocol", function()
                     )
                 )
                 if player.position ~= "keeper" then
+                    player.position = "midfielder"
                     player.loadout_id = bounded_id(
                         ("l%d%d"):format(team_index, roster_index),
                         protocol.MAX_ID_BYTES
@@ -812,7 +931,7 @@ t.describe("OMP-3 online protocol", function()
         )
         local maximal_wire = assert(protocol.encode(maximal_proposal))
         t.is_true(#maximal_wire <= protocol.MAX_WIRE_BYTES)
-        t.eq(#maximal_wire, 7196)
+        t.eq(#maximal_wire, 7219)
     end)
 
     t.it("rejects invalid phase use before callers mutate lifecycle state", function()
