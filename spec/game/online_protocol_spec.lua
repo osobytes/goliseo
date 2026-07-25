@@ -1,4 +1,6 @@
-local fixture = require("spec.fixtures.online_protocol")
+local fnv1a64 = require("core.fnv1a64")
+local conformance = require("game.online.protocol_conformance")
+local fixture = require("game.online.protocol_fixture")
 local protocol = require("game.online.protocol")
 local t = require("spec.support.runner")
 
@@ -22,6 +24,19 @@ t.describe("OMP-3 online protocol", function()
         t.eq(protocol.CURRENT_VERSIONS.snapshot, 9)
         t.eq(protocol.CURRENT_VERSIONS.tape, 2)
         t.eq(protocol.CURRENT_VERSIONS.combat, 1)
+    end)
+
+    t.it("matches literal wire, manifest, transcript, and per-kind golden evidence", function()
+        local report = conformance.verify()
+        t.eq(report.manifest_id, "27c9d39785b1aaaf")
+        t.eq(report.transcript_id, "c9a74fe23c6c46bc")
+        t.eq(report.message_count, 13)
+        t.eq(fnv1a64.hash(conformance.GOLDEN.complete_wire), "ae5be4cbc3ee95a7")
+        t.eq(
+            conformance.marker(report),
+            "GC_PROTOCOL|golden|schema=1|manifest_id=27c9d39785b1aaaf"
+                .. "|transcript_id=c9a74fe23c6c46bc|messages=13"
+        )
     end)
 
     t.it("constructs owned runtime and deterministic manifest records", function()
@@ -60,8 +75,38 @@ t.describe("OMP-3 online protocol", function()
             t.is_true(#wire <= protocol.MAX_WIRE_BYTES)
             local decoded = assert(protocol.decode(wire))
             t.eq(assert(protocol.encode(decoded)), wire)
-            t.eq(decoded.message_id, "session_alpha.host." .. tostring(index - 1))
+            local sequence = tostring(index - 1)
+            t.eq(
+                decoded.message_id,
+                "GCMI;1;13:session_alpha4:host" .. tostring(#sequence) .. ":" .. sequence
+            )
         end
+    end)
+
+    t.it("uses injective transcript ids through exact component maxima", function()
+        local session_id = string.rep("s", protocol.MAX_SESSION_ID_BYTES)
+        local peer_id = string.rep("p", protocol.MAX_PEER_ID_BYTES)
+        local message_id = assert(protocol.message_id(session_id, peer_id, protocol.MAX_SEQUENCE))
+        t.eq(#message_id, protocol.MAX_MESSAGE_ID_BYTES)
+
+        local manifest_id = protocol.manifest_id(fixture.manifest())
+        local message = assert(protocol.new("ready", session_id, peer_id, protocol.MAX_SEQUENCE, {
+            manifest_id = manifest_id,
+            ready = true,
+        }))
+        t.eq(message.message_id, message_id)
+        t.eq(assert(protocol.decode(assert(protocol.encode(message)))).message_id, message_id)
+
+        local first = assert(protocol.message_id("a.b", "c", 1))
+        local second = assert(protocol.message_id("a", "b.c", 1))
+        t.is_true(first ~= second)
+        t.eq(first, "GCMI;1;3:a.b1:c1:1")
+        t.eq(second, "GCMI;1;1:a3:b.c1:1")
+
+        local too_long, _, code =
+            protocol.message_id(string.rep("s", protocol.MAX_SESSION_ID_BYTES + 1), "peer", 0)
+        t.eq(too_long, nil)
+        t.eq(code, "malformed")
     end)
 
     t.it("rejects malformed, oversized, unsupported, unknown, and noncanonical wires", function()

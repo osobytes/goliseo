@@ -43,12 +43,15 @@ unique `producer_id` and integer `bot_seed`; they are not synthetic peers.
 Keepers occur first in each five-player roster, own no slot, have no combat
 loadout, and remain protected AI.
 
-Every message has a sender-local monotonic `sequence` and canonical
-`message_id = session_id.peer_id.sequence`. The transcript digest
-length-prefixes canonical messages in delivery order. Repeating the exact same
-message id and bytes is idempotent; reusing an id with different bytes is a
-terminal `transcript_conflict`. A later coordinator must reject the conflict
-before mutating session state.
+Every message has a sender-local monotonic `sequence`. Session and peer
+components are independently bounded to 128 bytes. Their canonical message id
+is `GCMI;1;` followed by byte-length-prefixed session id, peer id, and decimal
+sequence. Its exact maximum is 284 bytes. Length prefixes make
+`("a.b", "c")` distinct from `("a", "b.c")` even though dots are valid inside
+components. The transcript digest length-prefixes canonical messages in
+delivery order. Repeating the exact same message id and bytes is idempotent;
+reusing an id with different bytes is a terminal `transcript_conflict`. A
+later coordinator must reject the conflict before mutating session state.
 
 ## Deterministic manifest
 
@@ -131,6 +134,25 @@ identity mismatch, runtime mismatch, conflicting duplicate, or invalid phase
 terminate the handshake/session with the corresponding typed code. No runtime
 coercion or unknown-field preservation is allowed. A byte-identical duplicate
 is the sole no-op success.
+
+## Frozen wire evidence
+
+`game.online.protocol_conformance` pins the exact manifest and transcript
+digests, one complete literal `manifest_accept` wire, and a fixed wire digest
+for every message kind. The verifier decodes and re-encodes the literal vector
+as well as comparing freshly encoded fixtures with those checked-in bytes and
+digests. Tests therefore fail when encoder and decoder drift together; they do
+not derive their expected values from the implementation under test.
+
+The native test suite calls the same verifier directly. In addition,
+`love . --determinism` runs it before the OMP-1 replay and emits a
+`GC_PROTOCOL|golden|...` marker. The existing browser determinism job packages
+`core/`, `game/`, and `sim/`, launches that exact command in both pinned Chrome
+and Firefox love.js runtimes twice, requires exactly one marker with the pinned
+manifest/transcript ids and message count, and treats a conformance assertion
+as a `GC_DETERMINISM|failure|...` terminal error. Its independent Python marker
+parser also rejects changed literals. This provides cross-runtime wire evidence
+without adding transport, WebRTC, or #164 channel behavior.
 
 ## Versioning and #114 provisional values
 

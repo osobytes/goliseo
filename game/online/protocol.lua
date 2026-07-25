@@ -212,6 +212,9 @@ protocol.RUNTIME_IDENTITY_VERSION = 1
 protocol.COMBAT_SCHEMA_VERSION = combat_snapshot.VERSION
 protocol.MAX_WIRE_BYTES = 8192
 protocol.MAX_ID_BYTES = 128
+protocol.MAX_SESSION_ID_BYTES = 128
+protocol.MAX_PEER_ID_BYTES = 128
+protocol.MAX_MESSAGE_ID_BYTES = 284
 protocol.MAX_DETAIL_BYTES = 256
 protocol.MAX_SEQUENCE = 2147483647
 protocol.MAX_SEED = 2147483647
@@ -405,6 +408,7 @@ local RUNTIME_COMPARE_FIELDS = {
     "runtime_revision",
     "presentation_id",
 }
+local MESSAGE_ID_PREFIX = "GCMI;1;"
 
 ---@param value any
 ---@return boolean
@@ -491,9 +495,25 @@ local function validate_id(value, name)
         type(value) ~= "string"
         or value == ""
         or #value > protocol.MAX_ID_BYTES
-        or not value:match("^[%w][%w_%.%-]*$")
+        or not value:match("^[A-Za-z0-9][A-Za-z0-9_%.%-]*$")
     then
         return failure("malformed", name .. " must be a bounded opaque ASCII id")
+    end
+    return true
+end
+
+---@param value any
+---@param name string
+---@param maximum integer
+---@return boolean?, string?, SessionProtocolErrorCode?
+local function validate_identity_component(value, name, maximum)
+    if
+        type(value) ~= "string"
+        or value == ""
+        or #value > maximum
+        or not value:match("^[A-Za-z0-9][A-Za-z0-9_%.%-]*$")
+    then
+        return failure("malformed", name .. " must be a bounded opaque ASCII component")
     end
     return true
 end
@@ -524,12 +544,38 @@ local function validate_integer(value, name, minimum, maximum)
     return true
 end
 
+---@param value string
+---@return string
+local function length_prefix(value)
+    return tostring(#value) .. ":" .. value
+end
+
 ---@param session_id string
 ---@param peer_id string
 ---@param sequence integer
----@return string
-local function expected_message_id(session_id, peer_id, sequence)
-    return session_id .. "." .. peer_id .. "." .. tostring(sequence)
+---@return string?, string?, SessionProtocolErrorCode?
+function protocol.message_id(session_id, peer_id, sequence)
+    local ok, err, code =
+        validate_identity_component(session_id, "message.session_id", protocol.MAX_SESSION_ID_BYTES)
+    if not ok then
+        return nil, err, code
+    end
+    ok, err, code =
+        validate_identity_component(peer_id, "message.peer_id", protocol.MAX_PEER_ID_BYTES)
+    if not ok then
+        return nil, err, code
+    end
+    ok, err, code = validate_integer(sequence, "message.sequence", 0, protocol.MAX_SEQUENCE)
+    if not ok then
+        return nil, err, code
+    end
+    local sequence_text = tostring(sequence)
+    local message_id = MESSAGE_ID_PREFIX
+        .. length_prefix(session_id)
+        .. length_prefix(peer_id)
+        .. length_prefix(sequence_text)
+    assert(#message_id <= protocol.MAX_MESSAGE_ID_BYTES, "message id bound is inconsistent")
+    return message_id
 end
 
 ---@param value any
@@ -965,20 +1011,32 @@ function protocol.validate(message)
     if type(message.kind) ~= "string" or not BODY_FIELDS[message.kind] then
         return failure("unknown_message", "unknown control message kind")
     end
-    for _, field in ipairs({ "session_id", "peer_id", "message_id" }) do
-        local ok, err, code = validate_id(message[field], "message." .. field)
-        if not ok then
-            return nil, err, code
-        end
+    local ok, err, code = validate_identity_component(
+        message.session_id,
+        "message.session_id",
+        protocol.MAX_SESSION_ID_BYTES
+    )
+    if not ok then
+        return nil, err, code
     end
-    local ok, err, code =
-        validate_integer(message.sequence, "message.sequence", 0, protocol.MAX_SEQUENCE)
+    ok, err, code =
+        validate_identity_component(message.peer_id, "message.peer_id", protocol.MAX_PEER_ID_BYTES)
+    if not ok then
+        return nil, err, code
+    end
+    ok, err, code = validate_integer(message.sequence, "message.sequence", 0, protocol.MAX_SEQUENCE)
     if not ok then
         return nil, err, code
     end
     if
+        type(message.message_id) ~= "string"
+        or #message.message_id > protocol.MAX_MESSAGE_ID_BYTES
+    then
+        return failure("malformed", "message id must be a bounded canonical transcript id")
+    end
+    if
         message.message_id
-        ~= expected_message_id(message.session_id, message.peer_id, message.sequence)
+        ~= protocol.message_id(message.session_id, message.peer_id, message.sequence)
     then
         return failure("malformed", "message id does not match its transcript identity")
     end
@@ -1321,17 +1379,17 @@ end
 ---@param body SessionMessageBody
 ---@return SessionControlMessage?, string?, SessionProtocolErrorCode?
 function protocol.new(kind, session_id, peer_id, sequence, body)
+    local message_id, id_err, id_code = protocol.message_id(session_id, peer_id, sequence)
+    if not message_id then
+        return nil, id_err, id_code
+    end
     local message = {
         version = protocol.VERSION,
         kind = kind,
         session_id = session_id,
         peer_id = peer_id,
         sequence = sequence,
-        message_id = is_integer(sequence)
-                and type(session_id) == "string"
-                and type(peer_id) == "string"
-                and expected_message_id(session_id, peer_id, sequence)
-            or "",
+        message_id = message_id,
         body = body,
     }
     local wire, err, code = protocol.encode(message)

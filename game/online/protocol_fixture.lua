@@ -1,7 +1,7 @@
 local protocol = require("game.online.protocol")
 local input_frame = require("sim.input_frame")
 
----@class OnlineProtocolFixture
+---@class SessionProtocolFixtureModule
 local fixture = {}
 
 ---@return SessionRuntimeIdentity
