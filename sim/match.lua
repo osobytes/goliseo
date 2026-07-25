@@ -1984,19 +1984,30 @@ end
 function match._sanitize_press_states(s, combat_state)
     local pressing = require("sim.outfield_press")
     local owner = s.owner and s.players[s.owner] or nil
-    for _, team in ipairs({ "home", "away" }) do
-        local state = s.outfield_press[team]
-        local presser = state.presser_index
-        local defending = owner ~= nil
-            and owner.team ~= team
-            and s.kickoff_hold <= 0
-            and (not owner.is_keeper or owner.feet_ball)
-        if
-            not defending
-            or (presser ~= nil and not match._press_eligible(s, presser, combat_state))
-        then
-            s.outfield_press[team] = pressing.clear(s.outfield_press[team])
-        end
+    local home_state = s.outfield_press.home
+    local home_presser = home_state.presser_index
+    local home_defending = owner ~= nil
+        and owner.team ~= "home"
+        and s.kickoff_hold <= 0
+        and (not owner.is_keeper or owner.feet_ball)
+    if
+        not home_defending
+        or (home_presser ~= nil and not match._press_eligible(s, home_presser, combat_state))
+    then
+        s.outfield_press.home = pressing.clear(home_state)
+    end
+
+    local away_state = s.outfield_press.away
+    local away_presser = away_state.presser_index
+    local away_defending = owner ~= nil
+        and owner.team ~= "away"
+        and s.kickoff_hold <= 0
+        and (not owner.is_keeper or owner.feet_ball)
+    if
+        not away_defending
+        or (away_presser ~= nil and not match._press_eligible(s, away_presser, combat_state))
+    then
+        s.outfield_press.away = pressing.clear(away_state)
     end
 end
 

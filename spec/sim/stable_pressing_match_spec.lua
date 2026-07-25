@@ -2,6 +2,7 @@ local t = require("spec.support.runner")
 local Vec2 = require("core.vec2")
 local combat = require("sim.combat")
 local match = require("sim.match")
+local outfield_press = require("sim.outfield_press")
 local teams = require("data.teams")
 
 ---@return MatchInput
@@ -308,5 +309,48 @@ t.describe("stable pressing cover, exclusions, and resets", function()
         state.time_left = 0.001
         match.step(state, 1 / 60, neutral_input())
         t.eq(state.outfield_press.home.mode, "inactive")
+    end)
+
+    t.it("clears both team branches without replacing inactive state", function()
+        local state = defended_state("home")
+        state.outfield_press.home = outfield_press.contain(2)
+        state.outfield_press.away = outfield_press.contain(7)
+        state.owner = nil
+        match._sanitize_press_states(state)
+        t.eq(state.outfield_press.home.mode, "inactive")
+        t.eq(state.outfield_press.away.mode, "inactive")
+
+        local home = state.outfield_press.home
+        local away = state.outfield_press.away
+        match._sanitize_press_states(state)
+        t.eq(state.outfield_press.home, home)
+        t.eq(state.outfield_press.away, away)
+    end)
+
+    t.it("sanitizes inactive states without per-tick table churn", function()
+        local state = defended_state("home")
+        state.owner = nil
+        match._reset_press_states(state)
+        for _ = 1, 200 do
+            match._sanitize_press_states(state)
+        end
+
+        collectgarbage("collect")
+        collectgarbage("stop")
+        local before_kib = collectgarbage("count")
+        local ok, failure = pcall(function()
+            for _ = 1, 10000 do
+                match._sanitize_press_states(state)
+            end
+        end)
+        local allocated_bytes = (collectgarbage("count") - before_kib) * 1024
+        collectgarbage("restart")
+        collectgarbage("collect")
+
+        t.is_true(ok, tostring(failure))
+        t.is_true(
+            allocated_bytes < 4096,
+            ("inactive press sanitation allocated %.0f bytes"):format(allocated_bytes)
+        )
     end)
 end)

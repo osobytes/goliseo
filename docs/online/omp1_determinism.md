@@ -90,8 +90,9 @@ continue to change only `snapshot_version`. In either case, refresh consumes
 every migrated frozen frame in order to regenerate snapshot hashes. Bot
 materialization is not part of the refresh path.
 
-The snapshot-v8 migration retains all 7,201 effective input wires byte-for-byte
-(`SHA-256 7767a835f002d371a9fdf767449a8606295a9d7a87452f5c68bb5f0924871944`).
+The snapshot-v8 migration retains the canonical 725,882-byte block of 7,201
+effective input wires byte-for-byte
+(`SHA-256 380908c9ae2ab1a04b1dfd1196d1395a7ea047160c31cff41dcbb2758c08a7f7`).
 It adds one compact, versioned, team-owned outfield press state per side:
 presser identity, contain-or-commit mode, and the single stable commit reason.
 Fixed-slot players remain excluded from match AI, so the frozen score, event

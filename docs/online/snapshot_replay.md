@@ -68,8 +68,9 @@ strings are length-prefixed; nil, booleans, strings, and numbers have distinct
 tags. Arrays and sparse index maps are emitted in their declared numeric
 ranges. Records use the checked-in field arrays, never `pairs` iteration.
 Changing a field name, order, numeric format, or nested shape requires a new
-snapshot version. Version 8 appends an explicit `combat` record and `GCCS;`
-schema header after the version-7 match payload.
+snapshot version. Version 8 extends the version-7 match payload with the
+team-owned outfield press records. Version 9 appends an explicit `combat`
+record and `GCCS;` schema header after the version-8 match payload.
 
 Every finite Lua number is encoded exactly from `math.frexp` as:
 
@@ -99,7 +100,7 @@ Input tape version 1 owns deep copies of:
   content, exact tuning, configuration, fixture, seed, 60 Hz tick rate, roster,
   and slot ownership.
 
-Combat tapes use envelope/identity version 2 and require snapshot version 8.
+Combat tapes use envelope/identity version 2 and require snapshot version 9.
 Their identity adds a canonical combat-mechanics string covering every
 action-family timing, geometry, movement, and outcome field plus the ordered
 player-ID to mechanical-loadout/family mapping. Presentation IDs are
