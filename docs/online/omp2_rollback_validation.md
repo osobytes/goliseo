@@ -17,16 +17,16 @@ acceptance evidence.
 The current campaign freezes a mixed artifact matrix at 60 Hz:
 
 - every case uses InputFrame v2 and network-profile digest `5fbf1e0d51a6f4d5`;
-- soccer cases use InputTape v1 / MatchSnapshot v7, final hash
-  `2ea2e090ce56d99b`, sequence digest `3dc2ef59e573b5a1`, and live tape digest
-  `c203a244b09dff1d`;
-- combat cases use InputTape v2 / MatchSnapshot v8, initial hash
-  `a3b79ff3435760cd`, final hash `0aaee09c7e08348c`, and tape digest
-  `dd3b492759ed0af1`; and
+- soccer cases use InputTape v1 / MatchSnapshot v8, final hash
+  `459b141c4c0b8729`, sequence digest `1ab003a12c1f9a19`, and live tape digest
+  `9a284e2bb181699f`;
+- combat cases use InputTape v2 / MatchSnapshot v9, initial hash
+  `dc5bf8639102f82a`, final hash `56bcf87e3ad7aa93`, and tape digest
+  `fec464c0f45e4c83`; and
 - stable rollback-event identity and confirmation semantics apply to both.
 
 Runtime provenance therefore declares InputFrame v2 plus tape versions 1/2
-and snapshot versions 7/8; every case repeats and validates its exact artifact
+and snapshot versions 8/9; every case repeats and validates its exact artifact
 versions. Any merge that changes simulation, gameplay data or tuning,
 input/snapshot/event schemas, a pinned fixture, or network profiles invalidates
 the current evidence. The historical artifact remains an archive rather than
@@ -156,8 +156,8 @@ not a 60 Hz acceptance profile. Numeric measurements are emitted as
 `GC_ROLLBACK_VALIDATION` rows so two fresh native executions can be compared byte for byte
 without confusing wall-clock noise for logical drift.
 
-Snapshot bytes are exact per-case MatchSnapshot v7 or v8 canonical encodings;
-the v8 count includes its authoritative combat companion. Input, output, and
+Snapshot bytes are exact per-case MatchSnapshot v8 or v9 canonical encodings;
+the v9 count includes its authoritative combat companion. Input, output, and
 speculative event bytes use their documented deterministic retained-history
 encodings. They are logical payload counts, not estimates of Lua allocator
 overhead. The soak measures allocator behavior separately: Lua heap in-process,
@@ -170,9 +170,9 @@ Lua heap, process-tree RSS, and Chrome JS heap all include the final fifth-fixtu
 Native holds at that terminal marker until the evidence process acknowledges its RSS sample, so
 the runtime cannot exit between marker delivery and measurement.
 
-The current contract keeps the soccer campaign on MatchSnapshot v7/InputTape v1
+The current contract keeps the soccer campaign on MatchSnapshot v8/InputTape v1
 without appending a synthetic combat-identity segment, and keeps bounded
-composite combat coverage on MatchSnapshot v8/InputTape v2. The current soccer
+composite combat coverage on MatchSnapshot v9/InputTape v2. The current soccer
 digest is pinned separately from the historical InputFrame-v1 artifact.
 The 768-KiB snapshot gate is an explicit revision from 600 KiB: the previous
 peak was 611,274 bytes, leaving only 3,126 bytes for 31 retained boundaries,
@@ -183,15 +183,33 @@ projectile flight/expiry, stagger, knockback, and immunity; a dense delayed
 authority campaign additionally proves composite convergence and confirmed
 combat-event equality. A pinned 80-tick combat fixture now joins every native
 profile/common-seed pair, every browser full/stress case, and each soak seed,
-so MatchSnapshot v8/InputTape v2 crosses clean, fixed delay/loss, playable
+so MatchSnapshot v9/InputTape v2 crosses clean, fixed delay/loss, playable
 jitter/loss/duplication/burst/reordering, and stress paths in fresh processes.
-The clean 2001 baseline records 14 confirmed combat events, a 776,979-byte
-31-snapshot peak, and 831,489 bytes of retained history; both remain below the
+The clean 2001 baseline records 14 confirmed combat events, a 783,272-byte
+31-snapshot peak, and 837,782 bytes of retained history; both remain below the
 revised gates. The playable 2001 case performs eight rollbacks and 20
-resimulated ticks, peaks at 776,979 snapshot bytes and 830,686 history bytes,
-and records 1.855320 ms p95 work plus 1.789 ms p99.9/max rollback time. Each
+resimulated ticks, peaks at 783,272 snapshot bytes and 836,979 history bytes,
+and records 1.765570 ms p95 work plus 4.738 ms p99.9/max rollback time. Each
 case emits its exact snapshot/history/resimulation values and the validator
 rejects a combat impaired-network case that performs no resimulation.
+
+The issue-55 schema migration was revalidated locally on 2026-07-25 from dirty
+source based on `e545a0b8b6061e4fe23e09a85fc5845204a4b4ac`. The exact native
+artifact was written to
+`/tmp/galactic-cup-omp2-rollback.HPGI8Q/omp2_rollback.json` with SHA-256
+`49edfe68fec51cac57d15e5dceb3546c27db9df23e1d6c1ec10325c6303a31ce`.
+Two fresh 54-case runs agreed on logical marker SHA-256
+`284e81b7e5dda31008cab5e36b08c62d6970d77ec1229e7df8cdafc91a23d5e3`;
+the late-window pair and ten-case soak also passed.
+
+The combat 31-boundary peak is merge-critical: 783,272 canonical snapshot
+bytes leave only 3,160 bytes below the 768-KiB gate. Total retained history
+peaked at 837,782 bytes, leaving 210,794 bytes below the 1-MiB gate. Any
+further persistent or event-schema growth must be measured before acceptance.
+The native soak passed retained-memory gates: terminal Lua heap was below its
+warm-up baseline, with a diagnostic peak of 22,296,061 bytes (+2.714141%);
+process-tree RSS ended +0.703655%, with a diagnostic peak of 163,897,344 bytes
+(+1.280753%). Both remain below the 10% limit.
 Browser evidence waits inside the page for newly appended console entries and returns only the
 delta at each marker. It does not poll and reserialize the cumulative console array through
 WebDriver every frame interval, because those protocol allocations would contaminate Chrome's

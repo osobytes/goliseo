@@ -121,7 +121,7 @@ touches, tackles, saves, blocks, claims, aerial actions, and jukes.
 `sim/metrics.lua` derives the existing soccer-only `MatchMetrics`, and
 `sim/tripwire.lua` compares its checked-in 30-seed signature.
 
-Combat snapshot version 1 and match snapshot version 8 serialize combat state
+Combat snapshot version 1 and match snapshot version 9 serialize combat state
 and events. Input tape version 2, replay, and rollback-confirmed event handling
 provide deterministic identity and correction boundaries. Confirmed evidence
 exports contain only events that survive canonical rollback confirmation.

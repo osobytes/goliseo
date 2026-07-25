@@ -367,8 +367,29 @@ local SPRINT_ENGAGE = 0.25 -- min meter to start a sprint (hysteresis: no flicke
 -- (flashes, trails). Produced by the sim, cleared at the top of every step, so
 -- a frame's events are whatever happened during that frame. Positions are world
 -- space; `player` is the actor's id (nil for ball-only events).
+---@alias MatchEventKind
+---|"shot"
+---|"pass"
+---|"touch"
+---|"tackle"
+---|"press_commit_heavy_touch"
+---|"press_commit_exposed_ball"
+---|"press_commit_cover"
+---|"press_commit_box_desperation"
+---|"press_commit_low_discipline"
+---|"catch"
+---|"parry"
+---|"tip"
+---|"claim"
+---|"block"
+---|"header"
+---|"volley"
+---|"bicycle"
+---|"reception"
+---|"juke"
+
 ---@class MatchEvent
----@field kind "shot"|"pass"|"touch"|"tackle"|"catch"|"parry"|"tip"|"claim"|"block"|"header"|"volley"|"bicycle"|"reception"|"juke"
+---@field kind MatchEventKind
 ---@field x number
 ---@field y number
 ---@field player string?
@@ -402,6 +423,7 @@ local SPRINT_ENGAGE = 0.25 -- min meter to start a sprint (hysteresis: no flicke
 ---@field press { home: integer, away: integer }  -- chasers per team (tactic-driven)
 ---@field marking { home: MarkingConfig, away: MarkingConfig }  -- off-ball scheme per team
 ---@field marks { home: table<integer, integer>, away: table<integer, integer> }  -- prev marking assignment (hysteresis)
+---@field outfield_press { home: OutfieldPressState, away: OutfieldPressState }  -- team-owned stable presser state
 ---@field ball_spin number  -- lateral curve applied to the loose ball
 ---@field rng integer  -- seeded PRNG state (core.rng): same seed = same match
 ---@field block_grace number  -- body-blocking re-enabled when this hits 0 (set on release)
@@ -517,6 +539,10 @@ local function build_team(
         local species_data = species_by_id[species_id]
         assert(species_data, "unknown species: " .. tostring(species_id))
         local effective_stats = species.apply(pd.stats, species_data)
+        assert(
+            stats.press_discipline(effective_stats) == stats.composure(effective_stats),
+            "mental-derived press discipline must share the serialized composure scalar"
+        )
         local base = anchors[i]
         -- Outfield anchors shift with the tactic; the keeper (i == 1) stays home.
         local ax = base.x
@@ -640,6 +666,13 @@ local function is_human_player(s, player_idx)
     return s.human_controlled and player_idx == s.controlled
 end
 
+---@param s MatchState
+function match._reset_press_states(s)
+    local pressing = require("sim.outfield_press")
+    s.outfield_press.home = pressing.clear(s.outfield_press.home)
+    s.outfield_press.away = pressing.clear(s.outfield_press.away)
+end
+
 -- Route single-player control through one boundary so a player becoming human
 -- cannot retain a serialized AI choice from earlier in this tick.
 ---@param s MatchState
@@ -649,6 +682,12 @@ function match._set_controlled_player(s, player_idx)
     local player = s.players[player_idx]
     if not player.is_keeper and player.outfield_decision.context ~= "ineligible" then
         player.outfield_decision = require("sim.outfield_decision").reset(player.outfield_decision)
+    end
+    local pressing = require("sim.outfield_press")
+    for _, team in ipairs({ "home", "away" }) do
+        if s.outfield_press[team].presser_index == player_idx then
+            s.outfield_press[team] = pressing.clear(s.outfield_press[team])
+        end
     end
 end
 
@@ -753,6 +792,7 @@ local function place_kickoff(s, kicking)
     s.aerial_lock = 0
     s.ball_spin = 0
     s.kickoff_hold = KICKOFF_HOLD
+    match._reset_press_states(s)
     -- Centre-circle rule: the non-kicking team keeps its distance from the
     -- ball at the restart — push any intruder straight back out.
     for _, p in ipairs(s.players) do
@@ -886,6 +926,10 @@ function match.new(opts)
         press = { home = home_tactic.press, away = away_tactic.press },
         marking = { home = marking_of(home_tactic), away = marking_of(away_tactic) },
         marks = { home = {}, away = {} },
+        outfield_press = {
+            home = require("sim.outfield_press").new_state(),
+            away = require("sim.outfield_press").new_state(),
+        },
         block_grace = 0,
         aerial_lock = 0,
         kickoff_hold = 0,
@@ -1473,6 +1517,15 @@ end
 
 -- Build the existing one-per-teammate pass set with its openness, progress,
 -- distance, lane and interception inputs. No RNG is consumed here.
+---@param distance number
+---@param openness number
+---@return boolean
+function match._ai_pass_eligible(distance, openness)
+    return distance >= AI_PASS_MIN_DIST
+        and distance <= AI_PASS_MAX_DIST
+        and openness >= AI_PASS_MIN_OPEN
+end
+
 ---@param s MatchState
 ---@param owner_idx integer
 ---@return OutfieldPassOption[]
@@ -1494,7 +1547,7 @@ local function ai_pass_options(s, owner_idx)
             for _, qp in ipairs(opp_positions) do
                 open = math.min(open, qp:dist(p.pos))
             end
-            if d >= AI_PASS_MIN_DIST and d <= AI_PASS_MAX_DIST and open >= AI_PASS_MIN_OPEN then
+            if match._ai_pass_eligible(d, open) then
                 local blocked = ai.lane_blocker(owner.pos, p.pos, opp_positions, POSSESS_DIST)
                 local risk = not blocked and pass_risk(owner.pos, p.pos, threats) or nil
                 options[#options + 1] = {
@@ -1680,13 +1733,27 @@ local function attempt_steals(s, combat_state)
                     local jockey_bonus = (p.jockey_timer > 0) and JOCKEY_REACH_BONUS or 0
                     active, reach = true, STAND_REACH + jockey_bonus
                 end
-            elseif p.dash_cd <= 0 and d <= TUNE.STEAL_ATTEMPT then
-                -- The AI pokes as soon as the ball looks reachable — and goes on
-                -- cooldown whether or not it connects (a whiff is the carrier's
-                -- window to escape).
+            elseif
+                s.outfield_press[p.team].presser_index == i
+                and s.outfield_press[p.team].mode == "commit"
+                and p.dash_cd <= 0
+                and d <= TUNE.STEAL_ATTEMPT
+            then
+                -- The assigned AI presser pokes only after its serialized
+                -- contain-or-commit resolver names an explainable reason.
+                local reason = s.outfield_press[p.team].reason
+                assert(reason ~= "no_trigger", "AI press commit requires a stable reason")
                 active = true
                 p.dash_cd = TUNE.AI_STEAL_CD
                 p.tackle_timer = STAND_TIMER -- poke pose for the renderer
+                local commit_kind = "press_commit_" .. reason
+                ---@cast commit_kind MatchEventKind
+                s.events[#s.events + 1] = {
+                    kind = commit_kind,
+                    x = p.pos.x,
+                    y = p.pos.y,
+                    player = p.id,
+                }
                 if d > STEAL_DIST then
                     -- Lunged past a shielded ball: stumble briefly. Baiting the
                     -- poke and breaking away is the carrier's core move.
@@ -1768,6 +1835,182 @@ local function marker_target(defpos, opp_pos, opp_vel, goal, off)
     return aim:add(goal:sub(aim):normalized():scale(off or MARK_GOALSIDE))
 end
 
+---@param s MatchState
+---@param player_index integer
+---@param combat_state CombatMatchState?
+---@return boolean
+function match._press_eligible(s, player_index, combat_state)
+    local player = s.players[player_index]
+    local combat_module = combat_state and require("sim.combat") or nil
+    return player ~= nil
+        and not player.is_keeper
+        and not is_human_player(s, player_index)
+        and player.stun_timer <= 0
+        and player.aerial_recovery <= 0
+        and (
+            not combat_module
+            or not assert(combat_module).blocks_actions(combat_state, player_index)
+        )
+end
+
+---@param s MatchState
+---@param team "home"|"away"
+---@param carrier_index integer
+---@param pos Vec2[]
+---@return OutfieldLaneCandidate[]
+function match._passing_lane_candidates(s, team, carrier_index, pos)
+    local carrier = s.players[carrier_index]
+    local goal = own_goal_center(s, team)
+    local candidates = {}
+    local diagonal = math.sqrt(s.field.w * s.field.w + s.field.h * s.field.h)
+    local opponents = {}
+    for index, player in ipairs(s.players) do
+        if player.team ~= carrier.team then
+            opponents[#opponents + 1] = pos[index]
+        end
+    end
+    for index, player in ipairs(s.players) do
+        if index ~= carrier_index and player.team == carrier.team and not player.is_keeper then
+            local distance = pos[carrier_index]:dist(pos[index])
+            local openness = math.huge
+            for _, opponent_pos in ipairs(opponents) do
+                openness = math.min(openness, opponent_pos:dist(pos[index]))
+            end
+            if match._ai_pass_eligible(distance, openness) then
+                -- Rank only actual carrier pass options. Threat leads, while
+                -- openness and range break out otherwise similar lanes.
+                local goal_threat = diagonal - pos[index]:dist(goal)
+                candidates[#candidates + 1] = {
+                    player_index = index,
+                    score = goal_threat + openness * 0.35 - distance * 0.25,
+                    pos = pos[index],
+                }
+            end
+        end
+    end
+    return candidates
+end
+
+---@param s MatchState
+---@param team "home"|"away"
+---@param carrier_index integer
+---@param base Vec2
+---@param pos Vec2[]
+---@return Vec2
+function match._lane_shadow_target(s, team, carrier_index, base, pos)
+    local pressing = require("sim.outfield_press")
+    return pressing.lane_shadow_target(
+        base,
+        pos[carrier_index],
+        match._passing_lane_candidates(s, team, carrier_index, pos)
+    )
+end
+
+---@param s MatchState
+---@param team "home"|"away"
+---@param candidates integer[]
+---@param carrier_index integer
+---@param goal Vec2
+---@param ball Vec2
+---@param pos Vec2[]
+---@param combat_state CombatMatchState?
+---@return integer? presser
+---@return integer? cover
+function match._assign_press(s, team, candidates, carrier_index, goal, ball, pos, combat_state)
+    local pressing = require("sim.outfield_press")
+    local carrier = s.players[carrier_index]
+    local ranked = {}
+    for _, player_index in ipairs(candidates) do
+        ranked[#ranked + 1] = {
+            player_index = player_index,
+            distance_cost = pos[player_index]:dist(pos[carrier_index]),
+            eligible = match._press_eligible(s, player_index, combat_state),
+        }
+    end
+    local current = s.outfield_press[team].presser_index
+    local presser = pressing.assign_presser(ranked, current)
+    if not presser then
+        s.outfield_press[team] = pressing.clear(s.outfield_press[team])
+        return nil, nil
+    end
+
+    local cover = nil
+    local cover_distance = nil
+    for _, player_index in ipairs(candidates) do
+        if player_index ~= presser and match._press_eligible(s, player_index, combat_state) then
+            local distance = pos[player_index]:dist(pos[carrier_index])
+            if
+                cover_distance == nil
+                or distance < cover_distance
+                or (distance == cover_distance and player_index < assert(cover))
+            then
+                cover = player_index
+                cover_distance = distance
+            end
+        end
+    end
+
+    local cover_available = false
+    if cover then
+        cover_available = pressing.cover_available(
+            assert(cover_distance),
+            pos[cover]:dist(goal) < pos[carrier_index]:dist(goal)
+        )
+    end
+    local carrier_pos = pos[carrier_index]
+    local box_depth = team == "home" and carrier_pos.x or (s.field.w - carrier_pos.x)
+    local box_top = s.field.h / 2 - PENALTY_H / 2
+    local box_desperation = box_depth <= PENALTY_DEPTH
+        and carrier_pos.y >= box_top
+        and carrier_pos.y <= box_top + PENALTY_H
+    local reachable = s.players[presser].dash_cd <= 0
+        and pos[presser]:dist(ball) <= TUNE.STEAL_ATTEMPT
+    if reachable then
+        s.outfield_press[team] = pressing.resolve(presser, {
+            heavy_touch = carrier.settle_timer > 0,
+            exposed_ball = carrier_pos:dist(ball) > DRIBBLE_TOUCH_REACH,
+            cover_available = cover_available,
+            box_desperation = box_desperation,
+            press_discipline = s.players[presser].composure,
+        })
+    else
+        s.outfield_press[team] = pressing.contain(presser)
+    end
+    return presser, cover
+end
+
+---@param s MatchState
+---@param combat_state CombatMatchState?
+function match._sanitize_press_states(s, combat_state)
+    local pressing = require("sim.outfield_press")
+    local owner = s.owner and s.players[s.owner] or nil
+    local home_state = s.outfield_press.home
+    local home_presser = home_state.presser_index
+    local home_defending = owner ~= nil
+        and owner.team ~= "home"
+        and s.kickoff_hold <= 0
+        and (not owner.is_keeper or owner.feet_ball)
+    if
+        not home_defending
+        or (home_presser ~= nil and not match._press_eligible(s, home_presser, combat_state))
+    then
+        s.outfield_press.home = pressing.clear(home_state)
+    end
+
+    local away_state = s.outfield_press.away
+    local away_presser = away_state.presser_index
+    local away_defending = owner ~= nil
+        and owner.team ~= "away"
+        and s.kickoff_hold <= 0
+        and (not owner.is_keeper or owner.feet_ball)
+    if
+        not away_defending
+        or (away_presser ~= nil and not match._press_eligible(s, away_presser, combat_state))
+    then
+        s.outfield_press.away = pressing.clear(away_state)
+    end
+end
+
 -- Compute off-ball steering targets for every AI player NOT handled by the
 -- controlled / owner / keeper branches. Pure function of the top-of-tick
 -- snapshot `pos`. Returns player_index -> target Vec2 plus an URGENCY set
@@ -1777,9 +2020,10 @@ end
 -- press-set chase when loose.
 ---@param s MatchState
 ---@param pos Vec2[]
+---@param combat_state CombatMatchState?
 ---@return table<integer, Vec2> targets
 ---@return table<integer, boolean> urgent
-local function offball_targets(s, pos)
+local function offball_targets(s, pos, combat_state)
     local targets = {}
     local urgent = {} -- roles that need precision, exempt from positional calm
     local owner_team = s.owner and s.players[s.owner].team or nil
@@ -1825,50 +2069,56 @@ local function offball_targets(s, pos)
         end
 
         if owner_team and owner_team ~= team then
-            -- DEFENDING: rank defenders by distance to the carrier.
-            local carrier = s.players[s.owner]
-            local cpos = pos[s.owner]
-            local order = {}
-            for _, idx in ipairs(mine) do
-                order[#order + 1] = idx
-            end
-            table.sort(order, function(a, b)
-                local da, db = pos[a]:dist(cpos), pos[b]:dist(cpos)
-                if da ~= db then
-                    return da < db
-                end
-                return a < b
-            end)
+            -- DEFENDING: retain one eligible team-owned presser unless a
+            -- challenger clears the explicit 15% distance-cost threshold.
+            local carrier_index = assert(s.owner)
+            local carrier = s.players[carrier_index]
+            local cpos = pos[carrier_index]
 
-            -- Kickoff law: the non-kicking team holds shape at a restart
-            -- instead of pressing, until the first pass/shot (or the hold
-            -- timer runs out as a failsafe).
-            local held = s.kickoff_hold > 0
-            local presser, cover = order[1], order[2]
+            -- Kickoff law and keeper-hand protection both suspend the ordinary
+            -- defended-possession phase instead of pre-assigning a challenger.
+            local held = s.kickoff_hold > 0 or (carrier.is_keeper and not carrier.feet_ball)
+            local presser, cover
+            if held then
+                local pressing = require("sim.outfield_press")
+                s.outfield_press[team] = pressing.clear(s.outfield_press[team])
+            else
+                presser, cover = match._assign_press(
+                    s,
+                    team,
+                    mine,
+                    carrier_index,
+                    goal,
+                    s.ball,
+                    pos,
+                    combat_state
+                )
+            end
             if presser then
-                if held then
-                    targets[presser] =
-                        block_shift(s.players[presser].anchor, s.ball, cfg.compactness)
+                local press_state = s.outfield_press[team]
+                if press_state.mode == "commit" then
+                    targets[presser] = ai.pursue(pos[presser], s.ball, carrier.vel, PURSUE_LEAD)
                 else
-                    -- Press the BALL, not the man: against a carrier who stands
-                    -- still or turns to shield, the presser works around the body
-                    -- to the ball side (collision makes it circle) and keeps
-                    -- poking. Half the standoff keeps the press goal-side honest.
-                    local aim = ai.pursue(pos[presser], s.ball, carrier.vel, PURSUE_LEAD)
-                    targets[presser] = aim:add(goal:sub(aim):normalized():scale(cfg.standoff * 0.5))
-                    urgent[presser] = true
+                    targets[presser] = require("sim.outfield_press").contain_target(
+                        cpos,
+                        goal,
+                        s.field.h,
+                        cfg.standoff
+                    )
                 end
+                urgent[presser] = true
             end
             if cover then
-                targets[cover] = held
-                        and block_shift(s.players[cover].anchor, s.ball, cfg.compactness)
-                    or ai.interpose(cpos, goal, COVER_FRAC)
+                local base = ai.interpose(cpos, goal, COVER_FRAC)
+                targets[cover] = match._lane_shadow_target(s, team, carrier_index, base, pos)
             end
 
             -- The rest: which defenders should man-mark, which hold zone.
             local rest = {}
-            for k = 3, #order do
-                rest[#rest + 1] = order[k]
+            for _, player_index in ipairs(mine) do
+                if player_index ~= presser and player_index ~= cover then
+                    rest[#rest + 1] = player_index
+                end
             end
 
             -- Pick the opponents to be man-marked (player indices into opp_out).
@@ -1939,6 +2189,8 @@ local function offball_targets(s, pos)
                 targets[idx] = sep(idx, targets[idx])
             end
         elseif owner_team == team then
+            local pressing = require("sim.outfield_press")
+            s.outfield_press[team] = pressing.clear(s.outfield_press[team])
             -- ATTACKING off the ball. When OUR KEEPER has it we're in build-up: hold
             -- stable, spread outlet positions (don't roam) so the keeper's throw
             -- reaches a teammate who's actually there. Otherwise make support runs.
@@ -1989,6 +2241,8 @@ local function offball_targets(s, pos)
             end
             s.marks[team] = {}
         else
+            local pressing = require("sim.outfield_press")
+            s.outfield_press[team] = pressing.clear(s.outfield_press[team])
             -- LOOSE ball: the press-set chases it with a pursuit lead, cutting
             -- off a rolling ball instead of trailing it. Passers already price
             -- this in: pass safety is interception-aware (ai.pass_intercept),
@@ -2236,7 +2490,7 @@ local function move_players(s, dt, inputs, combat_state)
     for i, p in ipairs(s.players) do
         prev[i] = p.pos
     end
-    local targets, urgent = offball_targets(s, prev)
+    local targets, urgent = offball_targets(s, prev, combat_state)
     retain_offball_targets(s, targets, urgent, combat_state)
 
     for i, p in ipairs(s.players) do
@@ -2738,6 +2992,11 @@ local function move_players(s, dt, inputs, combat_state)
             -- beyond the wake radius — no robotic shuffling on the spot.
             local target = targets[i] or p.anchor
             local mv = p.move_speed * (p.stun_timer > 0 and STUN_SLOW or 1) * combat_scale
+            local press_state = s.outfield_press[p.team]
+            local active_presser = press_state.presser_index == i
+            if active_presser and p.run_vel:length() > mv then
+                p.run_vel = p.run_vel:normalized():scale(mv)
+            end
             local dist = p.pos:dist(target)
             local standing = p.run_vel:length() < STAND_STILL_SPEED
             local desired = Vec2.new(0, 0)
@@ -2745,10 +3004,23 @@ local function move_players(s, dt, inputs, combat_state)
                 local _, dir = ai.steer(p.pos, target, mv * dt)
                 if dir.x ~= 0 or dir.y ~= 0 then
                     local speed = urgent[i] and mv or mv * math.min(1, dist / ARRIVE_RADIUS)
+                    if active_presser and press_state.mode == "contain" then
+                        speed = require("sim.outfield_press").contain_speed(
+                            speed,
+                            dist,
+                            TUNE.JOCKEY_SLOW
+                        )
+                    end
                     desired = dir:scale(speed)
                 end
             end
             apply_locomotion(s, p, desired, dt)
+            if active_presser and press_state.mode == "contain" then
+                local to_ball = s.ball:sub(p.pos)
+                if to_ball:length() > 0 then
+                    p.facing = to_ball:normalized()
+                end
+            end
         end
     end
 
@@ -3942,6 +4214,7 @@ end
 ---@return MatchState
 function match.step(s, dt, input, combat_state)
     if s.finished then
+        match._reset_press_states(s)
         for _, player in ipairs(s.players) do
             player.keeper_set = 0
         end
@@ -3987,6 +4260,7 @@ function match.step(s, dt, input, combat_state)
     if s.time_left <= 0 then
         s.time_left = 0
         s.finished = true
+        match._reset_press_states(s)
         if combat_state then
             assert(combat_module).advance_boundary(combat_state)
         end
@@ -4148,6 +4422,7 @@ function match.step(s, dt, input, combat_state)
         end
         assert(combat_module).finish_tick(combat_state)
     end
+    match._sanitize_press_states(s, combat_state)
 
     -- A gained ball resolves any in-flight pass: nobody is "running onto" it
     -- any more. In particular an INTERCEPTED back-pass ends the keeper's
@@ -4225,6 +4500,7 @@ function match.step(s, dt, input, combat_state)
         end
         if s.score.home >= s.max_goals or s.score.away >= s.max_goals then
             s.finished = true
+            match._reset_press_states(s)
         else
             -- The team that conceded restarts play.
             place_kickoff(s, scorer == "home" and "away" or "home")

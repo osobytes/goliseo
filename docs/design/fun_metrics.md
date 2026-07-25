@@ -472,3 +472,30 @@ until phase 4 automates it).
   remain intact. Only the three additional breached, route-coupled guardrails
   moved (shots/goal, possession balance, and decided-late); all other
   in-tolerance baselines remain pinned.
+
+- **2026-07-25 — stable AI presser assignment and contain-or-commit defending.**
+  AI-only defending now retains one team-owned primary presser with a 15%
+  switch threshold. The default is a goal-side contain line; reachable
+  challenges require one stable trigger reason, while a named low-discipline
+  fallback preserves the prior dive-in failure mode. Cover keeps its existing
+  interpose foundation and shadows the highest-scored pass-eligible lane.
+  Human/fixed-slot players remain input-owned, and presser movement remains
+  clamped by stat-derived speed.
+
+  The 30-match signature measured fun 0.459, goals 1.867, shots/goal 24.063,
+  save rate 0.853, pass completion 0.591, turnovers/min 3.689, possession
+  balance 0.399, drought 11.459 s, and decided-late 0.512. Controlled/team-AI
+  sprint shares were 0.271/0.072, touches per carry-minute were 83.641/73.439,
+  and heavy losses were 1.113/0.206.
+
+  The 100-match audit measured fun 0.557, goals 2.140, shots/goal 20.626, save
+  rate 0.826, pass completion 0.576, turnovers/min 3.636, possession balance
+  0.397, drought 10.789 s, and decided-late 0.536. Controlled/team-AI sprint
+  shares were 0.290/0.085, touches per carry-minute were 87.032/74.587, and
+  heavy losses were 1.023/0.660. The passing, turnover, possession, drought,
+  goals, and decided-late target bands remain intact.
+
+  The selective 30-seed baseline refresh accepts only the nine behavior-linked
+  fields that crossed tolerance: fun, goals, shots/goal, drought, decided-late,
+  controlled touches and heavy losses, and team-AI sprint share and heavy
+  losses. Every in-tolerance field retains its previous pin.

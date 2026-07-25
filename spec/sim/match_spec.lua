@@ -233,7 +233,9 @@ t.describe("match.step tackling", function()
         end
         s.players[defender].pos = Vec2.new(carrier.pos.x + 20, carrier.pos.y) -- on their back
         s.players[defender].dash_cd = 0
+        s.players[defender].composure = 0 -- legacy low-discipline dive-in fixture
         s.players[s.controlled].pos = Vec2.new(60, 60) -- human well away
+        s.kickoff_hold = 0
         match.step(s, 0.016, NO_INPUT)
         t.eq(s.owner, away_idx, "the shielded ball stays with the carrier")
         t.is_true(s.players[defender].dash_cd > 0, "the failed poke still goes on cooldown")
@@ -252,7 +254,9 @@ t.describe("match.step tackling", function()
         end
         s.players[defender].pos = Vec2.new(carrier.pos.x - 20, carrier.pos.y) -- goal side, on the ball
         s.players[defender].dash_cd = 0
+        s.players[defender].composure = 0 -- legacy low-discipline dive-in fixture
         s.players[s.controlled].pos = Vec2.new(60, 60)
+        s.kickoff_hold = 0
         match.step(s, 0.016, NO_INPUT)
         t.is_true(s.owner ~= away_idx, "a front-on challenge dislodges the ball")
     end)
@@ -2014,7 +2018,9 @@ t.describe("match possession feel", function()
         -- On the carrier's back: ball shielded, poke commits but comes up short.
         s.players[defender].pos = Vec2.new(c.pos.x + 20, c.pos.y)
         s.players[defender].dash_cd = 0
+        s.players[defender].composure = 0 -- legacy low-discipline dive-in fixture
         s.players[s.controlled].pos = Vec2.new(60, 60)
+        s.kickoff_hold = 0
         match.step(s, 0.016, NO_INPUT)
         t.eq(s.owner, carrier, "the shielded carrier keeps it")
         t.is_true(s.players[defender].stun_timer > 0, "the whiffing defender stumbles")
