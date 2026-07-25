@@ -1,5 +1,7 @@
 local audio = require("game.audio")
+local combat_feedback = require("game.presentation.combat_feedback")
 local bloom = require("game.render.bloom")
+local effects = require("game.render.effects")
 
 ---@class RuntimeSettingsModule
 local runtime_settings = {}
@@ -8,6 +10,8 @@ local runtime_settings = {}
 function runtime_settings.apply(settings)
     bloom.config.enabled = settings.bloom
     audio.configure(settings)
+    combat_feedback.configure_defaults(settings)
+    effects.configure(settings)
 
     if love.audio and love.audio.setVolume then
         love.audio.setVolume(settings.master_volume)

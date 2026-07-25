@@ -17,6 +17,7 @@ local effects = require("game.render.effects")
 local match_hud_render = require("game.render.match_hud")
 local view_state = require("game.render.view_state")
 local combat_presentation = require("game.presentation.combat")
+local combat_feedback = require("game.presentation.combat_feedback")
 local audio = require("game.audio")
 local match_hud = require("game.match_hud")
 local onboarding = require("game.match_onboarding")
@@ -97,6 +98,7 @@ local FIELD_H = 540
 ---@field _render_smoothing CorrectionSmoothingState
 ---@field _render_pose CorrectionSmoothingPose
 ---@field _replay_state ReplayFrame?
+---@field _combat_feedback CombatFeedbackState
 local Match = {}
 Match.__index = Match
 
@@ -116,6 +118,18 @@ local function append_values(target, source)
     for _, value in ipairs(source) do
         target[#target + 1] = value
     end
+end
+
+---@param event CombatEvent
+---@param ordinal integer
+---@return string
+local function offline_combat_event_id(event, ordinal)
+    return ("offline/combat/%d/%s/%d/%d"):format(
+        event.tick,
+        event.kind,
+        event.source_sequence or 0,
+        ordinal
+    )
 end
 
 ---@param self MatchScreen
@@ -207,6 +221,7 @@ local function finish_replay(self)
     replay.stop()
     self._replay_state = nil
     effects.reset_visuals()
+    combat_feedback.reset_visuals(self._combat_feedback)
     clear_render_smoothing(self)
     view_state.update(self.state.players, 0, self._render_pose)
     if self._pending_confirmed_kickoff and not self._presentation_full_time then
@@ -248,6 +263,7 @@ function Match:consume_confirmed_lifecycle(event)
         self._last_scoring_team = scoring_team
         if replay.start_at(scoring_team, event.tick) then
             effects.reset()
+            combat_feedback.reset_visuals(self._combat_feedback)
             clear_render_smoothing(self)
             self._replay_state = nil
         end
@@ -286,14 +302,19 @@ end
 function Match:consume_confirmed_step(step)
     local consumed_count = 0
     for _, event in ipairs(step.match_events) do
-        effects.confirm_event(event.id)
-        if audio.consume_confirmed(event) then
+        effects.confirm_event(event)
+        if audio.consume_confirmed(event, replay.active()) then
             consumed_count = consumed_count + 1
         end
     end
     for _, event in ipairs(step.combat_events or {}) do
-        effects.confirm_event(event.id)
-        if audio.consume_confirmed(event) then
+        effects.confirm_event(event)
+        local link = combat_feedback.accepted(event.payload, event.id)
+        combat_feedback.confirm(self._combat_feedback, link)
+        if replay.active() then
+            combat_feedback.reset_visuals(self._combat_feedback)
+        end
+        if audio.consume_confirmed(event, replay.active()) then
             consumed_count = consumed_count + 1
         end
     end
@@ -424,6 +445,7 @@ function Match:restart()
     self._last_scoring_team = nil
     self._kickoff_banner = 1.15
     self._onboarding = onboarding.new(self._opts.show_onboarding == true, self._combat_state ~= nil)
+    self._combat_feedback = combat_feedback.new()
     self._replay_state = nil
     replay.reset()
     if self._rollback_lab then
@@ -441,6 +463,7 @@ end
 function Match:teardown()
     self._replay_state = nil
     clear_render_smoothing(self)
+    combat_feedback.reset_visuals(self._combat_feedback)
 end
 
 -- Product/offline matches retain their state-edge behavior. Rollback matches
@@ -768,6 +791,15 @@ function Match:update(dt)
             end
             effects.consume(self.state)
             audio.consume(self.state)
+            if self._combat_state then
+                effects.consume_combat(self._combat_state.events, offline_combat_event_id)
+                audio.consume_combat(self._combat_state.events)
+                for ordinal, event in ipairs(self._combat_state.events) do
+                    local link =
+                        combat_feedback.accepted(event, offline_combat_event_id(event, ordinal))
+                    combat_feedback.confirm(self._combat_feedback, link)
+                end
+            end
             -- Preserve the existing goal beat: stop this catch-up batch as soon as
             -- a live goal is scored, then the render update starts its replay.
             local scored = self.state.score.home + self.state.score.away > score_before
@@ -796,6 +828,7 @@ function Match:update(dt)
     )
     if not drawing_rollback_replay then
         effects.tick(dt)
+        combat_feedback.tick(self._combat_feedback, dt)
     end
     audio.tick(dt)
     advance_rollback_replay(self, dt)
@@ -825,6 +858,7 @@ function Match:update(dt)
             self._last_scoring_team = scoring_team
             if replay.start(scoring_team) then
                 effects.reset() -- the scene jumps back in time; drop live particles
+                combat_feedback.reset_visuals(self._combat_feedback)
                 view_state.reset()
                 self._replay_state = nil
             end
@@ -863,6 +897,7 @@ function Match:draw_frame(s, vp, combat_state)
         arena_pulse = math.min(1, self._kickoff_banner),
         render_pose = s == self.state and self._render_pose or nil,
         combat = combat_model,
+        camera_offset = combat_feedback.camera_offset(self._combat_feedback),
     })
 
     local phase = self:broadcast_phase()
@@ -878,6 +913,8 @@ function Match:draw_frame(s, vp, combat_state)
         phase = phase,
         scoring_team = self._last_scoring_team,
         combat_enabled = combat_model.enabled,
+        combat = combat_model.players[s.controlled],
+        combat_notice = combat_feedback.notice(self._combat_feedback, s.controlled),
     })
     match_hud_render.draw(model, vp)
 

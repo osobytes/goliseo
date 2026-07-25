@@ -8,6 +8,8 @@
 -- must no-op cleanly in that case — this is the module's first-class contract,
 -- not an afterthought.
 
+local combat_feedback = require("game.presentation.combat_feedback")
+
 ---@class AudioModule
 local audio = {}
 
@@ -35,6 +37,18 @@ local CUE_GAIN = {
     kickoff = 0.82,
     goal = 1.15,
     full_time = 1.12,
+    combat_commit = 0.5,
+    combat_projectile = 0.62,
+    combat_expire = 0.42,
+    combat_hit = 0.9,
+    combat_extended = 0.82,
+    combat_guarded = 0.78,
+    combat_immune = 0.54,
+    combat_superseded = 0.48,
+    combat_spill = 0.84,
+    combat_forced = 0.88,
+    combat_recoil = 0.7,
+    combat_rejected = 0.42,
 }
 
 local _muted = false
@@ -60,6 +74,8 @@ local CROWD_SWELL_DUR = 3.0
 local _confirmed_ids = {}
 ---@type table<string, integer>
 local _confirmed_cues = {}
+---@type table<string, integer>
+local _suppressed_confirmed_cues = {}
 
 ---@return number
 local function sfx_volume()
@@ -365,6 +381,18 @@ function audio.load()
     _sfx["goal"] = build_goal()
     _sfx["kickoff"] = build_kickoff()
     _sfx["full_time"] = build_full_time()
+    _sfx["combat_commit"] = build_pass()
+    _sfx["combat_projectile"] = build_parry()
+    _sfx["combat_expire"] = build_touch()
+    _sfx["combat_hit"] = build_tackle()
+    _sfx["combat_extended"] = build_tackle()
+    _sfx["combat_guarded"] = build_block()
+    _sfx["combat_immune"] = build_parry()
+    _sfx["combat_superseded"] = build_pass()
+    _sfx["combat_spill"] = build_catch()
+    _sfx["combat_forced"] = build_volley()
+    _sfx["combat_recoil"] = build_block()
+    _sfx["combat_rejected"] = build_touch()
 
     _crowd_src = build_crowd()
     if not _muted then
@@ -403,8 +431,9 @@ end
 -- Consume one stable event only after its rollback step is confirmed. Event
 -- identity, rather than mutable score/time edges, is the deduplication key.
 ---@param event RollbackWrappedEvent
+---@param suppress_playback boolean?
 ---@return boolean consumed
-function audio.consume_confirmed(event)
+function audio.consume_confirmed(event, suppress_playback)
     assert(
         type(event) == "table" and type(event.id) == "string",
         "confirmed audio event is invalid"
@@ -420,6 +449,10 @@ function audio.consume_confirmed(event)
         if CUE_GAIN[kind] then
             name = kind
         end
+    elseif event.domain:sub(1, 7) == "combat/" then
+        local payload = event.payload --[[@as CombatEvent]]
+        local link = combat_feedback.accepted(payload, event.id)
+        name = link.disposition.audio
     elseif event.domain == "lifecycle/goal" then
         name = "goal"
     elseif event.domain == "lifecycle/kickoff" then
@@ -431,6 +464,10 @@ function audio.consume_confirmed(event)
         return true
     end
 
+    if suppress_playback then
+        _suppressed_confirmed_cues[name] = (_suppressed_confirmed_cues[name] or 0) + 1
+        return true
+    end
     count_confirmed_cue(name)
     play(name)
     if name == "goal" then
@@ -439,10 +476,29 @@ function audio.consume_confirmed(event)
     return true
 end
 
+---@param events CombatEvent[]
+function audio.consume_combat(events)
+    for _, event in ipairs(events) do
+        local name = combat_feedback.disposition(event).audio
+        if name then
+            play(name)
+        end
+    end
+end
+
 ---@return table<string, integer>
 function audio.confirmed_cue_counts()
     local result = {}
     for name, count in pairs(_confirmed_cues) do
+        result[name] = count
+    end
+    return result
+end
+
+---@return table<string, integer>
+function audio.suppressed_confirmed_cue_counts()
+    local result = {}
+    for name, count in pairs(_suppressed_confirmed_cues) do
         result[name] = count
     end
     return result
@@ -541,6 +597,7 @@ function audio.reset()
     _prev_finished = false
     _confirmed_ids = {}
     _confirmed_cues = {}
+    _suppressed_confirmed_cues = {}
 
     if not love.audio or not love.sound then
         return

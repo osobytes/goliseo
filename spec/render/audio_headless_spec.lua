@@ -10,6 +10,7 @@
 local t = require("spec.support.runner")
 local match_sim = require("sim.match")
 local teams = require("data.teams")
+local combat_fixture = require("spec.fixtures.crowded_combat_feedback")
 
 -- Sanity check: in headless mode these MUST be nil; the test is meaningless
 -- if they aren't.
@@ -177,5 +178,22 @@ t.describe("audio headless contract", function()
             audio.toggle_mute()
         end)
         t.is_true(ok, "full cycle error: " .. tostring(err))
+    end)
+
+    t.it("deduplicates and replay-suppresses confirmed combat cues headlessly", function()
+        local ok, err = with_nil_audio(function()
+            local audio = require("game.audio")
+            audio.reset()
+            local hit = combat_fixture.events[3]
+            local guarded = combat_fixture.events[2]
+            t.is_true(audio.consume_confirmed(hit))
+            t.is_true(not audio.consume_confirmed(hit))
+            t.is_true(audio.consume_confirmed(guarded, true))
+            t.eq(audio.confirmed_cue_counts().combat_hit, 1)
+            t.is_true(audio.confirmed_cue_counts().combat_guarded == nil)
+            t.eq(audio.suppressed_confirmed_cue_counts().combat_guarded, 1)
+            audio.consume_combat({ hit.payload, guarded.payload })
+        end)
+        t.is_true(ok, "confirmed combat audio error: " .. tostring(err))
     end)
 end)

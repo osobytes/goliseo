@@ -1,4 +1,5 @@
 local runtime_settings = require("game.runtime_settings")
+local combat_feedback = require("game.presentation.combat_feedback")
 local settings = require("game.settings")
 local t = require("spec.support.runner")
 
@@ -33,5 +34,16 @@ t.describe("runtime settings", function()
         assert(ok, tostring(err))
         t.eq(volume, 0.35)
         t.eq(fullscreen, true)
+    end)
+
+    t.it("routes existing shake and bloom settings to reduced combat feedback", function()
+        local value = settings.defaults()
+        value.screen_shake = false
+        value.bloom = false
+        runtime_settings.apply(value)
+        local diagnostics = combat_feedback.diagnostics(combat_feedback.new())
+        t.is_true(diagnostics.reduced_motion)
+        t.is_true(diagnostics.reduced_flash)
+        runtime_settings.apply(settings.defaults())
     end)
 end)

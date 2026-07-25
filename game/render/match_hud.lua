@@ -89,6 +89,27 @@ local function stamina(rect, amount, scale)
     end
 end
 
+---@param rect Rect
+---@param amount number
+---@param scale number
+local function readiness(rect, amount, scale)
+    local segments = 5
+    local gap = math.max(1, 2 * scale)
+    local width = (rect.w - 16 * scale - gap * (segments - 1)) / segments
+    local y = rect.y + rect.h - 6 * scale
+    for index = 1, segments do
+        local threshold = index / segments
+        set(amount + 1e-9 >= threshold and COLORS.cyan or COLORS.border_soft, 0.9)
+        love.graphics.rectangle(
+            "fill",
+            rect.x + 8 * scale + (index - 1) * (width + gap),
+            y,
+            width,
+            math.max(2, 3 * scale)
+        )
+    end
+end
+
 ---@param model MatchHudModel
 ---@param viewport { w: number, h: number }
 function renderer.draw(model, viewport)
@@ -222,6 +243,27 @@ function renderer.draw(model, viewport)
         "right"
     )
     stamina(layout.identity, model.stamina, scale)
+
+    if model.equipment_label then
+        panel(
+            layout.combat,
+            COLORS.panel,
+            model.feedback_text and COLORS.amber or COLORS.border_soft
+        )
+        set_font("eyebrow", scale)
+        set(model.feedback_text and COLORS.amber or COLORS.text)
+        local text = model.feedback_text
+                and ("[" .. string.upper(model.feedback_glyph or "FEEDBACK") .. "] " .. model.feedback_text)
+            or ("EQUIPMENT · " .. model.equipment_label .. " · " .. assert(model.equipment_state))
+        love.graphics.printf(
+            text,
+            layout.combat.x + 8 * scale,
+            layout.combat.y + 4 * scale,
+            layout.combat.w - 16 * scale,
+            "center"
+        )
+        readiness(layout.combat, model.equipment_progress, scale)
+    end
 
     panel(layout.plan, COLORS.panel, COLORS.border_soft)
     set_font("eyebrow", scale)

@@ -423,7 +423,7 @@ function rollback_validation.observe_impaired_step(audit, step)
                     + 1
             end
             audit.speculative_ids[event.id] = nil
-            effects.confirm_event(event.id)
+            effects.confirm_event(event)
             audio.consume_confirmed(event)
         end
     end
