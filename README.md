@@ -125,7 +125,11 @@ everything, while `sim` never imports LÖVE or `game`. See
 The public contribution workflow is described in
 [CONTRIBUTING.md](CONTRIBUTING.md). The most useful contributions during the
 showcase milestone are focused fixes, tests, accessibility improvements, and
-small improvements that support the committed product scope.
+small improvements that support the committed product scope. External code
+and content contributions require acceptance of the
+[Individual Contributor License Agreement](CONTRIBUTOR_LICENSE_AGREEMENT.md);
+contributors keep ownership while granting the Project Owner commercial and
+relicensing rights.
 
 ## License
 
@@ -134,7 +138,7 @@ Copyright © 2026 Galactic Cup contributors.
 Galactic Cup is source-available under the
 [PolyForm Noncommercial License 1.0.0](LICENSE). You may use, study, modify,
 and redistribute it only for purposes permitted by that license. Commercial
-use requires a separate license from the copyright holders.
+use requires a separate license from the Project Owner.
 
 Unless a file states otherwise, repository-owned code, documentation, and
 assets use the same license. Third-party material retains its own license and

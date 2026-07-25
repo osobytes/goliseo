@@ -57,11 +57,28 @@ Commit messages use short conventional prefixes such as `feat:`, `fix:`,
 `test:`, `docs:`, or `refactor:`. Do not add co-author or generated-by
 trailers.
 
-## Contribution license
+## Contributor agreement
 
 Galactic Cup is source-available under the PolyForm Noncommercial License
-1.0.0. By submitting a contribution, you agree to license that contribution
-under the same terms and confirm that you have the right to do so.
+1.0.0. External contributions are accepted only under the
+[Individual Contributor License Agreement version
+1.0](CONTRIBUTOR_LICENSE_AGREEMENT.md).
+The agreement lets you keep ownership of your work while granting the Project
+Owner the rights needed to use it commercially and offer it under other
+licenses.
+
+Before submitting a pull request:
+
+- Read the contributor agreement.
+- Check the external-contributor acceptance in the pull-request template and
+  provide your legal name.
+- Confirm that you own the contribution or have written permission to make
+  every grant in the agreement.
+
+If an employer or another legal entity owns the contribution, do not submit it
+under the individual agreement. Contact the Project Owner for a separate
+written corporate agreement. Maintainers must not merge an external
+contribution without a complete acceptance record.
 
 Do not add code, fonts, audio, images, or other material unless its license
 permits the project's noncommercial use and redistribution and its provenance
