@@ -25,4 +25,21 @@ t.describe("placement.anchors", function()
             t.near(home[i].y, away[i].y)
         end
     end)
+
+    t.it("tags every built-in outfield slot with the closed role contract", function()
+        local expected = {
+            ["2-1-1"] = { "def", "def", "mid", "fwd" },
+            ["1-2-1"] = { "def", "wide", "wide", "fwd" },
+            ["1-1-2"] = { "def", "mid", "fwd", "fwd" },
+        }
+        local allowed = { def = true, mid = true, wide = true, fwd = true }
+        for formation_id, roles in pairs(expected) do
+            local formation = assert(formations[formation_id])
+            t.eq(#formation.outfield, 4)
+            for ordinal, anchor in ipairs(formation.outfield) do
+                t.is_true(allowed[anchor.role] == true)
+                t.eq(anchor.role, roles[ordinal], formation_id .. " slot " .. ordinal)
+            end
+        end
+    end)
 end)

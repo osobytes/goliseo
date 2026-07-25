@@ -13,13 +13,14 @@ mode, `MatchState.input_tick` is the next causal `InputFrame.tick` to consume.
 The hash at boundary `N` therefore describes state after input `N - 1` and
 before input `N`.
 
-Snapshot version 8 explicitly lists every `MatchState` and `MatchPlayer` field
+Snapshot version 9 explicitly lists every `MatchState` and `MatchPlayer` field
 in canonical order. It includes match RNG, ball/player action state, fixed
 tick metadata, input ownership, both slot mappings, marking hysteresis,
 optional wind-up/dive payloads, each outfielder's derived scan/composure
 values, serializable decision cadence/intent and dedicated RNG state, the two
-team-owned outfield press states, and the current event list. Capture and
-restore deep-copy all tables, and restore reconstructs every `Vec2` metatable.
+team-owned outfield press states, each team's authored formation identifier,
+and the current event list. Capture and restore deep-copy all tables, and
+restore reconstructs every `Vec2` metatable.
 
 Version 2 adds the keeper's transient `save_style` and one-shot tip-event guard
 to `MatchPlayer`, plus optional `save_style` data on catch/parry events.
@@ -34,21 +35,25 @@ snapshot version 7 or earlier are intentionally rejected rather than silently
 restored without this behavior state. Version 7 added the typed outfield
 decision-state contract and its canonical nested encoding. Version 8 adds the
 typed team-owned presser identity, press mode, and reason contract. Soccer-only
-snapshots are now version 8 and soccer-only input-tape envelopes remain version
-1. The current soccer fixture uses InputFrame v2 and is pinned at tape digest
-`9a284e2bb181699f`;
+snapshots are now version 9. Version 9 adds the authored formation identifiers
+and OutfieldDecision v2's optional run expiry, while changing decision records
+to a compact positional encoding. Role and run-drive inputs remain derived from
+formation order and serialized match stats rather than adding persistent
+fields. Soccer-only input-tape envelopes remain version 1. The current soccer
+fixture uses InputFrame v2 and is pinned at tape digest
+`9eb8012dc0bdc304`;
 the published historical InputFrame-v1/InputTape-v1 artifact remains archived
-at `881917e3ba798703`. Version 8 preserves the version-1 soccer tape envelope
+at `881917e3ba798703`. Version 9 preserves the version-1 soccer tape envelope
 and all 7,201 effective input wires, not snapshot byte identity.
 
-Combat-capable boundaries use MatchSnapshot version 9. The top-level snapshot
+Combat-capable boundaries use MatchSnapshot version 10. The top-level snapshot
 owns `MatchState` and a version-1 `CombatMatchState` companion atomically;
 capture and restore pass both halves. The combat schema includes fixture player
 IDs, mechanical loadout/family IDs, every action and forced-state timer/latch,
 projectiles, the current one-tick combat event batch, and the monotonic source
 sequence. Projectile vectors are deep-copied and restored as `Vec2`.
 Presentation equipment IDs, animation, particles, audio, camera, and other
-cosmetic state are excluded. Version 8 rejects a combat companion, version 9
+cosmetic state are excluded. Version 9 rejects a combat companion, version 10
 requires one, and a combat-enabled match cannot be captured without passing
 its companion.
 
@@ -69,8 +74,10 @@ tags. Arrays and sparse index maps are emitted in their declared numeric
 ranges. Records use the checked-in field arrays, never `pairs` iteration.
 Changing a field name, order, numeric format, or nested shape requires a new
 snapshot version. Version 8 extends the version-7 match payload with the
-team-owned outfield press records. Version 9 appends an explicit `combat`
-record and `GCCS;` schema header after the version-8 match payload.
+team-owned outfield press records. Version 9 adds formation identity and the
+OutfieldDecision v2 positional record with optional run expiry. Version 10
+appends an explicit `combat` record and `GCCS;` schema header after the
+version-9 match payload.
 
 Every finite Lua number is encoded exactly from `math.frexp` as:
 
@@ -100,7 +107,7 @@ Input tape version 1 owns deep copies of:
   content, exact tuning, configuration, fixture, seed, 60 Hz tick rate, roster,
   and slot ownership.
 
-Combat tapes use envelope/identity version 2 and require snapshot version 9.
+Combat tapes use envelope/identity version 2 and require snapshot version 10.
 Their identity adds a canonical combat-mechanics string covering every
 action-family timing, geometry, movement, and outcome field plus the ordered
 player-ID to mechanical-loadout/family mapping. Presentation IDs are
@@ -172,7 +179,7 @@ runtime, performance, and offline compatibility evidence is recorded in
 [`omp1_determinism.md`](omp1_determinism.md). This snapshot/tape layer remains
 diagnostic only; rollback and network behavior are still deferred to OMP-2.
 
-Snapshot-v8 also has a bounded synthetic replay regression for the goal window
+Snapshot-v9 also has a bounded synthetic replay regression for the goal window
 missing from the frozen 0-0 match. It constructs a real `InputTape` at the
 pre-goal boundary with all keeper behavior/release fields populated,
 replays three neutral frames through the goal, kickoff reset, and a post-kickoff

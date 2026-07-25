@@ -109,6 +109,18 @@ function stats.run_drive(s)
     return math.max(0, math.min(1, (s.pace * 0.6 + s.mental * 0.4) / 10))
 end
 
+-- Match snapshots already retain the two concrete scalars needed by the run
+-- resolver. Reconstruct the authored-stat derivation in its original operation
+-- order so rollback restores reproduce every IEEE-754 bit for canonical stats.
+---@param move_speed number
+---@param composure number
+---@return number run_drive
+function stats.run_drive_from_match(move_speed, composure)
+    local pace = (move_speed - BASE_MOVE) / MOVE_PER_PACE
+    local mental = composure * 10
+    return math.max(0, math.min(1, (pace * 0.6 + mental * 0.4) / 10))
+end
+
 ---@param s StatBlock
 ---@return number radians  -- 0..pi/15 (0..12 degrees) maximum angular execution error
 function stats.execution_error(s)

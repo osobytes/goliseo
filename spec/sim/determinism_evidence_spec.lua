@@ -9,7 +9,7 @@ local t = require("spec.support.runner")
 t.describe("OMP-1 determinism evidence", function()
     t.it("pins the authoritative fixture to the current snapshot schema", function()
         t.eq(fixture.identity.snapshot_version, match_snapshot.VERSION)
-        t.eq(match_snapshot.VERSION, 8)
+        t.eq(match_snapshot.VERSION, 9)
     end)
 
     t.it("uses a total order for equal-distance match candidates", function()

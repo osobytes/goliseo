@@ -533,3 +533,38 @@ until phase 4 automates it).
   accepts only the seven crossed, coupled fields: goals, drought, decided-late,
   controlled sprint/touches/heavy losses, and team-AI heavy losses. Every
   field still inside tolerance retains its prior pin.
+
+- **2026-07-25 — role-gated off-ball runs and stable runner assignment.**
+  AI-controlled outfield teammates can now retain one of two team-wide
+  in-behind, come-short, or hold-width assignments for a fixed 1.8-second
+  lifetime. Eligibility derives from the authored formation role and existing
+  match stats; ordinary support, human/fixed-slot input ownership, press
+  arbitration, and transition tactics retain their prior contracts.
+  The conservative run-drive threshold is 0.55: it admits the authored
+  0.56 profile while excluding the 0.54 and slower profiles. In a paired
+  60-seed tactic audit, Press High won 20 matches (33.333%) and Counter Attack
+  won 16 (26.667%), restoring a +6.667 percentage-point outcome lever versus
+  the pre-tuning 0-point result.
+
+  The generated 30-match signature measured fun 0.473, goals 2.033,
+  shots/goal 24.655, save rate 0.869, pass completion 0.588,
+  turnovers/min 3.836, possession balance 0.405, drought 10.866 s, and
+  decided-late 0.551. Controlled/team-AI sprint shares were 0.269/0.089,
+  touches per carry-minute were 85.698/75.283, and heavy losses were
+  1.420/0.817.
+
+  The 100-match audit measured fun 0.444, goals 1.900, shots/goal 22.947,
+  save rate 0.851, pass completion 0.578, turnovers/min 3.780, possession
+  balance 0.398, drought 10.596 s, and decided-late 0.594.
+  Controlled/team-AI sprint shares were 0.286/0.090, touches per carry-minute
+  were 86.278/75.418, and heavy losses were 1.027/0.940. Passing remains
+  inside its 0.55–0.85 target band. Goals at 1.900 are 0.100 below the 2–5
+  good band, though still above its catastrophic edge. The composite also
+  fell to 0.444 from the preceding presser audit's 0.557. The threshold
+  deliberately restores tactic liveness at that measured quality cost, so
+  hands-on validation still owns the gameplay-quality decision.
+
+  The selective 30-seed refresh accepts only the six behavior-linked fields
+  that crossed tolerance: goals, drought, decided-late, controlled heavy
+  losses, and team-AI sprint share and heavy losses. Every in-tolerance
+  signature retains its previous pin.
