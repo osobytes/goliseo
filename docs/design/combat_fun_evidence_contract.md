@@ -699,25 +699,47 @@ The predicate evaluates an executable family-specific tape and horizon:
   intersect the frozen target's projected collision volume on at least one
   contact-legal active tick;
 - `ranged`: commit with `pressed=true, held=true, released=false`; on the next
-  canonical tick emit the earliest legal `held=false, released=true` edge,
-  which latches through the rest of the 18-tick windup. At the resulting
-  1-tick active/projectile-spawn transition, require a legal aim and clear line
-  against projected public blockers. Freeze direction at spawn, then advance
-  the projectile at 300 px/s in canonical collision order for no more than its
-  60-tick lifetime or until public field exit, whichever comes first.
-  Feasibility requires an intersection with the frozen target's projected
-  collision volume inside that travel horizon; and
+  canonical tick emit the frozen early-release
+  `held=false, released=true` edge, which latches through the rest of the
+  18-tick windup. A same-tick release is also legal and produces the same
+  post-windup spawn; v1 uses the next-tick edge as its one canonical witness.
+  At the resulting 1-tick active/projectile-spawn transition, require a legal
+  aim and clear line against projected public blockers. Freeze direction at
+  spawn, then advance the projectile at 300 px/s in canonical collision order
+  for no more than its 60-tick lifetime or until public field exit, whichever
+  comes first. Feasibility requires an intersection with the frozen target's
+  projected collision volume inside that travel horizon; and
 - `guard`: commit with `pressed=true, held=true, released=false`, hold through
   the 6-tick windup and subsequent guard phase, and release on the tick after
-  the first witnessed defensive intersection. The finite proof horizon is
-  exactly 66 ticks after commit (guard windup 6 plus the maximum ranged
-  lifetime 60). The frozen target identity is the hostile threat source, and
-  its projected public melee threat or in-flight projectile/contact path must
-  intersect the guarding source's catalogued arc on an active guard tick at or
-  before that horizon. No intersection is infeasible; release without an
-  intersection cannot witness feasibility. Guard is self-only, so neither
-  feasibility nor reconciliation asks the guard geometry to contain the
-  hostile player's body.
+  the first witnessed defensive intersection. Its relevant threat set contains
+  only finite paths already proved by the public observation:
+  (1) a hostile melee `windup` or `active` row through its remaining public
+  windup/active path; (2) an already in-flight hostile projectile through that
+  row's public `horizon_ticks`; or (3) a hostile ranged row whose accepted
+  source sequence and public `release_latched=true` state fix its spawn, through
+  remaining public windup-to-spawn ticks plus the canonical spawned
+  projectile's `min(lifetime, field-exit)` path. Projected latch-resolved ranged
+  telegraphs therefore participate; held or aimed ranged state without a
+  public release latch does not.
+
+For each relevant threat, the path is reconstructed from its public phase,
+remaining phase ticks, telegraph start/end, projected geometry,
+source-sequence id, and, for ranged, release-latch and projected-spawn fields.
+The last relative path tick is remaining windup plus catalog active ticks for
+melee windup, remaining active ticks for melee active, projectile
+`horizon_ticks` for an in-flight row, or remaining ticks to ranged spawn plus
+the spawned projectile horizon for latch-resolved ranged. The guard
+intersection cap is the maximum of those finite last ticks and the 6-tick guard
+raise needed to test an active intersection. No relevant public path makes
+guard infeasible. The guard must intersect the frozen hostile source's melee or
+projectile/contact path inside its catalogued arc on an active guard tick at or
+before that cap; it then releases on the next tick. No intersection is
+infeasible, and the release tick cannot create one.
+
+Guard never extends, truncates, or invents a threat path using future confirmed
+input, hidden state, RNG, or eventual outcome. It is self-only, so neither
+feasibility nor reconciliation asks the guard geometry to contain the hostile
+player's body.
 
 All four families contribute their temporal relation. Family feasibility
 ignores which family is actually equipped and ignores actual cooldown,
@@ -870,12 +892,14 @@ shipped gameplay AI. It contains authoritative public simulation state only:
   player/slot/team id, public keeper/outfielder role, soccer
   action/commitment state, family, public source-sequence id, accepted-action/
   forced/immunity/guard phase and remaining public phase ticks, telegraph
-  start/end and projected action geometry, position, velocity, and facing;
+  start/end and projected action geometry, ranged `release_latched`, and
+  `projected_spawn_tick` only when that latch is true (both nil for other
+  families), position, velocity, and facing;
 - opponents: one row for every opposing player with the same authoritative
   public identity, keeper/outfielder role, soccer action/commitment, family,
   source-sequence, action/forced/immunity/guard phase, remaining phase ticks,
-  telegraph, projected geometry, position, velocity, and facing fields as
-  teammate rows;
+  telegraph, projected geometry, ranged release-latch/spawn, position,
+  velocity, and facing fields as teammate rows;
 - in-flight projectiles: stable `projectile_id`, source player/team id,
   source-sequence id, family id, position, unit direction and velocity in
   px/s, public `in_flight` phase, remaining lifetime ticks, and
@@ -1747,7 +1771,27 @@ cross-cutting changes require a pass-6 audit at the new exact head.
 | Experimental statistics and reproducibility | GUR/stats/accessibility council | approve | exact six-plus-two simulation, compatible operating points, and ten-claim max-T family accepted | no new change; pass-6 exact-head regression audit pending |
 | Accessibility, readability, and inclusive participant design | GUR/stats/accessibility council | approve | accommodations, exposure strata, assistance, and structural-missingness rules remain accepted | no new change; pass-6 exact-head regression audit pending |
 
-Pass 6 must review the next pushed exact head. No pass-6 disposition is
+Pass 6 reviewed exact head
+`0aad9b58f97df42609423f3e8ba8fd0aeb5dabcd` on 2026-07-25. Gameplay/AI
+returned three `block` dispositions for one shared fixed-guard-horizon defect.
+GUR, statistics, accessibility, and telemetry returned `approve`; netcode and
+privacy returned `approve with changes`. These are pass-6 statuses only. The
+guard-horizon author response and the two cross-cutting changes require a
+pass-7 audit at the new exact head.
+
+| Perspective | Reviewer | Pass-6 status | Remaining objection / accepted disposition | Author response for pass 7 |
+| --- | --- | --- | --- | --- |
+| Soccer tactics and arcade-sports design | gameplay/AI council | block | a fixed 66-tick guard proof can create or remove matched opportunities after the actual public hostile path ends | 4.6 threat-derived finite guard cap; pending |
+| Competitive combat/fighting counterplay | gameplay/AI council | block | the fixed cap truncates some latch-resolved ranged paths and extends short melee/projectile paths instead of following their executable remaining threat | 4.6 melee, in-flight, and latch-resolved ranged path rules; pending |
+| AI human-proxy and adversarial behavior | gameplay/AI council | block | guard may reason beyond the public finite threat path rather than solely from phase, remaining ticks, telegraph/geometry, source sequence, and projectile horizon | 4.6 public-path proof and 4.7 public release-latch/spawn fields; pending |
+| Telemetry/data engineering and deterministic replay | data/netcode/privacy council | approve | ordered teammate/projectile rows, collision-free identity, digest, and allowlist accepted | 4.7 preserves canonical row identity/digest while exposing only the public latch-resolved spawn fields; pass-7 audit pending |
+| Netcode, performance, and latency | data/netcode/privacy council | approve with changes | guard cap must derive from canonical public remaining paths and preserve deterministic schedule/order | 4.6 exact per-threat path lengths and max cap; pass-7 audit pending |
+| Privacy, responsible engagement, and player advocacy | data/netcode/privacy council | approve with changes | guard proof must not infer an unlatch-resolved release, future input, hidden outcome, or RNG | 4.6 public-path exclusions and 4.7 public latch fields; pass-7 audit pending |
+| Games user research and psychometrics | GUR/stats/accessibility council | approve | pass-5 accepted/rejected constructs and evidence protocol remain accepted | no new change; pass-7 exact-head regression audit pending |
+| Experimental statistics and reproducibility | GUR/stats/accessibility council | approve | pass-5 exact simulation, operating points, and max-T family remain accepted | no new change; pass-7 exact-head regression audit pending |
+| Accessibility, readability, and inclusive participant design | GUR/stats/accessibility council | approve | pass-5 accommodations, exposure, and structural-missingness rules remain accepted | no new change; pass-7 exact-head regression audit pending |
+
+Pass 7 must review the next pushed exact head. No pass-7 disposition is
 inferred from these author responses.
 
 Each reviewer record uses this category template:
