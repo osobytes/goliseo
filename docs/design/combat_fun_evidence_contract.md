@@ -141,7 +141,7 @@ and never mistaken for confirmed outcomes or lifecycle defects.
 | Stable AI decision reason and observable-information declaration | Combat AI is not implemented; generic brain helpers do not classify combat purpose | #112 |
 | Off-ball purpose | Requires authoritative state; bot intent additionally needs stable #112 reasons | #112 emits bot reason; #148 records/reconciles deterministic context |
 | Settled-possession and soccer-event source linkage | `MatchEvent` has no combat source sequence | #148 |
-| Miss/expiry for every family and defended/ignored commitment costs | Only ranged expiry and contacts are explicit | #148 |
+| Miss/expiry for every family, defended commitment costs, and rejected request outcomes | Only ranged expiry and contacts are explicit | #148 |
 | Pass progression, retained space, lane denial, chance, and prevented-shot definitions | Not present as canonical event fields | #148 |
 | Player-visible feedback for a rejected intent | Presentation behavior, not an event today | #113 core seam and #147 specialized feedback; #148 links |
 | Versioned combat-active report and raw/config hashes | No combat metrics collector exists | #148 |
@@ -279,15 +279,30 @@ code required from #112.
 global event key. #148 must materialize these compound identities:
 
 ```text
-run_id = hash(contract_version, schema_version, build_commit, tape_hash,
-              initial_boundary_hash, fixture_hash, tuning_hash, seed,
-              side_assignment, policy_id)
+run_id = sha256_hex(lp("combat-run/v1"), lp(contract_version),
+                    lp(schema_version), lp(build_commit), lp(tape_hash),
+                    lp(initial_boundary_hash), lp(fixture_hash),
+                    lp(tuning_hash), lp(seed), lp(side_assignment),
+                    lp(policy_id))
 
 event_id = run_id / game_instance_id / canonical_tick / event_domain /
            event_kind / source_sequence_or_zero / same_kind_ordinal
 
-funnel_row_id = run_id / source_sequence / row_kind / row_ordinal
+funnel_row_id = run_id / game_instance_id / source_sequence /
+                row_kind / row_ordinal
 ```
+
+The slash notation denotes typed tuple fields, not delimiter concatenation.
+Canonical textual ids concatenate `lp(field)` for every field in the displayed
+order.
+
+`sha256_hex` is SHA-256 rendered as exactly 64 lowercase hexadecimal
+characters. `lp(value)` converts a schema-typed value to its canonical UTF-8
+form, then emits ASCII decimal byte length, `:`, and those bytes. Integers use
+canonical decimal; strings are Unicode NFC normalized and then UTF-8 encoded.
+Concatenated length prefixes and the fixed field order make the tuple
+unambiguous; delimiter-joined or implementation-default object hashing is
+forbidden.
 
 `game_instance_id` distinguishes restarts in one run. `event_domain` is one of
 `input`, `soccer`, `combat`, or `lifecycle`. `same_kind_ordinal` is the
@@ -295,16 +310,34 @@ one-based position after canonical ordering by domain, kind, source sequence
 (`nil` sorts as zero), source index, target index, then the original
 authoritative array index. A funnel row stores `commit_event_id`,
 `terminal_event_id`, optional `parent_funnel_row_id`, and
-`consequence_event_id` foreign keys. Missing or non-unique keys fail closed.
+`consequence_event_id` foreign keys. Every funnel FK must share its `run_id`
+and `game_instance_id`; cross-game references, missing keys, and non-unique
+keys fail closed.
 
 Canonical machine exports are UTF-8 JSON Lines with one schema header followed
-by rows sorted by `(run_id, game_instance_id, canonical_tick, event_domain,
-event_kind, source_sequence_or_zero, same_kind_ordinal)`. Object keys use the
-schema order; arrays preserve declared order; integers are decimal without
-leading zero; finite non-integers use the shortest round-trippable decimal,
-normalize negative zero to `0`, and reject NaN/infinity. Newlines are LF and
-the final line ends in LF. Byte identity is claimed only under the complete
-`run_id` tuple.
+by rows sorted first by numeric row rank, then lexicographically by the
+materialized key below. Integers compare numerically; strings compare unsigned
+UTF-8 bytes. No sort-key field is nullable.
+
+| Rank / row type | Canonical key after rank |
+| --- | --- |
+| 0 schema header | the one literal `combat_active_signature/v1` |
+| 10 event | `(run_id, game_instance_id, canonical_tick, domain_rank, event_kind, source_sequence_or_zero, same_kind_ordinal)` |
+| 20 funnel | `(run_id, game_instance_id, root_commit_tick, source_sequence, row_kind_rank, row_ordinal)` |
+| 30 per-player | `(run_id, game_instance_id, stable_player_index)` |
+| 40 per-match | `(run_id, game_instance_id)` |
+| 50 fixture | `(fixture_hash, seed, side_assignment, policy_id, run_id)` |
+| 60 aggregate | `(metric_id, scope_rank, canonical_strata_json, window_ticks_or_zero)` |
+
+`domain_rank`, `row_kind_rank`, and `scope_rank` are closed schema enums.
+Optional sort integers materialize as `0`; optional sort strings materialize
+as `""`; a real field that could equal that sentinel carries an explicit
+presence bit in `canonical_strata_json`. Duplicate total keys fail closed.
+Object keys use schema order; arrays preserve declared order; integers are
+decimal without leading zero; finite non-integers use the shortest
+round-trippable decimal, normalize negative zero to `0`, and reject
+NaN/infinity. Newlines are LF and the final line ends in LF. Byte identity is
+claimed only under the complete `run_id` tuple and this total ordering.
 
 Wall-clock, frame time, device polling, network arrival, render presentation,
 and platform/browser observations are **observational runtime evidence**. They
@@ -427,9 +460,9 @@ from calibration results.
 | `projectile_result` | spawned, contact, expire counts / ranged commits; rates and travel ticks | no ranged commits → `NA` | diagnostic; role/lane | projectile volume is not lane value | `CE.projectile_*`, contact; #148 |
 | `recovery_punished_rate` | encounters where opponent gains a registered soccer consequence while attacker remains in recovery / missed or defended encounters | no missed/defended encounters → `NA` | higher supports commitment cost; family/response | proximity alone can falsely claim punishment | `CS.phase`, linked MS consequence; #148 |
 | `spill_to_opponent_settle` | opposing settled possessions attributable to a spill / spills; rate | no spills → `NA` | bounded higher; family/phase; 1.5/3/5 s | rewarding any turnover encourages combat replacing passing | `CE.ball_spill`, `MS.owner`; #148 |
-| `combat_to_soccer_conversion` | eligible encounters yielding one attributable settled possession, progressive pass, retained-space event, lane control, chance, shot, prevented shot, or goal / eligible terminal encounters | no encounters → `NA`; consequence types also reported separately | higher only with safety/soccer gates; 1.5/3/5 s | one loose composite hides low-quality or spam-created outcomes | CE→MS parent linkage; #148 |
+| `combat_to_soccer_conversion` | eligible encounters yielding one attributable settled possession, progressive pass, retained-space event, passing-lane control, receiver-lane denial, chance, shot, prevented shot, or goal / eligible terminal encounters | no encounters → `NA`; consequence types also reported separately | higher only with safety/soccer gates; 1.5/3/5 s | one loose composite hides low-quality or spam-created outcomes | CE→MS parent linkage; #148 |
 | `time_to_soccer_consequence_s` | ticks from terminal combat result to first attributed soccer consequence / 60; distribution per converted encounter | no consequence → right-censored at window and reported | lower can indicate immediacy, not quality; consequence type | stopping only successful cases hides failures | #148 causal rows |
-| `commitment_cost_conversion` | missed/expired/guarded/immune/superseded/cancelled encounters with opponent opportunity, lost space, or possession risk / encounters in those terminals | zero denominator → `NA` | higher supports counterplay; family/response | rejected requests paid no commitment and are excluded | #148, definitions below |
+| `commitment_cost_conversion` | missed/expired/guarded/immune/superseded/interrupted/cancelled encounters with opponent opportunity, lost space, or possession risk / encounters in those terminals | zero denominator → `NA` | higher supports counterplay; family/response | rejected requests paid no commitment and are excluded | #148, definitions below |
 
 For this contract:
 
@@ -442,10 +475,13 @@ For this contract:
   blocked, and ties use stable player index;
 - **progressive pass** advances the ball at least 48 px on the attack axis and
   is retained by the passer's team for 0.7 s;
-- **retained space** means the acting team owns the ball at the terminal, the
-  linked target is displaced/forced, and within the window the carrier or ball
-  enters the target's terminal-position circle of radius 36 px, gains at least
-  36 px attack-axis progress, and remains settled for 0.7 s;
+- **retained space** freezes a radius-36 px zone at the linked target's
+  pre-terminal position. The acting team must own the ball at the terminal;
+  before entry, the target's expanded collision circle must become disjoint
+  from that zone (tangency still blocks) and remain disjoint through credit.
+  Only then may the carrier or ball enter that fixed zone, gain at least 36 px
+  attack-axis progress from its terminal position, and remain team-settled for
+  0.7 s;
 - **open passing lane** is a clear segment of at least 48 px from the carrier
   to a non-keeper teammate's current position;
 - **open shot lane/chance** requires an eligible carrier within 180 px of the
@@ -454,10 +490,17 @@ For this contract:
 - **likely shooter** is the current owner when that owner has an open shot
   lane; otherwise it is the non-keeper attacker with an open shot lane and the
   smallest squared distance to the ball, tied by stable player index;
-- **passing-lane control** occurs when the linked target's terminal collision
-  circle intersected a previously open passing segment and its outcome makes
-  that lane clear for the acting team, or when a linked potential receiver on
-  the opposing team loses a previously open receiving lane;
+- **passing-lane control** freezes every carrier-to-non-keeper-teammate segment
+  of at least 48 px immediately before the terminal. A candidate was
+  `blocked_solo_by_target` only when the linked target's expanded collision
+  circle intersected it and, after removing that target alone, no other
+  opponent circle intersected it. Credit requires that exact frozen endpoint
+  segment to become clear of every opponent for 12 consecutive ticks;
+- **receiver-lane denial** is separate: a linked opposing potential receiver
+  must have had a clear carrier-to-receiver segment immediately before the
+  terminal, and that exact segment must remain blocked for 12 consecutive
+  ticks by the source actor or linked ball outcome. It is never counted as
+  passing-lane control;
 - **shot denial** requires the linked target to be the frozen likely shooter
   and the terminal to remove every open shot lane for at least 12 ticks;
 - **shot** and **goal** use existing match events/score;
@@ -576,7 +619,7 @@ that floor. A merely positive or frame-perfect window fails.
 | `concurrent_cue_count` / `cue_overlap_share` | active cues per tick; ticks with >=2 cues / threat ticks | no threat ticks → `NA` | lower tails, diagnostic | suppressing needed cues improves metric but harms comprehension | #147/#148 |
 | `false_defensive_reaction_rate` | defensive responses to no authoritative threat / defensive response opportunities | no responses → `NA` | lower; presentation/device | cautious play or ordinary juke can be mislabeled | input + cue linkage; #148 |
 | `ball_hud_occlusion_share` | threat ticks where cue geometry masks ball or required HUD target / threat ticks | no threat ticks → `NA` | hard review trigger above 0; viewport | pixel overlap is only a proxy for readability | presentation capture; #147/#148 |
-| `causal_identification_accuracy` | correctly identified source, family, direction, target, and available response components / presented components; rate per participant-condition | “unsure” is incorrect but retained; no probe → structural missingness and blocked coverage | confirmatory lower 95% interval `>=0.70` overall; component and priority-stratum rules in 6.3 | guessing, leading labels, memory delay | neutral replay probe; #151 |
+| `causal_identification_accuracy` | correctly identified source, family, direction, target, and available-response components / presented B components; rate per participant | “unsure” is incorrect but retained; fewer than eight B probes → structural missingness and blocked coverage; A is not a denominator | confirmatory simultaneous lower bound `>=0.70` overall; component and priority-stratum rules in 6.3 | guessing, leading labels, memory delay, accommodated exposure | neutral B replay probe; #151 |
 | `causal_identification_time_s` | probe onset to final answer; seconds per probe | timeout is right-censored at declared limit | lower diagnostic; same strata | faster guesses are not better comprehension | #151 |
 
 Freeze-probe tasks are separate from ordinary matches. Concurrent think-aloud
@@ -597,35 +640,73 @@ decision-tick snapshot for every human and bot opportunity:
    index tie);
 3. `loose_ball_contest`: owner is nil and both source and target are within
    96 px of the ball;
-4. `passing_lane_or_shot_denial`: the target intersects an open passing lane,
-   is the frozen likely shooter, or controls an open shot lane under section
-   4.3's exact predicates; or
-5. `recovery_punish`: the target is in an accepted equipment recovery phase.
+4. `passing_lane_or_shot_denial`: the target is the sole blocker of a frozen
+   candidate passing segment, is the frozen likely shooter, or controls an
+   open shot lane under section 4.3's exact predicates; or
+5. `recovery_punish`: the target is in an accepted equipment recovery phase
+   **and** at least one of predicates 1–4 is also true for that source/target.
 
 All true predicates are retained as an eligibility bitset. Zero true predicates
-becomes `unattributed_off_ball`; more than one becomes `multi_context` and is
-reported in every applicable stratum rather than coerced into a favorable
-purpose. `formation_risk_tradeoff` is not a purpose. It is a separate cost flag
-when committing increases source-to-anchor distance by at least 36 px or leaves
-the source more than 120 px from its current authored anchor.
+on a committed action produces the closed outcome `unattributed_off_ball`;
+more than one becomes `multi_context` and is reported in every applicable
+stratum rather than coerced into a favorable purpose. Recovery without a ball,
+carrier, or lane/shot predicate is `recovery_only_diagnostic`, never an
+eligibility bit or attributed purpose. `formation_risk_tradeoff` is not a
+purpose. It is a separate cost flag when committing increases
+source-to-anchor distance by at least 36 px or leaves the source more than
+120 px from its current authored anchor.
 
 #112 emits one stable bot decision reason from the five purpose ids or
 `decline`, using only its observable allowlist. #148 independently records the
 eligibility bitset and risk flag. A reason reconciles when it is in the bitset;
-`decline` reconciles with any eligible opportunity and remains in the
-denominator. Human stated intent is a separate replay-debrief field, never
-substituted for authoritative context. An AI reason is an intent claim, not
-proof of value.
+`decline` is valid only when the episode closes without an action; it can never
+label a commit. A committed zero-bitset action is
+`unattributed_off_ball`; for a representative policy it additionally raises
+the hard `representative_policy_context_violation` schema error. Human stated
+intent is a separate replay-debrief field, never substituted for authoritative
+context. An AI reason is an intent claim, not proof of value.
 
-An **opportunity episode** starts when a player is action-eligible and at least
-one context predicate is true, and ends when eligibility/context changes, an
-action commits, or 30 ticks elapse. One episode is one opportunity; a decline
-or cooldown/unavailability is retained. `net_soccer_utility` is reported both
-per opportunity and per active player-minute:
+A **family-neutral opportunity set** contains every `(target, context)` pair
+whose soccer predicate above is true, without consulting loadout, family
+range/arc, cooldown, recovery, commitment, or input. One source-player episode
+starts when that set becomes nonempty, stores its sorted pairs and canonical
+formation slot, and ends when the set changes, an action commits, or 30 ticks
+elapse. Thus every family receives the same soccer-context denominator.
+
+Each episode closes with exactly one outcome:
+
+- `acted` when an accepted commit occurred, with its target and reason;
+- `declined` when at least one tick was action-ready but no commit occurred; or
+- `unavailable:<reason>` when no tick was action-ready, using the closed
+  reason with the most unavailable ticks and rejection-enum order as the tie
+  break.
+
+Per-reason unavailable tick counts are always retained. Allowed unavailability
+reasons are `no_loadout`, `soccer_commitment`, `aerial_or_recovery`, `forced`,
+`already_committed`, and `cooldown`; malformed input is a protocol failure and
+missing press edge is a decline, not unavailability.
+
+Episode benefits are linked only from an accepted action and counted once per
+group: at most one possession gain (`+1.0`), one of progressive pass, retained
+space, passing-lane control, or receiver-lane denial (`+0.5`), one of chance,
+shot, or prevented shot (`+1.0`), and one goal (`+3.0`). Costs cap at one
+settled-possession loss (`-1.0`) and one lost-space/opponent-chance outcome
+(`-0.5`), while duration costs integrate continuously. `interrupted` is a paid
+commitment terminal.
+
+Formation cost samples the half-open confirmed-tick interval
+`[episode_start, cost_end)`, where `cost_end` is episode end without an action
+or the first action-ready tick after the linked terminal/recovery. With `d0`
+the source-to-current-authored-anchor distance at episode start,
+`formation_displacement_px_s = sum(max(0, d(t)-d0) / 60)`. If recovery
+extension overlaps another episode, each source tick belongs to the earliest
+episode start (then lowest episode id); it is never charged twice.
+Multi-context pairs share the same source episode. `net_soccer_utility` is
+reported both per opportunity and per active player-minute:
 
 ```text
 +1.0 settled possession gained
-+0.5 progressive pass, retained space, or lane control
++0.5 progressive pass, retained space, passing-lane control, or receiver-lane denial
 +1.0 chance, shot, or prevented shot
 +3.0 goal
 -1.0 settled possession lost
@@ -633,7 +714,7 @@ per opportunity and per active player-minute:
 -commitment_seconds / 3
 -recovery_seconds / 3
 -cooldown_unavailable_seconds / 6
--formation_displacement_px / 120
+-formation_displacement_px_s / 120
 ```
 
 Raw components are always reported; the weighted utility is a declared project
@@ -650,46 +731,62 @@ comparison, not human fun.
 | `machine_unarmed_viability` | unarmed player's touches, passes, progressive involvements, option episodes, settled-possession contributions, and net soccer utility / active player-minute and opportunities | missing role/slot cell → inconclusive | all section 4.4 team gates pass; each per-slot involvement ratio lower bound `>0.80`; utility difference lower bound `>-0.10/opportunity` | team success can hide one sidelined player | #149 |
 | `human_unarmed_viability` | unarmed player's enjoyment, partial-PXI autonomy/ease, and replay-cued agency versus matched armed role | incomplete follow-up retained as missing/harm disposition | enjoyment lower bound `>-0.50` points; other outcomes diagnostic unless powered | occasional selection is not agency | #151 evidence, #114 decision |
 
-Priority contexts are fixed as carrier contest, carrier protection, loose ball,
-lane/shot denial, recovery punish, and formation-risk tradeoff, crossed with
-four outfield roles and both sides. Results report authored player/stat,
-formation, score state, skill, and policy. A family is a strict upgrade only
-when its matched-opportunity uncertainty interval clears the context SESOI in
-every priority context and no raw cost/safety guard is worse. Absence of
-evidence is `inconclusive`, not balance. #149 can close from the machine gate
-without waiting for #151; the later human gate remains required for #114.
+Priority contexts are exactly the five ids above: carrier contest, carrier
+protection, loose-ball contest, lane/shot denial, and recovery punish. They are
+crossed with every canonical
+`<formation_id>/outfield/<outfield_index>` slot and both sides.
+`formation_risk_tradeoff` remains only a cost flag and can never become a sixth
+context or reason. Results report authored player/stat, formation, score state,
+skill, and policy. A family is a strict upgrade only when its
+matched-opportunity uncertainty interval clears the context SESOI in every
+priority context and no raw cost/safety guard is worse. Absence of evidence is
+`inconclusive`, not balance. #149 can close from the machine gate without
+waiting for #151; the later human gate remains required for #114.
 
 ### 4.7 Human-proxy and adversarial policy roles
 
-Representative policies consume the versioned `combat_observation/v1`
-allowlist and nothing else:
+`combat_sim_observation/v1` is the only schema available inside `sim/` and to
+shipped gameplay AI. It contains authoritative public simulation state only:
 
-- self: stable player/slot/team id, family, accepted public action/forced/
-  immunity phase, own cooldown availability as ready/not-ready, and own
-  materialized input history;
-- opponents: stable player/team id, visible public action/forced/guard cue and
-  quantized position/facing;
-- ball and match: ball position/velocity/owner, score, displayed time,
-  formation-slot anchors, and public stoppage state;
-- presentation visibility: cue visible/occluded flag under the supported
-  viewport, never an outcome that has not resolved; and
-- policy transform: observed canonical tick, 12-tick reaction delay, 12-tick
-  decision cadence, seeded aim/position noise, 4 px position and 16 px/s
-  velocity quantization, and 16-sector facing quantization.
+- self: stable player/slot/team id, family, public accepted-action/forced/
+  immunity phase, own ready/not-ready cooldown, and own materialized input
+  history;
+- opponents: stable player/team id, authoritative public action/forced/guard
+  phase, telegraph start/end plus projected action geometry, position, and
+  facing;
+- ball and match: ball position/velocity/owner, score, canonical remaining
+  ticks, formation-slot anchors, and public stoppage state; and
+- identity: schema, policy id, producer/observed canonical tick, canonical
+  player-index order, and digest.
 
-The observation row has schema/version, policy id, producer tick, observed
-source tick, visibility mask, each field in canonical player-index order,
-quantized values, noise seed/id, and a canonical hash. #112 emits that digest
-with its reason. A schema allowlist test rejects every undeclared field.
+It excludes pixels, cue visibility/occlusion, render timing, theme,
+presentation id, viewport, frame rate, and unresolved outcomes.
+
+`human_proxy_observation/v1` is evidence-only and is built outside `sim/`. It
+joins a simulation observation to recorded cue visible/occluded state,
+presented cue geometry, viewport/theme/presentation identity, render/device
+timestamps, and accessibility presentation. The harness then applies a
+12-tick reaction delay, 12-tick cadence, seeded aim/position noise, 4 px
+position and 16 px/s velocity quantization, and 16-sector facing quantization.
+The proxy can act only by materializing an ordinary input tape that passes the
+same producer and legality checks as human input; it has no direct simulation
+action channel.
+
+Each schema has a separate canonical digest and allowlist test that rejects
+undeclared fields. #112 emits the simulation digest with its reason; the
+evidence harness emits the human-proxy digest. Gameplay-AI decision inputs and
+digests remain invariant across presentation/theme/viewport swaps. Those
+identities are still retained outside the policy input in fixture E, which
+must reproduce identical gameplay-AI decisions and input tapes.
 
 Policy ids are distinct:
 
-- `gameplay_ai/combat/v1` — deterministic shipped gameplay AI using the
-  allowlist but its declared gameplay cadence;
+- `gameplay_ai/combat/v1` — deterministic shipped gameplay AI using only
+  `combat_sim_observation/v1` at its declared gameplay cadence;
 - `human_proxy/combat/v1` — the representative delayed/quantized/noisy
-  population above;
-- `adversarial_observable/combat/v1` — exploit search constrained to the same
-  allowlist; and
+  evidence population using `human_proxy_observation/v1`;
+- `adversarial_observable/combat/v1` — exploit search constrained to
+  `combat_sim_observation/v1`; and
 - `adversarial_privileged/combat/v1` — explicitly diagnostic search that may
   read hidden state but still emits only legal materialized inputs.
 
@@ -741,12 +838,15 @@ PXI was not validated as a responsiveness instrument for this two-period
 combat crossover. This is a project application, not a claim of validated
 within-person change sensitivity. Before freeze, the burden pilot must reach
 the complete three-item enjoyment rule in at least 90% of administered
-condition blocks, report condition-wise omega with bootstrap uncertainty, and
-report a within-person contrast reliability/generalizability coefficient with
-uncertainty. Item-level ordinal and plausible single-item-missing sensitivity
-analyses test whether the condition contrast depends on the complete-score
-rule. Failure to estimate the contrast reliably blocks confirmatory use or
-requires a reviewed redesign.
+condition blocks. Condition-wise omega and any within-person contrast
+reliability/generalizability decomposition are explicitly **diagnostic**:
+their estimator, variance components, script/environment hash, and uncertainty
+are reported, but no numeric reliability cutoff gates the study or supports a
+responsiveness claim. Confirmatory usability is decided by the complete-score
+rule and the exact-model power, missingness sensitivity, and interval-precision
+requirements in section 6. Item-level ordinal and plausible
+single-item-missing sensitivity analyses test whether the condition contrast
+depends on the complete-score rule.
 
 BANGS uses the particular-session wording, all 18 items, randomized order, and
 the validated labeled `1..7` response scale in a separate formative deep-dive
@@ -807,9 +907,10 @@ can eliminate observer effects simply by choosing one facilitator
 
 ### 5.3 Replay-probe sampling and scoring
 
-After each condition, #151 builds the eligible pool from confirmed encounter
-rows. A fixed debrief seed hashes the pseudonymous session id, condition block,
-and protocol version, then samples eight events without replacement:
+Comprehension is measured only for combat-active condition B. #151 builds its
+eligible pool from B's confirmed encounter rows. A fixed debrief seed hashes
+the pseudonymous session id, literal `condition_b`, and protocol version, then
+samples eight events without replacement:
 
 - two `hit` events, including a spill/forced event when available;
 - two defended contacts from `guarded`, `immune`, or `superseded`;
@@ -818,13 +919,23 @@ and protocol version, then samples eight events without replacement:
 
 Missing strata are reported and replaced by a random event from the nearest
 listed stratum; no facilitator chooses a favorable clip. Sampling balances
-families across the complete session before repeating a family.
+families across the B pool before repeating a family. Condition A has no combat
+probe and cannot enter the comprehension denominator or power model. Milestone
+11 does not administer an A guessing/no-threat control; a later control must
+use a separately named soccer/no-threat diagnostic pool and may not be pooled
+with B accuracy.
 
-The probe begins within five minutes of the condition. It first plays once at
-full speed without overlay, then permits exactly one rewind and up to two
-participant-requested pauses. The participant answers before any source,
-family, target, direction, terminal, or response annotation is revealed.
-Neutral prompts ask what was noticed, intended, caused, and still possible.
+The probe begins within five minutes of B. It first plays once at full speed
+without overlay, then permits exactly one rewind and up to two
+participant-requested pauses. Accessibility accommodations may allow additional
+rewinds, pauses, slower replay, or modality alternatives; the exact exposure is
+recorded as `accommodated_exposure` and reported as its own stratum. The
+participant answers before any source, family, target, direction, terminal, or
+response annotation is revealed. Neutral prompts ask what was noticed,
+intended, caused, and still possible. Primary comprehension retains
+accommodated participants and includes a strict-exposure sensitivity; a
+disposition change makes the gate unresolved rather than denying the
+accommodation.
 
 The legal-response rubric is generated from the frozen canonical scenario
 matrix and lists every response as legal/illegal, reactive/predictive/
@@ -851,11 +962,40 @@ the function affects input:
 | Cognitive/processing | plain language, practice/repetition, participant-paced research screens and breaks |
 | Motion/photosensitivity | reduced motion/flash setting, no essential information carried by shake/flash |
 
-For each domain, report the independent count and Wilson 95% interval for
-access-task completion; planned precision is half-width `<=0.35`. Falling
-below count/precision is an explicit coverage limitation and prevents a claim
-for that domain. Any access failure, adverse response, or access-related
-dropout is retained as a harm disposition regardless of rate and is never an
+Each participant-domain uses one frozen checklist. With the supported
+configuration active, the participant must:
+
+1. navigate instructions, practice, replay, and instrument screens;
+2. submit one response, deliberately skip one optional response, and recover
+   from one validation message;
+3. operate replay play/pause/rewind and answer controls;
+4. identify ball/possession state and one combat telegraph through the claimed
+   modality; and
+5. execute one mapped soccer action and one viable defensive response in the
+   canonical practice scenario.
+
+The binary endpoint is 1 only when all applicable items complete without the
+operator performing an input or revealing an answer; otherwise it is 0.
+Allowed assistance is setup, device positioning, remapping, verbatim
+read-aloud/repetition, participant-chosen time, rest, and the replay
+accommodations in section 5.3. Assistance and every checklist item are
+recorded.
+
+The numerator is completed participant-domain checklists. The denominator is
+every participant who consents to and begins that domain's configuration.
+Unavailable modality, structural inability after setup begins, assistance
+beyond the allowed list, or access/adverse stop is a noncompletion and harm
+disposition. Withdrawal before setup is structural missingness in the assigned
+count; withdrawal/deletion that removes a begun result is also structural
+missingness and is treated as failure in the mandatory worst-case
+sensitivity. Neither can improve the rate.
+
+For each domain, report assigned, begun, completed, structural-missing, and
+independent-participant counts plus the simultaneous interval in section 6.3;
+planned two-sided precision is half-width `<=0.35`. Falling below
+count/precision is an explicit coverage limitation and prevents a claim for
+that domain. Any access failure, adverse response, or access-related dropout is
+retained as a harm disposition regardless of rate and is never an
 outcome-blind exclusion.
 
 Research UI acceptance requires:
@@ -1011,7 +1151,9 @@ For each candidate even complete-pair count, at least 100,000 Monte Carlo
 replicates evaluate true mean differences
 `{-0.58,-0.33,0,+0.49,+0.50,+0.75}`. The report publishes the probability of
 every section 6.4 disposition at every effect, Monte Carlo uncertainty, and
-the generating parameters. The selected count must meet all of:
+the generating parameters. Every replicate applies section 6.4's exact harm
+classifier before assigning its disposition. The selected count must meet all
+of:
 
 - `P(proceed) >= 0.80` at `+0.75` (SESOI plus 0.25);
 - `P(proceed) <= 0.05` at `+0.50`, `+0.49`, `0`, `-0.33`, and `-0.58`;
@@ -1029,11 +1171,24 @@ Every stochastic blocking guardrail receives the same treatment at its own
 null boundary and at a frozen meaningful buffer beyond that boundary:
 `P(false pass at the boundary) <= 0.05` and `P(pass at the favorable buffered
 effect) >= 0.80`. The buffer is 25% of the corresponding NI/equivalence margin
-unless section 4 gives a stricter value. If blinded pilot data cannot support
-that operating characteristic, the measure is either reclassified as
-diagnostic before freeze or its independent-unit count is increased. Exact
-deterministic invariants and full-cell schema reconciliation are zero-tolerance
-checks, not powered claims.
+unless section 4 gives a stricter value.
+
+Human-family favorable rates are frozen instead of using that generic buffer.
+Comprehension simulation generates exactly eight clustered B probes per
+participant: boundary rates are 0.70 overall and 0.60 for each component;
+favorable rates are 0.85 overall and 0.75 for every component. Each priority
+stratum uses boundary 0.55 and favorable 0.80. Functional access uses the
+participant-domain binary checklist: boundary completion is 0.65 and favorable
+completion is 0.90 in every domain. Both simulations use blinded-pilot
+within-participant/domain correlation, structural missingness, the exact
+simultaneous-interval method in 6.3, and required strata. Each family must have
+false-pass probability `<=0.05` with all true rates at their boundaries and
+pass probability `>=0.80` with all true rates favorable.
+
+If blinded pilot data cannot support a required operating characteristic, the
+measure is either reclassified as diagnostic before freeze or its
+independent-unit count is increased. Exact deterministic invariants and
+full-cell schema reconciliation are zero-tolerance checks, not powered claims.
 
 Formative stopping uses theme saturation plus deliberate negative-case search,
 not a statistical claim. It cannot satisfy the confirmatory count.
@@ -1088,6 +1243,25 @@ assumptions; neither can erase the delta result. An access-related or adverse
 withdrawal independently remains a harm disposition even if its deleted
 payload cannot be imputed.
 
+Comprehension simultaneous intervals use a studentized
+participant-cluster max-T bootstrap with 50,000 resamples within
+sequence×device strata. The random generator is PCG64DXSM seeded from the first
+128 bits of SHA-256 over
+`combat_fun_evidence_contract/v1/comprehension-max-t/v1`; the frozen analysis
+records generator, library, script, and environment hashes. The max-T vector
+contains the six aggregate claims plus overall accuracy for every frozen
+device, experience-tertile, functional-domain, and strict/accommodated-exposure
+stratum. The one-sided 95% familywise critical value supplies lower pass
+bounds; the two-sided 95% max-absolute-T critical value supplies precision
+half-widths. A zero standard error or failed resample is unresolved, never a
+pass.
+
+Functional-access simultaneous intervals use conservative
+Bonferroni-Wilson score bounds across the five binary domain endpoints:
+one-sided 99% lower bounds for passing and two-sided 99% intervals for
+half-width. This controls familywise alpha at no more than 0.05 without
+assuming independent domains. Structural-missing sensitivity must also pass.
+
 The confirmatory families are exhaustive:
 
 | Family | Members and directional null | Adjustment and interval | Unit, strata, and minimum coverage |
@@ -1095,8 +1269,8 @@ The confirmatory families are exhaustive:
 | Primary enjoyment | one member, `B-A <= +0.50`; harm boundary `B-A <= -0.33` is reported from the same contrast | unadjusted two-sided 95% interval; strict bounds | randomized participant; frozen powered count; sequence, period, device, experience, functional configuration, and winner/loser sensitivity |
 | Soccer integrity | goals, completion, shots, shots/goal, save rate, pass volume, pass completion, turnovers, possession, loose ball, formation mean displacement, formation share above 120 px, progressive possessions, zone entries, chance rate, on-target share, drought, decided-late share, carry time, close/sprint/juke carry shares, heavy-loss rate, carry progression, carry retention, ball-in-play share, and soccer cadence; each null is the harm side of its section 4.4 NI or equivalence margin | Holm-adjusted one-sided 95% harm bounds; equivalence members use both Holm-adjusted TOST tests and familywise 90% intervals; absolute catastrophe floors also must pass | paired common seed; at least 60 pairs for each A/B fixture contrast, every declared C cell present, and at least 4 pairs/cell; aggregate interval width no greater than twice its full allowed margin, otherwise `inconclusive` |
 | Machine family balance | each of the four family net utilities in each of the five eligibility contexts; each raw benefit/cost NI check; strict-upgrade cell; unarmed touches, passes, progressive involvements, option episodes, settled-possession contributions, and net utility | Holm-adjusted one-sided 95% bounds within balance; a dominance claim requires every context lower bound `>+0.10` and every cost bound to pass | paired common seed across every family×formation×canonical-slot×side×profile×opponent-formation cell; no missing cell; at least 4 pairs/cell and 60 pairs in each collapsed claim |
-| Human causal comprehension | overall component accuracy plus source, family, direction, target, and available-response accuracy; nulls are overall `<0.70` and component `<0.60` | cluster-by-participant Holm-adjusted one-sided 95% lower bounds for six claims | frozen powered participants; eight probes/condition; keyboard and gamepad each `>=16`, each experience tertile `>=12`, each supported functional domain `>=8`; each priority-stratum 90% lower bound `>=0.55` and half-width `<=0.35` |
-| Functional access | vision, Deaf/Hard-of-Hearing, motor, cognitive, and motion/photosensitivity task completion; null `<0.65` | Holm-adjusted one-sided Wilson 95% lower bounds; any adverse/access failure retained separately | participant, `>=8` per overlapping domain and `>=4` per applicable device; Wilson half-width `<=0.35`; no diagnosis strata |
+| Human causal comprehension | B-only overall component accuracy plus source, family, direction, target, and available-response accuracy; nulls are overall `<0.70` and component `<0.60` | participant-cluster max-T one-sided 95% simultaneous lower bounds; two-sided 95% max-T precision intervals | frozen powered participants; exactly eight B probes each; keyboard and gamepad each `>=16`, each experience tertile `>=12`, each supported functional domain `>=8`; each frozen priority-stratum lower bound `>=0.55` and simultaneous half-width `<=0.35`; A absent |
+| Functional access | binary checklist completion for vision, Deaf/Hard-of-Hearing, motor, cognitive, and motion/photosensitivity; null `<0.65` | Bonferroni-Wilson one-sided 99% lower and two-sided 99% precision intervals; any adverse/access failure retained separately | participant-domain; `>=8` per overlapping domain and `>=4` per applicable device; half-width `<=0.35`; no diagnosis strata |
 
 The exact lifecycle, safety, counter-matrix, policy-allowlist, and reconciliation
 rules are full-enumeration hard gates. A normal-context runtime/counter window
@@ -1114,6 +1288,16 @@ one-sided safety/NI rule above is stricter. Let `L` and `U` be the primary
 enjoyment interval, and let each other gate be `pass`, `confirmed failure`, or
 `unresolved`.
 
+Enjoyment harm uses that same interval and exactly three states:
+
+- `confirmed_harm` when `U <= -0.33`;
+- `harm_excluded` when `L > -0.33`; and
+- `harm_unresolved` when `L <= -0.33 < U`.
+
+Thus equality at the upper harm boundary confirms harm, while equality at the
+lower boundary does not exclude it. Section 6.2 applies these predicates in
+every simulation replicate.
+
 Evidence integrity is decided first. A failed A/A, missing/duplicate key,
 reconciliation error, broken assignment, underpowered plan, absent required
 cell, failed carryover fallback, or missingness sensitivity that changes the
@@ -1127,10 +1311,12 @@ For the first valid confirmatory cycle, the quadrants are exhaustive:
 
 | Value interval and confirmatory gates | Decision |
 | --- | --- |
-| `L > +0.50` and every hard, soccer, balance, comprehension, access, and harm gate passes | `proceed` |
+| `L > +0.50`, `harm_excluded`, and every hard, soccer, balance, comprehension, and access gate passes | `proceed` |
 | `U <= +0.50`, including equality, regardless of otherwise favorable diagnostics | `stop`; the first-cycle interval rules out the required value |
-| any confirmed safety/access/product-rule failure or confirmed unacceptable harm, regardless of value | `stop`; a threshold may not be weakened |
-| `L <= +0.50 < U`, all hard gates pass, no confirmed harm exists, and a frozen bounded change has a causal hypothesis | `revise` once |
+| `confirmed_harm` or any confirmed safety/access/product-rule failure, regardless of value | `stop`; a threshold may not be weakened |
+| `L <= +0.50 < U`, `harm_excluded`, all hard gates pass, and a frozen bounded change has a causal hypothesis | `revise` once |
+| `U > +0.50` with `harm_unresolved`, all hard gates pass, and the frozen bounded change specifically addresses the plausible harm | `revise` once |
+| `U > +0.50` with `harm_unresolved` but no bounded harm hypothesis | `inconclusive`; do not guess away possible harm |
 | `L > +0.50`, but a non-hard soccer/balance/comprehension/access gate is unresolved or fails in a bounded remediable way without confirmed harm | `revise` once |
 | value or a non-hard gate is unresolved but no bounded causal revision is specified | `inconclusive`; do not improvise a change after seeing outcomes |
 
@@ -1143,10 +1329,11 @@ evidence.
 The one allowed `revise` must name one bounded product/presentation hypothesis,
 freeze a versioned contract and new untouched holdout, and keep pilot, first
 cycle, and revised estimates separate. On that revised cycle, all gates passing
-with `L > +0.50` yields `proceed`; any valid result that does not pass yields
-`stop`. Only a new evidence-integrity failure remains `inconclusive` and may be
-rerun without changing the product. Contradictory gate results therefore never
-default to the favorable outcome or authorize a second revision.
+with `L > +0.50` and `harm_excluded` yields `proceed`; `harm_unresolved` or any
+other valid result that does not pass yields `stop`. Only a new
+evidence-integrity failure remains `inconclusive` and may be rerun without
+changing the product. Contradictory gate results therefore never default to the
+favorable outcome or authorize a second revision.
 
 ## 7. Blinded A/A instrumentation and reconciliation gate
 
@@ -1265,6 +1452,24 @@ than overwritten by the response.
 | Accessibility, readability, and inclusive participant design | GUR/stats/accessibility council | block (pass 1); re-review pending | operationalize functional coverage, uncertainty, accessible research UI, structural missingness, and access harm | author response: 5.4, 6.1, 6.3, and 6.4; acceptance pending | v1 response 1 |
 | Netcode, performance, and latency | data/netcode/privacy council | block (pass 1); re-review pending | separate pure ticks from observed clocks and prediction lifecycle; freeze runtime/device/network strata and ownership | author response: 2.2, 4.5, 6.3, and 7; acceptance pending | v1 response 1 |
 | Privacy, responsible engagement, and player advocacy | data/netcode/privacy council | block (pass 1); re-review pending | reconcile immutable evidence with deletion; strengthen encrypted custody, roles, consent scopes, quarantine, adult participation, compensation, pseudonyms, and non-inference | author response: 3.1, 5.4–5.5, 6.1, and 8; acceptance pending | v1 response 1 |
+
+Pass 2 reviewed exact head
+`34dd810451d2e62b53b7830393594b98ce636090` on 2026-07-25. It produced
+seven `block` and two `approve with changes` dispositions as recorded below.
+These are pass-2 statuses, not final approvals. The author response is awaiting
+a pass-3 review at its new exact head.
+
+| Perspective | Reviewer | Pass-2 status | Remaining objection / required change | Author response for pass 3 |
+| --- | --- | --- | --- | --- |
+| Soccer tactics and arcade-sports design | gameplay/AI council | block | repair retained-space/lane predicates; use family-neutral episodes, capped utility, five contexts, and canonical slots | 4.3 and 4.6; pending |
+| Competitive combat/fighting counterplay | gameplay/AI council | block | make vacated space, lane branches, recovery context, and interrupted commitment cost executable | 4.3 and 4.6; pending |
+| AI human-proxy and adversarial behavior | gameplay/AI council | block | separate simulation-public gameplay observations from presentation-aware evidence proxy; close zero-context action semantics | 4.6–4.7; pending |
+| Telemetry/data engineering and deterministic replay | data/netcode/privacy council | block | add game instance to funnel identity; pin hash encoding and total canonical row order; remove stale vocabulary | 2.2 and 4.0; pending |
+| Netcode, performance, and latency | data/netcode/privacy council | approve with changes | clock/prediction split accepted; preserve runtime/canonical boundary while applying telemetry cleanup | 4.0, 4.5, and 7; pass-3 confirmation pending |
+| Privacy, responsible engagement, and player advocacy | data/netcode/privacy council | approve with changes | custody/deletion/consent response accepted; verify later edits do not expand participant scope | 3.1, 5.4–5.5, and 8; pass-3 confirmation pending |
+| Games user research and psychometrics | GUR/stats/accessibility council | block | make comprehension B-only and make PXI contrast reliability explicitly diagnostic or executable | 5.1 and 5.3; pending |
+| Experimental statistics and reproducibility | GUR/stats/accessibility council | block | freeze harm classifier, favorable operating points, and reproducible simultaneous intervals | 6.2–6.4; pending |
+| Accessibility, readability, and inclusive participant design | GUR/stats/accessibility council | block | define the participant-domain task, assistance, endpoint, denominator, missingness, and replay accommodations | 5.3–5.4 and 6.2–6.3; pending |
 
 Each reviewer record uses this category template:
 
