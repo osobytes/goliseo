@@ -9,10 +9,6 @@ unarmed martial artist can share one team.
 sport, or character class.** The crossover does not need to collapse into one
 historical or science-fiction theme.
 
-Its core promise is:
-
-> **Pick the five. Set the shape. Play the plan.**
-
 You make a few fast, legible decisions before kickoff, then personally execute
 them in a short match. Formation, tactics, player strengths, and eventually
 equipment loadouts are valuable only when they make the next match more
@@ -48,7 +44,7 @@ match.
 
 ## Near-term product
 
-The existing open-source showcase and its deterministic 5v5 match remain the
+The existing source-available showcase and its deterministic 5v5 match remain
 implementation baseline. `docs/showcase_release.md` still bounds current
 delivery work until it receives a dedicated rescope; the pivot does not
 silently add combat, progression, or a 3D renderer to that release.

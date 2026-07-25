@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 
 
 ROOT = Path(__file__).resolve().parents[1]
+GAME_PACKAGE_NAME = "goliseo.love"
 RUNTIME_REPOSITORY = "https://github.com/2dengine/love.js"
 RUNTIME_COMMIT = "495c5eb7eb55b54aaadfc21405c58f50a6d819c4"
 RUNTIME_ARCHIVE_SHA256 = "89b56e7953935d6cb06c454d0ee0c0d8903e433b9a94d1d6d501fb8b516f5ff6"
@@ -297,7 +298,7 @@ BROWSER_LOADER = r'''/* Galactic Cup browser bootstrap. */
   var page_query = new URL(window.location.href).searchParams;
   var script_query = new URL(script.src).searchParams;
   var version = "11.5";
-  var uri = script_query.get("g") || "galactic-cup.love";
+  var uri = script_query.get("g") || "goliseo.love";
   var args = [];
   var browser_compat = window.__GALACTIC_CUP__ = {
     artifact: "galactic-cup-web",
@@ -486,7 +487,7 @@ INDEX_HTML = """<!doctype html>
   <body>
     <canvas id="canvas" aria-label="Galactic Cup game"></canvas>
     <div id="spinner" class="pending" aria-live="polite"></div>
-    <script src="player.js?g=galactic-cup.love&amp;v=11.5"></script>
+    <script src="player.js?g=goliseo.love&amp;v=11.5"></script>
   </body>
 </html>
 """
@@ -759,7 +760,7 @@ def write_manifest(output: Path, package_hash: str) -> None:
     manifest = {
         "artifact": "galactic-cup-web",
         "game_package": {
-            "path": "galactic-cup.love",
+            "path": GAME_PACKAGE_NAME,
             "sha256": package_hash,
         },
         "source_revision": source_revision(),
@@ -768,7 +769,7 @@ def write_manifest(output: Path, package_hash: str) -> None:
             "repository": RUNTIME_REPOSITORY,
             "commit": RUNTIME_COMMIT,
             "archive_sha256": RUNTIME_ARCHIVE_SHA256,
-            "license": "MIT with included upstream notices",
+            "license": "mixed upstream licenses; full notices included",
         },
         "files": files,
     }
@@ -789,7 +790,7 @@ def build(output: Path) -> None:
     with tempfile.TemporaryDirectory(dir=output.parent, prefix=f".{output.name}.") as temp:
         staging = Path(temp) / output.name
         staging.mkdir()
-        package_hash = write_game_package(staging / "galactic-cup.love")
+        package_hash = write_game_package(staging / GAME_PACKAGE_NAME)
         runtime_root = download_runtime(Path(temp))
         (staging / "index.html").write_text(INDEX_HTML, encoding="utf-8")
         (staging / "webrtc-proof.html").write_text(
@@ -811,7 +812,7 @@ def build(output: Path) -> None:
         staging.rename(output)
 
     print(f"built {output}")
-    print(f"game package: {output / 'galactic-cup.love'} ({package_hash})")
+    print(f"game package: {output / GAME_PACKAGE_NAME} ({package_hash})")
     print(f"runtime commit: {RUNTIME_COMMIT}")
 
 

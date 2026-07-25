@@ -1,10 +1,8 @@
 # Showcase release
 
-> **Pick the five. Set the shape. Play the plan.**
-
 ## Release decision
 
-The next release is a **small complete game and an open-source portfolio
+The next release is a **small complete game and a source-available portfolio
 showcase**, not the first layer of a large career mode.
 
 Galactic Cup already has the expensive part: a typed, deterministic 5v5 match
@@ -128,7 +126,8 @@ ending and closes the loop.
 - One-command setup and one-command quality gate.
 - CI for format, types, tests, and gameplay tripwire.
 - Architecture and contribution guidance.
-- Explicit open-source license, release notes, and a downloadable Linux build.
+- Explicit source-available license, release notes, and a downloadable Linux
+  build.
 
 Why it stays: for a portfolio project, setup quality and engineering
 communication are part of the product.
@@ -212,7 +211,7 @@ The showcase is ready only when all of the following are true.
 - The browser artifact remains buildable and smoke-tested as a parallel
   delivery path.
 
-### Open-source and portfolio
+### Source-available project and portfolio
 
 - `README.md` opens with a strong screenshot or short GIF and an honest
   feature summary.
@@ -235,8 +234,8 @@ fake match. The current match/aerial work is integrated last:
    squad selection, tactical setup, and result loop.
 3. **Identity and visual system** — alien roster treatment and shared UI
    presentation across every non-match screen.
-4. **Public release engineering** — GPL license, CI, packaging, contribution
-   policy, and asset provenance.
+4. **Public release engineering** — PolyForm license, CI, packaging,
+   contribution policy, and asset provenance.
 5. **Real match integration** — connect the existing match/aerial work to the
    stable request/result/input seams, then apply HUD and arena presentation.
 6. **Release QA and publishing** — clean builds, onboarding tests, media,

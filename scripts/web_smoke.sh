@@ -20,7 +20,7 @@ second="$smoke_root/second"
 "$project_root/scripts/web_build.sh" "$second"
 node "$project_root/scripts/transport_bridge_smoke.js" "$first/player.js"
 
-cmp "$first/galactic-cup.love" "$second/galactic-cup.love"
+cmp "$first/goliseo.love" "$second/goliseo.love"
 
 python3 - "$first" <<'PY'
 import json
@@ -33,7 +33,7 @@ required = {
     ".htaccess",
     "11.5/love.js",
     "11.5/love.wasm",
-    "galactic-cup.love",
+    "goliseo.love",
     "index.html",
     "lua/normalize1.lua",
     "lua/normalize2.lua",
@@ -52,7 +52,7 @@ if missing:
     raise SystemExit(f"missing browser artifact files: {', '.join(missing)}")
 
 index = (artifact / "index.html").read_text(encoding="utf-8")
-if 'player.js?g=galactic-cup.love&amp;v=11.5' not in index:
+if 'player.js?g=goliseo.love&amp;v=11.5' not in index:
     raise SystemExit("index.html does not point at the packaged game and LÖVE 11.5")
 loader = (artifact / "player.js").read_text(encoding="utf-8")
 if "Promise.all(paths.map(fetch_binary))" not in loader:
@@ -115,7 +115,7 @@ for marker in ("GalacticCupWebRTCProofSuite", "suite_complete", "mismatch_comple
     if marker not in proof_suite:
         raise SystemExit(f"WebRTC proof suite is missing marker: {marker}")
 
-with zipfile.ZipFile(artifact / "galactic-cup.love") as package:
+with zipfile.ZipFile(artifact / "goliseo.love") as package:
     if package.testzip() is not None:
         raise SystemExit("game package contains a corrupt entry")
     names = set(package.namelist())
@@ -132,6 +132,8 @@ with zipfile.ZipFile(artifact / "galactic-cup.love") as package:
             raise SystemExit(f"game package is missing {path}")
 
 manifest = json.loads((artifact / "manifest.json").read_text(encoding="utf-8"))
+if manifest["game_package"]["path"] != "goliseo.love":
+    raise SystemExit("manifest game package path does not use the GOLISEO name")
 if manifest["runtime"]["commit"] != "495c5eb7eb55b54aaadfc21405c58f50a6d819c4":
     raise SystemExit("manifest runtime commit is not pinned")
 if not isinstance(manifest.get("source_dirty"), bool):
