@@ -1044,16 +1044,46 @@ local function lob_launch(from, to, f, h)
     return dir:normalized():scale(d / tf), 0.5 * GRAVITY * tf
 end
 
+-- Apply the one shared execution-noise contract at the actual release seam.
+-- Targeting and flight parameters are already fixed before this runs: only
+-- the final horizontal direction rotates, preserving speed and every vertical
+-- quantity. Eligible releases always advance the match RNG exactly once,
+-- including maximum-technique releases whose angle is zero.
 ---@param s MatchState
----@param owner MatchPlayer
+---@param owner_idx integer
+---@param intended_velocity Vec2
+---@return Vec2 release_velocity
+function match._apply_ai_outfield_execution_error(s, owner_idx, intended_velocity)
+    local owner = s.players[owner_idx]
+    if owner.is_keeper or is_human_player(s, owner_idx) then
+        return intended_velocity
+    end
+
+    local sample
+    s.rng, sample = rng.roll(s.rng)
+    local angle = (sample * 2 - 1)
+        * stats.execution_error_from_outfield(owner.first_touch, owner.composure)
+    local cosine = math.cos(angle)
+    local sine = math.sin(angle)
+    return Vec2.new(
+        intended_velocity.x * cosine - intended_velocity.y * sine,
+        intended_velocity.x * sine + intended_velocity.y * cosine
+    )
+end
+
+---@param s MatchState
+---@param owner_idx integer
 ---@param dir Vec2
 ---@param speed number?  -- defaults to the shooter's base shot speed
 ---@param vz number?  -- vertical launch (a chip); defaults to 0 (driven, on the ground)
 ---@param shot_type KeeperShotType?
-local function release_shot(s, owner, dir, speed, vz, shot_type)
+local function release_shot(s, owner_idx, dir, speed, vz, shot_type)
+    local owner = s.players[owner_idx]
     local launch_speed = speed or owner.shot_speed
     local launch_vz = vz or 0
-    local launch_dir = dir:normalized()
+    local launch_velocity =
+        match._apply_ai_outfield_execution_error(s, owner_idx, dir:normalized():scale(launch_speed))
+    local launch_dir = launch_velocity:normalized()
     local released_type = shot_type or ((launch_vz > 0) and "chip" or "ground")
     local threatened_keeper
     for _, player in ipairs(s.players) do
@@ -1113,7 +1143,7 @@ local function release_shot(s, owner, dir, speed, vz, shot_type)
     }
     s.owner = nil
     s.kickoff_hold = 0
-    s.ball_vel = launch_dir:scale(launch_speed)
+    s.ball_vel = launch_velocity
     s.ball_z = 0
     s.ball_vz = launch_vz
     s.pickup_cd = RELEASE_CD
@@ -1167,19 +1197,6 @@ end
 local function release_pass(s, owner_idx, target_idx, blocker_f, clear_h, land_pos)
     local owner = s.players[owner_idx]
     local target = s.players[target_idx]
-    -- Control follows a HUMAN pass to its receiver (standard soccer-game
-    -- behavior): you take over the man the ball is travelling to — attack the
-    -- cross, time the first touch — while it is still in flight. A back-pass
-    -- is the exception: the keeper AI steps out to meet it, and control hands
-    -- over in step() the moment the keeper traps it (see "Keeper control").
-    if
-        not s.slot_mode
-        and is_human_player(s, owner_idx)
-        and target.team == "home"
-        and not target.is_keeper
-    then
-        match._set_controlled_player(s, target_idx)
-    end
     -- A defender right on the release point eats a driven ball — and even a lob
     -- is still low in its first strides (the lane check ignores segment ends).
     -- Dink over them: an arc that clears at 15% of the lane also stays above
@@ -1223,6 +1240,21 @@ local function release_pass(s, owner_idx, target_idx, blocker_f, clear_h, land_p
         local aim_pt = target.pos:add(target.vel:scale(d / pass_speed * PASS_LEAD))
         s.ball_vel = aim_pt:sub(owner.pos):normalized():scale(pass_speed)
         s.ball_vz = 0
+    end
+    s.ball_vel = match._apply_ai_outfield_execution_error(s, owner_idx, s.ball_vel)
+    -- Control follows a HUMAN pass to its receiver (standard soccer-game
+    -- behavior): you take over the man the ball is travelling to — attack the
+    -- cross, time the first touch — while it is still in flight. Resolve
+    -- execution first while the releasing owner is still the controlled
+    -- player. A back-pass is the exception: the keeper AI steps out to meet it,
+    -- and control hands over in step() when the keeper traps it.
+    if
+        not s.slot_mode
+        and is_human_player(s, owner_idx)
+        and target.team == "home"
+        and not target.is_keeper
+    then
+        match._set_controlled_player(s, target_idx)
     end
 end
 
@@ -3767,7 +3799,7 @@ local function update_ball(s, dt, inputs, combat_state)
         if wowner.windup_timer == 0 and wowner.windup_shot then
             local ws = assert(wowner.windup_shot)
             wowner.windup_shot = nil
-            release_shot(s, wowner, ws.dir, ws.speed, ws.vz, ws.shot_type)
+            release_shot(s, s.owner, ws.dir, ws.speed, ws.vz, ws.shot_type)
             s.ball_spin = ws.spin
             -- Keeper punt gets a throw pose; outfield shot doesn't (handled below).
             if wowner.is_keeper then

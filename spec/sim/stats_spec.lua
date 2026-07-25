@@ -128,6 +128,22 @@ t.describe("stats", function()
         end
     end)
 
+    t.it("recovers execution error bit-exactly from serialized outfield derivations", function()
+        for technique = 0, 10 do
+            for mental = 0, 10 do
+                local source = block(5, 5, mental, technique)
+                t.eq(
+                    stats.execution_error_from_outfield(
+                        stats.first_touch(source),
+                        stats.composure(source)
+                    ),
+                    stats.execution_error(source),
+                    ("technique=%d mental=%d"):format(technique, mental)
+                )
+            end
+        end
+    end)
+
     t.it("keeps unrelated stats out of outfield behavior derivations", function()
         local low = block(4, 0, 6, 7, 8)
         local high = block(4, 10, 6, 7, 8)

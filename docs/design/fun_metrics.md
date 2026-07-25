@@ -499,3 +499,37 @@ until phase 4 automates it).
   fields that crossed tolerance: fun, goals, shots/goal, drought, decided-late,
   controlled touches and heavy losses, and team-AI sprint share and heavy
   losses. Every in-tolerance field retains its previous pin.
+
+- **2026-07-25 — technique-scaled AI kick execution.** AI-controlled
+  outfield passes, crosses, and shots now rotate only their final horizontal
+  release direction by one seeded normalized draw scaled by the existing
+  technique-derived 0–12 degree maximum. Target, receiver lead, speed, loft,
+  spin, action choice, and release timing remain unchanged. Maximum technique
+  still consumes the shared draw at zero angle, while human, fixed-slot,
+  keeper, aerial, selection, and cancelled-windup paths consume none.
+
+  Before any baseline refresh, the 30-match signature moved from fun
+  0.459 to 0.472, goals 1.867 to 2.033, shots/goal 24.063 to 24.188, save rate
+  0.833 to 0.798, pass completion 0.567 to 0.566, turnovers/min 3.828 to
+  3.893, possession balance 0.406 to 0.386, drought 11.459 s to 9.961 s,
+  and decided-late 0.512 to 0.617. Controlled/team-AI sprint shares moved
+  0.283/0.072 to 0.300/0.083, touches per carry-minute moved 83.641/76.299
+  to 90.938/75.389, and heavy losses moved 1.113/0.206 to 0.701/1.281.
+
+  The required 100-match audit compared with the stable-presser audit above
+  measured fun 0.557 to 0.555, goals 2.140 to 2.120, shots/goal 20.626 to
+  21.163, save rate 0.826 to 0.828, pass completion 0.576 to 0.568,
+  turnovers/min 3.636 to 3.965, possession balance 0.397 to 0.392, drought
+  10.789 s to 10.404 s, and decided-late 0.536 to 0.594. Controlled/team-AI
+  sprint shares moved 0.290/0.085 to 0.295/0.088, touches per carry-minute
+  moved 87.032/74.587 to 88.656/72.269, and heavy losses moved 1.023/0.660
+  to 0.824/1.173. Every target band remains intact.
+
+  The direction of drift matches the mechanic: imperfect AI releases create
+  more AI heavy losses while preserving pass viability and the chosen action's
+  physical parameters. Human release vectors remain exact; changes in the
+  controlled proxy's carry metrics arise downstream from different AI ball
+  trajectories and possession sequences. The selective 30-seed refresh
+  accepts only the seven crossed, coupled fields: goals, drought, decided-late,
+  controlled sprint/touches/heavy losses, and team-AI heavy losses. Every
+  field still inside tolerance retains its prior pin.
