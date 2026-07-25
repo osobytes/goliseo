@@ -262,7 +262,7 @@ function Match:consume_confirmed_lifecycle(event)
         local scoring_team = assert(payload.team, "confirmed goal is missing its scoring team")
         self._last_scoring_team = scoring_team
         if replay.start_at(scoring_team, event.tick) then
-            effects.reset()
+            effects.reset_visuals()
             combat_feedback.reset_visuals(self._combat_feedback)
             clear_render_smoothing(self)
             self._replay_state = nil
@@ -301,25 +301,29 @@ end
 ---@return integer consumed_count
 function Match:consume_confirmed_step(step)
     local consumed_count = 0
+    -- Lifecycle owns the presentation boundary. A goal confirmed in the same
+    -- batch as action events must start replay before those actions are
+    -- published, so no live-timeline cue can flash over past footage.
+    for _, event in ipairs(step.lifecycle_events) do
+        if self:consume_confirmed_lifecycle(event) then
+            consumed_count = consumed_count + 1
+        end
+    end
+    local replay_owns_screen = replay.active()
     for _, event in ipairs(step.match_events) do
-        effects.confirm_event(event)
-        if audio.consume_confirmed(event, replay.active()) then
+        effects.confirm_event(event, replay_owns_screen)
+        if audio.consume_confirmed(event, replay_owns_screen) then
             consumed_count = consumed_count + 1
         end
     end
     for _, event in ipairs(step.combat_events or {}) do
-        effects.confirm_event(event)
+        effects.confirm_event(event, replay_owns_screen)
         local link = combat_feedback.accepted(event.payload, event.id)
         combat_feedback.confirm(self._combat_feedback, link)
-        if replay.active() then
+        if replay_owns_screen then
             combat_feedback.reset_visuals(self._combat_feedback)
         end
-        if audio.consume_confirmed(event, replay.active()) then
-            consumed_count = consumed_count + 1
-        end
-    end
-    for _, event in ipairs(step.lifecycle_events) do
-        if self:consume_confirmed_lifecycle(event) then
+        if audio.consume_confirmed(event, replay_owns_screen) then
             consumed_count = consumed_count + 1
         end
     end
@@ -464,6 +468,11 @@ function Match:teardown()
     self._replay_state = nil
     clear_render_smoothing(self)
     combat_feedback.reset_visuals(self._combat_feedback)
+end
+
+---@param settings GameSettings
+function Match:apply_settings(settings)
+    combat_feedback.configure(self._combat_feedback, not settings.screen_shake, not settings.bloom)
 end
 
 -- Product/offline matches retain their state-edge behavior. Rollback matches
@@ -857,7 +866,9 @@ function Match:update(dt)
             local scoring_team = sh > self._last_home and "home" or "away"
             self._last_scoring_team = scoring_team
             if replay.start(scoring_team) then
-                effects.reset() -- the scene jumps back in time; drop live particles
+                -- The scene jumps back in time, but stable-event identity must
+                -- survive so a later confirmation cannot respawn a live cue.
+                effects.reset_visuals()
                 combat_feedback.reset_visuals(self._combat_feedback)
                 view_state.reset()
                 self._replay_state = nil

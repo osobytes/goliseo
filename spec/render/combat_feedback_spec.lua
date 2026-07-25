@@ -76,8 +76,13 @@ t.describe("combat feedback effects", function()
             revoked = {},
             replaced = {},
         })
+        local spill = fixture.events[4].payload
+        t.eq(spill.x, fixture.ball.x)
+        t.eq(spill.y, fixture.ball.y)
+        t.is_true(#fixture.selection_occluders > 0)
+        t.is_true(#fixture.threat_occluders > 0)
         local observation = effects.readability_observation(function(x, y)
-            return x, y, 1
+            return camera.project(x, y, fixture.state.field, { w = 960, h = 540 })
         end, fixture.ball, fixture.hud_rects, fixture.occluders)
         t.eq(observation.concurrent_event_count, #fixture.events)
         t.eq(observation.active_feedback_count, #fixture.events)

@@ -49,7 +49,6 @@ function Fixture.new(capture_path)
         captured = false,
         exit_seconds = nil,
     }, Fixture)
-    self.fixture.state.controlled = 4
     view_state.reset()
     view_state.update(self.fixture.state.players, 0)
     refresh(self)

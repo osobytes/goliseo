@@ -1,6 +1,8 @@
 local actions = require("game.input.actions")
 local App = require("game.app")
+local combat_feedback = require("game.presentation.combat_feedback")
 local fake_result = require("game.fake_result")
+local Match = require("game.screens.match")
 local hit = require("game.ui.hit")
 local t = require("spec.support.runner")
 local viewport = require("game.ui.viewport")
@@ -162,6 +164,37 @@ t.describe("product application flow", function()
         t.eq(app:current_route(), "pause")
         app:event({ kind = "gamepad", button = "start" })
         t.eq(app:current_route(), "match")
+    end)
+
+    t.it("applies live screen-shake changes to a paused match before resume", function()
+        local active_match = nil
+        ---@type MatchAdapter
+        local adapter = {
+            kind = "real",
+            new = function()
+                active_match = Match.new({ combat_enabled = true })
+                return active_match
+            end,
+        }
+        local app = App.new({ match_adapter = adapter })
+        click_widget(app, "combat_prototype")
+        click_widget(app, "next")
+        click_widget(app, "formation_1-1-2")
+        click_widget(app, "next")
+        click_widget(app, "tactic_press_high")
+        click_widget(app, "kickoff")
+        local match_screen = assert(active_match)
+        t.is_true(not combat_feedback.diagnostics(match_screen._combat_feedback).reduced_motion)
+
+        app:event({ kind = "key", key = "p" })
+        click_widget(app, "settings")
+        click_widget(app, "screen_shake")
+        t.is_true(combat_feedback.diagnostics(match_screen._combat_feedback).reduced_motion)
+        click_widget(app, "back")
+        app:event({ kind = "gamepad", button = "start" })
+
+        t.eq(app:current_route(), "match")
+        t.is_true(combat_feedback.diagnostics(match_screen._combat_feedback).reduced_motion)
     end)
 
     t.it("requires confirmation before restarting a paused fixture", function()

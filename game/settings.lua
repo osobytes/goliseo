@@ -46,7 +46,10 @@ function settings.validate(input)
     end
     local function boolean_or(key)
         local value = input[key]
-        return type(value) == "boolean" and value or defaults[key]
+        if type(value) == "boolean" then
+            return value
+        end
+        return defaults[key]
     end
     return {
         master_volume = number_or("master_volume"),

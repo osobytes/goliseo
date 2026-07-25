@@ -143,6 +143,9 @@ function App:start_match()
             self:show_tactic()
         end,
     }, self.viewport)
+    if screen.apply_settings then
+        screen:apply_settings(self.settings)
+    end
     self:_replace("match", screen)
 end
 
@@ -156,6 +159,11 @@ function App:_set_settings(value, persist)
     self.settings = settings_model.validate(value)
     if self.apply_settings then
         self.apply_settings(self.settings)
+    end
+    for _, screen in ipairs(self.stack.screens) do
+        if screen.apply_settings then
+            screen:apply_settings(self.settings)
+        end
     end
     if persist then
         settings_model.save(self.settings, self.settings_storage)

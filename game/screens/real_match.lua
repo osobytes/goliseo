@@ -148,4 +148,9 @@ function RealMatch:teardown()
     self.match:teardown()
 end
 
+---@param settings GameSettings
+function RealMatch:apply_settings(settings)
+    self.match:apply_settings(settings)
+end
+
 return RealMatch

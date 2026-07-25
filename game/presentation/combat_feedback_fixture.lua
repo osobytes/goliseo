@@ -9,6 +9,8 @@ local teams = require("data.teams")
 ---@field events RollbackWrappedCombatEvent[]
 ---@field ball { x: number, y: number }
 ---@field hud_rects Rect[]
+---@field selection_occluders Rect[]
+---@field threat_occluders Rect[]
 ---@field occluders Rect[]
 
 ---@class CombatFeedbackFixtureModule
@@ -40,6 +42,7 @@ function fixture.new()
     state.owner = nil
     state.ball = Vec2.new(480, 270)
     state.ball_vel = Vec2.new(0, 0)
+    state.controlled = 4
 
     local positions = {
         Vec2.new(95, 270),
@@ -114,8 +117,8 @@ function fixture.new()
             source_index = 4,
             target_index = 8,
             source_sequence = 3,
-            x = 700,
-            y = 350,
+            x = state.ball.x,
+            y = state.ball.y,
         }),
         wrapped("crowded/forced/3", 5, {
             kind = "forced",
@@ -128,6 +131,19 @@ function fixture.new()
             y = 360,
         }),
     }
+    -- Screen-space reservations at the fixture's native 960x540 projection.
+    -- They represent the controlled-player selection ring and the ranged aim
+    -- lane, ensuring feedback glyph composition leaves both readable.
+    local selection_occluders = {
+        { x = 378, y = 342, w = 32, h = 24 },
+    }
+    local threat_occluders = {
+        { x = 414, y = 348, w = 206, h = 14 },
+    }
+    local occluders = {
+        selection_occluders[1],
+        threat_occluders[1],
+    }
     return {
         state = state,
         combat = combat_state,
@@ -137,7 +153,9 @@ function fixture.new()
             { x = 696, y = 436, w = 240, h = 28 },
             { x = 696, y = 468, w = 240, h = 44 },
         },
-        occluders = {},
+        selection_occluders = selection_occluders,
+        threat_occluders = threat_occluders,
+        occluders = occluders,
     }
 end
 

@@ -6,6 +6,7 @@
 ---@field event fun(self: Screen, evt: InputEvent)?
 ---@field draw fun(self: Screen)?
 ---@field teardown fun(self: Screen)?
+---@field apply_settings fun(self: Screen, settings: GameSettings)?
 
 ---@alias InputEvent ActionEvent | { kind: "key", key: string, pressed: boolean? } | { kind: "click", x: number, y: number, button: number } | RawGamepadEvent
 

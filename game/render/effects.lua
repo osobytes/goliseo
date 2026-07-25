@@ -192,7 +192,9 @@ local function spawn_combat_event(event, event_id)
         glyph(event.x, event.y, life, size + 2, color, event_id, disposition.glyph)
     elseif disposition.vfx == "ball_spill" then
         ring(event.x, event.y, life, size + 6, { 1, 0.95, 0.7 }, event_id)
-        glyph(event.x, event.y, life, size + 3, { 1, 0.95, 0.7 }, event_id, disposition.glyph)
+        -- Keep the authoritative event anchored to the ball while placing the
+        -- semantic glyph just above it so the ball remains readable.
+        glyph(event.x, event.y - 32, life, size + 3, { 1, 0.95, 0.7 }, event_id, disposition.glyph)
         combat_burst(event.x, event.y, 6, 180, life, 2, { 1, 0.95, 0.7 }, event_id)
     elseif disposition.vfx == "forced" then
         glyph(event.x, event.y, life, size + 3, color, event_id, disposition.glyph)
@@ -354,14 +356,16 @@ end
 -- Once an event is confirmed it cannot be revoked. Existing particles keep
 -- aging naturally, while the rollback key is retired from bounded state.
 ---@param event RollbackWrappedEvent
+---@param suppress_spawn boolean?
 ---@return boolean consumed
-function effects.confirm_event(event)
+function effects.confirm_event(event, suppress_spawn)
     if confirmed_events[event.id] then
         return false
     end
     confirmed_events[event.id] = true
     if
         event.domain:sub(1, 7) == "combat/"
+        and not suppress_spawn
         and not speculative_events[event.id]
         and not suppressed_events[event.id]
     then
@@ -420,17 +424,29 @@ function effects.consume(s)
     effects.sample_ball(s)
 end
 
----@return { particle_count: integer, trail_count: integer, speculative_ids: string[] }
+---@return { particle_count: integer, trail_count: integer, speculative_ids: string[], suppressed_ids: string[], confirmed_ids: string[] }
 function effects.diagnostics()
-    local ids = {}
+    local speculative_ids = {}
     for id in pairs(speculative_events) do
-        ids[#ids + 1] = id
+        speculative_ids[#speculative_ids + 1] = id
     end
-    table.sort(ids)
+    local suppressed_ids = {}
+    for id in pairs(suppressed_events) do
+        suppressed_ids[#suppressed_ids + 1] = id
+    end
+    local confirmed_ids = {}
+    for id in pairs(confirmed_events) do
+        confirmed_ids[#confirmed_ids + 1] = id
+    end
+    table.sort(speculative_ids)
+    table.sort(suppressed_ids)
+    table.sort(confirmed_ids)
     return {
         particle_count = #particles,
         trail_count = #trail,
-        speculative_ids = ids,
+        speculative_ids = speculative_ids,
+        suppressed_ids = suppressed_ids,
+        confirmed_ids = confirmed_ids,
     }
 end
 

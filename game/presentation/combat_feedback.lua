@@ -70,7 +70,7 @@ local combat_presentation = require("game.presentation.combat")
 
 ---@class CombatFeedbackState
 ---@field confirmed_ids table<string, boolean>
----@field notice CombatFeedbackNotice?
+---@field notices CombatFeedbackNotice[]
 ---@field impulse CombatFeedbackImpulse?
 ---@field reduced_motion boolean
 ---@field reduced_flash boolean
@@ -94,6 +94,7 @@ local combat_presentation = require("game.presentation.combat")
 local feedback = {}
 
 local NOTICE_SECONDS = 0.72
+local MAX_NOTICE_COUNT = 6
 local IMPULSE_SECONDS = 0.16
 local MAX_CAMERA_OFFSET = 4
 local default_reduced_motion = false
@@ -320,7 +321,7 @@ end
 function feedback.new()
     return {
         confirmed_ids = {},
-        notice = nil,
+        notices = {},
         impulse = nil,
         reduced_motion = default_reduced_motion,
         reduced_flash = default_reduced_flash,
@@ -364,7 +365,7 @@ function feedback.confirm(state, link)
     state.confirmed_ids[link.stable_id] = true
     local disposition = link.disposition
     if disposition.hud_text then
-        state.notice = {
+        state.notices[#state.notices + 1] = {
             id = link.stable_id,
             text = disposition.hud_text,
             glyph = disposition.glyph,
@@ -373,6 +374,9 @@ function feedback.confirm(state, link)
             life = NOTICE_SECONDS,
             max = NOTICE_SECONDS,
         }
+        if #state.notices > MAX_NOTICE_COUNT then
+            table.remove(state.notices, 1)
+        end
     end
     if disposition.camera_strength > 0 and not state.reduced_motion then
         local strength = math.min(MAX_CAMERA_OFFSET, disposition.camera_strength)
@@ -390,17 +394,18 @@ end
 
 ---@param state CombatFeedbackState
 function feedback.reset_visuals(state)
-    state.notice = nil
+    state.notices = {}
     state.impulse = nil
 end
 
 ---@param state CombatFeedbackState
 ---@param dt number
 function feedback.tick(state, dt)
-    if state.notice then
-        state.notice.life = math.max(0, state.notice.life - dt)
-        if state.notice.life == 0 then
-            state.notice = nil
+    for index = #state.notices, 1, -1 do
+        local notice = state.notices[index]
+        notice.life = math.max(0, notice.life - dt)
+        if notice.life == 0 then
+            table.remove(state.notices, index)
         end
     end
     if state.impulse then
@@ -430,12 +435,11 @@ end
 ---@param controlled_index integer
 ---@return CombatFeedbackNotice?
 function feedback.notice(state, controlled_index)
-    local notice = state.notice
-    if
-        notice
-        and (notice.source_index == controlled_index or notice.target_index == controlled_index)
-    then
-        return notice
+    for index = #state.notices, 1, -1 do
+        local notice = state.notices[index]
+        if notice.source_index == controlled_index or notice.target_index == controlled_index then
+            return notice
+        end
     end
     return nil
 end
@@ -463,7 +467,7 @@ function feedback.observation(state, link, cue_state)
 end
 
 ---@param state CombatFeedbackState
----@return { confirmed_count: integer, notice_id: string?, impulse_id: string?, reduced_motion: boolean, reduced_flash: boolean }
+---@return { confirmed_count: integer, notice_count: integer, notice_id: string?, impulse_id: string?, reduced_motion: boolean, reduced_flash: boolean }
 function feedback.diagnostics(state)
     local confirmed_count = 0
     for _ in pairs(state.confirmed_ids) do
@@ -471,7 +475,8 @@ function feedback.diagnostics(state)
     end
     return {
         confirmed_count = confirmed_count,
-        notice_id = state.notice and state.notice.id or nil,
+        notice_count = #state.notices,
+        notice_id = state.notices[#state.notices] and state.notices[#state.notices].id or nil,
         impulse_id = state.impulse and state.impulse.id or nil,
         reduced_motion = state.reduced_motion,
         reduced_flash = state.reduced_flash,
