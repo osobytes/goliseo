@@ -190,10 +190,10 @@ function fixture.messages()
                 final_hash = "fedcba9876543210",
             },
         },
-        { "abort", { code = "host_abort", detail = "host ended the fixture" } },
+        { "abort", { code = "host_abort" } },
         {
             "disconnect",
-            { target_peer_id = "guest_2", code = "peer_left", detail = "peer closed" },
+            { target_peer_id = "guest_2", code = "peer_left" },
         },
     }
     local result = {}

@@ -20,7 +20,7 @@ local conformance = {}
 ---@type SessionProtocolGolden
 conformance.GOLDEN = {
     manifest_id = "27c9d39785b1aaaf",
-    transcript_id = "c9a74fe23c6c46bc",
+    transcript_id = "937cff176fa6af3b",
     complete_kind = "manifest_accept",
     complete_wire = "GCOP;1;t7:s4:bodyt1:s11:manifest_ids16:27c9d39785b1aaafs4:kinds15:"
         .. "manifest_accepts10:message_ids32:GCMI;1;13:session_alpha4:host1:2s7:peer_ids4:"
@@ -37,8 +37,8 @@ conformance.GOLDEN = {
         match_phase = "1671940891b78f1f",
         hash_report = "4405d9323b1e5b0f",
         result_ack = "5f466e6740c6d4cf",
-        abort = "d2b01db1954495cd",
-        disconnect = "f2f1ec132d958142",
+        abort = "9db9c05e9728c4c1",
+        disconnect = "a7599b154bb86cec",
     },
 }
 
@@ -57,7 +57,15 @@ function conformance.verify()
             "protocol fixture has an unpinned message kind"
         )
         local wire = assert(protocol.encode(message))
-        assert(fnv1a64.hash(wire) == expected, message.kind .. " protocol wire golden changed")
+        local actual = fnv1a64.hash(wire)
+        assert(
+            actual == expected,
+            ("%s protocol wire golden changed: expected %s, got %s"):format(
+                message.kind,
+                expected,
+                actual
+            )
+        )
         if message.kind == conformance.GOLDEN.complete_kind then
             assert(
                 wire == conformance.GOLDEN.complete_wire,
@@ -80,7 +88,13 @@ function conformance.verify()
     )
 
     local transcript_id = protocol.transcript_id(messages)
-    assert(transcript_id == conformance.GOLDEN.transcript_id, "protocol transcript golden changed")
+    assert(
+        transcript_id == conformance.GOLDEN.transcript_id,
+        ("protocol transcript golden changed: expected %s, got %s"):format(
+            conformance.GOLDEN.transcript_id,
+            transcript_id
+        )
+    )
     return {
         manifest_id = manifest_id,
         transcript_id = transcript_id,

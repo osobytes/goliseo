@@ -50,7 +50,7 @@ REQUIRED_FIELDS = {
 REQUIRED_PROTOCOL_FIELDS = {
     "schema": "1",
     "manifest_id": "27c9d39785b1aaaf",
-    "transcript_id": "c9a74fe23c6c46bc",
+    "transcript_id": "937cff176fa6af3b",
     "messages": "13",
 }
 ERROR_MARKERS = (
@@ -399,7 +399,7 @@ def run_once(
 def self_test() -> None:
     protocol_marker = (
         "GC_PROTOCOL|golden|schema=1|manifest_id=27c9d39785b1aaaf"
-        "|transcript_id=c9a74fe23c6c46bc|messages=13"
+        "|transcript_id=937cff176fa6af3b|messages=13"
     )
     if parse_protocol_marker(protocol_marker) != REQUIRED_PROTOCOL_FIELDS:
         raise RuntimeError("protocol golden marker self-test failed")

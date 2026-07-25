@@ -2,6 +2,7 @@ local fnv1a64 = require("core.fnv1a64")
 local conformance = require("game.online.protocol_conformance")
 local fixture = require("game.online.protocol_fixture")
 local protocol = require("game.online.protocol")
+local input_frame = require("sim.input_frame")
 local t = require("spec.support.runner")
 
 ---@param value any
@@ -17,6 +18,30 @@ local function deep_copy(value)
     return result
 end
 
+---@param prefix string
+---@param length integer
+---@return string
+local function bounded_id(prefix, length)
+    assert(#prefix <= length)
+    return prefix .. string.rep("x", length - #prefix)
+end
+
+---@param manifest SessionManifest
+---@param team_index integer
+---@param roster_index integer
+---@param player_id string
+local function replace_manifest_player_id(manifest, team_index, roster_index, player_id)
+    local player = manifest.teams[team_index].roster[roster_index]
+    local previous = player.player_id
+    player.player_id = player_id
+    for _, slot in ipairs(manifest.slots) do
+        if slot.player_id == previous then
+            slot.player_id = player_id
+            return
+        end
+    end
+end
+
 t.describe("OMP-3 online protocol", function()
     t.it("pins the accepted input, snapshot, tape, and combat schema versions", function()
         t.eq(protocol.CURRENT_VERSIONS.protocol, 1)
@@ -29,13 +54,13 @@ t.describe("OMP-3 online protocol", function()
     t.it("matches literal wire, manifest, transcript, and per-kind golden evidence", function()
         local report = conformance.verify()
         t.eq(report.manifest_id, "27c9d39785b1aaaf")
-        t.eq(report.transcript_id, "c9a74fe23c6c46bc")
+        t.eq(report.transcript_id, "937cff176fa6af3b")
         t.eq(report.message_count, 13)
         t.eq(fnv1a64.hash(conformance.GOLDEN.complete_wire), "ae5be4cbc3ee95a7")
         t.eq(
             conformance.marker(report),
             "GC_PROTOCOL|golden|schema=1|manifest_id=27c9d39785b1aaaf"
-                .. "|transcript_id=c9a74fe23c6c46bc|messages=13"
+                .. "|transcript_id=937cff176fa6af3b|messages=13"
         )
     end)
 
@@ -49,6 +74,85 @@ t.describe("OMP-3 online protocol", function()
         local manifest = assert(protocol.new_manifest(manifest_source))
         manifest_source.slots[1].player_id = "mutated"
         t.eq(manifest.slots[1].player_id, "zyro_vex")
+    end)
+
+    t.it("rejects sparse arrays without relying on Lua's undefined length operator", function()
+        local runtime = fixture.runtime()
+        runtime.capabilities = {
+            [1] = "combat_feedback.v1",
+            [3] = "input_channel.v1",
+        }
+        local value, _, code = protocol.validate_runtime(runtime)
+        t.eq(value, nil)
+        t.eq(code, "malformed")
+
+        local sparse_manifest_cases = {
+            {
+                name = "teams",
+                mutate = function(manifest)
+                    manifest.teams = { [1] = manifest.teams[1], [3] = manifest.teams[2] }
+                end,
+            },
+            {
+                name = "roster",
+                mutate = function(manifest)
+                    local roster = manifest.teams[1].roster
+                    manifest.teams[1].roster = {
+                        [1] = roster[1],
+                        [2] = roster[2],
+                        [3] = roster[3],
+                        [4] = roster[4],
+                        [6] = roster[5],
+                    }
+                end,
+            },
+            {
+                name = "slots",
+                mutate = function(manifest)
+                    local slots = manifest.slots
+                    manifest.slots = {
+                        [1] = slots[1],
+                        [2] = slots[2],
+                        [3] = slots[3],
+                        [4] = slots[4],
+                        [5] = slots[5],
+                        [6] = slots[6],
+                        [7] = slots[7],
+                        [9] = slots[8],
+                    }
+                end,
+            },
+        }
+        for _, case in ipairs(sparse_manifest_cases) do
+            local manifest = fixture.manifest()
+            case.mutate(manifest)
+            value, _, code = protocol.validate_manifest(manifest)
+            t.eq(value, nil, case.name)
+            t.eq(code, "malformed", case.name)
+        end
+
+        local assignments = fixture.assignments()
+        assignments = {
+            [1] = assignments[1],
+            [2] = assignments[2],
+            [3] = assignments[3],
+            [4] = assignments[4],
+            [5] = assignments[5],
+            [6] = assignments[6],
+            [7] = assignments[7],
+            [9] = assignments[8],
+        }
+        local assignment_message = deep_copy(fixture.messages()[5])
+        assignment_message.body.assignments = assignments
+        value, _, code = protocol.validate(assignment_message)
+        t.eq(value, nil)
+        t.eq(code, "malformed")
+
+        local messages = fixture.messages()
+        local sparse_transcript = { [1] = messages[1], [3] = messages[2] }
+        local ok, err = pcall(protocol.transcript_id, sparse_transcript)
+        t.eq(ok, false)
+        t.is_true(tostring(err):find("canonical message array", 1, true) ~= nil)
     end)
 
     t.it("round-trips every control message through one canonical bounded codec", function()
@@ -143,6 +247,127 @@ t.describe("OMP-3 online protocol", function()
         t.eq(code, "malformed")
     end)
 
+    t.it("rejects representative raw parser failures", function()
+        local valid_wire = assert(protocol.encode(fixture.messages()[1]))
+        local malformed_wires = {
+            { name = "unknown value tag", wire = "GCOP;1;x" },
+            { name = "truncated string", wire = "GCOP;1;s1:" },
+            { name = "noncanonical integer", wire = "GCOP;1;i2:01" },
+            { name = "invalid boolean", wire = "GCOP;1;b2" },
+            {
+                name = "duplicate table key",
+                wire = "GCOP;1;t2:s1:as1:xs1:as1:y",
+            },
+            { name = "trailing bytes", wire = valid_wire .. "x" },
+        }
+        for _, case in ipairs(malformed_wires) do
+            local value, _, code = protocol.decode(case.wire)
+            t.eq(value, nil, case.name)
+            t.eq(code, "malformed", case.name)
+        end
+    end)
+
+    t.it("rejects malformed bodies for every control message kind", function()
+        local cases = {
+            {
+                kind = "handshake",
+                mutate = function(body)
+                    body.role = "captain"
+                end,
+            },
+            {
+                kind = "manifest_proposal",
+                mutate = function(body)
+                    body.manifest_id = "not-a-hash"
+                end,
+            },
+            {
+                kind = "manifest_accept",
+                mutate = function(body)
+                    body.manifest_id = "not-a-hash"
+                end,
+            },
+            {
+                kind = "peer_assignment",
+                mutate = function(body)
+                    body.assigned_peer_id = ""
+                end,
+            },
+            {
+                kind = "slot_assignment",
+                mutate = function(body)
+                    body.assignments = {}
+                end,
+            },
+            {
+                kind = "ready",
+                mutate = function(body)
+                    body.ready = "yes"
+                end,
+            },
+            {
+                kind = "countdown",
+                mutate = function(body)
+                    body.remaining_ticks = -1
+                end,
+            },
+            {
+                kind = "start",
+                mutate = function(body)
+                    body.first_input_tick = -1
+                end,
+            },
+            {
+                kind = "match_phase",
+                mutate = function(body)
+                    body.phase = "countdown"
+                end,
+            },
+            {
+                kind = "hash_report",
+                mutate = function(body)
+                    body.boundary_hash = "not-a-hash"
+                end,
+            },
+            {
+                kind = "result_ack",
+                mutate = function(body)
+                    body.final_hash = "not-a-hash"
+                end,
+            },
+            {
+                kind = "abort",
+                mutate = function(body)
+                    body.code = "freeform_abort"
+                end,
+            },
+            {
+                kind = "disconnect",
+                mutate = function(body)
+                    body.code = "freeform_disconnect"
+                end,
+            },
+        }
+        local messages = fixture.messages()
+        t.eq(#cases, #messages)
+        for index, case in ipairs(cases) do
+            local message = deep_copy(messages[index])
+            t.eq(message.kind, case.kind)
+            case.mutate(message.body)
+            local value, _, code = protocol.validate(message)
+            t.eq(value, nil, case.kind)
+            t.eq(code, "malformed", case.kind)
+        end
+
+        for _, index in ipairs({ 12, 13 }) do
+            local message = deep_copy(messages[index])
+            message.body.detail = "peer-authored prose"
+            local value, _, code = protocol.validate(message)
+            t.eq(value, nil, message.kind .. " prose")
+            t.eq(code, "malformed", message.kind .. " prose")
+        end
+    end)
+
     t.it("validates canonical teams, slots, protected keepers, and bot fills", function()
         local manifest = fixture.manifest()
         t.is_true(assert(protocol.validate_manifest(manifest)))
@@ -184,37 +409,99 @@ t.describe("OMP-3 online protocol", function()
         })
         t.eq(invalid_message, nil)
         t.eq(code, "malformed")
+
+        assignments = fixture.assignments()
+        assignments[7].producer_id = assignments[1].producer_id
+        invalid_message, _, code = protocol.new("slot_assignment", manifest.session_id, "host", 3, {
+            manifest_id = protocol.manifest_id(manifest),
+            assignments = assignments,
+        })
+        t.eq(invalid_message, nil)
+        t.eq(code, "malformed")
+    end)
+
+    t.it("uses the InputFrame player-id bound for every player-id surface", function()
+        local lengths = {
+            { name = "minimum", length = 1, accepted = true },
+            { name = "maximum", length = input_frame.MAX_PLAYER_ID_BYTES, accepted = true },
+            { name = "over", length = input_frame.MAX_PLAYER_ID_BYTES + 1, accepted = false },
+        }
+        for _, case in ipairs(lengths) do
+            local player_id = bounded_id("p", case.length)
+            local manifest = fixture.manifest()
+            replace_manifest_player_id(manifest, 1, 2, player_id)
+            local value, _, code = protocol.validate_manifest(manifest)
+            t.eq(value == true, case.accepted, "roster " .. case.name)
+            if not case.accepted then
+                t.eq(code, "malformed", "roster " .. case.name)
+            end
+
+            if not case.accepted then
+                manifest = fixture.manifest()
+                manifest.slots[1].player_id = player_id
+                value, _, code = protocol.validate_manifest(manifest)
+                t.eq(value, nil, "manifest slot " .. case.name)
+                t.eq(code, "malformed", "manifest slot " .. case.name)
+            end
+
+            local assignments = fixture.assignments()
+            assignments[1].player_id = player_id
+            local message
+            message, _, code =
+                protocol.new("slot_assignment", "session_alpha", "host", case.length, {
+                    manifest_id = protocol.manifest_id(fixture.manifest()),
+                    assignments = assignments,
+                })
+            t.eq(message ~= nil, case.accepted, "producer assignment " .. case.name)
+            if not case.accepted then
+                t.eq(code, "malformed", "producer assignment " .. case.name)
+            end
+        end
     end)
 
     t.it("names the first deterministic identity mismatch before countdown", function()
         local expected = fixture.manifest()
-        local actual = deep_copy(expected)
-        actual.teams[2].roster[3].family_id = "ranged"
-        local ok, _, code, path = protocol.compare_manifest(expected, actual)
-        t.eq(ok, nil)
-        t.eq(code, "identity_mismatch")
-        t.eq(path, "manifest.teams.2.roster.3.family_id")
+        local cases = {
+            {
+                path = "manifest.build_id",
+                mutate = function(actual)
+                    actual.build_id = "build.other"
+                end,
+            },
+            {
+                path = "manifest.teams.2.team_id",
+                mutate = function(actual)
+                    actual.teams[2].team_id = "team_other"
+                end,
+            },
+            {
+                path = "manifest.teams.2.roster.3.family_id",
+                mutate = function(actual)
+                    actual.teams[2].roster[3].family_id = "ranged"
+                end,
+            },
+            {
+                path = "manifest.slots.1.player_id",
+                mutate = function(actual)
+                    actual.slots[1].player_id, actual.slots[2].player_id =
+                        actual.slots[2].player_id, actual.slots[1].player_id
+                end,
+            },
+        }
+        for _, case in ipairs(cases) do
+            local actual = deep_copy(expected)
+            case.mutate(actual)
+            local ok, _, code, path = protocol.compare_manifest(expected, actual)
+            t.eq(ok, nil, case.path)
+            t.eq(code, "identity_mismatch", case.path)
+            t.eq(path, case.path, case.path)
+        end
 
-        actual = deep_copy(expected)
+        local actual = deep_copy(expected)
         actual.presentation_id = "not-a-manifest-field"
         local valid, _, valid_code = protocol.validate_manifest(actual)
         t.eq(valid, nil)
         t.eq(valid_code, "malformed")
-
-        actual = deep_copy(expected)
-        actual.build_id = "build.other"
-        ok, _, code, path = protocol.compare_manifest(expected, actual)
-        t.eq(ok, nil)
-        t.eq(code, "identity_mismatch")
-        t.eq(path, "manifest.build_id")
-
-        actual = deep_copy(expected)
-        actual.slots[1].player_id, actual.slots[2].player_id =
-            actual.slots[2].player_id, actual.slots[1].player_id
-        ok, _, code, path = protocol.compare_manifest(expected, actual)
-        t.eq(ok, nil)
-        t.eq(code, "identity_mismatch")
-        t.eq(path, "manifest.slots.1.player_id")
     end)
 
     t.it(
@@ -248,7 +535,7 @@ t.describe("OMP-3 online protocol", function()
         end
     )
 
-    t.it("rejects every current schema version mismatch and bounded-field class", function()
+    t.it("rejects old and future control, runtime, and nested manifest versions", function()
         local version_fields = {
             "version",
             "protocol_version",
@@ -258,61 +545,274 @@ t.describe("OMP-3 online protocol", function()
             "combat_schema_version",
         }
         for _, field in ipairs(version_fields) do
+            for _, delta in ipairs({ -1, 1 }) do
+                local manifest = fixture.manifest()
+                manifest[field] = manifest[field] + delta
+                local value, _, code = protocol.validate_manifest(manifest)
+                t.eq(value, nil, field .. " " .. tostring(delta))
+                t.eq(code, "unsupported_version", field .. " " .. tostring(delta))
+            end
+        end
+
+        for _, delta in ipairs({ -1, 1 }) do
+            local runtime = fixture.runtime()
+            runtime.version = runtime.version + delta
+            local value, _, code = protocol.validate_runtime(runtime)
+            t.eq(value, nil, "runtime " .. tostring(delta))
+            t.eq(code, "unsupported_version", "runtime " .. tostring(delta))
+
+            local message = deep_copy(fixture.messages()[1])
+            message.version = message.version + delta
+            value, _, code = protocol.validate(message)
+            t.eq(value, nil, "message " .. tostring(delta))
+            t.eq(code, "unsupported_version", "message " .. tostring(delta))
+
+            local wire = assert(protocol.encode(fixture.messages()[1]))
+            wire = wire:gsub("^GCOP;1;", "GCOP;" .. tostring(protocol.VERSION + delta) .. ";")
+            local decoded, _, decode_code = protocol.decode(wire)
+            t.eq(decoded, nil, "wire " .. tostring(delta))
+            t.eq(decode_code, "unsupported_version", "wire " .. tostring(delta))
+        end
+    end)
+
+    t.it("accepts exact scalar bounds and rejects every over-bound class", function()
+        for _, case in ipairs({
+            { name = "minimum generic id", length = 1, accepted = true },
+            { name = "maximum generic id", length = protocol.MAX_ID_BYTES, accepted = true },
+            { name = "over generic id", length = protocol.MAX_ID_BYTES + 1, accepted = false },
+        }) do
             local manifest = fixture.manifest()
-            manifest[field] = manifest[field] + 1
+            manifest.build_id = bounded_id("b", case.length)
             local value, _, code = protocol.validate_manifest(manifest)
-            t.eq(value, nil, field)
-            t.eq(code, "unsupported_version", field)
+            t.eq(value == true, case.accepted, case.name)
+            if not case.accepted then
+                t.eq(code, "malformed", case.name)
+            end
         end
 
-        local runtime = fixture.runtime()
-        runtime.version = runtime.version + 1
-        local value, _, code = protocol.validate_runtime(runtime)
-        t.eq(value, nil)
-        t.eq(code, "unsupported_version")
-
-        local manifest = fixture.manifest()
-        manifest.build_id = string.rep("x", protocol.MAX_ID_BYTES + 1)
-        value, _, code = protocol.validate_manifest(manifest)
-        t.eq(value, nil)
-        t.eq(code, "malformed")
-
-        manifest = fixture.manifest()
-        manifest.seed = protocol.MAX_SEED + 1
-        value, _, code = protocol.validate_manifest(manifest)
-        t.eq(value, nil)
-        t.eq(code, "malformed")
-
-        manifest = fixture.manifest()
-        manifest.duration_ticks = protocol.MAX_DURATION_TICKS + 1
-        value, _, code = protocol.validate_manifest(manifest)
-        t.eq(value, nil)
-        t.eq(code, "malformed")
-
-        runtime = fixture.runtime()
-        for index = #runtime.capabilities + 1, protocol.MAX_CAPABILITIES + 1 do
-            runtime.capabilities[index] = ("zz_capability_%02d"):format(index)
+        for _, case in ipairs({
+            { name = "minimum session", session = "s", peer = "peer", accepted = true },
+            {
+                name = "maximum session",
+                session = bounded_id("s", protocol.MAX_SESSION_ID_BYTES),
+                peer = "peer",
+                accepted = true,
+            },
+            {
+                name = "over session",
+                session = bounded_id("s", protocol.MAX_SESSION_ID_BYTES + 1),
+                peer = "peer",
+                accepted = false,
+            },
+            { name = "minimum peer", session = "session", peer = "p", accepted = true },
+            {
+                name = "maximum peer",
+                session = "session",
+                peer = bounded_id("p", protocol.MAX_PEER_ID_BYTES),
+                accepted = true,
+            },
+            {
+                name = "over peer",
+                session = "session",
+                peer = bounded_id("p", protocol.MAX_PEER_ID_BYTES + 1),
+                accepted = false,
+            },
+        }) do
+            local value, _, code = protocol.message_id(case.session, case.peer, 0)
+            t.eq(value ~= nil, case.accepted, case.name)
+            if not case.accepted then
+                t.eq(code, "malformed", case.name)
+            end
         end
-        value, _, code = protocol.validate_runtime(runtime)
-        t.eq(value, nil)
-        t.eq(code, "malformed")
 
-        local abort = fixture.messages()[12]
-        abort.body.detail = string.rep("x", protocol.MAX_DETAIL_BYTES + 1)
-        value, _, code = protocol.validate(abort)
-        t.eq(value, nil)
-        t.eq(code, "malformed")
+        for _, case in ipairs({
+            { name = "minimum sequence", value = 0, accepted = true },
+            { name = "maximum sequence", value = protocol.MAX_SEQUENCE, accepted = true },
+            { name = "over sequence", value = protocol.MAX_SEQUENCE + 1, accepted = false },
+        }) do
+            local value, _, code = protocol.message_id("session", "peer", case.value)
+            t.eq(value ~= nil, case.accepted, case.name)
+            if not case.accepted then
+                t.eq(code, "malformed", case.name)
+            end
+        end
 
-        local oversized_sequence
-        oversized_sequence, _, code = protocol.new(
-            "ready",
-            "session_alpha",
-            "host",
-            protocol.MAX_SEQUENCE + 1,
-            { manifest_id = protocol.manifest_id(fixture.manifest()), ready = true }
+        local manifest_integer_cases = {
+            {
+                name = "seed",
+                field = "seed",
+                minimum = 0,
+                maximum = protocol.MAX_SEED,
+            },
+            {
+                name = "duration",
+                field = "duration_ticks",
+                minimum = 1,
+                maximum = protocol.MAX_DURATION_TICKS,
+            },
+            {
+                name = "goal limit",
+                field = "max_goals",
+                minimum = 1,
+                maximum = protocol.MAX_GOALS,
+            },
+        }
+        for _, case in ipairs(manifest_integer_cases) do
+            for _, boundary in ipairs({
+                { name = "minimum", value = case.minimum, accepted = true },
+                { name = "maximum", value = case.maximum, accepted = true },
+                { name = "over", value = case.maximum + 1, accepted = false },
+            }) do
+                local manifest = fixture.manifest()
+                manifest[case.field] = boundary.value
+                local value, _, code = protocol.validate_manifest(manifest)
+                t.eq(value == true, boundary.accepted, case.name .. " " .. boundary.name)
+                if not boundary.accepted then
+                    t.eq(code, "malformed", case.name .. " " .. boundary.name)
+                end
+            end
+        end
+
+        for _, case in ipairs({
+            { name = "minimum", value = 0, accepted = true },
+            { name = "maximum", value = protocol.MAX_COUNTDOWN_TICKS, accepted = true },
+            { name = "over", value = protocol.MAX_COUNTDOWN_TICKS + 1, accepted = false },
+        }) do
+            local message = deep_copy(fixture.messages()[7])
+            message.body.remaining_ticks = case.value
+            local value, _, code = protocol.validate(message)
+            t.eq(value == true, case.accepted, "countdown " .. case.name)
+            if not case.accepted then
+                t.eq(code, "malformed", "countdown " .. case.name)
+            end
+        end
+
+        for _, case in ipairs({
+            { name = "minimum", value = 0, accepted = true },
+            { name = "maximum", value = input_frame.MAX_TICK, accepted = true },
+            { name = "over", value = input_frame.MAX_TICK + 1, accepted = false },
+        }) do
+            local message = deep_copy(fixture.messages()[10])
+            message.body.tick = case.value
+            local value, _, code = protocol.validate(message)
+            t.eq(value == true, case.accepted, "tick " .. case.name)
+            if not case.accepted then
+                t.eq(code, "malformed", "tick " .. case.name)
+            end
+        end
+
+        for _, case in ipairs({
+            { name = "minimum", value = 0, accepted = true },
+            { name = "maximum", value = protocol.MAX_GOALS, accepted = true },
+            { name = "over", value = protocol.MAX_GOALS + 1, accepted = false },
+        }) do
+            local message = deep_copy(fixture.messages()[9])
+            message.body.home_score = case.value
+            local value, _, code = protocol.validate(message)
+            t.eq(value == true, case.accepted, "score " .. case.name)
+            if not case.accepted then
+                t.eq(code, "malformed", "score " .. case.name)
+            end
+        end
+
+        for _, case in ipairs({
+            { name = "minimum", count = 0, accepted = true },
+            { name = "maximum", count = protocol.MAX_CAPABILITIES, accepted = true },
+            { name = "over", count = protocol.MAX_CAPABILITIES + 1, accepted = false },
+        }) do
+            local runtime = fixture.runtime()
+            runtime.capabilities = {}
+            for index = 1, case.count do
+                runtime.capabilities[index] = ("capability_%03d"):format(index)
+            end
+            local value, _, code = protocol.validate_runtime(runtime)
+            t.eq(value == true, case.accepted, "capabilities " .. case.name)
+            if not case.accepted then
+                t.eq(code, "malformed", "capabilities " .. case.name)
+            end
+        end
+
+        local maximum_id = assert(
+            protocol.message_id(
+                bounded_id("s", protocol.MAX_SESSION_ID_BYTES),
+                bounded_id("p", protocol.MAX_PEER_ID_BYTES),
+                protocol.MAX_SEQUENCE
+            )
         )
-        t.eq(oversized_sequence, nil)
+        t.eq(#maximum_id, protocol.MAX_MESSAGE_ID_BYTES)
+        local message = deep_copy(fixture.messages()[1])
+        message.message_id = string.rep("m", protocol.MAX_MESSAGE_ID_BYTES + 1)
+        local value, _, code = protocol.validate(message)
+        t.eq(value, nil)
         t.eq(code, "malformed")
+
+        local decoded, _, decode_code =
+            protocol.decode(string.rep("x", protocol.MAX_WIRE_BYTES + 1))
+        t.eq(decoded, nil)
+        t.eq(decode_code, "wire_too_large")
+    end)
+
+    t.it("keeps an all-applicable-max proposal within the 8 KiB record bound", function()
+        local manifest = fixture.manifest()
+        manifest.session_id = bounded_id("session", protocol.MAX_SESSION_ID_BYTES)
+        manifest.seed = protocol.MAX_SEED
+        manifest.duration_ticks = protocol.MAX_DURATION_TICKS
+        manifest.max_goals = protocol.MAX_GOALS
+        for _, field in ipairs({
+            "build_id",
+            "source_id",
+            "content_id",
+            "tuning_id",
+            "match_config_id",
+            "fixture_id",
+            "arena_id",
+            "combat_rules_id",
+            "gameplay_ai_policy_id",
+        }) do
+            manifest[field] = bounded_id(field:sub(1, 1), protocol.MAX_ID_BYTES)
+        end
+        manifest.teams[1].team_id = bounded_id("home", protocol.MAX_ID_BYTES)
+        manifest.teams[2].team_id = bounded_id("away", protocol.MAX_ID_BYTES)
+        for team_index, team in ipairs(manifest.teams) do
+            for roster_index, player in ipairs(team.roster) do
+                replace_manifest_player_id(
+                    manifest,
+                    team_index,
+                    roster_index,
+                    bounded_id(
+                        ("p%d%d"):format(team_index, roster_index),
+                        input_frame.MAX_PLAYER_ID_BYTES
+                    )
+                )
+                if player.position ~= "keeper" then
+                    player.loadout_id = bounded_id(
+                        ("l%d%d"):format(team_index, roster_index),
+                        protocol.MAX_ID_BYTES
+                    )
+                    player.family_id = bounded_id(
+                        ("f%d%d"):format(team_index, roster_index),
+                        protocol.MAX_ID_BYTES
+                    )
+                end
+            end
+        end
+        t.is_true(assert(protocol.validate_manifest(manifest)))
+
+        local maximal_proposal = assert(
+            protocol.new(
+                "manifest_proposal",
+                manifest.session_id,
+                bounded_id("peer", protocol.MAX_PEER_ID_BYTES),
+                protocol.MAX_SEQUENCE,
+                {
+                    manifest_id = protocol.manifest_id(manifest),
+                    manifest = manifest,
+                }
+            )
+        )
+        local maximal_wire = assert(protocol.encode(maximal_proposal))
+        t.is_true(#maximal_wire <= protocol.MAX_WIRE_BYTES)
+        t.eq(#maximal_wire, 7196)
     end)
 
     t.it("rejects invalid phase use before callers mutate lifecycle state", function()
@@ -330,6 +830,40 @@ t.describe("OMP-3 online protocol", function()
         ok, _, code = protocol.validate_phase(messages[12], "terminal")
         t.eq(ok, nil)
         t.eq(code, "invalid_phase")
+
+        for _, match_phase in ipairs({
+            "kickoff",
+            "playing",
+            "goal_stoppage",
+            "full_time",
+        }) do
+            local message = deep_copy(messages[9])
+            message.body.phase = match_phase
+            t.is_true(
+                assert(protocol.validate_phase(message, "running")),
+                "running " .. match_phase
+            )
+            ok, _, code = protocol.validate_phase(message, "result")
+            t.eq(ok, nil, "result " .. match_phase)
+            t.eq(code, "invalid_phase", "result " .. match_phase)
+        end
+
+        local result_message = deep_copy(messages[9])
+        result_message.body.phase = "result"
+        t.is_true(assert(protocol.validate_phase(result_message, "result")))
+        ok, _, code = protocol.validate_phase(result_message, "running")
+        t.eq(ok, nil)
+        t.eq(code, "invalid_phase")
+
+        ok, _, code = protocol.validate_phase(messages[7], "result")
+        t.eq(ok, nil)
+        t.eq(code, "invalid_phase")
+
+        local invalid_match_phase = deep_copy(messages[9])
+        invalid_match_phase.body.phase = "countdown"
+        ok, _, code = protocol.validate_phase(invalid_match_phase, "result")
+        t.eq(ok, nil)
+        t.eq(code, "malformed")
     end)
 
     t.it("makes exact duplicates idempotent and conflicting reuse terminal", function()

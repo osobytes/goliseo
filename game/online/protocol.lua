@@ -167,12 +167,10 @@ local match_snapshot = require("sim.match_snapshot")
 
 ---@class SessionAbortBody
 ---@field code SessionRejectCode
----@field detail string
 
 ---@class SessionDisconnectBody
 ---@field target_peer_id string
 ---@field code SessionDisconnectCode
----@field detail string
 
 ---@alias SessionMessageBody
 ---| SessionHandshakeBody
@@ -215,7 +213,6 @@ protocol.MAX_ID_BYTES = 128
 protocol.MAX_SESSION_ID_BYTES = 128
 protocol.MAX_PEER_ID_BYTES = 128
 protocol.MAX_MESSAGE_ID_BYTES = 284
-protocol.MAX_DETAIL_BYTES = 256
 protocol.MAX_SEQUENCE = 2147483647
 protocol.MAX_SEED = 2147483647
 protocol.MAX_DURATION_TICKS = 216000
@@ -310,8 +307,8 @@ local BODY_FIELDS = {
         away_score = true,
         final_hash = true,
     },
-    abort = { code = true, detail = true },
-    disconnect = { target_peer_id = true, code = true, detail = true },
+    abort = { code = true },
+    disconnect = { target_peer_id = true, code = true },
 }
 local ROLES = { host = true, guest = true }
 local POSITIONS = { keeper = true, defender = true, midfielder = true, forward = true }
@@ -378,6 +375,15 @@ local ALLOWED_PHASES = {
         running = true,
         result = true,
     },
+}
+local MATCH_PHASES_BY_LIFECYCLE = {
+    running = {
+        kickoff = true,
+        playing = true,
+        goal_stoppage = true,
+        full_time = true,
+    },
+    result = { result = true },
 }
 local MANIFEST_COMPARE_FIELDS = {
     "version",
@@ -468,14 +474,20 @@ local function is_array(value, count, maximum)
     if type(value) ~= "table" then
         return false
     end
-    local length = #value
-    if (count and length ~= count) or (maximum and length > maximum) then
-        return false
-    end
+    local length = 0
+    local maximum_index = 0
     for key in pairs(value) do
-        if not is_integer(key) or key < 1 or key > length then
+        if not is_integer(key) or key < 1 then
             return false
         end
+        length = length + 1
+        maximum_index = math.max(maximum_index, key)
+    end
+    if maximum_index ~= length then
+        return false
+    end
+    if (count and length ~= count) or (maximum and length > maximum) then
+        return false
     end
     return true
 end
@@ -521,15 +533,8 @@ end
 ---@param value any
 ---@param name string
 ---@return boolean?, string?, SessionProtocolErrorCode?
-local function validate_detail(value, name)
-    if
-        type(value) ~= "string"
-        or #value > protocol.MAX_DETAIL_BYTES
-        or value:find("[%z\1-\31\127]")
-    then
-        return failure("malformed", name .. " must be bounded printable text")
-    end
-    return true
+local function validate_player_id(value, name)
+    return validate_identity_component(value, name, input_frame.MAX_PLAYER_ID_BYTES)
 end
 
 ---@param value any
@@ -647,7 +652,7 @@ local function validate_roster(roster, team, seen_players)
         if not has_only_fields(player, ROSTER_PLAYER_FIELDS) then
             return failure("malformed", team .. " roster player has unknown fields")
         end
-        local ok, err, code = validate_id(player.player_id, team .. " roster player id")
+        local ok, err, code = validate_player_id(player.player_id, team .. " roster player id")
         if not ok then
             return nil, err, code
         end
@@ -777,6 +782,10 @@ function protocol.validate_manifest(manifest)
             or assignment.team ~= slot.team
         then
             return failure("malformed", "manifest slots violate OMP-1 canonical order")
+        end
+        local ok, err, code = validate_player_id(assignment.player_id, "manifest slot player id")
+        if not ok then
+            return nil, err, code
         end
         local player = players_by_team[slot.team][assignment.player_id]
         if not player or player.position == "keeper" then
@@ -931,8 +940,7 @@ local function validate_slot_assignments(assignments)
     if not is_array(assignments, input_frame.SLOT_COUNT) then
         return failure("malformed", "slot assignment must contain exactly eight producers")
     end
-    local peer_ids = {}
-    local bot_ids = {}
+    local producer_ids = {}
     for index, assignment in ipairs(assignments) do
         local slot = assert(input_frame.slot(index))
         if
@@ -942,30 +950,27 @@ local function validate_slot_assignments(assignments)
         then
             return failure("malformed", "slot producers violate OMP-1 canonical order")
         end
-        for _, field in ipairs({ "player_id", "producer_id" }) do
-            local ok, err, code = validate_id(assignment[field], "slot assignment " .. field)
-            if not ok then
-                return nil, err, code
-            end
+        local ok, err, code = validate_player_id(assignment.player_id, "slot assignment player id")
+        if not ok then
+            return nil, err, code
         end
+        ok, err, code = validate_id(assignment.producer_id, "slot assignment producer id")
+        if not ok then
+            return nil, err, code
+        end
+        if producer_ids[assignment.producer_id] then
+            return failure("malformed", "slot producer ids must be unique across peers and bots")
+        end
+        producer_ids[assignment.producer_id] = true
         if assignment.producer_kind == "peer" then
             if assignment.bot_seed ~= nil then
                 return failure("malformed", "peer slot producer cannot carry a bot seed")
             end
-            if peer_ids[assignment.producer_id] then
-                return failure("malformed", "one peer cannot own multiple OMP-3 slots")
-            end
-            peer_ids[assignment.producer_id] = true
         elseif assignment.producer_kind == "bot" then
-            local ok, err, code =
-                validate_integer(assignment.bot_seed, "bot seed", 0, protocol.MAX_SEED)
+            ok, err, code = validate_integer(assignment.bot_seed, "bot seed", 0, protocol.MAX_SEED)
             if not ok then
                 return nil, err, code
             end
-            if bot_ids[assignment.producer_id] then
-                return failure("malformed", "bot producer ids must be unique")
-            end
-            bot_ids[assignment.producer_id] = true
         else
             return failure("malformed", "slot producer kind is invalid")
         end
@@ -1174,7 +1179,7 @@ function protocol.validate(message)
         if not REJECT_CODES[body.code] then
             return failure("malformed", "abort code is invalid")
         end
-        return validate_detail(body.detail, "abort detail")
+        return true
     end
     if not DISCONNECT_CODES[body.code] then
         return failure("malformed", "disconnect code is invalid")
@@ -1183,7 +1188,7 @@ function protocol.validate(message)
     if not ok then
         return nil, err, code
     end
-    return validate_detail(body.detail, "disconnect detail")
+    return true
 end
 
 ---@param value any
@@ -1420,6 +1425,18 @@ function protocol.validate_phase(message, phase)
         return failure(
             "invalid_phase",
             ("%s is invalid during session phase %s"):format(message.kind, tostring(phase))
+        )
+    end
+    if
+        message.kind == "match_phase"
+        and not MATCH_PHASES_BY_LIFECYCLE[phase][message.body.phase]
+    then
+        return failure(
+            "invalid_phase",
+            ("match phase %s is invalid during session phase %s"):format(
+                tostring(message.body.phase),
+                tostring(phase)
+            )
         )
     end
     return true

@@ -27,11 +27,13 @@ presentation object, runtime asset, target selection, result, or simulation
 outcome. OMP-3 provides mismatch detection and useful termination, not
 anti-cheat, authentication, confidentiality, accounts, or host migration.
 
-Only bounded opaque ASCII identifiers, canonical integers, booleans, and
-bounded printable terminal details cross this boundary. Direct identifiers,
+Only bounded opaque ASCII identifiers, closed/localizable terminal reason
+codes, canonical integers, and booleans cross this boundary. Abort and
+disconnect messages carry no peer-authored prose. Direct identifiers,
 participant-study data, survey responses, presentation objects, runtime asset
-instances, credentials, SDP/ICE payloads, and IP addresses are not protocol
-fields. Network diagnostics remain separately governed by #168.
+instances, credentials, SDP/ICE payloads, IP addresses, and free-form logging
+details are not protocol fields. Network diagnostics remain separately
+governed by #168.
 
 ## Stable identities
 
@@ -40,8 +42,11 @@ session the host is one stable peer and up to seven guests receive stable
 `peer_id` values. A peer can own at most one of the eight canonical OMP-1
 outfield slots. Missing humans are explicit deterministic bot producers with
 unique `producer_id` and integer `bot_seed`; they are not synthetic peers.
-Keepers occur first in each five-player roster, own no slot, have no combat
-loadout, and remain protected AI.
+Producer ids are unique across the combined peer and bot namespaces, so a bot
+cannot impersonate or collide with a peer producer. Keepers occur first in each
+five-player roster, own no slot, have no combat loadout, and remain protected
+AI. Roster, manifest-slot, and producer-assignment player ids share
+InputFrame's 64-byte player-id limit.
 
 Every message has a sender-local monotonic `sequence`. Session and peer
 components are independently bounded to 128 bytes. Their canonical message id
@@ -106,6 +111,11 @@ All message bodies have closed field allowlists:
 `validate_phase(message, current_phase)` is state-independent. Coordinators
 must call it before applying a message; a rejection never supplies a next
 state. This keeps invalid transitions from partially mutating lifecycle data.
+During `running`, match-phase bodies may report kickoff, playing, goal
+stoppage, or full time. During `result`, the only accepted match-phase body is
+`result`; playing, kickoff, and countdown traffic cannot regress the lifecycle.
+Ordering among successive running bodies remains stateful coordinator work for
+#163.
 Exact abort/disconnect duplicates are classified as idempotent before phase
 validation; a new terminal-state message is rejected, so reliable-channel
 delivery cannot revive or rewrite a completed session. Slot assignment must
