@@ -3,6 +3,7 @@ local App = require("game.app")
 local combat_feedback = require("game.presentation.combat_feedback")
 local fake_result = require("game.fake_result")
 local Match = require("game.screens.match")
+local settings = require("game.settings")
 local hit = require("game.ui.hit")
 local t = require("spec.support.runner")
 local viewport = require("game.ui.viewport")
@@ -176,7 +177,7 @@ t.describe("product application flow", function()
                 return active_match
             end,
         }
-        local app = App.new({ match_adapter = adapter })
+        local app = App.new({ match_adapter = adapter, settings = settings.defaults() })
         click_widget(app, "combat_prototype")
         click_widget(app, "next")
         click_widget(app, "formation_1-1-2")
