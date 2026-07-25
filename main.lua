@@ -628,6 +628,7 @@ end
 
 if has_flag("--determinism") then
     local evidence = require("sim.determinism_evidence")
+    local protocol_conformance = require("game.online.protocol_conformance")
     ---@type DeterminismCampaign?
     local browser_campaign
 
@@ -638,7 +639,24 @@ if has_flag("--determinism") then
         return evidence.report(result) .. ("|love=%d.%d.%d"):format(major, minor, revision)
     end
 
+    ---@return boolean
+    local function verify_protocol_golden()
+        local protocol_ok, protocol_result = pcall(protocol_conformance.verify)
+        if not protocol_ok then
+            print(
+                "GC_DETERMINISM|failure|message=protocol_golden_"
+                    .. tostring(protocol_result):gsub("|", "/")
+            )
+            return false
+        end
+        print(protocol_conformance.marker(protocol_result))
+        return true
+    end
+
     local function run_native_determinism()
+        if not verify_protocol_golden() then
+            os.exit(1)
+        end
         local ok, result = pcall(evidence.verify)
         print(
             ok and runtime_report(result)
@@ -649,6 +667,10 @@ if has_flag("--determinism") then
 
     function love.load()
         if has_flag("--browser-runtime") then
+            if not verify_protocol_golden() then
+                love.event.quit(1)
+                return
+            end
             local ok, campaign = pcall(evidence.new_campaign, false)
             if ok then
                 browser_campaign = campaign

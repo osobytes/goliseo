@@ -47,6 +47,12 @@ REQUIRED_FIELDS = {
     "events": "catch:1,claim:4,header:2,pass:5,reception:1,shot:1,tackle:147,touch:173",
     "love": "11.5.0",
 }
+REQUIRED_PROTOCOL_FIELDS = {
+    "schema": "1",
+    "manifest_id": "27c9d39785b1aaaf",
+    "transcript_id": "937cff176fa6af3b",
+    "messages": "13",
+}
 ERROR_MARKERS = (
     "GC_BROWSER|error|",
     "GC_BROWSER|window_error|",
@@ -70,6 +76,24 @@ def parse_marker(line: str) -> dict[str, str]:
             raise RuntimeError(
                 f"determinism marker {key} mismatch: expected {expected}, got {fields.get(key)}"
             )
+    return fields
+
+
+def parse_protocol_marker(line: str) -> dict[str, str]:
+    parts = line.split("|")
+    if parts[:2] != ["GC_PROTOCOL", "golden"]:
+        raise RuntimeError(f"invalid protocol golden marker: {line}")
+    fields: dict[str, str] = {}
+    for part in parts[2:]:
+        key, separator, value = part.partition("=")
+        if not separator or not key or key in fields:
+            raise RuntimeError(f"invalid protocol golden marker field: {part}")
+        fields[key] = value
+    if fields != REQUIRED_PROTOCOL_FIELDS:
+        raise RuntimeError(
+            f"protocol golden marker mismatch: "
+            f"expected {REQUIRED_PROTOCOL_FIELDS}, got {fields}"
+        )
     return fields
 
 
@@ -313,6 +337,7 @@ def run_once(
         deadline = time.monotonic() + timeout_seconds
         state: dict[str, Any] = {}
         markers: list[str] = []
+        protocol_markers: list[str] = []
         while time.monotonic() < deadline:
             state = console_state(driver)
             entries = state.get("entries")
@@ -332,23 +357,35 @@ def run_once(
                 if message.startswith("GC_DETERMINISM|result|")
             ]
             if markers:
+                protocol_markers = [
+                    message
+                    for message in messages
+                    if message.startswith("GC_PROTOCOL|golden|")
+                ]
                 break
             time.sleep(0.5)
         if len(markers) != 1:
             raise RuntimeError(
                 f"{browser_name} run {run_number} timed out without exactly one result marker"
             )
+        if len(protocol_markers) != 1:
+            raise RuntimeError(
+                f"{browser_name} run {run_number} omitted the unique protocol golden marker"
+            )
         if state.get("status") != "running":
             raise RuntimeError(
                 f"{browser_name} loader status is {state.get('status')!r}, expected 'running'"
             )
         fields = parse_marker(markers[0])
+        protocol_fields = parse_protocol_marker(protocol_markers[0])
         record = {
             "browser": browser_name,
             "browser_version": str(driver.capabilities.get("browserVersion")),
             "duration_seconds": round(time.monotonic() - started, 3),
             "fields": fields,
             "marker": markers[0],
+            "protocol": protocol_fields,
+            "protocol_marker": protocol_markers[0],
             "run": run_number,
         }
     finally:
@@ -360,6 +397,18 @@ def run_once(
 
 
 def self_test() -> None:
+    protocol_marker = (
+        "GC_PROTOCOL|golden|schema=1|manifest_id=27c9d39785b1aaaf"
+        "|transcript_id=937cff176fa6af3b|messages=13"
+    )
+    if parse_protocol_marker(protocol_marker) != REQUIRED_PROTOCOL_FIELDS:
+        raise RuntimeError("protocol golden marker self-test failed")
+    try:
+        parse_protocol_marker(protocol_marker.replace("messages=13", "messages=12"))
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError("protocol golden marker accepted a changed vector count")
     if "--no-sandbox" not in chrome_arguments(True):
         raise RuntimeError("CI Chrome arguments omit --no-sandbox")
     if "--no-sandbox" in chrome_arguments(False):
