@@ -75,6 +75,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ "$self_test" -eq 1 ]; then
+    python3 -B "$project_root/scripts/rollback_ci.py" self-test
     exec python3 -B "$project_root/scripts/rollback_validation.py" --self-test
 fi
 
