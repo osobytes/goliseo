@@ -664,34 +664,68 @@ source-movement/facing tape, a frozen target identity, a catalog family id, and
 the frozen catalog/static-collision version. It does not read confirmed future
 inputs, rollback-only or hidden state, an unresolved outcome, presentation, or
 eventual contact. Public motion is projected deterministically: a public
-accepted/forced phase uses its catalogued public pose path anchored at the
-observed state; otherwise current public position and velocity advance under
-neutral input at 60 Hz with the frozen pitch/collision rules. The source
-follows the searched tape. This no-response projection is a feasibility
+soccer/combat accepted or forced phase uses its catalogued public pose path
+anchored at the observed state; otherwise current public position and velocity
+advance under neutral input at 60 Hz with the frozen pitch/collision rules. The
+source follows the searched tape until its candidate commit tick. From that
+commit through the end of the family proof horizon, it repeats the witness
+tape's last legal movement vector and facing input (neutral movement and
+observed facing when the tape is empty) through the ordinary family movement
+multiplier, pitch, and collision transition. An exact catalogued
+committed-motion rule supersedes that repetition when present. No later input
+is searched or read. This no-response projection is a feasibility
 counterfactual, not a claim that the target will stand still or that a hit will
 occur.
 
-The predicate evaluates the family catalog's own temporal horizon:
+The frozen mechanics rows below come directly from the family catalog. Timing
+uses the ordinary `sim.combat` transition order; `hit` is the unguarded
+`interruption ticks / displacement px / ball spill` tuple.
 
-- `light_melee`: the catalogued swept legal-threat volume across windup and
-  active intersects the frozen target's projected collision volume on at least
-  one contact-legal active tick;
-- `ranged`: the source has a legal aim and clear line against projected public
-  blockers at the release tick, and the catalogued projectile
-  speed/collision/lifetime admits an intersection with the frozen target's
-  projected collision volume inside the projectile travel window; and
-- `guard`: the frozen target identity is the hostile threat source, and that
-  source's projected public legal threat/contact path intersects the guarding
-  source's catalogued guard arc during the guard active window. Guard is
-  self-only; neither feasibility nor reconciliation asks the guard geometry to
-  contain the hostile player's body.
+| Family | Activation and committed schedule | Threat geometry / travel | Actual recovery, cooldown, and hit |
+| --- | --- | --- | --- |
+| `unarmed` | press edge; windup 6 ticks, active 4 ticks | melee reach 30 px, front arc 100°, movement multiplier 0.80 | recovery 12, cooldown 24, hit `10/8/true` |
+| `light_melee` | press edge; windup 12 ticks, active 5 ticks | melee reach 42 px, front arc 75°, movement multiplier 0.50 | recovery 21, cooldown 42, hit `18/18/true` |
+| `ranged` | held-release; windup 18 ticks, active/spawn 1 tick | front arc 20°, movement multiplier 0.40, projectile 300 px/s for at most 60 ticks | recovery 27, cooldown 60, hit `12/10/true` |
+| `guard` | held; windup 6 ticks, then active while held | self-only guard arc 120°, movement multiplier 0.55 | recovery 9 after release, cooldown 0, no unguarded hit |
 
-`unarmed` contributes no commit geometry. Feasibility for all three armed
-families ignores which family is actually equipped and ignores actual
-cooldown, recovery, commitment, request acceptance, and resource cost. Those
-remain availability/cost facts. Feasibility also remains true after a
-subsequent miss, defense, supersession, interruption, or other terminal:
-eventual hit/miss/contact is not part of this predicate.
+The predicate evaluates an executable family-specific tape and horizon:
+
+- `unarmed`: commit with the canonical press edge, apply its 6-tick windup and
+  4 active ticks, and require the catalogued swept melee threat to intersect
+  the frozen target's projected collision volume on at least one
+  contact-legal active tick;
+- `light_melee`: commit with the canonical press edge, apply its 12-tick
+  windup and 5 active ticks, and require the catalogued swept melee threat to
+  intersect the frozen target's projected collision volume on at least one
+  contact-legal active tick;
+- `ranged`: commit with `pressed=true, held=true, released=false`; on the next
+  canonical tick emit the earliest legal `held=false, released=true` edge,
+  which latches through the rest of the 18-tick windup. At the resulting
+  1-tick active/projectile-spawn transition, require a legal aim and clear line
+  against projected public blockers. Freeze direction at spawn, then advance
+  the projectile at 300 px/s in canonical collision order for no more than its
+  60-tick lifetime or until public field exit, whichever comes first.
+  Feasibility requires an intersection with the frozen target's projected
+  collision volume inside that travel horizon; and
+- `guard`: commit with `pressed=true, held=true, released=false`, hold through
+  the 6-tick windup and subsequent guard phase, and release on the tick after
+  the first witnessed defensive intersection. The finite proof horizon is
+  exactly 66 ticks after commit (guard windup 6 plus the maximum ranged
+  lifetime 60). The frozen target identity is the hostile threat source, and
+  its projected public melee threat or in-flight projectile/contact path must
+  intersect the guarding source's catalogued arc on an active guard tick at or
+  before that horizon. No intersection is infeasible; release without an
+  intersection cannot witness feasibility. Guard is self-only, so neither
+  feasibility nor reconciliation asks the guard geometry to contain the
+  hostile player's body.
+
+All four families contribute their temporal relation. Family feasibility
+ignores which family is actually equipped and ignores actual cooldown,
+recovery, commitment, request acceptance, resource cost, and hit outcome.
+Those catalog fields remain actual-family availability/cost/outcome facts and
+are still measured for four-family balance. Feasibility remains true after a
+subsequent miss, defense, supersession, interruption, expiry, or other
+terminal: eventual hit/miss/contact is not part of this predicate.
 
 `intervention_candidate/v2` is the family-neutral feasibility envelope.
 Starting from the decision-tick boundary, a pure reachability search varies
@@ -699,7 +733,7 @@ only the source's canonical legal movement/facing inputs for at most 30 ticks.
 Every non-source trajectory is the public no-response projection above, never
 a future confirmed tape. A `(target, context)` pair enters the envelope only
 when its purpose predicate is true and at least one searched source pose makes
-`family_commit_feasibility/v1` true for at least one of the three armed
+`family_commit_feasibility/v1` true for at least one of the four catalogued
 families toward that same frozen target/threat-source identity. A commit may
 start within the 30-tick search window; its family-specific windup, active,
 release, projectile-travel, or guard horizon may end later.
@@ -707,26 +741,30 @@ release, projectile-travel, or guard horizon may end later.
 #148 freezes the input alphabet/search order, public projection rule, family
 catalog version, and static collision version; deduplicates equal states by
 canonical state hash; and records first feasible commit tick, witness-tape
-hash, family-feasibility bitset, projection-input digest, and catalog ids. The
-stored envelope is offline evidence and never becomes an extra AI observation.
-The same pure helper is lawful for #112 to recompute because every dynamic
-field it reads is already in `combat_sim_observation/v1`; #148 independently
-recomputes rather than trusting the AI result. A true purpose predicate outside
-the envelope is `context_only_remote`: retained as a diagnostic, never an
-opportunity or dominance denominator.
+hash, carried post-commit movement/facing input, ranged release/spawn/travel
+ticks, guard hold/intersection/release ticks, family-feasibility bitset,
+projection-input digest, and catalog ids. The stored envelope is offline
+evidence and never becomes an extra AI observation. The same pure helper is
+lawful for #112 to recompute because every dynamic field it reads is already
+in `combat_sim_observation/v1`; #148 independently recomputes rather than
+trusting the AI result. A true purpose predicate outside the envelope is
+`context_only_remote`: retained as a diagnostic, never an opportunity or
+dominance denominator.
 
 #112 emits one stable bot decision reason from the five purpose ids or
 `decline`, using only its observable allowlist. #148 independently records the
 eligibility bitset, intervention envelope, and risk flag. An accepted commit
 reason reconciles only when its frozen `(target, context)` is in that envelope
 **and** `family_commit_feasibility/v1`, recomputed from that commit's public
-decision snapshot, the zero-length precommit movement tape, and the actually
-equipped family, is true for the same frozen identity. For melee and ranged the
-identity is the projected target; for guard it is the incoming hostile threat
-source and the defensive-intersection relation above applies. Reconciliation
-never requires eventual contact or a favorable terminal. `decline` is valid
-only when the episode closes without an action; it can never label a commit. A
-committed zero-bitset or infeasible-target action is
+decision snapshot, its one-tick actually materialized movement/facing input,
+and the actually equipped family, is true for the same frozen identity. The
+helper carries that input after commit under the frozen rule above; it reads no
+later confirmed input. For unarmed, light melee, and ranged the identity is the
+projected target; for guard it is the incoming hostile threat source and the
+defensive-intersection relation above applies. Reconciliation never requires
+eventual contact or a favorable terminal. `decline` is valid only when the
+episode closes without an action; it can never label a commit. A committed
+zero-bitset or infeasible-target action is
 `unattributed_off_ball`; for a representative policy it additionally raises
 the hard
 `representative_policy_context_violation` schema error. Human stated intent is
@@ -823,20 +861,42 @@ waiting for #151; the later human gate remains required for #114.
 `combat_sim_observation/v1` is the only schema available inside `sim/` and to
 shipped gameplay AI. It contains authoritative public simulation state only:
 
-- self: stable player/slot/team id, family, public accepted-action/forced/
-  immunity phase, position, velocity, facing, own ready/not-ready cooldown, and
-  own materialized input history;
-- opponents: stable player/team id, authoritative public action/forced/guard
-  phase, telegraph start/end plus projected action geometry, position,
-  velocity, and facing;
+- self: stable player/slot/team id, family and public source-sequence id,
+  public keeper/outfielder role, soccer action/commitment state,
+  accepted-action/forced/immunity phase and remaining phase ticks, position,
+  velocity, facing, own ready/not-ready cooldown, and own materialized input
+  history through the observed tick;
+- teammates: one row for every other same-team player with stable
+  player/slot/team id, public keeper/outfielder role, soccer
+  action/commitment state, family, public source-sequence id, accepted-action/
+  forced/immunity/guard phase and remaining public phase ticks, telegraph
+  start/end and projected action geometry, position, velocity, and facing;
+- opponents: one row for every opposing player with the same authoritative
+  public identity, keeper/outfielder role, soccer action/commitment, family,
+  source-sequence, action/forced/immunity/guard phase, remaining phase ticks,
+  telegraph, projected geometry, position, velocity, and facing fields as
+  teammate rows;
+- in-flight projectiles: stable `projectile_id`, source player/team id,
+  source-sequence id, family id, position, unit direction and velocity in
+  px/s, public `in_flight` phase, remaining lifetime ticks, and
+  `horizon_ticks = min(remaining_lifetime_ticks, field_exit_ticks)` for legal
+  guard and spacing. `projectile_id` is the collision-free canonical encoding
+  of `(source_player_id, source_sequence)` because the catalog emits at most
+  one projectile per source sequence;
 - ball and match: ball position/velocity/owner, score, canonical remaining
   ticks, formation-slot anchors, public stoppage state, and the public
   pitch/static-collision catalog version; and
 - identity: schema, policy id, producer/observed canonical tick, canonical
-  player-index order, and digest.
+  player-index order, projectile order, family/catalog versions, and digest.
 
 It excludes pixels, cue visibility/occlusion, render timing, theme,
-presentation id, viewport, frame rate, and unresolved outcomes.
+presentation id, viewport, frame rate, unresolved outcomes, hidden collision
+results, future input, and RNG state. Teammate and opponent rows are ordered by
+canonical player index. Projectile rows are ordered by
+`(source_sequence, source_player_id, projectile_id)`; all scalar/vector fields
+use the section 4.0 canonical encoding. The allowlist and digest cover the
+schema tag, row counts, row order, every public field above, and their catalog
+versions, and reject a missing, duplicate, reordered, or undeclared field.
 
 `human_proxy_observation/v1` is evidence-only and is built outside `sim/`. It
 joins a simulation observation to recorded cue visible/occluded state,
@@ -848,12 +908,13 @@ The proxy can act only by materializing an ordinary input tape that passes the
 same producer and legality checks as human input; it has no direct simulation
 action channel.
 
-Each schema has a separate canonical digest and allowlist test that rejects
-undeclared fields. #112 emits the simulation digest with its reason; the
-evidence harness emits the human-proxy digest. Gameplay-AI decision inputs and
-digests remain invariant across presentation/theme/viewport swaps. Those
-identities are still retained outside the policy input in fixture E, which
-must reproduce identical gameplay-AI decisions and input tapes.
+Each schema has a separate canonical digest and allowlist test. #112 emits the
+simulation digest with its reason; the evidence harness emits the human-proxy
+digest. Gameplay-AI decision inputs, ordered public rows, digests, reasons, and
+materialized input tapes remain invariant across presentation/theme/viewport
+swaps. Those presentation identities are retained only outside the policy
+input in fixture E, which must reproduce the identical observation digest,
+gameplay-AI decisions, and input tapes.
 
 Policy ids are distinct:
 
@@ -1666,7 +1727,27 @@ new exact head.
 | Experimental statistics and reproducibility | GUR/stats/accessibility council | block | accepted/rejected aggregation, component denominators, and power do not implement the exact six-plus-two probe vector | 6.2–6.3 separate endpoints, fixed denominators, exact simulation, and ten-claim max-T vector; pending |
 | Accessibility, readability, and inclusive participant design | GUR/stats/accessibility council | approve | pass-3 accommodations, exposure strata, assistance, and structural-missingness rules remain accepted | no new change; pass-5 exact-head audit pending |
 
-Pass 5 must review the next pushed exact head. No pass-5 disposition is
+Pass 5 reviewed exact head
+`df74d77a98087e4ad588443c75005504fc843b73` on 2026-07-25. Gameplay/AI
+returned three `block` dispositions for one shared mechanics-alignment and
+lawful-observation defect. GUR, statistics, accessibility, and telemetry
+returned `approve`; netcode and privacy returned `approve with changes`.
+These are pass-5 statuses only. The gameplay/AI author response and the two
+cross-cutting changes require a pass-6 audit at the new exact head.
+
+| Perspective | Reviewer | Pass-5 status | Remaining objection / accepted disposition | Author response for pass 6 |
+| --- | --- | --- | --- | --- |
+| Soccer tactics and arcade-sports design | gameplay/AI council | block | excluding implemented unarmed from the common union breaks four-family opportunity balance, while missing teammate rows prevents lawful carrier-protection and lane reasoning | 4.6 four-family union/readiness and 4.7 authoritative teammate rows; pending |
+| Competitive combat/fighting counterplay | gameplay/AI council | block | unarmed is a real 6/4 press melee family, and post-search movement, ranged release/travel, and guard hold/release horizons are not executable | 4.6 catalog mechanics table and frozen family tapes/horizons; pending |
+| AI human-proxy and adversarial behavior | gameplay/AI council | block | the sole lawful observation omits teammates and in-flight projectiles needed for the declared reason/guard predicates | 4.6 no-future-input helper and 4.7 ordered public teammate/projectile rows; pending |
+| Telemetry/data engineering and deterministic replay | data/netcode/privacy council | approve | pass-4 telemetry identity and replay dispositions accepted | 4.7 reuses collision-free ids, canonical encoding, and explicit order for the public observation expansion; pass-6 audit pending |
+| Netcode, performance, and latency | data/netcode/privacy council | approve with changes | public projectile horizon and post-commit schedule need exact ordering/digest semantics without crossing the canonical/runtime boundary | 4.6 frozen witnesses and 4.7 row order/digest/allowlist; pass-6 audit pending |
+| Privacy, responsible engagement, and player advocacy | data/netcode/privacy council | approve with changes | expanded policy observation must remain public-only and exclude hidden outcome, RNG, future input, and presentation state | 4.7 explicit public fields and exclusions; pass-6 audit pending |
+| Games user research and psychometrics | GUR/stats/accessibility council | approve | separate accepted/rejected constructs, masks, coding, and nondiscretionary denominators accepted | no new change; pass-6 exact-head regression audit pending |
+| Experimental statistics and reproducibility | GUR/stats/accessibility council | approve | exact six-plus-two simulation, compatible operating points, and ten-claim max-T family accepted | no new change; pass-6 exact-head regression audit pending |
+| Accessibility, readability, and inclusive participant design | GUR/stats/accessibility council | approve | accommodations, exposure strata, assistance, and structural-missingness rules remain accepted | no new change; pass-6 exact-head regression audit pending |
+
+Pass 6 must review the next pushed exact head. No pass-6 disposition is
 inferred from these author responses.
 
 Each reviewer record uses this category template:
