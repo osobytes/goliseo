@@ -64,24 +64,63 @@ tick per `love.update`, so WebDriver can observe progress and terminate a stuck 
 
 ## Gates
 
-The runtime-matrix `playable` cases satisfy the CPU gates on every required runtime. Every
-`playable` case, including the persistent soak, satisfies the deterministic correctness and
-retained-storage gates. The separately rerunnable soak owns the retained-memory gate and records
-its CPU timings diagnostically.
+Every `playable` case, including the persistent soak, satisfies the deterministic correctness and
+retained-storage gates. Native runtime-matrix cases retain the absolute CPU budgets. Browser
+runtime-matrix CPU acceptance is an aggregate, same-browser comparison: each playable seed is
+paired with the clean case for that seed from the same job and exact browser runtime. The
+separately rerunnable soak owns the retained-memory gate and records its CPU timings
+diagnostically.
 
 | Gate | Required value | Owner |
 | --- | ---: | --- |
-| p95 combined client simulation plus rollback work | `< 16.67 ms` | runtime matrix |
-| nearest-rank p99.9 rollback wall duration | `< 33.3 ms` | runtime matrix |
+| native p95 combined client simulation plus rollback work | `< 16.67 ms` | native runtime matrix |
+| native nearest-rank p99.9 rollback wall duration | `< 33.3 ms` | native runtime matrix |
+| browser playable p95 work / paired clean p95 work | `< 6.7` | browser runtime matrix aggregate |
+| browser playable p99.9 rollback / paired clean p95 work | `< 11.7` | browser runtime matrix aggregate |
 | retained snapshot boundaries | `<= 31` | every playable case |
 | canonical retained snapshot payload | `< 768 KiB` | every playable case |
 | exact accounted snapshot/input/output/event history | `< 1 MiB` | every playable case |
 | terminal forced-GC Lua heap, process-tree RSS, and Chrome JS-heap growth from warm-up | `<= 10%` | persistent soak |
 
-This ownership and statistic split is an explicit revision to the initial issue wording. The
-numeric thresholds are unchanged, but CPU acceptance is narrowed to runtime-matrix `playable`
-cases and the rollback statistic changes from a raw maximum to nearest-rank p99.9. Hosted CI runs
-on shared, non-real-time infrastructure. Its p99.9 gate detects sustained tail regressions while
+`gate_contract=5` supersedes contract 4 for newly generated evidence. An individual browser
+playable case records `cpu_gate_mode=normalized_deferred`; it cannot fail solely because its
+absolute p95 work or p99.9 rollback time crosses the product budget. The validator first collects
+six unique clean controls and six unique playable cases per browser (`complete_fixture` and
+`combat` across three seeds). It validates exact browser, browser-version, scenario, profile, and
+seed identity, requires a finite positive clean p95 denominator, and then evaluates every
+scenario/seed pair with strict `<` comparisons. Missing, duplicate, malformed, or mismatched
+controls fail closed. The normalized evidence records every pair, both ratios, the thresholds, all
+violations, and the absolute p95, p99.9, maximum, and over-33.3-ms count.
+Each clean control runs immediately before its matching playable seed. This interleaving reduces
+temporal shared-runner drift without adding a case or weakening exact seed pairing.
+
+The thresholds are calibrated from the complete Chrome and Firefox distributions in accepted
+exact runs
+[`30060058593`](https://github.com/osobytes/galactic-cup/actions/runs/30060058593) and
+[`30065880550`](https://github.com/osobytes/galactic-cup/actions/runs/30065880550).
+Across their 12 seed pairs, p95-work ratios ranged from 5.328 to 5.799 and rollback-p99.9 ratios
+from 8.529 to 10.164. Each contract-5 threshold is the corresponding accepted maximum plus 15%,
+rounded upward to one decimal: 6.7 and 11.7. This is intentionally not a boundary fitted to the
+next observed sample.
+
+Failed exact run
+[`30075505461`](https://github.com/osobytes/galactic-cup/actions/runs/30075505461)
+provides the external-noise cross-check. Its complete Chrome pairs were 5.161--5.430 for p95 work
+and 7.817--8.494 for rollback p99.9. Firefox seeds 2001 and 2002 were 5.068 and 5.264 for p95 work
+and 7.826 and 8.264 for rollback p99.9; the old per-case absolute gate stopped the job before the
+third playable case. The rejected Firefox seed-2002 absolute p95 was 16.740 ms against a 3.180 ms
+clean control, while its 26.280 ms p99.9, 32.260 ms maximum, and zero samples at or above
+33.3 ms all passed their former absolute checks.
+
+Same-run normalization detects browser rollback work that gets slower relative to its clean
+simulation baseline. It intentionally allows a proportional whole-runtime slowdown, because a
+shared hosted runner cannot establish an absolute product performance claim. The unchanged native
+absolute gate remains the pull-request backstop for shared game and simulation regressions.
+Absolute browser p95, p99.9, maximum, and over-threshold counts remain diagnostics; controlled,
+dedicated hardware is required for browser frame-budget product acceptance.
+
+Contract 4 changed the rollback statistic from a raw maximum to nearest-rank p99.9. Hosted CI runs
+on shared, non-real-time infrastructure. That statistic detects sustained tail regressions while
 allowing at most the slowest 0.1% of samples to remain diagnostic; it does not claim that no
 individual rollback can exceed 33.3 ms. A hard raw-maximum claim requires the separately
 controlled dedicated-hardware performance campaign.
@@ -101,13 +140,13 @@ maxima of 24.18--29.16 ms. These isolated maxima are consistent with external sc
 but do not prove its cause; rerunning until a favorable maximum appears would create selection
 bias rather than stronger evidence.
 
-`gate_contract=4` makes the timing-evidence ownership explicit and supersedes the contract-3
-calibration format without changing its p99.9 statistic. Runtime-matrix cases emit the quantized
-raw integer-microsecond rollback samples separately from their logical markers. The Python
-evidence validator independently recomputes nearest-rank p99.9, the maximum, and the count at or
-above 33.3 ms, and rejects count drift against both the measured rollback calls and the logical
-rollback count. The raw maximum and all over-threshold matrix samples remain visible in the
-artifact. Runtime-matrix playable cases emit `cpu_gate_applied=1`; soak cases emit
+Runtime-matrix cases emit quantized raw integer-microsecond rollback samples separately from their
+logical markers. The Python evidence validator independently recomputes nearest-rank p99.9, the
+maximum, and the count at or above 33.3 ms, and rejects count drift against both the measured
+rollback calls and the logical rollback count. The raw maximum and all over-threshold matrix
+samples remain visible in the artifact. Native runtime-matrix playable cases emit
+`cpu_gate_applied=1` and `cpu_gate_mode=absolute`; browser playable cases emit
+`cpu_gate_applied=0` and `cpu_gate_mode=normalized_deferred`; soak cases emit
 `cpu_gate_applied=0`, `cpu_gate=not_applied`, and aggregate CPU diagnostics without transporting
 raw timing arrays. Storage, memory, provenance, teardown, and orphan gates remain active.
 

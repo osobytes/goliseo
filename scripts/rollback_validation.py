@@ -52,6 +52,11 @@ RESULT_REQUIRED_FIELDS = ("schema", "suite", "success", "logical_digest", "case_
 NETWORK_SEEDS = (2001, 2002, 2003)
 NATIVE_PROFILES = ("clean", "omp0_parity", "playable", "stress")
 BROWSER_FULL_PROFILES = ("clean", "playable")
+BROWSER_CPU_SCENARIOS = ("complete_fixture", "combat")
+BROWSER_CPU_FIXTURES = {
+    "complete_fixture": "omp1-nebula-orion-eight-streams-v2",
+    "combat": "omp2-combat-rollback-v1",
+}
 CAMPAIGNS = ("all", "matrix", "soak")
 STRESS_PROFILE = "stress"
 SCENARIOS = (
@@ -86,6 +91,99 @@ MAX_P95_WORK_MS = 16.67
 MAX_ROLLBACK_P999_MS = 33.3
 MAX_ROLLBACK_P999_US = 33300
 ROLLBACK_PERCENTILE = 0.999
+GATE_CONTRACT = "5"
+MAX_BROWSER_P95_WORK_RATIO = 6.7
+MAX_BROWSER_ROLLBACK_P999_RATIO = 11.7
+BROWSER_CPU_CALIBRATION_RUNS = ("30060058593", "30065880550")
+BROWSER_CPU_DIAGNOSTIC_RUN = "30075505461"
+BROWSER_CPU_CALIBRATION_MARGIN = 0.15
+BROWSER_CPU_CALIBRATION_MAX_P95_WORK_RATIO = 13.975 / 2.410
+BROWSER_CPU_CALIBRATION_MAX_ROLLBACK_P999_RATIO = 24.800 / 2.440
+BROWSER_CPU_CASE_FIELDS = frozenset(
+    {
+        "case",
+        "client_hash",
+        "cpu_gate",
+        "cpu_gate_applied",
+        "cpu_gate_mode",
+        "event_confirmed_combat",
+        "event_confirmed_digest",
+        "event_reference_digest",
+        "event_residue",
+        "expected_failure",
+        "fixture",
+        "game_gate",
+        "gate_contract",
+        "hidden_progress",
+        "history_gate",
+        "initial_hash",
+        "lab_success",
+        "late_tick",
+        "max_depth",
+        "network_seed",
+        "peak_history_bytes",
+        "peak_snapshot_bytes",
+        "peak_snapshots",
+        "profile",
+        "reference_hash",
+        "resimulated",
+        "rollbacks",
+        "sample",
+        "scenario",
+        "scenario_pass",
+        "schema",
+        "snapshot_gate",
+        "snapshot_version",
+        "status",
+        "success",
+        "tape_digest",
+        "tape_version",
+    }
+)
+BROWSER_CPU_RESULT_FIELDS = frozenset(
+    {"case_count", "logical_digest", "schema", "success", "suite"}
+)
+BROWSER_CPU_RUNTIME_FIELDS = frozenset(
+    {
+        "gate_contract",
+        "input_version",
+        "love",
+        "profile_digest",
+        "snapshot_versions",
+        "suite",
+        "tape_versions",
+        "tick_rate",
+    }
+)
+BROWSER_CPU_METRIC_FIELDS = frozenset(
+    {
+        "capture_calls",
+        "capture_ms",
+        "case",
+        "max_rollback_ms",
+        "max_update_wall_ms",
+        "p95_update_wall_ms",
+        "p95_work_ms",
+        "peak_history_bytes",
+        "peak_snapshot_bytes",
+        "profile",
+        "resimulation_calls",
+        "resimulation_ms",
+        "restore_calls",
+        "restore_ms",
+        "rollback_calls",
+        "rollback_ms",
+        "rollback_over_33_3_count",
+        "rollback_p999_ms",
+        "rollback_percentile",
+        "rollback_percentile_method",
+        "rollback_sample_count",
+        "rollback_timing_evidence",
+        "simulation_calls",
+        "simulation_ms",
+        "work_samples",
+    }
+)
 
 
 def validate_historical_soccer_evidence() -> None:
@@ -294,7 +392,7 @@ def parse_rollback_timings(line: str) -> RollbackTimingSeries:
     missing = sorted(required.difference(fields))
     if missing:
         raise RuntimeError(f"rollback timing series omits fields: {', '.join(missing)}")
-    if fields["gate_contract"] != "4":
+    if fields["gate_contract"] != GATE_CONTRACT:
         raise RuntimeError("rollback timing series uses a stale gate contract")
     if fields["unit"] != "microseconds":
         raise RuntimeError("rollback timing series uses an unsupported unit")
@@ -537,13 +635,25 @@ def validate_case_plan(
             )
 
 
-def cpu_gate_applies(suite: str, profile: str) -> bool:
-    """Derive CPU-gate ownership from the pinned campaign contract."""
+def cpu_gate_mode(suite: str, profile: str, browser_runtime: bool) -> str:
+    """Derive per-case CPU ownership from the pinned campaign contract."""
 
-    return profile == "playable" and suite != "soak"
+    if profile != "playable" or suite == "soak":
+        return "diagnostic"
+    if browser_runtime:
+        if suite != "browser-full":
+            raise RuntimeError(
+                f"{suite} cannot defer playable CPU acceptance to the browser aggregate"
+            )
+        return "normalized_deferred"
+    return "absolute"
 
 
-def validate_case_integrity(markers: list[ValidationMarker], suite: str) -> None:
+def validate_case_integrity(
+    markers: list[ValidationMarker],
+    suite: str,
+    browser_runtime: bool = False,
+) -> None:
     for marker in (row for row in markers if row.kind == "case"):
         fields = marker.fields
         case_id = fields.get("case", "<unknown>")
@@ -551,6 +661,7 @@ def validate_case_integrity(markers: list[ValidationMarker], suite: str) -> None
             "client_hash",
             "cpu_gate",
             "cpu_gate_applied",
+            "cpu_gate_mode",
             "event_confirmed_digest",
             "event_confirmed_combat",
             "event_reference_digest",
@@ -613,7 +724,7 @@ def validate_case_integrity(markers: list[ValidationMarker], suite: str) -> None
         resimulated = non_negative_integer(fields["resimulated"], f"{case_id} resimulated")
         if combat_case and fields["profile"] != "clean" and resimulated == 0:
             raise RuntimeError(f"{case_id} did not exercise combat resimulation")
-        if fields["gate_contract"] != "4":
+        if fields["gate_contract"] != GATE_CONTRACT:
             raise RuntimeError(
                 f"{case_id} reports gate_contract={fields['gate_contract']!r}"
             )
@@ -621,16 +732,27 @@ def validate_case_integrity(markers: list[ValidationMarker], suite: str) -> None
             raise RuntimeError(
                 f"{case_id} reports cpu_gate_applied={fields['cpu_gate_applied']!r}"
             )
-        expected_applied = cpu_gate_applies(suite, fields["profile"])
+        expected_mode = cpu_gate_mode(suite, fields["profile"], browser_runtime)
+        if fields["cpu_gate_mode"] != expected_mode:
+            raise RuntimeError(
+                f"{case_id} reports cpu_gate_mode={fields['cpu_gate_mode']!r}, "
+                f"expected {expected_mode!r}"
+            )
+        expected_applied = expected_mode == "absolute"
         if (fields["cpu_gate_applied"] == "1") != expected_applied:
             raise RuntimeError(
                 f"{case_id} CPU gate ownership differs from the {suite} contract"
             )
-        expected_cpu_gate = "1" if expected_applied else "not_applied"
-        if fields["cpu_gate"] != expected_cpu_gate:
+        if expected_mode == "absolute":
+            expected_cpu_gates = {"1"}
+        elif expected_mode == "normalized_deferred":
+            expected_cpu_gates = {"deferred"}
+        else:
+            expected_cpu_gates = {"not_applied"}
+        if fields["cpu_gate"] not in expected_cpu_gates:
             raise RuntimeError(
                 f"{case_id} reports cpu_gate={fields['cpu_gate']!r} "
-                f"with cpu_gate_applied={fields['cpu_gate_applied']!r}"
+                f"for cpu_gate_mode={fields['cpu_gate_mode']!r}"
             )
         for gate in ("snapshot_gate", "history_gate", "game_gate"):
             if fields[gate] != "1":
@@ -688,6 +810,7 @@ def validate_runtime_metrics(
     timings: list[RollbackTimingSeries],
     markers: list[ValidationMarker],
     suite: str,
+    browser_runtime: bool = False,
 ) -> None:
     runtimes = [metric for metric in metrics if metric.kind == "runtime"]
     if len(runtimes) != 1:
@@ -695,7 +818,7 @@ def validate_runtime_metrics(
     runtime = runtimes[0].fields
     expected_runtime = {
         "input_version": "2",
-        "gate_contract": "4",
+        "gate_contract": GATE_CONTRACT,
         "love": "11.5.0",
         "snapshot_versions": "5,6",
         "suite": suite,
@@ -881,7 +1004,8 @@ def validate_runtime_metrics(
                 raise RuntimeError(f"{case_id} reported maximum differs from raw timings")
             if counts["rollback_over_33_3_count"] != recomputed_over_count:
                 raise RuntimeError(f"{case_id} over-budget count differs from raw timings")
-        expected_applied = cpu_gate_applies(suite, case.fields["profile"])
+        expected_mode = cpu_gate_mode(suite, case.fields["profile"], browser_runtime)
+        expected_applied = expected_mode == "absolute"
         if (case.fields["cpu_gate_applied"] == "1") != expected_applied:
             raise RuntimeError(
                 f"{case_id} CPU metric ownership differs from the {suite} contract"
@@ -1960,6 +2084,25 @@ def set_webdriver_command_timeout(driver: Any, timeout_seconds: float) -> None:
     client_config.timeout = timeout_seconds
 
 
+def validated_browser_version(driver: Any, browser_name: str) -> str:
+    """Read an exact dotted-numeric browser version from raw WebDriver capabilities."""
+
+    capabilities = getattr(driver, "capabilities", None)
+    if not isinstance(capabilities, dict):
+        raise RuntimeError(f"{browser_name} WebDriver capabilities are malformed")
+    reported_browser = capabilities.get("browserName")
+    if reported_browser != browser_name:
+        raise RuntimeError(
+            f"{browser_name} WebDriver reports browserName={reported_browser!r}"
+        )
+    version = capabilities.get("browserVersion")
+    if not isinstance(version, str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)+", version):
+        raise RuntimeError(
+            f"{browser_name} WebDriver reports malformed browserVersion={version!r}"
+        )
+    return version
+
+
 def run_browser_once(
     browser_name: str,
     binary: Path,
@@ -2009,7 +2152,9 @@ def run_browser_once(
     result: ValidationMarker | None = None
     teardown: dict[str, Any]
     resources: dict[str, Any]
+    browser_version: str
     try:
+        browser_version = validated_browser_version(driver, browser_name)
         if browser_name == "chrome":
             driver.execute_cdp_cmd("Performance.enable", {})
         resource_checkpoints.append(browser_checkpoint(sampler, driver, browser_name, "started"))
@@ -2100,10 +2245,16 @@ def run_browser_once(
     if result is None:
         raise RuntimeError(f"{browser_name} {suite} produced no validated result")
     validate_case_plan(markers, suite, arguments)
-    validate_case_integrity(markers, suite)
+    validate_case_integrity(markers, suite, browser_runtime=True)
     runtime_metrics = runtime_metrics_from_messages(messages)
     rollback_timings = rollback_timings_from_messages(messages)
-    validate_runtime_metrics(runtime_metrics, rollback_timings, markers, suite)
+    validate_runtime_metrics(
+        runtime_metrics,
+        rollback_timings,
+        markers,
+        suite,
+        browser_runtime=True,
+    )
     js_heap_samples = [
         row["js_heap"] for row in resource_checkpoints if row.get("js_heap") is not None
     ]
@@ -2117,7 +2268,7 @@ def run_browser_once(
     record = {
         "arguments": list(arguments),
         "browser": browser_name,
-        "browser_version": str(driver.capabilities.get("browserVersion")),
+        "browser_version": browser_version,
         "duration_seconds": round(time.monotonic() - started, 6),
         "log": {
             "path": str(log_path.resolve()),
@@ -2164,8 +2315,8 @@ def browser_plan(campaign: str = "all") -> list[tuple[str, tuple[str, ...]]]:
         raise ValueError(f"unknown rollback campaign {campaign!r}")
     plan = []
     if campaign in {"all", "matrix"}:
-        for profile in BROWSER_FULL_PROFILES:
-            for network_seed in NETWORK_SEEDS:
+        for network_seed in NETWORK_SEEDS:
+            for profile in BROWSER_FULL_PROFILES:
                 plan.append(("browser-full", (profile, str(network_seed))))
         for network_seed in NETWORK_SEEDS:
             plan.append(("browser-stress", (STRESS_PROFILE, str(network_seed))))
@@ -2180,6 +2331,591 @@ def browser_suite_timeout_seconds(suite: str, timeout_seconds: int) -> int:
     if suite == "soak":
         return max(timeout_seconds, MIN_BROWSER_SOAK_TIMEOUT_SECONDS)
     return timeout_seconds
+
+
+def browser_cpu_case(
+    run: dict[str, Any],
+    browser_name: str,
+    run_index: int,
+) -> tuple[list[tuple[tuple[str, str, str], dict[str, Any]]], list[str]]:
+    """Validate and extract both exact browser-full CPU cases from one process."""
+
+    label = f"{browser_name} browser-full run {run_index}"
+    reasons: list[str] = []
+    if run.get("browser") != browser_name:
+        reasons.append(
+            f"{label} reports browser={run.get('browser')!r}, expected {browser_name!r}"
+        )
+    arguments = run.get("arguments")
+    if not isinstance(arguments, list) or len(arguments) != 2:
+        reasons.append(f"{label} has malformed arguments")
+        return [], reasons
+    profile, seed = arguments
+    if not isinstance(profile, str) or not isinstance(seed, str):
+        reasons.append(f"{label} has non-string profile or seed arguments")
+        return [], reasons
+    if profile not in BROWSER_FULL_PROFILES:
+        reasons.append(f"{label} has unexpected profile {profile!r}")
+        return [], reasons
+    if seed not in {str(value) for value in NETWORK_SEEDS}:
+        reasons.append(f"{label} has unexpected network seed {seed!r}")
+        return [], reasons
+    expected_plan = expected_case_plan("browser-full", (profile, seed))
+
+    raw_markers = run.get("markers")
+    if not isinstance(raw_markers, list):
+        reasons.append(f"{label} omits validation markers")
+        return [], reasons
+    if not all(isinstance(raw, str) for raw in raw_markers):
+        reasons.append(f"{label} contains a non-string validation marker")
+        return [], reasons
+    try:
+        markers = [parse_marker(raw) for raw in raw_markers]
+    except RuntimeError as error:
+        reasons.append(f"{label} has malformed validation markers: {error}")
+        return [], reasons
+    case_markers = [marker for marker in markers if marker.kind == "case"]
+    result_markers = [marker for marker in markers if marker.kind == "result"]
+    if len(markers) != 3 or len(case_markers) != 2 or len(result_markers) != 1:
+        reasons.append(
+            f"{label} has {len(case_markers)} case and {len(result_markers)} result "
+            "markers, expected exactly two cases and one result"
+        )
+        return [], reasons
+    result = result_markers[0]
+    if set(result.fields) != BROWSER_CPU_RESULT_FIELDS:
+        reasons.append(
+            f"{label} result marker schema differs from contract: "
+            f"missing={sorted(BROWSER_CPU_RESULT_FIELDS.difference(result.fields))}, "
+            f"extra={sorted(set(result.fields).difference(BROWSER_CPU_RESULT_FIELDS))}"
+        )
+    expected_result = {
+        "case_count": "2",
+        "schema": "1",
+        "success": "1",
+        "suite": "browser-full",
+    }
+    result_mismatches = [
+        f"{name}={result.fields.get(name)!r}"
+        for name, value in expected_result.items()
+        if result.fields.get(name) != value
+    ]
+    if not re.fullmatch(r"[0-9a-f]{16}", result.fields.get("logical_digest", "")):
+        result_mismatches.append(
+            f"logical_digest={result.fields.get('logical_digest')!r}"
+        )
+    if result_mismatches:
+        reasons.append(f"{label} result marker mismatch: {', '.join(result_mismatches)}")
+    try:
+        validate_marker_set(markers, "browser-full")
+        validate_case_plan(markers, "browser-full", (profile, seed))
+        validate_case_integrity(markers, "browser-full", browser_runtime=True)
+    except RuntimeError as error:
+        reasons.append(f"{label} marker contract failed: {error}")
+    for marker_index, marker in enumerate(case_markers, start=1):
+        if set(marker.fields) != BROWSER_CPU_CASE_FIELDS:
+            reasons.append(
+                f"{label} case marker {marker_index} schema differs from contract: "
+                f"missing={sorted(BROWSER_CPU_CASE_FIELDS.difference(marker.fields))}, "
+                f"extra={sorted(set(marker.fields).difference(BROWSER_CPU_CASE_FIELDS))}"
+            )
+        scenario = marker.fields.get("scenario")
+        expected_marker_values = {
+            "fixture": BROWSER_CPU_FIXTURES.get(scenario, ""),
+            "late_tick": "none",
+            "sample": "none",
+            "schema": "1",
+            "status": "converged",
+        }
+        marker_mismatches = [
+            f"{name}={marker.fields.get(name)!r}"
+            for name, value in expected_marker_values.items()
+            if marker.fields.get(name) != value
+        ]
+        if marker_mismatches:
+            reasons.append(
+                f"{label} case marker {marker_index} values differ from contract: "
+                + ", ".join(marker_mismatches)
+            )
+        for name in (
+            "max_depth",
+            "peak_history_bytes",
+            "peak_snapshot_bytes",
+            "peak_snapshots",
+            "resimulated",
+            "rollbacks",
+        ):
+            try:
+                non_negative_integer(
+                    marker.fields.get(name, ""),
+                    f"{label} case marker {marker_index} {name}",
+                )
+            except RuntimeError as error:
+                reasons.append(str(error))
+        for name in ("event_confirmed_digest", "event_reference_digest"):
+            if not re.fullmatch(r"[0-9a-f]{16}", marker.fields.get(name, "")):
+                reasons.append(
+                    f"{label} case marker {marker_index} reports malformed {name}"
+                )
+
+    marker_payload = ("\n".join(marker.raw for marker in markers) + "\n").encode()
+    declared_marker_digest = run.get("logical_marker_sha256")
+    if (
+        not isinstance(declared_marker_digest, str)
+        or declared_marker_digest != sha256_bytes(marker_payload)
+    ):
+        reasons.append(f"{label} logical marker digest is missing or mismatched")
+    if run.get("case_count") != 2:
+        reasons.append(f"{label} record case_count={run.get('case_count')!r}, expected 2")
+    if run.get("logical_digest") != result.fields.get("logical_digest"):
+        reasons.append(f"{label} record logical_digest differs from its result marker")
+    if run.get("result_fields") != result.fields:
+        reasons.append(f"{label} record result_fields differ from its result marker")
+
+    runtime_metrics = run.get("runtime_metrics")
+    if not isinstance(runtime_metrics, dict):
+        reasons.append(f"{label} omits runtime metric record")
+        return [], reasons
+    if set(runtime_metrics) != {"marker_sha256", "rows"}:
+        reasons.append(
+            f"{label} runtime metric record schema differs from contract"
+        )
+    rows = runtime_metrics.get("rows") if isinstance(runtime_metrics, dict) else None
+    if not isinstance(rows, list):
+        reasons.append(f"{label} omits runtime metric rows")
+        return [], reasons
+    parsed_metrics: list[RuntimeMetric] = []
+    for row_index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict) or set(row) != {"fields", "kind", "marker"}:
+            reasons.append(f"{label} runtime metric row {row_index} has malformed schema")
+            continue
+        fields = row["fields"]
+        kind = row["kind"]
+        raw = row["marker"]
+        if (
+            not isinstance(fields, dict)
+            or not all(
+                isinstance(name, str) and isinstance(value, str)
+                for name, value in fields.items()
+            )
+            or not isinstance(kind, str)
+            or not isinstance(raw, str)
+        ):
+            reasons.append(f"{label} runtime metric row {row_index} has malformed types")
+            continue
+        try:
+            parsed = parse_runtime_metric(raw)
+        except RuntimeError as error:
+            reasons.append(
+                f"{label} runtime metric row {row_index} is malformed: {error}"
+            )
+            continue
+        if parsed.kind != kind or parsed.fields != fields:
+            reasons.append(
+                f"{label} runtime metric row {row_index} differs from its marker"
+            )
+            continue
+        parsed_metrics.append(parsed)
+    runtime_rows = [metric for metric in parsed_metrics if metric.kind == "runtime"]
+    case_rows = [metric for metric in parsed_metrics if metric.kind == "case"]
+    if len(rows) != 3 or len(runtime_rows) != 1 or len(case_rows) != 2:
+        reasons.append(
+            f"{label} has {len(runtime_rows)} runtime and {len(case_rows)} case "
+            "metrics, expected exactly one runtime and two cases"
+        )
+    expected_metric_order = [
+        ("runtime", None),
+        *[("case", planned["case"]) for planned in expected_plan],
+    ]
+    actual_metric_order = [
+        (metric.kind, metric.fields.get("case")) for metric in parsed_metrics
+    ]
+    if actual_metric_order != expected_metric_order:
+        reasons.append(
+            f"{label} runtime metric order differs from contract: "
+            f"{actual_metric_order!r}"
+        )
+    declared_metric_digest = runtime_metrics.get("marker_sha256")
+    metric_payload = ("\n".join(metric.raw for metric in parsed_metrics) + "\n").encode()
+    if (
+        not isinstance(declared_metric_digest, str)
+        or declared_metric_digest != sha256_bytes(metric_payload)
+    ):
+        reasons.append(f"{label} runtime metric digest is missing or mismatched")
+    if len(runtime_rows) == 1:
+        runtime_fields = runtime_rows[0].fields
+        if set(runtime_fields) != BROWSER_CPU_RUNTIME_FIELDS:
+            reasons.append(
+                f"{label} runtime provenance schema differs from contract: "
+                f"missing={sorted(BROWSER_CPU_RUNTIME_FIELDS.difference(runtime_fields))}, "
+                f"extra={sorted(set(runtime_fields).difference(BROWSER_CPU_RUNTIME_FIELDS))}"
+            )
+        expected_runtime = {
+            "gate_contract": GATE_CONTRACT,
+            "input_version": "2",
+            "love": "11.5.0",
+            "profile_digest": EXPECTED_PROFILE_DIGEST,
+            "snapshot_versions": "5,6",
+            "suite": "browser-full",
+            "tape_versions": "1,2",
+            "tick_rate": "60",
+        }
+        runtime_mismatches = [
+            f"{name}={runtime_fields.get(name)!r}"
+            for name, value in expected_runtime.items()
+            if runtime_fields.get(name) != value
+        ]
+        if runtime_mismatches:
+            reasons.append(
+                f"{label} runtime provenance mismatch: {', '.join(runtime_mismatches)}"
+            )
+
+    extracted: list[tuple[tuple[str, str, str], dict[str, Any]]] = []
+    numeric_names = (
+        "capture_ms",
+        "max_rollback_ms",
+        "max_update_wall_ms",
+        "p95_update_wall_ms",
+        "p95_work_ms",
+        "resimulation_ms",
+        "restore_ms",
+        "rollback_ms",
+        "rollback_p999_ms",
+        "simulation_ms",
+    )
+    count_names = (
+        "capture_calls",
+        "peak_history_bytes",
+        "peak_snapshot_bytes",
+        "resimulation_calls",
+        "restore_calls",
+        "rollback_calls",
+        "rollback_over_33_3_count",
+        "rollback_sample_count",
+        "simulation_calls",
+    )
+    for planned in expected_plan:
+        case_id = planned["case"]
+        matching_metrics = [
+            metric for metric in case_rows if metric.fields.get("case") == case_id
+        ]
+        if len(matching_metrics) != 1:
+            reasons.append(
+                f"{label} has {len(matching_metrics)} runtime metrics for {case_id}, expected one"
+            )
+            continue
+        metric = matching_metrics[0]
+        fields = metric.fields
+        metric_reasons: list[str] = []
+        if set(fields) != BROWSER_CPU_METRIC_FIELDS:
+            metric_reasons.append(
+                "schema differs from contract: "
+                f"missing={sorted(BROWSER_CPU_METRIC_FIELDS.difference(fields))}, "
+                f"extra={sorted(set(fields).difference(BROWSER_CPU_METRIC_FIELDS))}"
+            )
+        if fields.get("profile") != profile:
+            metric_reasons.append(
+                f"profile={fields.get('profile')!r}, expected {profile!r}"
+            )
+        if fields.get("rollback_percentile") != "0.999":
+            metric_reasons.append("rollback_percentile is not 0.999")
+        if fields.get("rollback_percentile_method") != "nearest_rank":
+            metric_reasons.append("rollback_percentile_method is not nearest_rank")
+        if fields.get("rollback_timing_evidence") != "raw":
+            metric_reasons.append("rollback_timing_evidence is not raw")
+        numeric: dict[str, float] = {}
+        counts: dict[str, int] = {}
+        for name in numeric_names:
+            value = fields.get(name)
+            if not isinstance(value, str):
+                metric_reasons.append(f"{name} is missing")
+                continue
+            try:
+                numeric[name] = finite_non_negative_float(
+                    value,
+                    f"{label} {case_id} {name}",
+                )
+            except RuntimeError as error:
+                metric_reasons.append(str(error))
+        for name in count_names:
+            value = fields.get(name)
+            if not isinstance(value, str):
+                metric_reasons.append(f"{name} is missing")
+                continue
+            try:
+                counts[name] = non_negative_integer(
+                    value,
+                    f"{label} {case_id} {name}",
+                )
+            except RuntimeError as error:
+                metric_reasons.append(str(error))
+        work_samples = fields.get("work_samples")
+        if isinstance(work_samples, str):
+            try:
+                positive_integer(work_samples, f"{label} {case_id} work_samples")
+            except RuntimeError as error:
+                metric_reasons.append(str(error))
+        else:
+            metric_reasons.append("work_samples is missing")
+        if counts.get("simulation_calls", 0) <= 0:
+            metric_reasons.append("simulation_calls must be positive")
+        if (
+            "rollback_sample_count" in counts
+            and "rollback_calls" in counts
+            and counts["rollback_sample_count"] != counts["rollback_calls"]
+        ):
+            metric_reasons.append("rollback sample count differs from rollback calls")
+        if (
+            "max_rollback_ms" in numeric
+            and "rollback_p999_ms" in numeric
+            and numeric["max_rollback_ms"] < numeric["rollback_p999_ms"]
+        ):
+            metric_reasons.append("rollback maximum is below p99.9")
+        if (
+            "rollback_over_33_3_count" in counts
+            and "rollback_sample_count" in counts
+            and counts["rollback_over_33_3_count"] > counts["rollback_sample_count"]
+        ):
+            metric_reasons.append("over-budget count exceeds rollback sample count")
+        marker = next(
+            (candidate for candidate in case_markers if candidate.fields.get("case") == case_id),
+            None,
+        )
+        if marker is None:
+            metric_reasons.append("has no matching logical case marker")
+        else:
+            if (
+                "rollback_calls" in counts
+                and marker.fields.get("rollbacks") != str(counts["rollback_calls"])
+            ):
+                metric_reasons.append("rollback calls differ from logical marker")
+            for name in ("peak_history_bytes", "peak_snapshot_bytes"):
+                if name in counts and marker.fields.get(name) != str(counts[name]):
+                    metric_reasons.append(f"{name} differs from logical marker")
+        if {
+            "max_rollback_ms",
+            "rollback_p999_ms",
+        }.issubset(numeric) and {
+            "rollback_over_33_3_count",
+            "rollback_sample_count",
+        }.issubset(counts):
+            sample_count = counts["rollback_sample_count"]
+            over_count = counts["rollback_over_33_3_count"]
+            if sample_count == 0:
+                if (
+                    numeric["rollback_p999_ms"] != 0
+                    or numeric["max_rollback_ms"] != 0
+                    or over_count != 0
+                ):
+                    metric_reasons.append("empty rollback diagnostics are nonzero")
+            else:
+                maximum_reaches_threshold = (
+                    numeric["max_rollback_ms"] >= MAX_ROLLBACK_P999_MS
+                )
+                if maximum_reaches_threshold != (over_count > 0):
+                    metric_reasons.append(
+                        "rollback maximum disagrees with over-budget count"
+                    )
+                tail_slots = (
+                    sample_count
+                    - math.ceil(sample_count * ROLLBACK_PERCENTILE)
+                    + 1
+                )
+                p999_reaches_threshold = (
+                    numeric["rollback_p999_ms"] >= MAX_ROLLBACK_P999_MS
+                )
+                if p999_reaches_threshold != (over_count >= tail_slots):
+                    metric_reasons.append(
+                        "rollback p99.9 disagrees with over-budget count"
+                    )
+        if metric_reasons:
+            reasons.append(
+                f"{label} runtime metric {case_id} invalid: "
+                + ", ".join(metric_reasons)
+            )
+            continue
+        extracted.append(
+            (
+                (planned["scenario"], profile, seed),
+                {
+                    "case": case_id,
+                    "max_rollback_ms": numeric["max_rollback_ms"],
+                    "p95_work_ms": numeric["p95_work_ms"],
+                    "rollback_over_33_3_count": counts[
+                        "rollback_over_33_3_count"
+                    ],
+                    "rollback_p999_ms": numeric["rollback_p999_ms"],
+                    "scenario": planned["scenario"],
+                },
+            )
+        )
+    if reasons:
+        return [], reasons
+    if len(extracted) != len(BROWSER_CPU_SCENARIOS):
+        return [], [f"{label} did not extract both browser-full CPU cases"]
+    return extracted, []
+
+
+def browser_cpu_acceptance(
+    runs: list[dict[str, Any]],
+    browser_name: str,
+) -> dict[str, Any]:
+    """Apply the strict same-run, same-runtime, seed-paired browser CPU contract."""
+
+    reasons: list[str] = []
+    rows: dict[tuple[str, str, str], dict[str, Any]] = {}
+    browser_versions: set[str] = set()
+    for run_index, run in enumerate(runs, start=1):
+        if not isinstance(run, dict):
+            reasons.append(
+                f"{browser_name} browser run {run_index} is not an evidence object"
+            )
+            continue
+        if run.get("suite") != "browser-full":
+            continue
+        browser_version = run.get("browser_version")
+        if isinstance(browser_version, str) and re.fullmatch(
+            r"[0-9]+(?:\.[0-9]+)+",
+            browser_version,
+        ):
+            browser_versions.add(browser_version)
+        else:
+            reasons.append(
+                f"{browser_name} browser-full run {run_index} has malformed browser_version"
+            )
+        run_rows, row_reasons = browser_cpu_case(run, browser_name, run_index)
+        reasons.extend(row_reasons)
+        for key, row in run_rows:
+            if key in rows:
+                reasons.append(
+                    f"{browser_name} has duplicate {key[0]} {key[1]} control "
+                    f"for seed {key[2]}"
+                )
+                continue
+            rows[key] = row
+    if len(browser_versions) != 1:
+        reasons.append(
+            f"{browser_name} controls report {len(browser_versions)} browser versions, "
+            "expected exactly one"
+        )
+
+    pairs: list[dict[str, Any]] = []
+    for scenario in BROWSER_CPU_SCENARIOS:
+        for seed_value in NETWORK_SEEDS:
+            seed = str(seed_value)
+            clean = rows.get((scenario, "clean", seed))
+            playable = rows.get((scenario, "playable", seed))
+            if clean is None:
+                reasons.append(
+                    f"{browser_name} is missing the {scenario} clean control for seed {seed}"
+                )
+            if playable is None:
+                reasons.append(
+                    f"{browser_name} is missing the {scenario} playable case for seed {seed}"
+                )
+            if clean is None or playable is None:
+                continue
+            clean_p95 = clean["p95_work_ms"]
+            if not math.isfinite(clean_p95) or clean_p95 <= 0:
+                reasons.append(
+                    f"{browser_name} {scenario} seed {seed} clean p95 denominator "
+                    "must be finite and >0"
+                )
+                continue
+            p95_ratio = playable["p95_work_ms"] / clean_p95
+            rollback_ratio = playable["rollback_p999_ms"] / clean_p95
+            pair_reasons = []
+            if p95_ratio >= MAX_BROWSER_P95_WORK_RATIO:
+                pair_reasons.append(
+                    f"{browser_name} {scenario} seed {seed} "
+                    f"p95_work_ratio={p95_ratio:.9f} "
+                    f"does not meet <{MAX_BROWSER_P95_WORK_RATIO:.1f}"
+                )
+            if rollback_ratio >= MAX_BROWSER_ROLLBACK_P999_RATIO:
+                pair_reasons.append(
+                    f"{browser_name} {scenario} seed {seed} "
+                    f"rollback_p999_ratio={rollback_ratio:.9f} "
+                    f"does not meet <{MAX_BROWSER_ROLLBACK_P999_RATIO:.1f}"
+                )
+            reasons.extend(pair_reasons)
+            pairs.append(
+                {
+                    "absolute_diagnostics": {
+                        "clean_max_rollback_ms": clean["max_rollback_ms"],
+                        "clean_p95_work_ms": clean_p95,
+                        "clean_rollback_over_33_3_count": clean[
+                            "rollback_over_33_3_count"
+                        ],
+                        "clean_rollback_p999_ms": clean["rollback_p999_ms"],
+                        "playable_max_rollback_ms": playable["max_rollback_ms"],
+                        "playable_p95_work_ms": playable["p95_work_ms"],
+                        "playable_rollback_over_33_3_count": playable[
+                            "rollback_over_33_3_count"
+                        ],
+                        "playable_rollback_p999_ms": playable[
+                            "rollback_p999_ms"
+                        ],
+                    },
+                    "cases": {
+                        "clean": clean["case"],
+                        "playable": playable["case"],
+                    },
+                    "pass": not pair_reasons,
+                    "ratios": {
+                        "p95_work_over_clean_p95": round(p95_ratio, 9),
+                        "rollback_p999_over_clean_p95": round(rollback_ratio, 9),
+                    },
+                    "reasons": pair_reasons,
+                    "scenario": scenario,
+                    "seed": seed_value,
+                }
+            )
+    expected_keys = {
+        (scenario, profile, str(seed))
+        for scenario in BROWSER_CPU_SCENARIOS
+        for profile in BROWSER_FULL_PROFILES
+        for seed in NETWORK_SEEDS
+    }
+    unexpected_keys = sorted(set(rows).difference(expected_keys))
+    for scenario, profile, seed in unexpected_keys:
+        reasons.append(
+            f"{browser_name} has unexpected {scenario} {profile} control for seed {seed}"
+        )
+    if len(rows) != len(expected_keys):
+        reasons.append(
+            f"{browser_name} collected {len(rows)} unique scenario/profile rows, "
+            f"expected {len(expected_keys)}"
+        )
+    return {
+        "browser": browser_name,
+        "browser_version": (
+            next(iter(browser_versions)) if len(browser_versions) == 1 else None
+        ),
+        "calibration": {
+            "accepted_run_ids": list(BROWSER_CPU_CALIBRATION_RUNS),
+            "diagnostic_failed_run_id": BROWSER_CPU_DIAGNOSTIC_RUN,
+            "margin_over_accepted_maximum": BROWSER_CPU_CALIBRATION_MARGIN,
+            "max_accepted_p95_work_ratio": round(
+                BROWSER_CPU_CALIBRATION_MAX_P95_WORK_RATIO,
+                9,
+            ),
+            "max_accepted_rollback_p999_ratio": round(
+                BROWSER_CPU_CALIBRATION_MAX_ROLLBACK_P999_RATIO,
+                9,
+            ),
+        },
+        "gate_contract": int(GATE_CONTRACT),
+        "method": "same_run_same_runtime_scenario_seed_paired",
+        "pairs": pairs,
+        "pass": not reasons
+        and len(pairs) == len(BROWSER_CPU_SCENARIOS) * len(NETWORK_SEEDS),
+        "reasons": reasons,
+        "thresholds": {
+            "comparison": "strict_less_than",
+            "max_p95_work_over_clean_p95": MAX_BROWSER_P95_WORK_RATIO,
+            "max_rollback_p999_over_clean_p95": MAX_BROWSER_ROLLBACK_P999_RATIO,
+        },
+    }
 
 
 def browser_matrix(
@@ -2254,6 +2990,17 @@ def browser_matrix(
                         f"{browser_name} soak exceeded the 10% terminal "
                         "forced-GC growth gate"
                     )
+            if campaign in {"all", "matrix"}:
+                cpu_acceptance = browser_cpu_acceptance(
+                    runtime["runs"],
+                    browser_name,
+                )
+                runtime["cpu_acceptance"] = cpu_acceptance
+                if not cpu_acceptance["pass"]:
+                    reason = "; ".join(cpu_acceptance["reasons"])
+                    raise RuntimeError(
+                        f"{browser_name} aggregate browser CPU acceptance failed: {reason}"
+                    )
     finally:
         server.shutdown()
         server.server_close()
@@ -2324,10 +3071,10 @@ def run_self_test() -> None:
 
     expected_plan = [
         ("browser-full", ("clean", "2001")),
-        ("browser-full", ("clean", "2002")),
-        ("browser-full", ("clean", "2003")),
         ("browser-full", ("playable", "2001")),
+        ("browser-full", ("clean", "2002")),
         ("browser-full", ("playable", "2002")),
+        ("browser-full", ("clean", "2003")),
         ("browser-full", ("playable", "2003")),
         ("browser-stress", ("stress", "2001")),
         ("browser-stress", ("stress", "2002")),
@@ -2432,6 +3179,43 @@ def run_self_test() -> None:
     set_webdriver_command_timeout(fake_command_driver, 1810.0)
     if fake_command_driver.command_executor.client_config.timeout != 1810.0:
         raise RuntimeError("WebDriver command timeout self-test failed")
+
+    class FakeCapabilityDriver:
+        def __init__(self, capabilities: Any) -> None:
+            self.capabilities = capabilities
+
+    if (
+        validated_browser_version(
+            FakeCapabilityDriver(
+                {"browserName": "firefox", "browserVersion": "153.0"}
+            ),
+            "firefox",
+        )
+        != "153.0"
+    ):
+        raise RuntimeError("raw browser-version bridge self-test lost the version")
+    malformed_capabilities = (
+        None,
+        {},
+        {"browserName": "chrome", "browserVersion": "153.0"},
+        {"browserName": "firefox"},
+        {"browserName": "firefox", "browserVersion": None},
+        {"browserName": "firefox", "browserVersion": ""},
+        {"browserName": "firefox", "browserVersion": 153.0},
+        {"browserName": "firefox", "browserVersion": "None"},
+        {"browserName": "firefox", "browserVersion": "153"},
+        {"browserName": "firefox", "browserVersion": "153.0 beta"},
+    )
+    for capabilities in malformed_capabilities:
+        try:
+            validated_browser_version(
+                FakeCapabilityDriver(capabilities),
+                "firefox",
+            )
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError("malformed raw browser version passed self-test")
     expected_counts = {
         ("native", ()): 54,
         ("browser-full", ("clean", "2001")): 2,
@@ -2459,6 +3243,493 @@ def run_self_test() -> None:
         != native_campaign_plan()
     ):
         raise RuntimeError("split native campaigns do not reconstruct the full plan")
+
+    calibrated_p95 = (
+        math.ceil(
+            BROWSER_CPU_CALIBRATION_MAX_P95_WORK_RATIO
+            * (1 + BROWSER_CPU_CALIBRATION_MARGIN)
+            * 10
+        )
+        / 10
+    )
+    calibrated_rollback = (
+        math.ceil(
+            BROWSER_CPU_CALIBRATION_MAX_ROLLBACK_P999_RATIO
+            * (1 + BROWSER_CPU_CALIBRATION_MARGIN)
+            * 10
+        )
+        / 10
+    )
+    if (
+        calibrated_p95 != MAX_BROWSER_P95_WORK_RATIO
+        or calibrated_rollback != MAX_BROWSER_ROLLBACK_P999_RATIO
+    ):
+        raise RuntimeError("browser CPU calibration margin self-test failed")
+
+    def synthetic_browser_cpu_run(
+        profile: str,
+        seed: int,
+        p95_work_ms: float,
+        rollback_p999_ms: float,
+        *,
+        combat_p95_work_ms: float | None = None,
+        combat_rollback_p999_ms: float | None = None,
+        browser_name: str = "firefox",
+        browser_version: str = "153.0",
+        marker_seed: int | None = None,
+    ) -> dict[str, Any]:
+        emitted_seed = marker_seed or seed
+        cpu_gate = "deferred" if profile == "playable" else "not_applied"
+        cpu_mode = "normalized_deferred" if profile == "playable" else "diagnostic"
+        combat_p95 = (
+            combat_p95_work_ms
+            if combat_p95_work_ms is not None
+            else p95_work_ms * 1.2
+        )
+        combat_rollback = (
+            combat_rollback_p999_ms
+            if combat_rollback_p999_ms is not None
+            else rollback_p999_ms * 1.2
+        )
+
+        def logical_case(scenario: str) -> ValidationMarker:
+            combat = scenario == "combat"
+            prefix = "combat" if combat else "full"
+            case_id = f"{prefix}-{profile}-{emitted_seed}"
+            rollbacks = 0 if profile == "clean" else 8
+            peak_snapshot_bytes = 688660 if combat else 611274
+            peak_history_bytes = 743170 if combat else 700000
+            event_digest = "0000000000000004" if combat else "0000000000000003"
+            return parse_marker(
+                f"{MARKER_PREFIX}|case|schema=1|case={case_id}|scenario={scenario}|"
+                f"fixture={BROWSER_CPU_FIXTURES[scenario]}|"
+                f"profile={profile}|network_seed={emitted_seed}|success=1|"
+                "lab_success=1|expected_failure=0|status=converged|late_tick=none|"
+                "hidden_progress=0|scenario_pass=1|"
+                f"tape_version={'2' if combat else '1'}|"
+                f"snapshot_version={'6' if combat else '5'}|"
+                f"tape_digest={'1111111111111111' if combat else HISTORICAL_SOCCER_TAPE_DIGEST}|"
+                "initial_hash=0000000000000001|reference_hash=0000000000000002|"
+                f"client_hash=0000000000000002|rollbacks={rollbacks}|max_depth=8|"
+                f"resimulated={20 if profile == 'playable' else 0}|"
+                f"peak_snapshots=31|peak_snapshot_bytes={peak_snapshot_bytes}|"
+                f"peak_history_bytes={peak_history_bytes}|"
+                f"event_reference_digest={event_digest}|"
+                f"event_confirmed_digest={event_digest}|"
+                f"event_confirmed_combat={14 if combat else 0}|event_residue=0|"
+                f"sample=none|gate_contract={GATE_CONTRACT}|cpu_gate={cpu_gate}|"
+                f"cpu_gate_applied=0|cpu_gate_mode={cpu_mode}|snapshot_gate=1|"
+                "history_gate=1|game_gate=1"
+            )
+
+        logical_cases = [
+            logical_case("complete_fixture"),
+            logical_case("combat"),
+        ]
+        result = parse_marker(
+            f"{MARKER_PREFIX}|result|schema=1|suite=browser-full|success=1|"
+            "logical_digest=0000000000000005|case_count=2"
+        )
+        markers = [*logical_cases, result]
+        runtime_metric = parse_runtime_metric(
+            f"{METRICS_PREFIX}|runtime|love=11.5.0|suite=browser-full|"
+            f"gate_contract={GATE_CONTRACT}|profile_digest={EXPECTED_PROFILE_DIGEST}|"
+            "input_version=2|tape_versions=1,2|snapshot_versions=5,6|tick_rate=60"
+        )
+
+        def case_metric(
+            scenario: str,
+            case_p95_work_ms: float,
+            case_rollback_p999_ms: float,
+        ) -> RuntimeMetric:
+            combat = scenario == "combat"
+            prefix = "combat" if combat else "full"
+            case_id = f"{prefix}-{profile}-{seed}"
+            rollback_calls = 0 if profile == "clean" else 8
+            over_count = (
+                1
+                if rollback_calls > 0
+                and case_rollback_p999_ms >= MAX_ROLLBACK_P999_MS
+                else 0
+            )
+            peak_snapshot_bytes = 688660 if combat else 611274
+            peak_history_bytes = 743170 if combat else 700000
+            return parse_runtime_metric(
+                f"{METRICS_PREFIX}|case|case={case_id}|profile={profile}|"
+                f"p95_work_ms={case_p95_work_ms:.6f}|"
+                f"rollback_p999_ms={case_rollback_p999_ms:.6f}|"
+                f"max_rollback_ms={case_rollback_p999_ms:.6f}|"
+                f"rollback_sample_count={rollback_calls}|"
+                f"rollback_over_33_3_count={over_count}|"
+                "rollback_percentile=0.999|rollback_percentile_method=nearest_rank|"
+                "rollback_timing_evidence=raw|p95_update_wall_ms=1.000000|"
+                "max_update_wall_ms=2.000000|simulation_ms=3.000000|"
+                "capture_ms=4.000000|restore_ms=5.000000|"
+                "resimulation_ms=6.000000|rollback_ms=7.000000|capture_calls=80|"
+                f"simulation_calls=80|restore_calls={rollback_calls}|"
+                f"resimulation_calls={rollback_calls}|rollback_calls={rollback_calls}|"
+                f"work_samples=80|peak_snapshot_bytes={peak_snapshot_bytes}|"
+                f"peak_history_bytes={peak_history_bytes}"
+            )
+
+        metrics = [
+            runtime_metric,
+            case_metric("complete_fixture", p95_work_ms, rollback_p999_ms),
+            case_metric("combat", combat_p95, combat_rollback),
+        ]
+        marker_payload = ("\n".join(marker.raw for marker in markers) + "\n").encode()
+        metric_payload = ("\n".join(metric.raw for metric in metrics) + "\n").encode()
+        return {
+            "arguments": [profile, str(seed)],
+            "browser": browser_name,
+            "browser_version": browser_version,
+            "case_count": 2,
+            "logical_digest": result.fields["logical_digest"],
+            "logical_marker_sha256": sha256_bytes(marker_payload),
+            "markers": [marker.raw for marker in markers],
+            "result_fields": result.fields,
+            "runtime_metrics": {
+                "marker_sha256": sha256_bytes(metric_payload),
+                "rows": [
+                    {
+                        "fields": metric.fields,
+                        "kind": metric.kind,
+                        "marker": metric.raw,
+                    }
+                    for metric in metrics
+                ]
+            },
+            "suite": "browser-full",
+        }
+
+    def synthetic_browser_cpu_matrix(
+        scale: float,
+        soccer_rollback_regression_seeds: tuple[int, ...] = (),
+        combat_p95_regression_seeds: tuple[int, ...] = (),
+    ) -> list[dict[str, Any]]:
+        runs = []
+        for index, seed in enumerate(NETWORK_SEEDS):
+            for profile in BROWSER_FULL_PROFILES:
+                clean_p95 = (2.0 + index * 0.25) * scale
+                combat_clean_p95 = clean_p95 * 1.2
+                if profile == "clean":
+                    p95_work = clean_p95
+                    combat_p95_work = combat_clean_p95
+                    rollback_p999 = 0.0
+                    combat_rollback_p999 = 0.0
+                else:
+                    p95_work = clean_p95 * 5.5
+                    rollback_ratio = 9.5
+                    if seed in soccer_rollback_regression_seeds:
+                        rollback_ratio = MAX_BROWSER_ROLLBACK_P999_RATIO + 0.1
+                    rollback_p999 = clean_p95 * rollback_ratio
+                    combat_p95_ratio = 5.4
+                    if seed in combat_p95_regression_seeds:
+                        combat_p95_ratio = MAX_BROWSER_P95_WORK_RATIO + 0.1
+                    combat_p95_work = combat_clean_p95 * combat_p95_ratio
+                    combat_rollback_p999 = combat_clean_p95 * 9.0
+                runs.append(
+                    synthetic_browser_cpu_run(
+                        profile,
+                        seed,
+                        p95_work,
+                        rollback_p999,
+                        combat_p95_work_ms=combat_p95_work,
+                        combat_rollback_p999_ms=combat_rollback_p999,
+                    )
+                )
+        return runs
+
+    proportional_slowdown = browser_cpu_acceptance(
+        synthetic_browser_cpu_matrix(1.8),
+        "firefox",
+    )
+    if not proportional_slowdown["pass"] or len(proportional_slowdown["pairs"]) != 6:
+        raise RuntimeError("proportional browser slowdown did not pass normalization")
+    multi_family_regression = browser_cpu_acceptance(
+        synthetic_browser_cpu_matrix(
+            1.0,
+            soccer_rollback_regression_seeds=(2001,),
+            combat_p95_regression_seeds=(2002,),
+        ),
+        "firefox",
+    )
+    expected_regressions = (
+        "complete_fixture seed 2001 rollback_p999_ratio",
+        "combat seed 2002 p95_work_ratio",
+    )
+    if multi_family_regression["pass"] or not all(
+        any(fragment in reason for reason in multi_family_regression["reasons"])
+        for fragment in expected_regressions
+    ):
+        raise RuntimeError("aggregate browser CPU failure omitted a case-family violation")
+    complete_controls = synthetic_browser_cpu_matrix(1.0)
+
+    def replace_control(
+        controls: list[dict[str, Any]],
+        replacement: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        arguments = replacement["arguments"]
+        return [
+            replacement if control["arguments"] == arguments else control
+            for control in controls
+        ]
+
+    exact_p95_boundary = browser_cpu_acceptance(
+        replace_control(
+            complete_controls,
+            synthetic_browser_cpu_run(
+                "playable",
+                2001,
+                2.0 * MAX_BROWSER_P95_WORK_RATIO,
+                2.0 * 9.5,
+                combat_p95_work_ms=2.4 * 5.4,
+                combat_rollback_p999_ms=2.4 * 9.0,
+            ),
+        ),
+        "firefox",
+    )
+    if exact_p95_boundary["pass"] or not any(
+        "complete_fixture seed 2001 p95_work_ratio=6.700000000" in reason
+        for reason in exact_p95_boundary["reasons"]
+    ):
+        raise RuntimeError("exact browser p95 ratio threshold passed strict gate")
+    exact_rollback_boundary = browser_cpu_acceptance(
+        replace_control(
+            complete_controls,
+            synthetic_browser_cpu_run(
+                "playable",
+                2002,
+                2.25 * 5.5,
+                2.25 * MAX_BROWSER_ROLLBACK_P999_RATIO,
+                combat_p95_work_ms=2.7 * 5.4,
+                combat_rollback_p999_ms=2.7 * 9.0,
+            ),
+        ),
+        "firefox",
+    )
+    if exact_rollback_boundary["pass"] or not any(
+        "complete_fixture seed 2002 rollback_p999_ratio=11.700000000" in reason
+        for reason in exact_rollback_boundary["reasons"]
+    ):
+        raise RuntimeError("exact browser rollback ratio threshold passed strict gate")
+    missing_control = browser_cpu_acceptance(complete_controls[:-1], "firefox")
+    if missing_control["pass"] or not any(
+        "missing the complete_fixture playable case for seed 2003" in reason
+        for reason in missing_control["reasons"]
+    ):
+        raise RuntimeError("missing browser CPU control passed normalization")
+    duplicate_control = browser_cpu_acceptance(
+        [*complete_controls, complete_controls[0]],
+        "firefox",
+    )
+    if duplicate_control["pass"] or not any(
+        "duplicate complete_fixture clean control for seed 2001" in reason
+        for reason in duplicate_control["reasons"]
+    ):
+        raise RuntimeError("duplicate browser CPU control passed normalization")
+    mismatched_controls = [
+        synthetic_browser_cpu_run(
+            "clean",
+            2001,
+            2.0,
+            0.0,
+            marker_seed=2002,
+        ),
+        *complete_controls[1:],
+    ]
+    mismatched_control = browser_cpu_acceptance(mismatched_controls, "firefox")
+    if mismatched_control["pass"] or not any(
+        "marker contract failed" in reason for reason in mismatched_control["reasons"]
+    ):
+        raise RuntimeError("mismatched browser CPU control passed normalization")
+    non_string_marker_run = {
+        **complete_controls[0],
+        "markers": [*complete_controls[0]["markers"], 42],
+    }
+    non_string_marker = browser_cpu_acceptance(
+        [non_string_marker_run, *complete_controls[1:]],
+        "firefox",
+    )
+    if non_string_marker["pass"] or not any(
+        "non-string validation marker" in reason
+        for reason in non_string_marker["reasons"]
+    ):
+        raise RuntimeError("non-string browser CPU marker passed normalization")
+    malformed_metric_run = {
+        **complete_controls[0],
+        "runtime_metrics": {
+            **complete_controls[0]["runtime_metrics"],
+            "rows": [
+                *complete_controls[0]["runtime_metrics"]["rows"],
+                {"kind": "case"},
+            ],
+        },
+    }
+    malformed_metric = browser_cpu_acceptance(
+        [malformed_metric_run, *complete_controls[1:]],
+        "firefox",
+    )
+    if (
+        malformed_metric["pass"]
+        or "firefox browser-full run 1 runtime metric row 4 has malformed schema"
+        not in malformed_metric["reasons"]
+    ):
+        raise RuntimeError("malformed extra browser CPU metric passed normalization")
+    mismatched_logical_digest_run = {
+        **complete_controls[0],
+        "logical_marker_sha256": "0" * 64,
+    }
+    mismatched_logical_digest = browser_cpu_acceptance(
+        [mismatched_logical_digest_run, *complete_controls[1:]],
+        "firefox",
+    )
+    if (
+        mismatched_logical_digest["pass"]
+        or "firefox browser-full run 1 logical marker digest is missing or mismatched"
+        not in mismatched_logical_digest["reasons"]
+    ):
+        raise RuntimeError("mismatched browser logical marker digest passed normalization")
+    mismatched_metric_digest_run = {
+        **complete_controls[0],
+        "runtime_metrics": {
+            **complete_controls[0]["runtime_metrics"],
+            "marker_sha256": "0" * 64,
+        },
+    }
+    mismatched_metric_digest = browser_cpu_acceptance(
+        [mismatched_metric_digest_run, *complete_controls[1:]],
+        "firefox",
+    )
+    if (
+        mismatched_metric_digest["pass"]
+        or "firefox browser-full run 1 runtime metric digest is missing or mismatched"
+        not in mismatched_metric_digest["reasons"]
+    ):
+        raise RuntimeError("mismatched browser runtime metric digest passed normalization")
+
+    def metric_record(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        payload = ("\n".join(row["marker"] for row in rows) + "\n").encode()
+        return {"marker_sha256": sha256_bytes(payload), "rows": rows}
+
+    missing_combat_metric_run = {
+        **complete_controls[0],
+        "runtime_metrics": metric_record(
+            complete_controls[0]["runtime_metrics"]["rows"][:2]
+        ),
+    }
+    missing_combat_metric = browser_cpu_acceptance(
+        [missing_combat_metric_run, *complete_controls[1:]],
+        "firefox",
+    )
+    if missing_combat_metric["pass"] or not any(
+        "0 runtime metrics for combat-clean-2001" in reason
+        for reason in missing_combat_metric["reasons"]
+    ):
+        raise RuntimeError("missing combat CPU metric passed normalization")
+    duplicated_combat_rows = [
+        *complete_controls[0]["runtime_metrics"]["rows"],
+        complete_controls[0]["runtime_metrics"]["rows"][2],
+    ]
+    duplicate_combat_metric_run = {
+        **complete_controls[0],
+        "runtime_metrics": metric_record(duplicated_combat_rows),
+    }
+    duplicate_combat_metric = browser_cpu_acceptance(
+        [duplicate_combat_metric_run, *complete_controls[1:]],
+        "firefox",
+    )
+    if duplicate_combat_metric["pass"] or not any(
+        "2 runtime metrics for combat-clean-2001" in reason
+        for reason in duplicate_combat_metric["reasons"]
+    ):
+        raise RuntimeError("duplicate combat CPU metric passed normalization")
+
+    def marker_record(raw_markers: list[str]) -> dict[str, Any]:
+        parsed = [parse_marker(raw) for raw in raw_markers]
+        result_marker = next(marker for marker in parsed if marker.kind == "result")
+        payload = ("\n".join(raw_markers) + "\n").encode()
+        return {
+            "case_count": int(result_marker.fields["case_count"]),
+            "logical_digest": result_marker.fields["logical_digest"],
+            "logical_marker_sha256": sha256_bytes(payload),
+            "markers": raw_markers,
+            "result_fields": result_marker.fields,
+        }
+
+    missing_combat_markers = [
+        complete_controls[0]["markers"][0],
+        complete_controls[0]["markers"][2],
+    ]
+    missing_combat_marker_run = {
+        **complete_controls[0],
+        **marker_record(missing_combat_markers),
+    }
+    missing_combat_marker = browser_cpu_acceptance(
+        [missing_combat_marker_run, *complete_controls[1:]],
+        "firefox",
+    )
+    if missing_combat_marker["pass"] or not any(
+        "expected exactly two cases and one result" in reason
+        for reason in missing_combat_marker["reasons"]
+    ):
+        raise RuntimeError("missing combat logical marker passed normalization")
+    corrupted_combat_markers = [
+        complete_controls[0]["markers"][0],
+        complete_controls[0]["markers"][1].replace(
+            "event_confirmed_combat=14",
+            "event_confirmed_combat=0",
+        ),
+        complete_controls[0]["markers"][2],
+    ]
+    corrupted_combat_marker_run = {
+        **complete_controls[0],
+        **marker_record(corrupted_combat_markers),
+    }
+    corrupted_combat_marker = browser_cpu_acceptance(
+        [corrupted_combat_marker_run, *complete_controls[1:]],
+        "firefox",
+    )
+    if corrupted_combat_marker["pass"] or not any(
+        "did not confirm a combat event" in reason
+        for reason in corrupted_combat_marker["reasons"]
+    ):
+        raise RuntimeError("corrupted combat logical marker passed normalization")
+    wrong_browser_controls = [
+        synthetic_browser_cpu_run("clean", 2001, 2.0, 0.0, browser_name="chrome"),
+        *complete_controls[1:],
+    ]
+    wrong_browser = browser_cpu_acceptance(wrong_browser_controls, "firefox")
+    if wrong_browser["pass"] or not any(
+        "reports browser='chrome'" in reason for reason in wrong_browser["reasons"]
+    ):
+        raise RuntimeError("cross-browser CPU control passed normalization")
+    mixed_versions = [
+        synthetic_browser_cpu_run(
+            "clean",
+            2001,
+            2.0,
+            0.0,
+            browser_version="154.0",
+        ),
+        *complete_controls[1:],
+    ]
+    mixed_version = browser_cpu_acceptance(mixed_versions, "firefox")
+    if mixed_version["pass"] or not any(
+        "report 2 browser versions" in reason for reason in mixed_version["reasons"]
+    ):
+        raise RuntimeError("mixed browser-version controls passed normalization")
+    zero_denominator_controls = [
+        synthetic_browser_cpu_run("clean", 2001, 0.0, 0.0),
+        *complete_controls[1:],
+    ]
+    zero_denominator = browser_cpu_acceptance(zero_denominator_controls, "firefox")
+    if zero_denominator["pass"] or not any(
+        "complete_fixture seed 2001 clean p95 denominator must be finite and >0"
+        in reason
+        for reason in zero_denominator["reasons"]
+    ):
+        raise RuntimeError("zero browser CPU control denominator passed normalization")
     try:
         raise_on_interruption(signal.SIGTERM, None)
     except InterruptedError as error:
@@ -2471,7 +3742,8 @@ def run_self_test() -> None:
         f"{MARKER_PREFIX}|case|schema=1|case=integrity|scenario=complete_fixture|"
         "profile=playable|success=1|"
         "lab_success=1|expected_failure=0|hidden_progress=0|scenario_pass=1|"
-        "gate_contract=4|cpu_gate=1|cpu_gate_applied=1|snapshot_gate=1|"
+        "gate_contract=5|cpu_gate=1|cpu_gate_applied=1|cpu_gate_mode=absolute|"
+        "snapshot_gate=1|"
         "history_gate=1|game_gate=1|rollbacks=6903|"
         "tape_version=1|snapshot_version=5|"
         "initial_hash=0000000000000001|reference_hash=0000000000000002|"
@@ -2491,9 +3763,9 @@ def run_self_test() -> None:
         raise RuntimeError(f"{description} passed self-test")
 
     expect_integrity_failure(
-        integrity_case.raw.replace("gate_contract=4", "gate_contract=3"),
+        integrity_case.raw.replace("gate_contract=5", "gate_contract=4"),
         "native",
-        "contract-3 case",
+        "contract-4 case",
     )
     expect_integrity_failure(
         integrity_case.raw.replace("peak_snapshots=31", "peak_snapshots=32"),
@@ -2511,11 +3783,22 @@ def run_self_test() -> None:
     )
     soak_case = parse_marker(
         integrity_case.raw.replace(
-            "cpu_gate=1|cpu_gate_applied=1",
-            "cpu_gate=not_applied|cpu_gate_applied=0",
+            "cpu_gate=1|cpu_gate_applied=1|cpu_gate_mode=absolute",
+            "cpu_gate=not_applied|cpu_gate_applied=0|cpu_gate_mode=diagnostic",
         )
     )
     validate_case_integrity([soak_case], "soak")
+    deferred_browser_case = parse_marker(
+        integrity_case.raw.replace(
+            "cpu_gate=1|cpu_gate_applied=1|cpu_gate_mode=absolute",
+            "cpu_gate=deferred|cpu_gate_applied=0|cpu_gate_mode=normalized_deferred",
+        )
+    )
+    validate_case_integrity(
+        [deferred_browser_case],
+        "browser-full",
+        browser_runtime=True,
+    )
     for inconsistent, inconsistent_suite in (
         (soak_case.raw.replace("cpu_gate=not_applied", "cpu_gate=1"), "soak"),
         (soak_case.raw, "native"),
@@ -2527,6 +3810,16 @@ def run_self_test() -> None:
             inconsistent_suite,
             "inconsistent CPU gate ownership",
         )
+    try:
+        validate_case_integrity(
+            [integrity_case],
+            "browser-full",
+            browser_runtime=True,
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError("absolute browser CPU ownership passed self-test")
 
     def timing_series(case_id: str, samples_us: tuple[int, ...]) -> RollbackTimingSeries:
         return parse_rollback_timings(
@@ -2534,7 +3827,7 @@ def run_self_test() -> None:
                 (
                     TIMINGS_PREFIX,
                     "case",
-                    "gate_contract=4",
+                    "gate_contract=5",
                     f"case={case_id}",
                     f"sample_count={len(samples_us)}",
                     "unit=microseconds",
@@ -2567,7 +3860,7 @@ def run_self_test() -> None:
 
     runtime_provenance = parse_runtime_metric(
         f"{METRICS_PREFIX}|runtime|love=11.5.0|suite=native|"
-        f"gate_contract=4|profile_digest={EXPECTED_PROFILE_DIGEST}|input_version=2|"
+        f"gate_contract={GATE_CONTRACT}|profile_digest={EXPECTED_PROFILE_DIGEST}|input_version=2|"
         "tape_versions=1,2|snapshot_versions=5,6|tick_rate=60"
     )
     passing_samples = (10000,) * 6897 + (33301, 33400, 34000, 35000, 40000, 46040)
@@ -2627,7 +3920,7 @@ def run_self_test() -> None:
 
     malformed_timing_lines = (
         passing_timing.raw.replace("|unit=microseconds", ""),
-        passing_timing.raw.replace("gate_contract=4", "gate_contract=3"),
+        passing_timing.raw.replace("gate_contract=5", "gate_contract=4"),
         passing_timing.raw.replace("samples=10000", "samples=bad", 1),
         passing_timing.raw.replace("samples=10000", "samples=-1", 1),
         passing_timing.raw.replace("sample_count=6903", "sample_count=6902"),
@@ -2713,16 +4006,16 @@ def run_self_test() -> None:
             description,
         )
 
-    contract_3_runtime = parse_runtime_metric(
-        runtime_provenance.raw.replace("gate_contract=4", "gate_contract=3")
+    contract_4_runtime = parse_runtime_metric(
+        runtime_provenance.raw.replace("gate_contract=5", "gate_contract=4")
     )
     expect_runtime_failure(
-        contract_3_runtime,
+        contract_4_runtime,
         passing_metric,
         [passing_timing],
         integrity_case,
         "native",
-        "contract-3 runtime provenance",
+        "contract-4 runtime provenance",
     )
     stale_profile = parse_runtime_metric(
         runtime_provenance.raw.replace(EXPECTED_PROFILE_DIGEST, "0000000000000000")
@@ -2742,6 +4035,20 @@ def run_self_test() -> None:
         integrity_case,
         "native",
         "over-budget p95 work metric",
+    )
+    browser_provenance = parse_runtime_metric(
+        runtime_provenance.raw.replace("suite=native", "suite=browser-full")
+    )
+    deferred_threshold_metric = metric_for_samples(
+        threshold_samples,
+        p95_work_ms="16.67",
+    )
+    validate_runtime_metrics(
+        [browser_provenance, deferred_threshold_metric],
+        [threshold_timing],
+        [deferred_browser_case],
+        "browser-full",
+        browser_runtime=True,
     )
 
     soak_provenance = parse_runtime_metric(
@@ -3016,7 +4323,7 @@ def main() -> int:
     evidence: dict[str, Any] = {
         "generated_at": utc_now(),
         "campaign": args.campaign,
-        "gate_contract": 4,
+        "gate_contract": int(GATE_CONTRACT),
         "mode": args.mode,
         "pass": False,
         "schema": 1,
