@@ -1,6 +1,6 @@
 # Third-party software
 
-Galactic Cup's repository-owned code, documentation, and assets are licensed
+GOLISEO's repository-owned code, documentation, and assets are licensed
 under the PolyForm Noncommercial License 1.0.0 unless a file says otherwise.
 Third-party software is not relicensed under PolyForm and retains its own
 license terms and notices.
@@ -20,8 +20,8 @@ The browser artifact combines a separately licensed runtime with
 The upstream notice identifies LÖVE under the zlib license, LuaJIT and several
 other components under permissive licenses, and runtime libraries under the
 LGPL. It also lists a GPL utility that is expressly not included in the
-distribution. The project license applies to the game package, not to those
-separately licensed runtime files.
+distribution. The project license applies to GOLISEO's game package, not to
+those separately licensed runtime files.
 
 Do not remove or replace `third_party/lovejs.LICENSE.txt`. Before publishing a
 browser artifact, review the exact pinned runtime and satisfy every applicable
@@ -39,8 +39,8 @@ audited against the exact binaries in that package before release.
 The setup and CI scripts invoke external tools including LÖVE, StyLua,
 lua-language-server, Busted, Selenium, Python, Node.js, and pinned GitHub
 Actions. These tools are not included in the authored game package. Their
-licenses govern the tools themselves, not Galactic Cup source files or the
-ordinary output produced by running them.
+licenses govern the tools themselves, not GOLISEO source files or the ordinary
+output produced by running them.
 
 ## Repository content audit
 

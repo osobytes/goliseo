@@ -1,6 +1,6 @@
-# Contributing to Galactic Cup
+# Contributing to GOLISEO
 
-Thanks for helping make Galactic Cup better. The project currently prioritizes a
+Thanks for helping make GOLISEO better. The project currently prioritizes a
 small, polished showcase release over new systems or content breadth.
 
 Before starting work, read:
@@ -13,7 +13,7 @@ Before starting work, read:
 
 ## Set up the project
 
-Galactic Cup targets LÖVE 11.5 and LuaJIT / Lua 5.1 semantics.
+GOLISEO targets LÖVE 11.5 and LuaJIT / Lua 5.1 semantics.
 
 ```sh
 ./scripts/setup.sh
@@ -59,7 +59,7 @@ trailers.
 
 ## Contributor agreement
 
-Galactic Cup is source-available under the PolyForm Noncommercial License
+GOLISEO is source-available under the PolyForm Noncommercial License
 1.0.0. External contributions are accepted only under the
 [Individual Contributor License Agreement version
 1.0](CONTRIBUTOR_LICENSE_AGREEMENT.md).

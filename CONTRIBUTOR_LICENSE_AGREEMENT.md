@@ -1,11 +1,11 @@
-# Galactic Cup Individual Contributor License Agreement
+# GOLISEO Individual Contributor License Agreement
 
 Version 1.0
 
 Effective date: 2026-07-24
 
 This Individual Contributor License Agreement ("Agreement") explains the
-rights granted with contributions to Galactic Cup. It protects both
+rights granted with contributions to GOLISEO. It protects both
 contributors and the Project Owner while allowing the Project Owner to offer
 the project under public noncommercial terms and separate commercial terms.
 
@@ -14,7 +14,7 @@ your Contributions and may use them for any other purpose.
 
 ## 1. Definitions
 
-**Project** means the Galactic Cup repository at
+**Project** means the GOLISEO repository at
 <https://github.com/osobytes/galactic-cup> and its maintained successors.
 
 **Project Owner** means Oscar Obeso and any person or legal entity that later

@@ -1,30 +1,52 @@
-# Galactic Cup
+# GOLISEO
 
-> **Pick the five. Set the shape. Play the plan.**
+GOLISEO is a 5v5 arcade combat-soccer game built for impossible matchups. A
+knight can guard midfield beside a space ranger. A wind-up striker can slip
+past a pirate. An energy blade and a foam sword can share the same clear,
+competitive rules.
 
-Galactic Cup is a 5v5 intergalactic arcade soccer game where a short management
-setup flows directly into a fast, controllable match. Choose the squad,
-formation, and tactic, then take control and find out whether the plan works
-on the pitch.
+Before kickoff, you assemble a five-character squad and choose its shape,
+tactic, and—once the combat systems pass their prototype gates—equipment.
+Then you take control and play the match yourself.
 
-The project is being shaped into a small, complete source-available showcase rather
-than a broad career-mode prototype. The current build is playable and its
-simulation, rendering, and test infrastructure are already in place; the
-active milestone is product polish around that foundation.
+Soccer always comes first: goals are the only way to win. Combat is a tactical
+tool for contesting possession and space through readable blocks, dodges,
+staggers, knockbacks, and ball spills. There are no health bars, deaths, or
+second victory condition. Every action must create a soccer consequence.
 
-Running `love .` now opens the complete product shell: title, squad selection,
-formation, tactic, the real match, and post-match results. The deterministic
-fake adapter remains available to the headless flow tests.
+## The GOLISEO identity
 
-## What is already here
+- **Crossover spectacle:** characters from Medieval Fantasy, Galactic Sci-Fi,
+  Street Sports, High Seas Adventure, Martial Legends, and Toybox can share a
+  team.
+- **Fast, controllable matches:** exaggerated arcade movement and immediate
+  player control keep the action readable.
+- **Tactical contact:** telegraphed equipment actions create passing lanes,
+  interrupt possession, and reward counterplay rather than attack spam.
+- **Meaningful setup:** squad, formation, tactic, player strengths, and
+  loadout choices must make a visible difference in the next match.
+- **One competitive language:** wildly different themes still obey the same
+  soccer rules, team colors, action families, and broadcast presentation.
 
-- A real-time 5v5 match with movement momentum, sprinting, jockeying, tackles,
-  shielding, passing, charged and curved shots, keeper control, crosses, and
-  aerial finishes.
-- A stat-driven simulation: player pace, strength, technique, stamina, and
+The accepted product direction is documented in
+[docs/vision.md](docs/vision.md) and
+[docs/design/goliseo_theme_pivot.md](docs/design/goliseo_theme_pivot.md).
+
+## Playable today
+
+The current build is the deterministic 5v5 arcade-soccer foundation GOLISEO is
+growing from. Running `love .` opens the complete playable flow: title, squad
+selection, formation, tactic, match, and post-match results.
+
+It currently includes:
+
+- Real-time movement momentum, sprinting, jockeying, tackles, shielding,
+  passing, charged and curved shots, keeper control, crosses, and aerial
+  finishes.
+- A stat-driven simulation where pace, strength, technique, stamina, and
   mental attributes change real match behavior.
-- Three formations and three tactics carried from pure pre-match screens into
-  the match simulation.
+- Three formations and three tactics carried from the pre-match setup into
+  the simulation.
 - A code-driven 2.5D broadcast presentation with a perspective pitch, bloom,
   particles, synthesized audio, and slow-motion goal replays.
 - Deterministic headless matches, balance metrics, parameter sweeps, and a
@@ -32,22 +54,34 @@ fake adapter remains available to the headless flow tests.
 - Strict LuaLS types and hundreds of headless logic, UI, flow, and rendering
   tests.
 
-## Showcase release
+The multi-theme roster, equipment combat, and rigged 3D presentation are the
+accepted direction, but they are not being advertised as finished features.
+They enter production through bounded performance, readability, and gameplay
+proofs.
 
-The first public release is intentionally narrow: one polished match from
-title screen to post-match result, with no dead ends and no placeholder
-screens. It will add the high-leverage product pieces that prototypes usually
-skip—controller support, onboarding, a real squad picker, cohesive UI,
-results, settings, packaging, and release media.
+## Development path
 
-The committed scope, cut line, and definition of done live in
-[docs/showcase_release.md](docs/showcase_release.md). Significant additions
-should be discussed in a GitHub issue before implementation so the public
-project stays focused on that playable loop.
+The immediate release stays intentionally narrow: finish one polished match
+from title screen to result, with cohesive controls, onboarding, UI, settings,
+packaging, and release media. Its cut line and definition of done live in
+[docs/showcase_release.md](docs/showcase_release.md).
+
+After that foundation is complete, three questions across two proof streams
+test GOLISEO's new identity:
+
+1. Ten rigged 3D players must render and animate within native and browser
+   performance budgets.
+2. Fixed equipment loadouts must make soccer decisions more interesting
+   without creating stun-locks, damage races, or attack spam.
+3. Medieval Fantasy, Galactic Sci-Fi, and Toybox samples must look like one
+   game before the wider theme roster enters production.
+
+Significant additions should be discussed in a GitHub issue so new breadth
+does not outrun the playable core.
 
 ## Run locally
 
-Galactic Cup targets [LÖVE 11.5](https://love2d.org/) and LuaJIT / Lua 5.1
+GOLISEO targets [LÖVE 11.5](https://love2d.org/) and LuaJIT / Lua 5.1
 semantics.
 
 ```sh
@@ -133,9 +167,9 @@ relicensing rights.
 
 ## License
 
-Copyright © 2026 Galactic Cup contributors.
+Copyright © 2026 GOLISEO contributors.
 
-Galactic Cup is source-available under the
+GOLISEO is source-available under the
 [PolyForm Noncommercial License 1.0.0](LICENSE). You may use, study, modify,
 and redistribute it only for purposes permitted by that license. Commercial
 use requires a separate license from the Project Owner.
@@ -151,8 +185,13 @@ not revoke permissions already granted for those versions.
 
 ## Project status
 
-Galactic Cup is in active development and is not yet the public showcase
-release. The new shell, real match, and Helios Crown presentation package are
-integrated; release engineering, packaging, QA, and media remain. Career mode,
-leagues, transfers, signature skills, and other larger systems are design
-material for later and are not part of the current shipping scope.
+GOLISEO is in active development and is not yet a public release. Its complete
+title-to-result flow and deterministic 5v5 match are playable; release
+engineering, packaging, QA, and media remain. The repository slug and parts of
+the current showcase content still carry the Galactic Cup prototype name
+during the brand migration.
+
+Combat, rigged 3D characters, and the multi-theme roster remain bounded proof
+work rather than shipped features. Career mode, economies, progression, large
+competitions, and other broader systems come only after the core match and new
+identity prove themselves.

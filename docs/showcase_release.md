@@ -1,7 +1,5 @@
 # Showcase release
 
-> **Pick the five. Set the shape. Play the plan.**
-
 ## Release decision
 
 The next release is a **small complete game and a source-available portfolio

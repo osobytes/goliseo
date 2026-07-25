@@ -9,10 +9,6 @@ unarmed martial artist can share one team.
 sport, or character class.** The crossover does not need to collapse into one
 historical or science-fiction theme.
 
-Its core promise is:
-
-> **Pick the five. Set the shape. Play the plan.**
-
 You make a few fast, legible decisions before kickoff, then personally execute
 them in a short match. Formation, tactics, player strengths, and eventually
 equipment loadouts are valuable only when they make the next match more
