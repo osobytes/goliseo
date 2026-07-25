@@ -64,24 +64,63 @@ tick per `love.update`, so WebDriver can observe progress and terminate a stuck 
 
 ## Gates
 
-The runtime-matrix `playable` cases satisfy the CPU gates on every required runtime. Every
-`playable` case, including the persistent soak, satisfies the deterministic correctness and
-retained-storage gates. The separately rerunnable soak owns the retained-memory gate and records
-its CPU timings diagnostically.
+Every `playable` case, including the persistent soak, satisfies the deterministic correctness and
+retained-storage gates. Native runtime-matrix cases retain the absolute CPU budgets. Browser
+runtime-matrix CPU acceptance is an aggregate, same-browser comparison: each playable seed is
+paired with the clean case for that seed from the same job and exact browser runtime. The
+separately rerunnable soak owns the retained-memory gate and records its CPU timings
+diagnostically.
 
 | Gate | Required value | Owner |
 | --- | ---: | --- |
-| p95 combined client simulation plus rollback work | `< 16.67 ms` | runtime matrix |
-| nearest-rank p99.9 rollback wall duration | `< 33.3 ms` | runtime matrix |
+| native p95 combined client simulation plus rollback work | `< 16.67 ms` | native runtime matrix |
+| native nearest-rank p99.9 rollback wall duration | `< 33.3 ms` | native runtime matrix |
+| browser playable p95 work / paired clean p95 work | `< 6.7` | browser runtime matrix aggregate |
+| browser playable p99.9 rollback / paired clean p95 work | `< 11.7` | browser runtime matrix aggregate |
 | retained snapshot boundaries | `<= 31` | every playable case |
 | canonical retained snapshot payload | `< 768 KiB` | every playable case |
 | exact accounted snapshot/input/output/event history | `< 1 MiB` | every playable case |
 | terminal forced-GC Lua heap, process-tree RSS, and Chrome JS-heap growth from warm-up | `<= 10%` | persistent soak |
 
-This ownership and statistic split is an explicit revision to the initial issue wording. The
-numeric thresholds are unchanged, but CPU acceptance is narrowed to runtime-matrix `playable`
-cases and the rollback statistic changes from a raw maximum to nearest-rank p99.9. Hosted CI runs
-on shared, non-real-time infrastructure. Its p99.9 gate detects sustained tail regressions while
+`gate_contract=5` supersedes contract 4 for newly generated evidence. An individual browser
+playable case records `cpu_gate_mode=normalized_deferred`; it cannot fail solely because its
+absolute p95 work or p99.9 rollback time crosses the product budget. The validator first collects
+six unique clean controls and six unique playable cases per browser (`complete_fixture` and
+`combat` across three seeds). It validates exact browser, browser-version, scenario, profile, and
+seed identity, requires a finite positive clean p95 denominator, and then evaluates every
+scenario/seed pair with strict `<` comparisons. Missing, duplicate, malformed, or mismatched
+controls fail closed. The normalized evidence records every pair, both ratios, the thresholds, all
+violations, and the absolute p95, p99.9, maximum, and over-33.3-ms count.
+Each clean control runs immediately before its matching playable seed. This interleaving reduces
+temporal shared-runner drift without adding a case or weakening exact seed pairing.
+
+The thresholds are calibrated from the complete Chrome and Firefox distributions in accepted
+exact runs
+[`30060058593`](https://github.com/osobytes/galactic-cup/actions/runs/30060058593) and
+[`30065880550`](https://github.com/osobytes/galactic-cup/actions/runs/30065880550).
+Across their 12 seed pairs, p95-work ratios ranged from 5.328 to 5.799 and rollback-p99.9 ratios
+from 8.529 to 10.164. Each contract-5 threshold is the corresponding accepted maximum plus 15%,
+rounded upward to one decimal: 6.7 and 11.7. This is intentionally not a boundary fitted to the
+next observed sample.
+
+Failed exact run
+[`30075505461`](https://github.com/osobytes/galactic-cup/actions/runs/30075505461)
+provides the external-noise cross-check. Its complete Chrome pairs were 5.161--5.430 for p95 work
+and 7.817--8.494 for rollback p99.9. Firefox seeds 2001 and 2002 were 5.068 and 5.264 for p95 work
+and 7.826 and 8.264 for rollback p99.9; the old per-case absolute gate stopped the job before the
+third playable case. The rejected Firefox seed-2002 absolute p95 was 16.740 ms against a 3.180 ms
+clean control, while its 26.280 ms p99.9, 32.260 ms maximum, and zero samples at or above
+33.3 ms all passed their former absolute checks.
+
+Same-run normalization detects browser rollback work that gets slower relative to its clean
+simulation baseline. It intentionally allows a proportional whole-runtime slowdown, because a
+shared hosted runner cannot establish an absolute product performance claim. The unchanged native
+absolute gate remains the pull-request backstop for shared game and simulation regressions.
+Absolute browser p95, p99.9, maximum, and over-threshold counts remain diagnostics; controlled,
+dedicated hardware is required for browser frame-budget product acceptance.
+
+Contract 4 changed the rollback statistic from a raw maximum to nearest-rank p99.9. Hosted CI runs
+on shared, non-real-time infrastructure. That statistic detects sustained tail regressions while
 allowing at most the slowest 0.1% of samples to remain diagnostic; it does not claim that no
 individual rollback can exceed 33.3 ms. A hard raw-maximum claim requires the separately
 controlled dedicated-hardware performance campaign.
@@ -101,13 +140,13 @@ maxima of 24.18--29.16 ms. These isolated maxima are consistent with external sc
 but do not prove its cause; rerunning until a favorable maximum appears would create selection
 bias rather than stronger evidence.
 
-`gate_contract=4` makes the timing-evidence ownership explicit and supersedes the contract-3
-calibration format without changing its p99.9 statistic. Runtime-matrix cases emit the quantized
-raw integer-microsecond rollback samples separately from their logical markers. The Python
-evidence validator independently recomputes nearest-rank p99.9, the maximum, and the count at or
-above 33.3 ms, and rejects count drift against both the measured rollback calls and the logical
-rollback count. The raw maximum and all over-threshold matrix samples remain visible in the
-artifact. Runtime-matrix playable cases emit `cpu_gate_applied=1`; soak cases emit
+Runtime-matrix cases emit quantized raw integer-microsecond rollback samples separately from their
+logical markers. The Python evidence validator independently recomputes nearest-rank p99.9, the
+maximum, and the count at or above 33.3 ms, and rejects count drift against both the measured
+rollback calls and the logical rollback count. The raw maximum and all over-threshold matrix
+samples remain visible in the artifact. Native runtime-matrix playable cases emit
+`cpu_gate_applied=1` and `cpu_gate_mode=absolute`; browser playable cases emit
+`cpu_gate_applied=0` and `cpu_gate_mode=normalized_deferred`; soak cases emit
 `cpu_gate_applied=0`, `cpu_gate=not_applied`, and aggregate CPU diagnostics without transporting
 raw timing arrays. Storage, memory, provenance, teardown, and orphan gates remain active.
 
@@ -243,14 +282,65 @@ Omitting `--campaign` preserves the complete combined local campaign. CI runs na
 independent Chrome/Firefox runtime-matrix and soak jobs from the exact pull-request head and
 uploads normalized JSON plus raw logs. The four browser workers run in parallel and can be rerun
 independently, so a performance failure does not discard a successful hour-long memory soak and a
-memory failure does not rerun the runtime matrix. Pull requests run those long jobs only when their
-cumulative diff touches the workflow, runtime entry points, `core/`, `data/`, `game/`, `sim/`, or
-the rollback/browser build and validation scripts. Manual workflow dispatches always run them,
-and missing or invalid comparison history fails open by running them. A stable
-`OMP-2 rollback gate` job succeeds immediately for an unaffected change or requires native plus
-both browser job matrices for an affected change, so a required-check policy never depends on a
-skipped matrix job. The ordinary quality, browser artifact smoke, and OMP-1 browser determinism jobs
-remain unconditional.
+memory failure does not rerun the runtime matrix. Pull requests run those long jobs only when a
+deterministic rollback-relevance manifest differs between the base revision and the current head.
+The manifest includes the workflow, `conf.lua`, the exact `main.lua` blob, the rollback harness,
+browser/build scripts, frozen historical validation data, and the transitive static Lua `require`
+graph rooted at `sim.rollback_validation` and `game.rollback_validation`. `main.lua` is included
+because it selects and owns the validation runtime, but its normal app/bootstrap dependencies are
+not traversed: rollback validation returns before that product path is loaded.
+
+Every selected manifest path must be a regular tracked file rather than a symlink or submodule.
+The graph accepts only uniquely resolved, literal calls to the global Lua `require`; member-style,
+non-literal, and escaped imports are unsafe. Missing revisions or roots, missing or ambiguous
+reachable modules, unsafe imports or source encoding, non-regular selected paths, and Git parsing
+errors fail open to the complete five-shard campaign. Adding a module does not affect rollback
+evidence until a reachable validation module imports it; wiring that import changes the root blob
+and adds the new dependency blob to the manifest. Consequently an unreferenced module such as
+`sim/brain.lua`, a spec-only change, or ordinary docs do not launch the expensive jobs. They are
+not untested: the unconditional Lua quality gate still formats, type-checks, and runs the entire
+ordinary spec suite. This exact base-to-head manifest comparison remains the anti-bypass boundary,
+so a later unrelated commit cannot conceal an earlier reachable change.
+
+The first head for a relevant content fingerprint runs native, both browser matrices, and both
+browser soaks. GitHub's completed run, attempt-specific job/step history, and five uploaded
+artifacts are the reusable record; CI publishes no separate cache entry or mutable pointer.
+
+A later head in the same active pull request may reuse a prior run only when the rollback-relevant
+tracked content is byte-for-byte unchanged. The fingerprint covers its format and gate contract,
+the declared direct and Lua roots, and every selected committed mode, path, and blob identity,
+including this workflow and the fingerprint/validation script itself.
+
+Before skipping any long job, the impact filter scans prior completed-success runs of this
+workflow and head branch from newest to oldest. A candidate is reusable only when the GitHub
+Actions API establishes all of the following:
+
+- the producer is a different, completed-success, first-attempt `pull_request` run of this
+  repository and workflow;
+- its active pull-request linkage exactly matches the current pull-request number, repository,
+  head repository and ref, and base repository, ref, and revision by immutable repository IDs;
+- its revision is an ancestor of the current head and independently recomputes to the same
+  relevant-content fingerprint;
+- the impact filter, stable aggregate, five long jobs, each actual campaign step, and each
+  artifact-upload step all completed successfully on attempt one on the pinned Linux runner; and
+- the exact five artifacts still exist uniquely, are unexpired and nonempty, remain within the
+  evidence-size bound, and expose SHA-256 digests.
+
+This check deliberately validates GitHub's run, attempt-specific job/step, and artifact metadata;
+it does not download and re-audit the five ZIP bodies on every docs follow-up. Any network, API,
+pagination, ancestry, schema, fingerprint, job, step, artifact, digest, expiry, or provenance
+uncertainty fails open by running all five jobs. A run that reused evidence has skipped long jobs
+and therefore cannot become a producer for another reuse; discovery rejects it and may continue
+to an older complete fresh run. Partial, failed, cancelled, expired, or rerun-to-green campaigns
+cannot be assembled into reusable evidence.
+
+Manual workflow dispatches always run fresh, and pushes to `main` never reuse aggregate evidence;
+an unrelated push may still scope-skip the long campaign. Missing or invalid comparison history
+fails open by running fresh. A stable `OMP-2 rollback gate` job succeeds immediately for an
+unaffected change, independently revalidates an exact aggregate reuse, or requires native plus
+both browser job matrices for an affected change, so required-check policy never depends on a
+skipped matrix job. The ordinary quality, browser artifact smoke, and OMP-1 browser determinism
+jobs remain unconditional.
 
 Evidence records source and artifact hashes,
 executable/browser/driver identity, profile/tape hashes, every logical marker, timing totals and
@@ -286,6 +376,31 @@ measurement, soak diagnostics, raw-artifact digests, teardown results, and OMP-3
 [`evidence/omp2_rollback_linux_2026-07-24.json`](evidence/omp2_rollback_linux_2026-07-24.json).
 Its audit independently recomputed 166,812 raw matrix/late-window rollback samples rather than
 trusting the emitted percentiles.
+
+## Contract 5 targeted-gate producer
+
+GitHub Actions run
+[`30139012436`](https://github.com/osobytes/galactic-cup/actions/runs/30139012436)
+is the first-attempt producer for relevance fingerprint
+`1b48815006c8419055cbab16bcc71f700f671e2f00a79f1851677a6d5279a778` on exact clean source
+`cba1706303409f95524364d1836b0080871cc355`. The native campaign, Chrome and Firefox runtime
+matrices, Chrome and Firefox persistent soaks, ordinary checks, and stable aggregate gate all
+passed. The five unique, unexpired artifacts carried SHA-256 digests and contained five
+normalized JSON records plus 72 referenced raw logs; an independent audit matched every raw-log
+digest.
+
+The two fresh native runs agreed across all 54 cases and 15 shards. All 224 raw validation cases
+passed their scenario, storage, and game gates; the only late-window failure was the designed
+expected-unrecoverable 31-tick case. Each browser provided six same-run, same-runtime clean/playable
+pairs. Chrome's maximum p95-work and rollback-p99.9 ratios were 5.6981 and 8.8250; Firefox's were
+5.3333 and 8.8116, below the strict 6.7 and 11.7 limits. The absolute diagnostics retained one
+34.56 ms Firefox maximum, while its normalized pair remained inside contract. Native, Chrome, and
+Firefox soaks shared logical digest `b9b61c4349c7123a`; every memory gate stayed below 10%, and all
+teardowns were orphan-free with zero remaining or detached processes.
+
+This section is intentionally outside the rollback-relevance manifest. Its commit is the
+post-producer proof that an unchanged relevant fingerprint reuses the exact aggregate and skips
+all five expensive jobs while the stable gate and ordinary checks continue to run.
 
 ## OMP-3 transport inputs
 

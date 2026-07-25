@@ -12,6 +12,7 @@ local identity = require("game.presentation.identity")
 ---@field prompt OnboardingPrompt?
 ---@field phase BroadcastPhase?
 ---@field scoring_team "home"|"away"?
+---@field combat_enabled boolean?
 
 ---@class MatchHudModel
 ---@field home_name string
@@ -86,7 +87,7 @@ function hud.model(state, context)
 
     local title, detail = nil, nil
     if context.phase == "kickoff" then
-        title = "SHOWCASE FIXTURE"
+        title = context.combat_enabled and "COMBAT PROTOTYPE" or "SHOWCASE FIXTURE"
         detail = context.home_name .. "  ·  " .. context.away_name
     elseif context.phase == "goal" then
         local team_name = context.scoring_team == "away" and context.away_name or context.home_name

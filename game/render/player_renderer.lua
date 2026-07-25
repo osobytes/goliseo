@@ -24,6 +24,8 @@ local renderer = {}
 ---@field species_shape "round"|"broad"|"angular"|"cluster"?
 ---@field species_color number[]?
 ---@field team "home"|"away"?
+---@field combat CombatPlayerPresentation?
+---@field pose PlayerPoseSelection?
 
 ---@class PlayerSilhouetteProfile
 ---@field torso_scale number
@@ -62,6 +64,109 @@ local function lighten(c, t)
     return { c[1] + (1 - c[1]) * t, c[2] + (1 - c[2]) * t, c[3] + (1 - c[3]) * t }
 end
 
+---@param cx number
+---@param sh_y number
+---@param hip_y number
+---@param r number
+---@param opts PlayerRenderOptions
+local function draw_equipment(cx, sh_y, hip_y, r, opts)
+    local combat = opts.combat
+    if not combat or not combat.equipment_presentation_id or not combat.family_id then
+        return
+    end
+    local fx = opts.facing and opts.facing.x or 1
+    local side = fx >= 0 and 1 or -1
+    local active = combat.phase == "active"
+    local raised = combat.phase == "guard" or combat.phase == "aim"
+    local reach = active and 1.35 or (raised and 1.05 or 0.78)
+    local hand_x = cx + side * r * reach
+    local hand_y = raised and sh_y + r * 0.28 or hip_y - r * 0.3
+    local id = combat.equipment_presentation_id
+
+    if id == "toy_spring_gloves" then
+        local extension = active and r * 0.9 or r * 0.25
+        local front_x = hand_x + side * extension
+        set({ 0.92, 0.96, 1 }, 0.95)
+        love.graphics.setLineWidth(math.max(1, r * 0.12))
+        love.graphics.line(
+            hand_x - side * r * 0.22,
+            hand_y,
+            hand_x - side * r * 0.08,
+            hand_y - r * 0.12,
+            hand_x + side * r * 0.08,
+            hand_y + r * 0.12,
+            front_x,
+            hand_y
+        )
+        set({ 0.4, 0.95, 1 }, 0.98)
+        love.graphics.circle("fill", front_x, hand_y, r * 0.34)
+        love.graphics.circle("line", cx - side * r * 0.72, hand_y + r * 0.12, r * 0.3)
+    elseif id == "medieval_heater_shield" then
+        local shield_x = hand_x + side * r * 0.08
+        local shield_y = raised and sh_y + r * 0.42 or hip_y - r * 0.18
+        local width = r * (raised and 0.72 or 0.58)
+        local height = r * (raised and 1.05 or 0.85)
+        set({ 0.92, 0.72, 0.28 }, 0.96)
+        love.graphics.polygon(
+            "fill",
+            shield_x - width,
+            shield_y - height * 0.45,
+            shield_x + width,
+            shield_y - height * 0.45,
+            shield_x + width * 0.72,
+            shield_y + height * 0.45,
+            shield_x,
+            shield_y + height * 0.72,
+            shield_x - width * 0.72,
+            shield_y + height * 0.45
+        )
+        set({ 0.18, 0.12, 0.08 }, 0.82)
+        love.graphics.setLineWidth(math.max(1, r * 0.12))
+        love.graphics.line(shield_x, shield_y - height * 0.35, shield_x, shield_y + height * 0.45)
+        love.graphics.line(shield_x - width * 0.52, shield_y, shield_x + width * 0.52, shield_y)
+    elseif id == "scifi_pulse_blaster" then
+        local muzzle_x = hand_x + side * r * (active and 1.0 or 0.68)
+        local left = math.min(hand_x - side * r * 0.18, muzzle_x)
+        local width = math.abs(muzzle_x - hand_x) + r * 0.25
+        set({ 0.24, 0.14, 0.32 }, 0.98)
+        love.graphics.rectangle("fill", left, hand_y - r * 0.22, width, r * 0.44, r * 0.1)
+        set({ 1, 0.45, 0.78 }, 0.98)
+        love.graphics.setLineWidth(math.max(1, r * 0.13))
+        love.graphics.line(hand_x, hand_y, muzzle_x, hand_y)
+        love.graphics.polygon(
+            "line",
+            muzzle_x,
+            hand_y - r * 0.28,
+            muzzle_x + side * r * 0.35,
+            hand_y,
+            muzzle_x,
+            hand_y + r * 0.28
+        )
+    else
+        local blade_length = active and r * 1.8 or r * 1.35
+        local tip_x = hand_x + side * blade_length
+        local blade_color = { 0.92, 0.96, 1 }
+        local blade_width = r * 0.14
+        if id == "scifi_energy_blade" then
+            blade_color = { 0.45, 1, 0.9 }
+            blade_width = r * 0.2
+        elseif id == "toy_foam_sword" then
+            blade_color = { 1, 0.55, 0.28 }
+            blade_width = r * 0.34
+        end
+        set({ 0.2, 0.14, 0.12 }, 0.98)
+        love.graphics.setLineWidth(math.max(1.5, r * 0.26))
+        love.graphics.line(hand_x - side * r * 0.2, hand_y, hand_x + side * r * 0.18, hand_y)
+        love.graphics.line(hand_x, hand_y - r * 0.3, hand_x, hand_y + r * 0.3)
+        set(blade_color, 0.98)
+        love.graphics.setLineWidth(math.max(1.5, blade_width))
+        love.graphics.line(hand_x + side * r * 0.15, hand_y, tip_x, hand_y)
+        if id == "toy_foam_sword" then
+            love.graphics.circle("fill", tip_x, hand_y, r * 0.2)
+        end
+    end
+end
+
 -- Draw just the standing body (legs, arms, torso, helmet) centred on screen-x
 -- `bx`, feet at `gy`. No shadow / selection ring / facing tick — those are drawn
 -- once by `renderer.draw` so afterimage ghosts don't duplicate them.
@@ -88,6 +193,10 @@ local function figure(bx, gy, r, color, v, opts)
 
     -- Wind-up back-swing: lean the whole figure opposite the facing direction.
     local wu = opts.windup or 0
+    local pose_id = opts.pose and opts.pose.id or nil
+    if pose_id == "combat_windup" then
+        wu = math.max(wu, 1 - (opts.combat and opts.combat.phase_progress or 0) * 0.45)
+    end
     local fx = opts.facing and opts.facing.x or 0
     local windup_lean = -fx * wu * r * 0.6 -- leans back opposite facing
     local aerial = opts.aerial or 0
@@ -97,6 +206,10 @@ local function figure(bx, gy, r, color, v, opts)
         action_lean = fx * aerial * r * 0.45
     elseif aerial_style == "chest_control" then
         action_lean = -fx * aerial * r * 0.25
+    elseif pose_id == "combat_active" then
+        action_lean = fx * r * 0.65
+    elseif pose_id == "combat_recovery" then
+        action_lean = -fx * r * 0.2
     end
 
     local cx = bx + lean * r * 0.5 + windup_lean + action_lean
@@ -130,7 +243,13 @@ local function figure(bx, gy, r, color, v, opts)
     -- Arms (opposite the legs, swinging the other way).
     love.graphics.setLineWidth(math.max(1.5, r * 0.26 * limb_scale))
     set(color, opts.is_keeper and 0.8 or 1)
-    if aerial_style == "chest_control" then
+    if pose_id == "combat_guard" then
+        love.graphics.line(cx - r * 0.5, sh_y, cx + fx * r * 0.75, sh_y + r * 0.2)
+        love.graphics.line(cx + r * 0.5, sh_y, cx + fx * r * 0.95, sh_y + r * 0.5)
+    elseif pose_id == "combat_active" or pose_id == "combat_aim" then
+        love.graphics.line(cx - r * 0.5, sh_y, cx + fx * r * 0.7, sh_y + r * 0.35)
+        love.graphics.line(cx + r * 0.5, sh_y, cx + fx * r * 1.0, sh_y + r * 0.15)
+    elseif aerial_style == "chest_control" then
         love.graphics.line(cx - r * 0.5, sh_y, cx - r * (0.55 + 0.55 * aerial), sh_y + r * 0.2)
         love.graphics.line(cx + r * 0.5, sh_y, cx + r * (0.55 + 0.55 * aerial), sh_y + r * 0.2)
     else
@@ -231,6 +350,8 @@ local function figure(bx, gy, r, color, v, opts)
             head_y + fx * hr * 0.14
         )
     end
+
+    draw_equipment(cx, sh_y, hip_y, r, opts)
 end
 
 -- Draw one player.
@@ -241,6 +362,7 @@ end
 ---@param v PlayerView?  -- nil = idle fallback
 ---@param opts PlayerRenderOptions
 function renderer.draw(sx, gy, r, color, v, opts)
+    local pose_id = opts.pose and opts.pose.id or nil
     -- Ground shadow (kept here so it tracks the figure).
     love.graphics.setColor(0, 0, 0, 0.35)
     love.graphics.ellipse("fill", sx, gy, r * 1.15, r * 0.5)
@@ -266,7 +388,10 @@ function renderer.draw(sx, gy, r, color, v, opts)
     -- Keeper dive: pivot the whole body at the feet toward the dive side and
     -- shove it laterally, so the figure lunges horizontally for the save. `dive`
     -- is 0..1 progress (1 = just launched). Reuses figure() under a transform.
-    if opts.dive and opts.dive > 0 and opts.dive_dir then
+    if
+        (pose_id == "keeper_dive" or (pose_id == nil and opts.dive and opts.dive > 0))
+        and opts.dive_dir
+    then
         local d = opts.dive_dir ---@type Vec2
         local sign = (d.x >= 0) and 1 or -1
         local angle = sign * math.rad(72) * opts.dive
@@ -283,7 +408,13 @@ function renderer.draw(sx, gy, r, color, v, opts)
     -- Aerial actions use the ground point for sorting/shadow but lift the
     -- billboard. A bicycle rotates the whole figure into a readable overhead
     -- silhouette; other styles pose individual limbs in figure().
-    if opts.aerial and opts.aerial > 0 and opts.aerial_style then
+    if
+        (
+            pose_id == "aerial_bicycle"
+            or pose_id == "aerial_action"
+            or (pose_id == nil and opts.aerial and opts.aerial > 0)
+        ) and opts.aerial_style
+    then
         local amount = clamp(opts.aerial, 0, 1)
         local lift = r * (0.35 + 1.65 * (opts.aerial_jump or 0)) * amount
         if opts.aerial_style == "bicycle" then
@@ -298,6 +429,24 @@ function renderer.draw(sx, gy, r, color, v, opts)
         else
             figure(sx, gy - lift, r, color, v, opts)
         end
+        return
+    end
+
+    if pose_id == "combat_knockback" then
+        love.graphics.push()
+        love.graphics.translate(sx, gy - r * 0.45)
+        love.graphics.rotate(math.rad(68))
+        love.graphics.translate(-sx, -gy)
+        figure(sx, gy, r, color, v, opts)
+        love.graphics.pop()
+        return
+    elseif pose_id == "combat_stagger" then
+        love.graphics.push()
+        love.graphics.translate(sx, gy + r * 0.28)
+        love.graphics.rotate(math.rad(8))
+        love.graphics.translate(-sx, -gy)
+        figure(sx, gy, r, color, v, opts)
+        love.graphics.pop()
         return
     end
 

@@ -12,6 +12,7 @@ local session = require("game.session")
 local settings_model = require("game.settings")
 local t = require("spec.support.runner")
 local ui_draw = require("game.ui.draw")
+local ui = require("game.ui.hit")
 
 ---@param width integer
 ---@param height integer
@@ -57,6 +58,14 @@ local function assert_within_virtual_canvas(layout)
 end
 
 t.describe("product UI presentation", function()
+    t.it("keeps keeper and combat-only equipment guidance together", function()
+        local layout = Help.layout(Help.new_state({ w = 960, h = 540 }))
+        local text = assert(assert(ui.find(layout, "hint")).text)
+        t.is_true(text:find("KEEPER: PLAY THROWS · ACTION PUNTS", 1, true) ~= nil)
+        t.is_true(text:find("*COMBAT PROTOTYPE ONLY", 1, true) ~= nil)
+        t.is_true(text:find("EQUIPMENT: HOLD / TAP", 1, true) ~= nil)
+    end)
+
     t.it("keeps every surrounding screen inside the virtual canvas", function()
         local viewport = { w = 960, h = 540 }
         local state = session.new()

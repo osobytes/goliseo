@@ -11,6 +11,8 @@ local MOVE_PER_PACE = 20 -- px/s per pace point
 local BASE_SHOT = 150 -- px/s at strength 0
 local SHOT_PER_STRENGTH = 50 -- px/s per strength point
 
+local MAX_EXECUTION_ERROR_RADIANS = math.pi / 15 -- 12 degrees at technique 0
+
 ---@param s StatBlock
 ---@return number px_per_second
 function stats.move_speed(s)
@@ -70,6 +72,41 @@ local SPRINT_PER_STAMINA = 0.25 -- extra seconds per stamina point
 ---@return number seconds
 function stats.sprint_duration(s)
     return BASE_SPRINT + s.stamina * SPRINT_PER_STAMINA
+end
+
+-- Outfield behavior attributes remain pure derivations from the canonical
+-- five-stat block. They do not add authored attributes or alter match behavior
+-- until downstream AI mechanics consume them.
+
+---@param s StatBlock
+---@return number scan_rate  -- 0..1 mental-led decision-scanning rate
+function stats.scan_rate(s)
+    return math.max(0, math.min(1, (s.mental * 0.75 + s.stamina * 0.25) / 10))
+end
+
+---@param s StatBlock
+---@return number composure  -- 0..1 mental-led action-selection composure
+function stats.composure(s)
+    return math.max(0, math.min(1, s.mental / 10))
+end
+
+---@param s StatBlock
+---@return number press_discipline  -- 0..1 mental-led defensive discipline
+function stats.press_discipline(s)
+    return math.max(0, math.min(1, s.mental / 10))
+end
+
+---@param s StatBlock
+---@return number run_drive  -- 0..1 pace-led willingness to make an off-ball run
+function stats.run_drive(s)
+    return math.max(0, math.min(1, (s.pace * 0.6 + s.mental * 0.4) / 10))
+end
+
+---@param s StatBlock
+---@return number radians  -- 0..pi/15 (0..12 degrees) maximum angular execution error
+function stats.execution_error(s)
+    local technique = math.max(0, math.min(10, s.technique))
+    return (1 - technique / 10) * MAX_EXECUTION_ERROR_RADIANS
 end
 
 -- Keeper-specific derivations. Mental represents composure and positioning (reach),

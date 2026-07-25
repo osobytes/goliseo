@@ -7,6 +7,7 @@ on:
     pull_request:
 
 permissions:
+    actions: read
     contents: read
 
 concurrency:
@@ -18,7 +19,10 @@ jobs:
         name: OMP-2 rollback impact filter
         runs-on: ubuntu-24.04
         outputs:
-            run: ${{ steps.scope.outputs.run }}
+            fingerprint: ${{ steps.scope.outputs.fingerprint }}
+            impact: ${{ steps.scope.outputs.run }}
+            reuse: ${{ steps.discovery.outputs.reuse }}
+            run: ${{ steps.decision.outputs.run }}
 
         steps:
             - name: Check out source history
@@ -34,63 +38,57 @@ jobs:
                   EVENT_BEFORE: ${{ github.event.before }}
                   PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
               run: |
-                  rollback_paths=(
-                      .github/workflows/ci.yml
-                      conf.lua
-                      main.lua
-                      core
-                      data
-                      game
-                      sim
-                      scripts/browser_determinism.py
-                      scripts/browser_matrix.py
-                      scripts/browser_matrix-requirements.txt
-                      scripts/browser_storage_host.js
-                      scripts/check_rollback.sh
-                      scripts/rollback_validation.py
-                      scripts/web_build.py
-                      scripts/web_build.sh
-                      scripts/web_serve.py
-                      scripts/webrtc_proof_host.js
-                      scripts/webrtc_proof_runner.js
-                      scripts/webrtc_proof_suite.js
-                  )
+                  python3 -B scripts/rollback_ci.py scope \
+                      --event-name "$EVENT_NAME" \
+                      --event-before "$EVENT_BEFORE" \
+                      --pr-base-sha "$PR_BASE_SHA" \
+                      --github-output "$GITHUB_OUTPUT"
 
-                  run=true
-                  range=""
-                  if [ "$EVENT_NAME" != "workflow_dispatch" ]; then
-                      if [ "$EVENT_NAME" = "pull_request" ]; then
-                          base="$PR_BASE_SHA"
-                          range="$base...HEAD"
-                      else
-                          base="$EVENT_BEFORE"
-                          range="$base..HEAD"
-                      fi
+            - name: Discover prior complete rollback evidence
+              id: discovery
+              env:
+                  API_URL: ${{ github.api_url }}
+                  BASE_REF: ${{ github.base_ref }}
+                  BASE_REPOSITORY_ID: ${{ github.event.pull_request.base.repo.id }}
+                  BASE_SHA: ${{ github.event.pull_request.base.sha }}
+                  CURRENT_RUN_ID: ${{ github.run_id }}
+                  FINGERPRINT: ${{ steps.scope.outputs.fingerprint }}
+                  GH_TOKEN: ${{ github.token }}
+                  HEAD_BRANCH: ${{ github.head_ref }}
+                  HEAD_REPOSITORY_ID: ${{ github.event.pull_request.head.repo.id }}
+                  IMPACT: ${{ steps.scope.outputs.run }}
+                  PR_NUMBER: ${{ github.event.pull_request.number }}
+                  REPOSITORY: ${{ github.repository }}
+                  REPOSITORY_ID: ${{ github.repository_id }}
+              run: |
+                  python3 -B scripts/rollback_ci.py discover \
+                      --impact "$IMPACT" \
+                      --fingerprint "$FINGERPRINT" \
+                      --repository "$REPOSITORY" \
+                      --repository-id "${REPOSITORY_ID:-0}" \
+                      --pr-number "${PR_NUMBER:-0}" \
+                      --head-branch "$HEAD_BRANCH" \
+                      --head-repository-id "${HEAD_REPOSITORY_ID:-0}" \
+                      --base-repository-id "${BASE_REPOSITORY_ID:-0}" \
+                      --base-ref "$BASE_REF" \
+                      --base-sha "$BASE_SHA" \
+                      --current-run-id "$CURRENT_RUN_ID" \
+                      --token "$GH_TOKEN" \
+                      --api-url "$API_URL" \
+                      --github-output "$GITHUB_OUTPUT"
 
-                      if [ -n "$base" ] && ! [[ "$base" =~ ^0+$ ]] && \
-                          git cat-file -e "$base^{commit}" 2>/dev/null; then
-                          if git diff --quiet "$range" -- "${rollback_paths[@]}"; then
-                              run=false
-                          else
-                              status=$?
-                              if [ "$status" -gt 1 ]; then
-                                  echo "Change comparison failed; running rollback gates."
-                                  range=""
-                              fi
-                          fi
-                      else
-                          echo "Comparison commit unavailable; running rollback gates."
-                          range=""
-                      fi
+            - name: Select full campaign or aggregate reuse
+              id: decision
+              env:
+                  IMPACT: ${{ steps.scope.outputs.run }}
+                  REUSE: ${{ steps.discovery.outputs.reuse }}
+              run: |
+                  run="$IMPACT"
+                  if [ "$REUSE" = "true" ]; then
+                      run=false
                   fi
-
                   echo "run=$run" >> "$GITHUB_OUTPUT"
-                  echo "rollback_scope=$run range=${range:-manual}"
-                  if [ "$run" = "true" ] && [ -n "$range" ]; then
-                      if ! git diff --name-only "$range" -- "${rollback_paths[@]}"; then
-                          echo "Changed-path reporting failed after a fail-open decision."
-                      fi
-                  fi
+                  echo "rollback_campaign=$run aggregate_reuse=$REUSE"
 
     quality:
         name: Lua quality gate
@@ -385,17 +383,27 @@ jobs:
               env:
                   BROWSER_MATRIX_RESULT: ${{ needs.rollback_browser_matrix.result }}
                   BROWSER_SOAK_RESULT: ${{ needs.rollback_browser_soak.result }}
+                  IMPACT: ${{ needs.rollback_scope.outputs.impact }}
                   NATIVE_RESULT: ${{ needs.rollback_native.result }}
                   RUN_ROLLBACK: ${{ needs.rollback_scope.outputs.run }}
+                  REUSE: ${{ needs.rollback_scope.outputs.reuse }}
                   SCOPE_RESULT: ${{ needs.rollback_scope.result }}
               run: |
                   if [ "$SCOPE_RESULT" != "success" ]; then
                       echo "Rollback impact detection did not succeed."
                       exit 1
                   fi
-                  if [ "$RUN_ROLLBACK" = "false" ]; then
+                  if [ "$IMPACT" = "false" ]; then
                       echo "No rollback-impacting changes; long evidence jobs were skipped."
                       exit 0
+                  fi
+                  if [ "$REUSE" = "true" ]; then
+                      echo "Exact aggregate rollback evidence was independently revalidated and reused."
+                      exit 0
+                  fi
+                  if [ "$RUN_ROLLBACK" != "true" ]; then
+                      echo "Rollback campaign decision was inconsistent."
+                      exit 1
                   fi
                   if [ "$NATIVE_RESULT" != "success" ] || \
                       [ "$BROWSER_MATRIX_RESULT" != "success" ] || \

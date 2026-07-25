@@ -44,6 +44,7 @@ function RealMatch.new(request, callbacks)
         seed = request.seed,
         arena_id = request.arena_id,
         show_onboarding = request.show_onboarding,
+        combat_enabled = request.combat_enabled,
         profile = "product",
     })
     return setmetatable({

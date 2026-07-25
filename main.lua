@@ -144,6 +144,7 @@ if has_flag("--rollback-validation") then
     local validation_config = rollback_validation.config()
     local suite_arg, profile_arg, seed_arg = args_after("--rollback-validation")
     local suite = suite_arg or "native"
+    local browser_runtime = has_flag("--browser-runtime")
     local external_sample_ack = has_flag("--external-sample-ack")
     ---@cast suite RollbackValidationSuite
     local network_seed = nil
@@ -306,12 +307,14 @@ if has_flag("--rollback-validation") then
                 rollback_over_budget_count = rollback_over_budget_count + 1
             end
         end
-        local cpu_gate_applied = result.profile == "playable" and suite ~= "soak"
-        local cpu_gate = not cpu_gate_applied
-            or (
-                p95_work_ms < validation_config.budgets.p95_work_ms
-                and rollback_p999_ms < validation_config.budgets.rollback_p999_ms
-            )
+        local cpu_gate_mode = "diagnostic"
+        if result.profile == "playable" and suite ~= "soak" then
+            cpu_gate_mode = browser_runtime and "normalized_deferred" or "absolute"
+        end
+        local cpu_gate_applied = cpu_gate_mode == "absolute"
+        local cpu_gate = cpu_gate_applied
+                and (p95_work_ms < validation_config.budgets.p95_work_ms and rollback_p999_ms < validation_config.budgets.rollback_p999_ms)
+            or not cpu_gate_applied
         local snapshot_gate = result.metrics.peaks.snapshot_count
                 <= validation_config.budgets.snapshot_count
             and result.metrics.peaks.snapshot_bytes < validation_config.budgets.snapshot_bytes
@@ -325,11 +328,13 @@ if has_flag("--rollback-validation") then
         runtime_failed = runtime_failed or not passed
 
         local logical = rollback_validation.case_marker(completed)
-            .. "|gate_contract=4"
+            .. "|gate_contract=5"
             .. "|cpu_gate="
-            .. (cpu_gate_applied and (cpu_gate and "1" or "0") or "not_applied")
+            .. (cpu_gate_applied and (cpu_gate and "1" or "0") or (cpu_gate_mode == "normalized_deferred" and "deferred" or "not_applied"))
             .. "|cpu_gate_applied="
             .. (cpu_gate_applied and "1" or "0")
+            .. "|cpu_gate_mode="
+            .. cpu_gate_mode
             .. "|snapshot_gate="
             .. (snapshot_gate and "1" or "0")
             .. "|history_gate="
@@ -374,7 +379,7 @@ if has_flag("--rollback-validation") then
             timings = table.concat({
                 "GC_ROLLBACK_TIMINGS",
                 "case",
-                "gate_contract=4",
+                "gate_contract=5",
                 "case=" .. completed.id,
                 "sample_count=" .. #samples,
                 "unit=microseconds",
@@ -397,7 +402,7 @@ if has_flag("--rollback-validation") then
             "runtime",
             "love=" .. major .. "." .. minor .. "." .. revision,
             "suite=" .. suite,
-            "gate_contract=4",
+            "gate_contract=5",
             "profile_digest=" .. rollback_validation.profile_digest(),
             "input_version=2",
             "tape_versions=1,2",
@@ -460,7 +465,7 @@ if has_flag("--rollback-validation") then
         flush_stdout()
     end
 
-    if has_flag("--browser-runtime") then
+    if browser_runtime then
         function love.load()
             runtime_marker()
         end

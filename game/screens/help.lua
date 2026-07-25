@@ -27,22 +27,23 @@ function help.layout(state)
         {
             id = "keyboard",
             kind = "card",
-            text = "MATCH CONTROLS · KEYBOARD\nMove / Navigate   WASD or Arrows\nACTION              Space\nPLAY                   K\nSPRINT                Shift\nMODIFIER             L\nJUKE                    C\nPAUSE                  P or Esc",
+            text = "MATCH CONTROLS · KEYBOARD\nMove / Navigate   WASD or Arrows\nACTION              Space\nPLAY                   K\nSPRINT                Shift\nMODIFIER             L\nJUKE                    C\nEQUIPMENT*        J\nPAUSE                  P or Esc",
             rect = { x = 92, y = 112, w = 360, h = 292 },
             data = { focusable = false },
         },
         {
             id = "gamepad",
             kind = "card",
-            text = "MATCH CONTROLS · GAMEPAD\nMove / Navigate   Left Stick or D-Pad\nACTION              A\nPLAY                   X\nSPRINT                LB\nMODIFIER             Y\nJUKE                    L3\nPAUSE                  Start",
+            text = "MATCH CONTROLS · GAMEPAD\nMove / Navigate   Left Stick or D-Pad\nACTION              A\nPLAY                   X\nSPRINT                LB\nMODIFIER             Y\nJUKE                    L3\nEQUIPMENT*        B\nPAUSE                  Start",
             rect = { x = 508, y = 112, w = 360, h = 292 },
             data = { focusable = false },
         },
         {
             id = "hint",
             kind = "label",
-            text = "ACTION — shoot / tackle     PLAY — pass / switch\nHOLD ACTION OR PLAY TO CHARGE · RELEASE TO COMMIT     KEEPER: PLAY THROWS · ACTION PUNTS",
-            rect = { x = 90, y = 420, w = 780, h = 42 },
+            text = "ACTION — shoot / tackle     PLAY — pass / switch     *COMBAT PROTOTYPE ONLY\nHOLD ACTION OR PLAY TO CHARGE · RELEASE TO COMMIT     EQUIPMENT: HOLD / TAP"
+                .. "\nKEEPER: PLAY THROWS · ACTION PUNTS",
+            rect = { x = 90, y = 414, w = 780, h = 54 },
             data = { align = "center", tone = "muted" },
         },
         {
@@ -50,7 +51,7 @@ function help.layout(state)
             kind = "button",
             text = "BACK",
             focused = state.focus == "back",
-            rect = { x = 380, y = 474, w = 200, h = 42 },
+            rect = { x = 380, y = 486, w = 200, h = 42 },
         },
     }
 end

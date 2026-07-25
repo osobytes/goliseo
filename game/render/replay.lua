@@ -9,6 +9,7 @@
 -- because the sim mutates s.ball / s.ball_vel in place in the bounce code.
 
 local Vec2 = require("core.vec2")
+local combat_sim = require("sim.combat")
 local tuning = require("sim.tuning")
 
 local replay = {}
@@ -34,6 +35,7 @@ local STRIKE = { shot = true, header = true, volley = true, bicycle = true } -- 
 
 ---@class ReplayFrame: MatchState
 ---@field _replay_boundary integer
+---@field _combat_state CombatMatchState?
 
 ---@type ReplayFrame[]
 local buf = {}
@@ -98,8 +100,9 @@ end
 
 ---@param s MatchState
 ---@param boundary integer
+---@param combat_state CombatMatchState?
 ---@return ReplayFrame
-local function capture_frame(s, boundary)
+local function capture_frame(s, boundary, combat_state)
     local players = {}
     for i, p in ipairs(s.players) do
         players[i] = {
@@ -132,6 +135,7 @@ local function capture_frame(s, boundary)
     end
     return {
         _replay_boundary = boundary,
+        _combat_state = combat_state and combat_sim.snapshot(combat_state) or nil,
         field = s.field,
         goal_home = s.goal_home,
         goal_away = s.goal_away,
@@ -166,12 +170,13 @@ end
 -- footage uses this API so obsolete interval frames cannot survive by index.
 ---@param boundary integer
 ---@param s MatchState
-function replay.record_boundary(boundary, s)
+---@param combat_state CombatMatchState?
+function replay.record_boundary(boundary, s, combat_state)
     assert(
         type(boundary) == "number" and boundary == math.floor(boundary) and boundary >= 0,
         "replay boundary must be a non-negative integer"
     )
-    local frame = capture_frame(s, boundary)
+    local frame = capture_frame(s, boundary, combat_state)
     local index, found = boundary_index(boundary)
     if found then
         buf[assert(index)] = frame
@@ -202,8 +207,9 @@ end
 -- Record one legacy live frame (called before its simulation step). The
 -- compatibility adapter supplies a private contiguous boundary sequence.
 ---@param s MatchState
-function replay.record(s)
-    replay.record_boundary(legacy_boundary, s)
+---@param combat_state CombatMatchState?
+function replay.record(s, combat_state)
+    replay.record_boundary(legacy_boundary, s, combat_state)
     legacy_boundary = legacy_boundary + 1
 end
 
@@ -423,7 +429,7 @@ end
 
 -- One celebration frame: players ease from their goal-moment poses to their
 -- targets (scorer leads, teammates set off a beat later), ball sat in the net.
----@return MatchState
+---@return ReplayFrame
 local function celebration_frame()
     local T = CELEBRATE_SECONDS
     local st = {}
@@ -459,6 +465,7 @@ local function celebration_frame()
     st.ball_vel = Vec2.new(0, 0)
     st.ball_vz = 0
     st.events = {}
+    ---@cast st ReplayFrame
     return st
 end
 
@@ -468,7 +475,7 @@ end
 -- of how slowly the playhead crawls. (Typed as MatchState for the renderer's
 -- benefit: it carries every field the draw path reads.)
 ---@param dt number
----@return MatchState? state
+---@return ReplayFrame? state
 function replay.step(dt)
     if phase == "celebrate" then
         cel_elapsed = cel_elapsed + dt
@@ -510,6 +517,7 @@ function replay.step(dt)
     st.players = players
     st.events = (i > emitted) and a.events or {}
     emitted = math.max(emitted, i)
+    ---@cast st ReplayFrame
     return st
 end
 

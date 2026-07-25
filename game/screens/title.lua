@@ -42,6 +42,7 @@ function title.layout(state)
 
     local labels = {
         { "play", "PLAY SHOWCASE" },
+        { "combat_prototype", "COMBAT PROTOTYPE" },
         { "help", "HOW TO PLAY" },
         { "settings", "SETTINGS" },
         { "credits", "CREDITS" },
@@ -53,7 +54,7 @@ function title.layout(state)
             kind = "button",
             text = item[2],
             focused = state.focus == item[1],
-            rect = { x = 350, y = 226 + (i - 1) * 52, w = 260, h = 42 },
+            rect = { x = 350, y = 216 + (i - 1) * 48, w = 260, h = 40 },
         }
     end
     return layout
