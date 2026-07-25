@@ -8,7 +8,7 @@ license terms and notices.
 ## Distributed browser runtime
 
 The browser artifact combines a separately licensed runtime with
-`galactic-cup.love`, the authored game package:
+`goliseo.love`, the authored game package:
 
 - Runtime: [`2dengine/love.js`](https://github.com/2dengine/love.js)
 - Pinned commit: `495c5eb7eb55b54aaadfc21405c58f50a6d819c4`

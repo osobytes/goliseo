@@ -162,7 +162,7 @@ game package.
 
 The generated `build/` directory is ignored by Git. Every artifact contains a
 `manifest.json` with the game-package hash, source revision, runtime revision,
-and hashes for the generated files. `galactic-cup.love` uses normalized ZIP
+and hashes for the generated files. `goliseo.love` uses normalized ZIP
 timestamps and sorted entries so identical source inputs produce identical
 authored package bytes.
 
