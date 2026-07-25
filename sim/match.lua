@@ -90,7 +90,6 @@ local KICKOFF_CLEAR = 120 -- opponents keep this centre-circle distance at kicko
 local KICKOFF_HOLD = 2.5
 local TACKLE_POP_SPEED = 150 -- speed the ball pops out on a tackle
 -- AI_STEAL_CD: live-tunable — see sim/tuning.lua (F1 panel)
-local KEEPER_SMOTHER = 26 -- keeper takes the ball off a carrier's feet at this range (in its box)
 
 -- Body blocking: a fast loose ball ricochets off an outfield body it hits instead
 -- of ghosting through — defenders between the shooter and the goal matter. Slow
@@ -1736,7 +1735,7 @@ local function attempt_steals(s, combat_state)
             and p.team ~= owner.team
             and p.stun_timer <= 0
             and in_claim_zone(s, p)
-            and p.pos:dist(s.ball) <= KEEPER_SMOTHER
+            and keeper.in_smother_range(p.pos:dist(s.ball))
         then
             s.events[#s.events + 1] = { kind = "claim", x = s.ball.x, y = s.ball.y, player = p.id }
             -- Cancel any pending wind-up: the smother beats the shot.
@@ -3582,6 +3581,7 @@ local function attempt_save(s)
     if speed < 1 or s.ball_vel.x == 0 then
         return -- a dead or purely-vertical ball is not an on-target shot
     end
+    local keeper_rules = keeper
     for _, keeper in ipairs(s.players) do
         if
             keeper.is_keeper
@@ -3647,7 +3647,7 @@ local function attempt_save(s)
                     keeper.keeper_set = 0
                     local dist_to_keeper = keeper.pos:dist(s.ball)
                     local save_style
-                    if dist_to_keeper > KEEPER_SMOTHER then
+                    if not keeper_rules.in_smother_range(dist_to_keeper) then
                         save_style = require("sim.keeper").save_style(
                             dist_to_keeper,
                             dive_dist,

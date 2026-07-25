@@ -104,6 +104,12 @@ local CENTRAL_REACH_FRACTION = 0.4
 ---@class KeeperResolver
 local keeper = {}
 
+---@param distance number
+---@return boolean
+function keeper.in_smother_range(distance)
+    return distance <= SMOTHER_DISTANCE
+end
+
 ---@param value number
 ---@param minimum number
 ---@param maximum number
@@ -454,7 +460,7 @@ end
 ---@return SaveStyle
 function keeper.save_style(dist_to_keeper, dive_dist, reach)
     assert(
-        dist_to_keeper > SMOTHER_DISTANCE,
+        not keeper.in_smother_range(dist_to_keeper),
         "save_style only classifies saves beyond the smother distance"
     )
     if dist_to_keeper <= SPREAD_DISTANCE then

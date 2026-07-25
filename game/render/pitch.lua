@@ -12,6 +12,7 @@ local view_state = require("game.render.view_state")
 local effects = require("game.render.effects")
 local arenas = require("data.arenas")
 local sim_match = require("sim.match") -- CROSSBAR_H: the goal frame height
+local keeper = require("sim.keeper")
 
 local pitch = {}
 
@@ -26,6 +27,7 @@ local NET_BACK_FRAC = 0.55 -- back frame height as a fraction of the crossbar
 ---@field render_pose CorrectionSmoothingPose?
 ---@field combat CombatPresentationModel?
 ---@field camera_offset { x: number, y: number }?
+---@field events MatchEvent[]?
 
 ---@param player MatchPlayer
 ---@param pose CorrectionSmoothingPose?
@@ -180,6 +182,13 @@ function pitch.draw(s, vp, opts)
     local arena = opts.arena or arenas.helios_crown
     local render_pose = opts.render_pose
     local rendered_ball = ball_position(s, render_pose)
+    local frame_events = opts.events or s.events
+    local tip_events = {}
+    for _, event in ipairs(frame_events) do
+        if event.kind == "tip" and event.player then
+            tip_events[event.player] = event
+        end
+    end
     local function project(wx, wy)
         local sx, sy, scale = camera.project(wx, wy, field, vp)
         local offset = opts.camera_offset
@@ -342,6 +351,22 @@ function pitch.draw(s, vp, opts)
             local presentation =
                 assert(identity.for_player(p.id), "missing pitch identity for " .. p.id)
             local combat_sample = opts.combat and opts.combat.players[it.idx] or nil
+            local tip_event = tip_events[p.id]
+            local tip_dir = nil
+            if tip_event then
+                local delta = tip_event.y - p.pos.y
+                tip_dir = { x = 0, y = delta >= 0 and 1 or -1 }
+            end
+            local keeper_context = nil
+            if p.is_keeper then
+                keeper_context = {
+                    near_ball = keeper.in_smother_range(p.pos:dist(s.ball)),
+                    shuffling = p.keeper_state == "base" and p.run_vel ~= nil and math.abs(
+                        p.run_vel.y
+                    ) > 0,
+                    tip = tip_event ~= nil,
+                }
+            end
             local aerial_duration = 0.22
             if p.aerial_style == "bicycle" then
                 aerial_duration = 0.6
@@ -358,7 +383,7 @@ function pitch.draw(s, vp, opts)
                 -- 0.3 is a visual normalizer (~ the sim's dive duration); exactness
                 -- doesn't matter, it just eases the lunge back upright.
                 dive = (p.dive_timer > 0) and math.min(1, p.dive_timer / 0.3) or 0,
-                dive_dir = p.dive_dir,
+                dive_dir = tip_dir or p.dive_dir,
                 -- Keeper holding the ball: render it cradled in the hands (below).
                 holding = (it.idx == s.owner and p.is_keeper and not p.feet_ball),
                 grab = (p.grab_timer > 0) and math.min(1, p.grab_timer / 0.25) or 0,
@@ -375,7 +400,7 @@ function pitch.draw(s, vp, opts)
                 species_color = presentation.palette,
                 team = p.team,
                 combat = combat_sample,
-                pose = player_pose.select(p, combat_sample),
+                pose = player_pose.select(p, combat_sample, keeper_context),
             })
         elseif not keeper_holds then
             -- Loose / dribbled ball. (A keeper-held ball is drawn in its hands by the
