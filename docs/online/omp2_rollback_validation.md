@@ -290,15 +290,17 @@ graph rooted at `sim.rollback_validation` and `game.rollback_validation`. `main.
 because it selects and owns the validation runtime, but its normal app/bootstrap dependencies are
 not traversed: rollback validation returns before that product path is loaded.
 
-The graph accepts only uniquely resolved, literal Lua module imports. Missing revisions or roots,
-missing or ambiguous reachable modules, non-literal/escaped imports, unsafe source encoding, or
-Git parsing errors fail open to the complete five-shard campaign. Adding a module does not affect
-rollback evidence until a reachable validation module imports it; wiring that import changes the
-root blob and adds the new dependency blob to the manifest. Consequently an unreferenced module
-such as `sim/brain.lua`, a spec-only change, or ordinary docs do not launch the expensive jobs.
-They are not untested: the unconditional Lua quality gate still formats, type-checks, and runs the
-entire ordinary spec suite. This exact base-to-head manifest comparison remains the anti-bypass
-boundary, so a later unrelated commit cannot conceal an earlier reachable change.
+Every selected manifest path must be a regular tracked file rather than a symlink or submodule.
+The graph accepts only uniquely resolved, literal calls to the global Lua `require`; member-style,
+non-literal, and escaped imports are unsafe. Missing revisions or roots, missing or ambiguous
+reachable modules, unsafe imports or source encoding, non-regular selected paths, and Git parsing
+errors fail open to the complete five-shard campaign. Adding a module does not affect rollback
+evidence until a reachable validation module imports it; wiring that import changes the root blob
+and adds the new dependency blob to the manifest. Consequently an unreferenced module such as
+`sim/brain.lua`, a spec-only change, or ordinary docs do not launch the expensive jobs. They are
+not untested: the unconditional Lua quality gate still formats, type-checks, and runs the entire
+ordinary spec suite. This exact base-to-head manifest comparison remains the anti-bypass boundary,
+so a later unrelated commit cannot conceal an earlier reachable change.
 
 The first head for a relevant content fingerprint runs native, both browser matrices, and both
 browser soaks. GitHub's completed run, attempt-specific job/step history, and five uploaded

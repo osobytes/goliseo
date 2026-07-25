@@ -55,6 +55,7 @@ LUA_VALIDATION_ROOTS = (
 )
 
 LUA_MODULE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
+REGULAR_FILE_MODES = frozenset(("100644", "100755"))
 
 EXPECTED_JOB_STEPS = {
     "OMP-2 rollback impact filter": ("Detect rollback-impacting changes",),
@@ -171,8 +172,8 @@ def revision_tree(repo: Path, revision: str) -> dict[str, GitTreeEntry]:
             ) from error
         if path in entries:
             raise DiscoveryError(f"{revision} contains duplicate path {path}")
-        if kind != "blob" or not re.fullmatch(r"[0-7]{6}", mode):
-            raise DiscoveryError(f"{revision}:{path} is not an ordinary Git blob")
+        if kind not in ("blob", "commit") or not re.fullmatch(r"[0-7]{6}", mode):
+            raise DiscoveryError(f"{revision}:{path} has an unsafe Git entry")
         if not re.fullmatch(r"[0-9a-f]{40,64}", object_id):
             raise DiscoveryError(f"{revision}:{path} has a malformed object id")
         entries[path] = GitTreeEntry(mode, kind, object_id)
@@ -181,6 +182,19 @@ def revision_tree(repo: Path, revision: str) -> dict[str, GitTreeEntry]:
 
 def revision_blob(repo: Path, revision: str, path: str) -> bytes:
     return require_git(repo, ["cat-file", "blob", f"{revision}:{path}"])
+
+
+def require_regular_file(
+    tree: dict[str, GitTreeEntry], path: str, revision: str
+) -> GitTreeEntry:
+    entry = tree.get(path)
+    if entry is None:
+        raise DiscoveryError(f"{revision} is missing required rollback path {path}")
+    if entry.kind != "blob" or entry.mode not in REGULAR_FILE_MODES:
+        raise DiscoveryError(
+            f"{revision}:{path} is not a regular tracked rollback file"
+        )
+    return entry
 
 
 def long_bracket_end(source: str, start: int) -> tuple[str, int] | None:
@@ -284,7 +298,10 @@ def static_lua_requires(source: bytes, path: str) -> tuple[str, ...]:
             ("symbol", "."),
             ("symbol", ":"),
         ):
-            continue
+            raise DiscoveryError(
+                f"{path} uses member-style require syntax; "
+                "cannot prove rollback reachability"
+            )
         argument = index + 1
         parenthesized = argument < len(tokens) and tokens[argument] == (
             "symbol",
@@ -322,7 +339,9 @@ def resolve_lua_module(
         raise DiscoveryError(
             f"{revision} has {detail} reachable Lua module {module!r}"
         )
-    return candidates[0]
+    path = candidates[0]
+    require_regular_file(tree, path, revision)
+    return path
 
 
 def reachable_lua_paths(
@@ -354,6 +373,7 @@ def relevant_manifest(
     for path in DIRECT_RELEVANT_PATHS:
         if path not in tree:
             raise DiscoveryError(f"{revision} is missing required rollback root {path}")
+        require_regular_file(tree, path, revision)
         selected.add(path)
     selected.update(reachable_lua_paths(repo, revision, tree))
     return {path: tree[path] for path in sorted(selected)}
@@ -978,6 +998,16 @@ local runtime = require("sim.runtime")
 return runtime, message, template
 """
     assert static_lua_requires(parser_fixture, "parser_fixture.lua") == ("sim.runtime",)
+    for label, source in (
+        ("dotted literal", b'_G.require("sim.runtime")\n'),
+        ("colon nonliteral", b"loader:require(module_name)\n"),
+    ):
+        try:
+            static_lua_requires(source, "unsafe_member_require.lua")
+        except DiscoveryError as error:
+            assert "member-style require syntax" in str(error)
+        else:
+            raise AssertionError(f"{label} require syntax was accepted")
     with tempfile.TemporaryDirectory(prefix="rollback-ci-self-test-") as directory:
         repo = Path(directory)
         base = initialize_scope_fixture(repo)
@@ -1106,6 +1136,18 @@ return runtime, message, template
         commit_fixture(repo, "change workflow root")
         direct = decide_scope(repo, "pull_request", pr_base_sha=producer_revision)
         assert direct.run and direct.changed_paths == (WORKFLOW_PATH,)
+
+        git(repo, "checkout", "-q", "-b", "unsafe-symlink", producer_revision)
+        validation_path = repo / "scripts" / "rollback_validation.py"
+        validation_path.unlink()
+        write_fixture(repo, "scripts/rollback_impl.py", "implementation = 1\n")
+        validation_path.symlink_to("rollback_impl.py")
+        symlink_revision = commit_fixture(repo, "symlink direct rollback root")
+        write_fixture(repo, "scripts/rollback_impl.py", "implementation = 2\n")
+        commit_fixture(repo, "change symlink target only")
+        symlink = decide_scope(repo, "pull_request", pr_base_sha=symlink_revision)
+        assert symlink.run and symlink.fingerprint == "unavailable"
+        assert "not a regular tracked rollback file" in symlink.reason
 
         git(repo, "checkout", "-q", "-b", "unsafe-dynamic", producer_revision)
         write_fixture(
