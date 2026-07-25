@@ -1,4 +1,5 @@
 local Vec2 = require("core.vec2")
+local combat_feedback = require("game.presentation.combat_feedback")
 local match_contract = require("game.match_contract")
 local match_observer = require("game.match_observer")
 local audio = require("game.audio")
@@ -245,6 +246,9 @@ end
 local function audio_cue(event)
     if event.domain:sub(1, 6) == "match/" then
         return AUDIO_KINDS[event.payload.kind] and event.payload.kind or nil
+    elseif event.domain:sub(1, 7) == "combat/" then
+        local payload = event.payload --[[@as CombatEvent]]
+        return combat_feedback.accepted(payload, event.id).disposition.audio
     elseif event.domain == "lifecycle/goal" then
         return "goal"
     elseif event.domain == "lifecycle/kickoff" then

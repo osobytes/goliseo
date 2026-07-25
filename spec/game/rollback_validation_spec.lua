@@ -55,8 +55,18 @@ end
 ---@param owner_team InputTeam?
 ---@param match_events RollbackWrappedMatchEvent[]
 ---@param lifecycle_events RollbackWrappedLifecycleEvent[]
+---@param combat_events RollbackWrappedCombatEvent[]?
 ---@return RollbackEventStep
-local function step(tick, score, finished, owner_id, owner_team, match_events, lifecycle_events)
+local function step(
+    tick,
+    score,
+    finished,
+    owner_id,
+    owner_team,
+    match_events,
+    lifecycle_events,
+    combat_events
+)
     return {
         tick = tick,
         start_boundary = tick,
@@ -69,6 +79,7 @@ local function step(tick, score, finished, owner_id, owner_team, match_events, l
             owner_team = owner_team,
         },
         match_events = match_events,
+        combat_events = combat_events or {},
         lifecycle_events = lifecycle_events,
     }
 end
@@ -357,6 +368,45 @@ t.describe("rollback validation", function()
         t.is_true(report.passed, table.concat(report.errors, "; "))
         t.eq(report.events.reference_unique, 1)
         t.eq(report.events.impaired_unique, 1)
+        t.eq(report.consumers.audio_cue_count, 1)
+    end)
+
+    t.it("audits confirmed combat audio against the closed feedback disposition", function()
+        local initial = new_state()
+        local guarded = {
+            id = "combat-guarded",
+            tick = 0,
+            domain = "combat/contact/1",
+            ordinal = 1,
+            payload = {
+                kind = "contact",
+                tick = 0,
+                family_id = "light_melee",
+                source_index = 2,
+                target_index = 7,
+                source_sequence = 1,
+                result = "guarded",
+                x = initial.players[7].pos.x,
+                y = initial.players[7].pos.y,
+            },
+        }
+        ---@cast guarded RollbackWrappedCombatEvent
+        local confirmed = step(0, 0, false, nil, nil, {}, {}, { guarded })
+        local report = rollback_validation.run(initial, {
+            { kind = "reference_confirmed", step = confirmed },
+            { kind = "impaired_diff", diff = diff({ guarded }) },
+            { kind = "confirmed", step = confirmed },
+        }, {
+            home_team_id = "nebula",
+            away_team_id = "orion",
+            reference_final_state = initial,
+            impaired_final_state = initial,
+        })
+
+        t.is_true(report.passed, table.concat(report.errors, "; "))
+        t.eq(report.consumers.expected_audio_cues.combat_guarded, 1)
+        t.eq(report.consumers.audio_cues.combat_guarded, 1)
+        t.eq(report.consumers.expected_audio_cue_count, 1)
         t.eq(report.consumers.audio_cue_count, 1)
     end)
 
