@@ -619,7 +619,8 @@ that floor. A merely positive or frame-perfect window fails.
 | `concurrent_cue_count` / `cue_overlap_share` | active cues per tick; ticks with >=2 cues / threat ticks | no threat ticks → `NA` | lower tails, diagnostic | suppressing needed cues improves metric but harms comprehension | #147/#148 |
 | `false_defensive_reaction_rate` | defensive responses to no authoritative threat / defensive response opportunities | no responses → `NA` | lower; presentation/device | cautious play or ordinary juke can be mislabeled | input + cue linkage; #148 |
 | `ball_hud_occlusion_share` | threat ticks where cue geometry masks ball or required HUD target / threat ticks | no threat ticks → `NA` | hard review trigger above 0; viewport | pixel overlap is only a proxy for readability | presentation capture; #147/#148 |
-| `causal_identification_accuracy` | correctly identified source, family, direction, target, and available-response components / applicable presented B components; rate per participant with row-type denominators | “unsure” is incorrect but retained; fewer than six unique accepted plus two unique rejected rows → structural missingness and blocked coverage; A is not a denominator | confirmatory simultaneous lower bound `>=0.70` overall; component and priority-stratum rules in 6.3 | guessing, leading labels, memory delay, accommodated exposure | neutral B replay probe; #151 |
+| `accepted_causal_identification_accuracy` | correctly identified source, family, direction, target, and available-response components / 30 applicable components from exactly six accepted B rows; rate per participant plus five component rates with denominator 6 each | `unsure` or missing response is incorrect but retained; fewer than six unique accepted rows → structural missingness and blocked coverage; rejected rows and A are absent | confirmatory simultaneous lower bound `>=0.70` overall; component and accepted-terminal priority-stratum rules in 6.3 | guessing, leading labels, memory delay, accommodated exposure | neutral B replay probe; #151 |
+| `rejected_request_feedback_accuracy` | correctly identified perceived rejection state, typed rejection reason, and feedback meaning / 6 applicable components from exactly two rejected B rows; rate per participant plus three component rates with denominator 2 each | telemetry `missing_feedback` has a scored no-feedback answer; `unsure` or missing response is incorrect but retained; fewer than two unique rejected rows → structural missingness and blocked coverage; accepted rows and A are absent | confirmatory simultaneous lower bound `>=0.70` overall; component rules in 6.3 | generic feedback, guessing, memory delay, accommodated exposure | neutral B replay probe; #151 |
 | `causal_identification_time_s` | probe onset to final answer; seconds per probe | timeout is right-censored at declared limit | lower diagnostic; same strata | faster guesses are not better comprehension | #151 |
 
 Freeze-probe tasks are separate from ordinary matches. Concurrent think-aloud
@@ -656,40 +657,84 @@ purpose. It is a separate cost flag when committing increases
 source-to-anchor distance by at least 36 px or leaves the source more than
 120 px from its current authored anchor.
 
-`intervention_candidate/v1` is a family-neutral feasibility envelope. Starting
-from the decision-tick boundary, a pure reachability search holds every
-non-source confirmed input fixed and varies only the source's canonical legal
-movement/facing inputs for at most 30 ticks. It uses authoritative movement
-stats, pitch bounds, collision, facing, target motion, and line rules, but
-treats the equipped family and its actual geometry, cooldown, recovery, and
-commitment as unassigned. A `(target, context)` pair enters the envelope only
-when its purpose predicate is true and some searched source pose enters the
-union of the four catalogued families' legal threat geometries toward that same
-frozen target identity. The union includes each family's range, arc/facing,
-contact shape, and required clear projectile line.
+`family_commit_feasibility/v1` is a pure temporal predicate shared by the
+family-neutral envelope and commit reconciliation. Its only dynamic input is
+`combat_sim_observation/v1` at the decision tick plus a searched legal
+source-movement/facing tape, a frozen target identity, a catalog family id, and
+the frozen catalog/static-collision version. It does not read confirmed future
+inputs, rollback-only or hidden state, an unresolved outcome, presentation, or
+eventual contact. Public motion is projected deterministically: a public
+accepted/forced phase uses its catalogued public pose path anchored at the
+observed state; otherwise current public position and velocity advance under
+neutral input at 60 Hz with the frozen pitch/collision rules. The source
+follows the searched tape. This no-response projection is a feasibility
+counterfactual, not a claim that the target will stand still or that a hit will
+occur.
 
-#148 freezes the input alphabet/search order, deduplicates equal states by
-canonical state hash, and records first feasible tick, witness-tape hash, and
-union geometry ids. The envelope is offline evidence and never enters an AI
-observation. A true purpose predicate outside the envelope is
-`context_only_remote`: retained as a diagnostic, never an opportunity or
-dominance denominator.
+The predicate evaluates the family catalog's own temporal horizon:
+
+- `light_melee`: the catalogued swept legal-threat volume across windup and
+  active intersects the frozen target's projected collision volume on at least
+  one contact-legal active tick;
+- `ranged`: the source has a legal aim and clear line against projected public
+  blockers at the release tick, and the catalogued projectile
+  speed/collision/lifetime admits an intersection with the frozen target's
+  projected collision volume inside the projectile travel window; and
+- `guard`: the frozen target identity is the hostile threat source, and that
+  source's projected public legal threat/contact path intersects the guarding
+  source's catalogued guard arc during the guard active window. Guard is
+  self-only; neither feasibility nor reconciliation asks the guard geometry to
+  contain the hostile player's body.
+
+`unarmed` contributes no commit geometry. Feasibility for all three armed
+families ignores which family is actually equipped and ignores actual
+cooldown, recovery, commitment, request acceptance, and resource cost. Those
+remain availability/cost facts. Feasibility also remains true after a
+subsequent miss, defense, supersession, interruption, or other terminal:
+eventual hit/miss/contact is not part of this predicate.
+
+`intervention_candidate/v2` is the family-neutral feasibility envelope.
+Starting from the decision-tick boundary, a pure reachability search varies
+only the source's canonical legal movement/facing inputs for at most 30 ticks.
+Every non-source trajectory is the public no-response projection above, never
+a future confirmed tape. A `(target, context)` pair enters the envelope only
+when its purpose predicate is true and at least one searched source pose makes
+`family_commit_feasibility/v1` true for at least one of the three armed
+families toward that same frozen target/threat-source identity. A commit may
+start within the 30-tick search window; its family-specific windup, active,
+release, projectile-travel, or guard horizon may end later.
+
+#148 freezes the input alphabet/search order, public projection rule, family
+catalog version, and static collision version; deduplicates equal states by
+canonical state hash; and records first feasible commit tick, witness-tape
+hash, family-feasibility bitset, projection-input digest, and catalog ids. The
+stored envelope is offline evidence and never becomes an extra AI observation.
+The same pure helper is lawful for #112 to recompute because every dynamic
+field it reads is already in `combat_sim_observation/v1`; #148 independently
+recomputes rather than trusting the AI result. A true purpose predicate outside
+the envelope is `context_only_remote`: retained as a diagnostic, never an
+opportunity or dominance denominator.
 
 #112 emits one stable bot decision reason from the five purpose ids or
 `decline`, using only its observable allowlist. #148 independently records the
 eligibility bitset, intervention envelope, and risk flag. An accepted commit
 reason reconciles only when its frozen `(target, context)` is in that envelope
-**and** the actually equipped family's legal range/arc/facing/line geometry
-contains the same target at commit tick. `decline` is valid only when the
-episode closes without an action; it can never label a commit. A committed
-zero-bitset or infeasible-target action is
+**and** `family_commit_feasibility/v1`, recomputed from that commit's public
+decision snapshot, the zero-length precommit movement tape, and the actually
+equipped family, is true for the same frozen identity. For melee and ranged the
+identity is the projected target; for guard it is the incoming hostile threat
+source and the defensive-intersection relation above applies. Reconciliation
+never requires eventual contact or a favorable terminal. `decline` is valid
+only when the episode closes without an action; it can never label a commit. A
+committed zero-bitset or infeasible-target action is
 `unattributed_off_ball`; for a representative policy it additionally raises
-the hard `representative_policy_context_violation` schema error. Human stated
-intent is a separate replay-debrief field, never substituted for authoritative
-context. An AI reason is an intent claim, not proof of value.
+the hard
+`representative_policy_context_violation` schema error. Human stated intent is
+a separate replay-debrief field, never substituted for authoritative context.
+An AI reason is an intent claim, not proof of value.
 
 A **family-neutral opportunity set** contains every `(target, context)` pair
-inside `intervention_candidate/v1`, without consulting the equipped family or
+inside `intervention_candidate/v2`, without consulting the equipped family or
 its actual readiness. One source-player episode starts when that set becomes
 nonempty, stores its sorted pairs and canonical formation slot, and ends when
 the set changes, an action commits, or 30 ticks elapse. Thus every family
@@ -706,14 +751,15 @@ Each episode closes with exactly one outcome:
 
 Per-reason unavailable tick counts are always retained. Allowed unavailability
 reasons are `no_loadout`, `soccer_commitment`, `aerial_or_recovery`, `forced`,
-`already_committed`, `cooldown`, and `family_geometry`; malformed input is a
-protocol failure and missing press edge is a decline, not unavailability.
-For this classifier, `action-ready` means a legal request could reach at least
-one envelope pair under the equipped family's current geometry and non-input
-state; the physical press edge itself is not a readiness requirement.
-Every episode separately records equipped-family geometry-available ticks,
-range/arc/line failures, ready ticks, cooldown/recovery/commitment ticks, and
-accepted cadence; none can change the common envelope.
+`already_committed`, `cooldown`, and `family_commit_feasibility`; malformed
+input is a protocol failure and missing press edge is a decline, not
+unavailability. For this classifier, `action-ready` means a legal request
+could reach at least one envelope pair under the equipped family's current
+`family_commit_feasibility/v1` relation and non-input state; the physical press
+edge itself is not a readiness requirement. Every episode separately records
+equipped-family feasibility-available ticks, temporal geometry/line failures,
+ready ticks, cooldown/recovery/commitment ticks, and accepted cadence; none can
+change the common envelope.
 
 Episode benefits are linked only from an accepted action and counted once per
 group: at most one possession gain (`+1.0`), one of progressive pass, retained
@@ -778,13 +824,14 @@ waiting for #151; the later human gate remains required for #114.
 shipped gameplay AI. It contains authoritative public simulation state only:
 
 - self: stable player/slot/team id, family, public accepted-action/forced/
-  immunity phase, own ready/not-ready cooldown, and own materialized input
-  history;
+  immunity phase, position, velocity, facing, own ready/not-ready cooldown, and
+  own materialized input history;
 - opponents: stable player/team id, authoritative public action/forced/guard
-  phase, telegraph start/end plus projected action geometry, position, and
-  facing;
+  phase, telegraph start/end plus projected action geometry, position,
+  velocity, and facing;
 - ball and match: ball position/velocity/owner, score, canonical remaining
-  ticks, formation-slot anchors, and public stoppage state; and
+  ticks, formation-slot anchors, public stoppage state, and the public
+  pitch/static-collision catalog version; and
 - identity: schema, policy id, producer/observed canonical tick, canonical
   player-index order, and digest.
 
@@ -965,12 +1012,41 @@ substitution is forbidden. Fewer than six unique accepted rows, two unique
 rejected rows, or eight unique rows in the union is `blocked_coverage`: no
 sampling with replacement, silent reuse, or facilitator-selected clip is
 allowed. Sampling balances families within row type before repeating a family.
-The scoring rubric carries an applicability mask, so a non-applicable
-component is absent from that row type's denominator rather than scored
-correct. Condition A has no combat probe and cannot enter the comprehension
-denominator or power model. Milestone 11 does not administer an A
-guessing/no-threat control; a later control must use a separately named
-soccer/no-threat diagnostic pool and may not be pooled with B accuracy.
+
+`replay_probe_component/v2` freezes this ordered component vector and exact
+row-type applicability masks (`1` means scored, `0` means absent):
+
+| Row type | source | family | direction | target | available response | perceived rejection state | typed rejection reason | feedback comprehension |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `accepted_encounter` | 1 | 1 | 1 | 1 | 1 | 0 | 0 | 0 |
+| `rejected_request` | 0 | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
+
+Accepted truth comes from the linked accepted sequence, canonical legal-response
+matrix, and presented evidence. For a rejected row, perceived rejection state
+is correct only when the participant identifies `rejected`; typed reason is
+correct only when the selected closed-enum reason equals the confirmed
+request's telemetry reason. The feedback codebook maps each feedback-event
+enum to one neutral plain-language meaning. When the row has a feedback FK,
+feedback comprehension is correct only for that meaning; when telemetry is
+typed `missing_feedback`, it is correct only for
+`no_feedback_presented`. `unsure` is a distinct answer for every component and
+is retained as incorrect. A blank or timed-out component is retained as
+`missing_response` and incorrect; it is never confused with telemetry
+`missing_feedback`.
+
+The accepted endpoint is correct applicable components divided by exactly 30
+(six rows × five components), with each accepted component denominator exactly
+6. The rejected-feedback endpoint is correct applicable components divided by
+exactly 6 (two rows × three components), with each rejected component
+denominator exactly 2. These are separate confirmatory claims: no
+accepted/rejected pooled accuracy, discretionary weighting, or substitution is
+permitted. A pooled summary may not be reported as a claim, even if labeled
+exploratory. The masks, selected row ids, component responses, correctness, and
+denominators are exported. Condition A has no combat probe and cannot enter
+either comprehension denominator or power model. Milestone 11 does not
+administer an A guessing/no-threat control; a later control must use a
+separately named soccer/no-threat diagnostic pool and may not be pooled with B
+accuracy.
 
 The probe begins within five minutes of B. It first plays once at full speed
 without overlay, then permits exactly one rewind and up to two
@@ -1221,16 +1297,43 @@ effect) >= 0.80`. The buffer is 25% of the corresponding NI/equivalence margin
 unless section 4 gives a stricter value.
 
 Human-family favorable rates are frozen instead of using that generic buffer.
-Comprehension simulation generates exactly eight clustered B probes per
-participant: boundary rates are 0.70 overall and 0.60 for each component;
-favorable rates are 0.85 overall and 0.75 for every component. Each priority
-stratum uses boundary 0.55 and favorable 0.80. Functional access uses the
-participant-domain binary checklist: boundary completion is 0.65 and favorable
-completion is 0.90 in every domain. Both simulations use blinded-pilot
-within-participant/domain correlation, structural missingness, the exact
-simultaneous-interval method in 6.3, and required strata. Each family must have
-false-pass probability `<=0.05` with all true rates at their boundaries and
-pass probability `>=0.80` with all true rates favorable.
+Comprehension simulation generates the exact clustered B vector for every
+participant: six accepted rows with the five-component accepted mask and two
+rejected rows with the three-component rejected mask. Masked components are
+structurally absent, not generated successes. For each row type separately,
+boundary rates are 0.70 overall and 0.60 for every applicable component;
+favorable rates are 0.85 overall and 0.75 for every applicable component. The
+three accepted-terminal priority strata (`hit`, defended, and other terminal)
+use boundary 0.55 and favorable 0.80. The rejected-feedback endpoint is not
+pooled with those strata.
+
+Because each row-type overall is the arithmetic mean of its component rates,
+the simulation never assigns incompatible overall and component marginals. For
+a row type with `k` applicable components, its overall-boundary and
+overall-favorable configurations set all `k` component rates to 0.70 and 0.85,
+respectively. For component `j`, its boundary/favorable configurations set
+that rate to 0.60/0.75 and every other component rate to
+`(0.85*k-rate_j)/(k-1)`, keeping overall at the favorable 0.85. Thus the common
+other-component rates are 0.9125/0.875 for an accepted boundary/favorable
+component and 0.975/0.90 for a rejected boundary/favorable component. Accepted
+priority-stratum configurations set all five rates to 0.55/0.80.
+
+The comprehension simulation uses blinded-pilot within-participant
+correlation, component correlation, row-type-specific `missing_response`,
+`unsure`, and accommodated-exposure rates, plus the exact masks, component
+denominators, max-T vector, and structural-coverage rules in sections 5.3 and
+6.3. It reports false-pass probability `<=0.05` for every boundary
+configuration and pass probability `>=0.80` for every corresponding favorable
+configuration. `missing_feedback` is generated as rejected-row truth under its
+blinded-pilot rate and scored by the frozen no-feedback rule.
+
+Functional access uses the participant-domain binary checklist: boundary
+completion is 0.65 and favorable completion is 0.90 in every domain. Its
+simulation uses blinded-pilot within-domain correlation, structural
+missingness, the exact simultaneous-interval method in 6.3, and required
+strata. It likewise must have false-pass probability `<=0.05` with all true
+rates at their boundaries and pass probability `>=0.80` with all true rates
+favorable.
 
 If blinded pilot data cannot support a required operating characteristic, the
 measure is either reclassified as diagnostic before freeze or its
@@ -1294,14 +1397,18 @@ Comprehension simultaneous intervals use a studentized
 participant-cluster max-T bootstrap with 50,000 resamples within
 sequence×device strata. The random generator is PCG64DXSM seeded from the first
 128 bits of SHA-256 over
-`combat_fun_evidence_contract/v1/comprehension-max-t/v1`; the frozen analysis
+`combat_fun_evidence_contract/v1/comprehension-max-t/v2`; the frozen analysis
 records generator, library, script, and environment hashes. The max-T vector
-contains the six aggregate claims plus overall accuracy for every frozen
-device, experience-tertile, functional-domain, and strict/accommodated-exposure
-stratum. The one-sided 95% familywise critical value supplies lower pass
+contains exactly ten base claims: accepted overall plus its five
+components, and rejected-feedback overall plus its three components. It also
+contains accepted overall for each of the three accepted-terminal priority
+strata, and each applicable row-type overall for every frozen device,
+experience-tertile, functional-domain, and strict/accommodated-exposure
+stratum. Each statistic divides only by its exported applicability-mask
+denominator. The one-sided 95% familywise critical value supplies lower pass
 bounds; the two-sided 95% max-absolute-T critical value supplies precision
-half-widths. A zero standard error or failed resample is unresolved, never a
-pass.
+half-widths. A zero denominator, zero standard error, or failed resample is
+unresolved, never a pass.
 
 Functional-access simultaneous intervals use conservative
 Bonferroni-Wilson score bounds across the five binary domain endpoints:
@@ -1316,7 +1423,7 @@ The confirmatory families are exhaustive:
 | Primary enjoyment | one member, `B-A <= +0.50`; harm boundary `B-A <= -0.33` is reported from the same contrast | unadjusted two-sided 95% interval; strict bounds | randomized participant; frozen powered count; sequence, period, device, experience, functional configuration, and winner/loser sensitivity |
 | Soccer integrity | goals, completion, shots, shots/goal, save rate, pass volume, pass completion, turnovers, possession, loose ball, formation mean displacement, formation share above 120 px, progressive possessions, zone entries, chance rate, on-target share, drought, decided-late share, carry time, close/sprint/juke carry shares, heavy-loss rate, carry progression, carry retention, ball-in-play share, and soccer cadence; each null is the harm side of its section 4.4 NI or equivalence margin | Holm-adjusted one-sided 95% harm bounds; equivalence members use both Holm-adjusted TOST tests and familywise 90% intervals; absolute catastrophe floors also must pass | paired common seed; at least 60 pairs for each A/B fixture contrast, every declared C cell present, and at least 4 pairs/cell; aggregate interval width no greater than twice its full allowed margin, otherwise `inconclusive` |
 | Machine family balance | each of the four family net utilities in each of the five eligibility contexts; each raw benefit/cost NI check; strict-upgrade cell; unarmed touches, passes, progressive involvements, option episodes, settled-possession contributions, and net utility | Holm-adjusted one-sided 95% bounds within balance; a dominance claim requires every context lower bound `>+0.10` and every cost bound to pass | paired common seed across every family×formation×canonical-slot×side×profile×opponent-formation cell; no missing cell; at least 4 pairs/cell and 60 pairs in each collapsed claim |
-| Human causal comprehension | B-only overall component accuracy plus source, family, direction, target, and available-response accuracy; nulls are overall `<0.70` and component `<0.60` | participant-cluster max-T one-sided 95% simultaneous lower bounds; two-sided 95% max-T precision intervals | frozen powered participants; exactly eight B probes each; keyboard and gamepad each `>=16`, each experience tertile `>=12`, each supported functional domain `>=8`; each frozen priority-stratum lower bound `>=0.55` and simultaneous half-width `<=0.35`; A absent |
+| Human causal comprehension | two B-only claims: accepted overall plus source, family, direction, target, and available-response accuracy; rejected-feedback overall plus perceived rejection state, typed rejection reason, and feedback comprehension; each row-type null is overall `<0.70` and component `<0.60` | one participant-cluster max-T family with one-sided 95% simultaneous lower bounds and two-sided 95% max-T precision intervals; applicability masks forbid cross-row pooling | frozen powered participants; exactly six accepted plus two rejected probes each; accepted component denominator 6 and rejected component denominator 2; keyboard and gamepad each `>=16`, each experience tertile `>=12`, each supported functional domain `>=8`; each accepted priority-stratum lower bound `>=0.55` and simultaneous half-width `<=0.35`; A absent |
 | Functional access | binary checklist completion for vision, Deaf/Hard-of-Hearing, motor, cognitive, and motion/photosensitivity; null `<0.65` | Bonferroni-Wilson one-sided 99% lower and two-sided 99% precision intervals; any adverse/access failure retained separately | participant-domain; `>=8` per overlapping domain and `>=4` per applicable device; half-width `<=0.35`; no diagnosis strata |
 
 The exact lifecycle, safety, counter-matrix, policy-allowlist, and reconciliation
@@ -1537,6 +1644,30 @@ responses require a pass-4 audit at the new exact head.
 | Games user research and psychometrics | GUR/stats/accessibility council | block | B probe pool claimed encounter-only eligibility while requiring rejected requests that cannot be encounters | 5.3 disjoint tagged pools, explicit denominators, and blocked shortfall; pending |
 | Experimental statistics and reproducibility | GUR/stats/accessibility council | approve | pass-2 harm, operating-characteristic, and simultaneous-interval fixes accepted | no new change; pass-4 exact-head audit pending |
 | Accessibility, readability, and inclusive participant design | GUR/stats/accessibility council | approve | pass-2 checklist, assistance, missingness, and replay-accommodation fixes accepted | no new change; pass-4 exact-head audit pending |
+
+Pass 4 reviewed exact head
+`3df27a62c1321c4905d589769527fec06ffdd915` on 2026-07-25. Gameplay/AI
+returned three `block` dispositions for one shared family-temporal feasibility
+defect; GUR and statistics returned `block` for the missing rejected-row
+construct and nondiscretionary analysis; accessibility and telemetry returned
+`approve`; and netcode and privacy returned `approve with changes`. These are
+pass-4 statuses only. The author responses below require a pass-5 audit at the
+new exact head.
+
+| Perspective | Reviewer | Pass-4 status | Remaining objection / accepted disposition | Author response for pass 5 |
+| --- | --- | --- | --- | --- |
+| Soccer tactics and arcade-sports design | gameplay/AI council | block | the common union uses static commit-tick target geometry instead of family-temporal intervention feasibility | 4.6 `family_commit_feasibility/v1` and `intervention_candidate/v2`; pending |
+| Competitive combat/fighting counterplay | gameplay/AI council | block | melee, ranged, and self-only guard require different temporal commit relations, distinct from eventual contact and actual availability | 4.6 family-specific temporal rules and shared reconciliation; pending |
+| AI human-proxy and adversarial behavior | gameplay/AI council | block | the envelope holds future confirmed non-source inputs that representative AI cannot observe or lawfully predict | 4.6 public no-response projection and 4.7 observation allowlist; pending |
+| Telemetry/data engineering and deterministic replay | data/netcode/privacy council | approve | pass-3 identity, hashing, ordering, and vocabulary dispositions remain accepted | no new change; pass-5 exact-head audit pending |
+| Netcode, performance, and latency | data/netcode/privacy council | approve with changes | canonical/runtime and public-prediction boundaries accepted subject to the family-temporal exact-head audit | 4.6 deterministic public projection; pass-5 audit pending |
+| Privacy, responsible engagement, and player advocacy | data/netcode/privacy council | approve with changes | custody/consent scope remains accepted; verify the new observation helper reads no hidden or participant state | 4.6–4.7 allowlists; pass-5 audit pending |
+| Games user research and psychometrics | GUR/stats/accessibility council | block | rejected rows have no frozen scored construct for perceived rejection, typed reason, or feedback comprehension | 4.5 and 5.3 separate rejected-feedback construct, exact mask, and `missing_feedback`/`unsure` coding; pending |
+| Experimental statistics and reproducibility | GUR/stats/accessibility council | block | accepted/rejected aggregation, component denominators, and power do not implement the exact six-plus-two probe vector | 6.2–6.3 separate endpoints, fixed denominators, exact simulation, and ten-claim max-T vector; pending |
+| Accessibility, readability, and inclusive participant design | GUR/stats/accessibility council | approve | pass-3 accommodations, exposure strata, assistance, and structural-missingness rules remain accepted | no new change; pass-5 exact-head audit pending |
+
+Pass 5 must review the next pushed exact head. No pass-5 disposition is
+inferred from these author responses.
 
 Each reviewer record uses this category template:
 
