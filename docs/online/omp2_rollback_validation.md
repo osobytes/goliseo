@@ -277,7 +277,7 @@ jitter/loss/duplication/burst/reordering, and stress paths in fresh processes.
 The pre-v10 issue-55 clean 2001 baseline recorded 14 confirmed combat events, a 783,272-byte
 31-snapshot peak, and 837,782 bytes of retained history; both were below the
 revised gates. Its playable 2001 case performed eight rollbacks and 20
-resimulated ticks, peaks at 783,272 snapshot bytes and 836,979 history bytes,
+resimulated ticks, peaked at 783,272 snapshot bytes and 836,979 history bytes,
 and recorded 1.765570 ms p95 work plus 4.738 ms p99.9/max rollback time. Each
 case emits its exact snapshot/history/resimulation values and the validator
 rejects a combat impaired-network case that performs no resimulation.
