@@ -85,6 +85,15 @@ t.describe("settings", function()
         t.eq(value.fullscreen, true)
     end)
 
+    t.it("preserves explicit false accessibility settings", function()
+        local value = settings.validate({
+            screen_shake = false,
+            bloom = false,
+        })
+        t.eq(value.screen_shake, false)
+        t.eq(value.bloom, false)
+    end)
+
     t.it("round trips through deterministic storage", function()
         local contents = nil
         local storage = {

@@ -3,6 +3,7 @@
 --   love . --test             -> run the headless test suite and exit with status code
 --   love . --sim [n]          -> play n unattended matches, print fun-proxy metrics, exit
 --   love . --snapshot-measure [n] -> measure canonical snapshot operations n times
+--   love . --combat-feedback-fixture -> visually review the crowded #147 feedback fixture
 --   love . --rollback-lab [profile] [seed] [corrupt] -> run the OMP-2 lab
 --   love . --rollback-validation SUITE [profile] [seed] -> gate OMP-2 evidence
 --   love . --determinism      -> verify the frozen OMP-1 complete-match evidence
@@ -33,6 +34,32 @@ if has_flag("--test") then
         local runner = require("spec.support.runner")
         runner.load_and_run("spec")
         os.exit(runner.summary() and 0 or 1)
+    end
+    return
+end
+
+if has_flag("--combat-feedback-fixture") then
+    local fixture ---@type CombatFeedbackFixtureScreen
+    local capture_path ---@type string?
+    for index, value in ipairs(arg or {}) do
+        if value == "--combat-feedback-fixture" then
+            capture_path = arg[index + 1]
+            break
+        end
+    end
+    function love.load()
+        fixture = require("game.screens.combat_feedback_fixture").new(capture_path)
+    end
+    function love.update(dt)
+        fixture:update(dt)
+    end
+    function love.draw()
+        fixture:draw()
+    end
+    function love.keypressed(key)
+        if key == "escape" then
+            love.event.quit()
+        end
     end
     return
 end

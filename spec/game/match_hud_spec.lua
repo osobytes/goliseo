@@ -1,7 +1,10 @@
 local hud = require("game.match_hud")
+local combat_feedback = require("game.presentation.combat_feedback")
+local combat_presentation = require("game.presentation.combat")
 local match_sim = require("sim.match")
 local t = require("spec.support.runner")
 local teams = require("data.teams")
+local crowded_fixture = require("spec.fixtures.crowded_combat_feedback")
 
 ---@return MatchHudContext
 local function context()
@@ -72,5 +75,27 @@ t.describe("match HUD model", function()
                 end
             end
         end
+    end)
+
+    t.it("shows geometry-labeled equipment readiness and confirmed result feedback", function()
+        local value = crowded_fixture.state
+        value.controlled = 2
+        local combat_model = combat_presentation.model(value, crowded_fixture.combat)
+        local feedback_state = combat_feedback.new()
+        local confirmed = crowded_fixture.events[1]
+        combat_feedback.confirm(
+            feedback_state,
+            combat_feedback.accepted(confirmed.payload, confirmed.id)
+        )
+        local ctx = context()
+        ctx.combat_enabled = true
+        ctx.combat = combat_model.players[value.controlled]
+        ctx.combat_notice = combat_feedback.notice(feedback_state, value.controlled)
+        local model = hud.model(value, ctx)
+        t.is_true(model.equipment_label ~= nil)
+        t.is_true(model.equipment_state ~= nil)
+        t.eq(model.feedback_text, "EQUIPMENT COMMITTED")
+        t.eq(model.feedback_glyph, "chevron")
+        t.is_true(model.equipment_progress >= 0 and model.equipment_progress <= 1)
     end)
 end)

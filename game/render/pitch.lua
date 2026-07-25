@@ -25,6 +25,7 @@ local NET_BACK_FRAC = 0.55 -- back frame height as a fraction of the crossbar
 ---@field arena_pulse number?
 ---@field render_pose CorrectionSmoothingPose?
 ---@field combat CombatPresentationModel?
+---@field camera_offset { x: number, y: number }?
 
 ---@param player MatchPlayer
 ---@param pose CorrectionSmoothingPose?
@@ -180,7 +181,9 @@ function pitch.draw(s, vp, opts)
     local render_pose = opts.render_pose
     local rendered_ball = ball_position(s, render_pose)
     local function project(wx, wy)
-        return camera.project(wx, wy, field, vp)
+        local sx, sy, scale = camera.project(wx, wy, field, vp)
+        local offset = opts.camera_offset
+        return sx + (offset and offset.x or 0), sy + (offset and offset.y or 0), scale
     end
 
     arena_render.draw_backdrop(arena, vp)

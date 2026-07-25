@@ -13,6 +13,8 @@ local identity = require("game.presentation.identity")
 ---@field phase BroadcastPhase?
 ---@field scoring_team "home"|"away"?
 ---@field combat_enabled boolean?
+---@field combat CombatPlayerPresentation?
+---@field combat_notice CombatFeedbackNotice?
 
 ---@class MatchHudModel
 ---@field home_name string
@@ -34,6 +36,11 @@ local identity = require("game.presentation.identity")
 ---@field announcement_title string?
 ---@field announcement_detail string?
 ---@field announcement_kind BroadcastPhase?
+---@field equipment_label string?
+---@field equipment_state string?
+---@field equipment_progress number
+---@field feedback_text string?
+---@field feedback_glyph string?
 
 ---@class MatchHudLayout
 ---@field venue Rect
@@ -44,6 +51,7 @@ local identity = require("game.presentation.identity")
 ---@field plan Rect
 ---@field prompt Rect
 ---@field announcement Rect
+---@field combat Rect
 ---@field scale number
 
 ---@class MatchHudModule
@@ -106,6 +114,30 @@ function hud.model(state, context)
         )
     end
 
+    local equipment_label, equipment_state = nil, nil
+    local equipment_progress = 0
+    if context.combat and context.combat.family_name then
+        local combat = assert(context.combat)
+        equipment_label = string.upper(combat.family_name)
+        if combat.readiness == "ready" then
+            equipment_state = "READY"
+            equipment_progress = 1
+        elseif combat.readiness == "cooldown" then
+            equipment_state = "COOLDOWN"
+            equipment_progress = 1 - combat.cooldown_fraction
+        elseif combat.readiness == "forced" then
+            equipment_state = "INTERRUPTED"
+            equipment_progress = 0
+        elseif combat.readiness == "committed" then
+            equipment_state = string.upper(combat.phase)
+            equipment_progress = combat.phase_progress
+        else
+            equipment_state = "UNAVAILABLE"
+            equipment_progress = 0
+        end
+    end
+    local notice = context.combat_notice
+
     return {
         home_name = string.upper(context.home_name),
         away_name = string.upper(context.away_name),
@@ -126,6 +158,11 @@ function hud.model(state, context)
         announcement_title = title,
         announcement_detail = detail,
         announcement_kind = context.phase,
+        equipment_label = equipment_label,
+        equipment_state = equipment_state,
+        equipment_progress = clamp01(equipment_progress),
+        feedback_text = notice and notice.text or nil,
+        feedback_glyph = notice and notice.glyph or nil,
     }
 end
 
@@ -157,6 +194,7 @@ function hud.layout(viewport)
         plan = rect(696, 468, 240, 44),
         prompt = rect(270, 402, 420, 52),
         announcement = rect(180, 214, 600, 104),
+        combat = rect(696, 436, 240, 28),
         scale = scale,
     }
 end
