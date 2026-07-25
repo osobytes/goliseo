@@ -377,6 +377,31 @@ measurement, soak diagnostics, raw-artifact digests, teardown results, and OMP-3
 Its audit independently recomputed 166,812 raw matrix/late-window rollback samples rather than
 trusting the emitted percentiles.
 
+## Contract 5 targeted-gate producer
+
+GitHub Actions run
+[`30139012436`](https://github.com/osobytes/galactic-cup/actions/runs/30139012436)
+is the first-attempt producer for relevance fingerprint
+`1b48815006c8419055cbab16bcc71f700f671e2f00a79f1851677a6d5279a778` on exact clean source
+`cba1706303409f95524364d1836b0080871cc355`. The native campaign, Chrome and Firefox runtime
+matrices, Chrome and Firefox persistent soaks, ordinary checks, and stable aggregate gate all
+passed. The five unique, unexpired artifacts carried SHA-256 digests and contained five
+normalized JSON records plus 72 referenced raw logs; an independent audit matched every raw-log
+digest.
+
+The two fresh native runs agreed across all 54 cases and 15 shards. All 224 raw validation cases
+passed their scenario, storage, and game gates; the only late-window failure was the designed
+expected-unrecoverable 31-tick case. Each browser provided six same-run, same-runtime clean/playable
+pairs. Chrome's maximum p95-work and rollback-p99.9 ratios were 5.6981 and 8.8250; Firefox's were
+5.3333 and 8.8116, below the strict 6.7 and 11.7 limits. The absolute diagnostics retained one
+34.56 ms Firefox maximum, while its normalized pair remained inside contract. Native, Chrome, and
+Firefox soaks shared logical digest `b9b61c4349c7123a`; every memory gate stayed below 10%, and all
+teardowns were orphan-free with zero remaining or detached processes.
+
+This section is intentionally outside the rollback-relevance manifest. Its commit is the
+post-producer proof that an unchanged relevant fingerprint reuses the exact aggregate and skips
+all five expensive jobs while the stable gate and ordinary checks continue to run.
+
 ## OMP-3 transport inputs
 
 OMP-3 should begin with the following contract, subject to the checked-in measurements:
