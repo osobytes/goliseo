@@ -277,6 +277,48 @@ t.describe("match outfield decision cadence", function()
         end
     )
 
+    t.it("scores multiple route blockers as an order-independent minimum", function()
+        ---@class RouteBlocker
+        ---@field forward number
+        ---@field lateral number
+
+        ---@param blockers RouteBlocker[]
+        ---@return number
+        local function route_space(blockers)
+            local state = new_match({ human_controlled = false })
+            local owner_index = assert(state.owner)
+            local owner = state.players[owner_index]
+            owner.pos = Vec2.new(480, 270)
+            local blocker_index = 1
+            for _, player in ipairs(state.players) do
+                if player.team ~= owner.team and not player.is_keeper then
+                    local blocker = blockers[blocker_index]
+                    if blocker then
+                        player.pos = owner.pos:add(Vec2.new(blocker.forward, blocker.lateral))
+                    else
+                        player.pos = Vec2.new(800, 40)
+                    end
+                    blocker_index = blocker_index + 1
+                end
+            end
+            return match._carrier_forward_space(state, owner_index)
+        end
+
+        local centered = { forward = 35, lateral = 0 }
+        local offset = { forward = 14, lateral = 22 }
+        local centered_clearance = route_space({ centered })
+        local offset_clearance = route_space({ offset })
+        local independent_min = math.min(centered_clearance, offset_clearance)
+        local centered_first = route_space({ centered, offset })
+        local offset_first = route_space({ offset, centered })
+
+        t.near(centered_clearance, 0.5)
+        t.is_true(offset_clearance > centered_clearance)
+        t.near(centered_first, independent_min)
+        t.near(offset_first, independent_min)
+        t.near(centered_first, offset_first)
+    end)
+
     t.it("clears retained AI state on the exact human pass-receiver transfer", function()
         local state = new_match({ human_controlled = true })
         state.kickoff_hold = 0

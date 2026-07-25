@@ -3309,7 +3309,8 @@ end
 function match._carrier_forward_space(s, owner_idx)
     local owner = s.players[owner_idx]
     local attack_x = owner.team == "home" and 1 or -1
-    local route_distance = math.max(1, TUNE.AI_SPRINT_SPACE)
+    local max_route_distance = math.max(1, TUNE.AI_SPRINT_SPACE)
+    local route_distance = max_route_distance
     local route_half_width = POSSESS_DIST * 2
     for _, opponent in ipairs(s.players) do
         if opponent.team ~= owner.team and not opponent.is_keeper then
@@ -3317,14 +3318,14 @@ function match._carrier_forward_space(s, owner_idx)
             local lateral = math.abs(opponent.pos.y - owner.pos.y)
             if forward > 0 and lateral < route_half_width then
                 local edge_fraction = lateral / route_half_width
-                local centered_distance = math.min(route_distance, forward)
+                local centered_distance = math.min(max_route_distance, forward)
                 local effective_distance = centered_distance
-                    + (route_distance - centered_distance) * edge_fraction
+                    + (max_route_distance - centered_distance) * edge_fraction
                 route_distance = math.min(route_distance, effective_distance)
             end
         end
     end
-    return math.min(1, route_distance / math.max(1, TUNE.AI_SPRINT_SPACE))
+    return math.min(1, route_distance / max_route_distance)
 end
 
 ---@param s MatchState
