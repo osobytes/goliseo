@@ -9,6 +9,7 @@ local Vec2 = require("core.vec2")
 local fnv1a64 = require("core.fnv1a64")
 local input_frame = require("sim.input_frame")
 local combat_snapshot = require("sim.combat_snapshot")
+local outfield_decision = require("sim.outfield_decision")
 
 ---@class MatchSnapshot
 ---@field version integer
@@ -23,8 +24,8 @@ local combat_snapshot = require("sim.combat_snapshot")
 ---@class MatchSnapshotModule
 local match_snapshot = {}
 
-match_snapshot.VERSION = 5
-match_snapshot.COMBAT_VERSION = 6
+match_snapshot.VERSION = 7
+match_snapshot.COMBAT_VERSION = 8
 
 ---@type table<MatchState, string>
 local unsupported_states = setmetatable({}, { __mode = "k" })
@@ -96,6 +97,9 @@ match_snapshot.PLAYER_FIELDS = {
     "header_skill",
     "volley_skill",
     "bicycle_skill",
+    "scan_rate",
+    "composure",
+    "outfield_decision",
     "is_keeper",
     "radius",
     "dash_cd",
@@ -198,6 +202,18 @@ local WINDUP_FIELDS = {
     "shot_type",
 }
 
+local OUTFIELD_DECISION_FIELDS = {
+    "version",
+    "generation",
+    "rng_state",
+    "remaining",
+    "context",
+    "intent",
+    "target_x",
+    "target_y",
+    "target_player",
+}
+
 local ASSIGNMENT_FIELDS = {
     "slot",
     "team",
@@ -231,6 +247,7 @@ local TEAM_FIELD_SET = field_set({ "home", "away" })
 local MARKING_FIELD_SET = field_set(MARKING_FIELDS)
 local EVENT_FIELD_SET = field_set(EVENT_FIELDS)
 local WINDUP_FIELD_SET = field_set(WINDUP_FIELDS)
+local OUTFIELD_DECISION_FIELD_SET = field_set(OUTFIELD_DECISION_FIELDS)
 local OWNERSHIP_FIELD_SET = field_set({ "version", "rosters", "slots" })
 local ASSIGNMENT_FIELD_SET = field_set(ASSIGNMENT_FIELDS)
 local SNAPSHOT_FIELD_SET = field_set({ "version", "state", "combat" })
@@ -329,6 +346,9 @@ local function copy_player(source, path, make_vec)
                     shot_type = copy_scalar(shot.shot_type, field_path .. ".shot_type"),
                 }
             end
+        elseif field == "outfield_decision" then
+            assert_fields(source.outfield_decision, OUTFIELD_DECISION_FIELD_SET, field_path)
+            result.outfield_decision = outfield_decision.copy_state(source.outfield_decision)
         else
             result[field] = copy_scalar(source[field], field_path)
         end
@@ -534,6 +554,8 @@ local function copy_owned_player(source, make_vec)
                     shot_type = value.shot_type,
                 }
             end
+        elseif field == "outfield_decision" then
+            result.outfield_decision = outfield_decision.copy_state(value)
         else
             result[field] = value
         end
@@ -954,6 +976,12 @@ local function append_player(encoder, player)
             else
                 append_scalar(encoder, nil)
             end
+        elseif field == "outfield_decision" then
+            append_literal(encoder, "d;")
+            for _, decision_field in ipairs(OUTFIELD_DECISION_FIELDS) do
+                append_name(encoder, decision_field)
+                append_scalar(encoder, value[decision_field])
+            end
         else
             append_scalar(encoder, value)
         end
@@ -1222,6 +1250,16 @@ local function first_difference_canonical(a, b)
                                         bc[shot_field]
                                     )
                                 end
+                            end
+                        end
+                    elseif child == "outfield_decision" then
+                        for _, decision_field in ipairs(OUTFIELD_DECISION_FIELDS) do
+                            if not same_scalar(ac[decision_field], bc[decision_field]) then
+                                return difference(
+                                    child_path .. "." .. decision_field,
+                                    ac[decision_field],
+                                    bc[decision_field]
+                                )
                             end
                         end
                     elseif not same_scalar(ac, bc) then

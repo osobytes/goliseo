@@ -240,13 +240,18 @@ local function combat_validation_tape()
         combat = combat_identity.for_state(combat_state),
     }
     local tape = input_tape.new(identity, initial, frames)
+    local actual_initial = tape.boundary_hashes[1]
+    local actual_final = tape.boundary_hashes[#tape.boundary_hashes]
+    local actual_digest = rollback_lab.tape_digest(tape)
     assert(
-        tape.boundary_hashes[1] == fixture.initial_hash,
-        "combat validation initial hash changed"
-    )
-    assert(
-        tape.boundary_hashes[#tape.boundary_hashes] == fixture.final_hash,
-        "combat validation final hash changed"
+        actual_initial == fixture.initial_hash
+            and actual_final == fixture.final_hash
+            and actual_digest == fixture.tape_digest,
+        ("combat validation identity changed: initial=%s final=%s digest=%s"):format(
+            actual_initial,
+            actual_final,
+            actual_digest
+        )
     )
     return tape
 end

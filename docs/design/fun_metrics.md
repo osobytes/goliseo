@@ -399,3 +399,76 @@ until phase 4 automates it).
   3.493987, possession balance 0.429692 → 0.427794, drought 11.355556 →
   10.936111, and decided-late 0.651684 → 0.605511. The noisier 30-seed sample is
   retained exactly; the 100-match audit above is the calibration decision.
+
+- **2026-07-25 — personal decision cadence and scored carrier choices.**
+  AI outfielders now retain intent on a stat-derived 0.45–0.15 s cadence and
+  select deterministic shoot/cross/pass/dribble candidates from distance,
+  angle, coverage, space, progress, lane, and interception inputs. Live
+  pressure/reception/loose-ball pursuit keeps its existing urgent refresh, and
+  lower-composure sampling advances a serialized per-player decision stream
+  rather than perturbing physical execution RNG.
+
+  The pre-review 30-seed signature measured fun 0.500, goals 2.067,
+  shots/goal 21.273, save rate 0.846, pass completion 0.585,
+  turnovers/min 3.589, possession balance 0.411, drought 11.163 s, and
+  decided-late 0.545. Controlled/team-AI sprint shares were 0.310/0.093,
+  touches per carry-minute were 91.717/85.263, and heavy losses were
+  0.592/0.992. The fixed-seed sample therefore catches the intended carrier
+  and loose-ball behavior shift, but is too small to decide whether the
+  apparent scoring gain is systemic.
+
+  The pre-review 100-match audit measured fun 0.428, goals 1.850,
+  shots/goal 23.381, save rate 0.871, pass completion 0.589,
+  turnovers/min 3.743, possession balance 0.416, drought 11.550 s, and
+  decided-late 0.575. Controlled/team-AI sprint shares were 0.283/0.103,
+  touches per carry-minute were 89.194/80.790, and heavy losses were
+  0.842/1.278. No target band collapsed; the larger sample keeps the prior
+  overall envelope while showing the intended change from blindly continuing
+  a carry to reconsidering scored alternatives.
+
+  The refreshed 30-seed guardrail is deliberately selective. It accepts only
+  the eight fields that breached tolerance and are directly coupled to the
+  new behavior: fun, goals, shots-per-goal, decided-late, controlled
+  sprint/heavy losses, and AI sprint/heavy losses. Unrelated or
+  still-in-tolerance signatures retain their previous values so the refresh
+  cannot hide other gameplay drift.
+
+  Reviewer follow-up corrected carrier space from radial nearest-opponent
+  distance to usable forward-corridor distance and tightened decision-state
+  ownership boundaries. Its generated 30-seed signature measured fun 0.509,
+  goals 2.067, shots/goal 21.691, save rate 0.841, pass completion 0.577,
+  turnovers/min 3.828, possession balance 0.408, drought 10.093 s, and
+  decided-late 0.594. Controlled/team-AI sprint shares were 0.283/0.098,
+  touches per carry-minute were 92.565/76.299, and heavy losses were
+  0/1.086.
+
+  The repeated 100-match audit measured fun 0.460, goals 1.980,
+  shots/goal 21.354, save rate 0.833, pass completion 0.580,
+  turnovers/min 3.770, possession balance 0.404, drought 10.828 s, and
+  decided-late 0.555. Controlled/team-AI sprint shares were 0.305/0.097,
+  touches per carry-minute were 93.384/77.621, and heavy losses were
+  0.321/1.422. All target bands remain intact.
+
+  The follow-up refresh again remains selective: only the seven breached
+  fields coupled to carrier route choice and ownership lifecycle moved
+  (turnovers/min, drought, decided-late, controlled sprint/heavy losses, and
+  AI touches/heavy losses). In-tolerance signatures retain their previous
+  values.
+
+  Exact-head review then found that multiple blockers shared a shrinking
+  interpolation ceiling, making route clearance depend on player-list order.
+  Using one immutable route ceiling and taking the independent minimum produced
+  a final 30-seed signature of fun 0.490, goals 2.067, shots/goal 20.676, save
+  rate 0.839, pass completion 0.577, turnovers/min 3.785, possession balance
+  0.406, drought 10.117 s, and decided-late 0.563. Controlled/team-AI sprint
+  shares were 0.281/0.099, touches per carry-minute were 93.090/77.195, and
+  heavy losses were 0/1.086.
+
+  The final 100-match audit measured fun 0.460, goals 1.990, shots/goal 20.787,
+  save rate 0.832, pass completion 0.580, turnovers/min 3.772, possession
+  balance 0.404, drought 10.836 s, and decided-late 0.546.
+  Controlled/team-AI sprint shares were 0.305/0.097, touches per carry-minute
+  were 93.526/77.937, and heavy losses were 0.321/1.422. All target bands
+  remain intact. Only the three additional breached, route-coupled guardrails
+  moved (shots/goal, possession balance, and decided-late); all other
+  in-tolerance baselines remain pinned.

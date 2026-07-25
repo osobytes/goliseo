@@ -305,6 +305,17 @@ t.describe("canonical match snapshots", function()
 
     t.it("captures and restores every nested payload as independent state", function()
         local state = new_state()
+        state.players[2].outfield_decision = {
+            version = 1,
+            generation = 7,
+            rng_state = 53,
+            remaining = 0.25,
+            context = "offball",
+            intent = "move",
+            target_x = 410,
+            target_y = 220,
+            target_player = nil,
+        }
         state.players[2].dive_target = Vec2.new(10, 20)
         state.players[1].keeper_state = "retreat"
         state.players[1].keeper_state_timer = 0.15
@@ -346,12 +357,16 @@ t.describe("canonical match snapshots", function()
         local restored = match_snapshot.restore(snapshot)
 
         state.players[2].pos.x = -100
+        state.players[2].outfield_decision.generation = 8
+        state.players[2].outfield_decision.target_x = -101
         state.players[1].keeper_state = "base"
         state.players[1].keeper_release_depth = -101
         state.players[2].windup_shot.dir.y = 99
         state.events[1].x = 999
         state.events[2].save_style = "central"
         t.is_true(snapshot.state.players[2].pos.x ~= -100)
+        t.eq(snapshot.state.players[2].outfield_decision.generation, 7)
+        t.eq(snapshot.state.players[2].outfield_decision.target_x, 410)
         t.eq(snapshot.state.players[1].keeper_state, "retreat")
         t.eq(snapshot.state.players[1].keeper_release_state, "advance")
         t.eq(snapshot.state.players[1].keeper_release_motion, 0.75)
@@ -366,9 +381,12 @@ t.describe("canonical match snapshots", function()
         t.eq(snapshot.state.events[2].save_style, "spread")
 
         snapshot.state.players[2].pos.y = -200
+        snapshot.state.players[2].outfield_decision.target_y = -201
         snapshot.state.players[1].keeper_state = "recover"
         snapshot.state.players[2].windup_shot.speed = 1
         t.is_true(restored.players[2].pos.y ~= -200)
+        t.eq(restored.players[2].outfield_decision.generation, 7)
+        t.eq(restored.players[2].outfield_decision.target_y, 220)
         t.eq(restored.players[1].keeper_state, "retreat")
         t.eq(restored.players[1].keeper_state_timer, 0.15)
         t.eq(restored.players[1].keeper_release_state, "advance")
@@ -479,7 +497,7 @@ t.describe("canonical match snapshots", function()
         t.is_true(not pcall(match_snapshot.restore_owned, missing_state))
     end)
 
-    t.it("canonically restores a v5 keeper state through goal and kickoff", function()
+    t.it("canonically restores a v7 keeper state through goal and kickoff", function()
         local live = new_state()
         local away_keeper = live.players[6]
         away_keeper.keeper_state = "retreat"
@@ -613,6 +631,44 @@ t.describe("canonical match snapshots", function()
         t.eq(found.path, "state.players.2.windup_shot.shot_type")
         t.eq(found.expected, "chip")
         t.eq(found.actual, "ground")
+    end)
+
+    t.it("compares every canonical outfield decision field", function()
+        local state = new_state()
+        local left = match_snapshot.capture(state)
+        local right = match_snapshot.capture(state)
+        right.state.players[2].outfield_decision.generation = 1
+        local found = assert(match_snapshot.first_difference_canonical(left, right))
+        t.eq(found.path, "state.players.2.outfield_decision.generation")
+    end)
+
+    t.it("rejects malformed v7 and v8 context-intent pairs during restore", function()
+        local state = new_state()
+        local soccer = match_snapshot.capture(state)
+        local soccer_decision = soccer.state.players[2].outfield_decision
+        soccer_decision.context = "offball"
+        soccer_decision.intent = "shoot"
+        soccer_decision.remaining = 0.2
+        t.is_true(not pcall(match_snapshot.restore, soccer))
+
+        local combat_boundary = match_snapshot.capture(state, combat.new_state(state))
+        local combat_decision = combat_boundary.state.players[2].outfield_decision
+        combat_decision.context = "carrier"
+        combat_decision.intent = "move"
+        combat_decision.remaining = 0.2
+        combat_decision.target_x = 100
+        combat_decision.target_y = 200
+        t.is_true(not pcall(match_snapshot.restore, combat_boundary))
+    end)
+
+    t.it("keeps soccer and combat retained windows inside the snapshot budget", function()
+        local state = new_state()
+        local soccer = match_snapshot.capture(state)
+        local combat_state = combat.new_state(state)
+        local combat_boundary = match_snapshot.capture(state, combat_state)
+        local budget = 768 * 1024
+        t.is_true(match_snapshot.encoded_size_canonical(soccer) * 31 < budget)
+        t.is_true(match_snapshot.encoded_size_canonical(combat_boundary) * 31 < budget)
     end)
 
     t.it("rejects unhandled state and player fields", function()

@@ -699,7 +699,7 @@ def validate_case_integrity(
             raise RuntimeError(f"{case_id} made hidden progress after a terminal result")
         combat_case = fields.get("scenario") == "combat"
         expected_tape_version = "2" if combat_case else "1"
-        expected_snapshot_version = "6" if combat_case else "5"
+        expected_snapshot_version = "8" if combat_case else "7"
         if fields["tape_version"] != expected_tape_version:
             raise RuntimeError(
                 f"{case_id} reports tape_version={fields['tape_version']!r}, "
@@ -820,7 +820,7 @@ def validate_runtime_metrics(
         "input_version": "2",
         "gate_contract": GATE_CONTRACT,
         "love": "11.5.0",
-        "snapshot_versions": "5,6",
+        "snapshot_versions": "7,8",
         "suite": suite,
         "tape_versions": "1,2",
         "tick_rate": "60",
@@ -2555,7 +2555,7 @@ def browser_cpu_case(
             "input_version": "2",
             "love": "11.5.0",
             "profile_digest": EXPECTED_PROFILE_DIGEST,
-            "snapshot_versions": "5,6",
+            "snapshot_versions": "7,8",
             "suite": "browser-full",
             "tape_versions": "1,2",
             "tick_rate": "60",
@@ -3307,7 +3307,7 @@ def run_self_test() -> None:
                 "lab_success=1|expected_failure=0|status=converged|late_tick=none|"
                 "hidden_progress=0|scenario_pass=1|"
                 f"tape_version={'2' if combat else '1'}|"
-                f"snapshot_version={'6' if combat else '5'}|"
+                f"snapshot_version={'8' if combat else '7'}|"
                 f"tape_digest={'1111111111111111' if combat else HISTORICAL_SOCCER_TAPE_DIGEST}|"
                 "initial_hash=0000000000000001|reference_hash=0000000000000002|"
                 f"client_hash=0000000000000002|rollbacks={rollbacks}|max_depth=8|"
@@ -3334,7 +3334,7 @@ def run_self_test() -> None:
         runtime_metric = parse_runtime_metric(
             f"{METRICS_PREFIX}|runtime|love=11.5.0|suite=browser-full|"
             f"gate_contract={GATE_CONTRACT}|profile_digest={EXPECTED_PROFILE_DIGEST}|"
-            "input_version=2|tape_versions=1,2|snapshot_versions=5,6|tick_rate=60"
+            "input_version=2|tape_versions=1,2|snapshot_versions=7,8|tick_rate=60"
         )
 
         def case_metric(
@@ -3745,7 +3745,7 @@ def run_self_test() -> None:
         "gate_contract=5|cpu_gate=1|cpu_gate_applied=1|cpu_gate_mode=absolute|"
         "snapshot_gate=1|"
         "history_gate=1|game_gate=1|rollbacks=6903|"
-        "tape_version=1|snapshot_version=5|"
+        "tape_version=1|snapshot_version=7|"
         "initial_hash=0000000000000001|reference_hash=0000000000000002|"
         "client_hash=0000000000000002|tape_digest=881917e3ba798703|resimulated=42|"
         "event_reference_digest=0000000000000003|"
@@ -3861,7 +3861,7 @@ def run_self_test() -> None:
     runtime_provenance = parse_runtime_metric(
         f"{METRICS_PREFIX}|runtime|love=11.5.0|suite=native|"
         f"gate_contract={GATE_CONTRACT}|profile_digest={EXPECTED_PROFILE_DIGEST}|input_version=2|"
-        "tape_versions=1,2|snapshot_versions=5,6|tick_rate=60"
+        "tape_versions=1,2|snapshot_versions=7,8|tick_rate=60"
     )
     passing_samples = (10000,) * 6897 + (33301, 33400, 34000, 35000, 40000, 46040)
     passing_timing = timing_series("integrity", passing_samples)

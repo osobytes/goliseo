@@ -10,10 +10,10 @@ local tuning = require("sim.tuning")
 local short_match_tape = {}
 
 short_match_tape.EXPECTED_BOUNDARY_HASHES = {
-    "ade6a332b8396df4",
-    "0e429e725dc321bf",
-    "900379046d506ded",
-    "f8317a83edc04096",
+    "445f4c782befc911",
+    "beab813fee150eda",
+    "addb27376b04012a",
+    "29b04e232a262fff",
 }
 
 ---@return InputTape tape
@@ -59,6 +59,8 @@ function short_match_tape.make()
                 expected,
                 tape.boundary_hashes[index]
             )
+                .. "; observed sequence="
+                .. table.concat(tape.boundary_hashes, ",")
         )
     end
     return tape, identity

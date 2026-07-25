@@ -131,12 +131,13 @@ local function run_matrix()
 end
 
 t.describe("keeper hand-throw reliability (1 presser, 2 outlets)", function()
-    t.it("keeps the ball on at least 9 in 10 throws, any aim, never concedes", function()
+    t.it("keeps all 32 throws, any aim, and never concedes", function()
         local kept, total, conceded = run_matrix()
         t.eq(conceded, 0, "a hand throw must never gift a goal to the presser")
-        t.is_true(
-            kept >= math.ceil(total * 0.9),
-            ("home kept %d/%d throws — hand distribution too unreliable"):format(kept, total)
+        t.eq(
+            kept,
+            total,
+            ("home kept %d/%d throws — hand distribution regressed"):format(kept, total)
         )
     end)
 

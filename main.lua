@@ -433,7 +433,7 @@ if has_flag("--rollback-validation") then
             "profile_digest=" .. rollback_validation.profile_digest(),
             "input_version=2",
             "tape_versions=1,2",
-            "snapshot_versions=5,6",
+            "snapshot_versions=" .. match_snapshot.VERSION .. "," .. match_snapshot.COMBAT_VERSION,
             "tick_rate=60",
         }, "|"))
         flush_stdout()
