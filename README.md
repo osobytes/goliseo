@@ -7,7 +7,7 @@ setup flows directly into a fast, controllable match. Choose the squad,
 formation, and tactic, then take control and find out whether the plan works
 on the pitch.
 
-The project is being shaped into a small, complete open-source showcase rather
+The project is being shaped into a small, complete source-available showcase rather
 than a broad career-mode prototype. The current build is playable and its
 simulation, rendering, and test infrastructure are already in place; the
 active milestone is product polish around that foundation.
@@ -131,14 +131,18 @@ small improvements that support the committed product scope.
 
 Copyright © 2026 Galactic Cup contributors.
 
-Galactic Cup is free software licensed under the
-[GNU General Public License v3.0 or later](LICENSE) (`GPL-3.0-or-later`).
-You may use, study, modify, and redistribute it. If you distribute a modified
-or combined covered version, you must provide its corresponding source under
-the GPL to its recipients. Private modifications do not have to be published.
+Galactic Cup is source-available under the
+[PolyForm Noncommercial License 1.0.0](LICENSE). You may use, study, modify,
+and redistribute it only for purposes permitted by that license. Commercial
+use requires a separate license from the copyright holders.
 
 Unless a file states otherwise, repository-owned code, documentation, and
-assets use the same license. Third-party material must retain its own notices.
+assets use the same license. Third-party material retains its own license and
+notices.
+
+Versions previously published under the GNU General Public License v3.0 or
+later remain available to their recipients under those terms. This change does
+not revoke permissions already granted for those versions.
 
 ## Project status
 

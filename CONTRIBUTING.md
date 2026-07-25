@@ -59,14 +59,14 @@ trailers.
 
 ## Contribution license
 
-Galactic Cup is licensed under `GPL-3.0-or-later`. By submitting a contribution,
-you agree to license that contribution under the same terms and confirm that
-you have the right to do so.
+Galactic Cup is source-available under the PolyForm Noncommercial License
+1.0.0. By submitting a contribution, you agree to license that contribution
+under the same terms and confirm that you have the right to do so.
 
-Do not add code, fonts, audio, images, or other material unless its license is
-compatible with GPL distribution and its provenance can be recorded. Include
-the author/source, version or retrieval date, license identifier, and required
-attribution with any third-party material.
+Do not add code, fonts, audio, images, or other material unless its license
+permits the project's noncommercial use and redistribution and its provenance
+can be recorded. Include the author/source, version or retrieval date, license
+identifier, and required attribution with any third-party material.
 
 ## Reporting bugs
 

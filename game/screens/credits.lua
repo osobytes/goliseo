@@ -23,7 +23,7 @@ local function credit_lines()
         "Third-party runtime: LÖVE 11.5 and LuaJIT",
         "Third-party media: none bundled",
         "Code, documentation, and repository-owned assets:",
-        "GNU General Public License v3.0 or later",
+        "PolyForm Noncommercial License 1.0.0",
         "",
         "Version " .. build_info.version .. " • " .. build_info.channel,
     }

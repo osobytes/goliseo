@@ -48,7 +48,7 @@ match.
 
 ## Near-term product
 
-The existing open-source showcase and its deterministic 5v5 match remain the
+The existing source-available showcase and its deterministic 5v5 match remain
 implementation baseline. `docs/showcase_release.md` still bounds current
 delivery work until it receives a dedicated rescope; the pivot does not
 silently add combat, progression, or a 3D renderer to that release.
