@@ -640,6 +640,18 @@ local function is_human_player(s, player_idx)
     return s.human_controlled and player_idx == s.controlled
 end
 
+-- Route single-player control through one boundary so a player becoming human
+-- cannot retain a serialized AI choice from earlier in this tick.
+---@param s MatchState
+---@param player_idx integer
+function match._set_controlled_player(s, player_idx)
+    s.controlled = player_idx
+    local player = s.players[player_idx]
+    if not player.is_keeper and player.outfield_decision.context ~= "ineligible" then
+        player.outfield_decision = require("sim.outfield_decision").reset(player.outfield_decision)
+    end
+end
+
 -- Reset for a kickoff. `kicking` is the team restarting play (after conceding,
 -- per the laws of the game); the opening kickoff is the home side's.
 ---@param s MatchState
@@ -1122,7 +1134,7 @@ local function release_pass(s, owner_idx, target_idx, blocker_f, clear_h, land_p
         and target.team == "home"
         and not target.is_keeper
     then
-        s.controlled = target_idx
+        match._set_controlled_player(s, target_idx)
     end
     -- A defender right on the release point eats a driven ball — and even a lob
     -- is still low in its first strides (the lane check ignores segment ends).
@@ -2030,6 +2042,8 @@ end
 -- Retain an AI outfielder's chosen movement point until its personal cadence
 -- expires. A designated receiver and anyone close enough to contest a loose
 -- ball within one slow cadence interval keep reacting to its live trajectory.
+-- `urgent` also preserves the existing active presser/press-set chase contract;
+-- choosing or explaining those defenders remains #55 rather than this cadence.
 ---@param s MatchState
 ---@param targets table<integer, Vec2>
 ---@param urgent table<integer, boolean>
@@ -3291,6 +3305,30 @@ end
 -- Extracted to keep update_ball under the LuaJIT 60-upvalue cap.
 ---@param s MatchState
 ---@param owner_idx integer
+---@return number space  -- normalized usable distance in the attacking corridor
+function match._carrier_forward_space(s, owner_idx)
+    local owner = s.players[owner_idx]
+    local attack_x = owner.team == "home" and 1 or -1
+    local route_distance = math.max(1, TUNE.AI_SPRINT_SPACE)
+    local route_half_width = POSSESS_DIST * 2
+    for _, opponent in ipairs(s.players) do
+        if opponent.team ~= owner.team and not opponent.is_keeper then
+            local forward = (opponent.pos.x - owner.pos.x) * attack_x
+            local lateral = math.abs(opponent.pos.y - owner.pos.y)
+            if forward > 0 and lateral < route_half_width then
+                local edge_fraction = lateral / route_half_width
+                local centered_distance = math.min(route_distance, forward)
+                local effective_distance = centered_distance
+                    + (route_distance - centered_distance) * edge_fraction
+                route_distance = math.min(route_distance, effective_distance)
+            end
+        end
+    end
+    return math.min(1, route_distance / math.max(1, TUNE.AI_SPRINT_SPACE))
+end
+
+---@param s MatchState
+---@param owner_idx integer
 ---@param owner MatchPlayer
 local function ai_outfield_decision(s, owner_idx, owner)
     local decisions = require("sim.outfield_decision")
@@ -3335,7 +3373,7 @@ local function ai_outfield_decision(s, owner_idx, owner)
         box_targets = box_targets,
         cross_space = math.min(1, space / math.max(1, TUNE.CROSS_MIN_SPACE * 2)),
         goal_progress = attack_depth,
-        dribble_space = math.min(1, space / math.max(1, TUNE.AI_SPRINT_SPACE)),
+        dribble_space = match._carrier_forward_space(s, owner_idx),
         passes = passes,
     })
     local selected, next_decision_rng = decisions.decide_carrier(
@@ -3592,6 +3630,7 @@ local function update_ball(s, dt, inputs, combat_state)
             end
         elseif
             owner.windup_timer == 0
+            and owner.stun_timer <= 0
             and (not combat_module or not combat_module.blocks_actions(combat_state, s.owner))
         then
             -- AI owner: decide what to do (shoot/cross/pass/carry).
@@ -3864,7 +3903,7 @@ local function update_ball(s, dt, inputs, combat_state)
                 and bp.team == "home"
                 and not bp.is_keeper
             then
-                s.controlled = best
+                match._set_controlled_player(s, best)
             end
         end
     end
@@ -4058,7 +4097,7 @@ function match.step(s, dt, input, combat_state)
         and input.switch
         and (not combat_module or not combat_module.blocks_actions(combat_state, s.controlled))
     then
-        s.controlled = next_home_outfield(s, s.controlled)
+        match._set_controlled_player(s, next_home_outfield(s, s.controlled))
     end
     if not s.slot_mode then
         inputs[s.controlled] = input
@@ -4128,7 +4167,7 @@ function match.step(s, dt, input, combat_state)
         and owner_team == "away"
         and prev_owner_team ~= "away"
     then
-        s.controlled = best_defender(s)
+        match._set_controlled_player(s, best_defender(s))
     end
 
     -- Cross aid: when a lofted ball flies into the human's attacking third and
@@ -4151,7 +4190,7 @@ function match.step(s, dt, input, combat_state)
             end
         end
         if best and best_d <= CROSS_AID_RANGE then
-            s.controlled = best
+            match._set_controlled_player(s, best)
         end
     end
 
@@ -4161,7 +4200,7 @@ function match.step(s, dt, input, combat_state)
     if not s.slot_mode and s.human_controlled then
         if s.owner and s.players[s.owner].team == "home" and s.players[s.owner].is_keeper then
             if s.owner ~= prev_owner then
-                s.controlled = s.owner
+                match._set_controlled_player(s, s.owner)
                 -- The six-second clock only runs on a ball held in the HANDS;
                 -- a back-pass trapped at the feet plays on at your own pace.
                 if not s.players[s.owner].feet_ball then
@@ -4169,7 +4208,7 @@ function match.step(s, dt, input, combat_state)
                 end
             end
         elseif s.players[s.controlled].is_keeper then
-            s.controlled = best_defender(s)
+            match._set_controlled_player(s, best_defender(s))
         end
     end
 

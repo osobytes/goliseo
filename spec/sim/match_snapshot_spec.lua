@@ -497,7 +497,7 @@ t.describe("canonical match snapshots", function()
         t.is_true(not pcall(match_snapshot.restore_owned, missing_state))
     end)
 
-    t.it("canonically restores a v5 keeper state through goal and kickoff", function()
+    t.it("canonically restores a v7 keeper state through goal and kickoff", function()
         local live = new_state()
         local away_keeper = live.players[6]
         away_keeper.keeper_state = "retreat"
@@ -640,6 +640,25 @@ t.describe("canonical match snapshots", function()
         right.state.players[2].outfield_decision.generation = 1
         local found = assert(match_snapshot.first_difference_canonical(left, right))
         t.eq(found.path, "state.players.2.outfield_decision.generation")
+    end)
+
+    t.it("rejects malformed v7 and v8 context-intent pairs during restore", function()
+        local state = new_state()
+        local soccer = match_snapshot.capture(state)
+        local soccer_decision = soccer.state.players[2].outfield_decision
+        soccer_decision.context = "offball"
+        soccer_decision.intent = "shoot"
+        soccer_decision.remaining = 0.2
+        t.is_true(not pcall(match_snapshot.restore, soccer))
+
+        local combat_boundary = match_snapshot.capture(state, combat.new_state(state))
+        local combat_decision = combat_boundary.state.players[2].outfield_decision
+        combat_decision.context = "carrier"
+        combat_decision.intent = "move"
+        combat_decision.remaining = 0.2
+        combat_decision.target_x = 100
+        combat_decision.target_y = 200
+        t.is_true(not pcall(match_snapshot.restore, combat_boundary))
     end)
 
     t.it("keeps soccer and combat retained windows inside the snapshot budget", function()

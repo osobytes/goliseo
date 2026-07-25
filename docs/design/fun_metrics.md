@@ -432,3 +432,25 @@ until phase 4 automates it).
   sprint/heavy losses, and AI sprint/heavy losses. Unrelated or
   still-in-tolerance signatures retain their previous values so the refresh
   cannot hide other gameplay drift.
+
+  Reviewer follow-up corrected carrier space from radial nearest-opponent
+  distance to usable forward-corridor distance and tightened decision-state
+  ownership boundaries. Its generated 30-seed signature measured fun 0.509,
+  goals 2.067, shots/goal 21.691, save rate 0.841, pass completion 0.577,
+  turnovers/min 3.828, possession balance 0.408, drought 10.093 s, and
+  decided-late 0.594. Controlled/team-AI sprint shares were 0.283/0.098,
+  touches per carry-minute were 92.565/76.299, and heavy losses were
+  0/1.086.
+
+  The repeated 100-match audit measured fun 0.460, goals 1.980,
+  shots/goal 21.354, save rate 0.833, pass completion 0.580,
+  turnovers/min 3.770, possession balance 0.404, drought 10.828 s, and
+  decided-late 0.555. Controlled/team-AI sprint shares were 0.305/0.097,
+  touches per carry-minute were 93.384/77.621, and heavy losses were
+  0.321/1.422. All target bands remain intact.
+
+  The follow-up refresh again remains selective: only the seven breached
+  fields coupled to carrier route choice and ownership lifecycle moved
+  (turnovers/min, drought, decided-late, controlled sprint/heavy losses, and
+  AI touches/heavy losses). In-tolerance signatures retain their previous
+  values.

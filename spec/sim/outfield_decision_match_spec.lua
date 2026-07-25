@@ -24,6 +24,21 @@ local NO_INPUT = {
     equipment_released = false,
 }
 
+---@param overrides table?
+---@return MatchInput
+local function input(overrides)
+    overrides = overrides or {}
+    local result = {}
+    for key, value in pairs(NO_INPUT) do
+        result[key] = value
+    end
+    for key, value in pairs(overrides) do
+        result[key] = value
+    end
+    ---@cast result MatchInput
+    return result
+end
+
 ---@param options table?
 ---@return MatchState
 local function new_match(options)
@@ -36,6 +51,33 @@ local function new_match(options)
         input_ownership = options.input_ownership,
         seed = 53,
     })
+end
+
+---@param player MatchPlayer
+---@return integer rng_state
+local function seed_retained_move(player)
+    player.outfield_decision = outfield_decision.refresh(
+        player.outfield_decision,
+        "offball",
+        "move",
+        player.scan_rate,
+        player.pos.x + 20,
+        player.pos.y
+    )
+    player.outfield_decision.remaining = 10
+    return player.outfield_decision.rng_state
+end
+
+---@param player MatchPlayer
+---@param rng_state integer
+local function assert_ai_state_cleared(player, rng_state)
+    t.eq(player.outfield_decision.context, "ineligible")
+    t.eq(player.outfield_decision.intent, "none")
+    t.eq(player.outfield_decision.remaining, 0)
+    t.eq(player.outfield_decision.target_x, nil)
+    t.eq(player.outfield_decision.target_y, nil)
+    t.eq(player.outfield_decision.target_player, nil)
+    t.eq(player.outfield_decision.rng_state, rng_state)
 end
 
 t.describe("match outfield decision cadence", function()
@@ -147,6 +189,236 @@ t.describe("match outfield decision cadence", function()
 
         t.eq(presser.outfield_decision.context, "offball")
         t.eq(presser.outfield_decision.generation, generation + 1)
+    end)
+
+    t.it("blocks stunned carrier choices, then refreshes once and retains on recovery", function()
+        local state = new_match({ human_controlled = false })
+        state.kickoff_hold = 0
+        local owner_index = assert(state.owner)
+        local owner = state.players[owner_index]
+        owner.pos = Vec2.new(480, 270)
+        owner.anchor = owner.pos
+        state.ball = owner.pos:add(Vec2.new(18, 0))
+        for index, player in ipairs(state.players) do
+            if index ~= owner_index then
+                if player.team == owner.team then
+                    player.pos = Vec2.new(20, 20 + index * 18)
+                else
+                    player.pos = Vec2.new(900, 20 + index * 18)
+                end
+                player.anchor = player.pos
+            end
+        end
+
+        owner.outfield_decision = outfield_decision.refresh(
+            owner.outfield_decision,
+            "carrier",
+            "dribble",
+            owner.scan_rate
+        )
+        local generation = owner.outfield_decision.generation
+        local rng_state = owner.outfield_decision.rng_state
+        owner.outfield_decision.remaining = 0
+        owner.stun_timer = 0.1
+
+        match.step(state, 1 / 60, NO_INPUT)
+        t.eq(state.owner, owner_index)
+        t.eq(owner.outfield_decision.context, "ineligible")
+        t.eq(owner.outfield_decision.generation, generation)
+        t.eq(owner.outfield_decision.rng_state, rng_state)
+        t.eq(owner.windup_shot, nil)
+
+        owner.stun_timer = 0
+        match.step(state, 1 / 60, NO_INPUT)
+        t.eq(state.owner, owner_index)
+        t.eq(owner.outfield_decision.context, "carrier")
+        t.eq(owner.outfield_decision.intent, "dribble")
+        t.eq(owner.outfield_decision.generation, generation + 1)
+        local recovered_rng = owner.outfield_decision.rng_state
+        local recovered_remaining = owner.outfield_decision.remaining
+        t.is_true(recovered_remaining > 0)
+
+        match.step(state, 1 / 60, NO_INPUT)
+        t.eq(owner.outfield_decision.context, "carrier")
+        t.eq(owner.outfield_decision.intent, "dribble")
+        t.eq(owner.outfield_decision.generation, generation + 1)
+        t.eq(owner.outfield_decision.rng_state, recovered_rng)
+        t.is_true(owner.outfield_decision.remaining < recovered_remaining)
+    end)
+
+    t.it(
+        "scores matched opponent geometry from forward route space, not radial distance",
+        function()
+            ---@param opponent_forward number
+            ---@return number
+            local function route_space(opponent_forward)
+                local state = new_match({ human_controlled = false })
+                local owner_index = assert(state.owner)
+                local owner = state.players[owner_index]
+                owner.pos = Vec2.new(480, 270)
+                local route_opponent
+                for _, player in ipairs(state.players) do
+                    if player.team ~= owner.team and not player.is_keeper then
+                        if not route_opponent then
+                            route_opponent = player
+                        end
+                        player.pos = Vec2.new(800, 40)
+                    end
+                end
+                route_opponent = assert(route_opponent)
+                route_opponent.pos = owner.pos:add(Vec2.new(opponent_forward, 0))
+                return match._carrier_forward_space(state, owner_index)
+            end
+
+            local ahead = route_space(50)
+            local behind = route_space(-50)
+            t.is_true(ahead < behind, "a forward blocker must reduce usable dribble route space")
+            t.near(behind, 1)
+        end
+    )
+
+    t.it("clears retained AI state on the exact human pass-receiver transfer", function()
+        local state = new_match({ human_controlled = true })
+        state.kickoff_hold = 0
+        local passer_index = state.controlled
+        local passer = state.players[passer_index]
+        passer.pos = Vec2.new(300, 270)
+        passer.facing = Vec2.new(1, 0)
+        state.owner = passer_index
+        state.ball = passer.pos:add(Vec2.new(18, 0))
+
+        local receiver_index
+        for index, player in ipairs(state.players) do
+            if player.team == "home" and not player.is_keeper and index ~= passer_index then
+                if not receiver_index then
+                    receiver_index = index
+                    player.pos = Vec2.new(430, 270)
+                else
+                    player.pos = Vec2.new(40, 30 + index * 30)
+                end
+            elseif player.team == "away" then
+                player.pos = Vec2.new(850, 30 + index * 30)
+            end
+            player.anchor = player.pos
+        end
+        local receiver = state.players[assert(receiver_index)]
+        local receiver_rng = seed_retained_move(receiver)
+        passer.outfield_decision = outfield_decision.refresh(
+            passer.outfield_decision,
+            "carrier",
+            "dribble",
+            passer.scan_rate
+        )
+        local passer_rng = passer.outfield_decision.rng_state
+
+        match.step(state, 1 / 60, input({ pass = true, move = Vec2.new(1, 0) }))
+        t.eq(state.owner, nil)
+        t.eq(state.controlled, receiver_index)
+        assert_ai_state_cleared(passer, passer_rng)
+        assert_ai_state_cleared(receiver, receiver_rng)
+    end)
+
+    t.it("clears retained AI state when a home outfielder wins the loose ball", function()
+        local state = new_match({ human_controlled = true })
+        state.owner = nil
+        state.pickup_cd = 0
+        local winner_index
+        for index, player in ipairs(state.players) do
+            if player.team == "home" and not player.is_keeper and index ~= state.controlled then
+                winner_index = index
+                break
+            end
+        end
+        local winner = state.players[assert(winner_index)]
+        winner.pos = Vec2.new(300, 270)
+        winner.anchor = winner.pos
+        state.ball = winner.pos
+        state.ball_vel = Vec2.new(0, 0)
+        local winner_rng = seed_retained_move(winner)
+
+        match.step(state, 1 / 60, NO_INPUT)
+        t.eq(state.owner, winner_index)
+        t.eq(state.controlled, winner_index)
+        assert_ai_state_cleared(winner, winner_rng)
+    end)
+
+    t.it("clears retained AI state on turnover and cross-aid control transfers", function()
+        local turnover = new_match({ human_controlled = true })
+        local away_index
+        local defender_index
+        for index, player in ipairs(turnover.players) do
+            if player.team == "away" and not player.is_keeper and not away_index then
+                away_index = index
+            elseif
+                player.team == "home"
+                and not player.is_keeper
+                and index ~= turnover.controlled
+                and not defender_index
+            then
+                defender_index = index
+            end
+        end
+        local defender = turnover.players[assert(defender_index)]
+        local away = turnover.players[assert(away_index)]
+        away.pos = Vec2.new(600, 270)
+        defender.pos = Vec2.new(560, 270)
+        turnover.players[turnover.controlled].pos = Vec2.new(100, 100)
+        turnover.owner = nil
+        turnover.pickup_cd = 0
+        turnover.ball = away.pos
+        turnover.ball_vel = Vec2.new(0, 0)
+        local defender_rng = seed_retained_move(defender)
+
+        match.step(turnover, 1 / 60, NO_INPUT)
+        t.eq(turnover.owner, away_index)
+        t.eq(turnover.controlled, defender_index)
+        assert_ai_state_cleared(defender, defender_rng)
+
+        local cross = new_match({ human_controlled = true })
+        cross.owner = nil
+        cross.pickup_cd = 60
+        cross.ball = Vec2.new(800, 270)
+        cross.ball_vel = Vec2.new(0, 0)
+        cross.ball_z = 60
+        cross.ball_vz = 0
+        local attacker_index
+        for index, player in ipairs(cross.players) do
+            if player.team == "home" and not player.is_keeper and index ~= cross.controlled then
+                attacker_index = index
+                player.pos = Vec2.new(800, 270)
+                break
+            end
+        end
+        cross.players[cross.controlled].pos = Vec2.new(100, 100)
+        local attacker = cross.players[assert(attacker_index)]
+        local attacker_rng = seed_retained_move(attacker)
+
+        match.step(cross, 1 / 60, NO_INPUT)
+        t.eq(cross.controlled, attacker_index)
+        assert_ai_state_cleared(attacker, attacker_rng)
+    end)
+
+    t.it("clears retained AI state when keeper control returns to an outfielder", function()
+        local state = new_match({ human_controlled = true })
+        state.controlled = 1
+        state.owner = nil
+        state.pickup_cd = 60
+        state.ball = Vec2.new(400, 270)
+        state.ball_vel = Vec2.new(0, 0)
+        state.ball_z = 0
+        local rng_by_index = {}
+        for index, player in ipairs(state.players) do
+            if player.team == "home" and not player.is_keeper then
+                rng_by_index[index] = seed_retained_move(player)
+            end
+        end
+
+        match.step(state, 1 / 60, NO_INPUT)
+        t.is_true(not state.players[state.controlled].is_keeper)
+        assert_ai_state_cleared(
+            state.players[state.controlled],
+            assert(rng_by_index[state.controlled])
+        )
     end)
 
     t.it("never gives fixed-input-slot outfielders AI cadence or intent", function()

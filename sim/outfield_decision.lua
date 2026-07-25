@@ -70,6 +70,13 @@ local INTENTS = {
     dribble = true,
 }
 
+local CARRIER_INTENTS = {
+    shoot = true,
+    cross = true,
+    pass = true,
+    dribble = true,
+}
+
 ---@param value number
 ---@return boolean
 local function is_finite(value)
@@ -158,17 +165,25 @@ local function validate_state(state)
             state.target_x == nil and state.target_player == nil,
             "ineligible outfield decision state cannot retain a target"
         )
-    elseif state.intent == "move" then
+    elseif state.context == "offball" then
+        assert(state.intent == "move", "offball outfield decision state must retain move intent")
         assert(state.target_x ~= nil, "move intent requires a target point")
         assert(state.target_player == nil, "move intent cannot target a player")
-    elseif state.intent == "pass" or state.intent == "cross" then
-        assert(state.target_player ~= nil, "pass and cross intents require a target player")
-        assert(state.target_x == nil, "pass and cross intents cannot retain a target point")
     else
+        assert(state.context == "carrier", "unknown eligible outfield decision context")
         assert(
-            state.target_x == nil and state.target_player == nil,
-            "this outfield intent cannot retain a target"
+            CARRIER_INTENTS[state.intent],
+            "carrier outfield decision state requires a carrier intent"
         )
+        if state.intent == "pass" or state.intent == "cross" then
+            assert(state.target_player ~= nil, "pass and cross intents require a target player")
+            assert(state.target_x == nil, "pass and cross intents cannot retain a target point")
+        else
+            assert(
+                state.target_x == nil and state.target_player == nil,
+                "shoot and dribble intents cannot retain a target"
+            )
+        end
     end
 end
 
