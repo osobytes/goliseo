@@ -326,6 +326,8 @@ t.describe("keeper anticipation commit timing", function()
         tackler.vel = Vec2.new(0, 0)
         tackler.run_vel = Vec2.new(0, 0)
         tackler.dash_cd = 0
+        tackler.composure = 0 -- preserve the explicit legacy dive-in fixture
+        state.kickoff_hold = 0
         match.step(state, TICK, NO_INPUT)
 
         t.is_true(event_of(state, "tackle") ~= nil, "the real tackle transition fires")

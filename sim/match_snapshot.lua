@@ -10,6 +10,7 @@ local fnv1a64 = require("core.fnv1a64")
 local input_frame = require("sim.input_frame")
 local combat_snapshot = require("sim.combat_snapshot")
 local outfield_decision = require("sim.outfield_decision")
+local outfield_press = require("sim.outfield_press")
 
 ---@class MatchSnapshot
 ---@field version integer
@@ -24,8 +25,8 @@ local outfield_decision = require("sim.outfield_decision")
 ---@class MatchSnapshotModule
 local match_snapshot = {}
 
-match_snapshot.VERSION = 7
-match_snapshot.COMBAT_VERSION = 8
+match_snapshot.VERSION = 8
+match_snapshot.COMBAT_VERSION = 9
 
 ---@type table<MatchState, string>
 local unsupported_states = setmetatable({}, { __mode = "k" })
@@ -65,6 +66,7 @@ match_snapshot.MATCH_FIELDS = {
     "press",
     "marking",
     "marks",
+    "outfield_press",
     "ball_spin",
     "rng",
     "block_grace",
@@ -214,6 +216,13 @@ local OUTFIELD_DECISION_FIELDS = {
     "target_player",
 }
 
+local OUTFIELD_PRESS_FIELDS = {
+    "version",
+    "presser_index",
+    "mode",
+    "reason",
+}
+
 local ASSIGNMENT_FIELDS = {
     "slot",
     "team",
@@ -248,6 +257,7 @@ local MARKING_FIELD_SET = field_set(MARKING_FIELDS)
 local EVENT_FIELD_SET = field_set(EVENT_FIELDS)
 local WINDUP_FIELD_SET = field_set(WINDUP_FIELDS)
 local OUTFIELD_DECISION_FIELD_SET = field_set(OUTFIELD_DECISION_FIELDS)
+local OUTFIELD_PRESS_FIELD_SET = field_set(OUTFIELD_PRESS_FIELDS)
 local OWNERSHIP_FIELD_SET = field_set({ "version", "rosters", "slots" })
 local ASSIGNMENT_FIELD_SET = field_set(ASSIGNMENT_FIELDS)
 local SNAPSHOT_FIELD_SET = field_set({ "version", "state", "combat" })
@@ -449,6 +459,7 @@ local function copy_state(source, path, make_vec)
     assert_fields(source.press, TEAM_FIELD_SET, path .. ".press")
     assert_fields(source.marking, TEAM_FIELD_SET, path .. ".marking")
     assert_fields(source.marks, TEAM_FIELD_SET, path .. ".marks")
+    assert_fields(source.outfield_press, TEAM_FIELD_SET, path .. ".outfield_press")
 
     local result = {
         field = {
@@ -464,6 +475,7 @@ local function copy_state(source, path, make_vec)
         press = {},
         marking = {},
         marks = {},
+        outfield_press = {},
         events = {},
         slot_players = {},
         slot_for_player = {},
@@ -504,6 +516,37 @@ local function copy_state(source, path, make_vec)
         result.marking[team] = copy_marking(source.marking[team], path .. ".marking." .. team)
         result.marks[team] =
             copy_sparse_indices(source.marks[team], path .. ".marks." .. team, #source.players)
+        assert_fields(
+            source.outfield_press[team],
+            OUTFIELD_PRESS_FIELD_SET,
+            path .. ".outfield_press." .. team
+        )
+        local press_state = outfield_press.copy_state(source.outfield_press[team])
+        local presser_index = press_state.presser_index
+        if presser_index then
+            assert(
+                presser_index <= #source.players,
+                path .. ".outfield_press." .. team .. " presser is out of bounds"
+            )
+            local presser = source.players[presser_index]
+            assert(
+                presser.team == team,
+                path .. ".outfield_press." .. team .. " presser belongs to the wrong team"
+            )
+            assert(
+                not presser.is_keeper,
+                path .. ".outfield_press." .. team .. " presser cannot be a keeper"
+            )
+            assert(
+                source.slot_for_player[presser_index] == nil,
+                path .. ".outfield_press." .. team .. " presser cannot own a fixed input slot"
+            )
+            assert(
+                not source.human_controlled or source.controlled ~= presser_index,
+                path .. ".outfield_press." .. team .. " presser cannot be human-controlled"
+            )
+        end
+        result.outfield_press[team] = press_state
     end
     for index = 1, #source.events do
         result.events[index] = copy_event(source.events[index], path .. ".events." .. index)
@@ -656,6 +699,10 @@ local function copy_owned_state(source, make_vec)
         marks = {
             home = copy_owned_sparse_indices(source.marks.home),
             away = copy_owned_sparse_indices(source.marks.away),
+        },
+        outfield_press = {
+            home = outfield_press.copy_state(source.outfield_press.home),
+            away = outfield_press.copy_state(source.outfield_press.away),
         },
         ball_spin = source.ball_spin,
         rng = source.rng,
@@ -1029,6 +1076,13 @@ local function append_state(encoder, version, state)
         elseif field == "marks" then
             append_sparse_indices(encoder, value.home, #state.players)
             append_sparse_indices(encoder, value.away, #state.players)
+        elseif field == "outfield_press" then
+            for _, team in ipairs({ "home", "away" }) do
+                for _, press_field in ipairs(OUTFIELD_PRESS_FIELDS) do
+                    append_name(encoder, press_field)
+                    append_scalar(encoder, value[team][press_field])
+                end
+            end
         elseif field == "events" then
             append_scalar(encoder, #value)
             for index = 1, #value do
@@ -1298,6 +1352,18 @@ local function first_difference_canonical(a, b)
                             path .. "." .. team .. "." .. index,
                             av[team][index],
                             bv[team][index]
+                        )
+                    end
+                end
+            end
+        elseif field == "outfield_press" then
+            for _, team in ipairs({ "home", "away" }) do
+                for _, child in ipairs(OUTFIELD_PRESS_FIELDS) do
+                    if not same_scalar(av[team][child], bv[team][child]) then
+                        return difference(
+                            path .. "." .. team .. "." .. child,
+                            av[team][child],
+                            bv[team][child]
                         )
                     end
                 end

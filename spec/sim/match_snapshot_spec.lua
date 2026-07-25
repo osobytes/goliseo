@@ -6,6 +6,7 @@ local fixed_clock = require("sim.fixed_clock")
 local input_frame = require("sim.input_frame")
 local match = require("sim.match")
 local match_snapshot = require("sim.match_snapshot")
+local outfield_press = require("sim.outfield_press")
 local teams = require("data.teams")
 
 ---@return MatchState
@@ -18,6 +19,19 @@ local function new_state()
         max_goals = 3,
         seed = 38,
         input_ownership = match.ownership_for_teams(teams.nebula, teams.orion),
+    })
+end
+
+---@return MatchState
+local function new_ai_state()
+    return match.new({
+        home = teams.nebula,
+        away = teams.orion,
+        field = { w = 960, h = 540 },
+        duration = 2,
+        max_goals = 3,
+        seed = 38,
+        human_controlled = false,
     })
 end
 
@@ -642,7 +656,98 @@ t.describe("canonical match snapshots", function()
         t.eq(found.path, "state.players.2.outfield_decision.generation")
     end)
 
-    t.it("rejects malformed v7 and v8 context-intent pairs during restore", function()
+    t.it("restores and hashes team press state across soccer and combat boundaries", function()
+        for _, combat_active in ipairs({ false, true }) do
+            local state = new_ai_state()
+            state.outfield_press.home = outfield_press.resolve(2, {
+                heavy_touch = true,
+                exposed_ball = false,
+                cover_available = false,
+                box_desperation = false,
+                press_discipline = 1,
+            })
+            local companion = combat_active and combat.new_state(state) or nil
+            local snapshot = match_snapshot.capture(state, companion)
+            local restored, restored_combat = match_snapshot.restore(snapshot)
+            t.eq(restored.outfield_press.home.presser_index, 2)
+            t.eq(restored.outfield_press.home.mode, "commit")
+            t.eq(restored.outfield_press.home.reason, "heavy_touch")
+            t.eq(
+                match_snapshot.hash(match_snapshot.capture(restored, restored_combat)),
+                match_snapshot.hash(snapshot)
+            )
+        end
+    end)
+
+    t.it("diffs and strictly validates nested press state relations", function()
+        local state = new_ai_state()
+        state.outfield_press.home = outfield_press.contain(2)
+        local left = match_snapshot.capture(state)
+        local right = match_snapshot.capture(state)
+        right.state.outfield_press.home = outfield_press.resolve(2, {
+            heavy_touch = false,
+            exposed_ball = false,
+            cover_available = true,
+            box_desperation = false,
+            press_discipline = 1,
+        })
+        local found = assert(match_snapshot.first_difference_canonical(left, right))
+        t.eq(found.path, "state.outfield_press.home.mode")
+
+        local mutations = {
+            function(press)
+                press.version = outfield_press.VERSION + 1
+            end,
+            function(press)
+                press.presser_index = nil
+            end,
+            function(press)
+                press.presser_index = 99
+            end,
+            function(press)
+                press.presser_index = 1
+            end,
+            function(press)
+                press.presser_index = 7
+            end,
+            function(press)
+                press.unknown = true
+            end,
+        }
+        for index, mutate in ipairs(mutations) do
+            local malformed = match_snapshot.capture(state)
+            mutate(malformed.state.outfield_press.home)
+            t.is_true(
+                not pcall(match_snapshot.restore, malformed),
+                "malformed press state " .. index .. " was accepted"
+            )
+        end
+
+        local fixed = new_state()
+        local fixed_snapshot = match_snapshot.capture(fixed)
+        fixed_snapshot.state.outfield_press.home = outfield_press.contain(2)
+        t.is_true(
+            not pcall(match_snapshot.restore, fixed_snapshot),
+            "fixed-slot presser relation was accepted"
+        )
+
+        local human = match.new({
+            home = teams.nebula,
+            away = teams.orion,
+            field = { w = 960, h = 540 },
+            duration = 2,
+            max_goals = 3,
+            seed = 38,
+        })
+        local human_snapshot = match_snapshot.capture(human)
+        human_snapshot.state.outfield_press.home = outfield_press.contain(human.controlled)
+        t.is_true(
+            not pcall(match_snapshot.restore, human_snapshot),
+            "human-controlled presser relation was accepted"
+        )
+    end)
+
+    t.it("rejects malformed v8 and v9 context-intent pairs during restore", function()
         local state = new_state()
         local soccer = match_snapshot.capture(state)
         local soccer_decision = soccer.state.players[2].outfield_decision

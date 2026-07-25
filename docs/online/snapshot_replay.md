@@ -13,13 +13,13 @@ mode, `MatchState.input_tick` is the next causal `InputFrame.tick` to consume.
 The hash at boundary `N` therefore describes state after input `N - 1` and
 before input `N`.
 
-Snapshot version 7 explicitly lists every `MatchState` and `MatchPlayer` field
+Snapshot version 8 explicitly lists every `MatchState` and `MatchPlayer` field
 in canonical order. It includes match RNG, ball/player action state, fixed
 tick metadata, input ownership, both slot mappings, marking hysteresis,
 optional wind-up/dive payloads, each outfielder's derived scan/composure
-values, serializable decision cadence/intent and dedicated RNG state, and the current event list.
-Capture and restore deep-copy all tables, and restore reconstructs every
-`Vec2` metatable.
+values, serializable decision cadence/intent and dedicated RNG state, the two
+team-owned outfield press states, and the current event list. Capture and
+restore deep-copy all tables, and restore reconstructs every `Vec2` metatable.
 
 Version 2 adds the keeper's transient `save_style` and one-shot tip-event guard
 to `MatchPlayer`, plus optional `save_style` data on catch/parry events.
@@ -30,24 +30,25 @@ that lock with the explicit `keeper_state` / state timer and captured
 release-state, movement, shot-kind, and depth fields. Wind-up payloads now carry
 the shot type; shot/save events may carry shot type, on-target status, keeper
 state, and depth for deterministic telemetry. Snapshots and tapes carrying
-snapshot version 6 or earlier are intentionally rejected rather than silently
-restored without this behavior state. Version 7 adds the typed outfield
-decision-state contract and its canonical nested encoding. Soccer-only
-snapshots are now version 7
-and soccer-only input-tape envelopes remain version 1. The current soccer
-fixture uses InputFrame v2 and is pinned at tape digest `c203a244b09dff1d`;
+snapshot version 7 or earlier are intentionally rejected rather than silently
+restored without this behavior state. Version 7 added the typed outfield
+decision-state contract and its canonical nested encoding. Version 8 adds the
+typed team-owned presser identity, press mode, and reason contract. Soccer-only
+snapshots are now version 8 and soccer-only input-tape envelopes remain version
+1. The current soccer fixture uses InputFrame v2 and is pinned at tape digest
+`9a284e2bb181699f`;
 the published historical InputFrame-v1/InputTape-v1 artifact remains archived
-at `881917e3ba798703`. Version 7 preserves the version-1 soccer tape envelope
+at `881917e3ba798703`. Version 8 preserves the version-1 soccer tape envelope
 and all 7,201 effective input wires, not snapshot byte identity.
 
-Combat-capable boundaries use MatchSnapshot version 8. The top-level snapshot
+Combat-capable boundaries use MatchSnapshot version 9. The top-level snapshot
 owns `MatchState` and a version-1 `CombatMatchState` companion atomically;
 capture and restore pass both halves. The combat schema includes fixture player
 IDs, mechanical loadout/family IDs, every action and forced-state timer/latch,
 projectiles, the current one-tick combat event batch, and the monotonic source
 sequence. Projectile vectors are deep-copied and restored as `Vec2`.
 Presentation equipment IDs, animation, particles, audio, camera, and other
-cosmetic state are excluded. Version 7 rejects a combat companion, version 8
+cosmetic state are excluded. Version 8 rejects a combat companion, version 9
 requires one, and a combat-enabled match cannot be captured without passing
 its companion.
 
@@ -170,7 +171,7 @@ runtime, performance, and offline compatibility evidence is recorded in
 [`omp1_determinism.md`](omp1_determinism.md). This snapshot/tape layer remains
 diagnostic only; rollback and network behavior are still deferred to OMP-2.
 
-Snapshot-v7 also has a bounded synthetic replay regression for the goal window
+Snapshot-v8 also has a bounded synthetic replay regression for the goal window
 missing from the frozen 0-0 match. It constructs a real `InputTape` at the
 pre-goal boundary with all keeper behavior/release fields populated,
 replays three neutral frames through the goal, kickoff reset, and a post-kickoff
