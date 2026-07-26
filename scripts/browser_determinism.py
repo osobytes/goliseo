@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 import urllib.parse
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from http.server import ThreadingHTTPServer
@@ -467,6 +467,10 @@ def require_complete_shards(names: Iterable[str]) -> None:
     seen = list(names)
     expected = expected_shard_evidence()
     duplicates = sorted({name for name in seen if seen.count(name) > 1})
+    # No CI evidence tree can trip this: actions/upload-artifact enforces unique
+    # names per run and a directory listing cannot repeat an entry. It is part of
+    # this function's contract rather than of its caller's input, so the
+    # self-test asserts it by calling here directly instead of via the gate.
     if duplicates:
         raise RuntimeError(
             f"browser determinism evidence has duplicate shards: {', '.join(duplicates)}"
@@ -483,7 +487,26 @@ def require_complete_shards(names: Iterable[str]) -> None:
         )
 
 
-def load_shard_evidence(root: Path, artifact_name: str, browser_name: str, revision: str) -> Any:
+def marker_matches_golden(fields: Any) -> bool:
+    """Whether one record's determinism marker equals the pinned golden.
+
+    Split out so the per-record golden pin is a seam the self-test can switch
+    off. It is the stronger of the gate's two cross-runtime checks — it compares
+    each runtime against a recorded truth — but it is also the one that makes
+    `require_cross_runtime_agreement` unable to fail in a passing CI run. Being
+    able to disable exactly this check is what lets the self-test prove the
+    other one works rather than assume it.
+    """
+    return fields == REQUIRED_FIELDS
+
+
+def load_shard_evidence(
+    root: Path,
+    artifact_name: str,
+    browser_name: str,
+    revision: str,
+    marker_check: Callable[[Any], bool] = marker_matches_golden,
+) -> Any:
     """Load one shard's evidence, rejecting anything that is not its own proof."""
     path = root / artifact_name / shard_output_name(browser_name)
     if not path.is_file():
@@ -529,7 +552,7 @@ def load_shard_evidence(root: Path, artifact_name: str, browser_name: str, revis
             raise RuntimeError(
                 f"shard {artifact_name} carries a {record.get('browser')!r} record"
             )
-        if record.get("fields") != REQUIRED_FIELDS:
+        if not marker_check(record.get("fields")):
             raise RuntimeError(
                 f"shard {artifact_name} run {record.get('run')} did not match the pinned marker"
             )
@@ -558,18 +581,17 @@ def load_shard_evidence(root: Path, artifact_name: str, browser_name: str, revis
     return payload
 
 
-def aggregate_shards(root: Path, revision: str, shard_result: str) -> dict[str, Any]:
-    """Require every pinned shard and re-assert agreement across the runtimes."""
-    # Necessary, never sufficient: GitHub rolls a matrix job up to one result,
-    # which cannot see a shard that was never scheduled. The manifest below can.
-    if shard_result != "success":
-        raise RuntimeError(f"browser determinism shards did not succeed: result={shard_result}")
-    if not root.is_dir():
-        raise RuntimeError(f"browser determinism evidence root is missing: {root}")
-    require_complete_shards(sorted(entry.name for entry in root.iterdir() if entry.is_dir()))
-    payloads: dict[str, Any] = {}
-    for artifact_name, browser_name in sorted(expected_shard_evidence().items()):
-        payloads[browser_name] = load_shard_evidence(root, artifact_name, browser_name, revision)
+def require_cross_runtime_agreement(payloads: dict[str, Any]) -> tuple[dict[str, str], int]:
+    """Assert every fresh execution, in every shard, carries identical fields.
+
+    Deliberately independent of the golden pin `load_shard_evidence` applies per
+    record. That one asks "does each runtime match what we recorded"; this one
+    asks "do the runtimes match each other". They share no data and no code, so
+    a future relaxation of either — a field allowed to vary, a check refactored
+    into vacuity — cannot silently retire cross-runtime agreement. Redundant
+    while both stand, which is the point of stating it twice in a gate whose
+    whole job is proving determinism.
+    """
     canonical: dict[str, str] | None = None
     canonical_source = ""
     executions = 0
@@ -583,7 +605,38 @@ def aggregate_shards(root: Path, revision: str, shard_result: str) -> dict[str, 
                 raise RuntimeError(
                     f"{browser_name} run {record['run']} disagreed with {canonical_source}"
                 )
-    assert canonical is not None
+    if canonical is None:
+        raise RuntimeError("browser determinism evidence carries no fresh executions")
+    return canonical, executions
+
+
+def aggregate_shards(
+    root: Path,
+    revision: str,
+    shard_result: str,
+    marker_check: Callable[[Any], bool] = marker_matches_golden,
+) -> dict[str, Any]:
+    """Require every pinned shard and re-assert agreement across the runtimes.
+
+    `marker_check` is a seam, not a knob: CI always uses the default pinned
+    golden. `shard_gate_self_test` passes a permissive one so a record that is
+    structurally valid but carries divergent hashes can reach
+    `require_cross_runtime_agreement`, which is the only way to prove that
+    assertion still catches divergence on its own.
+    """
+    # Necessary, never sufficient: GitHub rolls a matrix job up to one result,
+    # which cannot see a shard that was never scheduled. The manifest below can.
+    if shard_result != "success":
+        raise RuntimeError(f"browser determinism shards did not succeed: result={shard_result}")
+    if not root.is_dir():
+        raise RuntimeError(f"browser determinism evidence root is missing: {root}")
+    require_complete_shards(sorted(entry.name for entry in root.iterdir() if entry.is_dir()))
+    payloads: dict[str, Any] = {}
+    for artifact_name, browser_name in sorted(expected_shard_evidence().items()):
+        payloads[browser_name] = load_shard_evidence(
+            root, artifact_name, browser_name, revision, marker_check
+        )
+    canonical, executions = require_cross_runtime_agreement(payloads)
     print(
         f"browser determinism gate: {executions} fresh executions across "
         f"{len(payloads)} shards agree at {canonical['final_hash']}/"
@@ -735,8 +788,18 @@ def shard_gate_self_test() -> None:
             else:
                 raise RuntimeError(f"gate accepted {label} evidence")
 
-        # Cross-runtime divergence is the assertion the single-job runner made in
-        # process; it survives sharding only because the gate re-applies it.
+        # A directory listing cannot repeat an entry, so the aggregate path can
+        # never reach the duplicate branch. Assert its contract where it lives.
+        try:
+            require_complete_shards(sorted(expected_shard_evidence()) * 2)
+        except RuntimeError as error:
+            if "duplicate" not in str(error):
+                raise RuntimeError("duplicate shard names failed for the wrong reason") from error
+        else:
+            raise RuntimeError("gate accepted duplicate shard evidence")
+
+        # Cross-runtime divergence is the assertion the single-job runner made
+        # in process. The whole gate must reject it...
         diverged = Path(temp) / "diverged"
         build_shard_fixture(diverged, revision)
         target = diverged / f"{SHARD_ARTIFACT_PREFIX}firefox" / shard_output_name("firefox")
@@ -750,6 +813,50 @@ def shard_gate_self_test() -> None:
             pass
         else:
             raise RuntimeError("gate accepted runtimes that disagreed with each other")
+
+        # ...but that alone proves nothing about which check did the rejecting:
+        # the per-record golden pin fires first and would hide a
+        # require_cross_runtime_agreement that had rotted into a no-op. Switch
+        # the pin off, leaving records that are structurally valid but carry
+        # divergent hashes, and require the comparison to catch them by itself.
+        def accept_any_marker(_fields: Any) -> bool:
+            return True
+
+        control = Path(temp) / "unpinned-control"
+        build_shard_fixture(control, revision)
+        aggregate_shards(control, revision, "success", accept_any_marker)
+        try:
+            aggregate_shards(diverged, revision, "success", accept_any_marker)
+        except RuntimeError as error:
+            if "disagreed with" not in str(error):
+                raise RuntimeError(
+                    "cross-runtime divergence failed for the wrong reason"
+                ) from error
+        else:
+            raise RuntimeError("the cross-runtime comparison does not catch divergence on its own")
+
+        # The mirror image, which pins the other assertion: every shard agreeing
+        # on a hash that is not the recorded one. The comparison above is blind
+        # to that by construction, so only the golden pin can reject it.
+        agreed_wrong = Path(temp) / "agreed-wrong"
+        build_shard_fixture(agreed_wrong, revision)
+        for browser_name in SHARD_BROWSERS:
+            wrong = (
+                agreed_wrong
+                / f"{SHARD_ARTIFACT_PREFIX}{browser_name}"
+                / shard_output_name(browser_name)
+            )
+            payload = json.loads(wrong.read_text(encoding="utf-8"))
+            for record in payload["records"]:
+                record["fields"]["final_hash"] = "0" * 16
+            wrong.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        try:
+            aggregate_shards(agreed_wrong, revision, "success")
+        except RuntimeError as error:
+            if "pinned marker" not in str(error):
+                raise RuntimeError("agreed-wrong evidence failed for the wrong reason") from error
+        else:
+            raise RuntimeError("gate accepted shards agreeing on a hash the golden does not pin")
     print("browser determinism shard gate self-test: OK")
 
 
