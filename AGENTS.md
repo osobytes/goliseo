@@ -261,6 +261,9 @@ assert(s2.selected == "1-2-1")
 - `./scripts/check.sh` runs format-check + type-check + tests; it must pass before commit.
 - Tests go in `spec/` mirroring the source tree (`spec/sim/progression_spec.lua`,
   `spec/screens/formation_spec.lua`). Run them headless with `love . --test`.
+- Branch names are `agent/<YYYY-MM-DD>-issue-<number>-<slug>`, e.g.
+  `agent/2026-07-25-issue-180-rollback-shards`. Branches predating this rule use a `codex/`
+  prefix — leave those alone; use `agent/` for anything new. No tooling keys off the prefix.
 - Small, focused commits. Conventional-ish messages: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`.
 - One change = one concern. Don't mix a refactor with a feature.
 - **Never add a `Co-Authored-By` trailer (or any co-author / "Generated with" line)
