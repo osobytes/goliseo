@@ -15,6 +15,11 @@ dist/
 lua_modules/
 *.rock
 
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
 # Environment and credentials
 .env
 .env.*
