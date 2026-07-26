@@ -650,7 +650,7 @@ until phase 4 automates it).
   pins, including values that shifted within tolerance.
 
 - **2026-07-26 — tactic-shaped counter-press and counter-attack windows
-  (issue 57). BASELINE NOT REFRESHED.** A settled possession change now opens
+  (issue 57).** A settled possession change now opens
   one counter-press window for the team that lost the ball and one
   counter-attack window for the team that won it, both decaying through
   `brain.phase` at the losing/winning tactic's authored seconds (Balanced
@@ -699,5 +699,17 @@ until phase 4 automates it).
   difference (was +6.7 before this change), still inside the 3-20 point gate,
   with three banded metrics moved.
 
-  `data/fun_baseline.lua` is deliberately UNCHANGED: the refresh is the repo
-  owner's call, so `love . --tripwire` reports DRIFT until it is taken.
+  `data/fun_baseline.lua` is refreshed with this entry, on the owner's explicit
+  approval of the drift above. Band status was checked field by field first. Two
+  metrics remain OUTSIDE their target bands -- shots/goal 21.514 (band 2.5-6) and
+  save rate 0.841 (band 0.45-0.75) -- but both were already outside on the
+  previous baseline (20.193 and 0.778); they are the inherited quality exceptions
+  owned by hands-on review, and this change moves them a further +0.134 and
+  +0.025 without hard-zeroing either (desirability 0.39 and 0.45). Every metric
+  that was inside its band stays inside: goals 2.040 [2-5], pass completion
+  0.576 [0.55-0.85], turnovers/min 4.013 [1-5], possession balance 0.405
+  [0.35-0.65], drought 10.926 s [0-35], decided-late 0.550 [0.4-1.0]. No metric
+  left a band it was previously inside, which is the condition that would have
+  stopped the refresh. `goals_total` now sits nearest its lower edge
+  (desirability 0.79) and is the field to watch if counter-pressing is
+  calibrated further.
