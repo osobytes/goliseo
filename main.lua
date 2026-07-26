@@ -366,7 +366,7 @@ if has_flag("--rollback-validation") then
         runtime_failed = runtime_failed or not passed
 
         local logical = rollback_validation.case_marker(completed)
-            .. "|gate_contract=6"
+            .. "|gate_contract=7"
             .. "|cpu_gate="
             .. (cpu_gate_applied and (cpu_gate and "1" or "0") or (cpu_gate_mode == "normalized_deferred" and "deferred" or "not_applied"))
             .. "|cpu_gate_applied="
@@ -417,7 +417,7 @@ if has_flag("--rollback-validation") then
             timings = table.concat({
                 "GC_ROLLBACK_TIMINGS",
                 "case",
-                "gate_contract=6",
+                "gate_contract=7",
                 "case=" .. completed.id,
                 "sample_count=" .. #samples,
                 "unit=microseconds",
@@ -440,7 +440,7 @@ if has_flag("--rollback-validation") then
             "runtime",
             "love=" .. major .. "." .. minor .. "." .. revision,
             "suite=" .. suite,
-            "gate_contract=6",
+            "gate_contract=7",
             "profile_digest=" .. rollback_validation.profile_digest(),
             "input_version=2",
             "tape_versions=1,2",
@@ -639,6 +639,7 @@ end
 
 if has_flag("--determinism") then
     local evidence = require("sim.determinism_evidence")
+    local input_protocol_conformance = require("game.online.input_protocol_conformance")
     local protocol_conformance = require("game.online.protocol_conformance")
     ---@type DeterminismCampaign?
     local browser_campaign
@@ -651,7 +652,7 @@ if has_flag("--determinism") then
     end
 
     ---@return boolean
-    local function verify_protocol_golden()
+    local function verify_protocol_goldens()
         local protocol_ok, protocol_result = pcall(protocol_conformance.verify)
         if not protocol_ok then
             print(
@@ -661,11 +662,20 @@ if has_flag("--determinism") then
             return false
         end
         print(protocol_conformance.marker(protocol_result))
+        local input_ok, input_result = pcall(input_protocol_conformance.verify)
+        if not input_ok then
+            print(
+                "GC_DETERMINISM|failure|message=input_protocol_golden_"
+                    .. tostring(input_result):gsub("|", "/")
+            )
+            return false
+        end
+        print(input_protocol_conformance.marker(input_result))
         return true
     end
 
     local function run_native_determinism()
-        if not verify_protocol_golden() then
+        if not verify_protocol_goldens() then
             os.exit(1)
         end
         local ok, result = pcall(evidence.verify)
@@ -678,7 +688,7 @@ if has_flag("--determinism") then
 
     function love.load()
         if has_flag("--browser-runtime") then
-            if not verify_protocol_golden() then
+            if not verify_protocol_goldens() then
                 love.event.quit(1)
                 return
             end

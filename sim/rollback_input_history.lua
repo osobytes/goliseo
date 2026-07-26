@@ -23,6 +23,18 @@ local input_frame = require("sim.input_frame")
 ---@field confirmed_tick integer -- Highest contiguous all-authoritative tick, or -1 before tick zero.
 ---@field earliest_divergence integer? -- Earliest unconsumed corrected tick used by the simulation.
 
+---@class RollbackAuthoritativeInput
+---@field tick integer
+---@field slot_index integer
+---@field sample InputSample
+
+---@class RollbackAuthoritativeBatchArrival
+---@field inserted integer
+---@field duplicates integer
+---@field inserted_rows RollbackAuthoritativeInput[]
+---@field confirmed_tick integer
+---@field earliest_divergence integer?
+
 ---@class RollbackInputAnchor
 ---@field tick integer
 ---@field sample InputSample
@@ -116,6 +128,24 @@ local function samples_equal(left, right)
         and left.move_y == right.move_y
         and left.held == right.held
         and left.edges == right.edges
+end
+
+---@param value any
+---@return boolean
+local function is_array(value)
+    if type(value) ~= "table" then
+        return false
+    end
+    local count = 0
+    local greatest = 0
+    for index in pairs(value) do
+        if not is_integer(index) or index < 1 then
+            return false
+        end
+        count = count + 1
+        greatest = math.max(greatest, index)
+    end
+    return count == greatest
 end
 
 ---@param sample InputSample
@@ -347,6 +377,114 @@ function rollback_input_history.add_authoritative(history, tick, slot_index, sam
 
     return {
         duplicate = false,
+        confirmed_tick = history._confirmed_tick,
+        earliest_divergence = history._earliest_divergence,
+    }
+end
+
+-- Validate a complete transport-tick batch before retaining any row. This
+-- prevents a late conflict or malformed row from leaving a partially applied
+-- authority set whose result depends on peer polling order.
+---@param history RollbackInputHistory
+---@param arrivals RollbackAuthoritativeInput[]
+---@return RollbackAuthoritativeBatchArrival?, string?, RollbackInputHistoryErrorCode?
+function rollback_input_history.add_authoritative_batch(history, arrivals)
+    assert_history(history)
+    if not is_array(arrivals) or #arrivals == 0 then
+        return nil, "authoritative input batch must be a non-empty canonical array", "malformed"
+    end
+
+    local planned = {}
+    local planned_rows = {}
+    local duplicates = 0
+    local previous_tick = nil
+    local previous_slot = nil
+    for _, arrival in ipairs(arrivals) do
+        if type(arrival) ~= "table" then
+            return nil, "authoritative input batch row must be a table", "malformed"
+        end
+        local ok, err, code = validate_arrival(arrival.tick, arrival.slot_index, arrival.sample)
+        if not ok then
+            return nil, err, code
+        end
+        if
+            previous_tick ~= nil
+            and (
+                arrival.tick < previous_tick
+                or (arrival.tick == previous_tick and arrival.slot_index < assert(previous_slot))
+            )
+        then
+            return nil, "authoritative input batch is not in canonical tick-slot order", "malformed"
+        end
+        previous_tick = arrival.tick
+        previous_slot = arrival.slot_index
+        if arrival.tick < history._oldest_retained_tick then
+            return nil,
+                ("authoritative input tick %d is older than retained tick %d"):format(
+                    arrival.tick,
+                    history._oldest_retained_tick
+                ),
+                "outside_window"
+        end
+
+        local key = tostring(arrival.tick) .. ":" .. tostring(arrival.slot_index)
+        local prior = planned[key]
+        if prior ~= nil then
+            if not samples_equal(prior.sample, arrival.sample) then
+                return nil,
+                    ("authoritative input conflicts at tick %d slot %d"):format(
+                        arrival.tick,
+                        arrival.slot_index
+                    ),
+                    "conflicting_authoritative"
+            end
+            duplicates = duplicates + 1
+        else
+            local slots = history._authoritative[arrival.tick]
+            local existing = slots and slots[arrival.slot_index] or nil
+            if existing ~= nil then
+                if not samples_equal(existing, arrival.sample) then
+                    return nil,
+                        ("authoritative input conflicts at tick %d slot %d"):format(
+                            arrival.tick,
+                            arrival.slot_index
+                        ),
+                        "conflicting_authoritative"
+                end
+                duplicates = duplicates + 1
+            else
+                local copied = {
+                    tick = arrival.tick,
+                    slot_index = arrival.slot_index,
+                    sample = copy_sample(arrival.sample),
+                }
+                planned[key] = copied
+                planned_rows[#planned_rows + 1] = copied
+            end
+        end
+    end
+
+    local inserted_rows = {}
+    for index, arrival in ipairs(planned_rows) do
+        local result = assert(
+            rollback_input_history.add_authoritative(
+                history,
+                arrival.tick,
+                arrival.slot_index,
+                arrival.sample
+            )
+        )
+        assert(not result.duplicate, "rollback batch preflight produced a duplicate insertion")
+        inserted_rows[index] = {
+            tick = arrival.tick,
+            slot_index = arrival.slot_index,
+            sample = copy_sample(arrival.sample),
+        }
+    end
+    return {
+        inserted = #inserted_rows,
+        duplicates = duplicates,
+        inserted_rows = inserted_rows,
         confirmed_tick = history._confirmed_tick,
         earliest_divergence = history._earliest_divergence,
     }
