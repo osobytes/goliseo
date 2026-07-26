@@ -5243,13 +5243,19 @@ def run_self_test() -> None:
         gate = "1" if mode == "absolute" else "not_applied"
         applied = "1" if mode == "absolute" else "0"
         digest = "0000000000000004" if combat else "0000000000000003"
+        # These two must track validate_case_integrity's expected_tape_version and
+        # expected_snapshot_version, which a gameplay change that alters the
+        # snapshot format bumps. If this fixture starts reporting the wrong
+        # version, update it there and here together.
+        tape_version = "2" if combat else "1"
+        snapshot_version = "12" if combat else "11"
         return (
             f"{MARKER_PREFIX}|case|schema=1|case={case['case']}|"
             f"scenario={case['scenario']}|profile={profile}|"
             f"network_seed={case['network_seed']}|success=1|lab_success=1|"
             "expected_failure=0|status=converged|late_tick=none|hidden_progress=0|"
-            f"scenario_pass=1|tape_version={'2' if combat else '1'}|"
-            f"snapshot_version={'11' if combat else '10'}|"
+            f"scenario_pass=1|tape_version={tape_version}|"
+            f"snapshot_version={snapshot_version}|"
             f"tape_digest={'1111111111111111' if combat else HISTORICAL_SOCCER_TAPE_DIGEST}|"
             "initial_hash=0000000000000001|reference_hash=0000000000000002|"
             "client_hash=0000000000000002|rollbacks=8|max_depth=8|"
