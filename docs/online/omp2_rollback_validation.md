@@ -77,7 +77,7 @@ diagnostically.
 | native nearest-rank p99.9 rollback wall duration | `< 33.3 ms` | native runtime matrix |
 | browser playable p95 work / paired clean p95 work | `< 6.7` | browser runtime matrix aggregate |
 | browser playable p99.9 rollback / **the same playable case's** p95 work, only when the playable case recorded `>= 1000` rollback samples | `< 2.6` | browser runtime matrix aggregate |
-| browser playable p99.9 rollback, absolute, under the same sample-count precondition | `< 39.7 ms` | browser runtime matrix aggregate |
+| browser playable p99.9 rollback, absolute, under the same sample-count precondition (a CI noise ceiling, **not** a frame budget) | `< 39.7 ms` | browser runtime matrix aggregate |
 | retained snapshot boundaries | `<= 31` | every playable case |
 | canonical retained snapshot payload | `< 768 KiB` | every playable case |
 | exact accounted snapshot/input/output/event history | `< 1 MiB` | every playable case |
@@ -135,8 +135,10 @@ still published: each pair carries `rollback_p999_gate.sample_count`,
 `rollback_p999_gate.normalized_ratio`, `rollback_p999_gate.composite_ratio`,
 `rollback_p999_gate.playable_rollback_p999_ms`, `rollback_p999_gate.normalizer`,
 `rollback_p999_gate.absolute_ceiling_ms`, `rollback_p999_gate.applied`, and a
-`rollback_p999_gate.status` of either `gated` or
-`diagnostic_sample_count_below_p999_floor`, so the artifact says exactly which pairs were enforced.
+`rollback_p999_gate.status`, so the artifact says exactly which pairs were enforced. The statuses
+are `gated`, `diagnostic_sample_count_below_p999_floor`, `error_sample_count_unavailable`, and
+`error_scenario_thresholds_uncalibrated`. Only the first means the comparisons ran; the two
+`error_` statuses fail the pair.
 
 `browser_cpu_case` is what makes a bad sample count fail closed: `rollback_sample_count` is one of
 the required metric count fields, it must parse through `non_negative_integer`, and a case that
@@ -207,25 +209,59 @@ playable partner did not. The playable case's p95 work shares the runner, the se
 window and the workload with the tail it normalizes, so it tracks the machine the tail was actually
 measured on.
 
-Normalizing inside one session is what makes the gate stable, and it is also what would let a
-uniformly slower build move numerator and denominator together. Two things stop that from becoming
-an exemption, and both are load-bearing:
-
-- **`p95_work_over_clean_p95 < 6.7` bounds the normalizer itself.** The denominator of the new
-  ratio is the numerator of the existing gate, so the playable p95 cannot grow relative to the same
-  runner's clean control without failing. A regression that inflates per-tick work fails there.
-- **`playable_rollback_p999_ms < 39.7 ms` bounds the tail absolutely.** No ratio can excuse it.
-
-What each gate is for, stated plainly: the p95-work ratio detects a **sustained** slowdown of the
+What each gate detects, stated plainly: the p95-work ratio detects a **sustained** slowdown of the
 playable build against its clean control on the same runner; the normalized tail ratio detects a
 **rollback-specific tail** regression, one that lifts the worst rollbacks without lifting typical
-per-tick work; the absolute ceiling detects a build that is simply too slow in a browser, however
-the ratios read. Runner noise moves all three numerators and denominators together and is what the
-normalization removes; a real regression moves them apart and is what the gates are shaped to see.
+per-tick work; the absolute ceiling bounds the tail in milliseconds however the ratios read. Runner
+noise moves the tail and its normalizer together and is what the normalization removes.
 
 The composite `rollback_p999_over_clean_p95` figure is still computed and published on every pair
 under contract 7, and `rollback_p999_gate.composite_ratio` carries it, so the contract-6 number
 stays comparable across the archive. It is a diagnostic, not a gate.
+
+### The proportional blind spot
+
+Those three gates do **not** partition the space of regressions, and the gap is worth stating
+precisely rather than hedging.
+
+Normalizing the tail by a measurement from the same session makes the normalized ratio **exactly
+invariant** under a proportional regression: `(k * p999) / (k * p95) == p999 / p95` for every `k`,
+however large. The derivative is zero. This is not "reduced sensitivity" — the normalized ratio
+contributes *nothing at all* to detecting this class, and it is a blind spot contract 7
+**introduces**. Contract 6 divided by the clean control, an independent reference that such a
+regression leaves untouched, so it did inflate and was caught.
+
+The class is not contrived. Resimulation replays buffered input through the same per-tick step that
+produces both `p95_work_ms` and the rollback tail, so a regression there moves both together.
+
+Only the work-ratio gate and the absolute ceiling bound it, and both are loose. Across the 48
+recorded `complete_fixture` pairs, the factor a uniform playable-build slowdown must reach before
+either fires:
+
+| | factor | undetected slowdown |
+| --- | ---: | ---: |
+| best recorded pair | 1.174 | 17% |
+| median pair | **1.256** | **26%** |
+| middle 90% | 1.183--1.334 | 18--33% |
+| worst recorded pair | 1.573 | 57% |
+
+**A uniform slowdown of the playable build below roughly 25% is not detected.** The work gate is
+the binding backstop in 37 of those 48 pairs and the ceiling in the other 11.
+
+The 1.573 worst case is worth naming: it is the sharded chrome seed 2001 pair, the same pair whose
+clean control misreported. When the clean control reads slow, the work-ratio backstop loosens in
+the same motion, so the two weaknesses compound rather than cover for each other.
+
+Worked example, run 30176706801 chrome seed 2001 (`clean_p95` 3.295 ms, `playable_p95` 16.52 ms,
+`playable_p999` 29.18 ms) under a uniform 1.30x playable slowdown: work ratio 6.518 (`< 6.7`,
+passes), normalized ratio 1.766 (unchanged, `< 2.6`, passes), absolute 37.93 ms (`< 39.7`, passes).
+A ~30% rollback-resimulation regression clears every gate on that pair.
+
+This is a deliberate trade — the clean control's session noise is what made contract 6 fail healthy
+builds — but it is a real loss, not a wash. The self-test pins it as a bounded property: a
+proportionally scaled pair must leave the normalized ratio bit-identical, must pass every gate at
+1.2x, and must be caught by the work gate at 1.3x. Tightening it is a deliberate future decision,
+and those assertions are what will notice when someone makes it.
 
 ### Calibration
 
@@ -233,8 +269,23 @@ stays comparable across the archive. It is a diagnostic, not a gate.
 [`30060058593`](https://github.com/osobytes/goliseo/actions/runs/30060058593) and
 [`30065880550`](https://github.com/osobytes/goliseo/actions/runs/30065880550).
 Across their 12 seed pairs, p95-work ratios ranged from 5.328 to 5.799. The threshold is that
-accepted maximum plus 15%, rounded upward to one decimal. This is intentionally not a boundary
-fitted to the next observed sample.
+accepted maximum plus 15%, rounded upward to one decimal.
+
+**`6.7` is itself uncalibrated against current hardware and is already breached by a recorded
+healthy pair.** Across all 96 recorded pairs the maximum observed p95-work ratio is **6.796407**,
+which is **-1.4% headroom** — run
+[`30179056065`](https://github.com/osobytes/goliseo/actions/runs/30179056065), firefox
+`complete_fixture` seed 2001, on `main`, recorded `"pass": false` with
+`p95_work_ratio=6.796407186 does not meet <6.7`. That is the #177 false failure itself, still
+unfixed. It matters here because the work gate is the primary backstop for the proportional class
+above: it binds in 37 of 48 pairs. Recalibrating it is tracked in
+[#191](https://github.com/osobytes/goliseo/issues/191) and is deliberately out of scope for
+contract 7, which would be unreviewable if it moved two gates at once.
+
+`39.7 ms` is a **CI noise ceiling, not a frame-budget claim.** It is `34.520 * 1.15` and nothing
+more. Do not read it as the browser analogue of the native `< 33.3 ms` p99.9 budget: that number is
+a deliberate two-frame claim at 60 fps, whereas 39.7 ms is 2.38 frames and asserts nothing about
+frame pacing. The browser matrix makes no frame-budget claims.
 
 `2.6` and `39.7 ms` are calibrated the same way, but on a different population, because contract 7
 changed the statistic and the contract-5 calibration pair predates it. They are carried from the 42
@@ -263,12 +314,19 @@ times two browsers times three seeds of `complete_fixture` only, every one of th
 case. Every threshold here is calibrated on the `complete_fixture` distribution alone.
 `6.7` is applied to `complete_fixture` and `combat` alike, which is a deliberate extrapolation for
 a statistic that is sound at both sample counts. `2.6` and `39.7 ms` are applied only to
-`complete_fixture` in practice, because it is the only scenario that clears the sample-count floor.
-If a future `combat` fixture grows past 1,000 rollbacks, its distribution must be recalibrated
-before either number can be treated as a bound on it -- the recorded combat pairs reach a
-normalized ratio of 3.437 at six samples, well past 2.6, so reusing these thresholds there would
+`complete_fixture`, and that restriction is **enforced in code, not documented in a comment**.
+`BROWSER_ROLLBACK_TAIL_CALIBRATED_SCENARIOS` names the calibrated scenarios; a pair from any other
+scenario that clears the sample floor fails closed with
+`rollback_p999_gate.status = error_scenario_thresholds_uncalibrated`, rather than silently
+borrowing thresholds fitted to a different distribution.
+
+That guard exists because the borrowing would be wrong: the recorded combat pairs reach a
+normalized ratio of **3.437** at six samples, well past 2.6, so reusing these numbers there would
 re-create exactly the false failure [#178](https://github.com/osobytes/goliseo/pull/178) removed.
-That is also why the absolute ceiling rides the same sample-count floor as the normalized ratio.
+If [#179](https://github.com/osobytes/goliseo/issues/179) redesigns the combat fixture past 1,000
+rollbacks, it has to calibrate combat's own distribution and add it to that set — CI will fail
+until it does. The same reasoning is why the absolute ceiling rides the sample-count floor
+alongside the normalized ratio.
 
 Failed exact run
 [`30075505461`](https://github.com/osobytes/goliseo/actions/runs/30075505461)
