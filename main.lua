@@ -355,7 +355,7 @@ if has_flag("--rollback-validation") then
         runtime_failed = runtime_failed or not passed
 
         local logical = rollback_validation.case_marker(completed)
-            .. "|gate_contract=6"
+            .. "|gate_contract=7"
             .. "|cpu_gate="
             .. (cpu_gate_applied and (cpu_gate and "1" or "0") or (cpu_gate_mode == "normalized_deferred" and "deferred" or "not_applied"))
             .. "|cpu_gate_applied="
@@ -406,7 +406,7 @@ if has_flag("--rollback-validation") then
             timings = table.concat({
                 "GC_ROLLBACK_TIMINGS",
                 "case",
-                "gate_contract=6",
+                "gate_contract=7",
                 "case=" .. completed.id,
                 "sample_count=" .. #samples,
                 "unit=microseconds",
@@ -429,7 +429,7 @@ if has_flag("--rollback-validation") then
             "runtime",
             "love=" .. major .. "." .. minor .. "." .. revision,
             "suite=" .. suite,
-            "gate_contract=6",
+            "gate_contract=7",
             "profile_digest=" .. rollback_validation.profile_digest(),
             "input_version=2",
             "tape_versions=1,2",
