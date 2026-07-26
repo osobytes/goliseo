@@ -4,6 +4,7 @@
 --   love . --sim [n]          -> play n unattended matches, print fun-proxy metrics, exit
 --   love . --snapshot-measure [n] -> measure canonical snapshot operations n times
 --   love . --combat-feedback-fixture -> visually review the crowded #147 feedback fixture
+--   love . --keeper-pose-snapshots [write] -> check or refresh #46 visual baselines
 --   love . --rollback-lab [profile] [seed] [corrupt] -> run the OMP-2 lab
 --   love . --rollback-validation SUITE [profile] [seed] -> gate OMP-2 evidence
 --   love . --determinism      -> verify the frozen OMP-1 complete-match evidence
@@ -74,6 +75,16 @@ local function args_after(flag)
         end
     end
     return nil, nil, nil
+end
+
+if has_flag("--keeper-pose-snapshots") then
+    function love.load()
+        local mode = args_after("--keeper-pose-snapshots")
+        local ok, report = require("spec.support.keeper_pose_snapshots").run(mode == "write")
+        print(report)
+        os.exit(ok and 0 or 1)
+    end
+    return
 end
 
 if has_flag("--sim") then

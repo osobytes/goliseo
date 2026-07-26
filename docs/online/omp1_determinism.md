@@ -1,7 +1,7 @@
 # OMP-1 determinism evidence
 
-Status: **native pass on the authoritative snapshot-v9 fixture**. The accepted
-snapshot-v4 Chrome/Firefox evidence remains historical until CI records the v9
+Status: **native pass on the authoritative snapshot-v10 fixture**. The accepted
+snapshot-v4 Chrome/Firefox evidence remains historical until CI records the v10
 browser run; the snapshot-v1 browser artifact is also preserved below.
 
 This report closes the OMP-1 evidence line. It proves that one complete,
@@ -22,7 +22,7 @@ the explicit refresh command is invoked.
 | Identity field | Frozen value |
 | --- | --- |
 | Fixture | `omp1-nebula-orion-eight-streams-v2` |
-| Tape / input / snapshot versions | `1 / 2 / 9` |
+| Tape / input / snapshot versions | `1 / 2 / 10` |
 | Build | `omp1-determinism-v1` |
 | Source | `issue-39-canonical-recording-v1` |
 | Content | `nebula-orion-showcase-content-v1` |
@@ -40,7 +40,7 @@ with an integer tick budget and version the fixture.
 
 ## Hash and repeated-run result
 
-Every boundary is encoded with canonical snapshot version 9 and hashed with
+Every boundary is encoded with canonical snapshot version 10 and hashed with
 the browser-safe FNV-1a-64 implementation. Verification performs these three
 checks:
 
@@ -53,11 +53,11 @@ The authoritative values are:
 
 ```text
 boundaries=7202
-final_hash=db0c203af21d6cfd
-sequence_digest=e1040cdab6b46393
+final_hash=650b2f0c5498aaa7
+sequence_digest=4bc8f6edabd9b43e
 score=0-0
 outcome=draw
-final_snapshot_bytes=21389
+final_snapshot_bytes=21659
 ```
 
 The complete match produced:
@@ -90,16 +90,25 @@ continue to change only `snapshot_version`. In either case, refresh consumes
 every migrated frozen frame in order to regenerate snapshot hashes. Bot
 materialization is not part of the refresh path.
 
-The snapshot-v9 migration retains the canonical 725,882-byte block of 7,201
+The snapshot-v10 migration retains the canonical 725,882-byte block of 7,201
 effective input wires byte-for-byte
 (`SHA-256 380908c9ae2ab1a04b1dfd1196d1395a7ea047160c31cff41dcbb2758c08a7f7`).
-It adds each team's authored formation identity and OutfieldDecision v2's
-optional run expiry, and changes those decision records to compact positional
-encoding. Fixed-slot players remain excluded from match AI, so the frozen
-score, event counts, and effective inputs do not change. The positional
-encoding reduces the final snapshot from 22,488 to 21,389 bytes despite the
-new formation fields. Only schema identity, canonical bytes, boundary hashes,
-sequence digest, and snapshot size are refreshed.
+It adds one keeper field, `keeper_get_up_timer`: the simulation-owned window
+that arms when a dive lunge ends and decays under the fixed timestep, so the
+post-dive get-up pose reads a real recovery timer instead of the keeper's
+`recover` positioning state. Fixed-slot players remain excluded from match AI,
+so the frozen score, event counts, and effective inputs do not change. The new
+per-player scalar grows the final snapshot from 21,389 to 21,659 bytes. Only
+schema identity, canonical bytes, boundary hashes, sequence digest, and
+snapshot size are refreshed.
+
+The snapshot-v9 migration also retained all effective input wires byte-for-byte.
+It added each team's authored formation identity and OutfieldDecision v2's
+optional run expiry, and changed those decision records to compact positional
+encoding. Fixed-slot players remained excluded from match AI, so the score,
+event counts, and effective inputs did not change; the positional encoding
+reduced the final snapshot from 22,488 to 21,389 bytes despite the new
+formation fields.
 
 The snapshot-v8 migration also retained all effective input wires byte-for-byte.
 It added one compact, versioned, team-owned outfield press state per side:
@@ -209,7 +218,7 @@ than skips, if Chrome or Firefox is missing.
 
 ## Runtime verification
 
-The authoritative snapshot-v9 fixture passes the two-fresh-process native
+The authoritative snapshot-v10 fixture passes the two-fresh-process native
 command above. CI builds a clean love.js artifact and runs the same current
 fixture in real Chrome and Firefox; that workflow, rather than a hand-edited
 evidence file, supplies the current browser integration proof.
@@ -223,7 +232,7 @@ evidence file, supplies the current browser integration proof.
 
 Those four historical browser executions produced final hash
 `b379a3a3ab5d7682` and sequence digest `0ff53075e3e626e0`. They are not presented
-as proof for the current v9 hashes.
+as proof for the current v10 hashes.
 
 The clean browser artifact was built from source commit `16fad22`, with package
 SHA-256 `2ec87dfa91770ea6b6772444c490808bf4ef7eaf2eca9693a3e7fbca27187f4f`.
@@ -260,7 +269,7 @@ browser artifact packaging path is replaced by this evidence work.
 ## Remaining OMP-2 risks
 
 - The checked-in browser artifact is historical snapshot-v1 evidence. Current
-  snapshot-v9 Chrome/Firefox proof runs in CI and is not a substitute for
+  snapshot-v10 Chrome/Firefox proof runs in CI and is not a substitute for
   Windows, macOS, or cross-architecture floating-point evidence.
 - The full-time boundary currently depends on floating countdown semantics
   and consumes 7,201 inputs for a nominal 7,200-tick duration.

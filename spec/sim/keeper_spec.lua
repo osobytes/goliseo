@@ -166,6 +166,8 @@ end)
 
 t.describe("keeper.save_style", function()
     t.it("leaves the 26-pixel smother boundary to the claim branch", function()
+        t.is_true(keeper.in_smother_range(26))
+        t.is_true(not keeper.in_smother_range(26.000001))
         local ok = pcall(keeper.save_style, 26, 0, 100)
         t.is_true(not ok)
         t.eq(keeper.save_style(26.000001, 100, 100), "spread")

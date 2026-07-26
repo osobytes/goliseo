@@ -203,7 +203,7 @@ end
 
 t.describe("OMP-2 authoritative-reference rollback laboratory", function()
     t.it("pins the live soccer tape digest without a synthetic combat segment", function()
-        t.eq(rollback_lab.tape_digest(determinism_evidence.fixture_tape()), "9eb8012dc0bdc304")
+        t.eq(rollback_lab.tape_digest(determinism_evidence.fixture_tape()), "be647d4f656aeedb")
     end)
 
     t.it("converges combat state and confirmed events through delayed authority", function()
