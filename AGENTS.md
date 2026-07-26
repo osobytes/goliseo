@@ -275,3 +275,8 @@ assert(s2.selected == "1-2-1")
   substantial additions before building ahead.
 - Respect the layer boundaries in §2 — they're the one rule that's expensive to fix later.
 - When unsure about a shape, define the `---@class`/`---@alias` first, then implement.
+- Use `scripts/gh-project` instead of the global `gh` CLI for any GitHub operation in this repo
+  (issues, PRs, comments, checks). It scopes auth to a profile dedicated to this checkout instead
+  of your default `gh` account. Authenticate once with
+  `scripts/gh-project auth login --hostname github.com --git-protocol ssh`, then use
+  `scripts/gh-project` anywhere you'd otherwise type `gh`.
