@@ -19,21 +19,21 @@ local conformance = {}
 
 ---@type SessionProtocolGolden
 conformance.GOLDEN = {
-    manifest_id = "27c9d39785b1aaaf",
-    transcript_id = "937cff176fa6af3b",
+    manifest_id = "fd826ceb66f9a4be",
+    transcript_id = "b4e3ed977697caa5",
     complete_kind = "manifest_accept",
-    complete_wire = "GCOP;1;t7:s4:bodyt1:s11:manifest_ids16:27c9d39785b1aaafs4:kinds15:"
+    complete_wire = "GCOP;1;t7:s4:bodyt1:s11:manifest_ids16:fd826ceb66f9a4bes4:kinds15:"
         .. "manifest_accepts10:message_ids32:GCMI;1;13:session_alpha4:host1:2s7:peer_ids4:"
         .. "hosts8:sequencei1:2s10:session_ids13:session_alphas7:versioni1:1",
     wire_digests = {
         handshake = "839047279d13a02d",
-        manifest_proposal = "1dcf8f797d10959b",
-        manifest_accept = "ae5be4cbc3ee95a7",
+        manifest_proposal = "2cc5bb470c61ef8c",
+        manifest_accept = "36db7cdbb413c6eb",
         peer_assignment = "fa48b31571dfe543",
-        slot_assignment = "6e8c875614e8f09f",
-        ready = "cad0ec0f926a9114",
-        countdown = "20c0ebc16e3c7047",
-        start = "a7c87a120e4c8150",
+        slot_assignment = "7b8f691d6e6e9e0b",
+        ready = "f28a421eb47861c8",
+        countdown = "86c50f3e7d2a3e8b",
+        start = "ce186e1f7602ee8c",
         match_phase = "1671940891b78f1f",
         hash_report = "4405d9323b1e5b0f",
         result_ack = "5f466e6740c6d4cf",

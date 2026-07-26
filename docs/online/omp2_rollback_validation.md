@@ -300,39 +300,43 @@ warm-up baseline, with a diagnostic peak of 22,296,061 bytes (+2.714141%);
 process-tree RSS ended +0.703655%, with a diagnostic peak of 163,897,344 bytes
 (+1.280753%). Both remain below the 10% limit.
 
-The issue-56 v9/v10 schema migration was revalidated locally on 2026-07-25
-from dirty source based on
-`97b60ea3fb576cfbde46ba623d63409f82f67673`. The exact native artifact is
-`/tmp/omp2-rollback-native-issue-56-rerun.json` (3,897,418 bytes), with
+The rebased issue-56 v9/v10 campaign was revalidated locally on 2026-07-25
+with the merged execution-error and session-protocol work present. It ran from
+dirty source based on `487e7947555d04f3b20736f0cad1f6e4199576bc`,
+itself rebased onto `583b8c279fadc4075c446a5e9abcb9f956dfb4af`.
+The exact native artifact is
+`/tmp/omp2-rollback-native-issue-56-rebased.json` (3,892,980 bytes), with
 SHA-256
-`9e1836408ad8a62a379ec9a01aa638bd2b81a731bd31a773d939708085b8fd8a`.
+`bab77e3b49c01ce12d7c0f3e9be042435472081fa69eb61a9603a1e2797f39c7`.
 Two fresh 54-case runs agreed on logical marker SHA-256
 `85507a61e6a4bb8104d0e02dc74324430c60a3465cd9fbc9b148db68cf187a61`.
 The late-window marker was
 `a824168740a2229c2dabc6d2a1485cbb003875c1fad1760e65ce2b5d114ae857`;
 the persistent ten-case soak marker was
-`2251f58d9617a2ed26a18e4f9837606be378995eb8302f01bf746f9945c8ba78`.
+`fee9968bddbda407202998961ad103c61416089858f90291eea4e2eabdec5c8f`.
 
 The current combat peak is 749,203 canonical snapshot bytes, leaving 37,229
 bytes below the 768-KiB gate. Total retained history peaked at 803,713 bytes,
 leaving 244,863 bytes below 1 MiB. The clean-2001 combat case retained 14
 confirmed combat events with no rollback. Its playable-2001 case performed
 eight rollbacks and 20 resimulated ticks, peaked at 749,203 snapshot bytes and
-802,910 history bytes, and recorded 2.023796 ms p95 work plus 1.827 ms
+802,910 history bytes, and recorded 2.669125 ms p95 work plus 3.140 ms
 p99.9/max rollback time. The complete soccer playable-2001 case performed
 6,903 rollbacks and 25,905 resimulated ticks, peaked at 671,786 snapshot bytes
-and 737,549 history bytes, and recorded 3.124138 ms p95 work plus 12.177 ms
-p99.9 rollback time (12.957 ms maximum).
+and 737,549 history bytes, and recorded 2.872758 ms p95 work plus 11.196 ms
+p99.9 rollback time (12.177 ms maximum).
 
 The exact 30-tick late case converged after 40 rollbacks at depth 30 and 765
 resimulated ticks, peaking at 629,024 snapshot bytes and 683,994 history bytes.
 Delay 31 reached the required `late_input_unrecoverable` terminal at tick 0,
 peaking at 627,725 snapshot bytes and 686,139 history bytes. The native soak
-also passed: Lua heap ended at 21,345,848 bytes versus a 21,674,100-byte
-warm-up baseline (0% positive terminal growth), with a 22,861,772-byte
-diagnostic peak (+5.479683%). Process-tree RSS ended at 164,032,512 bytes
-versus 162,742,272 bytes (+0.792812%), with a 164,462,592-byte diagnostic peak
-(+1.057082%). Every value remains below its gate.
+also passed: Lua heap ended at 21,793,954 bytes versus a 22,769,890-byte
+warm-up baseline, and process-tree RSS ended at 159,748,096 bytes versus
+163,926,016 bytes. Both terminal-growth values were 0%, their diagnostic peaks
+were the warm-up samples, and teardown was orphan-free. The soak's fifth
+complete-match fixture recorded one diagnostic 41.588 ms rollback, while its
+nearest-rank p99.9 remained 19.138 ms; soak CPU timing is diagnostic rather
+than an absolute gate. Every enforced value remains below its gate.
 Browser evidence waits inside the page for newly appended console entries and returns only the
 delta at each marker. It does not poll and reserialize the cumulative console array through
 WebDriver every frame interval, because those protocol allocations would contaminate Chrome's

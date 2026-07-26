@@ -607,3 +607,44 @@ until phase 4 automates it).
   crossed tolerance: goals, save rate, drought, decided-late, controlled
   touches, and team-AI heavy losses. Every in-tolerance signature retains its
   previous pin.
+
+- **2026-07-25 — rebased execution-error plus role-run combined head.**
+  This audit starts from the merged execution-error baseline on `main`, then
+  applies the final role-run implementation and target-validity corrections.
+  AI pass, cross, and shot release error remains active at its established
+  release seams; stable runner assignment, role gates, support behavior, and
+  lead-pass behavior coexist with it. The audit did not reuse the role-run
+  branch's stale pre-merge baseline.
+
+  Before refreshing any pin, the combined 30-match signature measured fun
+  0.545, goals 2.200, shots/goal 20.193, save rate 0.778, pass completion
+  0.568, turnovers/min 3.666, possession balance 0.408, drought 10.398 s, and
+  decided-late 0.578. Controlled/team-AI sprint shares were 0.301/0.083,
+  touches per carry-minute were 88.783/78.332, and heavy losses were
+  0.411/0.991. Relative to the merged execution-error baseline, seven fields
+  crossed tolerance and are causally coupled to the new run opportunities:
+  fun, goals, shots/goal, save rate, decided-late, controlled heavy losses,
+  and team-AI heavy losses.
+
+  The combined 100-match audit measured fun 0.531, goals 2.080, shots/goal
+  21.574, save rate 0.827, pass completion 0.562, turnovers/min 3.714,
+  possession balance 0.400, drought 10.603 s, and decided-late 0.557.
+  Controlled/team-AI sprint shares were 0.286/0.086, touches per carry-minute
+  were 87.631/73.229, and heavy losses were 0.745/1.141. Goals, passing,
+  turnovers, possession, drought, and decided-late remain inside their target
+  bands. Shots/goal and save rate remain the inherited quality exceptions
+  owned by hands-on review; no catastrophic guardrail collapsed.
+
+  In the paired 60-seed lever audit, Press High won 30.0% versus Counter
+  Attack's 23.3%, a +6.7 percentage-point tactic outcome difference; goals,
+  save rate, and shots/goal moved by +0.52, -0.64, and -3.05 respectively.
+  The star-swap comparison won 23.3% with Zyro versus 6.7% with Mika, a +16.7
+  percentage-point difference, and moved shots/goal by -1.83. Both comparisons
+  pass their outcome and metric-movement gates. Balanced and Aggressive each
+  won 23.3%, so formation outcome separation remains 0.0 percentage points;
+  it is separately disclosed, remains outside the gate, and is not addressed
+  by this integration.
+
+  The selective refresh accepts only the seven crossed, behavior-linked
+  fields named above. All other fields retain their merged execution-error
+  pins, including values that shifted within tolerance.

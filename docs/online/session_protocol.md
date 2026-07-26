@@ -75,7 +75,7 @@ Manifest version 1 contains, in comparison order:
    `away_1..away_4` order.
 
 The currently supported versions are protocol 1, InputFrame 2, combat-capable
-MatchSnapshot 9, combat input tape 2, and combat companion schema 1. The
+MatchSnapshot 10, combat input tape 2, and combat companion schema 1. The
 canonical manifest digest is a reproducibility/correlation id, not a
 cryptographic signature.
 
