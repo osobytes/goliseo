@@ -247,7 +247,10 @@ was never scheduled. The sufficient condition is the pinned manifest in
    `expected_shard_evidence()` and fails, naming the shard, on any **missing**,
    **unpinned**, or **duplicate** entry. A shard that vanished, was skipped, or
    was cancelled uploads nothing, so its pinned name is missing and the gate
-   fails closed. An unaccounted-for artifact fails closed too.
+   fails closed. An unaccounted-for artifact fails closed too. The duplicate
+   arm is contract, not defence: `actions/upload-artifact` enforces unique names
+   per run and a directory listing cannot repeat an entry, so the self-test
+   asserts it by calling the function directly rather than through the gate.
 2. `load_shard_evidence` requires each shard's JSON to declare the pinned
    evidence schema, its own `pass: true`, its own browser, the pinned love.js
    commit, a clean checkout at the gate's exact revision, at least two records
@@ -255,14 +258,31 @@ was never scheduled. The sufficient condition is the pinned manifest in
    equal to the pinned determinism, protocol, and input-protocol goldens.
    Evidence from another commit, runtime, or process cannot stand in for a
    missing shard.
-3. The gate then re-applies the cross-runtime comparison the single job used to
-   make in process: every record from every shard must carry byte-identical
-   marker fields, so Chrome and Firefox disagreeing still fails.
+3. `require_cross_runtime_agreement` then compares the records to each other:
+   every record from every shard must carry byte-identical marker fields, so
+   Chrome and Firefox disagreeing fails. Step 2's golden pin already implies
+   this, and that redundancy is deliberate — one check asks whether each runtime
+   matches what we recorded, the other whether the runtimes match each other.
+   They share no data and no code, so relaxing or breaking either one cannot
+   quietly leave cross-runtime agreement unenforced.
 
 `parse_marker` additionally rejects any marker field outside the pinned set, so
 a shard cannot vary a value that nothing else checks. Every branch above is
 covered by `python3 scripts/browser_determinism.py --self-test`, including
 dropping each pinned shard in turn.
+
+Steps 2 and 3 are each proven **individually** necessary, because a check that
+only ever fires behind another one is indistinguishable from dead code. The
+self-test isolates them with fixtures the other check cannot reject:
+
+- Shards whose hashes diverge, aggregated with step 2's golden pin switched off
+  via `aggregate_shards`' `marker_check` seam. Only step 3 can reject that, so
+  deleting step 3's comparison makes the self-test fail.
+- Shards that all agree on a hash the golden does not pin. Step 3 is blind to
+  that by construction, so deleting step 2's comparison makes the self-test fail.
+
+`marker_check` is a test seam and nothing more; CI always aggregates with the
+pinned golden in place.
 
 ## Runtime verification
 
