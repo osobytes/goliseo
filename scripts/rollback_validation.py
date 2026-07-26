@@ -86,6 +86,15 @@ SOAK_SAMPLES = ("warmup", "120", "360", "600", "final")
 EXTERNAL_MEMORY_SAMPLES = SOAK_SAMPLES
 EXPECTED_PROFILE_DIGEST = "5fbf1e0d51a6f4d5"
 MAX_MEMORY_GROWTH_RATIO = 0.10
+# Both ends of the growth ratio average this many checkpoints instead of reading one
+# sample. The checkpoint series has a natural spread of ~13%, so a single-sample
+# denominator made the verdict depend on where `warmup` happened to land rather than on
+# retained memory: two runs of identical code differing by 0.04% in mean heap scored
+# 0.000% and 11.572%. Averaging both ends removes that. It costs sensitivity — a
+# sustained leak is now detected from ~13.5% rather than ~10% — which is the price of
+# not resolving a 10% threshold against a 13% noise band. More checkpoints would buy the
+# sensitivity back; the checkpoint itself is sub-second.
+SOAK_GROWTH_WINDOW = 2
 MAX_SNAPSHOT_COUNT = 31
 MAX_SNAPSHOT_BYTES = 768 * 1024
 MAX_HISTORY_BYTES = 1024 * 1024
@@ -1247,26 +1256,40 @@ def validate_late_window_contract(markers: list[ValidationMarker]) -> None:
 
 
 def growth_gate(values: dict[str, int], label: str) -> dict[str, Any]:
-    baseline = values["warmup"]
-    terminal = values["final"]
+    ordered = list(values)
+    if not ordered:
+        raise RuntimeError(f"{label} growth gate received no checkpoints")
+    # Collapse to single-sample ends when there are too few checkpoints to average
+    # without the two windows overlapping.
+    window = SOAK_GROWTH_WINDOW if len(ordered) >= 2 * SOAK_GROWTH_WINDOW + 1 else 1
+    baseline_samples = ordered[:window]
+    terminal_samples = ordered[-window:]
+    baseline = sum(values[sample] for sample in baseline_samples) / window
+    terminal = sum(values[sample] for sample in terminal_samples) / window
+    if baseline <= 0:
+        raise RuntimeError(
+            f"{label} growth gate baseline is not positive: {baseline!r}"
+        )
     growth_ratio = max(0.0, (terminal - baseline) / baseline)
     peak_sample = max(values, key=lambda sample: values[sample])
     peak = values[peak_sample]
     peak_growth_ratio = max(0.0, (peak - baseline) / baseline)
     passed = growth_ratio <= MAX_MEMORY_GROWTH_RATIO + 1e-12
     return {
-        "baseline_bytes": baseline,
+        "baseline_bytes": round(baseline),
+        "baseline_samples": baseline_samples,
         "growth_percent": round(growth_ratio * 100, 6),
         "label": label,
         "limit_percent": MAX_MEMORY_GROWTH_RATIO * 100,
-        "measurement": "final_vs_warmup",
+        "measurement": "terminal_window_vs_baseline_window",
         "pass": passed,
         "peak_bytes": peak,
         "peak_growth_percent": round(peak_growth_ratio * 100, 6),
         "peak_sample": peak_sample,
         "samples": values,
-        "terminal_bytes": terminal,
-        "terminal_sample": "final",
+        "terminal_bytes": round(terminal),
+        "terminal_samples": terminal_samples,
+        "window": window,
     }
 
 
@@ -5006,11 +5029,101 @@ def run_self_test() -> None:
     if (
         not transient_peak["pass"]
         or transient_peak["growth_percent"] != 9.0
-        or transient_peak["measurement"] != "final_vs_warmup"
+        or transient_peak["measurement"] != "terminal_window_vs_baseline_window"
+        or transient_peak["window"] != 1
         or transient_peak["peak_growth_percent"] != 20.0
         or transient_peak["terminal_bytes"] != 1090
     ):
         raise RuntimeError("transient memory peak self-test failed")
+    # Both series below are the same healthy build, recorded by the native tail shard in
+    # runs 30192643196 and 30196601837. Their mean heaps differ by 0.04% (21.831 MB vs
+    # 21.823 MB) yet the single-sample rule scored them 0.000% and 11.572%, failing the
+    # second. Both must pass, or the gate is still reading sample ordering.
+    healthy_low_warmup = growth_gate(
+        {
+            "warmup": 20111247,
+            "120": 22777187,
+            "360": 21653003,
+            "600": 22135047,
+            "final": 22438539,
+        },
+        "recorded-healthy-low-warmup",
+    )
+    healthy_high_warmup = growth_gate(
+        {
+            "warmup": 22506091,
+            "120": 21978147,
+            "360": 20091631,
+            "600": 22731639,
+            "final": 21849187,
+        },
+        "recorded-healthy-high-warmup",
+    )
+    for recorded in (healthy_low_warmup, healthy_high_warmup):
+        if not recorded["pass"] or recorded["window"] != SOAK_GROWTH_WINDOW:
+            raise RuntimeError(
+                f"recorded healthy soak series failed: {recorded['label']} "
+                f"scored {recorded['growth_percent']}%"
+            )
+    if healthy_low_warmup["growth_percent"] >= MAX_MEMORY_GROWTH_RATIO * 100:
+        raise RuntimeError("recorded healthy series is not comfortably inside the limit")
+    # A sustained leak must still be rejected. Averaging the ends costs sensitivity, so
+    # pin where detection now begins rather than letting it drift silently.
+    leaking = growth_gate(
+        {
+            "warmup": 20_000_000,
+            "120": 21_000_000,
+            "360": 22_000_000,
+            "600": 23_000_000,
+            "final": 24_000_000,
+        },
+        "sustained-leak",
+    )
+    if leaking["pass"]:
+        raise RuntimeError("a sustained 20% memory leak passed the growth gate")
+    # Pin the detection floor explicitly so the sensitivity cost of averaging the ends
+    # cannot drift unnoticed. A 15% sustained leak is caught; a 10% one is not, because
+    # a 13% noise band cannot resolve a 10% signal. Tightening this needs more
+    # checkpoints, not a lower limit.
+    caught = growth_gate(
+        {
+            "warmup": 20_000_000,
+            "120": 20_750_000,
+            "360": 21_500_000,
+            "600": 22_250_000,
+            "final": 23_000_000,
+        },
+        "sustained-15pct",
+    )
+    if caught["pass"]:
+        raise RuntimeError("a sustained 15% memory leak passed the growth gate")
+    undetected = growth_gate(
+        {
+            "warmup": 20_000_000,
+            "120": 20_500_000,
+            "360": 21_000_000,
+            "600": 21_500_000,
+            "final": 22_000_000,
+        },
+        "sustained-10pct",
+    )
+    if not undetected["pass"]:
+        raise RuntimeError(
+            "the pinned detection floor moved: a sustained 10% leak is now caught, "
+            "so this assertion and the documented sensitivity are stale"
+        )
+    try:
+        growth_gate({}, "empty")
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError("empty checkpoint series passed the growth gate")
+    try:
+        growth_gate({"warmup": 0, "120": 0, "360": 1, "600": 2, "final": 3}, "zero")
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError("zero baseline passed the growth gate")
     soak_resources["checkpoints"][-1]["rss_bytes"] = 4000
     if soak_memory_evidence(soak_markers, soak_resources, "chrome")["pass"]:
         raise RuntimeError("over-budget soak memory self-test passed")
