@@ -424,6 +424,7 @@ local SPRINT_ENGAGE = 0.25 -- min meter to start a sprint (hysteresis: no flicke
 ---@field marking { home: MarkingConfig, away: MarkingConfig }  -- off-ball scheme per team
 ---@field marks { home: table<integer, integer>, away: table<integer, integer> }  -- prev marking assignment (hysteresis)
 ---@field outfield_press { home: OutfieldPressState, away: OutfieldPressState }  -- team-owned stable presser state
+---@field formation { home: string, away: string }  -- authoritative role lookup; roles derive by ordinal
 ---@field ball_spin number  -- lateral curve applied to the loose ball
 ---@field rng integer  -- seeded PRNG state (core.rng): same seed = same match
 ---@field block_grace number  -- body-blocking re-enabled when this hits 0 (set on release)
@@ -671,6 +672,16 @@ function match._reset_press_states(s)
     local pressing = require("sim.outfield_press")
     s.outfield_press.home = pressing.clear(s.outfield_press.home)
     s.outfield_press.away = pressing.clear(s.outfield_press.away)
+end
+
+---@param s MatchState
+function match._reset_run_states(s)
+    local decisions = require("sim.outfield_decision")
+    for _, player in ipairs(s.players) do
+        if decisions.is_run_intent(player.outfield_decision.intent) then
+            player.outfield_decision = decisions.reset(player.outfield_decision)
+        end
+    end
 end
 
 -- Route single-player control through one boundary so a player becoming human
@@ -929,6 +940,10 @@ function match.new(opts)
         outfield_press = {
             home = require("sim.outfield_press").new_state(),
             away = require("sim.outfield_press").new_state(),
+        },
+        formation = {
+            home = opts.home_formation or opts.home.formation,
+            away = opts.away.formation,
         },
         block_grace = 0,
         aerial_lock = 0,
@@ -1856,6 +1871,75 @@ local function block_shift(anchor, ball, compactness)
     return anchor:add(ball:sub(anchor):scale(BLOCK_SHIFT * compactness))
 end
 
+-- Existing attacking support fallback, shared by ordinary off-ball planning
+-- and same-boundary run invalidation so a cancelled run never parks on a raw
+-- formation anchor for the rest of its retained cadence.
+---@param s MatchState
+---@param player_index integer
+---@param pos Vec2[]?
+---@param opponent_positions Vec2[]?
+---@return Vec2
+function match._support_target(s, player_index, pos, opponent_positions)
+    pos = pos or {}
+    for index, player in ipairs(s.players) do
+        pos[index] = pos[index] or player.pos
+    end
+    local player = s.players[player_index]
+    local owner_index = assert(s.owner, "support target requires a carrier")
+    local owner = s.players[owner_index]
+    assert(owner.team == player.team and not owner.is_keeper, "support target requires open attack")
+    local attack = player.team == "home" and 1 or -1
+    local carrier_pos = pos[owner_index]
+    local base = Vec2.new(
+        player.anchor.x + attack * ATTACK_PUSH * s.marking[player.team].support,
+        player.anchor.y
+    )
+    local candidates = {
+        base,
+        Vec2.new(base.x, base.y - SUPPORT_FAN),
+        Vec2.new(base.x, base.y + SUPPORT_FAN),
+        Vec2.new(base.x + attack * SUPPORT_FAN, base.y),
+        Vec2.new(base.x - attack * SUPPORT_FAN, base.y),
+    }
+    if pos[player_index]:dist(carrier_pos) < TRIANGLE_JOIN then
+        for _, angle in ipairs({ -1.4, -0.7, 0.7, 1.4 }) do
+            local direction = Vec2.new(math.cos(angle) * attack, math.sin(angle))
+            local candidate = carrier_pos:add(direction:scale(TUNE.TRIANGLE_DIST))
+            candidates[#candidates + 1] = Vec2.new(
+                math.max(20, math.min(s.field.w - 20, candidate.x)),
+                math.max(20, math.min(s.field.h - 20, candidate.y))
+            )
+        end
+    end
+    local ahead = carrier_pos:add(owner.facing:scale(120))
+    local open_candidates = {}
+    for _, candidate in ipairs(candidates) do
+        if candidate:dist(ahead) > 70 then
+            open_candidates[#open_candidates + 1] = candidate
+        end
+    end
+    if #open_candidates == 0 then
+        open_candidates = candidates
+    end
+    local opponents = opponent_positions or {}
+    local teammates = {}
+    for index, other in ipairs(s.players) do
+        if not opponent_positions and other.team ~= player.team then
+            opponents[#opponents + 1] = pos[index]
+        elseif
+            other.team == player.team
+            and index ~= player_index
+            and index ~= owner_index
+            and not other.is_keeper
+            and not is_human_player(s, index)
+        then
+            teammates[#teammates + 1] = pos[index]
+        end
+    end
+    local target = ai.support_spot(carrier_pos, open_candidates, opponents, attack, s.field)
+    return target:add(ai.separation(target, teammates, SEP_RADIUS):scale(SEP_PUSH))
+end
+
 -- A marker stands just goal-side of its man, leading the man's motion.
 ---@param defpos Vec2
 ---@param opp_pos Vec2
@@ -1883,6 +1967,225 @@ function match._press_eligible(s, player_index, combat_state)
             not combat_module
             or not assert(combat_module).blocks_actions(combat_state, player_index)
         )
+end
+
+---@param s MatchState
+---@param player_index integer
+---@param combat_state CombatMatchState?
+---@return boolean
+function match._run_eligible(s, player_index, combat_state)
+    local player = s.players[player_index]
+    local combat_module = combat_state and require("sim.combat") or nil
+    return player ~= nil
+        and not player.is_keeper
+        and player_index ~= s.owner
+        and not is_human_player(s, player_index)
+        and player.stun_timer <= 0
+        and player.slide_timer <= 0
+        and player.tackle_timer <= 0
+        and player.dodge_timer <= 0
+        and player.jockey_timer <= 0
+        and player.windup_timer <= 0
+        and player.windup_shot == nil
+        and player.aerial_timer <= 0
+        and player.aerial_recovery <= 0
+        and player.receive_timer <= 0
+        and (
+            not combat_module
+            or not assert(combat_module).blocks_actions(combat_state, player_index)
+        )
+end
+
+---@param s MatchState
+---@param team "home"|"away"
+---@param player_index integer
+---@return integer
+function match._outfield_ordinal(s, team, player_index)
+    local ordinal = 0
+    for index, player in ipairs(s.players) do
+        if player.team == team and not player.is_keeper then
+            ordinal = ordinal + 1
+            if index == player_index then
+                return ordinal
+            end
+        end
+    end
+    assert(false, "player is not a team outfielder")
+    return 0
+end
+
+---@param s MatchState
+---@param team "home"|"away"
+---@param candidates integer[]
+---@param targets table<integer, Vec2>
+---@param pos Vec2[]
+---@param combat_state CombatMatchState?
+---@param urgent table<integer, boolean>
+function match._assign_runs(s, team, candidates, targets, pos, combat_state, urgent)
+    local decisions = require("sim.outfield_decision")
+    local runs = require("sim.offball_runs")
+    local now = -s.time_left
+    local active = {}
+    local active_players = {}
+    local ended_players = {}
+    for _, player_index in ipairs(candidates) do
+        local player = s.players[player_index]
+        local decision = player.outfield_decision
+        if decisions.is_run_intent(decision.intent) then
+            local expires_at = assert(decision.run_expires_at)
+            local target = Vec2.new(assert(decision.target_x), assert(decision.target_y))
+            if
+                expires_at > now
+                and player.pos:dist(target) > STAND_DEADBAND
+                and match._run_eligible(s, player_index, combat_state)
+            then
+                active[#active + 1] = {
+                    player_index = player_index,
+                    run_type = decision.intent,
+                    score = 0,
+                    target_x = target.x,
+                    target_y = target.y,
+                    granted_at = expires_at - runs.RUN_LIFETIME_SECONDS,
+                    expires_at = expires_at,
+                }
+                active_players[player_index] = true
+            else
+                local fallback = assert(targets[player_index])
+                player.outfield_decision = decisions.cancel_run(decision, fallback.x, fallback.y)
+                ended_players[player_index] = true
+            end
+        end
+    end
+
+    local needs_candidates = false
+    if #active < runs.MAX_ACTIVE_PER_TEAM then
+        for _, player_index in ipairs(candidates) do
+            if
+                not active_players[player_index]
+                and not ended_players[player_index]
+                and match._run_eligible(s, player_index, combat_state)
+                and decisions.should_refresh(s.players[player_index].outfield_decision, "offball")
+            then
+                needs_candidates = true
+                break
+            end
+        end
+    end
+    local slots = active
+    if needs_candidates then
+        local owner_index = assert(s.owner)
+        local owner = s.players[owner_index]
+        local pressure = s.field.w
+        local opponents = {}
+        local teammates = {}
+        local players = {}
+        for index, player in ipairs(s.players) do
+            if player.team ~= team then
+                if not player.is_keeper then
+                    pressure = math.min(pressure, pos[index]:dist(pos[owner_index]))
+                end
+                opponents[#opponents + 1] = {
+                    pos = pos[index],
+                    is_keeper = player.is_keeper,
+                }
+            elseif not player.is_keeper and index ~= owner_index then
+                teammates[#teammates + 1] = { player_index = index, pos = pos[index] }
+            end
+        end
+        for _, player_index in ipairs(candidates) do
+            local player = s.players[player_index]
+            if
+                not active_players[player_index]
+                and not ended_players[player_index]
+                and match._run_eligible(s, player_index, combat_state)
+                and decisions.should_refresh(player.outfield_decision, "offball")
+            then
+                local ordinal = match._outfield_ordinal(s, team, player_index)
+                players[#players + 1] = {
+                    player_index = player_index,
+                    role = runs.formation_role(s.formation[team], ordinal),
+                    run_drive = stats.run_drive_from_match(player.move_speed, player.composure),
+                    pos = pos[player_index],
+                    anchor_y = runs.formation_anchor_y(s.formation[team], ordinal),
+                }
+            end
+        end
+        slots = runs.grant({
+            team = team,
+            field = s.field,
+            carrier_pos = pos[owner_index],
+            carrier_settled = owner.settle_timer <= 0,
+            carrier_pressure = pressure,
+            pressure_distance = TUNE.AI_PASS_PRESSURE,
+            players = players,
+            teammates = teammates,
+            opponents = opponents,
+        }, active, now)
+    end
+    for _, slot in ipairs(slots) do
+        local player = s.players[slot.player_index]
+        local decision = player.outfield_decision
+        local retained = decisions.is_run_intent(decision.intent)
+            and decision.intent == slot.run_type
+            and decision.run_expires_at == slot.expires_at
+        if not retained or decision.remaining <= 0 then
+            player.outfield_decision = decisions.refresh(
+                decision,
+                "offball",
+                slot.run_type,
+                player.scan_rate,
+                slot.target_x,
+                slot.target_y,
+                nil,
+                slot.expires_at
+            )
+        end
+        targets[slot.player_index] = Vec2.new(slot.target_x, slot.target_y)
+        urgent[slot.player_index] = true
+    end
+end
+
+---@param s MatchState
+---@param combat_state CombatMatchState?
+function match._sanitize_run_states(s, combat_state)
+    local decisions = require("sim.outfield_decision")
+    local owner = s.owner and s.players[s.owner] or nil
+    local now = -s.time_left
+    for index, player in ipairs(s.players) do
+        local decision = player.outfield_decision
+        if decisions.is_run_intent(decision.intent) then
+            local ordinary_attack = owner ~= nil
+                and owner.team == player.team
+                and not owner.is_keeper
+                and s.kickoff_hold <= 0
+            local target = Vec2.new(assert(decision.target_x), assert(decision.target_y))
+            if
+                is_human_player(s, index)
+                or (
+                    not ordinary_attack
+                    or not match._run_eligible(s, index, combat_state)
+                    or assert(decision.run_expires_at) <= now
+                    or player.pos:dist(target) <= STAND_DEADBAND
+                )
+            then
+                if is_human_player(s, index) then
+                    player.outfield_decision = decisions.reset(decision)
+                else
+                    local fallback
+                    if player.receive_timer > 0 then
+                        fallback = s.ball
+                    elseif ordinary_attack then
+                        fallback = match._support_target(s, index)
+                    else
+                        fallback =
+                            block_shift(player.anchor, s.ball, s.marking[player.team].compactness)
+                    end
+                    player.outfield_decision =
+                        decisions.cancel_run(decision, fallback.x, fallback.y)
+                end
+            end
+        end
+    end
 end
 
 ---@param s MatchState
@@ -2063,7 +2366,6 @@ local function offball_targets(s, pos, combat_state)
     for _, team in ipairs({ "home", "away" }) do
         local cfg = s.marking[team]
         local goal = own_goal_center(s, team)
-        local atk = (team == "home") and 1 or -1
 
         -- This team's off-ball outfielders (exclude keeper, ball-owner, human).
         local mine = {}
@@ -2227,49 +2529,15 @@ local function offball_targets(s, pos, combat_state)
             -- stable, spread outlet positions (don't roam) so the keeper's throw
             -- reaches a teammate who's actually there. Otherwise make support runs.
             local build_up = s.players[s.owner].is_keeper
-            local cpos = pos[s.owner]
             for _, idx in ipairs(mine) do
                 if build_up then
                     targets[idx] = sep(idx, block_shift(s.players[idx].anchor, s.ball, 0.15))
                 else
-                    local a = s.players[idx].anchor
-                    local base = Vec2.new(a.x + atk * ATTACK_PUSH * cfg.support, a.y)
-                    local cands = {
-                        base,
-                        Vec2.new(base.x, base.y - SUPPORT_FAN),
-                        Vec2.new(base.x, base.y + SUPPORT_FAN),
-                        Vec2.new(base.x + atk * SUPPORT_FAN, base.y),
-                        Vec2.new(base.x - atk * SUPPORT_FAN, base.y),
-                    }
-                    -- Triangulation: supporters near the play also consider
-                    -- angular spots around the CARRIER at pass range (±40° and
-                    -- ±80° off the attacking axis), so there is always a short
-                    -- option to either side for a one-two.
-                    if pos[idx]:dist(cpos) < TRIANGLE_JOIN then
-                        for _, ang in ipairs({ -1.4, -0.7, 0.7, 1.4 }) do
-                            local dirv = Vec2.new(math.cos(ang) * atk, math.sin(ang))
-                            local c = cpos:add(dirv:scale(TUNE.TRIANGLE_DIST))
-                            cands[#cands + 1] = Vec2.new(
-                                math.max(20, math.min(s.field.w - 20, c.x)),
-                                math.max(20, math.min(s.field.h - 20, c.y))
-                            )
-                        end
-                    end
-                    -- Clear the carrier's dribbling lane: drop candidates that
-                    -- sit right ahead of them (don't clog the path).
-                    local ahead = cpos:add(s.players[s.owner].facing:scale(120))
-                    local open_cands = {}
-                    for _, c in ipairs(cands) do
-                        if c:dist(ahead) > 70 then
-                            open_cands[#open_cands + 1] = c
-                        end
-                    end
-                    if #open_cands == 0 then
-                        open_cands = cands
-                    end
-                    targets[idx] =
-                        sep(idx, ai.support_spot(cpos, open_cands, opp_all_pos, atk, s.field))
+                    targets[idx] = match._support_target(s, idx, pos, opp_all_pos)
                 end
+            end
+            if not build_up and s.kickoff_hold <= 0 then
+                match._assign_runs(s, team, mine, targets, pos, combat_state, urgent)
             end
             s.marks[team] = {}
         else
@@ -2339,6 +2607,7 @@ local function retain_offball_targets(s, targets, urgent, combat_state)
     local combat_module = combat_state and require("sim.combat") or nil
     for index, player in ipairs(s.players) do
         local blocked = combat_module and combat_module.blocks_actions(combat_state, index) or false
+        local running = decisions.is_run_intent(player.outfield_decision.intent)
         local ineligible = player.is_keeper
             or is_human_player(s, index)
             or blocked
@@ -2348,24 +2617,57 @@ local function retain_offball_targets(s, targets, urgent, combat_state)
                 player.outfield_decision = decisions.reset(player.outfield_decision)
             end
         elseif index ~= s.owner and targets[index] then
-            local contest_reach = TUNE.LOOSE_MAGNET
-                + player.move_speed * decisions.SLOW_REFRESH_SECONDS
-            local loose_contest = s.owner == nil and player.pos:dist(s.ball) <= contest_reach
-            local must_refresh = urgent[index] or player.receive_timer > 0 or loose_contest
-            if decisions.should_refresh(player.outfield_decision, "offball", must_refresh) then
-                local target = targets[index]
-                player.outfield_decision = decisions.refresh(
-                    player.outfield_decision,
-                    "offball",
-                    "move",
-                    player.scan_rate,
-                    target.x,
-                    target.y
+            local owner = s.owner and s.players[s.owner] or nil
+            local ordinary_attack = owner ~= nil
+                and owner.team == player.team
+                and not owner.is_keeper
+                and s.kickoff_hold <= 0
+            if
+                running
+                and (
+                    not ordinary_attack
+                    or not match._run_eligible(s, index, combat_state)
+                    or assert(player.outfield_decision.run_expires_at) <= -s.time_left
+                    or player.pos:dist(
+                            Vec2.new(
+                                assert(player.outfield_decision.target_x),
+                                assert(player.outfield_decision.target_y)
+                            )
+                        )
+                        <= STAND_DEADBAND
                 )
+            then
+                local fallback = targets[index]
+                player.outfield_decision =
+                    decisions.cancel_run(player.outfield_decision, fallback.x, fallback.y)
+                running = false
+            end
+            if running then
+                targets[index] = Vec2.new(
+                    assert(player.outfield_decision.target_x),
+                    assert(player.outfield_decision.target_y)
+                )
+                urgent[index] = true
             else
-                local target_x = assert(player.outfield_decision.target_x)
-                local target_y = assert(player.outfield_decision.target_y)
-                targets[index] = Vec2.new(target_x, target_y)
+                local contest_reach = TUNE.LOOSE_MAGNET
+                    + player.move_speed * decisions.SLOW_REFRESH_SECONDS
+                local loose_contest = s.owner == nil and player.pos:dist(s.ball) <= contest_reach
+                local must_refresh = urgent[index] or player.receive_timer > 0 or loose_contest
+                if decisions.should_refresh(player.outfield_decision, "offball", must_refresh) then
+                    local target = targets[index]
+                    player.outfield_decision = decisions.refresh(
+                        player.outfield_decision,
+                        "offball",
+                        "move",
+                        player.scan_rate,
+                        target.x,
+                        target.y
+                    )
+                else
+                    local target_x = assert(player.outfield_decision.target_x)
+                    local target_y = assert(player.outfield_decision.target_y)
+                    targets[index] = Vec2.new(target_x, target_y)
+                end
             end
         end
     end
@@ -4247,6 +4549,7 @@ end
 function match.step(s, dt, input, combat_state)
     if s.finished then
         match._reset_press_states(s)
+        match._reset_run_states(s)
         for _, player in ipairs(s.players) do
             player.keeper_set = 0
         end
@@ -4293,6 +4596,7 @@ function match.step(s, dt, input, combat_state)
         s.time_left = 0
         s.finished = true
         match._reset_press_states(s)
+        match._reset_run_states(s)
         if combat_state then
             assert(combat_module).advance_boundary(combat_state)
         end
@@ -4454,6 +4758,7 @@ function match.step(s, dt, input, combat_state)
         end
         assert(combat_module).finish_tick(combat_state)
     end
+    match._sanitize_run_states(s, combat_state)
     match._sanitize_press_states(s, combat_state)
 
     -- A gained ball resolves any in-flight pass: nobody is "running onto" it
@@ -4533,6 +4838,7 @@ function match.step(s, dt, input, combat_state)
         if s.score.home >= s.max_goals or s.score.away >= s.max_goals then
             s.finished = true
             match._reset_press_states(s)
+            match._reset_run_states(s)
         else
             -- The team that conceded restarts play.
             place_kickoff(s, scorer == "home" and "away" or "home")
@@ -4553,5 +4859,6 @@ match._resolve_collisions = resolve_collisions
 -- Test seam: pure receiver selectors (used for pass preview and acceptance specs).
 match._select_pass_target = select_pass_target
 match._select_throw_target = select_throw_target
+match._ai_pass_options = ai_pass_options
 
 return match

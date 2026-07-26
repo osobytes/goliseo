@@ -9,6 +9,7 @@ local Vec2 = require("core.vec2")
 local fnv1a64 = require("core.fnv1a64")
 local input_frame = require("sim.input_frame")
 local combat_snapshot = require("sim.combat_snapshot")
+local formations = require("data.formations")
 local outfield_decision = require("sim.outfield_decision")
 local outfield_press = require("sim.outfield_press")
 
@@ -25,8 +26,8 @@ local outfield_press = require("sim.outfield_press")
 ---@class MatchSnapshotModule
 local match_snapshot = {}
 
-match_snapshot.VERSION = 8
-match_snapshot.COMBAT_VERSION = 9
+match_snapshot.VERSION = 9
+match_snapshot.COMBAT_VERSION = 10
 
 ---@type table<MatchState, string>
 local unsupported_states = setmetatable({}, { __mode = "k" })
@@ -67,6 +68,7 @@ match_snapshot.MATCH_FIELDS = {
     "marking",
     "marks",
     "outfield_press",
+    "formation",
     "ball_spin",
     "rng",
     "block_grace",
@@ -214,6 +216,7 @@ local OUTFIELD_DECISION_FIELDS = {
     "target_x",
     "target_y",
     "target_player",
+    "run_expires_at",
 }
 
 local OUTFIELD_PRESS_FIELDS = {
@@ -460,6 +463,7 @@ local function copy_state(source, path, make_vec)
     assert_fields(source.marking, TEAM_FIELD_SET, path .. ".marking")
     assert_fields(source.marks, TEAM_FIELD_SET, path .. ".marks")
     assert_fields(source.outfield_press, TEAM_FIELD_SET, path .. ".outfield_press")
+    assert_fields(source.formation, TEAM_FIELD_SET, path .. ".formation")
 
     local result = {
         field = {
@@ -476,6 +480,7 @@ local function copy_state(source, path, make_vec)
         marking = {},
         marks = {},
         outfield_press = {},
+        formation = {},
         events = {},
         slot_players = {},
         slot_for_player = {},
@@ -509,6 +514,101 @@ local function copy_state(source, path, make_vec)
         "input_tick",
     }) do
         result[field] = copy_scalar(source[field], path .. "." .. field)
+    end
+    local now = -result.time_left
+    local run_counts = { home = 0, away = 0 }
+    for index, player in ipairs(result.players) do
+        local decision = player.outfield_decision
+        if outfield_decision.is_run_intent(decision.intent) then
+            local owner_index = result.owner
+            assert(
+                player.team == "home" or player.team == "away",
+                path .. ".players." .. index .. ".outfield_decision run has an invalid team"
+            )
+            assert(
+                player.is_keeper == false,
+                path .. ".players." .. index .. ".outfield_decision keeper cannot own a run"
+            )
+            assert(
+                owner_index ~= index,
+                path .. ".players." .. index .. ".outfield_decision owner cannot retain a run"
+            )
+            assert(
+                type(owner_index) == "number"
+                    and owner_index == math.floor(owner_index)
+                    and result.players[owner_index] ~= nil,
+                path .. ".players." .. index .. ".outfield_decision run requires a ball owner"
+            )
+            local owner = result.players[owner_index]
+            assert(
+                not owner.is_keeper and owner.team == player.team,
+                path
+                    .. ".players."
+                    .. index
+                    .. ".outfield_decision run requires same-team outfield possession"
+            )
+            assert(
+                result.kickoff_hold <= 0 and not result.finished,
+                path
+                    .. ".players."
+                    .. index
+                    .. ".outfield_decision run is invalid outside ordinary attack"
+            )
+            assert(
+                source.slot_for_player[index] == nil,
+                path
+                    .. ".players."
+                    .. index
+                    .. ".outfield_decision fixed-slot player cannot own a run"
+            )
+            assert(
+                not source.human_controlled or source.controlled ~= index,
+                path
+                    .. ".players."
+                    .. index
+                    .. ".outfield_decision human-controlled player cannot own a run"
+            )
+            assert(
+                player.stun_timer <= 0
+                    and player.slide_timer <= 0
+                    and player.tackle_timer <= 0
+                    and player.dodge_timer <= 0
+                    and player.jockey_timer <= 0
+                    and player.windup_timer <= 0
+                    and player.windup_shot == nil
+                    and player.aerial_timer <= 0
+                    and player.aerial_recovery <= 0
+                    and player.receive_timer <= 0,
+                path
+                    .. ".players."
+                    .. index
+                    .. ".outfield_decision run conflicts with a soccer commitment"
+            )
+            assert(
+                decision.target_x >= 0
+                    and decision.target_x <= result.field.w
+                    and decision.target_y >= 0
+                    and decision.target_y <= result.field.h,
+                path .. ".players." .. index .. ".outfield_decision run target is outside the field"
+            )
+            local expires_at = assert(decision.run_expires_at)
+            assert(
+                expires_at > now,
+                path .. ".players." .. index .. ".outfield_decision run expiry must be future"
+            )
+            assert(
+                expires_at <= now + outfield_decision.RUN_LIFETIME_SECONDS,
+                path
+                    .. ".players."
+                    .. index
+                    .. ".outfield_decision run expiry exceeds the fixed lifetime"
+            )
+            run_counts[player.team] = run_counts[player.team] + 1
+            assert(
+                run_counts[player.team] <= 2,
+                path .. ".outfield_decision team cannot retain more than two active runs"
+            )
+        end
     end
     for _, team in ipairs({ "home", "away" }) do
         result.score[team] = copy_scalar(source.score[team], path .. ".score." .. team)
@@ -547,6 +647,11 @@ local function copy_state(source, path, make_vec)
             )
         end
         result.outfield_press[team] = press_state
+        assert(
+            type(source.formation[team]) == "string" and formations[source.formation[team]],
+            path .. ".formation." .. team .. " must identify an authored formation"
+        )
+        result.formation[team] = copy_scalar(source.formation[team], path .. ".formation." .. team)
     end
     for index = 1, #source.events do
         result.events[index] = copy_event(source.events[index], path .. ".events." .. index)
@@ -560,6 +665,21 @@ local function copy_state(source, path, make_vec)
         copy_sparse_indices(source.slot_for_player, path .. ".slot_for_player", #source.players)
     ---@cast result MatchState
     return result
+end
+
+---@param state MatchState
+---@param combat_state CombatMatchState
+---@param path string
+local function assert_combat_run_relations(state, combat_state, path)
+    for index, player in ipairs(state.players) do
+        if outfield_decision.is_run_intent(player.outfield_decision.intent) then
+            local runtime = combat_state.players[index]
+            assert(
+                runtime.phase == "ready" and runtime.forced_ticks <= 0,
+                path .. ".players." .. index .. " combat commitment conflicts with an active run"
+            )
+        end
+    end
 end
 
 -- Rollback owns states that have already crossed capture/restore's validating
@@ -704,6 +824,10 @@ local function copy_owned_state(source, make_vec)
             home = outfield_press.copy_state(source.outfield_press.home),
             away = outfield_press.copy_state(source.outfield_press.away),
         },
+        formation = {
+            home = source.formation.home,
+            away = source.formation.away,
+        },
         ball_spin = source.ball_spin,
         rng = source.rng,
         block_grace = source.block_grace,
@@ -734,10 +858,12 @@ function match_snapshot.capture(state, combat_state)
     assert_snapshot_supported(state, combat_state)
     local copied_state = copy_state(state, "state", false)
     if combat_state then
+        local copied_combat = combat_snapshot.copy(combat_state, "combat", copied_state, false)
+        assert_combat_run_relations(copied_state, copied_combat, "combat")
         return {
             version = match_snapshot.COMBAT_VERSION,
             state = copied_state,
-            combat = combat_snapshot.copy(combat_state, "combat", copied_state, false),
+            combat = copied_combat,
         }
     end
     return { version = match_snapshot.VERSION, state = copied_state }
@@ -786,6 +912,7 @@ function match_snapshot.restore(snapshot)
     end
     assert(type(snapshot.combat) == "table", "combat snapshot companion is required")
     local combat_state = combat_snapshot.copy(snapshot.combat, "snapshot.combat", state, true)
+    assert_combat_run_relations(state, combat_state, "snapshot.combat")
     match_snapshot.mark_unsupported(
         state,
         "combat-active match snapshots require their CombatMatchState companion"
@@ -1026,7 +1153,6 @@ local function append_player(encoder, player)
         elseif field == "outfield_decision" then
             append_literal(encoder, "d;")
             for _, decision_field in ipairs(OUTFIELD_DECISION_FIELDS) do
-                append_name(encoder, decision_field)
                 append_scalar(encoder, value[decision_field])
             end
         else
@@ -1083,6 +1209,9 @@ local function append_state(encoder, version, state)
                     append_scalar(encoder, value[team][press_field])
                 end
             end
+        elseif field == "formation" then
+            append_scalar(encoder, value.home)
+            append_scalar(encoder, value.away)
         elseif field == "events" then
             append_scalar(encoder, #value)
             for index = 1, #value do
@@ -1366,6 +1495,12 @@ local function first_difference_canonical(a, b)
                             bv[team][child]
                         )
                     end
+                end
+            end
+        elseif field == "formation" then
+            for _, team in ipairs({ "home", "away" }) do
+                if not same_scalar(av[team], bv[team]) then
+                    return difference(path .. "." .. team, av[team], bv[team])
                 end
             end
         elseif field == "events" then

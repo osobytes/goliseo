@@ -50,8 +50,10 @@ exactly one keeper; the other 4 in formation line order defence→attack).
 
 ### FormationData (`data/formations.lua`)
 
-`id, name, keeper Anchor, outfield Anchor[4]`. An `Anchor` is normalized `{x, y}` in an
-attacking-right frame; `sim/placement.lua` converts to absolute coords and mirrors for away.
+`id, name, keeper Anchor, outfield OutfieldAnchor[4]`. An `Anchor` is normalized
+`{x, y}` in an attacking-right frame; each outfield anchor also owns the stable
+`def`, `mid`, `wide`, or `fwd` role used by off-ball run eligibility.
+`sim/placement.lua` converts anchors to absolute coords and mirrors for away.
 
 ### MatchPlayer / MatchState / MatchInput (`sim/match.lua`)
 
@@ -74,7 +76,7 @@ loadout receive a neutral combat runtime and ignore equipment intent.
 
 Presentation, cosmetic, theme, and equipment-appearance ids never enter the
 companion. `data/action_families.lua` remains the sole tuning authority.
-Combat-active snapshot/hash/rollback integration uses match snapshot version 9,
+Combat-active snapshot/hash/rollback integration uses match snapshot version 10,
 combat snapshot version 1, and input tape version 2. A combat-enabled match
 must supply the companion at capture; passing only the soccer half fails
 loudly.

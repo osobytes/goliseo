@@ -533,3 +533,118 @@ until phase 4 automates it).
   accepts only the seven crossed, coupled fields: goals, drought, decided-late,
   controlled sprint/touches/heavy losses, and team-AI heavy losses. Every
   field still inside tolerance retains its prior pin.
+
+- **2026-07-25 — role-gated off-ball runs and stable runner assignment.**
+  AI-controlled outfield teammates can now retain one of two team-wide
+  in-behind, come-short, or hold-width assignments for a fixed 1.8-second
+  lifetime. Eligibility derives from the authored formation role and existing
+  match stats; ordinary support, human/fixed-slot input ownership, press
+  arbitration, and transition tactics retain their prior contracts.
+  The conservative run-drive threshold is 0.55: it admits the authored
+  0.56 profile while excluding the 0.54 and slower profiles. In a paired
+  60-seed tactic audit, Press High won 20 matches (33.333%) and Counter Attack
+  won 16 (26.667%), restoring a +6.667 percentage-point outcome lever versus
+  the pre-tuning 0-point result.
+
+  The generated 30-match signature measured fun 0.473, goals 2.033,
+  shots/goal 24.655, save rate 0.869, pass completion 0.588,
+  turnovers/min 3.836, possession balance 0.405, drought 10.866 s, and
+  decided-late 0.551. Controlled/team-AI sprint shares were 0.269/0.089,
+  touches per carry-minute were 85.698/75.283, and heavy losses were
+  1.420/0.817.
+
+  The 100-match audit measured fun 0.444, goals 1.900, shots/goal 22.947,
+  save rate 0.851, pass completion 0.578, turnovers/min 3.780, possession
+  balance 0.398, drought 10.596 s, and decided-late 0.594.
+  Controlled/team-AI sprint shares were 0.286/0.090, touches per carry-minute
+  were 86.278/75.418, and heavy losses were 1.027/0.940. Passing remains
+  inside its 0.55–0.85 target band. Goals at 1.900 are 0.100 below the 2–5
+  good band, though still above its catastrophic edge. The composite also
+  fell to 0.444 from the preceding presser audit's 0.557. The threshold
+  deliberately restores tactic liveness at that measured quality cost, so
+  hands-on validation still owns the gameplay-quality decision.
+
+  The selective 30-seed refresh accepts only the six behavior-linked fields
+  that crossed tolerance: goals, drought, decided-late, controlled heavy
+  losses, and team-AI sprint share and heavy losses. Every in-tolerance
+  signature retains its previous pin.
+
+- **2026-07-25 — exact-head off-ball run geometry review corrections.**
+  Gameplay review found three invalid target cases in the issue-56 resolver:
+  an in-behind target could sit behind an already advanced runner, a projected
+  or marker-adjusted come-short target could move a nearby runner away from the
+  carrier, and hold-width occupancy omitted the carrier. The correction
+  requires 24 px of directional progress for in-behind and come-short runs and
+  treats the carrier as occupying its current wide lane. Mirrored home/away
+  regression scenarios pin each rule.
+
+  Before refreshing the tripwire, the corrected 30-match signature measured
+  fun 0.438, goals 1.900, shots/goal 25.256, save rate 0.875, pass completion
+  0.579, turnovers/min 3.747, possession balance 0.405, drought 11.554 s, and
+  decided-late 0.521. Controlled/team-AI sprint shares were 0.276/0.080,
+  touches per carry-minute were 88.599/74.494, and heavy losses were
+  1.479/0.471.
+
+  The repeated 100-match audit measured fun 0.451, goals 1.900,
+  shots/goal 23.733, save rate 0.855, pass completion 0.571,
+  turnovers/min 3.768, possession balance 0.398, drought 10.824 s, and
+  decided-late 0.581. Controlled/team-AI sprint shares were 0.276/0.085,
+  touches per carry-minute were 85.933/71.322, and heavy losses were
+  1.068/0.937. Pass completion, turnovers, possession, drought, and
+  decided-late remain in their declared milestone bands. Goals remain 0.100
+  below the 2–5 good band; high save rate and shots/goal remain the inherited
+  quality exceptions already owned by hands-on review.
+
+  A separate paired 60-seed audit kept the required tactic lever live:
+  Press High won 45.0% at home versus Counter Attack's 33.3%, a +11.7
+  percentage-point difference. Goals, save rate, and shots/goal had raw
+  band-width deltas of +0.65, -0.64, and -4.04; all cleared the 0.5-band moved
+  threshold. The separately measured formation comparison is explicitly
+  disclosed at -21.7 percentage points, remains beyond its 20-point upper
+  gate, and is not addressed by this target-validity correction.
+
+  The selective refresh accepts only the six causally coupled fields that
+  crossed tolerance: goals, save rate, drought, decided-late, controlled
+  touches, and team-AI heavy losses. Every in-tolerance signature retains its
+  previous pin.
+
+- **2026-07-25 — rebased execution-error plus role-run combined head.**
+  This audit starts from the merged execution-error baseline on `main`, then
+  applies the final role-run implementation and target-validity corrections.
+  AI pass, cross, and shot release error remains active at its established
+  release seams; stable runner assignment, role gates, support behavior, and
+  lead-pass behavior coexist with it. The audit did not reuse the role-run
+  branch's stale pre-merge baseline.
+
+  Before refreshing any pin, the combined 30-match signature measured fun
+  0.545, goals 2.200, shots/goal 20.193, save rate 0.778, pass completion
+  0.568, turnovers/min 3.666, possession balance 0.408, drought 10.398 s, and
+  decided-late 0.578. Controlled/team-AI sprint shares were 0.301/0.083,
+  touches per carry-minute were 88.783/78.332, and heavy losses were
+  0.411/0.991. Relative to the merged execution-error baseline, seven fields
+  crossed tolerance and are causally coupled to the new run opportunities:
+  fun, goals, shots/goal, save rate, decided-late, controlled heavy losses,
+  and team-AI heavy losses.
+
+  The combined 100-match audit measured fun 0.531, goals 2.080, shots/goal
+  21.574, save rate 0.827, pass completion 0.562, turnovers/min 3.714,
+  possession balance 0.400, drought 10.603 s, and decided-late 0.557.
+  Controlled/team-AI sprint shares were 0.286/0.086, touches per carry-minute
+  were 87.631/73.229, and heavy losses were 0.745/1.141. Goals, passing,
+  turnovers, possession, drought, and decided-late remain inside their target
+  bands. Shots/goal and save rate remain the inherited quality exceptions
+  owned by hands-on review; no catastrophic guardrail collapsed.
+
+  In the paired 60-seed lever audit, Press High won 30.0% versus Counter
+  Attack's 23.3%, a +6.7 percentage-point tactic outcome difference; goals,
+  save rate, and shots/goal moved by +0.52, -0.64, and -3.05 respectively.
+  The star-swap comparison won 23.3% with Zyro versus 6.7% with Mika, a +16.7
+  percentage-point difference, and moved shots/goal by -1.83. Both comparisons
+  pass their outcome and metric-movement gates. Balanced and Aggressive each
+  won 23.3%, so formation outcome separation remains 0.0 percentage points;
+  it is separately disclosed, remains outside the gate, and is not addressed
+  by this integration.
+
+  The selective refresh accepts only the seven crossed, behavior-linked
+  fields named above. All other fields retain their merged execution-error
+  pins, including values that shifted within tolerance.

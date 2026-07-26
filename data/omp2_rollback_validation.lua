@@ -110,9 +110,9 @@ return {
         id = "omp2-combat-rollback-v1",
         seed = 733,
         frame_count = 80,
-        initial_hash = "dc5bf8639102f82a",
-        final_hash = "56bcf87e3ad7aa93",
-        tape_digest = "fec464c0f45e4c83",
+        initial_hash = "e2fd0647232aeb74",
+        final_hash = "7e3b5009bccfa79f",
+        tape_digest = "e6e9c36e11c3899f",
     },
     budgets = {
         p95_work_ms = 16.67,

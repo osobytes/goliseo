@@ -83,21 +83,21 @@ t.describe("OMP-3 online protocol", function()
     t.it("pins the accepted input, snapshot, tape, and combat schema versions", function()
         t.eq(protocol.CURRENT_VERSIONS.protocol, 1)
         t.eq(protocol.CURRENT_VERSIONS.input, 2)
-        t.eq(protocol.CURRENT_VERSIONS.snapshot, 9)
+        t.eq(protocol.CURRENT_VERSIONS.snapshot, 10)
         t.eq(protocol.CURRENT_VERSIONS.tape, 2)
         t.eq(protocol.CURRENT_VERSIONS.combat, 1)
     end)
 
     t.it("matches literal wire, manifest, transcript, and per-kind golden evidence", function()
         local report = conformance.verify()
-        t.eq(report.manifest_id, "27c9d39785b1aaaf")
-        t.eq(report.transcript_id, "937cff176fa6af3b")
+        t.eq(report.manifest_id, "fd826ceb66f9a4be")
+        t.eq(report.transcript_id, "b4e3ed977697caa5")
         t.eq(report.message_count, 13)
-        t.eq(fnv1a64.hash(conformance.GOLDEN.complete_wire), "ae5be4cbc3ee95a7")
+        t.eq(fnv1a64.hash(conformance.GOLDEN.complete_wire), "36db7cdbb413c6eb")
         t.eq(
             conformance.marker(report),
-            "GC_PROTOCOL|golden|schema=1|manifest_id=27c9d39785b1aaaf"
-                .. "|transcript_id=937cff176fa6af3b|messages=13"
+            "GC_PROTOCOL|golden|schema=1|manifest_id=fd826ceb66f9a4be"
+                .. "|transcript_id=b4e3ed977697caa5|messages=13"
         )
     end)
 
@@ -931,7 +931,7 @@ t.describe("OMP-3 online protocol", function()
         )
         local maximal_wire = assert(protocol.encode(maximal_proposal))
         t.is_true(#maximal_wire <= protocol.MAX_WIRE_BYTES)
-        t.eq(#maximal_wire, 7219)
+        t.eq(#maximal_wire, 7220)
     end)
 
     t.it("rejects invalid phase use before callers mutate lifecycle state", function()
