@@ -39,20 +39,20 @@ REQUIRED_FIELDS = {
     "tick_rate": "60",
     "ticks": "7201",
     "boundaries": "7202",
-    "hash": "fnv1a64-canonical-snapshot-v10",
-    "final_hash": "650b2f0c5498aaa7",
-    "sequence_digest": "4bc8f6edabd9b43e",
+    "hash": "fnv1a64-canonical-snapshot-v11",
+    "final_hash": "f5bc4aaade430afb",
+    "sequence_digest": "b4e10bdddd965a31",
     "score": "0-0",
     "outcome": "draw",
-    "snapshot_bytes": "21659",
+    "snapshot_bytes": "21937",
     "coverage": "tackle,aerial,keeper,full_time",
     "events": "catch:1,claim:4,header:2,pass:5,reception:1,shot:1,tackle:147,touch:173",
     "love": "11.5.0",
 }
 REQUIRED_PROTOCOL_FIELDS = {
     "schema": "1",
-    "manifest_id": "ed404908cc301829",
-    "transcript_id": "098e3e665bc478c8",
+    "manifest_id": "659947cdd13d7d68",
+    "transcript_id": "5772846370555e41",
     "messages": "13",
 }
 REQUIRED_INPUT_PROTOCOL_FIELDS = {
@@ -61,8 +61,8 @@ REQUIRED_INPUT_PROTOCOL_FIELDS = {
     "history": "6",
     "delay": "3",
     "vectors": "2",
-    "guest": "3332f9c19ea9ce34",
-    "host": "1e9b1ebfad823a44",
+    "guest": "4c85cafb2a373f45",
+    "host": "ac5249f8efb62759",
     "max_bytes": "755",
 }
 ERROR_MARKERS = (
@@ -755,8 +755,8 @@ def shard_gate_self_test() -> None:
 
 def self_test() -> None:
     protocol_marker = (
-        "GC_PROTOCOL|golden|schema=1|manifest_id=ed404908cc301829"
-        "|transcript_id=098e3e665bc478c8|messages=13"
+        "GC_PROTOCOL|golden|schema=1|manifest_id=659947cdd13d7d68"
+        "|transcript_id=5772846370555e41|messages=13"
     )
     if parse_protocol_marker(protocol_marker) != REQUIRED_PROTOCOL_FIELDS:
         raise RuntimeError("protocol golden marker self-test failed")
@@ -768,7 +768,7 @@ def self_test() -> None:
         raise RuntimeError("protocol golden marker accepted a changed vector count")
     input_protocol_marker = (
         "GC_INPUT_PROTOCOL|golden|schema=1|input=2|history=6|delay=3|vectors=2"
-        "|guest=3332f9c19ea9ce34|host=1e9b1ebfad823a44|max_bytes=755"
+        "|guest=4c85cafb2a373f45|host=ac5249f8efb62759|max_bytes=755"
     )
     if parse_input_protocol_marker(input_protocol_marker) != REQUIRED_INPUT_PROTOCOL_FIELDS:
         raise RuntimeError("input protocol golden marker self-test failed")
