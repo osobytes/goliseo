@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -96,6 +97,16 @@ EXPECTED_ARTIFACTS = frozenset(
         "omp2-rollback-firefox-soak",
     }
 )
+
+CAMPAIGN_EVENT_ENV = "GC_CAMPAIGN_EVENT"
+CAMPAIGN_SHA_ENV = "GC_CAMPAIGN_SHA"
+CAMPAIGN_MESSAGE_ENV = "GC_CAMPAIGN_HEAD_COMMIT_MESSAGE"
+SQUASH_MERGE_SUBJECT = re.compile(r"\(#([1-9][0-9]{0,9})\)$")
+FAILED_RESULTS = ("failure", "cancelled")
+MAX_SUBJECT_CHARS = 160
+MAX_METRIC_CHARS = 400
+MAX_EVIDENCE_FILES = 64
+MAX_EVIDENCE_BYTES = 8 * 1024 * 1024
 
 
 class DiscoveryError(RuntimeError):
@@ -521,6 +532,165 @@ def duplicate_safe_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise ValueError(f"duplicate field {key!r}")
         result[key] = value
     return result
+
+
+def append_text(path: Path | None, text: str) -> None:
+    if path is None:
+        return
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(text)
+
+
+def printable_line(value: str) -> str:
+    """Reduce untrusted commit or evidence text to one collapsed printable line."""
+
+    stripped = value.strip()
+    if not stripped:
+        return ""
+    line = stripped.splitlines()[0]
+    return " ".join(
+        "".join(
+            character if character.isprintable() else " " for character in line
+        ).split()
+    )
+
+
+def bounded(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: max(limit - 3, 0)] + "..."
+
+
+def campaign_attribution(
+    event_name: str,
+    revision: str,
+    head_commit_message: str,
+) -> dict[str, Any]:
+    """Attribute one campaign to its merge commit and originating pull request."""
+
+    subject = printable_line(head_commit_message)
+    match = SQUASH_MERGE_SUBJECT.search(subject)
+    return {
+        "event": bounded(printable_line(event_name), 40) or "unknown",
+        "pull_request": int(match.group(1)) if match else None,
+        "revision": revision if GIT_REVISION.fullmatch(revision or "") else "",
+        "subject": bounded(subject, MAX_SUBJECT_CHARS),
+    }
+
+
+def attribution_from_environment(environment: Any) -> dict[str, Any]:
+    """Read the campaign attribution the workflow publishes to every job."""
+
+    return campaign_attribution(
+        environment.get(CAMPAIGN_EVENT_ENV, ""),
+        environment.get(CAMPAIGN_SHA_ENV, ""),
+        environment.get(CAMPAIGN_MESSAGE_ENV, ""),
+    )
+
+
+def attribution_lines(attribution: dict[str, Any], run_url: str) -> list[str]:
+    pull_request = attribution.get("pull_request")
+    origin = (
+        f"#{pull_request}"
+        if isinstance(pull_request, int)
+        else "unknown (the merge subject carries no squashed pull-request number)"
+    )
+    lines = [
+        f"- merge commit: `{attribution.get('revision') or 'unknown'}`",
+        f"- originating pull request: {origin}",
+        f"- merged subject: {attribution.get('subject') or 'unknown'}",
+    ]
+    if run_url:
+        lines.append(f"- evidence artifacts: {run_url}#artifacts")
+    return lines
+
+
+def campaign_results(payload: str) -> list[tuple[str, str]]:
+    """Normalize the workflow ``needs`` context into ordered job results."""
+
+    try:
+        data = json.loads(payload or "{}", object_pairs_hook=duplicate_safe_object)
+    except ValueError as error:
+        raise DiscoveryError(f"campaign results are malformed: {error}") from error
+    if not isinstance(data, dict):
+        raise DiscoveryError("campaign results are not an object")
+    results: list[tuple[str, str]] = []
+    for name in sorted(data):
+        record = data[name]
+        result = record.get("result") if isinstance(record, dict) else None
+        results.append((name, result if isinstance(result, str) else "unknown"))
+    return results
+
+
+def evidence_failures(evidence_root: Path) -> list[tuple[str, str]]:
+    """Collect the gate metric each failing rollback evidence record wrote down."""
+
+    if not evidence_root.is_dir():
+        return []
+    failures: list[tuple[str, str]] = []
+    for path in sorted(evidence_root.rglob("*.json"))[:MAX_EVIDENCE_FILES]:
+        try:
+            if not path.is_file() or path.stat().st_size > MAX_EVIDENCE_BYTES:
+                continue
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(record, dict) or record.get("pass") is True:
+            continue
+        error = record.get("error")
+        metric = printable_line(error) if isinstance(error, str) else ""
+        failures.append(
+            (
+                str(path.relative_to(evidence_root)),
+                bounded(metric, MAX_METRIC_CHARS) or "no gate metric was recorded",
+            )
+        )
+    return failures
+
+
+def render_campaign_report(
+    attribution: dict[str, Any],
+    results: list[tuple[str, str]],
+    failures: list[tuple[str, str]],
+    run_url: str,
+) -> tuple[bool, str, str]:
+    """Render the post-merge campaign summary and its failure issue body."""
+
+    failed_jobs = [name for name, result in results if result in FAILED_RESULTS]
+    failed = bool(failed_jobs)
+    revision = attribution.get("revision") or "unknown"
+    pull_request = attribution.get("pull_request")
+    origin = f" from #{pull_request}" if isinstance(pull_request, int) else ""
+    title = bounded(
+        f"OMP-2 post-merge rollback campaign failed at {revision[:12]}{origin}",
+        MAX_SUBJECT_CHARS,
+    )
+    lines = ["## OMP-2 post-merge rollback campaign", ""]
+    lines.extend(attribution_lines(attribution, run_url))
+    lines.extend(
+        [
+            "",
+            "| job | result |",
+            "| --- | --- |",
+            *[f"| `{name}` | {result} |" for name, result in results],
+            "",
+        ]
+    )
+    if failed:
+        lines.append("### Failing gates")
+        lines.append("")
+        lines.extend(f"- `{name}`" for name in failed_jobs)
+        lines.append("")
+        lines.append("### Recorded metrics")
+        lines.append("")
+        if failures:
+            lines.extend(f"- `{name}`: {metric}" for name, metric in failures)
+        else:
+            lines.append("- no failing evidence record was downloadable for this run")
+    else:
+        lines.append("Every scoped rollback gate passed on this merge commit.")
+    lines.append("")
+    return failed, title, "\n".join(lines)
 
 
 def api_json(url: str, token: str) -> dict[str, Any]:
@@ -955,9 +1125,43 @@ def validate_workflow_wiring() -> None:
     discovery = workflow.index("scripts/rollback_ci.py discover", scope)
     decision = workflow.index("- name: Select full campaign or aggregate reuse", scope)
     assert scope < discovery < decision
-    assert workflow.count("if: needs.rollback_scope.outputs.run == 'true'") == 3
+    assert (
+        workflow.count(
+            "if: github.event_name != 'pull_request' "
+            "&& needs.rollback_scope.outputs.run == 'true'"
+        )
+        == 3
+    )
+    assert "if: needs.rollback_scope.outputs.run == 'true'" not in workflow
+    assert workflow.count("if: needs.rollback_scope.outputs.impact == 'true'") == 1
+    assert "--campaign stress" in workflow
     gate = workflow.index("\n    rollback_gate:")
     assert "pointer-write" not in workflow[gate:]
+
+    # Main campaigns queue instead of cancelling one another; pull requests
+    # still supersede their own in-flight runs.
+    assert (
+        "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in workflow
+    )
+    assert "cancel-in-progress: true" not in workflow
+
+    # The attribution environment reaches only the jobs and steps that read it,
+    # so no unrelated step can re-export an untrusted commit message later.
+    assert "\nenv:\n" not in workflow
+    campaign_environment = [
+        line for line in workflow.splitlines() if "GC_CAMPAIGN_" in line
+    ]
+    assert len(campaign_environment) == 15
+    assert all(line.startswith(" " * 12) for line in campaign_environment)
+
+    # Least privilege: only the post-merge report job may open an issue.
+    permissions = workflow.index("\npermissions:\n")
+    assert workflow[permissions:].startswith(
+        "\npermissions:\n    actions: read\n    contents: read\n"
+    )
+    report = workflow.index("\n    campaign_report:")
+    assert workflow.count("issues: write") == 1
+    assert report > gate and "issues: write" in workflow[report:]
 
 
 def initialize_scope_fixture(repo: Path) -> str:
@@ -1183,7 +1387,126 @@ return runtime, message, template
         assert missing_root.run and missing_root.fingerprint == "unavailable"
         assert "missing required rollback root" in missing_root.reason
 
+    run_report_self_test()
     print("rollback CI self-test passed")
+
+
+def run_report_self_test() -> None:
+    merge_revision = "a" * 40
+    attributed = campaign_attribution(
+        "push",
+        merge_revision,
+        "feat: add stable AI pressing (#160)\n\nlonger body (#999)\n",
+    )
+    assert attributed == {
+        "event": "push",
+        "pull_request": 160,
+        "revision": merge_revision,
+        "subject": "feat: add stable AI pressing (#160)",
+    }
+    assert campaign_attribution("push", merge_revision, "docs: no squash number") == {
+        "event": "push",
+        "pull_request": None,
+        "revision": merge_revision,
+        "subject": "docs: no squash number",
+    }
+    assert campaign_attribution("push", "not-a-revision", "")["revision"] == ""
+    hostile = campaign_attribution(
+        "push",
+        merge_revision,
+        "feat: \x07control\tand   spaces (#12)\nsecond line",
+    )
+    assert hostile["subject"] == "feat: control and spaces (#12)"
+    assert hostile["pull_request"] == 12
+    assert attribution_from_environment({}) == campaign_attribution("", "", "")
+    assert (
+        attribution_from_environment(
+            {
+                CAMPAIGN_EVENT_ENV: "push",
+                CAMPAIGN_SHA_ENV: merge_revision,
+                CAMPAIGN_MESSAGE_ENV: "fix: guard (#7)",
+            }
+        )["pull_request"]
+        == 7
+    )
+
+    results = campaign_results(
+        json.dumps(
+            {
+                "rollback_native": {"result": "failure"},
+                "rollback_gate": {"result": "failure"},
+                "rollback_scope": {"result": "success", "outputs": {"run": "true"}},
+                "rollback_browser_soak": {},
+            }
+        )
+    )
+    assert results == [
+        ("rollback_browser_soak", "unknown"),
+        ("rollback_gate", "failure"),
+        ("rollback_native", "failure"),
+        ("rollback_scope", "success"),
+    ]
+
+    with tempfile.TemporaryDirectory(prefix="rollback-report-self-test-") as directory:
+        evidence_root = Path(directory)
+        failing = evidence_root / "omp2-rollback-native"
+        failing.mkdir()
+        (failing / "omp2-rollback-native.json").write_text(
+            json.dumps(
+                {
+                    "pass": False,
+                    "error": "native soak exceeded the 10% terminal forced-GC growth gate",
+                }
+            ),
+            encoding="utf-8",
+        )
+        passing = evidence_root / "omp2-rollback-chrome-stress"
+        passing.mkdir()
+        (passing / "omp2-rollback-chrome-stress.json").write_text(
+            json.dumps({"pass": True}), encoding="utf-8"
+        )
+        (passing / "truncated.json").write_text("{", encoding="utf-8")
+        failures = evidence_failures(evidence_root)
+        assert failures == [
+            (
+                "omp2-rollback-native/omp2-rollback-native.json",
+                "native soak exceeded the 10% terminal forced-GC growth gate",
+            )
+        ]
+        assert evidence_failures(evidence_root / "missing") == []
+
+        run_url = "https://github.com/osobytes/goliseo/actions/runs/1"
+        failed, title, body = render_campaign_report(
+            attributed, results, failures, run_url
+        )
+        assert failed
+        assert title == "OMP-2 post-merge rollback campaign failed at aaaaaaaaaaaa from #160"
+        assert "\n" not in title
+        assert f"- merge commit: `{merge_revision}`" in body
+        assert "- originating pull request: #160" in body
+        assert f"- evidence artifacts: {run_url}#artifacts" in body
+        assert "| `rollback_native` | failure |" in body
+        assert "native soak exceeded" in body
+
+        clean, _clean_title, clean_body = render_campaign_report(
+            attributed,
+            [("rollback_gate", "success"), ("rollback_scope", "success")],
+            [],
+            run_url,
+        )
+        assert not clean
+        assert "Every scoped rollback gate passed" in clean_body
+        assert "Failing gates" not in clean_body
+
+        cancelled, _cancelled_title, cancelled_body = render_campaign_report(
+            campaign_attribution("push", merge_revision, "chore: unattributed"),
+            [("rollback_native", "cancelled")],
+            [],
+            "",
+        )
+        assert cancelled
+        assert "the merge subject carries no squashed pull-request number" in cancelled_body
+        assert "no failing evidence record was downloadable" in cancelled_body
 
 
 def scope_command(arguments: argparse.Namespace) -> int:
@@ -1242,6 +1565,25 @@ def discover_command(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def report_command(arguments: argparse.Namespace) -> int:
+    attribution = attribution_from_environment(os.environ)
+    failed, title, body = render_campaign_report(
+        attribution,
+        campaign_results(arguments.results),
+        evidence_failures(arguments.evidence_root),
+        arguments.run_url,
+    )
+    print(body)
+    append_text(arguments.github_summary, body + "\n")
+    if arguments.issue_body is not None:
+        arguments.issue_body.write_text(body + "\n", encoding="utf-8")
+    write_github_output(
+        arguments.github_output,
+        {"failed": "true" if failed else "false", "title": title},
+    )
+    return 0
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1273,6 +1615,17 @@ def parse_args() -> argparse.Namespace:
     discover.add_argument("--repo", type=Path, default=ROOT)
     discover.add_argument("--github-output", type=Path)
     discover.set_defaults(handler=discover_command)
+
+    report = subparsers.add_parser(
+        "report", help="attribute a post-merge campaign and report its failing gates"
+    )
+    report.add_argument("--results", default="{}")
+    report.add_argument("--evidence-root", type=Path, default=Path("."))
+    report.add_argument("--run-url", default="")
+    report.add_argument("--issue-body", type=Path)
+    report.add_argument("--github-summary", type=Path)
+    report.add_argument("--github-output", type=Path)
+    report.set_defaults(handler=report_command)
 
     self_test = subparsers.add_parser("self-test", help="run deterministic fixtures")
     self_test.set_defaults(handler=lambda _arguments: run_self_test() or 0)

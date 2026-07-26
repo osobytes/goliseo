@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
     group: ci-${{ github.workflow }}-${{ github.ref }}
-    cancel-in-progress: true
+    cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
     rollback_scope:
@@ -211,10 +211,75 @@ jobs:
                           --browser chrome \
                           --output "$RUNNER_TEMP/omp1-browser-determinism.json"
 
+    rollback_browser_stress:
+        name: OMP-2 rollback browser stress (${{ matrix.browser }})
+        needs: rollback_scope
+        if: needs.rollback_scope.outputs.impact == 'true'
+        # Read only by scripts/rollback_validation.py, which sanitizes it.
+        env:
+            GC_CAMPAIGN_EVENT: ${{ github.event_name }}
+            GC_CAMPAIGN_SHA: ${{ github.sha }}
+            GC_CAMPAIGN_HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        runs-on: ubuntu-24.04
+        timeout-minutes: 45
+        strategy:
+            fail-fast: false
+            matrix:
+                browser: [chrome, firefox]
+
+        steps:
+            - name: Check out source
+              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+              with:
+                  ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+            - name: Install pinned browser evidence dependencies
+              run: |
+                  python3 -m venv "$RUNNER_TEMP/browser-evidence"
+                  "$RUNNER_TEMP/browser-evidence/bin/pip" install \
+                      --require-hashes \
+                      --requirement scripts/browser_matrix-requirements.txt
+                  printf '%s\n' "$RUNNER_TEMP/browser-evidence/bin" >> "$GITHUB_PATH"
+
+            - name: Build the pinned love.js artifact
+              run: ./scripts/web_build.sh "$RUNNER_TEMP/omp2-web"
+
+            - name: Run the short stress scenario matrix
+              env:
+                  GALLIUM_DRIVER: llvmpipe
+                  LIBGL_ALWAYS_SOFTWARE: "1"
+                  SE_CACHE_PATH: ${{ runner.temp }}/selenium
+              run: |
+                  xvfb-run -a \
+                      -s "-screen 0 1280x720x24 -nolisten tcp +extension GLX +render -noreset" \
+                      ./scripts/check_rollback.sh \
+                          --browser \
+                          --runtime-browser "${{ matrix.browser }}" \
+                          --campaign stress \
+                          --artifact "$RUNNER_TEMP/omp2-web" \
+                          --output "$RUNNER_TEMP/omp2-rollback-${{ matrix.browser }}-stress.json" \
+                          --timeout-seconds 1800
+
+            - name: Upload browser stress rollback evidence
+              if: always()
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+              with:
+                  name: omp2-rollback-${{ matrix.browser }}-stress
+                  path: |
+                      ${{ runner.temp }}/omp2-rollback-${{ matrix.browser }}-stress.json
+                      ${{ runner.temp }}/omp2-rollback-${{ matrix.browser }}-stress-raw
+                  if-no-files-found: error
+                  retention-days: 14
+
     rollback_native:
         name: OMP-2 rollback native
         needs: rollback_scope
-        if: needs.rollback_scope.outputs.run == 'true'
+        if: github.event_name != 'pull_request' && needs.rollback_scope.outputs.run == 'true'
+        # Read only by scripts/rollback_validation.py, which sanitizes it.
+        env:
+            GC_CAMPAIGN_EVENT: ${{ github.event_name }}
+            GC_CAMPAIGN_SHA: ${{ github.sha }}
+            GC_CAMPAIGN_HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         runs-on: ubuntu-24.04
         timeout-minutes: 180
 
@@ -265,7 +330,12 @@ jobs:
     rollback_browser_matrix:
         name: OMP-2 rollback browser matrix (${{ matrix.browser }})
         needs: rollback_scope
-        if: needs.rollback_scope.outputs.run == 'true'
+        if: github.event_name != 'pull_request' && needs.rollback_scope.outputs.run == 'true'
+        # Read only by scripts/rollback_validation.py, which sanitizes it.
+        env:
+            GC_CAMPAIGN_EVENT: ${{ github.event_name }}
+            GC_CAMPAIGN_SHA: ${{ github.sha }}
+            GC_CAMPAIGN_HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         runs-on: ubuntu-24.04
         timeout-minutes: 180
         strategy:
@@ -320,7 +390,12 @@ jobs:
     rollback_browser_soak:
         name: OMP-2 rollback browser soak (${{ matrix.browser }})
         needs: rollback_scope
-        if: needs.rollback_scope.outputs.run == 'true'
+        if: github.event_name != 'pull_request' && needs.rollback_scope.outputs.run == 'true'
+        # Read only by scripts/rollback_validation.py, which sanitizes it.
+        env:
+            GC_CAMPAIGN_EVENT: ${{ github.event_name }}
+            GC_CAMPAIGN_SHA: ${{ github.sha }}
+            GC_CAMPAIGN_HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         runs-on: ubuntu-24.04
         timeout-minutes: 180
         strategy:
@@ -374,7 +449,12 @@ jobs:
 
     rollback_gate:
         name: OMP-2 rollback gate
-        needs: [rollback_scope, rollback_native, rollback_browser_matrix, rollback_browser_soak]
+        needs:
+            - rollback_scope
+            - rollback_browser_stress
+            - rollback_native
+            - rollback_browser_matrix
+            - rollback_browser_soak
         if: always()
         runs-on: ubuntu-24.04
 
@@ -383,6 +463,8 @@ jobs:
               env:
                   BROWSER_MATRIX_RESULT: ${{ needs.rollback_browser_matrix.result }}
                   BROWSER_SOAK_RESULT: ${{ needs.rollback_browser_soak.result }}
+                  BROWSER_STRESS_RESULT: ${{ needs.rollback_browser_stress.result }}
+                  EVENT_NAME: ${{ github.event_name }}
                   IMPACT: ${{ needs.rollback_scope.outputs.impact }}
                   NATIVE_RESULT: ${{ needs.rollback_native.result }}
                   RUN_ROLLBACK: ${{ needs.rollback_scope.outputs.run }}
@@ -395,6 +477,14 @@ jobs:
                   fi
                   if [ "$IMPACT" = "false" ]; then
                       echo "No rollback-impacting changes; long evidence jobs were skipped."
+                      exit 0
+                  fi
+                  if [ "$EVENT_NAME" = "pull_request" ]; then
+                      if [ "$BROWSER_STRESS_RESULT" != "success" ]; then
+                          echo "Pull-request rollback stress evidence failed: stress=$BROWSER_STRESS_RESULT"
+                          exit 1
+                      fi
+                      echo "Stress evidence passed; the complete campaign runs on the merge commit."
                       exit 0
                   fi
                   if [ "$REUSE" = "true" ]; then
@@ -412,3 +502,66 @@ jobs:
                       exit 1
                   fi
                   echo "Native plus Chrome/Firefox matrix and soak evidence passed."
+
+    campaign_report:
+        name: OMP-2 post-merge campaign report
+        needs:
+            - rollback_scope
+            - rollback_browser_stress
+            - rollback_native
+            - rollback_browser_matrix
+            - rollback_browser_soak
+            - rollback_gate
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        runs-on: ubuntu-24.04
+        permissions:
+            actions: read
+            contents: read
+            issues: write
+
+        steps:
+            - name: Check out source
+              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+              with:
+                  ref: ${{ github.sha }}
+
+            - name: Download campaign evidence
+              continue-on-error: true
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  mkdir -p "$RUNNER_TEMP/campaign-evidence"
+                  gh run download "$GITHUB_RUN_ID" \
+                      --repo "$GITHUB_REPOSITORY" \
+                      --pattern 'omp2-rollback-*' \
+                      --dir "$RUNNER_TEMP/campaign-evidence" \
+                      || echo "no rollback evidence artifacts were available to download"
+
+            - name: Attribute the campaign to its merge commit
+              id: report
+              env:
+                  # Read only by scripts/rollback_ci.py, which sanitizes it.
+                  GC_CAMPAIGN_EVENT: ${{ github.event_name }}
+                  GC_CAMPAIGN_SHA: ${{ github.sha }}
+                  GC_CAMPAIGN_HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+                  NEEDS: ${{ toJSON(needs) }}
+                  RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+              run: |
+                  python3 -B scripts/rollback_ci.py report \
+                      --results "$NEEDS" \
+                      --evidence-root "$RUNNER_TEMP/campaign-evidence" \
+                      --run-url "$RUN_URL" \
+                      --issue-body "$RUNNER_TEMP/campaign-report.md" \
+                      --github-summary "$GITHUB_STEP_SUMMARY" \
+                      --github-output "$GITHUB_OUTPUT"
+
+            - name: Open a campaign failure issue
+              if: steps.report.outputs.failed == 'true'
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  ISSUE_TITLE: ${{ steps.report.outputs.title }}
+              run: |
+                  gh issue create \
+                      --repo "$GITHUB_REPOSITORY" \
+                      --title "$ISSUE_TITLE" \
+                      --body-file "$RUNNER_TEMP/campaign-report.md"
