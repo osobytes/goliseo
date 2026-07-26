@@ -331,18 +331,27 @@ t.describe("stable pressing cover, exclusions, and resets", function()
         local state = defended_state("home")
         state.owner = nil
         match._reset_press_states(state)
-        for _ = 1, 200 do
-            match._sanitize_press_states(state)
+
+        -- LuaJIT compiles traces per bytecode location, so the loop we warm has
+        -- to be the loop we measure. Warming a *different* loop (or one inside a
+        -- closure created after the warm-up) leaves trace recording inside the
+        -- measurement window, and the recorder's IR allocation is charged to
+        -- `collectgarbage("count")` — worth hundreds of kilobytes some runs.
+        local function sanitize_ticks()
+            for _ = 1, 10000 do
+                match._sanitize_press_states(state)
+            end
         end
+
+        local ok, failure = pcall(sanitize_ticks)
+        t.is_true(ok, tostring(failure))
+        ok, failure = pcall(sanitize_ticks)
+        t.is_true(ok, tostring(failure))
 
         collectgarbage("collect")
         collectgarbage("stop")
         local before_kib = collectgarbage("count")
-        local ok, failure = pcall(function()
-            for _ = 1, 10000 do
-                match._sanitize_press_states(state)
-            end
-        end)
+        ok, failure = pcall(sanitize_ticks)
         local allocated_bytes = (collectgarbage("count") - before_kib) * 1024
         collectgarbage("restart")
         collectgarbage("collect")

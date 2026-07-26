@@ -2374,35 +2374,45 @@ function match._assign_press(s, team, candidates, carrier_index, goal, ball, pos
     return presser, cover
 end
 
----@param s MatchState
----@param combat_state CombatMatchState?
-function match._sanitize_press_states(s, combat_state)
+-- `require` is a C call LuaJIT cannot record, so calling it per tick makes the
+-- compiler stitch a fresh trace at that point on every hot iteration — an
+-- unbounded chain whose IR allocation lands in whatever the caller is measuring
+-- (that is the flake in #212, and it is per-tick work in the match loop either
+-- way). This module reference is hoisted out of the call, but into a block
+-- scope rather than up with the other requires because this chunk already sits
+-- on Lua's 200-local ceiling.
+do
     local pressing = require("sim.outfield_press")
-    local owner = s.owner and s.players[s.owner] or nil
-    local home_state = s.outfield_press.home
-    local home_presser = home_state.presser_index
-    local home_defending = owner ~= nil
-        and owner.team ~= "home"
-        and s.kickoff_hold <= 0
-        and (not owner.is_keeper or owner.feet_ball)
-    if
-        not home_defending
-        or (home_presser ~= nil and not match._press_eligible(s, home_presser, combat_state))
-    then
-        s.outfield_press.home = pressing.clear(home_state)
-    end
 
-    local away_state = s.outfield_press.away
-    local away_presser = away_state.presser_index
-    local away_defending = owner ~= nil
-        and owner.team ~= "away"
-        and s.kickoff_hold <= 0
-        and (not owner.is_keeper or owner.feet_ball)
-    if
-        not away_defending
-        or (away_presser ~= nil and not match._press_eligible(s, away_presser, combat_state))
-    then
-        s.outfield_press.away = pressing.clear(away_state)
+    ---@param s MatchState
+    ---@param combat_state CombatMatchState?
+    function match._sanitize_press_states(s, combat_state)
+        local owner = s.owner and s.players[s.owner] or nil
+        local home_state = s.outfield_press.home
+        local home_presser = home_state.presser_index
+        local home_defending = owner ~= nil
+            and owner.team ~= "home"
+            and s.kickoff_hold <= 0
+            and (not owner.is_keeper or owner.feet_ball)
+        if
+            not home_defending
+            or (home_presser ~= nil and not match._press_eligible(s, home_presser, combat_state))
+        then
+            s.outfield_press.home = pressing.clear(home_state)
+        end
+
+        local away_state = s.outfield_press.away
+        local away_presser = away_state.presser_index
+        local away_defending = owner ~= nil
+            and owner.team ~= "away"
+            and s.kickoff_hold <= 0
+            and (not owner.is_keeper or owner.feet_ball)
+        if
+            not away_defending
+            or (away_presser ~= nil and not match._press_eligible(s, away_presser, combat_state))
+        then
+            s.outfield_press.away = pressing.clear(away_state)
+        end
     end
 end
 
