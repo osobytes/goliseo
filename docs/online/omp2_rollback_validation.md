@@ -81,7 +81,7 @@ diagnostically.
 | retained snapshot boundaries | `<= 31` | every playable case |
 | canonical retained snapshot payload | `< 768 KiB` | every playable case |
 | exact accounted snapshot/input/output/event history | `< 1 MiB` | every playable case |
-| terminal forced-GC Lua heap, process-tree RSS, and Chrome JS-heap growth from warm-up | `<= 10%` | persistent soak |
+| forced-GC Lua heap, process-tree RSS, and Chrome JS-heap growth, mean of the last two checkpoints over the mean of the first two | `<= 10%` | persistent soak |
 
 Only `complete_fixture` meets that sample-count precondition. The browser `combat` cases record
 six to eight rollback samples by construction, so their p99.9 ratio is recorded diagnostically and
@@ -491,8 +491,23 @@ round trips. Before each Chrome forced-GC checkpoint, the sampler invokes CDP
 `Runtime.discardConsoleEntries` and then `HeapProfiler.collectGarbage`. Each checkpoint records
 whether console entries were discarded and JavaScript GC was forced.
 
-The memory gate measures retained terminal growth: the forced-GC `final` checkpoint must be no
-more than 10% above `warmup`. Intermediate maxima remain recorded as `peak_bytes`, `peak_sample`,
+The memory gate measures retained terminal growth: the mean of the last two forced-GC checkpoints
+(`600`, `final`) must be no more than 10% above the mean of the first two (`warmup`, `120`).
+
+Both ends average two checkpoints rather than reading a single sample because the series has a
+natural spread of about 13%, which cannot resolve a 10% threshold. Two native runs of identical
+code, recorded in runs `30192643196` and `30196601837`, had mean heaps of 21.831 MB and 21.823 MB —
+0.04% apart — yet the single-sample rule scored them 0.000% and 11.572% and failed the second. The
+verdict was decided by whether `warmup` happened to land high or low in the band, not by retained
+memory.
+
+Averaging both ends costs sensitivity: a sustained leak is detected from roughly 13.5% growth rather
+than 10%. That is the price of not resolving a 10% threshold against a 13% noise band. Self-tests pin
+the floor — a sustained 15% leak must fail and a 10% one must not — so it cannot drift unnoticed.
+Recovering the lost sensitivity requires more checkpoints, not a lower limit; a checkpoint itself
+costs well under a second.
+
+Intermediate maxima remain recorded as `peak_bytes`, `peak_sample`,
 and `peak_growth_percent`, but are diagnostic rather than the pass/fail value because a recovered
 transient is not monotonic retained growth. During final CI validation, the earlier peak-based
 checker rejected a non-monotonic native sequence of 19,632,733; 21,167,273; 19,762,601;
