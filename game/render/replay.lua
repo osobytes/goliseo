@@ -118,6 +118,7 @@ local function capture_frame(s, boundary, combat_state)
             slide_timer = p.slide_timer,
             dive_timer = p.dive_timer,
             dive_dir = p.dive_dir,
+            keeper_get_up_timer = p.keeper_get_up_timer,
             save_style = p.save_style,
             grab_timer = p.grab_timer,
             throw_timer = p.throw_timer,
