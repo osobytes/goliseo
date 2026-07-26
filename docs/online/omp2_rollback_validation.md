@@ -17,16 +17,16 @@ acceptance evidence.
 The current campaign freezes a mixed artifact matrix at 60 Hz:
 
 - every case uses InputFrame v2 and network-profile digest `5fbf1e0d51a6f4d5`;
-- soccer cases use InputTape v1 / MatchSnapshot v10, final hash
-  `650b2f0c5498aaa7`, sequence digest `4bc8f6edabd9b43e`, and live tape digest
-  `be647d4f656aeedb`;
-- combat cases use InputTape v2 / MatchSnapshot v11, initial hash
-  `287b82678ad2ea23`, final hash `87eb218cd02fdecc`, and tape digest
-  `c3fdb048b62a18dc`; and
+- soccer cases use InputTape v1 / MatchSnapshot v11, final hash
+  `f5bc4aaade430afb`, sequence digest `b4e10bdddd965a31`, and live tape digest
+  `2cc6894e771f78f9`;
+- combat cases use InputTape v2 / MatchSnapshot v12, initial hash
+  `0f7c7c66b5a6bbf6`, final hash `32ffe60cbec9d83a`, and tape digest
+  `f4140ca5b3b9d2fc`; and
 - stable rollback-event identity and confirmation semantics apply to both.
 
 Runtime provenance therefore declares InputFrame v2 plus tape versions 1/2
-and snapshot versions 10/11; every case repeats and validates its exact artifact
+and snapshot versions 11/12; every case repeats and validates its exact artifact
 versions. Any merge that changes simulation, gameplay data or tuning,
 input/snapshot/event schemas, a pinned fixture, or network profiles invalidates
 the current evidence. The historical artifact remains an archive rather than
@@ -381,8 +381,8 @@ not a 60 Hz acceptance profile. Numeric measurements are emitted as
 `GC_ROLLBACK_VALIDATION` rows so two fresh native executions can be compared byte for byte
 without confusing wall-clock noise for logical drift.
 
-Snapshot bytes are exact per-case MatchSnapshot v10 or v11 canonical encodings;
-the v11 count includes its authoritative combat companion. Input, output, and
+Snapshot bytes are exact per-case MatchSnapshot v11 or v12 canonical encodings;
+the v12 count includes its authoritative combat companion. Input, output, and
 speculative event bytes use their documented deterministic retained-history
 encodings. They are logical payload counts, not estimates of Lua allocator
 overhead. The soak measures allocator behavior separately: Lua heap in-process,
@@ -395,9 +395,9 @@ Lua heap, process-tree RSS, and Chrome JS heap all include the final fifth-fixtu
 Native holds at that terminal marker until the evidence process acknowledges its RSS sample, so
 the runtime cannot exit between marker delivery and measurement.
 
-The current contract keeps the soccer campaign on MatchSnapshot v10/InputTape v1
+The current contract keeps the soccer campaign on MatchSnapshot v11/InputTape v1
 without appending a synthetic combat-identity segment, and keeps bounded
-composite combat coverage on MatchSnapshot v11/InputTape v2. The current soccer
+composite combat coverage on MatchSnapshot v12/InputTape v2. The current soccer
 digest is pinned separately from the historical InputFrame-v1 artifact.
 The 768-KiB snapshot gate is an explicit revision from 600 KiB: the previous
 peak was 611,274 bytes, leaving only 3,126 bytes for 31 retained boundaries,
@@ -794,17 +794,20 @@ backpressure, cross-peer clock drift, signaling and room lifecycle, reconnect/re
 behavior, MTU/fragmentation, mobile and background-tab throttling, hostile or malformed peers,
 and production telemetry. None may be hidden behind render smoothing or a state overwrite.
 
-## Issue-46 v10/v11 schema migration
+## Issue-57 v11/v12 schema migration
 
-The keeper get-up window (`MatchPlayer.keeper_get_up_timer`) moved soccer
-snapshots to v10 and combat snapshots to v11. The pinned artifact identity was
-regenerated from source — soccer final hash `650b2f0c5498aaa7`, sequence digest
-`4bc8f6edabd9b43e`, live soccer tape digest `be647d4f656aeedb`, and the combat
-fixture's `287b82678ad2ea23` / `87eb218cd02fdecc` / `c3fdb048b62a18dc` — and the
+The possession-transition contract (`MatchState.transition_windows` and
+`MatchState.transition`) moved soccer snapshots to v11 and combat snapshots to
+v12, superseding the issue-46 v10/v11 figures. The pinned artifact identity was
+regenerated from source — soccer final hash `f5bc4aaade430afb`, sequence digest
+`b4e10bdddd965a31`, live soccer tape digest `2cc6894e771f78f9`, and the combat
+fixture's `0f7c7c66b5a6bbf6` / `32ffe60cbec9d83a` / `f4140ca5b3b9d2fc` — and the
 harness self-tests plus the complete headless suite pass. The full 54-case
 native campaign, the late-window pair, the ten-case soak, and the browser
 matrix have NOT been re-executed for this schema bump; the measured byte,
-memory, and CPU figures above therefore remain issue-56 evidence. Snapshot
-bytes grow by 27 per player per boundary (270 per snapshot), which the recorded
-749,203-byte combat peak absorbs inside the 768-KiB gate, but the campaign must
-be re-run before this migration is presented as acceptance evidence.
+memory, and CPU figures above therefore remain issue-56 evidence. The new state
+is team-level rather than per player, so snapshot bytes grow by 278 per boundary
+(both tactic window pairs plus the six-field possession memory); the pinned
+31-snapshot combat window is 756,865 bytes, still inside the 768-KiB gate, but
+the campaign must be re-run before this migration is presented as acceptance
+evidence.

@@ -648,3 +648,56 @@ until phase 4 automates it).
   The selective refresh accepts only the seven crossed, behavior-linked
   fields named above. All other fields retain their merged execution-error
   pins, including values that shifted within tolerance.
+
+- **2026-07-26 — tactic-shaped counter-press and counter-attack windows
+  (issue 57). BASELINE NOT REFRESHED.** A settled possession change now opens
+  one counter-press window for the team that lost the ball and one
+  counter-attack window for the team that won it, both decaying through
+  `brain.phase` at the losing/winning tactic's authored seconds (Balanced
+  2.5/2.5, Press High 3.0/2.5, Counter Attack 0.0/3.0). Inside a counter-press
+  the losing side commits its two nearest eligible AI outfielders to the ball at
+  full urgency instead of one presser plus a standing-off cover, while the rest
+  hold their turnover position and shade the highest-valued outlet lane
+  (defensive roles recover toward their anchors). Inside a counter-attack the
+  winning side deepens support by formation role and may take one immediate
+  in-behind run without the settled-carrier requirement.
+
+  `sim/possession_transition.lua` requires ESTABLISHED possession — the same
+  0.7 s hold `turnovers_per_min` counts — before a turnover opens a window. An
+  earlier draft triggered on raw ownership flips; those run ~32/min here, so the
+  windows refreshed forever and the ordinary attack/defend phases fell to ~3% of
+  ticks each (fun 0.545 -> 0.386). With the settled rule the phase budget is
+  roughly 6% counter-press / 6% counter-attack per team.
+
+  The 30-seed tripwire moved fun 0.545 -> 0.496, goals 2.200 -> 2.133,
+  shots/goal 20.193 -> 20.327, save rate 0.778 -> 0.803, pass completion
+  0.567 -> 0.577, turnovers/min 3.828 -> 3.726, possession balance
+  0.406 -> 0.410, drought 9.961 -> 10.269 s, and decided-late 0.578 -> 0.541.
+  Controlled/team-AI heavy losses moved 0.411 -> 0.627 and 0.991 -> 0.609, and
+  team-AI sprint share 0.072 -> 0.088. Five fields crossed tolerance: fun,
+  decided-late, controlled heavy losses, team-AI sprint share, and team-AI heavy
+  losses. Both metrics named as guardrails in the issue — turnovers/min and
+  possession balance — stayed inside tolerance.
+
+  The 100-match audit measured fun 0.477, goals 2.040, shots/goal 21.514, save
+  rate 0.841, pass completion 0.576, turnovers/min 4.013, possession balance
+  0.405, drought 10.926 s, and decided-late 0.550. Controlled/team-AI heavy
+  losses were 0.712/0.679 and sprint shares 0.285/0.086. Goals, passing,
+  turnovers, possession, drought, and decided-late remain inside their bands;
+  shots/goal and save rate remain the inherited quality exceptions owned by
+  hands-on review. No band collapsed.
+
+  Reading of the crossed fields: two hunters closing the ball instead of one
+  containing it costs the bot-driven controlled carrier the ball more often on a
+  heavy touch, while AI carriers lose it LESS often because the counter-attack
+  window gives them deeper support and an immediate in-behind option to pass
+  into. The team-AI sprint share rises for the same reason a hunted carrier
+  runs. Fun and decided-late follow those two.
+
+  In the paired 60-seed lever audit the tactic lever got LIVELIER: Press High
+  won 31.7% versus Counter Attack's 16.7%, a +15.0 percentage-point outcome
+  difference (was +6.7 before this change), still inside the 3-20 point gate,
+  with three banded metrics moved.
+
+  `data/fun_baseline.lua` is deliberately UNCHANGED: the refresh is the repo
+  owner's call, so `love . --tripwire` reports DRIFT until it is taken.
