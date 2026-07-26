@@ -82,6 +82,11 @@ diagnostically.
 | exact accounted snapshot/input/output/event history | `< 1 MiB` | every playable case |
 | terminal forced-GC Lua heap, process-tree RSS, and Chrome JS-heap growth from warm-up | `<= 10%` | persistent soak |
 
+Only `complete_fixture` meets that sample-count precondition. The browser `combat` cases record
+six to eight rollback samples by construction, so their p99.9 ratio is recorded diagnostically and
+is never gated -- see "What the combat sample-count floor actually switches off" below for what
+covers combat rollback performance instead.
+
 `gate_contract=6` supersedes contract 5 for newly generated evidence. Contract 6 changes only the
 browser aggregate acceptance rule: the rollback-p99.9 ratio comparison now carries an explicit
 minimum-sample-count precondition. Nothing else about the emitted markers, the thresholds, or the
@@ -108,6 +113,11 @@ smallest count that keeps at least one sample strictly above the reported rank. 
 property of the statistic, not a tuned constant; `MIN_ROLLBACK_P999_SAMPLE_COUNT = 1000` in
 `scripts/rollback_validation.py` and the self-test pins the derivation directly.
 
+The floor is the boundary of the formula, not a claim of strong tail confidence. At exactly
+`n = 1000` a single sample sits above the reported rank, so p99.9 stops being the maximum but is
+still only one order statistic away from it. 1000 is the point where the number becomes a
+percentile at all; it is not the point where it becomes a robust one.
+
 The `complete_fixture` playable cases record roughly 6,900 rollback samples, so their p99.9 is a
 real tail percentile. The `combat` playable cases record six to eight, so before contract 6 their
 `rollback_p999_ms` was literally the worst single sample -- one GC pause or one unit of host CPU
@@ -117,13 +127,51 @@ playable case recorded at least 1,000 rollback samples. Pairs below the floor ar
 and still published: each pair carries `rollback_p999_gate.sample_count`,
 `rollback_p999_gate.ratio`, `rollback_p999_gate.applied`, and a `rollback_p999_gate.status` of
 either `gated` or `diagnostic_sample_count_below_p999_floor`, so the artifact says exactly which
-pairs were enforced. A playable case with an absent, non-integer, or negative
-`rollback_sample_count` fails closed with status `error_sample_count_unavailable`; a small sample
-count is a reason to stop calling the number a percentile, never a reason to skip validation.
+pairs were enforced.
+
+`browser_cpu_case` is what makes a bad sample count fail closed: `rollback_sample_count` is one of
+the required metric count fields, it must parse through `non_negative_integer`, and a case that
+fails that check is dropped from extraction and contributes its own rejection reason, so the pair
+never reaches the ratio comparison at all. `rollback_p999_gate_decision` additionally returns
+`error_sample_count_unavailable` for an absent, non-integer, or negative count, and the aggregate
+records that status and rejects the pair. That second check is defence in depth behind the
+existing upstream validation rather than the mechanism that performs it in production; it exists
+so a future refactor cannot turn a missing count into a silent exemption.
 
 The `p95_work_over_clean_p95` gate carries no such precondition and applies to every pair. Browser
 combat cases record 80 work samples, and `nearest_rank(80, 0.95)` is the 76th of 80 ordered
 samples, a genuine percentile rather than a maximum.
+
+### What the combat sample-count floor actually switches off
+
+The browser `combat` fixture is a pinned 80-tick campaign; six to eight rollbacks is what it
+produces **by construction**, not an unlucky run. `rollback_p999_gate_decision` will therefore
+return `diagnostic_sample_count_below_p999_floor` for every browser combat pair for the
+foreseeable future. The browser p99.9 ratio gate is not relaxed for combat, it is **off** for
+combat, and it stays off unless the fixture is redesigned to produce well over 1,000 rollbacks.
+
+What still covers combat rollback performance:
+
+- **Native `combat-playable-{2001,2002,2003}` keep the absolute gates.**
+  `cpu_gate_mode(suite, profile, browser_runtime)` returns `absolute` for every native playable
+  case, so those three cases are still gated at `< 33.3 ms` nearest-rank p99.9 and `< 16.67 ms`
+  p95 work, per case, on every pull request. At `n = 6..8` that p99.9 is itself a maximum -- which
+  is exactly what an absolute millisecond budget should be compared against, and a more direct
+  check than a ratio. Current native readings are 2.0--7.1 ms, far under the budget.
+- **The browser combat `p95_work_over_clean_p95 < 6.7` gate**, which is untouched and sound at 80
+  work samples. It catches a sustained combat rollback slowdown, because `p95_work_ms` is combined
+  simulation-plus-rollback work.
+
+The gap this leaves is therefore specific and worth naming: a **browser-runtime-only** combat
+rollback regression that shows up as isolated spikes rather than as sustained work. Nothing in the
+browser matrix fails on it, and the native absolute gate cannot see it because it does not run
+WASM. This is not hypothetical -- browser combat p99.9 runs roughly six times the native figure
+(43.5 ms observed on Chrome against a 7.1 ms native peak), so a WASM-specific rollback regression
+has room to hide inside noise that the browser matrix now only records. Closing it needs a
+statistic that is honest at `n <= 10` -- an explicitly named max gate with its own calibration --
+and that is tracked separately in
+[#179](https://github.com/osobytes/goliseo/issues/179). Until #179 lands, browser combat rollback
+tail behaviour is observed, published, and unenforced.
 
 The thresholds are calibrated from the complete Chrome and Firefox distributions in accepted
 exact runs

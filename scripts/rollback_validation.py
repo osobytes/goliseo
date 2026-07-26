@@ -823,8 +823,20 @@ def rollback_p999_gate_decision(sample_count: Any) -> tuple[bool, str]:
 
     The ratio threshold is only comparable to a calibrated bound when the case recorded
     enough rollbacks for nearest-rank p99.9 to be a tail percentile rather than the
-    maximum sample; see MIN_ROLLBACK_P999_SAMPLE_COUNT. A missing, non-integer, or
-    negative count is an evidence defect: it fails closed rather than exempting the case.
+    maximum sample; see MIN_ROLLBACK_P999_SAMPLE_COUNT. At exactly that floor a single
+    sample sits above the reported rank, so the floor is the boundary of the formula
+    rather than a threshold of strong tail confidence.
+
+    The browser combat scenario records six to eight rollbacks by construction, so it sits
+    below the floor permanently and its browser p99.9 ratio is diagnostic indefinitely.
+    Native combat playable cases keep the absolute < 33.3 ms p99.9 gate; see
+    docs/online/omp2_rollback_validation.md and issue #179.
+
+    ROLLBACK_P999_GATE_ERROR is defence in depth, not the production fail-closed path:
+    browser_cpu_case already requires rollback_sample_count to parse through
+    non_negative_integer and drops the whole case, with its own rejection reason, when it
+    does not. This branch exists so a refactor that loosens that upstream check cannot
+    turn a missing count into a silent exemption.
     """
 
     if (
@@ -2869,6 +2881,8 @@ def browser_cpu_acceptance(
             rollback_gate_applied, rollback_gate_status = rollback_p999_gate_decision(
                 rollback_sample_count
             )
+            # Redundant with the browser_cpu_case count validation that already rejects such
+            # a case upstream; kept so the aggregate can never silently exempt a pair.
             if rollback_gate_status == ROLLBACK_P999_GATE_ERROR:
                 rollback_sample_count = None
                 pair_reasons.append(
