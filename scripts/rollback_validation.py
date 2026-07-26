@@ -106,14 +106,71 @@ MIN_ROLLBACK_P999_SAMPLE_COUNT = 1000
 ROLLBACK_P999_GATE_APPLIED = "gated"
 ROLLBACK_P999_GATE_DIAGNOSTIC = "diagnostic_sample_count_below_p999_floor"
 ROLLBACK_P999_GATE_ERROR = "error_sample_count_unavailable"
-GATE_CONTRACT = "6"
+ROLLBACK_P999_GATE_UNCALIBRATED = "error_scenario_thresholds_uncalibrated"
+GATE_CONTRACT = "7"
 MAX_BROWSER_P95_WORK_RATIO = 6.7
-MAX_BROWSER_ROLLBACK_P999_RATIO = 11.7
+# The browser rollback tail is normalized against the playable case's OWN p95 work rather than
+# against the paired clean control's p95 work. Both profiles run in the same job on the same
+# runner, but they are two separate browser sessions, so the clean control draws its own sample
+# of how loaded that machine happened to be. The numerator here is a tail statistic with roughly
+# seven samples above the p99.9 rank; the clean control's p95 is a smooth statistic over
+# thousands. Dividing one by the other does not cancel runner noise, it amplifies it, and the
+# chrome seed 2001 shard of the first sharded campaign shows the failure directly: playable p95 /
+# clean p95 read 2.984 where every other recorded pair reads 5.01-6.80, because the clean session
+# hit a slow patch its playable partner did not. The playable case's own p95 work shares the
+# time window and the workload with the tail it normalizes, so it tracks the machine the tail was
+# actually measured on. Over the 42 recorded unsharded complete_fixture pairs the two statistics
+# are equally tight (cv 0.085 against 0.086); over the six sharded pairs the composite spreads to
+# cv 0.198 while the normalized ratio holds at 0.118.
+MAX_BROWSER_ROLLBACK_P999_OVER_PLAYABLE_P95 = 2.6
+# Absolute backstop, applied alongside the normalized ratio.
+#
+# This is a CI noise ceiling, not a frame-budget claim. It is the largest tail in the 42-pair
+# calibration population carried through BROWSER_CPU_CALIBRATION_MARGIN (34.520 * 1.15), and
+# nothing more. Do not read it as the browser analogue of MAX_ROLLBACK_P999_MS = 33.3: that number
+# is a deliberate two-frame claim at 60 fps, whereas 39.7 is 2.38 frames and asserts nothing about
+# frame pacing. The browser matrix does not make frame-budget claims.
+#
+# Its job is bounding, not detection. Normalizing the tail by a measurement from the same session
+# is what makes the gate stable, and it is also what makes the normalized ratio EXACTLY invariant
+# under a proportional regression: (k * p999) / (k * p95) == p999 / p95 for every k, however
+# large. That is a null derivative, not reduced sensitivity, and it is a blind spot contract 7
+# introduces -- contract 6 divided by the clean control, an independent reference, so a
+# proportional regression did inflate it. The proportional class is therefore bounded by
+# MAX_BROWSER_P95_WORK_RATIO and this ceiling alone, and both are loose: across the 48 recorded
+# complete_fixture pairs a uniform slowdown of the playable build must reach a median factor of
+# 1.256 before either fires, and 1.573 on the pair whose clean control misreported. The self-test
+# pins the invariance as a known bounded property rather than leaving it unexamined.
+MAX_BROWSER_ROLLBACK_P999_MS = 39.7
+# 2.6 and 39.7 ms are calibrated on the complete_fixture distribution and on nothing else. combat
+# sits permanently below MIN_ROLLBACK_P999_SAMPLE_COUNT so it is never gated today, but the
+# recorded combat pairs reach a normalized ratio of 3.437 at six samples: reusing these numbers
+# there would re-create exactly the false failure #178 removed. Namespacing the thresholds by
+# scenario makes that a fail-closed error rather than a comment somebody can overlook. A scenario
+# that clears the sample floor without an entry here fails the pair, so #179 has to calibrate
+# before it can gate.
+BROWSER_ROLLBACK_TAIL_CALIBRATED_SCENARIOS = frozenset({"complete_fixture"})
 BROWSER_CPU_CALIBRATION_RUNS = ("30060058593", "30065880550")
 BROWSER_CPU_DIAGNOSTIC_RUN = "30075505461"
 BROWSER_CPU_CALIBRATION_MARGIN = 0.15
 BROWSER_CPU_CALIBRATION_MAX_P95_WORK_RATIO = 13.975 / 2.410
-BROWSER_CPU_CALIBRATION_MAX_ROLLBACK_P999_RATIO = 24.800 / 2.440
+# Contract 7 recalibrated the rollback tail gate on the 42 complete_fixture pairs recorded by the
+# seven consecutive runs below -- the largest accepted population available -- because the
+# statistic itself changed and the contract-5 calibration pair predates it. The maxima are the
+# worst single pair in that population: chrome seed 2002 of run 30170553072 for the normalized
+# ratio, and firefox seed 2001 of run 30179056065 for the absolute tail. Both are carried through
+# BROWSER_CPU_CALIBRATION_MARGIN exactly as the contract-5 thresholds were.
+BROWSER_TAIL_CALIBRATION_RUNS = (
+    "30163492726",
+    "30168105822",
+    "30170553072",
+    "30175632519",
+    "30176706801",
+    "30179056065",
+    "30181277777",
+)
+BROWSER_TAIL_CALIBRATION_MAX_ROLLBACK_P999_OVER_PLAYABLE_P95 = 24.295 / 10.825
+BROWSER_TAIL_CALIBRATION_MAX_ROLLBACK_P999_MS = 34.520
 BROWSER_CPU_CASE_FIELDS = frozenset(
     {
         "case",
@@ -2875,8 +2932,21 @@ def browser_cpu_acceptance(
                     "must be finite and >0"
                 )
                 continue
-            p95_ratio = playable["p95_work_ms"] / clean_p95
-            rollback_ratio = playable["rollback_p999_ms"] / clean_p95
+            playable_p95 = playable["p95_work_ms"]
+            # The tail normalizer must be a real measurement before it can divide anything.
+            # finite_non_negative_float upstream admits 0.0, so this is the only thing standing
+            # between an absent or collapsed playable p95 and a ZeroDivisionError -- or worse, an
+            # inflated denominator that quietly excuses a slow tail. Fail the pair instead.
+            if not math.isfinite(playable_p95) or playable_p95 <= 0:
+                reasons.append(
+                    f"{browser_name} {scenario} seed {seed} playable p95 work normalizer "
+                    "must be finite and >0"
+                )
+                continue
+            playable_rollback_p999 = playable["rollback_p999_ms"]
+            p95_ratio = playable_p95 / clean_p95
+            rollback_ratio = playable_rollback_p999 / clean_p95
+            normalized_rollback_ratio = playable_rollback_p999 / playable_p95
             pair_reasons = []
             if p95_ratio >= MAX_BROWSER_P95_WORK_RATIO:
                 pair_reasons.append(
@@ -2896,14 +2966,46 @@ def browser_cpu_acceptance(
                     f"{browser_name} {scenario} seed {seed} playable case reports no usable "
                     "rollback_sample_count, so the rollback p99.9 gate fails closed"
                 )
+            # The thresholds below are calibrated on complete_fixture alone. A scenario that
+            # clears the sample floor without its own calibration must fail rather than borrow
+            # them: the recorded combat pairs reach a normalized ratio of 3.437, so borrowing 2.6
+            # would re-create the false failure #178 removed. This is the guard that stops the
+            # numbers being reused silently when #179 lifts the floor for combat.
             if (
                 rollback_gate_applied
-                and rollback_ratio >= MAX_BROWSER_ROLLBACK_P999_RATIO
+                and scenario not in BROWSER_ROLLBACK_TAIL_CALIBRATED_SCENARIOS
+            ):
+                rollback_gate_applied = False
+                rollback_gate_status = ROLLBACK_P999_GATE_UNCALIBRATED
+                pair_reasons.append(
+                    f"{browser_name} {scenario} seed {seed} cleared the rollback p99.9 sample "
+                    "floor, but the tail thresholds are calibrated for "
+                    f"{sorted(BROWSER_ROLLBACK_TAIL_CALIBRATED_SCENARIOS)} only, so the gate "
+                    "fails closed until they are recalibrated for this scenario"
+                )
+            if (
+                rollback_gate_applied
+                and normalized_rollback_ratio
+                >= MAX_BROWSER_ROLLBACK_P999_OVER_PLAYABLE_P95
             ):
                 pair_reasons.append(
                     f"{browser_name} {scenario} seed {seed} "
-                    f"rollback_p999_ratio={rollback_ratio:.9f} "
-                    f"does not meet <{MAX_BROWSER_ROLLBACK_P999_RATIO:.1f}"
+                    f"rollback_p999_over_playable_p95={normalized_rollback_ratio:.9f} "
+                    f"does not meet <{MAX_BROWSER_ROLLBACK_P999_OVER_PLAYABLE_P95:.1f}"
+                )
+            # The absolute ceiling rides the same sample-count floor as the normalized ratio. At
+            # six to eight samples rollback_p999_ms is the worst single sample, and #177 recorded
+            # one 43.545 ms combat sample on a build with a 7.1 ms native peak -- runner noise,
+            # not a regression. Applying a millisecond ceiling there would re-create exactly the
+            # false failure #178 removed.
+            if (
+                rollback_gate_applied
+                and playable_rollback_p999 >= MAX_BROWSER_ROLLBACK_P999_MS
+            ):
+                pair_reasons.append(
+                    f"{browser_name} {scenario} seed {seed} "
+                    f"playable_rollback_p999_ms={playable_rollback_p999:.6f} "
+                    f"does not meet <{MAX_BROWSER_ROLLBACK_P999_MS:.1f}"
                 )
             reasons.extend(pair_reasons)
             pairs.append(
@@ -2935,13 +3037,24 @@ def browser_cpu_acceptance(
                     "pass": not pair_reasons,
                     "ratios": {
                         "p95_work_over_clean_p95": round(p95_ratio, 9),
+                        # Retained as a diagnostic only. Contract 6 gated on this; contract 7
+                        # gates on rollback_p999_over_playable_p95 instead, and keeping the old
+                        # figure published lets a reader compare the two across the archive.
                         "rollback_p999_over_clean_p95": round(rollback_ratio, 9),
+                        "rollback_p999_over_playable_p95": round(
+                            normalized_rollback_ratio,
+                            9,
+                        ),
                     },
                     "reasons": pair_reasons,
                     "rollback_p999_gate": {
+                        "absolute_ceiling_ms": MAX_BROWSER_ROLLBACK_P999_MS,
                         "applied": rollback_gate_applied,
+                        "composite_ratio": round(rollback_ratio, 9),
                         "minimum_sample_count": MIN_ROLLBACK_P999_SAMPLE_COUNT,
-                        "ratio": round(rollback_ratio, 9),
+                        "normalized_ratio": round(normalized_rollback_ratio, 9),
+                        "normalizer": "playable_p95_work_ms",
+                        "playable_rollback_p999_ms": playable_rollback_p999,
                         "sample_count": rollback_sample_count,
                         "status": rollback_gate_status,
                     },
@@ -2978,10 +3091,14 @@ def browser_cpu_acceptance(
                 BROWSER_CPU_CALIBRATION_MAX_P95_WORK_RATIO,
                 9,
             ),
-            "max_accepted_rollback_p999_ratio": round(
-                BROWSER_CPU_CALIBRATION_MAX_ROLLBACK_P999_RATIO,
+            "max_accepted_rollback_p999_ms": (
+                BROWSER_TAIL_CALIBRATION_MAX_ROLLBACK_P999_MS
+            ),
+            "max_accepted_rollback_p999_over_playable_p95": round(
+                BROWSER_TAIL_CALIBRATION_MAX_ROLLBACK_P999_OVER_PLAYABLE_P95,
                 9,
             ),
+            "rollback_tail_accepted_run_ids": list(BROWSER_TAIL_CALIBRATION_RUNS),
         },
         "gate_contract": int(GATE_CONTRACT),
         "method": "same_run_same_runtime_scenario_seed_paired",
@@ -2992,7 +3109,10 @@ def browser_cpu_acceptance(
         "thresholds": {
             "comparison": "strict_less_than",
             "max_p95_work_over_clean_p95": MAX_BROWSER_P95_WORK_RATIO,
-            "max_rollback_p999_over_clean_p95": MAX_BROWSER_ROLLBACK_P999_RATIO,
+            "max_rollback_p999_ms": MAX_BROWSER_ROLLBACK_P999_MS,
+            "max_rollback_p999_over_playable_p95": (
+                MAX_BROWSER_ROLLBACK_P999_OVER_PLAYABLE_P95
+            ),
             "min_rollback_p999_sample_count": MIN_ROLLBACK_P999_SAMPLE_COUNT,
         },
     }
@@ -3380,27 +3500,39 @@ def run_self_test() -> None:
                 f"{expected_decision!r}"
             )
 
-    calibrated_p95 = (
-        math.ceil(
-            BROWSER_CPU_CALIBRATION_MAX_P95_WORK_RATIO
-            * (1 + BROWSER_CPU_CALIBRATION_MARGIN)
-            * 10
+    def carry_calibration_margin(accepted_maximum: float) -> float:
+        return (
+            math.ceil(
+                accepted_maximum * (1 + BROWSER_CPU_CALIBRATION_MARGIN) * 10
+            )
+            / 10
         )
-        / 10
-    )
-    calibrated_rollback = (
-        math.ceil(
-            BROWSER_CPU_CALIBRATION_MAX_ROLLBACK_P999_RATIO
-            * (1 + BROWSER_CPU_CALIBRATION_MARGIN)
-            * 10
-        )
-        / 10
-    )
-    if (
-        calibrated_p95 != MAX_BROWSER_P95_WORK_RATIO
-        or calibrated_rollback != MAX_BROWSER_ROLLBACK_P999_RATIO
+
+    for accepted_maximum, threshold, label in (
+        (
+            BROWSER_CPU_CALIBRATION_MAX_P95_WORK_RATIO,
+            MAX_BROWSER_P95_WORK_RATIO,
+            "p95 work ratio",
+        ),
+        (
+            BROWSER_TAIL_CALIBRATION_MAX_ROLLBACK_P999_OVER_PLAYABLE_P95,
+            MAX_BROWSER_ROLLBACK_P999_OVER_PLAYABLE_P95,
+            "rollback p99.9 over playable p95",
+        ),
+        (
+            BROWSER_TAIL_CALIBRATION_MAX_ROLLBACK_P999_MS,
+            MAX_BROWSER_ROLLBACK_P999_MS,
+            "rollback p99.9 absolute ceiling",
+        ),
     ):
-        raise RuntimeError("browser CPU calibration margin self-test failed")
+        if carry_calibration_margin(accepted_maximum) != threshold:
+            raise RuntimeError(
+                f"browser CPU calibration margin self-test failed for {label}"
+            )
+        if accepted_maximum >= threshold:
+            raise RuntimeError(
+                f"browser CPU threshold for {label} does not clear its accepted maximum"
+            )
 
     def synthetic_browser_cpu_run(
         profile: str,
@@ -3559,32 +3691,56 @@ def run_self_test() -> None:
             "suite": "browser-full",
         }
 
+    # Healthy shapes, taken from the recorded complete_fixture population: playable p95 work runs
+    # about 5.5x the paired clean control, and the playable rollback p99.9 runs about 1.85x the
+    # playable p95 (the median of the 48 recorded pairs is 1.844).
+    HEALTHY_WORK_RATIO = 5.5
+    HEALTHY_TAIL_RATIO = 1.85
+    HEALTHY_COMBAT_WORK_RATIO = 5.4
+    HEALTHY_COMBAT_TAIL_RATIO = 1.7
+
+    # The browser combat fixture is a pinned 80-tick campaign that produces six to eight rollbacks
+    # by construction, so the synthetic matrix mirrors production and keeps combat below the
+    # sample floor. Tests that need a gated combat pair ask for one explicitly.
+    OBSERVED_COMBAT_ROLLBACK_SAMPLES = 8
+
     def synthetic_browser_cpu_matrix(
         scale: float,
         soccer_rollback_regression_seeds: tuple[int, ...] = (),
         combat_p95_regression_seeds: tuple[int, ...] = (),
+        clean_control_scale: float = 1.0,
+        playable_scale: float = 1.0,
     ) -> list[dict[str, Any]]:
+        """Build a seed-paired browser-full matrix.
+
+        ``scale`` multiplies every measurement, so the ratio gates must be blind to it.
+        ``clean_control_scale`` multiplies only the clean control's p95 work, reproducing the
+        per-shard clean/playable disagreement that #188 measured on real hardware.
+        ``playable_scale`` multiplies only the playable case, modelling a regression that slows
+        the playable build uniformly while the clean control stays where it was.
+        """
+
         runs = []
         for index, seed in enumerate(NETWORK_SEEDS):
             for profile in BROWSER_FULL_PROFILES:
-                clean_p95 = (2.0 + index * 0.25) * scale
-                combat_clean_p95 = clean_p95 * 1.2
+                machine_p95 = (2.0 + index * 0.25) * scale
+                combat_machine_p95 = machine_p95 * 1.2
                 if profile == "clean":
-                    p95_work = clean_p95
-                    combat_p95_work = combat_clean_p95
+                    p95_work = machine_p95 * clean_control_scale
+                    combat_p95_work = combat_machine_p95 * clean_control_scale
                     rollback_p999 = 0.0
                     combat_rollback_p999 = 0.0
                 else:
-                    p95_work = clean_p95 * 5.5
-                    rollback_ratio = 9.5
+                    p95_work = machine_p95 * HEALTHY_WORK_RATIO * playable_scale
+                    tail_ratio = HEALTHY_TAIL_RATIO
                     if seed in soccer_rollback_regression_seeds:
-                        rollback_ratio = MAX_BROWSER_ROLLBACK_P999_RATIO + 0.1
-                    rollback_p999 = clean_p95 * rollback_ratio
-                    combat_p95_ratio = 5.4
+                        tail_ratio = MAX_BROWSER_ROLLBACK_P999_OVER_PLAYABLE_P95 + 0.1
+                    rollback_p999 = p95_work * tail_ratio
+                    combat_p95_ratio = HEALTHY_COMBAT_WORK_RATIO
                     if seed in combat_p95_regression_seeds:
                         combat_p95_ratio = MAX_BROWSER_P95_WORK_RATIO + 0.1
-                    combat_p95_work = combat_clean_p95 * combat_p95_ratio
-                    combat_rollback_p999 = combat_clean_p95 * 9.0
+                    combat_p95_work = combat_machine_p95 * combat_p95_ratio
+                    combat_rollback_p999 = combat_p95_work * HEALTHY_COMBAT_TAIL_RATIO
                 runs.append(
                     synthetic_browser_cpu_run(
                         profile,
@@ -3593,16 +3749,121 @@ def run_self_test() -> None:
                         rollback_p999,
                         combat_p95_work_ms=combat_p95_work,
                         combat_rollback_p999_ms=combat_rollback_p999,
+                        combat_rollback_samples=OBSERVED_COMBAT_ROLLBACK_SAMPLES,
                     )
                 )
         return runs
 
     proportional_slowdown = browser_cpu_acceptance(
-        synthetic_browser_cpu_matrix(1.8),
+        synthetic_browser_cpu_matrix(1.4),
         "firefox",
     )
     if not proportional_slowdown["pass"] or len(proportional_slowdown["pairs"]) != 6:
         raise RuntimeError("proportional browser slowdown did not pass normalization")
+    # The ratio gates are scale-free by construction, which is exactly why normalization on its
+    # own could excuse a build that is simply slower everywhere. The absolute ceiling is the part
+    # that is not scale-free: push the same healthy shape far enough and it must fail.
+    gross_slowdown = browser_cpu_acceptance(
+        synthetic_browser_cpu_matrix(1.8),
+        "firefox",
+    )
+    if gross_slowdown["pass"] or not any(
+        "complete_fixture seed 2003 playable_rollback_p999_ms" in reason
+        for reason in gross_slowdown["reasons"]
+    ):
+        raise RuntimeError(
+            "the absolute rollback ceiling did not backstop a proportional slowdown"
+        )
+    if any(
+        "rollback_p999_over_playable_p95" in reason
+        for reason in gross_slowdown["reasons"]
+    ):
+        raise RuntimeError(
+            "a proportional slowdown moved the normalized rollback ratio"
+        )
+
+    # The proportional blind spot, pinned as a known bounded property rather than left unexamined.
+    #
+    # A regression that slows the playable build uniformly multiplies the tail and its normalizer
+    # by the same factor, so the normalized ratio does not move AT ALL -- the derivative is zero,
+    # not merely small. Contract 6 did not have this blind spot, because it divided by the clean
+    # control, which such a regression leaves untouched. Contract 7 accepts it in exchange for
+    # removing the clean control's session noise, and bounds it with the work-ratio gate and the
+    # absolute ceiling.
+    #
+    # These assertions state the bound in both directions: below the bound the class is invisible,
+    # above it the backstops fire, and the normalized ratio is unchanged either way. Tightening
+    # this is a deliberate future decision (see #191 for the work gate's own calibration), and
+    # these assertions are what will notice when someone makes it.
+    def normalized_ratios(acceptance: dict[str, Any]) -> list[float]:
+        return [
+            pair["ratios"]["rollback_p999_over_playable_p95"]
+            for pair in acceptance["pairs"]
+            if pair["scenario"] == "complete_fixture"
+        ]
+
+    baseline_normalized = normalized_ratios(
+        browser_cpu_acceptance(synthetic_browser_cpu_matrix(1.0), "firefox")
+    )
+    # 1.2 sits under the work-ratio bound for this fixture (5.5 * 1.2 = 6.6 against 6.7), so a 20%
+    # uniform playable regression clears every gate. That is the documented gap.
+    undetected_proportional = browser_cpu_acceptance(
+        synthetic_browser_cpu_matrix(1.0, playable_scale=1.2),
+        "firefox",
+    )
+    if not undetected_proportional["pass"]:
+        raise RuntimeError(
+            "the proportional blind spot changed shape; re-derive the documented bound: "
+            f"{undetected_proportional['reasons']}"
+        )
+    if normalized_ratios(undetected_proportional) != baseline_normalized:
+        raise RuntimeError("a proportional regression moved the normalized rollback ratio")
+    # 1.3 crosses the work-ratio bound (5.5 * 1.3 = 7.15), and the backstop fires.
+    detected_proportional = browser_cpu_acceptance(
+        synthetic_browser_cpu_matrix(1.0, playable_scale=1.3),
+        "firefox",
+    )
+    if detected_proportional["pass"] or not any(
+        "complete_fixture seed 2001 p95_work_ratio" in reason
+        for reason in detected_proportional["reasons"]
+    ):
+        raise RuntimeError("no backstop caught a 1.3x uniform playable regression")
+    if normalized_ratios(detected_proportional) != baseline_normalized:
+        raise RuntimeError("a proportional regression moved the normalized rollback ratio")
+    if any(
+        "rollback_p999_over_playable_p95" in reason
+        for reason in detected_proportional["reasons"]
+    ):
+        raise RuntimeError(
+            "the normalized ratio claimed credit for catching a proportional regression"
+        )
+    # #188's mechanism: the clean control is a separate browser session, so it can record a
+    # slower machine than the playable case it is paired with. Contract 6 divided the playable
+    # tail by that control, so this pair read 1 / 0.55 = 1.8x its true composite ratio. The
+    # normalized gate is measured entirely inside the playable session and does not move.
+    noisy_clean_control = browser_cpu_acceptance(
+        synthetic_browser_cpu_matrix(1.0, clean_control_scale=1 / 0.55),
+        "firefox",
+    )
+    if not noisy_clean_control["pass"]:
+        raise RuntimeError(
+            "an anomalously slow clean control failed the runner-relative gate: "
+            f"{noisy_clean_control['reasons']}"
+        )
+    noisy_pair = next(
+        pair
+        for pair in noisy_clean_control["pairs"]
+        if pair["scenario"] == "complete_fixture" and pair["seed"] == 2001
+    )
+    if round(noisy_pair["ratios"]["rollback_p999_over_playable_p95"], 6) != round(
+        HEALTHY_TAIL_RATIO,
+        6,
+    ):
+        raise RuntimeError("clean-control noise leaked into the normalized rollback ratio")
+    if noisy_pair["ratios"]["rollback_p999_over_clean_p95"] >= (
+        HEALTHY_WORK_RATIO * HEALTHY_TAIL_RATIO
+    ):
+        raise RuntimeError("the composite diagnostic did not record the clean-control noise")
     multi_family_regression = browser_cpu_acceptance(
         synthetic_browser_cpu_matrix(
             1.0,
@@ -3612,7 +3873,7 @@ def run_self_test() -> None:
         "firefox",
     )
     expected_regressions = (
-        "complete_fixture seed 2001 rollback_p999_ratio",
+        "complete_fixture seed 2001 rollback_p999_over_playable_p95",
         "combat seed 2002 p95_work_ratio",
     )
     if multi_family_regression["pass"] or not all(
@@ -3651,25 +3912,60 @@ def run_self_test() -> None:
         for reason in exact_p95_boundary["reasons"]
     ):
         raise RuntimeError("exact browser p95 ratio threshold passed strict gate")
+    # Seed 2002 clean controls are 2.25 ms (complete_fixture) and 2.7 ms (combat) at scale 1.0.
+    # 12.5 ms of playable p95 work puts the exact-threshold tail at 32.5 ms: under the absolute
+    # ceiling, so this exercises the normalized ratio on its own, and exact at the six decimal
+    # places the metric markers carry, so the boundary is not decided by a rounding artifact.
     exact_rollback_boundary = browser_cpu_acceptance(
         replace_control(
             complete_controls,
             synthetic_browser_cpu_run(
                 "playable",
                 2002,
-                2.25 * 5.5,
-                2.25 * MAX_BROWSER_ROLLBACK_P999_RATIO,
+                12.5,
+                12.5 * MAX_BROWSER_ROLLBACK_P999_OVER_PLAYABLE_P95,
                 combat_p95_work_ms=2.7 * 5.4,
-                combat_rollback_p999_ms=2.7 * 9.0,
+                combat_rollback_p999_ms=2.7 * 5.4 * 1.7,
             ),
         ),
         "firefox",
     )
     if exact_rollback_boundary["pass"] or not any(
-        "complete_fixture seed 2002 rollback_p999_ratio=11.700000000" in reason
+        "complete_fixture seed 2002 rollback_p999_over_playable_p95=2.600000000" in reason
         for reason in exact_rollback_boundary["reasons"]
     ):
         raise RuntimeError("exact browser rollback ratio threshold passed strict gate")
+    if any(
+        "seed 2002 playable_rollback_p999_ms" in reason
+        for reason in exact_rollback_boundary["reasons"]
+    ):
+        raise RuntimeError("the absolute ceiling fired below its own threshold")
+    # 2.5 * 6.5 = 16.25 ms of playable p95 work keeps the normalized ratio at 2.443, below its
+    # threshold, so this exercises the absolute ceiling on its own.
+    exact_ceiling_boundary = browser_cpu_acceptance(
+        replace_control(
+            complete_controls,
+            synthetic_browser_cpu_run(
+                "playable",
+                2003,
+                2.5 * 6.5,
+                MAX_BROWSER_ROLLBACK_P999_MS,
+                combat_p95_work_ms=3.0 * 5.4,
+                combat_rollback_p999_ms=3.0 * 5.4 * 1.7,
+            ),
+        ),
+        "firefox",
+    )
+    if exact_ceiling_boundary["pass"] or not any(
+        "complete_fixture seed 2003 playable_rollback_p999_ms=39.700000" in reason
+        for reason in exact_ceiling_boundary["reasons"]
+    ):
+        raise RuntimeError("exact browser rollback ceiling passed strict gate")
+    if any(
+        "seed 2003 rollback_p999_over_playable_p95" in reason
+        for reason in exact_ceiling_boundary["reasons"]
+    ):
+        raise RuntimeError("the normalized ratio fired below its own threshold")
 
     def combat_pair(acceptance: dict[str, Any], seed: int) -> dict[str, Any]:
         return next(
@@ -3680,14 +3976,17 @@ def run_self_test() -> None:
 
     def small_sample_combat_run(rollback_samples: int) -> dict[str, Any]:
         # Seed 2002 clean controls are 2.25 ms (complete_fixture) and 2.7 ms (combat) at
-        # scale 1.0. A 2.7 * 31.7 ms combat p99.9 is far past the 11.7 ratio threshold.
+        # scale 1.0. A 14.58 * 3.6 = 52.5 ms combat p99.9 is past both the normalized ratio
+        # threshold and the absolute ceiling, so the floor has to hold back two gates.
         return synthetic_browser_cpu_run(
             "playable",
             2002,
             2.25 * 5.5,
-            2.25 * 9.5,
+            2.25 * 5.5 * 1.85,
             combat_p95_work_ms=2.7 * 5.4,
-            combat_rollback_p999_ms=2.7 * (MAX_BROWSER_ROLLBACK_P999_RATIO + 20.0),
+            combat_rollback_p999_ms=(
+                2.7 * 5.4 * (MAX_BROWSER_ROLLBACK_P999_OVER_PLAYABLE_P95 + 1.0)
+            ),
             combat_rollback_samples=rollback_samples,
         )
 
@@ -3702,23 +4001,36 @@ def run_self_test() -> None:
         )
         below_floor_pair = combat_pair(below_floor, 2002)
         if not below_floor["pass"] or any(
-            "combat seed 2002 rollback_p999_ratio" in reason
+            "combat seed 2002 rollback_p999_over_playable_p95" in reason
+            or "combat seed 2002 playable_rollback_p999_ms" in reason
             for reason in below_floor["reasons"]
         ):
             raise RuntimeError(
                 f"combat rollback p99.9 ratio at {below_floor_samples} samples was gated"
             )
         if below_floor_pair["rollback_p999_gate"] != {
+            "absolute_ceiling_ms": MAX_BROWSER_ROLLBACK_P999_MS,
             "applied": False,
+            "composite_ratio": below_floor_pair["ratios"][
+                "rollback_p999_over_clean_p95"
+            ],
             "minimum_sample_count": MIN_ROLLBACK_P999_SAMPLE_COUNT,
-            "ratio": below_floor_pair["ratios"]["rollback_p999_over_clean_p95"],
+            "normalized_ratio": below_floor_pair["ratios"][
+                "rollback_p999_over_playable_p95"
+            ],
+            "normalizer": "playable_p95_work_ms",
+            "playable_rollback_p999_ms": below_floor_pair["absolute_diagnostics"][
+                "playable_rollback_p999_ms"
+            ],
             "sample_count": below_floor_samples,
             "status": ROLLBACK_P999_GATE_DIAGNOSTIC,
         }:
             raise RuntimeError("small-sample combat pair was not recorded diagnostically")
         if (
-            below_floor_pair["ratios"]["rollback_p999_over_clean_p95"]
-            < MAX_BROWSER_ROLLBACK_P999_RATIO
+            below_floor_pair["ratios"]["rollback_p999_over_playable_p95"]
+            < MAX_BROWSER_ROLLBACK_P999_OVER_PLAYABLE_P95
+            or below_floor_pair["absolute_diagnostics"]["playable_rollback_p999_ms"]
+            < MAX_BROWSER_ROLLBACK_P999_MS
             or below_floor_pair["absolute_diagnostics"][
                 "playable_rollback_sample_count"
             ]
@@ -3730,7 +4042,7 @@ def run_self_test() -> None:
         if not all(
             pair["rollback_p999_gate"]["status"] == ROLLBACK_P999_GATE_APPLIED
             for pair in below_floor["pairs"]
-            if pair is not below_floor_pair
+            if pair["scenario"] == "complete_fixture"
         ):
             raise RuntimeError("the sample-count floor exempted a full-sample pair")
 
@@ -3741,16 +4053,71 @@ def run_self_test() -> None:
         ),
         "firefox",
     )
+    # combat is not a calibrated scenario, so clearing the sample floor must fail closed rather
+    # than borrow the complete_fixture thresholds. This is the tripwire that stops 2.6 and 39.7 ms
+    # being reused verbatim if #179 ever redesigns the combat fixture past 1,000 rollbacks.
     at_floor_pair = combat_pair(at_floor, 2002)
     if at_floor["pass"] or not any(
-        "combat seed 2002 rollback_p999_ratio" in reason
+        "combat seed 2002 cleared the rollback p99.9 sample floor, but the tail thresholds "
+        "are calibrated for ['complete_fixture'] only" in reason
         for reason in at_floor["reasons"]
     ):
-        raise RuntimeError("combat rollback p99.9 ratio at the sample floor passed the gate")
-    if at_floor_pair["rollback_p999_gate"] != {
+        raise RuntimeError(
+            "an uncalibrated scenario at the sample floor did not fail closed: "
+            f"{at_floor['reasons']}"
+        )
+    if any(
+        "combat seed 2002 rollback_p999_over_playable_p95" in reason
+        or "combat seed 2002 playable_rollback_p999_ms" in reason
+        for reason in at_floor["reasons"]
+    ):
+        raise RuntimeError("an uncalibrated scenario was compared against borrowed thresholds")
+    if at_floor_pair["rollback_p999_gate"]["status"] != ROLLBACK_P999_GATE_UNCALIBRATED:
+        raise RuntimeError("the uncalibrated pair was not recorded as uncalibrated")
+    if at_floor_pair["rollback_p999_gate"]["applied"]:
+        raise RuntimeError("an uncalibrated pair reported its gate as applied")
+
+    # The calibrated scenario at exactly the sample floor still gates normally.
+    calibrated_at_floor = browser_cpu_acceptance(
+        replace_control(
+            complete_controls,
+            synthetic_browser_cpu_run(
+                "playable",
+                2002,
+                12.5,
+                12.5 * MAX_BROWSER_ROLLBACK_P999_OVER_PLAYABLE_P95,
+                combat_p95_work_ms=2.7 * 5.4,
+                combat_rollback_p999_ms=2.7 * 5.4 * 1.7,
+                rollback_samples=MIN_ROLLBACK_P999_SAMPLE_COUNT,
+                combat_rollback_samples=OBSERVED_COMBAT_ROLLBACK_SAMPLES,
+            ),
+        ),
+        "firefox",
+    )
+    calibrated_at_floor_pair = next(
+        pair
+        for pair in calibrated_at_floor["pairs"]
+        if pair["scenario"] == "complete_fixture" and pair["seed"] == 2002
+    )
+    if calibrated_at_floor["pass"] or not any(
+        "complete_fixture seed 2002 rollback_p999_over_playable_p95=2.600000000" in reason
+        for reason in calibrated_at_floor["reasons"]
+    ):
+        raise RuntimeError("the calibrated scenario at the sample floor passed the gate")
+    if calibrated_at_floor_pair["rollback_p999_gate"] != {
+        "absolute_ceiling_ms": MAX_BROWSER_ROLLBACK_P999_MS,
         "applied": True,
+        "composite_ratio": calibrated_at_floor_pair["ratios"][
+            "rollback_p999_over_clean_p95"
+        ],
         "minimum_sample_count": MIN_ROLLBACK_P999_SAMPLE_COUNT,
-        "ratio": at_floor_pair["ratios"]["rollback_p999_over_clean_p95"],
+        "normalized_ratio": calibrated_at_floor_pair["ratios"][
+            "rollback_p999_over_playable_p95"
+        ],
+        "normalizer": "playable_p95_work_ms",
+        "playable_rollback_p999_ms": calibrated_at_floor_pair["absolute_diagnostics"][
+            "playable_rollback_p999_ms"
+        ],
         "sample_count": MIN_ROLLBACK_P999_SAMPLE_COUNT,
         "status": ROLLBACK_P999_GATE_APPLIED,
     }:
@@ -4026,6 +4393,175 @@ def run_self_test() -> None:
         for reason in zero_denominator["reasons"]
     ):
         raise RuntimeError("zero browser CPU control denominator passed normalization")
+    # The tail normalizer is a measurement, so it can go missing. finite_non_negative_float
+    # accepts 0.0 upstream, which would make the normalized ratio 0/0 -- an exemption, not a
+    # failure. Every collapsed normalizer must fail the pair instead.
+    for normalizer_p95, normalizer_p999, description in (
+        (0.0, 0.0, "zero"),
+        (0.0, 24.0, "zero with a live tail"),
+    ):
+        zero_normalizer = browser_cpu_acceptance(
+            replace_control(
+                complete_controls,
+                synthetic_browser_cpu_run(
+                    "playable",
+                    2001,
+                    normalizer_p95,
+                    normalizer_p999,
+                    combat_p95_work_ms=2.4 * 5.4,
+                    combat_rollback_p999_ms=2.4 * 5.4 * 1.7,
+                ),
+            ),
+            "firefox",
+        )
+        if zero_normalizer["pass"] or not any(
+            "complete_fixture seed 2001 playable p95 work normalizer must be finite and >0"
+            in reason
+            for reason in zero_normalizer["reasons"]
+        ):
+            raise RuntimeError(
+                f"a {description} playable p95 normalizer passed normalization"
+            )
+        if any(
+            pair["scenario"] == "complete_fixture" and pair["seed"] == 2001
+            for pair in zero_normalizer["pairs"]
+        ):
+            raise RuntimeError("a collapsed normalizer still published a gated pair")
+
+    def recorded_browser_cpu_matrix(
+        measurements: tuple[tuple[float, float, float], ...],
+    ) -> list[dict[str, Any]]:
+        """Replay recorded (clean p95, playable p95, playable p99.9) triples, seed by seed.
+
+        The combat cases are held at a fixed healthy shape so the assertions below are about
+        the complete_fixture measurements and nothing else.
+        """
+
+        runs = []
+        for seed, (clean_p95, playable_p95, playable_p999) in zip(
+            NETWORK_SEEDS,
+            measurements,
+        ):
+            combat_clean_p95 = clean_p95 * 1.2
+            combat_playable_p95 = combat_clean_p95 * 4.0
+            runs.append(
+                synthetic_browser_cpu_run(
+                    "clean",
+                    seed,
+                    clean_p95,
+                    0.0,
+                    combat_p95_work_ms=combat_clean_p95,
+                    combat_rollback_p999_ms=0.0,
+                )
+            )
+            runs.append(
+                synthetic_browser_cpu_run(
+                    "playable",
+                    seed,
+                    playable_p95,
+                    playable_p999,
+                    combat_p95_work_ms=combat_playable_p95,
+                    combat_rollback_p999_ms=combat_playable_p95 * 1.5,
+                    combat_rollback_samples=OBSERVED_COMBAT_ROLLBACK_SAMPLES,
+                )
+            )
+        return runs
+
+    # Measurements lifted verbatim from the artifacts analysed in #188.
+    for description, measurements in (
+        # The first sharded campaign, chrome. Seed 2003 read a composite ratio of 11.807 against
+        # the contract-6 threshold of 11.7 and failed a healthy build. Seed 2001 is the pair
+        # whose clean control disagreed with its own playable partner about the machine.
+        (
+            "first sharded chrome campaign",
+            (
+                (4.185, 12.490, 25.245),
+                (2.355, 12.645, 25.910),
+                (1.835, 9.590, 21.665),
+            ),
+        ),
+        # The fastest runner in the 42-pair unsharded population (run 30179056065, chrome).
+        # Fast machines are where the composite ratio drifts highest.
+        (
+            "fastest recorded unsharded runner",
+            (
+                (1.950, 10.320, 21.170),
+                (1.970, 10.675, 22.065),
+                (1.955, 10.665, 22.035),
+            ),
+        ),
+        # The slowest runner in that population (run 30176706801, firefox).
+        (
+            "slowest recorded unsharded runner",
+            (
+                (3.600, 18.360, 30.400),
+                (3.560, 18.480, 31.400),
+                (3.600, 18.360, 33.580),
+            ),
+        ),
+    ):
+        replayed = browser_cpu_acceptance(
+            recorded_browser_cpu_matrix(measurements),
+            "firefox",
+        )
+        if not replayed["pass"]:
+            raise RuntimeError(
+                f"recorded healthy measurements from the {description} failed the gate: "
+                f"{replayed['reasons']}"
+            )
+    sharded_replay = browser_cpu_acceptance(
+        recorded_browser_cpu_matrix(
+            (
+                (4.185, 12.490, 25.245),
+                (2.355, 12.645, 25.910),
+                (1.835, 9.590, 21.665),
+            )
+        ),
+        "firefox",
+    )
+    sharded_seed_2003 = next(
+        pair
+        for pair in sharded_replay["pairs"]
+        if pair["scenario"] == "complete_fixture" and pair["seed"] == 2003
+    )
+    if round(sharded_seed_2003["ratios"]["rollback_p999_over_clean_p95"], 3) != 11.807:
+        raise RuntimeError("the retired composite ratio is no longer published for comparison")
+    if (
+        sharded_seed_2003["ratios"]["rollback_p999_over_playable_p95"]
+        >= MAX_BROWSER_ROLLBACK_P999_OVER_PLAYABLE_P95
+    ):
+        raise RuntimeError("the run that motivated #188 still fails the normalized gate")
+    # The two genuine breaches of run 30181277777, replayed at a full sample count so the gate
+    # is actually applied. Seed 2001 carries the chrome combat 2002 measurements (43.545 ms) and
+    # seed 2002 the firefox combat 2002 measurements (34.100 ms). The firefox pair sits under the
+    # absolute ceiling, so only the normalized ratio can catch it -- a rule that needed the
+    # ceiling for both would be an absolute gate wearing a ratio's name. Seed 2003 is a healthy
+    # pair from the same run and must stay clean.
+    breach_replay = browser_cpu_acceptance(
+        recorded_browser_cpu_matrix(
+            (
+                (3.015, 14.660, 43.545),
+                (2.740, 12.720, 34.100),
+                (3.000, 16.020, 29.500),
+            )
+        ),
+        "firefox",
+    )
+    breach_expectations = (
+        ("complete_fixture seed 2001 rollback_p999_over_playable_p95", True),
+        ("complete_fixture seed 2001 playable_rollback_p999_ms", True),
+        ("complete_fixture seed 2002 rollback_p999_over_playable_p95", True),
+        ("complete_fixture seed 2002 playable_rollback_p999_ms", False),
+        ("complete_fixture seed 2003", False),
+    )
+    for fragment, expected in breach_expectations:
+        if any(fragment in reason for reason in breach_replay["reasons"]) != expected:
+            raise RuntimeError(
+                f"replayed genuine breach verdict changed for {fragment!r}: "
+                f"{breach_replay['reasons']}"
+            )
+    if breach_replay["pass"]:
+        raise RuntimeError("replayed genuine browser rollback breaches passed the gate")
     try:
         raise_on_interruption(signal.SIGTERM, None)
     except InterruptedError as error:
