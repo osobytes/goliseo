@@ -174,9 +174,13 @@ jobs:
               run: ./scripts/web_smoke.sh
 
     browser_determinism:
-        name: OMP-1 browser determinism
+        name: OMP-1 browser determinism (${{ matrix.browser }})
         runs-on: ubuntu-24.04
-        timeout-minutes: 45
+        timeout-minutes: 30
+        strategy:
+            fail-fast: false
+            matrix:
+                browser: [chrome, firefox]
 
         steps:
             - name: Check out source
@@ -197,7 +201,7 @@ jobs:
                       scripts/browser_determinism.py --self-test
                   ./scripts/web_build.sh "$RUNNER_TEMP/omp1-web"
 
-            - name: Run two fresh Chrome and Firefox determinism campaigns
+            - name: Run two fresh determinism campaigns
               env:
                   GALLIUM_DRIVER: llvmpipe
                   LIBGL_ALWAYS_SOFTWARE: "1"
@@ -207,9 +211,59 @@ jobs:
                       -s "-screen 0 1280x720x24 -nolisten tcp +extension GLX +render -noreset" \
                       "$RUNNER_TEMP/browser-evidence/bin/python" -B scripts/browser_determinism.py \
                           --artifact "$RUNNER_TEMP/omp1-web" \
-                          --browser firefox \
-                          --browser chrome \
-                          --output "$RUNNER_TEMP/omp1-browser-determinism.json"
+                          --browser "${{ matrix.browser }}" \
+                          --run-concurrency 2 \
+                          --output "$RUNNER_TEMP/omp1-browser-determinism-${{ matrix.browser }}.json"
+
+            - name: Upload browser determinism shard evidence
+              if: always()
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+              with:
+                  name: omp1-determinism-${{ matrix.browser }}
+                  path: |
+                      ${{ runner.temp }}/omp1-browser-determinism-${{ matrix.browser }}.json
+                      ${{ runner.temp }}/omp1-browser-determinism-${{ matrix.browser }}-logs
+                  if-no-files-found: error
+                  retention-days: 14
+
+    browser_determinism_gate:
+        name: OMP-1 browser determinism gate
+        needs: browser_determinism
+        if: always()
+        runs-on: ubuntu-24.04
+
+        steps:
+            - name: Check out source
+              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+              with:
+                  ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+            - name: Download browser determinism shard evidence
+              continue-on-error: true
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  mkdir -p "$RUNNER_TEMP/omp1-determinism-evidence"
+                  gh run download "$GITHUB_RUN_ID" \
+                      --repo "$GITHUB_REPOSITORY" \
+                      --pattern 'omp1-determinism-*' \
+                      --dir "$RUNNER_TEMP/omp1-determinism-evidence" \
+                      || echo "no browser determinism evidence artifacts were available"
+
+            # The rolled-up matrix result is necessary but never sufficient: it
+            # cannot see a shard that was never scheduled. The pinned manifest in
+            # scripts/browser_determinism.py can, so a vanished, skipped, or
+            # cancelled shard fails this gate by name.
+            - name: Require complete browser determinism shard evidence
+              env:
+                  REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+                  SHARD_RESULT: ${{ needs.browser_determinism.result }}
+              run: |
+                  python3 -B scripts/browser_determinism.py \
+                      --mode aggregate \
+                      --evidence-root "$RUNNER_TEMP/omp1-determinism-evidence" \
+                      --revision "$REVISION" \
+                      --shard-result "$SHARD_RESULT"
 
     rollback_browser_stress:
         name: OMP-2 rollback browser stress (${{ matrix.browser }})

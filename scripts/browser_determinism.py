@@ -12,6 +12,8 @@ import tempfile
 import threading
 import time
 import urllib.parse
+from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -69,6 +71,15 @@ ERROR_MARKERS = (
     "GC_BROWSER|unhandled_rejection|",
     "GC_DETERMINISM|failure|",
 )
+# Every browser the sharded workflow must schedule. The gate pins this set, so a
+# shard that is never scheduled, is skipped, or is cancelled uploads nothing and
+# is detected by name instead of relying on a rolled-up matrix job result.
+SHARD_BROWSERS = ("chrome", "firefox")
+SHARD_ARTIFACT_PREFIX = "omp1-determinism-"
+EVIDENCE_SCHEMA = "omp1-browser-determinism-1"
+# The proof is that independent processes agree, so a shard is only evidence if
+# it carries at least two records produced by distinct WebDriver process groups.
+MINIMUM_FRESH_RUNS = 2
 
 
 def parse_marker(line: str) -> dict[str, str]:
@@ -86,6 +97,11 @@ def parse_marker(line: str) -> dict[str, str]:
             raise RuntimeError(
                 f"determinism marker {key} mismatch: expected {expected}, got {fields.get(key)}"
             )
+    # The pinned set is exhaustive, so an unpinned field would otherwise be a
+    # value a browser shard could vary without any shard or gate noticing.
+    unpinned = sorted(set(fields) - set(REQUIRED_FIELDS))
+    if unpinned:
+        raise RuntimeError(f"determinism marker carries unpinned fields: {', '.join(unpinned)}")
     return fields
 
 
@@ -437,6 +453,306 @@ def run_once(
     return record
 
 
+def shard_output_name(browser_name: str) -> str:
+    return f"omp1-browser-determinism-{browser_name}.json"
+
+
+def expected_shard_evidence() -> dict[str, str]:
+    """Pinned artifact name -> browser for every shard the gate demands."""
+    return {f"{SHARD_ARTIFACT_PREFIX}{name}": name for name in SHARD_BROWSERS}
+
+
+def require_complete_shards(names: Iterable[str]) -> None:
+    """Fail closed unless exactly the pinned shard evidence arrived, once each."""
+    seen = list(names)
+    expected = expected_shard_evidence()
+    duplicates = sorted({name for name in seen if seen.count(name) > 1})
+    if duplicates:
+        raise RuntimeError(
+            f"browser determinism evidence has duplicate shards: {', '.join(duplicates)}"
+        )
+    missing = sorted(set(expected) - set(seen))
+    if missing:
+        raise RuntimeError(
+            f"browser determinism evidence is missing shards: {', '.join(missing)}"
+        )
+    unpinned = sorted(set(seen) - set(expected))
+    if unpinned:
+        raise RuntimeError(
+            f"browser determinism evidence has unpinned shards: {', '.join(unpinned)}"
+        )
+
+
+def load_shard_evidence(root: Path, artifact_name: str, browser_name: str, revision: str) -> Any:
+    """Load one shard's evidence, rejecting anything that is not its own proof."""
+    path = root / artifact_name / shard_output_name(browser_name)
+    if not path.is_file():
+        raise RuntimeError(f"shard {artifact_name} did not upload {path.name}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise RuntimeError(f"shard {artifact_name} evidence is unreadable: {error}") from error
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"shard {artifact_name} evidence is not an object")
+    if payload.get("schema") != EVIDENCE_SCHEMA:
+        raise RuntimeError(
+            f"shard {artifact_name} reports schema {payload.get('schema')!r}, "
+            f"expected {EVIDENCE_SCHEMA!r}"
+        )
+    if payload.get("pass") is not True:
+        raise RuntimeError(f"shard {artifact_name} did not pass")
+    if payload.get("shard") != browser_name:
+        raise RuntimeError(
+            f"shard {artifact_name} declares shard {payload.get('shard')!r}, "
+            f"expected {browser_name!r}"
+        )
+    if payload.get("runtime_commit") != RUNTIME_COMMIT:
+        raise RuntimeError(f"shard {artifact_name} pinned a different love.js commit")
+    if payload.get("source_dirty") is not False:
+        raise RuntimeError(f"shard {artifact_name} was produced from a dirty checkout")
+    if payload.get("manifest_source_revision") != revision:
+        raise RuntimeError(
+            f"shard {artifact_name} was built at revision "
+            f"{payload.get('manifest_source_revision')!r}, expected {revision!r}"
+        )
+    records = payload.get("records")
+    if not isinstance(records, list) or len(records) < MINIMUM_FRESH_RUNS:
+        raise RuntimeError(
+            f"shard {artifact_name} carries fewer than {MINIMUM_FRESH_RUNS} fresh executions"
+        )
+    groups: list[Any] = []
+    versions: set[str] = set()
+    for record in records:
+        if not isinstance(record, dict):
+            raise RuntimeError(f"shard {artifact_name} has a malformed record")
+        if record.get("browser") != browser_name:
+            raise RuntimeError(
+                f"shard {artifact_name} carries a {record.get('browser')!r} record"
+            )
+        if record.get("fields") != REQUIRED_FIELDS:
+            raise RuntimeError(
+                f"shard {artifact_name} run {record.get('run')} did not match the pinned marker"
+            )
+        if record.get("protocol") != REQUIRED_PROTOCOL_FIELDS:
+            raise RuntimeError(
+                f"shard {artifact_name} run {record.get('run')} did not match the protocol golden"
+            )
+        if record.get("input_protocol") != REQUIRED_INPUT_PROTOCOL_FIELDS:
+            raise RuntimeError(
+                f"shard {artifact_name} run {record.get('run')} "
+                "did not match the input protocol golden"
+            )
+        teardown = record.get("teardown")
+        if not isinstance(teardown, dict) or teardown.get("process_group") is None:
+            raise RuntimeError(
+                f"shard {artifact_name} run {record.get('run')} has no process-group evidence"
+            )
+        groups.append(teardown["process_group"])
+        versions.add(str(record.get("browser_version")))
+    if len(set(groups)) != len(groups):
+        raise RuntimeError(
+            f"shard {artifact_name} reused a browser process group across its fresh runs"
+        )
+    if len(versions) != 1:
+        raise RuntimeError(f"shard {artifact_name} mixed browser versions across its fresh runs")
+    return payload
+
+
+def aggregate_shards(root: Path, revision: str, shard_result: str) -> dict[str, Any]:
+    """Require every pinned shard and re-assert agreement across the runtimes."""
+    # Necessary, never sufficient: GitHub rolls a matrix job up to one result,
+    # which cannot see a shard that was never scheduled. The manifest below can.
+    if shard_result != "success":
+        raise RuntimeError(f"browser determinism shards did not succeed: result={shard_result}")
+    if not root.is_dir():
+        raise RuntimeError(f"browser determinism evidence root is missing: {root}")
+    require_complete_shards(sorted(entry.name for entry in root.iterdir() if entry.is_dir()))
+    payloads: dict[str, Any] = {}
+    for artifact_name, browser_name in sorted(expected_shard_evidence().items()):
+        payloads[browser_name] = load_shard_evidence(root, artifact_name, browser_name, revision)
+    canonical: dict[str, str] | None = None
+    canonical_source = ""
+    executions = 0
+    for browser_name, payload in sorted(payloads.items()):
+        for record in payload["records"]:
+            executions += 1
+            if canonical is None:
+                canonical = record["fields"]
+                canonical_source = f"{browser_name} run {record['run']}"
+            elif record["fields"] != canonical:
+                raise RuntimeError(
+                    f"{browser_name} run {record['run']} disagreed with {canonical_source}"
+                )
+    assert canonical is not None
+    print(
+        f"browser determinism gate: {executions} fresh executions across "
+        f"{len(payloads)} shards agree at {canonical['final_hash']}/"
+        f"{canonical['sequence_digest']}"
+    )
+    return {"final_hash": canonical["final_hash"], "shards": sorted(payloads)}
+
+
+def build_shard_fixture(root: Path, revision: str) -> None:
+    group = 1000
+    for browser_name in SHARD_BROWSERS:
+        records = []
+        for run_number in (1, 2):
+            group += 1
+            records.append(
+                {
+                    "browser": browser_name,
+                    "browser_version": "1.0",
+                    "duration_seconds": 1.0,
+                    "fields": dict(REQUIRED_FIELDS),
+                    "marker": "GC_DETERMINISM|result|",
+                    "protocol": dict(REQUIRED_PROTOCOL_FIELDS),
+                    "protocol_marker": "GC_PROTOCOL|golden|",
+                    "input_protocol": dict(REQUIRED_INPUT_PROTOCOL_FIELDS),
+                    "input_protocol_marker": "GC_INPUT_PROTOCOL|golden|",
+                    "run": run_number,
+                    "teardown": {"process_group": group},
+                }
+            )
+        directory = root / f"{SHARD_ARTIFACT_PREFIX}{browser_name}"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / shard_output_name(browser_name)).write_text(
+            json.dumps(
+                {
+                    "manifest_source_revision": revision,
+                    "pass": True,
+                    "records": records,
+                    "runtime_commit": RUNTIME_COMMIT,
+                    "schema": EVIDENCE_SCHEMA,
+                    "shard": browser_name,
+                    "source_dirty": False,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+
+def shard_gate_self_test() -> None:
+    revision = "a" * 40
+    with tempfile.TemporaryDirectory(prefix="gc-determinism-gate-self-test-") as temp:
+        root = Path(temp) / "evidence"
+        build_shard_fixture(root, revision)
+        aggregate_shards(root, revision, "success")
+
+        for result in ("failure", "cancelled", "skipped", ""):
+            try:
+                aggregate_shards(root, revision, result)
+            except RuntimeError:
+                pass
+            else:
+                raise RuntimeError(f"gate accepted a {result!r} shard result")
+
+        # A shard that was never scheduled uploads nothing; drop each in turn.
+        for artifact_name in expected_shard_evidence():
+            hostile = Path(temp) / f"missing-{artifact_name}"
+            build_shard_fixture(hostile, revision)
+            dropped = hostile / artifact_name
+            for child in dropped.iterdir():
+                child.unlink()
+            dropped.rmdir()
+            try:
+                aggregate_shards(hostile, revision, "success")
+            except RuntimeError as error:
+                if artifact_name not in str(error):
+                    raise RuntimeError(f"gate failure did not name {artifact_name}") from error
+            else:
+                raise RuntimeError(f"gate accepted a run without {artifact_name}")
+
+        unpinned = Path(temp) / "unpinned"
+        build_shard_fixture(unpinned, revision)
+        (unpinned / f"{SHARD_ARTIFACT_PREFIX}webkit").mkdir()
+        try:
+            aggregate_shards(unpinned, revision, "success")
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError("gate accepted an unpinned shard")
+
+        empty = Path(temp) / "empty"
+        empty.mkdir()
+        try:
+            aggregate_shards(empty, revision, "success")
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError("gate accepted a run with no shard evidence at all")
+
+        mutations: tuple[tuple[str, Any], ...] = (
+            ("failed shard", lambda payload: payload.update(**{"pass": False})),
+            ("stale contract", lambda payload: payload.update(schema="omp1-legacy")),
+            ("cross runtime", lambda payload: payload.update(shard="firefox")),
+            ("cross revision", lambda payload: payload.update(manifest_source_revision="b" * 40)),
+            ("dirty checkout", lambda payload: payload.update(source_dirty=True)),
+            ("foreign runtime commit", lambda payload: payload.update(runtime_commit="0" * 40)),
+            ("single execution", lambda payload: payload.update(records=payload["records"][:1])),
+            (
+                "reused process",
+                lambda payload: payload["records"][1]["teardown"].update(
+                    process_group=payload["records"][0]["teardown"]["process_group"]
+                ),
+            ),
+            (
+                "mixed versions",
+                lambda payload: payload["records"][1].update(browser_version="2.0"),
+            ),
+            (
+                "foreign record",
+                lambda payload: payload["records"][1].update(browser="firefox"),
+            ),
+            (
+                "unpinned marker",
+                lambda payload: payload["records"][1]["fields"].update(final_hash="0" * 16),
+            ),
+            (
+                "protocol drift",
+                lambda payload: payload["records"][1]["protocol"].update(messages="12"),
+            ),
+            (
+                "input protocol drift",
+                lambda payload: payload["records"][1]["input_protocol"].update(max_bytes="756"),
+            ),
+        )
+        for label, mutate in mutations:
+            hostile = Path(temp) / f"hostile-{label.replace(' ', '-')}"
+            build_shard_fixture(hostile, revision)
+            target = hostile / f"{SHARD_ARTIFACT_PREFIX}chrome" / shard_output_name("chrome")
+            payload = json.loads(target.read_text(encoding="utf-8"))
+            mutate(payload)
+            target.write_text(
+                json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            try:
+                aggregate_shards(hostile, revision, "success")
+            except RuntimeError:
+                pass
+            else:
+                raise RuntimeError(f"gate accepted {label} evidence")
+
+        # Cross-runtime divergence is the assertion the single-job runner made in
+        # process; it survives sharding only because the gate re-applies it.
+        diverged = Path(temp) / "diverged"
+        build_shard_fixture(diverged, revision)
+        target = diverged / f"{SHARD_ARTIFACT_PREFIX}firefox" / shard_output_name("firefox")
+        payload = json.loads(target.read_text(encoding="utf-8"))
+        for record in payload["records"]:
+            record["fields"]["sequence_digest"] = "0" * 16
+        target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        try:
+            aggregate_shards(diverged, revision, "success")
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError("gate accepted runtimes that disagreed with each other")
+    print("browser determinism shard gate self-test: OK")
+
+
 def self_test() -> None:
     protocol_marker = (
         "GC_PROTOCOL|golden|schema=1|manifest_id=ed404908cc301829"
@@ -545,6 +861,16 @@ def self_test() -> None:
     )
     if fields != REQUIRED_FIELDS:
         raise RuntimeError("marker parser self-test failed")
+    try:
+        parse_marker(
+            "GC_DETERMINISM|result|"
+            + "|".join(f"{key}={value}" for key, value in REQUIRED_FIELDS.items())
+            + "|unpinned=1"
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError("marker parser accepted an unpinned field")
 
     for invalid_dirty in (None, "false", 0):
         invalid_manifest = {
@@ -587,6 +913,7 @@ def self_test() -> None:
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+    shard_gate_self_test()
     print("browser determinism self-test: OK")
 
 
@@ -602,18 +929,44 @@ def main() -> int:
         help="Required browser; repeat to select both (default: both).",
     )
     parser.add_argument("--runs", type=int, default=2)
+    parser.add_argument(
+        "--run-concurrency",
+        type=int,
+        default=1,
+        help=(
+            "Fresh processes to run at once within a browser. They stay fully "
+            "independent and the comparison is hash equality, so contention "
+            "cannot alter the result (default: 1)."
+        ),
+    )
     parser.add_argument("--timeout-seconds", type=int, default=1200)
     parser.add_argument("--allow-dirty", action="store_true")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument(
+        "--mode",
+        choices=("campaign", "aggregate"),
+        default="campaign",
+        help="campaign runs the browsers; aggregate gates the uploaded shard evidence.",
+    )
+    parser.add_argument("--evidence-root", type=Path)
+    parser.add_argument("--revision")
+    parser.add_argument("--shard-result", default="")
     args = parser.parse_args()
     if args.self_test:
         self_test()
         return 0
+    if args.mode == "aggregate":
+        if args.evidence_root is None or not args.revision:
+            parser.error("--evidence-root and --revision are required for --mode aggregate")
+        aggregate_shards(args.evidence_root.resolve(), args.revision, args.shard_result)
+        return 0
     if args.artifact is None or args.output is None:
         parser.error("--artifact and --output are required unless --self-test is used")
-    browsers = args.browsers or ["chrome", "firefox"]
+    browsers = args.browsers or list(SHARD_BROWSERS)
     if args.runs < 2:
         raise SystemExit("--runs must be at least 2")
+    if args.run_concurrency < 1:
+        raise SystemExit("--run-concurrency must be at least 1")
 
     artifact = args.artifact.resolve()
     manifest = json.loads((artifact / "manifest.json").read_text(encoding="utf-8"))
@@ -651,9 +1004,11 @@ def main() -> int:
                 "driver": str(driver_path),
                 "driver_version": driver_version(driver_path),
             }
-            browser_records = [
-                run_once(
-                    browser_name,
+            run_numbers = range(1, args.runs + 1)
+
+            def execute(run_number: int, name: str = browser_name) -> dict[str, Any]:
+                return run_once(
+                    name,
                     binary,
                     driver_path,
                     url,
@@ -661,8 +1016,17 @@ def main() -> int:
                     run_number,
                     args.timeout_seconds,
                 )
-                for run_number in range(1, args.runs + 1)
-            ]
+
+            if args.run_concurrency > 1:
+                # Each run owns a separate browser process group and writes its
+                # own WebDriver log, so the runs share nothing but the artifact.
+                with ThreadPoolExecutor(max_workers=args.run_concurrency) as pool:
+                    browser_records = list(pool.map(execute, run_numbers))
+            else:
+                browser_records = [execute(run_number) for run_number in run_numbers]
+            groups = [record["teardown"]["process_group"] for record in browser_records]
+            if len(set(groups)) != len(groups):
+                raise RuntimeError(f"fresh {browser_name} runs shared a browser process group")
             first_fields = browser_records[0]["fields"]
             for record in browser_records[1:]:
                 if record["fields"] != first_fields:
@@ -681,7 +1045,11 @@ def main() -> int:
             "manifest_source_revision": manifest.get("source_revision"),
             "pass": True,
             "records": records,
+            "run_concurrency": args.run_concurrency,
             "runtime_commit": RUNTIME_COMMIT,
+            "schema": EVIDENCE_SCHEMA,
+            "shard": browsers[0] if len(browsers) == 1 else None,
+            "source_dirty": manifest.get("source_dirty"),
         }
         output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         for record in records:

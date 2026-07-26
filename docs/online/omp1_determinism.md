@@ -216,6 +216,44 @@ result marker and no loader/runtime errors, and verifies bounded process-group
 cleanup. It launches two fresh profiles per required browser and fails, rather
 than skips, if Chrome or Firefox is missing.
 
+### CI shape: one shard per browser
+
+The determinism assertion is *within* a browser — two fresh processes of the
+same runtime must produce the same marker — so CI runs one shard per browser
+(`chrome`, `firefox`) instead of both in one job. Wall clock becomes the slower
+browser rather than the sum of both. Inside a shard the two fresh processes run
+concurrently (`--run-concurrency 2`); they still own separate browser process
+groups, separate profiles, and separate WebDriver logs, and the comparison is
+hash equality, which no amount of CPU contention can alter.
+
+Each shard uploads `omp1-determinism-<browser>`, and `OMP-1 browser determinism
+gate` aggregates them with `--mode aggregate`. The rolled-up matrix result is
+checked first but is only a necessary condition: GitHub collapses a matrix job
+to a single `result`, which cannot distinguish a shard that ran from one that
+was never scheduled. The sufficient condition is the pinned manifest in
+`scripts/browser_determinism.py`:
+
+1. `require_complete_shards` compares the artifacts that arrived against
+   `expected_shard_evidence()` and fails, naming the shard, on any **missing**,
+   **unpinned**, or **duplicate** entry. A shard that vanished, was skipped, or
+   was cancelled uploads nothing, so its pinned name is missing and the gate
+   fails closed. An unaccounted-for artifact fails closed too.
+2. `load_shard_evidence` requires each shard's JSON to declare the pinned
+   evidence schema, its own `pass: true`, its own browser, the pinned love.js
+   commit, a clean checkout at the gate's exact revision, at least two records
+   from **distinct browser process groups**, one browser version, and markers
+   equal to the pinned determinism, protocol, and input-protocol goldens.
+   Evidence from another commit, runtime, or process cannot stand in for a
+   missing shard.
+3. The gate then re-applies the cross-runtime comparison the single job used to
+   make in process: every record from every shard must carry byte-identical
+   marker fields, so Chrome and Firefox disagreeing still fails.
+
+`parse_marker` additionally rejects any marker field outside the pinned set, so
+a shard cannot vary a value that nothing else checks. Every branch above is
+covered by `python3 scripts/browser_determinism.py --self-test`, including
+dropping each pinned shard in turn.
+
 ## Runtime verification
 
 The authoritative snapshot-v10 fixture passes the two-fresh-process native
