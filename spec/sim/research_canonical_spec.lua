@@ -1,5 +1,6 @@
 local canonical_vectors = require("spec.fixtures.research.canonical_vectors")
 local example_package = require("spec.fixtures.research.example_package")
+local match_snapshot = require("sim.match_snapshot")
 local research_features = require("sim.research_features")
 local research_response = require("sim.research_response")
 local research_schema = require("sim.research_schema")
@@ -31,6 +32,23 @@ t.describe("research canonical serialization vectors", function()
     t.it("pins the serialization version and digest name", function()
         t.eq(research_schema.SERIALIZATION_VERSION, canonical_vectors.SERIALIZATION_VERSION)
         t.eq(research_schema.DIGEST, canonical_vectors.DIGEST)
+    end)
+
+    -- Checked before the hash assertions so a simulation version bump reports
+    -- itself instead of surfacing as an opaque 16-hex mismatch. Every hash below
+    -- covers the tape's simulation identity, so bumping either version legitimately
+    -- moves all of them and the vectors must be regenerated.
+    t.it("pins the simulation versions the vectors were computed against", function()
+        t.eq(
+            match_snapshot.VERSION,
+            canonical_vectors.SNAPSHOT_VERSION,
+            "snapshot version moved: regenerate the canonical vectors"
+        )
+        t.eq(
+            match_snapshot.COMBAT_VERSION,
+            canonical_vectors.COMBAT_VERSION,
+            "combat version moved: regenerate the canonical vectors"
+        )
     end)
 
     t.it("pins the hand-written sample wire bytes and digest", function()
