@@ -110,7 +110,9 @@ function player_pose.select(player, combat, keeper_context)
                 add("keeper_dive", "soccer")
             end
         end
-        if player.keeper_state == "recover" then
+        -- Getting up is the post-dive recovery window the simulation owns, not
+        -- the keeper's "recover" positioning state.
+        if player.keeper_get_up_timer > 0 then
             add("keeper_get_up", "soccer")
         elseif player.keeper_state == "set" or player.keeper_set > 0 then
             add("keeper_set", "soccer")

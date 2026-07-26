@@ -26,8 +26,8 @@ local outfield_press = require("sim.outfield_press")
 ---@class MatchSnapshotModule
 local match_snapshot = {}
 
-match_snapshot.VERSION = 9
-match_snapshot.COMBAT_VERSION = 10
+match_snapshot.VERSION = 10
+match_snapshot.COMBAT_VERSION = 11
 
 ---@type table<MatchState, string>
 local unsupported_states = setmetatable({}, { __mode = "k" })
@@ -125,6 +125,7 @@ match_snapshot.PLAYER_FIELDS = {
     "dive_dir",
     "dive_delay",
     "dive_target",
+    "keeper_get_up_timer",
     "hold_timer",
     "feet_ball",
     "slide_timer",

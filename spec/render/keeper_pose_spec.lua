@@ -138,9 +138,15 @@ t.describe("goalkeeper pose projection", function()
 
         keeper.keeper_state = "set"
         t.eq(player_pose.select(keeper, nil, neutral).id, "keeper_set")
+        -- "recover" is positioning recovery, not getting up off the floor.
         keeper.keeper_state = "recover"
-        t.eq(player_pose.select(keeper, nil, neutral).id, "keeper_get_up")
+        t.eq(player_pose.select(keeper, nil, neutral).id, "keeper_ready_tall")
         keeper.keeper_state = "base"
+
+        keeper.keeper_get_up_timer = 0.18
+        t.eq(player_pose.select(keeper, nil, neutral).id, "keeper_get_up")
+        keeper.keeper_get_up_timer = 0
+        t.eq(player_pose.select(keeper, nil, neutral).id, "keeper_ready_tall")
 
         keeper.dive_timer = 0.2
         for _, style in ipairs({ "spread", "central", "stretch" }) do
@@ -151,6 +157,61 @@ t.describe("goalkeeper pose projection", function()
         keeper.save_style = nil
         neutral.tip = true
         t.eq(player_pose.select(keeper, nil, neutral).id, "keeper_tip")
+    end)
+
+    t.it("reads getting up from the simulation timer, never the recover state", function()
+        local state = fixture()
+        local keeper = state.players[1]
+
+        -- The get-up window outranks the set/lean and both ready postures while
+        -- it runs, and hands every one of them back the moment it expires.
+        for _, case in ipairs({
+            {
+                context = { near_ball = false, shuffling = false, tip = false },
+                after = "keeper_ready_tall",
+            },
+            {
+                context = { near_ball = true, shuffling = false, tip = false },
+                after = "keeper_ready_low",
+            },
+            {
+                context = { near_ball = false, shuffling = true, tip = false },
+                after = "keeper_shuffle",
+            },
+        }) do
+            keeper.keeper_get_up_timer = 0.18
+            t.eq(player_pose.select(keeper, nil, case.context).id, "keeper_get_up")
+            keeper.keeper_get_up_timer = 0
+            t.eq(player_pose.select(keeper, nil, case.context).id, case.after)
+        end
+
+        local neutral = { near_ball = false, shuffling = false, tip = false }
+        keeper.keeper_get_up_timer = 0.18
+        keeper.keeper_state = "set"
+        t.eq(player_pose.select(keeper, nil, neutral).id, "keeper_get_up")
+        keeper.keeper_state = "base"
+
+        -- Dive, tip, and hand poses all stay ahead of it.
+        keeper.dive_timer = 0.2
+        keeper.save_style = "stretch"
+        t.eq(player_pose.select(keeper, nil, neutral).id, "keeper_stretch")
+        t.eq(
+            player_pose.select(keeper, nil, { near_ball = false, shuffling = false, tip = true }).id,
+            "keeper_tip"
+        )
+        keeper.grab_timer = 0.1
+        t.eq(player_pose.select(keeper, nil, neutral).id, "keeper_grab")
+        keeper.grab_timer = 0
+        keeper.dive_timer = 0
+        keeper.save_style = nil
+
+        -- Every keeper_state, including "recover", selects a ready posture once
+        -- the get-up window is spent.
+        keeper.keeper_get_up_timer = 0
+        for _, keeper_state in ipairs({ "base", "advance", "contain", "retreat", "recover" }) do
+            keeper.keeper_state = keeper_state
+            t.eq(player_pose.select(keeper, nil, neutral).id, "keeper_ready_tall", keeper_state)
+        end
     end)
 
     t.it("keeps grab, throw, and punt above save and ready variants", function()

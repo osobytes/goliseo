@@ -230,6 +230,7 @@ local SAVE_PAD = 18 -- on-target tolerance beyond the posts when projecting a sh
 local SAVE_ZONE = 130 -- the keeper commits a dive once the shot is this close to its line
 local KEEPER_GRAB_POSE = 0.25 -- seconds of the gather/reach pose after a grab
 local KEEPER_THROW_POSE = 0.25 -- seconds of the release/throw pose after distributing
+local KEEPER_GET_UP_POSE = 0.18 -- seconds of the push-back-up pose after a dive ends
 local RECEIVE_TIME = 1.3 -- seconds the intended receiver runs onto a keeper's distribution
 -- A back-pass keeps the keeper coming to MEET it until it resolves: long enough
 -- to outlive any under-hit roll (the window is cut short the moment anyone
@@ -309,6 +310,7 @@ local SPRINT_ENGAGE = 0.25 -- min meter to start a sprint (hysteresis: no flicke
 ---@field dive_dir Vec2  -- unit direction of the active dive
 ---@field dive_delay number  -- countdown until a queued dive launches (synced to ball arrival)
 ---@field dive_target Vec2?  -- intercept point the dive converges on (movement stops there)
+---@field keeper_get_up_timer number  -- seconds of the post-dive push-back-up pose remaining
 ---@field hold_timer number  -- seconds a keeper holds the ball before distributing
 ---@field feet_ball boolean  -- keeper took a teammate's pass with the feet (no hands: dribbles, tackleable)
 ---@field slide_timer number  -- seconds of an active slide tackle remaining
@@ -603,6 +605,7 @@ local function build_team(
             dive_dir = Vec2.new(0, 0),
             dive_delay = 0,
             dive_target = nil,
+            keeper_get_up_timer = 0,
             hold_timer = 0,
             feet_ball = false,
             slide_timer = 0,
@@ -726,6 +729,7 @@ local function place_kickoff(s, kicking)
         p.dive_dir = Vec2.new(0, 0)
         p.dive_delay = 0
         p.dive_target = nil
+        p.keeper_get_up_timer = 0
         p.keeper_state = "base"
         p.keeper_state_timer = 0
         p.keeper_release_state = nil
@@ -4628,12 +4632,22 @@ function match.step(s, dt, input, combat_state)
         if p.dodge_timer > 0 then
             p.dodge_timer = math.max(0, p.dodge_timer - dt)
         end
+        -- Decays before the dive block so the tick that arms it below still
+        -- spends the full window on screen.
+        if p.keeper_get_up_timer > 0 then
+            p.keeper_get_up_timer = math.max(0, p.keeper_get_up_timer - dt)
+        end
         if p.dive_timer > 0 then
             p.dive_timer = math.max(0, p.dive_timer - dt)
             if p.dive_timer == 0 then
                 p.dive_target = nil
                 p.save_style = nil
                 p.save_tip_emitted = false
+                -- The lunge just finished: the keeper is on the floor and pushes
+                -- back up before any ready posture reads as truthful again. This
+                -- is the ONLY place the get-up window is armed, so it is exactly
+                -- one dive-end transition per dive under the fixed timestep.
+                p.keeper_get_up_timer = KEEPER_GET_UP_POSE
             end
         end
         if p.dive_delay > 0 then

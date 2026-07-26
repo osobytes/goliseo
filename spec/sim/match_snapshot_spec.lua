@@ -326,7 +326,7 @@ t.describe("canonical match snapshots", function()
         end
     end)
 
-    t.it("persists active AI runs through a v9 soccer boundary and continuation", function()
+    t.it("persists active AI runs through a v10 soccer boundary and continuation", function()
         local state = new_attacking_ai_state()
         local owner = assert(state.owner)
         local owner_team = state.players[owner].team
@@ -382,7 +382,7 @@ t.describe("canonical match snapshots", function()
         end
     end)
 
-    t.it("persists active AI runs through a v10 combat boundary and continuation", function()
+    t.it("persists active AI runs through a v11 combat boundary and continuation", function()
         local state = new_attacking_ai_state()
         local owner = assert(state.owner)
         local owner_team = state.players[owner].team
@@ -442,7 +442,7 @@ t.describe("canonical match snapshots", function()
         end
     end)
 
-    t.it("rejects a combat-blocked active run as a malformed v10 boundary", function()
+    t.it("rejects a combat-blocked active run as a malformed v11 boundary", function()
         local state = new_attacking_ai_state()
         local owner = assert(state.owner)
         local runner_index = nil
@@ -707,7 +707,7 @@ t.describe("canonical match snapshots", function()
         t.is_true(not pcall(match_snapshot.restore_owned, missing_state))
     end)
 
-    t.it("canonically restores a v9 keeper state through goal and kickoff", function()
+    t.it("canonically restores a v10 keeper state through goal and kickoff", function()
         local live = new_state()
         local away_keeper = live.players[6]
         away_keeper.keeper_state = "retreat"
@@ -997,7 +997,7 @@ t.describe("canonical match snapshots", function()
         )
     end)
 
-    t.it("rejects malformed v9 and v10 decision contracts during restore", function()
+    t.it("rejects malformed v10 and v11 decision contracts during restore", function()
         local state = new_state()
         local soccer = match_snapshot.capture(state)
         local soccer_decision = soccer.state.players[2].outfield_decision
@@ -1383,7 +1383,7 @@ t.describe("canonical match snapshots", function()
         end
     end)
 
-    t.it("encodes decision children positionally with exact no-run v9 arithmetic", function()
+    t.it("encodes decision children positionally with exact no-run v10 arithmetic", function()
         local legacy_fields = {
             "version",
             "generation",
@@ -1420,8 +1420,9 @@ t.describe("canonical match snapshots", function()
             + #"k9:formation;"
             + #"s5:2-1-1;"
             + #"s5:1-1-2;"
+            + 10 * #"k19:keeper_get_up_timer;nz;"
         t.eq(#encoded, expected)
-        t.eq(#encoded, 20244)
+        t.eq(#encoded, 20514)
 
         local decision_marker = "k17:outfield_decision;d;"
         local next_field_marker = "k9:is_keeper;"
@@ -1547,15 +1548,15 @@ t.describe("canonical match snapshots", function()
                 budget - combat_window
             )
         )
-        t.eq(soccer_bytes, 20149)
-        t.eq(combat_bytes, 23495)
+        t.eq(soccer_bytes, 20419)
+        t.eq(combat_bytes, 23765)
         t.eq(four_run_delta, 346)
         t.eq(press_delta, 26)
         t.eq(combined_delta, 372)
-        t.eq(soccer_window, 636151)
-        t.eq(combat_window, 739877)
-        t.eq(budget - soccer_window, 150281)
-        t.eq(budget - combat_window, 46555)
+        t.eq(soccer_window, 644521)
+        t.eq(combat_window, 748247)
+        t.eq(budget - soccer_window, 141911)
+        t.eq(budget - combat_window, 38185)
         t.is_true(soccer_window < budget)
         t.is_true(combat_window < budget)
     end)

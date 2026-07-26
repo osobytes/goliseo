@@ -1,4 +1,5 @@
 local t = require("spec.support.runner")
+local fixed_clock = require("sim.fixed_clock")
 local match = require("sim.match")
 local match_snapshot = require("sim.match_snapshot")
 local teams = require("data.teams")
@@ -417,5 +418,75 @@ t.describe("keeper save-style lifecycle", function()
         t.eq(state.score.home, 1)
         t.eq(keeper.save_style, nil)
         t.is_true(not keeper.save_tip_emitted)
+    end)
+end)
+
+-- The get-up window is the ONLY signal the presentation layer may read for the
+-- post-dive recovery pose, so the simulation owns arming, decay, and reset.
+t.describe("keeper post-dive get-up window", function()
+    t.it("arms the window on the tick the dive lunge ends", function()
+        local state, keeper = new_save_state()
+        keeper.dive_timer = 2 * fixed_clock.TICK_SECONDS
+        keeper.dive_dir = Vec2.new(0, 1)
+        t.eq(keeper.keeper_get_up_timer, 0)
+
+        match.step(state, fixed_clock.TICK_SECONDS, NO_INPUT)
+        t.eq(keeper.dive_timer, fixed_clock.TICK_SECONDS)
+        t.eq(keeper.keeper_get_up_timer, 0, "an unfinished dive never arms the get-up window")
+
+        match.step(state, fixed_clock.TICK_SECONDS, NO_INPUT)
+        t.eq(keeper.dive_timer, 0)
+        t.eq(keeper.keeper_get_up_timer, 0.18)
+    end)
+
+    t.it("decays the armed window to exactly zero over 0.18 simulated seconds", function()
+        local state, keeper = new_save_state()
+        keeper.keeper_get_up_timer = 0.18
+
+        local ticks = 0
+        while keeper.keeper_get_up_timer > 0 do
+            match.step(state, fixed_clock.TICK_SECONDS, NO_INPUT)
+            ticks = ticks + 1
+            t.is_true(ticks <= 12, "the get-up window outlived its budget")
+        end
+        t.eq(keeper.keeper_get_up_timer, 0)
+        t.eq(ticks, 11) -- ceil(0.18 * 60)
+
+        local exact, exact_keeper = new_save_state()
+        exact_keeper.keeper_get_up_timer = 0.18
+        match.step(exact, 0.18, NO_INPUT)
+        t.eq(exact_keeper.keeper_get_up_timer, 0)
+    end)
+
+    t.it("survives a canonical snapshot capture and restore", function()
+        local state, keeper = new_save_state()
+        keeper.keeper_get_up_timer = 0.18
+
+        local boundary = match_snapshot.capture(state)
+        local restored = match_snapshot.restore(boundary)
+        local restored_keeper
+        for _, player in ipairs(restored.players) do
+            if player.team == "away" and player.is_keeper then
+                restored_keeper = player
+            end
+        end
+        t.eq(assert(restored_keeper).keeper_get_up_timer, 0.18)
+        t.is_true(
+            match_snapshot.encode(boundary):find("k19:keeper_get_up_timer;", 1, true) ~= nil,
+            "the get-up window is missing from the canonical wire"
+        )
+        t.eq(match_snapshot.hash(match_snapshot.capture(restored)), match_snapshot.hash(boundary))
+    end)
+
+    t.it("clears the window on kickoff reset", function()
+        local state, keeper = new_save_state()
+        keeper.keeper_get_up_timer = 0.18
+        state.ball = Vec2.new(965, 270)
+        state.ball_vel = Vec2.new(600, 0)
+
+        match.step(state, fixed_clock.TICK_SECONDS, NO_INPUT)
+
+        t.eq(state.score.home, 1)
+        t.eq(keeper.keeper_get_up_timer, 0)
     end)
 end)

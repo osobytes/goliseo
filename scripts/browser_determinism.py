@@ -37,20 +37,20 @@ REQUIRED_FIELDS = {
     "tick_rate": "60",
     "ticks": "7201",
     "boundaries": "7202",
-    "hash": "fnv1a64-canonical-snapshot-v9",
-    "final_hash": "db0c203af21d6cfd",
-    "sequence_digest": "e1040cdab6b46393",
+    "hash": "fnv1a64-canonical-snapshot-v10",
+    "final_hash": "650b2f0c5498aaa7",
+    "sequence_digest": "4bc8f6edabd9b43e",
     "score": "0-0",
     "outcome": "draw",
-    "snapshot_bytes": "21389",
+    "snapshot_bytes": "21659",
     "coverage": "tackle,aerial,keeper,full_time",
     "events": "catch:1,claim:4,header:2,pass:5,reception:1,shot:1,tackle:147,touch:173",
     "love": "11.5.0",
 }
 REQUIRED_PROTOCOL_FIELDS = {
     "schema": "1",
-    "manifest_id": "fd826ceb66f9a4be",
-    "transcript_id": "b4e3ed977697caa5",
+    "manifest_id": "ed404908cc301829",
+    "transcript_id": "098e3e665bc478c8",
     "messages": "13",
 }
 ERROR_MARKERS = (
@@ -398,8 +398,8 @@ def run_once(
 
 def self_test() -> None:
     protocol_marker = (
-        "GC_PROTOCOL|golden|schema=1|manifest_id=fd826ceb66f9a4be"
-        "|transcript_id=b4e3ed977697caa5|messages=13"
+        "GC_PROTOCOL|golden|schema=1|manifest_id=ed404908cc301829"
+        "|transcript_id=098e3e665bc478c8|messages=13"
     )
     if parse_protocol_marker(protocol_marker) != REQUIRED_PROTOCOL_FIELDS:
         raise RuntimeError("protocol golden marker self-test failed")
