@@ -190,3 +190,9 @@ The OMP-2 runner should consume this module as follows:
 This contract simulates delivery conditions only. Restore, resimulation,
 confirmed events, presentation reconciliation, and real production transport
 remain separate OMP-2/OMP-3 responsibilities.
+
+OMP-3 preserves this exact current-plus-six policy in the production
+[input packet contract](input_packets.md). The production codec adds session
+identity, ownership, envelope validation, compact bounded bytes, host
+canonicalization, atomic history insertion, and one reconciliation boundary;
+it does not change the impairment evidence recorded here.

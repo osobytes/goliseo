@@ -209,6 +209,37 @@ t.describe("OMP-1 input frame", function()
         t.eq(input_frame.has_edge(next_sample, "shoot"), false)
     end)
 
+    t.it("round-trips the compact four-byte sample without omitting combat bits", function()
+        local all_holds = assert(input_frame.new_sample({
+            move_x = -127,
+            move_y = 127,
+            held = 255,
+            edges = input_frame.EDGE_BITS.equipment_pressed,
+        }))
+        local hold_wire = assert(input_frame.encode_sample(all_holds))
+        t.eq(hold_wire, "00feff20")
+        t.eq(#hold_wire, input_frame.MAX_SAMPLE_WIRE_BYTES)
+        local decoded_holds = assert(input_frame.decode_sample(hold_wire))
+        t.eq(decoded_holds.move_x, -127)
+        t.eq(decoded_holds.move_y, 127)
+        t.eq(decoded_holds.held, 255)
+        t.eq(decoded_holds.edges, input_frame.EDGE_BITS.equipment_pressed)
+
+        local all_edges = assert(input_frame.new_sample({
+            held = 0,
+            edges = 127,
+        }))
+        local edge_wire = assert(input_frame.encode_sample(all_edges))
+        t.eq(edge_wire, "7f7f007f")
+        t.eq(assert(input_frame.decode_sample(edge_wire)).edges, 127)
+
+        for _, wire in ipairs({ "7F7f007f", "7f7f007", "7f7f0080", "zzzzzzzz" }) do
+            local value, _, code = input_frame.decode_sample(wire)
+            t.eq(value, nil)
+            t.eq(code, "malformed")
+        end
+    end)
+
     t.it("encodes and decodes one byte-for-byte canonical frame", function()
         local slots = neutral_slots()
         slots[1] = assert(input_frame.new_sample({

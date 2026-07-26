@@ -11,13 +11,18 @@
 ---@field x number  -- 0..1 depth (own goal -> opponent goal)
 ---@field y number  -- 0..1 width (top -> bottom)
 
+---@alias FormationRole "def"|"mid"|"wide"|"fwd"
+
+---@class OutfieldAnchor: Anchor
+---@field role FormationRole
+
 ---@class FormationData
 ---@field id string
 ---@field name string
 ---@field strength string?
 ---@field risk string?
 ---@field keeper Anchor
----@field outfield Anchor[]  -- exactly 4
+---@field outfield OutfieldAnchor[]  -- exactly 4
 
 local GK = { x = 0.06, y = 0.5 }
 
@@ -30,10 +35,10 @@ return {
         risk = "The lone forward can become isolated.",
         keeper = GK,
         outfield = {
-            { x = 0.28, y = 0.30 }, -- defender
-            { x = 0.28, y = 0.70 }, -- defender
-            { x = 0.52, y = 0.50 }, -- midfielder
-            { x = 0.76, y = 0.50 }, -- forward
+            { x = 0.28, y = 0.30, role = "def" },
+            { x = 0.28, y = 0.70, role = "def" },
+            { x = 0.52, y = 0.50, role = "mid" },
+            { x = 0.76, y = 0.50, role = "fwd" },
         },
     },
     ["1-2-1"] = {
@@ -43,10 +48,10 @@ return {
         risk = "Only one defender guards counterattacks.",
         keeper = GK,
         outfield = {
-            { x = 0.26, y = 0.50 }, -- defender
-            { x = 0.52, y = 0.30 }, -- midfielder
-            { x = 0.52, y = 0.70 }, -- midfielder
-            { x = 0.78, y = 0.50 }, -- forward
+            { x = 0.26, y = 0.50, role = "def" },
+            { x = 0.52, y = 0.30, role = "wide" },
+            { x = 0.52, y = 0.70, role = "wide" },
+            { x = 0.78, y = 0.50, role = "fwd" },
         },
     },
     ["1-1-2"] = {
@@ -56,10 +61,10 @@ return {
         risk = "Large spaces open behind the first press.",
         keeper = GK,
         outfield = {
-            { x = 0.26, y = 0.50 }, -- defender
-            { x = 0.50, y = 0.50 }, -- midfielder
-            { x = 0.76, y = 0.30 }, -- forward
-            { x = 0.76, y = 0.70 }, -- forward
+            { x = 0.26, y = 0.50, role = "def" },
+            { x = 0.50, y = 0.50, role = "mid" },
+            { x = 0.76, y = 0.30, role = "fwd" },
+            { x = 0.76, y = 0.70, role = "fwd" },
         },
     },
 }

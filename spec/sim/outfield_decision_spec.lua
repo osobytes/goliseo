@@ -97,6 +97,56 @@ t.describe("outfield decision cadence state", function()
         state = outfield_decision.advance(state, state.remaining)
         t.is_true(outfield_decision.should_refresh(state, "offball"))
     end)
+
+    t.it("retains one fixed run expiry across personal cadence refreshes", function()
+        local expiry = -17.2
+        local state = outfield_decision.refresh(
+            outfield_decision.new_state(53),
+            "offball",
+            "in_behind",
+            0.5,
+            700,
+            220,
+            nil,
+            expiry
+        )
+        local generation = state.generation
+        state = outfield_decision.advance(state, state.remaining)
+        state = outfield_decision.refresh(state, "offball", "in_behind", 0.5, 700, 220, nil, expiry)
+        t.eq(state.generation, generation + 1)
+        t.eq(state.run_expires_at, expiry)
+    end)
+
+    t.it("cancels a run into support without inventing a cadence boundary", function()
+        local running = outfield_decision.refresh(
+            outfield_decision.new_state(91),
+            "offball",
+            "hold_width",
+            0.4,
+            500,
+            80,
+            nil,
+            1.8
+        )
+        local cancelled = outfield_decision.cancel_run(running, 420, 160)
+        t.eq(cancelled.intent, "move")
+        t.eq(cancelled.target_x, 420)
+        t.eq(cancelled.target_y, 160)
+        t.eq(cancelled.run_expires_at, nil)
+        t.eq(cancelled.generation, running.generation)
+        t.eq(cancelled.remaining, running.remaining)
+        t.eq(cancelled.rng_state, running.rng_state)
+    end)
+
+    t.it("rejects expiry on an ordinary move and missing expiry on a run", function()
+        local initial = outfield_decision.new_state()
+        t.is_true(not pcall(function()
+            outfield_decision.refresh(initial, "offball", "move", 0.5, 10, 20, nil, 1.8)
+        end))
+        t.is_true(not pcall(function()
+            outfield_decision.refresh(initial, "offball", "come_short", 0.5, 10, 20)
+        end))
+    end)
 end)
 
 t.describe("outfield carrier choices", function()

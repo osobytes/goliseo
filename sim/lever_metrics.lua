@@ -334,7 +334,11 @@ function lever_metrics.report(config_name, runs)
                 delta.n
             )
         end
-        out[#out + 1] = "  all band-width deltas A-B: " .. table.concat(all_deltas, ", ")
+        out[#out + 1] = ("  home win rates A/B: %.1f%% / %.1f%%; all band-width deltas A-B: %s"):format(
+            run.result.win_rate_a * 100,
+            run.result.win_rate_b * 100,
+            table.concat(all_deltas, ", ")
+        )
     end
     return table.concat(out, "\n")
 end

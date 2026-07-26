@@ -18,6 +18,7 @@ local match_hud_render = require("game.render.match_hud")
 local view_state = require("game.render.view_state")
 local combat_presentation = require("game.presentation.combat")
 local combat_feedback = require("game.presentation.combat_feedback")
+local match_event_batch = require("game.presentation.match_event_batch")
 local audio = require("game.audio")
 local match_hud = require("game.match_hud")
 local onboarding = require("game.match_onboarding")
@@ -332,6 +333,7 @@ end
 
 ---@param self MatchScreen
 local function consume_rollback_presentation(self)
+    append_values(self._frame_events, match_event_batch.surviving(self._rollback_event_diffs))
     for _, diff in ipairs(self._rollback_event_diffs) do
         self:consume_rollback_event_diff(diff)
     end
@@ -909,6 +911,7 @@ function Match:draw_frame(s, vp, combat_state)
         render_pose = s == self.state and self._render_pose or nil,
         combat = combat_model,
         camera_offset = combat_feedback.camera_offset(self._combat_feedback),
+        events = s == self.state and self._frame_events or s.events,
     })
 
     local phase = self:broadcast_phase()

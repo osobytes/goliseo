@@ -399,6 +399,41 @@ t.describe("rollback session", function()
         )
     end)
 
+    t.it("applies one authoritative packet batch through exactly one reconciliation", function()
+        local session = rollback_session.new(initial_snapshot(), sources())
+        step_many(session, 4)
+        local applied = assert(rollback_session.apply_authoritative_batch(session, {
+            { tick = 1, slot_index = 1, sample = sample({ move_y = -127 }) },
+            {
+                tick = 2,
+                slot_index = 2,
+                sample = sample({ move_x = 80, held = input_frame.HELD_BITS.sprint }),
+            },
+        }))
+        t.eq(applied.arrival.inserted, 2)
+        t.eq(applied.arrival.duplicates, 0)
+        t.eq(applied.arrival.corrections, 2)
+        t.is_true(applied.reconciliation.changed)
+        t.eq(applied.reconciliation.causal_tick, 1)
+        t.eq(#applied.reconciliation.corrected_outputs, 3)
+        local diagnostics = rollback_session.diagnostics(session)
+        t.eq(diagnostics.rollback_count, 1)
+        t.eq(diagnostics.correction_count, 2)
+
+        local duplicate = assert(rollback_session.apply_authoritative_batch(session, {
+            { tick = 1, slot_index = 1, sample = sample({ move_y = -127 }) },
+            {
+                tick = 2,
+                slot_index = 2,
+                sample = sample({ move_x = 80, held = input_frame.HELD_BITS.sprint }),
+            },
+        }))
+        t.eq(duplicate.arrival.inserted, 0)
+        t.eq(duplicate.arrival.duplicates, 2)
+        t.is_true(not duplicate.reconciliation.changed)
+        t.eq(rollback_session.diagnostics(session).rollback_count, 1)
+    end)
+
     t.it("remains deterministic across repeated rollback of corrected intervals", function()
         local initial = initial_snapshot()
         local delayed = rollback_session.new(initial, sources())

@@ -184,6 +184,7 @@ local function figure(bx, gy, r, color, v, opts)
     local accent = opts.species_color or lighten(color, 0.55)
     local shape = opts.species_shape or "round"
     local silhouette = renderer.silhouette(shape)
+    local pose_id = opts.pose and opts.pose.id or nil
 
     local swing = math.sin(ph) -- fore/aft limb phase
     -- Whole-body bounce: a gentle idle breath plus a run bob that peaks twice
@@ -193,7 +194,6 @@ local function figure(bx, gy, r, color, v, opts)
 
     -- Wind-up back-swing: lean the whole figure opposite the facing direction.
     local wu = opts.windup or 0
-    local pose_id = opts.pose and opts.pose.id or nil
     if pose_id == "combat_windup" then
         wu = math.max(wu, 1 - (opts.combat and opts.combat.phase_progress or 0) * 0.45)
     end
@@ -210,16 +210,34 @@ local function figure(bx, gy, r, color, v, opts)
         action_lean = fx * r * 0.65
     elseif pose_id == "combat_recovery" then
         action_lean = -fx * r * 0.2
+    elseif pose_id == "keeper_set" then
+        action_lean = fx * r * 0.18
+    elseif pose_id == "keeper_get_up" then
+        action_lean = -fx * r * 0.25
     end
 
     local cx = bx + lean * r * 0.5 + windup_lean + action_lean
     local foot_y = gy
-    local hip_y = gy - r * 1.35 - bounce - breath
-    local sh_y = gy - r * 2.15 - bounce - breath
-    local head_y = gy - r * 2.75 - bounce - breath
+    local stance_drop = 0
+    if pose_id == "keeper_ready_low" or pose_id == "keeper_spread" then
+        stance_drop = r * 0.32
+    elseif pose_id == "keeper_set" then
+        stance_drop = r * 0.18
+    elseif pose_id == "keeper_get_up" then
+        stance_drop = r * 0.42
+    end
+    local hip_y = gy - r * 1.35 - bounce - breath + stance_drop
+    local sh_y = gy - r * 2.15 - bounce - breath + stance_drop
+    local head_y = gy - r * 2.75 - bounce - breath + stance_drop
 
     local stride = run * r * 0.65
-    local hip_dx = r * 0.34
+    if pose_id == "keeper_shuffle" then
+        stride = r * 0.28
+    end
+    local wide_stance = pose_id == "keeper_ready_low"
+        or pose_id == "keeper_set"
+        or pose_id == "keeper_spread"
+    local hip_dx = r * (wide_stance and 0.52 or 0.34)
 
     -- Legs (pump in opposite phase). Boots are chunky blocks at the feet.
     local limb_scale = silhouette.limb_scale
@@ -243,7 +261,49 @@ local function figure(bx, gy, r, color, v, opts)
     -- Arms (opposite the legs, swinging the other way).
     love.graphics.setLineWidth(math.max(1.5, r * 0.26 * limb_scale))
     set(color, opts.is_keeper and 0.8 or 1)
-    if pose_id == "combat_guard" then
+    if pose_id == "keeper_spread" then
+        love.graphics.line(cx - r * 0.48, sh_y, cx - r * 1.4, sh_y + r * 0.28)
+        love.graphics.line(cx + r * 0.48, sh_y, cx + r * 1.4, sh_y + r * 0.28)
+    elseif
+        pose_id == "keeper_central"
+        or pose_id == "keeper_stretch"
+        or pose_id == "keeper_tip"
+    then
+        local side = fx >= 0 and 1 or -1
+        local reach = pose_id == "keeper_tip" and 1.75
+            or (pose_id == "keeper_stretch" and 1.45 or 1.08)
+        love.graphics.line(cx - r * 0.48, sh_y, cx + side * r * reach, sh_y - r * 0.2)
+        love.graphics.line(cx + r * 0.48, sh_y, cx + side * r * reach, sh_y + r * 0.3)
+    elseif pose_id == "keeper_set" then
+        love.graphics.line(cx - r * 0.5, sh_y, cx - r * 0.82, hip_y - r * 0.08)
+        love.graphics.line(cx + r * 0.5, sh_y, cx + r * 0.82, hip_y - r * 0.08)
+    elseif pose_id == "keeper_ready_low" then
+        love.graphics.line(cx - r * 0.5, sh_y, cx - r * 0.95, hip_y + r * 0.25)
+        love.graphics.line(cx + r * 0.5, sh_y, cx + r * 0.95, hip_y + r * 0.25)
+    elseif pose_id == "keeper_shuffle" then
+        love.graphics.line(cx - r * 0.5, sh_y, cx - r * 0.8, hip_y - r * 0.05)
+        love.graphics.line(cx + r * 0.5, sh_y, cx + r * 0.8, hip_y - r * 0.05)
+    elseif pose_id == "keeper_ready_tall" then
+        love.graphics.line(
+            cx - r * 0.5,
+            sh_y,
+            cx - r * 0.82,
+            sh_y + r * 0.48,
+            cx - r * 0.62,
+            hip_y + r * 0.05
+        )
+        love.graphics.line(
+            cx + r * 0.5,
+            sh_y,
+            cx + r * 0.82,
+            sh_y + r * 0.48,
+            cx + r * 0.62,
+            hip_y + r * 0.05
+        )
+    elseif pose_id == "keeper_get_up" then
+        love.graphics.line(cx - r * 0.5, sh_y, cx - r * 1.0, foot_y - r * 0.15)
+        love.graphics.line(cx + r * 0.5, sh_y, cx + r * 0.7, hip_y + r * 0.15)
+    elseif pose_id == "combat_guard" then
         love.graphics.line(cx - r * 0.5, sh_y, cx + fx * r * 0.75, sh_y + r * 0.2)
         love.graphics.line(cx + r * 0.5, sh_y, cx + fx * r * 0.95, sh_y + r * 0.5)
     elseif pose_id == "combat_active" or pose_id == "combat_aim" then
@@ -352,6 +412,26 @@ local function figure(bx, gy, r, color, v, opts)
     end
 
     draw_equipment(cx, sh_y, hip_y, r, opts)
+
+    -- Keeper handling stays inside the figure transform so a dive-catch carries
+    -- its gloves and ball with the body instead of leaving them at the feet.
+    if opts.holding then
+        local gathering = (opts.grab or 0) > 0
+        local hy = gathering and (gy - r * 1.6) or (gy - r * 2.1)
+        local hx = cx + fx * r * 0.35
+        set(lighten(color, 0.55), 0.95)
+        love.graphics.setLineWidth(math.max(1.5, r * 0.26))
+        love.graphics.line(cx - r * 0.5, sh_y, hx - r * 0.35, hy)
+        love.graphics.line(cx + r * 0.5, sh_y, hx + r * 0.35, hy)
+        love.graphics.setColor(1, 0.95, 0.7)
+        love.graphics.circle("fill", hx, hy, r * 0.5)
+    elseif (opts.throw or 0) > 0 then
+        local hx = cx + fx * r * (0.6 + opts.throw * 0.8)
+        set(lighten(color, 0.55), 0.9)
+        love.graphics.setLineWidth(math.max(1.5, r * 0.26))
+        love.graphics.line(cx - r * 0.5, sh_y, hx, gy - r * 1.9)
+        love.graphics.line(cx + r * 0.5, sh_y, hx, gy - r * 1.9)
+    end
 end
 
 -- Draw one player.
@@ -385,18 +465,34 @@ function renderer.draw(sx, gy, r, color, v, opts)
         )
     end
 
-    -- Keeper dive: pivot the whole body at the feet toward the dive side and
-    -- shove it laterally, so the figure lunges horizontally for the save. `dive`
-    -- is 0..1 progress (1 = just launched). Reuses figure() under a transform.
-    if
-        (pose_id == "keeper_dive" or (pose_id == nil and opts.dive and opts.dive > 0))
-        and opts.dive_dir
-    then
+    -- Keeper saves reuse the same body under bounded transforms. Spread stays
+    -- compact, central corrects a short distance, stretch holds the full-lunge
+    -- silhouette, and a one-shot tip reaches just beyond it.
+    local keeper_save_pose = pose_id == "keeper_spread"
+        or pose_id == "keeper_central"
+        or pose_id == "keeper_stretch"
+        or pose_id == "keeper_tip"
+        or pose_id == "keeper_dive"
+    if (keeper_save_pose or (pose_id == nil and opts.dive and opts.dive > 0)) and opts.dive_dir then
         local d = opts.dive_dir ---@type Vec2
-        local sign = (d.x >= 0) and 1 or -1
-        local angle = sign * math.rad(72) * opts.dive
+        local axis = math.abs(d.x) > math.abs(d.y) and d.x or d.y
+        local sign = axis >= 0 and 1 or -1
+        local amount = pose_id == "keeper_tip" and 1 or clamp(opts.dive or 0, 0, 1)
+        local angle_degrees = 72
+        local travel = 1.6
+        if pose_id == "keeper_spread" then
+            angle_degrees, travel = 28, 0.65
+        elseif pose_id == "keeper_central" then
+            angle_degrees, travel = 48, 0.95
+        elseif pose_id == "keeper_stretch" then
+            angle_degrees, travel = 78, 1.9
+            amount = math.max(amount, 0.82)
+        elseif pose_id == "keeper_tip" then
+            angle_degrees, travel = 84, 2.2
+        end
+        local angle = sign * math.rad(angle_degrees) * amount
         love.graphics.push()
-        love.graphics.translate(sx + d.x * r * 1.6 * opts.dive, gy)
+        love.graphics.translate(sx + sign * r * travel * amount, gy)
         love.graphics.rotate(angle)
         love.graphics.translate(-sx, -gy)
         figure(sx, gy, r, color, v, opts)
@@ -450,6 +546,19 @@ function renderer.draw(sx, gy, r, color, v, opts)
         return
     end
 
+    if pose_id == "keeper_get_up" then
+        local d = opts.dive_dir
+        local axis = d and (math.abs(d.x) > math.abs(d.y) and d.x or d.y) or 1
+        local sign = axis >= 0 and 1 or -1
+        love.graphics.push()
+        love.graphics.translate(sx, gy + r * 0.18)
+        love.graphics.rotate(sign * math.rad(16))
+        love.graphics.translate(-sx, -gy)
+        figure(sx, gy, r, color, v, opts)
+        love.graphics.pop()
+        return
+    end
+
     -- Dash afterimage: faded copies trailing backward along the facing direction
     -- (which equals the move direction during a dash). Drawn before the figure so
     -- the solid body sits on top of its own smear.
@@ -464,28 +573,6 @@ function renderer.draw(sx, gy, r, color, v, opts)
     end
 
     figure(sx, gy, r, color, v, opts)
-
-    -- Keeper ball handling: cradle the ball in raised hands while holding it (lower
-    -- while gathering), or thrust the arms forward on release (no ball — it's away).
-    local fx = (opts.facing and opts.facing.x) or 0
-    local sh_y = gy - r * 2.15
-    if opts.holding then
-        local gathering = (opts.grab or 0) > 0
-        local hy = gathering and (gy - r * 1.6) or (gy - r * 2.1)
-        local hx = sx + fx * r * 0.35
-        set(lighten(color, 0.55), 0.95)
-        love.graphics.setLineWidth(math.max(1.5, r * 0.26))
-        love.graphics.line(sx - r * 0.5, sh_y, hx - r * 0.35, hy)
-        love.graphics.line(sx + r * 0.5, sh_y, hx + r * 0.35, hy)
-        love.graphics.setColor(1, 0.95, 0.7)
-        love.graphics.circle("fill", hx, hy, r * 0.5)
-    elseif (opts.throw or 0) > 0 then
-        local hx = sx + fx * r * (0.6 + opts.throw * 0.8)
-        set(lighten(color, 0.55), 0.9)
-        love.graphics.setLineWidth(math.max(1.5, r * 0.26))
-        love.graphics.line(sx - r * 0.5, sh_y, hx, gy - r * 1.9)
-        love.graphics.line(sx + r * 0.5, sh_y, hx, gy - r * 1.9)
-    end
 
     -- Ground-plane facing tick (kept from the old renderer as a clear aim cue).
     if opts.facing then

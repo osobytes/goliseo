@@ -6,7 +6,9 @@ local fixed_clock = require("sim.fixed_clock")
 local input_frame = require("sim.input_frame")
 local match = require("sim.match")
 local match_snapshot = require("sim.match_snapshot")
+local outfield_decision = require("sim.outfield_decision")
 local outfield_press = require("sim.outfield_press")
+local slot_input = require("sim.slot_input")
 local teams = require("data.teams")
 
 ---@return MatchState
@@ -33,6 +35,13 @@ local function new_ai_state()
         seed = 38,
         human_controlled = false,
     })
+end
+
+---@return MatchState
+local function new_attacking_ai_state()
+    local state = new_ai_state()
+    state.kickoff_hold = 0
+    return state
 end
 
 ---@param class_name string
@@ -317,18 +326,203 @@ t.describe("canonical match snapshots", function()
         end
     end)
 
+    t.it("persists active AI runs through a v10 soccer boundary and continuation", function()
+        local state = new_attacking_ai_state()
+        local owner = assert(state.owner)
+        local owner_team = state.players[owner].team
+        local runner_indices = {}
+        for index, player in ipairs(state.players) do
+            if
+                player.team == owner_team
+                and not player.is_keeper
+                and index ~= owner
+                and #runner_indices < 2
+            then
+                runner_indices[#runner_indices + 1] = index
+            end
+        end
+        t.eq(#runner_indices, 2)
+        for ordinal, runner_index in ipairs(runner_indices) do
+            local player = state.players[runner_index]
+            player.outfield_decision = outfield_decision.refresh(
+                player.outfield_decision,
+                "offball",
+                ordinal == 1 and "come_short" or "in_behind",
+                player.scan_rate,
+                ordinal == 1 and 420 or 700,
+                ordinal == 1 and 180 or 300,
+                nil,
+                -0.2
+            )
+        end
+
+        local boundary = match_snapshot.capture(state)
+        t.eq(boundary.version, match_snapshot.VERSION)
+        local restored, restored_combat = match_snapshot.restore(boundary)
+        t.eq(restored_combat, nil)
+        for _, runner_index in ipairs(runner_indices) do
+            local expected = state.players[runner_index].outfield_decision
+            local actual = restored.players[runner_index].outfield_decision
+            t.eq(actual.intent, expected.intent)
+            t.eq(actual.run_expires_at, expected.run_expires_at)
+            t.eq(actual.remaining, expected.remaining)
+            t.eq(actual.generation, expected.generation)
+        end
+        t.eq(match_snapshot.hash(match_snapshot.capture(restored)), match_snapshot.hash(boundary))
+
+        for _ = 1, 2 do
+            local live_input = slot_input.neutral_match_input()
+            local restored_input = slot_input.neutral_match_input()
+            match.step(state, fixed_clock.TICK_SECONDS, live_input)
+            match.step(restored, fixed_clock.TICK_SECONDS, restored_input)
+            t.eq(
+                match_snapshot.hash(match_snapshot.capture(restored)),
+                match_snapshot.hash(match_snapshot.capture(state))
+            )
+        end
+    end)
+
+    t.it("persists active AI runs through a v11 combat boundary and continuation", function()
+        local state = new_attacking_ai_state()
+        local owner = assert(state.owner)
+        local owner_team = state.players[owner].team
+        local runner_indices = {}
+        for index, player in ipairs(state.players) do
+            if
+                player.team == owner_team
+                and not player.is_keeper
+                and index ~= owner
+                and #runner_indices < 2
+            then
+                runner_indices[#runner_indices + 1] = index
+            end
+        end
+        t.eq(#runner_indices, 2)
+        for ordinal, runner_index in ipairs(runner_indices) do
+            local player = state.players[runner_index]
+            player.outfield_decision = outfield_decision.refresh(
+                player.outfield_decision,
+                "offball",
+                ordinal == 1 and "come_short" or "in_behind",
+                player.scan_rate,
+                ordinal == 1 and 420 or 700,
+                ordinal == 1 and 180 or 300,
+                nil,
+                -0.2
+            )
+        end
+
+        local combat_state = combat.new_state(state)
+        local boundary = match_snapshot.capture(state, combat_state)
+        t.eq(boundary.version, match_snapshot.COMBAT_VERSION)
+        local restored, restored_combat = match_snapshot.restore(boundary)
+        restored_combat = assert(restored_combat)
+        for _, runner_index in ipairs(runner_indices) do
+            local expected = state.players[runner_index].outfield_decision
+            local actual = restored.players[runner_index].outfield_decision
+            t.eq(actual.intent, expected.intent)
+            t.eq(actual.run_expires_at, expected.run_expires_at)
+            t.eq(actual.remaining, expected.remaining)
+            t.eq(actual.generation, expected.generation)
+        end
+        t.eq(
+            match_snapshot.hash(match_snapshot.capture(restored, restored_combat)),
+            match_snapshot.hash(boundary)
+        )
+
+        for _ = 1, 2 do
+            local live_input = slot_input.neutral_match_input()
+            local restored_input = slot_input.neutral_match_input()
+            match.step(state, fixed_clock.TICK_SECONDS, live_input, combat_state)
+            match.step(restored, fixed_clock.TICK_SECONDS, restored_input, restored_combat)
+            t.eq(
+                match_snapshot.hash(match_snapshot.capture(restored, restored_combat)),
+                match_snapshot.hash(match_snapshot.capture(state, combat_state))
+            )
+        end
+    end)
+
+    t.it("rejects a combat-blocked active run as a malformed v11 boundary", function()
+        local state = new_attacking_ai_state()
+        local owner = assert(state.owner)
+        local runner_index = nil
+        for index, player in ipairs(state.players) do
+            if
+                player.team == state.players[owner].team
+                and not player.is_keeper
+                and index ~= owner
+            then
+                runner_index = index
+                break
+            end
+        end
+        runner_index = assert(runner_index)
+        local runner = state.players[runner_index]
+        runner.outfield_decision = outfield_decision.refresh(
+            runner.outfield_decision,
+            "offball",
+            "in_behind",
+            runner.scan_rate,
+            700,
+            240,
+            nil,
+            -0.2
+        )
+        local combat_state = combat.new_state(state)
+        local runtime = combat_state.players[runner_index]
+
+        local valid_boundary = match_snapshot.capture(state, combat_state)
+        runtime.forced_state = "stagger"
+        runtime.forced_ticks = 2
+        runtime.chain_ticks = 4
+        t.is_true(
+            not pcall(match_snapshot.capture, state, combat_state),
+            "capture accepted a forced player retaining a run"
+        )
+
+        valid_boundary.combat.players[runner_index].forced_state = "stagger"
+        valid_boundary.combat.players[runner_index].forced_ticks = 2
+        valid_boundary.combat.players[runner_index].chain_ticks = 4
+        t.is_true(
+            not pcall(match_snapshot.restore, valid_boundary),
+            "restore accepted a forced player retaining a run"
+        )
+        local malformed_runtime = valid_boundary.combat.players[runner_index]
+        malformed_runtime.forced_state = nil
+        malformed_runtime.forced_ticks = 0
+        malformed_runtime.chain_ticks = 0
+        malformed_runtime.phase = "recovery"
+        malformed_runtime.phase_ticks = 1
+        t.is_true(
+            not pcall(match_snapshot.restore, valid_boundary),
+            "restore accepted an action-committed player retaining a run"
+        )
+
+        match._sanitize_run_states(state, combat_state)
+        local cleared = state.players[runner_index].outfield_decision
+        t.is_true(not outfield_decision.is_run_intent(cleared.intent))
+        t.eq(cleared.run_expires_at, nil)
+        local cleared_boundary = match_snapshot.capture(state, combat_state)
+        local cleared_state, cleared_combat = match_snapshot.restore(cleared_boundary)
+        t.eq(
+            match_snapshot.hash(match_snapshot.capture(cleared_state, assert(cleared_combat))),
+            match_snapshot.hash(cleared_boundary)
+        )
+    end)
+
     t.it("captures and restores every nested payload as independent state", function()
-        local state = new_state()
+        local state = new_attacking_ai_state()
         state.players[2].outfield_decision = {
-            version = 1,
+            version = outfield_decision.VERSION,
             generation = 7,
             rng_state = 53,
             remaining = 0.25,
             context = "offball",
-            intent = "move",
+            intent = "in_behind",
             target_x = 410,
             target_y = 220,
             target_player = nil,
+            run_expires_at = -0.2,
         }
         state.players[2].dive_target = Vec2.new(10, 20)
         state.players[1].keeper_state = "retreat"
@@ -337,7 +531,7 @@ t.describe("canonical match snapshots", function()
         state.players[1].keeper_release_motion = 0.75
         state.players[1].keeper_release_kind = "chip"
         state.players[1].keeper_release_depth = 40
-        state.players[2].windup_shot = {
+        state.players[3].windup_shot = {
             dir = Vec2.new(0.25, -0.75),
             speed = 456,
             vz = 123,
@@ -375,18 +569,19 @@ t.describe("canonical match snapshots", function()
         state.players[2].outfield_decision.target_x = -101
         state.players[1].keeper_state = "base"
         state.players[1].keeper_release_depth = -101
-        state.players[2].windup_shot.dir.y = 99
+        state.players[3].windup_shot.dir.y = 99
         state.events[1].x = 999
         state.events[2].save_style = "central"
         t.is_true(snapshot.state.players[2].pos.x ~= -100)
         t.eq(snapshot.state.players[2].outfield_decision.generation, 7)
         t.eq(snapshot.state.players[2].outfield_decision.target_x, 410)
+        t.eq(snapshot.state.players[2].outfield_decision.run_expires_at, -0.2)
         t.eq(snapshot.state.players[1].keeper_state, "retreat")
         t.eq(snapshot.state.players[1].keeper_release_state, "advance")
         t.eq(snapshot.state.players[1].keeper_release_motion, 0.75)
         t.eq(snapshot.state.players[1].keeper_release_kind, "chip")
         t.eq(snapshot.state.players[1].keeper_release_depth, 40)
-        t.eq(snapshot.state.players[2].windup_shot.dir.y, -0.75)
+        t.eq(snapshot.state.players[3].windup_shot.dir.y, -0.75)
         t.eq(snapshot.state.players[2].save_style, "stretch")
         t.is_true(snapshot.state.players[2].save_tip_emitted)
         t.eq(snapshot.state.players[2].keeper_anticipation, 0.75)
@@ -397,10 +592,11 @@ t.describe("canonical match snapshots", function()
         snapshot.state.players[2].pos.y = -200
         snapshot.state.players[2].outfield_decision.target_y = -201
         snapshot.state.players[1].keeper_state = "recover"
-        snapshot.state.players[2].windup_shot.speed = 1
+        snapshot.state.players[3].windup_shot.speed = 1
         t.is_true(restored.players[2].pos.y ~= -200)
         t.eq(restored.players[2].outfield_decision.generation, 7)
         t.eq(restored.players[2].outfield_decision.target_y, 220)
+        t.eq(restored.players[2].outfield_decision.run_expires_at, -0.2)
         t.eq(restored.players[1].keeper_state, "retreat")
         t.eq(restored.players[1].keeper_state_timer, 0.15)
         t.eq(restored.players[1].keeper_release_state, "advance")
@@ -409,9 +605,9 @@ t.describe("canonical match snapshots", function()
         t.eq(restored.players[1].keeper_release_depth, 40)
         t.near(restored.players[1].keeper_aggression, state.players[1].keeper_aggression)
         t.near(restored.players[1].keeper_anticipation, state.players[1].keeper_anticipation)
-        t.eq(restored.players[2].windup_shot.speed, 456)
-        t.eq(restored.players[2].windup_shot.shot_type, "chip")
-        t.near(restored.players[2].windup_shot.dir:length(), math.sqrt(0.625))
+        t.eq(restored.players[3].windup_shot.speed, 456)
+        t.eq(restored.players[3].windup_shot.shot_type, "chip")
+        t.near(restored.players[3].windup_shot.dir:length(), math.sqrt(0.625))
         t.eq(restored.players[2].keeper_anticipation, 0.75)
         t.eq(restored.players[2].keeper_set, 0.125)
         t.eq(restored.events[2].save_style, "spread")
@@ -511,7 +707,7 @@ t.describe("canonical match snapshots", function()
         t.is_true(not pcall(match_snapshot.restore_owned, missing_state))
     end)
 
-    t.it("canonically restores a v7 keeper state through goal and kickoff", function()
+    t.it("canonically restores a v10 keeper state through goal and kickoff", function()
         local live = new_state()
         local away_keeper = live.players[6]
         away_keeper.keeper_state = "retreat"
@@ -630,7 +826,7 @@ t.describe("canonical match snapshots", function()
 
     t.it("compares every canonical windup-shot field", function()
         local state = new_state()
-        state.players[2].windup_shot = {
+        state.players[3].windup_shot = {
             dir = Vec2.new(0.25, -0.75),
             speed = 456,
             vz = 123,
@@ -639,21 +835,75 @@ t.describe("canonical match snapshots", function()
         }
         local left = match_snapshot.capture(state)
         local right = match_snapshot.capture(state)
-        assert(right.state.players[2].windup_shot).shot_type = "ground"
+        assert(right.state.players[3].windup_shot).shot_type = "ground"
 
         local found = assert(match_snapshot.first_difference_canonical(left, right))
-        t.eq(found.path, "state.players.2.windup_shot.shot_type")
+        t.eq(found.path, "state.players.3.windup_shot.shot_type")
         t.eq(found.expected, "chip")
         t.eq(found.actual, "ground")
     end)
 
     t.it("compares every canonical outfield decision field", function()
-        local state = new_state()
+        local state = new_ai_state()
         local left = match_snapshot.capture(state)
         local right = match_snapshot.capture(state)
-        right.state.players[2].outfield_decision.generation = 1
+        right.state.players[2].outfield_decision = outfield_decision.refresh(
+            right.state.players[2].outfield_decision,
+            "offball",
+            "hold_width",
+            0.5,
+            450,
+            20,
+            nil,
+            -0.3
+        )
         local found = assert(match_snapshot.first_difference_canonical(left, right))
         t.eq(found.path, "state.players.2.outfield_decision.generation")
+
+        left = match_snapshot.capture(state)
+        right = match_snapshot.capture(state)
+        left.state.players[2].outfield_decision = outfield_decision.refresh(
+            left.state.players[2].outfield_decision,
+            "offball",
+            "hold_width",
+            0.5,
+            450,
+            20,
+            nil,
+            -0.3
+        )
+        right.state.players[2].outfield_decision = outfield_decision.refresh(
+            right.state.players[2].outfield_decision,
+            "offball",
+            "hold_width",
+            0.5,
+            450,
+            20,
+            nil,
+            -0.2
+        )
+        local found = assert(match_snapshot.first_difference_canonical(left, right))
+        t.eq(found.path, "state.players.2.outfield_decision.run_expires_at")
+    end)
+
+    t.it("restores and diffs both authoritative formation identities", function()
+        local state = new_state()
+        local snapshot = match_snapshot.capture(state)
+        local restored = match_snapshot.restore(snapshot)
+        t.eq(restored.formation.home, "2-1-1")
+        t.eq(restored.formation.away, "1-1-2")
+
+        local changed = match_snapshot.capture(state)
+        changed.state.formation.home = "1-2-1"
+        local found = assert(match_snapshot.first_difference_canonical(snapshot, changed))
+        t.eq(found.path, "state.formation.home")
+
+        rawset(changed.state.formation, "extra", "2-1-1")
+        t.is_true(not pcall(match_snapshot.restore, changed))
+
+        local unknown = match_snapshot.capture(state)
+        unknown.state.formation.away = "future-shape"
+        t.is_true(not pcall(match_snapshot.restore, unknown))
     end)
 
     t.it("restores and hashes team press state across soccer and combat boundaries", function()
@@ -747,7 +997,7 @@ t.describe("canonical match snapshots", function()
         )
     end)
 
-    t.it("rejects malformed v8 and v9 context-intent pairs during restore", function()
+    t.it("rejects malformed v10 and v11 decision contracts during restore", function()
         local state = new_state()
         local soccer = match_snapshot.capture(state)
         local soccer_decision = soccer.state.players[2].outfield_decision
@@ -764,16 +1014,551 @@ t.describe("canonical match snapshots", function()
         combat_decision.target_x = 100
         combat_decision.target_y = 200
         t.is_true(not pcall(match_snapshot.restore, combat_boundary))
+
+        state = new_attacking_ai_state()
+        local valid_run = match_snapshot.capture(state)
+        valid_run.state.players[2].outfield_decision = outfield_decision.refresh(
+            valid_run.state.players[2].outfield_decision,
+            "offball",
+            "in_behind",
+            0.5,
+            500,
+            220,
+            nil,
+            -0.2
+        )
+        t.is_true(pcall(match_snapshot.restore, valid_run))
+        local active = valid_run.state.players[2].outfield_decision
+        local cancelled = outfield_decision.cancel_run(active, 420, 220)
+        t.eq(cancelled.generation, active.generation)
+        t.eq(cancelled.remaining, active.remaining)
+        t.eq(cancelled.intent, "move")
+        t.eq(cancelled.run_expires_at, nil)
+        valid_run.state.players[2].outfield_decision = cancelled
+        t.is_true(pcall(match_snapshot.restore, valid_run))
+
+        local mutations = {
+            function(decision)
+                decision.version = outfield_decision.VERSION - 1
+            end,
+            function(decision)
+                decision.run_expires_at = nil
+            end,
+            function(decision)
+                decision.run_expires_at = 0 / 0
+            end,
+            function(decision)
+                decision.run_expires_at = -2
+            end,
+            function(decision)
+                decision.run_expires_at = 0
+            end,
+            function(decision)
+                decision.target_x = nil
+                decision.target_y = nil
+            end,
+            function(decision)
+                decision.target_player = 3
+            end,
+            function(decision)
+                decision.context = "carrier"
+            end,
+            function(decision)
+                decision.intent = "move"
+            end,
+            function(decision)
+                decision.unknown_run_field = true
+            end,
+        }
+        for index, mutate in ipairs(mutations) do
+            local malformed = match_snapshot.capture(state)
+            malformed.state.players[2].outfield_decision = outfield_decision.refresh(
+                malformed.state.players[2].outfield_decision,
+                "offball",
+                "come_short",
+                0.5,
+                300,
+                220,
+                nil,
+                -0.2
+            )
+            mutate(malformed.state.players[2].outfield_decision)
+            t.is_true(
+                not pcall(match_snapshot.restore, malformed),
+                "malformed v9 run decision " .. index .. " was accepted"
+            )
+        end
+
+        local malformed_combat = match_snapshot.capture(state, combat.new_state(state))
+        malformed_combat.state.players[7].outfield_decision = outfield_decision.refresh(
+            malformed_combat.state.players[7].outfield_decision,
+            "offball",
+            "hold_width",
+            0.5,
+            500,
+            30,
+            nil,
+            -0.2
+        )
+        malformed_combat.state.players[7].outfield_decision.run_expires_at = math.huge
+        t.is_true(not pcall(match_snapshot.restore, malformed_combat))
+
+        local too_many = new_attacking_ai_state()
+        local too_many_snapshot = match_snapshot.capture(too_many)
+        for _, index in ipairs({ 2, 3, 4 }) do
+            local player = too_many_snapshot.state.players[index]
+            player.outfield_decision = outfield_decision.refresh(
+                player.outfield_decision,
+                "offball",
+                "in_behind",
+                player.scan_rate,
+                500 + index,
+                200 + index,
+                nil,
+                -0.2
+            )
+        end
+        t.is_true(
+            not pcall(match_snapshot.restore, too_many_snapshot),
+            "third same-team run was accepted"
+        )
+
+        ---@param relation_state MatchState
+        ---@param runner_index integer
+        ---@return integer owner_index
+        local function set_ordinary_teammate_owner(relation_state, runner_index)
+            local runner = relation_state.players[runner_index]
+            for index, player in ipairs(relation_state.players) do
+                if
+                    index ~= runner_index
+                    and player.team == runner.team
+                    and not player.is_keeper
+                then
+                    relation_state.owner = index
+                    relation_state.kickoff_hold = 0
+                    relation_state.finished = false
+                    return index
+                end
+            end
+            assert(false, "relation fixture requires an ordinary teammate owner")
+            return 0
+        end
+
+        local invalid_relations = {
+            {
+                name = "keeper",
+                state = new_attacking_ai_state(),
+                player_index = 1,
+                target_x = 500,
+                target_y = 200,
+            },
+            {
+                name = "fixed slot",
+                state = new_state(),
+                player_index = 2,
+                target_x = 500,
+                target_y = 200,
+            },
+            {
+                name = "outside field",
+                state = new_attacking_ai_state(),
+                player_index = 2,
+                target_x = -1,
+                target_y = 200,
+            },
+        }
+        local human = match.new({
+            home = teams.nebula,
+            away = teams.orion,
+            field = { w = 960, h = 540 },
+            duration = 2,
+            max_goals = 3,
+            seed = 38,
+        })
+        local fixed_case = invalid_relations[2]
+        fixed_case.state.human_controlled = false
+        set_ordinary_teammate_owner(fixed_case.state, fixed_case.player_index)
+        set_ordinary_teammate_owner(human, human.controlled)
+        invalid_relations[#invalid_relations + 1] = {
+            name = "human control",
+            state = human,
+            player_index = human.controlled,
+            target_x = 500,
+            target_y = 200,
+        }
+        for _, case in ipairs(invalid_relations) do
+            if case.name == "fixed slot" or case.name == "human control" then
+                local relation_state = case.state
+                local relation_player = relation_state.players[case.player_index]
+                local relation_owner = relation_state.players[assert(relation_state.owner)]
+                t.is_true(not relation_player.is_keeper, case.name .. " runner is a keeper")
+                t.is_true(
+                    relation_state.owner ~= case.player_index,
+                    case.name .. " runner owns the ball"
+                )
+                t.eq(
+                    relation_owner.team,
+                    relation_player.team,
+                    case.name .. " owner belongs to the wrong team"
+                )
+                t.is_true(not relation_owner.is_keeper, case.name .. " owner is a keeper")
+                t.is_true(
+                    relation_state.kickoff_hold <= 0 and not relation_state.finished,
+                    case.name .. " fixture is outside ordinary attack"
+                )
+                if case.name == "fixed slot" then
+                    t.is_true(
+                        relation_state.slot_for_player[case.player_index] ~= nil,
+                        "fixed-slot fixture runner has no slot"
+                    )
+                    t.is_true(
+                        not relation_state.human_controlled
+                            or relation_state.controlled ~= case.player_index,
+                        "fixed-slot fixture also violates human control"
+                    )
+                else
+                    t.eq(
+                        relation_state.slot_for_player[case.player_index],
+                        nil,
+                        "human fixture runner owns a fixed slot"
+                    )
+                    t.is_true(
+                        relation_state.human_controlled
+                            and relation_state.controlled == case.player_index,
+                        "human fixture runner is not human-controlled"
+                    )
+                end
+            end
+            local snapshot = match_snapshot.capture(case.state)
+            local player = snapshot.state.players[case.player_index]
+            player.outfield_decision = outfield_decision.refresh(
+                player.outfield_decision,
+                "offball",
+                "in_behind",
+                player.scan_rate,
+                case.target_x,
+                case.target_y,
+                nil,
+                -0.2
+            )
+            t.is_true(
+                not pcall(match_snapshot.restore, snapshot),
+                case.name .. " run relation was accepted"
+            )
+        end
+
+        ---@return MatchSnapshot
+        local function ordinary_run_boundary()
+            local snapshot = match_snapshot.capture(new_attacking_ai_state())
+            local player = snapshot.state.players[2]
+            player.outfield_decision = outfield_decision.refresh(
+                player.outfield_decision,
+                "offball",
+                "come_short",
+                player.scan_rate,
+                360,
+                220,
+                nil,
+                -0.2
+            )
+            return snapshot
+        end
+
+        local possession_mutations = {
+            {
+                name = "loose ball",
+                mutate = function(snapshot)
+                    snapshot.state.owner = nil
+                end,
+            },
+            {
+                name = "opponent possession",
+                mutate = function(snapshot)
+                    snapshot.state.owner = 7
+                end,
+            },
+            {
+                name = "keeper build-up",
+                mutate = function(snapshot)
+                    snapshot.state.owner = 1
+                end,
+            },
+            {
+                name = "kickoff hold",
+                mutate = function(snapshot)
+                    snapshot.state.kickoff_hold = 0.2
+                end,
+            },
+            {
+                name = "finished match",
+                mutate = function(snapshot)
+                    snapshot.state.finished = true
+                end,
+            },
+        }
+        for _, case in ipairs(possession_mutations) do
+            local malformed = ordinary_run_boundary()
+            case.mutate(malformed)
+            t.is_true(
+                not pcall(match_snapshot.restore, malformed),
+                case.name .. " retained an active run"
+            )
+        end
+
+        local commitment_mutations = {
+            {
+                name = "stun",
+                mutate = function(player)
+                    player.stun_timer = 0.2
+                end,
+            },
+            {
+                name = "slide",
+                mutate = function(player)
+                    player.slide_timer = 0.2
+                end,
+            },
+            {
+                name = "tackle",
+                mutate = function(player)
+                    player.tackle_timer = 0.2
+                end,
+            },
+            {
+                name = "dodge",
+                mutate = function(player)
+                    player.dodge_timer = 0.2
+                end,
+            },
+            {
+                name = "jockey",
+                mutate = function(player)
+                    player.jockey_timer = 0.2
+                end,
+            },
+            {
+                name = "wind-up timer",
+                mutate = function(player)
+                    player.windup_timer = 0.2
+                end,
+            },
+            {
+                name = "wind-up payload",
+                mutate = function(player)
+                    player.windup_shot = {
+                        dir = Vec2.new(1, 0),
+                        speed = 300,
+                        vz = 0,
+                        spin = 0,
+                        shot_type = "ground",
+                    }
+                end,
+            },
+            {
+                name = "aerial action",
+                mutate = function(player)
+                    player.aerial_timer = 0.2
+                end,
+            },
+            {
+                name = "aerial recovery",
+                mutate = function(player)
+                    player.aerial_recovery = 0.2
+                end,
+            },
+            {
+                name = "reception",
+                mutate = function(player)
+                    player.receive_timer = 0.2
+                end,
+            },
+        }
+        for _, case in ipairs(commitment_mutations) do
+            local malformed = ordinary_run_boundary()
+            case.mutate(malformed.state.players[2])
+            t.is_true(
+                not pcall(match_snapshot.restore, malformed),
+                case.name .. " retained an active run"
+            )
+        end
     end)
 
-    t.it("keeps soccer and combat retained windows inside the snapshot budget", function()
+    t.it("encodes decision children positionally with exact no-run v10 arithmetic", function()
+        local legacy_fields = {
+            "version",
+            "generation",
+            "rng_state",
+            "remaining",
+            "context",
+            "intent",
+            "target_x",
+            "target_y",
+            "target_player",
+        }
+        local legacy_key_bytes = 0
+        for _, field in ipairs(legacy_fields) do
+            legacy_key_bytes = legacy_key_bytes + #("k" .. tostring(#field) .. ":" .. field .. ";")
+        end
+        t.eq(legacy_key_bytes, 115)
+
+        local state = match.new({
+            home = teams.nebula,
+            away = teams.orion,
+            field = { w = 960, h = 540 },
+            duration = 120,
+            max_goals = 3,
+            seed = 38,
+            input_ownership = match.ownership_for_teams(teams.nebula, teams.orion),
+        })
+        for tick = 0, 119 do
+            match.step(state, fixed_clock.TICK_SECONDS, assert(input_frame.neutral(tick)))
+        end
+        local encoded = match_snapshot.encode(match_snapshot.capture(state))
+        local expected = 21343
+            - 10 * legacy_key_bytes
+            + 10 * #"z;"
+            + #"k9:formation;"
+            + #"s5:2-1-1;"
+            + #"s5:1-1-2;"
+            + 10 * #"k19:keeper_get_up_timer;nz;"
+        t.eq(#encoded, expected)
+        t.eq(#encoded, 20514)
+
+        local decision_marker = "k17:outfield_decision;d;"
+        local next_field_marker = "k9:is_keeper;"
+        local search_at = 1
+        local count = 0
+        while true do
+            local start_at = encoded:find(decision_marker, search_at, true)
+            if not start_at then
+                break
+            end
+            local decision_start = start_at + #decision_marker
+            local decision_end = assert(encoded:find(next_field_marker, decision_start, true))
+            local decision_wire = encoded:sub(decision_start, decision_end - 1)
+            t.is_true(decision_wire:find("k", 1, true) == nil, "decision child emitted a named key")
+            count = count + 1
+            search_at = decision_end + #next_field_marker
+        end
+        t.eq(count, 10)
+    end)
+
+    t.it("prices four hypothetical runs on the valid high-overhead slot-mode base", function()
         local state = new_state()
+        t.is_true(state.slot_mode)
+        t.is_true(state.input_ownership ~= nil)
+        for slot_index = 1, input_frame.SLOT_COUNT do
+            local player_index = assert(state.slot_players[slot_index])
+            t.eq(state.slot_for_player[player_index], slot_index)
+        end
+
         local soccer = match_snapshot.capture(state)
         local combat_state = combat.new_state(state)
         local combat_boundary = match_snapshot.capture(state, combat_state)
+        local soccer_bytes = match_snapshot.encoded_size_canonical(soccer)
+        local combat_bytes = match_snapshot.encoded_size_canonical(combat_boundary)
+        t.eq(soccer.state.outfield_press.home.version, outfield_press.VERSION)
+        t.eq(soccer.state.outfield_press.away.version, outfield_press.VERSION)
+
+        ---@param value number|string|boolean?
+        ---@return integer
+        local function scalar_bytes(value)
+            local kind = type(value)
+            if value == nil then
+                return #"z;"
+            elseif kind == "number" then
+                ---@cast value number
+                return #match_snapshot.number_bytes(value) + 2
+            elseif kind == "string" then
+                ---@cast value string
+                return #("s" .. tostring(#value) .. ":" .. value .. ";")
+            end
+            return #"b0;"
+        end
+
+        ---@type string[]
+        local decision_fields = {
+            "version",
+            "generation",
+            "rng_state",
+            "remaining",
+            "context",
+            "intent",
+            "target_x",
+            "target_y",
+            "target_player",
+            "run_expires_at",
+        }
+        ---@type { player_index: integer, intent: OutfieldIntent, x: number, y: number }[]
+        local run_records = {
+            { player_index = 2, intent = "come_short", x = 350, y = 120 },
+            { player_index = 3, intent = "in_behind", x = 700, y = 180 },
+            { player_index = 7, intent = "hold_width", x = 610, y = 510 },
+            { player_index = 8, intent = "in_behind", x = 220, y = 300 },
+        }
+        local four_run_delta = 0
+        for _, run in ipairs(run_records) do
+            local player = soccer.state.players[run.player_index]
+            local base_decision = player.outfield_decision
+            local active_decision = outfield_decision.refresh(
+                base_decision,
+                "offball",
+                run.intent,
+                player.scan_rate,
+                run.x,
+                run.y,
+                nil,
+                -0.2
+            )
+            t.eq(active_decision.generation, base_decision.generation + 1)
+            t.is_true(active_decision.remaining > 0)
+            for _, field in ipairs(decision_fields) do
+                four_run_delta = four_run_delta
+                    + scalar_bytes(active_decision[field])
+                    - scalar_bytes(base_decision[field])
+            end
+        end
+
+        ---@type string[]
+        local press_fields = { "version", "presser_index", "mode", "reason" }
+        local press_delta = 0
+        for _, team in ipairs({ "home", "away" }) do
+            local base_press = soccer.state.outfield_press[team]
+            local active_press = outfield_press.contain(team == "home" and 2 or 7)
+            for _, field in ipairs(press_fields) do
+                press_delta = press_delta
+                    + scalar_bytes(active_press[field])
+                    - scalar_bytes(base_press[field])
+            end
+        end
+        local combined_delta = four_run_delta + press_delta
         local budget = 768 * 1024
-        t.is_true(match_snapshot.encoded_size_canonical(soccer) * 31 < budget)
-        t.is_true(match_snapshot.encoded_size_canonical(combat_boundary) * 31 < budget)
+        local soccer_window = (soccer_bytes + combined_delta) * 31
+        local combat_window = (combat_bytes + combined_delta) * 31
+        print(
+            ("snapshot_active_ai_budget soccer_base=%d combat_base=%d run_delta=%d press_delta=%d combined_delta=%d soccer_window=%d combat_window=%d soccer_headroom=%d combat_headroom=%d"):format(
+                soccer_bytes,
+                combat_bytes,
+                four_run_delta,
+                press_delta,
+                combined_delta,
+                soccer_window,
+                combat_window,
+                budget - soccer_window,
+                budget - combat_window
+            )
+        )
+        t.eq(soccer_bytes, 20419)
+        t.eq(combat_bytes, 23765)
+        t.eq(four_run_delta, 346)
+        t.eq(press_delta, 26)
+        t.eq(combined_delta, 372)
+        t.eq(soccer_window, 644521)
+        t.eq(combat_window, 748247)
+        t.eq(budget - soccer_window, 141911)
+        t.eq(budget - combat_window, 38185)
+        t.is_true(soccer_window < budget)
+        t.is_true(combat_window < budget)
     end)
 
     t.it("rejects unhandled state and player fields", function()

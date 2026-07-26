@@ -1417,6 +1417,31 @@ t.describe("match.step keeper vs close-range shots", function()
         t.is_true(s.players[1].hold_timer > 0, "and holds it in hand")
     end)
 
+    t.it("keeps the exact 26-pixel smother boundary inclusive", function()
+        local function at_distance(distance)
+            local s = new_match()
+            local carrier
+            for i, p in ipairs(s.players) do
+                if p.team == "away" and not p.is_keeper then
+                    carrier = i
+                    break
+                end
+            end
+            local keeper = s.players[1]
+            keeper.pos = Vec2.new(24, 270)
+            local c = s.players[assert(carrier)]
+            c.pos = Vec2.new(keeper.pos.x + distance + 18, 270)
+            c.facing = Vec2.new(-1, 0)
+            s.owner = carrier
+            s.ball = Vec2.new(keeper.pos.x + distance, 270)
+            match.step(s, 0, NO_INPUT)
+            return s
+        end
+
+        t.eq(at_distance(26).owner, 1)
+        t.is_true(at_distance(26.000001).owner ~= 1)
+    end)
+
     t.it("rushes a carrier in its box instead of holding the line", function()
         local s = new_match()
         local carrier

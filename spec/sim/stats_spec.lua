@@ -110,6 +110,22 @@ t.describe("stats", function()
         end
     end)
 
+    t.it("reconstructs run drive bit-exactly from every canonical match scalar pair", function()
+        for pace = 0, 10 do
+            for mental = 0, 10 do
+                local stat_block = block(pace, 5, mental)
+                t.eq(
+                    stats.run_drive_from_match(
+                        stats.move_speed(stat_block),
+                        stats.composure(stat_block)
+                    ),
+                    stats.run_drive(stat_block),
+                    ("pace=%d mental=%d"):format(pace, mental)
+                )
+            end
+        end
+    end)
+
     t.it("maps technique to a bounded maximum execution error in radians", function()
         local maximum = math.pi / 15
         t.eq(stats.execution_error(block(5, 5, 5, 0)), maximum)

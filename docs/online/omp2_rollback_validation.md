@@ -17,16 +17,16 @@ acceptance evidence.
 The current campaign freezes a mixed artifact matrix at 60 Hz:
 
 - every case uses InputFrame v2 and network-profile digest `5fbf1e0d51a6f4d5`;
-- soccer cases use InputTape v1 / MatchSnapshot v8, final hash
-  `459b141c4c0b8729`, sequence digest `1ab003a12c1f9a19`, and live tape digest
-  `9a284e2bb181699f`;
-- combat cases use InputTape v2 / MatchSnapshot v9, initial hash
-  `dc5bf8639102f82a`, final hash `56bcf87e3ad7aa93`, and tape digest
-  `fec464c0f45e4c83`; and
+- soccer cases use InputTape v1 / MatchSnapshot v10, final hash
+  `650b2f0c5498aaa7`, sequence digest `4bc8f6edabd9b43e`, and live tape digest
+  `be647d4f656aeedb`;
+- combat cases use InputTape v2 / MatchSnapshot v11, initial hash
+  `287b82678ad2ea23`, final hash `87eb218cd02fdecc`, and tape digest
+  `c3fdb048b62a18dc`; and
 - stable rollback-event identity and confirmation semantics apply to both.
 
 Runtime provenance therefore declares InputFrame v2 plus tape versions 1/2
-and snapshot versions 8/9; every case repeats and validates its exact artifact
+and snapshot versions 10/11; every case repeats and validates its exact artifact
 versions. Any merge that changes simulation, gameplay data or tuning,
 input/snapshot/event schemas, a pinned fixture, or network profiles invalidates
 the current evidence. The historical artifact remains an archive rather than
@@ -76,7 +76,8 @@ diagnostically.
 | native p95 combined client simulation plus rollback work | `< 16.67 ms` | native runtime matrix |
 | native nearest-rank p99.9 rollback wall duration | `< 33.3 ms` | native runtime matrix |
 | browser playable p95 work / paired clean p95 work | `< 6.7` | browser runtime matrix aggregate |
-| browser playable p99.9 rollback / paired clean p95 work, only when the playable case recorded `>= 1000` rollback samples | `< 11.7` | browser runtime matrix aggregate |
+| browser playable p99.9 rollback / **the same playable case's** p95 work, only when the playable case recorded `>= 1000` rollback samples | `< 2.6` | browser runtime matrix aggregate |
+| browser playable p99.9 rollback, absolute, under the same sample-count precondition (a CI noise ceiling, **not** a frame budget) | `< 39.7 ms` | browser runtime matrix aggregate |
 | retained snapshot boundaries | `<= 31` | every playable case |
 | canonical retained snapshot payload | `< 768 KiB` | every playable case |
 | exact accounted snapshot/input/output/event history | `< 1 MiB` | every playable case |
@@ -87,19 +88,24 @@ six to eight rollback samples by construction, so their p99.9 ratio is recorded 
 is never gated -- see "What the combat sample-count floor actually switches off" below for what
 covers combat rollback performance instead.
 
-`gate_contract=6` supersedes contract 5 for newly generated evidence. Contract 6 changes only the
-browser aggregate acceptance rule: the rollback-p99.9 ratio comparison now carries an explicit
-minimum-sample-count precondition. Nothing else about the emitted markers, the thresholds, or the
-native gates changed. An individual browser
+`gate_contract=7` supersedes contract 6 for newly generated evidence. Contract 7 changes only the
+browser aggregate rollback-tail rule: it is normalized against the playable case's own p95 work
+instead of the paired clean control's, recalibrated for that statistic, and backstopped by an
+absolute millisecond ceiling. The p95-work ratio gate, the minimum-sample-count precondition, the
+emitted markers, and the native gates are unchanged. See "Why the rollback tail is normalized
+against the playable case" below. An individual browser
 playable case records `cpu_gate_mode=normalized_deferred`; it cannot fail solely because its
 absolute p95 work or p99.9 rollback time crosses the product budget. The validator first collects
 six unique clean controls and six unique playable cases per browser (`complete_fixture` and
 `combat` across three seeds). It validates exact browser, browser-version, scenario, profile, and
 seed identity, requires a finite positive clean p95 denominator, and then evaluates every
 scenario/seed pair with strict `<` comparisons. Missing, duplicate, malformed, or mismatched
-controls fail closed. The normalized evidence records every pair, both ratios, the thresholds, all
-violations, the clean and playable rollback sample counts, an explicit per-pair
-`rollback_p999_gate` block, and the absolute p95, p99.9, maximum, and over-33.3-ms count.
+controls fail closed. It also requires a finite positive **playable** p95 work value, because
+contract 7 divides by it; `finite_non_negative_float` admits `0.0` upstream, so a collapsed or
+absent normalizer would otherwise become a `0/0` exemption rather than a failure. The normalized
+evidence records every pair, all three ratios, the thresholds, all violations, the clean and
+playable rollback sample counts, an explicit per-pair `rollback_p999_gate` block, and the absolute
+p95, p99.9, maximum, and over-33.3-ms count.
 Each clean control runs immediately before its matching playable seed. This interleaving reduces
 temporal shared-runner drift without adding a case or weakening exact seed pairing.
 
@@ -122,12 +128,17 @@ The `complete_fixture` playable cases record roughly 6,900 rollback samples, so 
 real tail percentile. The `combat` playable cases record six to eight, so before contract 6 their
 `rollback_p999_ms` was literally the worst single sample -- one GC pause or one unit of host CPU
 steal on a shared runner -- yet it was compared against a ratio threshold calibrated on the
-~6,900-sample distribution. Under contract 6 the ratio comparison is applied only to pairs whose
-playable case recorded at least 1,000 rollback samples. Pairs below the floor are still measured
-and still published: each pair carries `rollback_p999_gate.sample_count`,
-`rollback_p999_gate.ratio`, `rollback_p999_gate.applied`, and a `rollback_p999_gate.status` of
-either `gated` or `diagnostic_sample_count_below_p999_floor`, so the artifact says exactly which
-pairs were enforced.
+~6,900-sample distribution. Since contract 6 the tail comparison is applied only to pairs whose
+playable case recorded at least 1,000 rollback samples, and contract 7 puts its absolute ceiling
+behind the same precondition for the same reason. Pairs below the floor are still measured and
+still published: each pair carries `rollback_p999_gate.sample_count`,
+`rollback_p999_gate.normalized_ratio`, `rollback_p999_gate.composite_ratio`,
+`rollback_p999_gate.playable_rollback_p999_ms`, `rollback_p999_gate.normalizer`,
+`rollback_p999_gate.absolute_ceiling_ms`, `rollback_p999_gate.applied`, and a
+`rollback_p999_gate.status`, so the artifact says exactly which pairs were enforced. The statuses
+are `gated`, `diagnostic_sample_count_below_p999_floor`, `error_sample_count_unavailable`, and
+`error_scenario_thresholds_uncalibrated`. Only the first means the comparisons ran; the two
+`error_` statuses fail the pair.
 
 `browser_cpu_case` is what makes a bad sample count fail closed: `rollback_sample_count` is one of
 the required metric count fields, it must parse through `non_negative_integer`, and a case that
@@ -173,24 +184,149 @@ and that is tracked separately in
 [#179](https://github.com/osobytes/goliseo/issues/179). Until #179 lands, browser combat rollback
 tail behaviour is observed, published, and unenforced.
 
-The thresholds are calibrated from the complete Chrome and Firefox distributions in accepted
-exact runs
+### Why the rollback tail is normalized against the playable case
+
+Contract 6 divided the playable rollback p99.9 by the **paired clean control's** p95 work. Both
+profiles run in the same job on the same runner, but they are two separate browser sessions, so the
+clean control takes its own draw of how loaded that machine happened to be. The numerator is a tail
+statistic with roughly seven samples above the p99.9 rank; the denominator is a smooth statistic
+over thousands. Dividing one by the other does not cancel runner noise, it amplifies it.
+
+Sharding made that visible. Before [#180](https://github.com/osobytes/goliseo/issues/180) all three
+seeds for a browser ran sequentially on one runner and shared a single draw of machine noise; after
+it they run on three. Measured across the 42 `complete_fixture` pairs of the seven runs listed
+below, plus the six pairs of the first sharded campaign:
+
+| Statistic | unsharded min--max | unsharded cv | sharded min--max | sharded cv |
+| --- | ---: | ---: | ---: | ---: |
+| p99.9 / **clean** p95 (contract 6) | 8.444--11.414 | 0.085 | 6.032--**11.807** | 0.198 |
+| p99.9 / **playable** p95 (contract 7) | 1.521--2.244 | 0.086 | 1.658--2.259 | 0.118 |
+
+The two statistics are equally tight before sharding and materially different after it. The chrome
+seed 2001 shard shows the mechanism directly: its playable p95 / clean p95 read **2.984** where
+every other recorded pair reads 5.01--6.80, because the clean session hit a slow patch its own
+playable partner did not. The playable case's p95 work shares the runner, the session, the time
+window and the workload with the tail it normalizes, so it tracks the machine the tail was actually
+measured on.
+
+What each gate detects, stated plainly: the p95-work ratio detects a **sustained** slowdown of the
+playable build against its clean control on the same runner; the normalized tail ratio detects a
+**rollback-specific tail** regression, one that lifts the worst rollbacks without lifting typical
+per-tick work; the absolute ceiling bounds the tail in milliseconds however the ratios read. Runner
+noise moves the tail and its normalizer together and is what the normalization removes.
+
+The composite `rollback_p999_over_clean_p95` figure is still computed and published on every pair
+under contract 7, and `rollback_p999_gate.composite_ratio` carries it, so the contract-6 number
+stays comparable across the archive. It is a diagnostic, not a gate.
+
+### The proportional blind spot
+
+Those three gates do **not** partition the space of regressions, and the gap is worth stating
+precisely rather than hedging.
+
+Normalizing the tail by a measurement from the same session makes the normalized ratio **exactly
+invariant** under a proportional regression: `(k * p999) / (k * p95) == p999 / p95` for every `k`,
+however large. The derivative is zero. This is not "reduced sensitivity" — the normalized ratio
+contributes *nothing at all* to detecting this class, and it is a blind spot contract 7
+**introduces**. Contract 6 divided by the clean control, an independent reference that such a
+regression leaves untouched, so it did inflate and was caught.
+
+The class is not contrived. Resimulation replays buffered input through the same per-tick step that
+produces both `p95_work_ms` and the rollback tail, so a regression there moves both together.
+
+Only the work-ratio gate and the absolute ceiling bound it, and both are loose. Across the 48
+recorded `complete_fixture` pairs, the factor a uniform playable-build slowdown must reach before
+either fires:
+
+| | factor | undetected slowdown |
+| --- | ---: | ---: |
+| best recorded pair | 1.174 | 17% |
+| median pair | **1.256** | **26%** |
+| middle 90% | 1.183--1.334 | 18--33% |
+| worst recorded pair | 1.573 | 57% |
+
+**A uniform slowdown of the playable build below roughly 25% is not detected.** The work gate is
+the binding backstop in 37 of those 48 pairs and the ceiling in the other 11.
+
+The 1.573 worst case is worth naming: it is the sharded chrome seed 2001 pair, the same pair whose
+clean control misreported. When the clean control reads slow, the work-ratio backstop loosens in
+the same motion, so the two weaknesses compound rather than cover for each other.
+
+Worked example, run 30176706801 chrome seed 2001 (`clean_p95` 3.295 ms, `playable_p95` 16.52 ms,
+`playable_p999` 29.18 ms) under a uniform 1.30x playable slowdown: work ratio 6.518 (`< 6.7`,
+passes), normalized ratio 1.766 (unchanged, `< 2.6`, passes), absolute 37.93 ms (`< 39.7`, passes).
+A ~30% rollback-resimulation regression clears every gate on that pair.
+
+This is a deliberate trade — the clean control's session noise is what made contract 6 fail healthy
+builds — but it is a real loss, not a wash. The self-test pins it as a bounded property: a
+proportionally scaled pair must leave the normalized ratio bit-identical, must pass every gate at
+1.2x, and must be caught by the work gate at 1.3x. Tightening it is a deliberate future decision,
+and those assertions are what will notice when someone makes it.
+
+### Calibration
+
+`6.7` is calibrated from the complete Chrome and Firefox distributions in accepted exact runs
 [`30060058593`](https://github.com/osobytes/goliseo/actions/runs/30060058593) and
 [`30065880550`](https://github.com/osobytes/goliseo/actions/runs/30065880550).
-Across their 12 seed pairs, p95-work ratios ranged from 5.328 to 5.799 and rollback-p99.9 ratios
-from 8.529 to 10.164. Each threshold is the corresponding accepted maximum plus 15%,
-rounded upward to one decimal: 6.7 and 11.7. This is intentionally not a boundary fitted to the
-next observed sample.
+Across their 12 seed pairs, p95-work ratios ranged from 5.328 to 5.799. The threshold is that
+accepted maximum plus 15%, rounded upward to one decimal.
 
-Both accepted calibration runs predate the `combat` scenario: their 12 pairs are two runs times
-two browsers times three seeds of `complete_fixture` only, every one of them a ~6,900-sample case.
-The accepted calibration set therefore contains **no** combat pairs, and in particular no
-small-sample pairs. Both thresholds are calibrated on the `complete_fixture` distribution alone.
+**`6.7` is itself uncalibrated against current hardware and is already breached by a recorded
+healthy pair.** Across all 96 recorded pairs the maximum observed p95-work ratio is **6.796407**,
+which is **-1.4% headroom** — run
+[`30179056065`](https://github.com/osobytes/goliseo/actions/runs/30179056065), firefox
+`complete_fixture` seed 2001, on `main`, recorded `"pass": false` with
+`p95_work_ratio=6.796407186 does not meet <6.7`. That is the #177 false failure itself, still
+unfixed. It matters here because the work gate is the primary backstop for the proportional class
+above: it binds in 37 of 48 pairs. Recalibrating it is tracked in
+[#191](https://github.com/osobytes/goliseo/issues/191) and is deliberately out of scope for
+contract 7, which would be unreviewable if it moved two gates at once.
+
+`39.7 ms` is a **CI noise ceiling, not a frame-budget claim.** It is `34.520 * 1.15` and nothing
+more. Do not read it as the browser analogue of the native `< 33.3 ms` p99.9 budget: that number is
+a deliberate two-frame claim at 60 fps, whereas 39.7 ms is 2.38 frames and asserts nothing about
+frame pacing. The browser matrix makes no frame-budget claims.
+
+`2.6` and `39.7 ms` are calibrated the same way, but on a different population, because contract 7
+changed the statistic and the contract-5 calibration pair predates it. They are carried from the 42
+`complete_fixture` pairs of seven consecutive accepted runs --
+[`30163492726`](https://github.com/osobytes/goliseo/actions/runs/30163492726),
+[`30168105822`](https://github.com/osobytes/goliseo/actions/runs/30168105822),
+[`30170553072`](https://github.com/osobytes/goliseo/actions/runs/30170553072),
+[`30175632519`](https://github.com/osobytes/goliseo/actions/runs/30175632519),
+[`30176706801`](https://github.com/osobytes/goliseo/actions/runs/30176706801),
+[`30179056065`](https://github.com/osobytes/goliseo/actions/runs/30179056065) and
+[`30181277777`](https://github.com/osobytes/goliseo/actions/runs/30181277777) -- the largest
+recorded population available. The worst pair in it reads `24.295 / 10.825 = 2.244` for the
+normalized ratio and `34.520 ms` for the absolute tail; each threshold is that maximum plus 15%,
+rounded upward to one decimal. Contract 6's `11.7` sat only 2.5% above its own observed maximum,
+which is why the first sharded run's 11.807 failed a healthy build.
+
+Note what this margin does **not** buy. A 15% margin over the observed maximum means a regression
+must lift the tail by roughly a third above the median pair before it fails, where contract 6
+nominally fired at about a fifth. That sensitivity was not real: contract 6's threshold sat below
+values the healthy distribution actually produces, so it fired on runner noise as readily as on a
+regression. The trade is a gate that is less twitchy and correspondingly less sharp, and the
+absolute ceiling is the part that keeps the loss bounded in milliseconds rather than in ratios.
+
+The two accepted `6.7` calibration runs predate the `combat` scenario: their 12 pairs are two runs
+times two browsers times three seeds of `complete_fixture` only, every one of them a ~6,900-sample
+case. Every threshold here is calibrated on the `complete_fixture` distribution alone.
 `6.7` is applied to `complete_fixture` and `combat` alike, which is a deliberate extrapolation for
-a statistic that is sound at both sample counts. `11.7` is applied only to `complete_fixture` in
-practice, because it is the only scenario that clears the sample-count floor; if a future
-`combat` fixture grows past 1,000 rollbacks, its ratio distribution must be recalibrated before
-that number can be treated as a bound on it.
+a statistic that is sound at both sample counts. `2.6` and `39.7 ms` are applied only to
+`complete_fixture`, and that restriction is **enforced in code, not documented in a comment**.
+`BROWSER_ROLLBACK_TAIL_CALIBRATED_SCENARIOS` names the calibrated scenarios; a pair from any other
+scenario that clears the sample floor fails closed with
+`rollback_p999_gate.status = error_scenario_thresholds_uncalibrated`, rather than silently
+borrowing thresholds fitted to a different distribution.
+
+That guard exists because the borrowing would be wrong: the recorded combat pairs reach a
+normalized ratio of **3.437** at six samples, well past 2.6, so reusing these numbers there would
+re-create exactly the false failure [#178](https://github.com/osobytes/goliseo/pull/178) removed.
+If [#179](https://github.com/osobytes/goliseo/issues/179) redesigns the combat fixture past 1,000
+rollbacks, it has to calibrate combat's own distribution and add it to that set — CI will fail
+until it does. The same reasoning is why the absolute ceiling rides the sample-count floor
+alongside the normalized ratio.
 
 Failed exact run
 [`30075505461`](https://github.com/osobytes/goliseo/actions/runs/30075505461)
@@ -245,8 +381,8 @@ not a 60 Hz acceptance profile. Numeric measurements are emitted as
 `GC_ROLLBACK_VALIDATION` rows so two fresh native executions can be compared byte for byte
 without confusing wall-clock noise for logical drift.
 
-Snapshot bytes are exact per-case MatchSnapshot v8 or v9 canonical encodings;
-the v9 count includes its authoritative combat companion. Input, output, and
+Snapshot bytes are exact per-case MatchSnapshot v10 or v11 canonical encodings;
+the v11 count includes its authoritative combat companion. Input, output, and
 speculative event bytes use their documented deterministic retained-history
 encodings. They are logical payload counts, not estimates of Lua allocator
 overhead. The soak measures allocator behavior separately: Lua heap in-process,
@@ -259,9 +395,9 @@ Lua heap, process-tree RSS, and Chrome JS heap all include the final fifth-fixtu
 Native holds at that terminal marker until the evidence process acknowledges its RSS sample, so
 the runtime cannot exit between marker delivery and measurement.
 
-The current contract keeps the soccer campaign on MatchSnapshot v8/InputTape v1
+The current contract keeps the soccer campaign on MatchSnapshot v10/InputTape v1
 without appending a synthetic combat-identity segment, and keeps bounded
-composite combat coverage on MatchSnapshot v9/InputTape v2. The current soccer
+composite combat coverage on MatchSnapshot v11/InputTape v2. The current soccer
 digest is pinned separately from the historical InputFrame-v1 artifact.
 The 768-KiB snapshot gate is an explicit revision from 600 KiB: the previous
 peak was 611,274 bytes, leaving only 3,126 bytes for 31 retained boundaries,
@@ -272,13 +408,13 @@ projectile flight/expiry, stagger, knockback, and immunity; a dense delayed
 authority campaign additionally proves composite convergence and confirmed
 combat-event equality. A pinned 80-tick combat fixture now joins every native
 profile/common-seed pair, every browser full/stress case, and each soak seed,
-so MatchSnapshot v9/InputTape v2 crosses clean, fixed delay/loss, playable
+so MatchSnapshot v11/InputTape v2 crosses clean, fixed delay/loss, playable
 jitter/loss/duplication/burst/reordering, and stress paths in fresh processes.
-The clean 2001 baseline records 14 confirmed combat events, a 783,272-byte
-31-snapshot peak, and 837,782 bytes of retained history; both remain below the
-revised gates. The playable 2001 case performs eight rollbacks and 20
-resimulated ticks, peaks at 783,272 snapshot bytes and 836,979 history bytes,
-and records 1.765570 ms p95 work plus 4.738 ms p99.9/max rollback time. Each
+The pre-v11 issue-55 clean 2001 baseline recorded 14 confirmed combat events, a 783,272-byte
+31-snapshot peak, and 837,782 bytes of retained history; both were below the
+revised gates. Its playable 2001 case performed eight rollbacks and 20
+resimulated ticks, peaked at 783,272 snapshot bytes and 836,979 history bytes,
+and recorded 1.765570 ms p95 work plus 4.738 ms p99.9/max rollback time. Each
 case emits its exact snapshot/history/resimulation values and the validator
 rejects a combat impaired-network case that performs no resimulation.
 
@@ -299,6 +435,45 @@ The native soak passed retained-memory gates: terminal Lua heap was below its
 warm-up baseline, with a diagnostic peak of 22,296,061 bytes (+2.714141%);
 process-tree RSS ended +0.703655%, with a diagnostic peak of 163,897,344 bytes
 (+1.280753%). Both remain below the 10% limit.
+
+The rebased issue-56 v9/v10 campaign was revalidated locally on 2026-07-25
+with the merged execution-error and session-protocol work present (see the
+issue-46 note below for the current v10/v11 status). It ran from
+dirty source based on `487e7947555d04f3b20736f0cad1f6e4199576bc`,
+itself rebased onto `583b8c279fadc4075c446a5e9abcb9f956dfb4af`.
+The exact native artifact is
+`/tmp/omp2-rollback-native-issue-56-rebased.json` (3,892,980 bytes), with
+SHA-256
+`bab77e3b49c01ce12d7c0f3e9be042435472081fa69eb61a9603a1e2797f39c7`.
+Two fresh 54-case runs agreed on logical marker SHA-256
+`85507a61e6a4bb8104d0e02dc74324430c60a3465cd9fbc9b148db68cf187a61`.
+The late-window marker was
+`a824168740a2229c2dabc6d2a1485cbb003875c1fad1760e65ce2b5d114ae857`;
+the persistent ten-case soak marker was
+`fee9968bddbda407202998961ad103c61416089858f90291eea4e2eabdec5c8f`.
+
+The current combat peak is 749,203 canonical snapshot bytes, leaving 37,229
+bytes below the 768-KiB gate. Total retained history peaked at 803,713 bytes,
+leaving 244,863 bytes below 1 MiB. The clean-2001 combat case retained 14
+confirmed combat events with no rollback. Its playable-2001 case performed
+eight rollbacks and 20 resimulated ticks, peaked at 749,203 snapshot bytes and
+802,910 history bytes, and recorded 2.669125 ms p95 work plus 3.140 ms
+p99.9/max rollback time. The complete soccer playable-2001 case performed
+6,903 rollbacks and 25,905 resimulated ticks, peaked at 671,786 snapshot bytes
+and 737,549 history bytes, and recorded 2.872758 ms p95 work plus 11.196 ms
+p99.9 rollback time (12.177 ms maximum).
+
+The exact 30-tick late case converged after 40 rollbacks at depth 30 and 765
+resimulated ticks, peaking at 629,024 snapshot bytes and 683,994 history bytes.
+Delay 31 reached the required `late_input_unrecoverable` terminal at tick 0,
+peaking at 627,725 snapshot bytes and 686,139 history bytes. The native soak
+also passed: Lua heap ended at 21,793,954 bytes versus a 22,769,890-byte
+warm-up baseline, and process-tree RSS ended at 159,748,096 bytes versus
+163,926,016 bytes. Both terminal-growth values were 0%, their diagnostic peaks
+were the warm-up samples, and teardown was orphan-free. The soak's fifth
+complete-match fixture recorded one diagnostic 41.588 ms rollback, while its
+nearest-rank p99.9 remained 19.138 ms; soak CPU timing is diagnostic rather
+than an absolute gate. Every enforced value remains below its gate.
 Browser evidence waits inside the page for newly appended console entries and returns only the
 delta at each marker. It does not poll and reserialize the cumulative console array through
 WebDriver every frame interval, because those protocol allocations would contaminate Chrome's
@@ -583,7 +758,8 @@ The two fresh native runs agreed across all 54 cases and 15 shards. All 224 raw 
 passed their scenario, storage, and game gates; the only late-window failure was the designed
 expected-unrecoverable 31-tick case. Each browser provided six same-run, same-runtime clean/playable
 pairs. Chrome's maximum p95-work and rollback-p99.9 ratios were 5.6981 and 8.8250; Firefox's were
-5.3333 and 8.8116, below the strict 6.7 and 11.7 limits. The absolute diagnostics retained one
+5.3333 and 8.8116, below the strict 6.7 and 11.7 limits in force at the time. The absolute
+diagnostics retained one
 34.56 ms Firefox maximum, while its normalized pair remained inside contract. Native, Chrome, and
 Firefox soaks shared logical digest `b9b61c4349c7123a`; every memory gate stayed below 10%, and all
 teardowns were orphan-free with zero remaining or detached processes.
@@ -617,3 +793,18 @@ Remaining transport risks are deliberately unproven here: real WebRTC scheduling
 backpressure, cross-peer clock drift, signaling and room lifecycle, reconnect/resync, relay
 behavior, MTU/fragmentation, mobile and background-tab throttling, hostile or malformed peers,
 and production telemetry. None may be hidden behind render smoothing or a state overwrite.
+
+## Issue-46 v10/v11 schema migration
+
+The keeper get-up window (`MatchPlayer.keeper_get_up_timer`) moved soccer
+snapshots to v10 and combat snapshots to v11. The pinned artifact identity was
+regenerated from source — soccer final hash `650b2f0c5498aaa7`, sequence digest
+`4bc8f6edabd9b43e`, live soccer tape digest `be647d4f656aeedb`, and the combat
+fixture's `287b82678ad2ea23` / `87eb218cd02fdecc` / `c3fdb048b62a18dc` — and the
+harness self-tests plus the complete headless suite pass. The full 54-case
+native campaign, the late-window pair, the ten-case soak, and the browser
+matrix have NOT been re-executed for this schema bump; the measured byte,
+memory, and CPU figures above therefore remain issue-56 evidence. Snapshot
+bytes grow by 27 per player per boundary (270 per snapshot), which the recorded
+749,203-byte combat peak absorbs inside the 768-KiB gate, but the campaign must
+be re-run before this migration is presented as acceptance evidence.

@@ -1,4 +1,5 @@
 local t = require("spec.support.runner")
+local player_pose = require("game.presentation.player_pose")
 local replay = require("game.render.replay")
 local match = require("sim.match")
 local teams = require("data.teams")
@@ -136,5 +137,50 @@ t.describe("goal replay buffer", function()
         end
         t.is_true(celeb_frames > 30, "celebration lasts a beat: " .. celeb_frames)
         t.is_true(replay.active() and not replay.celebrating(), "then it is the replay")
+    end)
+
+    -- pitch.draw hands buffered replay players straight to player_pose.select,
+    -- so every field that selector reads must survive the capture. A missing one
+    -- is a nil comparison — a crash on the goal sequence, not a wrong pose.
+    t.it("carries every pose input through capture, celebration, and playback", function()
+        tuning.reset()
+        replay.reset()
+        local s =
+            match.new({ home = teams.nebula, away = teams.orion, field = { w = 960, h = 540 } })
+        local keeper_index
+        for index, p in ipairs(s.players) do
+            if p.is_keeper then
+                keeper_index = index
+                break
+            end
+        end
+        keeper_index = assert(keeper_index)
+        for _ = 1, 90 do
+            -- Hold the post-dive get-up window open across the recording. The
+            -- buffered struct must carry it; the selector must not default it.
+            s.players[keeper_index].keeper_get_up_timer = 0.18
+            replay.record(s)
+            match.step(s, 1 / 60, NO_INPUT)
+        end
+
+        t.is_true(replay.start("home"))
+        local neutral = { near_ball = false, shuffling = false, tip = false }
+        local frames, get_up_frames = 0, 0
+        for _ = 1, 4000 do
+            local st = replay.step(1 / 60)
+            if not st then
+                break
+            end
+            frames = frames + 1
+            for _, p in ipairs(st.players) do
+                local selection = player_pose.select(p, nil, p.is_keeper and neutral or nil)
+                t.is_true(player_pose.PRIORITY[selection.id] ~= nil, "unknown replay pose")
+                if p.is_keeper and selection.id == "keeper_get_up" then
+                    get_up_frames = get_up_frames + 1
+                end
+            end
+        end
+        t.is_true(frames > 0, "replay produced no frames")
+        t.is_true(get_up_frames > 0, "the get-up window never reached a replay frame")
     end)
 end)

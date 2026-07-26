@@ -6,7 +6,7 @@ local brain = require("sim.brain")
 local rng = require("core.rng")
 
 ---@alias OutfieldDecisionContext "ineligible"|"offball"|"carrier"
----@alias OutfieldIntent "none"|"move"|"shoot"|"cross"|"pass"|"dribble"
+---@alias OutfieldIntent "none"|"move"|"in_behind"|"come_short"|"hold_width"|"shoot"|"cross"|"pass"|"dribble"
 
 ---@class OutfieldDecisionState
 ---@field version integer
@@ -18,6 +18,7 @@ local rng = require("core.rng")
 ---@field target_x number?
 ---@field target_y number?
 ---@field target_player integer?
+---@field run_expires_at number?
 
 ---@class OutfieldPassOption
 ---@field player_index integer
@@ -45,10 +46,11 @@ local rng = require("core.rng")
 ---@class OutfieldDecisionModule
 local outfield_decision = {}
 
-outfield_decision.VERSION = 1
+outfield_decision.VERSION = 2
 outfield_decision.SLOW_REFRESH_SECONDS = 0.45
 outfield_decision.FAST_REFRESH_SECONDS = 0.15
 outfield_decision.BASE_TEMPERATURE = 3
+outfield_decision.RUN_LIFETIME_SECONDS = 1.8
 
 local SHARP_COMPOSURE = 0.8
 local PASS_RISK_PENALTY = 5
@@ -64,10 +66,19 @@ local CONTEXTS = {
 local INTENTS = {
     none = true,
     move = true,
+    in_behind = true,
+    come_short = true,
+    hold_width = true,
     shoot = true,
     cross = true,
     pass = true,
     dribble = true,
+}
+
+local RUN_INTENTS = {
+    in_behind = true,
+    come_short = true,
+    hold_width = true,
 }
 
 local CARRIER_INTENTS = {
@@ -114,6 +125,7 @@ function outfield_decision.new_state(rng_state)
         target_x = nil,
         target_y = nil,
         target_player = nil,
+        run_expires_at = nil,
     }
 end
 
@@ -158,6 +170,9 @@ local function validate_state(state)
             "outfield decision target player must be a positive integer"
         )
     end
+    if state.run_expires_at ~= nil then
+        assert_finite(state.run_expires_at, "outfield decision run expiry")
+    end
     if state.context == "ineligible" then
         assert(state.intent == "none", "ineligible outfield decision state must have no intent")
         assert(state.remaining == 0, "ineligible outfield decision state cannot retain cadence")
@@ -165,10 +180,25 @@ local function validate_state(state)
             state.target_x == nil and state.target_player == nil,
             "ineligible outfield decision state cannot retain a target"
         )
+        assert(
+            state.run_expires_at == nil,
+            "ineligible outfield decision state cannot retain a run expiry"
+        )
     elseif state.context == "offball" then
-        assert(state.intent == "move", "offball outfield decision state must retain move intent")
-        assert(state.target_x ~= nil, "move intent requires a target point")
-        assert(state.target_player == nil, "move intent cannot target a player")
+        assert(
+            state.intent == "move" or RUN_INTENTS[state.intent],
+            "offball outfield decision state must retain a movement intent"
+        )
+        assert(state.target_x ~= nil, "offball movement intent requires a target point")
+        assert(state.target_player == nil, "offball movement intent cannot target a player")
+        if RUN_INTENTS[state.intent] then
+            assert(state.run_expires_at ~= nil, "offball run intent requires an absolute expiry")
+        else
+            assert(
+                state.run_expires_at == nil,
+                "ordinary offball movement cannot retain a run expiry"
+            )
+        end
     else
         assert(state.context == "carrier", "unknown eligible outfield decision context")
         assert(
@@ -184,7 +214,17 @@ local function validate_state(state)
                 "shoot and dribble intents cannot retain a target"
             )
         end
+        assert(
+            state.run_expires_at == nil,
+            "carrier outfield decision state cannot retain a run expiry"
+        )
     end
+end
+
+---@param intent OutfieldIntent
+---@return boolean
+function outfield_decision.is_run_intent(intent)
+    return RUN_INTENTS[intent] == true
 end
 
 ---@param state OutfieldDecisionState
@@ -201,6 +241,7 @@ function outfield_decision.copy_state(state)
         target_x = state.target_x,
         target_y = state.target_y,
         target_player = state.target_player,
+        run_expires_at = state.run_expires_at,
     }
 end
 
@@ -233,6 +274,23 @@ function outfield_decision.with_rng_state(state, rng_state)
     return outfield_decision.copy_state(next_state)
 end
 
+-- End an active run without inventing a cadence boundary. The caller supplies
+-- the ordinary support fallback that takes over for the retained countdown.
+---@param state OutfieldDecisionState
+---@param target_x number
+---@param target_y number
+---@return OutfieldDecisionState
+function outfield_decision.cancel_run(state, target_x, target_y)
+    local next_state = outfield_decision.copy_state(state)
+    assert(RUN_INTENTS[next_state.intent], "cancel_run requires an active run intent")
+    next_state.intent = "move"
+    next_state.target_x = target_x
+    next_state.target_y = target_y
+    next_state.target_player = nil
+    next_state.run_expires_at = nil
+    return outfield_decision.copy_state(next_state)
+end
+
 ---@param state OutfieldDecisionState
 ---@param context OutfieldDecisionContext
 ---@param urgent boolean?
@@ -251,6 +309,7 @@ end
 ---@param target_x number?
 ---@param target_y number?
 ---@param target_player integer?
+---@param run_expires_at number?
 ---@return OutfieldDecisionState
 function outfield_decision.refresh(
     state,
@@ -259,7 +318,8 @@ function outfield_decision.refresh(
     scan_rate,
     target_x,
     target_y,
-    target_player
+    target_player,
+    run_expires_at
 )
     validate_state(state)
     assert(context ~= "ineligible" and CONTEXTS[context], "refresh requires an eligible context")
@@ -277,6 +337,7 @@ function outfield_decision.refresh(
         target_x = target_x,
         target_y = target_y,
         target_player = target_player,
+        run_expires_at = run_expires_at,
     }
     return outfield_decision.copy_state(refreshed)
 end

@@ -11,8 +11,8 @@ lobby.
 Each host/guest link keeps the OMP-0 topology:
 
 - one reliable, ordered control channel carries this protocol; and
-- one unordered, loss-tolerant channel carries the tick-numbered input bundles
-  owned by #162.
+- one unordered, loss-tolerant channel carries the tick-numbered
+  [input bundles and canonical host batches](input_packets.md).
 
 Control messages are pure Lua records. Their canonical `GCOP;1;...` encoding
 is bounded to 8,192 bytes and never invokes simulation code while parsing.
@@ -75,7 +75,7 @@ Manifest version 1 contains, in comparison order:
    `away_1..away_4` order.
 
 The currently supported versions are protocol 1, InputFrame 2, combat-capable
-MatchSnapshot 9, combat input tape 2, and combat companion schema 1. The
+MatchSnapshot 10, combat input tape 2, and combat companion schema 1. The
 canonical manifest digest is a reproducibility/correlation id, not a
 cryptographic signature.
 
