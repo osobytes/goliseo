@@ -1965,6 +1965,28 @@ def run_native_once(
     return record
 
 
+def require_nonempty_plan(
+    plan: list[tuple[str, tuple[str, ...]]],
+    runtime: str,
+    campaign: str,
+    shard: str | None,
+) -> list[tuple[str, tuple[str, ...]]]:
+    """Refuse to run a campaign that would validate nothing and report success.
+
+    An empty plan is the one shape that could produce a passing evidence
+    artifact without doing any work, which is exactly what the rollback gate
+    exists to prevent. Every reachable campaign/shard combination owns cases, so
+    an empty plan is a contract bug rather than a valid selection.
+    """
+
+    if not plan:
+        raise ValueError(
+            f"the {runtime} {campaign} campaign selected no cases for shard "
+            f"{shard!r}; refusing to emit empty rollback evidence"
+        )
+    return plan
+
+
 def native_shard_plan(
     network_seed: str | None = None,
 ) -> list[tuple[str, tuple[str, ...]]]:
@@ -2031,20 +2053,26 @@ def native_campaign_plan(
         )
     if shard is not None and shard not in NATIVE_SHARDS:
         raise ValueError(f"unknown native rollback shard {shard!r}")
+    if shard in SEED_SHARDS and campaign not in {"all", "matrix"}:
+        raise ValueError(
+            f"the native {campaign} campaign has no work for network seed shard "
+            f"{shard}; the seed-independent late-window pair and persistent soak "
+            f"live in the {TAIL_SHARD!r} shard"
+        )
     plan: list[tuple[str, tuple[str, ...]]] = []
     if shard == TAIL_SHARD:
         if campaign in {"all", "matrix"}:
             plan.append(("late-window", ()))
         if campaign in {"all", "soak"}:
             plan.append(("soak", ()))
-        return plan
+        return require_nonempty_plan(plan, "native", campaign, shard)
     if campaign in {"all", "matrix"}:
         plan.extend(native_shard_plan(shard))
         if shard is None:
             plan.append(("late-window", ()))
     if campaign in {"all", "soak"} and shard is None:
         plan.append(("soak", ()))
-    return plan
+    return require_nonempty_plan(plan, "native", campaign, shard)
 
 
 def native_matrix(
@@ -2515,7 +2543,7 @@ def browser_plan(
             plan.append(("browser-stress", (STRESS_PROFILE, str(network_seed))))
     if campaign in {"all", "soak"}:
         plan.append(("soak", ()))
-    return plan
+    return require_nonempty_plan(plan, "browser", campaign, shard)
 
 
 def browser_suite_timeout_seconds(suite: str, timeout_seconds: int) -> int:
@@ -3869,6 +3897,36 @@ def run_self_test() -> None:
             raise RuntimeError(f"native seed shard {shard} changed the pinned case order")
     if native_campaign_plan("all", TAIL_SHARD) != [("late-window", ()), ("soak", ())]:
         raise RuntimeError("native tail shard campaign plan self-test failed")
+    if native_campaign_plan("matrix", TAIL_SHARD) != [("late-window", ())]:
+        raise RuntimeError("native tail matrix campaign plan self-test failed")
+    if native_campaign_plan("soak", TAIL_SHARD) != [("soak", ())]:
+        raise RuntimeError("native tail soak campaign plan self-test failed")
+    for rejected_campaign, rejected_shard in (
+        ("soak", "2001"),
+        ("soak", "2002"),
+        ("soak", "2003"),
+        ("all", "2004"),
+        ("sprint", "2001"),
+    ):
+        try:
+            native_campaign_plan(rejected_campaign, rejected_shard)
+        except ValueError:
+            pass
+        else:
+            raise RuntimeError(
+                f"native {rejected_campaign} campaign emitted a plan for shard "
+                f"{rejected_shard!r}"
+            )
+    for runtime_label in ("native", "browser"):
+        try:
+            require_nonempty_plan([], runtime_label, "soak", "2001")
+        except ValueError as error:
+            if "refusing to emit empty rollback evidence" not in str(error):
+                raise RuntimeError(
+                    f"{runtime_label} empty-plan guard reason self-test failed"
+                ) from error
+        else:
+            raise RuntimeError(f"{runtime_label} empty rollback plan passed self-test")
     sharded_native_cases = sorted(
         case["case"]
         for shard in SEED_SHARDS
@@ -5003,6 +5061,19 @@ def run_self_test() -> None:
     if breach_replay["pass"]:
         raise RuntimeError("replayed genuine browser rollback breaches passed the gate")
 
+    # rollback_ci.py restates the shard sets instead of importing them, because it
+    # runs in the impact-filter job, which deliberately installs no browser
+    # evidence dependencies and therefore cannot import this module. Assert the
+    # two agree from this side, where both imports are already available.
+    import rollback_ci
+
+    if (
+        rollback_ci.NETWORK_SEED_SHARDS != SEED_SHARDS
+        or rollback_ci.NATIVE_SHARDS != NATIVE_SHARDS
+        or rollback_ci.BROWSER_RUNTIMES != BROWSER_RUNTIMES
+    ):
+        raise RuntimeError("rollback_ci.py shard sets drifted from the pinned campaign")
+
     shard_identities = expected_shard_evidence()
     expected_shard_names = sorted(shard_identities)
     # Per browser: one artifact per matrix seed shard, plus the whole soak and the
@@ -5011,6 +5082,12 @@ def run_self_test() -> None:
         len(BROWSER_MATRIX_SHARDS) + 2
     ):
         raise RuntimeError("pinned rollback shard set changed size")
+    if rollback_ci.EXPECTED_ARTIFACTS != frozenset(
+        {*expected_shard_names, rollback_ci.AGGREGATE_ARTIFACT}
+    ):
+        raise RuntimeError(
+            "the reuse contract's artifact set drifted from the pinned shard manifest"
+        )
     if require_complete_shards(expected_shard_names) != expected_shard_names:
         raise RuntimeError("the complete rollback shard set was rejected")
     for dropped in expected_shard_names:
@@ -5153,6 +5230,208 @@ def run_self_test() -> None:
                 raise RuntimeError("aggregate shard gate self-test failed") from error
         else:
             raise RuntimeError("incomplete rollback shard evidence passed the aggregate")
+
+    def native_case_marker(case: dict[str, str]) -> str:
+        combat = case["scenario"] == "combat"
+        profile = case["profile"]
+        mode = cpu_gate_mode("native", profile, False)
+        gate = "1" if mode == "absolute" else "not_applied"
+        applied = "1" if mode == "absolute" else "0"
+        digest = "0000000000000004" if combat else "0000000000000003"
+        return (
+            f"{MARKER_PREFIX}|case|schema=1|case={case['case']}|"
+            f"scenario={case['scenario']}|profile={profile}|"
+            f"network_seed={case['network_seed']}|success=1|lab_success=1|"
+            "expected_failure=0|status=converged|late_tick=none|hidden_progress=0|"
+            f"scenario_pass=1|tape_version={'2' if combat else '1'}|"
+            f"snapshot_version={'9' if combat else '8'}|"
+            f"tape_digest={'1111111111111111' if combat else HISTORICAL_SOCCER_TAPE_DIGEST}|"
+            "initial_hash=0000000000000001|reference_hash=0000000000000002|"
+            "client_hash=0000000000000002|rollbacks=8|max_depth=8|"
+            f"resimulated={0 if profile == 'clean' else 20}|peak_snapshots=31|"
+            "peak_snapshot_bytes=611274|peak_history_bytes=700000|"
+            f"event_reference_digest={digest}|event_confirmed_digest={digest}|"
+            f"event_confirmed_combat={14 if combat else 0}|event_residue=0|"
+            f"sample=none|gate_contract={GATE_CONTRACT}|cpu_gate={gate}|"
+            f"cpu_gate_applied={applied}|cpu_gate_mode={mode}|snapshot_gate=1|"
+            "history_gate=1|game_gate=1"
+        )
+
+    def publish_complete_shard_tree(root: Path, revision: str) -> None:
+        """Fabricate one passing artifact for every pinned shard."""
+
+        def envelope(
+            mode: str,
+            campaign: str,
+            shard: str | None,
+            section: dict[str, Any],
+        ) -> dict[str, Any]:
+            return {
+                "campaign": campaign,
+                "gate_contract": int(GATE_CONTRACT),
+                mode: section,
+                "mode": mode,
+                "pass": True,
+                "schema": 1,
+                "shard": shard,
+                "source": {"dirty": False, "revision": revision},
+            }
+
+        def publish(name: str, payload: dict[str, Any]) -> None:
+            write_json(root / name / f"{name}.json", payload)
+
+        for seed_shard in SEED_SHARDS:
+            seed_markers = [
+                native_case_marker(case)
+                for case in expected_case_plan("native", (seed_shard,))
+            ]
+            publish(
+                f"omp2-rollback-native-{seed_shard}",
+                envelope(
+                    "native",
+                    "all",
+                    seed_shard,
+                    {
+                        "fresh_runs": [
+                            {"markers": seed_markers},
+                            {"markers": seed_markers},
+                        ],
+                        "fresh_runs_agree": True,
+                        "shard": seed_shard,
+                    },
+                ),
+            )
+        publish(
+            f"omp2-rollback-native-{TAIL_SHARD}",
+            envelope(
+                "native",
+                "all",
+                TAIL_SHARD,
+                {
+                    "late_window": {"case_count": 2, "suite": "late-window"},
+                    "shard": TAIL_SHARD,
+                    "soak": {"soak_memory": {"pass": True}},
+                },
+            ),
+        )
+        for runtime_name in BROWSER_RUNTIMES:
+            for seed_index, seed_shard in enumerate(BROWSER_MATRIX_SHARDS):
+                seed_value = int(seed_shard)
+                clean_p95 = 2.0 + seed_index * 0.25
+                combat_clean_p95 = clean_p95 * 1.2
+                seed_runs = [
+                    synthetic_browser_cpu_run(
+                        "clean",
+                        seed_value,
+                        clean_p95,
+                        0.0,
+                        combat_p95_work_ms=combat_clean_p95,
+                        combat_rollback_p999_ms=0.0,
+                        browser_name=runtime_name,
+                    ),
+                    synthetic_browser_cpu_run(
+                        "playable",
+                        seed_value,
+                        clean_p95 * 5.5,
+                        clean_p95 * 9.5,
+                        combat_p95_work_ms=combat_clean_p95 * 5.4,
+                        combat_rollback_p999_ms=combat_clean_p95 * 9.0,
+                        browser_name=runtime_name,
+                    ),
+                ]
+                publish(
+                    f"omp2-rollback-{runtime_name}-matrix-{seed_shard}",
+                    envelope(
+                        "browser",
+                        "matrix",
+                        seed_shard,
+                        {
+                            "runtimes": {
+                                runtime_name: {
+                                    "cpu_acceptance": browser_cpu_acceptance(
+                                        seed_runs,
+                                        runtime_name,
+                                        (seed_value,),
+                                    ),
+                                    "runs": seed_runs,
+                                }
+                            },
+                            "shard": seed_shard,
+                        },
+                    ),
+                )
+            publish(
+                f"omp2-rollback-{runtime_name}-soak",
+                envelope(
+                    "browser",
+                    "soak",
+                    None,
+                    {
+                        "runtimes": {
+                            runtime_name: {
+                                "runs": [
+                                    {"soak_memory": {"pass": True}, "suite": "soak"}
+                                ]
+                            }
+                        },
+                        "shard": None,
+                    },
+                ),
+            )
+
+    with tempfile.TemporaryDirectory(prefix="omp2-rollback-aggregate-") as directory:
+        aggregate_root = Path(directory)
+        aggregate_revision = "c" * 40
+        publish_complete_shard_tree(aggregate_root, aggregate_revision)
+        aggregate_evidence: dict[str, Any] = {
+            "source": {"revision": aggregate_revision}
+        }
+        aggregate_shards(aggregate_evidence, aggregate_root)
+        aggregate = aggregate_evidence["aggregate"]
+        pinned_native_cases = len(expected_case_plan("native", ()))
+        if aggregate["native"]["case_count"] != pinned_native_cases:
+            raise RuntimeError(
+                "the rollback aggregate did not reassemble the pinned native plan"
+            )
+        if aggregate["native"]["cases_per_shard"] != {
+            seed_shard: len(expected_case_plan("native", (seed_shard,)))
+            for seed_shard in SEED_SHARDS
+        }:
+            raise RuntimeError("the rollback aggregate mis-split its native seed shards")
+        if aggregate["native"]["soak_memory"]["pass"] is not True:
+            raise RuntimeError("the rollback aggregate lost the native soak gate")
+        if len(aggregate["shards"]) != len(expected_shard_evidence()):
+            raise RuntimeError("the rollback aggregate omitted a shard digest")
+        expected_pairs = len(BROWSER_CPU_SCENARIOS) * len(NETWORK_SEEDS)
+        for runtime_name in BROWSER_RUNTIMES:
+            merged = aggregate["browser"]["runtimes"][runtime_name]
+            merged_acceptance = merged["cpu_acceptance"]
+            if (
+                merged_acceptance["pass"] is not True
+                or merged_acceptance["scope"] != "aggregate"
+                or merged_acceptance["seeds"] != list(NETWORK_SEEDS)
+                or len(merged_acceptance["pairs"]) != expected_pairs
+            ):
+                raise RuntimeError(
+                    f"{runtime_name} aggregate acceptance did not evaluate all "
+                    f"{expected_pairs} pairs across the seed shards"
+                )
+            if merged["soak_memory"]["pass"] is not True:
+                raise RuntimeError(f"{runtime_name} aggregate lost its soak memory gate")
+        vanished = f"omp2-rollback-{BROWSER_RUNTIMES[0]}-matrix-{SEED_SHARDS[-1]}"
+        shutil.rmtree(aggregate_root / vanished)
+        try:
+            aggregate_shards(
+                {"source": {"revision": aggregate_revision}},
+                aggregate_root,
+            )
+        except RuntimeError as error:
+            if f"missing rollback shard evidence: {vanished}" not in str(error):
+                raise RuntimeError(
+                    "the rollback aggregate did not name its vanished shard"
+                ) from error
+        else:
+            raise RuntimeError("a vanished shard passed the complete rollback aggregate")
 
     try:
         raise_on_interruption(signal.SIGTERM, None)

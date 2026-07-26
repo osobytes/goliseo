@@ -580,6 +580,11 @@ them. The seed-independent remainder, the late-window pair and the persistent na
     --output /tmp/omp2-rollback-native-tail.json
 ```
 
+A shard and a campaign that select no cases between them are refused rather than run. Combining a
+numeric seed shard with `--campaign soak` fails and names the `tail` shard, and any plan that
+resolved to empty fails before launching, because an empty plan is the one shape that could write
+passing evidence having validated nothing.
+
 The complete browser campaign uses a pinned love.js artifact and Selenium assets:
 
 ```sh

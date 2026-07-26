@@ -335,7 +335,7 @@ jobs:
             GC_CAMPAIGN_SHA: ${{ github.sha }}
             GC_CAMPAIGN_HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         runs-on: ubuntu-24.04
-        timeout-minutes: 180
+        timeout-minutes: 60
         strategy:
             fail-fast: false
             matrix:
@@ -396,7 +396,7 @@ jobs:
             GC_CAMPAIGN_SHA: ${{ github.sha }}
             GC_CAMPAIGN_HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         runs-on: ubuntu-24.04
-        timeout-minutes: 180
+        timeout-minutes: 60
         strategy:
             fail-fast: false
             matrix:
