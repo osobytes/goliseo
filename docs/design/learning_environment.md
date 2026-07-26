@@ -303,10 +303,20 @@ The identified lever, **not implemented here** because it changes the contract a
 deserves its own review: make per-tick boundary hashing optional
 (`every_tick` by default, `episode_bounds` for throughput runs). `env.tape` would
 then fall back from `input_tape.from_frozen_recording` to `input_tape.new`, which
-derives the hash chain itself by replaying. That would cut a single-slot step by
-roughly half while keeping the audit path available on demand. If #139 finds
-throughput marginal, this is the first thing to reach for — before concluding
-anything about the engine.
+derives the hash chain itself by replaying. Removing the ~120 KB of snapshot and
+hash work from a 202 KB step leaves roughly 41% of it, so this is closer to a
+**2.4× reduction** than a halving, while keeping the audit path available on
+demand.
+
+Two cautions if #139 reaches for it — and it should reach for it before concluding
+anything about the engine. First, the figures above are *allocation* shares, and
+`match_snapshot.capture` also carries per-field validation cost that is CPU rather
+than GC pressure, so #139 should measure ticks/sec directly with the toggle rather
+than deriving a multiplier from this table. Second, `episode_bounds` mode needs
+explicit semantics for `boundary_hash` and `boundary_hashes` at unhashed ticks,
+plus a test proving `input_tape.new`'s replay-derived hash chain matches
+`input_tape.from_frozen_recording`'s, so the two tape paths cannot silently
+diverge.
 
 Two further characteristics to account for rather than to "fix":
 
