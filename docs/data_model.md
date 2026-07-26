@@ -76,7 +76,7 @@ loadout receive a neutral combat runtime and ignore equipment intent.
 
 Presentation, cosmetic, theme, and equipment-appearance ids never enter the
 companion. `data/action_families.lua` remains the sole tuning authority.
-Combat-active snapshot/hash/rollback integration uses match snapshot version 11,
+Combat-active snapshot/hash/rollback integration uses match snapshot version 12,
 combat snapshot version 1, and input tape version 2. A combat-enabled match
 must supply the companion at capture; passing only the soccer half fails
 loudly.
@@ -110,9 +110,14 @@ identity.
 
 `id, name, press` (how many off-ball players hunt the ball), `line_shift` (anchor depth
 bias along the attack axis, fraction of pitch), `stamina_drain` (a currently unused,
-post-showcase multiplier).
+post-showcase multiplier), `marking` (off-ball scheme and shape knobs), `transition`
+(seconds of counter-press for the team that loses the ball and counter-attack for the team
+that wins it).
 Applied in `sim/match.lua`: `line_shift` adjusts outfield anchors at build time, `press`
-sets `MatchState.press` which drives how many players chase per team.
+sets `MatchState.press` which drives how many players chase per team, and `transition`
+sets `MatchState.transition_windows`, which `sim/possession_transition.lua` decays through
+`brain.phase` into each team's counterpress/counterattack phase. Adding a tactic stays a
+data edit: a new window pair requires no `sim/` change.
 
 ### Widget / Layout (`game/ui/hit.lua`)
 

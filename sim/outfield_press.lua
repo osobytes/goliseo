@@ -255,4 +255,29 @@ function outfield_press.lane_shadow_target(base, carrier, candidates)
     return base:add(lane_point:sub(base):scale(LANE_SHADOW_WEIGHT))
 end
 
+-- Shade a HELD position onto the highest-valued lane instead of drawing it to
+-- the single shared lane point: each player steps toward the NEAREST point of the
+-- lane, so several of them can cut it at once without stacking and without giving
+-- up the ground they are standing on. Counter-pressing uses this, because its
+-- contract is to hold the turnover position rather than converge on the ball.
+---@param base Vec2
+---@param carrier Vec2
+---@param candidates OutfieldLaneCandidate[]
+---@return Vec2
+function outfield_press.lane_hold_target(base, carrier, candidates)
+    local receiver = outfield_press.highest_scored_lane(candidates)
+    if not receiver then
+        return base
+    end
+    local lane = receiver.pos:sub(carrier)
+    local length_squared = lane.x * lane.x + lane.y * lane.y
+    local nearest = carrier
+    if length_squared > 0 then
+        local fraction = ((base.x - carrier.x) * lane.x + (base.y - carrier.y) * lane.y)
+            / length_squared
+        nearest = carrier:add(lane:scale(math.max(0, math.min(1, fraction))))
+    end
+    return base:add(nearest:sub(base):scale(LANE_SHADOW_WEIGHT))
+end
+
 return outfield_press

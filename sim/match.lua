@@ -425,6 +425,8 @@ local SPRINT_ENGAGE = 0.25 -- min meter to start a sprint (hysteresis: no flicke
 ---@field marking { home: MarkingConfig, away: MarkingConfig }  -- off-ball scheme per team
 ---@field marks { home: table<integer, integer>, away: table<integer, integer> }  -- prev marking assignment (hysteresis)
 ---@field outfield_press { home: OutfieldPressState, away: OutfieldPressState }  -- team-owned stable presser state
+---@field transition_windows { home: TransitionConfig, away: TransitionConfig }  -- tactic counterpress/counterattack seconds
+---@field transition PossessionTransitionState  -- possession memory driving the transition phases
 ---@field formation { home: string, away: string }  -- authoritative role lookup; roles derive by ordinal
 ---@field ball_spin number  -- lateral curve applied to the loose ball
 ---@field rng integer  -- seeded PRNG state (core.rng): same seed = same match
@@ -676,6 +678,14 @@ function match._reset_press_states(s)
     s.outfield_press.away = pressing.clear(s.outfield_press.away)
 end
 
+-- Forget the possession memory. Every lifecycle boundary routes through here so
+-- a restart, a full-time whistle, or a fresh match can never leak a live window
+-- into play or manufacture a turnover out of the possession that preceded it.
+---@param s MatchState
+function match._reset_transition_state(s)
+    require("sim.possession_transition").clear(s.transition)
+end
+
 ---@param s MatchState
 function match._reset_run_states(s)
     local decisions = require("sim.outfield_decision")
@@ -807,6 +817,9 @@ local function place_kickoff(s, kicking)
     s.ball_spin = 0
     s.kickoff_hold = KICKOFF_HOLD
     match._reset_press_states(s)
+    -- The restart hands the ball over by law, not by a turnover: clear the
+    -- possession memory so nobody counter-presses a kickoff.
+    match._reset_transition_state(s)
     -- Centre-circle rule: the non-kicking team keeps its distance from the
     -- ball at the restart — push any intruder straight back out.
     for _, p in ipairs(s.players) do
@@ -845,6 +858,15 @@ function match.new(opts)
         or require("data.showcase_player_compatibility")
     local home_tactic = opts.tactic or tactics.balanced
     local away_tactic = opts.away_tactic or tactics.balanced
+    ---@param tactic TacticData
+    ---@return TransitionConfig
+    local function transition_of(tactic)
+        -- Function-local like marking_of's fallback: this near-limit chunk must
+        -- not spend a permanent local on a legacy-tactic default.
+        return require("sim.possession_transition").copy_windows(
+            tactic.transition or { counterpress = 2.5, counterattack = 2.5 }
+        )
+    end
 
     -- Seeded randomness (grab-vs-parry rolls). Warm the state up a few steps:
     -- minstd's first draws correlate with small seeds (seed 3 -> tiny sample).
@@ -944,6 +966,11 @@ function match.new(opts)
             home = require("sim.outfield_press").new_state(),
             away = require("sim.outfield_press").new_state(),
         },
+        transition_windows = {
+            home = transition_of(home_tactic),
+            away = transition_of(away_tactic),
+        },
+        transition = require("sim.possession_transition").new_state(),
         formation = {
             home = opts.home_formation or opts.home.formation,
             away = opts.away.formation,
@@ -1881,8 +1908,9 @@ end
 ---@param player_index integer
 ---@param pos Vec2[]?
 ---@param opponent_positions Vec2[]?
+---@param push_scale number?  -- >1 deepens the support push (counter-attack window)
 ---@return Vec2
-function match._support_target(s, player_index, pos, opponent_positions)
+function match._support_target(s, player_index, pos, opponent_positions, push_scale)
     pos = pos or {}
     for index, player in ipairs(s.players) do
         pos[index] = pos[index] or player.pos
@@ -1894,7 +1922,7 @@ function match._support_target(s, player_index, pos, opponent_positions)
     local attack = player.team == "home" and 1 or -1
     local carrier_pos = pos[owner_index]
     local base = Vec2.new(
-        player.anchor.x + attack * ATTACK_PUSH * s.marking[player.team].support,
+        player.anchor.x + attack * ATTACK_PUSH * s.marking[player.team].support * (push_scale or 1),
         player.anchor.y
     )
     local candidates = {
@@ -1952,6 +1980,32 @@ end
 local function marker_target(defpos, opp_pos, opp_vel, goal, off)
     local aim = ai.pursue(defpos, opp_pos, opp_vel, PURSUE_LEAD)
     return aim:add(goal:sub(aim):normalized():scale(off or MARK_GOALSIDE))
+end
+
+-- The team's current possession phase. `brain.phase` decays a live turnover
+-- into ordinary attack/defend/loose once the team's tactic window elapses, so
+-- this is the single place a counterpress or counterattack phase is decided.
+---@param s MatchState
+---@param team "home"|"away"
+---@return TeamPhase
+function match._team_phase(s, team)
+    return require("sim.possession_transition").phase(
+        s.transition,
+        team,
+        s.owner and s.players[s.owner].team or nil,
+        s.transition_windows[team]
+    )
+end
+
+---@param s MatchState
+---@param team "home"|"away"
+---@param player_index integer
+---@return FormationRole
+function match._formation_role(s, team, player_index)
+    return require("sim.offball_runs").formation_role(
+        s.formation[team],
+        match._outfield_ordinal(s, team, player_index)
+    )
 end
 
 ---@param s MatchState
@@ -2024,7 +2078,8 @@ end
 ---@param pos Vec2[]
 ---@param combat_state CombatMatchState?
 ---@param urgent table<integer, boolean>
-function match._assign_runs(s, team, candidates, targets, pos, combat_state, urgent)
+---@param counterattack boolean?
+function match._assign_runs(s, team, candidates, targets, pos, combat_state, urgent, counterattack)
     local decisions = require("sim.outfield_decision")
     local runs = require("sim.offball_runs")
     local now = -s.time_left
@@ -2120,6 +2175,7 @@ function match._assign_runs(s, team, candidates, targets, pos, combat_state, urg
             carrier_settled = owner.settle_timer <= 0,
             carrier_pressure = pressure,
             pressure_distance = TUNE.AI_PASS_PRESSURE,
+            counterattack = counterattack == true,
             players = players,
             teammates = teammates,
             opponents = opponents,
@@ -2234,14 +2290,15 @@ end
 ---@param carrier_index integer
 ---@param base Vec2
 ---@param pos Vec2[]
+---@param hold boolean?  -- shade a held position onto the lane instead of converging on it
 ---@return Vec2
-function match._lane_shadow_target(s, team, carrier_index, base, pos)
+function match._lane_shadow_target(s, team, carrier_index, base, pos, hold)
     local pressing = require("sim.outfield_press")
-    return pressing.lane_shadow_target(
-        base,
-        pos[carrier_index],
-        match._passing_lane_candidates(s, team, carrier_index, pos)
-    )
+    local candidates = match._passing_lane_candidates(s, team, carrier_index, pos)
+    if hold then
+        return pressing.lane_hold_target(base, pos[carrier_index], candidates)
+    end
+    return pressing.lane_shadow_target(base, pos[carrier_index], candidates)
 end
 
 ---@param s MatchState
@@ -2355,20 +2412,25 @@ end
 -- (roles needing full-speed precision, exempt from positional calm), and
 -- refreshes s.marks for man-marking hysteresis. Roles: one presser + one cover
 -- + scheme-driven rest when defending; support-spot runs when attacking;
--- press-set chase when loose.
+-- press-set chase when loose. A team inside a possession-transition window
+-- (match._team_phase) instead counter-presses or counter-attacks until its
+-- tactic window decays back into those ordinary phases.
 ---@param s MatchState
 ---@param pos Vec2[]
 ---@param combat_state CombatMatchState?
 ---@return table<integer, Vec2> targets
 ---@return table<integer, boolean> urgent
+---@return table<integer, boolean> closing  -- counter-pressers, exempt from the contain slowdown
 local function offball_targets(s, pos, combat_state)
     local targets = {}
     local urgent = {} -- roles that need precision, exempt from positional calm
+    local closing = {} -- counter-pressers hunting the ball at full urgency
     local owner_team = s.owner and s.players[s.owner].team or nil
 
     for _, team in ipairs({ "home", "away" }) do
         local cfg = s.marking[team]
         local goal = own_goal_center(s, team)
+        local phase = match._team_phase(s, team)
 
         -- This team's off-ball outfielders (exclude keeper, ball-owner, human).
         local mine = {}
@@ -2431,9 +2493,13 @@ local function offball_targets(s, pos, combat_state)
                     combat_state
                 )
             end
+            -- COUNTER-PRESS: the losing team gets two hunters instead of one
+            -- presser plus a standing-off cover, and neither of them contains.
+            -- Choosing and explaining the challenge itself stays with #55.
+            local counterpress = phase == "counterpress" and not held
             if presser then
                 local press_state = s.outfield_press[team]
-                if press_state.mode == "commit" then
+                if counterpress or press_state.mode == "commit" then
                     targets[presser] = ai.pursue(pos[presser], s.ball, carrier.vel, PURSUE_LEAD)
                 else
                     targets[presser] = require("sim.outfield_press").contain_target(
@@ -2444,10 +2510,19 @@ local function offball_targets(s, pos, combat_state)
                     )
                 end
                 urgent[presser] = true
+                if counterpress then
+                    closing[presser] = true
+                end
             end
             if cover then
-                local base = ai.interpose(cpos, goal, COVER_FRAC)
-                targets[cover] = match._lane_shadow_target(s, team, carrier_index, base, pos)
+                if counterpress then
+                    targets[cover] = ai.pursue(pos[cover], s.ball, carrier.vel, PURSUE_LEAD)
+                    urgent[cover] = true
+                    closing[cover] = true
+                else
+                    local base = ai.interpose(cpos, goal, COVER_FRAC)
+                    targets[cover] = match._lane_shadow_target(s, team, carrier_index, base, pos)
+                end
             end
 
             -- The rest: which defenders should man-mark, which hold zone.
@@ -2458,68 +2533,89 @@ local function offball_targets(s, pos, combat_state)
                 end
             end
 
-            -- Pick the opponents to be man-marked (player indices into opp_out).
-            local mark_locals = {}
-            if cfg.scheme == "man" then
-                for li = 1, #opp_out do
-                    mark_locals[#mark_locals + 1] = li
-                end
-            elseif cfg.scheme == "hybrid" then
-                local rank = {}
-                for li = 1, #opp_out do
-                    rank[#rank + 1] = li
-                end
-                table.sort(rank, function(a, b)
-                    local da, db = opp_out_pos[a]:dist(goal), opp_out_pos[b]:dist(goal)
-                    if da ~= db then
-                        return da < db -- closest to our goal = most dangerous
-                    end
-                    return opp_out[a] < opp_out[b]
-                end)
-                for n = 1, math.min(cfg.man_marks, #rank) do
-                    mark_locals[#mark_locals + 1] = rank[n]
-                end
-            end
-
-            local newmarks = {}
-            if #mark_locals > 0 and #rest > 0 then
-                local restpos, markpos = {}, {}
+            if counterpress then
+                -- Everyone else holds the position the turnover left them in and
+                -- shades the highest-valued outlet lane instead of retreating to
+                -- a formation anchor. Defensive roles are the exception: they
+                -- recover first when their team loses the ball.
                 for _, idx in ipairs(rest) do
-                    restpos[#restpos + 1] = pos[idx]
+                    if match._formation_role(s, team, idx) == "def" then
+                        targets[idx] = block_shift(s.players[idx].anchor, s.ball, cfg.compactness)
+                    else
+                        targets[idx] =
+                            match._lane_shadow_target(s, team, carrier_index, pos[idx], pos, true)
+                    end
                 end
-                for _, li in ipairs(mark_locals) do
-                    markpos[#markpos + 1] = opp_out_pos[li]
+                s.marks[team] = {}
+            else
+                -- Pick the opponents to be man-marked (player indices into opp_out).
+                local mark_locals = {}
+                if cfg.scheme == "man" then
+                    for li = 1, #opp_out do
+                        mark_locals[#mark_locals + 1] = li
+                    end
+                elseif cfg.scheme == "hybrid" then
+                    local rank = {}
+                    for li = 1, #opp_out do
+                        rank[#rank + 1] = li
+                    end
+                    table.sort(rank, function(a, b)
+                        local da, db = opp_out_pos[a]:dist(goal), opp_out_pos[b]:dist(goal)
+                        if da ~= db then
+                            return da < db -- closest to our goal = most dangerous
+                        end
+                        return opp_out[a] < opp_out[b]
+                    end)
+                    for n = 1, math.min(cfg.man_marks, #rank) do
+                        mark_locals[#mark_locals + 1] = rank[n]
+                    end
                 end
-                -- Build prev assignment in local indices for hysteresis.
-                local prev_local = {}
-                for di, pidx in ipairs(rest) do
-                    local prev_opp = s.marks[team][pidx]
-                    if prev_opp then
-                        for mi, li in ipairs(mark_locals) do
-                            if opp_out[li] == prev_opp then
-                                prev_local[di] = mi
+
+                local newmarks = {}
+                if #mark_locals > 0 and #rest > 0 then
+                    local restpos, markpos = {}, {}
+                    for _, idx in ipairs(rest) do
+                        restpos[#restpos + 1] = pos[idx]
+                    end
+                    for _, li in ipairs(mark_locals) do
+                        markpos[#markpos + 1] = opp_out_pos[li]
+                    end
+                    -- Build prev assignment in local indices for hysteresis.
+                    local prev_local = {}
+                    for di, pidx in ipairs(rest) do
+                        local prev_opp = s.marks[team][pidx]
+                        if prev_opp then
+                            for mi, li in ipairs(mark_locals) do
+                                if opp_out[li] == prev_opp then
+                                    prev_local[di] = mi
+                                end
                             end
                         end
                     end
+                    local map = ai.assign_marks(restpos, markpos, prev_local, MARK_STICK)
+                    for di, mi in pairs(map) do
+                        local def_idx = rest[di]
+                        local opp_idx = opp_out[mark_locals[mi]]
+                        newmarks[def_idx] = opp_idx
+                        -- Tight on a live carrier's teammates; lane distance while
+                        -- the keeper surveys, so throws can actually be received.
+                        local off = carrier.is_keeper and MARK_LANE_OFF or MARK_GOALSIDE
+                        targets[def_idx] = marker_target(
+                            pos[def_idx],
+                            pos[opp_idx],
+                            s.players[opp_idx].vel,
+                            goal,
+                            off
+                        )
+                    end
                 end
-                local map = ai.assign_marks(restpos, markpos, prev_local, MARK_STICK)
-                for di, mi in pairs(map) do
-                    local def_idx = rest[di]
-                    local opp_idx = opp_out[mark_locals[mi]]
-                    newmarks[def_idx] = opp_idx
-                    -- Tight on a live carrier's teammates; lane distance while
-                    -- the keeper surveys, so throws can actually be received.
-                    local off = carrier.is_keeper and MARK_LANE_OFF or MARK_GOALSIDE
-                    targets[def_idx] =
-                        marker_target(pos[def_idx], pos[opp_idx], s.players[opp_idx].vel, goal, off)
-                end
-            end
-            s.marks[team] = newmarks
+                s.marks[team] = newmarks
 
-            -- Any defender without a mark holds a ball-shifted zone.
-            for _, idx in ipairs(rest) do
-                if not targets[idx] then
-                    targets[idx] = block_shift(s.players[idx].anchor, s.ball, cfg.compactness)
+                -- Any defender without a mark holds a ball-shifted zone.
+                for _, idx in ipairs(rest) do
+                    if not targets[idx] then
+                        targets[idx] = block_shift(s.players[idx].anchor, s.ball, cfg.compactness)
+                    end
                 end
             end
             for _, idx in ipairs(rest) do
@@ -2532,15 +2628,25 @@ local function offball_targets(s, pos, combat_state)
             -- stable, spread outlet positions (don't roam) so the keeper's throw
             -- reaches a teammate who's actually there. Otherwise make support runs.
             local build_up = s.players[s.owner].is_keeper
+            -- COUNTER-ATTACK: the team that just won the ball pushes its support
+            -- depth by formation role (forwards hardest) and buys one immediate
+            -- in-behind request. Keeper build-up and the kickoff hold are laws,
+            -- not phases, so they still take precedence.
+            local counterattack = phase == "counterattack" and not build_up and s.kickoff_hold <= 0
+            local transitions = require("sim.possession_transition")
             for _, idx in ipairs(mine) do
                 if build_up then
                     targets[idx] = sep(idx, block_shift(s.players[idx].anchor, s.ball, 0.15))
                 else
-                    targets[idx] = match._support_target(s, idx, pos, opp_all_pos)
+                    local push = nil
+                    if counterattack then
+                        push = transitions.support_push(match._formation_role(s, team, idx))
+                    end
+                    targets[idx] = match._support_target(s, idx, pos, opp_all_pos, push)
                 end
             end
             if not build_up and s.kickoff_hold <= 0 then
-                match._assign_runs(s, team, mine, targets, pos, combat_state, urgent)
+                match._assign_runs(s, team, mine, targets, pos, combat_state, urgent, counterattack)
             end
             s.marks[team] = {}
         else
@@ -2550,14 +2656,43 @@ local function offball_targets(s, pos, combat_state)
             -- off a rolling ball instead of trailing it. Passers already price
             -- this in: pass safety is interception-aware (ai.pass_intercept),
             -- not just a static lane check. Everyone else holds shape.
-            local chasers = nearest_n(s, team, s.press[team])
+            -- Inside a counter-press window the assignment is exactly the two
+            -- nearest eligible hunters instead: the rest hold their turnover
+            -- position (defensive roles recover) rather than joining the chase.
+            local counterpress = phase == "counterpress" and s.kickoff_hold <= 0
+            local hunters = nil
+            if counterpress then
+                local transitions = require("sim.possession_transition")
+                local ranked = {}
+                for _, idx in ipairs(mine) do
+                    ranked[#ranked + 1] = {
+                        player_index = idx,
+                        distance_cost = pos[idx]:dist(s.ball),
+                        eligible = match._press_eligible(s, idx, combat_state),
+                    }
+                end
+                hunters = {}
+                local chosen = transitions.select_pressers(ranked, transitions.MAX_PRESSERS)
+                for _, idx in ipairs(chosen) do
+                    hunters[idx] = true
+                end
+            end
+            local chasers = hunters or nearest_n(s, team, s.press[team])
             for _, idx in ipairs(mine) do
                 -- The press-set chases — and so does ANYONE the ball lands
                 -- near: a ball at your feet is yours to claim, whatever your
                 -- assigned role (the ball magnet).
-                if chasers[idx] or pos[idx]:dist(s.ball) < TUNE.LOOSE_MAGNET then
+                if
+                    chasers[idx]
+                    or (not counterpress and pos[idx]:dist(s.ball) < TUNE.LOOSE_MAGNET)
+                then
                     targets[idx] = ai.pursue(pos[idx], s.ball, s.ball_vel, PURSUE_LEAD)
                     urgent[idx] = true
+                    if counterpress then
+                        closing[idx] = true
+                    end
+                elseif counterpress and match._formation_role(s, team, idx) ~= "def" then
+                    targets[idx] = sep(idx, pos[idx])
                 else
                     targets[idx] = block_shift(s.players[idx].anchor, s.ball, cfg.compactness)
                 end
@@ -2593,7 +2728,7 @@ local function offball_targets(s, pos, combat_state)
         end
     end
 
-    return targets, urgent
+    return targets, urgent, closing
 end
 
 -- Retain an AI outfielder's chosen movement point until its personal cadence
@@ -2827,7 +2962,7 @@ local function move_players(s, dt, inputs, combat_state)
     for i, p in ipairs(s.players) do
         prev[i] = p.pos
     end
-    local targets, urgent = offball_targets(s, prev, combat_state)
+    local targets, urgent, closing = offball_targets(s, prev, combat_state)
     retain_offball_targets(s, targets, urgent, combat_state)
 
     for i, p in ipairs(s.players) do
@@ -3331,6 +3466,9 @@ local function move_players(s, dt, inputs, combat_state)
             local mv = p.move_speed * (p.stun_timer > 0 and STUN_SLOW or 1) * combat_scale
             local press_state = s.outfield_press[p.team]
             local active_presser = press_state.presser_index == i
+            -- A counter-presser is closing the ball, not containing it: the
+            -- contain slowdown and its ball-facing lock stay out of the window.
+            local containing = active_presser and press_state.mode == "contain" and not closing[i]
             if active_presser and p.run_vel:length() > mv then
                 p.run_vel = p.run_vel:normalized():scale(mv)
             end
@@ -3341,7 +3479,7 @@ local function move_players(s, dt, inputs, combat_state)
                 local _, dir = ai.steer(p.pos, target, mv * dt)
                 if dir.x ~= 0 or dir.y ~= 0 then
                     local speed = urgent[i] and mv or mv * math.min(1, dist / ARRIVE_RADIUS)
-                    if active_presser and press_state.mode == "contain" then
+                    if containing then
                         speed = require("sim.outfield_press").contain_speed(
                             speed,
                             dist,
@@ -3352,7 +3490,7 @@ local function move_players(s, dt, inputs, combat_state)
                 end
             end
             apply_locomotion(s, p, desired, dt)
-            if active_presser and press_state.mode == "contain" then
+            if containing then
                 local to_ball = s.ball:sub(p.pos)
                 if to_ball:length() > 0 then
                     p.facing = to_ball:normalized()
@@ -4554,6 +4692,7 @@ function match.step(s, dt, input, combat_state)
     if s.finished then
         match._reset_press_states(s)
         match._reset_run_states(s)
+        match._reset_transition_state(s)
         for _, player in ipairs(s.players) do
             player.keeper_set = 0
         end
@@ -4601,6 +4740,7 @@ function match.step(s, dt, input, combat_state)
         s.finished = true
         match._reset_press_states(s)
         match._reset_run_states(s)
+        match._reset_transition_state(s)
         if combat_state then
             assert(combat_module).advance_boundary(combat_state)
         end
@@ -4622,6 +4762,9 @@ function match.step(s, dt, input, combat_state)
     if s.kickoff_hold > 0 then
         s.kickoff_hold = math.max(0, s.kickoff_hold - dt)
     end
+    -- Decay the live turnover before this tick's movement reads its phases, and
+    -- retire it once both tactic windows have elapsed so nothing accumulates.
+    require("sim.possession_transition").advance(s.transition, dt, s.transition_windows)
     for _, p in ipairs(s.players) do
         if p.dash_cd > 0 then
             p.dash_cd = math.max(0, p.dash_cd - dt)
@@ -4774,6 +4917,14 @@ function match.step(s, dt, input, combat_state)
     end
     match._sanitize_run_states(s, combat_state)
     match._sanitize_press_states(s, combat_state)
+    -- Authoritative possession for this tick is settled. A loose ball keeps the
+    -- prior team, so one flip opens exactly one transition and a spill inside it
+    -- neither restarts nor cancels the window.
+    require("sim.possession_transition").observe(
+        s.transition,
+        s.owner and s.players[s.owner].team or nil,
+        dt
+    )
 
     -- A gained ball resolves any in-flight pass: nobody is "running onto" it
     -- any more. In particular an INTERCEPTED back-pass ends the keeper's
@@ -4853,6 +5004,7 @@ function match.step(s, dt, input, combat_state)
             s.finished = true
             match._reset_press_states(s)
             match._reset_run_states(s)
+            match._reset_transition_state(s)
         else
             -- The team that conceded restarts play.
             place_kickoff(s, scorer == "home" and "away" or "home")
