@@ -294,14 +294,26 @@ The complete browser campaign uses a pinned love.js artifact and Selenium assets
     --campaign soak \
     --artifact /tmp/omp2-web \
     --output /tmp/omp2-rollback-browser-soak.json
+
+./scripts/check_rollback.sh \
+    --browser \
+    --campaign stress \
+    --artifact /tmp/omp2-web \
+    --output /tmp/omp2-rollback-browser-stress.json
 ```
 
+`--campaign stress` selects only the short stress scenario matrix: the three stress seeds without
+the six complete `browser-full` runs and without the soak. It is browser-only, because the native
+campaign owns its full matrix as one pinned case plan; a native `--campaign stress` is rejected.
+The stress campaign runs no `browser-full` case, so it also owns no aggregate browser CPU
+acceptance — the paired clean/playable contract remains the runtime matrix's.
+
 Omitting `--campaign` preserves the complete combined local campaign. CI runs native plus
-independent Chrome/Firefox runtime-matrix and soak jobs from the exact pull-request head and
+independent Chrome/Firefox runtime-matrix and soak jobs from the exact merge commit and
 uploads normalized JSON plus raw logs. The four browser workers run in parallel and can be rerun
 independently, so a performance failure does not discard a successful hour-long memory soak and a
-memory failure does not rerun the runtime matrix. Pull requests run those long jobs only when a
-deterministic rollback-relevance manifest differs between the base revision and the current head.
+memory failure does not rerun the runtime matrix. Those jobs run only when a
+deterministic rollback-relevance manifest differs between the compared revisions.
 The manifest includes the workflow, `conf.lua`, the exact `main.lua` blob, the rollback harness,
 browser/build scripts, frozen historical validation data, and the transitive static Lua `require`
 graph rooted at `sim.rollback_validation` and `game.rollback_validation`. `main.lua` is included
@@ -355,10 +367,57 @@ cannot be assembled into reusable evidence.
 Manual workflow dispatches always run fresh, and pushes to `main` never reuse aggregate evidence;
 an unrelated push may still scope-skip the long campaign. Missing or invalid comparison history
 fails open by running fresh. A stable `OMP-2 rollback gate` job succeeds immediately for an
-unaffected change, independently revalidates an exact aggregate reuse, or requires native plus
-both browser job matrices for an affected change, so required-check policy never depends on a
-skipped matrix job. The ordinary quality, browser artifact smoke, and OMP-1 browser determinism
-jobs remain unconditional.
+unaffected change, requires the stress evidence on a pull request, independently revalidates an
+exact aggregate reuse, or requires native plus both browser job matrices for an affected merge
+commit, so required-check policy never depends on a skipped matrix job. The ordinary quality,
+browser artifact smoke, and OMP-1 browser determinism jobs remain unconditional.
+
+### Where the campaign runs
+
+The complete campaign is a post-merge net rather than a pull-request gate:
+
+- **pull requests** run the unconditional fast gates — Lua quality, browser artifact smoke, and
+  OMP-1 browser determinism — plus the rollback impact filter, the validator self-test, and the
+  Chrome and Firefox `--campaign stress` jobs. Stress is the campaign's best signal per second: 30
+  cases per browser in roughly 90 seconds of validation, against 12 complete cases per browser in
+  about an hour;
+- **pushes to `main`** run the complete campaign — native, both browser runtime matrices, both
+  persistent soaks, and the stable aggregate gate; and
+- **manual dispatch** runs the complete campaign on demand.
+
+`cancel-in-progress` is `${{ github.event_name == 'pull_request' }}`. A superseded pull-request run
+is still cancelled, but a `main` campaign is never cancelled by the next merge. Because the `main`
+ref is constant, unconditional cancellation meant each merge discarded the in-flight campaign of the
+previous merge — runs
+[`30177662086`](https://github.com/osobytes/goliseo/actions/runs/30177662086) and
+[`30161868713`](https://github.com/osobytes/goliseo/actions/runs/30161868713) are two observed
+`main / cancelled` campaigns. Per-commit campaigns now queue instead of discarding the only complete
+evidence for a commit that has already shipped.
+
+### Attributing a post-merge failure
+
+Squash merge produces exactly one `main` commit per pull request and its subject carries the number
+(`feat: ... (#174)`). The workflow publishes the event, merge revision, and head-commit message to
+every job as `GC_CAMPAIGN_*` environment, so each normalized evidence record carries an
+`attribution` block with that revision, the merged subject, and the parsed pull-request number. The
+`OMP-2 post-merge campaign report` job repeats the attribution in the run summary and, when a scoped
+job fails or is cancelled, opens an issue naming the failing jobs, the gate metric each failing
+evidence record wrote down, and the artifact link — no `git log` archaeology and no bisect over a
+batch. That job holds `issues: write` in a job-level `permissions:` block; the workflow-level grant
+remains `actions: read` plus `contents: read`.
+
+### Risk accepted
+
+A rollback regression that the stress matrix does not catch can now land on `main` and is caught by
+the post-merge campaign minutes later, instead of being blocked pre-merge. This is a deliberate
+trade. Main campaigns were being cancelled by the following merge, so the pre-merge gate was buying
+roughly an hour of author delay per rollback-impacting pull request against a post-merge net that
+frequently never finished; one uncancellable campaign per merge is a net increase in reliable
+coverage rather than a decrease. Nightly or batched runs were rejected because standard-runner
+minutes are free on this public repository and batching collapses several merges into one verdict
+over many candidate causes. If merge volume ever outgrows one campaign per commit, the escalation is
+GitHub's merge queue (`merge_group`), which batches candidates, tests the combined result, and
+ejects the offending pull request automatically.
 
 Evidence records source and artifact hashes,
 executable/browser/driver identity, profile/tape hashes, every logical marker, timing totals and

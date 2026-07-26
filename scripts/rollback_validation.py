@@ -37,6 +37,7 @@ from browser_matrix import (
     selenium_metadata,
     validate_manifest,
 )
+from rollback_ci import attribution_from_environment
 from web_serve import ArtifactHandler
 
 
@@ -57,7 +58,8 @@ BROWSER_CPU_FIXTURES = {
     "complete_fixture": "omp1-nebula-orion-eight-streams-v2",
     "combat": "omp2-combat-rollback-v1",
 }
-CAMPAIGNS = ("all", "matrix", "soak")
+CAMPAIGNS = ("all", "matrix", "soak", "stress")
+BROWSER_ONLY_CAMPAIGNS = frozenset({"stress"})
 STRESS_PROFILE = "stress"
 SCENARIOS = (
     "possession_change",
@@ -1868,6 +1870,10 @@ def native_aggregate_record(
 def native_campaign_plan(campaign: str = "all") -> list[tuple[str, tuple[str, ...]]]:
     if campaign not in CAMPAIGNS:
         raise ValueError(f"unknown rollback campaign {campaign!r}")
+    if campaign in BROWSER_ONLY_CAMPAIGNS:
+        raise ValueError(
+            f"the {campaign} campaign is browser-only; native runs own the full matrix"
+        )
     plan: list[tuple[str, tuple[str, ...]]] = []
     if campaign in {"all", "matrix"}:
         plan.extend(native_shard_plan())
@@ -2318,6 +2324,7 @@ def browser_plan(campaign: str = "all") -> list[tuple[str, tuple[str, ...]]]:
         for network_seed in NETWORK_SEEDS:
             for profile in BROWSER_FULL_PROFILES:
                 plan.append(("browser-full", (profile, str(network_seed))))
+    if campaign in {"all", "matrix", "stress"}:
         for network_seed in NETWORK_SEEDS:
             plan.append(("browser-stress", (STRESS_PROFILE, str(network_seed))))
     if campaign in {"all", "soak"}:
@@ -3089,6 +3096,19 @@ def run_self_test() -> None:
         raise RuntimeError("browser soak campaign plan self-test failed")
     if browser_plan("matrix") + browser_plan("soak") != browser_plan("all"):
         raise RuntimeError("split browser campaigns do not reconstruct the full plan")
+    if browser_plan("stress") != expected_plan[6:-1]:
+        raise RuntimeError("browser stress campaign plan self-test failed")
+    if browser_plan("stress") != [
+        step for step in browser_plan("matrix") if step[0] == "browser-stress"
+    ]:
+        raise RuntimeError("browser stress campaign is not a subset of the runtime matrix")
+    try:
+        native_campaign_plan("stress")
+    except ValueError as error:
+        if "browser-only" not in str(error):
+            raise RuntimeError("native stress rejection reports the wrong reason") from error
+    else:
+        raise RuntimeError("browser-only stress campaign was accepted natively")
     if browser_suite_timeout_seconds("browser-full", 1800) != 1800:
         raise RuntimeError("single-fixture browser timeout scaling self-test failed")
     if browser_suite_timeout_seconds("soak", 1800) != 5400:
@@ -4316,11 +4336,14 @@ def main() -> int:
         raise SystemExit("--timeout-seconds must be positive")
     if args.mode in {"browser", "full"} and args.artifact is None:
         raise SystemExit("--artifact is required for browser and full modes")
+    if args.campaign in BROWSER_ONLY_CAMPAIGNS and args.mode != "browser":
+        raise SystemExit(f"--campaign {args.campaign} requires --mode browser")
 
     output = (args.output or default_output()).resolve()
     raw_root = output.parent / (output.stem + "-raw")
     source = source_provenance()
     evidence: dict[str, Any] = {
+        "attribution": attribution_from_environment(os.environ),
         "generated_at": utc_now(),
         "campaign": args.campaign,
         "gate_contract": int(GATE_CONTRACT),
