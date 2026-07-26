@@ -10,11 +10,6 @@ permissions:
     actions: read
     contents: read
 
-env:
-    GC_CAMPAIGN_EVENT: ${{ github.event_name }}
-    GC_CAMPAIGN_SHA: ${{ github.sha }}
-    GC_CAMPAIGN_HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-
 concurrency:
     group: ci-${{ github.workflow }}-${{ github.ref }}
     cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -220,6 +215,11 @@ jobs:
         name: OMP-2 rollback browser stress (${{ matrix.browser }})
         needs: rollback_scope
         if: needs.rollback_scope.outputs.impact == 'true'
+        # Read only by scripts/rollback_validation.py, which sanitizes it.
+        env:
+            GC_CAMPAIGN_EVENT: ${{ github.event_name }}
+            GC_CAMPAIGN_SHA: ${{ github.sha }}
+            GC_CAMPAIGN_HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         runs-on: ubuntu-24.04
         timeout-minutes: 45
         strategy:
@@ -275,6 +275,11 @@ jobs:
         name: OMP-2 rollback native
         needs: rollback_scope
         if: github.event_name != 'pull_request' && needs.rollback_scope.outputs.run == 'true'
+        # Read only by scripts/rollback_validation.py, which sanitizes it.
+        env:
+            GC_CAMPAIGN_EVENT: ${{ github.event_name }}
+            GC_CAMPAIGN_SHA: ${{ github.sha }}
+            GC_CAMPAIGN_HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         runs-on: ubuntu-24.04
         timeout-minutes: 180
 
@@ -326,6 +331,11 @@ jobs:
         name: OMP-2 rollback browser matrix (${{ matrix.browser }})
         needs: rollback_scope
         if: github.event_name != 'pull_request' && needs.rollback_scope.outputs.run == 'true'
+        # Read only by scripts/rollback_validation.py, which sanitizes it.
+        env:
+            GC_CAMPAIGN_EVENT: ${{ github.event_name }}
+            GC_CAMPAIGN_SHA: ${{ github.sha }}
+            GC_CAMPAIGN_HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         runs-on: ubuntu-24.04
         timeout-minutes: 180
         strategy:
@@ -381,6 +391,11 @@ jobs:
         name: OMP-2 rollback browser soak (${{ matrix.browser }})
         needs: rollback_scope
         if: github.event_name != 'pull_request' && needs.rollback_scope.outputs.run == 'true'
+        # Read only by scripts/rollback_validation.py, which sanitizes it.
+        env:
+            GC_CAMPAIGN_EVENT: ${{ github.event_name }}
+            GC_CAMPAIGN_SHA: ${{ github.sha }}
+            GC_CAMPAIGN_HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         runs-on: ubuntu-24.04
         timeout-minutes: 180
         strategy:
@@ -525,6 +540,10 @@ jobs:
             - name: Attribute the campaign to its merge commit
               id: report
               env:
+                  # Read only by scripts/rollback_ci.py, which sanitizes it.
+                  GC_CAMPAIGN_EVENT: ${{ github.event_name }}
+                  GC_CAMPAIGN_SHA: ${{ github.sha }}
+                  GC_CAMPAIGN_HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
                   NEEDS: ${{ toJSON(needs) }}
                   RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
               run: |

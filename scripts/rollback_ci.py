@@ -1145,6 +1145,15 @@ def validate_workflow_wiring() -> None:
     )
     assert "cancel-in-progress: true" not in workflow
 
+    # The attribution environment reaches only the jobs and steps that read it,
+    # so no unrelated step can re-export an untrusted commit message later.
+    assert "\nenv:\n" not in workflow
+    campaign_environment = [
+        line for line in workflow.splitlines() if "GC_CAMPAIGN_" in line
+    ]
+    assert len(campaign_environment) == 15
+    assert all(line.startswith(" " * 12) for line in campaign_environment)
+
     # Least privilege: only the post-merge report job may open an issue.
     permissions = workflow.index("\npermissions:\n")
     assert workflow[permissions:].startswith(
