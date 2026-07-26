@@ -30,6 +30,7 @@ local formations = require("data.formations")
 ---@field carrier_settled boolean
 ---@field carrier_pressure number
 ---@field pressure_distance number
+---@field counterattack boolean?  -- inside a counter-attack window (sim.possession_transition)
 ---@field players OffballRunPlayer[]
 ---@field teammates OffballRunTeammate[]
 ---@field opponents OffballRunOpponent[]
@@ -123,10 +124,13 @@ end
 ---@param player OffballRunPlayer
 ---@return BrainRunTarget?
 local function in_behind_target(context, player)
+    -- A counter-attack window buys ONE immediate in-behind request from an
+    -- unsettled carrier (`grant` keeps only the best). The role gate, lane
+    -- rules, progress floor, team cap, and slot expiry are untouched.
     if
         player.role ~= "fwd"
         or player.run_drive < offball_runs.RUN_DRIVE_THRESHOLD
-        or not context.carrier_settled
+        or not (context.carrier_settled or context.counterattack)
     then
         return nil
     end
@@ -313,6 +317,24 @@ function offball_runs.grant(context, active, now)
             come_short = come_short_target(context, player),
             hold_width = hold_width_target(context, player),
         }
+    end
+    if context.counterattack and not context.carrier_settled then
+        -- Exactly one free in-behind request: the best-scoring option wins and
+        -- the player index breaks ties, so mirrored fixtures mirror.
+        local best = nil
+        for _, player in ipairs(players) do
+            if
+                player.in_behind ~= nil
+                and (best == nil or player.in_behind.score > assert(best.in_behind).score)
+            then
+                best = player
+            end
+        end
+        for _, player in ipairs(players) do
+            if player ~= best then
+                player.in_behind = nil
+            end
+        end
     end
     local candidates = brain.run_candidates({ players = players })
     return brain.grant_runs(candidates, active, offball_runs.MAX_ACTIVE_PER_TEAM, now)

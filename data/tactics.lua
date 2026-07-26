@@ -5,6 +5,8 @@
 --   line_shift : anchor depth bias along the attack axis (fraction of pitch);
 --                + pushes the shape upfield, - drops it deeper
 --   stamina_drain : multiplier (stub for M4)
+--   transition : how long a turnover keeps this team counter-pressing or
+--                counter-attacking before it returns to its ordinary shape
 
 -- Off-ball marking/shape config (see sim/ai.lua + move_players). `scheme` picks
 -- how non-presser defenders behave; the rest are tuning knobs for how tight the
@@ -17,6 +19,17 @@
 ---@field compactness number  -- 0..1 how hard the block shifts to ball/goal when defending
 ---@field support number  -- 0..1 attacking off-ball aggressiveness (support depth)
 
+-- Possession-transition windows (see sim/possession_transition.lua, whose
+-- brain.phase decay turns them into per-team counterpress/counterattack
+-- phases). A turnover gives the team that LOST the ball `counterpress` seconds
+-- of urgent hunting and the team that WON it `counterattack` seconds of extra
+-- attacking push; both then decay into ordinary defend/attack. Zero disables a
+-- window outright. `match.new` fills any missing block with the balanced
+-- default, so a tactic authored without one still simulates.
+---@class TransitionConfig
+---@field counterpress number  -- seconds the losing team counter-presses
+---@field counterattack number  -- seconds the winning team counter-attacks
+
 ---@class TacticData
 ---@field id string
 ---@field name string
@@ -26,6 +39,7 @@
 ---@field line_shift number
 ---@field stamina_drain number
 ---@field marking MarkingConfig
+---@field transition TransitionConfig
 
 ---@type table<string, TacticData>
 return {
@@ -44,6 +58,10 @@ return {
             compactness = 0.5,
             support = 0.5,
         },
+        transition = {
+            counterpress = 2.5,
+            counterattack = 2.5,
+        },
     },
     press_high = {
         id = "press_high",
@@ -60,6 +78,10 @@ return {
             compactness = 0.7,
             support = 0.65,
         },
+        transition = {
+            counterpress = 3.0,
+            counterattack = 2.5,
+        },
     },
     counter = {
         id = "counter",
@@ -75,6 +97,10 @@ return {
             standoff = 40,
             compactness = 0.35,
             support = 0.4,
+        },
+        transition = {
+            counterpress = 0.0,
+            counterattack = 3.0,
         },
     },
 }
