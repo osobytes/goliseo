@@ -795,7 +795,9 @@ local function packet_covers(older, newer)
         or older.session_id ~= newer.session_id
         or older.manifest_id ~= newer.manifest_id
         or older.sender_id ~= newer.sender_id
+        or older.first_input_tick ~= newer.first_input_tick
         or newer.sequence < older.sequence
+        or newer.transport_tick < older.transport_tick
     then
         return false
     end

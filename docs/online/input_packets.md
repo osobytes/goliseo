@@ -163,7 +163,7 @@ The checked-in maximum fixture uses:
 - current plus six prior ticks;
 - all 56 explicit rows;
 - maximum tick, sequence, session-id, and sender-id contexts; and
-- maximum valid axes/held/edge bytes.
+- explicit valid axis, held, and edge bytes.
 
 Full context ids affect the fixed-size packet id rather than being repeated on
 wire. The resulting packet is **755 bytes**, leaving 269 payload bytes below the
