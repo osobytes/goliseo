@@ -8,6 +8,7 @@ local match = require("sim.match")
 local match_snapshot = require("sim.match_snapshot")
 local outfield_decision = require("sim.outfield_decision")
 local outfield_press = require("sim.outfield_press")
+local possession_transition = require("sim.possession_transition")
 local slot_input = require("sim.slot_input")
 local teams = require("data.teams")
 
@@ -1383,7 +1384,7 @@ t.describe("canonical match snapshots", function()
         end
     end)
 
-    t.it("encodes decision children positionally with exact no-run v10 arithmetic", function()
+    t.it("encodes decision children positionally with exact no-run v11 arithmetic", function()
         local legacy_fields = {
             "version",
             "generation",
@@ -1413,6 +1414,31 @@ t.describe("canonical match snapshots", function()
         for tick = 0, 119 do
             match.step(state, fixed_clock.TICK_SECONDS, assert(input_frame.neutral(tick)))
         end
+        -- A slot-mode neutral fixture never turns the ball over, so the
+        -- transition block prices its established-but-idle spelling exactly.
+        t.eq(state.transition.last_team, "home")
+        t.eq(state.transition.holding_team, "home")
+        t.eq(state.transition.hold, possession_transition.ESTABLISH_SECONDS)
+        t.eq(state.transition.turnover_team, nil)
+        t.eq(state.transition.elapsed, 0)
+        local balanced_window = #("n" .. match_snapshot.number_bytes(2.5) .. ";")
+        local transition_bytes = #"k18:transition_windows;"
+            + 2 * (#"k12:counterpress;" + #"k13:counterattack;" + 2 * balanced_window)
+            + #"k10:transition;"
+            + #"k7:version;"
+            + #("n" .. match_snapshot.number_bytes(1) .. ";")
+            + #"k9:last_team;"
+            + #"s4:home;"
+            + #"k12:holding_team;"
+            + #"s4:home;"
+            + #"k4:hold;"
+            + #("n" .. match_snapshot.number_bytes(possession_transition.ESTABLISH_SECONDS) .. ";")
+            + #"k13:turnover_team;"
+            + #"z;"
+            + #"k7:elapsed;"
+            + #"nz;"
+        t.eq(transition_bytes, 311)
+
         local encoded = match_snapshot.encode(match_snapshot.capture(state))
         local expected = 21343
             - 10 * legacy_key_bytes
@@ -1421,8 +1447,9 @@ t.describe("canonical match snapshots", function()
             + #"s5:2-1-1;"
             + #"s5:1-1-2;"
             + 10 * #"k19:keeper_get_up_timer;nz;"
+            + transition_bytes
         t.eq(#encoded, expected)
-        t.eq(#encoded, 20514)
+        t.eq(#encoded, 20825)
 
         local decision_marker = "k17:outfield_decision;d;"
         local next_field_marker = "k9:is_keeper;"
@@ -1548,15 +1575,15 @@ t.describe("canonical match snapshots", function()
                 budget - combat_window
             )
         )
-        t.eq(soccer_bytes, 20419)
-        t.eq(combat_bytes, 23765)
+        t.eq(soccer_bytes, 20697)
+        t.eq(combat_bytes, 24043)
         t.eq(four_run_delta, 346)
         t.eq(press_delta, 26)
         t.eq(combined_delta, 372)
-        t.eq(soccer_window, 644521)
-        t.eq(combat_window, 748247)
-        t.eq(budget - soccer_window, 141911)
-        t.eq(budget - combat_window, 38185)
+        t.eq(soccer_window, 653139)
+        t.eq(combat_window, 756865)
+        t.eq(budget - soccer_window, 133293)
+        t.eq(budget - combat_window, 29567)
         t.is_true(soccer_window < budget)
         t.is_true(combat_window < budget)
     end)

@@ -12,6 +12,7 @@ local combat_snapshot = require("sim.combat_snapshot")
 local formations = require("data.formations")
 local outfield_decision = require("sim.outfield_decision")
 local outfield_press = require("sim.outfield_press")
+local possession_transition = require("sim.possession_transition")
 
 ---@class MatchSnapshot
 ---@field version integer
@@ -26,8 +27,8 @@ local outfield_press = require("sim.outfield_press")
 ---@class MatchSnapshotModule
 local match_snapshot = {}
 
-match_snapshot.VERSION = 10
-match_snapshot.COMBAT_VERSION = 11
+match_snapshot.VERSION = 11
+match_snapshot.COMBAT_VERSION = 12
 
 ---@type table<MatchState, string>
 local unsupported_states = setmetatable({}, { __mode = "k" })
@@ -68,6 +69,8 @@ match_snapshot.MATCH_FIELDS = {
     "marking",
     "marks",
     "outfield_press",
+    "transition_windows",
+    "transition",
     "formation",
     "ball_spin",
     "rng",
@@ -227,6 +230,20 @@ local OUTFIELD_PRESS_FIELDS = {
     "reason",
 }
 
+local TRANSITION_WINDOW_FIELDS = {
+    "counterpress",
+    "counterattack",
+}
+
+local TRANSITION_FIELDS = {
+    "version",
+    "last_team",
+    "holding_team",
+    "hold",
+    "turnover_team",
+    "elapsed",
+}
+
 local ASSIGNMENT_FIELDS = {
     "slot",
     "team",
@@ -262,6 +279,8 @@ local EVENT_FIELD_SET = field_set(EVENT_FIELDS)
 local WINDUP_FIELD_SET = field_set(WINDUP_FIELDS)
 local OUTFIELD_DECISION_FIELD_SET = field_set(OUTFIELD_DECISION_FIELDS)
 local OUTFIELD_PRESS_FIELD_SET = field_set(OUTFIELD_PRESS_FIELDS)
+local TRANSITION_WINDOW_FIELD_SET = field_set(TRANSITION_WINDOW_FIELDS)
+local TRANSITION_FIELD_SET = field_set(TRANSITION_FIELDS)
 local OWNERSHIP_FIELD_SET = field_set({ "version", "rosters", "slots" })
 local ASSIGNMENT_FIELD_SET = field_set(ASSIGNMENT_FIELDS)
 local SNAPSHOT_FIELD_SET = field_set({ "version", "state", "combat" })
@@ -464,6 +483,8 @@ local function copy_state(source, path, make_vec)
     assert_fields(source.marking, TEAM_FIELD_SET, path .. ".marking")
     assert_fields(source.marks, TEAM_FIELD_SET, path .. ".marks")
     assert_fields(source.outfield_press, TEAM_FIELD_SET, path .. ".outfield_press")
+    assert_fields(source.transition_windows, TEAM_FIELD_SET, path .. ".transition_windows")
+    assert_fields(source.transition, TRANSITION_FIELD_SET, path .. ".transition")
     assert_fields(source.formation, TEAM_FIELD_SET, path .. ".formation")
 
     local result = {
@@ -481,6 +502,8 @@ local function copy_state(source, path, make_vec)
         marking = {},
         marks = {},
         outfield_press = {},
+        transition_windows = {},
+        transition = possession_transition.copy_state(source.transition),
         formation = {},
         events = {},
         slot_players = {},
@@ -648,11 +671,31 @@ local function copy_state(source, path, make_vec)
             )
         end
         result.outfield_press[team] = press_state
+        assert_fields(
+            source.transition_windows[team],
+            TRANSITION_WINDOW_FIELD_SET,
+            path .. ".transition_windows." .. team
+        )
+        result.transition_windows[team] =
+            possession_transition.copy_windows(source.transition_windows[team])
         assert(
             type(source.formation[team]) == "string" and formations[source.formation[team]],
             path .. ".formation." .. team .. " must identify an authored formation"
         )
         result.formation[team] = copy_scalar(source.formation[team], path .. ".formation." .. team)
+    end
+    -- A live transition is a decaying timer: a finished match cannot hold one,
+    -- and one that outlived both tactic windows is a leak, not a phase.
+    if possession_transition.active(result.transition) then
+        assert(
+            not result.finished,
+            path .. ".transition cannot stay live after the match has finished"
+        )
+        assert(
+            result.transition.elapsed
+                < possession_transition.window_limit(result.transition, result.transition_windows),
+            path .. ".transition outlived both tactic windows"
+        )
     end
     for index = 1, #source.events do
         result.events[index] = copy_event(source.events[index], path .. ".events." .. index)
@@ -825,6 +868,11 @@ local function copy_owned_state(source, make_vec)
             home = outfield_press.copy_state(source.outfield_press.home),
             away = outfield_press.copy_state(source.outfield_press.away),
         },
+        transition_windows = {
+            home = possession_transition.copy_windows(source.transition_windows.home),
+            away = possession_transition.copy_windows(source.transition_windows.away),
+        },
+        transition = possession_transition.copy_state(source.transition),
         formation = {
             home = source.formation.home,
             away = source.formation.away,
@@ -1210,6 +1258,18 @@ local function append_state(encoder, version, state)
                     append_scalar(encoder, value[team][press_field])
                 end
             end
+        elseif field == "transition_windows" then
+            for _, team in ipairs({ "home", "away" }) do
+                for _, window_field in ipairs(TRANSITION_WINDOW_FIELDS) do
+                    append_name(encoder, window_field)
+                    append_scalar(encoder, value[team][window_field])
+                end
+            end
+        elseif field == "transition" then
+            for _, transition_field in ipairs(TRANSITION_FIELDS) do
+                append_name(encoder, transition_field)
+                append_scalar(encoder, value[transition_field])
+            end
         elseif field == "formation" then
             append_scalar(encoder, value.home)
             append_scalar(encoder, value.away)
@@ -1496,6 +1556,24 @@ local function first_difference_canonical(a, b)
                             bv[team][child]
                         )
                     end
+                end
+            end
+        elseif field == "transition_windows" then
+            for _, team in ipairs({ "home", "away" }) do
+                for _, child in ipairs(TRANSITION_WINDOW_FIELDS) do
+                    if not same_scalar(av[team][child], bv[team][child]) then
+                        return difference(
+                            path .. "." .. team .. "." .. child,
+                            av[team][child],
+                            bv[team][child]
+                        )
+                    end
+                end
+            end
+        elseif field == "transition" then
+            for _, child in ipairs(TRANSITION_FIELDS) do
+                if not same_scalar(av[child], bv[child]) then
+                    return difference(path .. "." .. child, av[child], bv[child])
                 end
             end
         elseif field == "formation" then
