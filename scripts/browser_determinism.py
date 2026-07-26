@@ -59,8 +59,8 @@ REQUIRED_INPUT_PROTOCOL_FIELDS = {
     "history": "6",
     "delay": "3",
     "vectors": "2",
-    "guest": "94db8753a3be9846",
-    "host": "2e77227f216a1eba",
+    "guest": "3332f9c19ea9ce34",
+    "host": "1e9b1ebfad823a44",
     "max_bytes": "755",
 }
 ERROR_MARKERS = (
@@ -452,7 +452,7 @@ def self_test() -> None:
         raise RuntimeError("protocol golden marker accepted a changed vector count")
     input_protocol_marker = (
         "GC_INPUT_PROTOCOL|golden|schema=1|input=2|history=6|delay=3|vectors=2"
-        "|guest=94db8753a3be9846|host=2e77227f216a1eba|max_bytes=755"
+        "|guest=3332f9c19ea9ce34|host=1e9b1ebfad823a44|max_bytes=755"
     )
     if parse_input_protocol_marker(input_protocol_marker) != REQUIRED_INPUT_PROTOCOL_FIELDS:
         raise RuntimeError("input protocol golden marker self-test failed")
