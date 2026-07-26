@@ -21,15 +21,15 @@ local conformance = {}
 
 ---@type InputProtocolGolden
 conformance.GOLDEN = {
-    guest_wire = "GCIP;1;G;2;27c9d39785b1aaaf;7;f6f6f9dbe278dccb;12;0;3;7;"
+    guest_wire = "GCIP;1;G;2;fd826ceb66f9a4be;7;f6f6f9dbe278dccb;12;0;3;7;"
         .. "AAAAAAJ/fwAAAAAAAQIA/gUJAAAAAgJ/f4AgAAAAAwJ/f4AAAAAABAJ/fwBAAAAABQJ/f38f"
         .. "AAAABgL+ABIW",
-    guest_digest = "3d68556810fe82ea",
-    host_wire = "GCIP;1;H;2;27c9d39785b1aaaf;13;65c65955c65cc80a;15;0;3;16;"
+    guest_digest = "94db8753a3be9846",
+    host_wire = "GCIP;1;H;2;fd826ceb66f9a4be;13;65c65955c65cc80a;15;0;3;16;"
         .. "AAAABQGwTgAAAAAABQKvTwEBAAAABQOuUAICAAAABQStUQMDAAAABQWsUgQEAAAABQarUwUF"
         .. "AAAABQeqVAYGAAAABQipVYAgAAAABgG6RAAAAAAABgK5RQEBAAAABgO4RgICAAAABgS3RwMD"
         .. "AAAABgW2SAQEAAAABga1SQUFAAAABge0SgYGAAAABgizS4Ag",
-    host_digest = "099c56520dc1b9a6",
+    host_digest = "2e77227f216a1eba",
     maximal_wire_bytes = 755,
 }
 

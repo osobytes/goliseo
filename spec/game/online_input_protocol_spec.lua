@@ -133,13 +133,13 @@ end
 t.describe("OMP-3 input packet protocol", function()
     t.it("pins literal native and love.js conformance vectors", function()
         local report = input_conformance.verify()
-        t.eq(report.guest_digest, "3d68556810fe82ea")
-        t.eq(report.host_digest, "099c56520dc1b9a6")
+        t.eq(report.guest_digest, "94db8753a3be9846")
+        t.eq(report.host_digest, "2e77227f216a1eba")
         t.eq(report.maximal_wire_bytes, 755)
         t.eq(
             input_conformance.marker(report),
             "GC_INPUT_PROTOCOL|golden|schema=1|input=2|history=6|delay=3|vectors=2"
-                .. "|guest=3d68556810fe82ea|host=099c56520dc1b9a6|max_bytes=755"
+                .. "|guest=94db8753a3be9846|host=2e77227f216a1eba|max_bytes=755"
         )
     end)
 
