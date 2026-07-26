@@ -81,7 +81,7 @@ diagnostically.
 | retained snapshot boundaries | `<= 31` | every playable case |
 | canonical retained snapshot payload | `< 768 KiB` | every playable case |
 | exact accounted snapshot/input/output/event history | `< 1 MiB` | every playable case |
-| terminal forced-GC Lua heap, process-tree RSS, and Chrome JS-heap growth from warm-up | `<= 10%` | persistent soak |
+| forced-GC Lua heap, process-tree RSS, and Chrome JS-heap growth, mean of the last two checkpoints over the mean of the first two | `<= 10%` | persistent soak |
 
 Only `complete_fixture` meets that sample-count precondition. The browser `combat` cases record
 six to eight rollback samples by construction, so their p99.9 ratio is recorded diagnostically and
