@@ -5320,27 +5320,37 @@ def run_self_test() -> None:
             ),
         )
         for runtime_name in BROWSER_RUNTIMES:
+            # Same healthy shape as synthetic_browser_cpu_matrix, including the
+            # observed browser combat sample count: combat sits below the p99.9
+            # sample floor in reality, and contract 7 fails closed for any
+            # uncalibrated scenario that clears it.
             for seed_index, seed_shard in enumerate(BROWSER_MATRIX_SHARDS):
                 seed_value = int(seed_shard)
-                clean_p95 = 2.0 + seed_index * 0.25
-                combat_clean_p95 = clean_p95 * 1.2
+                machine_p95 = 2.0 + seed_index * 0.25
+                combat_machine_p95 = machine_p95 * 1.2
+                playable_p95 = machine_p95 * HEALTHY_WORK_RATIO
+                combat_playable_p95 = combat_machine_p95 * HEALTHY_COMBAT_WORK_RATIO
                 seed_runs = [
                     synthetic_browser_cpu_run(
                         "clean",
                         seed_value,
-                        clean_p95,
+                        machine_p95,
                         0.0,
-                        combat_p95_work_ms=combat_clean_p95,
+                        combat_p95_work_ms=combat_machine_p95,
                         combat_rollback_p999_ms=0.0,
+                        combat_rollback_samples=OBSERVED_COMBAT_ROLLBACK_SAMPLES,
                         browser_name=runtime_name,
                     ),
                     synthetic_browser_cpu_run(
                         "playable",
                         seed_value,
-                        clean_p95 * 5.5,
-                        clean_p95 * 9.5,
-                        combat_p95_work_ms=combat_clean_p95 * 5.4,
-                        combat_rollback_p999_ms=combat_clean_p95 * 9.0,
+                        playable_p95,
+                        playable_p95 * HEALTHY_TAIL_RATIO,
+                        combat_p95_work_ms=combat_playable_p95,
+                        combat_rollback_p999_ms=(
+                            combat_playable_p95 * HEALTHY_COMBAT_TAIL_RATIO
+                        ),
+                        combat_rollback_samples=OBSERVED_COMBAT_ROLLBACK_SAMPLES,
                         browser_name=runtime_name,
                     ),
                 ]
