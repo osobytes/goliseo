@@ -5061,10 +5061,12 @@ def run_self_test() -> None:
     if breach_replay["pass"]:
         raise RuntimeError("replayed genuine browser rollback breaches passed the gate")
 
-    # rollback_ci.py restates the shard sets instead of importing them, because it
-    # runs in the impact-filter job, which deliberately installs no browser
-    # evidence dependencies and therefore cannot import this module. Assert the
-    # two agree from this side, where both imports are already available.
+    # rollback_ci.py restates the shard sets instead of importing them to keep the
+    # impact-filter job's import graph minimal: that job deliberately installs no
+    # browser evidence dependencies. The import would in fact succeed today, since
+    # browser_determinism defers its selenium imports into function bodies, but
+    # relying on that couples the scope job to an incidental laziness one edit could
+    # remove. Assert the two agree from this side, where both imports are available.
     import rollback_ci
 
     if (
