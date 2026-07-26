@@ -2,8 +2,16 @@ local fnv1a64 = require("core.fnv1a64")
 local input_protocol = require("game.online.input_protocol")
 local fixture = require("game.online.input_protocol_fixture")
 local input_frame = require("sim.input_frame")
+local match_snapshot = require("sim.match_snapshot")
 
+-- The wire literals below embed `manifest-id`, a hash over the session manifest,
+-- which carries the snapshot and combat schema versions. Bumping either version
+-- invalidates every literal here, so the versions they were generated against are
+-- pinned too and checked first: a stale golden then reports which version it was
+-- built for instead of an opaque byte mismatch.
 ---@class InputProtocolGolden
+---@field snapshot_version integer
+---@field combat_version integer
 ---@field guest_wire string
 ---@field guest_digest string
 ---@field host_wire string
@@ -21,6 +29,8 @@ local conformance = {}
 
 ---@type InputProtocolGolden
 conformance.GOLDEN = {
+    snapshot_version = 10,
+    combat_version = 11,
     guest_wire = "GCIP;1;G;2;ed404908cc301829;7;f6f6f9dbe278dccb;12;0;3;7;"
         .. "AAAAAAJ/fwAAAAAAAQIA/gUJAAAAAgJ/f4AgAAAAAwJ/f4AAAAAABAJ/fwBAAAAABQJ/f38f"
         .. "AAAABgL+ABIW",
@@ -35,6 +45,19 @@ conformance.GOLDEN = {
 
 ---@return InputProtocolConformanceReport
 function conformance.verify()
+    local versions = ("snapshot %d / combat %d"):format(
+        match_snapshot.VERSION,
+        match_snapshot.COMBAT_VERSION
+    )
+    assert(
+        match_snapshot.VERSION == conformance.GOLDEN.snapshot_version
+            and match_snapshot.COMBAT_VERSION == conformance.GOLDEN.combat_version,
+        ("input packet goldens are stale for %s; pinned for snapshot %d / combat %d"):format(
+            versions,
+            conformance.GOLDEN.snapshot_version,
+            conformance.GOLDEN.combat_version
+        )
+    )
     local guest = fixture.guest()
     local guest_wire = assert(input_protocol.encode(guest))
     assert(guest_wire == conformance.GOLDEN.guest_wire, "guest input packet golden changed")
