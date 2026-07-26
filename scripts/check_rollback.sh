@@ -11,11 +11,18 @@ forward=()
 
 usage() {
     printf '%s\n' \
-        "Usage: $0 [--native|--browser|--full] [--artifact DIR] [--output FILE]" \
+        "Usage: $0 [--native|--browser|--full|--aggregate] [--artifact DIR] [--output FILE]" \
         "          [--runtime-browser chrome|firefox]" \
         "          [--campaign all|matrix|soak|stress]  (stress is browser-only)" \
+        "          [--shard 2001|2002|2003|tail] [--evidence-root DIR]" \
         "          [--allow-dirty] [--self-test]" \
-        "          [rollback_validation.py options]"
+        "          [rollback_validation.py options]" \
+        "" \
+        "--shard restricts a run to one pinned network seed so the CI shards stay" \
+        "parallel; every clean control still runs beside its own playable seed." \
+        "The native 'tail' shard carries the seed-independent late-window pair and" \
+        "the persistent soak. --aggregate merges uploaded shard evidence from" \
+        "--evidence-root and applies the campaign-wide acceptance."
 }
 
 while [ "$#" -gt 0 ]; do
@@ -31,6 +38,26 @@ while [ "$#" -gt 0 ]; do
         --full)
             mode="full"
             shift
+            ;;
+        --aggregate)
+            mode="aggregate"
+            shift
+            ;;
+        --shard)
+            [ "$#" -ge 2 ] || {
+                echo "--shard needs a network seed or tail" >&2
+                exit 2
+            }
+            forward+=(--shard "$2")
+            shift 2
+            ;;
+        --evidence-root)
+            [ "$#" -ge 2 ] || {
+                echo "--evidence-root needs a directory" >&2
+                exit 2
+            }
+            forward+=(--evidence-root "$2")
+            shift 2
             ;;
         --artifact)
             [ "$#" -ge 2 ] || {

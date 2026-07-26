@@ -67,7 +67,7 @@ tick per `love.update`, so WebDriver can observe progress and terminate a stuck 
 Every `playable` case, including the persistent soak, satisfies the deterministic correctness and
 retained-storage gates. Native runtime-matrix cases retain the absolute CPU budgets. Browser
 runtime-matrix CPU acceptance is an aggregate, same-browser comparison: each playable seed is
-paired with the clean case for that seed from the same job and exact browser runtime. The
+paired with the clean case for that seed from the same shard job and exact browser runtime. The
 separately rerunnable soak owns the retained-memory gate and records its CPU timings
 diagnostically.
 
@@ -95,19 +95,26 @@ absolute millisecond ceiling. The p95-work ratio gate, the minimum-sample-count 
 emitted markers, and the native gates are unchanged. See "Why the rollback tail is normalized
 against the playable case" below. An individual browser
 playable case records `cpu_gate_mode=normalized_deferred`; it cannot fail solely because its
-absolute p95 work or p99.9 rollback time crosses the product budget. The validator first collects
-six unique clean controls and six unique playable cases per browser (`complete_fixture` and
-`combat` across three seeds). It validates exact browser, browser-version, scenario, profile, and
-seed identity, requires a finite positive clean p95 denominator, and then evaluates every
-scenario/seed pair with strict `<` comparisons. Missing, duplicate, malformed, or mismatched
-controls fail closed. It also requires a finite positive **playable** p95 work value, because
-contract 7 divides by it; `finite_non_negative_float` admits `0.0` upstream, so a collapsed or
-absent normalizer would otherwise become a `0/0` exemption rather than a failure. The normalized
-evidence records every pair, all three ratios, the thresholds, all violations, the clean and
-playable rollback sample counts, an explicit per-pair `rollback_p999_gate` block, and the absolute
-p95, p99.9, maximum, and over-33.3-ms count.
-Each clean control runs immediately before its matching playable seed. This interleaving reduces
-temporal shared-runner drift without adding a case or weakening exact seed pairing.
+absolute p95 work or p99.9 rollback time crosses the product budget. Acceptance is applied at two
+scopes over the same contract. Each seed shard scores its own two pairs (`complete_fixture` and
+`combat` for its seed) and records `scope=shard`; the rollback gate then merges the three shards
+per browser and scores all six pairs with `scope=aggregate`. Both scopes collect unique clean
+controls and playable cases, validate exact browser, browser-version, scenario, profile, and seed
+identity, require a finite positive clean p95 denominator, and evaluate every scenario/seed pair
+with strict `<` comparisons. A shard that carries a seed outside its own scope fails closed, as do
+missing, duplicate, malformed, or mismatched controls. Both scopes also require a finite positive
+**playable** p95 work value, because contract 7 divides by it; `finite_non_negative_float` admits
+`0.0` upstream, so a collapsed or absent normalizer would otherwise become a `0/0` exemption
+rather than a failure. The normalized evidence records the scope, its seeds, every pair, all three
+ratios, the thresholds, all violations, the clean and playable rollback sample counts, an explicit
+per-pair `rollback_p999_gate` block, and the absolute p95, p99.9, maximum, and over-33.3-ms count.
+Each clean control runs immediately before its matching playable seed inside one shard. This
+interleaving reduces temporal shared-runner drift without adding a case or weakening exact seed
+pairing, and it is why the campaign shards by seed rather than by profile: a profile shard would
+put a pair on two runners and break the comparison it exists to make. Both the minimum-sample
+precondition below and contract 7's tail gates are evaluated per individual pair, entirely inside
+one playable run, and are never summed across shards, so they are invariant to where the shard
+boundaries fall.
 
 ### The rollback-p99.9 minimum sample count
 
@@ -559,6 +566,20 @@ the persistent soak:
 `--campaign matrix` selects the fresh runtime matrix plus the late-window pair, while
 `--campaign soak` selects only the persistent native soak. Omitting it runs both in pinned order.
 
+`--shard` restricts a run to one pinned network seed, which is how CI parallelises the campaign
+without weakening it. The 54 native matrix cases partition exactly by seed — every profile
+contributes one complete-fixture and one combat case per seed, and each seed owns its ten stress
+cases — so `--shard 2001`, `--shard 2002`, and `--shard 2003` reconstruct the pinned plan between
+them. The seed-independent remainder, the late-window pair and the persistent native soak, is the
+`tail` shard:
+
+```sh
+./scripts/check_rollback.sh --native --shard 2001 \
+    --output /tmp/omp2-rollback-native-2001.json
+./scripts/check_rollback.sh --native --shard tail \
+    --output /tmp/omp2-rollback-native-tail.json
+```
+
 The complete browser campaign uses a pinned love.js artifact and Selenium assets:
 
 ```sh
@@ -587,12 +608,27 @@ campaign owns its full matrix as one pinned case plan; a native `--campaign stre
 The stress campaign runs no `browser-full` case, so it also owns no aggregate browser CPU
 acceptance — the paired clean/playable contract remains the runtime matrix's.
 
-Omitting `--campaign` preserves the complete combined local campaign. CI runs native plus
-independent Chrome/Firefox runtime-matrix and soak jobs from the exact merge commit and
-uploads normalized JSON plus raw logs. The four browser workers run in parallel and can be rerun
-independently, so a performance failure does not discard a successful hour-long memory soak and a
-memory failure does not rerun the runtime matrix. Those jobs run only when a
-deterministic rollback-relevance manifest differs between the compared revisions.
+The browser runtime matrix accepts `--shard` on the same seed key, because the browser CPU
+contract is *same-shard, same-runtime, seed-paired*: each clean control runs immediately before
+its own playable seed, so a seed shard measures both halves of every pair itself and temporal
+drift stays inside one job. Sharding by profile would split a pair across runners and is
+rejected. The persistent browser soak refuses `--shard` outright: its five fixtures are one
+continuous process whose forced-GC checkpoints (`warmup`, `120`, `360`, `600`, `final`) are
+compared final-against-warmup on a single Lua heap, process-tree RSS, and Chrome JS heap. Its seed
+list deliberately repeats (2001, 2002, 2003, 2001, 2002), so it measures retention across
+repetition rather than seed coverage; restarting it per seed would reset the baseline and delete
+the measurement. The already-short stress campaign refuses `--shard` too: it is its own job.
+
+Omitting `--campaign` preserves the complete combined local campaign. CI runs the campaign from
+the exact merge commit as twelve long shard jobs — four native shards (`2001`, `2002`, `2003`,
+`tail`), six browser runtime-matrix shards (Chrome and Firefox × three seeds), and the two whole
+browser soaks — beside the two short browser stress jobs, and uploads normalized JSON plus raw
+logs per shard. Every shard is independent and can be rerun on its own, so a performance failure
+does not discard a successful hour-long memory soak and a memory failure does not rerun the
+runtime matrix. Sharding trades concurrency for latency at identical total CPU-minutes: it takes
+the runtime matrix and the native campaign off the critical path, leaving the unshardable soak as
+the campaign's floor. Those jobs run only when a deterministic rollback-relevance manifest differs
+between the compared revisions.
 The manifest includes the workflow, `conf.lua`, the exact `main.lua` blob, the rollback harness,
 browser/build scripts, frozen historical validation data, and the transitive static Lua `require`
 graph rooted at `sim.rollback_validation` and `game.rollback_validation`. `main.lua` is included
@@ -603,7 +639,7 @@ Every selected manifest path must be a regular tracked file rather than a symlin
 The graph accepts only uniquely resolved, literal calls to the global Lua `require`; member-style,
 non-literal, and escaped imports are unsafe. Missing revisions or roots, missing or ambiguous
 reachable modules, unsafe imports or source encoding, non-regular selected paths, and Git parsing
-errors fail open to the complete five-shard campaign. Adding a module does not affect rollback
+errors fail open to the complete sharded campaign. Adding a module does not affect rollback
 evidence until a reachable validation module imports it; wiring that import changes the root blob
 and adds the new dependency blob to the manifest. Consequently an unreferenced module such as
 `sim/brain.lua`, a spec-only change, or ordinary docs do not launch the expensive jobs. They are
@@ -613,17 +649,17 @@ so a later unrelated commit cannot conceal an earlier reachable change.
 
 Pull-request evidence reuse is now **inert**. The mechanism is still wired and still fails closed,
 but it can no longer fire: a reusable producer must be a completed-success, first-attempt
-`pull_request` run whose five long jobs and five uploaded artifacts all succeeded, and pull requests
+`pull_request` run whose long shard jobs and uploaded artifacts all succeeded, and pull requests
 no longer run those long jobs at all. Discovery therefore finds no candidate, reports no reuse, and
 the merge commit validates fresh. It costs a few GitHub API calls per pull request and saves
 nothing. Whether to retarget discovery at `main` producers or retire it is tracked in
 [#187](https://github.com/osobytes/goliseo/issues/187) and is deliberately out of scope here. The
 rest of this subsection records the contract as it stands in code, not as an active saving.
 
-The record discovery looks for is a completed pull-request run whose impact filter, five long jobs,
-every actual campaign step, and five uploaded artifacts all succeeded on attempt one. GitHub's run,
-attempt-specific job/step history, and those artifacts are that record; CI publishes no separate
-cache entry or mutable pointer.
+The record discovery looks for is a completed pull-request run whose impact filter, twelve long
+shard jobs, two stress jobs, every actual campaign step, and every uploaded artifact all succeeded
+on attempt one. GitHub's run, attempt-specific job/step history, and those artifacts are that
+record; CI publishes no separate cache entry or mutable pointer.
 
 A later head in the same active pull request may reuse such a run only when the rollback-relevant
 tracked content is byte-for-byte unchanged. The fingerprint covers its format and gate contract,
@@ -640,15 +676,18 @@ Actions API establishes all of the following:
   head repository and ref, and base repository, ref, and revision by immutable repository IDs;
 - its revision is an ancestor of the current head and independently recomputes to the same
   relevant-content fingerprint;
-- the impact filter, stable aggregate, five long jobs, each actual campaign step, and each
-  artifact-upload step all completed successfully on attempt one on the pinned Linux runner; and
-- the exact five artifacts still exist uniquely, are unexpired and nonempty, remain within the
-  evidence-size bound, and expose SHA-256 digests.
+- the impact filter, stable aggregate, every one of the twelve long shard jobs, both stress jobs,
+  each actual campaign step, and each artifact-upload step all completed successfully on attempt
+  one on the pinned Linux runner, and the gate itself downloaded and aggregated the shard evidence;
+  and
+- the exact fifteen artifacts — fourteen shards plus the gate's merged aggregate — still exist
+  uniquely, are unexpired and nonempty, remain within the evidence-size bound, and expose SHA-256
+  digests.
 
 This check deliberately validates GitHub's run, attempt-specific job/step, and artifact metadata;
-it does not download and re-audit the five ZIP bodies on every docs follow-up. Any network, API,
+it does not download and re-audit the ZIP bodies on every docs follow-up. Any network, API,
 pagination, ancestry, schema, fingerprint, job, step, artifact, digest, expiry, or provenance
-uncertainty fails open by running all five jobs. A run that reused evidence has skipped long jobs
+uncertainty fails open by running every shard. A run that reused evidence has skipped long jobs
 and therefore cannot become a producer for another reuse; discovery rejects it and may continue
 to an older complete fresh run. Partial, failed, cancelled, expired, or rerun-to-green campaigns
 cannot be assembled into reusable evidence.
@@ -657,10 +696,25 @@ Manual workflow dispatches always run fresh, and pushes to `main` never reuse ag
 an unrelated push may still scope-skip the long campaign. Missing or invalid comparison history
 fails open by running fresh. A stable `OMP-2 rollback gate` job succeeds immediately for an
 unaffected change, requires the stress evidence on a pull request, independently revalidates an
-exact aggregate reuse (unreachable while reuse is inert), or requires native plus both browser job
-matrices for an affected merge commit, so required-check policy never depends on a skipped matrix
+exact aggregate reuse (unreachable while reuse is inert), or requires every native and browser
+shard for an affected merge commit, so required-check policy never depends on a skipped matrix
 job. The ordinary quality,
 browser artifact smoke, and OMP-1 browser determinism jobs remain unconditional.
+
+For an affected merge commit the gate does more than read job results. GitHub rolls every shard of
+a matrix job up into one `needs.<job>.result`, so that value proves a failed, cancelled, or wholly
+skipped matrix but cannot see a shard that never existed. The gate therefore downloads every
+uploaded shard artifact and re-derives the campaign from a pinned shard manifest: a shard that
+vanished, was skipped, was cancelled, or was renamed uploads nothing, so its pinned name is missing
+and the gate fails closed naming it. An artifact the manifest does not account for fails closed
+too, so an added evidence job cannot slip past the gate unexamined. Each shard's evidence must
+additionally report the pinned schema and gate contract, its own `pass`, a clean checkout at the
+gate's exact revision, and its own declared shard, campaign, and runtime, so evidence from another
+commit or another seed cannot be substituted. The gate then reassembles the pinned 54-case native
+plan across the three seed shards, requires the tail shard's late-window pair and passing native
+soak, merges each browser's three seed shards, applies the full six-pair CPU acceptance per
+browser, and requires each browser's whole soak and complete stress seed coverage before it
+succeeds.
 
 ### Where the campaign runs
 
@@ -721,7 +775,6 @@ can never deliver; retargeting or retiring it is tracked in
 [#187](https://github.com/osobytes/goliseo/issues/187). And the pull-request `OMP-2 rollback gate`
 now certifies stress evidence only, as stated above, which is weaker than its unchanged name
 implies.
-
 Evidence records source and artifact hashes,
 executable/browser/driver identity, profile/tape hashes, every logical marker, timing totals and
 percentiles, raw quantized runtime-matrix rollback durations, retained-byte breakdowns, memory

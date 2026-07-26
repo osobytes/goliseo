@@ -60,6 +60,14 @@ BROWSER_CPU_FIXTURES = {
 }
 CAMPAIGNS = ("all", "matrix", "soak", "stress")
 BROWSER_ONLY_CAMPAIGNS = frozenset({"stress"})
+# Only the seed-partitioned runtime matrix shards. The short stress campaign is
+# already its own job, and the persistent soak is one continuous process.
+SHARDED_CAMPAIGNS = frozenset({"matrix"})
+BROWSER_RUNTIMES = ("chrome", "firefox")
+SEED_SHARDS = tuple(str(seed) for seed in NETWORK_SEEDS)
+TAIL_SHARD = "tail"
+NATIVE_SHARDS = (*SEED_SHARDS, TAIL_SHARD)
+BROWSER_MATRIX_SHARDS = SEED_SHARDS
 STRESS_PROFILE = "stress"
 SCENARIOS = (
     "possession_change",
@@ -615,13 +623,18 @@ def expected_case_plan(
         }
 
     if suite == "native":
+        seeds = NETWORK_SEEDS
         if arguments:
-            raise RuntimeError("native validation does not accept case filters")
+            if len(arguments) != 1 or arguments[0] not in SEED_SHARDS:
+                raise RuntimeError(
+                    "native validation accepts at most one pinned network seed"
+                )
+            seeds = (int(arguments[0]),)
         for profile in NATIVE_PROFILES:
-            for seed in NETWORK_SEEDS:
+            for seed in seeds:
                 plan.append(full_case(profile, seed))
                 plan.append(combat_case(profile, seed))
-        for seed in NETWORK_SEEDS:
+        for seed in seeds:
             for scenario in SCENARIOS:
                 plan.append(scenario_case(scenario, STRESS_PROFILE, seed))
             plan.append(
@@ -1952,28 +1965,35 @@ def run_native_once(
     return record
 
 
-def native_shard_plan() -> list[tuple[str, tuple[str, ...]]]:
+def native_shard_plan(
+    network_seed: str | None = None,
+) -> list[tuple[str, tuple[str, ...]]]:
     """Split independent native matrix cases into fresh bounded processes."""
 
+    if network_seed is not None and network_seed not in SEED_SHARDS:
+        raise ValueError(f"unknown native network seed shard {network_seed!r}")
+    seeds = NETWORK_SEEDS if network_seed is None else (int(network_seed),)
     plan: list[tuple[str, tuple[str, ...]]] = []
     for profile in NATIVE_PROFILES:
-        for network_seed in NETWORK_SEEDS:
-            plan.append(("browser-full", (profile, str(network_seed))))
-    for network_seed in NETWORK_SEEDS:
-        plan.append(("browser-stress", (STRESS_PROFILE, str(network_seed))))
+        for seed in seeds:
+            plan.append(("browser-full", (profile, str(seed))))
+    for seed in seeds:
+        plan.append(("browser-stress", (STRESS_PROFILE, str(seed))))
     return plan
 
 
 def native_aggregate_record(
     run_number: int,
     shards: list[dict[str, Any]],
+    network_seed: str | None = None,
 ) -> dict[str, Any]:
     markers = [
         parse_marker(raw)
         for shard in shards
         for raw in shard["markers"]
     ]
-    validate_case_plan(markers, "native", ())
+    arguments = () if network_seed is None else (network_seed,)
+    validate_case_plan(markers, "native", arguments)
     validate_case_integrity(markers, "native")
     encoded = ("\n".join(marker.raw for marker in markers) + "\n").encode()
     return {
@@ -1985,6 +2005,7 @@ def native_aggregate_record(
         "logical_marker_sha256": sha256_bytes(encoded),
         "markers": [marker.raw for marker in markers],
         "result_count": sum(1 for marker in markers if marker.kind == "result"),
+        "network_seed": network_seed,
         "run": run_number,
         "shard_count": len(shards),
         "shards": shards,
@@ -1992,18 +2013,36 @@ def native_aggregate_record(
     }
 
 
-def native_campaign_plan(campaign: str = "all") -> list[tuple[str, tuple[str, ...]]]:
+def native_campaign_plan(
+    campaign: str = "all",
+    shard: str | None = None,
+) -> list[tuple[str, tuple[str, ...]]]:
+    """Select the pinned native plan, optionally restricted to one CI shard.
+
+    ``shard`` is a network seed for the seed-partitioned matrix cases, or
+    ``tail`` for the seed-independent late-window pair and persistent soak.
+    """
+
     if campaign not in CAMPAIGNS:
         raise ValueError(f"unknown rollback campaign {campaign!r}")
     if campaign in BROWSER_ONLY_CAMPAIGNS:
         raise ValueError(
             f"the {campaign} campaign is browser-only; native runs own the full matrix"
         )
+    if shard is not None and shard not in NATIVE_SHARDS:
+        raise ValueError(f"unknown native rollback shard {shard!r}")
     plan: list[tuple[str, tuple[str, ...]]] = []
+    if shard == TAIL_SHARD:
+        if campaign in {"all", "matrix"}:
+            plan.append(("late-window", ()))
+        if campaign in {"all", "soak"}:
+            plan.append(("soak", ()))
+        return plan
     if campaign in {"all", "matrix"}:
-        plan.extend(native_shard_plan())
-        plan.append(("late-window", ()))
-    if campaign in {"all", "soak"}:
+        plan.extend(native_shard_plan(shard))
+        if shard is None:
+            plan.append(("late-window", ()))
+    if campaign in {"all", "soak"} and shard is None:
         plan.append(("soak", ()))
     return plan
 
@@ -2014,38 +2053,41 @@ def native_matrix(
     raw_root: Path,
     timeout_seconds: int,
     campaign: str,
+    shard: str | None = None,
 ) -> None:
+    plan = native_campaign_plan(campaign, shard)
+    matrix_plan = [entry for entry in plan if entry[0].startswith("browser-")]
+    network_seed = shard if shard in SEED_SHARDS else None
     native: dict[str, Any] = {
         "matrix_process_model": "fresh_process_per_full_case_and_stress_seed",
         "plan": [
             {"arguments": list(arguments), "suite": suite}
-            for suite, arguments in native_campaign_plan(campaign)
+            for suite, arguments in plan
         ],
         "campaign": campaign,
-        "persistent_soak": campaign in {"all", "soak"},
+        "network_seed": network_seed,
+        "persistent_soak": ("soak", ()) in plan,
         "runtime": executable_metadata(love_bin),
+        "shard": shard,
         "fresh_runs": [],
     }
     evidence["native"] = native
-    if campaign in {"all", "matrix"}:
+    if matrix_plan:
         for run_number in (1, 2):
             shards: list[dict[str, Any]] = []
-            for shard_number, (suite, arguments) in enumerate(
-                native_shard_plan(),
-                start=1,
-            ):
+            for shard_number, (suite, arguments) in enumerate(matrix_plan, start=1):
                 slug = "-".join((suite, *arguments))
-                shard = run_native_once(
+                process = run_native_once(
                     love_bin,
                     suite,
                     arguments,
                     raw_root / f"native-{run_number}-{shard_number:02d}-{slug}.log",
                     timeout_seconds,
                 )
-                shard["shard"] = shard_number
-                shards.append(shard)
+                process["shard"] = shard_number
+                shards.append(process)
             native["fresh_runs"].append(
-                native_aggregate_record(run_number, shards)
+                native_aggregate_record(run_number, shards, network_seed)
             )
         first_markers = [
             parse_marker(marker) for marker in native["fresh_runs"][0]["markers"]
@@ -2058,6 +2100,7 @@ def native_matrix(
             second_markers,
         )
         native["fresh_runs_agree"] = True
+    if ("late-window", ()) in plan:
         native["late_window"] = run_native_once(
             love_bin,
             "late-window",
@@ -2065,7 +2108,7 @@ def native_matrix(
             raw_root / "native-late-window.log",
             timeout_seconds,
         )
-    if campaign in {"all", "soak"}:
+    if ("soak", ()) in plan:
         native["soak"] = run_native_once(
             love_bin,
             "soak",
@@ -2441,16 +2484,34 @@ def artifact_provenance(artifact: Path, allow_dirty: bool) -> dict[str, Any]:
     }
 
 
-def browser_plan(campaign: str = "all") -> list[tuple[str, tuple[str, ...]]]:
+def browser_plan(
+    campaign: str = "all",
+    shard: str | None = None,
+) -> list[tuple[str, tuple[str, ...]]]:
+    """Select the pinned browser plan, optionally restricted to one network seed.
+
+    Each seed keeps its clean control immediately before its playable case, so a
+    seed shard still measures both halves of a CPU pair in one job.
+    """
+
     if campaign not in CAMPAIGNS:
         raise ValueError(f"unknown rollback campaign {campaign!r}")
+    if shard is not None and shard not in BROWSER_MATRIX_SHARDS:
+        raise ValueError(f"unknown browser rollback shard {shard!r}")
+    if shard is not None and campaign not in SHARDED_CAMPAIGNS:
+        raise ValueError(
+            "only the browser runtime matrix is sharded by network seed; the short "
+            "stress campaign is already its own job and the persistent soak is one "
+            "continuous memory-retention process"
+        )
+    seeds = NETWORK_SEEDS if shard is None else (int(shard),)
     plan = []
     if campaign in {"all", "matrix"}:
-        for network_seed in NETWORK_SEEDS:
+        for network_seed in seeds:
             for profile in BROWSER_FULL_PROFILES:
                 plan.append(("browser-full", (profile, str(network_seed))))
     if campaign in {"all", "matrix", "stress"}:
-        for network_seed in NETWORK_SEEDS:
+        for network_seed in seeds:
             plan.append(("browser-stress", (STRESS_PROFILE, str(network_seed))))
     if campaign in {"all", "soak"}:
         plan.append(("soak", ()))
@@ -2892,9 +2953,18 @@ def browser_cpu_case(
 def browser_cpu_acceptance(
     runs: list[dict[str, Any]],
     browser_name: str,
+    seeds: tuple[int, ...] = NETWORK_SEEDS,
 ) -> dict[str, Any]:
-    """Apply the strict same-run, same-runtime, seed-paired browser CPU contract."""
+    """Apply the strict same-shard, same-runtime, seed-paired browser CPU contract.
 
+    ``seeds`` narrows the contract to one CI shard's own network seed. Every
+    supplied seed must contribute a complete clean/playable pair for both
+    scenario families, and no run may carry a seed outside the scope.
+    """
+
+    unknown = [seed for seed in seeds if seed not in NETWORK_SEEDS]
+    if not seeds or unknown:
+        raise ValueError(f"browser CPU acceptance received unpinned seeds {unknown!r}")
     reasons: list[str] = []
     rows: dict[tuple[str, str, str], dict[str, Any]] = {}
     browser_versions: set[str] = set()
@@ -2934,7 +3004,7 @@ def browser_cpu_acceptance(
 
     pairs: list[dict[str, Any]] = []
     for scenario in BROWSER_CPU_SCENARIOS:
-        for seed_value in NETWORK_SEEDS:
+        for seed_value in seeds:
             seed = str(seed_value)
             clean = rows.get((scenario, "clean", seed))
             playable = rows.get((scenario, "playable", seed))
@@ -3089,7 +3159,7 @@ def browser_cpu_acceptance(
         (scenario, profile, str(seed))
         for scenario in BROWSER_CPU_SCENARIOS
         for profile in BROWSER_FULL_PROFILES
-        for seed in NETWORK_SEEDS
+        for seed in seeds
     }
     unexpected_keys = sorted(set(rows).difference(expected_keys))
     for scenario, profile, seed in unexpected_keys:
@@ -3124,11 +3194,13 @@ def browser_cpu_acceptance(
             "rollback_tail_accepted_run_ids": list(BROWSER_TAIL_CALIBRATION_RUNS),
         },
         "gate_contract": int(GATE_CONTRACT),
-        "method": "same_run_same_runtime_scenario_seed_paired",
+        "method": "same_shard_same_runtime_scenario_seed_paired",
         "pairs": pairs,
         "pass": not reasons
-        and len(pairs) == len(BROWSER_CPU_SCENARIOS) * len(NETWORK_SEEDS),
+        and len(pairs) == len(BROWSER_CPU_SCENARIOS) * len(seeds),
         "reasons": reasons,
+        "scope": "aggregate" if tuple(seeds) == NETWORK_SEEDS else "shard",
+        "seeds": [int(seed) for seed in seeds],
         "thresholds": {
             "comparison": "strict_less_than",
             "max_p95_work_over_clean_p95": MAX_BROWSER_P95_WORK_RATIO,
@@ -3149,7 +3221,10 @@ def browser_matrix(
     timeout_seconds: int,
     allow_dirty: bool,
     campaign: str,
+    shard: str | None = None,
 ) -> None:
+    plan = browser_plan(campaign, shard)
+    seeds = NETWORK_SEEDS if shard is None else (int(shard),)
     provenance = artifact_provenance(artifact, allow_dirty)
     source = evidence["source"]
     if provenance["manifest"].get("source_revision") != source["revision"]:
@@ -3168,12 +3243,14 @@ def browser_matrix(
     browser_evidence: dict[str, Any] = {
         "artifact": provenance,
         "campaign": campaign,
+        "network_seed": shard,
         "plan": [
             {"arguments": list(arguments), "suite": suite}
-            for suite, arguments in browser_plan(campaign)
+            for suite, arguments in plan
         ],
         "runtimes": {},
         "selenium": selenium_metadata(),
+        "shard": shard,
     }
     evidence["browser"] = browser_evidence
     try:
@@ -3186,10 +3263,7 @@ def browser_matrix(
                 "runs": [],
             }
             browser_evidence["runtimes"][browser_name] = runtime
-            for run_number, (suite, arguments) in enumerate(
-                browser_plan(campaign),
-                start=1,
-            ):
+            for run_number, (suite, arguments) in enumerate(plan, start=1):
                 slug = "-".join((browser_name, suite, *arguments))
                 suite_timeout_seconds = browser_suite_timeout_seconds(
                     suite,
@@ -3217,12 +3291,14 @@ def browser_matrix(
                 cpu_acceptance = browser_cpu_acceptance(
                     runtime["runs"],
                     browser_name,
+                    seeds,
                 )
                 runtime["cpu_acceptance"] = cpu_acceptance
                 if not cpu_acceptance["pass"]:
                     reason = "; ".join(cpu_acceptance["reasons"])
                     raise RuntimeError(
-                        f"{browser_name} aggregate browser CPU acceptance failed: {reason}"
+                        f"{browser_name} {cpu_acceptance['scope']} browser CPU "
+                        f"acceptance failed: {reason}"
                     )
     finally:
         server.shutdown()
@@ -3230,6 +3306,264 @@ def browser_matrix(
         thread.join(timeout=5)
     if thread.is_alive():
         raise RuntimeError("browser artifact server did not stop cleanly")
+
+
+def expected_shard_evidence() -> dict[str, dict[str, Any]]:
+    """Pin every artifact a complete campaign uploads before the gate may pass.
+
+    This covers the short stress jobs as well as the sharded long jobs, because
+    the gate downloads every ``omp2-rollback-*`` artifact in the run: an artifact
+    the manifest does not account for is as much a contract break as a missing
+    one. ``rollback_ci.EXPECTED_ARTIFACTS`` restates this set for reuse
+    discovery, and the self-test asserts the two never drift.
+    """
+
+    expected: dict[str, dict[str, Any]] = {}
+    for shard in NATIVE_SHARDS:
+        expected[f"omp2-rollback-native-{shard}"] = {
+            "browser": None,
+            "campaign": "all",
+            "mode": "native",
+            "shard": shard,
+        }
+    for browser_name in BROWSER_RUNTIMES:
+        for shard in BROWSER_MATRIX_SHARDS:
+            expected[f"omp2-rollback-{browser_name}-matrix-{shard}"] = {
+                "browser": browser_name,
+                "campaign": "matrix",
+                "mode": "browser",
+                "shard": shard,
+            }
+        expected[f"omp2-rollback-{browser_name}-soak"] = {
+            "browser": browser_name,
+            "campaign": "soak",
+            "mode": "browser",
+            "shard": None,
+        }
+        expected[f"omp2-rollback-{browser_name}-stress"] = {
+            "browser": browser_name,
+            "campaign": "stress",
+            "mode": "browser",
+            "shard": None,
+        }
+    return expected
+
+
+def require_complete_shards(found: Iterable[str]) -> list[str]:
+    """Fail closed unless the pinned shard set is present exactly once each.
+
+    A vanished, skipped, or cancelled shard uploads no evidence, so its pinned
+    name is missing here even when GitHub rolls the matrix job up to success.
+    """
+
+    names = list(found)
+    expected = frozenset(expected_shard_evidence())
+    missing = sorted(expected.difference(names))
+    unexpected = sorted(frozenset(names).difference(expected))
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    problems: list[str] = []
+    if missing:
+        problems.append(f"missing rollback shard evidence: {', '.join(missing)}")
+    if unexpected:
+        problems.append(f"unpinned rollback shard evidence: {', '.join(unexpected)}")
+    if duplicates:
+        problems.append(f"duplicate rollback shard evidence: {', '.join(duplicates)}")
+    if problems:
+        raise RuntimeError("; ".join(problems))
+    return sorted(expected)
+
+
+def load_shard_evidence(
+    root: Path,
+    name: str,
+    identity: dict[str, Any],
+    revision: str,
+) -> dict[str, Any]:
+    """Read one shard's uploaded evidence and prove it is the pinned shard."""
+
+    path = root / name / f"{name}.json"
+    if not path.is_file():
+        raise RuntimeError(f"rollback shard {name} uploaded no evidence at {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise RuntimeError(f"rollback shard {name} evidence is unreadable: {error}") from error
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"rollback shard {name} evidence root is not an object")
+    if payload.get("schema") != 1:
+        raise RuntimeError(f"rollback shard {name} reports an unsupported schema")
+    if payload.get("gate_contract") != int(GATE_CONTRACT):
+        raise RuntimeError(f"rollback shard {name} was produced under another gate contract")
+    if payload.get("pass") is not True:
+        raise RuntimeError(
+            f"rollback shard {name} did not pass: {payload.get('error', 'no reason recorded')}"
+        )
+    for field in ("mode", "campaign"):
+        if payload.get(field) != identity[field]:
+            raise RuntimeError(
+                f"rollback shard {name} reports {field}={payload.get(field)!r}, "
+                f"expected {identity[field]!r}"
+            )
+    source = payload.get("source")
+    if not isinstance(source, dict):
+        raise RuntimeError(f"rollback shard {name} omits source provenance")
+    if source.get("revision") != revision:
+        raise RuntimeError(
+            f"rollback shard {name} was produced at revision "
+            f"{source.get('revision')!r}, expected {revision!r}"
+        )
+    if source.get("dirty") is not False:
+        raise RuntimeError(f"rollback shard {name} was produced from a dirty checkout")
+    section = payload.get(identity["mode"])
+    if not isinstance(section, dict):
+        raise RuntimeError(f"rollback shard {name} omits its {identity['mode']} evidence")
+    if section.get("shard") != identity["shard"]:
+        raise RuntimeError(
+            f"rollback shard {name} reports shard={section.get('shard')!r}, "
+            f"expected {identity['shard']!r}"
+        )
+    if identity["browser"] is not None:
+        runtimes = section.get("runtimes")
+        if not isinstance(runtimes, dict) or set(runtimes) != {identity["browser"]}:
+            raise RuntimeError(
+                f"rollback shard {name} did not record exactly the "
+                f"{identity['browser']} runtime"
+            )
+    return payload
+
+
+def aggregate_native_evidence(shards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Reassemble the pinned 54-case native plan from its per-seed shards."""
+
+    covered: list[str] = []
+    per_shard: dict[str, int] = {}
+    for seed in SEED_SHARDS:
+        native = shards[f"omp2-rollback-native-{seed}"]["native"]
+        fresh_runs = native.get("fresh_runs")
+        if not isinstance(fresh_runs, list) or len(fresh_runs) != 2:
+            raise RuntimeError(f"native seed shard {seed} did not record two fresh runs")
+        if native.get("fresh_runs_agree") is not True:
+            raise RuntimeError(f"native seed shard {seed} fresh runs did not agree")
+        for run in fresh_runs:
+            raw_markers = run.get("markers")
+            if not isinstance(raw_markers, list):
+                raise RuntimeError(f"native seed shard {seed} omits validation markers")
+            markers = [parse_marker(raw) for raw in raw_markers]
+            validate_case_plan(markers, "native", (seed,))
+            validate_case_integrity(markers, "native")
+        first = [parse_marker(raw) for raw in fresh_runs[0]["markers"]]
+        cases = [marker.fields["case"] for marker in first if marker.kind == "case"]
+        per_shard[seed] = len(cases)
+        covered.extend(cases)
+    expected_cases = [case["case"] for case in expected_case_plan("native", ())]
+    missing = sorted(set(expected_cases).difference(covered))
+    unexpected = sorted(set(covered).difference(expected_cases))
+    if missing or unexpected or len(covered) != len(expected_cases):
+        raise RuntimeError(
+            f"sharded native evidence covers {len(covered)} of {len(expected_cases)} "
+            f"pinned cases: missing={missing}, unexpected={unexpected}"
+        )
+    tail = shards[f"omp2-rollback-native-{TAIL_SHARD}"]["native"]
+    late_window = tail.get("late_window")
+    if not isinstance(late_window, dict) or late_window.get("suite") != "late-window":
+        raise RuntimeError("native tail shard omitted the late-window pair")
+    soak = tail.get("soak")
+    if not isinstance(soak, dict) or soak.get("soak_memory", {}).get("pass") is not True:
+        raise RuntimeError("native tail shard omitted a passing persistent soak")
+    return {
+        "case_count": len(covered),
+        "cases_per_shard": per_shard,
+        "late_window_cases": late_window.get("case_count"),
+        "shard_key": "network_seed",
+        "soak_memory": soak["soak_memory"],
+    }
+
+
+def aggregate_browser_evidence(shards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Evaluate all six clean/playable pairs per browser across the seed shards."""
+
+    runtimes: dict[str, Any] = {}
+    for browser_name in BROWSER_RUNTIMES:
+        runs: list[dict[str, Any]] = []
+        for seed in BROWSER_MATRIX_SHARDS:
+            name = f"omp2-rollback-{browser_name}-matrix-{seed}"
+            runtime = shards[name]["browser"]["runtimes"][browser_name]
+            shard_acceptance = runtime.get("cpu_acceptance")
+            if not isinstance(shard_acceptance, dict):
+                raise RuntimeError(f"{name} omitted its shard CPU acceptance")
+            if shard_acceptance.get("seeds") != [int(seed)]:
+                raise RuntimeError(f"{name} scoped its CPU acceptance to the wrong seed")
+            if shard_acceptance.get("pass") is not True:
+                raise RuntimeError(f"{name} shard CPU acceptance did not pass")
+            shard_runs = runtime.get("runs")
+            if not isinstance(shard_runs, list):
+                raise RuntimeError(f"{name} omitted its browser runs")
+            runs.extend(shard_runs)
+        acceptance = browser_cpu_acceptance(runs, browser_name)
+        if not acceptance["pass"]:
+            reason = "; ".join(acceptance["reasons"])
+            raise RuntimeError(
+                f"{browser_name} aggregate browser CPU acceptance failed: {reason}"
+            )
+        soak_name = f"omp2-rollback-{browser_name}-soak"
+        soak_runs = shards[soak_name]["browser"]["runtimes"][browser_name].get("runs")
+        if not isinstance(soak_runs, list):
+            raise RuntimeError(f"{soak_name} omitted its browser runs")
+        soaks = [run for run in soak_runs if run.get("suite") == "soak"]
+        if len(soaks) != 1:
+            raise RuntimeError(f"{soak_name} did not record exactly one persistent soak")
+        soak_memory = soaks[0].get("soak_memory")
+        if not isinstance(soak_memory, dict) or soak_memory.get("pass") is not True:
+            raise RuntimeError(f"{soak_name} did not pass the memory growth gate")
+        stress_name = f"omp2-rollback-{browser_name}-stress"
+        stress_runs = shards[stress_name]["browser"]["runtimes"][browser_name].get("runs")
+        if not isinstance(stress_runs, list):
+            raise RuntimeError(f"{stress_name} omitted its browser runs")
+        stress_seeds = sorted(
+            run.get("arguments", [None, None])[1]
+            for run in stress_runs
+            if run.get("suite") == "browser-stress"
+        )
+        if stress_seeds != sorted(SEED_SHARDS):
+            raise RuntimeError(
+                f"{stress_name} covered stress seeds {stress_seeds}, "
+                f"expected {sorted(SEED_SHARDS)}"
+            )
+        runtimes[browser_name] = {
+            "cpu_acceptance": acceptance,
+            "soak_memory": soak_memory,
+            "stress_seeds": stress_seeds,
+        }
+    return {"runtimes": runtimes, "shard_key": "network_seed"}
+
+
+def aggregate_shards(evidence: dict[str, Any], evidence_root: Path) -> None:
+    """Merge every uploaded shard and apply the campaign-wide acceptance."""
+
+    root = evidence_root.resolve()
+    if not root.is_dir():
+        raise RuntimeError(f"rollback shard evidence root is missing: {root}")
+    names = require_complete_shards(
+        entry.name for entry in root.iterdir() if entry.is_dir()
+    )
+    revision = evidence["source"]["revision"]
+    identities = expected_shard_evidence()
+    shards = {
+        name: load_shard_evidence(root, name, identities[name], revision)
+        for name in names
+    }
+    evidence["aggregate"] = {
+        "browser": aggregate_browser_evidence(shards),
+        "evidence_root": str(root),
+        "native": aggregate_native_evidence(shards),
+        "shards": {
+            name: {
+                "generated_at": shards[name].get("generated_at"),
+                "sha256": sha256_file(root / name / f"{name}.json"),
+            }
+            for name in names
+        },
+    }
 
 
 def run_self_test() -> None:
@@ -3523,6 +3857,54 @@ def run_self_test() -> None:
                 f"{expected_decision!r}"
             )
 
+    for shard in SEED_SHARDS:
+        if native_campaign_plan("all", shard) != native_shard_plan(shard):
+            raise RuntimeError(f"native seed shard {shard} campaign plan self-test failed")
+        shard_cases = [
+            case
+            for suite, arguments in native_campaign_plan("all", shard)
+            for case in expected_case_plan(suite, arguments)
+        ]
+        if shard_cases != expected_case_plan("native", (shard,)) or len(shard_cases) != 18:
+            raise RuntimeError(f"native seed shard {shard} changed the pinned case order")
+    if native_campaign_plan("all", TAIL_SHARD) != [("late-window", ()), ("soak", ())]:
+        raise RuntimeError("native tail shard campaign plan self-test failed")
+    sharded_native_cases = sorted(
+        case["case"]
+        for shard in SEED_SHARDS
+        for case in expected_case_plan("native", (shard,))
+    )
+    if sharded_native_cases != sorted(
+        case["case"] for case in expected_case_plan("native", ())
+    ):
+        raise RuntimeError("native seed shards do not reconstruct the pinned 54-case plan")
+    for shard in SEED_SHARDS:
+        if browser_plan("matrix", shard) != [
+            ("browser-full", ("clean", shard)),
+            ("browser-full", ("playable", shard)),
+            ("browser-stress", ("stress", shard)),
+        ]:
+            raise RuntimeError(f"browser seed shard {shard} lost its clean/playable pair")
+    sharded_browser_plan = [
+        entry for shard in SEED_SHARDS for entry in browser_plan("matrix", shard)
+    ]
+    if sorted(sharded_browser_plan) != sorted(browser_plan("matrix")):
+        raise RuntimeError("browser seed shards do not reconstruct the runtime matrix")
+    for campaign, rejected_shard in (
+        ("soak", "2001"),
+        ("stress", "2001"),
+        ("all", "2001"),
+        ("matrix", TAIL_SHARD),
+    ):
+        try:
+            browser_plan(campaign, rejected_shard)
+        except ValueError:
+            pass
+        else:
+            raise RuntimeError(
+                f"browser {campaign} campaign accepted shard {rejected_shard!r}"
+            )
+
     def carry_calibration_margin(accepted_maximum: float) -> float:
         return (
             math.ceil(
@@ -3783,6 +4165,41 @@ def run_self_test() -> None:
     )
     if not proportional_slowdown["pass"] or len(proportional_slowdown["pairs"]) != 6:
         raise RuntimeError("proportional browser slowdown did not pass normalization")
+    if proportional_slowdown["scope"] != "aggregate":
+        raise RuntimeError("complete browser CPU acceptance lost its aggregate scope")
+    sharded_controls = synthetic_browser_cpu_matrix(1.4)
+    for shard_index, shard_seed in enumerate(NETWORK_SEEDS):
+        shard_runs = sharded_controls[shard_index * 2 : shard_index * 2 + 2]
+        shard_acceptance = browser_cpu_acceptance(shard_runs, "firefox", (shard_seed,))
+        if not shard_acceptance["pass"] or len(shard_acceptance["pairs"]) != 2:
+            raise RuntimeError(f"seed {shard_seed} shard CPU acceptance self-test failed")
+        if (
+            shard_acceptance["scope"] != "shard"
+            or shard_acceptance["seeds"] != [shard_seed]
+        ):
+            raise RuntimeError(f"seed {shard_seed} shard CPU acceptance lost its scope")
+    if browser_cpu_acceptance(sharded_controls, "firefox") != proportional_slowdown:
+        raise RuntimeError("merged seed shards did not reconstruct the aggregate contract")
+    foreign_seed = browser_cpu_acceptance(sharded_controls, "firefox", (2001,))
+    if foreign_seed["pass"] or not any(
+        "unexpected complete_fixture clean control for seed 2002" in reason
+        for reason in foreign_seed["reasons"]
+    ):
+        raise RuntimeError("shard-scoped browser CPU acceptance accepted a foreign seed")
+    incomplete_aggregate = browser_cpu_acceptance(sharded_controls[:4], "firefox")
+    if incomplete_aggregate["pass"] or not any(
+        "missing the complete_fixture clean control for seed 2003" in reason
+        for reason in incomplete_aggregate["reasons"]
+    ):
+        raise RuntimeError("aggregate browser CPU acceptance accepted a vanished shard")
+    for unpinned in ((), (2004,)):
+        try:
+            browser_cpu_acceptance(sharded_controls, "firefox", unpinned)
+        except ValueError:
+            pass
+        else:
+            raise RuntimeError(f"browser CPU acceptance accepted seeds {unpinned!r}")
+
     # The ratio gates are scale-free by construction, which is exactly why normalization on its
     # own could excuse a build that is simply slower everywhere. The absolute ceiling is the part
     # that is not scale-free: push the same healthy shape far enough and it must fail.
@@ -4585,6 +5002,158 @@ def run_self_test() -> None:
             )
     if breach_replay["pass"]:
         raise RuntimeError("replayed genuine browser rollback breaches passed the gate")
+
+    shard_identities = expected_shard_evidence()
+    expected_shard_names = sorted(shard_identities)
+    # Per browser: one artifact per matrix seed shard, plus the whole soak and the
+    # short stress job.
+    if len(expected_shard_names) != len(NATIVE_SHARDS) + len(BROWSER_RUNTIMES) * (
+        len(BROWSER_MATRIX_SHARDS) + 2
+    ):
+        raise RuntimeError("pinned rollback shard set changed size")
+    if require_complete_shards(expected_shard_names) != expected_shard_names:
+        raise RuntimeError("the complete rollback shard set was rejected")
+    for dropped in expected_shard_names:
+        try:
+            require_complete_shards(
+                [name for name in expected_shard_names if name != dropped]
+            )
+        except RuntimeError as error:
+            if f"missing rollback shard evidence: {dropped}" not in str(error):
+                raise RuntimeError(
+                    f"vanished rollback shard {dropped} was not named by the gate"
+                ) from error
+        else:
+            raise RuntimeError(f"vanished rollback shard {dropped} passed the gate")
+    for hostile_names, fragment in (
+        ([*expected_shard_names, "omp2-rollback-native-2004"], "unpinned"),
+        ([*expected_shard_names, expected_shard_names[0]], "duplicate"),
+        ([], "missing"),
+    ):
+        try:
+            require_complete_shards(hostile_names)
+        except RuntimeError as error:
+            if fragment not in str(error):
+                raise RuntimeError(
+                    f"{fragment} rollback shard reason self-test failed"
+                ) from error
+        else:
+            raise RuntimeError(f"{fragment} rollback shard evidence passed the gate")
+
+    with tempfile.TemporaryDirectory(prefix="omp2-rollback-shard-") as directory:
+        shard_root = Path(directory)
+        shard_name = "omp2-rollback-chrome-matrix-2001"
+        shard_identity = shard_identities[shard_name]
+        shard_revision = "a" * 40
+        shard_payload: dict[str, Any] = {
+            "browser": {
+                "campaign": "matrix",
+                "runtimes": {"chrome": {"runs": []}},
+                "shard": "2001",
+            },
+            "campaign": "matrix",
+            "gate_contract": int(GATE_CONTRACT),
+            "mode": "browser",
+            "pass": True,
+            "schema": 1,
+            "shard": "2001",
+            "source": {"dirty": False, "revision": shard_revision},
+        }
+        shard_path = shard_root / shard_name / f"{shard_name}.json"
+        write_json(shard_path, shard_payload)
+        load_shard_evidence(shard_root, shard_name, shard_identity, shard_revision)
+
+        def expect_shard_rejection(
+            mutated: dict[str, Any],
+            fragment: str,
+            label: str,
+        ) -> None:
+            write_json(shard_path, mutated)
+            try:
+                load_shard_evidence(
+                    shard_root,
+                    shard_name,
+                    shard_identity,
+                    shard_revision,
+                )
+            except RuntimeError as error:
+                if fragment not in str(error):
+                    raise RuntimeError(
+                        f"{label} rollback shard reason self-test failed"
+                    ) from error
+            else:
+                raise RuntimeError(f"{label} rollback shard evidence passed the gate")
+
+        browser_section = shard_payload["browser"]
+        for label, mutated_payload, fragment in (
+            ("failed", {**shard_payload, "pass": False}, "did not pass"),
+            (
+                "stale contract",
+                {**shard_payload, "gate_contract": int(GATE_CONTRACT) - 1},
+                "another gate contract",
+            ),
+            (
+                "cross-revision",
+                {
+                    **shard_payload,
+                    "source": {"dirty": False, "revision": "b" * 40},
+                },
+                "was produced at revision",
+            ),
+            (
+                "dirty",
+                {
+                    **shard_payload,
+                    "source": {"dirty": True, "revision": shard_revision},
+                },
+                "dirty checkout",
+            ),
+            (
+                "cross-campaign",
+                {**shard_payload, "campaign": "soak"},
+                "reports campaign=",
+            ),
+            (
+                "cross-seed",
+                {**shard_payload, "browser": {**browser_section, "shard": "2002"}},
+                "reports shard=",
+            ),
+            (
+                "cross-runtime",
+                {
+                    **shard_payload,
+                    "browser": {
+                        **browser_section,
+                        "runtimes": {"firefox": {"runs": []}},
+                    },
+                },
+                "did not record exactly the chrome runtime",
+            ),
+        ):
+            expect_shard_rejection(mutated_payload, fragment, label)
+        shard_path.unlink()
+        try:
+            load_shard_evidence(
+                shard_root,
+                shard_name,
+                shard_identity,
+                shard_revision,
+            )
+        except RuntimeError as error:
+            if "uploaded no evidence" not in str(error):
+                raise RuntimeError(
+                    "skipped rollback shard reason self-test failed"
+                ) from error
+        else:
+            raise RuntimeError("skipped rollback shard evidence passed the gate")
+        try:
+            aggregate_shards({"source": {"revision": shard_revision}}, shard_root)
+        except RuntimeError as error:
+            if "missing rollback shard evidence" not in str(error):
+                raise RuntimeError("aggregate shard gate self-test failed") from error
+        else:
+            raise RuntimeError("incomplete rollback shard evidence passed the aggregate")
+
     try:
         raise_on_interruption(signal.SIGTERM, None)
     except InterruptedError as error:
@@ -5236,11 +5805,20 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--mode",
-        choices=("native", "browser", "full"),
+        choices=("native", "browser", "full", "aggregate"),
         default="native",
     )
     parser.add_argument("--artifact", type=Path)
     parser.add_argument("--campaign", choices=CAMPAIGNS, default="all")
+    parser.add_argument(
+        "--shard",
+        choices=NATIVE_SHARDS,
+        help=(
+            "restrict this run to one pinned network seed, or to the "
+            "seed-independent native tail (late-window pair plus persistent soak)"
+        ),
+    )
+    parser.add_argument("--evidence-root", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--love-bin", default=os.environ.get("LOVE_BIN", "love"))
     parser.add_argument(
@@ -5267,6 +5845,12 @@ def main() -> int:
         raise SystemExit("--artifact is required for browser and full modes")
     if args.campaign in BROWSER_ONLY_CAMPAIGNS and args.mode != "browser":
         raise SystemExit(f"--campaign {args.campaign} requires --mode browser")
+    if args.mode == "aggregate" and args.evidence_root is None:
+        raise SystemExit("--evidence-root is required for aggregate mode")
+    if args.mode == "aggregate" and args.shard is not None:
+        raise SystemExit("the rollback aggregate spans every shard and cannot be sharded")
+    if args.mode == "full" and args.shard is not None:
+        raise SystemExit("--shard selects a single-runtime campaign, not full mode")
 
     output = (args.output or default_output()).resolve()
     raw_root = output.parent / (output.stem + "-raw")
@@ -5279,6 +5863,7 @@ def main() -> int:
         "mode": args.mode,
         "pass": False,
         "schema": 1,
+        "shard": args.shard,
         "source": source,
         "system": system_provenance(),
     }
@@ -5287,9 +5872,10 @@ def main() -> int:
     try:
         if source["dirty"] and not args.allow_dirty:
             raise RuntimeError("rollback validation refuses a dirty source checkout")
-        if raw_root.exists() and any(raw_root.iterdir()):
-            raise RuntimeError(f"raw evidence directory is not empty: {raw_root}")
-        raw_root.mkdir(parents=True, exist_ok=True)
+        if args.mode != "aggregate":
+            if raw_root.exists() and any(raw_root.iterdir()):
+                raise RuntimeError(f"raw evidence directory is not empty: {raw_root}")
+            raw_root.mkdir(parents=True, exist_ok=True)
         if args.mode in {"native", "full"}:
             love_bin = command_executable(args.love_bin)
             native_matrix(
@@ -5298,17 +5884,21 @@ def main() -> int:
                 raw_root,
                 args.timeout_seconds,
                 args.campaign,
+                args.shard,
             )
         if args.mode in {"browser", "full"}:
             browser_matrix(
                 evidence,
                 args.artifact.resolve(),
-                args.browsers or ["chrome", "firefox"],
+                args.browsers or list(BROWSER_RUNTIMES),
                 raw_root,
                 args.timeout_seconds,
                 args.allow_dirty,
                 args.campaign,
+                args.shard,
             )
+        if args.mode == "aggregate":
+            aggregate_shards(evidence, args.evidence_root)
         evidence["pass"] = True
         evidence["completed_at"] = utc_now()
         write_json(output, evidence)

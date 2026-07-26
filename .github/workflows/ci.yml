@@ -326,7 +326,7 @@ jobs:
                   retention-days: 14
 
     rollback_native:
-        name: OMP-2 rollback native
+        name: OMP-2 rollback native (${{ matrix.shard }})
         needs: rollback_scope
         if: github.event_name != 'pull_request' && needs.rollback_scope.outputs.run == 'true'
         # Read only by scripts/rollback_validation.py, which sanitizes it.
@@ -336,6 +336,10 @@ jobs:
             GC_CAMPAIGN_HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         runs-on: ubuntu-24.04
         timeout-minutes: 180
+        strategy:
+            fail-fast: false
+            matrix:
+                shard: ["2001", "2002", "2003", "tail"]
 
         steps:
             - name: Check out source
@@ -363,26 +367,27 @@ jobs:
                   "$tool_dir/bin/love" --version
                   printf '%s\n' "$tool_dir/bin" >> "$GITHUB_PATH"
 
-            - name: Run isolated native matrix, late-window, and persistent soak
+            - name: Run the pinned native rollback shard
               run: |
                   ./scripts/check_rollback.sh \
                       --native \
-                      --output "$RUNNER_TEMP/omp2-rollback-native.json" \
+                      --shard "${{ matrix.shard }}" \
+                      --output "$RUNNER_TEMP/omp2-rollback-native-${{ matrix.shard }}.json" \
                       --timeout-seconds 2700
 
             - name: Upload native rollback evidence
               if: always()
               uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
               with:
-                  name: omp2-rollback-native
+                  name: omp2-rollback-native-${{ matrix.shard }}
                   path: |
-                      ${{ runner.temp }}/omp2-rollback-native.json
-                      ${{ runner.temp }}/omp2-rollback-native-raw
+                      ${{ runner.temp }}/omp2-rollback-native-${{ matrix.shard }}.json
+                      ${{ runner.temp }}/omp2-rollback-native-${{ matrix.shard }}-raw
                   if-no-files-found: error
                   retention-days: 14
 
     rollback_browser_matrix:
-        name: OMP-2 rollback browser matrix (${{ matrix.browser }})
+        name: OMP-2 rollback browser matrix (${{ matrix.browser }}, ${{ matrix.shard }})
         needs: rollback_scope
         if: github.event_name != 'pull_request' && needs.rollback_scope.outputs.run == 'true'
         # Read only by scripts/rollback_validation.py, which sanitizes it.
@@ -396,6 +401,7 @@ jobs:
             fail-fast: false
             matrix:
                 browser: [chrome, firefox]
+                shard: ["2001", "2002", "2003"]
 
         steps:
             - name: Check out source
@@ -426,18 +432,19 @@ jobs:
                           --browser \
                           --runtime-browser "${{ matrix.browser }}" \
                           --campaign matrix \
+                          --shard "${{ matrix.shard }}" \
                           --artifact "$RUNNER_TEMP/omp2-web" \
-                          --output "$RUNNER_TEMP/omp2-rollback-${{ matrix.browser }}-matrix.json" \
+                          --output "$RUNNER_TEMP/omp2-rollback-${{ matrix.browser }}-matrix-${{ matrix.shard }}.json" \
                           --timeout-seconds 1800
 
             - name: Upload browser rollback evidence
               if: always()
               uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
               with:
-                  name: omp2-rollback-${{ matrix.browser }}-matrix
+                  name: omp2-rollback-${{ matrix.browser }}-matrix-${{ matrix.shard }}
                   path: |
-                      ${{ runner.temp }}/omp2-rollback-${{ matrix.browser }}-matrix.json
-                      ${{ runner.temp }}/omp2-rollback-${{ matrix.browser }}-matrix-raw
+                      ${{ runner.temp }}/omp2-rollback-${{ matrix.browser }}-matrix-${{ matrix.shard }}.json
+                      ${{ runner.temp }}/omp2-rollback-${{ matrix.browser }}-matrix-${{ matrix.shard }}-raw
                   if-no-files-found: error
                   retention-days: 14
 
@@ -514,6 +521,7 @@ jobs:
 
         steps:
             - name: Require scoped rollback evidence
+              id: require
               env:
                   BROWSER_MATRIX_RESULT: ${{ needs.rollback_browser_matrix.result }}
                   BROWSER_SOAK_RESULT: ${{ needs.rollback_browser_soak.result }}
@@ -525,37 +533,77 @@ jobs:
                   REUSE: ${{ needs.rollback_scope.outputs.reuse }}
                   SCOPE_RESULT: ${{ needs.rollback_scope.result }}
               run: |
+                  finish() {
+                      echo "aggregate=$1" >> "$GITHUB_OUTPUT"
+                      exit "$2"
+                  }
                   if [ "$SCOPE_RESULT" != "success" ]; then
                       echo "Rollback impact detection did not succeed."
-                      exit 1
+                      finish false 1
                   fi
                   if [ "$IMPACT" = "false" ]; then
                       echo "No rollback-impacting changes; long evidence jobs were skipped."
-                      exit 0
+                      finish false 0
                   fi
                   if [ "$EVENT_NAME" = "pull_request" ]; then
                       if [ "$BROWSER_STRESS_RESULT" != "success" ]; then
                           echo "Pull-request rollback stress evidence failed: stress=$BROWSER_STRESS_RESULT"
-                          exit 1
+                          finish false 1
                       fi
                       echo "Stress evidence passed; the complete campaign runs on the merge commit."
-                      exit 0
+                      finish false 0
                   fi
                   if [ "$REUSE" = "true" ]; then
                       echo "Exact aggregate rollback evidence was independently revalidated and reused."
-                      exit 0
+                      finish false 0
                   fi
                   if [ "$RUN_ROLLBACK" != "true" ]; then
                       echo "Rollback campaign decision was inconsistent."
-                      exit 1
+                      finish false 1
                   fi
+                  # GitHub rolls every shard of a matrix job up into one result, so
+                  # this catches a failed, cancelled, or wholly skipped matrix but
+                  # cannot see a shard that never existed. The pinned per-shard
+                  # evidence manifest in the aggregate step closes that hole.
                   if [ "$NATIVE_RESULT" != "success" ] || \
                       [ "$BROWSER_MATRIX_RESULT" != "success" ] || \
-                      [ "$BROWSER_SOAK_RESULT" != "success" ]; then
-                      echo "Rollback evidence failed: native=$NATIVE_RESULT matrix=$BROWSER_MATRIX_RESULT soak=$BROWSER_SOAK_RESULT"
-                      exit 1
+                      [ "$BROWSER_SOAK_RESULT" != "success" ] || \
+                      [ "$BROWSER_STRESS_RESULT" != "success" ]; then
+                      echo "Rollback evidence failed: native=$NATIVE_RESULT matrix=$BROWSER_MATRIX_RESULT soak=$BROWSER_SOAK_RESULT stress=$BROWSER_STRESS_RESULT"
+                      finish false 1
                   fi
-                  echo "Native plus Chrome/Firefox matrix and soak evidence passed."
+                  echo "Every rollback shard job reported success; merging shard evidence."
+                  finish true 0
+
+            - name: Check out source
+              if: steps.require.outputs.aggregate == 'true'
+              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+              with:
+                  ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+            - name: Download every rollback shard artifact
+              if: steps.require.outputs.aggregate == 'true'
+              uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+              with:
+                  path: ${{ runner.temp }}/omp2-rollback-shards
+                  pattern: omp2-rollback-*
+
+            - name: Aggregate sharded rollback evidence
+              if: steps.require.outputs.aggregate == 'true'
+              run: |
+                  ./scripts/check_rollback.sh \
+                      --aggregate \
+                      --evidence-root "$RUNNER_TEMP/omp2-rollback-shards" \
+                      --output "$RUNNER_TEMP/omp2-rollback-aggregate.json"
+
+            - name: Upload aggregate rollback evidence
+              if: steps.require.outputs.aggregate == 'true'
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+              with:
+                  name: omp2-aggregate-rollback
+                  path: ${{ runner.temp }}/omp2-rollback-aggregate.json
+                  if-no-files-found: error
+                  retention-days: 14
 
     campaign_report:
         name: OMP-2 post-merge campaign report
