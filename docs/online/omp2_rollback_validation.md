@@ -76,13 +76,16 @@ diagnostically.
 | native p95 combined client simulation plus rollback work | `< 16.67 ms` | native runtime matrix |
 | native nearest-rank p99.9 rollback wall duration | `< 33.3 ms` | native runtime matrix |
 | browser playable p95 work / paired clean p95 work | `< 6.7` | browser runtime matrix aggregate |
-| browser playable p99.9 rollback / paired clean p95 work | `< 11.7` | browser runtime matrix aggregate |
+| browser playable p99.9 rollback / paired clean p95 work, only when the playable case recorded `>= 1000` rollback samples | `< 11.7` | browser runtime matrix aggregate |
 | retained snapshot boundaries | `<= 31` | every playable case |
 | canonical retained snapshot payload | `< 768 KiB` | every playable case |
 | exact accounted snapshot/input/output/event history | `< 1 MiB` | every playable case |
 | terminal forced-GC Lua heap, process-tree RSS, and Chrome JS-heap growth from warm-up | `<= 10%` | persistent soak |
 
-`gate_contract=5` supersedes contract 4 for newly generated evidence. An individual browser
+`gate_contract=6` supersedes contract 5 for newly generated evidence. Contract 6 changes only the
+browser aggregate acceptance rule: the rollback-p99.9 ratio comparison now carries an explicit
+minimum-sample-count precondition. Nothing else about the emitted markers, the thresholds, or the
+native gates changed. An individual browser
 playable case records `cpu_gate_mode=normalized_deferred`; it cannot fail solely because its
 absolute p95 work or p99.9 rollback time crosses the product budget. The validator first collects
 six unique clean controls and six unique playable cases per browser (`complete_fixture` and
@@ -90,18 +93,56 @@ six unique clean controls and six unique playable cases per browser (`complete_f
 seed identity, requires a finite positive clean p95 denominator, and then evaluates every
 scenario/seed pair with strict `<` comparisons. Missing, duplicate, malformed, or mismatched
 controls fail closed. The normalized evidence records every pair, both ratios, the thresholds, all
-violations, and the absolute p95, p99.9, maximum, and over-33.3-ms count.
+violations, the clean and playable rollback sample counts, an explicit per-pair
+`rollback_p999_gate` block, and the absolute p95, p99.9, maximum, and over-33.3-ms count.
 Each clean control runs immediately before its matching playable seed. This interleaving reduces
 temporal shared-runner drift without adding a case or weakening exact seed pairing.
+
+### The rollback-p99.9 minimum sample count
+
+Nearest-rank p99.9 returns `ordered[ceil(n * 0.999) - 1]`. That index is the last element -- the
+plain maximum -- whenever `ceil(n * 0.999) == n`. For integer `n`, `ceil(n * p) < n` holds exactly
+when `n * p <= n - 1`, that is when `n * (1 - p) >= 1`, that is when `n >= 1 / (1 - 0.999) = 1000`.
+So the reported p99.9 **is** the maximum sample for every `n <= 999`, and `n = 1000` is the
+smallest count that keeps at least one sample strictly above the reported rank. The floor is a
+property of the statistic, not a tuned constant; `MIN_ROLLBACK_P999_SAMPLE_COUNT = 1000` in
+`scripts/rollback_validation.py` and the self-test pins the derivation directly.
+
+The `complete_fixture` playable cases record roughly 6,900 rollback samples, so their p99.9 is a
+real tail percentile. The `combat` playable cases record six to eight, so before contract 6 their
+`rollback_p999_ms` was literally the worst single sample -- one GC pause or one unit of host CPU
+steal on a shared runner -- yet it was compared against a ratio threshold calibrated on the
+~6,900-sample distribution. Under contract 6 the ratio comparison is applied only to pairs whose
+playable case recorded at least 1,000 rollback samples. Pairs below the floor are still measured
+and still published: each pair carries `rollback_p999_gate.sample_count`,
+`rollback_p999_gate.ratio`, `rollback_p999_gate.applied`, and a `rollback_p999_gate.status` of
+either `gated` or `diagnostic_sample_count_below_p999_floor`, so the artifact says exactly which
+pairs were enforced. A playable case with an absent, non-integer, or negative
+`rollback_sample_count` fails closed with status `error_sample_count_unavailable`; a small sample
+count is a reason to stop calling the number a percentile, never a reason to skip validation.
+
+The `p95_work_over_clean_p95` gate carries no such precondition and applies to every pair. Browser
+combat cases record 80 work samples, and `nearest_rank(80, 0.95)` is the 76th of 80 ordered
+samples, a genuine percentile rather than a maximum.
 
 The thresholds are calibrated from the complete Chrome and Firefox distributions in accepted
 exact runs
 [`30060058593`](https://github.com/osobytes/goliseo/actions/runs/30060058593) and
 [`30065880550`](https://github.com/osobytes/goliseo/actions/runs/30065880550).
 Across their 12 seed pairs, p95-work ratios ranged from 5.328 to 5.799 and rollback-p99.9 ratios
-from 8.529 to 10.164. Each contract-5 threshold is the corresponding accepted maximum plus 15%,
+from 8.529 to 10.164. Each threshold is the corresponding accepted maximum plus 15%,
 rounded upward to one decimal: 6.7 and 11.7. This is intentionally not a boundary fitted to the
 next observed sample.
+
+Both accepted calibration runs predate the `combat` scenario: their 12 pairs are two runs times
+two browsers times three seeds of `complete_fixture` only, every one of them a ~6,900-sample case.
+The accepted calibration set therefore contains **no** combat pairs, and in particular no
+small-sample pairs. Both thresholds are calibrated on the `complete_fixture` distribution alone.
+`6.7` is applied to `complete_fixture` and `combat` alike, which is a deliberate extrapolation for
+a statistic that is sound at both sample counts. `11.7` is applied only to `complete_fixture` in
+practice, because it is the only scenario that clears the sample-count floor; if a future
+`combat` fixture grows past 1,000 rollbacks, its ratio distribution must be recalibrated before
+that number can be treated as a bound on it.
 
 Failed exact run
 [`30075505461`](https://github.com/osobytes/goliseo/actions/runs/30075505461)

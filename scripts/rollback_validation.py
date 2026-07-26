@@ -91,7 +91,20 @@ MAX_P95_WORK_MS = 16.67
 MAX_ROLLBACK_P999_MS = 33.3
 MAX_ROLLBACK_P999_US = 33300
 ROLLBACK_PERCENTILE = 0.999
-GATE_CONTRACT = "5"
+# Nearest-rank p99.9 returns ordered[ceil(n * 0.999) - 1]. That index is the last element --
+# the plain maximum -- whenever ceil(n * ROLLBACK_PERCENTILE) == n. For integer n,
+# ceil(n * p) < n holds exactly when n * p <= n - 1, i.e. n * (1 - p) >= 1, i.e.
+# n >= 1 / (1 - ROLLBACK_PERCENTILE) = 1000. So p99.9 is the maximum for every n <= 999 and
+# becomes a genuine tail percentile at n == 1000, the smallest sample count that keeps at
+# least one sample strictly above the reported rank. Below this floor the statistic is a
+# maximum wearing a percentile's name, and comparing it against a ratio threshold calibrated
+# on ~6900-sample distributions rejects healthy runs whenever one of a handful of samples is
+# slow. Cases below the floor are recorded diagnostically instead of gated.
+MIN_ROLLBACK_P999_SAMPLE_COUNT = 1000
+ROLLBACK_P999_GATE_APPLIED = "gated"
+ROLLBACK_P999_GATE_DIAGNOSTIC = "diagnostic_sample_count_below_p999_floor"
+ROLLBACK_P999_GATE_ERROR = "error_sample_count_unavailable"
+GATE_CONTRACT = "6"
 MAX_BROWSER_P95_WORK_RATIO = 6.7
 MAX_BROWSER_ROLLBACK_P999_RATIO = 11.7
 BROWSER_CPU_CALIBRATION_RUNS = ("30060058593", "30065880550")
@@ -803,6 +816,26 @@ def nearest_rank_integer(values: tuple[int, ...], percentile: float) -> int:
         return 0
     ordered = sorted(values)
     return ordered[max(0, math.ceil(len(ordered) * percentile) - 1)]
+
+
+def rollback_p999_gate_decision(sample_count: Any) -> tuple[bool, str]:
+    """Decide whether a playable case's rollback p99.9 ratio is eligible for its gate.
+
+    The ratio threshold is only comparable to a calibrated bound when the case recorded
+    enough rollbacks for nearest-rank p99.9 to be a tail percentile rather than the
+    maximum sample; see MIN_ROLLBACK_P999_SAMPLE_COUNT. A missing, non-integer, or
+    negative count is an evidence defect: it fails closed rather than exempting the case.
+    """
+
+    if (
+        not isinstance(sample_count, int)
+        or isinstance(sample_count, bool)
+        or sample_count < 0
+    ):
+        return False, ROLLBACK_P999_GATE_ERROR
+    if sample_count < MIN_ROLLBACK_P999_SAMPLE_COUNT:
+        return False, ROLLBACK_P999_GATE_DIAGNOSTIC
+    return True, ROLLBACK_P999_GATE_APPLIED
 
 
 def validate_runtime_metrics(
@@ -2745,6 +2778,7 @@ def browser_cpu_case(
                         "rollback_over_33_3_count"
                     ],
                     "rollback_p999_ms": numeric["rollback_p999_ms"],
+                    "rollback_sample_count": counts["rollback_sample_count"],
                     "scenario": planned["scenario"],
                 },
             )
@@ -2831,7 +2865,20 @@ def browser_cpu_acceptance(
                     f"p95_work_ratio={p95_ratio:.9f} "
                     f"does not meet <{MAX_BROWSER_P95_WORK_RATIO:.1f}"
                 )
-            if rollback_ratio >= MAX_BROWSER_ROLLBACK_P999_RATIO:
+            rollback_sample_count = playable.get("rollback_sample_count")
+            rollback_gate_applied, rollback_gate_status = rollback_p999_gate_decision(
+                rollback_sample_count
+            )
+            if rollback_gate_status == ROLLBACK_P999_GATE_ERROR:
+                rollback_sample_count = None
+                pair_reasons.append(
+                    f"{browser_name} {scenario} seed {seed} playable case reports no usable "
+                    "rollback_sample_count, so the rollback p99.9 gate fails closed"
+                )
+            if (
+                rollback_gate_applied
+                and rollback_ratio >= MAX_BROWSER_ROLLBACK_P999_RATIO
+            ):
                 pair_reasons.append(
                     f"{browser_name} {scenario} seed {seed} "
                     f"rollback_p999_ratio={rollback_ratio:.9f} "
@@ -2847,6 +2894,9 @@ def browser_cpu_acceptance(
                             "rollback_over_33_3_count"
                         ],
                         "clean_rollback_p999_ms": clean["rollback_p999_ms"],
+                        "clean_rollback_sample_count": clean.get(
+                            "rollback_sample_count"
+                        ),
                         "playable_max_rollback_ms": playable["max_rollback_ms"],
                         "playable_p95_work_ms": playable["p95_work_ms"],
                         "playable_rollback_over_33_3_count": playable[
@@ -2855,6 +2905,7 @@ def browser_cpu_acceptance(
                         "playable_rollback_p999_ms": playable[
                             "rollback_p999_ms"
                         ],
+                        "playable_rollback_sample_count": rollback_sample_count,
                     },
                     "cases": {
                         "clean": clean["case"],
@@ -2866,6 +2917,13 @@ def browser_cpu_acceptance(
                         "rollback_p999_over_clean_p95": round(rollback_ratio, 9),
                     },
                     "reasons": pair_reasons,
+                    "rollback_p999_gate": {
+                        "applied": rollback_gate_applied,
+                        "minimum_sample_count": MIN_ROLLBACK_P999_SAMPLE_COUNT,
+                        "ratio": round(rollback_ratio, 9),
+                        "sample_count": rollback_sample_count,
+                        "status": rollback_gate_status,
+                    },
                     "scenario": scenario,
                     "seed": seed_value,
                 }
@@ -2914,6 +2972,7 @@ def browser_cpu_acceptance(
             "comparison": "strict_less_than",
             "max_p95_work_over_clean_p95": MAX_BROWSER_P95_WORK_RATIO,
             "max_rollback_p999_over_clean_p95": MAX_BROWSER_ROLLBACK_P999_RATIO,
+            "min_rollback_p999_sample_count": MIN_ROLLBACK_P999_SAMPLE_COUNT,
         },
     }
 
@@ -3244,6 +3303,49 @@ def run_self_test() -> None:
     ):
         raise RuntimeError("split native campaigns do not reconstruct the full plan")
 
+    # Pin the derivation behind MIN_ROLLBACK_P999_SAMPLE_COUNT: nearest-rank p99.9 is the
+    # maximum sample for every n below the floor and a strictly smaller order statistic at the
+    # floor itself. tuple(range(n)) is strictly increasing, so its maximum is n - 1.
+    for collapsed_count in (8, 999, MIN_ROLLBACK_P999_SAMPLE_COUNT - 1):
+        ascending = tuple(range(collapsed_count))
+        if (
+            nearest_rank_integer(ascending, ROLLBACK_PERCENTILE)
+            != collapsed_count - 1
+        ):
+            raise RuntimeError(
+                f"p99.9 nearest rank at n={collapsed_count} is not the maximum sample"
+            )
+    floor_samples = tuple(range(MIN_ROLLBACK_P999_SAMPLE_COUNT))
+    if nearest_rank_integer(floor_samples, ROLLBACK_PERCENTILE) != (
+        MIN_ROLLBACK_P999_SAMPLE_COUNT - 2
+    ):
+        raise RuntimeError(
+            "p99.9 nearest rank at the minimum sample count is not strictly below the maximum"
+        )
+    if nearest_rank_integer(floor_samples, 1) != MIN_ROLLBACK_P999_SAMPLE_COUNT - 1:
+        raise RuntimeError("nearest-rank maximum self-test failed")
+    for sample_count, expected_decision in (
+        (MIN_ROLLBACK_P999_SAMPLE_COUNT, (True, ROLLBACK_P999_GATE_APPLIED)),
+        (MIN_ROLLBACK_P999_SAMPLE_COUNT + 1, (True, ROLLBACK_P999_GATE_APPLIED)),
+        (6903, (True, ROLLBACK_P999_GATE_APPLIED)),
+        (0, (False, ROLLBACK_P999_GATE_DIAGNOSTIC)),
+        (8, (False, ROLLBACK_P999_GATE_DIAGNOSTIC)),
+        (
+            MIN_ROLLBACK_P999_SAMPLE_COUNT - 1,
+            (False, ROLLBACK_P999_GATE_DIAGNOSTIC),
+        ),
+        (None, (False, ROLLBACK_P999_GATE_ERROR)),
+        ("1000", (False, ROLLBACK_P999_GATE_ERROR)),
+        (1000.0, (False, ROLLBACK_P999_GATE_ERROR)),
+        (True, (False, ROLLBACK_P999_GATE_ERROR)),
+        (-1, (False, ROLLBACK_P999_GATE_ERROR)),
+    ):
+        if rollback_p999_gate_decision(sample_count) != expected_decision:
+            raise RuntimeError(
+                f"rollback p99.9 gate decision for {sample_count!r} is not "
+                f"{expected_decision!r}"
+            )
+
     calibrated_p95 = (
         math.ceil(
             BROWSER_CPU_CALIBRATION_MAX_P95_WORK_RATIO
@@ -3274,11 +3376,24 @@ def run_self_test() -> None:
         *,
         combat_p95_work_ms: float | None = None,
         combat_rollback_p999_ms: float | None = None,
+        rollback_samples: int = MIN_ROLLBACK_P999_SAMPLE_COUNT,
+        combat_rollback_samples: int | None = None,
         browser_name: str = "firefox",
         browser_version: str = "153.0",
         marker_seed: int | None = None,
     ) -> dict[str, Any]:
         emitted_seed = marker_seed or seed
+        combat_samples = (
+            combat_rollback_samples
+            if combat_rollback_samples is not None
+            else rollback_samples
+        )
+
+        def sample_count(scenario: str) -> int:
+            if profile == "clean":
+                return 0
+            return combat_samples if scenario == "combat" else rollback_samples
+
         cpu_gate = "deferred" if profile == "playable" else "not_applied"
         cpu_mode = "normalized_deferred" if profile == "playable" else "diagnostic"
         combat_p95 = (
@@ -3296,7 +3411,7 @@ def run_self_test() -> None:
             combat = scenario == "combat"
             prefix = "combat" if combat else "full"
             case_id = f"{prefix}-{profile}-{emitted_seed}"
-            rollbacks = 0 if profile == "clean" else 8
+            rollbacks = sample_count(scenario)
             peak_snapshot_bytes = 688660 if combat else 611274
             peak_history_bytes = 743170 if combat else 700000
             event_digest = "0000000000000004" if combat else "0000000000000003"
@@ -3345,9 +3460,17 @@ def run_self_test() -> None:
             combat = scenario == "combat"
             prefix = "combat" if combat else "full"
             case_id = f"{prefix}-{profile}-{seed}"
-            rollback_calls = 0 if profile == "clean" else 8
+            rollback_calls = sample_count(scenario)
+            # The validator cross-checks p99.9 against the over-budget count: an over-budget
+            # p99.9 requires at least as many over-budget samples as the nearest-rank tail
+            # holds, which is one slot for every n below the floor and grows above it.
+            tail_slots = (
+                rollback_calls
+                - math.ceil(rollback_calls * ROLLBACK_PERCENTILE)
+                + 1
+            )
             over_count = (
-                1
+                tail_slots
                 if rollback_calls > 0
                 and case_rollback_p999_ms >= MAX_ROLLBACK_P999_MS
                 else 0
@@ -3513,6 +3636,145 @@ def run_self_test() -> None:
         for reason in exact_rollback_boundary["reasons"]
     ):
         raise RuntimeError("exact browser rollback ratio threshold passed strict gate")
+
+    def combat_pair(acceptance: dict[str, Any], seed: int) -> dict[str, Any]:
+        return next(
+            pair
+            for pair in acceptance["pairs"]
+            if pair["scenario"] == "combat" and pair["seed"] == seed
+        )
+
+    def small_sample_combat_run(rollback_samples: int) -> dict[str, Any]:
+        # Seed 2002 clean controls are 2.25 ms (complete_fixture) and 2.7 ms (combat) at
+        # scale 1.0. A 2.7 * 31.7 ms combat p99.9 is far past the 11.7 ratio threshold.
+        return synthetic_browser_cpu_run(
+            "playable",
+            2002,
+            2.25 * 5.5,
+            2.25 * 9.5,
+            combat_p95_work_ms=2.7 * 5.4,
+            combat_rollback_p999_ms=2.7 * (MAX_BROWSER_ROLLBACK_P999_RATIO + 20.0),
+            combat_rollback_samples=rollback_samples,
+        )
+
+    # 8 is the observed browser combat sample count; the floor minus one is the boundary.
+    for below_floor_samples in (8, MIN_ROLLBACK_P999_SAMPLE_COUNT - 1):
+        below_floor = browser_cpu_acceptance(
+            replace_control(
+                complete_controls,
+                small_sample_combat_run(below_floor_samples),
+            ),
+            "firefox",
+        )
+        below_floor_pair = combat_pair(below_floor, 2002)
+        if not below_floor["pass"] or any(
+            "combat seed 2002 rollback_p999_ratio" in reason
+            for reason in below_floor["reasons"]
+        ):
+            raise RuntimeError(
+                f"combat rollback p99.9 ratio at {below_floor_samples} samples was gated"
+            )
+        if below_floor_pair["rollback_p999_gate"] != {
+            "applied": False,
+            "minimum_sample_count": MIN_ROLLBACK_P999_SAMPLE_COUNT,
+            "ratio": below_floor_pair["ratios"]["rollback_p999_over_clean_p95"],
+            "sample_count": below_floor_samples,
+            "status": ROLLBACK_P999_GATE_DIAGNOSTIC,
+        }:
+            raise RuntimeError("small-sample combat pair was not recorded diagnostically")
+        if (
+            below_floor_pair["ratios"]["rollback_p999_over_clean_p95"]
+            < MAX_BROWSER_ROLLBACK_P999_RATIO
+            or below_floor_pair["absolute_diagnostics"][
+                "playable_rollback_sample_count"
+            ]
+            != below_floor_samples
+        ):
+            raise RuntimeError(
+                "small-sample combat diagnostics lost the over-threshold ratio"
+            )
+        if not all(
+            pair["rollback_p999_gate"]["status"] == ROLLBACK_P999_GATE_APPLIED
+            for pair in below_floor["pairs"]
+            if pair is not below_floor_pair
+        ):
+            raise RuntimeError("the sample-count floor exempted a full-sample pair")
+
+    at_floor = browser_cpu_acceptance(
+        replace_control(
+            complete_controls,
+            small_sample_combat_run(MIN_ROLLBACK_P999_SAMPLE_COUNT),
+        ),
+        "firefox",
+    )
+    at_floor_pair = combat_pair(at_floor, 2002)
+    if at_floor["pass"] or not any(
+        "combat seed 2002 rollback_p999_ratio" in reason
+        for reason in at_floor["reasons"]
+    ):
+        raise RuntimeError("combat rollback p99.9 ratio at the sample floor passed the gate")
+    if at_floor_pair["rollback_p999_gate"] != {
+        "applied": True,
+        "minimum_sample_count": MIN_ROLLBACK_P999_SAMPLE_COUNT,
+        "ratio": at_floor_pair["ratios"]["rollback_p999_over_clean_p95"],
+        "sample_count": MIN_ROLLBACK_P999_SAMPLE_COUNT,
+        "status": ROLLBACK_P999_GATE_APPLIED,
+    }:
+        raise RuntimeError("the pair at the sample floor was not recorded as gated")
+
+    def rewrite_metric_markers(
+        run: dict[str, Any],
+        old: str,
+        new: str,
+    ) -> dict[str, Any]:
+        rewritten = []
+        for row in run["runtime_metrics"]["rows"]:
+            raw = row["marker"].replace(old, new)
+            parsed = parse_runtime_metric(raw)
+            rewritten.append(
+                {"fields": parsed.fields, "kind": parsed.kind, "marker": raw}
+            )
+        payload = ("\n".join(row["marker"] for row in rewritten) + "\n").encode()
+        return {
+            **run,
+            "runtime_metrics": {
+                "marker_sha256": sha256_bytes(payload),
+                "rows": rewritten,
+            },
+        }
+
+    intact_sample_count = f"rollback_sample_count={MIN_ROLLBACK_P999_SAMPLE_COUNT}"
+    for intact, broken_sample_count, description in (
+        (intact_sample_count, "rollback_sample_count=not-a-number", "malformed"),
+        (intact_sample_count, "rollback_sample_count=-1", "negative"),
+        (f"|{intact_sample_count}", "", "absent"),
+    ):
+        broken = browser_cpu_acceptance(
+            [
+                complete_controls[0],
+                rewrite_metric_markers(
+                    complete_controls[1],
+                    intact,
+                    broken_sample_count,
+                ),
+                *complete_controls[2:],
+            ],
+            "firefox",
+        )
+        if broken["pass"] or not any(
+            "rollback_sample_count" in reason for reason in broken["reasons"]
+        ):
+            raise RuntimeError(
+                f"{description} rollback_sample_count did not fail the browser CPU gate closed"
+            )
+        if any(
+            pair["scenario"] == "complete_fixture" and pair["seed"] == 2001
+            for pair in broken["pairs"]
+        ):
+            raise RuntimeError(
+                f"{description} rollback_sample_count was exempted instead of rejected"
+            )
+
     missing_control = browser_cpu_acceptance(complete_controls[:-1], "firefox")
     if missing_control["pass"] or not any(
         "missing the complete_fixture playable case for seed 2003" in reason
@@ -3742,7 +4004,8 @@ def run_self_test() -> None:
         f"{MARKER_PREFIX}|case|schema=1|case=integrity|scenario=complete_fixture|"
         "profile=playable|success=1|"
         "lab_success=1|expected_failure=0|hidden_progress=0|scenario_pass=1|"
-        "gate_contract=5|cpu_gate=1|cpu_gate_applied=1|cpu_gate_mode=absolute|"
+        f"gate_contract={GATE_CONTRACT}|cpu_gate=1|cpu_gate_applied=1|"
+        "cpu_gate_mode=absolute|"
         "snapshot_gate=1|"
         "history_gate=1|game_gate=1|rollbacks=6903|"
         "tape_version=1|snapshot_version=8|"
@@ -3763,7 +4026,10 @@ def run_self_test() -> None:
         raise RuntimeError(f"{description} passed self-test")
 
     expect_integrity_failure(
-        integrity_case.raw.replace("gate_contract=5", "gate_contract=4"),
+        integrity_case.raw.replace(
+            f"gate_contract={GATE_CONTRACT}",
+            "gate_contract=4",
+        ),
         "native",
         "contract-4 case",
     )
@@ -3827,7 +4093,7 @@ def run_self_test() -> None:
                 (
                     TIMINGS_PREFIX,
                     "case",
-                    "gate_contract=5",
+                    f"gate_contract={GATE_CONTRACT}",
                     f"case={case_id}",
                     f"sample_count={len(samples_us)}",
                     "unit=microseconds",
@@ -3920,7 +4186,7 @@ def run_self_test() -> None:
 
     malformed_timing_lines = (
         passing_timing.raw.replace("|unit=microseconds", ""),
-        passing_timing.raw.replace("gate_contract=5", "gate_contract=4"),
+        passing_timing.raw.replace(f"gate_contract={GATE_CONTRACT}", "gate_contract=4"),
         passing_timing.raw.replace("samples=10000", "samples=bad", 1),
         passing_timing.raw.replace("samples=10000", "samples=-1", 1),
         passing_timing.raw.replace("sample_count=6903", "sample_count=6902"),
@@ -4007,7 +4273,7 @@ def run_self_test() -> None:
         )
 
     contract_4_runtime = parse_runtime_metric(
-        runtime_provenance.raw.replace("gate_contract=5", "gate_contract=4")
+        runtime_provenance.raw.replace(f"gate_contract={GATE_CONTRACT}", "gate_contract=4")
     )
     expect_runtime_failure(
         contract_4_runtime,
