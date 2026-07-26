@@ -6,6 +6,7 @@ local protocol = require("game.online.protocol")
 local protocol_fixture = require("game.online.protocol_fixture")
 local transport_contract = require("game.transport.contract")
 local input_frame = require("sim.input_frame")
+local match_snapshot = require("sim.match_snapshot")
 local rollback_input_history = require("sim.rollback_input_history")
 
 ---@param mask integer
@@ -133,14 +134,25 @@ end
 t.describe("OMP-3 input packet protocol", function()
     t.it("pins literal native and love.js conformance vectors", function()
         local report = input_conformance.verify()
-        t.eq(report.guest_digest, "94db8753a3be9846")
-        t.eq(report.host_digest, "2e77227f216a1eba")
+        t.eq(report.guest_digest, "3332f9c19ea9ce34")
+        t.eq(report.host_digest, "1e9b1ebfad823a44")
         t.eq(report.maximal_wire_bytes, 755)
         t.eq(
             input_conformance.marker(report),
             "GC_INPUT_PROTOCOL|golden|schema=1|input=2|history=6|delay=3|vectors=2"
-                .. "|guest=94db8753a3be9846|host=2e77227f216a1eba|max_bytes=755"
+                .. "|guest=3332f9c19ea9ce34|host=1e9b1ebfad823a44|max_bytes=755"
         )
+    end)
+
+    t.it("names the snapshot version its literals were generated against", function()
+        t.eq(input_conformance.GOLDEN.snapshot_version, match_snapshot.VERSION)
+        t.eq(input_conformance.GOLDEN.combat_version, match_snapshot.COMBAT_VERSION)
+        local pinned = input_conformance.GOLDEN.snapshot_version
+        input_conformance.GOLDEN.snapshot_version = pinned + 1
+        local ok, err = pcall(input_conformance.verify)
+        input_conformance.GOLDEN.snapshot_version = pinned
+        t.is_true(not ok)
+        t.is_true(tostring(err):find("input packet goldens are stale for snapshot", 1, true) ~= nil)
     end)
 
     t.it("round-trips current plus exactly six prior guest rows with distinct clocks", function()

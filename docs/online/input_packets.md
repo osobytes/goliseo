@@ -195,8 +195,16 @@ fragments.
 
 - one complete literal guest wire and digest;
 - one complete literal host wire and digest;
-- schema, InputFrame, redundancy, and fairness versions; and
-- the exact 755-byte maximum fixture.
+- schema, InputFrame, redundancy, and fairness versions;
+- the exact 755-byte maximum fixture; and
+- the snapshot and combat schema versions the literals were generated against.
+
+The `manifest-id` field of every wire is a hash over the session manifest, which
+carries the snapshot and combat schema versions, so bumping either version
+invalidates every literal above. The verifier checks the pinned versions first
+and reports which version the goldens were built for, instead of failing with an
+opaque byte mismatch. Regenerate the literals in the same change that bumps the
+version.
 
 Native tests call the verifier directly. `love . --determinism` emits one
 `GC_INPUT_PROTOCOL|golden|...` marker before running the OMP-1 evidence.
