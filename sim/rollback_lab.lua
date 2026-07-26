@@ -1081,6 +1081,10 @@ function rollback_lab.new_campaign(tape, options)
     local reference_history = rollback_snapshot_history.new(max_rollback_ticks)
     assert(rollback_snapshot_history.store(reference_history, tape.initial))
     local session = rollback_session.new(tape.initial, sources, max_rollback_ticks, options.measure)
+    -- `update_peaks` reads session accounting four times per simulated tick, so
+    -- re-encoding every retained output on demand dominated this campaign's run
+    -- time. The incremental total is byte-identical; only the harness opts in.
+    rollback_session.track_output_bytes(session)
     local network = network_conditions.new(profile, network_seed)
     ---@type RollbackLabRunState
     local state = {

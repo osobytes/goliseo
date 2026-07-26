@@ -807,4 +807,109 @@ t.describe("rollback session", function()
             assert(rollback_session.diagnostics(session).last_comparison).actual_hash ~= "mutated"
         )
     end)
+
+    -- The tracked retained-output byte total feeds `peak_snapshot_bytes` and
+    -- `peak_history_bytes`, which are gated values, so drift between the
+    -- incremental total and the on-demand sum would silently corrupt evidence.
+    -- The untracked session's `accounting` is literally the from-scratch
+    -- recomputation, so running both through identical operations and comparing
+    -- after every one is a direct equality proof across the three paths where an
+    -- incremental total can drift: store, overwrite-on-resimulate, and truncate.
+    t.it("tracks retained-output bytes identically to recomputing them", function()
+        local checks = 0
+        ---@param max_goals integer
+        ---@return RollbackSession tracked
+        ---@return RollbackSession recomputed
+        ---@return fun(label: string) agree
+        local function lockstep(max_goals)
+            local tracked = rollback_session.new(shot_fixture(max_goals), sources())
+            local recomputed = rollback_session.new(shot_fixture(max_goals), sources())
+            rollback_session.track_output_bytes(tracked)
+            return tracked,
+                recomputed,
+                function(label)
+                    checks = checks + 1
+                    local left = rollback_session.accounting(tracked)
+                    local right = rollback_session.accounting(recomputed)
+                    t.eq(left.output_bytes, right.output_bytes, label .. " output bytes")
+                    t.eq(left.total_bytes, right.total_bytes, label .. " total bytes")
+                    t.eq(tracked._output_bytes, right.output_bytes, label .. " running total")
+                end
+        end
+
+        -- Three goals, so the late shot below rolls the session back without
+        -- ending the match and the resimulated range stays steppable.
+        local tracked, recomputed, agree = lockstep(3)
+        t.is_true(tracked._track_output_bytes)
+        t.is_true(not recomputed._track_output_bytes)
+        agree("empty")
+        t.eq(rollback_session.accounting(tracked).output_bytes, 0)
+
+        -- Store: plain forward simulation, far enough to prune the floor too.
+        step_many(tracked, 1)
+        step_many(recomputed, 1)
+        agree("first output")
+        t.is_true(rollback_session.accounting(tracked).output_bytes > 0)
+        step_many(tracked, 39)
+        step_many(recomputed, 39)
+        agree("pruned window")
+        t.eq(rollback_session.diagnostics(tracked).input_history.oldest_retained_tick, 10)
+
+        -- Overwrite-on-resimulate: a late authoritative shot at tick 15 rewinds
+        -- the session and replaces every retained output from there forward.
+        local shot = sample({ edges = input_frame.EDGE_BITS.shoot })
+        assert(rollback_session.add_authoritative(tracked, 15, 1, shot))
+        assert(rollback_session.add_authoritative(recomputed, 15, 1, shot))
+        local replaced = rollback_session.reconcile(tracked)
+        local replaced_peer = rollback_session.reconcile(recomputed)
+        t.is_true(replaced.changed)
+        t.eq(replaced.new_present_boundary, replaced_peer.new_present_boundary)
+        t.eq(replaced.new_present_boundary, 40)
+        agree("after overwrite-on-resimulate")
+
+        step_many(tracked, 5)
+        step_many(recomputed, 5)
+        agree("resimulated forward")
+        local move = sample({ move_y = 20 })
+        assert(rollback_session.add_authoritative(tracked, 20, 2, move))
+        assert(rollback_session.add_authoritative(recomputed, 20, 2, move))
+        rollback_session.reconcile(tracked)
+        rollback_session.reconcile(recomputed)
+        agree("after second rollback")
+
+        -- Truncate: the same shot against a one-goal match ends it during
+        -- resimulation, so the boundary shrinks and the outputs beyond the new
+        -- present are dropped rather than replaced.
+        local short, short_peer, short_agree = lockstep(1)
+        step_many(short, 40)
+        step_many(short_peer, 40)
+        short_agree("short pruned window")
+        assert(rollback_session.add_authoritative(short, 15, 1, shot))
+        assert(rollback_session.add_authoritative(short_peer, 15, 1, shot))
+        local truncated = rollback_session.reconcile(short)
+        local truncated_peer = rollback_session.reconcile(short_peer)
+        t.is_true(truncated.changed)
+        t.eq(truncated.new_present_boundary, truncated_peer.new_present_boundary)
+        t.is_true(truncated.new_present_boundary < 40)
+        t.eq(rollback_session.output(short, truncated.new_present_boundary), nil)
+        short_agree("after truncate")
+        t.eq(checks, 8)
+    end)
+
+    t.it("leaves retained-output accounting untracked by default", function()
+        local session = rollback_session.new(shot_fixture(), sources())
+        step_many(session, 12)
+        t.is_true(not session._track_output_bytes)
+        t.eq(session._output_bytes, 0)
+        local before = rollback_session.accounting(session)
+        t.is_true(before.output_bytes > 0)
+
+        -- Switching on mid-session seeds from the retained outputs, so the
+        -- reported total is unchanged by the act of enabling it.
+        rollback_session.track_output_bytes(session)
+        local after = rollback_session.accounting(session)
+        t.eq(after.output_bytes, before.output_bytes)
+        t.eq(after.total_bytes, before.total_bytes)
+        t.eq(session._output_bytes, before.output_bytes)
+    end)
 end)

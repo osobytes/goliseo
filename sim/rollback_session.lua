@@ -105,6 +105,8 @@ local rollback_snapshot_history = require("sim.rollback_snapshot_history")
 ---@field _input_history RollbackInputHistory
 ---@field _snapshot_history RollbackSnapshotHistory
 ---@field _outputs table<integer, RollbackTickOutput>
+---@field _track_output_bytes boolean
+---@field _output_bytes integer
 ---@field _status RollbackSessionStatus
 ---@field _rollback_count integer
 ---@field _correction_count integer
@@ -377,6 +379,34 @@ local function make_output(tick, record, snapshot)
     return result
 end
 
+-- Retained-output byte accounting, optionally kept incrementally.
+--
+-- `rollback_session.accounting` re-encodes every retained output on demand. The
+-- offline validation harness reads it several times per simulated tick, where
+-- that repeated encoding dominates the run. Such a caller can opt in with
+-- `rollback_session.track_output_bytes`, after which the running total is
+-- maintained here instead. A retained output is never mutated in place --
+-- `rollback_session.output` hands out a defensive copy -- so encoding it once
+-- when it enters retention and subtracting the identical encoding when it
+-- leaves is byte-identical to summing the encodings on demand.
+--
+-- Tracking is off by default, so the shipped match path pays nothing for it.
+---@param session RollbackSession
+---@param tick integer
+---@param output RollbackTickOutput?
+local function store_output(session, tick, output)
+    if session._track_output_bytes then
+        local previous = session._outputs[tick]
+        if previous ~= nil then
+            session._output_bytes = session._output_bytes - #canonical_payload(previous)
+        end
+        if output ~= nil then
+            session._output_bytes = session._output_bytes + #canonical_payload(output)
+        end
+    end
+    session._outputs[tick] = output
+end
+
 ---@param session RollbackSession
 ---@param tick integer
 ---@return RollbackTickOutput
@@ -396,7 +426,7 @@ local function execute_tick(session, tick)
     )
     assert(rollback_snapshot_history.store_owned(session._snapshot_history, boundary))
     local output = make_output(tick, record, boundary)
-    session._outputs[tick] = output
+    store_output(session, tick, output)
     return output
 end
 
@@ -410,7 +440,7 @@ local function prune_retained_outputs(session)
     assert(rollback_input_history.prune_before(session._input_history, floor))
     for tick in pairs(session._outputs) do
         if tick < floor then
-            session._outputs[tick] = nil
+            store_output(session, tick, nil)
         end
     end
 end
@@ -434,6 +464,8 @@ function rollback_session.new(initial_snapshot, sources, max_rollback_ticks, mea
         _input_history = rollback_input_history.new(sources),
         _snapshot_history = snapshots,
         _outputs = {},
+        _track_output_bytes = false,
+        _output_bytes = 0,
         _status = "active",
         _rollback_count = 0,
         _correction_count = 0,
@@ -622,7 +654,7 @@ local function reconcile_changed(session, causal_tick, detailed_diagnostics)
         assert(rollback_input_history.truncate_from(session._input_history, new_present))
         for output_tick in pairs(session._outputs) do
             if output_tick >= new_present then
-                session._outputs[output_tick] = nil
+                store_output(session, output_tick, nil)
             end
         end
     end
@@ -809,6 +841,25 @@ function rollback_session.diagnostics(session)
     }
 end
 
+-- Opt into incremental retained-output byte accounting for this session.
+--
+-- Off by default. Only callers that read `accounting` far more often than they
+-- retain outputs -- in practice the offline validation harness, which reads it
+-- several times per simulated tick -- need it; the shipped match path leaves it
+-- off and behaves exactly as before. Enabling seeds the running total from the
+-- currently retained outputs, so the total is exact from the moment it is
+-- switched on and stays byte-identical to the on-demand sum thereafter.
+---@param session RollbackSession
+function rollback_session.track_output_bytes(session)
+    assert_session(session)
+    local output_bytes = 0
+    for _, output in pairs(session._outputs) do
+        output_bytes = output_bytes + #canonical_payload(output)
+    end
+    session._output_bytes = output_bytes
+    session._track_output_bytes = true
+end
+
 -- Exact logical payload retained by the rollback coordinator. Snapshot bytes
 -- use the MatchSnapshot versioned canonical encoding; input/output bytes use their versioned
 -- canonical encodings owned by their respective modules.
@@ -818,8 +869,12 @@ function rollback_session.accounting(session)
     assert_session(session)
     local input = rollback_input_history.accounting(session._input_history)
     local output_bytes = 0
-    for _, output in pairs(session._outputs) do
-        output_bytes = output_bytes + #canonical_payload(output)
+    if session._track_output_bytes then
+        output_bytes = session._output_bytes
+    else
+        for _, output in pairs(session._outputs) do
+            output_bytes = output_bytes + #canonical_payload(output)
+        end
     end
     local snapshot_bytes =
         rollback_snapshot_history.diagnostics(session._snapshot_history).canonical_bytes
