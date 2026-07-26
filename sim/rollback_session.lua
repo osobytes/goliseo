@@ -29,6 +29,13 @@ local rollback_snapshot_history = require("sim.rollback_snapshot_history")
 ---@class RollbackSessionArrival: RollbackAuthoritativeArrival
 ---@field correction boolean -- Accepted authority differs from a previously consumed sample.
 
+---@class RollbackSessionBatchArrival: RollbackAuthoritativeBatchArrival
+---@field corrections integer -- Newly inserted rows differing from samples already consumed.
+
+---@class RollbackSessionBatchApplyResult
+---@field arrival RollbackSessionBatchArrival
+---@field reconciliation RollbackReconcileResult
+
 ---@class RollbackComparison
 ---@field matched boolean
 ---@field boundary_mismatch boolean
@@ -477,6 +484,38 @@ function rollback_session.add_authoritative(session, tick, slot_index, sample)
 end
 
 ---@param session RollbackSession
+---@param arrivals RollbackAuthoritativeInput[]
+---@return RollbackSessionBatchArrival?, string?, RollbackInputHistoryErrorCode?
+function rollback_session.add_authoritative_batch(session, arrivals)
+    assert_session(session)
+    local accepted, err, code =
+        rollback_input_history.add_authoritative_batch(session._input_history, arrivals)
+    if accepted == nil then
+        return nil, err, code
+    end
+    local corrections = 0
+    for _, arrival in ipairs(accepted.inserted_rows) do
+        local used = rollback_input_history.record(session._input_history, arrival.tick)
+        if
+            used ~= nil
+            and used.slots[arrival.slot_index] ~= nil
+            and sample_differs(arrival.sample, used.slots[arrival.slot_index])
+        then
+            corrections = corrections + 1
+        end
+    end
+    session._correction_count = session._correction_count + corrections
+    return {
+        inserted = accepted.inserted,
+        duplicates = accepted.duplicates,
+        inserted_rows = accepted.inserted_rows,
+        confirmed_tick = accepted.confirmed_tick,
+        earliest_divergence = accepted.earliest_divergence,
+        corrections = corrections,
+    }
+end
+
+---@param session RollbackSession
 ---@return RollbackTickOutput?, string?, RollbackSessionErrorCode?
 function rollback_session.step(session)
     assert_session(session)
@@ -660,6 +699,25 @@ function rollback_session.reconcile(session, detailed_diagnostics)
     end)
     ---@cast result RollbackReconcileResult
     return result
+end
+
+-- One host batch is one correction boundary. The complete authority set is
+-- preflighted and retained atomically before the existing rollback machinery
+-- is invoked exactly once.
+---@param session RollbackSession
+---@param arrivals RollbackAuthoritativeInput[]
+---@param detailed_diagnostics boolean?
+---@return RollbackSessionBatchApplyResult?, string?, RollbackInputHistoryErrorCode?
+function rollback_session.apply_authoritative_batch(session, arrivals, detailed_diagnostics)
+    assert_session(session)
+    local accepted, err, code = rollback_session.add_authoritative_batch(session, arrivals)
+    if accepted == nil then
+        return nil, err, code
+    end
+    return {
+        arrival = accepted,
+        reconciliation = rollback_session.reconcile(session, detailed_diagnostics),
+    }
 end
 
 ---@param session RollbackSession

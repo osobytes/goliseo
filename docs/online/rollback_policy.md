@@ -45,6 +45,12 @@ sample for the same tick and slot returns the recoverable
 tick, or divergence state. The client must treat that conflict as invalid
 upstream data; authority is never last-writer-wins.
 
+`add_authoritative_batch(history, rows)` extends those rules to one complete
+transport-tick host batch. It validates canonical order, every row, the
+retained floor, duplicates, and conflicts against both the batch and retained
+history before inserting anything. Its result reports new versus duplicate
+rows and the one resulting divergence boundary.
+
 ## Prediction rule
 
 For each missing remote row on tick `N`, search that slot's authoritative
@@ -215,12 +221,14 @@ constructor accepts a tick-zero `MatchSnapshot`, the eight input sources, and
 an optional rollback-window override. It creates both bounded histories and
 stores boundary zero before simulation begins.
 
-Callers insert every authoritative row available for an update with
+Production packet callers use `apply_authoritative_batch`, which performs the
+atomic insertion and calls `reconcile` exactly once. Single-row laboratory
+callers may continue to insert every row available for an update with
 `add_authoritative`, then call `reconcile` once. The session observes whether
-each accepted row differs from the already-consumed effective row before the
-history changes, so a batch can count every correction while still restoring
-only once from its earliest causal input tick. Equal predictions and
-authoritative input for an unconsumed tick are not corrections.
+each newly accepted row differs from the already-consumed effective row, so a
+batch can count every correction while still restoring only once from its
+earliest causal input tick. Equal predictions and authoritative input for an
+unconsumed tick are not corrections.
 
 `step` materializes exactly the current input tick, calls `sim.match.step` with
 `fixed_clock.TICK_SECONDS`, stores the resulting start-of-next-tick boundary,

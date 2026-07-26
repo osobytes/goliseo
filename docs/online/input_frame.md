@@ -121,6 +121,11 @@ held` and the other contradictory combinations are malformed. No edge is
 derived from adjacent frames: every recorder must set the applicable `edges`
 bit explicitly and clear it on the next frame.
 
+`encode_sample` / `decode_sample` expose the four-byte version-2 sample used by
+OMP-3 input packets as eight lowercase hex characters. The axes are biased by
+127, followed by the complete held and edge bytes. This compact form does not
+derive or omit equipment transitions; it passes the same validation above.
+
 ## Canonical bounded wire form
 
 `input_frame.encode(frame)` validates and emits one ASCII form:
@@ -144,10 +149,10 @@ checked-in OMP-1 determinism fixture has one narrow migration that changes only
 its version header and identity while preserving every axis and legacy input
 mask.
 
-This is an input payload candidate only. If it is later placed in the OMP-0
-transport envelope, its `InputFrame.tick` must agree with that envelope's
-input-message tick; the transport layer continues to treat this payload as
-opaque.
+Complete eight-slot frame wires remain tape/simulation records. OMP-3's
+[per-slot bundles](input_packets.md) use the compact sample form and carry
+transport time separately from each authoritative input tick; the transport
+layer continues to treat those payload bytes as opaque.
 
 ## Recording identity beside a tape
 

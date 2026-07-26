@@ -53,6 +53,16 @@ REQUIRED_PROTOCOL_FIELDS = {
     "transcript_id": "098e3e665bc478c8",
     "messages": "13",
 }
+REQUIRED_INPUT_PROTOCOL_FIELDS = {
+    "schema": "1",
+    "input": "2",
+    "history": "6",
+    "delay": "3",
+    "vectors": "2",
+    "guest": "94db8753a3be9846",
+    "host": "2e77227f216a1eba",
+    "max_bytes": "755",
+}
 ERROR_MARKERS = (
     "GC_BROWSER|error|",
     "GC_BROWSER|window_error|",
@@ -93,6 +103,24 @@ def parse_protocol_marker(line: str) -> dict[str, str]:
         raise RuntimeError(
             f"protocol golden marker mismatch: "
             f"expected {REQUIRED_PROTOCOL_FIELDS}, got {fields}"
+        )
+    return fields
+
+
+def parse_input_protocol_marker(line: str) -> dict[str, str]:
+    parts = line.split("|")
+    if parts[:2] != ["GC_INPUT_PROTOCOL", "golden"]:
+        raise RuntimeError(f"invalid input protocol golden marker: {line}")
+    fields: dict[str, str] = {}
+    for part in parts[2:]:
+        key, separator, value = part.partition("=")
+        if not separator or not key or key in fields:
+            raise RuntimeError(f"invalid input protocol golden marker field: {part}")
+        fields[key] = value
+    if fields != REQUIRED_INPUT_PROTOCOL_FIELDS:
+        raise RuntimeError(
+            f"input protocol golden marker mismatch: "
+            f"expected {REQUIRED_INPUT_PROTOCOL_FIELDS}, got {fields}"
         )
     return fields
 
@@ -338,6 +366,7 @@ def run_once(
         state: dict[str, Any] = {}
         markers: list[str] = []
         protocol_markers: list[str] = []
+        input_protocol_markers: list[str] = []
         while time.monotonic() < deadline:
             state = console_state(driver)
             entries = state.get("entries")
@@ -362,6 +391,11 @@ def run_once(
                     for message in messages
                     if message.startswith("GC_PROTOCOL|golden|")
                 ]
+                input_protocol_markers = [
+                    message
+                    for message in messages
+                    if message.startswith("GC_INPUT_PROTOCOL|golden|")
+                ]
                 break
             time.sleep(0.5)
         if len(markers) != 1:
@@ -372,12 +406,17 @@ def run_once(
             raise RuntimeError(
                 f"{browser_name} run {run_number} omitted the unique protocol golden marker"
             )
+        if len(input_protocol_markers) != 1:
+            raise RuntimeError(
+                f"{browser_name} run {run_number} omitted the unique input protocol golden marker"
+            )
         if state.get("status") != "running":
             raise RuntimeError(
                 f"{browser_name} loader status is {state.get('status')!r}, expected 'running'"
             )
         fields = parse_marker(markers[0])
         protocol_fields = parse_protocol_marker(protocol_markers[0])
+        input_protocol_fields = parse_input_protocol_marker(input_protocol_markers[0])
         record = {
             "browser": browser_name,
             "browser_version": str(driver.capabilities.get("browserVersion")),
@@ -386,6 +425,8 @@ def run_once(
             "marker": markers[0],
             "protocol": protocol_fields,
             "protocol_marker": protocol_markers[0],
+            "input_protocol": input_protocol_fields,
+            "input_protocol_marker": input_protocol_markers[0],
             "run": run_number,
         }
     finally:
@@ -409,6 +450,18 @@ def self_test() -> None:
         pass
     else:
         raise RuntimeError("protocol golden marker accepted a changed vector count")
+    input_protocol_marker = (
+        "GC_INPUT_PROTOCOL|golden|schema=1|input=2|history=6|delay=3|vectors=2"
+        "|guest=94db8753a3be9846|host=2e77227f216a1eba|max_bytes=755"
+    )
+    if parse_input_protocol_marker(input_protocol_marker) != REQUIRED_INPUT_PROTOCOL_FIELDS:
+        raise RuntimeError("input protocol golden marker self-test failed")
+    try:
+        parse_input_protocol_marker(input_protocol_marker.replace("max_bytes=755", "max_bytes=756"))
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError("input protocol golden marker accepted a changed maximum size")
     if "--no-sandbox" not in chrome_arguments(True):
         raise RuntimeError("CI Chrome arguments omit --no-sandbox")
     if "--no-sandbox" in chrome_arguments(False):

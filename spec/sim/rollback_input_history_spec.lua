@@ -212,6 +212,47 @@ t.describe("OMP-2 rollback input history", function()
         t.eq(rollback_input_history.confirmed_tick(history), 0)
     end)
 
+    t.it("preflights complete authority batches before one atomic insertion", function()
+        local history = rollback_input_history.new(sources())
+        local first = sample(12, -4, input_frame.HELD_BITS.pass, input_frame.EDGE_BITS.pass)
+        local third = sample(30, 0, 0, 0)
+        assert(rollback_input_history.add_authoritative(history, 0, 1, first))
+        assert(rollback_input_history.add_authoritative(history, 0, 3, third))
+        local before = rollback_input_history.diagnostics(history)
+
+        local rejected, _, code = rollback_input_history.add_authoritative_batch(history, {
+            { tick = 0, slot_index = 1, sample = first },
+            { tick = 0, slot_index = 2, sample = sample(20, 0, 0, 0) },
+            { tick = 0, slot_index = 3, sample = sample(31, 0, 0, 0) },
+        })
+        t.eq(rejected, nil)
+        t.eq(code, "conflicting_authoritative")
+        local after = rollback_input_history.diagnostics(history)
+        t.eq(after.authoritative_sample_count, before.authoritative_sample_count)
+        t.eq(rollback_input_history.authoritative_record(history, 0, 2), nil)
+        t.eq(assert(rollback_input_history.authoritative_record(history, 0, 3)).sample.move_x, 30)
+
+        local inserted = assert(rollback_input_history.add_authoritative_batch(history, {
+            { tick = 0, slot_index = 1, sample = first },
+            { tick = 0, slot_index = 2, sample = sample(20, 0, 0, 0) },
+            { tick = 0, slot_index = 2, sample = sample(20, 0, 0, 0) },
+            { tick = 1, slot_index = 1, sample = sample(40, 0, 0, 0) },
+        }))
+        t.eq(inserted.inserted, 2)
+        t.eq(inserted.duplicates, 2)
+        t.eq(#inserted.inserted_rows, 2)
+        t.eq(assert(rollback_input_history.authoritative_record(history, 0, 2)).sample.move_x, 20)
+        t.eq(assert(rollback_input_history.authoritative_record(history, 1, 1)).sample.move_x, 40)
+
+        rejected, _, code = rollback_input_history.add_authoritative_batch(history, {
+            { tick = 1, slot_index = 2, sample = input_frame.neutral_sample() },
+            { tick = 0, slot_index = 4, sample = input_frame.neutral_sample() },
+        })
+        t.eq(rejected, nil)
+        t.eq(code, "malformed")
+        t.eq(rollback_input_history.authoritative_record(history, 1, 2), nil)
+    end)
+
     t.it("deep-copies authoritative, effective, and caller-returned records", function()
         local history = rollback_input_history.new(sources())
         local supplied = sample(70, -20, input_frame.HELD_BITS.sprint, input_frame.EDGE_BITS.dodge)
