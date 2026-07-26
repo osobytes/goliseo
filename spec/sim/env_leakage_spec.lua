@@ -186,28 +186,41 @@ t.describe("env representative observation leakage", function()
         t.is_true(assert(view.privileged).snapshot ~= nil, "it carries the canonical snapshot")
     end)
 
-    t.it("carries no future tick: rows the tape holds for later ticks are invisible", function()
-        local baseline = reset_with_tape(99, 12)
-        local diverging = reset_with_tape(4, 12)
+    -- Divergence starts four ticks BEYOND the tick about to be simulated, which
+    -- makes this a genuinely distinct property from the same-tick test below: it
+    -- rules out lookahead at arbitrary depth, not just a one-tick peek. Boundary 4
+    -- is observed while the tapes still agree on ticks 4..7 and differ from tick 8.
+    t.it("carries no future tick, at arbitrary lookahead depth", function()
+        local baseline = reset_with_tape(99, 16)
+        local diverging = reset_with_tape(8, 16)
         for _ = 1, 4 do
             assert(env.step(baseline, still(baseline)))
             assert(env.step(diverging, still(diverging)))
         end
         t.eq(baseline.tick, 4)
         t.eq(diverging.tick, 4)
-        -- Both tapes agree on ticks 0..3 and differ from tick 4 onward. The
-        -- boundary-4 observation is taken before tick 4 is simulated, so a view
-        -- that peeked ahead would differ here.
         t.eq(
             env_observation.encode(env.observe(diverging)),
             env_observation.encode(env.observe(baseline)),
-            "boundary observations must not depend on later tape rows"
+            "a boundary observation must not depend on tape rows four or more ticks ahead"
         )
-        -- And the tapes really do diverge afterwards, so the fixture is not vacuous.
+        -- Still identical after stepping through the ticks the tapes agree on, so
+        -- the equality above is not an artefact of a static fixture.
+        for _ = 1, 4 do
+            assert(env.step(baseline, still(baseline)))
+            assert(env.step(diverging, still(diverging)))
+        end
+        t.eq(baseline.tick, 8)
+        t.eq(
+            diverging.boundary_hashes[9],
+            baseline.boundary_hashes[9],
+            "the runs agree right up to the first differing row"
+        )
+        -- And the divergence is real once the differing row is actually consumed.
         assert(env.step(baseline, still(baseline)))
         assert(env.step(diverging, still(diverging)))
         t.is_true(
-            baseline.boundary_hashes[6] ~= diverging.boundary_hashes[6],
+            baseline.boundary_hashes[10] ~= diverging.boundary_hashes[10],
             "the diverging tape must actually change the simulation"
         )
     end)

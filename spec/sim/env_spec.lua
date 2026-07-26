@@ -7,6 +7,7 @@ local input_frame = require("sim.input_frame")
 local match = require("sim.match")
 local match_snapshot = require("sim.match_snapshot")
 local replay = require("sim.replay")
+local slot_input = require("sim.slot_input")
 local tuning = require("sim.tuning")
 local players = require("data.players")
 local tactics = require("data.tactics")
@@ -303,16 +304,56 @@ t.describe("env determinism and hash equivalence", function()
     end)
 
     t.it("agrees with the direct sim and with replay on every boundary hash", function()
+        ---@param index integer
+        ---@return EnvSlotAction
+        local function scripted(index)
+            return {
+                move = { x = index % 2 == 0 and 1 or -1, y = 0 },
+                held = { sprint = index % 3 == 0 },
+                edges = { dodge = index == 2 },
+            }
+        end
+
         local instance = reset({ seed = 17, duration = 4 })
         for index = 1, 6 do
-            assert(env.step(
-                instance,
-                actions_for(instance, {
-                    move = { x = index % 2 == 0 and 1 or -1, y = 0 },
-                    held = { sprint = index % 3 == 0 },
-                    edges = { dodge = index == 2 },
-                })
-            ))
+            assert(env.step(instance, actions_for(instance, scripted(index))))
+        end
+
+        -- Independent reconstruction: build a second fixture and a second producer
+        -- from the config alone and rematerialize every row from the action script,
+        -- so this leg never reads instance.frames. This is the leg that would catch
+        -- the environment materializing something other than what its config and
+        -- actions describe.
+        local rebuilt_state = direct_match(17, 4)
+        local rebuilt_producer = slot_input.new_producer({
+            { kind = "frame" },
+            { kind = "neutral" },
+            { kind = "neutral" },
+            { kind = "neutral" },
+            { kind = "neutral" },
+            { kind = "neutral" },
+            { kind = "neutral" },
+            { kind = "neutral" },
+        })
+        local rebuilt = { match_snapshot.hash(match_snapshot.capture(rebuilt_state)) }
+        for index = 1, 6 do
+            local slots = {}
+            for slot = 1, input_frame.SLOT_COUNT do
+                slots[slot] = input_frame.neutral_sample()
+            end
+            slots[1] = assert(env_action.to_sample(scripted(index)))
+            local row = assert(input_frame.new(rebuilt_state.input_tick, slots))
+            local effective = slot_input.materialize(rebuilt_producer, rebuilt_state, row)
+            match.step(rebuilt_state, fixed_clock.TICK_SECONDS, effective)
+            rebuilt[index + 1] = match_snapshot.hash(match_snapshot.capture(rebuilt_state))
+        end
+        t.eq(#rebuilt, #instance.boundary_hashes)
+        for index, hash in ipairs(instance.boundary_hashes) do
+            t.eq(
+                rebuilt[index],
+                hash,
+                "independently rematerialized boundary " .. index .. " must match"
+            )
         end
 
         -- Direct sim: the same fixture stepped with the effective rows the

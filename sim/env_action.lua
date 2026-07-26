@@ -255,7 +255,10 @@ end
 -- `view`. The representative and team profiles carry no private timers, so the
 -- resulting mask cannot encode privileged legality; the privileged profile is
 -- flagged so a report can never present it as a human-equivalent mask.
----@param view EnvSlotView
+--
+-- Only `own` and `ball` are read, so a narrow EnvActionView is enough: callers on
+-- the per-step path should pass one instead of building a whole observation.
+---@param view EnvSlotView|EnvActionView
 ---@return EnvActionMask?, string?, EnvActionErrorCode?
 function env_action.mask(view)
     if type(view) ~= "table" or type(view.own) ~= "table" or type(view.ball) ~= "table" then

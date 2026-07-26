@@ -142,7 +142,7 @@ denominators (`field_w`, `field_h`, goal rects) a policy needs to normalize.
 | `own.x/y`, `vx/vy`, `facing_x/y`, `radius` | `player` | px, px/s, unit | own body | current | never |
 | `own.move_speed` | `player.move_speed` | px/s | own stat sheet | static | never |
 | `own.has_ball` | `state.owner` | boolean | own body | current | never |
-| `own.sprinting`, `jockeying`, `sliding`, `tackling`, `dodging`, `stunned`, `diving`, `airborne`, `winding_up`, `charging` | timers → boolean | boolean | own visible pose | current | never |
+| `own.sprinting`, `jockeying`, `sliding`, `tackling`, `dodging`, `stunned`, `diving`, `airborne`, `winding_up`, `charging` | timers → boolean | boolean | own state — what the player driving this slot knows about their own player from their own inputs and HUD, whether or not it is drawn | current | never |
 | `own.sprint_meter`, `charge`, `pass_charge` | `player` | 0..1 | own HUD meter | current | never |
 | `own.dash_ready`, `dodge_ready`, `tackle_ready`, `header_ready` | cooldowns == 0 | boolean | own readiness | current | never |
 | `own.*_cooldown_s`, `stun_s`, `dodge_s`, `slide_s`, `tackle_s`, `jockey_s`, `windup_s`, `aerial_recovery_s` | `player` timers | seconds ≥ 0 | own readiness readout | current | never |
@@ -151,14 +151,59 @@ denominators (`field_w`, `field_h`, goal rects) a policy needs to normalize.
 | `teammates[]` / `opponents[]` | `state.players` | canonical player order | see below | current | keepers report `slot = nil` |
 | `events[]` | `state.events`, `combat_state.events` | see below | confirmed, past | previous tick only | empty at reset |
 
-Other players (`teammates` / `opponents`) expose position, velocity, facing,
-radius, side, keeper flag, slot (nil for keepers), `has_ball`, and the visible
-poses `sprinting`, `jockeying`, `sliding`, `tackling`, `dodging`, `stunned`,
-`diving`, `airborne`, `winding_up`, `charging`. They expose **no** remaining timer
-values and **no** meters: an opponent's animation is visible, their private clock is
-not. Their `equipment` telegraph is `{ family_id, phase, forced_state }` — the
-silhouette, the visible animation phase, and a visible stagger — with no
-`phase_ticks`, no `cooldown_ticks`, and no `loadout_id`.
+Other players (`teammates` / `opponents`) are held to a stricter rule than "own
+state": **a field is permitted only if the renderer actually draws it for a player
+the viewer does not control.** The permitted set is pinned in code as
+`env_observation.PLAYER_FIELDS`, each field carries its render citation in the
+`EnvObservedPlayer` annotation, and
+`spec/sim/env_observation_spec.lua` fails on any field not on that list. The set is:
+
+| Non-self field | Where it is rendered |
+| -------------- | -------------------- |
+| `slot`, `side`, `is_keeper` | public fixture facts — kit colour, keeper kit, position |
+| `x`, `y` | every player is drawn at `p.pos` (`game/render/pitch.lua`) |
+| `vx`, `vy` | visible motion; run cadence follows speed (`player_renderer.lua:182`) |
+| `facing_x`, `facing_y` | the sprite is oriented by `facing` (passed from `pitch.lua`) |
+| `radius` | drawn size |
+| `has_ball` | the ball is drawn at the carrier's feet |
+| `sprinting` | limb cadence from speed (`player_renderer.lua:182`); also implied by `vx`/`vy` |
+| `sliding` | `pitch.lua:382` `dashing`; `player_pose.lua:151` |
+| `diving` | `pitch.lua:385` `dive`; `player_pose.lua:102` |
+| `airborne` | `pitch.lua:373`/`:398` `aerial_jump`; `player_renderer.lua:515` lift |
+| `winding_up` | `pitch.lua:392` `windup`; `player_pose.lua:96`/`:148` |
+| `equipment` | telegraph arc, see below |
+
+They expose **no** remaining timer values and **no** meters: another player's
+animation is visible, their private clock is not.
+
+Five states that an earlier revision of this contract exposed have been **removed**
+because an exhaustive read of `game/render/*.lua` and
+`game/presentation/player_pose.lua` found no pose, colour, or icon for them on a
+non-local player:
+
+- `charging` — `charge` / `pass_charge` drive only a HUD bar under the *locally
+  controlled* player (`game/render/pitch.lua:474-499`), and
+  `game/render/replay.lua` zeroes both for playback. Exposing it let a policy read
+  that an opponent was holding shoot or pass *before any windup or animation
+  existed*, which no human opponent or spectator can perceive.
+- `jockeying`, `tackling`, `dodging`, `stunned` — zero rendering hits;
+  `game/render/replay.lua` does not even carry the tackle/stun/dodge timers into
+  the renderable player. The comment at `sim/match.lua:1798` ("poke pose for the
+  renderer") describes intent that was never wired up.
+
+Note the distinction: the discrete `tackle` **MatchEvent** does have presentation
+(`game/render/effects.lua:239`, `game/audio.lua:205-207`) and reaches observations
+through the confirmed-event channel. That is a separate, legitimate channel and is
+not the same as a continuous `tackling` boolean covering the whole 0.22 s
+`STAND_TIMER` window (`sim/match.lua:130`). The fix was to remove the fields, not
+to add render cues to justify them.
+
+Their `equipment` telegraph is `{ family_id, phase, forced_state }` — the arc
+colour (`game/render/combat.lua:37` `FAMILY_COLORS`), its alpha by phase
+(`combat.lua:24-31`), and the `combat_stagger` / `combat_knockback` pose
+(`player_renderer.lua:531`/`:539`, fed by `game/presentation/combat.lua:192`) —
+with no `phase_ticks`, no `cooldown_ticks`, and no `loadout_id`. That set is pinned
+as `env_observation.EQUIPMENT_TELEGRAPH_FIELDS`.
 
 `own.equipment` additionally carries `loadout_id`, `phase_ticks`,
 `cooldown_ticks`, `ready`, `control_held`, `forced_ticks`, and `immunity_ticks`:
@@ -189,6 +234,91 @@ happens next.
 `spec/sim/env_leakage_spec.lua` asserts each of these, and pairs the negative
 assertion with a positive control on the `privileged` profile so a scan that stops
 working fails instead of passing silently.
+
+### Relationship to `combat_sim_observation/v1`
+
+`docs/design/combat_fun_evidence_contract.md` §4.7 defines a separate
+`combat_sim_observation/v1` allowlist that treats an opponent's remaining phase
+ticks, the source-sequence id, and projectile rows as public. This contract is
+deliberately **stricter**: it exposes `phase` but not `phase_ticks`, and no
+projectile rows or sequence ids at all.
+
+Under-exposure is safe — a policy trained here cannot be reading more than a human
+could — but two "sim observation" schemas drifting apart unexplained is a
+maintenance trap, so state the intended relationship explicitly:
+
+- The two serve different consumers. `combat_sim_observation/v1` feeds combat
+  *evidence and feedback* analysis, where the question is whether a presentation
+  reads correctly and full mechanical detail is the point. This contract feeds
+  *policies*, where any field without a presented analogue is a leak.
+- They are therefore **not** intended to converge on one field set. What they must
+  converge on is the *derivation*: both should ultimately read presented combat
+  state through one shared projection, with the evidence contract taking the wider
+  slice and this contract the narrower one, rather than each hand-rolling its own
+  field list from `CombatPlayerState`.
+- Until that shared projection exists, a change to combat state that affects
+  visibility has to be reflected in both documents. Whoever unifies them should
+  treat this contract's set as the floor: widening it requires the same
+  render-citation justification as any other field here.
+
+## Performance profile
+
+#139 decides training feasibility from measured throughput, so the per-step cost is
+part of this contract's record rather than an afterthought. Measured on LuaJIT with
+the `soccer_only` reference fixture at seed 5, allocation per call:
+
+| Surface | Bytes/call |
+| ------- | ---------- |
+| `env.action_masks` (1 slot) | 3.0 KB |
+| `env.observe` (1 slot) | 11.8 KB |
+| `env.action_masks` (8 slots) | 22.7 KB |
+| `env.observe` (8 slots) | 104.8 KB |
+| `env.step` (1 slot, representative) | 202.2 KB |
+| `env.step` (1 slot, privileged) | 202.5 KB |
+| `env.step` (8 slots, team) | 333.7 KB |
+
+Breakdown of a single-slot step:
+
+| Component | Bytes | Share |
+| --------- | ----- | ----- |
+| `match_snapshot.capture` + `hash` (the boundary hash) | ~120 KB | **59%** |
+| `match.step` (engine baseline, not introduced here) | ~32 KB | 16% |
+| `slot_input.materialize` + `input_frame.encode` | ~5 KB | 2% |
+| `env_observation.build` (the observation) | ~12 KB | **6%** |
+| `env_observation.action_view` + `env_action.mask` | ~3 KB | 1.5% |
+| remainder (events, reward, result table) | ~30 KB | 15% |
+
+Two things follow, and both matter for #139:
+
+1. **The observation is not the cost.** It is ~6% of a step. Building it twice — as
+   an earlier revision did, once for masking and once for the result — was a real
+   6% waste and is now fixed and regression-tested
+   (`spec/sim/env_budget_spec.lua`), but it was never the headline.
+2. **The boundary hash is the cost.** Capturing and hashing the canonical snapshot
+   every tick is 59% of every step. That is pre-existing `sim/match_snapshot.lua`
+   behaviour, not something this module adds, and it is the price of the
+   hash-equivalence auditing that makes an episode reproducible.
+
+The identified lever, **not implemented here** because it changes the contract and
+deserves its own review: make per-tick boundary hashing optional
+(`every_tick` by default, `episode_bounds` for throughput runs). `env.tape` would
+then fall back from `input_tape.from_frozen_recording` to `input_tape.new`, which
+derives the hash chain itself by replaying. That would cut a single-slot step by
+roughly half while keeping the audit path available on demand. If #139 finds
+throughput marginal, this is the first thing to reach for — before concluding
+anything about the engine.
+
+Two further characteristics to account for rather than to "fix":
+
+- **Observation cost is O(controlled_slots × players)** by design. Each slot
+  independently rebuilds every other player's record; sharing records between slots
+  would reintroduce exactly the cross-slot leakage this contract exists to prevent.
+  Eight controlled slots is the worst case and is budgeted as such.
+- **An episode retains its recording.** Every step appends the effective
+  `InputFrame` and its boundary hash to the instance, because `env.tape` and the
+  equivalence proof need them. Retained memory therefore grows linearly with
+  episode length; that is deliberate, and it is separate from the churn figures
+  above.
 
 ## Action contract
 
@@ -347,9 +477,23 @@ both sides from the same registry.
 `env.tape(instance)` exports the episode as a canonical `InputTape` built from the
 reset snapshot, the effective rows the simulation consumed, and the environment's
 own boundary hashes. `sim.replay` then re-derives those hashes independently, which
-is the equivalence proof: `spec/sim/env_spec.lua` asserts the same hashes from
-(a) the environment, (b) a plain `match.new` + `match.step` loop fed the same rows,
-and (c) `replay.run` on the exported tape.
+is the equivalence proof. `spec/sim/env_spec.lua` asserts the same hashes from four
+legs:
+
+1. **the environment** itself;
+2. **an independent reconstruction** — a second `match.new` fixture and a second
+   `slot_input.new_producer`, with every row rematerialized from the config and the
+   action script. This leg never reads `instance.frames`, so it is the one that
+   would catch the environment materializing something other than what its config
+   and actions describe;
+3. **a plain `match.new` + `match.step` loop** fed the effective rows;
+4. **`replay.run`** on the exported tape.
+
+Legs 3 and 4 consume rows and hashes the environment already produced, so on their
+own they prove the stepping and hashing path is self-consistent rather than that it
+is correct from first principles. Leg 2 supplies that, and the separate
+two-independent-reset test covers the "same seed and action script ⇒ same hashes"
+claim end to end.
 
 `env.snapshot(instance)` returns the canonical `MatchSnapshot` for save/checkpoint
 use. Restore is **not** landed in this change (see Deferred).

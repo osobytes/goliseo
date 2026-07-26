@@ -138,13 +138,84 @@ t.describe("env_observation.view", function()
         t.eq(view.own.dash_ready, false)
         t.eq(view.own.dodge_ready, true)
         t.eq(view.own.sprint_meter, 0.5)
-        -- Other players expose visible poses, never their remaining timers.
+        -- Other players expose no remaining timers and no meters at all.
         for _, other in ipairs(view.opponents) do
             t.eq(field(other, "dash_cooldown_s"), nil)
             t.eq(field(other, "sprint_meter"), nil)
-            t.eq(type(other.sprinting), "boolean")
-            t.eq(type(other.stunned), "boolean")
+            t.eq(field(other, "charge"), nil)
+            t.eq(field(other, "pass_charge"), nil)
         end
+    end)
+
+    -- The guard the previous version of this suite lacked. A `type(x) == "boolean"`
+    -- assertion passes whether or not the field should exist at all, so it cannot
+    -- catch a visibility violation. This pins the exact field set instead: adding a
+    -- field to a non-self player record fails here until it is also justified in
+    -- env_observation.PLAYER_FIELDS with a citation for where it is rendered.
+    t.it("exposes no non-self field without a rendered analogue", function()
+        local combat_instance =
+            assert(env.reset(assert(env.reference_config("combat_all_families", { seed = 5 }))))
+        local views = {
+            assert(env_observation.view(reset({ seed = 5 })._state, nil, 1, "representative")),
+            assert(
+                env_observation.view(
+                    combat_instance._state,
+                    combat_instance._combat,
+                    1,
+                    "representative"
+                )
+            ),
+        }
+        local seen = {}
+        local records = 0
+        for _, view in ipairs(views) do
+            for _, group in ipairs({ view.teammates, view.opponents }) do
+                for _, other in ipairs(group) do
+                    records = records + 1
+                    for name in pairs(other) do
+                        seen[name] = true
+                        t.is_true(
+                            env_observation.PLAYER_FIELDS[name],
+                            "non-self field '"
+                                .. tostring(name)
+                                .. "' is not in env_observation.PLAYER_FIELDS: either it has a"
+                                .. " rendered analogue and belongs there with a citation, or it"
+                                .. " must not be observable"
+                        )
+                    end
+                    local telegraph = field(other, "equipment")
+                    if telegraph then
+                        for name in pairs(telegraph) do
+                            t.is_true(
+                                env_observation.EQUIPMENT_TELEGRAPH_FIELDS[name],
+                                "equipment telegraph field '" .. tostring(name) .. "' is not pinned"
+                            )
+                        end
+                    end
+                end
+            end
+        end
+        t.eq(records, 18, "both fixtures contributed nine other-player records each")
+        -- Positive control: the scan really did walk populated records.
+        t.is_true(seen.x and seen.side and seen.equipment, "the scan reached real fields")
+        -- And the five states with no rendered analogue are gone for good.
+        for _, name in ipairs({ "charging", "jockeying", "tackling", "dodging", "stunned" }) do
+            t.is_true(
+                not seen[name],
+                name
+                    .. " has no rendered analogue for a non-local player and must stay unobservable"
+            )
+            t.is_true(
+                not env_observation.PLAYER_FIELDS[name],
+                name .. " must not be re-added to the permitted non-self field set"
+            )
+        end
+        -- Own-view readiness is unaffected: these remain visible about yourself.
+        local own =
+            assert(env_observation.view(reset({ seed = 5 })._state, nil, 1, "representative")).own
+        t.eq(type(own.charging), "boolean")
+        t.eq(type(own.stunned), "boolean")
+        t.eq(type(own.jockeying), "boolean")
     end)
 
     t.it("shows equipment as a telegraph for others and a readout for self", function()

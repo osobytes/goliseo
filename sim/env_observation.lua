@@ -68,10 +68,15 @@ local match_snapshot = require("sim.match_snapshot")
 ---@field owner_side EnvRelativeSide? -- Carrier's side relative to the viewer.
 ---@field owner_is_keeper boolean
 
+-- Equipment telegraph for another player. `family_id` picks the drawn arc colour
+-- and `phase` its alpha (game/render/combat.lua:24-37); `forced_state` selects the
+-- `combat_stagger` / `combat_knockback` pose (game/render/player_renderer.lua:531,
+-- :539, fed by game/presentation/combat.lua:192). Remaining phase ticks, cooldown,
+-- and loadout identity are withheld.
 ---@class EnvObservedEquipment
----@field family_id ActionFamilyId -- Visible equipment silhouette.
+---@field family_id ActionFamilyId -- Visible equipment silhouette / arc colour.
 ---@field phase CombatActionPhase -- Visible animation phase; remaining ticks are withheld.
----@field forced_state CombatForcedState? -- Visible stagger/knockback.
+---@field forced_state CombatForcedState? -- Visible stagger/knockback pose.
 
 ---@class EnvObservedSelfEquipment
 ---@field loadout_id string
@@ -85,29 +90,39 @@ local match_snapshot = require("sim.match_snapshot")
 ---@field forced_ticks integer
 ---@field immunity_ticks integer
 
+-- Another player, restricted to what the renderer actually draws for them. Every
+-- field cites where it is rendered, and `env_observation.PLAYER_FIELDS` pins the
+-- set so a new field cannot be added without justifying it the same way.
+--
+-- Deliberately absent, because an exhaustive read of `game/render/*.lua` and
+-- `game/presentation/player_pose.lua` finds no pose, colour, or icon for them on a
+-- non-local player: `charging` (charge / pass_charge are drawn only as a HUD bar
+-- under the locally controlled player, `game/render/pitch.lua:474-499`, and
+-- `game/render/replay.lua` zeroes both for playback), plus `jockeying`,
+-- `tackling`, `dodging`, and `stunned` (zero rendering hits; `render/replay.lua`
+-- does not even carry the tackle/stun/dodge timers into the renderable player).
+-- The discrete `tackle` MatchEvent does have presentation and reaches an
+-- observation through the confirmed-event channel; that is a separate, legitimate
+-- channel and is not the same as a continuous boolean covering the whole
+-- standing-tackle window.
 ---@class EnvObservedPlayer
----@field slot integer? -- Canonical input slot; nil for keepers.
----@field side EnvRelativeSide
----@field is_keeper boolean
----@field x number
+---@field slot integer? -- Canonical input slot; nil for keepers. Public fixture fact.
+---@field side EnvRelativeSide -- Kit colour.
+---@field is_keeper boolean -- Kit and position.
+---@field x number -- Drawn at `p.pos` (game/render/pitch.lua).
 ---@field y number
----@field vx number -- Realized velocity from the previous tick, world px/s.
+---@field vx number -- Visible motion; run cadence follows speed (player_renderer.lua:182).
 ---@field vy number
----@field facing_x number -- Unit facing.
+---@field facing_x number -- Unit facing; the sprite is oriented by it (pitch.lua passes `facing`).
 ---@field facing_y number
----@field radius number
----@field has_ball boolean
----@field sprinting boolean
----@field jockeying boolean
----@field sliding boolean
----@field tackling boolean
----@field dodging boolean
----@field stunned boolean
----@field diving boolean
----@field airborne boolean
----@field winding_up boolean -- A shot/punt windup pose is visible.
----@field charging boolean -- A charge meter pose is visible.
----@field equipment EnvObservedEquipment?
+---@field radius number -- Drawn size.
+---@field has_ball boolean -- The ball is drawn at the carrier's feet.
+---@field sprinting boolean -- Limb cadence from speed (player_renderer.lua:182); implied by vx/vy.
+---@field sliding boolean -- pitch.lua:382 `dashing`; player_pose.lua:151.
+---@field diving boolean -- pitch.lua:385 `dive`; player_pose.lua:102.
+---@field airborne boolean -- pitch.lua:373/398 `aerial_jump`; player_renderer.lua:515 lift.
+---@field winding_up boolean -- pitch.lua:392 `windup`; player_pose.lua:96/148.
+---@field equipment EnvObservedEquipment? -- Telegraph arc; see EnvObservedEquipment.
 
 ---@class EnvObservedSelf
 ---@field player_id string
@@ -171,6 +186,22 @@ local match_snapshot = require("sim.match_snapshot")
 ---@field snapshot MatchSnapshot -- Canonical deep copy; never the live state table.
 ---@field boundary_hash string
 
+-- The narrow slot projection an action mask needs. It is a strict subset of
+-- EnvSlotView, so `env_action.mask` accepts either.
+---@class EnvActionView
+---@field version integer
+---@field profile EnvObservationProfile
+---@field slot integer
+---@field team InputTeam
+---@field ball EnvObservedBall
+---@field own EnvObservedSelf
+
+-- A snapshot a caller has already captured, donated so the privileged profile does
+-- not capture and hash the same boundary a second time.
+---@class EnvObservationContext
+---@field snapshot MatchSnapshot?
+---@field boundary_hash string?
+
 ---@class EnvSlotView
 ---@field version integer
 ---@field profile EnvObservationProfile
@@ -199,6 +230,39 @@ local match_snapshot = require("sim.match_snapshot")
 local env_observation = {}
 
 env_observation.VERSION = 1
+
+-- The complete, pinned field set of a non-self player record. Adding a field here
+-- is a claim that the renderer draws it for a player the viewer does not control;
+-- the EnvObservedPlayer annotation above carries the citation for each one, and
+-- spec/sim/env_observation_spec.lua fails on any field not listed here.
+---@type table<string, boolean>
+env_observation.PLAYER_FIELDS = {
+    slot = true,
+    side = true,
+    is_keeper = true,
+    x = true,
+    y = true,
+    vx = true,
+    vy = true,
+    facing_x = true,
+    facing_y = true,
+    radius = true,
+    has_ball = true,
+    sprinting = true,
+    sliding = true,
+    diving = true,
+    airborne = true,
+    winding_up = true,
+    equipment = true,
+}
+
+-- The pinned field set of another player's equipment telegraph.
+---@type table<string, boolean>
+env_observation.EQUIPMENT_TELEGRAPH_FIELDS = {
+    family_id = true,
+    phase = true,
+    forced_state = true,
+}
 
 ---@type table<EnvObservationProfile, EnvObservationProfileData>
 env_observation.PROFILES = {
@@ -323,15 +387,10 @@ local function observed_player(state, combat_state, player_index, view_team)
         radius = player.radius,
         has_ball = state.owner == player_index,
         sprinting = player.sprinting,
-        jockeying = player.jockey_timer > 0,
         sliding = player.slide_timer > 0,
-        tackling = player.tackle_timer > 0,
-        dodging = player.dodge_timer > 0,
-        stunned = player.stun_timer > 0,
         diving = player.dive_timer > 0,
         airborne = player.aerial_jump > 0,
         winding_up = player.windup_timer > 0,
-        charging = player.charge > 0 or player.pass_charge > 0,
         equipment = equipment_telegraph(state, combat_state, player_index),
     }
 end
@@ -467,15 +526,69 @@ local function observed_events(state, combat_state, view_team)
     return events
 end
 
+-- The privileged block reuses a snapshot the caller already captured when one is
+-- supplied: `env.step` needs the canonical snapshot for the boundary hash anyway,
+-- and capturing it a second time here would triple the cost of a privileged step.
 ---@param state MatchState
 ---@param combat_state CombatMatchState?
+---@param context EnvObservationContext?
 ---@return EnvPrivilegedView
-local function privileged_view(state, combat_state)
-    local snapshot = match_snapshot.capture(state, combat_state)
+local function privileged_view(state, combat_state, context)
+    local snapshot = context and context.snapshot or match_snapshot.capture(state, combat_state)
     return {
         rng = state.rng,
         snapshot = snapshot,
-        boundary_hash = match_snapshot.hash(snapshot),
+        boundary_hash = (context and context.boundary_hash) or match_snapshot.hash(snapshot),
+    }
+end
+
+---@param state MatchState
+---@param slot integer
+---@param profile EnvObservationProfile
+---@return integer? player_index
+---@return InputSlot? canonical_slot
+---@return string? err
+---@return EnvObservationErrorCode? code
+local function resolve_slot(state, slot, profile)
+    if not env_observation.PROFILES[profile] then
+        return nil, nil, "unknown observation profile: " .. tostring(profile), "unknown_profile"
+    end
+    local canonical_slot, slot_err = input_frame.slot(slot)
+    if not canonical_slot then
+        return nil, nil, assert(slot_err), "malformed"
+    end
+    if not state.slot_mode then
+        return nil, nil, "observations require a fixed-slot match", "malformed"
+    end
+    local player_index = state.slot_players[slot]
+    if not player_index then
+        return nil, nil, "slot " .. slot .. " is not routed to a player", "malformed"
+    end
+    return player_index, canonical_slot
+end
+
+-- The narrow projection an action mask needs: own readiness and the ball, and
+-- nothing else. `env_action.mask` reads only these, so building a full view to
+-- compute legality would allocate a teammate/opponent/event record set per slot
+-- per step for no gain. It is built from the same player-observable projections as
+-- the full view, so the two cannot drift apart.
+---@param state MatchState
+---@param combat_state CombatMatchState?
+---@param slot integer
+---@param profile EnvObservationProfile
+---@return EnvActionView?, string?, EnvObservationErrorCode?
+function env_observation.action_view(state, combat_state, slot, profile)
+    local player_index, canonical_slot, err, code = resolve_slot(state, slot, profile)
+    if not player_index or not canonical_slot then
+        return nil, err, code
+    end
+    return {
+        version = env_observation.VERSION,
+        profile = profile,
+        slot = slot,
+        team = canonical_slot.team,
+        ball = observed_ball(state, canonical_slot.team),
+        own = observed_self(state, combat_state, player_index, slot),
     }
 end
 
@@ -486,21 +599,13 @@ end
 ---@param combat_state CombatMatchState?
 ---@param slot integer
 ---@param profile EnvObservationProfile
+---@param context EnvObservationContext?
 ---@return EnvSlotView?, string?, EnvObservationErrorCode?
-function env_observation.view(state, combat_state, slot, profile)
-    if not env_observation.PROFILES[profile] then
-        return reject("unknown_profile", "unknown observation profile: " .. tostring(profile))
-    end
-    local canonical_slot, slot_err = input_frame.slot(slot)
-    if not canonical_slot then
-        return reject("malformed", assert(slot_err))
-    end
-    if not state.slot_mode then
-        return reject("malformed", "observations require a fixed-slot match")
-    end
-    local player_index = state.slot_players[slot]
-    if not player_index then
-        return reject("malformed", "slot " .. slot .. " is not routed to a player")
+function env_observation.view(state, combat_state, slot, profile, context)
+    local player_index, canonical_slot, resolve_err, resolve_code =
+        resolve_slot(state, slot, profile)
+    if not player_index or not canonical_slot then
+        return nil, resolve_err, resolve_code
     end
     local view_team = canonical_slot.team
     local teammates = {}
@@ -545,7 +650,8 @@ function env_observation.view(state, combat_state, slot, profile)
         teammates = teammates,
         opponents = opponents,
         events = observed_events(state, combat_state, view_team),
-        privileged = profile == "privileged" and privileged_view(state, combat_state) or nil,
+        privileged = profile == "privileged" and privileged_view(state, combat_state, context)
+            or nil,
     }
 end
 
@@ -556,8 +662,9 @@ end
 ---@param combat_state CombatMatchState?
 ---@param slots integer[]
 ---@param profile EnvObservationProfile
+---@param context EnvObservationContext? -- Lets a caller donate a snapshot it already captured.
 ---@return EnvObservation?, string?, EnvObservationErrorCode?
-function env_observation.build(state, combat_state, slots, profile)
+function env_observation.build(state, combat_state, slots, profile, context)
     local profile_data = env_observation.PROFILES[profile]
     if not profile_data then
         return reject("unknown_profile", "unknown observation profile: " .. tostring(profile))
@@ -580,7 +687,8 @@ function env_observation.build(state, combat_state, slots, profile)
             return reject("malformed", "controlled slots must be ascending unique integers")
         end
         previous = slot
-        local view, view_err, view_code = env_observation.view(state, combat_state, slot, profile)
+        local view, view_err, view_code =
+            env_observation.view(state, combat_state, slot, profile, context)
         if not view then
             return nil, view_err, view_code
         end

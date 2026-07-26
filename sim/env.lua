@@ -272,12 +272,6 @@ local function copy_tape_frames(frames)
     return copied
 end
 
----@param instance EnvInstance
----@return string
-local function boundary_hash(instance)
-    return match_snapshot.hash(match_snapshot.capture(instance._state, instance._combat))
-end
-
 -- Construct a fresh episode. Everything the episode depends on is named in the
 -- config, so the manifest returned by `env.manifest` is sufficient to reproduce
 -- this run tick for tick.
@@ -377,14 +371,24 @@ function env.observe(instance)
     return observation
 end
 
--- Legality masks for the controlled slots, derived from the current observation.
+-- Legality masks for the controlled slots. These are derived from the narrow
+-- own+ball projection rather than a full observation: a mask reads nothing else,
+-- and building the teammate/opponent/event records per slot just to compute
+-- legality would double the per-step observation cost.
 ---@param instance EnvInstance
 ---@return table<integer, EnvActionMask>
 function env.action_masks(instance)
-    local observation = env.observe(instance)
     local masks = {}
     for _, slot in ipairs(instance.controlled_slots) do
-        masks[slot] = assert(env_action.mask(assert(observation.views[slot])))
+        local view = assert(
+            env_observation.action_view(
+                instance._state,
+                instance._combat,
+                slot,
+                instance.config.observation_profile
+            )
+        )
+        masks[slot] = assert(env_action.mask(view))
     end
     return masks
 end
@@ -548,6 +552,19 @@ local function collect_events(instance, confirmed_tick, events, reward_events)
     end
 end
 
+-- Materialize the effective row and advance exactly one canonical tick. Called
+-- through `pcall` with arguments, so it allocates no closure per tick.
+---@param instance EnvInstance
+---@param frame InputFrame
+---@param step_tick FixedClockStep
+---@return InputFrame effective
+---@return string wire
+local function advance_tick(instance, frame, step_tick)
+    local effective = slot_input.materialize(instance._producer, instance._state, frame)
+    fixed_clock.step(instance._clock, effective, step_tick)
+    return effective, assert(input_frame.encode(effective))
+end
+
 ---@param instance EnvInstance
 ---@return EnvTerminationReason
 local function termination_reason(instance)
@@ -609,6 +626,18 @@ function env.step(instance, actions, ticks)
     local action_wires = {}
     local simulated = 0
     local held_actions = normalized
+    ---@type MatchSnapshot?
+    local snapshot = nil
+
+    -- One closure for the whole step instead of one per tick: `fixed_clock.step`
+    -- hands the callback only (tick, input), so the instance has to be captured,
+    -- but nothing in it changes across the ticks of a single step.
+    ---@type FixedClockStep
+    local function step_tick(_, tick_input)
+        match.step(state, DT, tick_input, instance._combat)
+        metrics.observe(instance._metrics, state, DT)
+        return not state.finished
+    end
 
     for index = 1, requested do
         if index > 1 then
@@ -632,39 +661,31 @@ function env.step(instance, actions, ticks)
         end
         -- The whole tick runs under pcall: an invariant violation anywhere between
         -- materialization and the boundary is a fault the caller must be able to
-        -- reproduce, not a crash that takes the trainer down with it.
-        local requested_wire = assert(input_frame.encode(frame))
-        ---@type { frame: InputFrame, wire: string }?
-        local advanced = nil
-        local ok, fault = pcall(function()
-            local effective = slot_input.materialize(instance._producer, state, frame)
-            local encoded = assert(input_frame.encode(effective))
-            fixed_clock.step(instance._clock, effective, function(_, tick_input)
-                match.step(state, DT, tick_input, instance._combat)
-                metrics.observe(instance._metrics, state, DT)
-                return not state.finished
-            end)
-            advanced = { frame = effective, wire = encoded }
-        end)
-        if not ok or not advanced then
+        -- reproduce, not a crash that takes the trainer down with it. `pcall` is
+        -- given arguments rather than a closure so the loop allocates none, and the
+        -- requested row is only encoded on the fault path.
+        local ok, effective, wire = pcall(advance_tick, instance, frame, step_tick)
+        if not ok then
+            local fault = effective
             instance._fault = tostring(fault)
             return reject(
                 "sim_fault",
                 ("simulation fault at tick %d (boundary %s, input %s): %s"):format(
                     tick,
                     instance.boundary_hashes[#instance.boundary_hashes],
-                    requested_wire,
+                    tostring(input_frame.encode(frame)),
                     tostring(fault)
                 )
             )
         end
-        local effective = advanced.frame
-        local wire = advanced.wire
+        ---@cast effective InputFrame
+        ---@cast wire string
         simulated = simulated + 1
         instance.episode_ticks = instance.episode_ticks + 1
         instance.tick = state.input_tick
         instance.frames[#instance.frames + 1] = effective
-        local hash = boundary_hash(instance)
+        snapshot = match_snapshot.capture(state, instance._combat)
+        local hash = match_snapshot.hash(snapshot)
         instance.boundary_hashes[#instance.boundary_hashes + 1] = hash
         boundary_hashes[#boundary_hashes + 1] = hash
         action_wires[#action_wires + 1] = wire
@@ -705,7 +726,23 @@ function env.step(instance, actions, ticks)
         version = env.STEP_VERSION,
         tick = state.input_tick,
         ticks_simulated = simulated,
-        observation = env.observe(instance),
+        -- The observation is built exactly once per step, and it reuses the
+        -- snapshot the boundary hash already needed so the privileged profile does
+        -- not capture and hash the same boundary again.
+        observation = assert(
+            env_observation.build(
+                state,
+                instance._combat,
+                instance.controlled_slots,
+                instance.config.observation_profile,
+                snapshot
+                        and {
+                            snapshot = snapshot,
+                            boundary_hash = instance.boundary_hashes[#instance.boundary_hashes],
+                        }
+                    or nil
+            )
+        ),
         reward = reward,
         terminated = instance.terminated,
         truncated = instance.truncated,
