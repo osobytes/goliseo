@@ -5063,10 +5063,13 @@ def run_self_test() -> None:
 
     # rollback_ci.py restates the shard sets instead of importing them to keep the
     # impact-filter job's import graph minimal: that job deliberately installs no
-    # browser evidence dependencies. The import would in fact succeed today, since
+    # browser evidence dependencies. Selenium would in fact load today, because
     # browser_determinism defers its selenium imports into function bodies, but
     # relying on that couples the scope job to an incidental laziness one edit could
-    # remove. Assert the two agree from this side, where both imports are available.
+    # remove. Since #182 the direction is fixed anyway: this module imports
+    # rollback_ci for attribution_from_environment, so importing back would be a
+    # circular import that fails on a partially initialized module. Assert the two
+    # agree from this side, where both imports are available.
     import rollback_ci
 
     if (
@@ -5246,7 +5249,7 @@ def run_self_test() -> None:
             f"network_seed={case['network_seed']}|success=1|lab_success=1|"
             "expected_failure=0|status=converged|late_tick=none|hidden_progress=0|"
             f"scenario_pass=1|tape_version={'2' if combat else '1'}|"
-            f"snapshot_version={'9' if combat else '8'}|"
+            f"snapshot_version={'11' if combat else '10'}|"
             f"tape_digest={'1111111111111111' if combat else HISTORICAL_SOCCER_TAPE_DIGEST}|"
             "initial_hash=0000000000000001|reference_hash=0000000000000002|"
             "client_hash=0000000000000002|rollbacks=8|max_depth=8|"
@@ -5373,6 +5376,28 @@ def run_self_test() -> None:
                             runtime_name: {
                                 "runs": [
                                     {"soak_memory": {"pass": True}, "suite": "soak"}
+                                ]
+                            }
+                        },
+                        "shard": None,
+                    },
+                ),
+            )
+            publish(
+                f"omp2-rollback-{runtime_name}-stress",
+                envelope(
+                    "browser",
+                    "stress",
+                    None,
+                    {
+                        "runtimes": {
+                            runtime_name: {
+                                "runs": [
+                                    {
+                                        "arguments": [STRESS_PROFILE, stress_shard],
+                                        "suite": "browser-stress",
+                                    }
+                                    for stress_shard in SEED_SHARDS
                                 ]
                             }
                         },
