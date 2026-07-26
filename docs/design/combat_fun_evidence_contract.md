@@ -12,6 +12,9 @@
   [#151](https://github.com/osobytes/goliseo/issues/151)
 - **Related contracts:** [combat interaction](combat_interaction_contract.md),
   [soccer-shape metrics](fun_metrics.md), [snapshot/replay](../online/snapshot_replay.md)
+- **Downstream importer:** the milestone-12
+  [player-evidence lab charter](player_evidence_lab.md) imports this contract
+  whole and may not weaken it
 
 This document decides what evidence can support the claim that fixed-loadout
 combat improves GOLISEO. It does not implement telemetry, tune combat, run a
