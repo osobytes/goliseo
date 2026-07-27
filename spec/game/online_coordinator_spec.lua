@@ -95,19 +95,24 @@ local function ready_host(state, guest_count, sequences)
     local manifest_id = assert(state.manifest_id)
     for index = 1, guest_count do
         local peer_id = fixture.guest_peer_id(index)
-        sequences[index] = sequences[index] + 1
-        state = (
-            deliver(
-                state,
-                peer_id,
-                message(
-                    "ready",
+        -- A real guest answers a published assignment with an explicit negative
+        -- readiness first; that falling edge is what binds its later positive
+        -- readiness to this ownership generation.
+        for _, ready in ipairs({ false, true }) do
+            sequences[index] = sequences[index] + 1
+            state = (
+                deliver(
+                    state,
                     peer_id,
-                    sequences[index],
-                    { manifest_id = manifest_id, ready = true }
+                    message(
+                        "ready",
+                        peer_id,
+                        sequences[index],
+                        { manifest_id = manifest_id, ready = ready }
+                    )
                 )
             )
-        )
+        end
     end
     return (coordinator.step(state, { kind = "set_ready", ready = true }))
 end
@@ -432,17 +437,21 @@ t.describe("online coordinator configuration", function()
             })
         )
         t.eq(state.phase, "assigned")
-        state = (
-            deliver(
-                state,
-                "guest.1",
-                message("ready", "guest.1", 2, {
-                    manifest_id = assert(state.manifest_id),
-                    ready = true,
-                })
-            )
+        local unconfirmed, outcome = deliver(
+            state,
+            "guest.1",
+            message("ready", "guest.1", 2, {
+                manifest_id = assert(state.manifest_id),
+                ready = true,
+            })
         )
+        t.eq(outcome.code, "invalid_assignment", "readiness must answer for this ownership")
+        t.eq(outcome.reason, coordinator.UNCONFIRMED_READY_REASON)
+        t.is_true(unconfirmed == state)
+
+        state = ready_host(state, 1, { 1 })
         t.eq(state.peers[2].ready, true)
+        t.eq(state.phase, "ready")
     end)
 
     t.it("holds the acceptance invariant even if ownership was published early", function()
@@ -1129,5 +1138,351 @@ t.describe("online coordinator guest validation", function()
         t.eq(guest.peers[1].ready, false)
         t.eq(outcome.actions[1].message.kind, "ready")
         t.eq(outcome.actions[1].message.body.ready, false)
+    end)
+end)
+
+-- Systematic coverage of the two transition dimensions the reducer defines:
+-- inbound (phase x control message kind) legality, and (phase x local event
+-- kind) totality. These are cross-products, not hand-picked scenarios, so a
+-- phase or kind added later cannot quietly escape coverage.
+t.describe("online coordinator transition matrix", function()
+    local GUEST = "guest.1"
+
+    ---@param manifest_id string?
+    ---@return table<SessionMessageKind, SessionMessageBody>
+    local function guest_bodies(manifest_id)
+        local id = manifest_id or "0123456789abcdef"
+        return {
+            handshake = { role = "guest", runtime = fixture.runtime() },
+            manifest_accept = { manifest_id = id },
+            ready = { manifest_id = id, ready = true },
+            start = {
+                manifest_id = id,
+                countdown_id = fixture.COUNTDOWN_ID,
+                first_input_tick = 0,
+            },
+            hash_report = { tick = 60, boundary_hash = "0123456789abcdef" },
+            result_ack = {
+                final_tick = 7200,
+                home_score = 1,
+                away_score = 0,
+                final_hash = "fedcba9876543210",
+            },
+            abort = { code = "host_abort" },
+            disconnect = { target_peer_id = GUEST, code = "peer_left" },
+        }
+    end
+
+    ---@param manifest_id string?
+    ---@return table<SessionMessageKind, SessionMessageBody>
+    local function host_bodies(manifest_id)
+        local id = manifest_id or "0123456789abcdef"
+        local bodies = guest_bodies(id)
+        return {
+            manifest_proposal = {
+                manifest_id = protocol.manifest_id(fixture.manifest()),
+                manifest = fixture.manifest(),
+            },
+            peer_assignment = { assigned_peer_id = GUEST, role = "guest" },
+            slot_assignment = { manifest_id = id, assignments = fixture.assignments(1) },
+            countdown = {
+                manifest_id = id,
+                countdown_id = fixture.COUNTDOWN_ID,
+                remaining_ticks = 1,
+                first_input_tick = 0,
+            },
+            start = bodies.start,
+            match_phase = { phase = "kickoff", tick = 0, home_score = 0, away_score = 0 },
+            hash_report = bodies.hash_report,
+            result_ack = bodies.result_ack,
+            abort = bodies.abort,
+            disconnect = { target_peer_id = GUEST, code = "host_left" },
+        }
+    end
+
+    -- One host state per lifecycle phase, built through the real reducer.
+    ---@return table<SessionLifecyclePhase, CoordinatorState>
+    local function host_states()
+        local states = {}
+        states.handshake = (deliver(fixture.host(), GUEST, handshake(GUEST, 0)))
+        local state, sequences = assigned_host(1)
+        states.manifest = (
+            coordinator.step(
+                (deliver(fixture.host(), GUEST, handshake(GUEST, 0))),
+                { kind = "propose_manifest", manifest = fixture.manifest() }
+            )
+        )
+        states.assigned = state
+        state = ready_host(state, 1, sequences)
+        states.ready = state
+        state = (
+            coordinator.step(state, {
+                kind = "begin_countdown",
+                countdown_id = fixture.COUNTDOWN_ID,
+                remaining_ticks = 0,
+                first_input_tick = 0,
+            })
+        )
+        states.countdown = state
+        state = (
+            deliver(
+                state,
+                GUEST,
+                message("start", GUEST, 40, {
+                    manifest_id = assert(state.manifest_id),
+                    countdown_id = fixture.COUNTDOWN_ID,
+                    first_input_tick = 0,
+                })
+            )
+        )
+        states.running = state
+        for _, phase in ipairs({ "kickoff", "playing", "full_time" }) do
+            state = (
+                coordinator.step(state, {
+                    kind = "match_phase",
+                    phase = phase,
+                    tick = phase == "full_time" and 7200 or (phase == "playing" and 1 or 0),
+                    home_score = phase == "full_time" and 1 or 0,
+                    away_score = 0,
+                })
+            )
+        end
+        states.result = (
+            coordinator.step(state, {
+                kind = "finish",
+                final_tick = 7200,
+                home_score = 1,
+                away_score = 0,
+                final_hash = "fedcba9876543210",
+            })
+        )
+        return states
+    end
+
+    ---@return table<SessionLifecyclePhase, CoordinatorState>
+    local function guest_states()
+        local states = {}
+        states.new = fixture.guest(1)
+        local state = (coordinator.step(states.new, { kind = "connect" }))
+        states.handshake = state
+        local manifest = fixture.manifest()
+        local manifest_id = protocol.manifest_id(manifest)
+        state = (
+            deliver(
+                state,
+                GUEST,
+                message("manifest_proposal", HOST, 0, {
+                    manifest_id = manifest_id,
+                    manifest = manifest,
+                })
+            )
+        )
+        states.manifest = state
+        state = (
+            deliver(
+                state,
+                GUEST,
+                message("slot_assignment", HOST, 1, {
+                    manifest_id = manifest_id,
+                    assignments = fixture.assignments(1),
+                })
+            )
+        )
+        states.assigned = state
+        state = (coordinator.step(state, { kind = "set_ready", ready = true }))
+        states.ready = state
+        state = (
+            deliver(
+                state,
+                GUEST,
+                message("countdown", HOST, 2, {
+                    manifest_id = manifest_id,
+                    countdown_id = fixture.COUNTDOWN_ID,
+                    remaining_ticks = 0,
+                    first_input_tick = 0,
+                })
+            )
+        )
+        states.countdown = state
+        state = (
+            deliver(
+                state,
+                GUEST,
+                message("start", HOST, 3, {
+                    manifest_id = manifest_id,
+                    countdown_id = fixture.COUNTDOWN_ID,
+                    first_input_tick = 0,
+                })
+            )
+        )
+        states.running = state
+        local sequence = 3
+        for _, phase in ipairs({ "kickoff", "playing", "full_time" }) do
+            sequence = sequence + 1
+            state = (
+                deliver(
+                    state,
+                    GUEST,
+                    message("match_phase", HOST, sequence, {
+                        phase = phase,
+                        tick = phase == "full_time" and 7200 or (phase == "playing" and 1 or 0),
+                        home_score = phase == "full_time" and 1 or 0,
+                        away_score = 0,
+                    })
+                )
+            )
+        end
+        states.result = state
+        return states
+    end
+
+    ---@param state CoordinatorState
+    ---@param sender string
+    ---@param kind SessionMessageKind
+    ---@param bodies table<SessionMessageKind, SessionMessageBody>
+    local function assert_phase_cell(state, sender, kind, bodies)
+        local control = message(kind, sender, 90, bodies[kind])
+        -- The coordinator validates a republished assignment against `assigned`
+        -- because ownership changes revoke readiness; the oracle mirrors that
+        -- one documented remap and nothing else.
+        local phase = state.phase
+        if kind == "slot_assignment" and phase == "ready" then
+            phase = "assigned"
+        end
+        local legal = protocol.validate_phase(control, phase) ~= nil
+        local next_state = (deliver(state, GUEST, control))
+        local label = ("%s in %s"):format(kind, state.phase)
+        if legal then
+            local terminal = next_state.terminal
+            t.is_true(
+                terminal == nil or terminal.code ~= "invalid_phase",
+                label .. " is legal but was refused as out of phase"
+            )
+        else
+            t.eq(next_state.phase, "terminal", label .. " must not be accepted")
+            t.eq(assert(next_state.terminal).code, "invalid_phase", label)
+        end
+    end
+
+    t.it("agrees with the protocol phase table for every host-received kind", function()
+        local states = host_states()
+        local checked = 0
+        for _, phase in ipairs(coordinator.PHASES) do
+            local state = states[phase]
+            if state then
+                t.eq(state.phase, phase, "fixture for phase " .. phase)
+                for _, kind in ipairs({
+                    "handshake",
+                    "manifest_accept",
+                    "ready",
+                    "start",
+                    "hash_report",
+                    "result_ack",
+                    "abort",
+                    "disconnect",
+                }) do
+                    assert_phase_cell(state, GUEST, kind, guest_bodies(state.manifest_id))
+                    checked = checked + 1
+                end
+            end
+        end
+        t.eq(checked, 7 * 8, "every host phase must be crossed with every guest-sent kind")
+    end)
+
+    t.it("agrees with the protocol phase table for every guest-received kind", function()
+        local states = guest_states()
+        local checked = 0
+        for _, phase in ipairs(coordinator.PHASES) do
+            local state = states[phase]
+            if state then
+                t.eq(state.phase, phase, "fixture for phase " .. phase)
+                for _, kind in ipairs({
+                    "manifest_proposal",
+                    "peer_assignment",
+                    "slot_assignment",
+                    "countdown",
+                    "start",
+                    "match_phase",
+                    "hash_report",
+                    "result_ack",
+                    "abort",
+                    "disconnect",
+                }) do
+                    assert_phase_cell(state, HOST, kind, host_bodies(state.manifest_id))
+                    checked = checked + 1
+                end
+            end
+        end
+        t.eq(checked, 8 * 10, "every guest phase must be crossed with every host-sent kind")
+    end)
+
+    t.it("is a total function over every phase and local event kind", function()
+        local events = {
+            { kind = "connect" },
+            { kind = "control", link_id = fixture.link_id(GUEST) },
+            { kind = "link_lost", link_id = fixture.link_id(GUEST), code = "transport_lost" },
+            { kind = "propose_manifest", manifest = fixture.manifest() },
+            { kind = "assign_slots", assignments = fixture.assignments(1) },
+            { kind = "set_ready", ready = true },
+            {
+                kind = "begin_countdown",
+                countdown_id = fixture.COUNTDOWN_ID,
+                remaining_ticks = 1,
+                first_input_tick = 0,
+            },
+            { kind = "tick" },
+            { kind = "match_phase", phase = "kickoff", tick = 0, home_score = 0, away_score = 0 },
+            { kind = "hash_report", tick = 60, boundary_hash = "0123456789abcdef" },
+            {
+                kind = "finish",
+                final_tick = 7200,
+                home_score = 1,
+                away_score = 0,
+                final_hash = "fedcba9876543210",
+            },
+            { kind = "netcode_failure", failure = "late_input" },
+            { kind = "leave" },
+            { kind = "abort", code = "host_abort" },
+        }
+        local dispositions = { applied = true, idempotent = true, rejected = true }
+        local checked = 0
+        for _, states in ipairs({ host_states(), guest_states() }) do
+            local terminal = nil
+            for _, phase in ipairs(coordinator.PHASES) do
+                local state = states[phase]
+                if state then
+                    terminal = terminal
+                        or (coordinator.step(state, { kind = "abort", code = "host_abort" }))
+                    for _, base in ipairs(events) do
+                        for _, subject in ipairs({ state, terminal }) do
+                            local next_state, outcome = coordinator.step(subject, base)
+                            t.is_true(
+                                dispositions[outcome.disposition],
+                                base.kind .. " in " .. subject.phase .. " returned no disposition"
+                            )
+                            t.is_true(
+                                type(outcome.actions) == "table",
+                                base.kind .. " in " .. subject.phase .. " returned no action list"
+                            )
+                            if outcome.disposition == "rejected" then
+                                t.is_true(
+                                    next_state == subject,
+                                    base.kind
+                                        .. " in "
+                                        .. subject.phase
+                                        .. " left progress behind on rejection"
+                                )
+                                t.is_true(
+                                    outcome.code ~= nil,
+                                    base.kind .. " rejected with no code"
+                                )
+                            end
+                            checked = checked + 1
+                        end
+                    end
+                end
+            end
+        end
+        t.eq(checked, (7 + 8) * #events * 2)
     end)
 end)

@@ -59,7 +59,10 @@ this way. There is no join-in-progress and no reconnect.
 Once a link is an admitted peer, the same classes of failure end the session,
 because a peer that has already influenced lifecycle state cannot be
 un-influenced. The one exception is voluntary or transport departure before the
-countdown, which is a roster change rather than a failure.
+countdown, which is a roster change rather than a failure: the departing peer is
+removed, readiness is cleared, and ownership that named it is voided so the host
+must republish before anyone can be ready again. The lifecycle phase itself is
+not rewound past `assigned`.
 
 ## Manifest and ownership
 
@@ -84,16 +87,34 @@ that no combat-protected keeper is seated.
 ## Readiness
 
 A peer may only become ready after accepting the exact manifest digest and
-owning a slot; a `ready` that precedes either is a protocol violation. Readiness
-is revocable until the countdown freezes, and any ownership change clears it.
+owning a slot; a `ready` that precedes acceptance is a protocol violation.
+Readiness is revocable until the countdown freezes, and any ownership change
+clears it.
 
-Ownership changes race with in-flight readiness. The coordinator resolves this
-without extending the protocol: the host clears readiness when it republishes,
-and a guest that was ready when a *changed* assignment arrives clears its own
-readiness and sends `ready = false`. Because each link is reliable and ordered,
-that revocation always lands after the stale `ready = true`, so both ends
-converge on the peer's post-change answer. A byte-identical republication is
-idempotent and preserves readiness.
+Ownership changes race with in-flight readiness, and the `ready` body carries
+only the immutable `manifest_id` — never an assignment identity — so the host
+cannot tell "ready for the previous ownership" from "ready for the current one"
+by inspection. Owning *a* slot is not sufficient evidence either: a swap can
+leave a peer owning exactly one slot in both generations.
+
+The coordinator closes this without extending the wire, by making the peer
+prove it observed the generation:
+
+1. publishing ownership marks every remote peer *unconfirmed* and clears its
+   readiness;
+2. a guest that accepts a *changed* assignment always answers `ready = false`,
+   whether or not it was ready — that falling edge is the acknowledgement;
+3. the host treats a negative readiness as the confirmation, and refuses to
+   count a positive readiness from an unconfirmed peer.
+
+Per-link FIFO puts the acknowledgement after anything already in flight for the
+previous generation, so a stale `ready = true` is always refused and the
+following confirmation always lands. A byte-identical republication is
+idempotent: it is not a new generation and preserves readiness.
+
+The refusal of stale or unconfirmed readiness is a *rejection*, not a
+termination — the peer did nothing wrong, it simply answered for a
+configuration that no longer exists, and it will answer again.
 
 ## Countdown, freeze, and the start boundary
 
@@ -158,6 +179,13 @@ Local reasons are specific; the wire stays inside #161's closed rejection codes.
 delay, and resimulation belong to #162 and #166. It only guarantees that such a
 failure produces one stable reason and no hidden progress.
 
+Two of these mappings are lossy and should be revisited when #164 and #166 land.
+`late_input` and `hash_mismatch` are causally different classes — an overflowed
+rollback window versus divergent simulation — that share the `desync` wire code
+because #161 has no closer one. The local reason stays exact; only the byte on
+the wire is coarse. Likewise, every decode or validation failure other than an
+unsupported version folds into `malformed_message`.
+
 ## Duplicates and out-of-order control traffic
 
 Sequences are sender-local and strictly increasing but not contiguous, because
@@ -166,9 +194,20 @@ A sequence above the last one seen is new. A sequence at or below it is a
 duplicate: byte-identical bytes are an accepted no-op, and the same identity
 with different bytes is terminal, exactly as #161 requires. Duplicates are
 classified before phase validation, so a retransmitted terminal message cannot
-revive a session. The retained window is `DUPLICATE_WINDOW` messages per peer;
-a duplicate older than that cannot be proven identical and is treated as a
-protocol violation rather than silently trusted.
+revive a session.
+
+Byte comparison needs the original wire, and only the last `DUPLICATE_WINDOW`
+messages per peer are retained. That window bounds *conflict detection*, never
+session survival. Nothing in #161 bounds how late a reliable transport may
+retransmit, so a genuine retransmission can always age out of any finite
+window — ending the session there would kill a healthy match over an ordinary
+loss-and-retry. An unprovable duplicate therefore fails **open**: it is dropped
+without being applied, reported as an accepted no-op carrying
+`STALE_DUPLICATE_REASON`, and nothing advances. Dropping is strictly safer than
+applying, and the case the window might have caught is refused either way,
+because the message is never applied. Semantically idempotent repeats occupy
+window slots like any other message, which is correct rather than merely
+tolerable: a retransmission of one of *them* must stay classifiable too.
 
 Semantic repeats that are not wire duplicates are idempotent too: re-admitting,
 re-accepting, re-readying, re-starting, and re-acknowledging a result all leave
@@ -185,9 +224,36 @@ the freeze), and `terminate` (with the terminal record).
 `game.online.coordinator_driver` supplies the fake clock and fake reliable
 control links used by the tests. It runs up to eight real coordinator instances
 that exchange real canonical `GCOP` wires, supports per-link latency, link
-loss, and replayed packets, and exposes the resulting transcript digest so two
-identical runs can be compared. `game.online.coordinator_conformance` pins the
-canonical eight-human and bot-filled sessions, and the specs in
-`spec/game/online_coordinator_spec.lua` and
-`spec/game/online_coordinator_driver_spec.lua` cover the transition tables,
-ownership invariants, duplicate handling, and every abort path.
+loss, replayed packets, and `inject` — a message the sender's own coordinator
+would never emit, which is how a misbehaving peer is modelled without adding a
+test-only entry point to the coordinator itself.
+`game.online.coordinator_conformance` pins the canonical eight-human,
+bot-filled, and solo sessions.
+
+Two dimensions are covered as systematic cross-products rather than chosen
+scenarios, so a phase or message kind added later cannot escape coverage:
+
+- **phase × control message kind**, in both directions, asserted against
+  `protocol.validate_phase` as the oracle. Legal cells must not be refused as
+  out of phase; illegal cells must terminate with `invalid_phase`. The oracle
+  mirrors the one documented remap (a republished `slot_assignment` during
+  `ready`) and nothing else.
+- **phase × local event kind**, asserting the reducer is total: every
+  combination returns a disposition and an action list, and every rejection
+  returns the identical state with a code.
+
+Beyond the matrices, the specs cover ownership invariants, the readiness
+generation rule, aged-out retransmission, adversarial hosts and guests, and
+every abort path. "Exhaustive" applies to the two matrices above; the remaining
+coverage is scenario-based, and content-level outcomes within a legal cell (for
+example which specific mismatch a body triggers) are asserted case by case
+rather than exhaustively.
+
+## Assumptions
+
+A guest verifies that published ownership seats *it* in exactly one slot, but it
+cannot verify that the whole roster maps one-to-one onto genuinely admitted
+peers — it never sees the roster. That check lives on the host. This is a
+property of the single-trusted-host topology #161 defines, not a gap: OMP-3
+provides mismatch detection and useful termination, not anti-cheat. A host that
+lies about ownership can already choose the manifest.

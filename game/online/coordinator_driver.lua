@@ -256,6 +256,62 @@ function Driver:connect_all()
     return self
 end
 
+-- Send a control message that the sender's own coordinator would never emit,
+-- over the sender's real link and canonical wire format. This is how a
+-- misbehaving or compromised peer is modelled: the receiving coordinator is
+-- exercised exactly as in production, with no test-only entry point. The
+-- sender's counter advances so the transcript stays monotonic for both ends.
+---@param from_peer_id string
+---@param to_peer_id string
+---@param kind SessionMessageKind
+---@param body SessionMessageBody
+---@param session_id string?
+---@return CoordinatorDriver
+function Driver:inject(from_peer_id, to_peer_id, kind, body, session_id)
+    local node = assert(self:node(from_peer_id), "unknown driver node " .. tostring(from_peer_id))
+    local guest_peer_id = node.role == "host" and to_peer_id or from_peer_id
+    local message = assert(
+        protocol.new(kind, session_id or self.session_id, from_peer_id, node.state.sequence, body)
+    )
+    node.state.sequence = node.state.sequence + 1
+    self:_apply(node, {
+        { kind = "send", targets = { fixture.link_id(guest_peer_id) }, message = message },
+    })
+    self:pump()
+    return self
+end
+
+-- Replay a wire that was already delivered, exactly as a reliable transport
+-- retransmitting after loss would.
+---@param from_peer_id string
+---@param to_peer_id string
+---@param wire string
+---@return CoordinatorDriver
+function Driver:replay(from_peer_id, to_peer_id, wire)
+    local node = assert(self:node(from_peer_id))
+    local guest_peer_id = node.role == "host" and to_peer_id or from_peer_id
+    self.queue[#self.queue + 1] = {
+        link_id = fixture.link_id(guest_peer_id),
+        to_host = node.role == "guest",
+        wire = wire,
+        deliver_at = self.clock,
+    }
+    self:pump()
+    return self
+end
+
+-- The canonical wire of the first message of `kind` this session carried.
+---@param kind SessionMessageKind
+---@return string
+function Driver:first_wire(kind)
+    for _, message in ipairs(self.transcript) do
+        if message.kind == kind then
+            return assert(protocol.encode(message))
+        end
+    end
+    error("the session never carried a " .. kind .. " message")
+end
+
 -- Simulate a transport failure: both endpoints observe the loss of the link.
 ---@param guest_peer_id string
 ---@param code SessionDisconnectCode?

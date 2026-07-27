@@ -59,6 +59,7 @@ local input_frame = require("sim.input_frame")
 ---@field runtime SessionRuntimeIdentity
 ---@field accepted_manifest_id string?
 ---@field assigned boolean
+---@field assignment_confirmed boolean -- Host view: this peer answered for the current assignment.
 ---@field ready boolean
 ---@field started boolean
 ---@field result_acked boolean
@@ -183,6 +184,8 @@ coordinator.MAX_HASH_MISMATCHES = 3
 coordinator.START_ACK_TIMEOUT_TICKS = 120
 coordinator.BOT_SEED_STRIDE = 7919
 coordinator.BOT_PRODUCER_PREFIX = "bot."
+coordinator.STALE_DUPLICATE_REASON = "duplicate fell outside the retained transcript window"
+coordinator.UNCONFIRMED_READY_REASON = "readiness predates the current slot assignment"
 
 ---@type SessionLifecyclePhase[]
 coordinator.PHASES = {
@@ -288,6 +291,13 @@ local function idempotent()
     return { accepted = true, disposition = "idempotent", actions = {} }
 end
 
+-- An accepted no-op that carries why it was dropped, for diagnostics.
+---@param reason string
+---@return CoordinatorOutcome
+local function stale(reason)
+    return { accepted = true, disposition = "idempotent", reason = reason, actions = {} }
+end
+
 ---@param value any
 ---@return any
 local function copy_value(value)
@@ -315,6 +325,7 @@ local function copy_peer(peer)
         runtime = peer.runtime,
         accepted_manifest_id = peer.accepted_manifest_id,
         assigned = peer.assigned,
+        assignment_confirmed = peer.assignment_confirmed,
         ready = peer.ready,
         started = peer.started,
         result_acked = peer.result_acked,
@@ -533,16 +544,13 @@ function coordinator.slot_sources(manifest, assignments)
     if not ok then
         return nil, err, code
     end
+    -- `validate_assignment_manifest` has already proven that the array holds
+    -- exactly the eight canonical slots in OMP-1 order, so indexing it by slot
+    -- id cannot collide; this only re-shapes it for lookup.
     ---@type table<InputSlotId, SessionSlotProducer>
     local sources = {}
     for index = 1, input_frame.SLOT_COUNT do
-        local slot = assert(input_frame.slot(index))
-        if sources[slot.id] then
-            return nil,
-                "canonical slot " .. slot.id .. " has more than one source",
-                "invalid_assignment"
-        end
-        sources[slot.id] = assignments[index]
+        sources[assert(input_frame.slot(index)).id] = assignments[index]
     end
     return sources
 end
@@ -799,6 +807,7 @@ function coordinator.new(options)
         runtime = runtime,
         accepted_manifest_id = nil,
         assigned = options.role == "host",
+        assignment_confirmed = true,
         ready = false,
         started = false,
         result_acked = false,
@@ -816,6 +825,7 @@ function coordinator.new(options)
             runtime = runtime,
             accepted_manifest_id = nil,
             assigned = true,
+            assignment_confirmed = true,
             ready = false,
             started = false,
             result_acked = false,
@@ -1011,6 +1021,12 @@ local function handle_assign_slots(state, event)
     next_state.assignments = assignments
     next_state.phase = "assigned"
     clear_readiness(next_state)
+    -- A new ownership generation invalidates every remote peer's answer. Until
+    -- a peer answers again *after* seeing this publication, its readiness
+    -- cannot be attributed to this generation, so it does not count.
+    for index = 2, #next_state.peers do
+        next_state.peers[index].assignment_confirmed = false
+    end
     emit(
         next_state,
         "slot_assignment",
@@ -1530,6 +1546,7 @@ local function admit_guest(state, link_id, message)
         runtime = copy_value(body.runtime),
         accepted_manifest_id = nil,
         assigned = false,
+        assignment_confirmed = true,
         ready = false,
         started = false,
         result_acked = false,
@@ -1677,16 +1694,17 @@ local function apply_slot_assignment(state, peer, message)
     local next_state = copy_state(state)
     next_state.assignments = copy_value(body.assignments)
     next_state.phase = "assigned"
-    local was_ready = local_peer(next_state).ready
     clear_readiness(next_state)
-    if was_ready then
-        -- FIFO per link: the revocation lands after any in-flight readiness,
-        -- so the host converges on the peer's post-change answer.
-        emit(next_state, "ready", {
-            manifest_id = assert(next_state.manifest_id),
-            ready = false,
-        }, link_targets(next_state), actions)
-    end
+    -- Always answer a new ownership generation with an explicit negative
+    -- readiness, whether or not this peer was ready. The `ready` body carries
+    -- no assignment identity, so this falling edge is what tells the host the
+    -- peer has actually observed this generation. Per-link FIFO puts it after
+    -- any readiness that was already in flight for the previous generation,
+    -- and the host refuses to count readiness until it arrives.
+    emit(next_state, "ready", {
+        manifest_id = assert(next_state.manifest_id),
+        ready = false,
+    }, link_targets(next_state), actions)
     return next_state, applied(actions)
 end
 
@@ -1706,29 +1724,46 @@ local function apply_ready(state, peer, message)
             announce = true,
         })
     end
-    if body.ready then
-        if peer.accepted_manifest_id ~= state.manifest_id then
-            return terminate_from(state, {
-                reason = "protocol_violation",
-                origin = "remote",
-                peer_id = peer.peer_id,
-                detail = "readiness preceded manifest acceptance",
-                announce = true,
-            })
+    if not body.ready then
+        -- A negative readiness is also this peer's acknowledgement that it has
+        -- observed the current ownership generation.
+        if peer.assignment_confirmed and not peer.ready then
+            return state, idempotent()
         end
-        if not owns_slot(state, peer.peer_id) then
-            -- Ownership was replaced while this readiness was in flight. The
-            -- peer will answer again for the configuration it has not seen yet,
-            -- so drop the stale claim instead of ending the session.
-            return state,
-                rejected("invalid_assignment", "stale readiness for replaced slot ownership")
-        end
+        local next_state = copy_state(state)
+        local tracked = assert(peer_by_id(next_state, peer.peer_id))
+        tracked.assignment_confirmed = true
+        tracked.ready = false
+        refresh_ready_phase(next_state)
+        return next_state, applied()
     end
-    if peer.ready == body.ready then
+    if peer.accepted_manifest_id ~= state.manifest_id then
+        return terminate_from(state, {
+            reason = "protocol_violation",
+            origin = "remote",
+            peer_id = peer.peer_id,
+            detail = "readiness preceded manifest acceptance",
+            announce = true,
+        })
+    end
+    if not owns_slot(state, peer.peer_id) then
+        -- Ownership was replaced while this readiness was in flight. The peer
+        -- will answer again for the configuration it has not seen yet, so drop
+        -- the stale claim instead of ending the session.
+        return state, rejected("invalid_assignment", "stale readiness for replaced slot ownership")
+    end
+    if not peer.assignment_confirmed then
+        -- Owning *some* slot is not the same as having answered for *this*
+        -- ownership generation: a swap that leaves this peer with one slot
+        -- would otherwise let a positive readiness from the previous
+        -- generation satisfy the barrier for a configuration it never saw.
+        return state, rejected("invalid_assignment", coordinator.UNCONFIRMED_READY_REASON)
+    end
+    if peer.ready then
         return state, idempotent()
     end
     local next_state = copy_state(state)
-    assert(peer_by_id(next_state, peer.peer_id)).ready = body.ready
+    assert(peer_by_id(next_state, peer.peer_id)).ready = true
     refresh_ready_phase(next_state)
     return next_state, applied()
 end
@@ -1761,15 +1796,10 @@ local function apply_countdown(state, peer, message)
             announce = true,
         })
     end
-    if not local_peer(state).ready then
-        return terminate_from(state, {
-            reason = "protocol_violation",
-            origin = "remote",
-            peer_id = peer.peer_id,
-            detail = "the countdown preceded local readiness",
-            announce = true,
-        })
-    end
+    -- A countdown that precedes local readiness needs no check here: a guest is
+    -- in the `ready` phase exactly when it is ready, and #161 admits `countdown`
+    -- only during `ready` or `countdown`, so the phase gate has already refused
+    -- it before this handler runs.
     local next_state = copy_state(state)
     freeze_session(
         next_state,
@@ -2106,11 +2136,20 @@ local SENDER_ROLE = {
     match_phase = "host",
 }
 
----@param state CoordinatorState
+-- Transcript classification is a *conflict detector*, not a liveness gate.
+--
+-- The retained window bounds how far back a byte-for-byte comparison can be
+-- made. Nothing in #161 bounds how late a reliable transport may retransmit, so
+-- a genuine retransmission can always age out of any finite window. Ending the
+-- session in that case would kill a healthy match over an ordinary loss-and-
+-- retry, so an unprovable duplicate fails *open*: it is dropped without being
+-- applied and without advancing anything. Dropping is strictly safer than
+-- applying, and the case it might have caught -- a conflicting reuse of an old
+-- identity -- is refused either way, because the message is never applied.
 ---@param peer CoordinatorPeer
 ---@param message SessionControlMessage
----@return CoordinatorDisposition?, string?
-local function classify_transcript(state, peer, message)
+---@return "applied"|"idempotent"|"stale"?, string?
+local function classify_transcript(peer, message)
     if message.sequence > peer.last_sequence then
         return "applied"
     end
@@ -2124,7 +2163,7 @@ local function classify_transcript(state, peer, message)
             return nil, "message id was reused with different canonical bytes"
         end
     end
-    return nil, "a stale duplicate fell outside the retained transcript window"
+    return "stale"
 end
 
 ---@param next_state CoordinatorState
@@ -2231,7 +2270,7 @@ local function handle_control(state, event)
             announce = true,
         })
     end
-    local disposition, transcript_err = classify_transcript(state, peer, message)
+    local disposition, transcript_err = classify_transcript(peer, message)
     if not disposition then
         return terminate_from(state, {
             reason = "protocol_violation",
@@ -2244,6 +2283,9 @@ local function handle_control(state, event)
     end
     if disposition == "idempotent" then
         return state, idempotent()
+    end
+    if disposition == "stale" then
+        return state, stale(coordinator.STALE_DUPLICATE_REASON)
     end
     -- Republished ownership implicitly revokes readiness, so it is validated
     -- against `assigned`: #161 forbids slot assignment during `ready`, and the
