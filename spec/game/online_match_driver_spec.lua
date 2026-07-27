@@ -21,6 +21,10 @@ local rollback_session = require("sim.rollback_session")
 ---@field combat boolean?
 ---@field hash_interval_ticks integer?
 ---@field max_rollback_ticks integer?
+---@field settle_timeout_ticks integer?
+---@field settle_timeout_seconds number?
+---@field clock (fun(): number)?
+---@field divergent_peer integer? -- Driver index whose boundary zero is seeded differently.
 
 ---@param mode SessionMatchMode
 ---@param options DriverHarnessOptions?
@@ -29,30 +33,40 @@ local function harness(mode, options)
     options = options or {}
     local session = fixture.session(mode, nil, options.humans)
     local snapshot = fixture.initial_snapshot(options.duration, options.combat)
-    local drivers = {}
-    local peer_ids = { session.host_peer_id }
-    drivers[1] = match_driver.new({
-        role = "host",
-        peer_id = session.host_peer_id,
-        freeze = session.freeze,
-        manifest = session.manifest,
-        transport = session.host_transport,
-        initial_snapshot = snapshot,
-        hash_interval_ticks = options.hash_interval_ticks,
-        max_rollback_ticks = options.max_rollback_ticks,
-    })
-    for _, peer_id in ipairs(session.guest_peer_ids) do
-        peer_ids[#peer_ids + 1] = peer_id
-        drivers[#drivers + 1] = match_driver.new({
+    local divergent = options.divergent_peer
+            and fixture.initial_snapshot(options.duration, options.combat, fixture.DEFAULT_SEED + 1)
+        or nil
+
+    ---@param index integer
+    ---@return MatchDriverOptions
+    local function driver_options(index)
+        return {
             role = "guest",
-            peer_id = peer_id,
+            peer_id = "",
             freeze = session.freeze,
             manifest = session.manifest,
-            transport = assert(session.guest_transports[peer_id]),
-            initial_snapshot = snapshot,
+            transport = session.host_transport,
+            initial_snapshot = index == options.divergent_peer and assert(divergent) or snapshot,
             hash_interval_ticks = options.hash_interval_ticks,
             max_rollback_ticks = options.max_rollback_ticks,
-        })
+            settle_timeout_ticks = options.settle_timeout_ticks,
+            settle_timeout_seconds = options.settle_timeout_seconds,
+            clock = options.clock,
+        }
+    end
+
+    local drivers = {}
+    local peer_ids = { session.host_peer_id }
+    local host_options = driver_options(1)
+    host_options.role = "host"
+    host_options.peer_id = session.host_peer_id
+    drivers[1] = match_driver.new(host_options)
+    for _, peer_id in ipairs(session.guest_peer_ids) do
+        peer_ids[#peer_ids + 1] = peer_id
+        local guest_options = driver_options(#drivers + 1)
+        guest_options.peer_id = peer_id
+        guest_options.transport = assert(session.guest_transports[peer_id])
+        drivers[#drivers + 1] = match_driver.new(guest_options)
     end
     return { session = session, drivers = drivers, peer_ids = peer_ids, step = 0 }
 end
@@ -168,6 +182,113 @@ local function assert_confirmed_state(harness_state)
         reference = reference or hash
         t.eq(hash, reference, "confirmed boundary " .. tostring(boundary))
     end
+end
+
+-- A short match, so a burst can straddle full time without the hold itself
+-- outrunning the 30-tick retained window and turning the run into `late_input`.
+local SETTLE_DURATION = 24 / 60
+
+-- Advance every driver once per step, delivering only on the steps `deliver`
+-- allows, and stopping once no driver is still active.
+---@param harness_state DriverHarness
+---@param steps integer
+---@param deliver fun(step: integer): boolean
+---@param sample_for (fun(step: integer, index: integer): InputSample)?
+local function drive(harness_state, steps, deliver, sample_for)
+    for _ = 1, steps do
+        local step = harness_state.step
+        local active = false
+        for index, driver in ipairs(harness_state.drivers) do
+            match_driver.advance(
+                driver,
+                sample_for and sample_for(step, index) or input_frame.neutral_sample()
+            )
+            active = active or match_driver.status(driver) == "active"
+        end
+        if deliver(step) then
+            harness_state.session.host_transport:pump()
+        end
+        harness_state.step = step + 1
+        if not active then
+            return
+        end
+    end
+end
+
+-- Input that changes every step. Prediction repeats the last sample, so a
+-- constant one is predicted *correctly* by definition: a burst over constant
+-- input opens no divergence at all, and a test built on it would pass whether
+-- or not the tail was ever confirmed.
+---@param step integer
+---@param index integer
+---@return InputSample
+local function moving_sample(step, index)
+    local phase = (step * 7 + index * 13) % 8
+    return sample({
+        move_x = 90 - phase * 24,
+        move_y = phase * 17 - 60,
+        edges = phase == 3 and input_frame.EDGE_BITS.switch or 0,
+    })
+end
+
+-- Which tick full time lands on is `sim.match`'s countdown to decide, not
+-- arithmetic on the duration: a float remainder buys one more tick. Probe it
+-- once under clean delivery rather than encode an assumption about it, because
+-- every burst window below is placed relative to it.
+local FULL_TIME_BOUNDARY = (function()
+    local probe = harness("1v1", { duration = SETTLE_DURATION })
+    drive(probe, 200, function()
+        return true
+    end)
+    return assert(match_driver.full_time_boundary(probe.drivers[1]))
+end)()
+-- Driver step `T` simulates input tick `T`, so this is the step that reaches it.
+local FULL_TIME_STEP = FULL_TIME_BOUNDARY - 1
+
+-- Every peer completed *through the settle phase*, on the same final boundary,
+-- with every tick of the match authoritative and the same hash captured there.
+-- The final boundary hash is what the screen reports as the session's
+-- `final_hash`, so this is the agreement the acknowledged result rests on.
+---@param harness_state DriverHarness
+---@param label string?
+---@return integer boundary
+local function assert_settled(harness_state, label)
+    local suffix = label and (" in " .. label) or ""
+    local boundary = nil
+    for index, driver in ipairs(harness_state.drivers) do
+        local diagnostics = match_driver.diagnostics(driver)
+        t.eq(
+            match_driver.status(driver),
+            "completed",
+            ("peer %d did not complete%s"):format(index, suffix)
+        )
+        t.eq(assert(match_driver.terminal(driver)).failure, nil)
+        t.is_true(
+            match_driver.settled(driver),
+            ("peer %d completed without settling%s"):format(index, suffix)
+        )
+        t.is_true(not diagnostics.settling)
+        local mine = assert(match_driver.full_time_boundary(driver))
+        boundary = boundary or mine
+        t.eq(mine, boundary, ("final boundary on peer %d%s"):format(index, suffix))
+        -- The settle phase's whole contract: nothing in the match is left
+        -- unconfirmed when it reports the result.
+        t.eq(
+            diagnostics.confirmed_output_tick,
+            boundary - 1,
+            ("peer %d completed with an unconfirmed tail%s"):format(index, suffix)
+        )
+    end
+    boundary = assert(boundary)
+    local reference = nil
+    for index, driver in ipairs(harness_state.drivers) do
+        local lookup = match_driver.snapshot(driver, boundary)
+        t.is_true(lookup.status == "present" or lookup.status == "retained")
+        local hash = match_snapshot.hash(assert(lookup.snapshot))
+        reference = reference or hash
+        t.eq(hash, reference, ("final hash on peer %d%s"):format(index, suffix))
+    end
+    return boundary
 end
 
 t.describe("online match driver", function()
@@ -805,6 +926,208 @@ t.describe("online match driver", function()
         rollback_session.current_snapshot = original
         t.is_true(multi_ok, tostring(multi_err))
         t.eq(captures, 8)
+    end)
+
+    -- #237. The driver used to terminate at *present* full time, leaving up to
+    -- DELAY_TICKS of the match unconfirmed at the moment it reported the result.
+    -- These pin the settle phase that closes it.
+
+    t.it("settles the final boundary before completing under clean delivery", function()
+        for _, mode in ipairs({ "1v1", "2v2", "4v4" }) do
+            local state = harness(mode, { duration = SETTLE_DURATION })
+            drive(state, FULL_TIME_BOUNDARY + 20, function()
+                return true
+            end, moving_sample)
+            t.eq(assert_settled(state, mode), FULL_TIME_BOUNDARY)
+            for index, driver in ipairs(state.drivers) do
+                -- Clean delivery confirms ahead of the present, so settling is
+                -- all but free: the host has the whole tail at full time, and a
+                -- guest is exactly one step behind the fan-out that carries the
+                -- final row to it. The healthy path stays as prompt as it was.
+                t.is_true(
+                    match_driver.diagnostics(driver).settle_steps <= 1,
+                    ("peer %d settled slowly under clean delivery in %s"):format(index, mode)
+                )
+            end
+        end
+    end)
+
+    -- The regression test. The pre-existing full-time coverage runs bursty
+    -- delivery *up to* full time, which is why this was missed: the burst has to
+    -- straddle the final whistle for peers to stop at different confirmation
+    -- depths.
+    t.it("completes with an agreed final hash under a burst across full time", function()
+        for _, mode in ipairs({ "1v1", "2v2", "4v4" }) do
+            local state = harness(mode, { duration = SETTLE_DURATION })
+            drive(state, FULL_TIME_BOUNDARY + 90, function(step)
+                return step < FULL_TIME_STEP - 6 or step > FULL_TIME_STEP + 4
+            end, moving_sample)
+            assert_settled(state, mode)
+            local rollbacks, settle_steps = 0, 0
+            for _, driver in ipairs(state.drivers) do
+                local diagnostics = match_driver.diagnostics(driver)
+                rollbacks = rollbacks + diagnostics.rollback_count
+                settle_steps = settle_steps + diagnostics.settle_steps
+            end
+            t.is_true(rollbacks > 0, ("the burst never corrected anything in %s"):format(mode))
+            -- And the burst really did leave a tail to drain, so this is the
+            -- path under test rather than the clean one in disguise.
+            t.is_true(settle_steps > 0, ("nothing was left to settle in %s"):format(mode))
+        end
+    end)
+
+    t.it("does not swallow a boundary disagreement reported while settling", function()
+        local state = harness("2v2", { duration = SETTLE_DURATION, settle_timeout_ticks = 40 })
+        drive(state, FULL_TIME_STEP + 1, function(step)
+            return step < FULL_TIME_STEP - 5
+        end, moving_sample)
+        local driver = state.drivers[1]
+        t.is_true(match_driver.diagnostics(driver).settling, "the peer was not settling")
+
+        -- A peer disagreeing about a boundary this driver hashed is exactly the
+        -- report the coordinator forwards. Settling must not make it wait it out.
+        local checkpoint = assert(match_driver.checkpoints(driver)[1])
+        for _ = 1, match_driver.MAX_HASH_MISMATCHES do
+            t.is_true(
+                not match_driver.observe_checkpoint(driver, checkpoint.tick, "dead0000dead0000")
+            )
+        end
+        t.eq(match_driver.status(driver), "hash_mismatch")
+        t.eq(assert(match_driver.terminal(driver)).failure, "desync")
+        t.is_true(not match_driver.settled(driver))
+
+        -- Delivery resumes and the tail would now confirm. A settle phase that
+        -- completed anyway would have converted a real divergence into a result.
+        drive(state, 40, function()
+            return true
+        end, moving_sample)
+        t.eq(match_driver.status(driver), "hash_mismatch")
+        t.is_true(not match_driver.settled(driver))
+    end)
+
+    t.it("settles a genuinely divergent peer without hiding the divergence", function()
+        -- Peer two simulates from a differently seeded boundary zero: every
+        -- input row still agrees, so every peer confirms every tick and settles,
+        -- but the states never do. Settling waits for *authority*, never for
+        -- agreement, so the disagreement survives into the final hash the
+        -- session acknowledges -- where `coordinator.apply_result_ack` ends it as
+        -- `hash_mismatch` (pinned in spec/game/online_coordinator_spec.lua).
+        local state = harness("2v2", { duration = SETTLE_DURATION, divergent_peer = 2 })
+        drive(state, FULL_TIME_BOUNDARY + 20, function()
+            return true
+        end, moving_sample)
+        local boundary = nil
+        for _, driver in ipairs(state.drivers) do
+            t.eq(match_driver.status(driver), "completed")
+            t.is_true(match_driver.settled(driver))
+            boundary = assert(match_driver.full_time_boundary(driver))
+        end
+        boundary = assert(boundary)
+        local hashes = {}
+        for index, driver in ipairs(state.drivers) do
+            hashes[index] =
+                match_snapshot.hash(assert(match_driver.snapshot(driver, boundary).snapshot))
+        end
+        t.is_true(hashes[1] ~= hashes[2], "a divergent peer settled onto an agreed final hash")
+        -- The driver's own comparison would fire on the same evidence: the
+        -- boundaries it published during play already disagree.
+        t.is_true(
+            not match_driver.observe_checkpoint(
+                state.drivers[3],
+                assert(match_driver.checkpoints(state.drivers[2])[1]).tick,
+                assert(match_driver.checkpoints(state.drivers[2])[1]).hash
+            )
+        )
+    end)
+
+    t.it("ends a settle nobody can finish with a bounded typed reason", function()
+        local state = harness("2v2", { duration = SETTLE_DURATION, settle_timeout_ticks = 10 })
+        -- Delivery stops before full time and never resumes: every peer reaches
+        -- the final tick on predicted rows and none of them can ever confirm it.
+        drive(state, FULL_TIME_BOUNDARY + 60, function(step)
+            return step < FULL_TIME_STEP - 5
+        end, moving_sample)
+        for index, driver in ipairs(state.drivers) do
+            local status = match_driver.status(driver)
+            t.eq(status, "settle_timeout", ("peer %d did not time out"):format(index))
+            -- Typed, and emphatically not the desync a healthy match used to get.
+            t.is_true(status ~= "hash_mismatch")
+            local terminal = assert(match_driver.terminal(driver))
+            t.eq(terminal.failure, "input_channel")
+            t.eq(terminal.tick, match_driver.full_time_boundary(driver))
+            t.is_true(not match_driver.settled(driver))
+            t.eq(match_driver.diagnostics(driver).settle_steps, 10)
+        end
+
+        -- No hidden progress after the settle phase ends, same as every other
+        -- terminal status.
+        local driver = state.drivers[1]
+        local before = match_driver.diagnostics(driver)
+        local batch = match_driver.advance(driver, input_frame.neutral_sample())
+        t.eq(#batch.outputs, 0)
+        t.eq(batch.sent_packets, 0)
+        t.eq(batch.status, "settle_timeout")
+        local after = match_driver.diagnostics(driver)
+        t.eq(after.present_input_tick, before.present_input_tick)
+        t.eq(after.confirmed_input_tick, before.confirmed_input_tick)
+        t.eq(after.settle_steps, before.settle_steps)
+    end)
+
+    t.it("bounds the settle phase in wall clock as well as in ticks", function()
+        -- One second of monotonic time per reading, so a caller whose frames
+        -- have stopped arriving at 60 Hz cannot stretch a bounded number of
+        -- steps into an unbounded wait.
+        local now = 0
+        local state = harness("2v2", {
+            duration = SETTLE_DURATION,
+            settle_timeout_ticks = 10000,
+            settle_timeout_seconds = 2,
+            clock = function()
+                now = now + 1
+                return now
+            end,
+        })
+        drive(state, FULL_TIME_BOUNDARY + 60, function(step)
+            return step < FULL_TIME_STEP - 5
+        end, moving_sample)
+        for index, driver in ipairs(state.drivers) do
+            t.eq(match_driver.status(driver), "settle_timeout", ("peer %d"):format(index))
+            local detail = assert(match_driver.terminal(driver)).detail
+            t.is_true(
+                detail:find("seconds", 1, true) ~= nil,
+                "the wall-clock bound was not the one that fired: " .. detail
+            )
+            -- Far short of the tick bound, which is the point.
+            t.is_true(match_driver.diagnostics(driver).settle_steps < 10)
+        end
+    end)
+
+    t.it("re-publishes the tail while settling and simulates nothing", function()
+        local state = harness("2v2", { duration = SETTLE_DURATION, settle_timeout_ticks = 40 })
+        drive(state, FULL_TIME_STEP + 1, function(step)
+            return step < FULL_TIME_STEP - 5
+        end, moving_sample)
+        for index, driver in ipairs(state.drivers) do
+            local before = match_driver.diagnostics(driver)
+            t.is_true(before.settling, ("peer %d was not settling"):format(index))
+            t.eq(before.status, "active")
+            local batch = match_driver.advance(driver, input_frame.neutral_sample())
+            -- Nothing is simulated after full time, ever.
+            t.eq(#batch.outputs, 0, ("peer %d simulated after full time"):format(index))
+            local after = match_driver.diagnostics(driver)
+            t.eq(after.present_input_tick, before.present_input_tick)
+            t.eq(after.present_input_tick, assert(before.full_time_boundary))
+            -- But the last authored window keeps going out, which is how a peer
+            -- that lost the tail can still receive it.
+            t.is_true(
+                batch.sent_packets > 0 or index == 1,
+                ("settling peer %d stopped re-publishing its tail"):format(index)
+            )
+        end
+        -- The host publishes through its own collector, so its re-sends leave on
+        -- the canonical batch a step later rather than immediately.
+        local host_batch = match_driver.advance(state.drivers[1], input_frame.neutral_sample())
+        t.is_true(host_batch.sent_packets > 0, "a settling host stopped fanning out authority")
     end)
 
     t.it("reports a lost transport as a typed terminal status", function()

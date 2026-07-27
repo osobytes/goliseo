@@ -591,8 +591,11 @@ end
 function Match:full_time_confirmed()
     if self._source then
         -- A driven match reaches full time when its confirmed lifecycle record
-        -- says so, or when the source declares it: the online driver stops at
-        -- the tick the match ends, which can be before the final rows confirm.
+        -- says so, or when the source declares it. Both are keyed off confirmed
+        -- authority: the lifecycle record is published from the confirmation
+        -- ceiling, and the online driver declares full time only once its settle
+        -- phase has confirmed the final boundary. So the visible whistle and the
+        -- confirmed result cannot disagree.
         return self._presentation_full_time or self._source:full_time()
     end
     return self.state.finished

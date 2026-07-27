@@ -65,6 +65,34 @@
 -- longer calls live for at most `DELAY` ticks. Every peer agrees on that
 -- outcome, and the simulation is unaffected: it consumes the eight rows it is
 -- given, whoever authored them.
+--
+-- # Full time settles before it completes
+--
+-- Reaching full time is not the same as agreeing on it. The last `DELAY` ticks
+-- can still be unconfirmed at the moment the final tick is simulated, so a
+-- driver that terminated there would report a final hash taken over predicted
+-- authority. Under a burst straddling full time two peers stop at different
+-- confirmation depths and disagree about a match in which nothing actually
+-- diverged.
+--
+-- So full time opens a **settle phase** instead of terminating: the simulation
+-- stops for good, and the driver keeps draining, applying, and re-publishing the
+-- last authored redundancy window until `confirmed_output_tick + 1` reaches the
+-- final boundary. Only then does it terminate `completed`, over a final state
+-- that is a function of confirmed authority alone. Boundary hashes stop here:
+-- from full time the acknowledged final hash is the cross-check, and a report
+-- for a settling peer's boundary could reach one that has already moved on to
+-- the result, where a hash report is no longer legal.
+--
+-- Settling is bounded twice, and it waits on nothing else. It ends after
+-- `SETTLE_TIMEOUT_TICKS` further driver steps, or after `SETTLE_TIMEOUT_SECONDS`
+-- of monotonic wall clock, whichever comes first, with the typed terminal
+-- `settle_timeout`. It is deliberately *not* gated on hash agreement: the driver
+-- cannot see another peer's hash, so waiting for one would be an unbounded wait
+-- on a fact that never arrives. A disagreement reported through
+-- `observe_checkpoint` while settling still terminates `hash_mismatch`, exactly
+-- as it does while playing -- settling never swallows a divergence, it only
+-- refuses to report a result over authority it has not confirmed.
 
 local coordinator = require("game.online.coordinator")
 local input_protocol = require("game.online.input_protocol")
@@ -80,6 +108,7 @@ local slot_input = require("sim.slot_input")
 ---@alias MatchDriverStatus
 ---| "active"
 ---| "completed"
+---| "settle_timeout"
 ---| "late_input"
 ---| "hash_mismatch"
 ---| "ownership_violation"
@@ -107,6 +136,9 @@ local slot_input = require("sim.slot_input")
 ---@field initial_snapshot MatchSnapshot -- Canonical slot-mode boundary zero.
 ---@field max_rollback_ticks integer?
 ---@field hash_interval_ticks integer?
+---@field settle_timeout_ticks integer? -- Driver steps the settle phase may span.
+---@field settle_timeout_seconds number? -- Monotonic seconds the settle phase may span.
+---@field clock (fun(): number)? -- Monotonic seconds source; injected so the bound is testable.
 
 ---@class MatchDriverBatch
 ---@field step integer -- Driver step that produced this batch.
@@ -144,6 +176,10 @@ local slot_input = require("sim.slot_input")
 ---@field late_input_tick integer?
 ---@field hash_mismatches integer
 ---@field checkpoint_count integer
+---@field settling boolean -- Full time reached, final boundary not confirmed yet.
+---@field settled boolean -- The final boundary was confirmed before the driver completed.
+---@field full_time_boundary integer? -- Final boundary, in input-tick space.
+---@field settle_steps integer -- Settle steps taken; zero when full time settled immediately.
 ---@field dropped_outbound integer
 ---@field dropped_inbound integer
 
@@ -187,6 +223,14 @@ local slot_input = require("sim.slot_input")
 ---@field _status MatchDriverStatus
 ---@field _terminal MatchDriverTerminal?
 ---@field _late_input_tick integer?
+---@field _authored_tick integer -- Highest input tick this peer has authored rows for.
+---@field _settle_ticks integer
+---@field _settle_seconds number
+---@field _clock fun(): number
+---@field _full_time_boundary integer? -- Final boundary; non-nil once full time is reached.
+---@field _settle_steps integer -- Settle steps taken so far, capped by `_settle_ticks`.
+---@field _settle_deadline number? -- Monotonic second the settle phase expires at.
+---@field _settled boolean
 
 ---@class OnlineMatchDriverModule
 local match_driver = {}
@@ -196,6 +240,23 @@ match_driver.DEFAULT_HASH_INTERVAL_TICKS = 30
 match_driver.MAX_HASH_MISMATCHES = 3
 match_driver.POLL_BATCH_LIMIT = transport_contract.MAX_QUEUE_LIMIT
 
+-- The settle phase drains at most one second of further driver steps. The tail
+-- it is waiting for is at most `DELAY_TICKS` of authority, already carried by
+-- the seven-row redundancy window, and settling adds one further re-send of that
+-- window per step: sixty of them is far past the point where a recoverable burst
+-- has been recovered, and short enough that nobody stares at a dead peer. It is
+-- a liveness bound, not a correctness one -- nothing is simulated while
+-- settling, so the retained window stops sliding and waiting can never push the
+-- tail out of it.
+match_driver.SETTLE_TIMEOUT_TICKS = 60
+
+-- The same bound in real time, for a caller whose frames are not arriving at
+-- 60 Hz. A driver that is advanced slowly would otherwise spend far longer than
+-- a second inside a bounded number of steps; at a healthy frame rate the tick
+-- bound always expires first. Half the coordinator's start-acknowledgement
+-- patience, which is the closest comparable wait in the session.
+match_driver.SETTLE_TIMEOUT_SECONDS = 2
+
 ---@param value any
 ---@return boolean
 local function is_integer(value)
@@ -204,6 +265,19 @@ local function is_integer(value)
         and value ~= math.huge
         and value ~= -math.huge
         and value == math.floor(value)
+end
+
+-- Monotonic seconds for the settle phase's wall-clock bound. LOVE's timer is the
+-- honest source when there is one; the fallback keeps the driver constructible
+-- in a bare Lua host, and every test that asserts on the bound injects its own.
+-- Nothing simulated reads this: it can only end a settle phase early, never
+-- change a tick.
+---@return number
+local function default_clock()
+    if love ~= nil and love.timer ~= nil and love.timer.getTime ~= nil then
+        return love.timer.getTime()
+    end
+    return os.time()
 end
 
 ---@param sample InputSample
@@ -1024,6 +1098,11 @@ end
 -- Checkpoints
 -- ---------------------------------------------------------------------------
 
+-- Boundary hashes are a *running* session's cross-check, and the caller stops
+-- publishing them at full time -- see `advance`. From there the final boundary's
+-- hash is the result acknowledgement's business, and it subsumes every earlier
+-- one: the final state is a function of every confirmed tick, so a boundary that
+-- disagreed anywhere cannot agree there.
 ---@param driver MatchDriver
 ---@param batch MatchDriverBatch
 local function publish_checkpoints(driver, batch)
@@ -1103,6 +1182,140 @@ function match_driver.checkpoints(driver)
 end
 
 -- ---------------------------------------------------------------------------
+-- Full time and settling
+-- ---------------------------------------------------------------------------
+
+-- Full time stops the simulation and opens the settle phase. It does not
+-- terminate: up to `DELAY_TICKS` of the match can still be unconfirmed here, and
+-- a result reported over predicted authority is exactly the disagreement this
+-- phase exists to prevent.
+---@param driver MatchDriver
+local function reach_full_time(driver)
+    if driver._full_time_boundary ~= nil then
+        return
+    end
+    driver._full_time_boundary = present_input_tick(driver)
+    driver._settle_deadline = driver._clock() + driver._settle_seconds
+end
+
+-- One settle step's outbound traffic: the last authored redundancy window,
+-- re-published unchanged.
+--
+-- Nothing new is authored, because nothing is simulated any more -- there is no
+-- boundary state to materialize an AI row from and no tick left for a human
+-- sample to be authority for. What a peer can still be missing is the tail of
+-- what was already authored, and that is precisely this window. Re-sending it
+-- once per settle step gives the last ticks the same redundancy every earlier
+-- tick got; without it the final rows would be published fewer times than any
+-- others, which is why the tail is the part that fails to confirm.
+--
+-- The host's re-sends go back through its own collector on the ordinary
+-- `DELAY_TICKS` due date. `canonical_host_batch` refuses host-local input that
+-- has not spent the fairness delay, and settling is not a licence to bypass
+-- canonical sequencing.
+---@param driver MatchDriver
+---@param batch MatchDriverBatch
+---@param transport_tick integer
+local function resend_tail(driver, batch, transport_tick)
+    local tick = driver._authored_tick
+    for _, slot_index in ipairs(driver._authored) do
+        local packet, envelope = build_packet(driver, slot_index, tick, transport_tick)
+        if driver._role == "host" then
+            driver._pending[#driver._pending + 1] = {
+                due = driver._step + match_driver.DELAY_TICKS,
+                packet = packet,
+                envelope = envelope,
+                producer_id = packet.sender_id,
+            }
+        else
+            local ok, err, code =
+                driver._transport:send(transport_contract.HOST_PEER_ID, "input", envelope)
+            if ok == nil then
+                terminate(
+                    driver,
+                    code == "backpressure" and "input_channel_failure" or "transport_lost",
+                    err or "a guest could not re-publish its settling input bundle",
+                    "input_channel"
+                )
+                return
+            end
+            batch.sent_packets = batch.sent_packets + 1
+        end
+    end
+end
+
+-- Close the settle phase, one way or the other.
+--
+-- It completes when the final boundary is confirmed -- `confirmed_output_tick`,
+-- the output-capped confirmation, because a settled boundary is exactly one that
+-- was both simulated and fully authorized. The state captured there is then a
+-- function of confirmed authority alone, which is what makes the final hash the
+-- session acknowledges an agreement rather than a coincidence.
+--
+-- Otherwise it expires, in ticks or in wall clock, whichever comes first. A peer
+-- that has genuinely gone must not hold the match open, and there is no path
+-- here that waits on anything unbounded: both deadlines are fixed the moment
+-- full time is reached, and each `advance` re-checks them exactly once.
+---@param driver MatchDriver
+local function settle(driver)
+    local boundary = driver._full_time_boundary
+    if boundary == nil or not running(driver) then
+        return
+    end
+    if confirmed_output_input_tick(driver) + 1 >= boundary then
+        driver._settled = true
+        terminate(
+            driver,
+            "completed",
+            "the match reached full time with the final boundary confirmed"
+        )
+        return
+    end
+    if driver._settle_steps >= driver._settle_ticks then
+        terminate(
+            driver,
+            "settle_timeout",
+            "full time was reached but the final boundary was still unconfirmed after "
+                .. tostring(driver._settle_ticks)
+                .. " settle ticks",
+            "input_channel",
+            boundary
+        )
+        return
+    end
+    if driver._clock() >= assert(driver._settle_deadline) then
+        terminate(
+            driver,
+            "settle_timeout",
+            "full time was reached but the final boundary was still unconfirmed after "
+                .. tostring(driver._settle_seconds)
+                .. " seconds of settling",
+            "input_channel",
+            boundary
+        )
+        return
+    end
+    driver._settle_steps = driver._settle_steps + 1
+end
+
+-- True once the final boundary was confirmed. This is the settled
+-- full time, as opposed to the tick the simulation happened to stop on, and it
+-- is what presentation must key the final whistle off so the visible whistle and
+-- the confirmed result agree.
+---@param driver MatchDriver
+---@return boolean
+function match_driver.settled(driver)
+    return driver._settled
+end
+
+-- The final boundary, in input-tick space. `nil` until full time is reached.
+---@param driver MatchDriver
+---@return integer?
+function match_driver.full_time_boundary(driver)
+    return driver._full_time_boundary
+end
+
+-- ---------------------------------------------------------------------------
 -- Construction
 -- ---------------------------------------------------------------------------
 
@@ -1161,6 +1374,18 @@ function match_driver.new(options)
         is_integer(hash_interval) and hash_interval >= 1,
         "match driver hash interval must be a positive integer"
     )
+    local settle_ticks = options.settle_timeout_ticks or match_driver.SETTLE_TIMEOUT_TICKS
+    assert(
+        is_integer(settle_ticks) and settle_ticks >= 1,
+        "match driver settle window must be a positive integer number of ticks"
+    )
+    local settle_seconds = options.settle_timeout_seconds or match_driver.SETTLE_TIMEOUT_SECONDS
+    assert(
+        type(settle_seconds) == "number" and settle_seconds > 0 and settle_seconds < math.huge,
+        "match driver settle window must be a positive number of seconds"
+    )
+    local clock = options.clock or default_clock
+    assert(type(clock) == "function", "match driver clock must be a monotonic seconds function")
     local maximum = options.max_rollback_ticks or rollback_input_history.ROLLBACK_WINDOW_TICKS
     assert(
         is_integer(maximum)
@@ -1261,6 +1486,14 @@ function match_driver.new(options)
         _status = "active",
         _terminal = nil,
         _late_input_tick = nil,
+        _authored_tick = freeze.first_input_tick + match_driver.DELAY_TICKS - 1,
+        _settle_ticks = settle_ticks,
+        _settle_seconds = settle_seconds,
+        _clock = clock,
+        _full_time_boundary = nil,
+        _settle_steps = 0,
+        _settle_deadline = nil,
+        _settled = false,
     }
     ---@type table<string, InputSlotId>
     local opening = {}
@@ -1287,6 +1520,7 @@ local function author_and_send(driver, batch, input_tick, transport_tick, sample
     for _, slot_index in ipairs(driver._authored) do
         record_authored(driver, slot_index, input_tick, authored[slot_index])
     end
+    driver._authored_tick = input_tick
     ---@type InputAuthorityRow[]
     local local_rows = {}
     for _, slot_index in ipairs(driver._authored) do
@@ -1338,13 +1572,13 @@ local function step_to(driver, batch, input_tick)
             return
         end
         if diagnostics.status == "finished" then
-            terminate(driver, "completed", "the match reached full time")
+            reach_full_time(driver)
             return
         end
         local output, err, code = rollback_session.step(driver._session)
         if output == nil then
             if code == "match_finished" then
-                terminate(driver, "completed", "the match reached full time")
+                reach_full_time(driver)
                 return
             end
             terminate(
@@ -1363,7 +1597,7 @@ local function step_to(driver, batch, input_tick)
             rollback_session.diagnostics(driver._session).input_history.oldest_retained_tick
         prune_live(driver, to_input_tick(driver, floor))
         if output.finished then
-            terminate(driver, "completed", "the match reached full time")
+            reach_full_time(driver)
             return
         end
     end
@@ -1372,6 +1606,12 @@ end
 -- One fixed 60 Hz driver step: poll, apply one canonical arrival batch through
 -- one reconciliation, author this step's rows, publish them, simulate one input
 -- tick, and hash any confirmed checkpoint that came due.
+--
+-- After full time the same step keeps its first half and loses its second: the
+-- driver still polls, still applies one arrival batch through one
+-- reconciliation, and still re-publishes the last authored window, but it
+-- authors nothing new and simulates nothing. It ends when the final boundary
+-- confirms or the settle phase expires.
 ---@param driver MatchDriver
 ---@param sample InputSample? -- The local human's sample; nil for a peer that owns nothing.
 ---@return MatchDriverBatch
@@ -1410,18 +1650,31 @@ function match_driver.advance(driver, sample)
         end
     end
     if running(driver) then
-        author_and_send(
-            driver,
-            batch,
-            input_tick + match_driver.DELAY_TICKS,
-            transport_tick,
-            sample
-        )
+        if driver._full_time_boundary ~= nil then
+            resend_tail(driver, batch, transport_tick)
+        else
+            author_and_send(
+                driver,
+                batch,
+                input_tick + match_driver.DELAY_TICKS,
+                transport_tick,
+                sample
+            )
+        end
     end
-    if running(driver) then
+    if running(driver) and driver._full_time_boundary == nil then
         step_to(driver, batch, input_tick)
     end
-    publish_checkpoints(driver, batch)
+    -- Boundary hashes stop at full time, including on the step that reaches it.
+    -- Settling peers no longer terminate on the same step, so a checkpoint
+    -- published while one peer settles can reach another that has already left
+    -- `running` for the result -- and a hash report is only legal in a running
+    -- session. It costs no detection: from here the acknowledged final hash is
+    -- the cross-check, and every earlier boundary is folded into it.
+    if driver._full_time_boundary == nil then
+        publish_checkpoints(driver, batch)
+    end
+    settle(driver)
 
     driver._step = driver._step + 1
     batch.status = driver._status
@@ -1514,6 +1767,10 @@ function match_driver.diagnostics(driver)
         late_input_tick = driver._late_input_tick,
         hash_mismatches = driver._hash_mismatches,
         checkpoint_count = #driver._checkpoints,
+        settling = driver._full_time_boundary ~= nil and driver._status == "active",
+        settled = driver._settled,
+        full_time_boundary = driver._full_time_boundary,
+        settle_steps = driver._settle_steps,
         dropped_outbound = transport.dropped_outbound,
         dropped_inbound = transport.dropped_inbound,
     }
