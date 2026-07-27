@@ -90,14 +90,14 @@ t.describe("OMP-3 online protocol", function()
 
     t.it("matches literal wire, manifest, transcript, and per-kind golden evidence", function()
         local report = conformance.verify()
-        t.eq(report.manifest_id, "659947cdd13d7d68")
-        t.eq(report.transcript_id, "3ae8c1cac000d905")
+        t.eq(report.manifest_id, "ea39ebe78423e0a0")
+        t.eq(report.transcript_id, "25a24b77f8167ab3")
         t.eq(report.message_count, 13)
-        t.eq(fnv1a64.hash(conformance.GOLDEN.complete_wire), "66c31c2ba4fe0898")
+        t.eq(fnv1a64.hash(conformance.GOLDEN.complete_wire), "a292fa4a99393456")
         t.eq(
             conformance.marker(report),
-            "GC_PROTOCOL|golden|schema=1|manifest_id=659947cdd13d7d68"
-                .. "|transcript_id=3ae8c1cac000d905|messages=13"
+            "GC_PROTOCOL|golden|schema=1|manifest_id=ea39ebe78423e0a0"
+                .. "|transcript_id=25a24b77f8167ab3|messages=13"
         )
     end)
 
@@ -936,7 +936,7 @@ t.describe("OMP-3 online protocol", function()
         )
         local maximal_wire = assert(protocol.encode(maximal_proposal))
         t.is_true(#maximal_wire <= protocol.MAX_WIRE_BYTES)
-        t.eq(#maximal_wire, 7220)
+        t.eq(#maximal_wire, 7240)
     end)
 
     t.it("rejects invalid phase use before callers mutate lifecycle state", function()

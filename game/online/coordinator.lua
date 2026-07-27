@@ -20,6 +20,7 @@ local input_frame = require("sim.input_frame")
 ---| "input_channel_failure"
 ---| "late_input"
 ---| "hash_mismatch"
+---@alias CoordinatorSlotDriver "human"|"ai"
 ---@alias CoordinatorRejectCode
 ---| SessionProtocolErrorCode
 ---| "capacity"
@@ -92,8 +93,11 @@ local input_frame = require("sim.input_frame")
 ---@field combat_rules_id string
 ---@field gameplay_ai_policy_id string
 ---@field combat_status SessionCombatStatus
+---@field match_mode SessionMatchMode -- Frozen with everything else; never varies mid-match.
 ---@field assignments SessionSlotProducer[]
 ---@field sources table<InputSlotId, SessionSlotProducer>
+---@field owned table<string, InputSlotId[]> -- Human producer id -> owned slots, canonical order.
+---@field live table<string, InputSlotId> -- Human producer id -> the slot live at the first tick.
 
 ---@class CoordinatorMatchState
 ---@field phase SessionMatchPhase
@@ -558,6 +562,11 @@ function coordinator.slot_sources(manifest, assignments)
     return sources
 end
 
+-- Humans are seated in contiguous canonical blocks of `slots_per_human`, so the
+-- Nth human owns slots `(N-1)*k+1 .. N*k`. Four outfield slots per team divide
+-- evenly by every supported `k`, so a block never straddles the halfway line and
+-- an owned set is always a subset of one team's line. At k = 1 this is exactly
+-- the one-slot-per-peer seating OMP-3 already shipped.
 ---@param manifest SessionManifest
 ---@param peer_ids string[]
 ---@return SessionSlotProducer[]?, string?, CoordinatorRejectCode?
@@ -566,23 +575,31 @@ function coordinator.plan_assignments(manifest, peer_ids)
     if not manifest_ok then
         return nil, manifest_err, manifest_code
     end
-    if type(peer_ids) ~= "table" or #peer_ids > input_frame.SLOT_COUNT then
-        return nil, "a session cannot seat more humans than canonical slots", "capacity"
+    local shape = assert(protocol.MATCH_MODES[manifest.match_mode])
+    if type(peer_ids) ~= "table" or #peer_ids > shape.humans then
+        return nil,
+            ("a %s session seats at most %d humans"):format(shape.mode, shape.humans),
+            "capacity"
     end
     ---@type table<string, boolean>
     local seen = {}
-    for _, peer_id in ipairs(peer_ids) do
+    ---@type table<integer, string>
+    local peer_by_slot = {}
+    for order, peer_id in ipairs(peer_ids) do
         if type(peer_id) ~= "string" or seen[peer_id] then
             return nil, "human slot sources must be unique peer ids", "duplicate_peer"
         end
         seen[peer_id] = true
+        for offset = 1, shape.slots_per_human do
+            peer_by_slot[(order - 1) * shape.slots_per_human + offset] = peer_id
+        end
     end
     ---@type SessionSlotProducer[]
     local assignments = {}
     for index = 1, input_frame.SLOT_COUNT do
         local slot = assert(input_frame.slot(index))
         local entry = manifest.slots[index]
-        local peer_id = peer_ids[index]
+        local peer_id = peer_by_slot[index]
         if peer_id then
             assignments[index] = {
                 slot = slot.id,
@@ -636,10 +653,18 @@ local function validate_local_assignments(state, assignments)
             return nil, "a bot producer cannot reuse an admitted peer id", "invalid_assignment"
         end
     end
+    -- `slot_sources` has already proven every owned set matches the frozen
+    -- mode; this is the host-only half the guests cannot see, that the owned
+    -- sets map onto genuinely admitted peers and leave nobody unseated.
+    local shape = assert(protocol.MATCH_MODES[manifest.match_mode])
     for _, peer in ipairs(state.peers) do
-        if (peer_slots[peer.peer_id] or 0) ~= 1 then
+        if (peer_slots[peer.peer_id] or 0) ~= shape.slots_per_human then
             return nil,
-                "admitted peer " .. peer.peer_id .. " must own exactly one canonical slot",
+                ("admitted peer %s must own exactly %d canonical slot(s) in %s"):format(
+                    peer.peer_id,
+                    shape.slots_per_human,
+                    shape.mode
+                ),
                 "invalid_assignment"
         end
     end
@@ -726,6 +751,20 @@ end
 local function freeze_session(next_state, manifest, countdown_id, first_input_tick)
     local assignments = copy_value(assert(next_state.assignments))
     local sources = assert(coordinator.slot_sources(manifest, assignments))
+    ---@type table<string, InputSlotId[]>
+    local owned = {}
+    ---@type table<string, InputSlotId>
+    local live = {}
+    for _, producer in ipairs(assignments) do
+        if producer.producer_kind == "peer" and not owned[producer.producer_id] then
+            local slots = protocol.owned_slots(assignments, producer.producer_id)
+            owned[producer.producer_id] = slots
+            -- The first owned slot in canonical order is live at the first tick.
+            -- It is derived from the frozen assignments, so every peer computes
+            -- the same opening live slot without exchanging anything further.
+            live[producer.producer_id] = slots[1]
+        end
+    end
     ---@type CoordinatorFreeze
     local freeze = {
         manifest_id = assert(next_state.manifest_id),
@@ -741,8 +780,11 @@ local function freeze_session(next_state, manifest, countdown_id, first_input_ti
         combat_rules_id = manifest.combat_rules_id,
         gameplay_ai_policy_id = manifest.gameplay_ai_policy_id,
         combat_status = manifest.combat_status,
+        match_mode = manifest.match_mode,
         assignments = assignments,
         sources = sources,
+        owned = owned,
+        live = live,
     }
     next_state.freeze = freeze
     return freeze
@@ -917,6 +959,82 @@ function coordinator.slot_owner(state, slot)
     return nil
 end
 
+-- The slots one producer owns, in canonical order: four in 1v1, two in 2v2, one
+-- in 4v4. Empty when ownership is unpublished or the producer is not seated.
+---@param state CoordinatorState
+---@param producer_id string
+---@return InputSlotId[]
+function coordinator.owned_slots(state, producer_id)
+    local assignments = state.freeze and state.freeze.assignments or state.assignments
+    if not assignments then
+        return {}
+    end
+    return protocol.owned_slots(assignments, producer_id)
+end
+
+-- One human's control moves within their owned set and nowhere else. The rule
+-- itself is the shipped single-player one (`docs/controls.md`): winning the ball
+-- switches control to the winner, and the `switch` edge without the ball hands
+-- control to the outfielder nearest the ball. Both are intersected with the
+-- owned set here, which is the whole of the online generalization.
+--
+-- `switch` must be read from the canonical input row of the currently live slot
+-- and `carrier`/`winner`/`ranked` from the deterministic simulation, never from
+-- local presentation or local input timing: every peer evaluates the same inputs
+-- at the same tick and therefore reaches the same live slot.
+--
+-- In 4v4 the owned set has one member, so every branch returns it and switching
+-- is inert. That is a consequence of the general rule, not a special case.
+---@class CoordinatorLiveTransition
+---@field switch boolean -- The canonical `switch` edge bit for this tick.
+---@field carrier InputSlotId? -- The slot holding the ball, if any.
+---@field winner InputSlotId? -- The slot that won the ball on this tick, if any.
+---@field ranked InputSlotId[]? -- Outfield slots ordered by deterministic distance to the ball.
+
+---@param owned InputSlotId[]
+---@param live InputSlotId
+---@param transition CoordinatorLiveTransition
+---@return InputSlotId
+function coordinator.next_live_slot(owned, live, transition)
+    ---@type table<InputSlotId, boolean>
+    local set = {}
+    for _, slot in ipairs(owned) do
+        set[slot] = true
+    end
+    assert(set[live], "the live slot must belong to the owned set")
+    if transition.winner and set[transition.winner] then
+        return transition.winner
+    end
+    if not transition.switch or transition.carrier == live then
+        return live
+    end
+    for _, slot in ipairs(transition.ranked or {}) do
+        if set[slot] then
+            return slot
+        end
+    end
+    return live
+end
+
+-- Who materializes each canonical slot's input row for one tick. A slot is
+-- human-driven only while it is that human's live slot; every other owned slot
+-- is `ai`, exactly like a declared bot fill, so the input stream cannot tell
+-- them apart.
+---@param freeze CoordinatorFreeze
+---@param live table<string, InputSlotId>? -- Defaults to the frozen opening live slots.
+---@return table<InputSlotId, CoordinatorSlotDriver>
+function coordinator.slot_drivers(freeze, live)
+    live = live or freeze.live
+    ---@type table<InputSlotId, CoordinatorSlotDriver>
+    local drivers = {}
+    for _, producer in ipairs(freeze.assignments) do
+        local is_live = producer.producer_kind == "peer"
+            and live[producer.producer_id] == producer.slot
+        drivers[producer.slot] = is_live and "human" or "ai"
+    end
+    return drivers
+end
+
 -- ---------------------------------------------------------------------------
 -- Local command handlers
 -- ---------------------------------------------------------------------------
@@ -966,6 +1084,21 @@ local function handle_propose_manifest(state, event)
     end
     if state.phase ~= "handshake" and state.phase ~= "manifest" then
         return state, rejected("invalid_phase", "manifest proposal is closed in " .. state.phase)
+    end
+    -- Admission closes when the manifest is proposed and the mode is immutable
+    -- afterwards, so a lobby that seats more humans than the mode can own is
+    -- refused here rather than deadlocking at assignment time.
+    local shape = assert(protocol.MATCH_MODES[manifest.match_mode])
+    if #state.peers > shape.humans then
+        return state,
+            rejected(
+                "capacity",
+                ("%s seats %d humans but %d are admitted"):format(
+                    shape.mode,
+                    shape.humans,
+                    #state.peers
+                )
+            )
     end
     local actions = {}
     local next_state = copy_state(state)
@@ -1055,7 +1188,8 @@ local function handle_set_ready(state, event)
                 rejected("identity_mismatch", "readiness requires accepting the exact manifest")
         end
         if not owns_slot(state, peer.peer_id) then
-            return state, rejected("invalid_assignment", "readiness requires owning one slot")
+            return state,
+                rejected("invalid_assignment", "readiness requires an owned set in this generation")
         end
     end
     if peer.ready == event.ready then

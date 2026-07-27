@@ -14,9 +14,10 @@ function fixture.runtime()
     return protocol_fixture.runtime()
 end
 
+---@param mode SessionMatchMode?
 ---@return SessionManifest
-function fixture.manifest()
-    return protocol_fixture.manifest()
+function fixture.manifest(mode)
+    return protocol_fixture.manifest(mode)
 end
 
 -- What a guest can verify locally before accepting a proposal: immutable build,
@@ -90,9 +91,12 @@ function fixture.guest(index, session_id, expectation)
 end
 
 ---@param guest_count integer
+---@param mode SessionMatchMode?
 ---@return SessionSlotProducer[]
-function fixture.assignments(guest_count)
-    return assert(coordinator.plan_assignments(fixture.manifest(), fixture.peer_ids(guest_count)))
+function fixture.assignments(guest_count, mode)
+    return assert(
+        coordinator.plan_assignments(fixture.manifest(mode), fixture.peer_ids(guest_count))
+    )
 end
 
 return fixture

@@ -28,11 +28,13 @@ local protocol = require("game.online.protocol")
 ---@field guest_count integer?
 ---@field latency_ticks integer?
 ---@field expectation CoordinatorManifestExpectation?
+---@field mode SessionMatchMode?
 
 ---@class CoordinatorDriver
 ---@field clock integer
 ---@field latency_ticks integer
 ---@field session_id string
+---@field mode SessionMatchMode
 ---@field nodes CoordinatorDriverNode[] -- Host first, then guests in order.
 ---@field links CoordinatorDriverLink[]
 ---@field queue CoordinatorDriverPacket[]
@@ -53,16 +55,19 @@ driver.MAX_PUMP_ROUNDS = 64
 function driver.new(options)
     options = options or {}
     local guest_count = options.guest_count or 0
+    local mode = options.mode or "4v4"
+    local shape = assert(protocol.MATCH_MODES[mode], "unsupported driver match mode")
     assert(
-        guest_count >= 0 and guest_count <= coordinator.MAX_GUESTS,
-        "a direct-host session seats at most seven guests"
+        guest_count >= 0 and guest_count <= shape.humans - 1,
+        ("a direct-host %s session seats at most %d guests"):format(mode, shape.humans - 1)
     )
-    local session_id = options.session_id or fixture.manifest().session_id
+    local session_id = options.session_id or fixture.manifest(mode).session_id
     ---@type CoordinatorDriver
     local self = setmetatable({
         clock = 0,
         latency_ticks = options.latency_ticks or 0,
         session_id = session_id,
+        mode = mode,
         nodes = {},
         links = {},
         queue = {},
@@ -371,7 +376,7 @@ end
 ---@param first_input_tick integer?
 ---@return CoordinatorDriver
 function Driver:reach_start(countdown_ticks, first_input_tick)
-    local manifest = fixture.manifest()
+    local manifest = fixture.manifest(self.mode)
     local guest_count = #self.nodes - 1
     self:connect_all()
     self:send(fixture.HOST_PEER_ID, { kind = "propose_manifest", manifest = manifest })
