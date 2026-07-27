@@ -6,6 +6,7 @@ local match_driver = require("game.online.match_driver")
 local input_protocol = require("game.online.input_protocol")
 local input_frame = require("sim.input_frame")
 local transport_contract = require("game.transport.contract")
+local desync_package = require("game.online.desync_package")
 local live_slot = require("game.online.live_slot")
 
 ---@param options InputSampleOptions
@@ -45,6 +46,38 @@ local function all_text(artifact)
     return table.concat(parts, "\n")
 end
 
+-- Assert that no fragment of `poison` survives anywhere in `artifact`. Whole
+-- strings are checked as well as the tokens inside them, so a partial scrub
+-- would fail this rather than sneak through a whole-string comparison.
+---@param artifact table
+---@param poison string
+local function assert_absent(artifact, poison)
+    local text = all_text(artifact)
+    t.is_true(text:find(poison, 1, true) == nil, poison .. " survived into the export")
+    for token in poison:gmatch("[%w%.%-:@]+") do
+        if #token >= 6 and token:find("[%.:@]") ~= nil then
+            t.is_true(
+                text:find(token, 1, true) == nil,
+                "fragment " .. token .. " survived into the export"
+            )
+        end
+    end
+end
+
+---@return TransportChannelDiagnostics
+local function channel_diagnostics()
+    return {
+        state = "connected",
+        outbound_depth = 0,
+        inbound_depth = 0,
+        buffered_amount = 0,
+        sent = 1,
+        received = 1,
+        dropped_outbound = 0,
+        dropped_inbound = 0,
+    }
+end
+
 t.describe("diagnostics schema", function()
     t.it("refuses a canonical field that borrows wall-clock vocabulary", function()
         local ok = pcall(function()
@@ -81,6 +114,103 @@ t.describe("diagnostics schema", function()
             { name = "mapping_error_ms", kind = "number" },
         })
         t.eq(good.kind, "record")
+    end)
+
+    -- Regression: the completeness check used to be gated on being the
+    -- outermost call, so it never ran for the shape that actually ships --
+    -- `EXPORT` is a domainless container and its `anchors` field is nested one
+    -- level down. These build the anchor exactly the way `EXPORT` does.
+    t.it("enforces anchor completeness on a nested anchor, as EXPORT nests it", function()
+        -- The precondition this regression is about: the shipped export really
+        -- is a domainless container with its anchor nested inside. If that ever
+        -- stops being true, this test stops mirroring reality and should be
+        -- rewritten rather than quietly kept passing.
+        t.eq(net_diagnostics.EXPORT.domain, nil, "EXPORT is no longer a domainless container")
+        local anchor_paths = 0
+        for _, domain in pairs(schema.domains(net_diagnostics.EXPORT)) do
+            if domain == "anchor" then
+                anchor_paths = anchor_paths + 1
+            end
+        end
+        t.is_true(anchor_paths > 0, "EXPORT declares no anchor field to enforce")
+
+        ---@param fields DiagnosticsField[]
+        ---@return boolean
+        local function builds(fields)
+            return (
+                pcall(function()
+                    return schema.record("nested_probe", nil, {
+                        {
+                            name = "session",
+                            kind = "record",
+                            domain = "identity",
+                            fields = { { name = "peer_id", kind = "id" } },
+                        },
+                        {
+                            name = "anchors",
+                            kind = "array",
+                            domain = "anchor",
+                            element = { kind = "record", fields = fields },
+                        },
+                    })
+                end)
+            )
+        end
+
+        t.is_true(not builds({
+            { name = "input_tick", kind = "integer" },
+            { name = "monotonic_ms", kind = "number" },
+        }), "a nested anchor without a mapping error was accepted")
+        t.is_true(not builds({
+            { name = "monotonic_ms", kind = "number" },
+            { name = "mapping_error_ms", kind = "number" },
+        }), "a nested anchor naming no simulation tick was accepted")
+        t.is_true(
+            builds({
+                { name = "input_tick", kind = "integer" },
+                { name = "mapping_error_ms", kind = "number" },
+            }),
+            "a nested anchor whose only wall-clock word is its own error term is still a binding"
+        )
+        t.is_true(
+            builds({
+                { name = "input_tick", kind = "integer" },
+                { name = "monotonic_ms", kind = "number" },
+                { name = "mapping_error_ms", kind = "number" },
+            }),
+            "a well-formed nested anchor was rejected"
+        )
+    end)
+
+    -- The scope must be per-anchor-subtree. A sibling section naming a tick or a
+    -- millisecond must not be able to satisfy the anchor's own requirements.
+    t.it("does not let sibling sections satisfy an anchor's completeness", function()
+        local ok = pcall(function()
+            return schema.record("sibling_probe", nil, {
+                {
+                    name = "canonical",
+                    kind = "record",
+                    domain = "canonical",
+                    fields = { { name = "confirmed_tick", kind = "integer" } },
+                },
+                {
+                    name = "runtime",
+                    kind = "record",
+                    domain = "runtime",
+                    fields = { { name = "mapping_error_ms", kind = "number" } },
+                },
+                {
+                    name = "anchors",
+                    kind = "array",
+                    domain = "anchor",
+                    element = {
+                        kind = "record",
+                        fields = { { name = "monotonic_ms", kind = "number" } },
+                    },
+                },
+            })
+        end)
+        t.is_true(not ok, "an anchor borrowed completeness from its siblings")
     end)
 
     t.it("keeps the two vocabularies disjoint across the whole export shape", function()
@@ -170,6 +300,48 @@ t.describe("net diagnostics collection", function()
         t.is_true(#artifact.anchors > 0)
         for _, anchor in ipairs(artifact.anchors) do
             t.is_true(anchor.mapping_error_ms > 0, "an anchor claimed a perfect clock mapping")
+        end
+    end)
+
+    -- The runtime star/peers section was previously only asserted to be
+    -- non-empty. It is the half of the artifact carrying transport counters and
+    -- free text, so it gets its own coverage.
+    t.it("folds star and per-channel transport counters into the runtime section", function()
+        local harness = fixture.harness("2v2", { hash_interval_ticks = 6 })
+        fixture.run(harness, 25)
+        local artifact = export_of(harness)
+        local star = assert(artifact.runtime.star)
+        t.eq(star.role, "host")
+        t.eq(star.state, "connected")
+        t.is_true(star.sent > 0 and star.received > 0)
+        t.eq(star.dropped_outbound, 0)
+        t.eq(star.dropped_inbound, 0)
+        t.eq(star.malformed, 0)
+        t.eq(star.overflow, 0)
+        t.eq(star.peer_count, #harness.peers - 1)
+        t.eq(star.last_error, nil, "a clean run reported a transport error")
+
+        t.eq(#artifact.runtime.peers, #harness.peers - 1)
+        for _, peer in ipairs(artifact.runtime.peers) do
+            t.eq(peer.state, "connected")
+            t.eq(peer.sequence_gaps, 0)
+            t.eq(peer.backpressure, 0)
+            t.eq(peer.malformed, 0)
+            for _, channel in ipairs({ peer.control, peer.input }) do
+                t.is_true(channel.buffered_amount >= 0)
+                t.is_true(channel.outbound_depth >= 0 and channel.inbound_depth >= 0)
+                t.is_true(channel.dropped_outbound == 0 and channel.dropped_inbound == 0)
+            end
+            t.is_true(peer.input.sent > 0, "no input traffic was attributed to a peer channel")
+        end
+
+        -- The tap records transport lifecycle events, in order.
+        t.is_true(#artifact.runtime.events > 0, "no runtime event was ever recorded")
+        for index = 2, #artifact.runtime.events do
+            t.is_true(
+                artifact.runtime.events[index].ordinal > artifact.runtime.events[index - 1].ordinal,
+                "runtime event ordinals are not monotonic"
+            )
         end
     end)
 
@@ -358,6 +530,138 @@ t.describe("net diagnostics privacy", function()
         local bytes = assert(net_diagnostics.encode(host.recorder))
         t.is_true(bytes:find("192.168.1.14", 1, true) == nil)
         t.is_true(bytes:find("ice-pwd", 1, true) == nil)
+    end)
+
+    -- Regression: `last_error` and event `detail` are free text produced by
+    -- `String(error)` on a WebRTC/DOM exception and by the JS bridge itself.
+    -- Nothing about that text is a controlled vocabulary, and once STUN/TURN is
+    -- wired in it can carry a candidate line or an address verbatim. It used to
+    -- pass through length truncation only.
+    local POISON = {
+        "ICE failed for candidate 192.168.1.14:54321 typ host",
+        "connection reset by [fe80::1a2b:3c4d:5e6f:7890]",
+        "bridge error: a=ice-pwd:x9Yb3kQwPl2sVn8tRc4mHd",
+        "failed to apply sdp offer",
+        "signalling failed for turn:turn.example.com:3478",
+        "peer someone@example.com is unreachable",
+    }
+
+    t.it("redacts sensitive free text arriving as a transport error", function()
+        local harness = fixture.harness("2v2")
+        fixture.run(harness, 6)
+        local recorder = harness.peers[1].recorder
+
+        for _, poison in ipairs(POISON) do
+            t.is_true(net_diagnostics.record_transport(recorder, {
+                role = "host",
+                state = "connected",
+                capacity = 7,
+                peer_count = 1,
+                queue_limit = 64,
+                buffered_amount_limit = 65536,
+                event_depth = 0,
+                sent = 1,
+                received = 1,
+                dropped_outbound = 0,
+                dropped_inbound = 0,
+                malformed = 0,
+                unsupported_version = 0,
+                overflow = 0,
+                backpressure = 0,
+                last_error = poison,
+                peers = {
+                    {
+                        peer_id = "guest_1",
+                        slot = 1,
+                        state = "connected",
+                        ice_state = "connected",
+                        control = channel_diagnostics(),
+                        input = channel_diagnostics(),
+                        sequence_gaps = 0,
+                        backpressure = 0,
+                        malformed = 0,
+                        last_error = poison,
+                    },
+                },
+            }))
+            local artifact = assert(net_diagnostics.export(recorder))
+            t.eq(artifact.runtime.star.last_error, schema.REDACTED)
+            t.eq(artifact.runtime.peers[1].last_error, schema.REDACTED)
+            assert_absent(artifact, poison)
+        end
+    end)
+
+    t.it("redacts sensitive free text arriving as a runtime event detail", function()
+        local harness = fixture.harness("2v2")
+        fixture.run(harness, 6)
+        local recorder = harness.peers[1].recorder
+        for index, poison in ipairs(POISON) do
+            t.is_true(net_diagnostics.record_event(recorder, {
+                kind = "peer_error",
+                monotonic_ms = index * 10,
+                peer_id = "guest_1",
+                code = "signal_error",
+                detail = poison,
+            }))
+        end
+        local artifact = assert(net_diagnostics.export(recorder))
+        local redacted = 0
+        for _, event in ipairs(artifact.runtime.events) do
+            if event.detail == schema.REDACTED then
+                redacted = redacted + 1
+            end
+        end
+        t.eq(redacted, #POISON, "a poisoned event detail survived unredacted")
+        for _, poison in ipairs(POISON) do
+            assert_absent(artifact, poison)
+        end
+    end)
+
+    t.it("keeps benign transport error text readable", function()
+        local harness = fixture.harness("2v2")
+        fixture.run(harness, 6)
+        local recorder = harness.peers[1].recorder
+        t.is_true(net_diagnostics.record_event(recorder, {
+            kind = "star_error",
+            monotonic_ms = 5,
+            code = "overflow",
+            detail = "outbound queue reached its limit of 64 messages",
+        }))
+        local artifact = assert(net_diagnostics.export(recorder))
+        local last = artifact.runtime.events[#artifact.runtime.events]
+        t.eq(last.detail, "outbound queue reached its limit of 64 messages")
+        t.eq(last.code, "overflow")
+    end)
+
+    t.it("stops poisoned free text reaching a desync package", function()
+        local harness = fixture.harness("2v2", { hash_interval_ticks = 5 })
+        fixture.run(harness, 30)
+        local host = harness.peers[1]
+        local poison = "ICE failed for candidate 192.168.1.14:54321 typ host"
+        t.is_true(net_diagnostics.record_event(host.recorder, {
+            kind = "peer_error",
+            monotonic_ms = 12,
+            peer_id = "guest_1",
+            detail = poison,
+        }))
+        local checkpoints = match_driver.checkpoints(host.driver)
+        local built = assert(desync_package.build({
+            recorder = host.recorder,
+            manifest = harness.session.manifest,
+            freeze = harness.session.freeze,
+            peer_id = host.peer_id,
+            remote_peer_id = harness.session.guest_peer_ids[1],
+            agreed_boundary_tick = checkpoints[1].tick,
+            agreed_boundary_hash = checkpoints[1].hash,
+            divergence_tick = checkpoints[#checkpoints].tick,
+            local_hash = checkpoints[#checkpoints].hash,
+            remote_hash = "deadbeefdeadbeef",
+            input_wires = host.tap:wires(),
+        }))
+        -- The package embeds runtime events verbatim, so redaction has to have
+        -- happened on the way in rather than on the way out.
+        assert_absent(built, poison)
+        t.is_true(assert(desync_package.encode(built)):find("192.168.1.14", 1, true) == nil)
     end)
 
     t.it("refuses to store a direct identifier as a peer id", function()

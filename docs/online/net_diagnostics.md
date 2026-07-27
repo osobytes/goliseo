@@ -111,7 +111,7 @@ and network profile a reproduction has to match.
 
 Star state and cumulative counters; per peer and per channel state, `ice_state`,
 queue depth, `bufferedAmount`, sent/received, drops, sequence gaps, backpressure,
-malformed counts, last error code; per-peer RTT/jitter min/max/last with the
+malformed counts, redacted last error text; per-peer RTT/jitter min/max/last with the
 monotonic window they were taken over; ordered transport and lifecycle events;
 signalling records; and teardown completeness.
 
@@ -142,6 +142,28 @@ digested, and not hashed — a digest of an SDP is still derived from ICE
 credentials, and "we only kept a hash of it" is the kind of half-measure this
 schema is meant to avoid. Byte length is kept because a bloated candidate list is
 a real thing to debug and a length reveals nothing.
+
+**Free text is redacted, not just shortened.** A star's `last_error`, a peer's
+`last_error`, and a runtime event's `detail` are the one place uncontrolled text
+enters the system: they carry `String(error)` on a WebRTC or DOM exception and
+the browser bridge's own prose, and neither this schema nor the transport
+contract constrains a byte of it. Once STUN/TURN is configured, such a string can
+contain a candidate line, a relay URL, or a peer address verbatim.
+
+Every one of those fields passes through `diagnostics_schema.redact_free_text`,
+which replaces the string **whole** with `[redacted]` if it matches any sensitive
+shape — a dotted quad, two or more colons (every IPv6 form), `ice-`, `candidate`,
+`fingerprint`, `sdp`, `stun:`/`turn:`/`turns:`, `://`, `@`, or an SDP body line at
+a line start. Replaced whole rather than scrubbed in place: partial scrubbing of a
+grammar nobody controls is the same half-measure as digesting an SDP instead of
+dropping it. This deliberately over-rejects — a timestamp like `12:34:56` is
+address-shaped by this rule — because losing a timestamp from a diagnostic detail
+is cheap and leaking an address is not. Benign text (`outbound queue reached its
+limit of 64 messages`) survives untouched.
+
+This matters beyond the export: `desync_package` embeds `runtime.events` verbatim
+into the artifact designed to be attached to GitHub issues, so the redaction has
+to happen on the way in. A spec asserts it does, for the export and the package.
 
 **Ids are validated, not trusted.** Anything typed `id` must match
 `^[%w][%w_%-%.]*$`. The charset excludes `@`, `:`, `/`, and `\`, so

@@ -112,6 +112,39 @@ local HASH_PATTERN = "^[0-9a-f]+$"
 local FORBIDDEN_ID_SUBSTRINGS = { "..", "@" }
 local IPV4_PATTERN = "^%d+%.%d+%.%d+%.%d+$"
 
+-- Free text arriving from a transport is not a controlled vocabulary. A star's
+-- `last_error` and a peer event's message are produced by `String(error)` on a
+-- WebRTC or DOM exception and by the browser bridge's own prose, and neither
+-- this schema nor the transport contract constrains a single byte of it. Once
+-- STUN/TURN is configured there is no reason to assume such a string will not
+-- contain a candidate line, a relay URL, or a peer address verbatim.
+--
+-- So free text is *checked*, not merely shortened. A string matching any
+-- sensitive shape is replaced whole rather than scrubbed in place: partial
+-- scrubbing of a grammar nobody controls is the same half-measure as digesting
+-- an SDP instead of dropping it, and it fails the moment the text is shaped
+-- slightly differently than expected. A benign "outbound queue reached its
+-- limit" survives untouched.
+--
+-- This deliberately over-rejects. Two or more colons is treated as address-shaped
+-- even though a wall-clock time like `12:34:56` also matches, because losing one
+-- timestamp from a diagnostic detail is cheap and leaking an IPv6 address is not.
+local SENSITIVE_TEXT_SUBSTRINGS = {
+    "ice-",
+    "candidate",
+    "fingerprint",
+    "sdp",
+    "stun:",
+    "turn:",
+    "turns:",
+    "://",
+    "@",
+}
+
+-- SDP body lines are `<key>=<value>` at a line start. Matched at line starts
+-- only, so ordinary prose such as "data=17 rejected" is not swept up.
+local SDP_LINE_KEYS = { "v", "o", "s", "c", "t", "m", "a", "b", "i", "u", "k", "r", "z" }
+
 -- Vocabulary guards. These are matched against lowercase field names.
 local WALL_CLOCK_WORDS = {
     "_ms$",
@@ -173,6 +206,63 @@ local function matches_vocabulary(name, words)
         end
     end
     return nil
+end
+
+-- Does this free text look like it carries network or identity material?
+---@param text string
+---@return boolean
+function diagnostics_schema.is_sensitive_text(text)
+    if type(text) ~= "string" then
+        return false
+    end
+    local lowered = text:lower()
+    for _, needle in ipairs(SENSITIVE_TEXT_SUBSTRINGS) do
+        if lowered:find(needle, 1, true) then
+            return true
+        end
+    end
+    -- A dotted quad, anywhere in the string.
+    if lowered:match("%d+%.%d+%.%d+%.%d+") then
+        return true
+    end
+    -- Address-shaped: two or more colons covers every IPv6 form, compressed or
+    -- not, without needing to parse one.
+    local colons = 0
+    for _ in lowered:gmatch(":") do
+        colons = colons + 1
+        if colons >= 2 then
+            return true
+        end
+    end
+    -- An SDP body line at a line start.
+    local probe = "\n" .. lowered:gsub("\r", "\n")
+    for _, key in ipairs(SDP_LINE_KEYS) do
+        if probe:find("\n" .. key .. "=", 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+-- Bound and redact one free-text field. Returns the redaction marker when the
+-- text looks sensitive, the truncated text when it is merely long, and the text
+-- unchanged otherwise.
+---@param text any
+---@param max_bytes integer
+---@return string?
+function diagnostics_schema.redact_free_text(text, max_bytes)
+    if type(text) ~= "string" then
+        return nil
+    end
+    if diagnostics_schema.is_sensitive_text(text) then
+        return diagnostics_schema.REDACTED
+    end
+    if #text <= max_bytes then
+        return text
+    end
+    return text:sub(1, max_bytes - #diagnostics_schema.TRUNCATED - 1)
+        .. " "
+        .. diagnostics_schema.TRUNCATED
 end
 
 ---@param name string
@@ -243,10 +333,24 @@ local function assert_field_shape(field, inherited, path, seen)
             path .. " may not change domain from " .. tostring(inherited)
         )
     end
-    -- One scope per anchor subtree: the completeness check below is about the
-    -- anchor as a whole, not about any single field inside it.
-    local root_of_anchor = domain == "anchor" and seen == nil
-    local scope = seen or { wall = false, simulation = false, mapping_error = false }
+    -- One scope per anchor subtree, keyed on the *domain transition* into
+    -- `anchor` rather than on being the outermost call.
+    --
+    -- Keying it on `seen == nil` was wrong twice over, and both ways mattered.
+    -- The shape that actually ships (`net_diagnostics.EXPORT`) is a domainless
+    -- container, so a scope was created at the root and threaded into every
+    -- descendant; by the time the nested `anchors` field was reached `seen` was
+    -- never nil, and the completeness assertion below never ran for the shipped
+    -- schema at all. It fired only for an anchor that happened to be top-level,
+    -- which is to say only in this module's own unit tests. And because that one
+    -- root scope accumulated flags from every unrelated identity, canonical, and
+    -- runtime field in the tree, an anchor could have satisfied "names both
+    -- vocabularies" using its siblings' field names rather than its own.
+    local entering_anchor = domain == "anchor" and inherited ~= "anchor"
+    local scope = seen
+    if entering_anchor or scope == nil then
+        scope = { wall = false, simulation = false, mapping_error = false }
+    end
     if domain ~= nil then
         assert_domain(field, domain, path, scope)
     else
@@ -280,7 +384,7 @@ local function assert_field_shape(field, inherited, path, seen)
     end
     -- An anchor is the only place both vocabularies may meet, and it only earns
     -- that by actually binding them and by naming its own error term.
-    if root_of_anchor then
+    if entering_anchor then
         assert(scope.wall, path .. " anchor must name a wall-clock observation")
         assert(scope.simulation, path .. " anchor must name a simulation tick")
         assert(scope.mapping_error, path .. " anchor must declare mapping_error_ms")

@@ -408,7 +408,6 @@ net_diagnostics.EXPORT = schema.record("net_diagnostics", nil, {
                     signed_field("through_tick"),
                     integer_field("depth"),
                     integer_field("resimulated_ticks"),
-                    { name = "first_difference_path", kind = "string", optional = true },
                 },
             },
             schema.nested("events", {
@@ -527,7 +526,7 @@ net_diagnostics.EXPORT = schema.record("net_diagnostics", nil, {
                     integer_field("unsupported_version"),
                     integer_field("overflow"),
                     integer_field("backpressure"),
-                    { name = "last_error_code", kind = "string", optional = true },
+                    { name = "last_error", kind = "text", optional = true },
                 },
             },
             {
@@ -545,7 +544,7 @@ net_diagnostics.EXPORT = schema.record("net_diagnostics", nil, {
                         integer_field("sequence_gaps"),
                         integer_field("backpressure"),
                         integer_field("malformed"),
-                        { name = "last_error_code", kind = "string", optional = true },
+                        { name = "last_error", kind = "text", optional = true },
                     },
                 },
             },
@@ -706,18 +705,15 @@ local function is_integer(value)
     return is_finite(value) and value == math.floor(value)
 end
 
+-- Every free-text field in this module goes through here. Length is the lesser
+-- half of the job: the text originates from a transport, a browser bridge, or a
+-- raw DOM exception, so it is checked for network and identity material and
+-- replaced whole when it looks like it carries any. See
+-- `diagnostics_schema.is_sensitive_text`.
 ---@param text any
 ---@return string?
 local function bounded_detail(text)
-    if type(text) ~= "string" then
-        return nil
-    end
-    if #text <= net_diagnostics.MAX_DETAIL_BYTES then
-        return text
-    end
-    return text:sub(1, net_diagnostics.MAX_DETAIL_BYTES - #schema.TRUNCATED - 1)
-        .. " "
-        .. schema.TRUNCATED
+    return schema.redact_free_text(text, net_diagnostics.MAX_DETAIL_BYTES)
 end
 
 ---@param recorder NetDiagnostics
@@ -1232,7 +1228,7 @@ function net_diagnostics.record_transport(recorder, star)
         unsupported_version = star.unsupported_version,
         overflow = star.overflow,
         backpressure = star.backpressure,
-        last_error_code = bounded_detail(star.last_error),
+        last_error = bounded_detail(star.last_error),
     }
     ---@type table[]
     local peers = {}
@@ -1247,7 +1243,7 @@ function net_diagnostics.record_transport(recorder, star)
             sequence_gaps = peer.sequence_gaps,
             backpressure = peer.backpressure,
             malformed = peer.malformed,
-            last_error_code = bounded_detail(peer.last_error),
+            last_error = bounded_detail(peer.last_error),
         }
     end
     recorder._peers = peers

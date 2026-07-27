@@ -153,6 +153,11 @@ local function record_envelope(self, sender_id, message, disposition, inbound)
     })
 end
 
+-- `state`, `code`, and `channel` are closed vocabularies from the transport
+-- contract. `detail` is not: it carries `err`, a caller's close reason, or a
+-- bridge's raw `String(error)`. It is redacted by `record_event`, which is the
+-- single boundary every free-text field in this system passes through -- doing
+-- it here as well would put two owners on one rule.
 ---@param self DiagnosticTransport
 ---@param event NetDiagnosticsEvent
 local function note(self, event)
