@@ -132,10 +132,12 @@ local match_snapshot = require("sim.match_snapshot")
 
 ---@class SessionSlotAssignmentBody
 ---@field manifest_id string
+---@field assignment_id string -- Host-minted identity of this ownership generation.
 ---@field assignments SessionSlotProducer[]
 
 ---@class SessionReadyBody
 ---@field manifest_id string
+---@field assignment_id string -- The ownership generation this readiness answers.
 ---@field ready boolean
 
 ---@class SessionCountdownBody
@@ -290,8 +292,8 @@ local BODY_FIELDS = {
     manifest_proposal = { manifest_id = true, manifest = true },
     manifest_accept = { manifest_id = true },
     peer_assignment = { assigned_peer_id = true, role = true },
-    slot_assignment = { manifest_id = true, assignments = true },
-    ready = { manifest_id = true, ready = true },
+    slot_assignment = { manifest_id = true, assignment_id = true, assignments = true },
+    ready = { manifest_id = true, assignment_id = true, ready = true },
     countdown = {
         manifest_id = true,
         countdown_id = true,
@@ -1083,9 +1085,17 @@ function protocol.validate(message)
         if not ok then
             return nil, err, code
         end
+        ok, err, code = validate_hash(body.assignment_id, "assignment id")
+        if not ok then
+            return nil, err, code
+        end
         return validate_slot_assignments(body.assignments)
     elseif message.kind == "ready" then
         ok, err, code = validate_hash(body.manifest_id, "manifest id")
+        if not ok then
+            return nil, err, code
+        end
+        ok, err, code = validate_hash(body.assignment_id, "assignment id")
         if not ok then
             return nil, err, code
         end
@@ -1410,6 +1420,24 @@ function protocol.manifest_id(manifest)
     local ok, err = protocol.validate_manifest(manifest)
     assert(ok, err)
     return fnv1a64.hash("GCOM;" .. encode_value(manifest, 0))
+end
+
+-- Identity of one ownership generation. The epoch is part of the digest, so
+-- republishing byte-identical ownership still mints a distinct generation and a
+-- readiness answer can never be attributed to the wrong one. Peers treat the
+-- result as an opaque token minted by the host and echo it back; only the host
+-- can derive it, because only the host holds the epoch.
+---@param assignments SessionSlotProducer[]
+---@param epoch integer
+---@return string
+function protocol.assignment_id(assignments, epoch)
+    local ok, err = validate_slot_assignments(assignments)
+    assert(ok, err)
+    assert(
+        is_integer(epoch) and epoch >= 0 and epoch <= protocol.MAX_SEQUENCE,
+        "assignment epoch must be a bounded non-negative integer"
+    )
+    return fnv1a64.hash("GCOA;" .. length_prefix(tostring(epoch)) .. encode_value(assignments, 0))
 end
 
 ---@param message SessionControlMessage

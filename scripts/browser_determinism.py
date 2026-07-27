@@ -52,7 +52,7 @@ REQUIRED_FIELDS = {
 REQUIRED_PROTOCOL_FIELDS = {
     "schema": "1",
     "manifest_id": "659947cdd13d7d68",
-    "transcript_id": "5772846370555e41",
+    "transcript_id": "3ae8c1cac000d905",
     "messages": "13",
 }
 REQUIRED_INPUT_PROTOCOL_FIELDS = {
@@ -863,7 +863,7 @@ def shard_gate_self_test() -> None:
 def self_test() -> None:
     protocol_marker = (
         "GC_PROTOCOL|golden|schema=1|manifest_id=659947cdd13d7d68"
-        "|transcript_id=5772846370555e41|messages=13"
+        "|transcript_id=3ae8c1cac000d905|messages=13"
     )
     if parse_protocol_marker(protocol_marker) != REQUIRED_PROTOCOL_FIELDS:
         raise RuntimeError("protocol golden marker self-test failed")

@@ -152,6 +152,7 @@ end
 function fixture.messages()
     local manifest = fixture.manifest()
     local manifest_id = protocol.manifest_id(manifest)
+    local assignment_id = protocol.assignment_id(fixture.assignments(), 1)
     local bodies = {
         { "handshake", { role = "host", runtime = fixture.runtime() } },
         { "manifest_proposal", { manifest_id = manifest_id, manifest = manifest } },
@@ -159,9 +160,13 @@ function fixture.messages()
         { "peer_assignment", { assigned_peer_id = "host", role = "host" } },
         {
             "slot_assignment",
-            { manifest_id = manifest_id, assignments = fixture.assignments() },
+            {
+                manifest_id = manifest_id,
+                assignment_id = assignment_id,
+                assignments = fixture.assignments(),
+            },
         },
-        { "ready", { manifest_id = manifest_id, ready = true } },
+        { "ready", { manifest_id = manifest_id, assignment_id = assignment_id, ready = true } },
         {
             "countdown",
             {
