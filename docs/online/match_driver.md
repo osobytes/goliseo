@@ -227,7 +227,7 @@ a silent gap into a spurious `late_input` on a healthy peer.
 
 This repairs the *leak*, not the *bound*. It cannot help when the batch is already
 saturated, which is exactly what the `stress` profile does: the harness's
-[open `4v4.stress` finding](fault_harness.md#still-open-4v4stress-strands-on-batch-capacity-not-on-a-leak)
+[open `4v4.stress` finding, #243](fault_harness.md#still-open-243-4v4stress-strands-on-batch-capacity-not-on-a-leak)
 records the measurement and the three allocation schemes that were tried against
 it and rejected.
 
@@ -282,6 +282,18 @@ they no longer decide the status: a peer whose own final boundary is confirmed
 completes when the phase expires, relaying or not. `settle_timeout` therefore
 keeps meaning exactly one thing — the phase expired with *this peer's own* final
 boundary still unconfirmed.
+
+The quiet window is the one bound in this phase that is a **heuristic**, and it
+should not be read as though it were the other two. Four steps covers *one*
+worst-case burst — `stress` bursts at most three consecutive losses — but not a
+worst-case burst immediately followed by worst-case jitter, where the next
+re-send can draw up to three further ticks of delay and push a genuine
+straggler's silence past four steps. The host would then leave while somebody is
+still asking. That is a real, low-probability edge which does not appear in the
+seed sweep, and its blast radius is bounded to a rarer instance of the same typed
+`settle_timeout` this phase already reports — not a new or silent failure class.
+Turning it into a guarantee needs the guest to be able to *say* it is still
+missing rows, which is the protocol addition #243 tracks.
 
 Under clean delivery the guests still cost nothing: confirmation already runs
 ahead of the present, so a guest settles one step after full time, when the

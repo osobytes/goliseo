@@ -178,7 +178,8 @@ fault_scenarios.SCENARIOS = {
             .. "late, fanned it out three times instead of seven, and the stranded guest lost "
             .. "exactly those three. Unlike #241's playable stalls this is a capacity limit of "
             .. "the 56-row batch, not a leak in how it is filled, so it needs a way for a guest "
-            .. "to ask for what it missed rather than a wider open-loop window. The peer now "
+            .. "to ask for what it missed rather than a wider open-loop window -- tracked as "
+            .. "#243, and this row stays red until that lands. The peer now "
             .. "reports confirmation_stalled at the step it stalls instead of settle_timeout a "
             .. "match later, and that terminal ends the session for every peer -- see "
             .. "docs/online/fault_harness.md",

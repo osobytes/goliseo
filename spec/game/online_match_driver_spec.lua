@@ -1170,6 +1170,49 @@ t.describe("online match driver", function()
         end
     end)
 
+    -- The defensive fallback, exercised on purpose because nothing else can.
+    --
+    -- `rollback_input_history` still owns the retained floor and still rejects an
+    -- over-window row with `outside_window`, and the driver still maps that onto
+    -- `late_input`. Since #241 no *arrival* can reach it: a row is only offered to
+    -- the history when it is above this peer's confirmation, so a row below the
+    -- floor implies `confirmed + 1 < floor`, which confirmation liveness
+    -- terminates on at the end of the previous step. The mapping is correct to
+    -- keep — it is the fallback for a rule this driver does not own — but a safety
+    -- net that nothing exercises is not yet a safety net, so this forces it
+    -- directly rather than leaving it uncovered as a side effect of the fix.
+    t.it("maps a rejected over-window batch onto late_input (unreachable by design)", function()
+        local state = harness("2v2")
+        -- A backlog, so the arriving batch genuinely carries rows above this
+        -- peer's confirmation and the session call is actually reached.
+        run_bursty(state, 8, 4)
+        local guest = state.drivers[2]
+        t.eq(match_driver.status(guest), "active")
+
+        local original = rollback_session.apply_authoritative_batch
+        local reached = 0
+        ---@diagnostic disable-next-line: duplicate-set-field
+        rollback_session.apply_authoritative_batch = function()
+            reached = reached + 1
+            return nil, "forced retained-window rejection", "outside_window"
+        end
+        local ok, err = pcall(match_driver.advance, guest, input_frame.neutral_sample())
+        rollback_session.apply_authoritative_batch = original
+        t.is_true(ok, tostring(err))
+
+        t.is_true(reached > 0, "the arrival path never reached the session")
+        t.eq(match_driver.status(guest), "late_input")
+        local terminal = assert(match_driver.terminal(guest))
+        t.eq(terminal.failure, "late_input")
+        -- The history's own message survives, so this is the mapped rejection
+        -- rather than some other terminal arriving at the same moment.
+        t.eq(terminal.detail, "forced retained-window rejection")
+        -- And the causal tick is attributed and published, which is the part a
+        -- desync capture reads.
+        t.is_true(terminal.tick ~= nil)
+        t.eq(match_driver.diagnostics(guest).late_input_tick, terminal.tick)
+    end)
+
     -- #241, the fan-out half. `MAX_HOST_ROWS` is eight slots times the seven-row
     -- redundancy window because one host batch is meant to carry a full window
     -- for every slot. Relaying only what arrived on this transport tick spent

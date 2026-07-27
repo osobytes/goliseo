@@ -271,6 +271,29 @@ match_driver.SETTLE_TIMEOUT_SECONDS = 2
 -- clean match costs the host four extra steps (67 ms) and a match with a
 -- straggler keeps the relay alive for as long as the straggler keeps asking,
 -- bounded by the settle phase's existing deadlines and by nothing new.
+--
+-- **This one is a heuristic, and it is the only bound in this phase that is.**
+-- `SETTLE_TIMEOUT_TICKS` and `SETTLE_TIMEOUT_SECONDS` are hard: they end the
+-- phase unconditionally, and nothing here can wait past them. This margin is
+-- not of that class, and a future reader must not read it as though it were.
+--
+-- What "burst length plus one" actually covers is **one** worst-case burst. The
+-- `stress` profile's maximum burst is three consecutive losses, so a straggler
+-- that loses a whole burst of re-sends still breaks the silence on the fourth
+-- step. What it does **not** cover is a worst-case burst immediately followed by
+-- worst-case jitter: the next re-send after a three-loss burst can draw up to
+-- three further ticks of positive delay, which pushes that straggler's silent
+-- window past four steps and lets the host conclude "drained" while somebody is
+-- still asking.
+--
+-- That compounding edge is real, low-probability, and does not appear anywhere
+-- in the seed sweep this landed against. Its blast radius is bounded and is
+-- deliberately not a new failure class: the straggler ends `settle_timeout`,
+-- which is exactly the typed terminal it would have had before this relay
+-- existed, just rarer. Widening the margin trades a longer whistle on every
+-- clean match for a smaller tail here; making it a guarantee instead of a
+-- heuristic needs the guest to be able to *say* it is still missing rows, which
+-- is the same protocol addition #243 tracks.
 match_driver.SETTLE_RELAY_QUIET_STEPS = match_driver.DELAY_TICKS + 1
 
 ---@param value any

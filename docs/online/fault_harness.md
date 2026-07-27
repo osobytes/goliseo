@@ -290,10 +290,11 @@ Neither fix widened the redundancy window, raised the settle bound, or changed
 this matrix's scenarios, profiles or seeds. `4v4.playable` is the evidence: the
 seeds that stranded `guest_5` and `guest_6` now pass unchanged.
 
-### Still open: `4v4.stress` strands on batch capacity, not on a leak
+### Still open (#243): `4v4.stress` strands on batch capacity, not on a leak
 
-`4v4.stress` still strands a guest, and the row keeps a `known_gap` — but the
-cause is now measured rather than suspected, and it is **not** the same defect.
+`4v4.stress` still strands a guest, and the row keeps a `known_gap` pointing at
+[#243](https://github.com/osobytes/goliseo/issues/243) — but the cause is now
+measured rather than suspected, and it is **not** the same defect.
 
 Under `stress` the host's canonical batch is saturated at exactly
 `MAX_HOST_ROWS` on every tick from the twelfth onwards: all eight slots deliver
@@ -311,7 +312,8 @@ giving each accepted bundle a relay quota counted from when the host learned it
 per-slot in one pass (worse — one slot's history starves another slot's present);
 and reserving one bundle's worth of the batch for repayment (worse — it turned
 `4v4.playable` red). Closing it needs a way for a guest to *ask* for the row it
-missed, which is a protocol addition, not a wider open-loop window.
+missed, which is a protocol addition rather than a wider open-loop window, and
+that is what **#243** tracks. This row stays red until it lands.
 
 What did change for this row: the stranded peer now reports
 `confirmation_stalled` at the step its confirmation dies rather than
