@@ -91,13 +91,13 @@ t.describe("OMP-3 online protocol", function()
     t.it("matches literal wire, manifest, transcript, and per-kind golden evidence", function()
         local report = conformance.verify()
         t.eq(report.manifest_id, "659947cdd13d7d68")
-        t.eq(report.transcript_id, "5772846370555e41")
+        t.eq(report.transcript_id, "3ae8c1cac000d905")
         t.eq(report.message_count, 13)
         t.eq(fnv1a64.hash(conformance.GOLDEN.complete_wire), "66c31c2ba4fe0898")
         t.eq(
             conformance.marker(report),
             "GC_PROTOCOL|golden|schema=1|manifest_id=659947cdd13d7d68"
-                .. "|transcript_id=5772846370555e41|messages=13"
+                .. "|transcript_id=3ae8c1cac000d905|messages=13"
         )
     end)
 
@@ -313,6 +313,7 @@ t.describe("OMP-3 online protocol", function()
         local manifest_id = protocol.manifest_id(fixture.manifest())
         local message = assert(protocol.new("ready", session_id, peer_id, protocol.MAX_SEQUENCE, {
             manifest_id = manifest_id,
+            assignment_id = manifest_id,
             ready = true,
         }))
         t.eq(message.message_id, message_id)
@@ -505,6 +506,7 @@ t.describe("OMP-3 online protocol", function()
         local assignments = fixture.assignments()
         local message = assert(protocol.new("slot_assignment", manifest.session_id, "host", 1, {
             manifest_id = protocol.manifest_id(manifest),
+            assignment_id = protocol.assignment_id(assignments, 1),
             assignments = assignments,
         }))
         t.is_true(assert(protocol.validate(message)))
@@ -522,6 +524,7 @@ t.describe("OMP-3 online protocol", function()
         local invalid_message
         invalid_message, _, code = protocol.new("slot_assignment", manifest.session_id, "host", 2, {
             manifest_id = protocol.manifest_id(manifest),
+            assignment_id = protocol.manifest_id(manifest),
             assignments = assignments,
         })
         t.eq(invalid_message, nil)
@@ -531,6 +534,7 @@ t.describe("OMP-3 online protocol", function()
         assignments[7].producer_id = assignments[1].producer_id
         invalid_message, _, code = protocol.new("slot_assignment", manifest.session_id, "host", 3, {
             manifest_id = protocol.manifest_id(manifest),
+            assignment_id = protocol.manifest_id(manifest),
             assignments = assignments,
         })
         t.eq(invalid_message, nil)
@@ -567,6 +571,7 @@ t.describe("OMP-3 online protocol", function()
             message, _, code =
                 protocol.new("slot_assignment", "session_alpha", "host", case.length, {
                     manifest_id = protocol.manifest_id(fixture.manifest()),
+                    assignment_id = protocol.manifest_id(fixture.manifest()),
                     assignments = assignments,
                 })
             t.eq(message ~= nil, case.accepted, "producer assignment " .. case.name)

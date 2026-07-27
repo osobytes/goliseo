@@ -20,7 +20,7 @@ local conformance = {}
 ---@type SessionProtocolGolden
 conformance.GOLDEN = {
     manifest_id = "659947cdd13d7d68",
-    transcript_id = "5772846370555e41",
+    transcript_id = "3ae8c1cac000d905",
     complete_kind = "manifest_accept",
     complete_wire = "GCOP;1;t7:s4:bodyt1:s11:manifest_ids16:659947cdd13d7d68s4:kinds15:"
         .. "manifest_accepts10:message_ids32:GCMI;1;13:session_alpha4:host1:2s7:peer_ids4:"
@@ -30,8 +30,8 @@ conformance.GOLDEN = {
         manifest_proposal = "d81457084f973875",
         manifest_accept = "66c31c2ba4fe0898",
         peer_assignment = "fa48b31571dfe543",
-        slot_assignment = "ff613a093a184410",
-        ready = "331269597633807d",
+        slot_assignment = "edc315e800451830",
+        ready = "8f90bbed53a0c95d",
         countdown = "3144a5cac3dcda74",
         start = "cc6f684f2b98e915",
         match_phase = "1671940891b78f1f",

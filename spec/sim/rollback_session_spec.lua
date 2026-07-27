@@ -893,7 +893,56 @@ t.describe("rollback session", function()
         t.is_true(truncated.new_present_boundary < 40)
         t.eq(rollback_session.output(short, truncated.new_present_boundary), nil)
         short_agree("after truncate")
-        t.eq(checks, 8)
+
+        -- Two consecutive overlapping rollbacks with NO accounting read between
+        -- them, so the same ticks are replaced twice while still uncounted. An
+        -- incremental total must contribute nothing on either side for an
+        -- output it never counted; subtracting a length that was never added
+        -- would drift `peak_history_bytes` silently rather than crash. Nothing
+        -- below may call `agree` until both rollbacks have happened.
+        step_many(tracked, 4)
+        step_many(recomputed, 4)
+        local late = sample({ move_x = -20 })
+        assert(rollback_session.add_authoritative(tracked, 30, 3, late))
+        assert(rollback_session.add_authoritative(recomputed, 30, 3, late))
+        t.is_true(rollback_session.reconcile(tracked).changed)
+        t.is_true(rollback_session.reconcile(recomputed).changed)
+        local earlier = sample({ move_x = 15, move_y = -10 })
+        assert(rollback_session.add_authoritative(tracked, 26, 4, earlier))
+        assert(rollback_session.add_authoritative(recomputed, 26, 4, earlier))
+        t.is_true(rollback_session.reconcile(tracked).changed)
+        t.is_true(rollback_session.reconcile(recomputed).changed)
+        agree("two uncounted overlapping rollbacks")
+        t.eq(checks, 9)
+    end)
+
+    -- The campaign's CPU evidence is whatever runs inside the `measured` tick,
+    -- resimulation, and rollback brackets. Storing an output happens inside all
+    -- three, so encoding there would charge real work to the very numbers under
+    -- test. Encoding is deferred to `accounting`, which runs outside every
+    -- bracket; this pins that split so it cannot regress silently.
+    t.it("defers retained-output encoding out of the measured brackets", function()
+        local session = rollback_session.new(shot_fixture(3), sources())
+        rollback_session.track_output_bytes(session)
+        step_many(session, 6)
+
+        -- Six outputs stored and nothing encoded, so no canonical encoding ran
+        -- inside `measured("tick", ...)`.
+        t.eq(session._output_bytes, 0)
+        t.eq(next(assert(session._counted_output_bytes)), nil)
+
+        local first = rollback_session.accounting(session)
+        t.is_true(first.output_bytes > 0)
+        t.eq(session._output_bytes, first.output_bytes)
+        local cached = 0
+        for _ in pairs(assert(session._counted_output_bytes)) do
+            cached = cached + 1
+        end
+        t.eq(cached, 6)
+
+        -- A second read encodes nothing new and reports the same total.
+        t.eq(rollback_session.accounting(session).output_bytes, first.output_bytes)
+        t.eq(session._output_bytes, first.output_bytes)
     end)
 
     t.it("leaves retained-output accounting untracked by default", function()
@@ -904,8 +953,8 @@ t.describe("rollback session", function()
         local before = rollback_session.accounting(session)
         t.is_true(before.output_bytes > 0)
 
-        -- Switching on mid-session seeds from the retained outputs, so the
-        -- reported total is unchanged by the act of enabling it.
+        -- Switching on mid-session leaves the retained outputs to be encoded by
+        -- the next read, so the reported total is unchanged by enabling it.
         rollback_session.track_output_bytes(session)
         local after = rollback_session.accounting(session)
         t.eq(after.output_bytes, before.output_bytes)
