@@ -204,7 +204,10 @@ session's `confirmed_output_tick`, **never** the raw `confirmed_tick`: a sample
 is authority up to `DELAY` ticks before it is consumed, so raw confirmation can
 name a boundary that was never captured, and a checkpoint landing there aborts a
 perfectly healthy match. `confirmed_output_tick + 1 <= present_boundary` is
-exactly the guarantee a snapshot lookup needs. `apply_rows` still uses the raw
+exactly the guarantee a snapshot lookup needs, and it holds *by construction*
+rather than by observation: `rollback_session.diagnostics` computes
+`confirmed_output_tick = math.min(confirmed_tick, present_boundary - 1)`, so the
+bound is unconditional for any raw `confirmed_tick`, however far ahead it runs. `apply_rows` still uses the raw
 confirmation, which is correct there: it is asking about input-authority
 completeness, not snapshot availability. Each checkpoint carries the live slot
 of every human at that boundary alongside the hash, because the timeline is
@@ -233,3 +236,19 @@ acceptance criteria remain contingent on open work and are not claimed here:
 - **#114, the accepted default combat disposition.** The manifest identity the
   fixture pins is a fixture, not an accepted policy. When #114 lands, the
   identity changes in the fixture and nowhere else.
+
+The combat companion is a third, separate line, and it splits in two.
+`fixture.initial_snapshot(duration, true)` opts boundary zero into the combat
+snapshot schema (`match_snapshot.COMBAT_VERSION`), and the
+`carries the combat companion through correction and resimulation` spec drives
+that fixture through bursty delivery so restore and resimulation carry
+`CombatMatchState` alongside `MatchState` on every peer. The **mechanism** is
+therefore proven: the companion survives a correction.
+
+The **behaviour** is not. The rows are still produced by the pre-#112 bot, which
+never drives the companion into wind-up, guard, contact, projectile flight,
+stagger, ball spill, or immunity expiry, so none of the combat correction cases
+the issue names are individually pinned. That is a distinct gap from "the AI is
+not combat-aware yet" — it is what the combat-aware AI would be needed to
+*test*, not merely what it would change — and those scenarios are worth pinning
+only once #112 can produce them.

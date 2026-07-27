@@ -712,6 +712,65 @@ t.describe("online match driver", function()
         assert_confirmed_state(state)
     end)
 
+    -- A guest's own rows skip the reconciliation pass because they cannot open a
+    -- divergence. The skip is guarded by a runtime `earliest_divergence` check
+    -- that real traffic never trips, so the fallback is forced here: a safety
+    -- net nothing ever exercises is not yet a safety net.
+    t.it("still reconciles if a local insert ever reports a divergence", function()
+        local state = harness("2v2")
+        run(state, 12)
+        local guest = state.drivers[2]
+
+        local reconciles = 0
+        local original_reconcile = rollback_session.reconcile
+        local function count_reconciles()
+            rollback_session.reconcile = function(...)
+                reconciles = reconciles + 1
+                return original_reconcile(...)
+            end
+        end
+
+        -- Baseline: every reconciliation on a normal step is accounted for by an
+        -- arrival batch. The guest's own authoring adds none.
+        count_reconciles()
+        local ok, batch = pcall(match_driver.advance, guest, input_frame.neutral_sample())
+        rollback_session.reconcile = original_reconcile
+        t.is_true(ok, tostring(batch))
+        t.eq(reconciles, batch.reconciliations, "a clean local insert reconciled anyway")
+
+        -- Force the fallback: report a divergence the real path never produces.
+        reconciles = 0
+        local arrival_reconciles = 0
+        local original_add = rollback_session.add_authoritative_batch
+        rollback_session.add_authoritative_batch = function(session, arrivals)
+            local accepted, err, code = original_add(session, arrivals)
+            if accepted ~= nil then
+                accepted.earliest_divergence = accepted.confirmed_tick
+            end
+            return accepted, err, code
+        end
+        count_reconciles()
+        local forced_ok, forced_err = pcall(function()
+            for _ = 1, 6 do
+                local batches = advance(state)
+                arrival_reconciles = arrival_reconciles + batches[2].reconciliations
+            end
+        end)
+        rollback_session.add_authoritative_batch = original_add
+        rollback_session.reconcile = original_reconcile
+        t.is_true(forced_ok, tostring(forced_err))
+        t.is_true(
+            reconciles > arrival_reconciles,
+            "the divergence fallback never reconciled beyond the arrival batches"
+        )
+
+        -- And the driver is still healthy and still converging afterwards.
+        t.eq(match_driver.status(guest), "active")
+        run(state, 12)
+        t.is_true(assert_agreement(state) > 0)
+        assert_confirmed_state(state)
+    end)
+
     t.it("costs no extra snapshot work when a peer authors only its control slot", function()
         local state = harness("4v4")
         local guest = state.drivers[2]

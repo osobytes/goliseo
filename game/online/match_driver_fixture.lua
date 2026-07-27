@@ -48,7 +48,7 @@ end
 -- Boundary zero for the pinned combat fixture. Slot mode is mandatory: the
 -- online driver never runs the legacy single-input path.
 --
--- `combat_active` opts the fixture into MatchSnapshot v9's combat companion, so
+-- `combat_active` opts the fixture into the combat snapshot schema, so
 -- the driver's restore/resimulate path carries `CombatMatchState` as well as
 -- `MatchState`. What that does *not* buy is combat-aware AI: the rows are still
 -- produced by the pre-#112 deterministic bot, so the companion is carried and
