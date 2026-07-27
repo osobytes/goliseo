@@ -2,6 +2,7 @@ local t = require("spec.support.runner")
 local match_driver = require("game.online.match_driver")
 local fixture = require("game.online.match_driver_fixture")
 local input_protocol = require("game.online.input_protocol")
+local live_slot = require("game.online.live_slot")
 local protocol = require("game.online.protocol")
 local transport_contract = require("game.transport.contract")
 local input_frame = require("sim.input_frame")
@@ -357,6 +358,64 @@ t.describe("online match driver", function()
         t.eq(match_driver.status(state.drivers[1]), "ownership_violation")
         local terminal = assert(match_driver.terminal(state.drivers[1]))
         t.eq(terminal.failure, "input_channel")
+    end)
+
+    t.it("is idempotent for a replayed bundle and terminal for a conflicting one", function()
+        local state = harness("2v2")
+        run(state, 6)
+        local guest_id = state.session.guest_peer_ids[1]
+        local guest_transport = assert(state.session.guest_transports[guest_id])
+        local owned_slot = live_slot.slot_index(assert(state.session.freeze.owned[guest_id])[1])
+
+        ---@param edges integer
+        ---@return TransportMessage
+        local function bundle(edges)
+            local rows = {}
+            for tick = 0, 6 do
+                rows[#rows + 1] = {
+                    tick = tick,
+                    slot_index = owned_slot,
+                    sample = sample({ edges = tick == 6 and edges or 0 }),
+                }
+            end
+            local packet = assert(input_protocol.new_guest({
+                session_id = state.session.manifest.session_id,
+                manifest_id = protocol.manifest_id(state.session.manifest),
+                sender_id = guest_id,
+                sequence = 4242,
+                transport_tick = 9,
+                first_input_tick = 0,
+                rows = rows,
+            }))
+            return assert(transport_contract.new({
+                type = "input",
+                seq = packet.sequence,
+                tick = packet.transport_tick,
+                payload = assert(input_protocol.encode(packet)),
+            }))
+        end
+
+        -- The same sender sequence with byte-identical authority is a no-op.
+        local repeated = bundle(0)
+        assert(guest_transport:send(transport_contract.HOST_PEER_ID, "input", repeated))
+        assert(guest_transport:send(transport_contract.HOST_PEER_ID, "input", repeated))
+        state.session.host_transport:pump()
+        advance(state)
+        t.eq(match_driver.status(state.drivers[1]), "active")
+
+        -- The same identity with different bytes is not.
+        assert(guest_transport:send(transport_contract.HOST_PEER_ID, "input", bundle(0)))
+        assert(
+            guest_transport:send(
+                transport_contract.HOST_PEER_ID,
+                "input",
+                bundle(input_frame.EDGE_BITS.dash)
+            )
+        )
+        state.session.host_transport:pump()
+        advance(state)
+        t.eq(match_driver.status(state.drivers[1]), "authority_conflict")
+        t.eq(assert(match_driver.terminal(state.drivers[1])).failure, "input_channel")
     end)
 
     t.it("accepts every slot inside a peer's frozen owned set", function()
