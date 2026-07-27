@@ -159,15 +159,10 @@ fault_scenarios.SCENARIOS = {
         profile = "playable",
         injection = "none",
         smoke = false,
-        known_gap = "an eight-client match under a reordering profile can strand a guest: "
-            .. "confirmation stops advancing -- sometimes three ticks short of full time, "
-            .. "sometimes before half time -- with no terminal raised, and the peer only "
-            .. "reports settle_timeout after the settle phase expires. Observed on roughly "
-            .. "half of the seeds tried; never under clean or omp0_parity, which have no "
-            .. "jitter, no duplication, and no bursts. The lost-batch count does not predict "
-            .. "it: see docs/online/fault_harness.md. Kept out of the CI subset because it is "
-            .. "a product finding, not a harness flake",
-        note = "the eight-client row under the documented playable profile",
+        note = "the eight-client row under the documented playable profile; this is the row "
+            .. "that found #241, and it is the row that proves the fix -- eight clients under "
+            .. "a reordering profile is the only shape in this matrix where the guest-to-host "
+            .. "and host-to-guest legs compound",
     },
     {
         id = "4v4.stress",
@@ -175,7 +170,20 @@ fault_scenarios.SCENARIOS = {
         profile = "stress",
         injection = "none",
         smoke = false,
-        known_gap = "same finding as 4v4.playable, at a higher loss and burst rate",
+        known_gap = "an eight-client match under the stress profile can still strand a guest, "
+            .. "and the cause is now measured rather than suspected: this profile keeps the "
+            .. "host's canonical batch saturated at MAX_HOST_ROWS every tick, so a row the "
+            .. "host learns late cannot be fanned out again without displacing a fresh row. "
+            .. "Captured at the default seed: the host learned one row seven transport ticks "
+            .. "late, fanned it out three times instead of seven, and the stranded guest lost "
+            .. "exactly those three. Unlike #241's playable stalls this is a capacity limit of "
+            .. "the 56-row batch, not a leak in how it is filled, so it needs a way for a guest "
+            .. "to ask for what it missed rather than a wider open-loop window -- tracked as "
+            .. "#243, and this row stays red until that lands. The peer now "
+            .. "reports confirmation_stalled at the step it stalls instead of settle_timeout a "
+            .. "match later, and that terminal ends the session for every peer -- see "
+            .. "docs/online/fault_harness.md",
+        note = "the same eight-client shape at a higher loss and burst rate",
     },
     -- Short lobbies: fewer humans than the mode seats, so declared bot fills
     -- exist at all.
@@ -200,8 +208,9 @@ fault_scenarios.SCENARIOS = {
         id = "4v4.control_duplication",
         mode = "4v4",
         -- Deliberately the jitter-free profile: this row is about a duplicated
-        -- control envelope, and pairing it with `playable` would only re-hit the
-        -- open 4v4 finding and say nothing about duplication.
+        -- control envelope, and pairing it with `playable` would only re-run
+        -- what the `4v4.playable` row already covers and say nothing about
+        -- duplication.
         profile = "omp0_parity",
         injection = "control_duplication",
         smoke = false,
@@ -283,7 +292,7 @@ fault_scenarios.SCENARIOS = {
         profile = "clean",
         injection = "over_window_input",
         at_step = 30,
-        expect_status = "late_input",
+        expect_status = "confirmation_stalled",
         smoke = true,
     },
     {
@@ -474,9 +483,12 @@ local function inject(harness, scenario)
         return
     end
     if kind == "over_window_input" then
-        -- Nothing is delivered for well over the 30-tick retained floor, then
-        -- the whole backlog lands at once carrying rows the window can no longer
-        -- accept. This is the driver's documented `late_input` path.
+        -- Nothing is delivered for well over the 30-tick retained floor. Since
+        -- #241 the driver catches this on confirmation liveness -- at the step
+        -- the floor passes a tick that never became authoritative -- rather than
+        -- waiting for the backlog to land and be refused. The backlog is still
+        -- released, because the row must prove the peer says so *before* it
+        -- arrives rather than only that something eventually terminates.
         local from = harness.transport_tick + 1
         for _, client in ipairs(harness.clients) do
             client.fault:hold(from, from + fault_scenarios.OVER_WINDOW_HOLD_TICKS)

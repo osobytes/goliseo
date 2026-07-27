@@ -870,7 +870,12 @@ t.describe("net diagnostics failure fixtures", function()
         local terminal = 0
         for index in ipairs(harness.peers) do
             local simulation = typed_summary(harness, index)
-            if simulation.status == "late_input" then
+            -- Since #241 the driver catches this on confirmation liveness at the
+            -- step the tick becomes unconfirmable, rather than on the arrival
+            -- that used to reveal it. The typed reason is sharper; the causal
+            -- attribution the recorder carries -- the tick, and the failure the
+            -- coordinator is told -- is unchanged.
+            if simulation.status == "confirmation_stalled" then
                 terminal = terminal + 1
                 t.eq(simulation.terminal_failure, "late_input")
                 t.is_true(simulation.terminal_tick ~= nil)

@@ -207,7 +207,14 @@ than over the last `DELAY` ticks of prediction — see
 [the driver's settle phase](match_driver.md#full-time-settles-before-it-completes)
 for the bounds and for why it is not gated on hash agreement. A peer whose tail
 never arrives ends `settle_timeout`, which is an input-channel failure and
-deliberately not a desync.
+deliberately not a desync. The host stays a few steps past its own confirmation
+while any guest is still asking it to relay, because in a star it is the only
+peer that can fan a missing row back out.
+
+A peer that stopped being able to confirm *at all* — an unconfirmed tick that
+fell below its retained rollback floor — ends `confirmation_stalled` at the step
+that happens, rather than surfacing a whole match later as somebody else's
+failure mode.
 
 The screen follows that boundary rather than the tick the simulation stopped on:
 `full_time()` reports `match_driver.settled`, so the visible "FULL TIME" banner
