@@ -198,16 +198,18 @@ These criteria are **not** claimed satisfied:
   is that the fixed loadout and family reach the request, the HUD, and the
   renderer for every seated slot.
 
-## Known sharp edge
+## Full time is settled, not merely reached
 
-The driver terminates the moment its *present* simulation reaches full time, and
-after that it makes no progress at all — so the final ticks can still be
-unconfirmed when `finish` is reported. Under clean delivery every peer reaches
-the same final boundary and the same hash; under a burst that straddles full
-time, two peers can report different final hashes and the coordinator ends the
-session as `hash_mismatch` instead of `completed`.
+The driver no longer terminates the moment its *present* simulation reaches full
+time. It opens a bounded settle phase and drains the outstanding authority first,
+so `finish` is reported over a final boundary every peer has confirmed rather
+than over the last `DELAY` ticks of prediction — see
+[the driver's settle phase](match_driver.md#full-time-settles-before-it-completes)
+for the bounds and for why it is not gated on hash agreement. A peer whose tail
+never arrives ends `settle_timeout`, which is an input-channel failure and
+deliberately not a desync.
 
-That is detection rather than silent divergence, and it is the honest behaviour
-for the current contract, but it is a real gap: a settle phase that drains the
-last `DELAY` ticks of authority before reporting full time belongs in the driver
-(#166), not in a screen, so it is deliberately not worked around here.
+The screen follows that boundary rather than the tick the simulation stopped on:
+`full_time()` reports `match_driver.settled`, so the visible "FULL TIME" banner
+and the confirmed result cannot disagree. Result commitment is unchanged and
+still gated strictly on the coordinator's acknowledged `result`.

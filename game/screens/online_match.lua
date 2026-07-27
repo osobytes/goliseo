@@ -94,7 +94,11 @@ local function driver_source(self)
             return status ~= "active" and status ~= "completed"
         end,
         full_time = function()
-            return match_driver.status(self.driver) == "completed"
+            -- The settled boundary, not the tick the simulation stopped on. The
+            -- driver keeps draining the tail after full time, so `completed` and
+            -- "settled" now coincide; asking for the settled boundary says which
+            -- of the two the final whistle is allowed to follow.
+            return match_driver.settled(self.driver)
         end,
         debug_model = function()
             -- The online overlay below is this screen's own, drawn from real

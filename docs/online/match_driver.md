@@ -179,6 +179,63 @@ deferred: its slots are the ones its own materialization requires to be
 authoritative, so starving them would stall the host on its own input. The
 carried queue is bounded; exceeding it is `input_channel_failure`.
 
+## Full time settles before it completes
+
+Reaching full time is not the same as agreeing on it. A sample is authority
+`DELAY` ticks after it is taken, so up to `DELAY` ticks of the match can still be
+unconfirmed at the moment the final tick is simulated. A driver that terminated
+there would report a final hash taken partly over *predicted* authority, and
+under a burst straddling full time two peers would stop at different confirmation
+depths and disagree about a match in which nothing actually diverged.
+
+So full time opens a **settle phase** instead of terminating. The simulation
+stops for good — nothing is authored, nothing is stepped, the retained window
+stops sliding — and the driver keeps polling, keeps applying one arrival batch
+per step through one reconciliation, and keeps re-publishing the last authored
+redundancy window until `confirmed_output_tick + 1` reaches the final boundary.
+Only then does it terminate `completed`.
+
+Re-publishing that window is the point of the phase's outbound half. There is no
+new sample to author, but the final rows are otherwise carried by fewer packets
+than any earlier row — the redundancy window has no ticks left to ride on — which
+is exactly why the tail is the part that fails to confirm. Settling gives it the
+same protection every other tick got. The host's re-sends go back through its own
+collector on the ordinary fairness-delay due date: settling is not a licence to
+bypass canonical sequencing.
+
+Under clean delivery the phase costs nothing. Confirmation already runs ahead of
+the present, so the host settles on the step it reaches full time and a guest one
+step later, when the fan-out carrying the final row arrives.
+
+**It is bounded twice, and waits on nothing else.** It ends after
+`SETTLE_TIMEOUT_TICKS` (60) further driver steps, or after
+`SETTLE_TIMEOUT_SECONDS` (2) of monotonic wall clock for a caller whose frames
+have stopped arriving at 60 Hz, whichever comes first, with the typed terminal
+`settle_timeout`. Both deadlines are fixed the moment full time is reached and
+re-checked exactly once per `advance`. The tick bound is a liveness choice, not a
+correctness one: nothing is simulated while settling, so waiting can never push
+the tail out of the retained window.
+
+It is deliberately **not** gated on hash agreement. The driver cannot see another
+peer's hash, so waiting for one would be an unbounded wait on a fact that never
+arrives — and it would be the wrong instrument anyway. A disagreement reported
+through `observe_checkpoint` while settling terminates `hash_mismatch` exactly as
+it does while playing; settling never swallows a divergence, it only refuses to
+report a result over authority it has not confirmed. A genuinely divergent peer
+therefore still settles, and still carries its own divergent final hash into
+`coordinator.apply_result_ack`, which ends the session as `hash_mismatch`.
+
+Boundary hashes stop at full time, including on the step that reaches it.
+Settling peers no longer terminate on the same step, so a checkpoint published
+while one peer settles could reach another that has already left `running` for
+the result — and a hash report is only legal in a running session. It costs no
+detection: the acknowledged final hash is a function of every confirmed tick, so
+a boundary that disagreed anywhere cannot agree there.
+
+`match_driver.settled` is the settled boundary as a predicate. Presentation keys
+the final whistle off it rather than off the tick the simulation stopped on, so
+the visible whistle and the confirmed result agree.
+
 ## Terminal statuses
 
 The driver ends once, with a reason, and makes no hidden progress afterwards: a
@@ -187,7 +244,8 @@ nothing.
 
 | Status | Reported to the coordinator as | Raised when |
 | --- | --- | --- |
-| `completed` | — | Full time was reached. |
+| `completed` | — | Full time was reached *and* the final boundary confirmed. |
+| `settle_timeout` | `input_channel` | Full time was reached, but the final boundary was still unconfirmed when the settle phase expired. |
 | `late_input` | `late_input` | Unconfirmed authority older than the retained 30-tick floor, or the window overflowed while reconciling. |
 | `hash_mismatch` | `desync` | Boundary hashes disagreed at `MAX_HASH_MISMATCHES` consecutive checkpoints. |
 | `ownership_violation` | `input_channel` | A peer authored a slot outside its frozen owned set. |
@@ -196,7 +254,10 @@ nothing.
 | `transport_lost` | — | The star or a frozen link is no longer connected. |
 
 `late_input` and `hash_mismatch` remain causally distinct here even though #161's
-wire folds both onto `desync`; the local reason stays exact.
+wire folds both onto `desync`; the local reason stays exact. `settle_timeout` is
+distinct from both for the same reason and a sharper one: a tail that never
+arrived is a delivery failure, and reporting a healthy match's missing final rows
+as a desync is precisely the mislabelling the settle phase exists to end.
 
 Boundary hashes are published every `DEFAULT_HASH_INTERVAL_TICKS` (30) confirmed
 boundaries, starting at `first_input_tick`. The boundary comes from the

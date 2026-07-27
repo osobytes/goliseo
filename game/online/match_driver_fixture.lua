@@ -53,17 +53,23 @@ end
 -- `MatchState`. What that does *not* buy is combat-aware AI: the rows are still
 -- produced by the pre-#112 deterministic bot, so the companion is carried and
 -- corrected but is not driven to interesting states.
+--
+-- `seed` overrides the pinned match seed. Every peer shares one boundary zero in
+-- a real session, so a differing seed is not a configuration: it is the cheapest
+-- honest way to give one peer a genuinely divergent simulation while every input
+-- row still agrees, which is what a desync looks like from the driver's side.
 ---@param duration number?
 ---@param combat_active boolean?
+---@param seed integer?
 ---@return MatchSnapshot
-function fixture.initial_snapshot(duration, combat_active)
+function fixture.initial_snapshot(duration, combat_active, seed)
     local state = match.new({
         home = teams.nebula,
         away = teams.orion,
         field = { w = 960, h = 540 },
         duration = duration or fixture.DEFAULT_DURATION,
         max_goals = 99,
-        seed = fixture.DEFAULT_SEED,
+        seed = seed or fixture.DEFAULT_SEED,
         input_ownership = match.ownership_for_teams(teams.nebula, teams.orion),
     })
     if not combat_active then
