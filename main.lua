@@ -1037,5 +1037,5 @@ end
 function love.joystickremoved(joystick)
     local _ = joystick
     metrics:lifecycle(clock(), "joystick_removed")
-    app:pause_match()
+    app:controller_removed()
 end
