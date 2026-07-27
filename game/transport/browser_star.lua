@@ -269,6 +269,19 @@ function BrowserStarTransport:shutdown()
     return true
 end
 
+-- Returns the peer id only if this adapter has actually opened that link, so a
+-- caller-supplied id for an unknown peer never gets tagged onto an event.
+---@param peer_id string
+---@return string?
+function BrowserStarTransport:_opened_peer(peer_id)
+    for _, opened in ipairs(self._order) do
+        if opened == peer_id then
+            return peer_id
+        end
+    end
+    return nil
+end
+
 ---@return boolean?, string?, TransportErrorCode?
 function BrowserStarTransport:_require_connected()
     if self._state == "new" then
@@ -453,10 +466,14 @@ function BrowserStarTransport:send(peer_id, channel, message)
     -- shape is the one fault every layer can judge identically.
     local line, encode_err, encode_code = contract.encode_addressed(peer_id, channel, message)
     if not line then
+        -- Tag the event against the link only when it is actually open. For a
+        -- peer that was never opened the bridge and the fake both queue an
+        -- untagged `star_error`, and this has to match them. The lookup only
+        -- picks the event's attribution; the returned code is unaffected.
         return self:_record_error(
             encode_code or "malformed",
             encode_err or "browser star transport rejected a message",
-            peer_id,
+            self:_opened_peer(peer_id),
             contract.CHANNEL_CONFIG[channel] and channel or nil
         )
     end

@@ -27,6 +27,14 @@ function transport.fake_star(options)
     return FakeStarTransport.new(options)
 end
 
+-- One rendezvous per logical star. Pass the same one to a host and its guests
+-- to let them complete a manual handshake in process; endpoints that were not
+-- handed it cannot see each other's signals.
+---@return FakeStarRendezvous
+function transport.fake_star_rendezvous()
+    return FakeStarTransport.new_rendezvous()
+end
+
 ---@param options BrowserStarTransportOptions?
 ---@return BrowserStarTransport
 function transport.browser_star(options)

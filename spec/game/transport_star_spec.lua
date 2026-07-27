@@ -420,10 +420,15 @@ t.describe("fake host-star transport", function()
     end)
 
     t.it("completes a manual offer/answer handshake in process", function()
-        local host = transport.fake_star()
+        local rendezvous = transport.fake_star_rendezvous()
+        local host = transport.fake_star({ rendezvous = rendezvous })
         assert(host:initialize())
         assert(host:open_peer("guest_1"))
-        local guest = transport.fake_star({ role = "guest", peer_id = "guest_1" })
+        local guest = transport.fake_star({
+            role = "guest",
+            peer_id = "guest_1",
+            rendezvous = rendezvous,
+        })
         assert(guest:initialize())
 
         t.is_true(host:take_signal("guest_1") == nil)
@@ -442,11 +447,75 @@ t.describe("fake host-star transport", function()
         t.eq(assert(guest:poll()).message.payload, "after-handshake")
     end)
 
-    t.it("rejects signaling misuse with typed errors", function()
+    t.it("keeps two stars in one process from sharing signaling state", function()
+        -- A harness that runs a host plus seven guests in a single process is
+        -- proving those clients converge WITHOUT shared mutable state. A token
+        -- minted by one star must be meaningless to another star's guest, or
+        -- such a harness can pass for the wrong reason.
+        local first = transport.fake_star_rendezvous()
+        local second = transport.fake_star_rendezvous()
+
+        local host_a = transport.fake_star({ rendezvous = first })
+        assert(host_a:initialize())
+        assert(host_a:open_peer("guest_1"))
+        local host_b = transport.fake_star({ rendezvous = second })
+        assert(host_b:initialize())
+        assert(host_b:open_peer("guest_1"))
+
+        local guest_b = transport.fake_star({
+            role = "guest",
+            peer_id = "guest_1",
+            rendezvous = second,
+        })
+        assert(guest_b:initialize())
+
+        assert(host_a:request_offer("guest_1"))
+        local foreign = assert(host_a:take_signal("guest_1"))
+
+        -- The other star's guest must not accept star A's token.
+        local crossed, _, crossed_code = guest_b:accept_offer(foreign)
+        t.is_true(crossed == nil)
+        t.eq(crossed_code, "signal_error")
+        t.eq(guest_b:peer_state(contract.HOST_PEER_ID), "connecting")
+        t.eq(host_a:peer_state("guest_1"), "connecting")
+
+        -- And star B's own handshake still completes independently.
+        assert(host_b:request_offer("guest_1"))
+        local own = assert(host_b:take_signal("guest_1"))
+        assert(guest_b:accept_offer(own))
+        local answer = assert(guest_b:take_signal(contract.HOST_PEER_ID))
+        assert(host_b:accept_answer("guest_1", answer))
+        t.eq(host_b:peer_state("guest_1"), "connected")
+        -- Star A is untouched by star B completing.
+        t.eq(host_a:peer_state("guest_1"), "connecting")
+    end)
+
+    t.it("gives an endpoint a private rendezvous when none is supplied", function()
+        -- The default must not be a shared registry: two endpoints built
+        -- without an explicit rendezvous cannot see each other's signals.
         local host = transport.fake_star()
         assert(host:initialize())
         assert(host:open_peer("guest_1"))
         local guest = transport.fake_star({ role = "guest", peer_id = "guest_1" })
+        assert(guest:initialize())
+
+        assert(host:request_offer("guest_1"))
+        local token = assert(host:take_signal("guest_1"))
+        local accepted, _, code = guest:accept_offer(token)
+        t.is_true(accepted == nil)
+        t.eq(code, "signal_error")
+    end)
+
+    t.it("rejects signaling misuse with typed errors", function()
+        local rendezvous = transport.fake_star_rendezvous()
+        local host = transport.fake_star({ rendezvous = rendezvous })
+        assert(host:initialize())
+        assert(host:open_peer("guest_1"))
+        local guest = transport.fake_star({
+            role = "guest",
+            peer_id = "guest_1",
+            rendezvous = rendezvous,
+        })
         assert(guest:initialize())
 
         local guest_offer, _, guest_code = guest:request_offer("guest_1")
@@ -710,7 +779,8 @@ t.describe("browser host-star transport", function()
     end)
 
     t.it("drives the manual handshake through the bridge", function()
-        local reference = transport.fake_star()
+        local rendezvous = transport.fake_star_rendezvous()
+        local reference = transport.fake_star({ rendezvous = rendezvous })
         local browser = transport.browser_star({ eval = star_bridge(reference) })
         assert(browser:initialize())
         assert(browser:open_peer("guest_1"))
@@ -721,7 +791,11 @@ t.describe("browser host-star transport", function()
         t.is_true(browser:take_signal("guest_1") == nil)
 
         -- The guest side runs against its own endpoint and bridge.
-        local guest_reference = transport.fake_star({ role = "guest", peer_id = "guest_1" })
+        local guest_reference = transport.fake_star({
+            role = "guest",
+            peer_id = "guest_1",
+            rendezvous = rendezvous,
+        })
         local guest = transport.browser_star({
             role = "guest",
             eval = star_bridge(guest_reference),
@@ -862,6 +936,58 @@ t.describe("browser host-star transport", function()
         t.eq(fake_unknown, "unknown_peer")
         local _, _, browser_unknown = browser:send("nobody", "control", control(0))
         t.eq(browser_unknown, "unknown_peer")
+    end)
+
+    t.it("attributes a combined-fault event the same way on both adapters", function()
+        ---@param star StarTransportAdapter
+        ---@return TransportPeerEvent?
+        local function last_error_event(star)
+            local found = nil
+            local event = star:poll_event()
+            while event do
+                if event.kind == "peer_error" or event.kind == "star_error" then
+                    found = event
+                end
+                event = star:poll_event()
+            end
+            return found
+        end
+
+        local fake = build_star(1)
+        local reference = build_star(1)
+        local browser = transport.browser_star({ eval = star_bridge(reference) })
+        assert(browser:initialize())
+        assert(browser:open_peer("guest_2"))
+
+        -- Shape fault aimed at an OPEN link: attributed to that link.
+        last_error_event(fake)
+        assert(fake:send("guest_1", "control", input(0, 3)) == nil)
+        local fake_known = assert(last_error_event(fake))
+        t.eq(fake_known.kind, "peer_error")
+        t.eq(fake_known.peer_id, "guest_1")
+
+        last_error_event(browser)
+        assert(browser:send("guest_2", "control", input(0, 3)) == nil)
+        local browser_known = assert(last_error_event(browser))
+        t.eq(browser_known.kind, "peer_error")
+        t.eq(browser_known.peer_id, "guest_2")
+
+        -- Shape fault aimed at a peer that was NEVER opened: the link is not
+        -- known, so neither adapter may tag the event with a peer id.
+        last_error_event(fake)
+        assert(fake:send("nobody", "control", input(0, 3)) == nil)
+        local fake_unknown = assert(last_error_event(fake))
+        t.eq(fake_unknown.kind, "star_error")
+        t.eq(fake_unknown.peer_id, nil)
+
+        last_error_event(browser)
+        assert(browser:send("nobody", "control", input(0, 3)) == nil)
+        local browser_unknown = assert(last_error_event(browser))
+        t.eq(browser_unknown.kind, "star_error")
+        t.eq(browser_unknown.peer_id, nil)
+
+        t.eq(browser_unknown.kind, fake_unknown.kind)
+        t.eq(browser_known.kind, fake_known.kind)
     end)
 
     t.it("numbers arrival_seq per peer at poll time on both adapters", function()

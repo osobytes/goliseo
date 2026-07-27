@@ -13,6 +13,7 @@ local contract = require("game.transport.contract")
 ---@field queue_limit integer?
 ---@field max_guests integer?
 ---@field buffered_amount_limit integer?
+---@field rendezvous FakeStarRendezvous? -- Share one across the endpoints of a single star.
 
 ---@class FakeStarChannel
 ---@field state TransportPeerState
@@ -61,17 +62,27 @@ local contract = require("game.transport.contract")
 ---@field _unsupported_version integer
 ---@field _overflow integer
 ---@field _backpressure integer
+---@field _rendezvous FakeStarRendezvous
 ---@field _last_error string?
 local FakeStarTransport = {}
 FakeStarTransport.__index = FakeStarTransport
 
--- In-process signaling rendezvous. A real star exchanges SDP blobs by hand
--- between two browser contexts; here the blob is an opaque token that resolves
--- back to the offering host and the answering guest. Entries live only between
--- `request_offer` and `accept_answer`.
-local PENDING_OFFERS = {}
-local PENDING_ANSWERS = {}
-local OFFER_SEQUENCE = 0
+-- In-process signaling rendezvous, scoped to ONE logical star. A real star
+-- exchanges SDP blobs by hand between two browser contexts; here the blob is an
+-- opaque token that resolves back to the offering host and the answering guest.
+-- Endpoints only reach each other's tokens when they were handed the same
+-- rendezvous, so two stars in one process cannot cross-talk by accident. An
+-- endpoint constructed without one gets a private rendezvous, which makes
+-- sharing an explicit, greppable decision rather than the default.
+---@class FakeStarRendezvous
+---@field offers table<string, { host: FakeStarTransport, peer_id: string }>
+---@field answers table<string, FakeStarTransport>
+---@field sequence integer
+
+---@return FakeStarRendezvous
+function FakeStarTransport.new_rendezvous()
+    return { offers = {}, answers = {}, sequence = 0 }
+end
 
 ---@param code TransportErrorCode
 ---@param message string
@@ -134,6 +145,7 @@ function FakeStarTransport.new(options)
         _event_limit = math.max(2, queue_limit),
         _max_guests = role == "host" and max_guests or 1,
         _buffered_amount_limit = buffered_amount_limit,
+        _rendezvous = options.rendezvous or FakeStarTransport.new_rendezvous(),
         _peers = {},
         _order = {},
         _events = {},
@@ -340,9 +352,10 @@ function FakeStarTransport:request_offer(peer_id)
         self:_record_error(peer_code or "unknown_peer", peer_err or "unknown peer")
         return nil, peer_err, peer_code
     end
-    OFFER_SEQUENCE = OFFER_SEQUENCE + 1
-    local token = ("offer:%d"):format(OFFER_SEQUENCE)
-    PENDING_OFFERS[token] = { host = self, peer_id = peer_id }
+    local rendezvous = self._rendezvous
+    rendezvous.sequence = rendezvous.sequence + 1
+    local token = ("offer:%d"):format(rendezvous.sequence)
+    rendezvous.offers[token] = { host = self, peer_id = peer_id }
     peer.signal = token
     peer.ice_state = "checking"
     return true
@@ -359,7 +372,7 @@ function FakeStarTransport:accept_offer(signal)
         self:_record_error("role_forbidden", "only a guest accepts an offer")
         return failure("role_forbidden", "only a guest accepts an offer")
     end
-    local offer = type(signal) == "string" and PENDING_OFFERS[signal] or nil
+    local offer = type(signal) == "string" and self._rendezvous.offers[signal] or nil
     if not offer then
         self:_record_error("signal_error", "remote offer is not a known fake star offer")
         return failure("signal_error", "remote offer is not a known fake star offer")
@@ -368,7 +381,7 @@ function FakeStarTransport:accept_offer(signal)
     if not host_peer then
         return failure("not_connected", "guest endpoint is not initialized")
     end
-    PENDING_ANSWERS[signal] = self
+    self._rendezvous.answers[signal] = self
     host_peer.signal = "answer:" .. signal
     host_peer.ice_state = "checking"
     return true
@@ -391,19 +404,20 @@ function FakeStarTransport:accept_answer(peer_id, signal)
         self:_record_error(peer_code or "unknown_peer", peer_err or "unknown peer")
         return nil, peer_err, peer_code
     end
+    local rendezvous = self._rendezvous
     local token = type(signal) == "string" and signal:match("^answer:(.+)$") or nil
-    local offer = token and PENDING_OFFERS[token] or nil
+    local offer = token and rendezvous.offers[token] or nil
     if not offer or offer.host ~= self or offer.peer_id ~= peer_id then
         self:_record_error("signal_error", "remote answer does not match a pending offer")
         return failure("signal_error", "remote answer does not match a pending offer")
     end
-    local guest = PENDING_ANSWERS[token]
+    local guest = rendezvous.answers[token]
     if not guest then
         self:_record_error("signal_error", "no guest endpoint accepted that offer")
         return failure("signal_error", "no guest endpoint accepted that offer")
     end
-    PENDING_OFFERS[token] = nil
-    PENDING_ANSWERS[token] = nil
+    rendezvous.offers[token] = nil
+    rendezvous.answers[token] = nil
     peer.signal = nil
     return self:link(guest)
 end

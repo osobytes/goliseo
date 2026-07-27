@@ -313,6 +313,26 @@ ICE servers.
 or a test can drive the whole handshake without a browser. The fake's blob is
 an opaque rendezvous token rather than SDP.
 
+Signaling state is scoped to one logical star, not to the process. Endpoints
+see each other's tokens only when they were constructed with the same
+`transport.fake_star_rendezvous()`:
+
+```lua
+local rendezvous = transport.fake_star_rendezvous()
+local host = transport.fake_star({ rendezvous = rendezvous })
+local guest = transport.fake_star({
+    role = "guest",
+    peer_id = "guest_1",
+    rendezvous = rendezvous,
+})
+```
+
+An endpoint built without one gets a private rendezvous and cannot complete a
+handshake with anything, which makes sharing an explicit decision. That
+matters for a harness running one host and seven guests in a single process:
+its whole point is proving those clients converge *without* shared mutable
+state, so cross-star signaling would let it pass for the wrong reason.
+
 > **Operator note.** A real offer or answer blob contains ICE candidates,
 > which include local and public IP addresses of the machine that produced it.
 > Treat a pasted SDP blob as personal network data: keep it out of shared
