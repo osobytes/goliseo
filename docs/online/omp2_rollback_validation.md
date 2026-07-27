@@ -77,7 +77,7 @@ diagnostically.
 | native nearest-rank p99.9 rollback wall duration | `< 33.3 ms` | native runtime matrix |
 | browser playable p95 work / paired clean p95 work | `< 6.7` | browser runtime matrix aggregate |
 | browser playable p99.9 rollback / **the same playable case's** p95 work, only when the playable case recorded `>= 1000` rollback samples | `< 2.6` | browser runtime matrix aggregate |
-| browser playable p99.9 rollback, absolute, under the same sample-count precondition (a CI noise ceiling, **not** a frame budget) | `< 39.7 ms` | browser runtime matrix aggregate |
+| browser playable p99.9 rollback, absolute, scaled by how fast this shard's runner measured against the campaign's other shards, under the same sample-count precondition (a CI noise ceiling, **not** a frame budget) | `< 39.7 ms * runner scale`, the scale clamped to `1.0--1.6` | browser runtime matrix aggregate **only** |
 | retained snapshot boundaries | `<= 31` | every playable case |
 | canonical retained snapshot payload | `< 768 KiB` | every playable case |
 | exact accounted snapshot/input/output/event history | `< 1 MiB` | every playable case |
@@ -91,9 +91,13 @@ covers combat rollback performance instead.
 `gate_contract=7` supersedes contract 6 for newly generated evidence. Contract 7 changes only the
 browser aggregate rollback-tail rule: it is normalized against the playable case's own p95 work
 instead of the paired clean control's, recalibrated for that statistic, and backstopped by an
-absolute millisecond ceiling. The p95-work ratio gate, the minimum-sample-count precondition, the
-emitted markers, and the native gates are unchanged. See "Why the rollback tail is normalized
-against the playable case" below. An individual browser
+absolute millisecond ceiling. That ceiling is itself runner-relative since
+[#230](https://github.com/osobytes/goliseo/issues/230): the enforced value is `39.7 ms` multiplied
+by how fast this shard's runner measured against the campaign's other shards, so it asserts
+"absolutely slow **for this machine**" rather than "absolutely slow". The p95-work ratio gate, the
+minimum-sample-count precondition, the emitted markers, and the native gates are unchanged. See
+"Why the rollback tail is normalized against the playable case" and "Why the absolute ceiling is
+scaled by the runner" below. An individual browser
 playable case records `cpu_gate_mode=normalized_deferred`; it cannot fail solely because its
 absolute p95 work or p99.9 rollback time crosses the product budget. Acceptance is applied at two
 scopes over the same contract. Each seed shard scores its own two pairs (`complete_fixture` and
@@ -108,6 +112,14 @@ missing, duplicate, malformed, or mismatched controls. Both scopes also require 
 rather than a failure. The normalized evidence records the scope, its seeds, every pair, all three
 ratios, the thresholds, all violations, the clean and playable rollback sample counts, an explicit
 per-pair `rollback_p999_gate` block, and the absolute p95, p99.9, maximum, and over-33.3-ms count.
+
+The two scopes differ in exactly one place. The absolute ceiling needs the campaign's other shards
+to know how fast this shard's runner was, and a shard job holds one seed, so a shard scores the
+ceiling as `deferred_to_aggregate_peer_set` and does not enforce it; the aggregate has all three
+seeds and does. This is not a hole: the rollback gate runs only when every shard job succeeded,
+`expected_shard_evidence` pins all six matrix artifacts, and `aggregate_browser_evidence` refuses
+any aggregate in which a pair the tail gate enforced never had its ceiling applied. Every other
+rule, including the normalized ratio and the work ratio, is evaluated identically at both scopes.
 Each clean control runs immediately before its matching playable seed inside one shard. This
 interleaving reduces temporal shared-runner drift without adding a case or weakening exact seed
 pairing, and it is why the campaign shards by seed rather than by profile: a profile shard would
@@ -141,11 +153,21 @@ behind the same precondition for the same reason. Pairs below the floor are stil
 still published: each pair carries `rollback_p999_gate.sample_count`,
 `rollback_p999_gate.normalized_ratio`, `rollback_p999_gate.composite_ratio`,
 `rollback_p999_gate.playable_rollback_p999_ms`, `rollback_p999_gate.normalizer`,
-`rollback_p999_gate.absolute_ceiling_ms`, `rollback_p999_gate.applied`, and a
+`rollback_p999_gate.absolute_ceiling`, `rollback_p999_gate.applied`, and a
 `rollback_p999_gate.status`, so the artifact says exactly which pairs were enforced. The statuses
 are `gated`, `diagnostic_sample_count_below_p999_floor`, `error_sample_count_unavailable`, and
 `error_scenario_thresholds_uncalibrated`. Only the first means the comparisons ran; the two
 `error_` statuses fail the pair.
+
+`rollback_p999_gate.absolute_ceiling` is a block of its own, because the ceiling can be held back
+for a reason the normalized ratio was not. It carries `base_ms` (`39.7`), the measured
+`runner_scale` and whether the clamp bound it, the `peer_reference_p95_work_ms` it was measured
+against and the `peer_count` behind that reference, the `effective_ms` actually enforced, and its
+own `applied` and `status`. Its statuses are the four above plus
+`deferred_to_aggregate_peer_set` — a shard job with no peers — and
+`error_runner_reference_unavailable`, which fails the pair. The runner scale is measured and
+published even where the sample floor holds the gate back, so a diagnostic pair still shows what
+its ceiling would have been.
 
 `browser_cpu_case` is what makes a bad sample count fail closed: `rollback_sample_count` is one of
 the required metric count fields, it must parse through `non_negative_integer`, and a case that
@@ -226,6 +248,71 @@ The composite `rollback_p999_over_clean_p95` figure is still computed and publis
 under contract 7, and `rollback_p999_gate.composite_ratio` carries it, so the contract-6 number
 stays comparable across the archive. It is a diagnostic, not a gate.
 
+### Why the absolute ceiling is scaled by the runner
+
+The ceiling was the one gate in contract 7 that was not runner-relative, so it converted runner
+speed into a verdict. Run
+[`30238674582`](https://github.com/osobytes/goliseo/actions/runs/30238674582), `complete_fixture`:
+
+| shard | p99.9 ms | p95 work ms | normalized | peer median p95 ms | runner scale | enforced ceiling |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| chrome 2001 | 29.72 | 15.735 | 1.889 | 19.3075 | 1.000 | 39.700 ms |
+| chrome 2002 | 29.74 | 16.775 | 1.773 | 18.7875 | 1.000 | 39.700 ms |
+| **chrome 2003** | **48.40** | **21.840** | **2.216** | 16.2550 | **1.344** | **53.340 ms** |
+| firefox 2001 | 30.96 | 19.640 | 1.576 | 17.6300 | 1.114 | 44.226 ms |
+| firefox 2002 | 31.66 | 16.860 | 1.878 | 19.0200 | 1.000 | 39.700 ms |
+| firefox 2003 | 29.32 | 18.400 | 1.593 | 18.2500 | 1.008 | 40.026 ms |
+
+Chrome seed 2003 failed the fixed `39.7 ms` ceiling on a healthy build. It is slow in **both**
+statistics: its p95 work of 21.84 ms sits against a healthy peer mean of 15.81 ms, so the whole job
+ran about 38% slow. The normalized ratio, which is runner-relative, read 2.216 against 2.6 and
+passed. Two gates disagreed about the same measurements, and the absolute one won.
+
+Raising `39.7` was not the fix. [#205](https://github.com/osobytes/goliseo/issues/205) recovered
+this headroom the right way, by removing 59,131 in-bracket encodes rather than by moving a
+threshold, and no fixed millisecond value can be correct across runners that vary by 38% anyway —
+which is the reasoning that produced the normalized ratio in the first place. Deleting it was not
+the fix either: it is the only bound on the proportional class the normalized ratio is exactly
+blind to, and the work-ratio gate that shares that job is itself uncalibrated
+([#191](https://github.com/osobytes/goliseo/issues/191)).
+
+So the ceiling is now measured **per runner**. The reference is the median p95 work of the
+campaign's other shards for the same browser and scenario. Those shards run concurrently on
+comparable hosted runners, so the ratio of one shard's p95 work to its peers' is a measure of that
+machine and of nothing else. The property that makes this safe is that the ratio is **invariant to
+the build**: a regression slows every shard together, moving the numerator and the peer median by
+the same factor, so it leaves the scale at 1.0 and the ceiling at 39.7 ms. Slack can only be
+earned by being slow *relative to your own campaign*, which is the signature of runner noise, not
+of code.
+
+The correction never tightens. A shard faster than its peers is still measured against the
+unmodified 39.7 ms, so nothing that passed the fixed ceiling can fail the scaled one; the scale is
+clamped to `[1.0, 1.6]`. Scaling downwards would apply a constant fitted on one population to a
+different one, and it would have failed a healthy pair: firefox seed 2002 of run
+[`30231753972`](https://github.com/osobytes/goliseo/actions/runs/30231753972) read 13.580 ms of p95
+work against an 18.120 ms peer median and a 33.760 ms tail, which a two-sided correction would have
+failed at 29.75 ms.
+
+**The clean control could not be the reference.** Scaling the ceiling by the paired clean control's
+p95 work is algebraically the contract-6 composite ratio that #188 and #190 removed. Over the 24
+gated `complete_fixture` pairs of the four replayed campaigns it spans 7.929--12.692, and the
+**healthy** maximum (firefox seed 2002 of run 30231753972, 12.692) sits **above** the false red
+this change exists to fix (11.748) — the statistic cannot separate the two cases at all. Calibrated
+the way every other threshold here is, it would land at 14.6, which on a typical 3.2 ms clean
+control is a 46.7 ms ceiling: looser than the 39.7 ms it would replace.
+
+**A binary runner-health precondition could not be calibrated.** Downgrading the ceiling to
+diagnostic when the shard is an outlier needs an outlier threshold, and the recorded data leaves no
+room for one: the largest healthy peer-relative slowdown is 1.161 and the false red is 1.344, so
+the project's 15% margin over the healthy maximum lands at 1.335 — 0.7% *below* the value it has to
+exempt. That is a threshold inside its own noise band, the #191 defect, on a brand-new constant.
+The continuous correction has no such knife edge and clears the false red by 9.3%.
+
+Modelled against a uniform proportional slowdown of the whole campaign, the median factor before
+the ceiling fires is **1.267** for the old fixed value, **1.301** for this peer-relative one, and
+**1.501** for a clean-scaled one. The peer reference costs 2.7% of proportional sensitivity; the
+clean control would have cost 18%.
+
 ### The proportional blind spot
 
 Those three gates do **not** partition the space of regressions, and the gap is worth stating
@@ -270,6 +357,23 @@ proportionally scaled pair must leave the normalized ratio bit-identical, must p
 1.2x, and must be caught by the work gate at 1.3x. Tightening it is a deliberate future decision,
 and those assertions are what will notice when someone makes it.
 
+Scaling the ceiling by the runner does **not** widen this blind spot, and the reason is worth
+stating plainly. A uniform slowdown lifts every shard by the same factor, so every peer median
+lifts with it and every runner scale is bit-identical to what the healthy campaign produced: the
+ceiling that a proportional regression is measured against is the same ceiling as before. Replaying
+run 30238674582's chrome campaign under a uniform playable slowdown, 1.10x passes and 1.15x fails
+on the ceiling alone — the work ratio is still 6.10 against 6.7 and the normalized ratio has not
+moved at all. Across the four replayed campaigns the median factor before the ceiling fires moves
+from 1.267 to 1.301, a 2.7% loss of sensitivity to this class, in exchange for removing the
+false-failure class entirely. The self-test asserts the invariance directly: a uniform slowdown that
+moved any runner scale would mean the correction was absorbing regressions rather than runner noise.
+
+What the correction *does* widen is the single-shard case. A regression that slowed only one seed's
+fixture would raise that shard's p95 work relative to its peers and buy itself a proportionally
+higher ceiling. The work-ratio gate is what covers that case, because the clean control on that
+shard is untouched by a build regression, and it is the discriminator the correction deliberately
+does not use — see the residual risks in [#230](https://github.com/osobytes/goliseo/issues/230).
+
 ### Calibration
 
 `6.7` is calibrated from the complete Chrome and Firefox distributions in accepted exact runs
@@ -292,7 +396,17 @@ contract 7, which would be unreviewable if it moved two gates at once.
 `39.7 ms` is a **CI noise ceiling, not a frame-budget claim.** It is `34.520 * 1.15` and nothing
 more. Do not read it as the browser analogue of the native `< 33.3 ms` p99.9 budget: that number is
 a deliberate two-frame claim at 60 fps, whereas 39.7 ms is 2.38 frames and asserts nothing about
-frame pacing. The browser matrix makes no frame-budget claims.
+frame pacing. The browser matrix makes no frame-budget claims. Since #230 it is the ceiling for a
+shard running at the speed of the campaign's other shards; the enforced value is that number times
+the shard's own runner scale.
+
+`MAX_BROWSER_RUNNER_SCALE = 1.6` is the most that scale may reach, derived the same way as every
+threshold above: the worst runner slowdown ever recorded — chrome seed 2003 of run
+[`30238674582`](https://github.com/osobytes/goliseo/actions/runs/30238674582), `21.840 / 16.2550 =
+1.3436` — carried through the same 15% margin and rounded upward to one decimal. Past it the
+correction stops growing; it is a clamp rather than an error, because a pair under the capped
+ceiling is still under a ceiling. The self-test pins the derivation to the measurements it came
+from, so the cap cannot drift from its justification.
 
 `2.6` and `39.7 ms` are calibrated the same way, but on a different population, because contract 7
 changed the statistic and the contract-5 calibration pair predates it. They are carried from the 42
