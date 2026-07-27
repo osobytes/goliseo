@@ -528,6 +528,118 @@ t.describe("OMP-3 mode-aware coordinator ownership", function()
             t.is_true(session:all_terminal("completed"), mode .. " never completed")
         end
     end)
+
+    -- The phase gate that refuses this is mode-blind and shared with every other
+    -- post-freeze configuration change, but #225 names the 2v2 pair explicitly,
+    -- so it gets a test that names it explicitly rather than one that has to be
+    -- reasoned about from the general case.
+    t.it("freezes a 2v2 human's chosen pair at countdown and mid-match", function()
+        local guest = fixture.guest_peer_id(1)
+        local manifest = fixture.manifest("2v2")
+        local session = driver.new({ guest_count = 3, mode = "2v2" })
+        session:connect_all()
+        session:send(HOST, { kind = "propose_manifest", manifest = manifest })
+        session:pump()
+        local plan = assert(coordinator.plan_assignments(manifest, fixture.peer_ids(3)))
+        session:send(HOST, { kind = "assign_slots", assignments = plan })
+        session:pump()
+        for _, node in ipairs(session.nodes) do
+            session:send(node.peer_id, { kind = "set_ready", ready = true })
+        end
+        session:pump()
+        session:send(HOST, {
+            kind = "begin_countdown",
+            countdown_id = fixture.COUNTDOWN_ID,
+            remaining_ticks = 4,
+            first_input_tick = 0,
+        })
+        session:pump()
+
+        local host = session:host()
+        t.eq(assert(host.state.freeze).match_mode, "2v2")
+        t.eq(table.concat(assert(host.state.freeze).owned[HOST], ","), "home_1,home_2")
+        t.eq(table.concat(assert(host.state.freeze).owned[guest], ","), "home_3,home_4")
+
+        -- Swap which pair the two home humans hold. Same mode, same owned-set
+        -- sizes, same roster, same eight declared sources: only the partition
+        -- moves. It is perfectly legal ownership — it is the freeze, not the
+        -- ownership rules, that has to refuse it.
+        local repartitioned = deep_copy(plan)
+        repartitioned[1].producer_id = guest
+        repartitioned[2].producer_id = guest
+        repartitioned[3].producer_id = HOST
+        repartitioned[4].producer_id = HOST
+        t.is_true(assert(protocol.validate_assignment_manifest(manifest, repartitioned)))
+
+        for _, stage in ipairs({ "countdown", "running" }) do
+            if stage == "running" then
+                session:tick(5)
+                t.is_true(session:all_started(), "the 2v2 session never started")
+            end
+            t.eq(host.state.phase, stage)
+            local before = host.state
+            local outcome =
+                session:send(HOST, { kind = "assign_slots", assignments = repartitioned })
+            t.eq(outcome.accepted, false, "a pair may not be repartitioned in " .. stage)
+            t.eq(outcome.code, "invalid_phase")
+            t.is_true(host.state == before, "a refused repartition leaves no progress behind")
+        end
+
+        -- Every peer's frozen pair, and its opening live slot, is untouched.
+        for _, node in ipairs(session.nodes) do
+            local freeze = assert(node.state.freeze)
+            t.eq(table.concat(freeze.owned[HOST], ","), "home_1,home_2")
+            t.eq(table.concat(freeze.owned[guest], ","), "home_3,home_4")
+            t.eq(freeze.live[HOST], "home_1")
+            t.eq(freeze.live[guest], "home_3")
+        end
+    end)
+
+    -- The owned-set/mode check also has to hold on the receiving end of a real
+    -- link, not only in `plan_assignments` and the host's local command path.
+    -- `inject` sends a message the sender's own coordinator would never emit,
+    -- over the sender's link and canonical wire, so this exercises
+    -- `apply_slot_assignment` exactly as production would.
+    t.it("terminates a guest sent ownership that disagrees with the frozen mode", function()
+        local guest = fixture.guest_peer_id(1)
+        local manifest = fixture.manifest("2v2")
+        local session = driver.new({ guest_count = 3, mode = "2v2" })
+        session:connect_all()
+        session:send(HOST, { kind = "propose_manifest", manifest = manifest })
+        session:pump()
+        t.eq(assert(session:node(guest)).state.phase, "manifest")
+
+        -- Wire-valid ownership: eight canonical slots in order, one declared
+        -- source each, no keeper, and the guest genuinely seated — but shaped
+        -- for 4v4 while the accepted manifest says 2v2. Nothing about the bytes
+        -- is wrong, so only the manifest-aware check can catch it.
+        local one_slot_each =
+            assert(coordinator.plan_assignments(fixture.manifest("4v4"), fixture.peer_ids(3)))
+        t.is_true(
+            assert(protocol.validate_assignment_manifest(fixture.manifest("4v4"), one_slot_each))
+        )
+        t.eq(#protocol.owned_slots(one_slot_each, guest), 1, "the guest is seated, just wrongly")
+
+        session:inject(HOST, guest, "slot_assignment", {
+            manifest_id = protocol.manifest_id(manifest),
+            assignment_id = protocol.assignment_id(one_slot_each, 1),
+            assignments = one_slot_each,
+        })
+
+        local node = assert(session:node(guest))
+        local terminal = assert(node.terminal, "the guest accepted ownership it should refuse")
+        t.eq(terminal.reason, "invalid_assignment")
+        t.eq(terminal.code, "invalid_assignment")
+        t.eq(terminal.origin, "remote")
+        t.is_true(
+            type(terminal.detail) == "string"
+                and terminal.detail:find("2v2 seats 2 per human", 1, true) ~= nil,
+            "the guest must name the mode disagreement, got " .. tostring(terminal.detail)
+        )
+        t.eq(node.state.assignments, nil, "refused ownership is never adopted")
+        -- The blast radius is that one link: the host drops the guest and lives.
+        t.eq(session:host().terminal, nil)
+    end)
 end)
 
 t.describe("OMP-3 live slot selection", function()
