@@ -753,18 +753,15 @@ local function freeze_session(next_state, manifest, countdown_id, first_input_ti
     local sources = assert(coordinator.slot_sources(manifest, assignments))
     ---@type table<string, InputSlotId[]>
     local owned = {}
-    ---@type table<string, InputSlotId>
-    local live = {}
     for _, producer in ipairs(assignments) do
         if producer.producer_kind == "peer" and not owned[producer.producer_id] then
-            local slots = protocol.owned_slots(assignments, producer.producer_id)
-            owned[producer.producer_id] = slots
-            -- The first owned slot in canonical order is live at the first tick.
-            -- It is derived from the frozen assignments, so every peer computes
-            -- the same opening live slot without exchanging anything further.
-            live[producer.producer_id] = slots[1]
+            owned[producer.producer_id] = protocol.owned_slots(assignments, producer.producer_id)
         end
     end
+    -- The first owned slot in canonical order is live at the first tick; one
+    -- implementation of that rule serves the freeze and every pre-freeze
+    -- preview alike.
+    local live = coordinator.preview_live(assignments)
     ---@type CoordinatorFreeze
     local freeze = {
         manifest_id = assert(next_state.manifest_id),
@@ -1011,6 +1008,26 @@ function coordinator.next_live_slot(owned, live, transition)
     for _, slot in ipairs(transition.ranked or {}) do
         if set[slot] then
             return slot
+        end
+    end
+    return live
+end
+
+-- The opening live slot of every human in one ownership generation: the first
+-- owned slot in canonical order, derived from the assignments alone so every
+-- peer computes the same one without exchanging anything further.
+--
+-- `freeze_session` records exactly this as `CoordinatorFreeze.live`. It is
+-- exposed because a lobby has to show the same thing *before* the freeze, and
+-- previewing it must not mean reimplementing the rule.
+---@param assignments SessionSlotProducer[]?
+---@return table<string, InputSlotId>
+function coordinator.preview_live(assignments)
+    ---@type table<string, InputSlotId>
+    local live = {}
+    for _, producer in ipairs(assignments or {}) do
+        if producer.producer_kind == "peer" and live[producer.producer_id] == nil then
+            live[producer.producer_id] = producer.slot
         end
     end
     return live
