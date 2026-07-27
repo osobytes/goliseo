@@ -46,6 +46,31 @@ local FIELD_H = 540
 ---@field correction_magnitude number
 ---@field active_smoothing_count integer
 
+-- The seam between the renderer and whatever is actually simulating. The
+-- development rollback laboratory implements it below; the online match screen
+-- implements it over the OMP-3 driver. Everything the renderer does with a batch
+-- — speculative add/revoke/replace, confirmed exactly-once publication, replay,
+-- smoothing — is identical for both, which is the point: the online match reuses
+-- the shipped feedback path rather than growing a parallel one.
+--
+-- Two members the laboratory structurally cannot answer, and answers as constant
+-- no-ops below: `full_time`, because the lab drains its network after reference
+-- full time and reaches full time only through the confirmed lifecycle record;
+-- and `controlled_player`, because the lab pins its local slot at construction
+-- and never moves it. Both exist for a driven match, where the source stops at
+-- the tick the match ends and where the controlled player follows a live slot
+-- that moves. Treat the lab as the reference for everything *except* those two.
+---@class MatchRollbackSource
+---@field needs_local_sample fun(self: MatchRollbackSource): boolean
+---@field advance fun(self: MatchRollbackSource, tick: integer, sample: InputSample?): RollbackPlayableLabBatch
+---@field current_snapshot fun(self: MatchRollbackSource): MatchSnapshot
+---@field snapshot fun(self: MatchRollbackSource, boundary: integer): RollbackSnapshotLookup
+---@field terminal fun(self: MatchRollbackSource): boolean -- No further progress is possible.
+---@field failed fun(self: MatchRollbackSource): boolean -- Terminal for a synchronization reason.
+---@field full_time fun(self: MatchRollbackSource): boolean -- Full time is reached even if the tail is unconfirmed.
+---@field debug_model fun(self: MatchRollbackSource): MatchRollbackDebugModel?
+---@field controlled_player fun(self: MatchRollbackSource, state: MatchState): integer?
+
 ---@class MatchScreenOptions
 ---@field formation string?
 ---@field tactic string?
@@ -55,8 +80,10 @@ local FIELD_H = 540
 ---@field arena_id string?
 ---@field show_onboarding boolean?
 ---@field combat_enabled boolean? -- Explicit post-showcase prototype opt-in.
----@field profile "product"|"playtest"?
+---@field profile "product"|"playtest"|"online"?
 ---@field rollback_lab MatchRollbackLabOptions? -- Explicit development-only opt-in.
+---@field rollback_source (fun(): MatchRollbackSource)? -- Online drive seam.
+---@field initial_snapshot MatchSnapshot? -- Canonical boundary zero for a driven match.
 
 ---@class MatchScreen : Screen
 ---@field state MatchState
@@ -67,7 +94,8 @@ local FIELD_H = 540
 ---@field away_name string
 ---@field arena ArenaData
 ---@field _opts MatchScreenOptions
----@field _profile "product"|"playtest"
+---@field _profile "product"|"playtest"|"online"
+---@field _source MatchRollbackSource?
 ---@field _onboarding MatchOnboardingState
 ---@field _kickoff_banner number
 ---@field _last_scoring_team "home"|"away"?
@@ -106,9 +134,8 @@ Match.__index = Match
 ---@param self MatchScreen
 ---@return boolean
 local function match_is_over(self)
-    if self._rollback_debug then
-        local status = self._rollback_debug.status
-        return status ~= "active" and status ~= "settling"
+    if self._source then
+        return self._source:terminal()
     end
     return self.state.finished
 end
@@ -178,18 +205,15 @@ local function update_render_smoothing(self, dt, corrected, lifecycle_reset, upd
     end
 end
 
----@param debug MatchRollbackDebugModel?
+---@param self MatchScreen
 ---@return boolean
-local function synchronization_failed(debug)
-    if debug == nil then
-        return false
-    end
-    return debug.status ~= "active" and debug.status ~= "settling" and debug.status ~= "converged"
+local function synchronization_failed(self)
+    return self._source ~= nil and self._source:failed()
 end
 
 ---@param self MatchScreen
 local function reconcile_rollback_replay(self)
-    local lab = assert(self._rollback_lab)
+    local source = assert(self._source)
     local first_boundary = nil
     for _, correction in ipairs(self._rollback_corrections) do
         first_boundary = first_boundary and math.min(first_boundary, correction.replaced_from_tick)
@@ -207,7 +231,7 @@ local function reconcile_rollback_replay(self)
         return
     end
     for boundary = first_boundary, self.state.input_tick do
-        local lookup = rollback_playable_lab.snapshot(lab, boundary)
+        local lookup = source:snapshot(boundary)
         if lookup.status == "present" or lookup.status == "retained" then
             replay.record_boundary(
                 boundary,
@@ -235,7 +259,7 @@ end
 ---@param dt number
 ---@return boolean was_active
 local function advance_rollback_replay(self, dt)
-    if self._rollback_lab == nil or not replay.active() then
+    if self._source == nil or not replay.active() then
         return false
     end
     self._replay_state = replay.step(dt)
@@ -287,7 +311,7 @@ end
 ---@param diff RollbackEventDiff
 ---@return boolean presented
 function Match:consume_rollback_event_diff(diff)
-    if self._rollback_lab ~= nil and replay.active() then
+    if self._source ~= nil and replay.active() then
         effects.discard_event_diff(diff)
         return false
     end
@@ -346,6 +370,70 @@ local function consume_rollback_presentation(self)
     end
 end
 
+-- The development laboratory, wrapped in the renderer's drive seam. It is the
+-- reference implementation of `MatchRollbackSource`: the online source in
+-- `game.screens.online_match` answers the same questions over the OMP-3 driver
+-- instead.
+---@param lab RollbackPlayableLab
+---@return MatchRollbackSource
+local function lab_source(lab)
+    ---@type MatchRollbackSource
+    local source = {
+        needs_local_sample = function()
+            return rollback_playable_lab.needs_local_sample(lab)
+        end,
+        advance = function(_, tick, sample)
+            return rollback_playable_lab.advance(lab, tick, sample)
+        end,
+        current_snapshot = function()
+            return rollback_playable_lab.current_snapshot(lab)
+        end,
+        snapshot = function(_, boundary)
+            return rollback_playable_lab.snapshot(lab, boundary)
+        end,
+        terminal = function()
+            local status = rollback_playable_lab.debug_model(lab).status
+            return status ~= "active" and status ~= "settling"
+        end,
+        failed = function()
+            local status = rollback_playable_lab.debug_model(lab).status
+            return status ~= "active" and status ~= "settling" and status ~= "converged"
+        end,
+        full_time = function()
+            -- The laboratory drains its network after reference full time, so
+            -- its full time is the confirmed lifecycle record and nothing else.
+            return false
+        end,
+        debug_model = function()
+            local debug = rollback_playable_lab.debug_model(lab)
+            ---@cast debug MatchRollbackDebugModel
+            return debug
+        end,
+        controlled_player = function()
+            -- The lab pins its local slot at construction and never moves it, so
+            -- the snapshot's own `controlled` is already right. See the note on
+            -- `MatchRollbackSource`.
+            return nil
+        end,
+    }
+    return source
+end
+
+---@param self MatchScreen
+local function follow_source_control(self)
+    local source = self._source
+    if source == nil then
+        return
+    end
+    local index = source:controlled_player(self.state)
+    if index ~= nil then
+        -- Presentation only. Slot routing in `sim.match` is `slot_players`, which
+        -- never reads `controlled`, so this moves the camera, the HUD subject,
+        -- and the contextual key meanings without widening what a peer authors.
+        self.state.controlled = index
+    end
+end
+
 ---@param opts MatchScreenOptions?
 ---@return MatchScreen
 function Match.new(opts)
@@ -377,10 +465,13 @@ function Match:restart()
     local away = self._opts.away or teams.orion
     local rollback_options = self._opts.rollback_lab
     local ownership = rollback_options and sim_match.ownership_for_teams(home, away) or nil
+    local pinned = self._opts.initial_snapshot
+        or (rollback_options and rollback_options.initial_snapshot)
+        or nil
     local initial ---@type MatchState
     local initial_combat ---@type CombatMatchState?
-    if rollback_options and rollback_options.initial_snapshot then
-        initial, initial_combat = match_snapshot.restore(rollback_options.initial_snapshot)
+    if pinned then
+        initial, initial_combat = match_snapshot.restore(pinned)
     else
         initial = sim_match.new({
             home = home,
@@ -403,23 +494,40 @@ function Match:restart()
             or "combat-enabled matches require a CombatMatchState companion"
     )
     if rollback_options then
-        self._rollback_lab =
-            rollback_playable_lab.new(match_snapshot.capture(initial, initial_combat), {
-                local_slot = rollback_options.local_slot,
-                profile_name = rollback_options.profile_name,
-                profile = rollback_options.network_profile,
-                network_seed = rollback_options.network_seed,
-                bot_seed = rollback_options.bot_seed,
-                max_rollback_ticks = rollback_options.max_rollback_ticks,
-                settlement_ticks = rollback_options.settlement_ticks,
-            })
-        self.state, self._combat_state =
-            match_snapshot.restore(rollback_playable_lab.current_snapshot(self._rollback_lab))
-        local debug = rollback_playable_lab.debug_model(self._rollback_lab)
-        ---@cast debug MatchRollbackDebugModel
-        self._rollback_debug = debug
+        local lab = rollback_playable_lab.new(match_snapshot.capture(initial, initial_combat), {
+            local_slot = rollback_options.local_slot,
+            profile_name = rollback_options.profile_name,
+            profile = rollback_options.network_profile,
+            network_seed = rollback_options.network_seed,
+            bot_seed = rollback_options.bot_seed,
+            max_rollback_ticks = rollback_options.max_rollback_ticks,
+            settlement_ticks = rollback_options.settlement_ticks,
+        })
+        self._rollback_lab = lab
+        self._source = lab_source(lab)
+    elseif self._opts.rollback_source then
+        -- An externally driven match (the OMP-3 online driver). Boundary zero is
+        -- supplied rather than built here, because every peer must start from the
+        -- byte-identical snapshot the frozen manifest names.
+        --
+        -- The factory takes nothing on purpose. A driven source is seeded from
+        -- that same snapshot *before* this screen exists — the online driver is
+        -- constructed with it — so handing the snapshot over here would look
+        -- like the callee still gets to choose, when it has already committed.
+        -- `initial_snapshot` remains required, because it is what this screen
+        -- restores and renders from until the first advance.
+        assert(pinned, "an externally driven match requires its canonical boundary zero")
+        self._rollback_lab = nil
+        self._source = self._opts.rollback_source()
     else
         self._rollback_lab = nil
+        self._source = nil
+    end
+    if self._source then
+        self.state, self._combat_state = match_snapshot.restore(self._source:current_snapshot())
+        self._rollback_debug = self._source:debug_model()
+        follow_source_control(self)
+    else
         self._rollback_debug = nil
         self.state = initial
         self._combat_state = initial_combat
@@ -454,7 +562,7 @@ function Match:restart()
     self._combat_feedback = combat_feedback.new()
     self._replay_state = nil
     replay.reset()
-    if self._rollback_lab then
+    if self._source then
         replay.record_boundary(0, self.state, self._combat_state)
     end
     view_state.reset()
@@ -481,8 +589,11 @@ end
 -- expose full time only after the stable lifecycle step is confirmed.
 ---@return boolean
 function Match:full_time_confirmed()
-    if self._rollback_lab then
-        return self._presentation_full_time
+    if self._source then
+        -- A driven match reaches full time when its confirmed lifecycle record
+        -- says so, or when the source declares it: the online driver stops at
+        -- the tick the match ends, which can be before the final rows confirm.
+        return self._presentation_full_time or self._source:full_time()
     end
     return self.state.finished
 end
@@ -491,7 +602,7 @@ end
 -- explicitly skips it. Result navigation must not replace an active replay.
 ---@return boolean
 function Match:result_completion_blocked()
-    return self._rollback_lab ~= nil and replay.active()
+    return self._source ~= nil and replay.active()
 end
 
 ---@param self MatchScreen
@@ -674,7 +785,7 @@ function Match:update(dt)
     end
     -- Slow-motion goal replay: the sim freezes while the buffer plays back
     -- through the normal renderer (same camera).
-    if self._rollback_lab == nil and replay.active() then
+    if self._source == nil and replay.active() then
         self._replay_state = replay.step(dt)
         if self._replay_state then
             view_state.update(self._replay_state.players, dt)
@@ -761,28 +872,26 @@ function Match:update(dt)
     self._frame_events = {}
     local score_before = self.state.score.home + self.state.score.away
     local kickoff_before = self.state.kickoff_hold
-    if self._rollback_lab then
-        local lab = assert(self._rollback_lab)
+    if self._source then
+        local source = assert(self._source)
         fixed_clock.advance(self._clock, dt, function(_)
-            if not rollback_playable_lab.needs_local_sample(lab) then
+            if not source:needs_local_sample() then
                 return nil
             end
             local next, tick_input = match_input_adapter.next_tick(self._input_adapter)
             self._input_adapter = next
             return slot_input.to_sample(tick_input)
         end, function(tick, sample)
-            local batch = rollback_playable_lab.advance(lab, tick, sample)
+            local batch = source:advance(tick, sample)
             append_values(self._rollback_outputs, batch.outputs)
             append_values(self._rollback_event_diffs, batch.event_diffs)
             append_values(self._rollback_confirmed_steps, batch.confirmed_steps)
             append_values(self._rollback_corrections, batch.corrections)
-            self.state, self._combat_state =
-                match_snapshot.restore(rollback_playable_lab.current_snapshot(lab))
-            return batch.status == "active" or batch.status == "settling"
+            self.state, self._combat_state = match_snapshot.restore(source:current_snapshot())
+            follow_source_control(self)
+            return not source:terminal()
         end)
-        local debug = rollback_playable_lab.debug_model(lab)
-        ---@cast debug MatchRollbackDebugModel
-        self._rollback_debug = debug
+        self._rollback_debug = source:debug_model()
         reconcile_rollback_replay(self)
         consume_rollback_presentation(self)
         if not replay.active() then
@@ -823,13 +932,13 @@ function Match:update(dt)
     -- A correction begins at the preceding displayed pose, then sheds only its
     -- render-owned offset. Confirmed replay footage keeps its own view timeline
     -- while hidden live corrections continue to reconcile independently.
-    local drawing_rollback_replay = self._rollback_lab ~= nil and replay.active()
+    local drawing_rollback_replay = self._source ~= nil and replay.active()
     local score_after = self.state.score.home + self.state.score.away
     local lifecycle_reset = score_after ~= score_before
-        or (self._rollback_lab == nil and score_after > self._last_score)
+        or (self._source == nil and score_after > self._last_score)
         or self.state.kickoff_hold > kickoff_before
         or self.state.finished
-        or synchronization_failed(self._rollback_debug)
+        or synchronization_failed(self)
     update_render_smoothing(
         self,
         dt,
@@ -862,7 +971,7 @@ function Match:update(dt)
 
     -- A goal just went in (score edge, match still live): celebrate, then roll
     -- the replay. Which side scored picks the celebrating team.
-    if self._rollback_lab == nil then
+    if self._source == nil then
         local sh, sa = self.state.score.home, self.state.score.away
         if sh + sa > self._last_score and not self.state.finished then
             local scoring_team = sh > self._last_home and "home" or "away"
