@@ -12,6 +12,7 @@ import platform
 import re
 import shutil
 import signal
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -140,7 +141,10 @@ MAX_BROWSER_P95_WORK_RATIO = 6.7
 # are equally tight (cv 0.085 against 0.086); over the six sharded pairs the composite spreads to
 # cv 0.198 while the normalized ratio holds at 0.118.
 MAX_BROWSER_ROLLBACK_P999_OVER_PLAYABLE_P95 = 2.6
-# Absolute backstop, applied alongside the normalized ratio.
+# Absolute backstop, applied alongside the normalized ratio, and scaled by the runner this shard
+# landed on -- see MAX_BROWSER_RUNNER_SCALE below. 39.7 ms is the ceiling for a shard running at
+# the speed of the campaign's other shards; a shard measurably slower than its own peers is
+# compared against a proportionally larger number.
 #
 # This is a CI noise ceiling, not a frame-budget claim. It is the largest tail in the 42-pair
 # calibration population carried through BROWSER_CPU_CALIBRATION_MARGIN (34.520 * 1.15), and
@@ -159,6 +163,68 @@ MAX_BROWSER_ROLLBACK_P999_OVER_PLAYABLE_P95 = 2.6
 # 1.256 before either fires, and 1.573 on the pair whose clean control misreported. The self-test
 # pins the invariance as a known bounded property rather than leaving it unexamined.
 MAX_BROWSER_ROLLBACK_P999_MS = 39.7
+# The ceiling is corrected for runner speed by the shard's own p95 work measured against the
+# median of the campaign's OTHER shards for the same browser and scenario (#230).
+#
+# Why a correction was needed. The ceiling was the one gate in contract 7 that was not
+# runner-relative, so it converted runner speed into a verdict. Run 30238674582 recorded
+# complete_fixture chrome seed 2003 at a 48.400 ms tail on a 21.840 ms p95 work, against a healthy
+# peer mean of 15.81 ms and a healthy peer maximum of 17.09 ms: the whole job ran about 38% slow.
+# The normalized ratio, which is runner-relative, read 2.216 against its 2.6 threshold and passed.
+# Two gates disagreed about the same measurements, and the absolute one turned main red.
+#
+# Why the peer shards are the reference. The six matrix shards run concurrently on comparable
+# hosted runners, so the ratio of one shard's p95 work to its peers' is a measure of that runner
+# and of nothing else. Critically it is invariant to the build: a regression that slows the
+# playable case moves every shard together, leaving the ratio at 1 and the ceiling at 39.7 ms, so
+# the correction cannot be bought by regressing the code. Only a shard that is slow relative to
+# its own campaign -- the runner-noise signature -- earns slack.
+#
+# Why not the paired clean control (option 1 of #230). Scaling by the clean control's p95 work is
+# algebraically the contract-6 composite ratio that #188 and #190 removed, and it is measurably
+# worse. Over the 24 gated complete_fixture pairs of the four replayed campaigns, p99.9 over clean
+# p95 spans 7.929-12.692 with the HEALTHY maximum (firefox seed 2002 of run 30231753972, 12.692)
+# ABOVE the false red this constant exists to fix (11.748): the statistic cannot even separate the
+# two. Calibrated the way every other threshold here is, it would sit at 14.6, which on a typical
+# 3.2 ms clean control is a 46.7 ms ceiling -- looser than the 39.7 ms it replaces. Modelled
+# against a uniform proportional slowdown of the whole campaign, the median detection factor is
+# 1.267 for the fixed ceiling, 1.301 for this peer-relative one, and 1.501 for the clean-scaled
+# one. The peer reference costs 2.7% of proportional sensitivity; the clean control costs 18%.
+#
+# Why not a binary runner-health precondition (option 2 of #230). Downgrading the ceiling to
+# diagnostic when the shard is an outlier needs an outlier threshold, and the recorded data does
+# not leave room for one: the largest healthy peer-relative slowdown is 1.161 and the false red is
+# 1.344, so the project's 15% margin over the healthy maximum lands at 1.335 -- 0.7% below the
+# value it must exempt. That is a threshold inside its own noise band, the #191 defect, on a new
+# constant. A continuous correction has no such knife edge: it degrades smoothly and clears the
+# false red by 9.3%.
+#
+# The correction never tightens the ceiling. A shard faster than its peers is still measured
+# against 39.7 ms, so nothing that passed the fixed ceiling can fail the scaled one -- replaying
+# the four recorded campaigns shows exactly one verdict change, the false red. Scaling downwards
+# would apply the constant to a population it was not fitted on: firefox seed 2002 of run
+# 30231753972 read 13.580 ms of p95 work against an 18.120 ms peer median and a 33.760 ms tail,
+# and a two-sided correction would have failed that healthy pair at 29.75 ms.
+BROWSER_CEILING_RUNNER_REFERENCE = "peer_median_playable_p95_work_ms"
+# At least two peers, so the reference is a median of a real set rather than a single shard's own
+# noise. Three seed shards per browser give every pair exactly two.
+MIN_BROWSER_CEILING_PEER_COUNT = 2
+# The largest correction the ceiling will grant, so an absurd peer ratio cannot buy unbounded
+# exemption. Derived like every other browser threshold here: the worst runner slowdown ever
+# recorded, chrome seed 2003 of run 30238674582 at 21.840 / 16.2550, carried through
+# BROWSER_CPU_CALIBRATION_MARGIN by the same math.ceil(x * 1.15 * 10) / 10 the tail thresholds
+# use. The self-test pins that derivation. Past this the correction stops growing; it is a clamp,
+# not an error, because a pair under the capped ceiling is still under a ceiling.
+BROWSER_RUNNER_SCALE_CALIBRATION_RUN = "30238674582"
+BROWSER_RUNNER_SCALE_CALIBRATION_MAX = 21.840 / 16.2550
+MAX_BROWSER_RUNNER_SCALE = 1.6
+# The peer set exists only where more than one seed is in scope, which is the aggregate. A
+# single-seed shard job records the ceiling as deferred and the rollback gate applies it when it
+# merges the three shards; aggregate_browser_evidence refuses evidence in which a gated pair never
+# had its ceiling applied, so the deferral is always redeemed. This is what stops a slow runner
+# failing its own shard job before the campaign that could exonerate it has finished.
+ROLLBACK_CEILING_GATE_DEFERRED = "deferred_to_aggregate_peer_set"
+ROLLBACK_CEILING_GATE_ERROR = "error_runner_reference_unavailable"
 # 2.6 and 39.7 ms are calibrated on the complete_fixture distribution and on nothing else. combat
 # sits permanently below MIN_ROLLBACK_P999_SAMPLE_COUNT so it is never gated today, but the
 # recorded combat pairs reach a normalized ratio of 3.437 at six samples: reusing these numbers
@@ -2978,6 +3044,82 @@ def browser_cpu_case(
     return extracted, []
 
 
+def browser_ceiling_gate(
+    playable_p95: float,
+    peers: list[float],
+    expected_peer_count: int,
+) -> dict[str, Any]:
+    """Scale the absolute rollback ceiling by this shard's own runner speed.
+
+    ``peers`` are the playable p95 work values of the campaign's other shards for the same
+    browser and scenario, measured concurrently on comparable hardware. Their median is the
+    reference: a shard slower than it is compared against a proportionally larger ceiling, a
+    shard faster than it is compared against the unmodified one. The correction is invariant
+    to the build, because a regression moves every shard together.
+
+    Fails closed in both directions it can. Fewer than ``MIN_BROWSER_CEILING_PEER_COUNT``
+    peers in scope is a deferral, not an exemption -- the aggregate has the peer set and
+    ``aggregate_browser_evidence`` refuses evidence in which a gated pair never had its
+    ceiling applied. A peer set that is incomplete or carries a non-finite or non-positive
+    measurement where one was expected is an error that fails the pair, so a vanished or
+    collapsed reference can never be read as "no ceiling".
+    """
+
+    block: dict[str, Any] = {
+        "applied": False,
+        "base_ms": MAX_BROWSER_ROLLBACK_P999_MS,
+        "effective_ms": None,
+        "max_runner_scale": MAX_BROWSER_RUNNER_SCALE,
+        "peer_count": len(peers),
+        "peer_reference_p95_work_ms": None,
+        "reference": BROWSER_CEILING_RUNNER_REFERENCE,
+        "runner_scale": None,
+        "runner_scale_clamped": False,
+        "status": ROLLBACK_CEILING_GATE_DEFERRED,
+    }
+    if expected_peer_count < MIN_BROWSER_CEILING_PEER_COUNT:
+        return block
+    if len(peers) != expected_peer_count or not all(
+        math.isfinite(peer) and peer > 0 for peer in peers
+    ):
+        block["status"] = ROLLBACK_CEILING_GATE_ERROR
+        return block
+    reference = statistics.median(peers)
+    if not math.isfinite(reference) or reference <= 0:
+        block["status"] = ROLLBACK_CEILING_GATE_ERROR
+        return block
+    measured_scale = playable_p95 / reference
+    runner_scale = min(max(measured_scale, 1.0), MAX_BROWSER_RUNNER_SCALE)
+    block.update(
+        {
+            "applied": True,
+            "effective_ms": round(MAX_BROWSER_ROLLBACK_P999_MS * runner_scale, 9),
+            "peer_reference_p95_work_ms": round(reference, 9),
+            "runner_scale": round(runner_scale, 9),
+            "runner_scale_clamped": measured_scale > MAX_BROWSER_RUNNER_SCALE,
+            "status": ROLLBACK_P999_GATE_APPLIED,
+        }
+    )
+    return block
+
+
+def unredeemed_ceiling_deferrals(acceptance: dict[str, Any]) -> list[str]:
+    """Name every gated pair whose absolute ceiling was never applied.
+
+    The shard jobs defer the ceiling because a single shard has no peers to measure its runner
+    against (#230). This is where that debt is collected: a pair the tail gate enforced must
+    have had its ceiling enforced too, or the campaign produced evidence in which nothing ever
+    applied it.
+    """
+
+    return [
+        f"{pair['scenario']} seed {pair['seed']}"
+        for pair in acceptance["pairs"]
+        if pair["rollback_p999_gate"]["applied"]
+        and not pair["rollback_p999_gate"]["absolute_ceiling"]["applied"]
+    ]
+
+
 def browser_cpu_acceptance(
     runs: list[dict[str, Any]],
     browser_name: str,
@@ -3029,6 +3171,14 @@ def browser_cpu_acceptance(
             f"{browser_name} controls report {len(browser_versions)} browser versions, "
             "expected exactly one"
         )
+
+    # The runner-speed reference for the absolute ceiling. Keyed by scenario and seed so a pair
+    # is only ever compared against the same fixture on the campaign's other shards.
+    peer_p95_work: dict[tuple[str, str], float] = {
+        (key[0], key[2]): row["p95_work_ms"]
+        for key, row in rows.items()
+        if key[1] == "playable"
+    }
 
     pairs: list[dict[str, Any]] = []
     for scenario in BROWSER_CPU_SCENARIOS:
@@ -3119,14 +3269,42 @@ def browser_cpu_acceptance(
             # one 43.545 ms combat sample on a build with a 7.1 ms native peak -- runner noise,
             # not a regression. Applying a millisecond ceiling there would re-create exactly the
             # false failure #178 removed.
-            if (
-                rollback_gate_applied
-                and playable_rollback_p999 >= MAX_BROWSER_ROLLBACK_P999_MS
+            #
+            # It is also the one gate here that is stated in milliseconds, so it is the one that
+            # has to be told how fast the machine under it was. The peer shards say so; see
+            # browser_ceiling_gate and MAX_BROWSER_RUNNER_SCALE.
+            ceiling_gate = browser_ceiling_gate(
+                playable_p95,
+                [
+                    peer_p95_work[(scenario, str(peer_seed))]
+                    for peer_seed in seeds
+                    if peer_seed != seed_value
+                    and (scenario, str(peer_seed)) in peer_p95_work
+                ],
+                len(seeds) - 1,
+            )
+            if not rollback_gate_applied:
+                # Whatever held back the normalized ratio holds back the ceiling too, and the
+                # published status says which of the two reasons it was.
+                ceiling_gate["applied"] = False
+                ceiling_gate["status"] = rollback_gate_status
+            elif ceiling_gate["status"] == ROLLBACK_CEILING_GATE_ERROR:
+                pair_reasons.append(
+                    f"{browser_name} {scenario} seed {seed} has no usable runner reference "
+                    f"for the absolute rollback ceiling ({ceiling_gate['peer_count']} of "
+                    f"{len(seeds) - 1} peer shards reported a finite positive p95 work), so "
+                    "the ceiling fails closed"
+                )
+            elif ceiling_gate["applied"] and (
+                playable_rollback_p999 >= ceiling_gate["effective_ms"]
             ):
                 pair_reasons.append(
                     f"{browser_name} {scenario} seed {seed} "
                     f"playable_rollback_p999_ms={playable_rollback_p999:.6f} "
-                    f"does not meet <{MAX_BROWSER_ROLLBACK_P999_MS:.1f}"
+                    f"does not meet <{ceiling_gate['effective_ms']:.6f} "
+                    f"({MAX_BROWSER_ROLLBACK_P999_MS:.1f} ms base ceiling at a "
+                    f"{ceiling_gate['runner_scale']:.6f} runner scale over a "
+                    f"{ceiling_gate['peer_reference_p95_work_ms']:.6f} ms peer median p95 work)"
                 )
             reasons.extend(pair_reasons)
             pairs.append(
@@ -3169,7 +3347,7 @@ def browser_cpu_acceptance(
                     },
                     "reasons": pair_reasons,
                     "rollback_p999_gate": {
-                        "absolute_ceiling_ms": MAX_BROWSER_ROLLBACK_P999_MS,
+                        "absolute_ceiling": ceiling_gate,
                         "applied": rollback_gate_applied,
                         "composite_ratio": round(rollback_ratio, 9),
                         "minimum_sample_count": MIN_ROLLBACK_P999_SAMPLE_COUNT,
@@ -3219,7 +3397,12 @@ def browser_cpu_acceptance(
                 BROWSER_TAIL_CALIBRATION_MAX_ROLLBACK_P999_OVER_PLAYABLE_P95,
                 9,
             ),
+            "max_accepted_runner_scale": round(
+                BROWSER_RUNNER_SCALE_CALIBRATION_MAX,
+                9,
+            ),
             "rollback_tail_accepted_run_ids": list(BROWSER_TAIL_CALIBRATION_RUNS),
+            "runner_scale_accepted_run_id": BROWSER_RUNNER_SCALE_CALIBRATION_RUN,
         },
         "gate_contract": int(GATE_CONTRACT),
         "method": "same_shard_same_runtime_scenario_seed_paired",
@@ -3232,11 +3415,16 @@ def browser_cpu_acceptance(
         "thresholds": {
             "comparison": "strict_less_than",
             "max_p95_work_over_clean_p95": MAX_BROWSER_P95_WORK_RATIO,
+            # Base value. The enforced ceiling is this scaled by the pair's own runner scale,
+            # published per pair as rollback_p999_gate.absolute_ceiling.effective_ms.
             "max_rollback_p999_ms": MAX_BROWSER_ROLLBACK_P999_MS,
             "max_rollback_p999_over_playable_p95": (
                 MAX_BROWSER_ROLLBACK_P999_OVER_PLAYABLE_P95
             ),
+            "max_runner_scale": MAX_BROWSER_RUNNER_SCALE,
+            "min_rollback_p999_peer_count": MIN_BROWSER_CEILING_PEER_COUNT,
             "min_rollback_p999_sample_count": MIN_ROLLBACK_P999_SAMPLE_COUNT,
+            "runner_scale_reference": BROWSER_CEILING_RUNNER_REFERENCE,
         },
     }
 
@@ -3532,6 +3720,12 @@ def aggregate_browser_evidence(shards: dict[str, dict[str, Any]]) -> dict[str, A
             reason = "; ".join(acceptance["reasons"])
             raise RuntimeError(
                 f"{browser_name} aggregate browser CPU acceptance failed: {reason}"
+            )
+        deferred = unredeemed_ceiling_deferrals(acceptance)
+        if deferred:
+            raise RuntimeError(
+                f"{browser_name} aggregate evidence gated the rollback tail without applying "
+                f"the absolute ceiling to {deferred}"
             )
         soak_name = f"omp2-rollback-{browser_name}-soak"
         soak_runs = shards[soak_name]["browser"]["runtimes"][browser_name].get("runs")
@@ -3987,6 +4181,11 @@ def run_self_test() -> None:
             MAX_BROWSER_ROLLBACK_P999_MS,
             "rollback p99.9 absolute ceiling",
         ),
+        (
+            BROWSER_RUNNER_SCALE_CALIBRATION_MAX,
+            MAX_BROWSER_RUNNER_SCALE,
+            "absolute ceiling runner scale cap",
+        ),
     ):
         if carry_calibration_margin(accepted_maximum) != threshold:
             raise RuntimeError(
@@ -4167,12 +4366,18 @@ def run_self_test() -> None:
     # sample floor. Tests that need a gated combat pair ask for one explicitly.
     OBSERVED_COMBAT_ROLLBACK_SAMPLES = 8
 
+    # The three shards land on three different runners, so the default fixture gives them three
+    # different machine speeds. That spread is exactly what the absolute ceiling's runner scale
+    # reads, and equal entries put every shard on scale 1.0.
+    SHARD_MACHINE_P95_MS = (2.0, 2.25, 2.5)
+
     def synthetic_browser_cpu_matrix(
         scale: float,
         soccer_rollback_regression_seeds: tuple[int, ...] = (),
         combat_p95_regression_seeds: tuple[int, ...] = (),
         clean_control_scale: float = 1.0,
         playable_scale: float = 1.0,
+        machine_p95_ms: tuple[float, float, float] = SHARD_MACHINE_P95_MS,
     ) -> list[dict[str, Any]]:
         """Build a seed-paired browser-full matrix.
 
@@ -4181,12 +4386,14 @@ def run_self_test() -> None:
         per-shard clean/playable disagreement that #188 measured on real hardware.
         ``playable_scale`` multiplies only the playable case, modelling a regression that slows
         the playable build uniformly while the clean control stays where it was.
+        ``machine_p95_ms`` sets each shard's runner speed, which is what the absolute ceiling's
+        peer-relative runner scale is derived from.
         """
 
         runs = []
         for index, seed in enumerate(NETWORK_SEEDS):
             for profile in BROWSER_FULL_PROFILES:
-                machine_p95 = (2.0 + index * 0.25) * scale
+                machine_p95 = machine_p95_ms[index] * scale
                 combat_machine_p95 = machine_p95 * 1.2
                 if profile == "clean":
                     p95_work = machine_p95 * clean_control_scale
@@ -4236,6 +4443,55 @@ def run_self_test() -> None:
             or shard_acceptance["seeds"] != [shard_seed]
         ):
             raise RuntimeError(f"seed {shard_seed} shard CPU acceptance lost its scope")
+        # A shard job holds one seed, so it has no peers to measure its runner against and
+        # cannot apply the absolute ceiling. It says so rather than quietly applying a value
+        # calibrated for a machine it cannot see; the aggregate below collects the debt.
+        for shard_pair in shard_acceptance["pairs"]:
+            shard_ceiling = shard_pair["rollback_p999_gate"]["absolute_ceiling"]
+            if (
+                shard_ceiling["applied"]
+                or shard_ceiling["effective_ms"] is not None
+                or shard_ceiling["peer_count"] != 0
+            ):
+                raise RuntimeError(
+                    f"seed {shard_seed} applied the absolute ceiling without a peer set: "
+                    f"{shard_ceiling}"
+                )
+            expected_shard_status = (
+                ROLLBACK_CEILING_GATE_DEFERRED
+                if shard_pair["rollback_p999_gate"]["applied"]
+                else shard_pair["rollback_p999_gate"]["status"]
+            )
+            if shard_ceiling["status"] != expected_shard_status:
+                raise RuntimeError(
+                    f"seed {shard_seed} misreported its deferred ceiling: {shard_ceiling}"
+                )
+        # A shard's deferral is a debt the rollback gate collects when it merges the shards.
+        # aggregate_browser_evidence refuses evidence that still owes it, so shard-scoped
+        # evidence must be exactly what that guard rejects.
+        if unredeemed_ceiling_deferrals(shard_acceptance) != [
+            f"complete_fixture seed {shard_seed}"
+        ]:
+            raise RuntimeError(
+                f"seed {shard_seed} shard evidence did not record a ceiling debt: "
+                f"{unredeemed_ceiling_deferrals(shard_acceptance)}"
+            )
+    for aggregate_pair in proportional_slowdown["pairs"]:
+        aggregate_ceiling = aggregate_pair["rollback_p999_gate"]["absolute_ceiling"]
+        if (
+            aggregate_pair["rollback_p999_gate"]["applied"]
+            != aggregate_ceiling["applied"]
+            or aggregate_ceiling["peer_count"] != MIN_BROWSER_CEILING_PEER_COUNT
+        ):
+            raise RuntimeError(
+                "the aggregate did not redeem a shard's deferred ceiling: "
+                f"{aggregate_ceiling}"
+            )
+    if unredeemed_ceiling_deferrals(proportional_slowdown):
+        raise RuntimeError(
+            "aggregate evidence still owed a ceiling: "
+            f"{unredeemed_ceiling_deferrals(proportional_slowdown)}"
+        )
     if browser_cpu_acceptance(sharded_controls, "firefox") != proportional_slowdown:
         raise RuntimeError("merged seed shards did not reconstruct the aggregate contract")
     foreign_seed = browser_cpu_acceptance(sharded_controls, "firefox", (2001,))
@@ -4261,12 +4517,19 @@ def run_self_test() -> None:
     # The ratio gates are scale-free by construction, which is exactly why normalization on its
     # own could excuse a build that is simply slower everywhere. The absolute ceiling is the part
     # that is not scale-free: push the same healthy shape far enough and it must fail.
+    #
+    # It fires on seed 2002 rather than on the slowest shard, and that is the runner scale working
+    # as intended. A uniform slowdown multiplies every shard equally, so no shard moves relative
+    # to its peers and every runner scale is exactly what it was on the healthy matrix: seed 2003
+    # is 17.6% slower than its peers by construction and keeps the 17.6% larger ceiling it had
+    # before the slowdown, so the gate binds on the middle shard, whose scale is 1.0. The
+    # correction equalizes sensitivity across shards; it does not lower it.
     gross_slowdown = browser_cpu_acceptance(
         synthetic_browser_cpu_matrix(1.8),
         "firefox",
     )
     if gross_slowdown["pass"] or not any(
-        "complete_fixture seed 2003 playable_rollback_p999_ms" in reason
+        "complete_fixture seed 2002 playable_rollback_p999_ms" in reason
         for reason in gross_slowdown["reasons"]
     ):
         raise RuntimeError(
@@ -4438,32 +4701,179 @@ def run_self_test() -> None:
         for reason in exact_rollback_boundary["reasons"]
     ):
         raise RuntimeError("the absolute ceiling fired below its own threshold")
-    # 2.5 * 6.5 = 16.25 ms of playable p95 work keeps the normalized ratio at 2.443, below its
-    # threshold, so this exercises the absolute ceiling on its own.
+    # The absolute ceiling, exercised on its own at both of the values it can take.
+    #
+    # First the base value, on a matrix whose three shards run at the same speed, so every runner
+    # scale is exactly 1.0 and the enforced ceiling is the unmodified 39.7 ms. 3.0 ms machines put
+    # playable p95 work at 16.5 ms, which holds the normalized ratio at 39.7 / 16.5 = 2.406 and
+    # the work ratio at 5.5, so neither of the other two gates can be what fires.
+    def uniform_shard_playable(
+        seed: int,
+        machine_p95: float,
+        rollback_p999_ms: float,
+    ) -> dict[str, Any]:
+        combat_p95 = machine_p95 * 1.2 * HEALTHY_COMBAT_WORK_RATIO
+        return synthetic_browser_cpu_run(
+            "playable",
+            seed,
+            machine_p95 * HEALTHY_WORK_RATIO,
+            rollback_p999_ms,
+            combat_p95_work_ms=combat_p95,
+            combat_rollback_p999_ms=combat_p95 * HEALTHY_COMBAT_TAIL_RATIO,
+            combat_rollback_samples=OBSERVED_COMBAT_ROLLBACK_SAMPLES,
+        )
+
+    even_machines = synthetic_browser_cpu_matrix(1.0, machine_p95_ms=(3.0, 3.0, 3.0))
     exact_ceiling_boundary = browser_cpu_acceptance(
         replace_control(
-            complete_controls,
-            synthetic_browser_cpu_run(
-                "playable",
-                2003,
-                2.5 * 6.5,
-                MAX_BROWSER_ROLLBACK_P999_MS,
-                combat_p95_work_ms=3.0 * 5.4,
-                combat_rollback_p999_ms=3.0 * 5.4 * 1.7,
-            ),
+            even_machines,
+            uniform_shard_playable(2003, 3.0, MAX_BROWSER_ROLLBACK_P999_MS),
         ),
         "firefox",
     )
     if exact_ceiling_boundary["pass"] or not any(
-        "complete_fixture seed 2003 playable_rollback_p999_ms=39.700000" in reason
+        "complete_fixture seed 2003 playable_rollback_p999_ms=39.700000 "
+        "does not meet <39.700000 (39.7 ms base ceiling at a 1.000000 runner scale "
+        "over a 16.500000 ms peer median p95 work)" in reason
         for reason in exact_ceiling_boundary["reasons"]
     ):
-        raise RuntimeError("exact browser rollback ceiling passed strict gate")
+        raise RuntimeError(
+            "exact browser rollback ceiling passed strict gate: "
+            f"{exact_ceiling_boundary['reasons']}"
+        )
     if any(
         "seed 2003 rollback_p999_over_playable_p95" in reason
         for reason in exact_ceiling_boundary["reasons"]
     ):
         raise RuntimeError("the normalized ratio fired below its own threshold")
+
+    # Then the scaled value, at a runner scale the fixture makes exact. Machines of 3.0, 3.0 and
+    # 3.75 ms put seed 2003's playable p95 work at 20.625 ms against a 16.5 ms peer median: a
+    # runner scale of exactly 1.25, so the enforced ceiling is 39.7 * 1.25 = 49.625 ms. The
+    # normalized ratio at that tail is 2.406 and the work ratio is 5.5, so again neither of the
+    # other gates can be what fires.
+    uneven_machines = synthetic_browser_cpu_matrix(1.0, machine_p95_ms=(3.0, 3.0, 3.75))
+    scaled_ceiling_boundary = browser_cpu_acceptance(
+        replace_control(
+            uneven_machines,
+            uniform_shard_playable(2003, 3.75, MAX_BROWSER_ROLLBACK_P999_MS * 1.25),
+        ),
+        "firefox",
+    )
+    if scaled_ceiling_boundary["pass"] or not any(
+        "complete_fixture seed 2003 playable_rollback_p999_ms=49.625000 "
+        "does not meet <49.625000 (39.7 ms base ceiling at a 1.250000 runner scale "
+        "over a 16.500000 ms peer median p95 work)" in reason
+        for reason in scaled_ceiling_boundary["reasons"]
+    ):
+        raise RuntimeError(
+            "exact scaled browser rollback ceiling passed strict gate: "
+            f"{scaled_ceiling_boundary['reasons']}"
+        )
+    if any(
+        "seed 2003 rollback_p999_over_playable_p95" in reason
+        or "seed 2003 p95_work_ratio" in reason
+        for reason in scaled_ceiling_boundary["reasons"]
+    ):
+        raise RuntimeError("a ratio gate fired below its own threshold")
+
+    # #230 in miniature: the same shard, one microsecond of tail lower, passes -- and it passes
+    # 25% above the base ceiling, purely because its own runner measured 25% slower than the
+    # campaign's other two. Under the fixed ceiling this was a red build.
+    scaled_ceiling_headroom = browser_cpu_acceptance(
+        replace_control(
+            uneven_machines,
+            uniform_shard_playable(2003, 3.75, MAX_BROWSER_ROLLBACK_P999_MS * 1.25 - 0.001),
+        ),
+        "firefox",
+    )
+    if not scaled_ceiling_headroom["pass"]:
+        raise RuntimeError(
+            "a slow runner under its own scaled ceiling still failed: "
+            f"{scaled_ceiling_headroom['reasons']}"
+        )
+    scaled_headroom_pair = next(
+        pair
+        for pair in scaled_ceiling_headroom["pairs"]
+        if pair["scenario"] == "complete_fixture" and pair["seed"] == 2003
+    )
+    if (
+        scaled_headroom_pair["absolute_diagnostics"]["playable_rollback_p999_ms"]
+        <= MAX_BROWSER_ROLLBACK_P999_MS
+    ):
+        raise RuntimeError("the scaled-ceiling headroom case never cleared the base ceiling")
+    if scaled_headroom_pair["rollback_p999_gate"]["absolute_ceiling"] != {
+        "applied": True,
+        "base_ms": MAX_BROWSER_ROLLBACK_P999_MS,
+        "effective_ms": 49.625,
+        "max_runner_scale": MAX_BROWSER_RUNNER_SCALE,
+        "peer_count": MIN_BROWSER_CEILING_PEER_COUNT,
+        "peer_reference_p95_work_ms": 16.5,
+        "reference": BROWSER_CEILING_RUNNER_REFERENCE,
+        "runner_scale": 1.25,
+        "runner_scale_clamped": False,
+        "status": ROLLBACK_P999_GATE_APPLIED,
+    }:
+        raise RuntimeError(
+            "the scaled ceiling was not published: "
+            f"{scaled_headroom_pair['rollback_p999_gate']['absolute_ceiling']}"
+        )
+    # The correction only ever loosens. Seeds 2001 and 2002 are faster than their own peer
+    # medians here, and both are still measured against the unmodified 39.7 ms, so nothing that
+    # passed the fixed ceiling can fail the scaled one.
+    for faster_seed in (2001, 2002):
+        faster_pair = next(
+            pair
+            for pair in scaled_ceiling_headroom["pairs"]
+            if pair["scenario"] == "complete_fixture" and pair["seed"] == faster_seed
+        )
+        faster_ceiling = faster_pair["rollback_p999_gate"]["absolute_ceiling"]
+        if (
+            faster_ceiling["runner_scale"] != 1.0
+            or faster_ceiling["effective_ms"] != MAX_BROWSER_ROLLBACK_P999_MS
+            or faster_ceiling["peer_reference_p95_work_ms"]
+            <= faster_pair["absolute_diagnostics"]["playable_p95_work_ms"]
+        ):
+            raise RuntimeError(
+                f"seed {faster_seed} ran faster than its peers and had its ceiling tightened: "
+                f"{faster_ceiling}"
+            )
+
+    # The clamp. A shard that reads absurdly slow against its peers cannot buy an unbounded
+    # exemption: the correction stops at MAX_BROWSER_RUNNER_SCALE, the pair is still measured
+    # against a ceiling, and the artifact says the clamp bound.
+    clamped_ceiling = browser_cpu_acceptance(
+        replace_control(
+            synthetic_browser_cpu_matrix(1.0, machine_p95_ms=(3.0, 3.0, 9.0)),
+            uniform_shard_playable(
+                2003,
+                9.0,
+                MAX_BROWSER_ROLLBACK_P999_MS * MAX_BROWSER_RUNNER_SCALE,
+            ),
+        ),
+        "firefox",
+    )
+    clamped_pair = next(
+        pair
+        for pair in clamped_ceiling["pairs"]
+        if pair["scenario"] == "complete_fixture" and pair["seed"] == 2003
+    )
+    clamped_block = clamped_pair["rollback_p999_gate"]["absolute_ceiling"]
+    if (
+        clamped_block["runner_scale"] != MAX_BROWSER_RUNNER_SCALE
+        or not clamped_block["runner_scale_clamped"]
+        or clamped_block["effective_ms"]
+        != round(MAX_BROWSER_ROLLBACK_P999_MS * MAX_BROWSER_RUNNER_SCALE, 9)
+    ):
+        raise RuntimeError(f"the runner scale was not clamped: {clamped_block}")
+    if clamped_ceiling["pass"] or not any(
+        "complete_fixture seed 2003 playable_rollback_p999_ms=63.520000" in reason
+        for reason in clamped_ceiling["reasons"]
+    ):
+        raise RuntimeError(
+            "a runner scale past the clamp escaped the ceiling entirely: "
+            f"{clamped_ceiling['reasons']}"
+        )
 
     def combat_pair(acceptance: dict[str, Any], seed: int) -> dict[str, Any]:
         return next(
@@ -4506,8 +4916,30 @@ def run_self_test() -> None:
             raise RuntimeError(
                 f"combat rollback p99.9 ratio at {below_floor_samples} samples was gated"
             )
-        if below_floor_pair["rollback_p999_gate"] != {
-            "absolute_ceiling_ms": MAX_BROWSER_ROLLBACK_P999_MS,
+        below_floor_ceiling = below_floor_pair["rollback_p999_gate"]["absolute_ceiling"]
+        # The runner scale is still measured and still published for a pair the sample floor
+        # holds back, so the artifact shows what the ceiling would have been compared against.
+        # combat seed 2002 sits exactly at its own peer median here.
+        if below_floor_ceiling != {
+            "applied": False,
+            "base_ms": MAX_BROWSER_ROLLBACK_P999_MS,
+            "effective_ms": MAX_BROWSER_ROLLBACK_P999_MS,
+            "max_runner_scale": MAX_BROWSER_RUNNER_SCALE,
+            "peer_count": MIN_BROWSER_CEILING_PEER_COUNT,
+            "peer_reference_p95_work_ms": 14.58,
+            "reference": BROWSER_CEILING_RUNNER_REFERENCE,
+            "runner_scale": 1.0,
+            "runner_scale_clamped": False,
+            "status": ROLLBACK_P999_GATE_DIAGNOSTIC,
+        }:
+            raise RuntimeError(
+                f"the small-sample ceiling block was not recorded: {below_floor_ceiling}"
+            )
+        if {
+            key: value
+            for key, value in below_floor_pair["rollback_p999_gate"].items()
+            if key != "absolute_ceiling"
+        } != {
             "applied": False,
             "composite_ratio": below_floor_pair["ratios"][
                 "rollback_p999_over_clean_p95"
@@ -4602,8 +5034,23 @@ def run_self_test() -> None:
         for reason in calibrated_at_floor["reasons"]
     ):
         raise RuntimeError("the calibrated scenario at the sample floor passed the gate")
-    if calibrated_at_floor_pair["rollback_p999_gate"] != {
-        "absolute_ceiling_ms": MAX_BROWSER_ROLLBACK_P999_MS,
+    calibrated_at_floor_ceiling = calibrated_at_floor_pair["rollback_p999_gate"][
+        "absolute_ceiling"
+    ]
+    if (
+        not calibrated_at_floor_ceiling["applied"]
+        or calibrated_at_floor_ceiling["status"] != ROLLBACK_P999_GATE_APPLIED
+        or calibrated_at_floor_ceiling["peer_count"] != MIN_BROWSER_CEILING_PEER_COUNT
+    ):
+        raise RuntimeError(
+            "the calibrated pair at the sample floor did not apply its ceiling: "
+            f"{calibrated_at_floor_ceiling}"
+        )
+    if {
+        key: value
+        for key, value in calibrated_at_floor_pair["rollback_p999_gate"].items()
+        if key != "absolute_ceiling"
+    } != {
         "applied": True,
         "composite_ratio": calibrated_at_floor_pair["ratios"][
             "rollback_p999_over_clean_p95"
@@ -4925,6 +5372,66 @@ def run_self_test() -> None:
             for pair in zero_normalizer["pairs"]
         ):
             raise RuntimeError("a collapsed normalizer still published a gated pair")
+        # That collapsed measurement is also somebody else's runner reference. A peer that
+        # reports 0.0 ms of p95 work cannot say how fast anyone's machine was, so the pairs
+        # that would have divided by it fail closed instead of falling back to an unscaled
+        # ceiling, an unbounded scale, or a division by zero.
+        for orphaned_seed in (2002, 2003):
+            if not any(
+                f"complete_fixture seed {orphaned_seed} has no usable runner reference"
+                in reason
+                for reason in zero_normalizer["reasons"]
+            ):
+                raise RuntimeError(
+                    f"a {description} peer p95 work silently exempted seed {orphaned_seed}"
+                )
+            orphaned = next(
+                pair
+                for pair in zero_normalizer["pairs"]
+                if pair["scenario"] == "complete_fixture" and pair["seed"] == orphaned_seed
+            )
+            orphaned_ceiling = orphaned["rollback_p999_gate"]["absolute_ceiling"]
+            if (
+                orphaned_ceiling["applied"]
+                or orphaned_ceiling["status"] != ROLLBACK_CEILING_GATE_ERROR
+                or orphaned_ceiling["effective_ms"] is not None
+                or orphaned_ceiling["runner_scale"] is not None
+                or orphaned["pass"]
+            ):
+                raise RuntimeError(
+                    f"seed {orphaned_seed} published a ceiling without a reference: "
+                    f"{orphaned_ceiling}"
+                )
+
+    # The runner reference, unit-tested at every boundary it has. A peer set below
+    # MIN_BROWSER_CEILING_PEER_COUNT in scope is a deferral to the aggregate; a peer set that is
+    # in scope but short, absent, or carrying a value that cannot describe a machine is an error.
+    # Neither is ever an exemption: only ROLLBACK_P999_GATE_APPLIED enforces, and only it
+    # publishes an effective ceiling.
+    for peers, expected_peer_count, expected_status in (
+        ([], 0, ROLLBACK_CEILING_GATE_DEFERRED),
+        ([16.5], 1, ROLLBACK_CEILING_GATE_DEFERRED),
+        ([], MIN_BROWSER_CEILING_PEER_COUNT, ROLLBACK_CEILING_GATE_ERROR),
+        ([16.5], MIN_BROWSER_CEILING_PEER_COUNT, ROLLBACK_CEILING_GATE_ERROR),
+        ([16.5, 0.0], MIN_BROWSER_CEILING_PEER_COUNT, ROLLBACK_CEILING_GATE_ERROR),
+        ([16.5, -1.0], MIN_BROWSER_CEILING_PEER_COUNT, ROLLBACK_CEILING_GATE_ERROR),
+        ([16.5, float("inf")], MIN_BROWSER_CEILING_PEER_COUNT, ROLLBACK_CEILING_GATE_ERROR),
+        ([16.5, float("nan")], MIN_BROWSER_CEILING_PEER_COUNT, ROLLBACK_CEILING_GATE_ERROR),
+        ([16.5, 16.5], MIN_BROWSER_CEILING_PEER_COUNT, ROLLBACK_P999_GATE_APPLIED),
+    ):
+        reference_block = browser_ceiling_gate(20.625, peers, expected_peer_count)
+        if reference_block["status"] != expected_status:
+            raise RuntimeError(
+                f"runner reference {peers!r} at {expected_peer_count} expected peers "
+                f"reported {reference_block['status']!r}, expected {expected_status!r}"
+            )
+        enforced = expected_status == ROLLBACK_P999_GATE_APPLIED
+        if reference_block["applied"] is not enforced:
+            raise RuntimeError(f"runner reference {peers!r} misreported enforcement")
+        if not enforced and reference_block["effective_ms"] is not None:
+            raise RuntimeError(f"runner reference {peers!r} published a ceiling anyway")
+        if enforced and reference_block["effective_ms"] != 49.625:
+            raise RuntimeError(f"runner reference {peers!r} scaled the ceiling wrongly")
 
     def recorded_browser_cpu_matrix(
         measurements: tuple[tuple[float, float, float], ...],
@@ -5060,6 +5567,176 @@ def run_self_test() -> None:
             )
     if breach_replay["pass"]:
         raise RuntimeError("replayed genuine browser rollback breaches passed the gate")
+
+    # #230, replayed verbatim. Run 30238674582, complete_fixture, chrome: the campaign that
+    # turned main red on a healthy build because one of the three runners was about 38% slow.
+    FALSE_RED_CHROME = (
+        (3.140, 15.735, 29.720),
+        (3.470, 16.775, 29.740),
+        (4.120, 21.840, 48.400),
+    )
+    false_red = browser_cpu_acceptance(
+        recorded_browser_cpu_matrix(FALSE_RED_CHROME),
+        "firefox",
+    )
+    if not false_red["pass"]:
+        raise RuntimeError(
+            f"the #230 false red still fails the gate: {false_red['reasons']}"
+        )
+    false_red_pair = next(
+        pair
+        for pair in false_red["pairs"]
+        if pair["scenario"] == "complete_fixture" and pair["seed"] == 2003
+    )
+    false_red_ceiling = false_red_pair["rollback_p999_gate"]["absolute_ceiling"]
+    # This is the derivation of MAX_BROWSER_RUNNER_SCALE, pinned to the measurements it came
+    # from: 21.840 ms of p95 work against a 16.2550 ms peer median is the worst runner slowdown
+    # ever recorded, and the cap is that carried through the calibration margin. Change either
+    # measurement and the constant no longer matches its own justification.
+    if false_red_ceiling["peer_reference_p95_work_ms"] != 16.255 or round(
+        false_red_ceiling["runner_scale"],
+        9,
+    ) != round(BROWSER_RUNNER_SCALE_CALIBRATION_MAX, 9):
+        raise RuntimeError(
+            "the runner-scale calibration drifted from the pair it was derived from: "
+            f"{false_red_ceiling}"
+        )
+    if not (
+        MAX_BROWSER_ROLLBACK_P999_MS
+        < false_red_pair["absolute_diagnostics"]["playable_rollback_p999_ms"]
+        < false_red_ceiling["effective_ms"]
+    ):
+        raise RuntimeError(
+            "the #230 tail no longer sits between the base and the scaled ceiling: "
+            f"{false_red_ceiling}"
+        )
+    # And the reason the clean control could not have been the reference instead (option 1 of
+    # #230). The healthy firefox seed 2002 pair of run 30233355883 -- 3.680 ms clean, 19.300 ms
+    # playable p95, 32.180 ms tail -- and the healthy firefox seed 2002 pair of run 30231753972
+    # produce composite ratios ABOVE the false red's 11.748, so a ceiling scaled by the clean
+    # control cannot separate a slow runner from a healthy one at all. The composite is still
+    # published, so this stays checkable.
+    healthy_composite = browser_cpu_acceptance(
+        recorded_browser_cpu_matrix(
+            (
+                (3.680, 17.940, 29.180),
+                (2.660, 13.580, 33.760),
+                (3.660, 18.300, 29.400),
+            )
+        ),
+        "firefox",
+    )
+    if not healthy_composite["pass"]:
+        raise RuntimeError(
+            "a recorded healthy campaign failed the scaled ceiling: "
+            f"{healthy_composite['reasons']}"
+        )
+    healthy_composite_ratio = next(
+        pair["ratios"]["rollback_p999_over_clean_p95"]
+        for pair in healthy_composite["pairs"]
+        if pair["scenario"] == "complete_fixture" and pair["seed"] == 2002
+    )
+    if healthy_composite_ratio <= false_red_pair["ratios"]["rollback_p999_over_clean_p95"]:
+        raise RuntimeError(
+            "the clean control now separates the #230 false red from healthy runs; "
+            "re-read the option-1 rejection in MAX_BROWSER_ROLLBACK_P999_MS"
+        )
+
+    def scale_measurements(
+        measurements: tuple[tuple[float, float, float], ...],
+        playable_scale: float = 1.0,
+        tail_scale: float = 1.0,
+    ) -> tuple[tuple[float, float, float], ...]:
+        return tuple(
+            (clean_p95, playable_p95 * playable_scale, playable_p999 * tail_scale)
+            for clean_p95, playable_p95, playable_p999 in measurements
+        )
+
+    # A genuine tail regression, in the exact shape the ceiling exists to catch and the shape
+    # the normalized ratio cannot see: seed 2001's tail inflated from 29.720 ms to 40.000 ms
+    # with its p95 work left flat. The normalized ratio reads 2.542 against 2.6 and passes, the
+    # work ratio is untouched, and the ceiling fails the pair on its own.
+    tail_regression = browser_cpu_acceptance(
+        recorded_browser_cpu_matrix(
+            ((3.140, 15.735, 40.000), *FALSE_RED_CHROME[1:]),
+        ),
+        "firefox",
+    )
+    if tail_regression["pass"] or not any(
+        "complete_fixture seed 2001 playable_rollback_p999_ms=40.000000 "
+        "does not meet <39.700000" in reason
+        for reason in tail_regression["reasons"]
+    ):
+        raise RuntimeError(
+            f"a flat-work tail regression escaped the ceiling: {tail_regression['reasons']}"
+        )
+    if any(
+        "rollback_p999_over_playable_p95" in reason or "p95_work_ratio" in reason
+        for reason in tail_regression["reasons"]
+    ):
+        raise RuntimeError(
+            "another gate claimed credit for catching a flat-work tail regression"
+        )
+    # Deferring the ceiling to the aggregate delays the verdict; it does not soften it. The same
+    # regression scored inside its own shard job passes, because that job cannot know how fast
+    # its runner was, and the campaign still goes red when the rollback gate merges the shards.
+    tail_regression_runs = recorded_browser_cpu_matrix(
+        ((3.140, 15.735, 40.000), *FALSE_RED_CHROME[1:]),
+    )
+    tail_regression_shard = browser_cpu_acceptance(
+        tail_regression_runs[:2],
+        "firefox",
+        (2001,),
+    )
+    if not tail_regression_shard["pass"]:
+        raise RuntimeError(
+            "a shard job enforced a ceiling it had no runner reference for: "
+            f"{tail_regression_shard['reasons']}"
+        )
+
+    # A uniform proportional slowdown of the playable build, stated plainly. Every shard moves
+    # together, so every peer median moves with it and every runner scale is bit-identical to
+    # the healthy campaign's: the correction absorbs runner noise and nothing else, and the
+    # ceiling keeps the whole of its sensitivity to this class. 1.10x passes and 1.15x fails,
+    # which is where the fixed ceiling sat too, and the normalized ratio never moves either way.
+    def runner_scales(acceptance: dict[str, Any]) -> list[float]:
+        return [
+            pair["rollback_p999_gate"]["absolute_ceiling"]["runner_scale"]
+            for pair in acceptance["pairs"]
+            if pair["scenario"] == "complete_fixture"
+        ]
+
+    for uniform_scale, expected_pass in ((1.10, True), (1.15, False)):
+        uniform = browser_cpu_acceptance(
+            recorded_browser_cpu_matrix(
+                scale_measurements(
+                    FALSE_RED_CHROME,
+                    playable_scale=uniform_scale,
+                    tail_scale=uniform_scale,
+                )
+            ),
+            "firefox",
+        )
+        if uniform["pass"] is not expected_pass:
+            raise RuntimeError(
+                f"a {uniform_scale}x uniform playable slowdown was not {expected_pass}: "
+                f"{uniform['reasons']}"
+            )
+        if runner_scales(uniform) != runner_scales(false_red):
+            raise RuntimeError(
+                "a uniform playable slowdown moved the runner scale, so the correction is "
+                "absorbing regressions and not just runner noise"
+            )
+        if normalized_ratios(uniform) != normalized_ratios(false_red):
+            raise RuntimeError("a uniform playable slowdown moved the normalized ratio")
+        if not expected_pass and not any(
+            "complete_fixture seed 2003 playable_rollback_p999_ms" in reason
+            for reason in uniform["reasons"]
+        ):
+            raise RuntimeError(
+                f"the ceiling did not backstop a {uniform_scale}x uniform slowdown: "
+                f"{uniform['reasons']}"
+            )
 
     # rollback_ci.py restates the shard sets instead of importing them to keep the
     # impact-filter job's import graph minimal: that job deliberately installs no
