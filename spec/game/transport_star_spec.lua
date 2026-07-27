@@ -282,6 +282,55 @@ t.describe("fake host-star transport", function()
         t.eq(assert(backpressure).channel, "control")
     end)
 
+    t.it("re-arms the backpressure latch after the channel drains", function()
+        -- A budget that fits some but not all of a burst, so congestion can be
+        -- relieved and then genuinely recur. A latch that never re-armed would
+        -- hide the second congestion entirely.
+        local host, guests = build_star(1, { queue_limit = 16, buffered_amount_limit = 40 })
+        local function drain_events()
+            local codes = {}
+            local event = host:poll_event()
+            while event do
+                codes[#codes + 1] = event.code
+                event = host:poll_event()
+            end
+            local count = 0
+            for _, code in ipairs(codes) do
+                if code == "backpressure" then
+                    count = count + 1
+                end
+            end
+            return count
+        end
+        drain_events()
+
+        for seq = 0, 2 do
+            assert(host:send("guest_1", "control", control(seq, "payload")))
+        end
+        host:pump()
+        local congested = host:diagnostics()
+        t.is_true(congested.peers[1].control.outbound_depth > 0)
+        t.eq(congested.backpressure, 1)
+        t.eq(drain_events(), 1)
+
+        -- Relieve: the next pass has a fresh budget and empties the queue.
+        host:pump()
+        local relieved = host:diagnostics()
+        t.eq(relieved.peers[1].control.outbound_depth, 0)
+        t.eq(relieved.backpressure, 1)
+        t.eq(drain_events(), 0)
+        -- Everything the host queued actually arrived.
+        t.eq(#guests[1]:poll_batch(8), 3)
+
+        -- Re-saturate: a genuine second congestion is reported again.
+        for seq = 3, 5 do
+            assert(host:send("guest_1", "control", control(seq, "payload")))
+        end
+        host:pump()
+        t.eq(host:diagnostics().backpressure, 2)
+        t.eq(drain_events(), 1)
+    end)
+
     t.it("drains peers and channels in a fixed order without starving a peer", function()
         local host, guests = build_star(3)
         for index = 1, 3 do
@@ -369,6 +418,58 @@ t.describe("fake host-star transport", function()
         t.is_true(sent == nil)
         t.eq(code, "not_initialized")
     end)
+
+    t.it("completes a manual offer/answer handshake in process", function()
+        local host = transport.fake_star()
+        assert(host:initialize())
+        assert(host:open_peer("guest_1"))
+        local guest = transport.fake_star({ role = "guest", peer_id = "guest_1" })
+        assert(guest:initialize())
+
+        t.is_true(host:take_signal("guest_1") == nil)
+        t.is_true(assert(host:request_offer("guest_1")))
+        local offer = assert(host:take_signal("guest_1"))
+        t.is_true(host:take_signal("guest_1") == nil, "a signal is handed out once")
+
+        t.is_true(assert(guest:accept_offer(offer)))
+        local answer = assert(guest:take_signal(contract.HOST_PEER_ID))
+        t.is_true(assert(host:accept_answer("guest_1", answer)))
+
+        t.eq(host:peer_state("guest_1"), "connected")
+        t.eq(guest:peer_state(contract.HOST_PEER_ID), "connected")
+        assert(host:send("guest_1", "control", control(0, "after-handshake")))
+        host:pump()
+        t.eq(assert(guest:poll()).message.payload, "after-handshake")
+    end)
+
+    t.it("rejects signaling misuse with typed errors", function()
+        local host = transport.fake_star()
+        assert(host:initialize())
+        assert(host:open_peer("guest_1"))
+        local guest = transport.fake_star({ role = "guest", peer_id = "guest_1" })
+        assert(guest:initialize())
+
+        local guest_offer, _, guest_code = guest:request_offer("guest_1")
+        t.is_true(guest_offer == nil)
+        t.eq(guest_code, "role_forbidden")
+
+        local host_accept, _, host_code = host:accept_offer("anything")
+        t.is_true(host_accept == nil)
+        t.eq(host_code, "role_forbidden")
+
+        local unknown, _, unknown_code = host:request_offer("nobody")
+        t.is_true(unknown == nil)
+        t.eq(unknown_code, "unknown_peer")
+
+        local bogus, _, bogus_code = guest:accept_offer("not-a-real-offer")
+        t.is_true(bogus == nil)
+        t.eq(bogus_code, "signal_error")
+
+        assert(host:request_offer("guest_1"))
+        local stale, _, stale_code = host:accept_answer("guest_1", "answer:offer:nonexistent")
+        t.is_true(stale == nil)
+        t.eq(stale_code, "signal_error")
+    end)
 end)
 
 ---@param host FakeStarTransport
@@ -398,14 +499,21 @@ local function star_bridge(host)
         return values, raw
     end
 
+    ---@param value string
+    ---@return string
+    local function escape(value)
+        return (
+            value:gsub("([^%w%-%._~])", function(character)
+                return ("%%%02X"):format(string.byte(character))
+            end)
+        )
+    end
+
     ---@param code TransportErrorCode?
     ---@param err string?
     ---@return string
     local function bridge_error(code, err)
-        local detail = (err or "error"):gsub("([^%w%-%._~])", function(character)
-            return ("%%%02X"):format(string.byte(character))
-        end)
-        return "error|" .. tostring(code) .. "|" .. detail
+        return "error|" .. tostring(code) .. "|" .. escape(err or "error")
     end
 
     return function(command)
@@ -430,6 +538,33 @@ local function star_bridge(host)
                 return bridge_error(code, err)
             end
             return "ok"
+        elseif name == "request_offer" then
+            local ok, err, code = host:request_offer(args[1])
+            if not ok then
+                return bridge_error(code, err)
+            end
+            return "ok"
+        elseif name == "accept_offer" then
+            local ok, err, code = host:accept_offer(args[1])
+            if not ok then
+                return bridge_error(code, err)
+            end
+            return "ok"
+        elseif name == "accept_answer" then
+            local ok, err, code = host:accept_answer(args[1], args[2])
+            if not ok then
+                return bridge_error(code, err)
+            end
+            return "ok"
+        elseif name == "take_signal" then
+            local signal, err, code = host:take_signal(args[1])
+            if not signal then
+                if code then
+                    return bridge_error(code, err)
+                end
+                return ""
+            end
+            return "signal|" .. escape(signal)
         elseif name == "send" then
             local addressed, decode_err, decode_code = contract.decode_addressed(raw[1])
             if not addressed then
@@ -572,6 +707,194 @@ t.describe("browser host-star transport", function()
         t.eq(fallback.state, "new")
         t.eq(fallback.peer_count, 0)
         t.is_true(fallback.last_error ~= nil)
+    end)
+
+    t.it("drives the manual handshake through the bridge", function()
+        local reference = transport.fake_star()
+        local browser = transport.browser_star({ eval = star_bridge(reference) })
+        assert(browser:initialize())
+        assert(browser:open_peer("guest_1"))
+
+        t.is_true(browser:take_signal("guest_1") == nil)
+        t.is_true(assert(browser:request_offer("guest_1")))
+        local offer = assert(browser:take_signal("guest_1"))
+        t.is_true(browser:take_signal("guest_1") == nil)
+
+        -- The guest side runs against its own endpoint and bridge.
+        local guest_reference = transport.fake_star({ role = "guest", peer_id = "guest_1" })
+        local guest = transport.browser_star({
+            role = "guest",
+            eval = star_bridge(guest_reference),
+        })
+        assert(guest:initialize())
+        t.is_true(assert(guest:accept_offer(offer)))
+        local answer = assert(guest:take_signal(contract.HOST_PEER_ID))
+        t.is_true(assert(browser:accept_answer("guest_1", answer)))
+        t.eq(reference:peer_state("guest_1"), "connected")
+    end)
+
+    t.it("round-trips a signal blob with SDP characters through the eval seam", function()
+        -- A real SDP blob carries newlines, quotes, equals signs, and commas.
+        -- Everything crossing the eval seam has to survive them intact.
+        local blob = '{"type":"offer","sdp":"v=0\r\na=candidate:1 1 udp 2 10.0.0.1 5,6\'\\"}'
+        local captured = nil
+        local browser = transport.browser_star({
+            eval = function(command)
+                local name, argument =
+                    command:match("^window%.GalacticCupStarTransport%.([%w_]+)%((.*)%)$")
+                if name == "initialize" then
+                    return "star|connected"
+                elseif name == "open_peer" then
+                    return "slot|1"
+                elseif name == "accept_answer" then
+                    captured = argument
+                    return "ok"
+                elseif name == "take_signal" then
+                    return "signal|"
+                        .. (
+                            blob:gsub("([^%w%-%._~])", function(character)
+                                return ("%%%02X"):format(string.byte(character))
+                            end)
+                        )
+                end
+                error("unexpected command: " .. command)
+            end,
+        })
+        assert(browser:initialize())
+        assert(browser:open_peer("guest_1"))
+        t.eq(assert(browser:take_signal("guest_1")), blob)
+
+        assert(browser:accept_answer("guest_1", blob))
+        -- The command the bridge received must contain no raw quote, comma, or
+        -- newline that could terminate or extend the JavaScript call.
+        local quoted = assert(captured):match("^'guest_1','(.*)'$")
+        t.is_true(quoted ~= nil, "accept_answer did not quote both arguments")
+        t.is_true(assert(quoted):find("[',\r\n\\]") == nil, "a raw delimiter escaped the encoder")
+    end)
+
+    t.it("keeps a wire payload injection-safe across the eval seam", function()
+        local hostile = "');window.owned=1;('"
+        local captured = nil
+        local browser = transport.browser_star({
+            eval = function(command)
+                local name, argument =
+                    command:match("^window%.GalacticCupStarTransport%.([%w_]+)%((.*)%)$")
+                if name == "initialize" then
+                    return "star|connected"
+                elseif name == "open_peer" then
+                    return "slot|1"
+                elseif name == "send" or name == "broadcast" then
+                    captured = argument
+                    return "ok"
+                end
+                error("unexpected command: " .. command)
+            end,
+        })
+        assert(browser:initialize())
+        assert(browser:open_peer("guest_1"))
+        assert(browser:send("guest_1", "control", control(0, hostile)))
+        local wire = assert(captured):match("^'(.*)'$")
+        t.is_true(wire ~= nil, "send did not quote its argument")
+        t.is_true(assert(wire):find("[']") == nil, "a quote survived into the eval command")
+        -- The payload still round-trips through the addressed decoder.
+        local addressed = assert(contract.decode_addressed(assert(wire)))
+        t.eq(addressed.message.payload, hostile)
+    end)
+
+    t.it("makes a locally rejected call as observable as a bridge rejection", function()
+        -- The fake records role violations through its error path; the browser
+        -- adapter rejects them before the bridge is reached, so it has to queue
+        -- an equivalent event and own last_error rather than leaving whatever
+        -- the bridge last said.
+        local reference = build_star(2)
+        local guest_reference = transport.fake_star({ role = "guest", peer_id = "guest_1" })
+        local guest = transport.browser_star({
+            role = "guest",
+            eval = star_bridge(guest_reference),
+        })
+        assert(guest:initialize())
+
+        local fanned, _, fan_code = guest:broadcast("input", input(0, 1))
+        t.is_true(fanned == nil)
+        t.eq(fan_code, "role_forbidden")
+
+        local event = assert(guest:poll_event())
+        t.eq(event.kind, "star_error")
+        t.eq(event.code, "role_forbidden")
+        t.is_true(assert(guest:diagnostics().last_error):find("fans out") ~= nil)
+
+        -- The fake reports the same fault the same way.
+        local fake_guest = transport.fake_star({ role = "guest", peer_id = "guest_2" })
+        assert(fake_guest:initialize())
+        local _, _, fake_code = fake_guest:broadcast("input", input(0, 1))
+        t.eq(fake_code, "role_forbidden")
+        local fake_event = nil
+        local next_event = fake_guest:poll_event()
+        while next_event do
+            if next_event.code == "role_forbidden" then
+                fake_event = next_event
+            end
+            next_event = fake_guest:poll_event()
+        end
+        t.eq(assert(fake_event).kind, "star_error")
+        t.is_true(assert(fake_guest:diagnostics().last_error):find("fans out") ~= nil)
+        t.is_true(reference ~= nil)
+    end)
+
+    t.it("judges message shape before peer resolution on both adapters", function()
+        -- A call that is BOTH addressed to an unknown peer AND carries a
+        -- message the channel cannot take must report the same code either way.
+        -- Shape wins: only the bridge can authoritatively resolve a peer, so an
+        -- adapter must never answer `unknown_peer` from a cached peer table.
+        local fake = build_star(1)
+        local _, _, fake_code = fake:send("nobody", "control", input(0, 3))
+        t.eq(fake_code, "channel_mismatch")
+
+        local reference = build_star(1)
+        local browser = transport.browser_star({ eval = star_bridge(reference) })
+        assert(browser:initialize())
+        local _, _, browser_code = browser:send("nobody", "control", input(0, 3))
+        t.eq(browser_code, "channel_mismatch")
+        t.eq(browser_code, fake_code)
+
+        -- A well-shaped message to an unknown peer still reports unknown_peer.
+        local _, _, fake_unknown = fake:send("nobody", "control", control(0))
+        t.eq(fake_unknown, "unknown_peer")
+        local _, _, browser_unknown = browser:send("nobody", "control", control(0))
+        t.eq(browser_unknown, "unknown_peer")
+    end)
+
+    t.it("numbers arrival_seq per peer at poll time on both adapters", function()
+        local fake, fake_guests = build_star(2)
+        for index = 1, 2 do
+            assert(fake_guests[index]:send(contract.HOST_PEER_ID, "control", control(0, "a")))
+            assert(fake_guests[index]:send(contract.HOST_PEER_ID, "input", input(0, 1, "b")))
+            fake_guests[index]:pump()
+        end
+        local fake_batch = fake:poll_batch(4)
+
+        local reference, guests = build_star(2)
+        local browser = transport.browser_star({ eval = star_bridge(reference) })
+        assert(browser:initialize())
+        for index = 1, 2 do
+            assert(guests[index]:send(contract.HOST_PEER_ID, "control", control(0, "a")))
+            assert(guests[index]:send(contract.HOST_PEER_ID, "input", input(0, 1, "b")))
+            guests[index]:pump()
+        end
+        local browser_batch = browser:poll_batch(4)
+
+        t.eq(#fake_batch, 4)
+        t.eq(#browser_batch, 4)
+        for index = 1, 4 do
+            t.eq(fake_batch[index].peer_id, browser_batch[index].peer_id)
+            t.eq(fake_batch[index].channel, browser_batch[index].channel)
+            t.eq(fake_batch[index].arrival_seq, browser_batch[index].arrival_seq)
+        end
+        -- Two peers, two messages each, numbered 1 and 2 within each peer.
+        t.eq(fake_batch[1].arrival_seq, 1)
+        t.eq(fake_batch[2].arrival_seq, 2)
+        t.eq(fake_batch[3].arrival_seq, 1)
+        t.eq(fake_batch[4].arrival_seq, 2)
     end)
 
     t.it("closes peers and tears the star down through the bridge", function()

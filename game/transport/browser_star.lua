@@ -22,6 +22,9 @@ local contract = require("game.transport.contract")
 ---@field _arrivals table<string, integer>
 ---@field _peer_states table<string, TransportPeerState>
 ---@field _order string[]
+---@field _events TransportPeerEvent[]
+---@field _event_limit integer
+---@field _local_error boolean
 ---@field _last_error string?
 local BrowserStarTransport = {}
 BrowserStarTransport.__index = BrowserStarTransport
@@ -146,8 +149,39 @@ function BrowserStarTransport.new(options)
         _arrivals = {},
         _peer_states = {},
         _order = {},
+        _events = {},
+        _event_limit = math.max(2, options.queue_limit or contract.DEFAULT_QUEUE_LIMIT),
+        _local_error = false,
         _last_error = nil,
     }, BrowserStarTransport)
+end
+
+-- A fault this adapter rejects locally (role misuse, lifecycle misuse, a
+-- message the bridge would never see) has to be as observable as one the
+-- bridge reports, or the two adapters disagree about what happened.
+---@param code TransportErrorCode
+---@param message string
+---@param peer_id string?
+---@param channel TransportChannel?
+---@return nil, string, TransportErrorCode
+function BrowserStarTransport:_record_error(code, message, peer_id, channel)
+    self._last_error = message
+    self._local_error = true
+    if #self._events >= self._event_limit then
+        table.remove(self._events, 1)
+    end
+    if peer_id then
+        self._events[#self._events + 1] = {
+            kind = "peer_error",
+            peer_id = peer_id,
+            channel = channel,
+            code = code,
+            message = message,
+        }
+    else
+        self._events[#self._events + 1] = { kind = "star_error", code = code, message = message }
+    end
+    return nil, message, code
 end
 
 ---@param name string
@@ -257,7 +291,7 @@ function BrowserStarTransport:open_peer(peer_id)
         return nil, err, code
     end
     if self._role ~= "host" then
-        return failure("role_forbidden", "only a host opens guest links")
+        return self:_record_error("role_forbidden", "only a host opens guest links")
     end
     ok, err, code = contract.validate_peer_id(peer_id)
     if not ok then
@@ -289,6 +323,10 @@ function BrowserStarTransport:close_peer(peer_id, reason)
     if not ok then
         return nil, err, code
     end
+    ok, err, code = contract.validate_peer_id(peer_id)
+    if not ok then
+        return self:_record_error(code or "malformed", err or "invalid peer id")
+    end
     local result, call_err = self:_call("close_peer", quote(peer_id), quote(reason or "closed"))
     if not result then
         return failure("bridge_error", call_err or "browser star bridge is unavailable")
@@ -312,7 +350,11 @@ function BrowserStarTransport:request_offer(peer_id)
         return nil, err, code
     end
     if self._role ~= "host" then
-        return failure("role_forbidden", "only a host creates offers")
+        return self:_record_error("role_forbidden", "only a host creates offers")
+    end
+    ok, err, code = contract.validate_peer_id(peer_id)
+    if not ok then
+        return self:_record_error(code or "malformed", err or "invalid peer id")
     end
     return self:_command("request_offer", quote(peer_id))
 end
@@ -325,7 +367,7 @@ function BrowserStarTransport:accept_offer(signal)
         return nil, err, code
     end
     if self._role ~= "guest" then
-        return failure("role_forbidden", "only a guest accepts an offer")
+        return self:_record_error("role_forbidden", "only a guest accepts an offer")
     end
     return self:_command("accept_offer", quote(signal))
 end
@@ -339,7 +381,11 @@ function BrowserStarTransport:accept_answer(peer_id, signal)
         return nil, err, code
     end
     if self._role ~= "host" then
-        return failure("role_forbidden", "only a host accepts an answer")
+        return self:_record_error("role_forbidden", "only a host accepts an answer")
+    end
+    ok, err, code = contract.validate_peer_id(peer_id)
+    if not ok then
+        return self:_record_error(code or "malformed", err or "invalid peer id")
     end
     return self:_command("accept_answer", quote(peer_id), quote(signal))
 end
@@ -399,12 +445,20 @@ function BrowserStarTransport:send(peer_id, channel, message)
         return nil, err, code
     end
     if self._role == "guest" and peer_id ~= contract.HOST_PEER_ID then
-        return failure("role_forbidden", "a guest may only address the host")
+        return self:_record_error("role_forbidden", "a guest may only address the host")
     end
+    -- Validation order is part of the contract: message shape first, peer
+    -- resolution second. Only the bridge knows which links exist, so an
+    -- adapter must never claim `unknown_peer` from its own cached peer table;
+    -- shape is the one fault every layer can judge identically.
     local line, encode_err, encode_code = contract.encode_addressed(peer_id, channel, message)
     if not line then
-        self._last_error = encode_err
-        return nil, encode_err, encode_code
+        return self:_record_error(
+            encode_code or "malformed",
+            encode_err or "browser star transport rejected a message",
+            peer_id,
+            contract.CHANNEL_CONFIG[channel] and channel or nil
+        )
     end
     return self:_command("send", "'" .. line .. "'")
 end
@@ -418,12 +472,14 @@ function BrowserStarTransport:broadcast(channel, message)
         return nil, err, code
     end
     if self._role ~= "host" then
-        return failure("role_forbidden", "only a host fans out canonical batches")
+        return self:_record_error("role_forbidden", "only a host fans out canonical batches")
     end
     ok, err, code = contract.validate_channel_message(channel, message)
     if not ok then
-        self._last_error = err
-        return nil, err, code
+        return self:_record_error(
+            code or "malformed",
+            err or "browser star transport rejected a message"
+        )
     end
     local wire = assert(contract.encode(message))
     local result, call_err = self:_call("broadcast", "'" .. channel .. "|" .. wire .. "'")
@@ -490,6 +546,11 @@ end
 
 ---@return TransportPeerEvent?
 function BrowserStarTransport:poll_event()
+    -- Locally rejected calls are queued here; drain them before the bridge's
+    -- own events so the caller sees every fault this adapter produced.
+    if #self._events > 0 then
+        return table.remove(self._events, 1)
+    end
     local result = self:_call("poll_event")
     if not result or result == "" then
         return nil
@@ -604,6 +665,13 @@ function BrowserStarTransport:diagnostics()
         self._order[index] = peer.peer_id
         self._peer_states[peer.peer_id] = peer.state
     end
+    -- A fault this adapter rejected locally never reached the bridge, so the
+    -- bridge's `last_error` would silently hide it. The local one is newer.
+    if self._local_error then
+        diagnostics.last_error = self._last_error
+        self._local_error = false
+    end
+    diagnostics.event_depth = diagnostics.event_depth + #self._events
     return diagnostics
 end
 

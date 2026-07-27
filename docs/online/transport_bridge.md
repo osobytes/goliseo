@@ -199,6 +199,30 @@ before anything reaches the wire:
 `contract.CHANNEL_CONFIG` is the single source of that configuration and is
 what the JavaScript bridge passes to `createDataChannel`.
 
+### Validation order
+
+Both adapters and the bridge judge a `send` in the same order, so the reported
+code never depends on which one you asked:
+
+1. lifecycle (`not_initialized` / `not_connected` / `closed`);
+2. role permission (`role_forbidden`);
+3. peer id and channel name shape (`malformed` / `channel_mismatch`);
+4. message shape and channel/type pairing (`malformed`,
+   `unsupported_version`, `payload_too_large`, `channel_mismatch`);
+5. peer resolution (`unknown_peer`);
+6. queue capacity (`overflow`).
+
+Message shape is deliberately judged *before* peer resolution. Only the bridge
+knows which links actually exist, so a Lua adapter must never answer
+`unknown_peer` from its own cached peer table; shape is the one fault every
+layer can judge identically. A call that is both badly shaped and badly
+addressed therefore reports the shape fault everywhere.
+
+A fault an adapter rejects locally — role misuse, a message the bridge would
+never see — is recorded exactly like one the bridge reports: it sets
+`last_error` and queues a typed event. The two adapters do not disagree about
+whether something happened.
+
 ### Deterministic poll batching
 
 `poll_batch(limit)` drains through a persistent cursor that walks
@@ -209,8 +233,11 @@ produces the same batch.
 
 This is an ordering rule at the Lua boundary and nothing more. Browser
 callback arrival order is **not** simulation order: `arrival_seq` is a
-per-peer transport receive counter, not a tick. The session and rollback
-layers still order work by the tick inside the payload.
+per-peer ordinal stamped at poll time — the position of that message among
+what the caller has drained for that peer — not a tick. It is stamped at poll
+time on both adapters precisely so they agree; the browser adapter cannot
+observe receive order at all. The session and rollback layers still order work
+by the tick inside the payload.
 
 ### Bounds, backpressure, and teardown
 
@@ -281,6 +308,37 @@ host finishes with `accept_answer(peer_id, signal)`. Blobs are exchanged by
 hand between two browser contexts. Automatic signaling, room codes, and
 production STUN/TURN credentials remain OMP-4 work; the bridge configures no
 ICE servers.
+
+`transport.fake_star()` implements the same four calls in process, so a lobby
+or a test can drive the whole handshake without a browser. The fake's blob is
+an opaque rendezvous token rather than SDP.
+
+> **Operator note.** A real offer or answer blob contains ICE candidates,
+> which include local and public IP addresses of the machine that produced it.
+> Treat a pasted SDP blob as personal network data: keep it out of shared
+> logs, issue trackers, and support tickets, and redact the candidate lines
+> before attaching one to a bug report.
+
+### Data channel invariants
+
+Each link carries exactly two data channels for its whole lifetime. Either
+side of an established `RTCPeerConnection` may call `createDataChannel` at any
+time, so the bridge refuses a second channel arriving on an occupied
+`control`/`input` label: it closes the newcomer and reports `channel_mismatch`
+against that peer. Without that rule a connected peer could open channels
+without bound and take over the reference the bridge sends through.
+
+Teardown detaches every listener before closing a channel or a peer
+connection, and the state-change handlers close over their own connection
+rather than the peer record. `RTCPeerConnection.close()` fires
+`connectionstatechange` and `iceconnectionstatechange` on a *later* task, by
+which point the peer record has already been released.
+
+The shipped bundle exposes no channel-injection seam. `scripts/web_smoke.sh`
+fails the build if one appears in `player.js`, because such a seam would let
+any co-resident script attach a handle to an open peer and forge traffic
+attributed to that peer id, bypassing the handshake that link attribution
+rests on.
 
 ## Observability contract
 

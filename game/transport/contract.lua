@@ -129,6 +129,12 @@
 ---@field close_peer fun(self: StarTransportAdapter, peer_id: string, reason: string?): boolean?, string?, TransportErrorCode?
 ---@field peer_ids fun(self: StarTransportAdapter): string[]
 ---@field peer_state fun(self: StarTransportAdapter, peer_id: string): TransportPeerState?
+-- Manual signaling. Offer/answer creation is asynchronous in the browser, so
+-- these only start the work; `take_signal` yields the blob on a later frame.
+---@field request_offer fun(self: StarTransportAdapter, peer_id: string): boolean?, string?, TransportErrorCode?
+---@field accept_offer fun(self: StarTransportAdapter, signal: string): boolean?, string?, TransportErrorCode?
+---@field accept_answer fun(self: StarTransportAdapter, peer_id: string, signal: string): boolean?, string?, TransportErrorCode?
+---@field take_signal fun(self: StarTransportAdapter, peer_id: string): string?, string?, TransportErrorCode?
 ---@field send fun(self: StarTransportAdapter, peer_id: string, channel: TransportChannel, message: TransportMessage): boolean?, string?, TransportErrorCode?
 ---@field broadcast fun(self: StarTransportAdapter, channel: TransportChannel, message: TransportMessage): integer?, string?, TransportErrorCode?
 ---@field poll fun(self: StarTransportAdapter): TransportPeerMessage?, string?, TransportErrorCode?

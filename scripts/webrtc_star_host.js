@@ -332,6 +332,20 @@
         return;
       }
       var channel = peer.channels[name];
+      /* Exactly two data channels per link, for the life of the link. Either
+       * side of an established connection may call createDataChannel at any
+       * time; a second channel on an occupied label would re-register
+       * listeners without bound and silently take over the reference this
+       * bridge sends through. Refuse it and close it. */
+      if (channel.handle) {
+        try {
+          handle.close();
+        } catch (error) {
+          star.last_error = String(error);
+        }
+        peerError(peer, name, "channel_mismatch", "duplicate " + name + " data channel refused");
+        return;
+      }
       channel.handle = handle;
       handle.binaryType = "arraybuffer";
       /* Resume draining well before the buffer empties, so backpressure costs
@@ -376,16 +390,20 @@
       }
       /* OMP-3 stays on manual signaling with no configured ICE servers.
        * Production STUN/TURN selection belongs to OMP-4. */
-      peer.pc = new window.RTCPeerConnection({ iceServers: [] });
-      peer.pc.oniceconnectionstatechange = function () {
-        peer.ice_state = peer.pc.iceConnectionState;
+      var pc = new window.RTCPeerConnection({ iceServers: [] });
+      peer.pc = pc;
+      /* These handlers close over `pc`, never `peer.pc`. RTCPeerConnection
+       * .close() fires the state-change callbacks on a later task, by which
+       * time closePeer has already set peer.pc to null. */
+      pc.oniceconnectionstatechange = function () {
+        peer.ice_state = pc.iceConnectionState;
         if (peer.ice_state === "failed") {
           peerError(peer, null, "disconnected", "ICE negotiation failed");
           peerState(peer, "error");
         }
       };
-      peer.pc.onconnectionstatechange = function () {
-        var connection = peer.pc.connectionState;
+      pc.onconnectionstatechange = function () {
+        var connection = pc.connectionState;
         if (connection === "failed" || connection === "closed") {
           if (peer.state !== "closed") {
             peerError(peer, null, "disconnected", "peer connection " + connection);
@@ -396,10 +414,21 @@
           peerState(peer, "disconnected");
         }
       };
-      peer.pc.ondatachannel = function (event) {
+      pc.ondatachannel = function (event) {
         attachChannel(peer, event.channel);
       };
-      return peer.pc;
+      return pc;
+    }
+
+    /* Detach every listener before closing, so a late callback from a closed
+     * connection or channel cannot touch a torn-down peer at all. */
+    function detach(target, names) {
+      if (!target) {
+        return;
+      }
+      names.forEach(function (name) {
+        target[name] = null;
+      });
     }
 
     function waitForIce(pc) {
@@ -433,6 +462,12 @@
     }
 
     function parseSignal(peer, raw) {
+      /* Bound the encoded length before decoding, so an oversized blob is
+       * rejected without allocating its decoded form first. */
+      if (typeof raw !== "string" || raw.length > MAX_SIGNAL_BYTES) {
+        peerError(peer, null, "signal_error", "remote signal exceeds the byte limit");
+        return null;
+      }
       var text = unescapeField(raw);
       if (text === null || byteLength(text) > MAX_SIGNAL_BYTES) {
         peerError(peer, null, "signal_error", "remote signal is malformed");
@@ -461,6 +496,13 @@
         channel.outbound = [];
         channel.inbound = [];
         if (channel.handle) {
+          detach(channel.handle, [
+            "onopen",
+            "onclose",
+            "onerror",
+            "onmessage",
+            "onbufferedamountlow"
+          ]);
           try {
             channel.handle.close();
           } catch (error) {
@@ -470,6 +512,12 @@
         }
       });
       if (peer.pc) {
+        detach(peer.pc, [
+          "oniceconnectionstatechange",
+          "onconnectionstatechange",
+          "onicegatheringstatechange",
+          "ondatachannel"
+        ]);
         try {
           peer.pc.close();
         } catch (error) {
@@ -758,12 +806,27 @@
         if (star.role === "guest" && peerId !== HOST_PEER_ID) {
           return starError("role_forbidden", "a guest may only address the host");
         }
+        /* Message shape decides the returned code before the peer is resolved,
+         * so a call that is both badly shaped and badly addressed reports the
+         * same code here as in the Lua adapters, which cannot resolve a peer
+         * without asking this bridge. The peer is still looked up first, so a
+         * shape fault aimed at a known link stays attributed to that link. */
         var peer = findPeer(peerId);
+        var known = CHANNEL_MESSAGE_TYPES[channelName] ? channelName : null;
+        var parsed = parseWire(wire);
+        if (parsed.error) {
+          return peer
+            ? peerError(peer, known, parsed.error, parsed.detail)
+            : starError(parsed.error, parsed.detail);
+        }
+        var mismatch = checkChannelMessage(channelName, parsed);
+        if (mismatch) {
+          return peer
+            ? peerError(peer, known, mismatch.error, mismatch.detail)
+            : starError(mismatch.error, mismatch.detail);
+        }
         if (!peer) {
           return starError("unknown_peer", "star transport has no peer with that id");
-        }
-        if (!CHANNEL_MESSAGE_TYPES[channelName]) {
-          return peerError(peer, null, "channel_mismatch", "channel must be control or input");
         }
         return enqueue(peer, channelName, wire);
       },
@@ -873,16 +936,6 @@
           lines.push(fields.join("|"));
         });
         return lines.join("\n");
-      },
-
-      /* Test seam for scripted multi-context runs. Not used by the game. */
-      attach_channel: function (peerId, handle) {
-        var peer = findPeer(peerId);
-        if (!peer) {
-          return "error|unknown_peer|unknown_peer";
-        }
-        attachChannel(peer, handle);
-        return "ok";
       }
     };
   })();

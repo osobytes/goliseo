@@ -17,6 +17,61 @@ node "$project_root/scripts/webrtc_proof_smoke.js"
 node "$project_root/scripts/webrtc_star_smoke.js"
 python3 "$project_root/scripts/browser_matrix.py" --self-test
 
+python3 - "$project_root" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+# The channel configuration exists in two languages. Values match today; this
+# pins them together so a change on one side cannot drift silently.
+root = Path(sys.argv[1])
+lua = (root / "game" / "transport" / "contract.lua").read_text(encoding="utf-8")
+js = (root / "scripts" / "webrtc_star_host.js").read_text(encoding="utf-8")
+
+
+def lua_number(name: str) -> int:
+    match = re.search(rf"^contract\.{name} = (\d+)$", lua, re.MULTILINE)
+    if not match:
+        raise SystemExit(f"contract.lua does not define {name}")
+    return int(match.group(1))
+
+
+def js_number(name: str) -> int:
+    match = re.search(rf"^  var {name} = (\d+);$", js, re.MULTILINE)
+    if not match:
+        raise SystemExit(f"webrtc_star_host.js does not define {name}")
+    return int(match.group(1))
+
+
+for lua_name, js_name in (
+    ("MAX_GUESTS", "MAX_GUESTS"),
+    ("MAX_PAYLOAD_BYTES", "MAX_PAYLOAD_BYTES"),
+    ("MAX_QUEUE_LIMIT", "MAX_QUEUE_LIMIT"),
+    ("DEFAULT_QUEUE_LIMIT", "DEFAULT_QUEUE_LIMIT"),
+    ("MAX_PEER_ID_BYTES", "MAX_PEER_ID_BYTES"),
+    ("DEFAULT_BUFFERED_AMOUNT_LIMIT", "DEFAULT_BUFFERED_AMOUNT_LIMIT"),
+    ("MAX_BUFFERED_AMOUNT_LIMIT", "MAX_BUFFERED_AMOUNT_LIMIT"),
+):
+    if lua_number(lua_name) != js_number(js_name):
+        raise SystemExit(
+            f"transport bound drifted between Lua and JavaScript: {lua_name}"
+        )
+
+lua_control = re.search(r"control = \{ label = \"control\", ordered = (\w+)", lua)
+lua_input = re.search(
+    r"input = \{ label = \"input\", ordered = (\w+), max_retransmits = (\d+)", lua
+)
+js_control = re.search(r"control: \{ ordered: (\w+) \}", js)
+js_input = re.search(r"input: \{ ordered: (\w+), maxRetransmits: (\d+) \}", js)
+if not (lua_control and lua_input and js_control and js_input):
+    raise SystemExit("channel configuration could not be read from both sources")
+if lua_control.group(1) != js_control.group(1):
+    raise SystemExit("control channel ordering drifted between Lua and JavaScript")
+if lua_input.groups() != js_input.groups():
+    raise SystemExit("input channel configuration drifted between Lua and JavaScript")
+print("transport channel configuration parity: OK")
+PY
+
 first="$smoke_root/first"
 second="$smoke_root/second"
 "$project_root/scripts/web_build.sh" "$first"
@@ -91,6 +146,12 @@ for marker in (
 ):
     if marker not in loader:
         raise SystemExit(f"browser loader is missing host-star transport marker: {marker}")
+# A shipped bundle must expose no channel-injection seam: it would let any
+# co-resident script attach a handle to an open peer and forge traffic
+# attributed to that peer id, bypassing the offer/answer/DTLS handshake.
+for forbidden in ("attach_channel",):
+    if forbidden in loader:
+        raise SystemExit(f"browser loader exposes a transport test seam: {forbidden}")
 
 style = (artifact / "style.css").read_text(encoding="utf-8")
 for marker in (

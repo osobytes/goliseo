@@ -33,6 +33,7 @@ local contract = require("game.transport.contract")
 ---@field ice_state string
 ---@field channels table<TransportChannel, FakeStarChannel>
 ---@field arrival_seq integer
+---@field signal string?
 ---@field sequence_gaps integer
 ---@field backpressure integer
 ---@field malformed integer
@@ -63,6 +64,14 @@ local contract = require("game.transport.contract")
 ---@field _last_error string?
 local FakeStarTransport = {}
 FakeStarTransport.__index = FakeStarTransport
+
+-- In-process signaling rendezvous. A real star exchanges SDP blobs by hand
+-- between two browser contexts; here the blob is an opaque token that resolves
+-- back to the offering host and the answering guest. Entries live only between
+-- `request_offer` and `accept_answer`.
+local PENDING_OFFERS = {}
+local PENDING_ANSWERS = {}
+local OFFER_SEQUENCE = 0
 
 ---@param code TransportErrorCode
 ---@param message string
@@ -240,6 +249,7 @@ function FakeStarTransport:_add_peer(peer_id)
         ice_state = "new",
         channels = { control = new_channel(), input = new_channel() },
         arrival_seq = 0,
+        signal = nil,
         sequence_gaps = 0,
         backpressure = 0,
         malformed = 0,
@@ -309,6 +319,110 @@ function FakeStarTransport:link(guest)
     self:_set_peer_state(peer, "connected")
     guest:_set_peer_state(host_peer, "connected")
     return true
+end
+
+-- Manual signaling, in process. The browser adapter drives the same four calls
+-- against real SDP; here the blob is an opaque token that resolves back to the
+-- offering host, so a lobby can script the full handshake without a browser.
+---@param peer_id string
+---@return boolean?, string?, TransportErrorCode?
+function FakeStarTransport:request_offer(peer_id)
+    local ok, err, code = self:_require_connected()
+    if not ok then
+        return nil, err, code
+    end
+    if self._role ~= "host" then
+        self:_record_error("role_forbidden", "only a host creates offers")
+        return failure("role_forbidden", "only a host creates offers")
+    end
+    local peer, peer_err, peer_code = self:_peer(peer_id)
+    if not peer then
+        self:_record_error(peer_code or "unknown_peer", peer_err or "unknown peer")
+        return nil, peer_err, peer_code
+    end
+    OFFER_SEQUENCE = OFFER_SEQUENCE + 1
+    local token = ("offer:%d"):format(OFFER_SEQUENCE)
+    PENDING_OFFERS[token] = { host = self, peer_id = peer_id }
+    peer.signal = token
+    peer.ice_state = "checking"
+    return true
+end
+
+---@param signal string
+---@return boolean?, string?, TransportErrorCode?
+function FakeStarTransport:accept_offer(signal)
+    local ok, err, code = self:_require_connected()
+    if not ok then
+        return nil, err, code
+    end
+    if self._role ~= "guest" then
+        self:_record_error("role_forbidden", "only a guest accepts an offer")
+        return failure("role_forbidden", "only a guest accepts an offer")
+    end
+    local offer = type(signal) == "string" and PENDING_OFFERS[signal] or nil
+    if not offer then
+        self:_record_error("signal_error", "remote offer is not a known fake star offer")
+        return failure("signal_error", "remote offer is not a known fake star offer")
+    end
+    local host_peer = self._peers[contract.HOST_PEER_ID]
+    if not host_peer then
+        return failure("not_connected", "guest endpoint is not initialized")
+    end
+    PENDING_ANSWERS[signal] = self
+    host_peer.signal = "answer:" .. signal
+    host_peer.ice_state = "checking"
+    return true
+end
+
+---@param peer_id string
+---@param signal string
+---@return boolean?, string?, TransportErrorCode?
+function FakeStarTransport:accept_answer(peer_id, signal)
+    local ok, err, code = self:_require_connected()
+    if not ok then
+        return nil, err, code
+    end
+    if self._role ~= "host" then
+        self:_record_error("role_forbidden", "only a host accepts an answer")
+        return failure("role_forbidden", "only a host accepts an answer")
+    end
+    local peer, peer_err, peer_code = self:_peer(peer_id)
+    if not peer then
+        self:_record_error(peer_code or "unknown_peer", peer_err or "unknown peer")
+        return nil, peer_err, peer_code
+    end
+    local token = type(signal) == "string" and signal:match("^answer:(.+)$") or nil
+    local offer = token and PENDING_OFFERS[token] or nil
+    if not offer or offer.host ~= self or offer.peer_id ~= peer_id then
+        self:_record_error("signal_error", "remote answer does not match a pending offer")
+        return failure("signal_error", "remote answer does not match a pending offer")
+    end
+    local guest = PENDING_ANSWERS[token]
+    if not guest then
+        self:_record_error("signal_error", "no guest endpoint accepted that offer")
+        return failure("signal_error", "no guest endpoint accepted that offer")
+    end
+    PENDING_OFFERS[token] = nil
+    PENDING_ANSWERS[token] = nil
+    peer.signal = nil
+    return self:link(guest)
+end
+
+-- Returns the locally produced blob once, or nil while none is pending.
+---@param peer_id string
+---@return string?, string?, TransportErrorCode?
+function FakeStarTransport:take_signal(peer_id)
+    local ok, err, code = self:_require_connected()
+    if not ok then
+        return nil, err, code
+    end
+    local peer, peer_err, peer_code = self:_peer(peer_id)
+    if not peer then
+        return nil, peer_err, peer_code
+    end
+    local signal = peer.signal
+    peer.signal = nil
+    return signal
 end
 
 ---@param peer_id string
@@ -437,10 +551,19 @@ function FakeStarTransport:send(peer_id, channel, message)
         self:_record_error("role_forbidden", "a guest may only address the host")
         return failure("role_forbidden", "a guest may only address the host")
     end
-    local peer, peer_err, peer_code = self:_peer(peer_id)
+    -- Message shape decides the returned code before peer resolution, because
+    -- the browser adapter cannot authoritatively resolve a peer without asking
+    -- the bridge. The peer is still looked up first so a shape fault aimed at
+    -- a known link stays attributed to that link in its diagnostics.
+    local peer = self._peers[peer_id]
+    ok, err, code = contract.validate_channel_message(channel, message)
+    if not ok then
+        self:_record_error(code or "malformed", err or "star transport rejected a message", peer)
+        return nil, err, code
+    end
     if not peer then
-        self:_record_error(peer_code or "unknown_peer", peer_err or "unknown peer")
-        return nil, peer_err, peer_code
+        self:_record_error("unknown_peer", "star transport has no peer with that id")
+        return failure("unknown_peer", "star transport has no peer with that id")
     end
     return self:_enqueue(peer, channel, message)
 end
@@ -494,11 +617,14 @@ function FakeStarTransport:_receive(peer, channel_name, addressed)
     if not channel.last_seq or seq > channel.last_seq then
         channel.last_seq = seq
     end
-    peer.arrival_seq = peer.arrival_seq + 1
+    -- `arrival_seq` is stamped at poll time, not here. It then means the same
+    -- thing on both adapters: the ordinal of this message among what the
+    -- caller has drained for this peer. The browser adapter cannot observe
+    -- receive order at all, so receive-time numbering would diverge.
     channel.inbound[#channel.inbound + 1] = {
         peer_id = peer.peer_id,
         channel = channel_name,
-        arrival_seq = peer.arrival_seq,
+        arrival_seq = 0,
         message = addressed.message,
     }
 end
@@ -588,6 +714,8 @@ function FakeStarTransport:_take()
             local entry = table.remove(channel.inbound, 1)
             channel.received = channel.received + 1
             self._received = self._received + 1
+            peer.arrival_seq = peer.arrival_seq + 1
+            entry.arrival_seq = peer.arrival_seq
             return entry
         end
     end
