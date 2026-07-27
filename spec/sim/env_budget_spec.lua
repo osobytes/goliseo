@@ -6,14 +6,23 @@
 -- to pass; each failure message prints the observed figure so a regression is
 -- diagnosable rather than just red.
 --
--- Measured on this fixture (LuaJIT, soccer_only, seed 5), for the record:
+-- Every figure below is measured with the JIT pinned off — see `per_call_bytes`
+-- and the note above it for why. Measured on this fixture (LuaJIT interpreter,
+-- soccer_only, seed 5) at the WARMUP/ITERATIONS/ROUNDS set below, with the ceiling
+-- each one justifies:
 --
---   env.action_masks (1 slot)          3.0 KB
---   env.observe      (1 slot)         11.8 KB
---   env.action_masks (8 slots)        22.7 KB
---   env.observe      (8 slots)       104.8 KB
---   env.step         (1 slot)        202.2 KB
---   env.step         (8 slots, team) 333.7 KB
+--   env.action_masks (1 slot)          3,321 B   ceiling   6,144  (1.85x)
+--   env.observe      (1 slot)         11,809 B   ceiling  16,384  (1.39x)
+--   env.action_masks (8 slots)        25,993 B   -- not asserted directly
+--   env.observe      (8 slots)        91,537 B   -- not asserted directly
+--   env.step         (1 slot)        207,485 B   ceiling 245,760  (1.18x)
+--   env.step         (8 slots, team)  335,938 B  ceiling 425,984  (1.27x)
+--
+-- Those are exact rather than approximate: with the execution mode pinned, every
+-- one of them repeats to the byte across full-suite runs. Re-derive them, and the
+-- headroom, if you change WARMUP or ITERATIONS — the step figures depend on the
+-- iteration count, because a step advances the match and successive calls
+-- therefore do not observe identical state.
 --
 -- The step figure is dominated by `match_snapshot.capture` + `hash` (~120 KB of
 -- it) and the `match.step` engine baseline (~32 KB), neither of which this module
@@ -26,24 +35,13 @@ local env = require("sim.env")
 local env_observation = require("sim.env_observation")
 local input_frame = require("sim.input_frame")
 
--- Measurement noise, and why this takes the best of several rounds.
---
--- A single amortised round is not stable even with the collector stopped and the
--- loop warmed: whether the measured loop runs compiled or falls back to the
--- interpreter depends on global JIT state at that moment, and the interpreted
--- path allocates materially more. Observed here: three consecutive full-suite
--- runs on one unchanged checkout produced two clean passes and one round
--- measuring 17.4 KB for the single-slot observation against a 16 KB ceiling — a
--- ~47% overshoot on identical code.
---
--- Loosening the ceiling to swallow that would make the guard decorative, so
--- instead each budget is the *minimum* over ROUNDS measured rounds. The minimum
--- is robust to an occasional interpreted round while still catching a real
--- regression, because a regression raises the floor rather than just the tail.
--- The repo's older probe in spec/sim/stable_pressing_match_spec.lua does not
--- amortise at all and flakes for the same reason (issue #184).
-local ITERATIONS = 500
-local WARMUP = 200
+-- Amortisation only has to divide out one-time costs now that the execution mode
+-- is pinned and per-call allocation is exact, so these are much smaller than the
+-- counts a JIT-on measurement needed. The whole file measures interpreted, which
+-- is slower per call; at these counts the suite is no slower than it was before
+-- this probe was pinned.
+local ITERATIONS = 100
+local WARMUP = 50
 local ROUNDS = 3
 
 ---@param slots integer
@@ -63,7 +61,7 @@ local function fresh(slots, profile)
 end
 
 -- Allocation per call, measured with the collector stopped so nothing is reclaimed
--- mid-measurement. Warm up first: the JIT and the instance's growable arrays both
+-- mid-measurement. The caller warms the body first: the instance's growable arrays
 -- allocate more on their first passes.
 ---@param body fun()
 ---@return number bytes_per_call
@@ -83,20 +81,63 @@ local function measure_round(body)
     return bytes / ITERATIONS
 end
 
+-- Why the JIT is turned off and the trace cache flushed for the measurement (#223).
+--
+-- LuaJIT allocates a different number of bytes for this path depending on which
+-- traces happen to cover it. The interpreted figure is invariant: 16 measurements
+-- taken across 8 separate full-suite processes each returned exactly 11,808 B for
+-- the single-slot observation. The compiled figure is not. Measuring the same
+-- unchanged code in the same process returns 13,216 B, 13,472 B or 17,632 B purely
+-- as a function of the trace layout the JIT built, and that layout depends on
+-- everything the suite ran beforehand. 17,376 B is one of those modes and it sits
+-- above the 16,384 ceiling, which is the ~1-in-3 CI failure reported in #223.
+-- (Those diagnostic figures come from the WARMUP/ITERATIONS of 200/500 this file
+-- used at the time; at the 50/100 it uses now the same measurement reads 11,809 B,
+-- one byte of rounding apart. The modes are the point, not the last digit.)
+--
+-- Two properties of that mode matter for the fix. It is stable *within* a process:
+-- every round of a failing run reports the same value, so warming the loop harder
+-- and taking the minimum over rounds cannot escape it — the minimum is over three
+-- samples of one mode. And it is deterministic rather than noisy, which is why the
+-- same 17,376 B reproduced to the byte on four unrelated machines.
+--
+-- Turning the JIT off removes the variable instead of hiding it. The cost is stated
+-- plainly: these budgets now describe *interpreted* allocation, which is the lower
+-- of the two modes, so a regression visible only in compiled code would not be
+-- caught here. In exchange the numbers are reproducible, and every ceiling in the
+-- header above is derived from the interpreted figure it guards. This is the
+-- opposite trade from #213, where disabling the JIT would have concealed a real
+-- per-tick `require`; here the alternative is a bimodal measurement, which is worse
+-- than a pinned one.
+--
+-- `jit.off()` alone is not enough: it stops new traces being recorded but leaves
+-- existing ones executable, and measuring under it still returns the compiled
+-- figure. The cache has to be flushed as well.
+--
+-- ROUNDS survives the change: with the mode pinned it is no longer defending
+-- against an interpreted round, but taking the minimum still discards a round that
+-- happened to absorb a one-off growable-array resize.
 ---@param body fun()
 ---@return number bytes_per_call
 local function per_call_bytes(body)
-    for _ = 1, WARMUP do
-        body()
-    end
-    local best = measure_round(body)
-    for _ = 2, ROUNDS do
-        local bytes = measure_round(body)
-        if bytes < best then
-            best = bytes
+    jit.off()
+    jit.flush()
+    local ok, result = pcall(function()
+        for _ = 1, WARMUP do
+            body()
         end
-    end
-    return best
+        local best = measure_round(body)
+        for _ = 2, ROUNDS do
+            local bytes = measure_round(body)
+            if bytes < best then
+                best = bytes
+            end
+        end
+        return best
+    end)
+    jit.on()
+    t.is_true(ok, tostring(result))
+    return result
 end
 
 ---@param slots integer
