@@ -124,6 +124,19 @@ local protocol = require("game.online.protocol")
 ---@field peer_id string
 ---@field first_difference_path string?
 
+---@class NetDiagnosticsPressure
+---@field samples integer -- Transport snapshots folded; a peak of one sample is not a peak.
+---@field peak_outbound_depth integer
+---@field peak_inbound_depth integer
+---@field peak_buffered_amount integer
+---@field peak_event_depth integer
+---@field peak_peer_count integer
+---@field backpressure integer -- Star-level cumulative latches, highest seen.
+---@field peer_backpressure integer -- Highest cumulative latch count on any one link.
+---@field overflow integer
+---@field dropped_outbound integer
+---@field dropped_inbound integer
+
 ---@class NetDiagnosticsTeardown
 ---@field requested boolean
 ---@field closed_peers integer
@@ -162,6 +175,7 @@ local protocol = require("game.online.protocol")
 ---@field _worst table?
 ---@field _star table?
 ---@field _peers table[]
+---@field _pressure table?
 ---@field _teardown table?
 ---@field _tick_digests table<integer, string>
 ---@field _tick_digest_floor integer
@@ -550,6 +564,24 @@ net_diagnostics.EXPORT = schema.record("net_diagnostics", nil, {
                 },
             },
             {
+                name = "pressure",
+                kind = "record",
+                optional = true,
+                fields = {
+                    integer_field("samples"),
+                    integer_field("peak_outbound_depth"),
+                    integer_field("peak_inbound_depth"),
+                    integer_field("peak_buffered_amount"),
+                    integer_field("peak_event_depth"),
+                    integer_field("peak_peer_count"),
+                    integer_field("backpressure"),
+                    integer_field("peer_backpressure"),
+                    integer_field("overflow"),
+                    integer_field("dropped_outbound"),
+                    integer_field("dropped_inbound"),
+                },
+            },
+            {
                 name = "latency",
                 kind = "array",
                 element = {
@@ -831,6 +863,7 @@ function net_diagnostics.new(options)
         _worst = nil,
         _star = nil,
         _peers = {},
+        _pressure = nil,
         _teardown = nil,
         _tick_digests = {},
         _tick_digest_floor = freeze.first_input_tick,
@@ -1206,6 +1239,17 @@ end
 -- Transport diagnostics are a *snapshot of counters*, so the latest replaces the
 -- previous rather than accumulating: the star already counts cumulatively and
 -- adding our own sum on top would double-count.
+--
+-- Queue **depths** are the exception, and they are why `runtime.pressure` exists.
+-- A depth is an instantaneous level, not a counter, and the last snapshot a run
+-- takes is almost always a quiescent one -- taken after the final pump, or after
+-- teardown drained everything. Reading `peers[*].control.outbound_depth` out of
+-- the export therefore answers "how deep was the queue when we stopped looking",
+-- which is nearly always zero, and a resource gate written against it cannot
+-- fail. `pressure` folds a genuine running peak across every snapshot, alongside
+-- the cumulative backpressure and overflow latches that a depth sample can miss
+-- entirely: a channel that hit its `bufferedAmount` ceiling and drained again
+-- between two observations leaves no depth behind, only a latch.
 ---@param recorder NetDiagnostics
 ---@param star TransportStarDiagnostics
 ---@return boolean?, string?
@@ -1248,6 +1292,42 @@ function net_diagnostics.record_transport(recorder, star)
         }
     end
     recorder._peers = peers
+
+    local pressure = recorder._pressure
+        or {
+            samples = 0,
+            peak_outbound_depth = 0,
+            peak_inbound_depth = 0,
+            peak_buffered_amount = 0,
+            peak_event_depth = 0,
+            peak_peer_count = 0,
+            backpressure = 0,
+            peer_backpressure = 0,
+            overflow = 0,
+            dropped_outbound = 0,
+            dropped_inbound = 0,
+        }
+    pressure.samples = pressure.samples + 1
+    pressure.peak_event_depth = math.max(pressure.peak_event_depth, star.event_depth or 0)
+    pressure.peak_peer_count = math.max(pressure.peak_peer_count, star.peer_count or 0)
+    -- The star's own counters are cumulative and monotonic, so a running maximum
+    -- is the same value while the star lives and survives a re-initialized one.
+    pressure.backpressure = math.max(pressure.backpressure, star.backpressure or 0)
+    pressure.overflow = math.max(pressure.overflow, star.overflow or 0)
+    pressure.dropped_outbound = math.max(pressure.dropped_outbound, star.dropped_outbound or 0)
+    pressure.dropped_inbound = math.max(pressure.dropped_inbound, star.dropped_inbound or 0)
+    for _, peer in ipairs(peers) do
+        pressure.peer_backpressure = math.max(pressure.peer_backpressure, peer.backpressure or 0)
+        for _, channel in ipairs({ peer.control, peer.input }) do
+            pressure.peak_outbound_depth =
+                math.max(pressure.peak_outbound_depth, channel.outbound_depth)
+            pressure.peak_inbound_depth =
+                math.max(pressure.peak_inbound_depth, channel.inbound_depth)
+            pressure.peak_buffered_amount =
+                math.max(pressure.peak_buffered_amount, channel.buffered_amount)
+        end
+    end
+    recorder._pressure = pressure
     return true
 end
 
@@ -1522,6 +1602,7 @@ function net_diagnostics.export(recorder)
         runtime = {
             star = recorder._star and shallow_copy(recorder._star) or nil,
             peers = recorder._peers,
+            pressure = recorder._pressure and shallow_copy(recorder._pressure) or nil,
             latency = latency_rows(recorder),
             events = ring_items(recorder._events),
             signals = ring_items(recorder._signals),

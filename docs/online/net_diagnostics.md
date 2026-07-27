@@ -115,6 +115,25 @@ malformed counts, redacted last error text; per-peer RTT/jitter min/max/last wit
 monotonic window they were taken over; ordered transport and lifecycle events;
 signalling records; and teardown completeness.
 
+`runtime.star` and `runtime.peers` are the **latest** snapshot: transport
+diagnostics are counters the star already accumulates, so replacing beats summing.
+That is right for counters and wrong for *depths*, which are instantaneous levels
+rather than totals. The last snapshot a run takes is nearly always a quiescent
+one — after the final pump, or after teardown drained the queues — so a resource
+gate written against `peers[*].control.outbound_depth` reads zero however hard
+the transport was pushed, and cannot fail.
+
+`runtime.pressure` exists for that: a running peak folded across **every**
+transport snapshot, with `samples` saying how many. It carries
+`peak_outbound_depth`, `peak_inbound_depth`, `peak_buffered_amount`,
+`peak_event_depth`, and `peak_peer_count`, plus the highest cumulative
+`backpressure`, `peer_backpressure`, `overflow`, `dropped_outbound`, and
+`dropped_inbound` seen. The latch counters matter independently of the depths: a
+channel that reached its `bufferedAmount` ceiling and drained again between two
+observations leaves no depth behind, only a latch. Anything gating on transport
+pressure should read this record, not the peers array — see
+[the fault harness](fault_harness.md#resource-measurement-and-teardown).
+
 ### Anchors
 
 `input_tick`, `monotonic_ms`, `mapping_error_ms`.
