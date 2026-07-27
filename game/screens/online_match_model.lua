@@ -163,6 +163,17 @@ local function settle(model)
         model.terminal = model.terminal or state.terminal
         -- Only a completed session carries an acknowledged result. Anything else
         -- ends without one, deliberately: there is no half-agreed score.
+        --
+        -- The `local_result` fallback is unreachable, and deliberately so rather
+        -- than accidentally: every path in `game.online.coordinator` that
+        -- terminates with `completed` sets `state.result` first — the host on the
+        -- final `result_ack`, the guest when it acknowledges the host's. It is
+        -- kept only so this returns *something* if that ever stops holding. It is
+        -- **not** a live path to committing a prediction, and must not be read as
+        -- one: `local_result` is this peer's own unacknowledged simulation, and
+        -- committing it would be exactly the bug the rest of this flow exists to
+        -- prevent. If the assertion above ever needs relaxing, delete the
+        -- fallback rather than leaning on it.
         if state.terminal and state.terminal.reason == "completed" then
             model.result = state.result or state.local_result
         end

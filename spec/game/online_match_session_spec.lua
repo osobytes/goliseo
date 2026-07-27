@@ -49,9 +49,87 @@ t.describe("content-derived online manifest", function()
         t.eq(protocol.manifest_id(one), protocol.manifest_id(four))
     end)
 
-    t.it("refuses a manifest naming content this build does not have", function()
+    t.it("mints deterministic, protocol-shaped identities", function()
+        for _, id in ipairs({
+            match_manifest.content_id(),
+            match_manifest.tuning_id(),
+            match_manifest.build_id(),
+        }) do
+            t.is_true(
+                id:match("^[A-Za-z0-9][A-Za-z0-9_%.%-]*$") ~= nil,
+                "identity is not a bounded opaque ASCII id: " .. id
+            )
+            t.is_true(#id <= 128)
+        end
+        -- Two peers on the same build must agree, so the digest can depend on
+        -- nothing but the content itself — no clock, no counter, no table order.
+        t.eq(match_manifest.content_id(), match_manifest.content_id())
+        t.eq(match_manifest.tuning_id(), match_manifest.tuning_id())
+        t.eq(match_manifest.build_id(), match_manifest.build_id())
+        t.eq(
+            protocol.manifest_id(match_manifest.template("2v2")),
+            protocol.manifest_id(match_manifest.template("2v2"))
+        )
+    end)
+
+    t.it("describes rosters the protocol and the simulation both accept", function()
         local manifest = match_manifest.template("4v4")
-        manifest.teams[1].team_id = "team_that_does_not_exist"
+        for _, team in ipairs(manifest.teams) do
+            t.eq(#team.roster, 5)
+            t.eq(team.roster[1].position, "keeper", "a manifest roster places its keeper first")
+            t.eq(team.roster[1].loadout_id, nil, "keepers carry no combat loadout")
+            t.eq(team.roster[1].family_id, nil)
+            for index = 2, #team.roster do
+                local player = team.roster[index]
+                t.is_true(player.position ~= "keeper", "only one keeper per roster")
+                t.is_true(player.loadout_id ~= nil, "an online outfielder needs a fixed loadout")
+                t.is_true(player.family_id ~= nil, "an online outfielder needs its family")
+            end
+        end
+    end)
+
+    t.it("refuses a manifest naming content this build does not have", function()
+        for _, mutate in ipairs({
+            function(manifest)
+                manifest.teams[1].team_id = "team_that_does_not_exist"
+            end,
+            function(manifest)
+                manifest.arena_id = "arena.that.does.not.exist"
+            end,
+            function(manifest)
+                manifest.teams[1].roster[2].player_id = "player_that_does_not_exist"
+            end,
+        }) do
+            local manifest = match_manifest.template("4v4")
+            mutate(manifest)
+            local content, err = match_manifest.resolve(manifest)
+            t.eq(content, nil)
+            t.is_true(err ~= nil)
+        end
+    end)
+
+    t.it("refuses a manifest that disagrees about a player this build has", function()
+        -- The dangerous case: every id resolves, but the manifest describes the
+        -- player differently, which would build a different match on this peer.
+        local manifest = match_manifest.template("4v4")
+        manifest.teams[1].roster[2].position = "defender" == manifest.teams[1].roster[2].position
+                and "midfielder"
+            or "defender"
+        local content, err = match_manifest.resolve(manifest)
+        t.eq(content, nil)
+        t.is_true(err ~= nil)
+
+        manifest = match_manifest.template("4v4")
+        manifest.teams[1].roster[2].loadout_id = "loadout_that_does_not_exist"
+        content, err = match_manifest.resolve(manifest)
+        t.eq(content, nil)
+        t.is_true(err ~= nil)
+    end)
+
+    t.it("refuses a slot table that disagrees with locally computed ownership", function()
+        local manifest = match_manifest.template("4v4")
+        manifest.slots[1].player_id, manifest.slots[2].player_id =
+            manifest.slots[2].player_id, manifest.slots[1].player_id
         local content, err = match_manifest.resolve(manifest)
         t.eq(content, nil)
         t.is_true(err ~= nil)

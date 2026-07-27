@@ -52,6 +52,14 @@ local FIELD_H = 540
 -- — speculative add/revoke/replace, confirmed exactly-once publication, replay,
 -- smoothing — is identical for both, which is the point: the online match reuses
 -- the shipped feedback path rather than growing a parallel one.
+--
+-- Two members the laboratory structurally cannot answer, and answers as constant
+-- no-ops below: `full_time`, because the lab drains its network after reference
+-- full time and reaches full time only through the confirmed lifecycle record;
+-- and `controlled_player`, because the lab pins its local slot at construction
+-- and never moves it. Both exist for a driven match, where the source stops at
+-- the tick the match ends and where the controlled player follows a live slot
+-- that moves. Treat the lab as the reference for everything *except* those two.
 ---@class MatchRollbackSource
 ---@field needs_local_sample fun(self: MatchRollbackSource): boolean
 ---@field advance fun(self: MatchRollbackSource, tick: integer, sample: InputSample?): RollbackPlayableLabBatch
@@ -74,7 +82,7 @@ local FIELD_H = 540
 ---@field combat_enabled boolean? -- Explicit post-showcase prototype opt-in.
 ---@field profile "product"|"playtest"|"online"?
 ---@field rollback_lab MatchRollbackLabOptions? -- Explicit development-only opt-in.
----@field rollback_source (fun(initial: MatchSnapshot): MatchRollbackSource)? -- Online drive seam.
+---@field rollback_source (fun(): MatchRollbackSource)? -- Online drive seam.
 ---@field initial_snapshot MatchSnapshot? -- Canonical boundary zero for a driven match.
 
 ---@class MatchScreen : Screen
@@ -402,6 +410,9 @@ local function lab_source(lab)
             return debug
         end,
         controlled_player = function()
+            -- The lab pins its local slot at construction and never moves it, so
+            -- the snapshot's own `controlled` is already right. See the note on
+            -- `MatchRollbackSource`.
             return nil
         end,
     }
@@ -498,10 +509,16 @@ function Match:restart()
         -- An externally driven match (the OMP-3 online driver). Boundary zero is
         -- supplied rather than built here, because every peer must start from the
         -- byte-identical snapshot the frozen manifest names.
+        --
+        -- The factory takes nothing on purpose. A driven source is seeded from
+        -- that same snapshot *before* this screen exists — the online driver is
+        -- constructed with it — so handing the snapshot over here would look
+        -- like the callee still gets to choose, when it has already committed.
+        -- `initial_snapshot` remains required, because it is what this screen
+        -- restores and renders from until the first advance.
+        assert(pinned, "an externally driven match requires its canonical boundary zero")
         self._rollback_lab = nil
-        self._source = self._opts.rollback_source(
-            assert(pinned, "an externally driven match requires its canonical boundary zero")
-        )
+        self._source = self._opts.rollback_source()
     else
         self._rollback_lab = nil
         self._source = nil
