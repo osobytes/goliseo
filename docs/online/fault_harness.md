@@ -89,6 +89,13 @@ Rows cover:
   over-window input, and persistent hash divergence, each declaring the terminal
   status it expects.
 
+The mode and profile bullets are crossed with each other. The taxonomy bullet is
+**not**: each fault row runs in one representative mode (2v2, visible in its
+scenario id) rather than in all three. The terminal paths it exercises are
+mode-independent by construction — ownership is a frozen partition, the retained
+floor is a per-peer window, and a lost link is a lost link — but that is an
+argument, not a measurement, and this matrix does not make it into one.
+
 Every row that is bounded says so. `--fault-harness smoke` prints how many of the
 declared rows it ran and which selector runs the rest, and every row carrying a
 `known_gap` is printed in **every** run whether or not it was selected.
@@ -126,7 +133,12 @@ operating-system processes and makes three checks:
 3. **Hash-seed diversity.** Each process prints its own observed `pairs()` order
    over a fixed table. If every process reported the same order, check 2 is
    vacuous for that run, and the controller **fails and says so** rather than
-   passing quietly.
+   passing quietly. Note the exact guarantee: it requires **at least two
+   distinct** orders across the N processes, not that every process differs from
+   every other. It therefore detects a total collapse of per-process
+   randomization, which is the failure that would make check 2 meaningless; it
+   does not certify that any particular pair of compared clients had different
+   seeds. In practice all three processes have differed on every run.
 
 This is a genuine execution proof for the divergence class in question. It is
 *not* the same thing as running each client in its own process with a real
@@ -144,6 +156,7 @@ not invent numbers the driver does not publish. Declared gates
 | --- | --- | --- |
 | `max_rollback_depth` | `rollback_input_history.ROLLBACK_WINDOW_TICKS` (30) | The retained floor. |
 | `max_channel_depth` | `transport_contract.MAX_QUEUE_LIMIT` (256) | The star's own bound. |
+| `max_overflow` | 0 | A healthy row must never have a send refused. |
 | `max_residual_queue` | 0 | Teardown must drain. |
 | `max_orphan_peers` | 0 | Teardown must close every link. |
 
@@ -151,6 +164,26 @@ Exceeding one is a blocking finding, not a warning. Per-client packets, bytes,
 rollback count, correction count, worst rollback depth, deferred/duplicate/
 rejected rows, and applied rows are printed as markers so a report can quote
 measured numbers rather than analytical ones.
+
+**Queue depth is read from `runtime.pressure`, never from `runtime.peers`.** A
+depth is an instantaneous level, and the last transport snapshot a run takes is
+almost always a quiescent one — after the final pump, after teardown drained
+everything. A gate written against the last snapshot reads zero however hard the
+transport was pushed, so `net_diagnostics` now folds a genuine running peak
+across every snapshot, alongside the cumulative backpressure and overflow latches
+that a depth sample can miss entirely (a channel that hit its `bufferedAmount`
+ceiling and drained again between two observations leaves no depth behind, only a
+latch).
+
+Two findings exist purely to keep those gates honest:
+
+- `resources.channel_depth_observed` fails if the peak the depth gate is checking
+  was never non-zero. A blocking gate that structurally cannot fail is worse than
+  no gate, because this document invites a reader to trust it.
+- `faults.backpressure_observed` fails if a row that clamped the send buffer
+  never actually latched backpressure — a scenario that silently turned itself
+  off. Reverting `2v2.backpressure`'s clamp to the adapter default makes this row
+  go red, which is how it was checked.
 
 ## Commands
 
@@ -205,33 +238,46 @@ the processes differed.
 
 ## Open finding: an eight-client match under a reordering profile can strand a peer
 
-Running `4v4.playable` or `4v4.stress` strands one or two guests on roughly half
-the seeds tried. The stranded peer's `confirmed_output_tick` stops advancing
-mid-match — in one captured run at tick 55 of 121 — while it keeps simulating
-predicted authority for the rest of the match. Nothing terminal is raised at the
-time. The peer only reports `settle_timeout` at full time, sixty settle steps
-later, and carries a final hash that disagrees with every other peer.
+`4v4.playable` and `4v4.stress` strand one or two guests on roughly half the
+seeds tried, and they do it in two visibly different shapes. From the captured
+`4v4.playable` run at the default network seed:
+
+| Peer | Host batches lost | Confirmed boundary at full time | Full-time boundary |
+| --- | ---: | ---: | ---: |
+| `guest_5` | 5 (2 independent, 3 burst) | 118 | 121 |
+| `guest_6` | 7 (1 independent, 6 burst) | 55 | 121 |
+
+`guest_5` is a **tail** stall: three ticks short of the final boundary, which is
+the shape the settle phase exists to absorb and did not. `guest_6` is a
+**mid-match** stall: its confirmation stopped advancing before half time, after
+which it simulated sixty-six further ticks of purely predicted authority with
+nothing terminal raised. `4v4.stress` produces a third point, `guest_3` stalled
+at 102 of 121. All of them surface only as `settle_timeout`, sixty settle steps
+after full time, carrying a final hash that disagrees with every other peer.
 
 What is established:
 
-- It is never observed under `clean` or `omp0_parity`, which have no jitter, no
-  duplication, and no bursts. It is observed under `playable` and `stress`, which
-  have all three.
-- It is not the host's row bound: the recorder reports `deferred=0` and
-  `rejected=0` on the host in a stranding run.
-- The stranded guest lost seven of the host's 122 canonical batches, of which six
-  were burst losses. The host's redundancy window carries seven rows per slot, so
-  seven consecutive lost batches is exactly the boundary at which a row becomes
-  unrecoverable.
-- Every confirmed checkpoint that *was* compared still agreed. The divergence is
+- never observed under `clean` or `omp0_parity`, which have no jitter, no
+  duplication, and no bursts; observed under `playable` and `stress`, which have
+  all three. Reordering, not raw loss rate, is what distinguishes them;
+- it is not the host's row bound: the recorder reports `deferred=0` and
+  `rejected=0` on the host in a stranding run;
+- every confirmed checkpoint that *was* compared still agreed. The divergence is
   in the tail and in the final hash, not in the confirmed timeline.
 
-What is not established: whether this is a gap in the redundancy window's sizing,
-in the settle phase's assumption that the host may terminate before its guests,
-or in the absence of a proactive "unconfirmed authority is older than the
-retained floor" check to sit alongside the reactive `late_input` one. That
-adjudication belongs to the driver's owners, not to this harness, and it is
-**not** fixed here.
+What is **not** established, and what an earlier draft of this document got
+wrong: the number of lost batches does not predict either the occurrence or the
+shape. The host's redundancy window carries seven rows per slot, so a peer that
+lost five scattered batches — `guest_5` — should have recovered all of them. Any
+hypothesis of the form "more consecutive losses than the window covers" is
+therefore already contradicted by the data on this page, and the two stall
+shapes may not even share a cause.
+
+Whether this is a gap in the redundancy window's sizing, in the settle phase's
+assumption that the host may terminate before its guests, or in the absence of a
+proactive "unconfirmed authority is older than the retained floor" check to sit
+beside the reactive `late_input` one, is for the driver's owners to adjudicate.
+It is **not** fixed here.
 
 The two affected rows carry a `known_gap` so every run prints the finding, and
 they are deliberately kept out of the CI subset — because they are a product

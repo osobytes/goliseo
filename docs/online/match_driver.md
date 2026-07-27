@@ -222,9 +222,10 @@ Those bounds are now **measured** rather than reasoned. The #169
 declared matrix the worst settle a peer actually completed from was **16 steps**
 of the 60-step bound. The same campaign found a case the bound does not cover —
 an eight-client match under a reordering profile can strand a guest whose
-confirmation stopped advancing mid-match, which surfaces only as a
-`settle_timeout` at full time. That finding is open and recorded in the harness
-document; it is not addressed here.
+confirmation stops advancing, sometimes three ticks short of the final boundary
+and sometimes before half time, with nothing terminal raised until the settle
+phase expires. That finding is open and recorded in the harness document; it is
+not addressed here.
 
 It is deliberately **not** gated on hash agreement. The driver cannot see another
 peer's hash, so waiting for one would be an unbounded wait on a fact that never

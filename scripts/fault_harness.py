@@ -21,7 +21,11 @@ system processes and compares:
      human. Those two clients demonstrably do not share a hash seed.
   3. **Hash-seed diversity.** If every process reported the same probe order,
      claim 2 is vacuous for that run. This is reported explicitly rather than
-     passed quietly.
+     passed quietly. The check requires **at least two distinct** orders across
+     the N processes, not full pairwise distinctness: it detects a total collapse
+     of per-process randomization, which is the failure that would make claim 2
+     meaningless, but it does not certify that any particular compared pair had
+     different seeds.
 
 What it does not prove: anything about NAT traversal, ICE, TURN, real device
 scheduling, or browser contexts. Simulated impairment is simulated; #170 covers
@@ -178,6 +182,12 @@ def compare_clients_across_processes(runs: list[RunMarkers]) -> tuple[list[str],
 
 
 def probe_diversity(runs: list[RunMarkers]) -> tuple[int, str]:
+    """Distinct probe orders observed. Two is enough to refute a total collapse.
+
+    Deliberately not pairwise distinctness: with N processes drawing seeds
+    independently, insisting every pair differ would make the check flaky for a
+    reason that says nothing about the code under test.
+    """
     probes = {run.probe for run in runs if run.probe}
     return len(probes), ", ".join(sorted(probes))
 

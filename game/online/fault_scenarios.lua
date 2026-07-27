@@ -160,11 +160,13 @@ fault_scenarios.SCENARIOS = {
         injection = "none",
         smoke = false,
         known_gap = "an eight-client match under a reordering profile can strand a guest: "
-            .. "confirmation stops advancing mid-match with no terminal, and the peer only "
-            .. "reports settle_timeout at full time. Observed on roughly half of the seeds "
-            .. "tried; never observed under clean or omp0_parity, which have no jitter, no "
-            .. "duplication, and no bursts. Kept out of the CI subset because it is a product "
-            .. "finding, not a harness flake",
+            .. "confirmation stops advancing -- sometimes three ticks short of full time, "
+            .. "sometimes before half time -- with no terminal raised, and the peer only "
+            .. "reports settle_timeout after the settle phase expires. Observed on roughly "
+            .. "half of the seeds tried; never under clean or omp0_parity, which have no "
+            .. "jitter, no duplication, and no bursts. The lost-batch count does not predict "
+            .. "it: see docs/online/fault_harness.md. Kept out of the CI subset because it is "
+            .. "a product finding, not a harness flake",
         note = "the eight-client row under the documented playable profile",
     },
     {

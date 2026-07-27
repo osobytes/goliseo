@@ -125,6 +125,10 @@ t.describe("online fault harness", function()
         t.is_true(finding(report, "converge.live_slot").ok, "stress must agree on the live slot")
     end)
 
+    -- Mechanism coverage, not the declared `2v2.poll_reversed` row: that row runs
+    -- the `stress` profile, whose losses would make the two runs differ for a
+    -- reason unrelated to release order. Holding the profile at `clean` isolates
+    -- the one variable. The matrix row itself still runs in the campaign.
     t.it("keeps confirmed boundaries independent of arrival release order", function()
         local forward = run("2v2.clean")
         local reversed = run("2v2.clean", { injection = "poll_reversed" })
@@ -153,6 +157,37 @@ t.describe("online fault harness", function()
             local report = run(id)
             local entry = finding(report, "terminal." .. assert(declared.expect_status))
             t.is_true(entry.ok, id .. ": " .. entry.detail)
+        end
+    end)
+
+    -- The mirror of "the stress profile must actually drop packets", one row
+    -- over: a clamped send buffer that never latched is a scenario that turned
+    -- itself off, and the gate it feeds would then be unfalsifiable.
+    t.it("observes the backpressure it clamps for, and gates on a real peak", function()
+        local report = run("2v2.backpressure")
+        local latched, peak = 0, 0
+        for _, marker in ipairs(report.markers) do
+            if marker:find("pressure ") == 1 then
+                latched = latched + (tonumber(marker:match("backpressure=(%d+)")) or 0)
+                peak = math.max(peak, tonumber(marker:match("outbound=(%d+)")) or 0)
+            end
+        end
+        t.is_true(latched > 0, "the clamped send buffer never latched backpressure")
+        t.is_true(peak > 0, "the depth gate never observed a non-zero queue")
+        t.is_true(finding(report, "faults.backpressure_observed").ok, "backpressure unobserved")
+        assert_all_ok(report)
+    end)
+
+    -- The depth gate reads `runtime.pressure`, a running peak, and not
+    -- `runtime.peers`, which is the last (quiescent) snapshot and reads zero
+    -- however hard the transport was pushed. This is the regression guard.
+    t.it("gates channel depth on a peak it actually observed", function()
+        for _, id in ipairs({ "1v1.clean", "4v4.clean" }) do
+            local report = run(id)
+            local observed = finding(report, "resources.channel_depth_observed")
+            t.is_true(observed.ok, id .. ": " .. observed.detail)
+            t.is_true(finding(report, "resources.channel_depth").ok, id .. " exceeded the gate")
+            t.is_true(finding(report, "resources.no_overflow").ok, id .. " refused a send")
         end
     end)
 

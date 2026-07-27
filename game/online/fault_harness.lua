@@ -115,6 +115,7 @@ local rollback_input_history = require("sim.rollback_input_history")
 ---@field step integer
 ---@field clock_ms number
 ---@field hash_interval_ticks integer
+---@field expect_backpressure boolean -- A clamped send buffer must actually latch.
 ---@field script fun(index: integer, step: integer): InputSample
 ---@field notes string[] -- Explicitly logged coverage bounds; never silent truncation.
 
@@ -239,6 +240,10 @@ function fault_harness.new(options)
         clock_ms = 0,
         hash_interval_ticks = options.hash_interval_ticks
             or match_driver.DEFAULT_HASH_INTERVAL_TICKS,
+        -- Clamping the send buffer is only a fault if the clamp bites. A row
+        -- that asks for one therefore has to observe it, or the row proves
+        -- nothing beyond "the match still ran".
+        expect_backpressure = options.buffered_amount_limit ~= nil,
         script = options.script or fault_harness.scripted_sample,
         notes = {},
     }
@@ -783,6 +788,7 @@ fault_harness.GATES = {
     max_channel_depth = transport_contract.MAX_QUEUE_LIMIT,
     max_residual_queue = 0,
     max_orphan_peers = 0,
+    max_overflow = 0,
 }
 
 ---@param live table<string, InputSlotId>
@@ -1021,12 +1027,20 @@ local function compare_status(harness, findings, expect_completed)
     end
 end
 
+-- Resource evidence comes from #168's recorder, not from a second observation
+-- path of the harness's own. One detail is load bearing: queue **depth** is read
+-- from `runtime.pressure`, the running peak across every transport snapshot, and
+-- never from `runtime.peers[*]`. The peers array is the *last* snapshot, and the
+-- last snapshot of a finished run is a quiescent one, so a gate written against
+-- it reads zero however hard the transport was pushed. A blocking gate that
+-- cannot fail is worse than no gate, so this one is checked for liveness too.
 ---@param harness FaultHarness
 ---@param findings FaultHarnessFinding[]
 ---@param markers string[]
 local function measure_resources(harness, findings, markers)
     local worst_depth, worst_channel, residual, orphans = 0, 0, 0, 0
     local packets, bytes = 0, 0
+    local backpressure, overflow, samples = 0, 0, 0
     for _, client in ipairs(harness.clients) do
         local recorder = client.recorder
         if recorder ~= nil then
@@ -1041,13 +1055,38 @@ local function measure_resources(harness, findings, markers)
                 for _, packet in ipairs(delivery.packets) do
                     bytes = bytes + packet.payload_bytes
                 end
-                for _, peer in ipairs(artifact.runtime.peers or {}) do
+                local pressure = artifact.runtime.pressure
+                if pressure == nil then
+                    finding(
+                        findings,
+                        "resources.pressure",
+                        false,
+                        client.peer_id .. " folded no transport snapshot at all"
+                    )
+                else
+                    samples = samples + pressure.samples
                     worst_channel = math.max(
                         worst_channel,
-                        peer.control.outbound_depth,
-                        peer.control.inbound_depth,
-                        peer.input.outbound_depth,
-                        peer.input.inbound_depth
+                        pressure.peak_outbound_depth,
+                        pressure.peak_inbound_depth
+                    )
+                    backpressure = backpressure + pressure.backpressure
+                    overflow = overflow + pressure.overflow
+                    markers[#markers + 1] = (
+                        "pressure %s samples=%d outbound=%d inbound=%d buffered=%d "
+                        .. "backpressure=%d peer_backpressure=%d overflow=%d "
+                        .. "dropped_out=%d dropped_in=%d"
+                    ):format(
+                        client.peer_id,
+                        pressure.samples,
+                        pressure.peak_outbound_depth,
+                        pressure.peak_inbound_depth,
+                        pressure.peak_buffered_amount,
+                        pressure.backpressure,
+                        pressure.peer_backpressure,
+                        pressure.overflow,
+                        pressure.dropped_outbound,
+                        pressure.dropped_inbound
                     )
                 end
                 local teardown = artifact.runtime.teardown
@@ -1086,11 +1125,54 @@ local function measure_resources(harness, findings, markers)
         findings,
         "resources.channel_depth",
         worst_channel <= fault_harness.GATES.max_channel_depth,
-        ("worst channel depth %d against a gate of %d"):format(
+        ("peak channel depth %d over %d transport snapshots, against a gate of %d"):format(
             worst_channel,
+            samples,
             fault_harness.GATES.max_channel_depth
         )
     )
+    -- The gate above is only evidence if the quantity it gates was ever
+    -- non-zero. This is the check that would have caught the earlier version,
+    -- which read the last (quiescent) snapshot and reported zero everywhere.
+    finding(
+        findings,
+        "resources.channel_depth_observed",
+        worst_channel > 0 and samples > 0,
+        ("the depth gate observed a peak of %d over %d snapshots; a zero peak would "):format(
+            worst_channel,
+            samples
+        ) .. "mean the gate cannot fail"
+    )
+    finding(
+        findings,
+        "resources.no_overflow",
+        overflow <= fault_harness.GATES.max_overflow,
+        ("%d refused sends (star overflow) against a gate of %d"):format(
+            overflow,
+            fault_harness.GATES.max_overflow
+        )
+    )
+    -- A clamped send buffer that never latched is a scenario that silently
+    -- turned itself off.
+    if harness.expect_backpressure then
+        finding(
+            findings,
+            "faults.backpressure_observed",
+            backpressure > 0,
+            ("the clamped send buffer latched %d times across %d clients"):format(
+                backpressure,
+                #harness.clients
+            )
+        )
+    else
+        skipped(
+            findings,
+            "faults.backpressure_observed",
+            ("this row does not clamp the send buffer; %d latches observed anyway"):format(
+                backpressure
+            )
+        )
+    end
     finding(
         findings,
         "teardown.clean",
