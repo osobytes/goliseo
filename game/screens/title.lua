@@ -46,6 +46,7 @@ function title.layout(state)
         { "help", "HOW TO PLAY" },
         { "settings", "SETTINGS" },
         { "credits", "CREDITS" },
+        { "online_lobby", "ONLINE LOBBY (DEV)" },
         { "quit", "QUIT" },
     }
     for i, item in ipairs(labels) do
@@ -54,7 +55,7 @@ function title.layout(state)
             kind = "button",
             text = item[2],
             focused = state.focus == item[1],
-            rect = { x = 350, y = 216 + (i - 1) * 48, w = 260, h = 40 },
+            rect = { x = 350, y = 210 + (i - 1) * 46, w = 260, h = 40 },
         }
     end
     return layout
