@@ -25,6 +25,7 @@ local rollback_session = require("sim.rollback_session")
 ---@field settle_timeout_seconds number?
 ---@field clock (fun(): number)?
 ---@field divergent_peer integer? -- Driver index whose boundary zero is seeded differently.
+---@field wrap_host_transport (fun(inner: StarTransportAdapter): StarTransportAdapter)?
 
 ---@param mode SessionMatchMode
 ---@param options DriverHarnessOptions?
@@ -60,6 +61,9 @@ local function harness(mode, options)
     local host_options = driver_options(1)
     host_options.role = "host"
     host_options.peer_id = session.host_peer_id
+    if options.wrap_host_transport then
+        host_options.transport = options.wrap_host_transport(session.host_transport)
+    end
     drivers[1] = match_driver.new(host_options)
     for _, peer_id in ipairs(session.guest_peer_ids) do
         peer_ids[#peer_ids + 1] = peer_id
@@ -662,12 +666,17 @@ t.describe("online match driver", function()
 
     t.it("terminates explicitly when authority falls outside the retained window", function()
         local state = harness("4v4")
-        -- Nothing is delivered for well over the 30-tick floor, so the burst
-        -- carries rows the window can no longer accept.
+        -- Nothing is delivered for well over the 30-tick floor, so confirmation
+        -- stops dead and the floor slides past the ticks it was waiting on.
         run_bursty(state, 60, 50)
         local terminal = 0
         for _, driver in ipairs(state.drivers) do
-            if match_driver.status(driver) == "late_input" then
+            -- Since #241 this is caught on confirmation liveness rather than on
+            -- the arrival that used to reveal it: the peer says so at the step
+            -- the tick becomes unconfirmable, not whenever the backlog lands.
+            -- Same causal family, same report to the coordinator, strictly
+            -- earlier and strictly more precise.
+            if match_driver.status(driver) == "confirmation_stalled" then
                 terminal = terminal + 1
                 local record = assert(match_driver.terminal(driver))
                 t.eq(record.failure, "late_input")
@@ -725,68 +734,43 @@ t.describe("online match driver", function()
         end
     end)
 
-    -- FINDING 3 / retained-floor edge. The driver keeps no floor pre-check of
-    -- its own; `rollback_input_history` owns the floor. These pin the exact
-    -- boundary that ownership implies.
-    t.it("accepts authority exactly at the retained floor and refuses one below", function()
-        ---@param offset integer
-        ---@return MatchDriverStatus, integer?, integer
-        local function inject_at_floor_offset(offset)
-            local state = harness("2v2", { max_rollback_ticks = 6 })
-            local guest = state.drivers[2]
-            -- Only the guest runs. The host is never advanced, so no canonical
-            -- batch is ever produced and the injected packet is the only remote
-            -- authority the guest ever sees. That keeps its confirmation pinned
-            -- below the retained floor, which is the only regime where the floor
-            -- rule can be observed at all.
-            for _ = 1, 20 do
-                match_driver.advance(guest, input_frame.neutral_sample())
-            end
-            local before = match_driver.diagnostics(guest)
-            t.eq(before.status, "active")
-            local floor = before.retained_floor_tick
-            t.is_true(floor > 1, "the retained floor never advanced")
-            t.is_true(before.confirmed_input_tick < floor, "confirmation outran the floor")
-            local packet = assert(input_protocol.new_host({
-                session_id = state.session.manifest.session_id,
-                manifest_id = protocol.manifest_id(state.session.manifest),
-                sender_id = state.session.host_peer_id,
-                sequence = 777,
-                transport_tick = 20,
-                first_input_tick = 0,
-                rows = {
-                    {
-                        tick = floor + offset,
-                        slot_index = 1,
-                        sample = input_frame.neutral_sample(),
-                    },
-                },
-            }))
-            local envelope = assert(transport_contract.new({
-                type = "input",
-                seq = packet.sequence,
-                tick = packet.transport_tick,
-                payload = assert(input_protocol.encode(packet)),
-            }))
-            assert(
-                state.session.host_transport:send(
-                    state.session.guest_peer_ids[1],
-                    "input",
-                    envelope
-                )
-            )
-            state.session.host_transport:pump()
+    -- FINDING 3 / retained-floor edge, revisited by #241. The driver still keeps
+    -- no floor pre-check of its own -- `rollback_input_history` owns the floor,
+    -- and `spec/sim/rollback_input_history_spec.lua` pins its exact
+    -- accept-at-the-floor / refuse-one-below boundary.
+    --
+    -- What changed is that the driver can no longer *reach* a below-floor
+    -- arrival. A row is only offered to the history when it is above this peer's
+    -- confirmation, so a row below the floor implies `confirmed + 1 < floor` --
+    -- and confirmation liveness terminates on exactly that comparison at the end
+    -- of the previous step, before any arrival is applied. The reactive path is
+    -- unreachable because the proactive one is strictly earlier and strictly
+    -- more precise, which is the whole point of #241's reporting fix.
+    t.it("terminates on confirmation liveness before a below-floor row can arrive", function()
+        local state = harness("2v2", { max_rollback_ticks = 6 })
+        local guest = state.drivers[2]
+        -- Only the guest runs. The host is never advanced, so no canonical batch
+        -- is ever produced and the guest's seven remote slots never become
+        -- authoritative: its confirmation is pinned while its floor keeps
+        -- sliding, which is the only regime where the floor rule bites at all.
+        for _ = 1, 20 do
             match_driver.advance(guest, input_frame.neutral_sample())
-            local terminal = match_driver.terminal(guest)
-            return match_driver.status(guest), terminal and terminal.tick or nil, floor
         end
-
-        local at_floor = inject_at_floor_offset(0)
-        t.eq(at_floor, "active")
-
-        local below, tick, floor = inject_at_floor_offset(-1)
-        t.eq(below, "late_input")
-        t.eq(tick, floor - 1)
+        t.eq(match_driver.status(guest), "confirmation_stalled")
+        local diagnostics = match_driver.diagnostics(guest)
+        local record = assert(match_driver.terminal(guest))
+        t.eq(record.failure, "late_input")
+        t.eq(record.tick, diagnostics.confirmed_input_tick + 1)
+        t.eq(diagnostics.late_input_tick, record.tick)
+        -- The boundary itself, and the reason it is not off by one: the driver
+        -- terminates and makes no further progress, so the floor it froze at is
+        -- the first one that ever outran confirmation. Authority *at* the floor
+        -- is still perfectly placeable, and this fires only one tick past it.
+        t.eq(
+            diagnostics.retained_floor_tick,
+            diagnostics.confirmed_input_tick + 2,
+            "confirmation liveness did not fire on the first step it could"
+        )
     end)
 
     -- FINDING 4: the combination the 1v1 case covers, in the other mode that can
@@ -941,12 +925,28 @@ t.describe("online match driver", function()
             t.eq(assert_settled(state, mode), FULL_TIME_BOUNDARY)
             for index, driver in ipairs(state.drivers) do
                 -- Clean delivery confirms ahead of the present, so settling is
-                -- all but free: the host has the whole tail at full time, and a
-                -- guest is exactly one step behind the fan-out that carries the
-                -- final row to it. The healthy path stays as prompt as it was.
+                -- all but free for a guest: it is exactly one step behind the
+                -- fan-out that carries the final row to it. The healthy guest
+                -- path stays as prompt as it was.
+                --
+                -- The host pays the relay quiet window on top, because it is the
+                -- star's only relay and "my own boundary is confirmed" is not
+                -- evidence that nobody still needs it -- it is, in fact, the
+                -- first peer to confirm. That is a bounded 67 ms at the whistle,
+                -- and it is pinned here so it can never quietly grow.
+                --
+                -- The host's bound is the quiet window plus two: the step it
+                -- reaches full time (its guests are still mid-play and sending),
+                -- and the step their last in-flight bundle lands on.
+                local allowed = index == 1 and match_driver.SETTLE_RELAY_QUIET_STEPS + 2 or 1
+                local steps = match_driver.diagnostics(driver).settle_steps
                 t.is_true(
-                    match_driver.diagnostics(driver).settle_steps <= 1,
-                    ("peer %d settled slowly under clean delivery in %s"):format(index, mode)
+                    steps <= allowed,
+                    ("peer %d settled slowly under clean delivery in %s: %d steps"):format(
+                        index,
+                        mode,
+                        steps
+                    )
                 )
             end
         end
@@ -1128,6 +1128,155 @@ t.describe("online match driver", function()
         -- the canonical batch a step later rather than immediately.
         local host_batch = match_driver.advance(state.drivers[1], input_frame.neutral_sample())
         t.is_true(host_batch.sent_packets > 0, "a settling host stopped fanning out authority")
+    end)
+
+    -- #241, the mid-match half. Confirmation could stop advancing permanently
+    -- with nothing raised at the time: the retained floor slid past a tick that
+    -- never got its eighth row, that tick's authority was deleted, and because
+    -- confirmation only advances from `confirmed_tick + 1` it could never cross
+    -- the hole again. The reactive `late_input` check cannot see it, because it
+    -- fires on a row that *arrives* below the floor and this is a row that never
+    -- arrives at all.
+    t.it("reports a stalled confirmation at the step it becomes permanent", function()
+        -- Long enough that the retained floor can outrun a hole without full
+        -- time arriving first and turning this into a settle question.
+        local state = harness("2v2", { duration = 2 })
+        -- Delivery stops for good well before full time. Every peer keeps
+        -- simulating on predicted rows, and thirty steps later the floor passes
+        -- the first tick that never became authoritative.
+        drive(state, 90, function(step)
+            return step < 12
+        end, moving_sample)
+        for index, driver in ipairs(state.drivers) do
+            local status = match_driver.status(driver)
+            t.eq(status, "confirmation_stalled", ("peer %d did not report its stall"):format(index))
+            -- Distinct from both statuses that used to absorb this, which is
+            -- what #169's harness and #171's evidence gate need it to be.
+            t.is_true(status ~= "settle_timeout")
+            t.is_true(status ~= "hash_mismatch")
+            local terminal = assert(match_driver.terminal(driver))
+            t.eq(terminal.failure, "late_input")
+            local diagnostics = match_driver.diagnostics(driver)
+            -- At the stall, not at the whistle: full time was never reached, so
+            -- the settle phase never even opened.
+            t.eq(diagnostics.full_time_boundary, nil)
+            t.eq(diagnostics.settle_steps, 0)
+            -- And it names the tick that never became authoritative.
+            t.eq(terminal.tick, diagnostics.confirmed_input_tick + 1)
+            t.is_true(
+                diagnostics.retained_floor_tick > diagnostics.confirmed_input_tick + 1,
+                ("peer %d reported a stall it was not in"):format(index)
+            )
+        end
+    end)
+
+    -- #241, the fan-out half. `MAX_HOST_ROWS` is eight slots times the seven-row
+    -- redundancy window because one host batch is meant to carry a full window
+    -- for every slot. Relaying only what arrived on this transport tick spent
+    -- far less of it: a slot whose author's bundle was lost or delayed
+    -- contributed nothing at all, so the guest-to-host leg's losses multiplied
+    -- into the host-to-guest leg, which has no retransmission.
+    t.it("fans out a full redundancy window for a slot that sent nothing", function()
+        ---@type TransportMessage[]
+        local sent = {}
+        local state = harness("4v4", {
+            wrap_host_transport = function(inner)
+                local recorder = {}
+                function recorder:poll_event()
+                    return inner:poll_event()
+                end
+                function recorder:poll_batch(limit)
+                    return inner:poll_batch(limit)
+                end
+                function recorder:send(peer_id, channel, envelope)
+                    return inner:send(peer_id, channel, envelope)
+                end
+                function recorder:broadcast(channel, envelope)
+                    if channel == "input" then
+                        sent[#sent + 1] = envelope
+                    end
+                    return inner:broadcast(channel, envelope)
+                end
+                function recorder:diagnostics()
+                    return inner:diagnostics()
+                end
+                return recorder
+            end,
+        })
+        -- Warm every slot: each guest has published a full window and the host
+        -- has accepted it.
+        run(state, 12)
+        t.is_true(#sent > 0, "the host never fanned anything out")
+
+        -- Now only the host advances. The first step drains what the last pump
+        -- delivered; the second has no guest traffic at all, which is exactly
+        -- the shape a lost or delayed bundle produces -- here for seven slots at
+        -- once rather than one.
+        match_driver.advance(state.drivers[1], input_frame.neutral_sample())
+        state.session.host_transport:pump()
+        local before = #sent
+        match_driver.advance(state.drivers[1], input_frame.neutral_sample())
+        t.eq(#sent, before + 1, "the host did not fan out a batch")
+
+        local packet = assert(input_protocol.decode(assert(sent[#sent]).payload, {
+            session_id = state.session.manifest.session_id,
+            manifest_id = protocol.manifest_id(state.session.manifest),
+            sender_id = state.session.host_peer_id,
+        }))
+        ---@type table<integer, integer>
+        local per_slot = {}
+        for _, row in ipairs(packet.rows) do
+            per_slot[row.slot_index] = (per_slot[row.slot_index] or 0) + 1
+        end
+        for slot_index = 1, input_frame.SLOT_COUNT do
+            t.eq(
+                per_slot[slot_index],
+                input_protocol.RETAINED_ROWS,
+                ("slot %d was not fanned out with a full window"):format(slot_index)
+            )
+        end
+        -- Exactly the bound the batch was always sized for, and never past it.
+        t.eq(#packet.rows, input_protocol.MAX_HOST_ROWS)
+    end)
+
+    -- #241, the tail half. The host is the star's only relay and, as sequencer,
+    -- structurally the first peer to confirm the final boundary -- so
+    -- "confirmed, therefore done" made it leave first every time, and a guest
+    -- still missing a tail row could never obtain it afterwards.
+    t.it("keeps the host relaying until its guests have stopped asking", function()
+        for _, mode in ipairs({ "2v2", "4v4" }) do
+            local state = harness(mode, { duration = SETTLE_DURATION })
+            ---@type table<integer, integer>
+            local left = {}
+            for step = 1, FULL_TIME_BOUNDARY + 90 do
+                for index, driver in ipairs(state.drivers) do
+                    match_driver.advance(driver, moving_sample(state.step, index))
+                    if left[index] == nil and match_driver.status(driver) ~= "active" then
+                        left[index] = step
+                    end
+                end
+                -- A burst straddling full time, so there is a tail to drain and
+                -- the guests really are still asking when the host confirms.
+                if state.step < FULL_TIME_STEP - 6 or state.step > FULL_TIME_STEP + 4 then
+                    state.session.host_transport:pump()
+                end
+                state.step = state.step + 1
+            end
+            local host_left = assert(left[1], ("the host never left in %s"):format(mode))
+            for index = 2, #state.drivers do
+                t.eq(
+                    match_driver.status(state.drivers[index]),
+                    "completed",
+                    ("guest %d did not complete in %s"):format(index, mode)
+                )
+                t.is_true(
+                    host_left >= assert(left[index]),
+                    ("the host left the star before guest %d in %s"):format(index, mode)
+                )
+            end
+            t.eq(match_driver.status(state.drivers[1]), "completed")
+            t.is_true(match_driver.settled(state.drivers[1]))
+        end
     end)
 
     t.it("reports a lost transport as a typed terminal status", function()

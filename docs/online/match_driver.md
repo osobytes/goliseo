@@ -165,6 +165,21 @@ lowest tick in the batch — valid rows are all at or above the floor — so a
 pre-check and the history's own rejection terminate on the same batch and
 attribute the same causal tick. One owner is better than two agreeing owners.
 
+That is still true, and the driver still has no pre-check. What #241 added is a
+different question asked at a different time: not "is this row too old?" but "can
+this peer still confirm at all?" — see [confirmation
+liveness](#confirmation-liveness-is-checked-not-inferred). The two interact in one
+direction worth stating plainly. A row is only offered to the history when it is
+*above* this peer's confirmation, so a row below the floor implies
+`confirmed + 1 < floor`, which the liveness check terminates on at the end of the
+previous step, before any arrival is applied. **The history's `outside_window`
+rejection is therefore no longer reachable from an arrival**: the reactive path is
+subsumed by a proactive one that is strictly earlier and strictly more precise,
+and reports the same `late_input` failure into the coordinator. `late_input`
+survives as a driver terminal for the other thing it always meant — the window
+overflowing during reconciliation — and the floor rule itself stays pinned where
+it lives, in `spec/sim/rollback_input_history_spec.lua`.
+
 ### The bounded batch and carry-over
 
 One host batch carries at most `MAX_HOST_ROWS` = 56 distinct `(tick, slot)` rows,
@@ -178,6 +193,43 @@ so it is independent of poll order. The host's own collector path is never
 deferred: its slots are the ones its own materialization requires to be
 authoritative, so starving them would stall the host on its own input. The
 carried queue is bounded; exceeding it is `input_channel_failure`.
+
+### The host fans out authority it holds, not traffic it just received
+
+That bound is `SLOT_COUNT * RETAINED_ROWS` for a reason: one host batch is meant
+to carry a seven-tick window for **every** slot. That window is the only
+redundancy a guest's confirmation has, because the host→guest leg has no
+retransmission at all — a row a guest never receives is a row it never gets.
+
+Selecting only the bundles that arrived on *this* transport tick spends far less
+of it than the bound implies. A slot whose author's bundle was lost or delayed on
+the guest→host leg contributes **nothing** to that batch, even though the host
+already holds that slot's rows as authority. The guest→host leg's losses
+therefore multiply into the host→guest leg instead of being absorbed by the one
+peer that has the rows. Measured on the #241 capture, a row the design fans out
+seven times was fanned out five, and the guest that stranded received a batch
+*inside* its loss burst whose tick span covered the missing row but which carried
+no row for that slot at all.
+
+So the host keeps the newest bundle it has accepted per canonical slot, and after
+selection tops the batch up from it for every slot the selection does not already
+cover. Those rows are authority the host has already validated and canonicalized;
+authorship is a frozen partition, so a re-sent row is byte-identical to the one it
+repeats and can never open a divergence.
+
+Two things bound it. The top-up runs **after** selection and only inside the
+remaining row budget, so it can never displace a real arrival or push one into the
+carried queue — in steady state, when all eight slots delivered, there is no room
+and nothing changes. And a retained bundle whose oldest row has fallen below the
+host's own retained floor is dropped rather than relayed: authority that old can
+no longer be placed in any peer's rollback window, and re-sending it would convert
+a silent gap into a spurious `late_input` on a healthy peer.
+
+This repairs the *leak*, not the *bound*. It cannot help when the batch is already
+saturated, which is exactly what the `stress` profile does: the harness's
+[open `4v4.stress` finding](fault_harness.md#still-open-4v4stress-strands-on-batch-capacity-not-on-a-leak)
+records the measurement and the three allocation schemes that were tried against
+it and rejected.
 
 ## Full time settles before it completes
 
@@ -203,9 +255,37 @@ same protection every other tick got. The host's re-sends go back through its ow
 collector on the ordinary fairness-delay due date: settling is not a licence to
 bypass canonical sequencing.
 
-Under clean delivery the phase costs nothing. Confirmation already runs ahead of
-the present, so the host settles on the step it reaches full time and a guest one
-step later, when the fan-out carrying the final row arrives.
+### The host is the star's relay, so it leaves last
+
+A guest's settle re-sends carry rows it already holds. The rows it is **missing**
+belong to other peers and can only reach it inside a canonical host batch, so the
+instant the host stops, the star stops. And the host is structurally the *first*
+peer to confirm the final boundary — it is the sequencer — so "confirmed,
+therefore done" made it leave first, by construction, every time.
+
+That is what stranded `guest_5` in #241: the host completed three steps into a
+sixty-step settle window while three of its guests were still settling, and the
+row one of them was missing was thereafter unobtainable. It kept re-publishing its
+own window into a dead star for the remaining fifty-two steps.
+
+So the host stays while somebody is still asking. A settling guest re-publishes
+its window on **every** settle step, which makes inbound input traffic the signal
+that the relay is still wanted and silence the signal that it is not: the host
+completes once its own final boundary is confirmed **and**
+`SETTLE_RELAY_QUIET_STEPS` (4, the fairness delay plus one) consecutive settle
+steps have brought no input traffic at all. A clean match costs the host those
+four steps — 67 ms — and a match with a straggler keeps the relay alive exactly as
+long as the straggler keeps asking.
+
+It introduces no new wait. The phase's two existing deadlines still end it, and
+they no longer decide the status: a peer whose own final boundary is confirmed
+completes when the phase expires, relaying or not. `settle_timeout` therefore
+keeps meaning exactly one thing — the phase expired with *this peer's own* final
+boundary still unconfirmed.
+
+Under clean delivery the guests still cost nothing: confirmation already runs
+ahead of the present, so a guest settles one step after full time, when the
+fan-out carrying the final row arrives.
 
 **It is bounded twice, and waits on nothing else.** It ends after
 `SETTLE_TIMEOUT_TICKS` (60) further driver steps, or after
@@ -218,14 +298,12 @@ the tail out of the retained window.
 
 Those bounds are now **measured** rather than reasoned. The #169
 [fault harness](fault_harness.md) drives the documented profiles from
-`data/network_profiles.lua` through `sim.network_conditions`: across the whole
-declared matrix the worst settle a peer actually completed from was **16 steps**
-of the 60-step bound. The same campaign found a case the bound does not cover —
-an eight-client match under a reordering profile can strand a guest whose
-confirmation stops advancing, sometimes three ticks short of the final boundary
-and sometimes before half time, with nothing terminal raised until the settle
-phase expires. That finding is open and recorded in the harness document; it is
-not addressed here.
+`data/network_profiles.lua` through `sim.network_conditions`. The same campaign
+found the two #241 stalls this document now describes — a tail stall the host's
+early exit made unrecoverable, and a mid-match stall confirmation liveness now
+reports — and neither of them was a bound that needed raising. Across the whole
+declared matrix the worst settle a peer actually completed from is well inside the
+60-step bound.
 
 It is deliberately **not** gated on hash agreement. The driver cannot see another
 peer's hash, so waiting for one would be an unbounded wait on a fact that never
@@ -257,7 +335,8 @@ nothing.
 | --- | --- | --- |
 | `completed` | — | Full time was reached *and* the final boundary confirmed. |
 | `settle_timeout` | `input_channel` | Full time was reached, but the final boundary was still unconfirmed when the settle phase expired. |
-| `late_input` | `late_input` | Unconfirmed authority older than the retained 30-tick floor, or the window overflowed while reconciling. |
+| `confirmation_stalled` | `late_input` | An unconfirmed tick fell below the retained floor, so confirmation can never advance past it again. |
+| `late_input` | `late_input` | The rollback window overflowed while reconciling. |
 | `hash_mismatch` | `desync` | Boundary hashes disagreed at `MAX_HASH_MISMATCHES` consecutive checkpoints. |
 | `ownership_violation` | `input_channel` | A peer authored a slot outside its frozen owned set. |
 | `authority_conflict` | `input_channel` | Two bundles claimed one `(slot, tick)` with different bytes. |
@@ -269,6 +348,41 @@ wire folds both onto `desync`; the local reason stays exact. `settle_timeout` is
 distinct from both for the same reason and a sharper one: a tail that never
 arrived is a delivery failure, and reporting a healthy match's missing final rows
 as a desync is precisely the mislabelling the settle phase exists to end.
+
+### Confirmation liveness is checked, not inferred
+
+`confirmation_stalled` is the fourth member of that set and the reason it exists
+is that confirmation could previously stop advancing *permanently* with nothing
+raised at all.
+
+`rollback_input_history` confirms tick `N` once all eight of its rows are
+authoritative, and it prunes below the retained floor as the present boundary
+slides. Those two are independent, and nothing stopped the floor from passing a
+tick that never got its eighth row. When it did, that tick's authority was deleted
+outright, and because confirmation only ever advances from `confirmed_tick + 1`,
+it could never cross the hole again — not later in the match, not ever. The peer
+went on simulating on authority it would never confirm.
+
+Nothing detected it. The `late_input` path is **reactive**: it fires when a row
+*arrives* below the floor. A row that simply never arrives trips nothing. So in
+#241 a `4v4.playable` guest lost the seven host batches carrying one row, kept
+predicting, lost the tick to the floor 30 steps later, and ran another 66 ticks
+before surfacing — 60 settle steps after full time — as `settle_timeout` with a
+divergent final hash, reported by a mechanism that exists for a lost peer.
+
+`confirmed_tick + 1 < oldest_retained_tick` is exactly that state, it is
+permanent, and it is one comparison at the end of every `advance`, checked before
+settling so a peer whose confirmation is already dead reports the reason that is
+true rather than waiting out a phase that would describe a different fault. The
+three stay sharply separable, which is what #169's harness and #171's evidence
+gate need: `settle_timeout` is a tail that did not arrive in time,
+`hash_mismatch` is peers disagreeing about a tick they both confirmed, and
+`confirmation_stalled` is a peer that can no longer confirm at all.
+
+It is a report, not a repair. A peer in this state needs authority it can no
+longer be sent, and recovering it needs the snapshot resync deferred to OMP-5.
+What the fan-out and settle-relay fixes above do is stop the state from being
+reached; this is the check that says so out loud when it is.
 
 Boundary hashes are published every `DEFAULT_HASH_INTERVAL_TICKS` (30) confirmed
 boundaries, starting at `first_input_tick`. The boundary comes from the

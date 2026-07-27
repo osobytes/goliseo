@@ -109,6 +109,7 @@ local slot_input = require("sim.slot_input")
 ---| "active"
 ---| "completed"
 ---| "settle_timeout"
+---| "confirmation_stalled"
 ---| "late_input"
 ---| "hash_mismatch"
 ---| "ownership_violation"
@@ -215,6 +216,7 @@ local slot_input = require("sim.slot_input")
 ---@field _sequences table<string, integer>
 ---@field _pending MatchDriverPending[] -- Host only: the delayed local collector path.
 ---@field _deferred InputPacketArrival[] -- Host only: arrivals held back by the row bound.
+---@field _relay table<integer, InputPacketArrival> -- Host only: newest accepted bundle per slot.
 ---@field _checkpoints MatchDriverCheckpoint[]
 ---@field _checkpoint_by_tick table<integer, string>
 ---@field _hash_interval integer
@@ -230,6 +232,7 @@ local slot_input = require("sim.slot_input")
 ---@field _full_time_boundary integer? -- Final boundary; non-nil once full time is reached.
 ---@field _settle_steps integer -- Settle steps taken so far, capped by `_settle_ticks`.
 ---@field _settle_deadline number? -- Monotonic second the settle phase expires at.
+---@field _settle_quiet_steps integer -- Consecutive settle steps with no inbound input traffic.
 ---@field _settled boolean
 
 ---@class OnlineMatchDriverModule
@@ -256,6 +259,19 @@ match_driver.SETTLE_TIMEOUT_TICKS = 60
 -- bound always expires first. Half the coordinator's start-acknowledgement
 -- patience, which is the closest comparable wait in the session.
 match_driver.SETTLE_TIMEOUT_SECONDS = 2
+
+-- Consecutive silent settle steps after which the host stops relaying.
+--
+-- The host is the star's only relay: a guest that is still missing a tail row
+-- can only ever receive it as part of a canonical host batch. A settling guest
+-- re-publishes its redundancy window on *every* settle step, so inbound input
+-- traffic is exactly the signal that somebody still needs the relay, and silence
+-- is the signal that nobody does. Four steps is the fairness delay plus one --
+-- the longest a link that is still being used can legitimately go quiet -- so a
+-- clean match costs the host four extra steps (67 ms) and a match with a
+-- straggler keeps the relay alive for as long as the straggler keeps asking,
+-- bounded by the settle phase's existing deadlines and by nothing new.
+match_driver.SETTLE_RELAY_QUIET_STEPS = match_driver.DELAY_TICKS + 1
 
 ---@param value any
 ---@return boolean
@@ -917,6 +933,8 @@ end
 ---@param driver MatchDriver
 ---@param arrivals InputPacketArrival[]
 ---@return InputPacketArrival[] selected
+---@return table<string, boolean> keys -- Distinct `(tick, slot)` keys the selection already carries.
+---@return integer count -- How many of `MAX_HOST_ROWS` those keys consume.
 local function select_within_bound(driver, arrivals)
     table.sort(arrivals, arrival_order(driver))
     ---@type InputPacketArrival[]
@@ -957,7 +975,103 @@ local function select_within_bound(driver, arrivals)
             "input_channel"
         )
     end
-    return selected
+    return selected, keys, count
+end
+
+-- The newest bundle the host has accepted for each canonical slot.
+--
+-- A guest bundle is single-slot by construction, so `rows[1].slot_index` names
+-- it. Newest wins, measured on the bundle's newest row rather than on its
+-- arrival order, so a reordered old bundle can never displace a fresher one.
+---@param driver MatchDriver
+---@param selected InputPacketArrival[]
+local function remember_relay(driver, selected)
+    for _, arrival in ipairs(selected) do
+        local rows = arrival.packet.rows
+        local slot_index = rows[1].slot_index
+        local newest = rows[#rows].tick
+        local held = driver._relay[slot_index]
+        if held == nil or newest > held.packet.rows[#held.packet.rows].tick then
+            -- A copy: the deferred queue re-stamps `arrival_tick` in place, and
+            -- the relay must not observe that mutation.
+            driver._relay[slot_index] = {
+                packet = arrival.packet,
+                envelope = arrival.envelope,
+                arrival_tick = arrival.arrival_tick,
+                transport_peer_id = arrival.transport_peer_id,
+            }
+        end
+    end
+end
+
+-- Fill the batch out to the full eight-slot redundancy window the row bound is
+-- sized for, from authority the host already holds.
+--
+-- `MAX_HOST_ROWS` is `SLOT_COUNT * RETAINED_ROWS` precisely because one host
+-- batch is meant to carry a seven-tick window for every slot: that is the
+-- redundancy every guest's confirmation depends on, because the host→guest leg
+-- has no retransmission. Selecting only the bundles that arrived on *this*
+-- transport tick silently spends far less of it. A slot whose author's bundle
+-- was lost or delayed on the guest→host leg contributes nothing at all, so that
+-- leg's losses multiply into the host→guest leg instead of being absorbed by the
+-- one peer that already has the rows. Measured on the #241 capture, a row that
+-- the design fans out seven times was fanned out five, and the guest that
+-- stranded received a batch inside its loss burst whose tick span covered the
+-- missing row but which carried no row for that slot.
+--
+-- So every slot the selection does not already cover is topped up from the
+-- newest bundle the host accepted for it, re-stamped onto this transport tick.
+-- Those rows are authority the host has already validated and canonicalized:
+-- authorship is a frozen partition, so a re-sent row is byte-identical to the
+-- one it repeats and can never open a divergence.
+--
+-- Two things bound it. The top-up runs *after* selection and only inside the
+-- remaining row budget, so it can never displace a real arrival or push one into
+-- the deferred queue. And a bundle whose oldest row has fallen below the host's
+-- own retained floor is dropped rather than relayed: authority that old can no
+-- longer be placed in any peer's rollback window, and re-sending it would turn a
+-- silent gap into a spurious `late_input` on a healthy peer.
+--
+-- This repairs the *leak*, not the *bound*. It has nothing to spend when the
+-- batch is already saturated, which is exactly what the `stress` profile does:
+-- `docs/online/fault_harness.md` records that measurement, the `4v4.stress` row
+-- it leaves open, and the three allocation schemes that were tried against it and
+-- rejected.
+---@param driver MatchDriver
+---@param selected InputPacketArrival[]
+---@param keys table<string, boolean>
+---@param count integer
+---@param transport_tick integer
+local function fill_relay_window(driver, selected, keys, count, transport_tick)
+    ---@type table<integer, boolean>
+    local covered = {}
+    for _, arrival in ipairs(selected) do
+        covered[arrival.packet.rows[1].slot_index] = true
+    end
+    local floor = retained_floor_input_tick(driver)
+    for slot_index = 1, input_frame.SLOT_COUNT do
+        local held = not covered[slot_index] and driver._relay[slot_index] or nil
+        if held ~= nil and held.packet.rows[1].tick >= floor then
+            local additional = 0
+            for _, row in ipairs(held.packet.rows) do
+                if not keys[tostring(row.tick) .. ":" .. tostring(row.slot_index)] then
+                    additional = additional + 1
+                end
+            end
+            if count + additional <= input_protocol.MAX_HOST_ROWS then
+                for _, row in ipairs(held.packet.rows) do
+                    keys[tostring(row.tick) .. ":" .. tostring(row.slot_index)] = true
+                end
+                count = count + additional
+                selected[#selected + 1] = {
+                    packet = held.packet,
+                    envelope = held.envelope,
+                    arrival_tick = transport_tick,
+                    transport_peer_id = held.transport_peer_id,
+                }
+            end
+        end
+    end
 end
 
 ---@param driver MatchDriver
@@ -978,7 +1092,13 @@ local function host_sequence_authority(driver, batch, transport_tick, messages)
         arrivals[#arrivals + 1] = arrival
     end
     -- Selection re-sorts, so appending here cannot change which arrivals win.
-    arrivals = select_within_bound(driver, arrivals)
+    local keys, count
+    arrivals, keys, count = select_within_bound(driver, arrivals)
+    if not running(driver) then
+        return
+    end
+    remember_relay(driver, arrivals)
+    fill_relay_window(driver, arrivals, keys, count, transport_tick)
     if #arrivals == 0 then
         return
     end
@@ -1182,6 +1302,62 @@ function match_driver.checkpoints(driver)
 end
 
 -- ---------------------------------------------------------------------------
+-- Confirmation liveness
+-- ---------------------------------------------------------------------------
+
+-- Confirmation can stop advancing without anything being raised, and the driver
+-- has to say so at the point it happens.
+--
+-- `rollback_input_history` confirms tick `N` when all eight of its rows are
+-- authoritative, and it prunes below the retained floor as the present boundary
+-- slides. Those two are independent: nothing stops the floor from passing a tick
+-- that never got its eighth row. When it does, that tick's authority is deleted,
+-- and because confirmation only ever advances from `confirmed_tick + 1`, it can
+-- never cross the hole again -- not later in this match, not ever. The peer
+-- keeps simulating on authority it will never confirm.
+--
+-- Nothing detects that today. The reactive `late_input` path fires when a row
+-- *arrives* below the floor; a row that simply never arrives trips nothing, so
+-- the first symptom is `settle_timeout` up to a whole match later, reported by a
+-- mechanism that exists for a lost peer and carrying a final hash that
+-- disagrees for a reason nobody named.
+--
+-- `confirmed_tick + 1 < oldest_retained_tick` is exactly that state, it is
+-- permanent, and it is one comparison. It is deliberately its own terminal:
+-- `settle_timeout` means a tail that did not arrive in time, `hash_mismatch`
+-- means peers that disagree about a tick they both confirmed, and this means a
+-- peer that can no longer confirm at all. It reports as `late_input` into the
+-- coordinator because that is the same causal family -- authority this peer can
+-- no longer place in its rollback window -- while the local reason stays exact.
+---@param driver MatchDriver
+local function detect_confirmation_stall(driver)
+    if not running(driver) then
+        return
+    end
+    local diagnostics = rollback_session.diagnostics(driver._session)
+    local floor = diagnostics.input_history.oldest_retained_tick
+    local gap = diagnostics.confirmed_tick + 1
+    if gap >= floor then
+        return
+    end
+    local stalled = to_input_tick(driver, gap)
+    driver._late_input_tick = driver._late_input_tick or stalled
+    terminate(
+        driver,
+        "confirmation_stalled",
+        ("confirmation stopped advancing at input tick %d: tick %d never became authoritative "):format(
+            stalled - 1,
+            stalled
+        )
+            .. ("and has fallen below the retained floor at tick %d"):format(
+                to_input_tick(driver, floor)
+            ),
+        "late_input",
+        stalled
+    )
+end
+
+-- ---------------------------------------------------------------------------
 -- Full time and settling
 -- ---------------------------------------------------------------------------
 
@@ -1256,13 +1432,34 @@ end
 -- that has genuinely gone must not hold the match open, and there is no path
 -- here that waits on anything unbounded: both deadlines are fixed the moment
 -- full time is reached, and each `advance` re-checks them exactly once.
+-- Whether this peer still owes the star a relay service.
+--
+-- Only the host does. A guest's settle re-sends carry rows it already holds; the
+-- rows it is *missing* belong to other peers and can only reach it inside a
+-- canonical host batch, so the instant the host stops the star stops. The host
+-- is also structurally the first peer to confirm the final boundary -- it is the
+-- sequencer -- which is why "confirmed, therefore done" let it leave three steps
+-- into a sixty-step settle window while three of its guests were still asking.
+-- It leaves when nobody is asking any more: a settling guest re-publishes its
+-- window every step, so `SETTLE_RELAY_QUIET_STEPS` consecutive silent steps mean
+-- every guest has either finished or lost that many consecutive bundles.
+---@param driver MatchDriver
+---@return boolean
+local function relay_drained(driver)
+    if driver._role ~= "host" then
+        return true
+    end
+    return driver._settle_quiet_steps >= match_driver.SETTLE_RELAY_QUIET_STEPS
+end
+
 ---@param driver MatchDriver
 local function settle(driver)
     local boundary = driver._full_time_boundary
     if boundary == nil or not running(driver) then
         return
     end
-    if confirmed_output_input_tick(driver) + 1 >= boundary then
+    local confirmed = confirmed_output_input_tick(driver) + 1 >= boundary
+    if confirmed and relay_drained(driver) then
         driver._settled = true
         terminate(
             driver,
@@ -1271,31 +1468,35 @@ local function settle(driver)
         )
         return
     end
-    if driver._settle_steps >= driver._settle_ticks then
+    -- Both deadlines end the phase, but they do not decide the status: a peer
+    -- that confirmed its own final boundary completes over confirmed authority
+    -- whether or not it was still relaying for somebody else. `settle_timeout`
+    -- keeps meaning exactly one thing -- the phase expired with this peer's own
+    -- final boundary still unconfirmed.
+    local expired = driver._settle_steps >= driver._settle_ticks
+    local detail = "full time was reached but the final boundary was still unconfirmed after "
+        .. tostring(driver._settle_ticks)
+        .. " settle ticks"
+    if not expired and driver._clock() >= assert(driver._settle_deadline) then
+        expired = true
+        detail = "full time was reached but the final boundary was still unconfirmed after "
+            .. tostring(driver._settle_seconds)
+            .. " seconds of settling"
+    end
+    if not expired then
+        driver._settle_steps = driver._settle_steps + 1
+        return
+    end
+    if confirmed then
+        driver._settled = true
         terminate(
             driver,
-            "settle_timeout",
-            "full time was reached but the final boundary was still unconfirmed after "
-                .. tostring(driver._settle_ticks)
-                .. " settle ticks",
-            "input_channel",
-            boundary
+            "completed",
+            "the match reached full time with the final boundary confirmed"
         )
         return
     end
-    if driver._clock() >= assert(driver._settle_deadline) then
-        terminate(
-            driver,
-            "settle_timeout",
-            "full time was reached but the final boundary was still unconfirmed after "
-                .. tostring(driver._settle_seconds)
-                .. " seconds of settling",
-            "input_channel",
-            boundary
-        )
-        return
-    end
-    driver._settle_steps = driver._settle_steps + 1
+    terminate(driver, "settle_timeout", detail, "input_channel", boundary)
 end
 
 -- True once the final boundary was confirmed. This is the settled
@@ -1478,6 +1679,7 @@ function match_driver.new(options)
         _sequences = {},
         _pending = {},
         _deferred = {},
+        _relay = {},
         _checkpoints = {},
         _checkpoint_by_tick = {},
         _hash_interval = hash_interval,
@@ -1493,6 +1695,7 @@ function match_driver.new(options)
         _full_time_boundary = nil,
         _settle_steps = 0,
         _settle_deadline = nil,
+        _settle_quiet_steps = 0,
         _settled = false,
     }
     ---@type table<string, InputSlotId>
@@ -1642,6 +1845,15 @@ function match_driver.advance(driver, sample)
 
     drain_events(driver)
     local messages = running(driver) and poll_input(driver, batch) or {}
+    if driver._full_time_boundary ~= nil then
+        -- Inbound input traffic during the settle phase is the only evidence the
+        -- host has that a guest is still asking it to relay.
+        if #messages > 0 then
+            driver._settle_quiet_steps = 0
+        else
+            driver._settle_quiet_steps = driver._settle_quiet_steps + 1
+        end
+    end
     if running(driver) then
         if driver._role == "host" then
             host_sequence_authority(driver, batch, transport_tick, messages)
@@ -1674,6 +1886,10 @@ function match_driver.advance(driver, sample)
     if driver._full_time_boundary == nil then
         publish_checkpoints(driver, batch)
     end
+    -- Before settling, because a peer whose confirmation is already dead must say
+    -- so with the reason that is true rather than wait out a phase whose deadline
+    -- would describe a different fault.
+    detect_confirmation_stall(driver)
     settle(driver)
 
     driver._step = driver._step + 1

@@ -211,6 +211,7 @@ local DRIVER_STATUS = schema.enum({
     "active",
     "completed",
     "settle_timeout",
+    "confirmation_stalled",
     "late_input",
     "hash_mismatch",
     "ownership_violation",

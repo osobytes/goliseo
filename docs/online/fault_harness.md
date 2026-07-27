@@ -236,10 +236,10 @@ the processes differed.
 - **The accepted default combat disposition (#114).** The manifest still carries
   a placeholder.
 
-## Open finding: an eight-client match under a reordering profile can strand a peer
+## The stranded-peer findings this harness found (#241): two fixed, one open
 
-`4v4.playable` and `4v4.stress` strand one or two guests on roughly half the
-seeds tried, and they do it in two visibly different shapes. From the captured
+`4v4.playable` and `4v4.stress` used to strand one or two guests on roughly half
+the seeds tried, in two visibly different shapes. From the captured
 `4v4.playable` run at the default network seed:
 
 | Peer | Host batches lost | Confirmed boundary at full time | Full-time boundary |
@@ -247,39 +247,76 @@ seeds tried, and they do it in two visibly different shapes. From the captured
 | `guest_5` | 5 (2 independent, 3 burst) | 118 | 121 |
 | `guest_6` | 7 (1 independent, 6 burst) | 55 | 121 |
 
-`guest_5` is a **tail** stall: three ticks short of the final boundary, which is
-the shape the settle phase exists to absorb and did not. `guest_6` is a
-**mid-match** stall: its confirmation stopped advancing before half time, after
-which it simulated sixty-six further ticks of purely predicted authority with
-nothing terminal raised. `4v4.stress` produces a third point, `guest_3` stalled
-at 102 of 121. All of them surface only as `settle_timeout`, sixty settle steps
-after full time, carrying a final hash that disagrees with every other peer.
+They were two defects, not one, and the number of lost batches predicted neither
+— which is what an earlier draft of this page got wrong, and why it is worth
+recording how each was actually pinned rather than only what the fix was.
 
-What is established:
+**`guest_6`, the mid-match stall.** Instrumenting the guest's confirmation showed
+it lose exactly one row — tick 56, slot 4 — and never recover it. The host emitted
+that row in **five** canonical batches, not the seven the redundancy window is
+supposed to give it, because a host batch carries only the guest bundles that
+arrived on that transport tick and slot 4's author did not deliver on every tick.
+`guest_6` lost host batches at transport ticks 61, 62, 63, 65, 66 and 67 — and
+*received* the one at 64, whose row span covered tick 56 but which carried no
+slot-4 row. Every one of the host's five emissions fell inside the burst. Thirty
+steps later the retained floor slid past tick 56, `prune_before` deleted it, and
+because confirmation only advances from `confirmed_tick + 1` it froze at 55 for
+the rest of the match with nothing raised. Both halves are fixed in the driver:
+the host now tops its batch up from authority it already holds, and
+`confirmation_stalled` reports the frozen state at the step it becomes permanent.
+
+**`guest_5` and `guest_3`, the tail stalls.** `guest_5` ended missing exactly one
+row — tick 119, slot 5 — with the retained floor at 91, so the row was well inside
+its window and still placeable. The host reached full time at step 120 and
+completed at step **122**, the earliest of any peer because as sequencer its
+confirmation runs ahead. After a terminal status a driver polls, applies and
+broadcasts nothing, so the star's only relay was gone three steps into a
+sixty-step settle window. Slot 5's author kept re-publishing its tail until it too
+completed at step 127, with nothing left to fan those bundles out. `guest_5` spent
+the remaining fifty-two settle steps re-publishing its own window into a dead
+star. The host now stays for as long as a guest is still asking.
+
+What the harness established on its own, and which held up:
 
 - never observed under `clean` or `omp0_parity`, which have no jitter, no
   duplication, and no bursts; observed under `playable` and `stress`, which have
   all three. Reordering, not raw loss rate, is what distinguishes them;
 - it is not the host's row bound: the recorder reports `deferred=0` and
   `rejected=0` on the host in a stranding run;
-- every confirmed checkpoint that *was* compared still agreed. The divergence is
+- every confirmed checkpoint that *was* compared still agreed. The divergence was
   in the tail and in the final hash, not in the confirmed timeline.
 
-What is **not** established, and what an earlier draft of this document got
-wrong: the number of lost batches does not predict either the occurrence or the
-shape. The host's redundancy window carries seven rows per slot, so a peer that
-lost five scattered batches — `guest_5` — should have recovered all of them. Any
-hypothesis of the form "more consecutive losses than the window covers" is
-therefore already contradicted by the data on this page, and the two stall
-shapes may not even share a cause.
+Neither fix widened the redundancy window, raised the settle bound, or changed
+this matrix's scenarios, profiles or seeds. `4v4.playable` is the evidence: the
+seeds that stranded `guest_5` and `guest_6` now pass unchanged.
 
-Whether this is a gap in the redundancy window's sizing, in the settle phase's
-assumption that the host may terminate before its guests, or in the absence of a
-proactive "unconfirmed authority is older than the retained floor" check to sit
-beside the reactive `late_input` one, is for the driver's owners to adjudicate.
-It is **not** fixed here.
+### Still open: `4v4.stress` strands on batch capacity, not on a leak
 
-The two affected rows carry a `known_gap` so every run prints the finding, and
-they are deliberately kept out of the CI subset — because they are a product
-finding rather than a harness flake, and a red CI signal that nobody can fix
-inside this issue's scope teaches nothing.
+`4v4.stress` still strands a guest, and the row keeps a `known_gap` — but the
+cause is now measured rather than suspected, and it is **not** the same defect.
+
+Under `stress` the host's canonical batch is saturated at exactly
+`MAX_HOST_ROWS` on every tick from the twelfth onwards: all eight slots deliver
+their seven-row window and there is no leftover budget at all. The fan-out repair
+above therefore has nothing to spend, and a row the host learns *late* cannot be
+re-sent without displacing a fresh row. Captured at the default seed: the host
+learned `(tick 9, slot 5)` seven transport ticks late, fanned it out at transport
+ticks 16, 20 and 21 — three times rather than seven — and `guest_7` received the
+batches at 15, 17, 18, 19 and 23 and missed exactly those three.
+
+That is a capacity limit of the 56-row batch, not a leak in how it is filled.
+Three things were tried against it and are recorded so they are not re-derived:
+giving each accepted bundle a relay quota counted from when the host learned it
+(inert — there is no leftover budget under saturation); repaying that quota
+per-slot in one pass (worse — one slot's history starves another slot's present);
+and reserving one bundle's worth of the batch for repayment (worse — it turned
+`4v4.playable` red). Closing it needs a way for a guest to *ask* for the row it
+missed, which is a protocol addition, not a wider open-loop window.
+
+What did change for this row: the stranded peer now reports
+`confirmation_stalled` at the step its confirmation dies rather than
+`settle_timeout` a whole match later. A terminal netcode failure ends the session
+for every peer — as it does for every other terminal this driver raises — so the
+row now fails with eight `confirmation_stalled` clients rather than seven
+completions and one late mislabelled straggler. That is a louder and earlier
+signal for the same underlying loss, not a new defect.
