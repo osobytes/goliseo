@@ -7,6 +7,7 @@
 --   love . --keeper-pose-snapshots [write] -> check or refresh #46 visual baselines
 --   love . --rollback-lab [profile] [seed] [corrupt] -> run the OMP-2 lab
 --   love . --rollback-validation SUITE [profile] [seed] -> gate OMP-2 evidence
+--   love . --fault-harness [row|smoke|full] [net seed] [ticks] -> OMP-3 fault matrix
 --   love . --determinism      -> verify the frozen OMP-1 complete-match evidence
 --   love . --determinism-refresh -> deliberately replace the frozen OMP-1 recording
 --   love . --rate-validate [n] -> validate frozen squad ratings over n paired seeds, exit
@@ -35,6 +36,24 @@ if has_flag("--test") then
         local runner = require("spec.support.runner")
         runner.load_and_run("spec")
         os.exit(runner.summary() and 0 or 1)
+    end
+    return
+end
+
+if has_flag("--fault-harness") then
+    function love.load()
+        local runner = require("game.online.fault_campaign")
+        ---@type string?, string?, string?
+        local selector, seed, duration
+        for index, value in ipairs(arg or {}) do
+            if value == "--fault-harness" then
+                selector, seed, duration = arg[index + 1], arg[index + 2], arg[index + 3]
+                break
+            end
+        end
+        local ticks = tonumber(duration)
+        local ok = runner.main(selector, tonumber(seed), ticks and math.floor(ticks) or nil)
+        os.exit(ok and 0 or 1)
     end
     return
 end

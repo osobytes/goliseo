@@ -50,6 +50,13 @@ else
     echo "   ! python3 not installed — skipping"
 fi
 
+echo "==> OMP-3 fault harness campaign controller self-test"
+if command -v python3 >/dev/null 2>&1; then
+    python3 -B scripts/fault_harness.py --self-test || fail=1
+else
+    echo "   ! python3 not installed — skipping"
+fi
+
 echo "==> OMP-2 rollback validation harness self-test"
 if command -v python3 >/dev/null 2>&1; then
     ./scripts/check_rollback.sh --self-test || fail=1
