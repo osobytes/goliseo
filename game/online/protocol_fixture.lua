@@ -15,8 +15,12 @@ function fixture.runtime()
     }
 end
 
+-- The canonical fixture manifest. `mode` defaults to `4v4`, so the pinned
+-- conformance vectors and every pre-existing caller describe the same eight
+-- one-slot humans they always did.
+---@param mode SessionMatchMode?
 ---@return SessionManifest
-function fixture.manifest()
+function fixture.manifest(mode)
     local home = {
         {
             player_id = "ozzo",
@@ -113,6 +117,7 @@ function fixture.manifest()
         tick_rate = 60,
         duration_ticks = 7200,
         max_goals = 5,
+        match_mode = mode or "4v4",
         teams = {
             { team = "home", team_id = "team_nova", roster = home },
             { team = "away", team_id = "team_void", roster = away },

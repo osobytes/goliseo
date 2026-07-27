@@ -34,8 +34,8 @@ parallel set:
 | --- | --- |
 | `new` | A guest has not sent its handshake yet. |
 | `handshake` | Admission is open; guests may still join. |
-| `manifest` | The immutable manifest is proposed; ownership is unpublished. |
-| `assigned` | All eight slots have a declared source; peers may ready up. |
+| `manifest` | The immutable manifest, including the match mode, is proposed; ownership is unpublished. |
+| `assigned` | All eight slots have a declared source and every owned set matches the mode; peers may ready up. |
 | `ready` | Every tracked peer is ready; the host may start a countdown. |
 | `countdown` | Manifest, ownership, and start boundary are frozen. |
 | `running` | The simulation owns the match; the coordinator acknowledges it. |
@@ -75,14 +75,71 @@ combat-rules, gameplay-AI-policy identity, and combat disposition) in a fixed
 order and reports the first differing path. Session-scoped values such as the
 seed are the host's to choose and are not pre-known.
 
-`plan_assignments` seats humans in canonical `home_1..home_4`, `away_1..away_4`
-order and fills the remaining slots with bots whose `producer_id` is
-`bot.<slot>` and whose `bot_seed` is derived from the manifest seed. It performs
-no team balancing — that is deliberately out of scope. At every point where
-ownership is published or frozen, `slot_sources` proves that all eight canonical
-slots have exactly one declared source, that producer ids are unique across the
-peer and bot namespaces, that every admitted peer owns exactly one slot, and
-that no combat-protected keeper is seated.
+The manifest also carries the [match mode](session_protocol.md#match-modes-and-slot-ownership),
+which fixes how many of the eight canonical slots each human owns: four in
+`1v1`, two in `2v2`, one in `4v4`. Because admission closes when the manifest is
+proposed and the mode is immutable afterwards, a proposal is refused with
+`capacity` when more humans are already admitted than the mode seats, rather
+than leaving the lobby to deadlock at assignment time. Admission itself still
+bounds at `MAX_PEERS` — the mode is not known while guests are still joining —
+so a too-large lobby is caught at proposal, not at handshake.
+
+`plan_assignments` seats humans in contiguous canonical blocks of
+`slots_per_human` over `home_1..home_4`, `away_1..away_4`: the Nth human owns
+slots `(N-1)*k+1 .. N*k`. Four slots per team divide evenly by every supported
+`k`, so a block never straddles the halfway line, and at `k = 1` the result is
+byte-identical to the one-slot-per-peer seating OMP-3 already shipped. Remaining
+slots are filled with bots whose `producer_id` is `bot.<slot>` and whose
+`bot_seed` is derived from the manifest seed. It performs no team balancing —
+that is deliberately out of scope.
+
+At every point where ownership is published or frozen, `slot_sources` proves
+that all eight canonical slots have exactly one declared source, that a bot
+producer drives exactly one slot, that producer ids never cross the peer and bot
+namespaces, that one human's owned slots all lie on one team, that every owned
+set has exactly the size the frozen mode requires, and that no combat-protected
+keeper is seated. `validate_local_assignments` adds the host-only half the
+guests cannot check: that those owned sets map onto genuinely admitted peers and
+leave nobody unseated.
+
+## Owned sets, the live slot, and switching
+
+A human owns a set of slots and controls exactly one of them at a time — the
+*live* slot. `owned_slots(state, producer_id)` returns that set in canonical
+order; the freeze records it per human as `owned`, together with `live`, the
+slot live at the first tick. The opening live slot is the first owned slot in
+canonical order, derived from the frozen assignments, so every peer computes the
+same one without exchanging anything further.
+
+`next_live_slot(owned, live, transition)` is the transition rule, and it is the
+shipped single-player rule from [`docs/controls.md`](../controls.md) intersected
+with the owned set:
+
+1. if the slot that won the ball this tick is owned, it becomes live;
+2. otherwise, on the `switch` edge while the live slot is not the carrier, the
+   first owned slot in the simulation's deterministic distance-to-ball ranking
+   becomes live;
+3. otherwise the live slot is unchanged.
+
+`switch` is already a bit in the canonical input frame, read from the input row
+of the currently live slot; `carrier`, `winner`, and `ranked` come from the
+deterministic simulation. Nothing local — presentation, frame timing, or when a
+key was physically pressed — enters the decision, so every peer evaluates the
+same transition at the same tick.
+
+In 4v4 the owned set has exactly one member, so every branch returns the slot
+already live and switching is inert. That is a consequence of the general rule;
+there is no mode branch anywhere in it, and adding one would be the bug.
+
+`slot_drivers(freeze, live)` says who materializes each slot's input row for a
+tick: `human` only for a human's live slot, `ai` for every other owned slot and
+for every declared bot fill. Non-live owned slots are therefore
+indistinguishable from bots in the input stream, which is exactly how solo play
+already treats the players you are not controlling.
+
+**Keepers stay AI-only, unassignable, and slotless in every mode**, a deliberate
+divergence from solo play that is spelled out in the
+[protocol document](session_protocol.md#match-modes-and-slot-ownership).
 
 ## Readiness
 
@@ -93,8 +150,8 @@ clears it.
 
 Ownership changes race with in-flight readiness. The manifest digest cannot
 settle that race — it is immutable and shared by every generation — and neither
-can slot ownership, since a swap can leave a peer owning exactly one slot both
-before and after.
+can slot ownership, since a swap can leave a peer owning an identically sized
+owned set both before and after.
 
 The generation is therefore named explicitly on the wire. Every publication
 increments an epoch and mints an `assignment_id` (see
@@ -107,7 +164,7 @@ Two earlier designs for this failed review, and both failed the same way, which
 is worth recording so it is not retried:
 
 - **Ownership-based.** Checking that the peer owns *a* slot. Defeated by a swap
-  that leaves the peer owning one slot in both generations.
+  that leaves the peer owning a same-sized set in both generations.
 - **Ordering-based.** Treating a negative readiness as an acknowledgement and
   relying on per-link FIFO to sequence it after anything stale. Defeated by two
   republishes in flight against one readiness answer: the negative arrives after
@@ -117,6 +174,14 @@ is worth recording so it is not retried:
 Both inferred the generation from something other than the generation. Per-link
 FIFO orders messages within a link; it says nothing about which publication a
 peer had seen when it spoke. Only an explicit identity answers that.
+
+Owned sets and the match mode both interact with this, and the reasoning is
+recorded in the
+[protocol document](session_protocol.md#ownership-generations): owned sets are
+already inside the digest, because they *are* the assignments array, so
+repartitioning a 2v2 pair necessarily mints a new generation; the mode is
+deliberately outside it, because it is manifest-immutable and `manifest_id` is
+checked before `assignment_id` on every message that carries both.
 
 Consequences:
 
@@ -132,9 +197,11 @@ Consequences:
 `begin_countdown` requires the `ready` phase and freezes a `CoordinatorFreeze`:
 manifest digest, the exact ownership generation, countdown id, first input tick,
 seed, tick rate, duration, goal limit, content/tuning/combat-rules/gameplay-AI
-identity, combat disposition, a deep copy of the assignments, and the
-slot-to-source table. After the freeze, assignment and readiness changes are
-rejected.
+identity, combat disposition, the match mode, a deep copy of the assignments,
+the slot-to-source table, and each human's owned set and opening live slot.
+After the freeze, assignment and readiness changes are rejected — so a 2v2
+human's chosen pair, which is just which two slots name that human, cannot
+change mid-match.
 
 The countdown is measured in coordinator `tick` events, not wall-clock time.
 Wall clock is never simulation authority: the single canonical boundary is
@@ -240,7 +307,8 @@ loss, replayed packets, and `inject` — a message the sender's own coordinator
 would never emit, which is how a misbehaving peer is modelled without adding a
 test-only entry point to the coordinator itself.
 `game.online.coordinator_conformance` pins the canonical eight-human,
-bot-filled, and solo sessions.
+bot-filled, and solo 4v4 sessions, plus a full 1v1 and a full 2v2 session with
+their owned sets and opening live slots.
 
 Two dimensions are covered as systematic cross-products rather than chosen
 scenarios, so a phase or message kind added later cannot escape coverage:
@@ -263,9 +331,10 @@ rather than exhaustively.
 
 ## Assumptions
 
-A guest verifies that published ownership seats *it* in exactly one slot, but it
-cannot verify that the whole roster maps one-to-one onto genuinely admitted
-peers — it never sees the roster. That check lives on the host. This is a
+A guest verifies that published ownership seats it, and — because it holds the
+manifest, and therefore the mode — that every declared owned set is the right
+size. It cannot verify that those owned sets map onto genuinely admitted peers,
+because it never sees the roster. That check lives on the host. This is a
 property of the single-trusted-host topology #161 defines, not a gap: OMP-3
 provides mismatch detection and useful termination, not anti-cheat. A host that
 lies about ownership can already choose the manifest.

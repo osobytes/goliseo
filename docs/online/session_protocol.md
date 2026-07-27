@@ -39,14 +39,16 @@ governed by #168.
 
 A manual connection begins with a caller-generated `session_id`. Within that
 session the host is one stable peer and up to seven guests receive stable
-`peer_id` values. A peer can own at most one of the eight canonical OMP-1
-outfield slots. Missing humans are explicit deterministic bot producers with
-unique `producer_id` and integer `bot_seed`; they are not synthetic peers.
-Producer ids are unique across the combined peer and bot namespaces, so a bot
-cannot impersonate or collide with a peer producer. Keepers occur first in each
-five-player roster, own no slot, have no combat loadout, and remain protected
-AI. Roster, manifest-slot, and producer-assignment player ids share
-InputFrame's 64-byte player-id limit.
+`peer_id` values. A peer owns a *set* of the eight canonical OMP-1 outfield
+slots whose size is fixed by the [match mode](#match-modes-and-slot-ownership).
+Missing humans are explicit deterministic bot producers with unique
+`producer_id` and integer `bot_seed`; they are not synthetic peers. A bot
+producer drives exactly one slot, because its `bot_seed` is per-slot. Producer
+ids never cross the peer and bot namespaces, so a bot cannot impersonate or
+collide with a peer producer. Keepers occur first in each five-player roster,
+own no slot, have no combat loadout, and remain protected AI. Roster,
+manifest-slot, and producer-assignment player ids share InputFrame's 64-byte
+player-id limit.
 
 Every message has a sender-local monotonic `sequence`. Session and peer
 components are independently bounded to 128 bytes. Their canonical message id
@@ -67,7 +69,7 @@ Manifest version 1 contains, in comparison order:
 2. immutable build and source identities;
 3. content, exact tuning, match-configuration, fixture, and arena identities;
 4. combat-rules and gameplay-AI-policy identities plus combat disposition;
-5. initial seed, 60 Hz tick rate, duration, and goal limit;
+5. initial seed, 60 Hz tick rate, duration, goal limit, and match mode;
 6. ordered home/away team ids and five-player rosters;
 7. every roster player's position and every outfielder's mechanical
    loadout/family mapping; and
@@ -83,6 +85,63 @@ cryptographic signature.
 mismatch fails before countdown with a name such as
 `manifest.teams.2.roster.3.family_id`. The manifest is immutable after
 proposal; any change requires a new session.
+
+## Match modes and slot ownership
+
+The pitch is always 4v4: eight canonical outfield slots plus two protected
+keepers, in every mode. What a mode changes is how many humans share those eight
+slots, and therefore how many slots each human owns.
+
+| Mode | Humans | Slots per human | Humans per team |
+| --- | ---: | ---: | ---: |
+| `1v1` | 2 | 4 (the team's whole outfield line) | 1 |
+| `2v2` | 4 | 2 (a chosen pair) | 2 |
+| `4v4` | 8 | 1 | 4 |
+
+`humans * slots_per_human` is always eight, which is why `3v3` has no entry:
+four outfield slots per team do not divide into three humans. It is refused by
+the same closed table as any other unsupported size, with the typed
+`unsupported_match_mode` code, at manifest validation — long before readiness.
+There is no `if mode == ...` anywhere in the ownership or switching rules.
+
+The mode lives in the deterministic manifest, so it is frozen with everything
+else and cannot change mid-session. A guest does not pre-verify it: like the
+seed, it is a session-scoped choice the host makes in the lobby, and a peer that
+disagreed about it would already fail on `manifest_id`.
+
+Ownership is a *function* from the eight canonical slots onto producers. Every
+slot still names exactly one declared source; a human source may now cover
+several. The invariants that keep the source unambiguous are:
+
+- every canonical slot has exactly one declared producer, in OMP-1 order;
+- a bot producer drives exactly one slot;
+- a producer id never appears as both a peer and a bot;
+- one human's owned slots all lie on one team, so an owned set is always a
+  subset of a single outfield line; and
+- every human's owned set has exactly `slots_per_human` members for the
+  manifest's mode. Wire shape alone cannot check this last one, so
+  `validate_slot_assignments` checks the first four and
+  `validate_assignment_manifest` — which has the manifest, and therefore the
+  mode — rejects a disagreeing size with the typed `invalid_ownership` code.
+
+A human controls exactly one owned slot at a time, the *live* slot; the others
+run the deterministic gameplay AI and are materialized as input rows exactly
+like declared bot fills, so nothing in the input stream distinguishes them. The
+live slot moves by the switch rule already documented in
+[`docs/controls.md`](../controls.md) — winning the ball switches control to the
+winner, and the `switch` edge without the ball hands control to the outfielder
+nearest the ball — intersected with the owned set. `switch` is already a bit in
+the canonical input frame, so the transition is part of the deterministic input
+stream rather than a new mechanism. In 4v4 the owned set has one member, so
+every branch of that rule returns the slot already live and switching is inert;
+that is a consequence of the general rule, not a special case.
+
+**Keepers remain AI-only, unassignable, and slotless in every mode.** This is a
+deliberate divergence from solo play, where gathering the ball hands control to
+your keeper. Online never does, in any mode, because keepers are also
+combat-protected and giving one mode's human a keeper would change what the
+eight canonical slots mean. It is intentional, not an oversight to be fixed
+later.
 
 Runtime compatibility is deliberately separate. The handshake carries runtime
 identity version, runtime family/revision, presentation-content identity, and
@@ -131,12 +190,31 @@ republishing byte-identical ownership still produces a distinct generation.
 
 This exists because readiness is otherwise unattributable. The manifest is
 immutable and shared by every generation, and a reassignment can leave a peer
-owning exactly one slot both before and after, so neither `manifest_id` nor slot
-ownership distinguishes "ready for the ownership in force" from "ready for
-ownership two republishes ago". Ordering cannot settle it either: any number of
+owning a same-sized owned set both before and after, so neither `manifest_id`
+nor slot ownership distinguishes "ready for the ownership in force" from "ready
+for ownership two republishes ago". Ordering cannot settle it either: any number of
 republishes may be in flight against a single readiness answer. Naming the
 generation on the wire is what makes the answer verifiable, and lets a
 coordinator refuse a superseded one without ending the session.
+
+Owned sets and the match mode both belong to this argument, and they enter the
+generation from opposite directions:
+
+- **Owned sets are already inside the digest.** They are not a separate field —
+  an owned set *is* the set of slots naming that producer in the `assignments`
+  array, which `assignment_id` hashes in full. Repartitioning a 2v2 pair changes
+  those bytes, and the epoch changes too, so it necessarily mints a new
+  generation. Readiness for the old partition cannot be credited to the new one.
+- **The mode is deliberately not in the digest, because it cannot vary.** It is
+  a manifest field, the manifest is immutable after proposal, and both
+  `slot_assignment` and `ready` already carry `manifest_id`, which a receiver
+  checks *before* `assignment_id`. A peer holding a different mode is therefore
+  already refused on manifest identity, and widening `assignment_id`'s signature
+  to re-carry a value that cannot change within a session would add a second
+  source of truth without closing any interleaving. The mode-dependent check
+  that does matter — that owned-set sizes match — is re-evaluated against the
+  manifest every time ownership is validated, on the host and on every guest,
+  rather than being inferred from the token.
 
 Only the host can derive the value, because only the host holds the epoch;
 peers treat it as an opaque bounded token and the protocol validates its shape
@@ -162,8 +240,9 @@ Both host and guest parse in this order:
 11. current lifecycle phase.
 
 Failure through step 6 cannot reach session logic. Unsupported versions,
-unknown messages, malformed/noncanonical data, oversized data, deterministic
-identity mismatch, runtime mismatch, conflicting duplicate, or invalid phase
+unknown messages, an unsupported match mode, malformed/noncanonical data,
+oversized data, deterministic identity mismatch, ownership that disagrees with
+the frozen mode, runtime mismatch, conflicting duplicate, or invalid phase
 terminate the handshake/session with the corresponding typed code. No runtime
 coercion or unknown-field preservation is allowed. A byte-identical duplicate
 is the sole no-op success.
@@ -206,6 +285,23 @@ regenerating the two affected wire digests, the transcript digest, and the
 browser evidence parser's pinned transcript id, all of which changed visibly and
 on purpose. Once a build ships that a player can connect with, this option
 closes and any further field change takes a version bump.
+
+**Decision on record:** the manifest's `match_mode` field, the relaxed
+duplicate-producer rule, and the `unsupported_match_mode` /
+`invalid_ownership` codes were likewise folded into protocol version 1, for the
+same reason and under the same closing condition. The change is additive at the
+field level, but it deliberately *is* a digest change: `match_mode` enters the
+canonical manifest, so `manifest_id` moves and every pinned wire that embeds it
+moves with it — the `manifest_proposal`, `manifest_accept`, `slot_assignment`,
+`ready`, `countdown`, and `start` digests, the transcript digest, the
+coordinator session transcripts, the input-packet literals, and the browser
+evidence parser's pinned ids. Making the mode digest-invisible was never an
+option: two peers must be unable to agree on a manifest while disagreeing about
+how many slots a human owns. The `handshake`, `peer_assignment`, `match_phase`,
+`hash_report`, `result_ack`, `abort`, and `disconnect` digests do not carry the
+manifest id and are unchanged, as are the 4v4 ownership goldens and the
+coordinator trace digest, which is the evidence that 4v4 behaviour itself did
+not move.
 
 `combat_status = provisional_114` is the only valid pre-disposition status.
 It lets protocol, lobby, and transport foundations use the accepted interaction

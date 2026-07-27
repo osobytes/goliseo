@@ -51,8 +51,8 @@ REQUIRED_FIELDS = {
 }
 REQUIRED_PROTOCOL_FIELDS = {
     "schema": "1",
-    "manifest_id": "659947cdd13d7d68",
-    "transcript_id": "3ae8c1cac000d905",
+    "manifest_id": "ea39ebe78423e0a0",
+    "transcript_id": "25a24b77f8167ab3",
     "messages": "13",
 }
 REQUIRED_INPUT_PROTOCOL_FIELDS = {
@@ -61,8 +61,8 @@ REQUIRED_INPUT_PROTOCOL_FIELDS = {
     "history": "6",
     "delay": "3",
     "vectors": "2",
-    "guest": "4c85cafb2a373f45",
-    "host": "ac5249f8efb62759",
+    "guest": "ee1a69575b7ac34b",
+    "host": "ead09d4439edb7b7",
     "max_bytes": "755",
 }
 ERROR_MARKERS = (
@@ -862,8 +862,8 @@ def shard_gate_self_test() -> None:
 
 def self_test() -> None:
     protocol_marker = (
-        "GC_PROTOCOL|golden|schema=1|manifest_id=659947cdd13d7d68"
-        "|transcript_id=3ae8c1cac000d905|messages=13"
+        "GC_PROTOCOL|golden|schema=1|manifest_id=ea39ebe78423e0a0"
+        "|transcript_id=25a24b77f8167ab3|messages=13"
     )
     if parse_protocol_marker(protocol_marker) != REQUIRED_PROTOCOL_FIELDS:
         raise RuntimeError("protocol golden marker self-test failed")
@@ -875,7 +875,7 @@ def self_test() -> None:
         raise RuntimeError("protocol golden marker accepted a changed vector count")
     input_protocol_marker = (
         "GC_INPUT_PROTOCOL|golden|schema=1|input=2|history=6|delay=3|vectors=2"
-        "|guest=4c85cafb2a373f45|host=ac5249f8efb62759|max_bytes=755"
+        "|guest=ee1a69575b7ac34b|host=ead09d4439edb7b7|max_bytes=755"
     )
     if parse_input_protocol_marker(input_protocol_marker) != REQUIRED_INPUT_PROTOCOL_FIELDS:
         raise RuntimeError("input protocol golden marker self-test failed")

@@ -15,6 +15,8 @@ local match_snapshot = require("sim.match_snapshot")
 ---| "invalid_phase"
 ---| "duplicate"
 ---| "transcript_conflict"
+---| "unsupported_match_mode"
+---| "invalid_ownership"
 ---@alias SessionMessageKind
 ---| "handshake"
 ---| "manifest_proposal"
@@ -31,6 +33,9 @@ local match_snapshot = require("sim.match_snapshot")
 ---| "disconnect"
 ---@alias SessionRole "host"|"guest"
 ---@alias SessionTeam "home"|"away"
+-- The pitch is always 4v4. A match mode says how many humans share those eight
+-- canonical outfield slots, never how many players are on it.
+---@alias SessionMatchMode "1v1"|"2v2"|"4v4"
 ---@alias SessionProducerKind "peer"|"bot"
 ---@alias SessionLifecyclePhase
 ---| "new"
@@ -82,6 +87,12 @@ local match_snapshot = require("sim.match_snapshot")
 ---@field team SessionTeam
 ---@field player_id string
 
+---@class SessionMatchModeShape
+---@field mode SessionMatchMode
+---@field humans integer -- Total humans the mode seats across both teams.
+---@field slots_per_human integer -- Canonical outfield slots one human owns.
+---@field team_humans integer -- Humans the mode seats on one team.
+
 ---@class SessionManifest
 ---@field version integer
 ---@field session_id string
@@ -104,6 +115,7 @@ local match_snapshot = require("sim.match_snapshot")
 ---@field tick_rate integer
 ---@field duration_ticks integer
 ---@field max_goals integer
+---@field match_mode SessionMatchMode -- How the eight canonical slots are shared.
 ---@field teams SessionTeamManifest[] -- Home, then away.
 ---@field slots SessionManifestSlot[] -- OMP-1 canonical slot order.
 
@@ -222,6 +234,18 @@ protocol.MAX_GOALS = 99
 protocol.MAX_COUNTDOWN_TICKS = 600
 protocol.MAX_CAPABILITIES = 16
 
+-- Every mode plays on the same eight canonical outfield slots and the same two
+-- protected keepers; only the number of humans and the size of one human's
+-- owned set changes. `humans * slots_per_human` is therefore always
+-- `input_frame.SLOT_COUNT`, and 3v3 has no entry because four outfield slots per
+-- team do not divide into three humans.
+---@type table<string, SessionMatchModeShape>
+protocol.MATCH_MODES = {
+    ["1v1"] = { mode = "1v1", humans = 2, slots_per_human = 4, team_humans = 1 },
+    ["2v2"] = { mode = "2v2", humans = 4, slots_per_human = 2, team_humans = 2 },
+    ["4v4"] = { mode = "4v4", humans = 8, slots_per_human = 1, team_humans = 4 },
+}
+
 protocol.CURRENT_VERSIONS = {
     protocol = protocol.VERSION,
     input = input_frame.VERSION,
@@ -268,6 +292,7 @@ local MANIFEST_FIELDS = {
     tick_rate = true,
     duration_ticks = true,
     max_goals = true,
+    match_mode = true,
     teams = true,
     slots = true,
 }
@@ -409,6 +434,7 @@ local MANIFEST_COMPARE_FIELDS = {
     "tick_rate",
     "duration_ticks",
     "max_goals",
+    "match_mode",
 }
 local RUNTIME_COMPARE_FIELDS = {
     "version",
@@ -595,6 +621,24 @@ local function validate_hash(value, name)
     return true
 end
 
+-- The one place an unsupported size is refused. `3v3` fails here, exactly like
+-- `5v5` or a misspelling, because the mode table -- not a special case -- is the
+-- closed set of supported shapes.
+---@param mode any
+---@return SessionMatchModeShape?, string?, SessionProtocolErrorCode?
+function protocol.match_mode(mode)
+    local shape = type(mode) == "string" and protocol.MATCH_MODES[mode] or nil
+    if not shape then
+        return failure(
+            "unsupported_match_mode",
+            ("match mode %s is not a supported size"):format(
+                type(mode) == "string" and mode or type(mode)
+            )
+        )
+    end
+    return shape
+end
+
 ---@param runtime any
 ---@return boolean?, string?, SessionProtocolErrorCode?
 function protocol.validate_runtime(runtime)
@@ -730,6 +774,10 @@ function protocol.validate_manifest(manifest)
     end
     if not COMBAT_STATUSES[manifest.combat_status] then
         return failure("malformed", "manifest combat status is invalid")
+    end
+    local mode_shape, mode_err, mode_code = protocol.match_mode(manifest.match_mode)
+    if not mode_shape then
+        return nil, mode_err, mode_code
     end
     local integer_fields = {
         { "seed", 0, protocol.MAX_SEED },
@@ -936,13 +984,33 @@ function protocol.compare_runtime(expected, actual)
     return true
 end
 
+---@class SessionProducerOwnership
+---@field producer_kind SessionProducerKind
+---@field team SessionTeam
+---@field slots InputSlotId[] -- Canonical order, one or more entries.
+
+-- Slot ownership is a *function* from the eight canonical slots onto producers:
+-- every slot still names exactly one declared source, but one human source may
+-- now cover several slots, which is what 1v1 and 2v2 are. The rules that keep
+-- the source unambiguous survive that widening:
+--
+--   * a bot producer drives exactly one slot, because its `bot_seed` is per-slot
+--     and a shared bot id would make that seed ambiguous;
+--   * a producer id never crosses the peer and bot namespaces; and
+--   * one human's owned slots all sit on one team, so an owned set is always a
+--     subset of a single outfield line.
+--
+-- How *many* slots a human may own is a manifest question, not a wire-shape
+-- one: it depends on the frozen match mode and is enforced by
+-- `validate_assignment_manifest`.
 ---@param assignments any
----@return boolean?, string?, SessionProtocolErrorCode?
-local function validate_slot_assignments(assignments)
+---@return table<string, SessionProducerOwnership>?, string?, SessionProtocolErrorCode?
+local function collect_slot_assignments(assignments)
     if not is_array(assignments, input_frame.SLOT_COUNT) then
         return failure("malformed", "slot assignment must contain exactly eight producers")
     end
-    local producer_ids = {}
+    ---@type table<string, SessionProducerOwnership>
+    local producers = {}
     for index, assignment in ipairs(assignments) do
         local slot = assert(input_frame.slot(index))
         if
@@ -960,10 +1028,6 @@ local function validate_slot_assignments(assignments)
         if not ok then
             return nil, err, code
         end
-        if producer_ids[assignment.producer_id] then
-            return failure("malformed", "slot producer ids must be unique across peers and bots")
-        end
-        producer_ids[assignment.producer_id] = true
         if assignment.producer_kind == "peer" then
             if assignment.bot_seed ~= nil then
                 return failure("malformed", "peer slot producer cannot carry a bot seed")
@@ -976,6 +1040,35 @@ local function validate_slot_assignments(assignments)
         else
             return failure("malformed", "slot producer kind is invalid")
         end
+        local owned = producers[assignment.producer_id]
+        if not owned then
+            producers[assignment.producer_id] = {
+                producer_kind = assignment.producer_kind,
+                team = slot.team,
+                slots = { slot.id },
+            }
+        elseif owned.producer_kind ~= assignment.producer_kind then
+            return failure(
+                "malformed",
+                "slot producer ids must not cross the peer and bot namespaces"
+            )
+        elseif assignment.producer_kind ~= "peer" then
+            return failure("malformed", "a bot producer drives exactly one canonical slot")
+        elseif owned.team ~= slot.team then
+            return failure("malformed", "a human producer owns slots on exactly one team")
+        else
+            owned.slots[#owned.slots + 1] = slot.id
+        end
+    end
+    return producers
+end
+
+---@param assignments any
+---@return boolean?, string?, SessionProtocolErrorCode?
+local function validate_slot_assignments(assignments)
+    local producers, err, code = collect_slot_assignments(assignments)
+    if not producers then
+        return nil, err, code
     end
     return true
 end
@@ -988,8 +1081,9 @@ function protocol.validate_assignment_manifest(manifest, assignments)
     if not ok then
         return nil, err, code
     end
-    ok, err, code = validate_slot_assignments(assignments)
-    if not ok then
+    local producers
+    producers, err, code = collect_slot_assignments(assignments)
+    if not producers then
         return nil, err, code
     end
     for index = 1, input_frame.SLOT_COUNT do
@@ -1000,7 +1094,47 @@ function protocol.validate_assignment_manifest(manifest, assignments)
             )
         end
     end
+    -- The frozen mode fixes the size of every human's owned set exactly. A
+    -- 4v4 owned set has one member, so nothing here special-cases it. Slots are
+    -- walked in canonical order rather than by hash order, so the first
+    -- offending owned set is reported identically on every peer.
+    local shape = assert(protocol.MATCH_MODES[manifest.match_mode])
+    for index = 1, input_frame.SLOT_COUNT do
+        local producer_id = assignments[index].producer_id
+        local owned = producers[producer_id]
+        if owned.producer_kind == "peer" and #owned.slots ~= shape.slots_per_human then
+            return failure(
+                "invalid_ownership",
+                ("%s owns %d canonical slots but %s seats %d per human"):format(
+                    producer_id,
+                    #owned.slots,
+                    shape.mode,
+                    shape.slots_per_human
+                )
+            )
+        end
+    end
     return true
+end
+
+-- The owned set of one producer: every canonical slot that names it, in OMP-1
+-- order. A human controls exactly one of these at a time; the rest run the
+-- deterministic gameplay AI and are indistinguishable from declared bot fills.
+---@param assignments SessionSlotProducer[]
+---@param producer_id string
+---@return InputSlotId[]
+function protocol.owned_slots(assignments, producer_id)
+    local ok, err = validate_slot_assignments(assignments)
+    assert(ok, err)
+    ---@type InputSlotId[]
+    local owned = {}
+    for index = 1, input_frame.SLOT_COUNT do
+        local producer = assignments[index]
+        if producer.producer_id == producer_id then
+            owned[#owned + 1] = producer.slot
+        end
+    end
+    return owned
 end
 
 ---@param message any
