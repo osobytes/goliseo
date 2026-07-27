@@ -314,6 +314,25 @@ t.describe("online match driver", function()
         end
     end)
 
+    t.it("hands control-channel traffic back instead of eating it", function()
+        local state = harness("2v2")
+        run(state, 4)
+        local guest_id = state.session.guest_peer_ids[1]
+        local guest_transport = assert(state.session.guest_transports[guest_id])
+        local control = assert(transport_contract.new({
+            type = "state",
+            seq = 3,
+            payload = "GCOP;control",
+        }))
+        assert(guest_transport:send(transport_contract.HOST_PEER_ID, "control", control))
+        state.session.host_transport:pump()
+        local batches = advance(state)
+        t.eq(#batches[1].control, 1)
+        t.eq(batches[1].control[1].channel, "control")
+        t.eq(batches[1].control[1].message.payload, "GCOP;control")
+        t.eq(match_driver.status(state.drivers[1]), "active")
+    end)
+
     t.it("keeps protected keepers AI-only and slotless", function()
         local state = harness("2v2")
         run(state, 8)

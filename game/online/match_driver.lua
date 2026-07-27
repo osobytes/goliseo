@@ -118,6 +118,7 @@ local slot_input = require("sim.slot_input")
 ---@field rollbacks integer
 ---@field sent_packets integer
 ---@field checkpoints MatchDriverCheckpoint[]
+---@field control TransportPeerMessage[] -- Control-channel traffic for the coordinator.
 ---@field live table<string, InputSlotId>
 ---@field status MatchDriverStatus
 
@@ -652,14 +653,22 @@ end
 -- Every input envelope available on one transport tick, in the transport's own
 -- deterministic drain order. Order is recorded, never used as authority: rows
 -- are unioned and canonically sorted before a single reconciliation.
+--
+-- One transport carries both channels, and the reliable control channel belongs
+-- to the session coordinator, not here. Draining it and discarding it would eat
+-- the coordinator's traffic, so anything that is not an input envelope is handed
+-- back on the batch for the owner to dispatch.
 ---@param driver MatchDriver
+---@param batch MatchDriverBatch
 ---@return TransportPeerMessage[]
-local function poll_input(driver)
+local function poll_input(driver, batch)
     local polled = driver._transport:poll_batch(match_driver.POLL_BATCH_LIMIT)
     local messages = {}
     for _, entry in ipairs(polled) do
         if entry.channel == "input" then
             messages[#messages + 1] = entry
+        else
+            batch.control[#batch.control + 1] = entry
         end
     end
     return messages
@@ -1309,6 +1318,7 @@ function match_driver.advance(driver, sample)
         rollbacks = 0,
         sent_packets = 0,
         checkpoints = {},
+        control = {},
         live = {},
         status = driver._status,
     }
@@ -1320,7 +1330,7 @@ function match_driver.advance(driver, sample)
     end
 
     drain_events(driver)
-    local messages = running(driver) and poll_input(driver) or {}
+    local messages = running(driver) and poll_input(driver, batch) or {}
     if running(driver) then
         if driver._role == "host" then
             host_sequence_authority(driver, batch, transport_tick, messages)

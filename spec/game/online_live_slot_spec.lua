@@ -89,7 +89,10 @@ t.describe("online live-slot ranking", function()
         -- because no single-process test can observe it.
         local source = assert(love.filesystem.read("game/online/live_slot.lua"))
         local body = source:gsub("%-%-[^\n]*", "")
-        t.eq(body:find("pairs%s*%("), nil)
+        -- `ipairs` is fine and `pairs` is not, so the match is anchored on the
+        -- character before the call rather than on the bare substring.
+        t.eq((" " .. body):find("[^%w_]pairs%s*%("), nil)
+        t.is_true((" " .. body:gsub("pairs", "ipairs")):find("[^%w_]pairs%s*%(") == nil)
     end)
 
     t.it("excludes the live slot so switching actually switches", function()

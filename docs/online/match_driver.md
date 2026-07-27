@@ -130,7 +130,10 @@ alongside an explicit exact-tie fixture.
 Each driver step:
 
 1. drains transport events, mapping terminal ones onto a typed status;
-2. polls **every** input envelope available on that transport tick;
+2. polls **every** envelope available on that transport tick, keeping the input
+   ones and handing control-channel traffic back on the batch — one transport
+   carries both channels and the reliable control channel belongs to the session
+   coordinator, so draining and discarding it would eat the coordinator's mail;
 3. host: validates each sender against its frozen owned set, adds its own due
    collector bundles, and canonicalizes one `canonical_host_batch`;
    guest: decodes every host batch, unions the rows, and sorts them into
