@@ -131,6 +131,157 @@ production network client. No JavaScript module is imported by `core/`, `data/`,
 or `sim/`, and no generated artifact is checked in. The browser build smoke
 check verifies both hosts are present in generated `player.js`.
 
+## Host-star transport (OMP-3)
+
+The two-peer loopback above stays as-is. The game-facing online path uses the
+**host-star** adapters instead: one host endpoint with up to seven
+independently addressed guest links. Entry points are
+`transport.fake_star(options)` and `transport.browser_star(options)`.
+
+```lua
+local transport = require("game.transport")
+
+local host = transport.fake_star() -- or transport.browser_star()
+assert(host:initialize())
+assert(host:open_peer("guest_1"))
+
+assert(host:send("guest_1", "control", lifecycle_message))
+assert(host:broadcast("input", canonical_batch))
+
+for _, entry in ipairs(host:poll_batch(32)) do
+    -- entry.peer_id, entry.channel, entry.arrival_seq, entry.message
+end
+
+local event = host:poll_event() -- typed peer/star state or error
+local metrics = host:diagnostics() -- star totals plus one record per peer
+assert(host:shutdown())
+```
+
+### Topology, roles, and permissions
+
+`contract.MAX_GUESTS` is 7 and `contract.HOST_PEER_ID` is `host`. A host
+allocates one slot per guest with `open_peer(peer_id)`; the eighth call fails
+with `capacity`, a repeated id with `duplicate_peer`, and the reserved `host`
+id with `duplicate_peer`. A guest endpoint has exactly one link, created by
+`initialize()`.
+
+Permissions are enforced at the link level, which is the only authority a
+transport legitimately has:
+
+| Operation | Host | Guest |
+| --- | --- | --- |
+| `open_peer` | allowed | `role_forbidden` |
+| `send(peer_id, ...)` | any open slot | only `host` |
+| `broadcast(channel, ...)` | fans out to every connected link | `role_forbidden` |
+
+A guest therefore has no way to address another guest and no way to fan out a
+canonical batch. Inbound messages are attributed by the link they arrived on,
+never by anything in the payload, so a guest cannot claim another peer's
+identity. `TransportPeerMessage.peer_id` is exactly the
+`InputPacketArrival.transport_peer_id` the input protocol expects.
+
+Payload-level authority stays where it belongs. The star reuses the #161
+session protocol (`game.online.protocol`) and #162 input packets
+(`game.online.input_protocol`) verbatim as opaque payload bytes; there is no
+second WebRTC message vocabulary in the game path. Deciding whether a given
+control payload is legal for a given peer is the session coordinator's job.
+
+### Channels
+
+Every link carries exactly two data channels, and the pairing is enforced
+before anything reaches the wire:
+
+| Channel | Delivery | Carries | Rejects |
+| --- | --- | --- | --- |
+| `control` | reliable, ordered | `event` and `state` envelopes | `input` → `channel_mismatch` |
+| `input` | unordered, `maxRetransmits: 0` | `input` envelopes | `event`/`state` → `channel_mismatch` |
+
+`contract.CHANNEL_CONFIG` is the single source of that configuration and is
+what the JavaScript bridge passes to `createDataChannel`.
+
+### Deterministic poll batching
+
+`poll_batch(limit)` drains through a persistent cursor that walks
+`(slot, channel-rank)` pairs — control before input, slot 1 before slot 7 —
+taking at most one message per pair before moving on. Both adapters advance
+the same cursor, so no peer can starve another and a given queue state always
+produces the same batch.
+
+This is an ordering rule at the Lua boundary and nothing more. Browser
+callback arrival order is **not** simulation order: `arrival_seq` is a
+per-peer transport receive counter, not a tick. The session and rollback
+layers still order work by the tick inside the payload.
+
+### Bounds, backpressure, and teardown
+
+Each peer/channel keeps its own bounded outbound and inbound queue at
+`queue_limit` (default 64, max 256). A full queue is the only condition that
+refuses a send: it returns `overflow`, drops the message, and increments
+`dropped_outbound`/`dropped_inbound`.
+
+A saturated send buffer is *backpressure*, not a rejection. When a channel's
+`bufferedAmount` would exceed `buffered_amount_limit` (default 65,536 bytes,
+max 1,048,576), the remaining messages stay queued and the peer reports one
+latched `backpressure` event until the channel moves again. Nothing blocks,
+spins, or waits on the network inside a LÖVE update.
+
+`close_peer(peer_id, reason?)` closes exactly one link: it drops that peer's
+queues, closes its channels and peer connection, emits `peer_state` and a
+`disconnected` `peer_error`, and leaves every other slot untouched. It is
+idempotent once the peer reports `closed`. `shutdown()` closes every link,
+releases every slot so no orphan peer connection survives, and is safe to call
+repeatedly.
+
+### Peer-scoped diagnostics
+
+`diagnostics()` returns star totals (`role`, `state`, `capacity`,
+`peer_count`, `queue_limit`, `buffered_amount_limit`, `event_depth`, `sent`,
+`received`, `dropped_outbound`, `dropped_inbound`, `malformed`,
+`unsupported_version`, `overflow`, `backpressure`, `last_error`) plus one
+`TransportPeerDiagnostics` per slot. Each peer record carries its `slot`,
+`state`, `ice_state`, `sequence_gaps`, `backpressure`, `malformed`,
+`last_error`, and a per-channel record with `state`, `outbound_depth`,
+`inbound_depth`, `buffered_amount`, `sent`, `received`, `dropped_outbound`,
+and `dropped_inbound`.
+
+`poll_event()` returns typed events rather than strings:
+`{ kind = "star_state"|"peer_state"|"star_error"|"peer_error", peer_id?,
+channel?, state?, code?, message? }`.
+
+### Generated browser bridge
+
+`scripts/webrtc_star_host.js` is embedded into `player.js` as
+`window.GalacticCupStarTransport`. It owns one `RTCPeerConnection` per guest
+and the two data channels per connection; no JavaScript object crosses into
+Lua. The Lua adapter exchanges bounded ASCII through `love.js.eval`:
+
+```text
+initialize(role, queue_limit, max_guests, buffered_limit) -> "star|connected"
+shutdown()                    -> "star|closed"
+open_peer(peer_id)            -> "slot|N" or "error|code|detail"
+close_peer(peer_id, reason)   -> "ok" or "error|code|detail"
+request_offer(peer_id)        -> "ok"   (host, asynchronous)
+accept_offer(signal)          -> "ok"   (guest, asynchronous)
+accept_answer(peer_id, signal)-> "ok"   (host)
+take_signal(peer_id)          -> "signal|<escaped SDP JSON>" or ""
+send("peer|channel|wire")     -> "ok" or "error|code|detail"
+broadcast("channel|wire")     -> "delivered|N" or "error|code|detail"
+poll()                        -> "peer|channel|wire" or ""
+poll_event()                  -> typed event line or ""
+diagnostics()                 -> one `star` record plus one `peer` record per slot
+```
+
+### Manual signaling (still OMP-3)
+
+Offer and answer creation are asynchronous, so signaling never blocks a frame.
+The host calls `request_offer(peer_id)` and then polls `take_signal(peer_id)`
+on later frames until the SDP blob appears; the guest calls
+`accept_offer(signal)` and polls `take_signal("host")` for its answer; the
+host finishes with `accept_answer(peer_id, signal)`. Blobs are exchanged by
+hand between two browser contexts. Automatic signaling, room codes, and
+production STUN/TURN credentials remain OMP-4 work; the bridge configures no
+ICE servers.
+
 ## Observability contract
 
 Expected failures are returned as `nil, message, code` and are also visible via
@@ -142,6 +293,18 @@ Expected failures are returned as `nil, message, code` and are also visible via
 - `overflow` — bounded queue capacity was reached;
 - `disconnected` — the host reported a peer/connection loss;
 - `not_initialized`, `not_connected`, and `closed` — lifecycle misuse.
+
+The host-star adapters add:
+
+- `capacity` — an eighth guest was requested;
+- `duplicate_peer` — the peer id is already open or is the reserved host id;
+- `unknown_peer` — no link exists with that id;
+- `role_forbidden` — a guest tried to fan out, open a link, or address another
+  guest;
+- `channel_mismatch` — the message type does not belong on that channel;
+- `backpressure` — the channel's send buffer is saturated and the message
+  stayed queued;
+- `signal_error` — a manual offer/answer blob was malformed or rejected.
 
 The adapter does not throw for those expected transport failures. Programmer
 configuration errors such as an invalid queue limit remain assertions.

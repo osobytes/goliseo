@@ -109,6 +109,15 @@ t.describe("transport envelope", function()
         t.eq(oversized_code, "payload_too_large")
     end)
 
+    t.it("decodes a control envelope that carries no tick", function()
+        local original = assert(contract.new({ type = "event", seq = 4, payload = "lifecycle" }))
+        local decoded = assert(contract.decode(assert(contract.encode(original))))
+        t.eq(decoded.type, "event")
+        t.eq(decoded.seq, 4)
+        t.eq(decoded.tick, nil)
+        t.eq(decoded.payload, "lifecycle")
+    end)
+
     t.it("requires ticks for input messages but permits control messages without one", function()
         local input, _, input_code = contract.new({
             type = "input",

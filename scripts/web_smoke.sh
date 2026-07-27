@@ -8,10 +8,13 @@ trap 'rm -rf "$smoke_root"' EXIT
 node --check "$project_root/scripts/webrtc_proof_host.js"
 node --check "$project_root/scripts/webrtc_proof_runner.js"
 node --check "$project_root/scripts/webrtc_proof_suite.js"
+node --check "$project_root/scripts/webrtc_star_host.js"
+node --check "$project_root/scripts/webrtc_star_smoke.js"
 node --check "$project_root/scripts/browser_storage_host.js"
 node --check "$project_root/scripts/browser_storage_smoke.js"
 node "$project_root/scripts/browser_storage_smoke.js"
 node "$project_root/scripts/webrtc_proof_smoke.js"
+node "$project_root/scripts/webrtc_star_smoke.js"
 python3 "$project_root/scripts/browser_matrix.py" --self-test
 
 first="$smoke_root/first"
@@ -79,6 +82,15 @@ if "GalacticCupTransportBridge" not in loader:
 for marker in ("GalacticCupWebRTCProof", "RTCPeerConnection", "GC_WEBRTC"):
     if marker not in loader:
         raise SystemExit(f"browser loader is missing WebRTC proof marker: {marker}")
+for marker in (
+    "GalacticCupStarTransport",
+    'maxRetransmits: 0',
+    "open_peer",
+    "take_signal",
+    "buffered_amount_limit",
+):
+    if marker not in loader:
+        raise SystemExit(f"browser loader is missing host-star transport marker: {marker}")
 
 style = (artifact / "style.css").read_text(encoding="utf-8")
 for marker in (
@@ -125,6 +137,8 @@ with zipfile.ZipFile(artifact / "goliseo.love") as package:
         "game/app.lua",
         "game/compatibility_metrics.lua",
         "game/transport.lua",
+        "game/transport/browser_star.lua",
+        "game/transport/fake_star.lua",
         "game/webrtc_proof.lua",
         "sim/match.lua",
     ):

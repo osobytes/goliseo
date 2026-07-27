@@ -5,6 +5,24 @@ later rollback client without putting WebRTC or JavaScript in `core/`, `data/`,
 or `sim/`. It does not drive a real match, provide signaling, or select
 production STUN/TURN services.
 
+## Status: historical evidence
+
+The game-facing online path no longer uses this proof. Issue #164 replaced it
+with the host-star transport in `docs/online/transport_bridge.md`
+(`game.transport.browser_star` over `window.GalacticCupStarTransport`), which
+carries #161 session messages and #162 input packets instead of a
+proof-specific vocabulary.
+
+Everything below is retained deliberately as OMP-0 evidence and as the
+two-peer measurement rig: `scripts/webrtc_proof_host.js`, the proof and suite
+pages, `game/webrtc_proof.lua`, and this runbook stay green and unchanged.
+What the host-star transport reuses from it is the *shape* — a reliable
+ordered control channel plus an unordered `maxRetransmits: 0` input channel,
+manual offer/answer exchange, and per-link queue/gap/drop diagnostics — not
+the code path. Latency and jitter percentiles, the deterministic shaper, and
+the 60 Hz observation runbook remain here; the host-star bridge deliberately
+does not duplicate them.
+
 ## Artifact and API
 
 Build and serve the pinned browser artifact in a secure context:
