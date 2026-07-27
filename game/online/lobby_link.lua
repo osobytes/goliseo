@@ -2,10 +2,11 @@
 --
 -- The session protocol bounds a control wire at 8,192 bytes while the transport
 -- envelope bounds one payload at 1,024, so a manifest proposal (about 2.5 kB)
--- cannot travel as a single message. This module adds the bounded framing the
--- transport bridge document leaves to the lobby: a control wire is split into
--- at most `MAX_FRAMES` ordered chunks over the reliable, ordered control
--- channel and reassembled on arrival. Framing is deliberately dumb — no
+-- cannot travel as a single message. The transport treats payload contents as
+-- opaque and says nothing about splitting them, so this module adds the bounded
+-- framing the transport bridge document leaves to its caller: a control wire is
+-- split into at most `MAX_FRAMES` ordered chunks over the reliable, ordered
+-- control channel and reassembled on arrival. Framing is deliberately dumb — no
 -- retransmission, no interleaving, no session state — because the control
 -- channel already guarantees order and delivery.
 --
@@ -82,6 +83,14 @@ end
 -- the final frame lands, `nil` while more are expected, and `nil, err` when the
 -- stream is malformed — which the caller must treat as a protocol violation
 -- rather than silently resynchronising.
+--
+-- There is deliberately no reassembly timeout. A peer that sends frame 1 of 3
+-- and stops leaves its own buffer half full; that costs at most
+-- `protocol.MAX_WIRE_BYTES` of memory, is per-peer, and blocks only that peer's
+-- control channel until a malformed frame resets the buffer or the link drops.
+-- On a reliable ordered channel a stall means the peer is gone, which the
+-- transport reports on its own, so a timer would add a second liveness
+-- authority for no reachable failure it does not already cover.
 ---@param buffer LobbyFrameBuffer
 ---@param payload string
 ---@return string?, string?

@@ -191,6 +191,38 @@ t.describe("lobby control framing", function()
         t.is_true(out_of_order ~= nil)
     end)
 
+    -- The framing is delimiter-safe by construction: chunks are cut with
+    -- `string.sub` on the wire and the header is matched with an anchored
+    -- pattern, so nothing ever scans inside a payload for a separator. Pin it,
+    -- because that is the invariant a future "optimization" would break.
+    t.it("carries payloads full of its own delimiters unchanged", function()
+        local wire = string.rep("GCLF;1;9;9;|a;b|\nc\r\n;;;|", 120)
+        t.is_true(#wire > lobby_link.MAX_CHUNK_BYTES, "the case must span several frames")
+        local frames = assert(lobby_link.frame(wire))
+        t.is_true(#frames > 1)
+        local buffer = lobby_link.new_buffer()
+        local rebuilt
+        for _, frame in ipairs(frames) do
+            rebuilt = lobby_link.absorb(buffer, frame)
+        end
+        t.eq(rebuilt, wire)
+    end)
+
+    t.it("carries a real control wire whose body holds delimiters", function()
+        local message = assert(protocol.new("abort", "session_alpha", "host", 1, {
+            code = "host_abort",
+        }))
+        local wire = assert(protocol.encode(message))
+        local frames = assert(lobby_link.frame(wire))
+        local buffer = lobby_link.new_buffer()
+        local rebuilt
+        for _, frame in ipairs(frames) do
+            rebuilt = lobby_link.absorb(buffer, frame)
+        end
+        t.eq(rebuilt, wire)
+        t.eq(assert(protocol.decode(rebuilt)).kind, "abort")
+    end)
+
     t.it("refuses a wire beyond the protocol bound", function()
         local _, err = lobby_link.frame(string.rep("q", protocol.MAX_WIRE_BYTES + 1))
         t.is_true(err ~= nil)

@@ -789,19 +789,6 @@ end
 ---@field can_start boolean
 ---@field started boolean
 
----@param assignments SessionSlotProducer[]?
----@return table<string, InputSlotId>
-local function first_owned(assignments)
-    ---@type table<string, InputSlotId>
-    local first = {}
-    for _, producer in ipairs(assignments or {}) do
-        if producer.producer_kind == "peer" and not first[producer.producer_id] then
-            first[producer.producer_id] = producer.slot
-        end
-    end
-    return first
-end
-
 ---@param model LobbyModel
 ---@return SessionSlotProducer[]?
 local function visible_assignments(model)
@@ -827,7 +814,9 @@ end
 local function roster_view(model)
     local manifest = visible_manifest(model)
     local assignments = visible_assignments(model)
-    local live = first_owned(assignments)
+    -- The opening live slot is the coordinator's rule, not the lobby's; the
+    -- freeze records the same table for the same assignments.
+    local live = coordinator.preview_live(assignments)
     ---@type LobbySlotView[]
     local slots = {}
     for index = 1, input_frame.SLOT_COUNT do

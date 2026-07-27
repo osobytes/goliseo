@@ -58,15 +58,17 @@ it does the same thing to whole lines and single slots. Every republication is a
 new ownership generation, so the coordinator clears readiness exactly as it does
 for any other pre-freeze configuration change.
 
-**Pair selection is host-authoritative.** A guest cannot request a pair, because
-the protocol message set is closed and carries no preference field. A guest sees
-the pair it has been given and answers with readiness or by leaving. Adding
-guest-initiated requests would be a protocol change, not a lobby change.
+**Pair selection is host-authoritative, for now.** A guest cannot request a
+pair, because the protocol message set is closed and carries no preference
+field. A guest sees the pair it has been given and answers with readiness or by
+leaving. Letting each player choose their own pair is the intended behaviour and
+needs a protocol addition; that is tracked as issue #233.
 
 The roster shows all eight canonical slots with their producer and driver:
 
-- `LIVE` — the human's opening live slot (the first owned slot in canonical
-  order);
+- `LIVE` — the human's opening live slot, taken from
+  `coordinator.preview_live`, which is the same rule and the same code the
+  freeze records as `CoordinatorFreeze.live`; the lobby does not restate it;
 - `AI (OWNED)` — a slot inside a human's owned set that the deterministic AI
   drives, which only exists in `1v1` and `2v2`;
 - `AI FILL` — a declared bot producer.
