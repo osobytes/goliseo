@@ -59,7 +59,6 @@ local input_frame = require("sim.input_frame")
 ---@field runtime SessionRuntimeIdentity
 ---@field accepted_manifest_id string?
 ---@field assigned boolean
----@field assignment_confirmed boolean -- Host view: this peer answered for the current assignment.
 ---@field ready boolean
 ---@field started boolean
 ---@field result_acked boolean
@@ -81,6 +80,7 @@ local input_frame = require("sim.input_frame")
 
 ---@class CoordinatorFreeze
 ---@field manifest_id string
+---@field assignment_id string -- The exact ownership generation that was frozen.
 ---@field countdown_id string
 ---@field first_input_tick integer
 ---@field seed integer
@@ -145,6 +145,8 @@ local input_frame = require("sim.input_frame")
 ---@field manifest SessionManifest?
 ---@field manifest_id string?
 ---@field assignments SessionSlotProducer[]?
+---@field assignment_id string? -- Identity of the ownership generation in force.
+---@field assignment_epoch integer -- Monotonic count of ownership publications.
 ---@field freeze CoordinatorFreeze?
 ---@field countdown_remaining integer?
 ---@field start_deadline integer?
@@ -185,7 +187,7 @@ coordinator.START_ACK_TIMEOUT_TICKS = 120
 coordinator.BOT_SEED_STRIDE = 7919
 coordinator.BOT_PRODUCER_PREFIX = "bot."
 coordinator.STALE_DUPLICATE_REASON = "duplicate fell outside the retained transcript window"
-coordinator.UNCONFIRMED_READY_REASON = "readiness predates the current slot assignment"
+coordinator.STALE_GENERATION_REASON = "readiness names a superseded ownership generation"
 
 ---@type SessionLifecyclePhase[]
 coordinator.PHASES = {
@@ -325,7 +327,6 @@ local function copy_peer(peer)
         runtime = peer.runtime,
         accepted_manifest_id = peer.accepted_manifest_id,
         assigned = peer.assigned,
-        assignment_confirmed = peer.assignment_confirmed,
         ready = peer.ready,
         started = peer.started,
         result_acked = peer.result_acked,
@@ -364,6 +365,8 @@ local function copy_state(state)
         manifest = state.manifest,
         manifest_id = state.manifest_id,
         assignments = state.assignments,
+        assignment_id = state.assignment_id,
+        assignment_epoch = state.assignment_epoch,
         freeze = state.freeze,
         countdown_remaining = state.countdown_remaining,
         start_deadline = state.start_deadline,
@@ -726,6 +729,7 @@ local function freeze_session(next_state, manifest, countdown_id, first_input_ti
     ---@type CoordinatorFreeze
     local freeze = {
         manifest_id = assert(next_state.manifest_id),
+        assignment_id = assert(next_state.assignment_id),
         countdown_id = countdown_id,
         first_input_tick = first_input_tick,
         seed = manifest.seed,
@@ -807,7 +811,6 @@ function coordinator.new(options)
         runtime = runtime,
         accepted_manifest_id = nil,
         assigned = options.role == "host",
-        assignment_confirmed = true,
         ready = false,
         started = false,
         result_acked = false,
@@ -825,7 +828,6 @@ function coordinator.new(options)
             runtime = runtime,
             accepted_manifest_id = nil,
             assigned = true,
-            assignment_confirmed = true,
             ready = false,
             started = false,
             result_acked = false,
@@ -853,6 +855,8 @@ function coordinator.new(options)
         manifest = nil,
         manifest_id = nil,
         assignments = nil,
+        assignment_id = nil,
+        assignment_epoch = 0,
         freeze = nil,
         countdown_remaining = nil,
         start_deadline = nil,
@@ -1018,22 +1022,19 @@ local function handle_assign_slots(state, event)
     local actions = {}
     local next_state = copy_state(state)
     local assignments = copy_value(event.assignments)
+    -- Every publication is its own generation, even one that restores byte-
+    -- identical ownership, because the epoch is part of the identity. Readiness
+    -- for any earlier generation can no longer be mistaken for readiness now.
+    next_state.assignment_epoch = state.assignment_epoch + 1
+    next_state.assignment_id = protocol.assignment_id(assignments, next_state.assignment_epoch)
     next_state.assignments = assignments
     next_state.phase = "assigned"
     clear_readiness(next_state)
-    -- A new ownership generation invalidates every remote peer's answer. Until
-    -- a peer answers again *after* seeing this publication, its readiness
-    -- cannot be attributed to this generation, so it does not count.
-    for index = 2, #next_state.peers do
-        next_state.peers[index].assignment_confirmed = false
-    end
-    emit(
-        next_state,
-        "slot_assignment",
-        { manifest_id = assert(next_state.manifest_id), assignments = assignments },
-        link_targets(next_state),
-        actions
-    )
+    emit(next_state, "slot_assignment", {
+        manifest_id = assert(next_state.manifest_id),
+        assignment_id = next_state.assignment_id,
+        assignments = assignments,
+    }, link_targets(next_state), actions)
     return next_state, applied(actions)
 end
 
@@ -1063,13 +1064,14 @@ local function handle_set_ready(state, event)
     local actions = {}
     local next_state = copy_state(state)
     if next_state.role == "guest" then
-        emit(
-            next_state,
-            "ready",
-            { manifest_id = assert(next_state.manifest_id), ready = event.ready },
-            link_targets(next_state),
-            actions
-        )
+        emit(next_state, "ready", {
+            manifest_id = assert(next_state.manifest_id),
+            -- Answer the generation this peer actually holds. If the host has
+            -- since republished, the host refuses this answer rather than
+            -- crediting it to ownership the peer never saw.
+            assignment_id = assert(next_state.assignment_id),
+            ready = event.ready,
+        }, link_targets(next_state), actions)
     end
     local_peer(next_state).ready = event.ready
     refresh_ready_phase(next_state)
@@ -1442,8 +1444,11 @@ local function drop_guest(state, peer, code)
     clear_readiness(next_state)
     if owns_slot(state, departed) then
         -- The published ownership named a peer that is gone, so it is void
-        -- until the host republishes; the phase stays configurable.
+        -- until the host republishes; the phase stays configurable. Remaining
+        -- peers may still have readiness in flight for it, which `apply_ready`
+        -- refuses on the ownership check.
         next_state.assignments = nil
+        next_state.assignment_id = nil
     end
     actions[#actions + 1] = { kind = "close", link_id = assert(peer.link_id) }
     return next_state, applied(actions)
@@ -1546,7 +1551,6 @@ local function admit_guest(state, link_id, message)
         runtime = copy_value(body.runtime),
         accepted_manifest_id = nil,
         assigned = false,
-        assignment_confirmed = true,
         ready = false,
         started = false,
         result_acked = false,
@@ -1687,25 +1691,21 @@ local function apply_slot_assignment(state, peer, message)
             announce = true,
         })
     end
-    if assignments_equal(state.assignments, body.assignments) then
+    if
+        body.assignment_id == state.assignment_id
+        and assignments_equal(state.assignments, body.assignments)
+    then
         return state, idempotent()
     end
-    local actions = {}
     local next_state = copy_state(state)
     next_state.assignments = copy_value(body.assignments)
+    -- The generation token is opaque here: only the host holds the epoch that
+    -- produced it. The guest stores it and names it in every readiness answer,
+    -- which is what lets the host bind that answer to this exact ownership.
+    next_state.assignment_id = body.assignment_id
     next_state.phase = "assigned"
     clear_readiness(next_state)
-    -- Always answer a new ownership generation with an explicit negative
-    -- readiness, whether or not this peer was ready. The `ready` body carries
-    -- no assignment identity, so this falling edge is what tells the host the
-    -- peer has actually observed this generation. Per-link FIFO puts it after
-    -- any readiness that was already in flight for the previous generation,
-    -- and the host refuses to count readiness until it arrives.
-    emit(next_state, "ready", {
-        manifest_id = assert(next_state.manifest_id),
-        ready = false,
-    }, link_targets(next_state), actions)
-    return next_state, applied(actions)
+    return next_state, applied()
 end
 
 ---@param state CoordinatorState
@@ -1724,20 +1724,7 @@ local function apply_ready(state, peer, message)
             announce = true,
         })
     end
-    if not body.ready then
-        -- A negative readiness is also this peer's acknowledgement that it has
-        -- observed the current ownership generation.
-        if peer.assignment_confirmed and not peer.ready then
-            return state, idempotent()
-        end
-        local next_state = copy_state(state)
-        local tracked = assert(peer_by_id(next_state, peer.peer_id))
-        tracked.assignment_confirmed = true
-        tracked.ready = false
-        refresh_ready_phase(next_state)
-        return next_state, applied()
-    end
-    if peer.accepted_manifest_id ~= state.manifest_id then
+    if body.ready and peer.accepted_manifest_id ~= state.manifest_id then
         return terminate_from(state, {
             reason = "protocol_violation",
             origin = "remote",
@@ -1746,24 +1733,25 @@ local function apply_ready(state, peer, message)
             announce = true,
         })
     end
-    if not owns_slot(state, peer.peer_id) then
-        -- Ownership was replaced while this readiness was in flight. The peer
-        -- will answer again for the configuration it has not seen yet, so drop
-        -- the stale claim instead of ending the session.
-        return state, rejected("invalid_assignment", "stale readiness for replaced slot ownership")
+    -- Live, and load-bearing: `drop_guest` voids ownership for every remaining
+    -- peer when a *different* peer departs before the countdown, so a peer that
+    -- legitimately owned a slot a moment ago can own none now, and its
+    -- in-flight readiness arrives here. Do not prune this as unreachable.
+    if body.ready and not owns_slot(state, peer.peer_id) then
+        return state, rejected("invalid_assignment", "readiness for voided slot ownership")
     end
-    if not peer.assignment_confirmed then
-        -- Owning *some* slot is not the same as having answered for *this*
-        -- ownership generation: a swap that leaves this peer with one slot
-        -- would otherwise let a positive readiness from the previous
-        -- generation satisfy the barrier for a configuration it never saw.
-        return state, rejected("invalid_assignment", coordinator.UNCONFIRMED_READY_REASON)
+    -- The ownership generation is named on the wire, never inferred from
+    -- arrival order or from the polarity of the last message seen. Inference
+    -- cannot survive two republishes racing one readiness answer; an exact
+    -- identity match can, and it is equally exact for a negative answer.
+    if body.assignment_id ~= state.assignment_id then
+        return state, rejected("invalid_assignment", coordinator.STALE_GENERATION_REASON)
     end
-    if peer.ready then
+    if peer.ready == body.ready then
         return state, idempotent()
     end
     local next_state = copy_state(state)
-    assert(peer_by_id(next_state, peer.peer_id)).ready = true
+    assert(peer_by_id(next_state, peer.peer_id)).ready = body.ready
     refresh_ready_phase(next_state)
     return next_state, applied()
 end

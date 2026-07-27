@@ -20,10 +20,10 @@ local conformance = {}
 
 ---@type SessionCoordinatorGolden
 conformance.GOLDEN = {
-    full_transcript_id = "7c6eff7714fd5008",
-    full_trace_digest = "8603a014f2e5e57e",
-    full_message_count = 58,
-    bot_transcript_id = "180801c8355d47ef",
+    full_transcript_id = "700f532375843dc5",
+    full_trace_digest = "2fa7235df619b00a",
+    full_message_count = 51,
+    bot_transcript_id = "875e351dd06aa729",
     bot_sources = "home_1=peer:host:nil|home_2=peer:guest.1:nil|home_3=peer:guest.2:nil|"
         .. "home_4=bot:bot.home_4:51677|away_1=bot:bot.away_1:59596|away_2=bot:bot.away_2:67515|"
         .. "away_3=bot:bot.away_3:75434|away_4=bot:bot.away_4:83353",

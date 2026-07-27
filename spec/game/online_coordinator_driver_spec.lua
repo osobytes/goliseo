@@ -347,11 +347,12 @@ t.describe("online coordinator retransmission and stale readiness", function()
         local session = driver.new({ guest_count = 1, latency_ticks = 4 })
         local guest = fixture.guest_peer_id(1)
         session:connect_all()
-        session:tick(5)
+        session:tick(6)
         session:send(HOST, { kind = "propose_manifest", manifest = fixture.manifest() })
-        session:tick(5)
+        session:tick(12)
         session:send(HOST, { kind = "assign_slots", assignments = fixture.assignments(1) })
-        session:tick(5)
+        session:tick(6)
+        t.eq(session:host().state.assignment_epoch, 1)
 
         session:send(guest, { kind = "set_ready", ready = true })
         t.eq(session:host().state.peers[2].ready, false, "the readiness is still in flight")
@@ -383,17 +384,81 @@ t.describe("online coordinator retransmission and stale readiness", function()
         t.eq(session:host().state.phase, "ready")
     end)
 
-    t.it("counts readiness only after the peer answers for the new ownership", function()
+    t.it("refuses stale readiness across two republishes in flight", function()
+        -- The interleaving that defeats every ordering-based scheme: a guest's
+        -- honest readiness for S0 is still in flight while the host advances
+        -- S0 -> S1 -> S2. No S0-era message can be credited to a generation the
+        -- guest never saw, because the generation is named on the wire.
+        local session = driver.new({ guest_count = 1, latency_ticks = 6 })
+        local guest = fixture.guest_peer_id(1)
+        session:connect_all()
+        session:tick(8)
+        session:send(HOST, { kind = "propose_manifest", manifest = fixture.manifest() })
+        -- Long enough for the proposal and its acceptance to complete a round
+        -- trip, so ownership can actually be published.
+        session:tick(16)
+        session:send(HOST, { kind = "assign_slots", assignments = fixture.assignments(1) })
+        session:tick(8)
+        t.eq(session:host().state.assignment_epoch, 1)
+        t.eq(assert(session:node(guest)).state.assignment_id, session:host().state.assignment_id)
+
+        session:send(guest, { kind = "set_ready", ready = true })
+        t.eq(session:host().state.peers[2].ready, false, "the S0 readiness is still in flight")
+
+        local swapped = fixture.assignments(1)
+        swapped[1].producer_id = guest
+        swapped[2].producer_id = HOST
+        session:send(HOST, { kind = "assign_slots", assignments = swapped })
+        session:send(HOST, { kind = "assign_slots", assignments = fixture.assignments(1) })
+        session:send(HOST, { kind = "set_ready", ready = true })
+        session:tick(10)
+
+        local host = session:host()
+        t.eq(host.terminal, nil)
+        t.eq(host.state.peers[2].ready, false, "no S0-era message may satisfy the S2 barrier")
+        t.eq(host.state.phase, "assigned")
+        t.eq(host.state.freeze, nil)
+        t.eq(host.state.assignment_epoch, 3)
+
+        local frozen, outcome = coordinator.step(host.state, {
+            kind = "begin_countdown",
+            countdown_id = fixture.COUNTDOWN_ID,
+            remaining_ticks = 1,
+            first_input_tick = 0,
+        })
+        t.eq(outcome.code, "invalid_phase")
+        t.eq(frozen.freeze, nil)
+
+        session:send(guest, { kind = "set_ready", ready = true })
+        session:tick(10)
+        t.eq(session:host().state.peers[2].ready, true)
+        t.eq(session:host().state.phase, "ready")
+    end)
+
+    t.it("mints a distinct generation even for byte-identical ownership", function()
         local session = driver.new({ guest_count = 1 })
         session:connect_all()
         session:send(HOST, { kind = "propose_manifest", manifest = fixture.manifest() })
         session:pump()
-        t.eq(session:host().state.peers[2].assignment_confirmed, true)
         session:send(HOST, { kind = "assign_slots", assignments = fixture.assignments(1) })
-        t.eq(session:host().state.peers[2].assignment_confirmed, false)
         session:pump()
-        t.eq(session:host().state.peers[2].assignment_confirmed, true)
-        t.eq(session:host().state.peers[2].ready, false)
+        local first = assert(session:host().state.assignment_id)
+
+        -- A different generation, then the original ownership restored: the
+        -- identity must not repeat, or readiness for the first could satisfy
+        -- the third.
+        local swapped = fixture.assignments(1)
+        swapped[1].producer_id = fixture.guest_peer_id(1)
+        swapped[2].producer_id = HOST
+        session:send(HOST, { kind = "assign_slots", assignments = swapped })
+        session:pump()
+        session:send(HOST, { kind = "assign_slots", assignments = fixture.assignments(1) })
+        session:pump()
+        local third = assert(session:host().state.assignment_id)
+
+        t.is_true(third ~= first, "restored ownership is still a new generation")
+        t.eq(session:host().state.assignment_epoch, 3)
+        t.eq(assert(session:node(fixture.guest_peer_id(1))).state.assignment_id, third)
     end)
 end)
 
@@ -487,6 +552,7 @@ t.describe("online coordinator adversarial peers", function()
         local session = staged("assigned")
         session:inject(fixture.guest_peer_id(1), HOST, "ready", {
             manifest_id = "0123456789abcdef",
+            assignment_id = assert(session:host().state.assignment_id),
             ready = true,
         })
         t.eq(terminal_of(session, HOST).reason, "manifest_mismatch")
@@ -526,7 +592,11 @@ t.describe("online coordinator adversarial peers", function()
             {
                 stage = "assigned",
                 kind = "slot_assignment",
-                body = { manifest_id = "0123456789abcdef", assignments = fixture.assignments(1) },
+                body = {
+                    manifest_id = "0123456789abcdef",
+                    assignment_id = protocol.assignment_id(fixture.assignments(1), 9),
+                    assignments = fixture.assignments(1),
+                },
                 detail = "slot assignment names a different manifest",
             },
             {

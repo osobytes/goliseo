@@ -93,26 +93,22 @@ end
 ---@return CoordinatorState
 local function ready_host(state, guest_count, sequences)
     local manifest_id = assert(state.manifest_id)
+    -- Readiness names the ownership generation it answers for.
+    local assignment_id = assert(state.assignment_id)
     for index = 1, guest_count do
         local peer_id = fixture.guest_peer_id(index)
-        -- A real guest answers a published assignment with an explicit negative
-        -- readiness first; that falling edge is what binds its later positive
-        -- readiness to this ownership generation.
-        for _, ready in ipairs({ false, true }) do
-            sequences[index] = sequences[index] + 1
-            state = (
-                deliver(
-                    state,
-                    peer_id,
-                    message(
-                        "ready",
-                        peer_id,
-                        sequences[index],
-                        { manifest_id = manifest_id, ready = ready }
-                    )
-                )
+        sequences[index] = sequences[index] + 1
+        state = (
+            deliver(
+                state,
+                peer_id,
+                message("ready", peer_id, sequences[index], {
+                    manifest_id = manifest_id,
+                    assignment_id = assignment_id,
+                    ready = true,
+                })
             )
-        end
+        )
     end
     return (coordinator.step(state, { kind = "set_ready", ready = true }))
 end
@@ -414,6 +410,9 @@ t.describe("online coordinator configuration", function()
                 "guest.1",
                 message("ready", "guest.1", 1, {
                     manifest_id = assert(state.manifest_id),
+                    -- No ownership exists yet; the phase gate refuses this
+                    -- before any generation check can apply.
+                    assignment_id = "0123456789abcdef",
                     ready = true,
                 })
             )
@@ -437,19 +436,21 @@ t.describe("online coordinator configuration", function()
             })
         )
         t.eq(state.phase, "assigned")
-        local unconfirmed, outcome = deliver(
+        -- Readiness that names any other ownership generation is refused.
+        local superseded, outcome = deliver(
             state,
             "guest.1",
             message("ready", "guest.1", 2, {
                 manifest_id = assert(state.manifest_id),
+                assignment_id = protocol.assignment_id(fixture.assignments(1), 99),
                 ready = true,
             })
         )
         t.eq(outcome.code, "invalid_assignment", "readiness must answer for this ownership")
-        t.eq(outcome.reason, coordinator.UNCONFIRMED_READY_REASON)
-        t.is_true(unconfirmed == state)
+        t.eq(outcome.reason, coordinator.STALE_GENERATION_REASON)
+        t.is_true(superseded == state, "a superseded answer leaves no progress")
 
-        state = ready_host(state, 1, { 1 })
+        state = ready_host(state, 1, { 2 })
         t.eq(state.peers[2].ready, true)
         t.eq(state.phase, "ready")
     end)
@@ -464,6 +465,7 @@ t.describe("online coordinator configuration", function()
             "guest.1",
             message("ready", "guest.1", 2, {
                 manifest_id = assert(state.manifest_id),
+                assignment_id = assert(state.assignment_id),
                 ready = true,
             })
         )
@@ -522,6 +524,7 @@ t.describe("online coordinator configuration", function()
             "guest.1",
             message("ready", "guest.1", sequences[1] + 1, {
                 manifest_id = assert(state.manifest_id),
+                assignment_id = assert(state.assignment_id),
                 ready = false,
             })
         )
@@ -916,6 +919,7 @@ t.describe("online coordinator duplicate and invalid traffic", function()
         local manifest_id = assert(state.manifest_id)
         local conflict = message("ready", "guest.1", sequences[1], {
             manifest_id = manifest_id,
+            assignment_id = assert(state.assignment_id),
             ready = true,
         })
         local next_state = (deliver(state, "guest.1", conflict))
@@ -933,6 +937,7 @@ t.describe("online coordinator duplicate and invalid traffic", function()
                 "guest.1",
                 message("ready", "guest.1", 1, {
                     manifest_id = "0123456789abcdef",
+                    assignment_id = "0123456789abcdef",
                     ready = true,
                 })
             )
@@ -1082,6 +1087,7 @@ t.describe("online coordinator guest validation", function()
                 "guest.1",
                 message("slot_assignment", HOST, 1, {
                     manifest_id = manifest_id,
+                    assignment_id = protocol.assignment_id(fixture.assignments(1), 1),
                     assignments = assert(coordinator.plan_assignments(manifest, { HOST })),
                 })
             )
@@ -1113,31 +1119,45 @@ t.describe("online coordinator guest validation", function()
                 "guest.1",
                 message("slot_assignment", HOST, 1, {
                     manifest_id = manifest_id,
+                    assignment_id = protocol.assignment_id(fixture.assignments(1), 1),
                     assignments = fixture.assignments(1),
                 })
             )
         )
         t.eq(guest.phase, "assigned")
+        local first_generation = assert(guest.assignment_id)
         local outcome
         guest, outcome = coordinator.step(guest, { kind = "set_ready", ready = true })
         t.eq(guest.phase, "ready")
         t.eq(outcome.actions[1].message.body.ready, true)
+        t.eq(
+            outcome.actions[1].message.body.assignment_id,
+            first_generation,
+            "readiness names the generation the guest holds"
+        )
 
         local swapped = fixture.assignments(1)
         swapped[1].producer_id = "guest.1"
         swapped[2].producer_id = HOST
-        guest, outcome = deliver(
-            guest,
-            "guest.1",
-            message("slot_assignment", HOST, 2, {
-                manifest_id = manifest_id,
-                assignments = swapped,
-            })
+        local second_generation = protocol.assignment_id(swapped, 2)
+        guest = (
+            deliver(
+                guest,
+                "guest.1",
+                message("slot_assignment", HOST, 2, {
+                    manifest_id = manifest_id,
+                    assignment_id = second_generation,
+                    assignments = swapped,
+                })
+            )
         )
         t.eq(guest.phase, "assigned")
         t.eq(guest.peers[1].ready, false)
-        t.eq(outcome.actions[1].message.kind, "ready")
-        t.eq(outcome.actions[1].message.body.ready, false)
+        t.eq(guest.assignment_id, second_generation)
+
+        guest, outcome = coordinator.step(guest, { kind = "set_ready", ready = true })
+        t.eq(outcome.actions[1].message.body.assignment_id, second_generation)
+        t.is_true(second_generation ~= first_generation)
     end)
 end)
 
@@ -1155,7 +1175,7 @@ t.describe("online coordinator transition matrix", function()
         return {
             handshake = { role = "guest", runtime = fixture.runtime() },
             manifest_accept = { manifest_id = id },
-            ready = { manifest_id = id, ready = true },
+            ready = { manifest_id = id, assignment_id = id, ready = true },
             start = {
                 manifest_id = id,
                 countdown_id = fixture.COUNTDOWN_ID,
@@ -1184,7 +1204,11 @@ t.describe("online coordinator transition matrix", function()
                 manifest = fixture.manifest(),
             },
             peer_assignment = { assigned_peer_id = GUEST, role = "guest" },
-            slot_assignment = { manifest_id = id, assignments = fixture.assignments(1) },
+            slot_assignment = {
+                manifest_id = id,
+                assignment_id = id,
+                assignments = fixture.assignments(1),
+            },
             countdown = {
                 manifest_id = id,
                 countdown_id = fixture.COUNTDOWN_ID,
@@ -1284,6 +1308,7 @@ t.describe("online coordinator transition matrix", function()
                 GUEST,
                 message("slot_assignment", HOST, 1, {
                     manifest_id = manifest_id,
+                    assignment_id = protocol.assignment_id(fixture.assignments(1), 1),
                     assignments = fixture.assignments(1),
                 })
             )

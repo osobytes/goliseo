@@ -100,7 +100,7 @@ All message bodies have closed field allowlists:
 | `handshake` | Declare host/guest role and runtime compatibility. |
 | `manifest_proposal` / `manifest_accept` | Propose the complete manifest and accept its canonical digest. |
 | `peer_assignment` / `slot_assignment` | Name a stable peer and publish all peer/bot slot producers. |
-| `ready` | Assert or revoke readiness for the accepted manifest. |
+| `ready` | Assert or revoke readiness for one ownership generation. |
 | `countdown` / `start` | Bind a countdown id to the first input tick. |
 | `match_phase` | Report kickoff, play, goal stoppage, full time, or result. |
 | `hash_report` | Report a canonical 16-hex boundary hash at one tick. |
@@ -121,6 +121,29 @@ validation; a new terminal-state message is rejected, so reliable-channel
 delivery cannot revive or rewrite a completed session. Slot assignment must
 also pass `validate_assignment_manifest` so its player ids agree with the
 accepted manifest rather than merely having valid canonical slot shapes.
+
+## Ownership generations
+
+`slot_assignment` and `ready` both carry an `assignment_id`: the identity of one
+ownership generation, minted by the host with `assignment_id(assignments,
+epoch)` and echoed unchanged by peers. The epoch is part of the digest, so
+republishing byte-identical ownership still produces a distinct generation.
+
+This exists because readiness is otherwise unattributable. The manifest is
+immutable and shared by every generation, and a reassignment can leave a peer
+owning exactly one slot both before and after, so neither `manifest_id` nor slot
+ownership distinguishes "ready for the ownership in force" from "ready for
+ownership two republishes ago". Ordering cannot settle it either: any number of
+republishes may be in flight against a single readiness answer. Naming the
+generation on the wire is what makes the answer verifiable, and lets a
+coordinator refuse a superseded one without ending the session.
+
+Only the host can derive the value, because only the host holds the epoch;
+peers treat it as an opaque bounded token and the protocol validates its shape
+alone. This is a deliberate exception to the rule that identity fields are
+recomputable by the receiver — the token names *which* publication, not *what*
+was published, and the assignments themselves are already verified against the
+manifest.
 
 ## Validation order and terminal failures
 
@@ -172,6 +195,17 @@ Any field addition/removal, meaning change, comparison-order change, canonical
 encoding change, message transition change, or bound change requires a
 protocol/manifest version decision. Old or future versions are rejected; there
 is no general migration at the network boundary.
+
+**Decision on record:** the `assignment_id` field on `slot_assignment` and
+`ready` was folded into protocol version 1 rather than minting version 2.
+OMP-3 has never shipped and no peer outside this repository speaks version 1,
+so there is nothing to migrate and no compatibility claim to break. The change
+is additive: no existing field changed meaning, no bound moved, no rejection
+code changed, and the manifest digest is untouched. The cost is confined to
+regenerating the two affected wire digests, the transcript digest, and the
+browser evidence parser's pinned transcript id, all of which changed visibly and
+on purpose. Once a build ships that a player can connect with, this option
+closes and any further field change takes a version bump.
 
 `combat_status = provisional_114` is the only valid pre-disposition status.
 It lets protocol, lobby, and transport foundations use the accepted interaction

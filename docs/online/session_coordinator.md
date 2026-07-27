@@ -91,38 +91,50 @@ owning a slot; a `ready` that precedes acceptance is a protocol violation.
 Readiness is revocable until the countdown freezes, and any ownership change
 clears it.
 
-Ownership changes race with in-flight readiness, and the `ready` body carries
-only the immutable `manifest_id` — never an assignment identity — so the host
-cannot tell "ready for the previous ownership" from "ready for the current one"
-by inspection. Owning *a* slot is not sufficient evidence either: a swap can
-leave a peer owning exactly one slot in both generations.
+Ownership changes race with in-flight readiness. The manifest digest cannot
+settle that race — it is immutable and shared by every generation — and neither
+can slot ownership, since a swap can leave a peer owning exactly one slot both
+before and after.
 
-The coordinator closes this without extending the wire, by making the peer
-prove it observed the generation:
+The generation is therefore named explicitly on the wire. Every publication
+increments an epoch and mints an `assignment_id` (see
+[ownership generations](session_protocol.md#ownership-generations)); the host
+stores it, each guest stores whatever it last received, and every `ready` body
+carries the generation it answers for. The host counts readiness only when that
+identity equals the generation currently in force.
 
-1. publishing ownership marks every remote peer *unconfirmed* and clears its
-   readiness;
-2. a guest that accepts a *changed* assignment always answers `ready = false`,
-   whether or not it was ready — that falling edge is the acknowledgement;
-3. the host treats a negative readiness as the confirmation, and refuses to
-   count a positive readiness from an unconfirmed peer.
+Two earlier designs for this failed review, and both failed the same way, which
+is worth recording so it is not retried:
 
-Per-link FIFO puts the acknowledgement after anything already in flight for the
-previous generation, so a stale `ready = true` is always refused and the
-following confirmation always lands. A byte-identical republication is
-idempotent: it is not a new generation and preserves readiness.
+- **Ownership-based.** Checking that the peer owns *a* slot. Defeated by a swap
+  that leaves the peer owning one slot in both generations.
+- **Ordering-based.** Treating a negative readiness as an acknowledgement and
+  relying on per-link FIFO to sequence it after anything stale. Defeated by two
+  republishes in flight against one readiness answer: the negative arrives after
+  the host has already advanced, re-arms the *new* generation, and the stale
+  positive behind it is then accepted for ownership the peer never saw.
 
-The refusal of stale or unconfirmed readiness is a *rejection*, not a
-termination — the peer did nothing wrong, it simply answered for a
-configuration that no longer exists, and it will answer again.
+Both inferred the generation from something other than the generation. Per-link
+FIFO orders messages within a link; it says nothing about which publication a
+peer had seen when it spoke. Only an explicit identity answers that.
+
+Consequences:
+
+- a byte-identical republication is still a *new* generation, because the epoch
+  differs — restoring earlier ownership cannot revive readiness for it;
+- the freeze records the exact `assignment_id` it froze;
+- readiness naming a superseded generation is *rejected*, not fatal. The peer
+  did nothing wrong: it answered honestly for what it knew. It will answer again
+  for the generation it now holds.
 
 ## Countdown, freeze, and the start boundary
 
 `begin_countdown` requires the `ready` phase and freezes a `CoordinatorFreeze`:
-manifest digest, countdown id, first input tick, seed, tick rate, duration, goal
-limit, content/tuning/combat-rules/gameplay-AI identity, combat disposition, a
-deep copy of the assignments, and the slot-to-source table. After the freeze,
-assignment and readiness changes are rejected.
+manifest digest, the exact ownership generation, countdown id, first input tick,
+seed, tick rate, duration, goal limit, content/tuning/combat-rules/gameplay-AI
+identity, combat disposition, a deep copy of the assignments, and the
+slot-to-source table. After the freeze, assignment and readiness changes are
+rejected.
 
 The countdown is measured in coordinator `tick` events, not wall-clock time.
 Wall clock is never simulation authority: the single canonical boundary is
