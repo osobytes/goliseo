@@ -17,6 +17,7 @@ local protocol = require("game.online.protocol")
 local protocol_fixture = require("game.online.protocol_fixture")
 local FakeStarTransport = require("game.transport.fake_star")
 local transport_contract = require("game.transport.contract")
+local combat = require("sim.combat")
 local match = require("sim.match")
 local match_snapshot = require("sim.match_snapshot")
 local teams = require("data.teams")
@@ -46,9 +47,16 @@ end
 
 -- Boundary zero for the pinned combat fixture. Slot mode is mandatory: the
 -- online driver never runs the legacy single-input path.
+--
+-- `combat_active` opts the fixture into MatchSnapshot v9's combat companion, so
+-- the driver's restore/resimulate path carries `CombatMatchState` as well as
+-- `MatchState`. What that does *not* buy is combat-aware AI: the rows are still
+-- produced by the pre-#112 deterministic bot, so the companion is carried and
+-- corrected but is not driven to interesting states.
 ---@param duration number?
+---@param combat_active boolean?
 ---@return MatchSnapshot
-function fixture.initial_snapshot(duration)
+function fixture.initial_snapshot(duration, combat_active)
     local state = match.new({
         home = teams.nebula,
         away = teams.orion,
@@ -58,7 +66,10 @@ function fixture.initial_snapshot(duration)
         seed = fixture.DEFAULT_SEED,
         input_ownership = match.ownership_for_teams(teams.nebula, teams.orion),
     })
-    return match_snapshot.capture(state)
+    if not combat_active then
+        return match_snapshot.capture(state)
+    end
+    return match_snapshot.capture(state, combat.new_state(state))
 end
 
 -- `humans` defaults to a full lobby. A short lobby is the only way a declared

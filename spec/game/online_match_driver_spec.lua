@@ -7,6 +7,7 @@ local protocol = require("game.online.protocol")
 local transport_contract = require("game.transport.contract")
 local input_frame = require("sim.input_frame")
 local match_snapshot = require("sim.match_snapshot")
+local rollback_session = require("sim.rollback_session")
 
 ---@class DriverHarness
 ---@field session MatchDriverFixtureSession
@@ -14,13 +15,20 @@ local match_snapshot = require("sim.match_snapshot")
 ---@field peer_ids string[]
 ---@field step integer
 
+---@class DriverHarnessOptions
+---@field duration number?
+---@field humans integer?
+---@field combat boolean?
+---@field hash_interval_ticks integer?
+---@field max_rollback_ticks integer?
+
 ---@param mode SessionMatchMode
----@param duration number?
----@param humans integer?
+---@param options DriverHarnessOptions?
 ---@return DriverHarness
-local function harness(mode, duration, humans)
-    local session = fixture.session(mode, nil, humans)
-    local snapshot = fixture.initial_snapshot(duration)
+local function harness(mode, options)
+    options = options or {}
+    local session = fixture.session(mode, nil, options.humans)
+    local snapshot = fixture.initial_snapshot(options.duration, options.combat)
     local drivers = {}
     local peer_ids = { session.host_peer_id }
     drivers[1] = match_driver.new({
@@ -30,6 +38,8 @@ local function harness(mode, duration, humans)
         manifest = session.manifest,
         transport = session.host_transport,
         initial_snapshot = snapshot,
+        hash_interval_ticks = options.hash_interval_ticks,
+        max_rollback_ticks = options.max_rollback_ticks,
     })
     for _, peer_id in ipairs(session.guest_peer_ids) do
         peer_ids[#peer_ids + 1] = peer_id
@@ -40,6 +50,8 @@ local function harness(mode, duration, humans)
             manifest = session.manifest,
             transport = assert(session.guest_transports[peer_id]),
             initial_snapshot = snapshot,
+            hash_interval_ticks = options.hash_interval_ticks,
+            max_rollback_ticks = options.max_rollback_ticks,
         })
     end
     return { session = session, drivers = drivers, peer_ids = peer_ids, step = 0 }
@@ -141,7 +153,7 @@ end
 local function assert_confirmed_state(harness_state)
     local boundary = nil
     for _, driver in ipairs(harness_state.drivers) do
-        local confirmed = match_driver.diagnostics(driver).confirmed_input_tick
+        local confirmed = match_driver.diagnostics(driver).confirmed_output_tick
         if boundary == nil or confirmed < boundary then
             boundary = confirmed
         end
@@ -192,7 +204,7 @@ t.describe("online match driver", function()
     t.it("makes the host author every declared bot fill in a short lobby", function()
         -- A full lobby covers all eight slots in every mode, so a declared bot
         -- fill only exists when fewer humans are seated than the mode allows.
-        local state = harness("2v2", nil, 2)
+        local state = harness("2v2", { humans = 2 })
         local sources = state.session.freeze.sources
         local bots = 0
         for slot = 1, input_frame.SLOT_COUNT do
@@ -301,8 +313,8 @@ t.describe("online match driver", function()
             reversed.session.host_transport:pump()
         end
         for index = 1, #forward.drivers do
-            local boundary = match_driver.diagnostics(forward.drivers[index]).confirmed_input_tick
-            t.eq(match_driver.diagnostics(reversed.drivers[index]).confirmed_input_tick, boundary)
+            local boundary = match_driver.diagnostics(forward.drivers[index]).confirmed_output_tick
+            t.eq(match_driver.diagnostics(reversed.drivers[index]).confirmed_output_tick, boundary)
             t.eq(
                 match_snapshot.hash(
                     assert(match_driver.snapshot(reversed.drivers[index], boundary).snapshot)
@@ -492,7 +504,7 @@ t.describe("online match driver", function()
     end)
 
     t.it("ends with a typed completed status at full time", function()
-        local state = harness("4v4", 0.2)
+        local state = harness("4v4", { duration = 0.2 })
         for _ = 1, 40 do
             advance(state)
             if match_driver.status(state.drivers[1]) ~= "active" then
@@ -542,6 +554,198 @@ t.describe("online match driver", function()
             end
         end
         t.is_true(terminal > 0, "an over-window burst never terminated a peer")
+    end)
+
+    -- FINDING 1 regression: `confirmed_tick` runs ahead of the simulated present
+    -- by up to DELAY_TICKS even with zero loss and zero jitter, because a sample
+    -- is authority before it is consumed. Keying a checkpoint's snapshot lookup
+    -- off it aborted healthy matches whenever the interval landed on that race.
+    t.it("publishes checkpoints on the simulated ceiling, not raw confirmation", function()
+        for _, interval in ipairs({ 1, 2, 3, 4 }) do
+            local state = harness("1v1", { hash_interval_ticks = interval })
+            run(state, 24)
+            for _, driver in ipairs(state.drivers) do
+                t.eq(
+                    match_driver.status(driver),
+                    "active",
+                    "hash_interval_ticks=" .. tostring(interval)
+                )
+            end
+            local checkpoints = match_driver.checkpoints(state.drivers[1])
+            t.is_true(#checkpoints > 1, "interval " .. tostring(interval) .. " published nothing")
+            for _, checkpoint in ipairs(checkpoints) do
+                -- Never ahead of a boundary that was actually simulated.
+                t.is_true(
+                    checkpoint.tick <= match_driver.diagnostics(state.drivers[1]).present_input_tick
+                )
+            end
+            t.is_true(assert_agreement(state) > 0)
+        end
+    end)
+
+    t.it("never publishes a checkpoint boundary that was not simulated", function()
+        -- The invariant the fix rests on: the output-capped confirmation is
+        -- always at most one boundary behind the present, so `confirmed + 1`
+        -- always names a boundary the session actually captured. The raw
+        -- confirmation carries no such guarantee, which is what the regression
+        -- above demonstrates behaviourally.
+        local state = harness("1v1")
+        for _ = 1, 24 do
+            advance(state)
+            for _, driver in ipairs(state.drivers) do
+                local diagnostics = match_driver.diagnostics(driver)
+                t.is_true(diagnostics.confirmed_output_tick <= diagnostics.confirmed_input_tick)
+                t.is_true(diagnostics.confirmed_output_tick < diagnostics.present_input_tick)
+                for _, checkpoint in ipairs(match_driver.checkpoints(driver)) do
+                    local lookup = match_driver.snapshot(driver, checkpoint.tick)
+                    t.is_true(lookup.status == "present" or lookup.status == "retained")
+                end
+            end
+        end
+    end)
+
+    -- FINDING 3 / retained-floor edge. The driver keeps no floor pre-check of
+    -- its own; `rollback_input_history` owns the floor. These pin the exact
+    -- boundary that ownership implies.
+    t.it("accepts authority exactly at the retained floor and refuses one below", function()
+        ---@param offset integer
+        ---@return MatchDriverStatus, integer?, integer
+        local function inject_at_floor_offset(offset)
+            local state = harness("2v2", { max_rollback_ticks = 6 })
+            local guest = state.drivers[2]
+            -- Only the guest runs. The host is never advanced, so no canonical
+            -- batch is ever produced and the injected packet is the only remote
+            -- authority the guest ever sees. That keeps its confirmation pinned
+            -- below the retained floor, which is the only regime where the floor
+            -- rule can be observed at all.
+            for _ = 1, 20 do
+                match_driver.advance(guest, input_frame.neutral_sample())
+            end
+            local before = match_driver.diagnostics(guest)
+            t.eq(before.status, "active")
+            local floor = before.retained_floor_tick
+            t.is_true(floor > 1, "the retained floor never advanced")
+            t.is_true(before.confirmed_input_tick < floor, "confirmation outran the floor")
+            local packet = assert(input_protocol.new_host({
+                session_id = state.session.manifest.session_id,
+                manifest_id = protocol.manifest_id(state.session.manifest),
+                sender_id = state.session.host_peer_id,
+                sequence = 777,
+                transport_tick = 20,
+                first_input_tick = 0,
+                rows = {
+                    {
+                        tick = floor + offset,
+                        slot_index = 1,
+                        sample = input_frame.neutral_sample(),
+                    },
+                },
+            }))
+            local envelope = assert(transport_contract.new({
+                type = "input",
+                seq = packet.sequence,
+                tick = packet.transport_tick,
+                payload = assert(input_protocol.encode(packet)),
+            }))
+            assert(
+                state.session.host_transport:send(
+                    state.session.guest_peer_ids[1],
+                    "input",
+                    envelope
+                )
+            )
+            state.session.host_transport:pump()
+            match_driver.advance(guest, input_frame.neutral_sample())
+            local terminal = match_driver.terminal(guest)
+            return match_driver.status(guest), terminal and terminal.tick or nil, floor
+        end
+
+        local at_floor = inject_at_floor_offset(0)
+        t.eq(at_floor, "active")
+
+        local below, tick, floor = inject_at_floor_offset(-1)
+        t.eq(below, "late_input")
+        t.eq(tick, floor - 1)
+    end)
+
+    -- FINDING 4: the combination the 1v1 case covers, in the other mode that can
+    -- exhibit live-slot divergence at all.
+    t.it("agrees on the live slot in 2v2 under impaired delivery with switching", function()
+        local state = harness("2v2")
+        run_bursty(state, 60, 5, {
+            [1] = switch_sample(),
+            [2] = switch_sample(),
+            [3] = sample({ move_x = 80, edges = input_frame.EDGE_BITS.switch }),
+        })
+        local rollbacks = 0
+        for _, driver in ipairs(state.drivers) do
+            rollbacks = rollbacks + match_driver.diagnostics(driver).rollback_count
+        end
+        t.is_true(rollbacks > 0, "bursty 2v2 switching never produced a correction")
+        t.is_true(assert_agreement(state) > 0)
+        assert_confirmed_state(state)
+    end)
+
+    -- FINDING 5: full time under impaired delivery, not only clean delivery.
+    t.it("reaches full time under impaired delivery", function()
+        local state = harness("2v2", { duration = 0.2 })
+        run_bursty(state, 60, 5, { [1] = switch_sample() })
+        for _, driver in ipairs(state.drivers) do
+            t.eq(match_driver.status(driver), "completed")
+            t.eq(assert(match_driver.terminal(driver)).failure, nil)
+        end
+        t.is_true(match_driver.diagnostics(state.drivers[1]).rollback_count > 0)
+    end)
+
+    t.it("carries the combat companion through correction and resimulation", function()
+        local state = harness("2v2", { combat = true })
+        local initial = match_driver.current_snapshot(state.drivers[1])
+        t.eq(initial.version, match_snapshot.COMBAT_VERSION)
+        t.is_true(initial.combat ~= nil)
+        run_bursty(state, 48, 5, { [1] = switch_sample(), [3] = sample({ move_y = 60 }) })
+        t.is_true(match_driver.diagnostics(state.drivers[1]).rollback_count > 0)
+        for _, driver in ipairs(state.drivers) do
+            t.eq(match_driver.status(driver), "active")
+            t.is_true(match_driver.current_snapshot(driver).combat ~= nil)
+        end
+        t.is_true(assert_agreement(state) > 0)
+        assert_confirmed_state(state)
+    end)
+
+    t.it("costs no extra snapshot work when a peer authors only its control slot", function()
+        local state = harness("4v4")
+        local guest = state.drivers[2]
+        t.eq(#match_driver.diagnostics(guest).authored, 1)
+        local captures = 0
+        local original = rollback_session.current_snapshot
+        rollback_session.current_snapshot = function(...)
+            captures = captures + 1
+            return original(...)
+        end
+        local ok, err = pcall(function()
+            for _ = 1, 8 do
+                match_driver.advance(guest, input_frame.neutral_sample())
+            end
+        end)
+        rollback_session.current_snapshot = original
+        t.is_true(ok, tostring(err))
+        t.eq(captures, 0, "a singleton owned set still paid a capture-and-restore")
+
+        -- And the peer that does author AI rows pays it once per step, not more.
+        local multi = harness("1v1")
+        captures = 0
+        rollback_session.current_snapshot = function(...)
+            captures = captures + 1
+            return original(...)
+        end
+        local multi_ok, multi_err = pcall(function()
+            for _ = 1, 8 do
+                match_driver.advance(multi.drivers[1], input_frame.neutral_sample())
+            end
+        end)
+        rollback_session.current_snapshot = original
+        t.is_true(multi_ok, tostring(multi_err))
+        t.eq(captures, 8)
     end)
 
     t.it("reports a lost transport as a typed terminal status", function()

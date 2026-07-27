@@ -141,13 +141,29 @@ Each driver step:
 4. applies that union through `rollback_session.apply_authoritative_batch`,
    which preflights atomically and reconciles **exactly once**;
 5. authors this step's rows, records them in the redundancy window, and
-   publishes them (a guest also applies its own rows locally, as one batch, so
-   its own authoring never costs a second reconciliation);
+   publishes them. A guest also inserts its own rows locally, but through
+   `add_authoritative_batch` with no reconciliation pass: its own rows are
+   always for a tick it has not simulated yet, and the redundant re-sends behind
+   them are byte-identical duplicates, so they cannot open a divergence. The
+   guarantee is checked rather than assumed — if a local insert ever did report
+   one, the reconciliation runs;
 6. steps the fixed clock to the next boundary and extends the live timeline;
 7. hashes any confirmed checkpoint that came due.
 
 Poll and callback order is recorded, never used as authority. Stepping the peers
 in reverse order produces byte-identical confirmed boundaries.
+
+### The retained floor has one owner
+
+`sim.rollback_input_history` owns the 30-tick floor and rejects
+`tick < oldest_retained_tick` with `outside_window`; the driver maps that onto a
+`late_input` terminal and does **not** duplicate the check. An earlier revision
+pre-checked the floor in the driver, which turned out to be provably redundant:
+the driver reads the same `oldest_retained_tick`, and every row that survives the
+"already confirmed, skip it" filter and is below the floor is necessarily the
+lowest tick in the batch — valid rows are all at or above the floor — so a
+pre-check and the history's own rejection terminate on the same batch and
+attribute the same causal tick. One owner is better than two agreeing owners.
 
 ### The bounded batch and carry-over
 
@@ -183,7 +199,14 @@ nothing.
 wire folds both onto `desync`; the local reason stays exact.
 
 Boundary hashes are published every `DEFAULT_HASH_INTERVAL_TICKS` (30) confirmed
-boundaries, starting at `first_input_tick`. Each checkpoint carries the live slot
+boundaries, starting at `first_input_tick`. The boundary comes from the
+session's `confirmed_output_tick`, **never** the raw `confirmed_tick`: a sample
+is authority up to `DELAY` ticks before it is consumed, so raw confirmation can
+name a boundary that was never captured, and a checkpoint landing there aborts a
+perfectly healthy match. `confirmed_output_tick + 1 <= present_boundary` is
+exactly the guarantee a snapshot lookup needs. `apply_rows` still uses the raw
+confirmation, which is correct there: it is asking about input-authority
+completeness, not snapshot availability. Each checkpoint carries the live slot
 of every human at that boundary alongside the hash, because the timeline is
 pruned with the rollback window and a checkpoint is exactly the boundary at which
 peers must agree on both. A single disagreement is tolerated and cleared by the

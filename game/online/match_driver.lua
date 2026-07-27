@@ -130,7 +130,9 @@ local slot_input = require("sim.slot_input")
 ---@field step integer
 ---@field transport_tick integer
 ---@field present_input_tick integer
----@field confirmed_input_tick integer
+---@field confirmed_input_tick integer -- Raw all-input authority confirmation.
+---@field confirmed_output_tick integer -- Confirmation capped to simulated outputs.
+---@field retained_floor_tick integer -- Oldest input tick the rollback window still holds.
 ---@field owned InputSlotId[]
 ---@field authored InputSlotId[]
 ---@field live table<string, InputSlotId>
@@ -273,6 +275,8 @@ local function present_input_tick(driver)
     return to_input_tick(driver, rollback_session.diagnostics(driver._session).present_boundary)
 end
 
+-- Input-authority confirmation: the highest contiguous tick whose eight rows are
+-- all authoritative. It says nothing about whether that tick has been simulated.
 ---@param driver MatchDriver
 ---@return integer
 local function confirmed_input_tick(driver)
@@ -281,6 +285,30 @@ local function confirmed_input_tick(driver)
         return driver._first - 1
     end
     return to_input_tick(driver, confirmed)
+end
+
+-- Confirmation capped to the simulated-output ceiling. A sample is authority
+-- `DELAY` ticks before it is consumed, so `confirmed_tick` routinely runs ahead
+-- of the present boundary even under perfectly clean delivery. Any boundary that
+-- keys a *snapshot* lookup must come from here instead, because
+-- `confirmed_output_tick + 1 <= present_boundary` is exactly the guarantee that
+-- the snapshot was captured. Using the raw confirmation aborts healthy matches
+-- whenever a checkpoint lands on the race point.
+---@param driver MatchDriver
+---@return integer
+local function confirmed_output_input_tick(driver)
+    local confirmed = rollback_session.diagnostics(driver._session).confirmed_output_tick
+    if confirmed < 0 then
+        return driver._first - 1
+    end
+    return to_input_tick(driver, confirmed)
+end
+
+---@param driver MatchDriver
+---@return integer
+local function retained_floor_input_tick(driver)
+    local diagnostics = rollback_session.diagnostics(driver._session)
+    return to_input_tick(driver, diagnostics.input_history.oldest_retained_tick)
 end
 
 -- ---------------------------------------------------------------------------
@@ -434,28 +462,46 @@ end
 -- control slot. The bot stream advances once per authored tick per slot
 -- regardless of which slot is live, so the stream is a function of the tick
 -- count alone and never of the live-slot history.
+--
+-- `geometry` lets a caller that already restored the present `MatchState` reuse
+-- it. Deriving one costs a `capture_owned` plus a `restore` — two full deep
+-- copies on top of the one the session already performs per tick — so it is
+-- derived lazily and only when this peer actually authors an AI row.
+--
+-- When the peer authors exactly one slot it is, necessarily, the control slot:
+-- `control_slot` always returns a member of the frozen owned set, and a
+-- one-element authored set means a one-element owned set and no bot fills. The
+-- materialized frame would then be discarded unread, so it is never built. That
+-- is the common case — every seat in a full 4v4 lobby, and every guest in any
+-- lobby with no declared fills.
 ---@param driver MatchDriver
 ---@param input_tick integer
 ---@param human_sample InputSample?
+---@param geometry MatchState? -- A present-boundary state the caller already holds.
 ---@return table<integer, InputSample>
-local function materialize_authored(driver, input_tick, human_sample)
-    local geometry = present_state(driver)
+local function materialize_authored(driver, input_tick, human_sample, geometry)
+    local control = nil
+    if #driver._owned > 0 then
+        control =
+            live_slot.slot_index(match_driver.control_slot(driver, driver._peer_id, input_tick))
+    end
+    local human = copy_sample(human_sample or input_frame.neutral_sample())
+    if #driver._authored == 1 and driver._authored[1] == control then
+        return { [control] = human }
+    end
+
+    geometry = geometry or present_state(driver)
     local slots = {}
     for index = 1, input_frame.SLOT_COUNT do
         slots[index] = input_frame.neutral_sample()
     end
     local base = assert(input_frame.new(geometry.input_tick, slots))
     local frame = slot_input.materialize(driver._producer, geometry, base)
-    local control = nil
-    if #driver._owned > 0 then
-        control =
-            live_slot.slot_index(match_driver.control_slot(driver, driver._peer_id, input_tick))
-    end
     ---@type table<integer, InputSample>
     local authored = {}
     for _, slot_index in ipairs(driver._authored) do
         if slot_index == control then
-            authored[slot_index] = copy_sample(human_sample or input_frame.neutral_sample())
+            authored[slot_index] = human
         else
             authored[slot_index] = copy_sample(frame.slots[slot_index])
         end
@@ -511,26 +557,21 @@ local function apply_rows(driver, rows, batch, arrival)
         return
     end
     local arrivals = {}
-    local session = rollback_session.diagnostics(driver._session)
+    -- Authority at or below the confirmed boundary is already final. The
+    -- redundant six-row history re-sends it every tick, and replaying it must
+    -- not re-enter the window as a late correction, so it is skipped here.
+    --
+    -- Everything else goes to `rollback_input_history`, which owns the retained
+    -- floor. There is deliberately no driver-level floor pre-check: it would be
+    -- provably redundant. The history rejects `tick < oldest_retained_tick` with
+    -- `outside_window`, this driver reads the same value, and every row that
+    -- survives the skip above and is below the floor is also the *lowest* tick
+    -- in `arrivals` (valid rows are all at or above the floor). So a pre-check
+    -- and the history's own rejection would terminate on the same batch and
+    -- attribute the same causal tick. One owner of the floor is better than two.
     local confirmed = confirmed_input_tick(driver)
-    local floor = to_input_tick(driver, session.input_history.oldest_retained_tick)
     for _, row in ipairs(rows) do
-        -- Authority at or below the confirmed boundary is already final. The
-        -- redundant six-row history re-sends it every tick and replaying it must
-        -- not re-enter the window as a late correction, so it is skipped.
-        if row.tick > confirmed and row.tick < floor then
-            -- Unconfirmed authority older than the retained floor can never be
-            -- applied, and pretending otherwise would hide a divergence.
-            driver._late_input_tick = driver._late_input_tick or row.tick
-            terminate(
-                driver,
-                "late_input",
-                "authority arrived older than the retained rollback floor",
-                "late_input",
-                driver._late_input_tick
-            )
-            return
-        elseif row.tick > confirmed then
+        if row.tick > confirmed then
             arrivals[#arrivals + 1] = {
                 tick = session_tick(driver, row.tick),
                 slot_index = row.slot_index,
@@ -541,7 +582,32 @@ local function apply_rows(driver, rows, batch, arrival)
     if #arrivals == 0 then
         return
     end
-    local result, err, code = rollback_session.apply_authoritative_batch(driver._session, arrivals)
+    -- A peer's own rows are always for a tick it has not simulated yet, and the
+    -- redundant re-sends behind them are byte-identical duplicates, so they can
+    -- never open a divergence. They are inserted without a reconciliation pass,
+    -- which is what makes "one arrival batch, one reconciliation" literally
+    -- true rather than "one, plus a no-op". The guarantee is checked rather
+    -- than assumed: if a local insert ever did report a divergence, the
+    -- reconciliation still runs below.
+    local result, err, code
+    if not arrival then
+        local accepted, insert_err, insert_code =
+            rollback_session.add_authoritative_batch(driver._session, arrivals)
+        if accepted ~= nil and accepted.earliest_divergence == nil then
+            batch.applied_rows = batch.applied_rows + accepted.inserted
+            return
+        end
+        if accepted ~= nil then
+            result = {
+                arrival = accepted,
+                reconciliation = rollback_session.reconcile(driver._session),
+            }
+        else
+            err, code = insert_err, insert_code
+        end
+    else
+        result, err, code = rollback_session.apply_authoritative_batch(driver._session, arrivals)
+    end
     if result == nil then
         if code == "outside_window" then
             driver._late_input_tick = driver._late_input_tick
@@ -961,7 +1027,9 @@ end
 ---@param driver MatchDriver
 ---@param batch MatchDriverBatch
 local function publish_checkpoints(driver, batch)
-    local confirmed = confirmed_input_tick(driver)
+    -- Output-capped confirmation, never the raw input confirmation: this
+    -- boundary keys a snapshot lookup.
+    local confirmed = confirmed_output_input_tick(driver)
     while running(driver) and driver._next_checkpoint <= confirmed + 1 do
         local boundary = driver._next_checkpoint
         local lookup = rollback_session.snapshot(driver._session, session_tick(driver, boundary))
@@ -1043,8 +1111,11 @@ local function prime(driver)
     -- Nobody could sample before the start boundary, so the first `DELAY` input
     -- ticks carry neutral human rows. AI rows are materialized from boundary
     -- zero, which every peer shares.
+    -- Nothing is simulated between these ticks, so the boundary-zero state is
+    -- restored once and reused rather than re-derived per priming tick.
+    local geometry = #driver._authored > 1 and present_state(driver) or nil
     for tick = driver._first, driver._first + match_driver.DELAY_TICKS - 1 do
-        local authored = materialize_authored(driver, tick, nil)
+        local authored = materialize_authored(driver, tick, nil, geometry)
         for _, slot_index in ipairs(driver._authored) do
             record_authored(driver, slot_index, tick, authored[slot_index])
         end
@@ -1430,6 +1501,8 @@ function match_driver.diagnostics(driver)
         transport_tick = driver._step + match_driver.DELAY_TICKS,
         present_input_tick = present_input_tick(driver),
         confirmed_input_tick = confirmed_input_tick(driver),
+        confirmed_output_tick = confirmed_output_input_tick(driver),
+        retained_floor_tick = retained_floor_input_tick(driver),
         owned = owned,
         authored = authored,
         live = copy_live_map(driver, driver._live[driver._live_tick] or {}),
