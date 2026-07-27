@@ -58,45 +58,88 @@ LUA_VALIDATION_ROOTS = (
 LUA_MODULE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 REGULAR_FILE_MODES = frozenset(("100644", "100755"))
 
-EXPECTED_JOB_STEPS = {
-    "OMP-2 rollback impact filter": ("Detect rollback-impacting changes",),
-    "OMP-2 rollback native": (
-        "Run isolated native matrix, late-window, and persistent soak",
-        "Upload native rollback evidence",
-    ),
-    "OMP-2 rollback browser matrix (chrome)": (
-        "Run complete and stress browser validation",
-        "Upload browser rollback evidence",
-    ),
-    "OMP-2 rollback browser matrix (firefox)": (
-        "Run complete and stress browser validation",
-        "Upload browser rollback evidence",
-    ),
-    "OMP-2 rollback browser soak (chrome)": (
-        "Run persistent browser memory soak",
-        "Upload browser rollback evidence",
-    ),
-    "OMP-2 rollback browser soak (firefox)": (
-        "Run persistent browser memory soak",
-        "Upload browser rollback evidence",
-    ),
-    "OMP-2 rollback gate": ("Require scoped rollback evidence",),
-}
+NETWORK_SEED_SHARDS = ("2001", "2002", "2003")
+NATIVE_SHARDS = (*NETWORK_SEED_SHARDS, "tail")
+BROWSER_RUNTIMES = ("chrome", "firefox")
+AGGREGATE_ARTIFACT = "omp2-aggregate-rollback"
 
-LONG_JOB_NAMES = frozenset(EXPECTED_JOB_STEPS) - {
-    "OMP-2 rollback impact filter",
-    "OMP-2 rollback gate",
-}
 
-EXPECTED_ARTIFACTS = frozenset(
-    {
-        "omp2-rollback-native",
-        "omp2-rollback-chrome-matrix",
-        "omp2-rollback-firefox-matrix",
-        "omp2-rollback-chrome-soak",
-        "omp2-rollback-firefox-soak",
+def _expected_job_steps() -> dict[str, tuple[str, ...]]:
+    """Pin every rollback job and step name the reuse contract depends on.
+
+    The long jobs are sharded by network seed, so each shard is its own job with
+    its own uploaded evidence. Reuse therefore requires every shard, not a matrix
+    job's rolled-up conclusion.
+    """
+
+    jobs: dict[str, tuple[str, ...]] = {
+        "OMP-2 rollback impact filter": ("Detect rollback-impacting changes",),
+    }
+    for browser in BROWSER_RUNTIMES:
+        jobs[f"OMP-2 rollback browser stress ({browser})"] = (
+            "Run the short stress scenario matrix",
+            "Upload browser stress rollback evidence",
+        )
+    for shard in NATIVE_SHARDS:
+        jobs[f"OMP-2 rollback native ({shard})"] = (
+            "Run the pinned native rollback shard",
+            "Upload native rollback evidence",
+        )
+    for browser in BROWSER_RUNTIMES:
+        for shard in NETWORK_SEED_SHARDS:
+            jobs[f"OMP-2 rollback browser matrix ({browser}, {shard})"] = (
+                "Run complete and stress browser validation",
+                "Upload browser rollback evidence",
+            )
+        jobs[f"OMP-2 rollback browser soak ({browser})"] = (
+            "Run persistent browser memory soak",
+            "Upload browser rollback evidence",
+        )
+    jobs["OMP-2 rollback gate"] = (
+        "Require scoped rollback evidence",
+        "Download every rollback shard artifact",
+        "Aggregate sharded rollback evidence",
+    )
+    return jobs
+
+
+def _expected_artifacts() -> frozenset[str]:
+    """Every artifact a complete campaign uploads, plus the gate's merged aggregate.
+
+    This is the same set the rollback gate pins in
+    ``rollback_validation.expected_shard_evidence``; that module's self-test
+    asserts the two never drift.
+    """
+
+    names = {AGGREGATE_ARTIFACT}
+    for shard in NATIVE_SHARDS:
+        names.add(f"omp2-rollback-native-{shard}")
+    for browser in BROWSER_RUNTIMES:
+        for shard in NETWORK_SEED_SHARDS:
+            names.add(f"omp2-rollback-{browser}-matrix-{shard}")
+        names.add(f"omp2-rollback-{browser}-soak")
+        names.add(f"omp2-rollback-{browser}-stress")
+    return frozenset(names)
+
+
+EXPECTED_JOB_STEPS = _expected_job_steps()
+
+# The short stress jobs also run on pull requests, so they are part of every
+# impacting campaign but are never the long evidence the reuse contract skips.
+STRESS_JOB_NAMES = frozenset(
+    f"OMP-2 rollback browser stress ({browser})" for browser in BROWSER_RUNTIMES
+)
+
+LONG_JOB_NAMES = (
+    frozenset(EXPECTED_JOB_STEPS)
+    - STRESS_JOB_NAMES
+    - {
+        "OMP-2 rollback impact filter",
+        "OMP-2 rollback gate",
     }
 )
+
+EXPECTED_ARTIFACTS = _expected_artifacts()
 
 CAMPAIGN_EVENT_ENV = "GC_CAMPAIGN_EVENT"
 CAMPAIGN_SHA_ENV = "GC_CAMPAIGN_SHA"
@@ -994,7 +1037,7 @@ def discover_reusable_run(
 
     result = select_candidate(candidates, validate)
     if result is None:
-        return False, "no complete prior workflow run is reusable; running all five shards"
+        return False, "no complete prior workflow run is reusable; running every rollback shard"
     return True, result
 
 
@@ -1002,7 +1045,7 @@ def fail_open_discovery(operation: Callable[[], tuple[bool, str]]) -> tuple[bool
     try:
         return operation()
     except Exception as error:
-        return False, f"evidence discovery failed open: {error}; running all five shards"
+        return False, f"evidence discovery failed open: {error}; running every rollback shard"
 
 
 def git(repo: Path, *arguments: str) -> None:
@@ -1125,6 +1168,8 @@ def validate_workflow_wiring() -> None:
     discovery = workflow.index("scripts/rollback_ci.py discover", scope)
     decision = workflow.index("- name: Select full campaign or aggregate reuse", scope)
     assert scope < discovery < decision
+    # The three long jobs stay off pull requests; sharding multiplies the jobs
+    # they produce but must never reintroduce them to pull-request runs.
     assert (
         workflow.count(
             "if: github.event_name != 'pull_request' "
@@ -1135,7 +1180,34 @@ def validate_workflow_wiring() -> None:
     assert "if: needs.rollback_scope.outputs.run == 'true'" not in workflow
     assert workflow.count("if: needs.rollback_scope.outputs.impact == 'true'") == 1
     assert "--campaign stress" in workflow
+    assert "name: omp2-rollback-${{ matrix.browser }}-stress" in workflow
+
+    seed_matrix = "shard: " + json.dumps(list(NETWORK_SEED_SHARDS))
+    native_matrix = "shard: " + json.dumps(list(NATIVE_SHARDS))
+    assert native_matrix in workflow
+    assert seed_matrix in workflow
+    assert "name: OMP-2 rollback native (${{ matrix.shard }})" in workflow
+    assert (
+        "name: OMP-2 rollback browser matrix "
+        "(${{ matrix.browser }}, ${{ matrix.shard }})"
+    ) in workflow
+    assert "name: omp2-rollback-native-${{ matrix.shard }}" in workflow
+    assert (
+        "name: omp2-rollback-${{ matrix.browser }}-matrix-${{ matrix.shard }}"
+    ) in workflow
+    assert "name: omp2-rollback-${{ matrix.browser }}-soak" in workflow
+    for steps in EXPECTED_JOB_STEPS.values():
+        for step in steps:
+            assert f"- name: {step}" in workflow
+
     gate = workflow.index("\n    rollback_gate:")
+    require = workflow.index("- name: Require scoped rollback evidence", gate)
+    download = workflow.index("- name: Download every rollback shard artifact", gate)
+    aggregate = workflow.index("- name: Aggregate sharded rollback evidence", gate)
+    assert require < download < aggregate
+    assert "pattern: omp2-rollback-*" in workflow[download:aggregate]
+    assert "--aggregate" in workflow[aggregate:]
+    assert f"name: {AGGREGATE_ARTIFACT}" in workflow[aggregate:]
     assert "pointer-write" not in workflow[gate:]
 
     # Main campaigns queue instead of cancelling one another; pull requests
