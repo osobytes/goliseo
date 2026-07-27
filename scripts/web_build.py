@@ -292,6 +292,8 @@ BROWSER_LOADER = r'''/* Galactic Cup browser bootstrap. */
 
   /*__GALACTIC_CUP_WEBRTC_PROOF__*/
 
+  /*__GALACTIC_CUP_STAR_TRANSPORT__*/
+
   var script = document.currentScript;
   var canvas = document.getElementById("canvas");
   var spinner = document.getElementById("spinner");
@@ -726,11 +728,13 @@ def write_browser_loader(output: Path) -> None:
         encoding="utf-8"
     )
     proof_host = (ROOT / "scripts" / "webrtc_proof_host.js").read_text(encoding="utf-8")
+    star_host = (ROOT / "scripts" / "webrtc_star_host.js").read_text(encoding="utf-8")
     loader = BROWSER_LOADER.replace(
         "  /*__GALACTIC_CUP_BROWSER_STORAGE__*/",
         storage_host,
     )
     loader = loader.replace("  /*__GALACTIC_CUP_WEBRTC_PROOF__*/", proof_host)
+    loader = loader.replace("  /*__GALACTIC_CUP_STAR_TRANSPORT__*/", star_host)
     loader = loader.replace("__GALACTIC_CUP_BUILD_ID__", source_revision())
     (output / "player.js").write_text(loader, encoding="utf-8")
 

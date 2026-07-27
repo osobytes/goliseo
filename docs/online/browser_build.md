@@ -55,6 +55,12 @@ expected 800×540 tall, 1280×540 wide, and required 16:9 canvas geometry:
 ./scripts/web_smoke.sh
 ```
 
+It also syntax-checks and runs the browser JavaScript hosts embedded in
+`player.js`, including `scripts/webrtc_star_smoke.js`, which drives the
+host-star transport (one host plus seven guests, capacity, permissions,
+queue bounds, backpressure, disconnect, teardown, and manual signaling) with
+each endpoint in its own VM context and no browser.
+
 CI can run this command without opening a browser. A normal browser should be
 used for the title-screen and complete-flow checks; those compatibility and
 performance checks remain part of issue #3.
