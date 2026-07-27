@@ -7,6 +7,7 @@ local Credits = require("game.screens.credits")
 local Formation = require("game.screens.formation")
 local Help = require("game.screens.help")
 local Menu = require("game.screens.menu")
+local OnlineLobby = require("game.screens.online_lobby")
 local Pause = require("game.screens.pause")
 local Result = require("game.screens.result")
 local Settings = require("game.screens.settings")
@@ -149,6 +150,18 @@ function App:start_match()
     self:_replace("match", screen)
 end
 
+-- The developer online route. It sits beside the showcase and combat-prototype
+-- paths rather than replacing either, and it is only reachable on request.
+---@param options OnlineLobbyOptions?
+function App:show_lobby(options)
+    self:_push(
+        "lobby",
+        OnlineLobby.new(self.viewport, function(action)
+            self:handle_action(action)
+        end, options)
+    )
+end
+
 function App:show_pause()
     self:_push("pause", self:_menu(Pause))
 end
@@ -184,6 +197,8 @@ function App:handle_action(action)
     elseif route == "title" and action.go == "combat_prototype" then
         session_model.set_combat_enabled(self.session, true)
         self:show_squad()
+    elseif route == "title" and action.go == "online_lobby" then
+        self:show_lobby()
     elseif route == "title" and action.go == "help" then
         self:_push("help", self:_menu(Help))
     elseif route == "title" and action.go == "credits" then
