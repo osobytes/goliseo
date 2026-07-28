@@ -503,6 +503,66 @@ t.describe("lobby pair selection", function()
         t.eq(table.concat(owned(host, "guest_2"), ","), "away_1,away_3")
     end)
 
+    -- Every canonical slot has exactly one producer, and no human holds more or
+    -- fewer slots than the mode seats. A roster change reseats humans, so this
+    -- is asserted on the far side of one.
+    ---@param peer LobbyTestPeer
+    ---@param mode SessionMatchMode
+    local function assert_partition(peer, mode)
+        local shape = assert(protocol.MATCH_MODES[mode])
+        ---@type table<string, integer>
+        local counts = {}
+        local rows = view(peer).slots
+        t.eq(#rows, 8, "a partition covers every canonical slot")
+        for _, row in ipairs(rows) do
+            local owner = assert(row.owner, row.slot .. " has no producer")
+            counts[owner] = (counts[owner] or 0) + 1
+        end
+        for _, seat in ipairs(view(peer).seats) do
+            t.eq(
+                counts[seat.peer_id] or 0,
+                shape.slots_per_human,
+                seat.peer_id .. " owns the wrong number of slots"
+            )
+        end
+    end
+
+    t.it("keeps the pair a roster change still fits and says why the other went", function()
+        local driver, host, guests = locked_lobby("2v2", 3)
+        -- `guest_1` refines its pair inside the home line; `guest_2` reaches
+        -- into the far half of the away line for `away_3`.
+        driver:send(guests[1], { kind = "pair", slot = "home_2" })
+        driver:pump(8)
+        driver:send(guests[2], { kind = "pair", slot = "away_3" })
+        driver:pump(8)
+        t.eq(table.concat(owned(host, "guest_1"), ","), "home_2,home_3")
+        t.eq(table.concat(owned(host, "guest_2"), ","), "away_1,away_3")
+
+        -- The roster changes. A three-human 2v2 seats nobody on `away_3`, so
+        -- one of the two granted pairs cannot come through this.
+        driver:send(guests[3], { kind = "leave" })
+        driver:pump(8)
+
+        t.eq(table.concat(owned(host, "guest_1"), ","), "home_2,home_3")
+        t.eq(table.concat(owned(guests[1], "guest_1"), ","), "home_2,home_3")
+        t.eq(
+            assert(view(guests[1]).preference).status,
+            "granted",
+            "a pair that survived is still the pair this guest was given"
+        )
+
+        local dropped = assert(view(guests[2]).preference, "a dropped pair must still be shown")
+        t.eq(dropped.status, "rejected")
+        t.eq(dropped.reason, "reseated")
+        t.eq(dropped.text, lobby_model.PREFERENCE_TEXT.reseated)
+        t.eq(table.concat(owned(guests[2], "guest_2"), ","), "away_1,away_2")
+        t.eq(table.concat(owned(host, "guest_2"), ","), "away_1,away_2")
+        assert_partition(host, "2v2")
+        assert_partition(guests[1], "2v2")
+        assert_partition(guests[2], "2v2")
+        t.is_true(not view(host).ready, "a reseat clears readiness like any repartition")
+    end)
+
     t.it("offers nothing to choose in 1v1 or 4v4", function()
         for _, case in ipairs({ { mode = "1v1", guests = 1 }, { mode = "4v4", guests = 7 } }) do
             local driver, host = locked_lobby(case.mode, case.guests)
