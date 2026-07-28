@@ -858,10 +858,13 @@ end
 -- clears through exactly one path however ownership changed.
 --
 -- `retained` is every pair claim this publication honours, keyed by the peer
--- that made it. It is also the only place a claim is recorded or dropped: a peer
--- named there keeps exactly the claim named with it, and a peer left out of it
--- has no claim afterwards. Passing nothing therefore drops every claim, which is
--- what the host reasserting its own seating order means.
+-- that made it: a peer named there keeps exactly the claim named with it, and a
+-- peer left out of it has no claim afterwards. Passing nothing therefore drops
+-- every claim, which is what the host reasserting its own seating order means.
+--
+-- This is where a claim is recorded or dropped, with one deliberate exception in
+-- the `unchanged` branches of `handle_prefer_pair` and `apply_pair_preference` --
+-- see there.
 ---@param next_state CoordinatorState
 ---@param assignments SessionSlotProducer[]
 ---@param retained table<string, InputSlotId[]>?
