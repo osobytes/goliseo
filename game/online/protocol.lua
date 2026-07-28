@@ -24,6 +24,8 @@ local match_snapshot = require("sim.match_snapshot")
 ---| "peer_assignment"
 ---| "slot_assignment"
 ---| "ready"
+---| "pair_preference"
+---| "pair_preference_result"
 ---| "countdown"
 ---| "start"
 ---| "match_phase"
@@ -63,6 +65,20 @@ local match_snapshot = require("sim.match_snapshot")
 ---| "desync"
 ---@alias SessionDisconnectCode "peer_left"|"transport_lost"|"host_left"|"protocol_error"
 ---@alias SessionDuplicateDisposition "idempotent"|"reject"
+-- The host's verdict on one pair preference. `unchanged` is a grant that moved
+-- nothing: the peer already owned exactly the set it asked for, so no ownership
+-- generation is minted and no readiness is cleared.
+---@alias SessionPreferenceStatus "granted"|"unchanged"|"rejected"
+-- Why a preference could not be granted. Every reason leaves the requesting
+-- peer's ownership exactly as it was.
+---@alias SessionPreferenceRejection
+---| "already_taken" -- A requested slot belongs to another peer's chosen pair.
+---| "wrong_team" -- A requested slot is not on the team this peer is seated on.
+---| "invalid_slot" -- The set is not a legal owned set for the frozen match mode.
+---| "detached" -- The set keeps none of the slots this peer already owns.
+---| "not_seated" -- The peer owns nothing in the generation it answered.
+---| "superseded" -- The preference answers an ownership generation no longer in force.
+---| "after_freeze" -- Ownership is frozen and cannot move again this session.
 
 ---@class SessionRuntimeIdentity
 ---@field version integer
@@ -152,6 +168,22 @@ local match_snapshot = require("sim.match_snapshot")
 ---@field assignment_id string -- The ownership generation this readiness answers.
 ---@field ready boolean
 
+-- A guest asking the host for the outfield slots it wants to control. It is a
+-- request and never an assignment: the host answers with
+-- `pair_preference_result` and, when it grants one, republishes ownership
+-- through the ordinary `slot_assignment` path.
+---@class SessionPairPreferenceBody
+---@field manifest_id string
+---@field assignment_id string -- The ownership generation this preference answers.
+---@field slots InputSlotId[] -- The requested owned set, ascending canonical order.
+
+---@class SessionPairPreferenceResultBody
+---@field manifest_id string
+---@field assignment_id string -- Echo of the generation the request named.
+---@field slots InputSlotId[] -- Echo of the requested set, so a result is self-describing.
+---@field status SessionPreferenceStatus
+---@field reason SessionPreferenceRejection? -- Present exactly when `status` is `rejected`.
+
 ---@class SessionCountdownBody
 ---@field manifest_id string
 ---@field countdown_id string
@@ -193,6 +225,8 @@ local match_snapshot = require("sim.match_snapshot")
 ---| SessionPeerAssignmentBody
 ---| SessionSlotAssignmentBody
 ---| SessionReadyBody
+---| SessionPairPreferenceBody
+---| SessionPairPreferenceResultBody
 ---| SessionCountdownBody
 ---| SessionStartBody
 ---| SessionMatchPhaseBody
@@ -319,6 +353,14 @@ local BODY_FIELDS = {
     peer_assignment = { assigned_peer_id = true, role = true },
     slot_assignment = { manifest_id = true, assignment_id = true, assignments = true },
     ready = { manifest_id = true, assignment_id = true, ready = true },
+    pair_preference = { manifest_id = true, assignment_id = true, slots = true },
+    pair_preference_result = {
+        manifest_id = true,
+        assignment_id = true,
+        slots = true,
+        status = true,
+        reason = true,
+    },
     countdown = {
         manifest_id = true,
         countdown_id = true,
@@ -364,6 +406,16 @@ local REJECT_CODES = {
     peer_disconnect = true,
     desync = true,
 }
+local PREFERENCE_STATUSES = { granted = true, unchanged = true, rejected = true }
+local PREFERENCE_REJECTIONS = {
+    already_taken = true,
+    wrong_team = true,
+    invalid_slot = true,
+    detached = true,
+    not_seated = true,
+    superseded = true,
+    after_freeze = true,
+}
 local DISCONNECT_CODES = {
     peer_left = true,
     transport_lost = true,
@@ -377,6 +429,14 @@ local ALLOWED_PHASES = {
     peer_assignment = { manifest = true, assigned = true },
     slot_assignment = { manifest = true, assigned = true },
     ready = { assigned = true, ready = true },
+    -- Configuration can still change in `assigned` and `ready`, so a preference
+    -- is legal there. `countdown` is included on purpose: the freeze lands at
+    -- the countdown, and a preference already in flight when it does is an
+    -- ordinary race that deserves the typed `after_freeze` refusal the host
+    -- gives it, not a terminated session. Past the countdown every peer has
+    -- seen `start`, and a preference is as much a violation as a late `ready`.
+    pair_preference = { assigned = true, ready = true, countdown = true },
+    pair_preference_result = { assigned = true, ready = true, countdown = true },
     countdown = { ready = true, countdown = true },
     start = { countdown = true },
     match_phase = { running = true, result = true },
@@ -443,6 +503,14 @@ local RUNTIME_COMPARE_FIELDS = {
     "presentation_id",
 }
 local MESSAGE_ID_PREFIX = "GCMI;1;"
+
+-- Canonical slot id -> OMP-1 slot index, built once with a numeric loop so no
+-- canonical-order query ever walks a hash table.
+---@type table<string, integer>
+local SLOT_INDEXES = {}
+for index = 1, input_frame.SLOT_COUNT do
+    SLOT_INDEXES[assert(input_frame.slot(index)).id] = index
+end
 
 ---@param value any
 ---@return boolean
@@ -1120,6 +1188,48 @@ end
 -- The owned set of one producer: every canonical slot that names it, in OMP-1
 -- order. A human controls exactly one of these at a time; the rest run the
 -- deterministic gameplay AI and are indistinguishable from declared bot fills.
+-- The OMP-1 index of a canonical outfield slot id, or nil when the id names no
+-- canonical slot. Keepers are slotless in every mode, so they answer nil here.
+---@param slot any
+---@return integer?
+function protocol.slot_index(slot)
+    if type(slot) ~= "string" then
+        return nil
+    end
+    return SLOT_INDEXES[slot]
+end
+
+-- The wire shape of a requested owned set: canonical outfield slot ids in
+-- strictly ascending canonical order, so one set has exactly one encoding and a
+-- duplicate slot cannot hide inside it.
+--
+-- Keeper protection needs no check here. A keeper has no canonical slot id, so
+-- the vocabulary this validates cannot express one.
+--
+-- *How many* slots a human may own is a manifest question, not a wire-shape
+-- one: it depends on the frozen match mode and is enforced where the mode is
+-- known, exactly as `validate_assignment_manifest` enforces published owned
+-- sets.
+---@param slots any
+---@return boolean?, string?, SessionProtocolErrorCode?
+function protocol.validate_slot_set(slots)
+    if not is_array(slots, nil, input_frame.SLOT_COUNT) or #slots == 0 then
+        return failure("malformed", "a slot set must hold one to eight canonical slots")
+    end
+    local previous = 0
+    for _, slot in ipairs(slots) do
+        local index = protocol.slot_index(slot)
+        if not index then
+            return failure("malformed", "slot set names an unknown canonical slot")
+        end
+        if index <= previous then
+            return failure("malformed", "slot set is not in ascending canonical order")
+        end
+        previous = index
+    end
+    return true
+end
+
 ---@param assignments SessionSlotProducer[]
 ---@param producer_id string
 ---@return InputSlotId[]
@@ -1235,6 +1345,40 @@ function protocol.validate(message)
         end
         if type(body.ready) ~= "boolean" then
             return failure("malformed", "ready state must be boolean")
+        end
+        return true
+    elseif message.kind == "pair_preference" then
+        ok, err, code = validate_hash(body.manifest_id, "manifest id")
+        if not ok then
+            return nil, err, code
+        end
+        ok, err, code = validate_hash(body.assignment_id, "assignment id")
+        if not ok then
+            return nil, err, code
+        end
+        return protocol.validate_slot_set(body.slots)
+    elseif message.kind == "pair_preference_result" then
+        ok, err, code = validate_hash(body.manifest_id, "manifest id")
+        if not ok then
+            return nil, err, code
+        end
+        ok, err, code = validate_hash(body.assignment_id, "assignment id")
+        if not ok then
+            return nil, err, code
+        end
+        ok, err, code = protocol.validate_slot_set(body.slots)
+        if not ok then
+            return nil, err, code
+        end
+        if not PREFERENCE_STATUSES[body.status] then
+            return failure("malformed", "pair preference status is invalid")
+        end
+        if body.status == "rejected" then
+            if not PREFERENCE_REJECTIONS[body.reason] then
+                return failure("malformed", "a refused pair preference needs a typed reason")
+            end
+        elseif body.reason ~= nil then
+            return failure("malformed", "only a refused pair preference carries a reason")
         end
         return true
     elseif message.kind == "countdown" then

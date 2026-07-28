@@ -99,6 +99,24 @@ lobby_model.TERMINAL_TEXT = {
     hash_mismatch = "Peers disagreed about the simulation.",
 }
 
+-- Plain-language equivalents of a pair request's state and of every reason the
+-- host can refuse one. Keyed by status for the outcomes that are not refusals
+-- and by the typed reason for the ones that are; the two vocabularies are
+-- disjoint, so one table serves both.
+---@type table<string, string>
+lobby_model.PREFERENCE_TEXT = {
+    pending = "Waiting for the host to answer your pair request.",
+    granted = "The host gave you the pair you asked for.",
+    unchanged = "You already control that pair.",
+    already_taken = "Another player already chose that pair.",
+    wrong_team = "Those players are not on your team.",
+    invalid_slot = "That is not a valid pair in this match mode.",
+    detached = "A pair request has to keep one of the players you already control.",
+    not_seated = "You control no players in this ownership.",
+    superseded = "Ownership changed while your request was in flight. Ask again.",
+    after_freeze = "The countdown froze the pairs; they cannot change now.",
+}
+
 -- The developer lobby proposes the pinned fixture manifest. It is the only
 -- complete, protocol-valid manifest in the tree today; a content-derived
 -- builder replaces it when the online match flow lands, which is why the
@@ -315,12 +333,19 @@ end
 -- roster or seating change without churning readiness.
 ---@param model LobbyModel
 ---@param effects LobbyEffect[]
-local function publish_assignments(model, effects)
+---@param force boolean? -- The host deliberately reasserting its seating order.
+local function publish_assignments(model, effects, force)
     local state = model.coordinator
     if not state or state.role ~= "host" then
         return
     end
     if state.phase ~= "manifest" and state.phase ~= "assigned" and state.phase ~= "ready" then
+        return
+    end
+    -- Ownership that already seats the whole roster needs no plan. Republishing
+    -- one would overwrite pairs guests were granted and clear readiness for
+    -- nothing; only a roster change or an explicit host swap reaches past this.
+    if not force and coordinator.ownership_seats_roster(state) then
         return
     end
     for _, peer in ipairs(state.peers) do
@@ -546,7 +571,65 @@ local function swap_seats(model, index, effects)
     end
     model.seating[index], model.seating[index + 1] = model.seating[index + 1], model.seating[index]
     model.status = "Ownership republished; readiness cleared."
-    publish_assignments(model, effects)
+    -- The host reasserting its own seating order overrides every pair a guest
+    -- was granted, and the coordinator drops their claims with it.
+    publish_assignments(model, effects, true)
+end
+
+-- The set this peer would ask for if it wanted `slot`: its current owned set
+-- with the last slot it does not open the match on traded away. The live slot
+-- is kept because a preference refines the pair you already control rather than
+-- moving you somewhere else, which is also the rule the host enforces.
+--
+-- An owned set with nothing to trade -- a single slot in `4v4`, a whole outfield
+-- line in `1v1` -- yields nothing here, so those modes offer no control at all.
+-- No mode is named to make that true.
+---@param model LobbyModel
+---@param slot InputSlotId
+---@return InputSlotId[]?
+local function pair_request(model, slot)
+    local state = model.coordinator
+    if not state then
+        return nil
+    end
+    local owned = coordinator.owned_slots(state, model.peer_id)
+    if #owned < 2 then
+        return nil
+    end
+    ---@type InputSlotId[]
+    local request = {}
+    for index = 1, #owned - 1 do
+        if owned[index] == slot then
+            return nil
+        end
+        request[index] = owned[index]
+    end
+    if owned[#owned] == slot then
+        return nil
+    end
+    request[#request + 1] = slot
+    table.sort(request, function(left, right)
+        return assert(protocol.slot_index(left)) < assert(protocol.slot_index(right))
+    end)
+    return request
+end
+
+---@param model LobbyModel
+---@param slot any
+---@param effects LobbyEffect[]
+local function request_pair(model, slot, effects)
+    if not model.coordinator then
+        return
+    end
+    local request = type(slot) == "string" and pair_request(model, slot) or nil
+    if not request then
+        model.error = "there is no pair to ask for on that slot"
+        return
+    end
+    local outcome = step(model, { kind = "prefer_pair", slots = request }, effects)
+    if outcome and outcome.accepted then
+        model.status = "Pair request sent to the host."
+    end
 end
 
 ---@param model LobbyModel
@@ -678,6 +761,9 @@ local COMMANDS = {
     swap = function(model, command, effects)
         swap_seats(model, command.index, effects)
     end,
+    pair = function(model, command, effects)
+        request_pair(model, command.slot, effects)
+    end,
     ready = function(model, command, effects)
         set_ready(model, command.ready, effects)
     end,
@@ -742,6 +828,7 @@ end
 ---@field driver CoordinatorSlotDriver|"pending"
 ---@field live boolean -- The opening live slot of its human owner.
 ---@field local_owner boolean
+---@field can_prefer boolean -- The local peer could ask the host for this slot.
 
 ---@class LobbySeatView
 ---@field index integer
@@ -749,6 +836,12 @@ end
 ---@field is_local boolean
 ---@field ready boolean
 ---@field slots InputSlotId[]
+
+---@class LobbyPreferenceView
+---@field slots InputSlotId[] -- The pair the local peer asked for.
+---@field status "pending"|SessionPreferenceStatus
+---@field reason SessionPreferenceRejection?
+---@field text string -- Plain language for the status, or for the typed reason.
 
 ---@class LobbyKeeperView
 ---@field team "home"|"away"
@@ -772,6 +865,7 @@ end
 ---@field slots LobbySlotView[]
 ---@field keepers LobbyKeeperView[]
 ---@field seats LobbySeatView[]
+---@field preference LobbyPreferenceView? -- The local peer's last pair request.
 ---@field identity LobbyIdentityRow[]
 ---@field countdown integer?
 ---@field terminal CoordinatorTerminal?
@@ -809,6 +903,36 @@ local function visible_manifest(model)
     return manifest_for(model, model.mode)
 end
 
+-- The team a peer is seated on, or nil while it owns nothing.
+---@param assignments SessionSlotProducer[]?
+---@param peer_id string
+---@return SessionTeam?
+local function team_of(assignments, peer_id)
+    for _, producer in ipairs(assignments or {}) do
+        if producer.producer_kind == "peer" and producer.producer_id == peer_id then
+            return producer.team
+        end
+    end
+    return nil
+end
+
+---@param model LobbyModel
+---@return LobbyPreferenceView?
+local function preference_view(model)
+    local state = model.coordinator
+    local preference = state and state.preference or nil
+    if not preference then
+        return nil
+    end
+    local key = preference.status == "rejected" and assert(preference.reason) or preference.status
+    return {
+        slots = preference.slots,
+        status = preference.status,
+        reason = preference.reason,
+        text = lobby_model.PREFERENCE_TEXT[key] or key,
+    }
+end
+
 ---@param model LobbyModel
 ---@return LobbySlotView[], LobbyKeeperView[]
 local function roster_view(model)
@@ -817,6 +941,9 @@ local function roster_view(model)
     -- The opening live slot is the coordinator's rule, not the lobby's; the
     -- freeze records the same table for the same assignments.
     local live = coordinator.preview_live(assignments)
+    local state = model.coordinator
+    local configurable_ownership = state ~= nil
+        and (state.phase == "assigned" or state.phase == "ready")
     ---@type LobbySlotView[]
     local slots = {}
     for index = 1, input_frame.SLOT_COUNT do
@@ -826,6 +953,9 @@ local function roster_view(model)
         local is_live = producer ~= nil
             and producer.producer_kind == "peer"
             and live[producer.producer_id] == producer.slot
+        local same_team = producer ~= nil
+            and assignments ~= nil
+            and producer.team == team_of(assignments, model.peer_id)
         slots[index] = {
             slot = slot.id,
             team = slot.team,
@@ -837,6 +967,9 @@ local function roster_view(model)
             local_owner = producer ~= nil
                 and producer.producer_kind == "peer"
                 and producer.producer_id == model.peer_id,
+            can_prefer = configurable_ownership
+                and same_team
+                and pair_request(model, slot.id) ~= nil,
         }
     end
     ---@type LobbyKeeperView[]
@@ -951,6 +1084,7 @@ function lobby_model.view(model)
         slots = slots,
         keepers = keepers,
         seats = seats_view(model),
+        preference = preference_view(model),
         identity = identity_view(model),
         countdown = state and state.countdown_remaining or nil,
         terminal = terminal,
