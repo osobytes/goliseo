@@ -3,8 +3,10 @@
 -- control wires through the real framing, and completes the real manual
 -- offer/answer handshake. No browser, no JavaScript, no display.
 
+local coordinator = require("game.online.coordinator")
 local lobby_link = require("game.online.lobby_link")
 local lobby_model = require("game.screens.lobby_model")
+local match_manifest = require("game.online.match_manifest")
 local protocol = require("game.online.protocol")
 local t = require("spec.support.runner")
 local transport = require("game.transport")
@@ -69,12 +71,13 @@ end
 
 ---@param role LobbyRole
 ---@param peer_id string
+---@param template (fun(mode: SessionMatchMode): SessionManifest)? -- Defaults to the model's.
 ---@return LobbyTestPeer
-function Driver:add(role, peer_id)
+function Driver:add(role, peer_id, template)
     ---@type LobbyTestPeer
     local peer = {
         id = peer_id,
-        model = lobby_model.new({ peer_id = peer_id }),
+        model = lobby_model.new({ peer_id = peer_id, template = template }),
         left = false,
     }
     self.peers[#self.peers + 1] = peer
@@ -500,6 +503,91 @@ t.describe("lobby pair selection", function()
         t.eq(table.concat(owned(host, "guest_2"), ","), "away_1,away_3")
     end)
 
+    -- Every canonical slot has exactly one producer, and no human holds more or
+    -- fewer slots than the mode seats. A roster change reseats humans, so this
+    -- is asserted on the far side of one.
+    ---@param peer LobbyTestPeer
+    ---@param mode SessionMatchMode
+    local function assert_partition(peer, mode)
+        local shape = assert(protocol.MATCH_MODES[mode])
+        ---@type table<string, integer>
+        local counts = {}
+        local rows = view(peer).slots
+        t.eq(#rows, 8, "a partition covers every canonical slot")
+        for _, row in ipairs(rows) do
+            local owner = assert(row.owner, row.slot .. " has no producer")
+            counts[owner] = (counts[owner] or 0) + 1
+        end
+        for _, seat in ipairs(view(peer).seats) do
+            t.eq(
+                counts[seat.peer_id] or 0,
+                shape.slots_per_human,
+                seat.peer_id .. " owns the wrong number of slots"
+            )
+        end
+    end
+
+    t.it("keeps the pair a roster change still fits and says why the other went", function()
+        local driver, host, guests = locked_lobby("2v2", 3)
+        -- `guest_1` refines its pair inside the home line; `guest_2` reaches
+        -- into the far half of the away line for `away_3`.
+        driver:send(guests[1], { kind = "pair", slot = "home_2" })
+        driver:pump(8)
+        driver:send(guests[2], { kind = "pair", slot = "away_3" })
+        driver:pump(8)
+        t.eq(table.concat(owned(host, "guest_1"), ","), "home_2,home_3")
+        t.eq(table.concat(owned(host, "guest_2"), ","), "away_1,away_3")
+
+        -- The roster changes. A three-human 2v2 seats nobody on `away_3`, so
+        -- one of the two granted pairs cannot come through this.
+        driver:send(guests[3], { kind = "leave" })
+        driver:pump(8)
+
+        t.eq(table.concat(owned(host, "guest_1"), ","), "home_2,home_3")
+        t.eq(table.concat(owned(guests[1], "guest_1"), ","), "home_2,home_3")
+        t.eq(
+            assert(view(guests[1]).preference).status,
+            "granted",
+            "a pair that survived is still the pair this guest was given"
+        )
+
+        local dropped = assert(view(guests[2]).preference, "a dropped pair must still be shown")
+        t.eq(dropped.status, "rejected")
+        t.eq(dropped.reason, "reseated")
+        t.eq(dropped.text, lobby_model.PREFERENCE_TEXT.reseated)
+        t.eq(table.concat(owned(guests[2], "guest_2"), ","), "away_1,away_2")
+        t.eq(table.concat(owned(host, "guest_2"), ","), "away_1,away_2")
+        assert_partition(host, "2v2")
+        assert_partition(guests[1], "2v2")
+        assert_partition(guests[2], "2v2")
+        t.is_true(not view(host).ready, "a reseat clears readiness like any repartition")
+    end)
+
+    -- `SWAP` deliberately outranks a guest's choice, and always has. What it
+    -- must not do is leave that guest reading "the host gave you the pair you
+    -- asked for" over an ownership that no longer seats it.
+    t.it("tells a guest when the host's swap took its pair back", function()
+        local driver, host, guests = locked_lobby("2v2", 3)
+        driver:send(guests[2], { kind = "pair", slot = "away_3" })
+        driver:pump(8)
+        t.eq(assert(view(guests[2]).preference).status, "granted")
+        t.eq(table.concat(owned(guests[2], "guest_2"), ","), "away_1,away_3")
+
+        -- Seats 3 and 4 are the two away humans, so this moves `guest_2` off
+        -- the pair it chose without the roster changing at all.
+        driver:send(host, { kind = "swap", index = 3 })
+        driver:pump(8)
+
+        local taken = assert(view(guests[2]).preference, "a swapped-away pair must still be shown")
+        t.eq(taken.status, "rejected")
+        t.eq(taken.reason, "reseated", "the reason is read off the ownership, not off the cause")
+        t.eq(taken.text, lobby_model.PREFERENCE_TEXT.reseated)
+        t.eq(table.concat(owned(guests[2], "guest_2"), ","), "away_3,away_4")
+        t.eq(table.concat(owned(host, "guest_2"), ","), "away_3,away_4")
+        assert_partition(host, "2v2")
+        assert_partition(guests[2], "2v2")
+    end)
+
     t.it("offers nothing to choose in 1v1 or 4v4", function()
         for _, case in ipairs({ { mode = "1v1", guests = 1 }, { mode = "4v4", guests = 7 } }) do
             local driver, host = locked_lobby(case.mode, case.guests)
@@ -513,6 +601,160 @@ t.describe("lobby pair selection", function()
             t.is_true(view(host).error ~= nil, case.mode .. " must refuse a pair request")
             t.eq(view(host).preference, nil, "nothing was asked, so nothing is shown")
         end
+    end)
+
+    t.it("stops waiting in plain language when the host never answers", function()
+        local driver, host, guests = locked_lobby("2v2", 3)
+        local chooser = guests[2]
+        local before = table.concat(owned(chooser, "guest_2"), ",")
+        -- The host is up and its link is open; it has simply stopped being
+        -- serviced, so it never reads the request and never replies. Nothing is
+        -- closed, so neither end takes the `transport_lost` path.
+        for index, peer in ipairs(driver.peers) do
+            if peer == host then
+                table.remove(driver.peers, index)
+                break
+            end
+        end
+
+        driver:send(chooser, { kind = "pair", slot = "away_3" })
+        t.eq(assert(view(chooser).preference).status, "pending")
+        driver:tick(coordinator.PREFERENCE_TIMEOUT_TICKS + 1)
+
+        local given_up = assert(view(chooser).preference)
+        t.eq(given_up.status, "rejected")
+        t.eq(given_up.reason, "no_response")
+        t.eq(given_up.text, lobby_model.PREFERENCE_TEXT.no_response)
+        t.eq(table.concat(given_up.slots, ","), "away_1,away_3", "the request stays legible")
+        t.eq(table.concat(owned(chooser, "guest_2"), ","), before, "nothing moved")
+        t.eq(view(chooser).terminal, nil, "a silent host does not end the session")
+        t.eq(view(chooser).phase, "assigned")
+    end)
+
+    -- An outcome with no text renders as its bare enum name, which is a defect
+    -- rather than a message. Derived from the protocol's own closed vocabulary
+    -- so a reason added there without lobby text fails here.
+    t.it("has plain language for every outcome a request can end on", function()
+        ---@type table<string, boolean>
+        local reachable = { pending = true }
+        for status in pairs(protocol.PREFERENCE_STATUSES) do
+            -- A refusal is shown by its typed reason, never by the bare status.
+            if status ~= "rejected" then
+                reachable[status] = true
+            end
+        end
+        for reason in pairs(protocol.PREFERENCE_REJECTIONS) do
+            reachable[reason] = true
+        end
+        for key in pairs(reachable) do
+            local text = lobby_model.PREFERENCE_TEXT[key]
+            t.is_true(type(text) == "string" and #text > 0, "no lobby text for " .. key)
+        end
+        for key in pairs(lobby_model.PREFERENCE_TEXT) do
+            t.is_true(reachable[key] == true, "lobby text for an unreachable outcome: " .. key)
+        end
+    end)
+end)
+
+t.describe("lobby build skew", function()
+    -- These flows use the content-derived template the shipped app injects,
+    -- not the lobby's fixture default, because `build_id` is the identity
+    -- under test and only that template computes one.
+
+    -- The manifest a peer would propose if it had been built from a commit
+    -- whose control vocabulary differs from this one's. Everything
+    -- `game/build_info.lua` knows — name, version, channel — is identical, so
+    -- this is exactly the pair of builds the old digest could not tell apart.
+    ---@param mode SessionMatchMode
+    ---@return SessionManifest
+    local function foreign_template(mode)
+        local original = protocol.vocabulary_id
+        protocol.vocabulary_id = function()
+            return original() .. "0"
+        end
+        local ok, manifest = pcall(match_manifest.template, mode)
+        protocol.vocabulary_id = original
+        assert(ok, tostring(manifest))
+        return manifest
+    end
+
+    -- The lobby already prints `BUILD` beside the manifest, so the value under
+    -- test is one a tester can read off two screens and compare.
+    ---@param peer LobbyTestPeer
+    ---@return string
+    local function build_row(peer)
+        for _, row in ipairs(view(peer).identity) do
+            if row.label == "BUILD" then
+                return row.value
+            end
+        end
+        error("the lobby stopped showing a build identity")
+    end
+
+    t.it("ends a same-version, different-vocabulary session at the manifest check", function()
+        local driver = new_driver()
+        local host = driver:add("host", "host", foreign_template)
+        driver:send(host, { kind = "mode", mode = "1v1" })
+        local guest = driver:add("guest", "guest_1", match_manifest.template)
+        t.is_true(
+            build_row(host) ~= build_row(guest),
+            "the two builds have to be distinguishable before either speaks"
+        )
+        driver:connect(host, guest)
+        driver:send(host, { kind = "lock" })
+        driver:pump(6)
+
+        local state = assert(guest.model.coordinator)
+        t.eq(state.phase, "terminal")
+        local terminal = assert(state.terminal)
+        t.eq(terminal.reason, "build_mismatch")
+        t.eq(terminal.detail, "local identity differs at manifest.build_id")
+        t.eq(
+            view(guest).terminal_text,
+            "The peers are running different builds. Install the same build on both."
+        )
+
+        -- At the manifest check means before anything a tester would read as
+        -- progress: no ownership was ever published to this guest, so it never
+        -- saw a seat, let alone a countdown.
+        t.eq(state.assignment_id, nil)
+        t.eq(guest.freeze, nil)
+
+        -- The refusal is announced, not silent, and the host's answer to it is
+        -- the one #163 already chose: before the freeze a guest's abort drops
+        -- that guest and leaves the lobby standing. So the host stops waiting
+        -- on a peer that will never ready, and one skewed guest cannot end the
+        -- session for everyone else.
+        driver:pump(8)
+        local host_state = assert(host.model.coordinator)
+        t.eq(host_state.terminal, nil, "one skewed guest must not end the host's lobby")
+        t.eq(#host_state.peers, 1, "the host dropped the peer it could not play with")
+        t.eq(host.freeze, nil)
+    end)
+
+    t.it("leaves peers on the same vocabulary exactly as compatible as before", function()
+        local driver = new_driver()
+        local host = driver:add("host", "host", match_manifest.template)
+        driver:send(host, { kind = "mode", mode = "1v1" })
+        local guest = driver:add("guest", "guest_1", match_manifest.template)
+        t.eq(build_row(host), build_row(guest), "one vocabulary is one build identity")
+        driver:connect(host, guest)
+        driver:send(host, { kind = "lock" })
+        driver:pump(6)
+
+        t.eq(view(guest).phase, "assigned")
+        driver:send(host, { kind = "ready", ready = true })
+        driver:send(guest, { kind = "ready", ready = true })
+        driver:pump(4)
+        driver:send(host, { kind = "start" })
+        driver:pump(2)
+        driver:tick(lobby_model.COUNTDOWN_TICKS + 4)
+
+        local freeze = assert(host.freeze, "the host never reached the start boundary")
+        local guest_freeze = assert(guest.freeze, "the guest never reached the start boundary")
+        t.eq(guest_freeze.manifest_id, freeze.manifest_id)
+        t.eq(assert(host.model.coordinator).terminal, nil)
+        t.eq(assert(guest.model.coordinator).terminal, nil)
     end)
 end)
 

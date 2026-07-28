@@ -245,6 +245,21 @@ t.describe("pair preference wire", function()
         end
         t.eq(validate("rejected", nil), nil, "a refusal must carry a reason")
         t.eq(validate("rejected", "no_thanks"), nil, "the reason vocabulary is closed")
+        -- Silence is only observable at the end that waited, and a pair the
+        -- roster reseated away is only observable against the ownership that
+        -- took it, which every peer holds for itself. A host claiming either
+        -- would be reporting something it does not decide. Keeping the locally
+        -- minted reasons off the wire is what leaves the accepted message
+        -- vocabulary -- and both digests above -- exactly as they were.
+        for reason in pairs(protocol.LOCAL_PREFERENCE_REJECTIONS) do
+            t.is_true(
+                protocol.PREFERENCE_REJECTIONS[reason] == true,
+                reason .. " is not a typed reason at all"
+            )
+            t.eq(validate("rejected", reason), nil, "a host cannot report " .. reason)
+        end
+        t.is_true(protocol.LOCAL_PREFERENCE_REJECTIONS.no_response == true)
+        t.is_true(protocol.LOCAL_PREFERENCE_REJECTIONS.reseated == true)
         t.eq(validate("granted", "already_taken"), nil, "only a refusal carries a reason")
         t.eq(validate("maybe", nil), nil, "the status vocabulary is closed")
         t.is_true(validate("granted", nil) == true)
@@ -461,6 +476,181 @@ t.describe("pair preference generations", function()
         )
         t.eq(state.peers[1].pair_choice, nil, "the host overruled every choice")
         t.eq(owned_text(state, HOST), "home_1,home_2", "the host's own plan is back in force")
+    end)
+end)
+
+-- A seating plan is derived from the roster alone, so a roster change would
+-- reseat straight over the pairs guests were granted. These cover the
+-- reconciliation that stands between the two: what a new roster can still hold,
+-- what it cannot, and that either way the result is one valid partition minted
+-- through the one existing generation path.
+t.describe("pair claims across a roster change", function()
+    ---@param state CoordinatorState
+    ---@param peer_id string
+    ---@param slots InputSlotId[]
+    ---@return CoordinatorState
+    local function ask(state, peer_id, slots)
+        if peer_id == HOST then
+            return (coordinator.step(state, { kind = "prefer_pair", slots = slots }))
+        end
+        return (
+            deliver(
+                state,
+                peer_id,
+                message("pair_preference", peer_id, 2, {
+                    manifest_id = assert(state.manifest_id),
+                    assignment_id = assert(state.assignment_id),
+                    slots = slots,
+                })
+            )
+        )
+    end
+
+    ---@param state CoordinatorState
+    ---@param peer_id string
+    ---@return CoordinatorState
+    local function depart(state, peer_id)
+        return (
+            deliver(
+                state,
+                peer_id,
+                message("disconnect", peer_id, 3, {
+                    target_peer_id = peer_id,
+                    code = "peer_left",
+                })
+            )
+        )
+    end
+
+    -- Exactly what the lobby publishes after a roster change: the plan for the
+    -- roster that is left, offered to the coordinator to seat claims around.
+    ---@param state CoordinatorState
+    ---@param peer_ids string[]
+    ---@return CoordinatorState
+    local function reseat(state, peer_ids)
+        return (
+            coordinator.step(state, {
+                kind = "assign_slots",
+                assignments = assert(
+                    coordinator.plan_assignments(assert(state.manifest), peer_ids)
+                ),
+                preserve_claims = true,
+            })
+        )
+    end
+
+    ---@param state CoordinatorState
+    ---@param peer_id string
+    ---@return string?
+    local function claim_text(state, peer_id)
+        for _, peer in ipairs(state.peers) do
+            if peer.peer_id == peer_id then
+                return peer.pair_choice and table.concat(peer.pair_choice, ",") or nil
+            end
+        end
+        return nil
+    end
+
+    t.it("keeps a claim the new roster still fits and drops the one it cannot", function()
+        local state = assigned_host("2v2", 3)
+        -- One claim inside the home line, which a smaller roster still seats
+        -- humans on, and one that reaches into the away line's far pair, which
+        -- it does not.
+        state = ask(state, "guest.1", { "home_2", "home_3" })
+        state = ask(state, "guest.2", { "away_1", "away_3" })
+        t.eq(owned_text(state, "guest.1"), "home_2,home_3")
+        t.eq(owned_text(state, "guest.2"), "away_1,away_3")
+        t.eq(owned_text(state, "guest.3"), "away_2,away_4")
+
+        state = depart(state, "guest.3")
+        t.eq(state.assignments, nil, "ownership naming a departed peer is void")
+        t.eq(claim_text(state, "guest.1"), "home_2,home_3", "a claim outlives its generation")
+        state = reseat(state, { HOST, "guest.1", "guest.2" })
+
+        t.eq(owned_text(state, "guest.1"), "home_2,home_3", "a pair the roster fits is kept")
+        t.eq(claim_text(state, "guest.1"), "home_2,home_3")
+        t.eq(owned_text(state, "guest.2"), "away_1,away_2", "a pair it cannot fit is reseated")
+        t.eq(claim_text(state, "guest.2"), nil, "and the claim goes with it, deliberately")
+        t.eq(owned_text(state, HOST), "home_1,home_4")
+        assert_partition(state, "2v2")
+    end)
+
+    t.it("mints the reseat through the existing assignment_id path", function()
+        local state = assigned_host("2v2", 3)
+        state = ask(state, "guest.1", { "home_2", "home_3" })
+        state = (coordinator.step(state, { kind = "set_ready", ready = true }))
+        t.is_true(state.peers[1].ready)
+        local epoch = state.assignment_epoch
+        local previous = assert(state.assignment_id)
+
+        state = depart(state, "guest.3")
+        state = reseat(state, { HOST, "guest.1", "guest.2" })
+        t.eq(state.assignment_epoch, epoch + 1, "a reseat is one generation, like any other")
+        t.eq(
+            state.assignment_id,
+            protocol.assignment_id(assert(state.assignments), state.assignment_epoch),
+            "a reseat must mint its generation through the one existing path"
+        )
+        t.is_true(state.assignment_id ~= previous)
+        t.eq(state.phase, "assigned")
+        for _, peer in ipairs(state.peers) do
+            t.is_true(not peer.ready, peer.peer_id .. " kept readiness across a reseat")
+        end
+    end)
+
+    t.it("still lets the host overrule every claim by reasserting its plan", function()
+        local state = assigned_host("2v2", 3)
+        state = ask(state, "guest.1", { "home_2", "home_3" })
+        state = depart(state, "guest.3")
+        -- No `preserve_claims`: this is the host's own seating order, which is
+        -- the one thing that outranks a pair a guest was granted.
+        state = (
+            coordinator.step(state, {
+                kind = "assign_slots",
+                assignments = assert(
+                    coordinator.plan_assignments(
+                        assert(state.manifest),
+                        { HOST, "guest.1", "guest.2" }
+                    )
+                ),
+            })
+        )
+        t.eq(owned_text(state, "guest.1"), "home_3,home_4", "the plan is back in force")
+        t.eq(claim_text(state, "guest.1"), nil)
+        assert_partition(state, "2v2")
+    end)
+
+    -- Swept rather than sampled: every grantable request by every remaining
+    -- peer is put through the same departure, so a double ownership or a claim
+    -- half-kept cannot hide behind the one case that was written by hand.
+    t.it("ends every roster change on a valid partition, claim kept whole or not at all", function()
+        local askers = { HOST, "guest.1", "guest.2" }
+        local swept = 0
+        for _, peer_id in ipairs(askers) do
+            for _, slots in ipairs(slot_sets(2)) do
+                local seeded = assigned_host("2v2", 3)
+                if coordinator.evaluate_preference(seeded, peer_id, slots).status == "granted" then
+                    swept = swept + 1
+                    local wanted = table.concat(slots, ",")
+                    local state = reseat(
+                        depart(ask(seeded, peer_id, slots), "guest.3"),
+                        { HOST, "guest.1", "guest.2" }
+                    )
+                    assert_partition(state, "2v2")
+                    local claim = claim_text(state, peer_id)
+                    if claim then
+                        t.eq(claim, wanted, "a kept claim is kept exactly")
+                        t.eq(owned_text(state, peer_id), wanted, "a kept claim is the ownership")
+                    else
+                        t.is_true(
+                            owned_text(state, peer_id) ~= wanted,
+                            "a claim dropped while its pair survived would be a silent loss"
+                        )
+                    end
+                end
+            end
+        end
+        t.is_true(swept > 0, "the sweep found no grantable request to reseat")
     end)
 end)
 
@@ -682,6 +872,115 @@ t.describe("pair preference sessions", function()
         local freeze = assert(session:host().state.freeze)
         t.eq(table.concat(freeze.owned["guest.2"], ","), "away_1,away_3")
         t.eq(freeze.live["guest.2"], "away_1")
+    end)
+
+    -- A host that is up but silent. The guest's link is blackholed in the
+    -- guest->host direction only: neither end sees a `link_lost`, so neither
+    -- takes the `transport_lost` path that already terminates correctly, and
+    -- the request simply never lands. This is the case an unbounded `pending`
+    -- never escaped.
+    ---@param session CoordinatorDriver
+    ---@param peer_id string
+    ---@return CoordinatorDriverLink
+    local function silence(session, peer_id)
+        local link = assert(session:link(fixture.link_id(peer_id)))
+        link.guest_open = false
+        return link
+    end
+
+    t.it("gives up on a request a live host never answers", function()
+        local session = assigned_session("2v2", 3)
+        local before = owned_text(assert(session:node("guest.2")).state, "guest.2")
+        silence(session, "guest.2")
+        session:send("guest.2", { kind = "prefer_pair", slots = { "away_1", "away_3" } })
+        t.eq(preference(session, "guest.2").status, "pending")
+
+        session:tick(coordinator.PREFERENCE_TIMEOUT_TICKS)
+        t.eq(preference(session, "guest.2").status, "pending", "the wait is not cut short")
+        session:tick(1)
+
+        local answer = preference(session, "guest.2")
+        t.eq(answer.status, "rejected")
+        t.eq(answer.reason, "no_response")
+        t.eq(answer.deadline, nil, "an answered request waits on nothing")
+        t.eq(table.concat(answer.slots, ","), "away_1,away_3", "the request stays legible")
+        t.eq(owned_text(assert(session:node("guest.2")).state, "guest.2"), before)
+        t.eq(owned_text(session:host().state, "guest.2"), before)
+        t.eq(session:host().state.assignment_epoch, 1, "an expiry mints no generation")
+        assert_partition(session:host().state, "2v2")
+        for _, node in ipairs(session.nodes) do
+            t.is_true(not coordinator.is_terminal(node.state), node.peer_id .. " ended")
+        end
+    end)
+
+    t.it("cannot be moved by a verdict that arrives after the wait expired", function()
+        local session = assigned_session("2v2", 3)
+        silence(session, "guest.2")
+        session:send("guest.2", { kind = "prefer_pair", slots = { "away_1", "away_3" } })
+        session:tick(coordinator.PREFERENCE_TIMEOUT_TICKS + 1)
+        t.eq(preference(session, "guest.2").reason, "no_response")
+
+        local guest = assert(session:node("guest.2")).state
+        local before = owned_text(guest, "guest.2")
+        local generation = assert(guest.assignment_id)
+        local epoch = guest.assignment_epoch
+        -- The host finally speaks, and grants exactly what was asked for. The
+        -- requester stopped waiting, so this answers no pending request and is
+        -- dropped: ownership only ever moves on `slot_assignment`.
+        session:inject(HOST, "guest.2", "pair_preference_result", {
+            manifest_id = assert(guest.manifest_id),
+            assignment_id = generation,
+            slots = { "away_1", "away_3" },
+            status = "granted",
+        })
+
+        local after = assert(session:node("guest.2")).state
+        t.eq(owned_text(after, "guest.2"), before, "a late grant cannot move ownership")
+        t.eq(after.assignment_id, generation, "a late grant mints no generation")
+        t.eq(after.assignment_epoch, epoch)
+        t.eq(assert(after.preference).status, "rejected")
+        t.eq(assert(after.preference).reason, "no_response", "a terminal outcome is not reopened")
+        t.is_true(not coordinator.is_terminal(after), "a late grant is not fatal")
+    end)
+
+    t.it("frees the guest to ask again once the wait has expired", function()
+        local session = assigned_session("2v2", 3)
+        local link = silence(session, "guest.2")
+        session:send("guest.2", { kind = "prefer_pair", slots = { "away_1", "away_3" } })
+        session:tick(coordinator.PREFERENCE_TIMEOUT_TICKS + 1)
+        t.eq(preference(session, "guest.2").reason, "no_response")
+
+        link.guest_open = true
+        session:send("guest.2", { kind = "prefer_pair", slots = { "away_1", "away_3" } })
+        t.eq(preference(session, "guest.2").status, "pending")
+        session:pump()
+        t.eq(preference(session, "guest.2").status, "granted")
+        t.eq(owned_text(session:host().state, "guest.2"), "away_1,away_3")
+        t.eq(owned_text(session:host().state, "guest.3"), "away_2,away_4")
+        assert_partition(session:host().state, "2v2")
+    end)
+
+    -- `superseded` is what protects ownership when the answer is late rather
+    -- than absent, so it is re-proven now that a wait can also end by itself:
+    -- the host answers the loser well inside the deadline, and running the
+    -- clock past that deadline afterwards must not reach back and overwrite
+    -- the typed reason the host actually gave.
+    t.it("still refuses a request that outlived its ownership generation", function()
+        local session = assigned_session("2v2", 3, 1)
+        session:send("guest.2", { kind = "prefer_pair", slots = { "away_1", "away_3" } })
+        session:send("guest.3", { kind = "prefer_pair", slots = { "away_3", "away_4" } })
+        session:tick(2)
+        t.eq(preference(session, "guest.2").status, "granted")
+        local loser = preference(session, "guest.3")
+        t.eq(loser.status, "rejected")
+        t.eq(loser.reason, "superseded")
+        t.eq(loser.deadline, nil, "an answered request stops waiting")
+        t.eq(owned_text(session:host().state, "guest.2"), "away_1,away_3")
+        assert_partition(session:host().state, "2v2")
+
+        session:tick(coordinator.PREFERENCE_TIMEOUT_TICKS + 1)
+        t.eq(preference(session, "guest.3").reason, "superseded")
+        t.eq(owned_text(session:host().state, "guest.2"), "away_1,away_3")
     end)
 end)
 

@@ -41,6 +41,39 @@ arena, or player, a disagreeing position or loadout, or a slot table that
 disagrees with the locally computed ownership all fail rather than producing a
 quietly different match.
 
+## `build_id` carries the control vocabulary
+
+`build_info` is three constants — name, version, channel — and a working commit
+moves none of them. On the development channel that made `build_id` blind to the
+difference that matters most while testing: two peers on different commits
+digested to the same string, passed the manifest comparison, and only found out
+they spoke different control vocabularies when one sent a message the other had
+never heard of. That surfaced as an announced `protocol_violation` partway
+through the lobby, which reads as a transport bug rather than "you deployed two
+different builds".
+
+So `build_id` digests `protocol.vocabulary_id()` alongside the three constants.
+That id is derived at load from the two tables `protocol.validate` and
+`protocol.validate_phase` actually read, covering three things a peer has to
+agree with — the message kinds, the fields of each body, and the lifecycle
+phases each kind is legal in — sorted so it never depends on `pairs` order. Disagreeing about any of them is unrecoverable
+(`unknown_message`, `malformed`, `invalid_phase` respectively), so a difference
+is worth refusing, and refusing it at the manifest check is strictly earlier
+than the first message that would have exposed it.
+
+The scope is deliberate in both directions. It is not a digest over the source
+tree: peers whose vocabularies agree stay compatible however else their commits
+differ, so this adds no mismatch a session would otherwise have survived. And it
+does not claim to catch every skew — two builds that differ only in simulation
+code still share a `build_id`, and that divergence is caught later by the
+boundary-hash machinery rather than here.
+
+The manifest schema is untouched: `build_id` was already a compared manifest
+field and already part of a guest's `CoordinatorManifestExpectation`, so nothing
+new crosses the wire. A guest that disagrees terminates with the coordinator's
+`build_mismatch` reason, which the lobby renders as "The peers are running
+different builds. Install the same build on both."
+
 ## The request is a pure function of the freeze
 
 `match_session.request` takes a role, a peer id, the frozen manifest, and the

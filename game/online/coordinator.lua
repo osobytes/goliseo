@@ -15,6 +15,7 @@ local input_frame = require("sim.input_frame")
 ---| "transport_lost"
 ---| "protocol_violation"
 ---| "manifest_mismatch"
+---| "build_mismatch" -- The peers are not running the same build.
 ---| "invalid_assignment"
 ---| "start_ack_timeout"
 ---| "input_channel_failure"
@@ -77,6 +78,7 @@ local input_frame = require("sim.input_frame")
 ---@field assignment_id string -- The ownership generation the request answered.
 ---@field status "pending"|SessionPreferenceStatus
 ---@field reason SessionPreferenceRejection?
+---@field deadline integer? -- Guest only, and only while `pending`: the clock the wait expires at.
 
 ---@class CoordinatorPreferenceVerdict
 ---@field status SessionPreferenceStatus
@@ -206,10 +208,16 @@ coordinator.DUPLICATE_WINDOW = 8
 coordinator.HASH_WINDOW = 8
 coordinator.MAX_HASH_MISMATCHES = 3
 coordinator.START_ACK_TIMEOUT_TICKS = 120
+-- How long a guest waits for the host's verdict on its pair request before it
+-- gives up. Five seconds on the same 60 Hz lobby clock the start barrier uses:
+-- long enough that an ordinary slow round trip is never mistaken for silence,
+-- short enough that nobody watches a `pending` label wondering.
+coordinator.PREFERENCE_TIMEOUT_TICKS = 300
 coordinator.BOT_SEED_STRIDE = 7919
 coordinator.BOT_PRODUCER_PREFIX = "bot."
 coordinator.STALE_DUPLICATE_REASON = "duplicate fell outside the retained transcript window"
 coordinator.STALE_GENERATION_REASON = "readiness names a superseded ownership generation"
+coordinator.STALE_PREFERENCE_REASON = "pair preference result answers no pending request"
 
 ---@type SessionLifecyclePhase[]
 coordinator.PHASES = {
@@ -236,6 +244,10 @@ coordinator.TERMINAL_CODES = {
     transport_lost = "peer_disconnect",
     protocol_violation = "malformed_message",
     manifest_mismatch = "manifest_mismatch",
+    -- A build disagreement is a manifest disagreement on the wire: the closed
+    -- #161 rejection codes do not name builds, and inventing a code would be a
+    -- protocol change to say locally what `manifest_mismatch` already says.
+    build_mismatch = "manifest_mismatch",
     invalid_assignment = "invalid_assignment",
     start_ack_timeout = "peer_disconnect",
     input_channel_failure = "peer_disconnect",
@@ -271,6 +283,19 @@ local EXPECTATION_FIELDS = {
     "combat_rules_id",
     "gameplay_ai_policy_id",
     "combat_status",
+}
+
+-- Which identity disagreed decides how a tester should read it. `build_id` and
+-- `source_id` both come from `game.build_info` and the control vocabulary, so a
+-- difference in either means the peers are running different builds — the one
+-- failure whose fix is "deploy the same commit to both", and the one a tester
+-- must not have to infer from a field name. Every other expectation field is a
+-- content or configuration disagreement between builds that could otherwise
+-- have played, and stays `manifest_mismatch`.
+---@type table<string, CoordinatorTerminalReason>
+local IDENTITY_REASONS = {
+    ["manifest.build_id"] = "build_mismatch",
+    ["manifest.source_id"] = "build_mismatch",
 }
 
 ---@type table<SessionMatchPhase, table<SessionMatchPhase, boolean>>
@@ -778,21 +803,73 @@ local function refresh_ready_phase(next_state)
     next_state.phase = all_ready(next_state) and "ready" or "assigned"
 end
 
+-- A peer's record of its own pair request is a display, not an authority, and a
+-- publication that takes the pair away must say so rather than leave a `granted`
+-- standing over ownership that no longer matches it. The reason is derived from
+-- the ownership in force, at whichever end holds it, so nothing has to be sent
+-- to explain it.
+-- Every pair claim in force once `peer_id` is granted `slots`. A grant never
+-- disturbs a claim another peer made -- `already_taken` refuses a request over
+-- claimed slots before it can be granted -- so the claims a grant keeps are all
+-- of them, with the requester's own added or replaced.
+---@param state CoordinatorState
+---@param peer_id string
+---@param slots InputSlotId[]
+---@return table<string, InputSlotId[]>
+local function claims_after(state, peer_id, slots)
+    ---@type table<string, InputSlotId[]>
+    local claims = {}
+    for _, peer in ipairs(state.peers) do
+        if peer.pair_choice then
+            claims[peer.peer_id] = copy_value(peer.pair_choice)
+        end
+    end
+    claims[peer_id] = copy_value(slots)
+    return claims
+end
+
+---@param next_state CoordinatorState
+local function settle_preference(next_state)
+    local preference = next_state.preference
+    if not preference then
+        return
+    end
+    if preference.status ~= "granted" and preference.status ~= "unchanged" then
+        return
+    end
+    local owned = protocol.owned_slots(assert(next_state.assignments), next_state.peer_id)
+    if slot_lists_equal(owned, preference.slots) then
+        return
+    end
+    -- Replaced rather than mutated: `copy_state` shares the preference table
+    -- with the state this one was derived from.
+    next_state.preference = {
+        slots = copy_value(preference.slots),
+        assignment_id = preference.assignment_id,
+        status = "rejected",
+        reason = "reseated",
+    }
+end
+
 -- The one place an ownership generation is minted, for every reason ownership
--- can move: the host's own plan and a granted pair preference both land here.
--- `protocol.assignment_id` is therefore the only thing that decides generation
--- identity, and readiness clears through exactly one path however ownership
--- changed.
+-- can move: the host's own plan, a granted pair preference, and a roster change
+-- reseating around the pairs it can keep all land here. `protocol.assignment_id`
+-- is therefore the only thing that decides generation identity, and readiness
+-- clears through exactly one path however ownership changed.
 --
--- `claimant` is the peer whose granted preference caused this publication, and
--- naming one is what keeps every peer's claim alive. When the host decides
--- ownership itself it names nobody, because it has just overruled every guest's
--- choice, and every claim is dropped.
+-- `retained` is every pair claim this publication honours, keyed by the peer
+-- that made it: a peer named there keeps exactly the claim named with it, and a
+-- peer left out of it has no claim afterwards. Passing nothing therefore drops
+-- every claim, which is what the host reasserting its own seating order means.
+--
+-- This is where a claim is recorded or dropped, with one deliberate exception in
+-- the `unchanged` branches of `handle_prefer_pair` and `apply_pair_preference` --
+-- see there.
 ---@param next_state CoordinatorState
 ---@param assignments SessionSlotProducer[]
----@param claimant string?
+---@param retained table<string, InputSlotId[]>?
 ---@param actions CoordinatorAction[]
-local function publish_ownership(next_state, assignments, claimant, actions)
+local function publish_ownership(next_state, assignments, retained, actions)
     -- Every publication is its own generation, even one that restores byte-
     -- identical ownership, because the epoch is part of the identity. Readiness
     -- for any earlier generation can no longer be mistaken for readiness now.
@@ -802,13 +879,12 @@ local function publish_ownership(next_state, assignments, claimant, actions)
     next_state.phase = "assigned"
     clear_readiness(next_state)
     for _, peer in ipairs(next_state.peers) do
-        if not claimant then
-            peer.pair_choice = nil
-        end
-        -- A claim a peer made for itself is never moved by somebody else's
-        -- preference: `already_taken` refuses a request over claimed slots
-        -- before it can be granted. This is that invariant, checked.
-        local claim = peer.pair_choice
+        local claim = retained and retained[peer.peer_id] or nil
+        peer.pair_choice = claim and copy_value(claim) or nil
+        -- A claim this publication says it kept has to be a claim this ownership
+        -- actually seats -- whether it survived somebody else's grant, which
+        -- `already_taken` guarantees, or a reseat that chose to keep it. This is
+        -- that invariant, checked where nothing has been sent yet.
         if claim then
             assert(
                 slot_lists_equal(protocol.owned_slots(assignments, peer.peer_id), claim),
@@ -816,6 +892,7 @@ local function publish_ownership(next_state, assignments, claimant, actions)
             )
         end
     end
+    settle_preference(next_state)
     emit(next_state, "slot_assignment", {
         manifest_id = assert(next_state.manifest_id),
         assignment_id = next_state.assignment_id,
@@ -1061,6 +1138,111 @@ function coordinator.ownership_seats_roster(state)
         return false
     end
     return validate_local_assignments(state, state.assignments) == true
+end
+
+---@class CoordinatorReseat
+---@field assignments SessionSlotProducer[] -- The plan, adjusted to honour every surviving claim.
+---@field retained table<string, InputSlotId[]> -- Peer id -> the claim this reseat keeps.
+
+-- A seating plan knows the roster and nothing else; the claims a host granted
+-- live beside it. This reconciles the two, and it is the whole of what a roster
+-- change does to a granted pair.
+--
+-- A claim survives when the plan still has room for it exactly as it was: the
+-- right number of slots for the mode, every one of them a slot this plan seats a
+-- human on, all on one team, and none of them already kept for another peer. A
+-- claim that fails any of those is not in `retained` and is therefore dropped by
+-- the publication that follows. Nothing here has to name the peers that lost a
+-- claim: each of them reads the loss off the ownership it is about to hold, in
+-- `settle_preference`, which is the only place the reason is needed.
+--
+-- What survives is then held fixed and the plan fills in around it: the peers
+-- with no surviving claim take the remaining human slots in the plan's own
+-- order, `slots_per_human` at a time. Each team's share of the human slots is a
+-- multiple of `slots_per_human` and every claim sits inside one team, so what is
+-- left over is too, and no owned set can straddle the halfway line. No mode is
+-- named to make that true.
+---@param state CoordinatorState
+---@param assignments SessionSlotProducer[] -- A seating-derived plan for the current roster.
+---@return CoordinatorReseat
+function coordinator.reseat_claims(state, assignments)
+    local shape = assert(protocol.MATCH_MODES[assert(state.manifest).match_mode])
+    ---@type table<InputSlotId, integer>
+    local human_index = {}
+    ---@type integer[]
+    local human_order = {}
+    for index, producer in ipairs(assignments) do
+        if producer.producer_kind == "peer" then
+            human_index[producer.slot] = index
+            human_order[#human_order + 1] = index
+        end
+    end
+    ---@type table<InputSlotId, boolean>
+    local kept = {}
+    ---@param claim InputSlotId[]
+    ---@return boolean
+    local function survives(claim)
+        if #claim ~= shape.slots_per_human then
+            return false
+        end
+        ---@type SessionTeam?
+        local team = nil
+        for _, slot in ipairs(claim) do
+            local index = human_index[slot]
+            if not index or kept[slot] then
+                return false
+            end
+            team = team or assignments[index].team
+            if assignments[index].team ~= team then
+                return false
+            end
+        end
+        return true
+    end
+    ---@type table<string, InputSlotId[]>
+    local retained = {}
+    for _, peer in ipairs(state.peers) do
+        local claim = peer.pair_choice
+        if claim and survives(claim) then
+            retained[peer.peer_id] = copy_value(claim)
+            for _, slot in ipairs(claim) do
+                kept[slot] = true
+            end
+        end
+    end
+    ---@type integer[]
+    local free = {}
+    ---@type string[]
+    local unseated = {}
+    ---@type table<string, boolean>
+    local seen = {}
+    for _, index in ipairs(human_order) do
+        local producer = assignments[index]
+        if not kept[producer.slot] then
+            free[#free + 1] = index
+        end
+        if not seen[producer.producer_id] and not retained[producer.producer_id] then
+            seen[producer.producer_id] = true
+            unseated[#unseated + 1] = producer.producer_id
+        end
+    end
+    ---@type SessionSlotProducer[]
+    local reseated = copy_value(assignments)
+    for _, peer in ipairs(state.peers) do
+        for _, slot in ipairs(retained[peer.peer_id] or {}) do
+            reseated[assert(human_index[slot])].producer_id = peer.peer_id
+        end
+    end
+    local cursor = 0
+    for _, producer_id in ipairs(unseated) do
+        for _ = 1, shape.slots_per_human do
+            cursor = cursor + 1
+            reseated[assert(free[cursor], "a reseat ran out of free human slots")].producer_id =
+                producer_id
+        end
+    end
+    assert(cursor == #free, "a reseat must seat every free human slot exactly once")
+    return { assignments = reseated, retained = retained }
 end
 
 -- Ownership after a granted preference: the requester takes the slots it asked
@@ -1434,12 +1616,30 @@ local function handle_assign_slots(state, event)
     if not ok then
         return state, rejected(code or "invalid_assignment", err or "invalid slot assignment")
     end
-    if assignments_equal(state.assignments, event.assignments) then
+    local assignments = copy_value(event.assignments)
+    ---@type table<string, InputSlotId[]>?
+    local retained = nil
+    -- A plan is derived from the roster alone, so publishing one as it stands
+    -- overrules every pair a guest was granted. That is what the host means when
+    -- it reasserts its seating order, and never what a roster change means.
+    if event.preserve_claims then
+        local reseat = coordinator.reseat_claims(state, assignments)
+        assignments = reseat.assignments
+        -- The reseat only permutes human producers among the slots this plan
+        -- already seats humans on, so this can only fire on a coding error --
+        -- but it fires before anything is published, not inside the digest.
+        assert(
+            validate_local_assignments(state, assignments),
+            "a claim-preserving reseat produced ownership the host would refuse"
+        )
+        retained = reseat.retained
+    end
+    if assignments_equal(state.assignments, assignments) then
         return state, idempotent()
     end
     local actions = {}
     local next_state = copy_state(state)
-    publish_ownership(next_state, copy_value(event.assignments), nil, actions)
+    publish_ownership(next_state, assignments, retained, actions)
     return next_state, applied(actions)
 end
 
@@ -1470,6 +1670,10 @@ local function handle_prefer_pair(state, event)
             slots = slots,
             assignment_id = assert(state.assignment_id),
             status = "pending",
+            -- Every wait is bounded. A host that is up but never answers would
+            -- otherwise leave this request on `pending` for the rest of the
+            -- session; see `expire_preference`.
+            deadline = state.clock + coordinator.PREFERENCE_TIMEOUT_TICKS,
         }
         emit(next_state, "pair_preference", {
             manifest_id = assert(state.manifest_id),
@@ -1490,9 +1694,20 @@ local function handle_prefer_pair(state, event)
         reason = verdict.reason,
     }
     if verdict.status == "granted" then
-        local_peer(next_state).pair_choice = slots
-        publish_ownership(next_state, assert(verdict.assignments), state.peer_id, actions)
+        publish_ownership(
+            next_state,
+            assert(verdict.assignments),
+            claims_after(state, state.peer_id, slots),
+            actions
+        )
     elseif verdict.status == "unchanged" then
+        -- The one claim recorded outside `publish_ownership`, deliberately.
+        -- `unchanged` fires only when the request *is* the set this peer
+        -- already owns, so the claim it records is the ownership already in
+        -- force and no publication is owed: minting a generation here would
+        -- clear everyone's readiness to announce that nothing moved. Every
+        -- other write to `pair_choice` goes through `publish_ownership`, which
+        -- is why a reseat can settle claims in one place.
         local_peer(next_state).pair_choice = slots
     end
     return next_state, applied(actions)
@@ -1612,6 +1827,32 @@ local function handle_begin_countdown(state, event)
     return next_state, applied(actions)
 end
 
+-- Give up on a pair request the host never answered. The wait is bounded by the
+-- same lobby clock the start barrier is bounded by, and running out of it is a
+-- refusal like any other: ownership is left exactly where it was, the reason is
+-- typed so the lobby can say it in words, and the peer is free to ask again.
+-- Nothing is sent -- silence is only observable at the end that waited, so the
+-- host is told nothing and the wire vocabulary is untouched.
+---@param next_state CoordinatorState
+local function expire_preference(next_state)
+    local pending = next_state.preference
+    if not pending or pending.status ~= "pending" then
+        return
+    end
+    local deadline = assert(pending.deadline, "a pending pair preference must carry a deadline")
+    if next_state.clock <= deadline then
+        return
+    end
+    -- Replaced rather than mutated: `copy_state` shares the preference table
+    -- with the state this tick came from.
+    next_state.preference = {
+        slots = copy_value(pending.slots),
+        assignment_id = pending.assignment_id,
+        status = "rejected",
+        reason = "no_response",
+    }
+end
+
 ---@param state CoordinatorState
 ---@return CoordinatorState, CoordinatorOutcome
 local function handle_tick(state)
@@ -1620,6 +1861,7 @@ local function handle_tick(state)
     if state.phase == "terminal" then
         return next_state, applied()
     end
+    expire_preference(next_state)
     local actions = {}
     if state.phase == "countdown" then
         if (next_state.countdown_remaining or 0) > 0 then
@@ -1910,11 +2152,12 @@ local function drop_guest(state, peer, code)
         -- refuses on the ownership check.
         next_state.assignments = nil
         next_state.assignment_id = nil
-        -- A pair claim describes an owned set inside that ownership, so it dies
-        -- with it. The republication that follows seats everyone afresh.
-        for _, peer_entry in ipairs(next_state.peers) do
-            peer_entry.pair_choice = nil
-        end
+        -- The pair claims deliberately outlive the ownership they were granted
+        -- in. A departure is exactly the case where some of them still fit and
+        -- some do not, and only the republication that follows can tell which:
+        -- see `reseat_claims`. Until it lands, no claim can be acted on anyway,
+        -- because every preference against an unpublished ownership is refused
+        -- `not_seated`.
     end
     actions[#actions + 1] = { kind = "close", link_id = assert(peer.link_id) }
     return next_state, applied(actions)
@@ -2050,7 +2293,7 @@ local function apply_manifest_proposal(state, peer, message)
     local difference = coordinator.expectation_difference(state.expectation, body.manifest)
     if difference then
         return terminate_from(state, {
-            reason = "manifest_mismatch",
+            reason = IDENTITY_REASONS[difference.path] or "manifest_mismatch",
             origin = "remote",
             peer_id = peer.peer_id,
             detail = "local identity differs at " .. difference.path,
@@ -2171,6 +2414,11 @@ local function apply_slot_assignment(state, peer, message)
     next_state.assignment_id = body.assignment_id
     next_state.phase = "assigned"
     clear_readiness(next_state)
+    -- The host holds every claim and decides which of them a new generation can
+    -- keep, but it never has to say so: this ownership either seats the pair
+    -- this peer was granted or it does not, and that is the whole answer. Same
+    -- rule, same reason, evaluated at whichever end is reading.
+    settle_preference(next_state)
     return next_state, applied()
 end
 
@@ -2256,9 +2504,17 @@ local function apply_pair_preference(state, peer, message)
     local actions = {}
     local next_state = copy_state(state)
     if verdict.status == "granted" then
-        assert(peer_by_id(next_state, peer.peer_id)).pair_choice = copy_value(verdict.slots)
-        publish_ownership(next_state, assert(verdict.assignments), peer.peer_id, actions)
+        publish_ownership(
+            next_state,
+            assert(verdict.assignments),
+            claims_after(state, peer.peer_id, verdict.slots),
+            actions
+        )
     elseif verdict.status == "unchanged" then
+        -- The host side of the one deliberate exception; see the same branch in
+        -- `handle_prefer_pair`. The set is the one this peer already owns, so
+        -- the claim records ownership that is already published and owes no
+        -- generation of its own.
         assert(peer_by_id(next_state, peer.peer_id)).pair_choice = copy_value(verdict.slots)
     end
     -- Answered after any republication, so the requester already holds the
@@ -2299,11 +2555,19 @@ local function apply_pair_preference_result(state, peer, message)
         or pending.assignment_id ~= body.assignment_id
         or not slot_lists_equal(pending.slots, body.slots)
     then
-        -- A result for a request this peer is no longer waiting on. Dropping is
-        -- strictly safer than adopting it, and it costs nothing: the ownership
-        -- in force is published separately and is unaffected either way.
-        return state, stale("pair preference result answers no pending request")
+        -- A result for a request this peer is no longer waiting on, including a
+        -- verdict that arrives after the wait expired. Dropping is strictly
+        -- safer than adopting it, and it costs nothing: the ownership in force
+        -- is published separately and is unaffected either way.
+        return state, stale(coordinator.STALE_PREFERENCE_REASON)
     end
+    -- The verdict is adopted as sent, without re-deriving it from the ownership
+    -- in force, so a grant whose pair a later publication has already seated
+    -- away can be read here as `granted` for as long as it takes that
+    -- publication's `slot_assignment` to arrive. The window is expected and
+    -- closes itself: `settle_preference` runs on that arrival and rewrites the
+    -- record to `reseated`. Re-deriving here instead would answer against
+    -- ownership this peer has not been told about yet.
     local next_state = copy_state(state)
     next_state.preference = {
         slots = copy_value(pending.slots),

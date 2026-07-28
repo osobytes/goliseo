@@ -79,6 +79,8 @@ local match_snapshot = require("sim.match_snapshot")
 ---| "not_seated" -- The peer owns nothing in the generation it answered.
 ---| "superseded" -- The preference answers an ownership generation no longer in force.
 ---| "after_freeze" -- Ownership is frozen and cannot move again this session.
+---| "no_response" -- The request expired unanswered. Minted locally, never on the wire.
+---| "reseated" -- A publication seated the pair again. Minted locally, never on the wire.
 
 ---@class SessionRuntimeIdentity
 ---@field version integer
@@ -406,8 +408,13 @@ local REJECT_CODES = {
     peer_disconnect = true,
     desync = true,
 }
-local PREFERENCE_STATUSES = { granted = true, unchanged = true, rejected = true }
-local PREFERENCE_REJECTIONS = {
+---@type table<SessionPreferenceStatus, boolean>
+protocol.PREFERENCE_STATUSES = { granted = true, unchanged = true, rejected = true }
+
+-- Every typed refusal a pair preference can end on, wire-borne or local. A
+-- reader that shows preferences has to cover all of them, so the set is public.
+---@type table<SessionPreferenceRejection, boolean>
+protocol.PREFERENCE_REJECTIONS = {
     already_taken = true,
     wrong_team = true,
     invalid_slot = true,
@@ -415,7 +422,31 @@ local PREFERENCE_REJECTIONS = {
     not_seated = true,
     superseded = true,
     after_freeze = true,
+    no_response = true,
+    reseated = true,
 }
+
+-- The refusals no host ever sends, because neither is a verdict on a request.
+-- Each is minted by the peer that observes it: silence is only observable at the
+-- end that waited, and a pair a publication seated away is only observable
+-- against the ownership that took it, which every peer holds for itself. A host
+-- claiming either is malformed.
+---@type table<SessionPreferenceRejection, boolean>
+protocol.LOCAL_PREFERENCE_REJECTIONS = {
+    no_response = true,
+    reseated = true,
+}
+
+-- The refusals a host may put on the wire: every typed reason except the ones a
+-- peer mints for itself. The accepted message vocabulary is therefore exactly
+-- what it was before either local reason existed.
+---@type table<SessionPreferenceRejection, boolean>
+local WIRE_PREFERENCE_REJECTIONS = {}
+for reason in pairs(protocol.PREFERENCE_REJECTIONS) do
+    if not protocol.LOCAL_PREFERENCE_REJECTIONS[reason] then
+        WIRE_PREFERENCE_REJECTIONS[reason] = true
+    end
+end
 local DISCONNECT_CODES = {
     peer_left = true,
     transport_lost = true,
@@ -510,6 +541,63 @@ local MESSAGE_ID_PREFIX = "GCMI;1;"
 local SLOT_INDEXES = {}
 for index = 1, input_frame.SLOT_COUNT do
     SLOT_INDEXES[assert(input_frame.slot(index)).id] = index
+end
+
+---@param set table<string, any>
+---@return string[]
+local function sorted_keys(set)
+    local keys = {}
+    for key in pairs(set) do
+        keys[#keys + 1] = key
+    end
+    table.sort(keys)
+    return keys
+end
+
+-- Digest everything a peer has to agree with before a control message is
+-- acceptable: which kinds exist, which fields each body carries, and which
+-- lifecycle phases each kind is legal in. Disagreeing about any of the three is
+-- unrecoverable and always was — an unknown kind is `unknown_message`, an
+-- unfamiliar body field is `malformed`, and a kind sent where this build does
+-- not allow it is `invalid_phase` — and each fires only when the offending
+-- message is finally sent, which for a lobby kind means partway through the
+-- lobby.
+--
+-- Pure and parameterised so the sensitivity is provable rather than asserted:
+-- a test can put a vocabulary that differs by one kind, one field, or one phase
+-- against this build's and require a different digest. Sorted throughout, so it
+-- never depends on `pairs` order and two peers running the same code always
+-- compute the same string.
+---@param kinds table<string, table<string, any>> -- Message kind -> its body field set.
+---@param phases table<string, table<string, any>> -- Message kind -> its legal phase set.
+---@return string
+function protocol.vocabulary_digest(kinds, phases)
+    local ordered = sorted_keys(kinds)
+    local ordered_phases = sorted_keys(phases)
+    assert(#ordered == #ordered_phases, "every message kind needs exactly one phase rule")
+    local parts = { "GCPV;1;", tostring(protocol.VERSION), ";" }
+    for index, kind in ipairs(ordered) do
+        assert(kind == ordered_phases[index], "message kind and phase tables disagree: " .. kind)
+        parts[#parts + 1] = ("%s:%s@%s;"):format(
+            kind,
+            table.concat(sorted_keys(kinds[kind]), ","),
+            table.concat(sorted_keys(phases[kind]), ",")
+        )
+    end
+    return fnv1a64.hash(table.concat(parts))
+end
+
+-- This build's own vocabulary, digested once at load from the same two tables
+-- `validate` and `validate_phase` read, so it cannot drift from the vocabulary
+-- it claims to describe. `game.online.match_manifest` folds it into `build_id`,
+-- which is what moves the disagreement above from mid-lobby to the manifest
+-- check.
+local VOCABULARY_ID = protocol.vocabulary_digest(BODY_FIELDS, ALLOWED_PHASES)
+
+-- Opaque, stable identity of the control vocabulary this build speaks.
+---@return string
+function protocol.vocabulary_id()
+    return VOCABULARY_ID
 end
 
 ---@param value any
@@ -1370,11 +1458,11 @@ function protocol.validate(message)
         if not ok then
             return nil, err, code
         end
-        if not PREFERENCE_STATUSES[body.status] then
+        if not protocol.PREFERENCE_STATUSES[body.status] then
             return failure("malformed", "pair preference status is invalid")
         end
         if body.status == "rejected" then
-            if not PREFERENCE_REJECTIONS[body.reason] then
+            if not WIRE_PREFERENCE_REJECTIONS[body.reason] then
                 return failure("malformed", "a refused pair preference needs a typed reason")
             end
         elseif body.reason ~= nil then
