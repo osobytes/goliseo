@@ -13,6 +13,19 @@
 // registers is dispatched through `fire`, which records anything it throws, so
 // a late callback touching a torn-down peer fails the run instead of passing
 // silently.
+//
+// Three more axes exist because a forgiving double certifies code a browser
+// breaks:
+//
+//   * `bufferedAmount` is real state. send() grows it, the transport drains it,
+//     and `onbufferedamountlow` fires -- on a later task -- only when the value
+//     CROSSES `bufferedAmountLowThreshold` downwards. That is a browser's
+//     primary drain-resumption path, and it is the one the bridge relies on.
+//   * data channels open in a caller-chosen order, synchronously or on later
+//     tasks. A browser guarantees neither the ordering nor the synchronicity.
+//   * `iceGatheringState` can start "gathering" and transition later, or never
+//     complete at all, so both the `onicegatheringstatechange` path and the
+//     ICE timeout fallback are reachable.
 
 const fs = require("fs");
 const vm = require("vm");
@@ -80,7 +93,8 @@ function wire(type, seq, tick, payload) {
 // RTCPeerConnection double
 // ---------------------------------------------------------------------------
 
-function createRtc() {
+function createRtc(options) {
+  const settings = options || {};
   const instances = [];
 
   function FakeChannel(label, config) {
@@ -97,10 +111,35 @@ function createRtc() {
       throw new Error("InvalidStateError: data channel is not open");
     }
     this.sent.push(data);
+    // A real send is buffered, not instantaneous: the byte count lands in
+    // bufferedAmount and only leaves it as the user agent puts bytes on the
+    // wire (see `releaseBytes`).
+    this.bufferedAmount += Buffer.byteLength(String(data), "utf8");
     const peer = this._peer;
     if (peer) {
       fire(peer, "onmessage", { data });
     }
+  };
+  // Pretend the user agent put `bytes` on the wire. This is the ONLY way
+  // bufferedAmount ever falls, and it is what makes onbufferedamountlow fire:
+  // per spec the event is queued when the value transitions from above the
+  // threshold to at-or-below it, on a later task.
+  FakeChannel.prototype.releaseBytes = function (bytes) {
+    const before = this.bufferedAmount;
+    const amount = bytes === undefined ? before : bytes;
+    this.bufferedAmount = Math.max(0, before - amount);
+    const crossed =
+      before > this.bufferedAmountLowThreshold &&
+      this.bufferedAmount <= this.bufferedAmountLowThreshold;
+    if (crossed) {
+      setTimeout(() => fire(this, "onbufferedamountlow", {}), 0);
+    }
+  };
+  // Congest the channel without any crossing: bufferedAmount only ever rises
+  // here, so no onbufferedamountlow can be attributed to setting it up.
+  FakeChannel.prototype.congestTo = function (bytes) {
+    check(bytes >= this.bufferedAmount, "congestTo must not lower bufferedAmount");
+    this.bufferedAmount = bytes;
   };
   FakeChannel.prototype.close = function () {
     if (this.readyState === "closed") {
@@ -113,7 +152,11 @@ function createRtc() {
 
   function FakePeerConnection(config) {
     this.config = config;
-    this.iceGatheringState = "complete";
+    // "complete" keeps waitForIce on its synchronous fast path. The gathering
+    // modes below are what a real connection does: state starts short of
+    // complete and transitions later, or never does.
+    this.iceGatheringState =
+      settings.ice_gathering === undefined ? "complete" : settings.ice_gathering;
     this.iceConnectionState = "new";
     this.connectionState = "new";
     this.localDescription = null;
@@ -122,6 +165,12 @@ function createRtc() {
     this.remoteChannels = [];
     instances.push(this);
   }
+  // Finish ICE gathering the way a browser does: mutate the state, then fire
+  // onicegatheringstatechange on a later task.
+  FakePeerConnection.prototype.completeIceGathering = function () {
+    this.iceGatheringState = "complete";
+    setTimeout(() => fire(this, "onicegatheringstatechange", {}), 0);
+  };
   FakePeerConnection.prototype.createDataChannel = function (label, config) {
     const channel = new FakeChannel(label, config);
     this.localChannels.push(channel);
@@ -164,22 +213,44 @@ function createRtc() {
   };
   // Deliver this connection's locally created channels to `other` the way a
   // browser does: through ondatachannel, then onopen on both ends.
-  FakePeerConnection.prototype.connectTo = function (other) {
-    this.localChannels.forEach((local) => {
+  //
+  // A browser guarantees neither the order in which the two channels open nor
+  // that they open during this call, so both are the caller's choice.
+  // `options.order` lists the labels to open, first to last; with
+  // `options.open === "deferred"` nothing opens here and the returned array of
+  // thunks lets the test run each open on a later task of its own choosing.
+  // The returned array is in `order`, so `openings[0]` is the first to open.
+  FakePeerConnection.prototype.connectTo = function (other, options) {
+    const settings = options || {};
+    const order = settings.order || this.localChannels.map((channel) => channel.label);
+    check(
+      order.length === this.localChannels.length,
+      "connectTo was given an order that does not cover every local channel"
+    );
+    const pairs = order.map((label) => {
+      const local = this.localChannels.find((channel) => channel.label === label);
+      check(local !== undefined, "connectTo was asked to open an unknown channel: " + label);
       const remote = new FakeChannel(local.label, local.config);
       local._peer = remote;
       remote._peer = local;
       other.remoteChannels.push(remote);
       fire(other, "ondatachannel", { channel: remote });
-      local.readyState = "open";
-      remote.readyState = "open";
-      fire(local, "onopen", {});
-      fire(remote, "onopen", {});
+      return { local, remote };
     });
     this.connectionState = "connected";
     this.iceConnectionState = "connected";
     other.connectionState = "connected";
     other.iceConnectionState = "connected";
+    const openings = pairs.map((pair) => () => {
+      pair.local.readyState = "open";
+      pair.remote.readyState = "open";
+      fire(pair.local, "onopen", {});
+      fire(pair.remote, "onopen", {});
+    });
+    if (settings.open !== "deferred") {
+      openings.forEach((open) => open());
+    }
+    return openings;
   };
   // Open an extra channel from this side onto an established connection.
   FakePeerConnection.prototype.pushExtraChannel = function (other, label) {
@@ -196,7 +267,7 @@ function createRtc() {
 // Star construction over the real signaling path
 // ---------------------------------------------------------------------------
 
-async function connect(host, guest, peerId, rtc) {
+async function connect(host, guest, peerId, rtc, link) {
   const first = rtc.instances.length;
   check(host.request_offer(peerId) === "ok", "request_offer was refused");
   await delay(5);
@@ -215,9 +286,9 @@ async function connect(host, guest, peerId, rtc) {
 
   const hostPc = rtc.instances[first];
   const guestPc = rtc.instances[first + 1];
-  hostPc.connectTo(guestPc);
+  const openings = hostPc.connectTo(guestPc, link);
   await delay(5);
-  return { hostPc, guestPc };
+  return { hostPc, guestPc, openings };
 }
 
 async function buildStar(options) {
@@ -239,10 +310,40 @@ async function buildStar(options) {
       guest.initialize("guest", queueLimit, 1, bufferedLimit) === "star|connected",
       "guest did not initialize"
     );
-    const links = await connect(host, guest, peerId, rtc);
-    guests.push({ peerId, star: guest, hostPc: links.hostPc, guestPc: links.guestPc });
+    const links = await connect(host, guest, peerId, rtc, settings.link);
+    guests.push({
+      peerId,
+      star: guest,
+      hostPc: links.hostPc,
+      guestPc: links.guestPc,
+      openings: links.openings
+    });
   }
   return { host, guests, rtc };
+}
+
+// The channel the host bridge actually sends through on a given link.
+function hostChannel(link, label) {
+  const channel = link.hostPc.localChannels.find((candidate) => candidate.label === label);
+  check(channel !== undefined, "the bridge never created a " + label + " channel");
+  return channel;
+}
+
+function peerRecord(star, peerId) {
+  const record = diagnostics(star).peers.find((peer) => peer.id === peerId);
+  check(record !== undefined, "diagnostics do not report " + peerId);
+  return record;
+}
+
+// Run one deferred channel open on a later task, the way a browser delivers an
+// open event, and let the bridge's synchronous reaction settle.
+function openLater(open) {
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      open();
+      resolve();
+    }, 1);
+  });
 }
 
 function diagnostics(star) {
@@ -524,24 +625,34 @@ async function testBoundsAndOverflow() {
   check(diagnostics(guest).peers[0].sequence_gaps > 0, "sequence gaps are not reported");
 }
 
+// The poll-driven fallback, measured on its own. Congestion is relieved here
+// by assigning bufferedAmount directly -- deliberately NOT a browser
+// operation, and the one thing in this file that skips the low-water event --
+// so that everything this case proves is attributable to poll_event's
+// drainAll.
 async function testBackpressureLatchRearms() {
   const { host, guests } = await buildStar({
     guests: 1,
     queue_limit: 16,
     buffered_amount_limit: 200
   });
-  const control = guests[0].hostPc.localChannels.find((channel) => channel.label === "control");
+  const control = hostChannel(guests[0], "control");
   drainEvents(host);
 
   const line = "guest_1|control|" + wire("event", 0, null, "payload");
+  const wireBytes = Buffer.byteLength(wire("event", 0, null, "payload"), "utf8");
 
   // 1. Healthy: the message reaches the data channel immediately.
   check(host.send(line) === "ok", "a healthy send was refused");
   check(control.sent.length === 1, "a healthy send did not reach the data channel");
   check(diagnostics(host).peers[0].control.outbound === 0, "a healthy send stayed queued");
+  check(
+    control.bufferedAmount === wireBytes,
+    "a sent message did not land in the channel send buffer"
+  );
 
   // 2. Saturate the send buffer. The message queues and one event is emitted.
-  control.bufferedAmount = 1000;
+  control.congestTo(1000);
   check(host.send(line) === "ok", "a backpressured send was refused instead of queued");
   check(control.sent.length === 1, "a message was pushed into a saturated buffer");
   check(diagnostics(host).peers[0].control.outbound === 1, "the message was not queued");
@@ -557,14 +668,16 @@ async function testBackpressureLatchRearms() {
   );
   check(diagnostics(host).backpressure === 1, "the backpressure counter double-counted");
 
-  // 4. Relieve the buffer. Draining empties the queue and clears the latch.
+  // 4. Relieve the buffer silently. Only polling can notice, and it does.
   control.bufferedAmount = 0;
+  await delay(5);
+  check(control.sent.length === 1, "a silent relief drained without anything polling");
   drainEvents(host);
   check(control.sent.length === 3, "the queued messages did not send after relief");
   check(diagnostics(host).peers[0].control.outbound === 0, "the outbound queue did not drain");
 
   // 5. Re-saturate: a genuine second congestion must be reported again.
-  control.bufferedAmount = 1000;
+  control.congestTo(1000);
   check(host.send(line) === "ok", "a re-saturated send was refused");
   const second = backpressureEvents(drainEvents(host));
   check(
