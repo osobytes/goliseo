@@ -80,12 +80,17 @@ rediscover:
   input stream — a deliberate wire addition, out of scope here and unaffected by
   the choice of 120 over 60.
 
-The OMP-3 fault campaign does not read this default: `fault_harness` overwrites
-`duration_ticks` with its own `DEFAULT_DURATION_TICKS = 150`
-(`game/online/fault_harness.lua:145,227`), as `match_driver_fixture`
-(`DEFAULT_DURATION = 6`) and the session spec fixture (`90`) do with theirs. The
-campaign runtime is therefore unchanged by this decision, which is why a
-two-minute online match costs nothing to validate.
+The OMP-3 fault campaign does not read this default. `fault_harness` builds on
+`match_manifest.template` and then overwrites `duration_ticks` with its own
+`DEFAULT_DURATION_TICKS = 150` (`game/online/fault_harness.lua:145,227`), as the
+session spec fixture does with its `90`
+(`spec/fixtures/online_match_session.lua:30,42-43`). `match_driver_fixture` does
+not reach this constant at all: its manifests come from
+`protocol_fixture.manifest` (`game/online/match_driver_fixture.lua:106,150`),
+and its own `DEFAULT_DURATION = 6` is a `sim.match.new` duration in **seconds**
+for `initial_snapshot`, not a manifest `duration_ticks`. The campaign runtime is
+therefore unchanged by this decision, which is why a two-minute online match
+costs nothing to validate.
 
 ## `build_id` carries the control vocabulary
 

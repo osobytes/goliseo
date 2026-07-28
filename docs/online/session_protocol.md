@@ -81,6 +81,14 @@ MatchSnapshot 10, combat input tape 2, and combat companion schema 1. The
 canonical manifest digest is a reproducibility/correlation id, not a
 cryptographic signature.
 
+The duration in field 5 is `duration_ticks`, and it is **7,200 ticks — 120
+seconds at 60 Hz** — the same length online and offline. That was decided in
+[#251](https://github.com/osobytes/goliseo/issues/251) after the online default
+was found running half of it; the reasoning, and why the frozen manifest rather
+than `MAX_DURATION_TICKS` is what bounds a future extra-time feature, is
+recorded in
+[`match_flow.md`](match_flow.md#a-match-is-120-seconds-online-and-offline).
+
 `manifest_difference` returns the first differing path, so a one-field
 mismatch fails before countdown with a name such as
 `manifest.teams.2.roster.3.family_id`. The manifest is immutable after
