@@ -238,6 +238,11 @@ Claims die whenever the ownership they describe does: an explicit host
 republication drops all of them, because the host has just overruled every
 guest's choice, and so does a pre-countdown departure that voids ownership.
 
+`state.preference` is the local peer's last request and the answer to it, kept
+so a lobby can say what happened. It is a record and never an authority: the
+ownership in force is `state.assignments`, and a peer that reads both will see a
+granted pair it was later moved out of as exactly that.
+
 **One generation mechanism.** A granted preference mints nothing of its own. It
 calls `publish_ownership`, the same function the host's own `assign_slots`
 calls, which bumps the epoch, mints `protocol.assignment_id(assignments,
