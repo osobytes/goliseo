@@ -42,13 +42,20 @@ cannot currently run (see correction 3), so it is **untested rather than disprov
 | host-star worst node | 5,285 B/tick | **5,319.9** |
 | relay client upload | 1,190 | **194.4** |
 | relay downlink | ~650 | **1,360.8** |
+| canonical batch | 755 B | **760.0** |
+
+The canonical batch row is not a prediction error — it moved when #243 added `confirmed_span` to
+every packet. It is listed here because the original sections below still quote **755 B** (at the
+`input_protocol_conformance` reference, in the relay-style table, and in the WebTransport datagram
+paragraph). Those are left as written, per this document's convention of correcting above rather
+than rewriting original prose — but without this row a reader has no signal they are stale.
 
 The 1,190 was the *mesh* figure copied into the relay column — a relay client uploads one copy, not
 seven — so the concentration win is roughly **27x**, not 4.4x. Better than claimed.
 
 The downlink figure was **inverted**, and instructively so: a framing relay cannot merge rows
-*precisely because it does not parse*, so it forwards seven envelopes and costs **1.76x more**
-downstream than the 755-byte canonical batch. Envelope overhead multiplied by fan-out is the price
+*precisely because it does not parse*, so it forwards seven envelopes and costs **1.79x more**
+downstream than the 760-byte canonical batch. Envelope overhead multiplied by fan-out is the price
 of staying ignorant of the game. "Cheaper and simpler" was wrong — it is simpler and more
 expensive.
 

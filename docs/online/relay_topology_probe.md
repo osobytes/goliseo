@@ -137,7 +137,7 @@ makes it attractive: it does not parse, so it cannot merge. Each client receives
 the other seven bundles whole — seven protocol headers, seven sender ids, seven
 sequences — where a canonical batch carries the union of their rows under one
 header. Measured: **1,360.8 B/tick of envelopes versus 760.0 B/tick canonical**,
-so the framing relay costs **1.76× more downstream**, not 16% less.
+so the framing relay costs **1.79× more downstream**, not 16% less.
 
 ### The 1,360.8 figure is a floor, not the wire cost
 
@@ -255,8 +255,10 @@ wait was a *heuristic* — `DELAY_TICKS + 1` consecutive silent steps — and th
 paid all four on every clean match, which is what made deleting it the decision's
 clearest simplification. #243 gave guests a way to report their own confirmation
 in the bundles they already re-publish, so the host now leaves when every author
-it has heard from has confirmed the final boundary. That is a bound, and the quiet
-count survives only as the fallback for a peer that has stopped speaking at all.
+it has heard from has confirmed the final boundary. The quiet count survives as the
+fallback for a peer that has stopped speaking at all — intended as a fallback
+rather than enforced as one, since `tail_delivered` still tests it before reading
+any report. See `match_driver.md`.
 Measured on the same healthy 1v1: the host and its guest both settle in two steps,
 where the host used to need four or more.
 

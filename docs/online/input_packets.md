@@ -13,6 +13,32 @@ Input packets use protocol version 1 and carry `InputFrame` sample version 2.
 Changing the sample bytes, row layout, six-row redundancy, three-tick fairness
 delay, ordering, identity, or bounds requires an explicit version decision.
 
+**Decision on record:** #243 raised `MAX_HOST_ROWS` from 56 to 72 and added the
+`confirmed_span` field and `repair_rows` to the host batch, and both were folded
+into protocol version 1 rather than minting version 2. That is a bound change and
+a field addition, so this section's own rule requires the decision be written down
+rather than assumed.
+
+OMP-3 has never shipped and no peer outside this repository speaks version 1, so
+there is nothing to migrate and no compatibility claim to break — the same
+reasoning recorded twice in `session_protocol.md`. The change is additive at the
+field level: no existing field changed meaning, no other bound moved, no error
+code was invented (`authority_conflict` is reused for repair-row conflicts), and
+the sample bytes, row layout, redundancy depth and fairness delay are all
+untouched.
+
+The cost is confined to regenerated pins, each of which changed visibly and on
+purpose: the guest and host wire digests, `maximal_wire_bytes` (755 → 958,
+decomposing exactly as +192 for sixteen more rows at twelve base64 bytes each and
++11 for one ten-digit field plus its separator), the new `maximal_wire_margin`,
+and the mirrored pins in `scripts/browser_determinism.py`. That last file is easy
+to miss: `./scripts/check.sh` does not compare a browser run's marker against it,
+so a stale value there passes locally and fails the OMP-1 browser determinism gate
+in CI every time. Regenerate it in the same change as the Lua goldens.
+
+Once a build ships that a player can connect with, this option closes and any
+further bound or field change takes a version bump.
+
 The established session link supplies the full `session_id` and sender/producer
 id as decode context. The wire carries the accepted 16-hex `manifest_id` and a
 16-hex packet id derived from:

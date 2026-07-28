@@ -354,9 +354,12 @@ That also turns this document's one remaining heuristic into a bound. The settle
 phase's relay-quiet check had to *infer* that guests were done from four silent
 steps, and was documented as covering everything except a worst-case burst
 followed by worst-case jitter. The host now leaves when every author it has heard
-from has **reported** confirming the final boundary; the quiet count survives only
-as the fallback for a peer that has stopped speaking at all, which is the one case
-no report can cover.
+from has **reported** confirming the final boundary; the quiet count survives as
+the fallback for a peer that has stopped speaking at all, which is the one case no
+report can cover. That fallback is intended rather than enforced — `tail_delivered`
+still tests the quiet count before it reads any report, so silence does not yet
+strictly lose to evidence. See `match_driver.md` for why closing that gap means
+retiring the quiet count rather than reordering it.
 
 Measured, on the same seeds before and after:
 

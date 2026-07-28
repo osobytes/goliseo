@@ -342,10 +342,21 @@ boundary is confirmed **and** every author it has heard from has confirmed the
 final boundary too. That is a bound, not a heuristic.
 
 `SETTLE_RELAY_QUIET_STEPS` (4, the fairness delay plus one) consecutive settle
-steps with no input traffic at all survives as the fallback, and only as the
-fallback: a peer that has stopped speaking altogether cannot report anything, and
-that is the one case a report cannot cover. The settle deadline bounds it anyway.
-A clean match costs the host at most those four steps — 67 ms.
+steps with no input traffic at all survives as the fallback for a peer that has
+stopped speaking altogether, which is the one case a report cannot cover. The
+settle deadline bounds it anyway. A clean match costs the host at most those four
+steps — 67 ms.
+
+**It is a fallback by intent, not by construction.** `tail_delivered` tests the
+quiet count *before* it consults `_peer_confirmed`, so a peer that reported itself
+behind and then fell silent for exactly four consecutive steps still trips the
+short-circuit ahead of its own report. Reports narrow the window in every case
+where any report keeps arriving, which is why the measured behaviour improved —
+but silence does not yet strictly lose to evidence. Making that unconditional
+means retiring the quiet count entirely rather than reordering two checks, since
+the loop below it already returns `true` when nothing is known to be behind;
+tracked separately so it is a deliberate removal rather than a side effect of this
+change.
 
 It introduces no new wait. The phase's two existing deadlines still end it, and
 they no longer decide the status: a peer whose own final boundary is confirmed
