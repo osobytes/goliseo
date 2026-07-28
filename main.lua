@@ -8,6 +8,8 @@
 --   love . --rollback-lab [profile] [seed] [corrupt] -> run the OMP-2 lab
 --   love . --rollback-validation SUITE [profile] [seed] -> gate OMP-2 evidence
 --   love . --fault-harness [row|smoke|full] [net seed] [ticks] -> OMP-3 fault matrix
+--                                (add `--topology relay` to run the same matrix over
+--                                 the in-process relay instead of the direct-host star)
 --   love . --determinism      -> verify the frozen OMP-1 complete-match evidence
 --   love . --determinism-refresh -> deliberately replace the frozen OMP-1 recording
 --   love . --rate-validate [n] -> validate frozen squad ratings over n paired seeds, exit
@@ -51,8 +53,17 @@ if has_flag("--fault-harness") then
                 break
             end
         end
+        ---@type string?
+        local topology
+        for index, value in ipairs(arg or {}) do
+            if value == "--topology" then
+                topology = arg[index + 1]
+                break
+            end
+        end
         local ticks = tonumber(duration)
-        local ok = runner.main(selector, tonumber(seed), ticks and math.floor(ticks) or nil)
+        local ok =
+            runner.main(selector, tonumber(seed), ticks and math.floor(ticks) or nil, topology)
         os.exit(ok and 0 or 1)
     end
     return

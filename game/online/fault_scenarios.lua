@@ -536,7 +536,7 @@ end
 
 -- Run one declared row end to end and report on it.
 ---@param scenario FaultScenario
----@param options { duration_ticks: integer?, network_seed: number? }?
+---@param options { duration_ticks: integer?, network_seed: number?, topology: FaultHarnessTopology? }?
 ---@return FaultHarnessReport
 function fault_scenarios.run(scenario, options)
     options = options or {}
@@ -544,6 +544,7 @@ function fault_scenarios.run(scenario, options)
         or options.duration_ticks
         or fault_scenarios.SMOKE_DURATION_TICKS
     local harness = fault_harness.new({
+        topology = options.topology,
         mode = scenario.mode,
         humans = scenario.humans,
         profile = scenario.profile,
