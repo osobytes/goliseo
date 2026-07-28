@@ -420,10 +420,23 @@ t.describe("relay topology probe: no peer is the sequencer", function()
         t.eq(counted.reason, "only the host starts the countdown")
     end)
 
-    -- Finding 5. The settle phase's relay-quiet heuristic is host-only by
+    -- Finding 5. The settle phase's relay-quiet wait is host-only by
     -- construction. It exists because a player-host that stops relaying strands
     -- everyone else's tail; a relay that is not a player cannot leave, so this
     -- is one piece of complexity the topology genuinely deletes.
+    --
+    -- #243 re-pinned the *cost*, not the finding. When this landed the wait was a
+    -- heuristic -- four consecutive silent steps -- and the host paid all four on
+    -- every clean match. Guests now report their own confirmation in the bundles
+    -- they already re-publish, so the host leaves when every author it has heard
+    -- from has confirmed the final boundary, and the quiet count survives only as
+    -- the fallback for a peer that has stopped speaking at all. Under clean
+    -- delivery that is two steps rather than four-plus, which is why this asserts
+    -- an upper bound where it used to assert a lower one.
+    --
+    -- The finding itself is untouched: `SETTLE_RELAY_QUIET_STEPS` is still
+    -- consulted by exactly one role, and a relay that is not a player still has
+    -- no settle phase to scope it to.
     t.it("scopes the settle relay-quiet wait to the host alone", function()
         t.eq(match_driver.SETTLE_RELAY_QUIET_STEPS, match_driver.DELAY_TICKS + 1)
         local harness = fault_harness.new({
@@ -445,12 +458,12 @@ t.describe("relay topology probe: no peer is the sequencer", function()
         t.eq(host.status, "completed")
         t.eq(guest.status, "completed")
         t.is_true(
-            host.settle_steps >= match_driver.SETTLE_RELAY_QUIET_STEPS,
-            "the host waits out the quiet window before leaving"
+            host.settle_steps <= match_driver.SETTLE_RELAY_QUIET_STEPS,
+            ("the host fell back on the quiet window: %d steps"):format(host.settle_steps)
         )
         t.is_true(
-            guest.settle_steps < host.settle_steps,
-            "a guest completes as soon as its own boundary is confirmed"
+            guest.settle_steps <= host.settle_steps,
+            "a guest cannot outlast the relay it depends on"
         )
         fault_harness.teardown(harness)
     end)
@@ -494,8 +507,13 @@ t.describe("relay topology probe: no peer is the sequencer", function()
                 framed > down,
                 ("framed %.1f must exceed the envelope figure %.1f"):format(framed, down)
             )
+            -- Re-pinned by #243, which added one `confirmed_span` header field to
+            -- every input packet. The envelope figures above are unchanged
+            -- because their brackets are wider than the field; this one is
+            -- tighter and moved from ~1,430 to ~1,463 B/tick, which is the seven
+            -- relayed bundles each carrying the new field.
             t.is_true(
-                framed > 1420 and framed < 1445,
+                framed > 1450 and framed < 1475,
                 ("framed downlink %.1f B/tick"):format(framed)
             )
         end

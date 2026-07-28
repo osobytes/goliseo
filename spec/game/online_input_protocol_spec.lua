@@ -134,13 +134,15 @@ end
 t.describe("OMP-3 input packet protocol", function()
     t.it("pins literal native and love.js conformance vectors", function()
         local report = input_conformance.verify()
-        t.eq(report.guest_digest, "ee1a69575b7ac34b")
-        t.eq(report.host_digest, "ead09d4439edb7b7")
-        t.eq(report.maximal_wire_bytes, 755)
+        t.eq(report.guest_digest, "cc1e2be6d59472ee")
+        t.eq(report.host_digest, "9f5892e524d62b33")
+        t.eq(report.maximal_wire_bytes, 958)
+        t.eq(report.maximal_wire_margin, 66)
         t.eq(
             input_conformance.marker(report),
             "GC_INPUT_PROTOCOL|golden|schema=1|input=2|history=6|delay=3|vectors=2"
-                .. "|guest=ee1a69575b7ac34b|host=ead09d4439edb7b7|max_bytes=755"
+                .. "|guest=cc1e2be6d59472ee|host=9f5892e524d62b33|host_rows=72"
+                .. "|max_bytes=958|margin=66"
         )
     end)
 
@@ -475,7 +477,10 @@ t.describe("OMP-3 input packet protocol", function()
         end
         local first = assert(input_protocol.canonical_host_batch(host_options(60, 20), arrivals))
         local second = assert(input_protocol.canonical_host_batch(host_options(60, 20), reversed))
-        t.eq(#first.rows, input_protocol.MAX_HOST_ROWS)
+        -- Eight single-slot bundles at a full window each: the steady-state
+        -- batch, which is 56 rows and no longer the row bound itself.
+        t.eq(#first.rows, input_frame.SLOT_COUNT * input_protocol.RETAINED_ROWS)
+        t.is_true(#first.rows <= input_protocol.MAX_HOST_ROWS)
         t.eq(assert(input_protocol.encode(first)), assert(input_protocol.encode(second)))
         for index, authority in ipairs(first.rows) do
             if index > 1 then
@@ -491,26 +496,125 @@ t.describe("OMP-3 input packet protocol", function()
         end
     end)
 
-    t.it("fits the honest 56-row maximum and fails closed above it", function()
+    -- The row bound is a *measured* sizing after #243, not a design intent, so
+    -- this pins both ends of the measurement: the bytes a full batch really costs
+    -- and the slack the sizing deliberately left under the wire bound. A future
+    -- header field that eats the margin fails here with the number.
+    t.it("fits the measured 72-row maximum with its declared margin", function()
         local maximal = input_fixture.maximal()
         local wire = assert(input_protocol.encode(maximal))
-        t.eq(#maximal.rows, 56)
-        t.eq(#wire, 755)
+        t.eq(#maximal.rows, 72)
+        t.eq(#maximal.rows, input_protocol.MAX_HOST_ROWS)
+        t.eq(#wire, 958)
         t.is_true(#wire <= input_protocol.MAX_WIRE_BYTES)
+        t.is_true(input_protocol.MAX_WIRE_BYTES - #wire >= input_protocol.MIN_WIRE_MARGIN_BYTES)
         local decoded = assert(input_protocol.decode(wire, {
             session_id = maximal.session_id,
             manifest_id = maximal.manifest_id,
             sender_id = maximal.sender_id,
         }))
-        t.eq(#decoded.rows, 56)
-        t.eq(decoded.rows[1].tick, input_frame.MAX_TICK - input_protocol.HISTORY_ROWS)
-        t.eq(decoded.rows[56].tick, input_frame.MAX_TICK)
+        t.eq(#decoded.rows, 72)
+        t.eq(decoded.rows[1].tick, input_frame.MAX_TICK - input_protocol.HOST_WINDOW_ROWS + 1)
+        t.eq(decoded.rows[72].tick, input_frame.MAX_TICK)
 
         local over = assert(input_protocol.copy(maximal))
-        over.rows[57] = row(input_frame.MAX_TICK, 8, input_frame.neutral_sample())
+        over.rows[73] = row(input_frame.MAX_TICK, 8, input_frame.neutral_sample())
         local value, _, code = input_protocol.encode(over)
         t.eq(value, nil)
         t.eq(code, "malformed")
+    end)
+
+    -- #243's confirmation feedback. It is one additive header field on a message
+    -- both roles already send every tick, carried as a *span* from
+    -- `first_input_tick` rather than as a tick so that "nothing confirmed yet" --
+    -- which is `first_input_tick - 1`, and therefore -1 for a session starting at
+    -- tick zero -- still has a canonical unsigned encoding.
+    t.it("carries a sender's confirmation as a span and round-trips it", function()
+        local packet = guest_packet(2, "guest_2", 9, 14, 8, 2)
+        t.eq(packet.confirmed_span, 0)
+        t.eq(input_protocol.confirmed_tick(packet), 1)
+
+        local reporting = assert(input_protocol.new_guest({
+            session_id = packet.session_id,
+            manifest_id = packet.manifest_id,
+            sender_id = packet.sender_id,
+            sequence = packet.sequence,
+            transport_tick = packet.transport_tick,
+            first_input_tick = packet.first_input_tick,
+            confirmed_span = 5,
+            rows = input_protocol.rows(packet),
+        }))
+        t.eq(input_protocol.confirmed_tick(reporting), 6)
+        local wire = assert(input_protocol.encode(reporting))
+        local decoded = assert(input_protocol.decode(wire, {
+            session_id = reporting.session_id,
+            manifest_id = reporting.manifest_id,
+            sender_id = reporting.sender_id,
+        }))
+        t.eq(decoded.confirmed_span, 5)
+        t.eq(assert(input_protocol.encode(decoded)), wire)
+
+        -- The span is bounded by the ticks that can exist above `first_input_tick`,
+        -- so it can never describe a confirmation past the end of the session.
+        local over = assert(input_protocol.copy(reporting))
+        over.confirmed_span = input_frame.MAX_TICK - over.first_input_tick + 2
+        local value, _, code = input_protocol.encode(over)
+        t.eq(value, nil)
+        t.eq(code, "malformed")
+
+        t.eq(input_protocol.confirmed_span(10, 9), 0)
+        t.eq(input_protocol.confirmed_span(10, 4), 0)
+        t.eq(input_protocol.confirmed_span(10, 14), 5)
+    end)
+
+    -- Repair rows are authority the host already holds, merged into the batch
+    -- outside any arrival. They are canonicalized through the same conflict check
+    -- as arrival rows: a repair that disagrees with a row already in the batch is
+    -- a genuine authority conflict, because authorship is a frozen partition.
+    t.it("merges host repair rows and conflict-checks them like any other", function()
+        local packet = guest_packet(2, "guest_2", 9, 14, 8, 0)
+        local arrivals = { arrival(packet, 20, "guest_2") }
+
+        local options = host_options(60, 20)
+        options.repair_rows = { row(0, 5, fuzz_sample(41)), row(1, 5, fuzz_sample(42)) }
+        local batch = assert(input_protocol.canonical_host_batch(options, arrivals))
+        -- Sorted into the one canonical (tick, slot) order, with the repaired
+        -- ticks ahead of the arrival's window rather than appended after it.
+        t.eq(#batch.rows, #packet.rows + 2)
+        t.eq(batch.rows[1].tick, 0)
+        t.eq(batch.rows[1].slot_index, 5)
+        t.eq(batch.rows[2].tick, 1)
+        t.eq(batch.rows[2].slot_index, 5)
+        t.eq(batch.rows[3].tick, 2)
+        t.eq(batch.rows[3].slot_index, 2)
+
+        -- A repair that repeats a row the arrivals already carry is idempotent,
+        -- which is what makes re-sending one every tick safe.
+        local repeated = host_options(61, 20)
+        repeated.repair_rows = { input_protocol.rows(packet)[1] }
+        local same = assert(input_protocol.canonical_host_batch(repeated, arrivals))
+        t.eq(#same.rows, #packet.rows)
+
+        local conflicting = host_options(62, 20)
+        conflicting.repair_rows = { row(8, 2, fuzz_sample(999)) }
+        local value, _, code = input_protocol.canonical_host_batch(conflicting, arrivals)
+        t.eq(value, nil)
+        t.eq(code, "authority_conflict")
+    end)
+
+    -- The bound above is where *rows* stop fitting; this is where *bytes* stop,
+    -- and #243 sized one against the other. Each row costs `RECORD_BYTES`
+    -- base64-expanded, which is exactly 12 bytes because 9 divides by 3, so the
+    -- ceiling is arithmetic from the measured maximal packet: 77 rows is the last
+    -- one the 1024-byte budget admits and 78 is refused. The 72-row sizing
+    -- therefore sits five rows below a hard wall rather than on it.
+    t.it("leaves five rows of headroom under the hard byte ceiling", function()
+        local wire = assert(input_protocol.encode(input_fixture.maximal()))
+        local row_bytes = input_protocol.RECORD_BYTES * 4 / 3
+        t.eq(row_bytes, 12)
+        t.eq(input_protocol.MAX_HOST_ROWS, 72)
+        t.is_true(#wire + 5 * row_bytes <= input_protocol.MAX_WIRE_BYTES)
+        t.is_true(#wire + 6 * row_bytes > input_protocol.MAX_WIRE_BYTES)
     end)
 
     t.it("coalesces only when no unsent authority can fall through backpressure", function()

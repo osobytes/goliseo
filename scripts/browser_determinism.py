@@ -55,15 +55,22 @@ REQUIRED_PROTOCOL_FIELDS = {
     "transcript_id": "48162b614e650bd2",
     "messages": "15",
 }
+# Mirrors game/online/input_protocol_conformance.lua's GOLDEN. Regenerate BOTH
+# together: ./scripts/check.sh does not compare a browser run's marker against
+# these pins, so a stale value here passes locally and fails the OMP-1 browser
+# determinism gate in CI every time. Field order and names come from
+# conformance.marker().
 REQUIRED_INPUT_PROTOCOL_FIELDS = {
     "schema": "1",
     "input": "2",
     "history": "6",
     "delay": "3",
     "vectors": "2",
-    "guest": "ee1a69575b7ac34b",
-    "host": "ead09d4439edb7b7",
-    "max_bytes": "755",
+    "guest": "cc1e2be6d59472ee",
+    "host": "9f5892e524d62b33",
+    "host_rows": "72",
+    "max_bytes": "958",
+    "margin": "66",
 }
 ERROR_MARKERS = (
     "GC_BROWSER|error|",
@@ -769,7 +776,15 @@ def shard_gate_self_test() -> None:
             ),
             (
                 "input protocol drift",
-                lambda payload: payload["records"][1]["input_protocol"].update(max_bytes="756"),
+                lambda payload: payload["records"][1]["input_protocol"].update(max_bytes="959"),
+            ),
+            (
+                "input protocol margin drift",
+                lambda payload: payload["records"][1]["input_protocol"].update(margin="65"),
+            ),
+            (
+                "input protocol row bound drift",
+                lambda payload: payload["records"][1]["input_protocol"].update(host_rows="73"),
             ),
         )
         for label, mutate in mutations:
@@ -875,16 +890,29 @@ def self_test() -> None:
         raise RuntimeError("protocol golden marker accepted a changed vector count")
     input_protocol_marker = (
         "GC_INPUT_PROTOCOL|golden|schema=1|input=2|history=6|delay=3|vectors=2"
-        "|guest=ee1a69575b7ac34b|host=ead09d4439edb7b7|max_bytes=755"
+        "|guest=cc1e2be6d59472ee|host=9f5892e524d62b33|host_rows=72"
+        "|max_bytes=958|margin=66"
     )
     if parse_input_protocol_marker(input_protocol_marker) != REQUIRED_INPUT_PROTOCOL_FIELDS:
         raise RuntimeError("input protocol golden marker self-test failed")
     try:
-        parse_input_protocol_marker(input_protocol_marker.replace("max_bytes=755", "max_bytes=756"))
+        parse_input_protocol_marker(input_protocol_marker.replace("max_bytes=958", "max_bytes=959"))
     except RuntimeError:
         pass
     else:
         raise RuntimeError("input protocol golden marker accepted a changed maximum size")
+    try:
+        parse_input_protocol_marker(input_protocol_marker.replace("margin=66", "margin=65"))
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError("input protocol golden marker accepted a changed wire margin")
+    try:
+        parse_input_protocol_marker(input_protocol_marker.replace("host_rows=72", "host_rows=73"))
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError("input protocol golden marker accepted a changed host row bound")
     if "--no-sandbox" not in chrome_arguments(True):
         raise RuntimeError("CI Chrome arguments omit --no-sandbox")
     if "--no-sandbox" in chrome_arguments(False):

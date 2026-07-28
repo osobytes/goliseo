@@ -170,20 +170,11 @@ fault_scenarios.SCENARIOS = {
         profile = "stress",
         injection = "none",
         smoke = false,
-        known_gap = "an eight-client match under the stress profile can still strand a guest, "
-            .. "and the cause is now measured rather than suspected: this profile keeps the "
-            .. "host's canonical batch saturated at MAX_HOST_ROWS every tick, so a row the "
-            .. "host learns late cannot be fanned out again without displacing a fresh row. "
-            .. "Captured at the default seed: the host learned one row seven transport ticks "
-            .. "late, fanned it out three times instead of seven, and the stranded guest lost "
-            .. "exactly those three. Unlike #241's playable stalls this is a capacity limit of "
-            .. "the 56-row batch, not a leak in how it is filled, so it needs a way for a guest "
-            .. "to ask for what it missed rather than a wider open-loop window -- tracked as "
-            .. "#243, and this row stays red until that lands. The peer now "
-            .. "reports confirmation_stalled at the step it stalls instead of settle_timeout a "
-            .. "match later, and that terminal ends the session for every peer -- see "
-            .. "docs/online/fault_harness.md",
-        note = "the same eight-client shape at a higher loss and burst rate",
+        note = "the same eight-client shape at a higher loss and burst rate; this is the row "
+            .. "that found #243, and the row that proves it closed -- it stranded a guest on "
+            .. "18 of 48 impairment seeds until the host's canonical batch was sized to the "
+            .. "byte budget and aimed by the confirmation each guest now reports, and it "
+            .. "converges on all 48 since",
     },
     -- Short lobbies: fewer humans than the mode seats, so declared bot fills
     -- exist at all.

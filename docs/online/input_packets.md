@@ -13,6 +13,35 @@ Input packets use protocol version 1 and carry `InputFrame` sample version 2.
 Changing the sample bytes, row layout, six-row redundancy, three-tick fairness
 delay, ordering, identity, or bounds requires an explicit version decision.
 
+**Decision on record:** #243 raised `MAX_HOST_ROWS` from 56 to 72, added the
+`confirmed_span` field to **every** packet — guest and host alike, which is the
+whole mechanism, since a guest reporting its own confirmation is what lets the
+host stop fanning out blind — and folded `repair_rows` into the host batch's
+existing bounded `rows` array, where it is indistinguishable on the wire from an
+arrival row. All of it went into protocol version 1 rather than minting version 2.
+That is a bound change and a field addition, so this section's own rule requires
+the decision be written down rather than assumed.
+
+OMP-3 has never shipped and no peer outside this repository speaks version 1, so
+there is nothing to migrate and no compatibility claim to break — the same
+reasoning `session_protocol.md` records for its own additive changes. The change is additive at the
+field level: no existing field changed meaning, no other bound moved, no error
+code was invented (`authority_conflict` is reused for repair-row conflicts), and
+the sample bytes, row layout, redundancy depth and fairness delay are all
+untouched.
+
+The cost is confined to regenerated pins, each of which changed visibly and on
+purpose: the guest and host wire digests, `maximal_wire_bytes` (755 → 958,
+decomposing exactly as +192 for sixteen more rows at twelve base64 bytes each and
++11 for one ten-digit field plus its separator), the new `maximal_wire_margin`,
+and the mirrored pins in `scripts/browser_determinism.py`. That last file is easy
+to miss: `./scripts/check.sh` does not compare a browser run's marker against it,
+so a stale value there passes locally and fails the OMP-1 browser determinism gate
+in CI every time. Regenerate it in the same change as the Lua goldens.
+
+Once a build ships that a player can connect with, this option closes and any
+further bound or field change takes a version bump.
+
 The established session link supplies the full `session_id` and sender/producer
 id as decode context. The wire carries the accepted 16-hex `manifest_id` and a
 16-hex packet id derived from:
@@ -65,17 +94,45 @@ The complete record block is base64 encoded canonically. Rows must be strictly
 ordered by `(input tick, canonical slot index)`, with no duplicate key inside a
 wire packet.
 
-The ASCII wire has twelve semicolon-separated fields:
+The ASCII wire has thirteen semicolon-separated fields:
 
 ```text
 GCIP ; packet-version ; G-or-H ; input-version ; manifest-id ;
 sequence ; packet-id ; transport-tick ; first-input-tick ;
-input-delay-ticks ; row-count ; base64-record-block
+confirmed-span ; input-delay-ticks ; row-count ; base64-record-block
 ```
 
 All integers use canonical unsigned decimal: zero is `0`; other values have no
 leading zeroes. The decoder re-encodes the complete packet and requires exact
 byte equality.
+
+## Confirmation feedback
+
+`confirmed-span` is the count of contiguous input ticks the **sender** has
+confirmed, measured from `first_input_tick`. Zero means it has confirmed
+nothing. `input_protocol.confirmed_tick` recovers the tick:
+`first_input_tick + confirmed_span - 1`.
+
+It is a span rather than a tick for one reason: a sender that has confirmed
+nothing sits at `first_input_tick - 1`, which is `-1` for a session that starts
+at tick zero, and this wire has no signed encoding. The span makes that state
+`0` and keeps every integer on the wire canonically unsigned.
+
+Both roles fill it, over the traffic that already exists — no new message kind,
+no round trip, and nothing to wait on:
+
+- a **guest** reports where its own confirmation has reached, which is what lets
+  the host stop fanning out blind. Without it the host gives identical
+  redundancy to a guest that is fully caught up and to one that is stuck, and a
+  row that ages out of the redundancy window is unrecoverable. See
+  `docs/online/match_driver.md` for what the host does with it.
+- the **host** reports the same thing in its canonical batches, which is what
+  lets a settling guest know whether the tail it authored ever reached the
+  sequencer. A guest's last authored rows exist nowhere else until the host has
+  them.
+
+The field is additive and costs at most eleven bytes of header. It moved every
+pinned conformance golden, because it changes the bytes of every packet.
 
 ## Guest redundancy
 
@@ -160,16 +217,28 @@ protocol's separate 8,192-byte bound.
 The checked-in maximum fixture uses:
 
 - eight slots;
-- current plus six prior ticks;
-- all 56 explicit rows;
-- maximum tick, sequence, session-id, and sender-id contexts; and
+- nine ticks;
+- all 72 explicit rows;
+- maximum tick, sequence, session-id, and sender-id contexts;
+- a `first_input_tick` and `confirmed_span` that are *simultaneously* ten
+  digits, which is not the same thing as each being at its maximum — the span is
+  bounded by `MAX_TICK - first_input_tick + 1`, so pushing the first tick to its
+  ceiling would collapse the span to one digit and understate the header; and
 - explicit valid axis, held, and edge bytes.
 
 Full context ids affect the fixed-size packet id rather than being repeated on
-wire. The resulting packet is **755 bytes**, leaving 269 payload bytes below the
-1,024-byte limit. Fifty-six rows occupy 504 raw bytes and 672 canonical base64
-bytes. A 57th row fails before encoding. Any other oversized message returns
+wire. The resulting packet is **958 bytes**, leaving **66 payload bytes** below
+the 1,024-byte limit. Each row costs 9 raw bytes and exactly 12 canonical base64
+bytes, so the hard ceiling is **77 rows at 1,018 bytes** and a 78th row is
+refused `wire_too_large`. The 72-row bound therefore sits five rows under the
+wall rather than on it, and `MIN_WIRE_MARGIN_BYTES` pins that slack so the next
+additive header field has to notice it. Any oversized message returns
 `wire_too_large`; there is no implicit fragmentation or partial host batch.
+
+The bound is a **measurement**, not a design intent. It was `SLOT_COUNT *
+RETAINED_ROWS` — "seven ticks of history for eight slots" — until #243 measured
+the byte budget it was supposed to be sized against and found it spending 755 of
+1,024 bytes. See `docs/online/match_driver.md` for what the extra rows buy.
 
 At 60 Hz the host fans one batch to seven guests, or 420 sends per second. A
 single shared 64-message queue represents only about 152 ms of fan-out; even a
@@ -183,7 +252,7 @@ Ordinary next-tick guest bundles normally fail this check because the oldest
 row falls out. The caller must then report/drop through its explicit overflow
 policy rather than pretending redundancy preserved the row.
 
-The 755-byte application payload is below the proof bridge's 1,024-byte payload
+The 958-byte application payload is below the proof bridge's 1,024-byte payload
 cap, but percent-escaped outer envelopes, SCTP/DTLS/IP overhead, browser
 scheduling, and actual MTU fragmentation remain #164/#170 measurements. A
 passing codec size test is not a claim that a browser data channel never
@@ -196,7 +265,7 @@ fragments.
 - one complete literal guest wire and digest;
 - one complete literal host wire and digest;
 - schema, InputFrame, redundancy, and fairness versions;
-- the exact 755-byte maximum fixture; and
+- the exact 958-byte maximum fixture and its 66-byte margin; and
 - the snapshot and combat schema versions the literals were generated against.
 
 The `manifest-id` field of every wire is a hash over the session manifest, which

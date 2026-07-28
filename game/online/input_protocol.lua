@@ -34,6 +34,7 @@ local input_frame = require("sim.input_frame")
 ---@field packet_id string
 ---@field transport_tick integer -- Sender transport clock, never an authority input tick.
 ---@field first_input_tick integer
+---@field confirmed_span integer -- Contiguous confirmed input ticks from `first_input_tick`; 0 = none.
 ---@field input_delay_ticks integer
 ---@field rows InputAuthorityRow[]
 
@@ -44,6 +45,7 @@ local input_frame = require("sim.input_frame")
 ---@field sequence integer
 ---@field transport_tick integer
 ---@field first_input_tick integer
+---@field confirmed_span integer? -- Defaults to 0, which claims nothing.
 ---@field rows InputAuthorityRow[]
 
 ---@class InputPacketDecodeContext
@@ -64,6 +66,8 @@ local input_frame = require("sim.input_frame")
 ---@field sequence integer
 ---@field transport_tick integer
 ---@field first_input_tick integer
+---@field confirmed_span integer? -- The host's own confirmation, reported back to guests.
+---@field repair_rows InputAuthorityRow[]? -- Host-held authority re-sent outside any arrival.
 
 ---@class InputProtocolModule
 local input_protocol = {}
@@ -73,9 +77,42 @@ input_protocol.HISTORY_ROWS = 6
 input_protocol.RETAINED_ROWS = input_protocol.HISTORY_ROWS + 1
 input_protocol.FAIRNESS_DELAY_TICKS = 3
 input_protocol.MAX_GUEST_ROWS = input_protocol.RETAINED_ROWS
-input_protocol.MAX_HOST_ROWS = input_frame.SLOT_COUNT * input_protocol.RETAINED_ROWS
+
+-- How many input ticks one host batch carries for every canonical slot.
+--
+-- This used to be `RETAINED_ROWS`, so `MAX_HOST_ROWS` was 56 and read as "the
+-- guest's own retained window, eight times". That was a design intent and never
+-- a transport limit, and #243 measured what the transport actually allows. Each
+-- row costs `RECORD_BYTES` base64-expanded to exactly 12 bytes, on top of a
+-- worst-case header of 92 bytes plus the row-count digits. Measured against
+-- `input_protocol_fixture.maximal`, which pins every variable-width header field
+-- at its worst case at once:
+--
+--     rows  bytes  spare        rows  bytes  spare
+--       70    934     90          75    994     30
+--       71    946     78          76   1006     18
+--       72    958     66          77   1018      6
+--       73    970     54          78      -  refused `wire_too_large`
+--       74    982     42
+--
+-- So 77 rows is the hard ceiling and 72 is the largest whole-slot-window sizing
+-- with real slack under it; ten ticks would need 80 rows and does not fit. The
+-- 66 spare bytes are pinned by `input_protocol_conformance` against
+-- `MIN_WIRE_MARGIN_BYTES` so the next additive header field has to notice them.
+--
+-- The two ticks above the guest's own seven-row window are not decoration. They
+-- are the budget the targeted repair in `match_driver` spends: a batch under the
+-- `stress` profile saturates on arrivals alone, and a repair that has to displace
+-- a fresh row to fit is not a repair. See `docs/online/match_driver.md`.
+input_protocol.HOST_WINDOW_ROWS = 9
+input_protocol.MAX_HOST_ROWS = input_frame.SLOT_COUNT * input_protocol.HOST_WINDOW_ROWS
 input_protocol.RECORD_BYTES = 9
 input_protocol.MAX_WIRE_BYTES = 1024
+-- The slack a maximally-full host batch must still leave inside the wire bound.
+-- `input_protocol_conformance` measures the real encoded size against this, so a
+-- future header field cannot quietly consume the last byte: it either fits in the
+-- margin or the conformance golden says exactly how far over it went.
+input_protocol.MIN_WIRE_MARGIN_BYTES = 64
 assert(
     transport_contract.MAX_PAYLOAD_BYTES >= input_protocol.MAX_WIRE_BYTES,
     "transport payload bound is smaller than the versioned input packet bound"
@@ -94,6 +131,7 @@ local PACKET_FIELDS = {
     packet_id = true,
     transport_tick = true,
     first_input_tick = true,
+    confirmed_span = true,
     input_delay_ticks = true,
     rows = true,
 }
@@ -439,6 +477,19 @@ function input_protocol.validate(packet)
     if not ok then
         return nil, err, code
     end
+    -- Confirmation feedback, carried as a *span* rather than a tick so it is
+    -- always a canonical unsigned integer. A sender that has confirmed nothing
+    -- sits at `first_input_tick - 1`, which is -1 for a session that starts at
+    -- tick zero and has no unsigned encoding; the span makes that state 0.
+    ok, err, code = validate_integer(
+        packet.confirmed_span,
+        "confirmed span",
+        0,
+        input_frame.MAX_TICK - packet.first_input_tick + 1
+    )
+    if not ok then
+        return nil, err, code
+    end
     if packet.input_delay_ticks ~= input_protocol.FAIRNESS_DELAY_TICKS then
         return failure("unsupported_version", "unsupported input fairness delay")
     end
@@ -529,6 +580,7 @@ function input_protocol.encode(packet)
         packet.packet_id,
         tostring(packet.transport_tick),
         tostring(packet.first_input_tick),
+        tostring(packet.confirmed_span),
         tostring(input_protocol.FAIRNESS_DELAY_TICKS),
         tostring(#packet.rows),
         base64_encode(table.concat(raw_rows)),
@@ -583,7 +635,7 @@ function input_protocol.decode(wire, context)
         return failure("malformed", "input packet decode context is required")
     end
     local fields = split_fields(wire)
-    if #fields ~= 12 or fields[1] ~= HEADER then
+    if #fields ~= 13 or fields[1] ~= HEADER then
         return failure("malformed", "input packet wire has invalid fields")
     end
     local version = parse_unsigned(fields[2])
@@ -604,12 +656,14 @@ function input_protocol.decode(wire, context)
     local sequence = parse_unsigned(fields[6])
     local transport_tick = parse_unsigned(fields[8])
     local first_input_tick = parse_unsigned(fields[9])
-    local input_delay_ticks = parse_unsigned(fields[10])
-    local row_count = parse_unsigned(fields[11])
+    local confirmed_span = parse_unsigned(fields[10])
+    local input_delay_ticks = parse_unsigned(fields[11])
+    local row_count = parse_unsigned(fields[12])
     if
         sequence == nil
         or transport_tick == nil
         or first_input_tick == nil
+        or confirmed_span == nil
         or input_delay_ticks == nil
         or row_count == nil
     then
@@ -620,7 +674,7 @@ function input_protocol.decode(wire, context)
     if row_count < 1 or row_count > maximum then
         return failure("malformed", "input packet row count is outside the kind bound")
     end
-    local raw_rows = base64_decode(fields[12])
+    local raw_rows = base64_decode(fields[13])
     if raw_rows == nil or #raw_rows ~= row_count * input_protocol.RECORD_BYTES then
         return failure("malformed", "input packet record block is invalid")
     end
@@ -644,6 +698,7 @@ function input_protocol.decode(wire, context)
         packet_id = fields[7],
         transport_tick = transport_tick,
         first_input_tick = first_input_tick,
+        confirmed_span = confirmed_span,
         input_delay_ticks = input_delay_ticks,
         rows = rows,
     }
@@ -680,6 +735,7 @@ local function new_packet(kind, options)
         packet_id = packet_id,
         transport_tick = options.transport_tick,
         first_input_tick = options.first_input_tick,
+        confirmed_span = options.confirmed_span or 0,
         input_delay_ticks = input_protocol.FAIRNESS_DELAY_TICKS,
         rows = options.rows,
     }
@@ -697,6 +753,25 @@ local function new_packet(kind, options)
         manifest_id = options.manifest_id,
         sender_id = options.sender_id,
     })
+end
+
+-- The sender's confirmed input tick, recovered from the span it reported.
+--
+-- `first_input_tick - 1` means "this sender has confirmed nothing yet", which is
+-- the only value below the session's first tick this can return.
+---@param packet InputPacket
+---@return integer
+function input_protocol.confirmed_tick(packet)
+    local ok, err = input_protocol.validate(packet)
+    assert(ok, err)
+    return packet.first_input_tick + packet.confirmed_span - 1
+end
+
+---@param first_input_tick integer
+---@param confirmed_tick integer
+---@return integer
+function input_protocol.confirmed_span(first_input_tick, confirmed_tick)
+    return math.max(0, confirmed_tick - first_input_tick + 1)
 end
 
 ---@param options InputPacketOptions
@@ -998,6 +1073,35 @@ function input_protocol.canonical_host_batch(options, arrivals)
             end
         end
     end
+    -- Repair rows are authority the host already holds and is re-sending outside
+    -- any arrival, because a guest told it the ordinary fan-out never landed.
+    -- They are canonicalized through the same conflict check as arrival rows:
+    -- authorship is a frozen partition, so a repair that disagrees with a row
+    -- already in this batch is a genuine authority conflict, not a race.
+    if options.repair_rows ~= nil then
+        if not is_array(options.repair_rows, input_protocol.MAX_HOST_ROWS) then
+            return failure("malformed", "host batch repair rows must be a bounded canonical array")
+        end
+        for _, row in ipairs(options.repair_rows) do
+            if type(row) ~= "table" or not has_only_fields(row, ROW_FIELDS) then
+                return failure("malformed", "host batch repair row must be canonical")
+            end
+            local row_key = tostring(row.tick) .. ":" .. tostring(row.slot_index)
+            local prior = authority[row_key]
+            if prior ~= nil then
+                if not samples_equal(prior.sample, row.sample) then
+                    return failure(
+                        "authority_conflict",
+                        "a host repair row conflicts with authority in the same batch"
+                    )
+                end
+            else
+                local copied = copy_row(row)
+                authority[row_key] = copied
+                rows[#rows + 1] = copied
+            end
+        end
+    end
     table.sort(rows, row_less)
     if #rows > input_protocol.MAX_HOST_ROWS then
         return failure("wire_too_large", "host batch exceeds the bounded authority row count")
@@ -1009,6 +1113,7 @@ function input_protocol.canonical_host_batch(options, arrivals)
         sequence = options.sequence,
         transport_tick = options.transport_tick,
         first_input_tick = options.first_input_tick,
+        confirmed_span = options.confirmed_span,
         rows = rows,
     })
 end

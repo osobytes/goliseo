@@ -805,6 +805,23 @@ function rollback_session.compare_retained(session, expected, boundary_tick)
     return rollback_snapshot_history.compare(expected, session._snapshot_history, boundary_tick)
 end
 
+-- Read back an authoritative sample this session already holds.
+--
+-- Read-only and copying, so a caller cannot mutate retained authority through
+-- it. `nil` means the row is either not authoritative yet or has been pruned
+-- below the retained floor -- callers must treat both as "not available" rather
+-- than assume the tick is in the window.
+---@param session RollbackSession
+---@param tick integer
+---@param slot_index integer
+---@return InputSample?
+function rollback_session.authoritative_sample(session, tick, slot_index)
+    assert_session(session)
+    local record =
+        rollback_input_history.authoritative_record(session._input_history, tick, slot_index)
+    return record and record.sample or nil
+end
+
 ---@param session RollbackSession
 ---@param input_tick integer
 ---@return RollbackTickOutput?
