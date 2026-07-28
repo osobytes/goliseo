@@ -512,6 +512,63 @@ for index = 1, input_frame.SLOT_COUNT do
     SLOT_INDEXES[assert(input_frame.slot(index)).id] = index
 end
 
+---@param set table<string, any>
+---@return string[]
+local function sorted_keys(set)
+    local keys = {}
+    for key in pairs(set) do
+        keys[#keys + 1] = key
+    end
+    table.sort(keys)
+    return keys
+end
+
+-- Digest everything a peer has to agree with before a control message is
+-- acceptable: which kinds exist, which fields each body carries, and which
+-- lifecycle phases each kind is legal in. Disagreeing about any of the three is
+-- unrecoverable and always was — an unknown kind is `unknown_message`, an
+-- unfamiliar body field is `malformed`, and a kind sent where this build does
+-- not allow it is `invalid_phase` — and each fires only when the offending
+-- message is finally sent, which for a lobby kind means partway through the
+-- lobby.
+--
+-- Pure and parameterised so the sensitivity is provable rather than asserted:
+-- a test can put a vocabulary that differs by one kind, one field, or one phase
+-- against this build's and require a different digest. Sorted throughout, so it
+-- never depends on `pairs` order and two peers running the same code always
+-- compute the same string.
+---@param kinds table<string, table<string, any>> -- Message kind -> its body field set.
+---@param phases table<string, table<string, any>> -- Message kind -> its legal phase set.
+---@return string
+function protocol.vocabulary_digest(kinds, phases)
+    local ordered = sorted_keys(kinds)
+    local ordered_phases = sorted_keys(phases)
+    assert(#ordered == #ordered_phases, "every message kind needs exactly one phase rule")
+    local parts = { "GCPV;1;", tostring(protocol.VERSION), ";" }
+    for index, kind in ipairs(ordered) do
+        assert(kind == ordered_phases[index], "message kind and phase tables disagree: " .. kind)
+        parts[#parts + 1] = ("%s:%s@%s;"):format(
+            kind,
+            table.concat(sorted_keys(kinds[kind]), ","),
+            table.concat(sorted_keys(phases[kind]), ",")
+        )
+    end
+    return fnv1a64.hash(table.concat(parts))
+end
+
+-- This build's own vocabulary, digested once at load from the same two tables
+-- `validate` and `validate_phase` read, so it cannot drift from the vocabulary
+-- it claims to describe. `game.online.match_manifest` folds it into `build_id`,
+-- which is what moves the disagreement above from mid-lobby to the manifest
+-- check.
+local VOCABULARY_ID = protocol.vocabulary_digest(BODY_FIELDS, ALLOWED_PHASES)
+
+-- Opaque, stable identity of the control vocabulary this build speaks.
+---@return string
+function protocol.vocabulary_id()
+    return VOCABULARY_ID
+end
+
 ---@param value any
 ---@return boolean
 local function is_integer(value)

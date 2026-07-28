@@ -114,10 +114,33 @@ function match_manifest.tuning_id()
     return "tuning." .. digest(tuning.serialize())
 end
 
+-- `build_info` alone cannot separate two development builds: name, version, and
+-- channel are constants a working commit does not move, so two peers on
+-- different commits used to digest to the same `build_id`, pass the manifest
+-- comparison, and only discover they speak different control vocabularies when
+-- one of them sent a message the other had never heard of — mid-lobby, as a
+-- generic `protocol_violation`.
+--
+-- The vocabulary is the part of a build a *peer* can observe, so it belongs in
+-- the identity peers compare. Folding it in makes "same `build_id`" imply "same
+-- control vocabulary", which is what turns that late failure into an early one:
+-- `build_id` is already a compared manifest field and already a guest
+-- expectation, so the disagreement lands at the manifest check with a reason
+-- that names the build.
+--
+-- This is deliberately not a digest over the source tree. It separates the
+-- builds that *cannot* finish a session together and leaves peers whose
+-- vocabularies match free to differ in anything a session never has to agree
+-- on, so it adds no mismatch a session would otherwise have survived.
 ---@return string
 function match_manifest.build_id()
     return "build."
-        .. digest(build_info.name .. "/" .. build_info.version .. "/" .. build_info.channel)
+        .. digest(table.concat({
+            build_info.name,
+            build_info.version,
+            build_info.channel,
+            protocol.vocabulary_id(),
+        }, "/"))
 end
 
 ---@param team TeamData
