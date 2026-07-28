@@ -27,6 +27,7 @@ function love.conf(t)
         "--snapshot-measure",
         "--rollback-lab",
         "--determinism-refresh",
+        "--fault-harness",
     }
     if not has_flag("--browser-runtime") then
         headless_flags[#headless_flags + 1] = "--determinism"
