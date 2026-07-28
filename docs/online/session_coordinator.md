@@ -234,11 +234,21 @@ guests racing for one pair: the first is granted and claims it, and the second
 is refused `already_taken` instead of taking it straight back.
 `publish_ownership` asserts that invariant on every publication.
 
-A claim is recorded and dropped in exactly one place: `publish_ownership` sets
-every peer's claim from the `retained` set it is handed, and a peer left out of
-that set has none afterwards. An explicit host republication hands it nothing
-and so drops all of them, because the host has just overruled every guest's
-choice.
+A claim is recorded and dropped in `publish_ownership`, which sets every peer's
+claim from the `retained` set it is handed; a peer left out of that set has none
+afterwards. An explicit host republication hands it nothing and so drops all of
+them, because the host has just overruled every guest's choice.
+
+There is **one deliberate exception**, in both `unchanged` branches
+(`handle_prefer_pair` and `apply_pair_preference`). An `unchanged` verdict fires
+only when the requested set *is* the set the peer already owns, so the claim it
+records describes the ownership already in force and no publication is owed.
+Routing it through `publish_ownership` would mint a generation and clear every
+peer's readiness in order to announce that nothing moved, which is precisely what
+`unchanged` exists to avoid. The written value cannot violate the partition — it
+is the peer's own owned set by construction — and a later reseat reads it like
+any other claim. Every other write to `pair_choice` goes through
+`publish_ownership`, which is what lets a reseat settle claims in one place.
 
 **A roster change reseats around the claims it can keep.** A seating plan is
 derived from the roster alone and knows nothing about pairs, so publishing one
@@ -260,6 +270,17 @@ end reads that answer off the generation it already holds: the host in
 `publish_ownership`, a guest in `apply_slot_assignment`. The record becomes
 `rejected` with the typed reason `reseated`, which is why that reason is minted
 locally and never appears on the wire.
+
+`reseated` is therefore **cause-neutral**, and its lobby text is too. A peer that
+lost a pair sees only the ownership that took it, and cannot tell a roster change
+from the host reasserting its seating order; a `SWAP` reaches this the same way a
+departure does. Naming a cause the peer cannot observe would be inventing one.
+
+A guest that is still waiting on a verdict when a publication lands is a separate
+case: `apply_pair_preference_result` adopts the host's answer as sent, so a grant
+whose pair a later publication has already seated away reads as `granted` until
+that publication's `slot_assignment` arrives and `settle_preference` rewrites it.
+The window is expected and closes itself.
 
 A pre-countdown departure voids ownership but no longer voids the claims: until
 the reseat that follows, no claim can be acted on anyway, because a preference

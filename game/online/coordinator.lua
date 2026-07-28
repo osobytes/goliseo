@@ -1140,7 +1140,6 @@ end
 ---@class CoordinatorReseat
 ---@field assignments SessionSlotProducer[] -- The plan, adjusted to honour every surviving claim.
 ---@field retained table<string, InputSlotId[]> -- Peer id -> the claim this reseat keeps.
----@field dropped string[] -- Peers whose claim could not survive, in admission order.
 
 -- A seating plan knows the roster and nothing else; the claims a host granted
 -- live beside it. This reconciles the two, and it is the whole of what a roster
@@ -1149,8 +1148,10 @@ end
 -- A claim survives when the plan still has room for it exactly as it was: the
 -- right number of slots for the mode, every one of them a slot this plan seats a
 -- human on, all on one team, and none of them already kept for another peer. A
--- claim that fails any of those is dropped, and the peer that made it is named
--- so the lobby can say what happened rather than reseat it in silence.
+-- claim that fails any of those is not in `retained` and is therefore dropped by
+-- the publication that follows. Nothing here has to name the peers that lost a
+-- claim: each of them reads the loss off the ownership it is about to hold, in
+-- `settle_preference`, which is the only place the reason is needed.
 --
 -- What survives is then held fixed and the plan fills in around it: the peers
 -- with no surviving claim take the remaining human slots in the plan's own
@@ -1197,18 +1198,12 @@ function coordinator.reseat_claims(state, assignments)
     end
     ---@type table<string, InputSlotId[]>
     local retained = {}
-    ---@type string[]
-    local dropped = {}
     for _, peer in ipairs(state.peers) do
         local claim = peer.pair_choice
-        if claim then
-            if survives(claim) then
-                retained[peer.peer_id] = copy_value(claim)
-                for _, slot in ipairs(claim) do
-                    kept[slot] = true
-                end
-            else
-                dropped[#dropped + 1] = peer.peer_id
+        if claim and survives(claim) then
+            retained[peer.peer_id] = copy_value(claim)
+            for _, slot in ipairs(claim) do
+                kept[slot] = true
             end
         end
     end
@@ -1244,7 +1239,7 @@ function coordinator.reseat_claims(state, assignments)
         end
     end
     assert(cursor == #free, "a reseat must seat every free human slot exactly once")
-    return { assignments = reseated, retained = retained, dropped = dropped }
+    return { assignments = reseated, retained = retained }
 end
 
 -- Ownership after a granted preference: the requester takes the slots it asked
@@ -1703,6 +1698,13 @@ local function handle_prefer_pair(state, event)
             actions
         )
     elseif verdict.status == "unchanged" then
+        -- The one claim recorded outside `publish_ownership`, deliberately.
+        -- `unchanged` fires only when the request *is* the set this peer
+        -- already owns, so the claim it records is the ownership already in
+        -- force and no publication is owed: minting a generation here would
+        -- clear everyone's readiness to announce that nothing moved. Every
+        -- other write to `pair_choice` goes through `publish_ownership`, which
+        -- is why a reseat can settle claims in one place.
         local_peer(next_state).pair_choice = slots
     end
     return next_state, applied(actions)
@@ -2506,6 +2508,10 @@ local function apply_pair_preference(state, peer, message)
             actions
         )
     elseif verdict.status == "unchanged" then
+        -- The host side of the one deliberate exception; see the same branch in
+        -- `handle_prefer_pair`. The set is the one this peer already owns, so
+        -- the claim records ownership that is already published and owes no
+        -- generation of its own.
         assert(peer_by_id(next_state, peer.peer_id)).pair_choice = copy_value(verdict.slots)
     end
     -- Answered after any republication, so the requester already holds the
@@ -2552,6 +2558,13 @@ local function apply_pair_preference_result(state, peer, message)
         -- is published separately and is unaffected either way.
         return state, stale(coordinator.STALE_PREFERENCE_REASON)
     end
+    -- The verdict is adopted as sent, without re-deriving it from the ownership
+    -- in force, so a grant whose pair a later publication has already seated
+    -- away can be read here as `granted` for as long as it takes that
+    -- publication's `slot_assignment` to arrive. The window is expected and
+    -- closes itself: `settle_preference` runs on that arrival and rewrites the
+    -- record to `reseated`. Re-deriving here instead would answer against
+    -- ownership this peer has not been told about yet.
     local next_state = copy_state(state)
     next_state.preference = {
         slots = copy_value(pending.slots),

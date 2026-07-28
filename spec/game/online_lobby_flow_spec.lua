@@ -563,6 +563,31 @@ t.describe("lobby pair selection", function()
         t.is_true(not view(host).ready, "a reseat clears readiness like any repartition")
     end)
 
+    -- `SWAP` deliberately outranks a guest's choice, and always has. What it
+    -- must not do is leave that guest reading "the host gave you the pair you
+    -- asked for" over an ownership that no longer seats it.
+    t.it("tells a guest when the host's swap took its pair back", function()
+        local driver, host, guests = locked_lobby("2v2", 3)
+        driver:send(guests[2], { kind = "pair", slot = "away_3" })
+        driver:pump(8)
+        t.eq(assert(view(guests[2]).preference).status, "granted")
+        t.eq(table.concat(owned(guests[2], "guest_2"), ","), "away_1,away_3")
+
+        -- Seats 3 and 4 are the two away humans, so this moves `guest_2` off
+        -- the pair it chose without the roster changing at all.
+        driver:send(host, { kind = "swap", index = 3 })
+        driver:pump(8)
+
+        local taken = assert(view(guests[2]).preference, "a swapped-away pair must still be shown")
+        t.eq(taken.status, "rejected")
+        t.eq(taken.reason, "reseated", "the reason is read off the ownership, not off the cause")
+        t.eq(taken.text, lobby_model.PREFERENCE_TEXT.reseated)
+        t.eq(table.concat(owned(guests[2], "guest_2"), ","), "away_3,away_4")
+        t.eq(table.concat(owned(host, "guest_2"), ","), "away_3,away_4")
+        assert_partition(host, "2v2")
+        assert_partition(guests[2], "2v2")
+    end)
+
     t.it("offers nothing to choose in 1v1 or 4v4", function()
         for _, case in ipairs({ { mode = "1v1", guests = 1 }, { mode = "4v4", guests = 7 } }) do
             local driver, host = locked_lobby(case.mode, case.guests)

@@ -80,7 +80,7 @@ local match_snapshot = require("sim.match_snapshot")
 ---| "superseded" -- The preference answers an ownership generation no longer in force.
 ---| "after_freeze" -- Ownership is frozen and cannot move again this session.
 ---| "no_response" -- The request expired unanswered. Minted locally, never on the wire.
----| "reseated" -- A roster change needed the pair's slots. Minted locally, never on the wire.
+---| "reseated" -- A publication seated the pair again. Minted locally, never on the wire.
 
 ---@class SessionRuntimeIdentity
 ---@field version integer
@@ -428,7 +428,7 @@ protocol.PREFERENCE_REJECTIONS = {
 
 -- The refusals no host ever sends, because neither is a verdict on a request.
 -- Each is minted by the peer that observes it: silence is only observable at the
--- end that waited, and a pair the roster reseated away is only observable
+-- end that waited, and a pair a publication seated away is only observable
 -- against the ownership that took it, which every peer holds for itself. A host
 -- claiming either is malformed.
 ---@type table<SessionPreferenceRejection, boolean>
