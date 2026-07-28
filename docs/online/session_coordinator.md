@@ -304,6 +304,7 @@ Local reasons are specific; the wire stays inside #161's closed rejection codes.
 | `transport_lost` | `peer_disconnect` | A frozen link failed. |
 | `protocol_violation` | `malformed_message` / `invalid_phase` | Malformed, out-of-phase, misdirected, spoofed, or conflicting traffic. |
 | `manifest_mismatch` | `manifest_mismatch` | Deterministic identity disagreed. |
+| `build_mismatch` | `manifest_mismatch` | The proposed `build_id` or `source_id` is not this build's. |
 | `invalid_assignment` | `invalid_assignment` | Published ownership was unusable. |
 | `start_ack_timeout` | `peer_disconnect` | A peer never reached the start boundary. |
 | `input_channel_failure` | `peer_disconnect` | #162's input channel failed terminally. |
@@ -321,6 +322,17 @@ rollback window versus divergent simulation — that share the `desync` wire cod
 because #161 has no closer one. The local reason stays exact; only the byte on
 the wire is coarse. Likewise, every decode or validation failure other than an
 unsupported version folds into `malformed_message`.
+
+`build_mismatch` is the same idea used deliberately. It shares the
+`manifest_mismatch` wire code — the closed #161 vocabulary has no code for
+builds, and inventing one would be a protocol change to say locally what
+`manifest_mismatch` already says — but it is a separate *local* reason because
+its fix is unlike every other identity failure: not "agree on content", but
+"install the same build on both machines". It is raised only for `build_id` and
+`source_id`, the two expectation fields derived from `game/build_info.lua` and
+the control vocabulary; every other field stays `manifest_mismatch`. See
+[the match flow document](match_flow.md) for why the vocabulary is part of
+`build_id` at all.
 
 ## Duplicates and out-of-order control traffic
 
