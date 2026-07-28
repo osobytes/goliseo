@@ -5,6 +5,7 @@
 
 local lobby_link = require("game.online.lobby_link")
 local lobby_model = require("game.screens.lobby_model")
+local match_manifest = require("game.online.match_manifest")
 local protocol = require("game.online.protocol")
 local t = require("spec.support.runner")
 local transport = require("game.transport")
@@ -69,12 +70,13 @@ end
 
 ---@param role LobbyRole
 ---@param peer_id string
+---@param template (fun(mode: SessionMatchMode): SessionManifest)? -- Defaults to the model's.
 ---@return LobbyTestPeer
-function Driver:add(role, peer_id)
+function Driver:add(role, peer_id, template)
     ---@type LobbyTestPeer
     local peer = {
         id = peer_id,
-        model = lobby_model.new({ peer_id = peer_id }),
+        model = lobby_model.new({ peer_id = peer_id, template = template }),
         left = false,
     }
     self.peers[#self.peers + 1] = peer
@@ -513,6 +515,108 @@ t.describe("lobby pair selection", function()
             t.is_true(view(host).error ~= nil, case.mode .. " must refuse a pair request")
             t.eq(view(host).preference, nil, "nothing was asked, so nothing is shown")
         end
+    end)
+end)
+
+t.describe("lobby build skew", function()
+    -- These flows use the content-derived template the shipped app injects,
+    -- not the lobby's fixture default, because `build_id` is the identity
+    -- under test and only that template computes one.
+
+    -- The manifest a peer would propose if it had been built from a commit
+    -- whose control vocabulary differs from this one's. Everything
+    -- `game/build_info.lua` knows — name, version, channel — is identical, so
+    -- this is exactly the pair of builds the old digest could not tell apart.
+    ---@param mode SessionMatchMode
+    ---@return SessionManifest
+    local function foreign_template(mode)
+        local original = protocol.vocabulary_id
+        protocol.vocabulary_id = function()
+            return original() .. "0"
+        end
+        local ok, manifest = pcall(match_manifest.template, mode)
+        protocol.vocabulary_id = original
+        assert(ok, tostring(manifest))
+        return manifest
+    end
+
+    -- The lobby already prints `BUILD` beside the manifest, so the value under
+    -- test is one a tester can read off two screens and compare.
+    ---@param peer LobbyTestPeer
+    ---@return string
+    local function build_row(peer)
+        for _, row in ipairs(view(peer).identity) do
+            if row.label == "BUILD" then
+                return row.value
+            end
+        end
+        error("the lobby stopped showing a build identity")
+    end
+
+    t.it("ends a same-version, different-vocabulary session at the manifest check", function()
+        local driver = new_driver()
+        local host = driver:add("host", "host", foreign_template)
+        driver:send(host, { kind = "mode", mode = "1v1" })
+        local guest = driver:add("guest", "guest_1", match_manifest.template)
+        t.is_true(
+            build_row(host) ~= build_row(guest),
+            "the two builds have to be distinguishable before either speaks"
+        )
+        driver:connect(host, guest)
+        driver:send(host, { kind = "lock" })
+        driver:pump(6)
+
+        local state = assert(guest.model.coordinator)
+        t.eq(state.phase, "terminal")
+        local terminal = assert(state.terminal)
+        t.eq(terminal.reason, "build_mismatch")
+        t.eq(terminal.detail, "local identity differs at manifest.build_id")
+        t.eq(
+            view(guest).terminal_text,
+            "The peers are running different builds. Install the same build on both."
+        )
+
+        -- At the manifest check means before anything a tester would read as
+        -- progress: no ownership was ever published to this guest, so it never
+        -- saw a seat, let alone a countdown.
+        t.eq(state.assignment_id, nil)
+        t.eq(guest.freeze, nil)
+
+        -- The refusal is announced, not silent, and the host's answer to it is
+        -- the one #163 already chose: before the freeze a guest's abort drops
+        -- that guest and leaves the lobby standing. So the host stops waiting
+        -- on a peer that will never ready, and one skewed guest cannot end the
+        -- session for everyone else.
+        driver:pump(8)
+        local host_state = assert(host.model.coordinator)
+        t.eq(host_state.terminal, nil, "one skewed guest must not end the host's lobby")
+        t.eq(#host_state.peers, 1, "the host dropped the peer it could not play with")
+        t.eq(host.freeze, nil)
+    end)
+
+    t.it("leaves peers on the same vocabulary exactly as compatible as before", function()
+        local driver = new_driver()
+        local host = driver:add("host", "host", match_manifest.template)
+        driver:send(host, { kind = "mode", mode = "1v1" })
+        local guest = driver:add("guest", "guest_1", match_manifest.template)
+        t.eq(build_row(host), build_row(guest), "one vocabulary is one build identity")
+        driver:connect(host, guest)
+        driver:send(host, { kind = "lock" })
+        driver:pump(6)
+
+        t.eq(view(guest).phase, "assigned")
+        driver:send(host, { kind = "ready", ready = true })
+        driver:send(guest, { kind = "ready", ready = true })
+        driver:pump(4)
+        driver:send(host, { kind = "start" })
+        driver:pump(2)
+        driver:tick(lobby_model.COUNTDOWN_TICKS + 4)
+
+        local freeze = assert(host.freeze, "the host never reached the start boundary")
+        local guest_freeze = assert(guest.freeze, "the guest never reached the start boundary")
+        t.eq(guest_freeze.manifest_id, freeze.manifest_id)
+        t.eq(assert(host.model.coordinator).terminal, nil)
+        t.eq(assert(guest.model.coordinator).terminal, nil)
     end)
 end)
 

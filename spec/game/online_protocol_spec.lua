@@ -101,6 +101,77 @@ t.describe("OMP-3 online protocol", function()
         )
     end)
 
+    t.it("pins the control vocabulary this build speaks", function()
+        t.eq(protocol.vocabulary_id(), "7c8fcb0146a73494")
+        t.eq(protocol.vocabulary_id(), conformance.GOLDEN.vocabulary_id)
+        t.eq(protocol.vocabulary_id(), protocol.vocabulary_id())
+        t.is_true(
+            protocol.vocabulary_id():match("^%x+$") ~= nil,
+            "the vocabulary id has to be an opaque hexadecimal digest"
+        )
+        -- The browser evidence parser compares the marker's field set exactly,
+        -- so the pin deliberately stays out of it.
+        t.is_true(
+            not conformance.marker(conformance.verify()):find("vocabulary", 1, true),
+            "the vocabulary pin must not widen the browser evidence marker"
+        )
+    end)
+
+    t.it("digests every part of the vocabulary a peer has to agree with", function()
+        local kinds = { alpha = { one = true }, beta = { two = true } }
+        local phases = { alpha = { ready = true }, beta = { ready = true } }
+        local baseline = protocol.vocabulary_digest(kinds, phases)
+        t.eq(baseline, protocol.vocabulary_digest(kinds, phases))
+
+        -- The three ways two builds can disagree, and the mid-session failure
+        -- each one used to produce: an unknown kind, an unfamiliar body field,
+        -- and a kind legal in a phase the other build refuses.
+        local cases = {
+            {
+                name = "an added message kind",
+                mutate = function(next_kinds, next_phases)
+                    next_kinds.gamma = { three = true }
+                    next_phases.gamma = { ready = true }
+                end,
+            },
+            {
+                name = "an added body field",
+                mutate = function(next_kinds)
+                    next_kinds.alpha.extra = true
+                end,
+            },
+            {
+                name = "an added allowed phase",
+                mutate = function(_, next_phases)
+                    next_phases.beta.countdown = true
+                end,
+            },
+            {
+                name = "a renamed message kind",
+                mutate = function(next_kinds, next_phases)
+                    next_kinds.beta, next_kinds.delta = nil, { two = true }
+                    next_phases.beta, next_phases.delta = nil, { ready = true }
+                end,
+            },
+        }
+        for _, case in ipairs(cases) do
+            local next_kinds = deep_copy(kinds)
+            local next_phases = deep_copy(phases)
+            case.mutate(next_kinds, next_phases)
+            t.is_true(
+                protocol.vocabulary_digest(next_kinds, next_phases) ~= baseline,
+                case.name .. " has to move the vocabulary digest"
+            )
+        end
+
+        -- Two peers build the same tables in whatever order their code happens
+        -- to, so the digest cannot depend on insertion order.
+        local shuffled_kinds, shuffled_phases = {}, {}
+        shuffled_kinds.beta, shuffled_kinds.alpha = { two = true }, { one = true }
+        shuffled_phases.beta, shuffled_phases.alpha = { ready = true }, { ready = true }
+        t.eq(protocol.vocabulary_digest(shuffled_kinds, shuffled_phases), baseline)
+    end)
+
     t.it("constructs owned runtime and deterministic manifest records", function()
         local runtime_source = fixture.runtime()
         local runtime = assert(protocol.new_runtime(runtime_source))
