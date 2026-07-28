@@ -182,9 +182,10 @@ it lives, in `spec/sim/rollback_input_history_spec.lua`.
 
 ### The bounded batch and carry-over
 
-One host batch carries at most `MAX_HOST_ROWS` = 56 distinct `(tick, slot)` rows,
-which is exactly eight slots times the seven-row redundancy window. Steady state
-fits exactly. A delivery burst wider than that window does not, so the excess is
+One host batch carries at most `MAX_HOST_ROWS` = 72 distinct `(tick, slot)` rows:
+eight slots times a nine-tick window. Steady state — eight bundles at a full
+seven-row window each — is 56 rows and fits with headroom. A delivery burst wider
+than that does not, so the excess is
 **carried to the next transport tick** rather than dropped — dropping would
 strand authority the peers still need to confirm, and emitting two batches on one
 tick would break the one-batch-one-reconciliation contract. Selection is sorted
@@ -194,12 +195,33 @@ deferred: its slots are the ones its own materialization requires to be
 authoritative, so starving them would stall the host on its own input. The
 carried queue is bounded; exceeding it is `input_channel_failure`.
 
+### Where the 72 comes from
+
+It used to be `SLOT_COUNT * RETAINED_ROWS` = 56, read as "the guest's own retained
+window, eight times". That was a design intent, and #243 measured that it was
+never the transport limit it was assumed to be: a maximally-full 56-row batch
+encoded to 755 of the 1,024 available bytes.
+
+The sizing is now the measurement. Each row costs exactly 12 base64 bytes on top
+of a 92-byte worst-case header, so **77 rows is the hard ceiling** at 1,018 bytes
+and a 78th is refused `wire_too_large`. Nine ticks — 72 rows, 958 bytes — is the
+largest whole-slot-window sizing under that ceiling, and it leaves 66 spare bytes
+that `input_protocol_conformance` pins against `MIN_WIRE_MARGIN_BYTES` rather than
+leaving for the next person to rediscover. Ten ticks would need 80 rows and does
+not fit.
+
+The 16 rows above steady state are not spare capacity for its own sake. They are
+what the targeted repair below spends, and raising the bound **without** the
+repair was measured and does not close `4v4.stress`: on a 48-seed sweep it moved
+the failures from 18 to 12 and flipped one previously-green seed red. Capacity
+alone moves the threshold; it does not remove the failure mode.
+
 ### The host fans out authority it holds, not traffic it just received
 
-That bound is `SLOT_COUNT * RETAINED_ROWS` for a reason: one host batch is meant
-to carry a seven-tick window for **every** slot. That window is the only
-redundancy a guest's confirmation has, because the host→guest leg has no
-retransmission at all — a row a guest never receives is a row it never gets.
+One host batch is meant to carry a seven-tick window for **every** slot. That
+window is the only redundancy a guest's confirmation has, because the host→guest
+leg has no retransmission at all — a row a guest never receives is a row it never
+gets.
 
 Selecting only the bundles that arrived on *this* transport tick spends far less
 of it than the bound implies. A slot whose author's bundle was lost or delayed on
@@ -225,11 +247,56 @@ host's own retained floor is dropped rather than relayed: authority that old can
 no longer be placed in any peer's rollback window, and re-sending it would convert
 a silent gap into a spurious `late_input` on a healthy peer.
 
-This repairs the *leak*, not the *bound*. It cannot help when the batch is already
-saturated, which is exactly what the `stress` profile does: the harness's
-[open `4v4.stress` finding, #243](fault_harness.md#still-open-243-4v4stress-strands-on-batch-capacity-not-on-a-leak)
-records the measurement and the three allocation schemes that were tried against
-it and rejected.
+This repairs the *leak*, not the *bound*. It is open-loop: it re-sends a slot's
+newest window on the chance that some guest missed it, and it has nothing to say
+about a row that has already aged out of that window.
+
+### The host repairs what a guest says it is missing
+
+Every bundle a guest sends now carries `confirmed_span` — where its own
+confirmation has actually reached. See
+[input packets](input_packets.md#confirmation-feedback) for the field. It is
+additive, costs at most eleven header bytes, and introduces no round trip: the
+guest states a fact it already knows and never waits on an answer.
+
+What it buys is that the host stops fanning out blind. Confirmation advances only
+from `confirmed_tick + 1`, so a guest stuck at `C` is blocked on exactly tick
+`C + 1`; every later tick it received is already sitting in its history,
+authoritative and unusable, and confirms in one step once the hole is filled. The
+host takes the **minimum** reported confirmation across every author it has heard
+from and re-sends a contiguous span of ticks from there, read straight out of its
+own retained authority.
+
+Three conditions gate it, and each is load-bearing:
+
+| Condition | Why |
+| --- | --- |
+| `tick <= host_confirmed` | The host must hold all eight rows of a tick, or it would be inventing some. A tick short even one slot ends the span rather than being sent partial — a partial tick cannot unblock confirmation. |
+| `tick >= retained floor` | Below the host's own floor the rows are gone, and a guest that far behind is already `confirmation_stalled` on its own side. |
+| `host_confirmed - needed > HISTORY_ROWS` | Inside the redundancy window the open-loop fan-out is still re-sending that tick every transport tick. Only once the window has moved past it has blind redundancy provably failed. This is what keeps the mechanism **off** in a healthy match. |
+
+It is a span (`REPAIR_SPAN_TICKS` = 4) rather than the single blocking tick, and
+that is a measurement rather than a preference. A guest's report reaches the host
+about three transport ticks after its confirmation moves and the repair takes
+several more to land, so single-tick repair discovers the next tick roughly six
+steps later — while the guest's retained floor climbs one tick *per* step. One
+tick recovered per six steps against a floor eating one per step is a race the
+guest loses. Captured on the default seed: single-tick repair walked the frontier
+9 → 10 and was still waiting for the report when the floor passed 11, and the
+guest that stranded was missing exactly two rows.
+
+**The allocation order is the policy.** Arrivals first, because they carry
+authority nobody else holds. Repair second. The open-loop top-up last. Repair
+outranking the top-up is the whole point — once a guest has *said* where it is
+stuck, spending the same rows on a guess is strictly worse than spending them on
+the answer, and with the top-up taking the headroom first the repair was left 6 to
+16 rows and `4v4.stress` stayed red. Repair never outranks arrivals, because
+displacing one defers it a transport tick and delays fresh authority for every
+peer to help one; reserving repair budget ahead of selection was measured too, and
+is worse at every span tried.
+
+This is what closed the harness's `4v4.stress` row. See
+[the fault harness](fault_harness.md) for the seed sweep.
 
 ## Full time settles before it completes
 
@@ -268,14 +335,17 @@ sixty-step settle window while three of its guests were still settling, and the
 row one of them was missing was thereafter unobtainable. It kept re-publishing its
 own window into a dead star for the remaining fifty-two steps.
 
-So the host stays while somebody is still asking. A settling guest re-publishes
-its window on **every** settle step, which makes inbound input traffic the signal
-that the relay is still wanted and silence the signal that it is not: the host
-completes once its own final boundary is confirmed **and**
+So the host stays while somebody is still asking. Since #243 it can *know* that
+rather than infer it: every settling guest reports its own confirmation in the
+bundle it re-publishes each step, so the host completes once its own final
+boundary is confirmed **and** every author it has heard from has confirmed the
+final boundary too. That is a bound, not a heuristic.
+
 `SETTLE_RELAY_QUIET_STEPS` (4, the fairness delay plus one) consecutive settle
-steps have brought no input traffic at all. A clean match costs the host those
-four steps — 67 ms — and a match with a straggler keeps the relay alive exactly as
-long as the straggler keeps asking.
+steps with no input traffic at all survives as the fallback, and only as the
+fallback: a peer that has stopped speaking altogether cannot report anything, and
+that is the one case a report cannot cover. The settle deadline bounds it anyway.
+A clean match costs the host at most those four steps — 67 ms.
 
 It introduces no new wait. The phase's two existing deadlines still end it, and
 they no longer decide the status: a peer whose own final boundary is confirmed
@@ -283,21 +353,44 @@ completes when the phase expires, relaying or not. `settle_timeout` therefore
 keeps meaning exactly one thing — the phase expired with *this peer's own* final
 boundary still unconfirmed.
 
-The quiet window is the one bound in this phase that is a **heuristic**, and it
-should not be read as though it were the other two. Four steps covers *one*
-worst-case burst — `stress` bursts at most three consecutive losses — but not a
-worst-case burst immediately followed by worst-case jitter, where the next
-re-send can draw up to three further ticks of delay and push a genuine
-straggler's silence past four steps. The host would then leave while somebody is
-still asking. That is a real, low-probability edge which does not appear in the
-seed sweep, and its blast radius is bounded to a rarer instance of the same typed
-`settle_timeout` this phase already reports — not a new or silent failure class.
-Turning it into a guarantee needs the guest to be able to *say* it is still
-missing rows, which is the protocol addition #243 tracks.
+### A guest leaves last too, for the mirror-image reason
 
-Under clean delivery the guests still cost nothing: confirmation already runs
-ahead of the present, so a guest settles one step after full time, when the
-fan-out carrying the final row arrives.
+The host is not the only peer holding something nobody else has. A guest's
+authored rows for the final ticks exist **nowhere else** until the host has them,
+and the host is the only peer that can fan them out to the other six. A guest that
+confirms its own boundary and leaves therefore takes authority with it.
+
+That is `4v4.stress` seed 4738, which #243's repair exposed by closing the
+confirmation stall that had been failing the row earlier: `guest_7` completed
+while input ticks 115 and 116 of its slot had never reached the host, and the
+remaining seven peers — the host included — spent the whole settle window missing
+exactly those two rows and then timed out. It is #241's tail stall in the opposite
+direction.
+
+The host's batches carry the host's own `confirmed_span`, so a guest can see that
+the sequencer is still behind the final boundary and keep re-publishing until it
+is not. Silence is not consent: a guest that has never heard a host batch has no
+evidence its tail landed and must keep publishing.
+
+**Which** window it re-publishes matters as much as whether it does. One bundle is
+a fixed seven rows ending at the tick it names, so re-sending the newest one — the
+obvious choice — carries nothing useful once the host is more than a window
+behind. On seed 4738 `guest_7` re-published `[118, 124]` sixty times while the
+rows nobody held were 115 and 116. The window is therefore anchored just above the
+host's reported confirmation, capped at the newest authored tick, so a caught-up
+host still gets the ordinary newest window and a healthy settle is unchanged.
+Authored samples are retained down to the rollback floor rather than to the seven
+ticks one bundle carries, so an older window can still be built at all.
+
+Neither wait is unbounded. The settle deadline expires both, and a peer that has
+confirmed its own boundary completes at expiry rather than failing, so waiting
+here can delay a whistle but can never invent a `settle_timeout`.
+
+Under clean delivery the guests still cost almost nothing: confirmation already
+runs ahead of the present, so a guest settles two steps after full time — one for
+the fan-out carrying the final row, one for the batch reporting the host's
+confirmation back. `spec/game/online_match_driver_spec.lua` pins both bounds so
+they cannot quietly grow.
 
 **It is bounded twice, and waits on nothing else.** It ends after
 `SETTLE_TIMEOUT_TICKS` (60) further driver steps, or after

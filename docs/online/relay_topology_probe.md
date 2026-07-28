@@ -117,18 +117,18 @@ Measured on `4v4.clean`, input channel only, over 129 driver steps:
 
 | | predicted | measured | note |
 | --- | ---: | ---: | --- |
-| host-star, worst node (host) | 5,285 B/tick | **5,291.5 B/tick** | within 0.2% |
-| host-star, a guest | ~170 B/tick | **168.6 B/tick** | |
-| relay wire, sequencer kept (host) | — | **755.9 B/tick** | one copy of the canonical batch |
-| relay, sequencer-less (every client) | 1,190 B/tick | **190.4 B/tick** | measured in `transport_relay_spec` |
-| relay downlink, framing (envelopes only) | ~650 B/tick | **1,332.8 B/tick** | comparable with the star figure |
-| relay downlink, framing (on the wire) | — | **1,433.8 B/tick** | addressing and separators included |
+| host-star, worst node (host) | 5,285 B/tick | **5,319.9 B/tick** | within 0.7% |
+| host-star, a guest | ~170 B/tick | **180.5 B/tick** | |
+| relay wire, sequencer kept (host) | — | **760.0 B/tick** | one copy of the canonical batch |
+| relay, sequencer-less (every client) | 1,190 B/tick | **194.4 B/tick** | measured in `transport_relay_spec` |
+| relay downlink, framing (envelopes only) | ~650 B/tick | **1,360.8 B/tick** | comparable with the star figure |
+| relay downlink, framing (on the wire) | — | **1,464.8 B/tick** | addressing and separators included |
 
 Two corrections:
 
 **The predicted 1,190 B/tick relay upload is the mesh column.** 1,190 = 7 × 170,
 which is what a client uploads when it sends its bundle to seven peers directly.
-A relay client uploads **one** copy: 190.4 B/tick measured on the real protocol
+A relay client uploads **one** copy: 194.4 B/tick measured on the real protocol
 bundle. The relay is 6.3× better than its own decision record claims.
 
 **The predicted ~650 B/tick framing downlink is inverted.** A framing relay
@@ -136,13 +136,13 @@ cannot be cheaper than a canonicalising one, and the reason is the property that
 makes it attractive: it does not parse, so it cannot merge. Each client receives
 the other seven bundles whole — seven protocol headers, seven sender ids, seven
 sequences — where a canonical batch carries the union of their rows under one
-header. Measured: **1,332.8 B/tick of envelopes versus 755.9 B/tick canonical**,
+header. Measured: **1,360.8 B/tick of envelopes versus 760.0 B/tick canonical**,
 so the framing relay costs **1.76× more downstream**, not 16% less.
 
-### The 1,332.8 figure is a floor, not the wire cost
+### The 1,360.8 figure is a floor, not the wire cost
 
 That number counts **encoded envelopes only**, deliberately, so that it is
-comparable with the star's 755.9 B/tick, which is also an envelope figure. It
+comparable with the star's 760.0 B/tick, which is also an envelope figure. It
 excludes the `origin|channel|` addressing on each forwarded line and the
 separators between lines. Both are real costs a relay has to pay and a star does
 not:
@@ -155,21 +155,21 @@ not:
   and the origin of an arrival *is* the channel it arrived on.
 
 `wire_counters().downlink_framed_bytes` counts what actually crossed the link.
-Measured on the same run: **1,433.8 B/tick** for a member receiving one `host`
-line and six `guest_N` lines, and 1,436.8 B/tick for the member receiving seven
-`guest_N` lines. Against the 755.9 B canonical batch that is **1.90×**, not
-1.76×.
+Measured on the same run: **1,461.8 B/tick** for a member receiving one `host`
+line and six `guest_N` lines, and 1,464.8 B/tick for the member receiving seven
+`guest_N` lines. Against the 760.0 B canonical batch that is **1.93×**, not
+1.79×.
 
-So the honest bracket is **1.76× to 1.90×**, and where it lands inside that
+So the honest bracket is **1.79× to 1.93×**, and where it lands inside that
 depends on how compactly a real relay encodes origin. This adapter uses the
 transport contract's own `peer_id|channel|` text form, which is verbose — 11 to
-14 bytes per line here — so 1.90× is the pessimistic end and a compact binary
-origin tag would sit near the optimistic one. **It cannot be below 1.76×**, and
+14 bytes per line here — so 1.93× is the pessimistic end and a compact binary
+origin tag would sit near the optimistic one. **It cannot be below 1.79×**, and
 the direction of the correction is what matters: opaque framing is more expensive
 downstream than canonicalising, and the gap is wider than the envelope figure
 alone suggests.
 
-The trade is real either way — 190 B up and 1,333 B down beats 5,292 B up on the
+The trade is real either way — 194 B up and 1,361 B down beats 5,320 B up on the
 worst node by a wide margin — but the decision's table understates the relay's
 upload win and inverts its downlink cost, and the "this is also *cheaper*"
 paragraph does not survive measurement.
@@ -244,21 +244,25 @@ and OMP-5 host migration is still required.
 
 ### Finding 5 — the settle phase's relay-quiet wait is complexity the relay deletes
 
-`match_driver.SETTLE_RELAY_QUIET_STEPS` and `relay_drained` are host-only:
+`match_driver.SETTLE_RELAY_QUIET_STEPS` and the host branch of `tail_delivered`
+are host-only. The host stays in the settle phase after confirming its own
+boundary because a departing player-host strands every guest's tail (#241), and a
+relay is not a player and cannot leave, so nothing under the new topology needs
+this at all. The finding stands.
 
-```lua
-if driver._role ~= "host" then
-    return true
-end
-```
+**Its weight does not, and this section is re-pinned.** When it was written the
+wait was a *heuristic* — `DELAY_TICKS + 1` consecutive silent steps — and the host
+paid all four on every clean match, which is what made deleting it the decision's
+clearest simplification. #243 gave guests a way to report their own confirmation
+in the bundles they already re-publish, so the host now leaves when every author
+it has heard from has confirmed the final boundary. That is a bound, and the quiet
+count survives only as the fallback for a peer that has stopped speaking at all.
+Measured on the same healthy 1v1: the host and its guest both settle in two steps,
+where the host used to need four or more.
 
-The host stays in the settle phase for `DELAY_TICKS + 1` consecutive silent steps
-after confirming its own boundary, because a departing player-host strands every
-guest's tail (#241). Measured on a healthy 1v1: the host settles for strictly
-more steps than the guest. A relay is not a player and cannot leave, so this
-heuristic has no reason to exist under the new topology. **This is the one place
-the decision makes the code simpler rather than harder**, and it is worth
-claiming explicitly since the decision does not.
+So the relay still deletes this code, but what it deletes is now a fallback path
+rather than a wait every clean match pays for. It is a smaller win than this
+document originally claimed.
 
 ### Finding 6 — the fairness delay is universalised, not removed
 
@@ -327,14 +331,14 @@ Of the decision's claims that this exercise can reach:
 
 | Claim | Verdict |
 | --- | --- |
-| The relay concentrates nothing on one player's uplink | **Confirmed.** 5,291.5 → 755.9 B/tick at the wire, → 190.4 B/tick sequencer-less. |
-| Worst-node upload 5,285 → 1,190 B/tick | **Star figure confirmed; relay figure wrong.** The true sequencer-less figure is 190.4 B/tick; 1,190 is the mesh column. |
-| Opaque framing is *cheaper* than canonicalising (~650 vs 755 B) | **Falsified.** 1,332.8 B/tick of envelopes and 1,433.8 B/tick on the wire; framing costs **1.76× to 1.90×** more downstream because it cannot merge rows and must name every origin. |
-| #243 disappears structurally | **Not at the wire.** `4v4.stress` fails identically under a relay. The claim is about removing the sequencer, and the driver refuses that today. |
+| The relay concentrates nothing on one player's uplink | **Confirmed.** 5,319.9 → 760.0 B/tick at the wire, → 194.4 B/tick sequencer-less. |
+| Worst-node upload 5,285 → 1,190 B/tick | **Star figure confirmed; relay figure wrong.** The true sequencer-less figure is 194.4 B/tick; 1,190 is the mesh column. |
+| Opaque framing is *cheaper* than canonicalising (~650 vs 760 B) | **Falsified.** 1,360.8 B/tick of envelopes and 1,464.8 B/tick on the wire; framing costs **1.79× to 1.93×** more downstream because it cannot merge rows and must name every origin. |
+| #243 disappears structurally | **Not at the wire.** `4v4.stress` failed identically under a relay, which is what established the defect as a property of the batch rather than of the topology. It was closed in the batch sizing and in confirmation feedback, and the row now passes under both topologies. |
 | The relay never needs to parse a game packet | **Confirmed**, with one requirement the decision omits: it must frame per-origin, or ownership validation degrades to self-declaration. |
 | A relay adapter is a third implementation and the driver does not change | **Falsified.** `match_driver.guest_apply_authority` terminates on the first peer bundle. |
 | Host departure still ends the session | **Confirmed.** The coordinator's authority is untouched by the wire. |
-| The settle phase's relay-quiet heuristic becomes unnecessary | **Confirmed**, and it is the decision's clearest simplification. |
+| The settle phase's relay-quiet heuristic becomes unnecessary | **Confirmed** that it is host-only, but smaller than claimed. #243 turned it from a heuristic into a bound and reduced its ordinary cost to zero, so what a relay deletes is a fallback path rather than a wait every clean match pays. |
 
 The decision's *direction* survives measurement. Its *arithmetic* and its
 *migration cost* do not: the relay is cheaper on upload than claimed, more

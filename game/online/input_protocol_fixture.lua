@@ -24,6 +24,8 @@ function fixture.guest()
         sequence = 7,
         transport_tick = 12,
         first_input_tick = 0,
+        -- Confirmation feedback: this guest has confirmed ticks 0..3.
+        confirmed_span = 4,
         rows = {
             row(0, 2, input_frame.neutral_sample()),
             row(
@@ -110,14 +112,28 @@ function fixture.host()
         sequence = 13,
         transport_tick = 15,
         first_input_tick = 0,
+        -- The host reports its own confirmation back the same way a guest does.
+        confirmed_span = 5,
         rows = rows,
     }))
 end
 
+-- The largest host batch the wire format admits, and the packet the byte budget
+-- is measured against.
+--
+-- Every variable-width header field is at its worst case *simultaneously*, which
+-- is not simply "every field at its maximum": `confirmed_span` is bounded by
+-- `MAX_TICK - first_input_tick + 1`, so pushing `first_input_tick` to `MAX_TICK`
+-- would collapse the span to a single digit and understate the header. A
+-- ten-digit `first_input_tick` that still leaves a ten-digit span is the real
+-- ceiling, and `FIRST_INPUT_TICK` below is chosen for exactly that.
+fixture.FIRST_INPUT_TICK = 1000000000
+
 ---@return InputPacket
 function fixture.maximal()
     local rows = {}
-    for tick = input_frame.MAX_TICK - input_protocol.HISTORY_ROWS, input_frame.MAX_TICK do
+    local span = input_protocol.HOST_WINDOW_ROWS
+    for tick = input_frame.MAX_TICK - span + 1, input_frame.MAX_TICK do
         for slot_index = 1, input_frame.SLOT_COUNT do
             rows[#rows + 1] = row(
                 tick,
@@ -137,7 +153,8 @@ function fixture.maximal()
         sender_id = string.rep("h", 128),
         sequence = 2147483647,
         transport_tick = input_frame.MAX_TICK,
-        first_input_tick = input_frame.MAX_TICK - input_protocol.HISTORY_ROWS,
+        first_input_tick = fixture.FIRST_INPUT_TICK,
+        confirmed_span = input_frame.MAX_TICK - fixture.FIRST_INPUT_TICK + 1,
         rows = rows,
     }))
 end

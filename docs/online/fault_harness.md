@@ -295,43 +295,75 @@ Neither fix widened the redundancy window, raised the settle bound, or changed
 this matrix's scenarios, profiles or seeds. `4v4.playable` is the evidence: the
 seeds that stranded `guest_5` and `guest_6` now pass unchanged.
 
-### Still open (#243): `4v4.stress` strands on batch capacity, not on a leak
+### Closed (#243): `4v4.stress` converges
 
-`4v4.stress` still strands a guest, and the row keeps a `known_gap` pointing at
-[#243](https://github.com/osobytes/goliseo/issues/243) — but the cause is now
-measured rather than suspected, and it is **not** the same defect.
+`4v4.stress` used to strand a guest on **18 of 48** impairment seeds, and #241's
+fan-out repair could not touch it. Under `stress` the host's canonical batch was
+saturated at `MAX_HOST_ROWS` on every tick from the twelfth onwards: all eight
+slots delivered their seven-row window and there was no leftover budget at all, so
+a row the host learned *late* could not be re-sent without displacing a fresh one.
+Captured at the default seed: the host learned `(tick 9, slot 5)` seven transport
+ticks late, fanned it out three times rather than seven, and `guest_7` missed
+exactly those three.
 
-Under `stress` the host's canonical batch is saturated at exactly
-`MAX_HOST_ROWS` on every tick from the twelfth onwards: all eight slots deliver
-their seven-row window and there is no leftover budget at all. The fan-out repair
-above therefore has nothing to spend, and a row the host learns *late* cannot be
-re-sent without displacing a fresh row. Captured at the default seed: the host
-learned `(tick 9, slot 5)` seven transport ticks late, fanned it out at transport
-ticks 16, 20 and 21 — three times rather than seven — and `guest_7` received the
-batches at 15, 17, 18, 19 and 23 and missed exactly those three.
+#245's relay probe established that this was a property of the *batch* and not of
+the wire: the row failed **identically** under `--topology relay` — the same eight
+`confirmation_stalled` statuses, the same eight final hashes, the same stalled
+confirmation ticks — even with the relay cutting the host's per-tick upload from
+5,319.9 B to 760.0 B. See
+[`relay_topology_probe.md`](relay_topology_probe.md). Moving the hub does not
+change what gets packed into a batch, so the fix belonged in the sizing,
+independent of any topology decision.
 
-#245 added a second piece of evidence for that reading: the row fails
-**identically** under `--topology relay` — the same eight `confirmation_stalled`
-statuses, the same eight final hashes, the same stalled confirmation ticks — even
-though the relay cuts the host's per-tick upload from 5,291.5 B to 755.9 B. A
-capacity limit of the canonical batch is not a property of the wire, so moving
-the fan-out to a relay does not touch it. See
-[`relay_topology_probe.md`](relay_topology_probe.md).
+Three allocation schemes had been tried against it and are still worth recording
+so they are not re-derived: giving each accepted bundle a relay quota counted from
+when the host learned it (inert — there is no leftover budget under saturation);
+repaying that quota per-slot in one pass (worse — one slot's history starves
+another slot's present); and reserving one bundle's worth of the batch for
+repayment (worse — it turned `4v4.playable` red).
 
-That is a capacity limit of the 56-row batch, not a leak in how it is filled.
-Three things were tried against it and are recorded so they are not re-derived:
-giving each accepted bundle a relay quota counted from when the host learned it
-(inert — there is no leftover budget under saturation); repaying that quota
-per-slot in one pass (worse — one slot's history starves another slot's present);
-and reserving one bundle's worth of the batch for repayment (worse — it turned
-`4v4.playable` red). Closing it needs a way for a guest to *ask* for the row it
-missed, which is a protocol addition rather than a wider open-loop window, and
-that is what **#243** tracks. This row stays red until it lands.
+**What closed it was two changes, and the measurement says both were needed.**
 
-What did change for this row: the stranded peer now reports
-`confirmation_stalled` at the step its confirmation dies rather than
-`settle_timeout` a whole match later. A terminal netcode failure ends the session
-for every peer — as it does for every other terminal this driver raises — so the
-row now fails with eight `confirmation_stalled` clients rather than seven
-completions and one late mislabelled straggler. That is a louder and earlier
-signal for the same underlying loss, not a new defect.
+*Sizing.* `MAX_HOST_ROWS` was `SLOT_COUNT * RETAINED_ROWS` = 56 — a design intent,
+never the transport limit it was assumed to be, since a maximally-full 56-row
+batch encoded to 755 of 1,024 bytes. It is now 72, measured against the byte
+budget, with 66 bytes of pinned margin under a hard ceiling of 77 rows. **On its
+own this was not enough**, and the sweep says so: raising the bound alone moved
+`4v4.stress` from 18 failures in 48 seeds to 12, and flipped one previously-green
+seed red. Raising it to the 78-row ceiling of the time gave the identical result,
+which is what ruled capacity out as a sufficient answer.
+
+*Confirmation feedback.* Every bundle a guest already sends every tick now carries
+where its own confirmation has reached, so the host allocates redundancy by need
+instead of uniformly: it re-sends a four-tick span from the lowest reported
+confirmation, ahead of the open-loop top-up but never ahead of a real arrival. The
+extra 16 rows the sizing bought are what that span spends. See
+[match driver](match_driver.md#the-host-repairs-what-a-guest-says-it-is-missing).
+
+The same field closed a second defect the first one had been hiding. With
+confirmation stalls gone, two seeds surfaced a **guest**-side tail stall — the
+mirror of #241's host-side one. On seed 4738 `guest_7` completed while ticks 115
+and 116 of its slot had never reached the host, and the other seven peers timed
+out settling on exactly those two rows. Host batches now carry the host's own
+confirmation too, so a settling guest can see the sequencer is behind and keeps
+re-publishing — anchored at the window the host is actually missing rather than at
+its newest, which on that seed was the difference between seven rows aimed at the
+gap and sixty re-sends aimed past it.
+
+That also turns this document's one remaining heuristic into a bound. The settle
+phase's relay-quiet check had to *infer* that guests were done from four silent
+steps, and was documented as covering everything except a worst-case burst
+followed by worst-case jitter. The host now leaves when every author it has heard
+from has **reported** confirming the final boundary; the quiet count survives only
+as the fallback for a peer that has stopped speaking at all, which is the one case
+no report can cover.
+
+Measured, on the same seeds before and after:
+
+| Row | Seeds | Before | After |
+| --- | --- | ---: | ---: |
+| `4v4.stress` | 4703–4750 | 18 stranded | 0 |
+| `4v4.playable` | 4703–4720 | 1 stranded | 0 |
+
+No scenario, profile, seed, gate or terminal was changed to get there, and the
+`4v4.stress` row no longer carries a `known_gap`.

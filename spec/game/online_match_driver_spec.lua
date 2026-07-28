@@ -26,6 +26,7 @@ local rollback_session = require("sim.rollback_session")
 ---@field clock (fun(): number)?
 ---@field divergent_peer integer? -- Driver index whose boundary zero is seeded differently.
 ---@field wrap_host_transport (fun(inner: StarTransportAdapter): StarTransportAdapter)?
+---@field wrap_guest_transport (fun(index: integer, inner: StarTransportAdapter): StarTransportAdapter)?
 
 ---@param mode SessionMatchMode
 ---@param options DriverHarnessOptions?
@@ -70,6 +71,10 @@ local function harness(mode, options)
         local guest_options = driver_options(#drivers + 1)
         guest_options.peer_id = peer_id
         guest_options.transport = assert(session.guest_transports[peer_id])
+        if options.wrap_guest_transport then
+            guest_options.transport =
+                options.wrap_guest_transport(#drivers + 1, guest_options.transport)
+        end
         drivers[#drivers + 1] = match_driver.new(guest_options)
     end
     return { session = session, drivers = drivers, peer_ids = peer_ids, step = 0 }
@@ -925,9 +930,18 @@ t.describe("online match driver", function()
             t.eq(assert_settled(state, mode), FULL_TIME_BOUNDARY)
             for index, driver in ipairs(state.drivers) do
                 -- Clean delivery confirms ahead of the present, so settling is
-                -- all but free for a guest: it is exactly one step behind the
-                -- fan-out that carries the final row to it. The healthy guest
-                -- path stays as prompt as it was.
+                -- all but free for a guest: one step behind the fan-out that
+                -- carries the final row to it, plus one more for the host batch
+                -- that reports the host's own confirmation back.
+                --
+                -- That second step is #243's, and it is the price of the guest
+                -- side of `tail_delivered`. A guest's authored tail exists nowhere
+                -- else until the sequencer has it, so "my own boundary is
+                -- confirmed" is not evidence that the rows it wrote ever landed;
+                -- seed 4738 of `4v4.stress` is the row where a guest left on
+                -- exactly that reasoning and took two ticks of authority with it.
+                -- One extra step -- 17 ms at the whistle -- buys the guarantee,
+                -- and it is pinned here so it can never quietly grow.
                 --
                 -- The host pays the relay quiet window on top, because it is the
                 -- star's only relay and "my own boundary is confirmed" is not
@@ -938,7 +952,7 @@ t.describe("online match driver", function()
                 -- The host's bound is the quiet window plus two: the step it
                 -- reaches full time (its guests are still mid-play and sending),
                 -- and the step their last in-flight bundle lands on.
-                local allowed = index == 1 and match_driver.SETTLE_RELAY_QUIET_STEPS + 2 or 1
+                local allowed = index == 1 and match_driver.SETTLE_RELAY_QUIET_STEPS + 2 or 2
                 local steps = match_driver.diagnostics(driver).settle_steps
                 t.is_true(
                     steps <= allowed,
@@ -1213,12 +1227,18 @@ t.describe("online match driver", function()
         t.eq(match_driver.diagnostics(guest).late_input_tick, terminal.tick)
     end)
 
-    -- #241, the fan-out half. `MAX_HOST_ROWS` is eight slots times the seven-row
-    -- redundancy window because one host batch is meant to carry a full window
-    -- for every slot. Relaying only what arrived on this transport tick spent
-    -- far less of it: a slot whose author's bundle was lost or delayed
-    -- contributed nothing at all, so the guest-to-host leg's losses multiplied
-    -- into the host-to-guest leg, which has no retransmission.
+    -- #241, the fan-out half. One host batch is meant to carry the full seven-row
+    -- redundancy window for every slot. Relaying only what arrived on this
+    -- transport tick spent far less of it: a slot whose author's bundle was lost
+    -- or delayed contributed nothing at all, so the guest-to-host leg's losses
+    -- multiplied into the host-to-guest leg, which has no retransmission.
+    --
+    -- The full-window figure and `MAX_HOST_ROWS` used to be the same number; #243
+    -- separated them. A full window for eight slots is still 56 rows and is still
+    -- what a healthy steady state emits -- what changed is that the bound is now
+    -- 72, sized to the byte budget, so the 16 rows above it are headroom the
+    -- targeted repair can spend. This asserts the window, and asserts it sits
+    -- inside the bound rather than at it.
     t.it("fans out a full redundancy window for a slot that sent nothing", function()
         ---@type TransportMessage[]
         local sent = {}
@@ -1278,8 +1298,10 @@ t.describe("online match driver", function()
                 ("slot %d was not fanned out with a full window"):format(slot_index)
             )
         end
-        -- Exactly the bound the batch was always sized for, and never past it.
-        t.eq(#packet.rows, input_protocol.MAX_HOST_ROWS)
+        -- A full window for every slot, with the repair headroom left unspent:
+        -- no guest is behind here, so nothing has asked for a repair.
+        t.eq(#packet.rows, input_frame.SLOT_COUNT * input_protocol.RETAINED_ROWS)
+        t.is_true(#packet.rows < input_protocol.MAX_HOST_ROWS)
     end)
 
     -- #241, the tail half. The host is the star's only relay and, as sequencer,
@@ -1319,6 +1341,137 @@ t.describe("online match driver", function()
             end
             t.eq(match_driver.status(state.drivers[1]), "completed")
             t.is_true(match_driver.settled(state.drivers[1]))
+        end
+    end)
+
+    -- #243, the repair half. Blind redundancy re-sends a row for seven transport
+    -- ticks and then stops, so a guest that loses every one of those seven can
+    -- never obtain that row from the ordinary fan-out again -- and because
+    -- confirmation only advances from `confirmed_tick + 1`, that one hole freezes
+    -- it for the rest of the match.
+    --
+    -- The bundle it already sends every tick now reports where its confirmation
+    -- actually is, so the host can aim a re-send at the gap instead of guessing.
+    -- This drops a burst wider than the redundancy window on one guest's inbound
+    -- link and asserts three things: it really did fall out of the window, the
+    -- host really did spend rows on a tick older than the window, and the guest
+    -- really did recover rather than stall.
+    t.it("repairs a guest whose hole has aged out of the redundancy window", function()
+        local blackout_from, blackout_through = 14, 26
+        local step = 0
+        ---@type integer[]
+        local repaired_ticks = {}
+        ---@type DriverHarness
+        local state
+        state = harness("4v4", {
+            wrap_guest_transport = function(index, inner)
+                if index ~= 8 then
+                    return inner
+                end
+                local filter = setmetatable({}, { __index = inner })
+                function filter:poll_batch(limit)
+                    local messages = inner:poll_batch(limit)
+                    if step < blackout_from or step > blackout_through then
+                        return messages
+                    end
+                    local kept = {}
+                    for _, entry in ipairs(messages) do
+                        if entry.message.type ~= "input" then
+                            kept[#kept + 1] = entry
+                        end
+                    end
+                    return kept
+                end
+                return filter
+            end,
+            wrap_host_transport = function(inner)
+                local recorder = setmetatable({}, { __index = inner })
+                function recorder:broadcast(channel, envelope)
+                    if channel == "input" then
+                        local packet = input_protocol.decode(envelope.payload, {
+                            session_id = state.session.manifest.session_id,
+                            manifest_id = protocol.manifest_id(state.session.manifest),
+                            sender_id = state.session.host_peer_id,
+                        })
+                        if packet ~= nil then
+                            local newest = packet.rows[#packet.rows].tick
+                            local oldest = packet.rows[1].tick
+                            if newest - oldest > input_protocol.HISTORY_ROWS then
+                                repaired_ticks[#repaired_ticks + 1] = oldest
+                            end
+                        end
+                    end
+                    return inner:broadcast(channel, envelope)
+                end
+                return recorder
+            end,
+        })
+
+        local stalled_during = nil
+        for _ = 1, 110 do
+            advance(state)
+            step = state.step
+            if step == blackout_through + 2 then
+                stalled_during = match_driver.diagnostics(state.drivers[8]).confirmed_input_tick
+            end
+        end
+
+        -- The blackout was wider than the window, so the guest is genuinely
+        -- behind the peers that kept receiving. Without that this test would pass
+        -- on a repair that never had anything to repair.
+        local reference = match_driver.diagnostics(state.drivers[2]).confirmed_input_tick
+        t.is_true(
+            assert(stalled_during) < reference,
+            "the blackout did not put the guest behind its peers"
+        )
+        -- The host spent rows on a tick older than blind redundancy would ever
+        -- re-send: that only happens when a guest reported where it was stuck.
+        t.is_true(#repaired_ticks > 0, "the host never fanned out a repaired tick")
+        -- And the point of all of it: the guest confirms past the hole instead of
+        -- freezing at it, so no peer reaches `confirmation_stalled`.
+        for index, driver in ipairs(state.drivers) do
+            t.is_true(
+                match_driver.status(driver) ~= "confirmation_stalled",
+                ("peer %d stalled its confirmation"):format(index)
+            )
+        end
+        t.is_true(
+            match_driver.diagnostics(state.drivers[8]).confirmed_input_tick > assert(stalled_during),
+            "the repaired guest never confirmed past its hole"
+        )
+    end)
+
+    -- #243, the settle half, and #241's tail stall in the other direction. A
+    -- guest's authored tail exists nowhere else until the host has it, so a guest
+    -- that leaves on "my own boundary is confirmed" can take rows with it that
+    -- every other peer -- the host included -- is still missing.
+    --
+    -- The host reports its own confirmation in the batches it already broadcasts,
+    -- so the guest can see the sequencer is behind and keep re-publishing. It
+    -- re-publishes the window the host is actually missing rather than the newest
+    -- one, which is the difference between seven rows aimed at the gap and seven
+    -- rows aimed past it.
+    t.it("keeps a guest re-publishing until the host has confirmed its tail", function()
+        local state = harness("4v4", { duration = SETTLE_DURATION })
+        local host_blind_until = FULL_TIME_STEP + 12
+        for _ = 1, FULL_TIME_BOUNDARY + 90 do
+            for index, driver in ipairs(state.drivers) do
+                match_driver.advance(driver, moving_sample(state.step, index))
+            end
+            -- A burst on the guest-to-host leg straddling full time: the host
+            -- stops hearing one author exactly when its last rows are authored.
+            if state.step < FULL_TIME_STEP - 8 or state.step > host_blind_until then
+                state.session.host_transport:pump()
+            end
+            state.step = state.step + 1
+        end
+        for index, driver in ipairs(state.drivers) do
+            t.eq(
+                match_driver.status(driver),
+                "completed",
+                ("peer %d did not complete"):format(index)
+            )
+            t.is_true(match_driver.settled(driver), ("peer %d never settled"):format(index))
         end
     end)
 

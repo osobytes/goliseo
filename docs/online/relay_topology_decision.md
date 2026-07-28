@@ -39,9 +39,9 @@ cannot currently run (see correction 3), so it is **untested rather than disprov
 
 | | this document predicted | measured |
 | --- | ---: | ---: |
-| host-star worst node | 5,285 B/tick | **5,291.5** |
-| relay client upload | 1,190 | **190.4** |
-| relay downlink | ~650 | **1,332.8** |
+| host-star worst node | 5,285 B/tick | **5,319.9** |
+| relay client upload | 1,190 | **194.4** |
+| relay downlink | ~650 | **1,360.8** |
 
 The 1,190 was the *mesh* figure copied into the relay column — a relay client uploads one copy, not
 seven — so the concentration win is roughly **27x**, not 4.4x. Better than claimed.
@@ -62,8 +62,10 @@ to self-declared `sender_id`; and declared bot fills have no author once no peer
 **One unclaimed cost.** Relay members share a single uplink buffer, so **per-peer backpressure
 isolation is something the star has and a relay does not**.
 
-**One unclaimed simplification.** `SETTLE_RELAY_QUIET_STEPS` and `relay_drained` are host-only and
-become unnecessary.
+**One unclaimed simplification.** `SETTLE_RELAY_QUIET_STEPS` and the host branch of
+`tail_delivered` are host-only and become unnecessary. Smaller than it looked when this was
+written: #243 turned that wait from a heuristic into a bound and reduced its ordinary cost to zero,
+so what the relay deletes is a fallback path, not a wait every clean match pays.
 
 ### What still stands
 

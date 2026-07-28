@@ -30,11 +30,11 @@ decision to move off the host-star in OMP-4.
 | `input_protocol.HISTORY_ROWS` | `6` prior rows of redundancy | `game/online/input_protocol.lua:72` |
 | `input_protocol.RETAINED_ROWS` | `7` = `HISTORY_ROWS + 1`, the redundancy window | `game/online/input_protocol.lua:73` |
 | `input_protocol.MAX_GUEST_ROWS` | `7` = `RETAINED_ROWS` — one slot, seven ticks | `game/online/input_protocol.lua:75` |
-| `input_protocol.MAX_HOST_ROWS` | `56` = `SLOT_COUNT * RETAINED_ROWS` | `game/online/input_protocol.lua:76` |
+| `input_protocol.MAX_HOST_ROWS` | `72` = `SLOT_COUNT * HOST_WINDOW_ROWS`, sized to the byte budget (#243) | `game/online/input_protocol.lua` |
 | `rollback_input_history.ROLLBACK_WINDOW_TICKS` | `30` ticks = 500 ms | `sim/rollback_input_history.lua:86` |
 | `contract.MAX_GUESTS` | `7`, so one star is at most 1 + 7 endpoints | `game/transport/contract.lua:165` |
 | `contract.MAX_PAYLOAD_BYTES` | `1024` per transport message | `game/transport/contract.lua:162` |
-| `match_driver.SETTLE_RELAY_QUIET_STEPS` | `4` = `DELAY_TICKS + 1` | `game/online/match_driver.lua:297` |
+| `match_driver.SETTLE_RELAY_QUIET_STEPS` | `4` = `DELAY_TICKS + 1`, the fallback when a peer stops reporting | `game/online/match_driver.lua` |
 | `match_driver.SETTLE_TIMEOUT_TICKS` / `_SECONDS` | `60` / `2` | `game/online/match_driver.lua:254,261` |
 
 A note on match length, because the figure is quoted inconsistently and it is
@@ -145,11 +145,13 @@ Step by step, with the code:
    (`game/online/input_protocol.lua:864-1014`). That function unions rows by
    `(slot, input tick)`, rejects any conflicting sample rather than picking a
    winner, sorts by `(input tick, slot)`, and emits one host packet.
-6. **Fanned back out.** One batch, broadcast to every guest
-   (`game/online/match_driver.lua:1162`), bounded at `MAX_HOST_ROWS = 56` rows —
-   eight slots times the seven-tick window. Note that today the batch carries **all
-   eight slots, including the recipient's own rows**; a guest de-duplicates them as
-   byte-identical repeats.
+6. **Fanned back out.** One batch, broadcast to every guest, bounded at
+   `MAX_HOST_ROWS = 72` rows — eight slots times a nine-tick window, sized to the
+   1,024-byte wire budget by #243 rather than to the guest's own retained window.
+   Steady state is 56 of those rows; the remainder is headroom the host spends
+   re-sending the ticks a lagging guest has *reported* it is still missing. Note
+   that the batch carries **all eight slots, including the recipient's own rows**;
+   a guest de-duplicates them as byte-identical repeats.
 7. **Applied on other clients.** A guest decodes every host batch on the step,
    unions the rows, sorts them canonically, and applies them as one atomic batch
    through `rollback_session.apply_authoritative_batch`, which reconciles **exactly
@@ -477,9 +479,11 @@ so it predicts less, rolls back less, and confirms earlier.
 So `FAIRNESS_DELAY_TICKS` cancels the *responsiveness* half of the host's structural
 position — the host's own button press takes effect exactly as many ticks later as
 any guest's — and leaves the *confirmation-depth* half untouched. The settle phase
-and its `SETTLE_RELAY_QUIET_STEPS = 4` rule exist to work around the untouched half:
-the host confirms first by construction, so "confirmed, therefore done" made it leave
-first, every time, stranding guests that were still asking it to relay.
+and its host-only relay wait exist to work around the untouched half: the host
+confirms first by construction, so "confirmed, therefore done" made it leave first,
+every time, stranding guests that were still asking it to relay. Since #243 that wait
+reads each guest's reported confirmation directly and `SETTLE_RELAY_QUIET_STEPS = 4`
+is only the fallback for a peer that has stopped reporting at all.
 
 Two further caveats on the value itself. Three ticks is a **fixed** guess: a guest
 100 ms away is under-compensated and one 10 ms away is over-compensated, so this is

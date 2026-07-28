@@ -217,6 +217,8 @@ local slot_input = require("sim.slot_input")
 ---@field _pending MatchDriverPending[] -- Host only: the delayed local collector path.
 ---@field _deferred InputPacketArrival[] -- Host only: arrivals held back by the row bound.
 ---@field _relay table<integer, InputPacketArrival> -- Host only: newest accepted bundle per slot.
+---@field _peer_confirmed table<integer, integer> -- Host only: slot index -> that author's newest reported confirmed input tick.
+---@field _host_confirmed integer? -- Guest only: the host's newest reported confirmed input tick.
 ---@field _checkpoints MatchDriverCheckpoint[]
 ---@field _checkpoint_by_tick table<integer, string>
 ---@field _hash_interval integer
@@ -242,6 +244,11 @@ match_driver.DELAY_TICKS = input_protocol.FAIRNESS_DELAY_TICKS
 match_driver.DEFAULT_HASH_INTERVAL_TICKS = 30
 match_driver.MAX_HASH_MISMATCHES = 3
 match_driver.POLL_BATCH_LIMIT = transport_contract.MAX_QUEUE_LIMIT
+
+-- How many contiguous input ticks one targeted repair covers. See `plan_repair`
+-- for why this is a span rather than the single tick a stalled guest is blocked
+-- on, and `input_protocol.HOST_WINDOW_ROWS` for the byte budget that pays for it.
+match_driver.REPAIR_SPAN_TICKS = 4
 
 -- The settle phase drains at most one second of further driver steps. The tail
 -- it is waiting for is at most `DELAY_TICKS` of authority, already carried by
@@ -498,10 +505,28 @@ local function extend_live(driver, tick, record)
     end
 end
 
+-- The live-slot timeline is pruned `DELAY_TICKS` *below* the authority floor, not
+-- to it.
+--
+-- `extend_live` re-derives the timeline for a corrected tick, and the switch edge
+-- it reads comes from the human's *control* slot -- the live slot from
+-- `DELAY_TICKS` earlier, because a sample is authority that long after it is
+-- taken. So correcting the oldest retained tick reads the timeline entry
+-- `DELAY_TICKS` beneath it, and pruning flush with the authority floor deletes
+-- exactly that entry.
+--
+-- Before #243 nothing reached far enough down to notice: the open-loop
+-- redundancy window only ever re-sent rows from the last seven ticks, so a
+-- correction landed nowhere near the floor. The targeted repair delivers
+-- authority from anywhere above the floor, including the floor itself, and turned
+-- the latent gap into a hard `the live-slot timeline has no entry for this tick`
+-- assertion on `4v4.stress`. The overlap is what the correction path always
+-- needed; only its reachability is new.
 ---@param driver MatchDriver
 ---@param floor integer -- Oldest input tick still retained.
 local function prune_live(driver, floor)
-    for tick = driver._first, floor - 1 do
+    local oldest = math.max(driver._first, floor - match_driver.DELAY_TICKS)
+    for tick = driver._first, oldest - 1 do
         driver._live[tick] = nil
         driver._carrier[tick] = nil
     end
@@ -541,6 +566,17 @@ local function next_sequence(driver, sender_id)
     return sequence
 end
 
+-- Authored samples are retained down to this peer's own rollback floor, not to
+-- the seven ticks one bundle carries.
+--
+-- The extra history is what makes `settle_tail_tick` able to re-publish a window
+-- the host is actually missing rather than only the newest one. Pruning flush
+-- with the bundle meant that once a tick fell out of the newest window it could
+-- never be re-authored by anyone: the guest that wrote it had thrown it away, and
+-- it existed nowhere else if the host had not received it. `ROLLBACK_WINDOW_TICKS`
+-- is the right floor because authority older than that cannot be placed in any
+-- peer's window anyway, so retaining more would buy nothing and retaining less
+-- discards rows that are still placeable.
 ---@param driver MatchDriver
 ---@param slot_index integer
 ---@param tick integer
@@ -548,7 +584,7 @@ end
 local function record_authored(driver, slot_index, tick, sample)
     local slot_history = driver._history[slot_index]
     slot_history[tick] = copy_sample(sample)
-    local oldest = tick - input_protocol.HISTORY_ROWS - 1
+    local oldest = tick - rollback_input_history.ROLLBACK_WINDOW_TICKS - 1
     if oldest >= driver._first then
         slot_history[oldest] = nil
     end
@@ -645,6 +681,11 @@ local function build_packet(driver, slot_index, tick, transport_tick)
         sequence = sequence,
         transport_tick = transport_tick,
         first_input_tick = driver._first,
+        -- The confirmation feedback #243 added. Every bundle a peer already sends
+        -- every tick now says how far its own confirmation has actually reached,
+        -- so the host stops fanning out blind. It costs one header field and no
+        -- round trip: the sender never waits on it and never asks for anything.
+        confirmed_span = input_protocol.confirmed_span(driver._first, confirmed_input_tick(driver)),
         rows = redundant_rows(driver, slot_index, tick),
     }))
     local wire = assert(input_protocol.encode(packet))
@@ -955,10 +996,11 @@ end
 
 ---@param driver MatchDriver
 ---@param arrivals InputPacketArrival[]
+---@param budget integer -- Rows this selection may consume, at most `MAX_HOST_ROWS`.
 ---@return InputPacketArrival[] selected
 ---@return table<string, boolean> keys -- Distinct `(tick, slot)` keys the selection already carries.
----@return integer count -- How many of `MAX_HOST_ROWS` those keys consume.
-local function select_within_bound(driver, arrivals)
+---@return integer count -- How many of `budget` those keys consume.
+local function select_within_bound(driver, arrivals, budget)
     table.sort(arrivals, arrival_order(driver))
     ---@type InputPacketArrival[]
     local selected = {}
@@ -977,7 +1019,7 @@ local function select_within_bound(driver, arrivals)
                 additional = additional + 1
             end
         end
-        if #deferred == 0 and count + additional <= input_protocol.MAX_HOST_ROWS then
+        if #deferred == 0 and count + additional <= budget then
             for _, row in ipairs(arrival.packet.rows) do
                 keys[tostring(row.tick) .. ":" .. tostring(row.slot_index)] = true
             end
@@ -1027,6 +1069,140 @@ local function remember_relay(driver, selected)
     end
 end
 
+-- Record what each remote author says its own confirmation has reached.
+--
+-- The bundle every guest already sends every tick now carries `confirmed_span`
+-- (#243), so this costs nothing beyond reading a field that already arrived. It
+-- is recorded per canonical slot rather than per peer because the rest of the
+-- host path is already keyed that way, and because a peer that owns several
+-- slots reports one confirmation for all of them: the same value lands under
+-- each of its slots and the minimum below is unchanged either way.
+--
+-- Newest wins, so a reordered old bundle can never walk a confirmation
+-- backwards. The host's own collector path is skipped: its confirmation is not
+-- feedback, it is the reference the feedback is measured against.
+---@param driver MatchDriver
+---@param arrivals InputPacketArrival[]
+local function remember_confirmation(driver, arrivals)
+    for _, arrival in ipairs(arrivals) do
+        if arrival.transport_peer_id ~= driver._peer_id then
+            local slot_index = arrival.packet.rows[1].slot_index
+            local reported = input_protocol.confirmed_tick(arrival.packet)
+            local held = driver._peer_confirmed[slot_index]
+            if held == nil or reported > held then
+                driver._peer_confirmed[slot_index] = reported
+            end
+        end
+    end
+end
+
+-- The contiguous span of input ticks the most-behind guest is waiting on, as
+-- rows read straight out of the host's own retained authority. `nil` means
+-- nobody is behind far enough for a repair to be the right answer.
+--
+-- Every row here is authority the host already validated, canonicalized and
+-- confirmed. Authorship is a frozen partition, so a re-sent row is
+-- byte-identical to the one it repeats and can never open a divergence.
+--
+-- Three conditions gate the span, and each one is doing work:
+--
+--   * `tick <= host_confirmed`. The host must hold all eight rows of a tick as
+--     authority, or it would be inventing some of them. A tick that is short
+--     even one slot ends the span rather than being sent partial: a partial tick
+--     cannot unblock confirmation, so it would be budget spent for nothing.
+--   * `tick >= floor`. Below the host's own retained floor the rows are gone,
+--     and a guest that far behind is already `confirmation_stalled` on its own
+--     side. Repair cannot resurrect it and must not pretend to.
+--   * `host_confirmed - needed > HISTORY_ROWS`. This is the gate that keeps the
+--     mechanism off in a healthy match. Inside the redundancy window the
+--     open-loop fan-out is still re-sending that tick every transport tick, so a
+--     repair would spend budget on a row already in flight. Only once the window
+--     has moved past it has blind redundancy provably failed for that guest.
+--
+-- ### Why a span and not the single tick the guest is stuck on
+--
+-- Confirmation advances only from `confirmed_tick + 1`, so a guest stuck at `C`
+-- is blocked on tick `C + 1` alone, and repairing exactly that tick is the
+-- minimal correct answer. It is also measurably too slow, and the reason is a
+-- race the single-tick version loses:
+--
+--   * the guest's report reaches the host about three transport ticks after its
+--     confirmation moves, and the repair takes several more to land, so the host
+--     learns the *next* tick to repair roughly six steps later;
+--   * the guest's retained floor climbs one tick per step regardless.
+--
+-- One tick recovered per six steps against a floor that eats one tick per step
+-- is a race the guest loses from any real deficit. Captured on the default seed:
+-- the single-tick repair walked the frontier 9 -> 10 and was still waiting for
+-- the report when the floor passed 11, and the guest that stranded was missing
+-- exactly two rows -- `(11, slot 5)` and `(12, slot 5)`. A span covers the ticks
+-- behind the report latency instead of discovering them one round trip at a
+-- time, which is what makes the mechanism outrun the floor rather than trail it.
+--
+-- `REPAIR_SPAN_TICKS` is that span, and its cost is why the row bound moved.
+-- Eight slots times four ticks is 32 of the 72 rows, reserved *before* selection
+-- rather than taken from what selection leaves over -- under `stress` the batch
+-- saturates on arrivals alone, so a repair competing for leftovers is a repair
+-- that never happens. The reservation is not a standing one: it is zero on every
+-- tick where no guest is measurably stuck, which is every tick of a healthy
+-- match.
+---@param driver MatchDriver
+---@param capacity_ticks integer -- Whole ticks the batch can still carry.
+---@return InputAuthorityRow[]?
+local function plan_repair(driver, capacity_ticks)
+    local frontier = nil
+    for slot_index = 1, input_frame.SLOT_COUNT do
+        local confirmed = driver._peer_confirmed[slot_index]
+        if confirmed ~= nil and (frontier == nil or confirmed < frontier) then
+            frontier = confirmed
+        end
+    end
+    if frontier == nil or capacity_ticks <= 0 then
+        return nil
+    end
+    local needed = frontier + 1
+    local host_confirmed = confirmed_input_tick(driver)
+    if needed > host_confirmed or host_confirmed - needed <= input_protocol.HISTORY_ROWS then
+        return nil
+    end
+    if needed < retained_floor_input_tick(driver) then
+        return nil
+    end
+    ---@type InputAuthorityRow[]
+    local rows = {}
+    local span = math.min(match_driver.REPAIR_SPAN_TICKS, capacity_ticks)
+    local last = math.min(needed + span - 1, host_confirmed)
+    for tick = needed, last do
+        ---@type InputAuthorityRow[]
+        local complete = {}
+        for slot_index = 1, input_frame.SLOT_COUNT do
+            local sample = rollback_session.authoritative_sample(
+                driver._session,
+                session_tick(driver, tick),
+                slot_index
+            )
+            if sample == nil then
+                break
+            end
+            complete[slot_index] = {
+                tick = tick,
+                slot_index = slot_index,
+                sample = copy_sample(sample),
+            }
+        end
+        if #complete < input_frame.SLOT_COUNT then
+            break
+        end
+        for _, row in ipairs(complete) do
+            rows[#rows + 1] = row
+        end
+    end
+    if #rows == 0 then
+        return nil
+    end
+    return rows
+end
+
 -- Fill the batch out to the full eight-slot redundancy window the row bound is
 -- sized for, from authority the host already holds.
 --
@@ -1064,8 +1240,10 @@ end
 ---@param selected InputPacketArrival[]
 ---@param keys table<string, boolean>
 ---@param count integer
+---@param budget integer
 ---@param transport_tick integer
-local function fill_relay_window(driver, selected, keys, count, transport_tick)
+---@return integer count -- Rows the batch carries after the top-up.
+local function fill_relay_window(driver, selected, keys, count, budget, transport_tick)
     ---@type table<integer, boolean>
     local covered = {}
     for _, arrival in ipairs(selected) do
@@ -1081,7 +1259,7 @@ local function fill_relay_window(driver, selected, keys, count, transport_tick)
                     additional = additional + 1
                 end
             end
-            if count + additional <= input_protocol.MAX_HOST_ROWS then
+            if count + additional <= budget then
                 for _, row in ipairs(held.packet.rows) do
                     keys[tostring(row.tick) .. ":" .. tostring(row.slot_index)] = true
                 end
@@ -1095,6 +1273,7 @@ local function fill_relay_window(driver, selected, keys, count, transport_tick)
             end
         end
     end
+    return count
 end
 
 ---@param driver MatchDriver
@@ -1114,14 +1293,40 @@ local function host_sequence_authority(driver, batch, transport_tick, messages)
         arrival.arrival_tick = transport_tick
         arrivals[#arrivals + 1] = arrival
     end
+    -- Confirmation feedback is read before selection, so a bundle the row bound
+    -- defers still tells the host where its author is stuck. Deferring authority
+    -- and ignoring the report attached to it would be the same blindness this
+    -- field exists to remove.
+    remember_confirmation(driver, arrivals)
+    local budget = input_protocol.MAX_HOST_ROWS
     -- Selection re-sorts, so appending here cannot change which arrivals win.
     local keys, count
-    arrivals, keys, count = select_within_bound(driver, arrivals)
+    arrivals, keys, count = select_within_bound(driver, arrivals, budget)
     if not running(driver) then
         return
     end
     remember_relay(driver, arrivals)
-    fill_relay_window(driver, arrivals, keys, count, transport_tick)
+    -- Three claims on one budget, allocated in this order, and the order *is* the
+    -- policy #243 asked for:
+    --
+    --   1. arrivals, which carry authority nobody else holds;
+    --   2. targeted repair, which re-sends what a guest has *said* it is missing;
+    --   3. the open-loop top-up, which re-sends a slot's newest window on the
+    --      chance that some guest missed it.
+    --
+    -- Repair outranking the top-up is the whole point: once a guest has reported
+    -- where it is stuck, spending the same rows on a guess is strictly worse than
+    -- spending them on the answer. Measured -- with the top-up taking the
+    -- headroom first, the repair was left between 6 and 16 rows and `4v4.stress`
+    -- stayed red on the default seed.
+    --
+    -- Repair never outranks arrivals, and that matters too: displacing an arrival
+    -- defers it to the next transport tick, which delays fresh authority for
+    -- *every* peer to help one. Reserving repair budget ahead of selection was
+    -- measured as well and is worse at every span tried.
+    local repairs = plan_repair(driver, math.floor((budget - count) / input_frame.SLOT_COUNT))
+    count = count + (repairs and #repairs or 0)
+    count = fill_relay_window(driver, arrivals, keys, count, budget, transport_tick)
     if #arrivals == 0 then
         return
     end
@@ -1132,6 +1337,8 @@ local function host_sequence_authority(driver, batch, transport_tick, messages)
         sequence = next_sequence(driver, driver._peer_id .. ".batch"),
         transport_tick = transport_tick,
         first_input_tick = driver._first,
+        confirmed_span = input_protocol.confirmed_span(driver._first, confirmed_input_tick(driver)),
+        repair_rows = repairs,
     }, arrivals)
     if packet == nil then
         local status = "input_channel_failure"
@@ -1203,6 +1410,14 @@ local function guest_apply_authority(driver, batch, messages)
                 "input_channel"
             )
             return
+        end
+        -- The host reports its own confirmation in the same field guests use, so
+        -- the feedback runs in both directions over the traffic that already
+        -- exists. A guest needs it to know whether the tail it authored ever
+        -- reached the sequencer -- see `tail_delivered`.
+        local host_confirmed = input_protocol.confirmed_tick(packet)
+        if driver._host_confirmed == nil or host_confirmed > driver._host_confirmed then
+            driver._host_confirmed = host_confirmed
         end
         for _, row in ipairs(packet.rows) do
             local key = tostring(row.tick) .. ":" .. tostring(row.slot_index)
@@ -1397,8 +1612,50 @@ local function reach_full_time(driver)
     driver._settle_deadline = driver._clock() + driver._settle_seconds
 end
 
--- One settle step's outbound traffic: the last authored redundancy window,
--- re-published unchanged.
+-- Which seven-tick window a settling guest re-publishes.
+--
+-- One bundle is a fixed seven rows ending at the tick it names, so naming a tick
+-- chooses the whole window. Re-sending the newest one every step is the obvious
+-- choice and is wrong whenever the host is more than a window behind: the rows
+-- the sequencer is actually missing have already fallen out of it, and no number
+-- of re-sends of the newest window will ever contain them.
+--
+-- The host now says where its confirmation is, so the window can be anchored just
+-- above it: `host_confirmed + 1 + HISTORY_ROWS` ends a bundle whose oldest row is
+-- exactly the tick the host needs next. Capped at the newest authored tick, so a
+-- caught-up host still gets the ordinary newest window and nothing changes for a
+-- healthy settle.
+--
+-- Measured on `4v4.stress` seed 4738: the host was confirmed at 114 with the
+-- final boundary at 121, and the two rows nobody in the session held were ticks
+-- 115 and 116 of `guest_7`'s slot. `guest_7` re-published `[118, 124]` sixty
+-- times and never once carried them. Anchored at the host's report it publishes
+-- `[115, 121]` instead, which is the same seven rows' worth of traffic aimed at
+-- the gap rather than past it.
+---@param driver MatchDriver
+---@return integer
+local function settle_tail_tick(driver)
+    local newest = driver._authored_tick
+    local host_confirmed = driver._role == "host" and confirmed_input_tick(driver)
+        or driver._host_confirmed
+    if host_confirmed == nil then
+        return newest
+    end
+    local anchored = host_confirmed + 1 + input_protocol.HISTORY_ROWS
+    -- A bundle carries `HISTORY_ROWS` rows *behind* the tick it names, so the
+    -- anchor cannot reach below the oldest authored sample still retained or
+    -- `redundant_rows` would be asked for a row that was pruned. A host that far
+    -- behind is past saving by re-publication anyway: those ticks are below every
+    -- peer's rollback floor.
+    local oldest = math.max(
+        driver._first,
+        newest - rollback_input_history.ROLLBACK_WINDOW_TICKS + input_protocol.HISTORY_ROWS
+    )
+    return math.max(oldest, math.min(newest, anchored))
+end
+
+-- One settle step's outbound traffic: an authored redundancy window, re-published
+-- unchanged.
 --
 -- Nothing new is authored, because nothing is simulated any more -- there is no
 -- boundary state to materialize an AI row from and no tick left for a human
@@ -1412,11 +1669,14 @@ end
 -- `DELAY_TICKS` due date. `canonical_host_batch` refuses host-local input that
 -- has not spent the fairness delay, and settling is not a licence to bypass
 -- canonical sequencing.
+--
+-- Which window gets re-sent is `settle_tail_tick`'s answer, not simply the newest
+-- one -- see there for why the newest is the wrong window when the host is behind.
 ---@param driver MatchDriver
 ---@param batch MatchDriverBatch
 ---@param transport_tick integer
 local function resend_tail(driver, batch, transport_tick)
-    local tick = driver._authored_tick
+    local tick = settle_tail_tick(driver)
     for _, slot_index in ipairs(driver._authored) do
         local packet, envelope = build_packet(driver, slot_index, tick, transport_tick)
         if driver._role == "host" then
@@ -1455,24 +1715,65 @@ end
 -- that has genuinely gone must not hold the match open, and there is no path
 -- here that waits on anything unbounded: both deadlines are fixed the moment
 -- full time is reached, and each `advance` re-checks them exactly once.
--- Whether this peer still owes the star a relay service.
+-- Whether this peer may leave the settle phase, over and above having confirmed
+-- its own final boundary. Both roles owe the star something, and #243's
+-- confirmation feedback is what lets each of them *know* when the debt is paid
+-- instead of inferring it.
 --
--- Only the host does. A guest's settle re-sends carry rows it already holds; the
--- rows it is *missing* belong to other peers and can only reach it inside a
--- canonical host batch, so the instant the host stops the star stops. The host
--- is also structurally the first peer to confirm the final boundary -- it is the
--- sequencer -- which is why "confirmed, therefore done" let it leave three steps
--- into a sixty-step settle window while three of its guests were still asking.
--- It leaves when nobody is asking any more: a settling guest re-publishes its
--- window every step, so `SETTLE_RELAY_QUIET_STEPS` consecutive silent steps mean
--- every guest has either finished or lost that many consecutive bundles.
+-- **The host owes a relay.** A guest's settle re-sends carry rows it already
+-- holds; the rows it is *missing* belong to other peers and can only reach it
+-- inside a canonical host batch, so the instant the host stops the star stops.
+-- The host is also structurally the first peer to confirm the final boundary --
+-- it is the sequencer -- which is why "confirmed, therefore done" let it leave
+-- three steps into a sixty-step settle window while three of its guests were
+-- still asking (#237).
+--
+-- Until now the host could only *infer* that nobody was still asking, from
+-- `SETTLE_RELAY_QUIET_STEPS` consecutive steps with no inbound traffic. That
+-- heuristic is documented above as the only one in a phase whose other bounds
+-- are hard, and as covering everything except a worst-case burst followed by
+-- worst-case jitter. Every settling guest now *states* its confirmation every
+-- step, so the ordinary case is a bound: the host leaves when every author it
+-- has heard from has confirmed the final boundary. The quiet count survives only
+-- as the fallback for a peer that has stopped speaking altogether, which is the
+-- one case a report cannot cover -- and which the settle deadline already bounds.
+--
+-- **A guest owes its tail.** Its authored rows for the last ticks exist nowhere
+-- else until the host has them, and the host is the only peer that can fan them
+-- out to the other six. A guest that confirms its own boundary and leaves takes
+-- that authority with it. Measured on `4v4.stress` seed 4738: `guest_7` completed
+-- while ticks 115 and 116 of its slot had never reached the host, and the other
+-- seven peers -- the host included -- spent the whole settle window missing
+-- exactly those two rows and then timed out. This is #241's tail stall in the
+-- other direction, and the same field closes it: the host's batches carry the
+-- host's own confirmation, so a guest can see that the sequencer is still behind
+-- the final boundary and keep re-publishing until it is not.
+--
+-- Neither wait is unbounded. The settle deadline expires both, and a peer that
+-- has confirmed its own boundary completes at expiry rather than failing, so
+-- waiting here can delay a whistle but can never invent a `settle_timeout`.
 ---@param driver MatchDriver
 ---@return boolean
-local function relay_drained(driver)
-    if driver._role ~= "host" then
+local function tail_delivered(driver)
+    local boundary = driver._full_time_boundary
+    if boundary == nil then
         return true
     end
-    return driver._settle_quiet_steps >= match_driver.SETTLE_RELAY_QUIET_STEPS
+    if driver._role ~= "host" then
+        -- Silence is not consent here: a guest that has never heard a host batch
+        -- has no evidence its tail landed, and must keep re-publishing.
+        return driver._host_confirmed ~= nil and driver._host_confirmed + 1 >= boundary
+    end
+    if driver._settle_quiet_steps >= match_driver.SETTLE_RELAY_QUIET_STEPS then
+        return true
+    end
+    for slot_index = 1, input_frame.SLOT_COUNT do
+        local confirmed = driver._peer_confirmed[slot_index]
+        if confirmed ~= nil and confirmed + 1 < boundary then
+            return false
+        end
+    end
+    return true
 end
 
 ---@param driver MatchDriver
@@ -1482,7 +1783,7 @@ local function settle(driver)
         return
     end
     local confirmed = confirmed_output_input_tick(driver) + 1 >= boundary
-    if confirmed and relay_drained(driver) then
+    if confirmed and tail_delivered(driver) then
         driver._settled = true
         terminate(
             driver,
@@ -1703,6 +2004,8 @@ function match_driver.new(options)
         _pending = {},
         _deferred = {},
         _relay = {},
+        _peer_confirmed = {},
+        _host_confirmed = nil,
         _checkpoints = {},
         _checkpoint_by_tick = {},
         _hash_interval = hash_interval,
