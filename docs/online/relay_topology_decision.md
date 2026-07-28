@@ -1,7 +1,11 @@
 # Online topology decision: dedicated relay
 
-Status: **accepted** by the repository owner on 2026-07-27. Supersedes the inherited host-star for
-OMP-4 onward. OMP-3 ships as built.
+Status: **accepted in direction, scope open**, by the repository owner on 2026-07-27. Supersedes the
+inherited host-star for OMP-4 onward. OMP-3 ships as built.
+
+Three claims in the original draft were subsequently falsified by measurement — see **Measured
+corrections** immediately below. The direction survives; how far to take it is deferred until #243
+closes independently.
 
 ## Decision
 
@@ -13,6 +17,66 @@ player-host, starting with OMP-4.
 - The relay runs on a **small VM with a public IP**, not a managed edge platform.
 - The **session coordinator stays client-side**. Only input distribution moves.
 - OMP-3's manual-connect host-star is retained as a LAN and no-infrastructure path.
+
+## Measured corrections — read this before the rest
+
+Everything below was written before the topology was measured. #245 (PR #252) then ran the #169
+fault matrix against a relay wire and **falsified three claims in this document**. They are
+corrected here rather than quietly edited out, because the reasoning that produced them is worth
+seeing alongside what the measurement showed.
+
+**1. "#243 disappears structurally" is wrong.** `4v4.stress` fails **byte-identically** under a
+relay — the same eight `confirmation_stalled` statuses, the same final hashes, the same stalled
+ticks — even with the host's upload on that row cut from 4,916 to 702 B/tick. #243 is a capacity
+limit of the 56-row canonical batch, which belongs to the **sequencer**, not the wire. Moving the
+hub does not change what gets packed.
+
+The narrower true statement: the claim holds only of a **sequencer-less** shape, and that shape
+cannot currently run (see correction 3), so it is **untested rather than disproven**. Either way
+#243 needs its own fix, tracked separately.
+
+**2. The bandwidth arithmetic was wrong in two of three places.**
+
+| | this document predicted | measured |
+| --- | ---: | ---: |
+| host-star worst node | 5,285 B/tick | **5,291.5** |
+| relay client upload | 1,190 | **190.4** |
+| relay downlink | ~650 | **1,332.8** |
+
+The 1,190 was the *mesh* figure copied into the relay column — a relay client uploads one copy, not
+seven — so the concentration win is roughly **27x**, not 4.4x. Better than claimed.
+
+The downlink figure was **inverted**, and instructively so: a framing relay cannot merge rows
+*precisely because it does not parse*, so it forwards seven envelopes and costs **1.76x more**
+downstream than the 755-byte canonical batch. Envelope overhead multiplied by fan-out is the price
+of staying ignorant of the game. "Cheaper and simpler" was wrong — it is simpler and more
+expensive.
+
+**3. "The driver above it does not change" is wrong.** `match_driver.guest_apply_authority` requires
+`packet.kind == "host"`, so the first peer bundle terminates the match with `ownership_violation`.
+Reaching a sequencer-less relay means **every client canonicalises locally**, which is a real driver
+change. Related findings from the probe: `canonical_host_batch` validates ownership against
+`arrival.transport_peer_id`, so the relay protocol must **frame per-origin** or ownership degrades
+to self-declared `sender_id`; and declared bot fills have no author once no peer is the host.
+
+**One unclaimed cost.** Relay members share a single uplink buffer, so **per-peer backpressure
+isolation is something the star has and a relay does not**.
+
+**One unclaimed simplification.** `SETTLE_RELAY_QUIET_STEPS` and `relay_drained` are host-only and
+become unnecessary.
+
+### What still stands
+
+NAT traversal elimination, host uplink concentration (by more than claimed), removal of the
+uncompensated leg asymmetry, and input-relay survival on host departure. The **direction** survives;
+the arithmetic and the migration cost did not.
+
+### Open question
+
+Whether to adopt the relay as a **wire replacement keeping the sequencer** (NAT solved, host stays
+privileged) or **sequencer-less** (all benefits, real driver work) is **not yet decided**. It is
+deferred until #243 is closed independently, so the choice is judged on what the relay actually
+delivers rather than on a benefit wrongly attributed to it.
 
 ## Why this is being decided at all
 
@@ -273,9 +337,16 @@ proportionally. Worth evaluating independently of topology.
 
 ## Migration
 
-`StarTransportAdapter` is already the seam. A relay adapter becomes a third implementation
-alongside `fake_star` and `browser_star`, and the driver above it does not change. The manual
-offer/answer path is retained for LAN and no-infrastructure play.
+`StarTransportAdapter` is already the seam, and a relay adapter becomes a third implementation
+alongside `fake_star` and `browser_star`. `game/transport/fake_relay.lua` already exists from #245's
+probe, so the wire half is done and measured.
+
+**The driver above it does change**, contrary to this document's original claim — see correction 3.
+A wire-replacement relay that keeps the sequencer needs little; a sequencer-less relay needs local
+canonicalisation on every client, per-origin framing so ownership validation survives, and a new
+author for declared bot fills.
+
+The manual offer/answer path is retained for LAN and no-infrastructure play.
 
 ## Alternatives rejected
 
