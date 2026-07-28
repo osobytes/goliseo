@@ -1,7 +1,7 @@
 # Online topology decision: dedicated relay
 
-Status: **proposed** on 2026-07-27. Supersedes the inherited host-star for OMP-4 onward.
-OMP-3 ships as built.
+Status: **accepted** by the repository owner on 2026-07-27. Supersedes the inherited host-star for
+OMP-4 onward. OMP-3 ships as built.
 
 ## Decision
 
@@ -156,6 +156,80 @@ move after creation** — so the relay hop would be regional, not edge, exactly 
   exists to avoid.
 - **Per-instance packet-rate limits are undocumented industry-wide.** At 60 Hz small packets, pps
   is likelier to bind than bandwidth. Benchmark before scaling.
+
+## What this does about the host's advantages
+
+`input_protocol.FAIRNESS_DELAY_TICKS = 3` exists because the host is not merely a player — it is
+the **sequencer**. Its own input enters the canonical stream with zero network hops while every
+guest's input has to travel, so the host confirms sooner and rolls back less. #241's tail stall is
+the clearest evidence: the host reached full time and terminated first precisely *because* as
+sequencer it confirms first.
+
+The current compensation is also crude. Three ticks is 50 ms — a fixed guess at guest-to-host
+latency. A guest 100 ms away is under-compensated; one 10 ms away is over-compensated. It is
+approximate fairness by construction.
+
+**The relay removes the structural advantage entirely.** With a framing relay there is no
+sequencer. Every client sends one hop to the relay and receives every other client's input two hops
+back. All eight occupy the identical structural position, and fairness stops being something the
+protocol patches — it becomes a property of the shape.
+
+The delay constant likely survives, but its justification changes: from "compensate a privileged
+player" to "a uniform input-delay knob trading responsiveness against rollback frequency", which is
+what rollback games normally tune it as. Its value deserves revisiting once it is no longer doing
+double duty.
+
+**Geography replaces structure.** A player 10 ms from the relay still has a genuine advantage over
+one at 80 ms. That does not disappear. But it is a better shape of unfairness: structural advantage
+is unfixable except by compensation, while geographic advantage is fixable by **placement** — put
+the relay near the players' centroid, or let the room choose a region. And it is symmetric in kind,
+since everyone has the same relationship to the relay and differs only in distance, rather than one
+player having a categorically different relationship to it.
+
+The unfixable asymmetry becomes a tunable one.
+
+## Provisioning and scaling
+
+**Many matches on one VM requires no additional software.** Room scoping is already inherent to the
+relay: clients present a room id and the relay forwards only within that room. That *is* the
+multi-tenancy. One VM serving many concurrent matches is the default behaviour, not a feature to
+build.
+
+**The control plane sits off the data path.** It answers "where do I play?" once at match creation,
+returns a relay endpoint plus a room token, and then never sees a game packet. Consequences worth
+stating plainly: it can be a small HTTP service, it can be down without killing matches already in
+progress, and it scales on a completely different curve from the relay.
+
+This is not a new component. **OMP-4's room-code service is the control plane** — resolving a room
+code and selecting a relay are the same request. Later it gains a VM registry and health checks,
+which is an internal change to a service already planned.
+
+### The constraint to honour from the first line of code
+
+**Clients must learn their relay endpoint from the room, not from configuration.**
+
+If the endpoint is baked into the client, moving to multiple VMs later requires a client update —
+and for a browser game that means every player must reload in lockstep to stay compatible. If the
+endpoint arrives with the room assignment, adding VMs is a control-plane change nobody notices.
+
+Two corollaries:
+
+- All clients in one match must receive the **same** endpoint, so room allocation has to be atomic.
+- If a relay VM dies mid-match, that match dies. This is no worse than host departure today, and it
+  is recoverable later by the same host-migration work already scoped to OMP-5.
+
+### Capacity
+
+At friends-and-family scale — 10 concurrent matches, 80 connections, 29 Mbps — a single small VM is
+enormously oversized. Even 100 sustained matches (290 Mbps, roughly 96,000 packets per second) fits
+on one or two boxes on bandwidth alone.
+
+The caveat is that **per-instance packet-rate limits are undocumented across every provider
+surveyed**, and at 60 Hz with small packets, packets-per-second is likelier to bind than bandwidth.
+Benchmark pps rather than trusting a bandwidth figure before scaling.
+
+Expect multi-VM to arrive for **latency** reasons — placing relays near players in different
+regions — well before capacity forces it.
 
 ## What this does not solve
 
