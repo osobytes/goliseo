@@ -77,6 +77,7 @@ local input_frame = require("sim.input_frame")
 ---@field assignment_id string -- The ownership generation the request answered.
 ---@field status "pending"|SessionPreferenceStatus
 ---@field reason SessionPreferenceRejection?
+---@field deadline integer? -- Guest only, and only while `pending`: the clock the wait expires at.
 
 ---@class CoordinatorPreferenceVerdict
 ---@field status SessionPreferenceStatus
@@ -206,10 +207,16 @@ coordinator.DUPLICATE_WINDOW = 8
 coordinator.HASH_WINDOW = 8
 coordinator.MAX_HASH_MISMATCHES = 3
 coordinator.START_ACK_TIMEOUT_TICKS = 120
+-- How long a guest waits for the host's verdict on its pair request before it
+-- gives up. Five seconds on the same 60 Hz lobby clock the start barrier uses:
+-- long enough that an ordinary slow round trip is never mistaken for silence,
+-- short enough that nobody watches a `pending` label wondering.
+coordinator.PREFERENCE_TIMEOUT_TICKS = 300
 coordinator.BOT_SEED_STRIDE = 7919
 coordinator.BOT_PRODUCER_PREFIX = "bot."
 coordinator.STALE_DUPLICATE_REASON = "duplicate fell outside the retained transcript window"
 coordinator.STALE_GENERATION_REASON = "readiness names a superseded ownership generation"
+coordinator.STALE_PREFERENCE_REASON = "pair preference result answers no pending request"
 
 ---@type SessionLifecyclePhase[]
 coordinator.PHASES = {
@@ -1470,6 +1477,10 @@ local function handle_prefer_pair(state, event)
             slots = slots,
             assignment_id = assert(state.assignment_id),
             status = "pending",
+            -- Every wait is bounded. A host that is up but never answers would
+            -- otherwise leave this request on `pending` for the rest of the
+            -- session; see `expire_preference`.
+            deadline = state.clock + coordinator.PREFERENCE_TIMEOUT_TICKS,
         }
         emit(next_state, "pair_preference", {
             manifest_id = assert(state.manifest_id),
@@ -1612,6 +1623,32 @@ local function handle_begin_countdown(state, event)
     return next_state, applied(actions)
 end
 
+-- Give up on a pair request the host never answered. The wait is bounded by the
+-- same lobby clock the start barrier is bounded by, and running out of it is a
+-- refusal like any other: ownership is left exactly where it was, the reason is
+-- typed so the lobby can say it in words, and the peer is free to ask again.
+-- Nothing is sent -- silence is only observable at the end that waited, so the
+-- host is told nothing and the wire vocabulary is untouched.
+---@param next_state CoordinatorState
+local function expire_preference(next_state)
+    local pending = next_state.preference
+    if not pending or pending.status ~= "pending" then
+        return
+    end
+    local deadline = assert(pending.deadline, "a pending pair preference must carry a deadline")
+    if next_state.clock <= deadline then
+        return
+    end
+    -- Replaced rather than mutated: `copy_state` shares the preference table
+    -- with the state this tick came from.
+    next_state.preference = {
+        slots = copy_value(pending.slots),
+        assignment_id = pending.assignment_id,
+        status = "rejected",
+        reason = "no_response",
+    }
+end
+
 ---@param state CoordinatorState
 ---@return CoordinatorState, CoordinatorOutcome
 local function handle_tick(state)
@@ -1620,6 +1657,7 @@ local function handle_tick(state)
     if state.phase == "terminal" then
         return next_state, applied()
     end
+    expire_preference(next_state)
     local actions = {}
     if state.phase == "countdown" then
         if (next_state.countdown_remaining or 0) > 0 then
@@ -2299,10 +2337,11 @@ local function apply_pair_preference_result(state, peer, message)
         or pending.assignment_id ~= body.assignment_id
         or not slot_lists_equal(pending.slots, body.slots)
     then
-        -- A result for a request this peer is no longer waiting on. Dropping is
-        -- strictly safer than adopting it, and it costs nothing: the ownership
-        -- in force is published separately and is unaffected either way.
-        return state, stale("pair preference result answers no pending request")
+        -- A result for a request this peer is no longer waiting on, including a
+        -- verdict that arrives after the wait expired. Dropping is strictly
+        -- safer than adopting it, and it costs nothing: the ownership in force
+        -- is published separately and is unaffected either way.
+        return state, stale(coordinator.STALE_PREFERENCE_REASON)
     end
     local next_state = copy_state(state)
     next_state.preference = {

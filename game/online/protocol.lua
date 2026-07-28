@@ -79,6 +79,7 @@ local match_snapshot = require("sim.match_snapshot")
 ---| "not_seated" -- The peer owns nothing in the generation it answered.
 ---| "superseded" -- The preference answers an ownership generation no longer in force.
 ---| "after_freeze" -- Ownership is frozen and cannot move again this session.
+---| "no_response" -- The request expired unanswered. Minted locally, never on the wire.
 
 ---@class SessionRuntimeIdentity
 ---@field version integer
@@ -406,8 +407,13 @@ local REJECT_CODES = {
     peer_disconnect = true,
     desync = true,
 }
-local PREFERENCE_STATUSES = { granted = true, unchanged = true, rejected = true }
-local PREFERENCE_REJECTIONS = {
+---@type table<SessionPreferenceStatus, boolean>
+protocol.PREFERENCE_STATUSES = { granted = true, unchanged = true, rejected = true }
+
+-- Every typed refusal a pair preference can end on, wire-borne or local. A
+-- reader that shows preferences has to cover all of them, so the set is public.
+---@type table<SessionPreferenceRejection, boolean>
+protocol.PREFERENCE_REJECTIONS = {
     already_taken = true,
     wrong_team = true,
     invalid_slot = true,
@@ -415,7 +421,20 @@ local PREFERENCE_REJECTIONS = {
     not_seated = true,
     superseded = true,
     after_freeze = true,
+    no_response = true,
 }
+
+-- The refusals a host may put on the wire: every typed reason except the one a
+-- requester mints for itself. Silence is only observable at the end that waited,
+-- so a host claiming `no_response` is malformed, and the accepted message
+-- vocabulary is exactly what it was before the expiry existed.
+---@type table<SessionPreferenceRejection, boolean>
+local WIRE_PREFERENCE_REJECTIONS = {}
+for reason in pairs(protocol.PREFERENCE_REJECTIONS) do
+    if reason ~= "no_response" then
+        WIRE_PREFERENCE_REJECTIONS[reason] = true
+    end
+end
 local DISCONNECT_CODES = {
     peer_left = true,
     transport_lost = true,
@@ -1370,11 +1389,11 @@ function protocol.validate(message)
         if not ok then
             return nil, err, code
         end
-        if not PREFERENCE_STATUSES[body.status] then
+        if not protocol.PREFERENCE_STATUSES[body.status] then
             return failure("malformed", "pair preference status is invalid")
         end
         if body.status == "rejected" then
-            if not PREFERENCE_REJECTIONS[body.reason] then
+            if not WIRE_PREFERENCE_REJECTIONS[body.reason] then
                 return failure("malformed", "a refused pair preference needs a typed reason")
             end
         elseif body.reason ~= nil then
