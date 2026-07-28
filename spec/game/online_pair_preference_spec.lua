@@ -245,6 +245,12 @@ t.describe("pair preference wire", function()
         end
         t.eq(validate("rejected", nil), nil, "a refusal must carry a reason")
         t.eq(validate("rejected", "no_thanks"), nil, "the reason vocabulary is closed")
+        -- Silence is only observable at the end that waited, so a host claiming
+        -- it would be reporting something it cannot know. Keeping the one
+        -- locally minted reason off the wire is what leaves the accepted
+        -- message vocabulary -- and both digests above -- exactly as they were.
+        t.is_true(protocol.PREFERENCE_REJECTIONS.no_response == true)
+        t.eq(validate("rejected", "no_response"), nil, "a host cannot report silence")
         t.eq(validate("granted", "already_taken"), nil, "only a refusal carries a reason")
         t.eq(validate("maybe", nil), nil, "the status vocabulary is closed")
         t.is_true(validate("granted", nil) == true)
@@ -682,6 +688,115 @@ t.describe("pair preference sessions", function()
         local freeze = assert(session:host().state.freeze)
         t.eq(table.concat(freeze.owned["guest.2"], ","), "away_1,away_3")
         t.eq(freeze.live["guest.2"], "away_1")
+    end)
+
+    -- A host that is up but silent. The guest's link is blackholed in the
+    -- guest->host direction only: neither end sees a `link_lost`, so neither
+    -- takes the `transport_lost` path that already terminates correctly, and
+    -- the request simply never lands. This is the case an unbounded `pending`
+    -- never escaped.
+    ---@param session CoordinatorDriver
+    ---@param peer_id string
+    ---@return CoordinatorDriverLink
+    local function silence(session, peer_id)
+        local link = assert(session:link(fixture.link_id(peer_id)))
+        link.guest_open = false
+        return link
+    end
+
+    t.it("gives up on a request a live host never answers", function()
+        local session = assigned_session("2v2", 3)
+        local before = owned_text(assert(session:node("guest.2")).state, "guest.2")
+        silence(session, "guest.2")
+        session:send("guest.2", { kind = "prefer_pair", slots = { "away_1", "away_3" } })
+        t.eq(preference(session, "guest.2").status, "pending")
+
+        session:tick(coordinator.PREFERENCE_TIMEOUT_TICKS)
+        t.eq(preference(session, "guest.2").status, "pending", "the wait is not cut short")
+        session:tick(1)
+
+        local answer = preference(session, "guest.2")
+        t.eq(answer.status, "rejected")
+        t.eq(answer.reason, "no_response")
+        t.eq(answer.deadline, nil, "an answered request waits on nothing")
+        t.eq(table.concat(answer.slots, ","), "away_1,away_3", "the request stays legible")
+        t.eq(owned_text(assert(session:node("guest.2")).state, "guest.2"), before)
+        t.eq(owned_text(session:host().state, "guest.2"), before)
+        t.eq(session:host().state.assignment_epoch, 1, "an expiry mints no generation")
+        assert_partition(session:host().state, "2v2")
+        for _, node in ipairs(session.nodes) do
+            t.is_true(not coordinator.is_terminal(node.state), node.peer_id .. " ended")
+        end
+    end)
+
+    t.it("cannot be moved by a verdict that arrives after the wait expired", function()
+        local session = assigned_session("2v2", 3)
+        silence(session, "guest.2")
+        session:send("guest.2", { kind = "prefer_pair", slots = { "away_1", "away_3" } })
+        session:tick(coordinator.PREFERENCE_TIMEOUT_TICKS + 1)
+        t.eq(preference(session, "guest.2").reason, "no_response")
+
+        local guest = assert(session:node("guest.2")).state
+        local before = owned_text(guest, "guest.2")
+        local generation = assert(guest.assignment_id)
+        local epoch = guest.assignment_epoch
+        -- The host finally speaks, and grants exactly what was asked for. The
+        -- requester stopped waiting, so this answers no pending request and is
+        -- dropped: ownership only ever moves on `slot_assignment`.
+        session:inject(HOST, "guest.2", "pair_preference_result", {
+            manifest_id = assert(guest.manifest_id),
+            assignment_id = generation,
+            slots = { "away_1", "away_3" },
+            status = "granted",
+        })
+
+        local after = assert(session:node("guest.2")).state
+        t.eq(owned_text(after, "guest.2"), before, "a late grant cannot move ownership")
+        t.eq(after.assignment_id, generation, "a late grant mints no generation")
+        t.eq(after.assignment_epoch, epoch)
+        t.eq(assert(after.preference).status, "rejected")
+        t.eq(assert(after.preference).reason, "no_response", "a terminal outcome is not reopened")
+        t.is_true(not coordinator.is_terminal(after), "a late grant is not fatal")
+    end)
+
+    t.it("frees the guest to ask again once the wait has expired", function()
+        local session = assigned_session("2v2", 3)
+        local link = silence(session, "guest.2")
+        session:send("guest.2", { kind = "prefer_pair", slots = { "away_1", "away_3" } })
+        session:tick(coordinator.PREFERENCE_TIMEOUT_TICKS + 1)
+        t.eq(preference(session, "guest.2").reason, "no_response")
+
+        link.guest_open = true
+        session:send("guest.2", { kind = "prefer_pair", slots = { "away_1", "away_3" } })
+        t.eq(preference(session, "guest.2").status, "pending")
+        session:pump()
+        t.eq(preference(session, "guest.2").status, "granted")
+        t.eq(owned_text(session:host().state, "guest.2"), "away_1,away_3")
+        t.eq(owned_text(session:host().state, "guest.3"), "away_2,away_4")
+        assert_partition(session:host().state, "2v2")
+    end)
+
+    -- `superseded` is what protects ownership when the answer is late rather
+    -- than absent, so it is re-proven now that a wait can also end by itself:
+    -- the host answers the loser well inside the deadline, and running the
+    -- clock past that deadline afterwards must not reach back and overwrite
+    -- the typed reason the host actually gave.
+    t.it("still refuses a request that outlived its ownership generation", function()
+        local session = assigned_session("2v2", 3, 1)
+        session:send("guest.2", { kind = "prefer_pair", slots = { "away_1", "away_3" } })
+        session:send("guest.3", { kind = "prefer_pair", slots = { "away_3", "away_4" } })
+        session:tick(2)
+        t.eq(preference(session, "guest.2").status, "granted")
+        local loser = preference(session, "guest.3")
+        t.eq(loser.status, "rejected")
+        t.eq(loser.reason, "superseded")
+        t.eq(loser.deadline, nil, "an answered request stops waiting")
+        t.eq(owned_text(session:host().state, "guest.2"), "away_1,away_3")
+        assert_partition(session:host().state, "2v2")
+
+        session:tick(coordinator.PREFERENCE_TIMEOUT_TICKS + 1)
+        t.eq(preference(session, "guest.3").reason, "superseded")
+        t.eq(owned_text(session:host().state, "guest.2"), "away_1,away_3")
     end)
 end)
 
