@@ -138,6 +138,13 @@ The two-peer loopback above stays as-is. The game-facing online path uses the
 independently addressed guest links. Entry points are
 `transport.fake_star(options)` and `transport.browser_star(options)`.
 
+A third implementation of the same contract, `transport.fake_relay(options)`,
+exists to *measure* the proposed OMP-4 relay topology rather than to ship it.
+Every member holds one link to a `transport.fake_relay_room()`, no member is
+privileged, and a `broadcast` costs one upload instead of one per link. It is
+in-process only; see [`relay_topology_probe.md`](relay_topology_probe.md) for
+what it measured and where the session stack refuses the topology.
+
 ```lua
 local transport = require("game.transport")
 

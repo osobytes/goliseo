@@ -21,6 +21,7 @@ Four modules, and none of them reimplements something that already exists:
 | Module | Owns |
 | --- | --- |
 | `game.online.fault_transport` | A `StarTransportAdapter` decorator that impairs *arrivals* using `sim.network_conditions` and `data/network_profiles.lua`. |
+| `game.transport.fake_relay` | The optional second wire shape. `--topology relay` runs every row over an in-process relay room instead of the direct-host star; see [`relay_topology_probe.md`](relay_topology_probe.md). |
 | `game.online.fault_harness` | N isolated clients, the lifecycle, and the cross-client comparison. |
 | `game.online.fault_scenarios` | The declared matrix, and the interpreter that turns a row into a report. |
 | `game.online.fault_campaign` | The headless entry point and its deterministic marker stream. |
@@ -201,9 +202,13 @@ love . --fault-harness 4v4.playable 9001 240
 love . --fault-harness smoke
 love . --fault-harness full
 
+# The same matrix over the in-process relay instead of the direct-host star
+love . --fault-harness full --topology relay
+
 # The separate-process campaign (three processes by default)
 python3 -B scripts/fault_harness.py --selection smoke
 python3 -B scripts/fault_harness.py --selection full --processes 4 --seed 9001
+python3 -B scripts/fault_harness.py --selection full --topology relay
 
 # The controller's own logic, with no LOVE process (this is what CI runs)
 python3 -B scripts/fault_harness.py --self-test
@@ -304,6 +309,14 @@ re-sent without displacing a fresh row. Captured at the default seed: the host
 learned `(tick 9, slot 5)` seven transport ticks late, fanned it out at transport
 ticks 16, 20 and 21 — three times rather than seven — and `guest_7` received the
 batches at 15, 17, 18, 19 and 23 and missed exactly those three.
+
+#245 added a second piece of evidence for that reading: the row fails
+**identically** under `--topology relay` — the same eight `confirmation_stalled`
+statuses, the same eight final hashes, the same stalled confirmation ticks — even
+though the relay cuts the host's per-tick upload from 5,291.5 B to 755.9 B. A
+capacity limit of the canonical batch is not a property of the wire, so moving
+the fan-out to a relay does not touch it. See
+[`relay_topology_probe.md`](relay_topology_probe.md).
 
 That is a capacity limit of the 56-row batch, not a leak in how it is filled.
 Three things were tried against it and are recorded so they are not re-derived:

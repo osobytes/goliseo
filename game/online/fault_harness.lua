@@ -59,17 +59,33 @@ local net_diagnostics = require("game.online.net_diagnostics")
 local online_match_model = require("game.screens.online_match_model")
 local protocol = require("game.online.protocol")
 local protocol_fixture = require("game.online.protocol_fixture")
+local FakeRelayTransport = require("game.transport.fake_relay")
 local FakeStarTransport = require("game.transport.fake_star")
 local transport_contract = require("game.transport.contract")
 local input_frame = require("sim.input_frame")
 local match_snapshot = require("sim.match_snapshot")
 local rollback_input_history = require("sim.rollback_input_history")
 
+-- Which shape the wire has beneath an unchanged session stack.
+--
+--  * `star` — the shipped OMP-3 direct-host star. The host endpoint *is* the
+--    hub: it fans a canonical batch out with one queued copy per guest link.
+--  * `relay` — every client holds one link to an in-process room that forwards
+--    opaque payloads and parses nothing (`game.transport.fake_relay`). A
+--    `broadcast` costs one upload however many members receive it.
+--
+-- The topology is the wire only. Which peer canonicalises is a *driver* question
+-- and is deliberately untouched here: `docs/online/relay_topology_probe.md`
+-- records what the session stack does when that assumption is removed too.
+---@alias FaultHarnessTopology "star"|"relay"
+
+---@alias FaultHarnessEndpoint FakeStarTransport|FakeRelayTransport
+
 ---@class FaultHarnessClient
 ---@field index integer
 ---@field peer_id string
 ---@field role SessionRole
----@field star FakeStarTransport
+---@field star FaultHarnessEndpoint
 ---@field fault FaultTransport
 ---@field tap DiagnosticTransport? -- Created with the driver, once a freeze exists.
 ---@field recorder NetDiagnostics? -- Created with the driver, once a freeze exists.
@@ -90,6 +106,7 @@ local rollback_input_history = require("sim.rollback_input_history")
 ---@field errors string[]
 
 ---@class FaultHarnessOptions
+---@field topology FaultHarnessTopology? -- Wire shape; defaults to the shipped star.
 ---@field mode SessionMatchMode
 ---@field humans integer? -- Seated humans; fewer than the mode allows declares bot fills.
 ---@field profile NetworkProfileName?
@@ -105,12 +122,13 @@ local rollback_input_history = require("sim.rollback_input_history")
 ---@field script (fun(index: integer, step: integer): InputSample)?
 
 ---@class FaultHarness
+---@field topology FaultHarnessTopology
 ---@field mode SessionMatchMode
 ---@field profile NetworkProfileName
 ---@field manifest SessionManifest
 ---@field peer_ids string[]
 ---@field clients FaultHarnessClient[]
----@field host_star FakeStarTransport
+---@field host_star FaultHarnessEndpoint -- The endpoint whose `pump` drives the whole wire.
 ---@field transport_tick integer
 ---@field step integer
 ---@field clock_ms number
@@ -218,17 +236,42 @@ function fault_harness.new(options)
         peer_ids[#peer_ids + 1] = fault_harness.guest_peer_id(index)
     end
 
+    local topology = options.topology or "star"
+    assert(topology == "star" or topology == "relay", "a fault harness topology is star or relay")
+
     local rendezvous = FakeStarTransport.new_rendezvous()
-    local host_star = FakeStarTransport.new({
-        role = "host",
-        rendezvous = rendezvous,
-        queue_limit = options.queue_limit,
-        buffered_amount_limit = options.buffered_amount_limit,
-    })
+    local room = FakeRelayTransport.new_room()
+
+    ---@param index integer
+    ---@param peer_id string
+    ---@return FaultHarnessEndpoint
+    local function endpoint_for(index, peer_id)
+        if topology == "relay" then
+            -- Every member is the same shape. `role` travels only because the
+            -- session stack above still names one; the room grants it nothing.
+            return FakeRelayTransport.new({
+                role = index == 1 and "host" or "guest",
+                peer_id = peer_id,
+                room = room,
+                queue_limit = options.queue_limit,
+                buffered_amount_limit = options.buffered_amount_limit,
+            })
+        end
+        return FakeStarTransport.new({
+            role = index == 1 and "host" or "guest",
+            peer_id = index == 1 and nil or peer_id,
+            rendezvous = rendezvous,
+            queue_limit = options.queue_limit,
+            buffered_amount_limit = options.buffered_amount_limit,
+        })
+    end
+
+    local host_star = endpoint_for(1, fault_harness.HOST_PEER_ID)
     assert(host_star:initialize())
 
     ---@type FaultHarness
     local harness = {
+        topology = topology,
         mode = mode,
         profile = options.profile or "clean",
         manifest = manifest,
@@ -253,7 +296,7 @@ function fault_harness.new(options)
     ---@param index integer
     ---@param peer_id string
     ---@param role SessionRole
-    ---@param star FakeStarTransport
+    ---@param star FaultHarnessEndpoint
     ---@param legs string[]
     local function add(index, peer_id, role, star, legs)
         local fault = FaultTransport.new({
@@ -305,16 +348,17 @@ function fault_harness.new(options)
     add(1, fault_harness.HOST_PEER_ID, "host", host_star, guest_ids)
     for index = 2, #peer_ids do
         local peer_id = peer_ids[index]
-        local guest_star = FakeStarTransport.new({
-            role = "guest",
-            peer_id = peer_id,
-            rendezvous = rendezvous,
-            queue_limit = options.queue_limit,
-            buffered_amount_limit = options.buffered_amount_limit,
-        })
+        local guest_star = endpoint_for(index, peer_id)
         assert(guest_star:initialize())
-        assert(host_star:open_peer(peer_id))
-        assert(host_star:link(guest_star))
+        if topology == "star" then
+            -- The star needs the host to allocate a slot and join the link.
+            -- Joining the room already did both for the relay, symmetrically,
+            -- with no member acting as the opener.
+            ---@cast host_star FakeStarTransport
+            ---@cast guest_star FakeStarTransport
+            assert(host_star:open_peer(peer_id))
+            assert(host_star:link(guest_star))
+        end
         add(index, peer_id, "guest", guest_star, { fault_harness.HOST_PEER_ID })
     end
 
@@ -1027,6 +1071,67 @@ local function compare_status(harness, findings, expect_completed)
     end
 end
 
+-- Per-node wire cost, read from the endpoint itself rather than from the
+-- recorder. The diagnostic tap deliberately records one packet per `broadcast`
+-- **call**, because it measures the driver's publication, not the wire: on a
+-- star that one call is one queued copy per guest link. So the recorder cannot
+-- see fan-out amplification at all, and a topology comparison that quoted it
+-- would report the two shapes as identical. These counters are per copy that
+-- crossed a link, on both adapters.
+---@param harness FaultHarness
+---@param markers string[]
+local function measure_wire(harness, markers)
+    local worst_uplink, total_uplink, total_downlink = 0, 0, 0
+    local worst_input_uplink, total_input_uplink, total_input_downlink = 0, 0, 0
+    ---@type string?
+    local worst_peer = nil
+    local steps = math.max(1, harness.step)
+    for _, client in ipairs(harness.clients) do
+        local counters = client.star:wire_counters()
+        total_uplink = total_uplink + counters.uplink_bytes
+        total_downlink = total_downlink + counters.downlink_bytes
+        total_input_uplink = total_input_uplink + counters.input_uplink_bytes
+        total_input_downlink = total_input_downlink + counters.input_downlink_bytes
+        if counters.input_uplink_bytes > worst_input_uplink then
+            worst_input_uplink = counters.input_uplink_bytes
+            worst_peer = client.peer_id
+        end
+        worst_uplink = math.max(worst_uplink, counters.uplink_bytes)
+        markers[#markers + 1] = (
+            "wire %s uplink_bytes=%d downlink_bytes=%d input_uplink_bytes=%d "
+            .. "input_downlink_bytes=%d input_up_per_tick=%.1f input_down_per_tick=%.1f "
+            .. "uplink_units=%d downlink_frames=%d frame_overhead=%d"
+        ):format(
+            client.peer_id,
+            counters.uplink_bytes,
+            counters.downlink_bytes,
+            counters.input_uplink_bytes,
+            counters.input_downlink_bytes,
+            counters.input_uplink_bytes / steps,
+            counters.input_downlink_bytes / steps,
+            counters.uplink_units,
+            counters.downlink_frames,
+            counters.frame_overhead_bytes
+        )
+    end
+    markers[#markers + 1] = (
+        "wire total topology=%s steps=%d worst_input_uplink_peer=%s "
+        .. "worst_input_uplink_bytes=%d worst_input_up_per_tick=%.1f worst_uplink_bytes=%d "
+        .. "uplink_bytes=%d downlink_bytes=%d input_uplink_bytes=%d input_downlink_bytes=%d"
+    ):format(
+        harness.topology,
+        harness.step,
+        worst_peer or "-",
+        worst_input_uplink,
+        worst_input_uplink / steps,
+        worst_uplink,
+        total_uplink,
+        total_downlink,
+        total_input_uplink,
+        total_input_downlink
+    )
+end
+
 -- Resource evidence comes from #168's recorder, not from a second observation
 -- path of the harness's own. One detail is load bearing: queue **depth** is read
 -- from `runtime.pressure`, the running peak across every transport snapshot, and
@@ -1229,7 +1334,8 @@ function fault_harness.report(harness, expect_completed)
     ---@type string[]
     local markers = {}
 
-    markers[#markers + 1] = ("scenario mode=%s profile=%s clients=%d steps=%d"):format(
+    markers[#markers + 1] = ("scenario topology=%s mode=%s profile=%s clients=%d steps=%d"):format(
+        harness.topology,
         harness.mode,
         harness.profile,
         #harness.clients,
@@ -1302,6 +1408,7 @@ function fault_harness.report(harness, expect_completed)
         skipped(findings, "converge.result", "a terminal fault scenario has no agreed result")
     end
     compare_presentation(harness, findings)
+    measure_wire(harness, markers)
     measure_resources(harness, findings, markers)
     declare_contingent(findings)
 

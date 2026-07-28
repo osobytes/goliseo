@@ -62,6 +62,12 @@ local contract = require("game.transport.contract")
 ---@field _unsupported_version integer
 ---@field _overflow integer
 ---@field _backpressure integer
+---@field _uplink_bytes integer
+---@field _downlink_bytes integer
+---@field _input_uplink_bytes integer
+---@field _input_downlink_bytes integer
+---@field _uplink_units integer
+---@field _downlink_frames integer
 ---@field _rendezvous FakeStarRendezvous
 ---@field _last_error string?
 local FakeStarTransport = {}
@@ -158,6 +164,12 @@ function FakeStarTransport.new(options)
         _unsupported_version = 0,
         _overflow = 0,
         _backpressure = 0,
+        _uplink_bytes = 0,
+        _downlink_bytes = 0,
+        _input_uplink_bytes = 0,
+        _input_downlink_bytes = 0,
+        _uplink_units = 0,
+        _downlink_frames = 0,
         _last_error = nil,
     }, FakeStarTransport)
 end
@@ -548,6 +560,14 @@ function FakeStarTransport:_enqueue(peer, channel_name, message)
     channel.buffered_amount = channel.buffered_amount + #wire
     channel.sent = channel.sent + 1
     self._sent = self._sent + 1
+    -- One count per queued copy. A host `broadcast` reaches here once per guest
+    -- link, which is exactly the fan-out amplification a relay removes and the
+    -- reason this counter exists at all.
+    self._uplink_units = self._uplink_units + 1
+    self._uplink_bytes = self._uplink_bytes + #wire
+    if channel_name == "input" then
+        self._input_uplink_bytes = self._input_uplink_bytes + #wire
+    end
     return true
 end
 
@@ -616,8 +636,15 @@ end
 ---@param peer FakeStarPeer
 ---@param channel_name TransportChannel
 ---@param addressed TransportAddressedMessage
-function FakeStarTransport:_receive(peer, channel_name, addressed)
+---@param wire_bytes integer?
+function FakeStarTransport:_receive(peer, channel_name, addressed, wire_bytes)
     local channel = peer.channels[channel_name]
+    self._downlink_frames = self._downlink_frames + 1
+    local received_bytes = wire_bytes or #assert(contract.encode(addressed.message))
+    self._downlink_bytes = self._downlink_bytes + received_bytes
+    if channel_name == "input" then
+        self._input_downlink_bytes = self._input_downlink_bytes + received_bytes
+    end
     if #channel.inbound >= self._queue_limit then
         channel.dropped_inbound = channel.dropped_inbound + 1
         self._dropped_inbound = self._dropped_inbound + 1
@@ -696,7 +723,7 @@ function FakeStarTransport:_flush()
                 channel.buffered_amount = math.max(0, channel.buffered_amount - size)
                 local remote = link and link_peer_id and link._peers[link_peer_id] or nil
                 if link and remote and peer.state == "connected" then
-                    link:_receive(remote, channel_name, addressed)
+                    link:_receive(remote, channel_name, addressed, size)
                 else
                     channel.dropped_outbound = channel.dropped_outbound + 1
                     self._dropped_outbound = self._dropped_outbound + 1
@@ -797,6 +824,34 @@ end
 ---@return TransportState
 function FakeStarTransport:state()
     return self._state
+end
+
+-- Encoded envelope wires this endpoint put on its links and took off them, one
+-- count per copy. A host `broadcast` costs one copy per guest here and one copy
+-- in total on `fake_relay`; these counters are what makes that comparable
+-- without either adapter having to be trusted about it.
+---@return integer uplink_bytes, integer downlink_bytes
+function FakeStarTransport:wire_bytes()
+    return self._uplink_bytes, self._downlink_bytes
+end
+
+---@return FakeRelayWireCounters
+function FakeStarTransport:wire_counters()
+    return {
+        uplink_bytes = self._uplink_bytes,
+        downlink_bytes = self._downlink_bytes,
+        uplink_units = self._uplink_units,
+        input_uplink_bytes = self._input_uplink_bytes,
+        input_downlink_bytes = self._input_downlink_bytes,
+        -- A star pays no addressing on the wire: each guest link is its own
+        -- data channel, so the origin of an arrival is the channel it arrived
+        -- on. The framed figure is therefore the envelope figure.
+        downlink_framed_bytes = self._downlink_bytes,
+        downlink_frames = self._downlink_frames,
+        -- A star delivers one envelope per message; there is no framing layer
+        -- above the envelope to pay for.
+        frame_overhead_bytes = 0,
+    }
 end
 
 ---@param channel FakeStarChannel

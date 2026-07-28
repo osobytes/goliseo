@@ -96,10 +96,18 @@ def parse_markers(label: str, text: str) -> RunMarkers:
     return run
 
 
-def run_process(selector: str, seed: int, index: int, duration: int | None) -> RunMarkers:
+def run_process(
+    selector: str, seed: int, index: int, duration: int | None, topology: str = "star"
+) -> RunMarkers:
     command = ["love", ".", "--fault-harness", selector, str(seed)]
     if duration is not None:
         command.append(str(duration))
+    # The wire shape is an axis, not a scenario: the same declared rows run over
+    # the direct-host star or over the in-process relay (#245). It is appended
+    # as a flag rather than a positional so the existing three-argument form
+    # keeps its meaning.
+    if topology != "star":
+        command += ["--topology", topology]
     completed = subprocess.run(
         command,
         cwd=REPO_ROOT,
@@ -197,9 +205,16 @@ def probe_diversity(runs: list[RunMarkers]) -> tuple[int, str]:
 # ---------------------------------------------------------------------------
 
 
-def campaign(selector: str, seed: int, processes: int, duration: int | None) -> bool:
-    print(f"==> fault harness campaign: selection={selector} seed={seed} processes={processes}")
-    runs = [run_process(selector, seed, index + 1, duration) for index in range(processes)]
+def campaign(
+    selector: str, seed: int, processes: int, duration: int | None, topology: str = "star"
+) -> bool:
+    print(
+        f"==> fault harness campaign: selection={selector} seed={seed} "
+        f"processes={processes} topology={topology}"
+    )
+    runs = [
+        run_process(selector, seed, index + 1, duration, topology) for index in range(processes)
+    ]
 
     ok = True
     for run in runs:
@@ -317,11 +332,21 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="impairment seed")
     parser.add_argument("--processes", type=int, default=DEFAULT_PROCESSES)
     parser.add_argument("--duration", type=int, default=None, help="override duration ticks")
+    parser.add_argument(
+        "--topology",
+        default="star",
+        choices=("star", "relay"),
+        help="wire shape: the direct-host star, or the in-process relay (#245)",
+    )
     args = parser.parse_args()
 
     if args.self_test:
         return 0 if self_test() else 1
-    return 0 if campaign(args.selection, args.seed, args.processes, args.duration) else 1
+    return (
+        0
+        if campaign(args.selection, args.seed, args.processes, args.duration, args.topology)
+        else 1
+    )
 
 
 if __name__ == "__main__":

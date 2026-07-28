@@ -77,13 +77,15 @@ end
 ---@param selector string?
 ---@param network_seed number?
 ---@param duration_ticks integer?
+---@param topology string?
 ---@return boolean ok
-function fault_campaign.main(selector, network_seed, duration_ticks)
+function fault_campaign.main(selector, network_seed, duration_ticks, topology)
     -- A raised error inside `love.load` reaches LOVE's error handler, which in a
     -- headless run has no window to draw on and no key to dismiss it with: the
     -- process hangs instead of failing. Every row is therefore protected, and a
     -- crash is reported as a failing row and a non-zero exit.
-    local ok, result = pcall(fault_campaign.run_selection, selector, network_seed, duration_ticks)
+    local ok, result =
+        pcall(fault_campaign.run_selection, selector, network_seed, duration_ticks, topology)
     if not ok then
         print("RESULT fail rows=0 failures=1")
         print("error " .. tostring(result))
@@ -95,11 +97,15 @@ end
 ---@param selector string?
 ---@param network_seed number?
 ---@param duration_ticks integer?
+---@param topology string?
 ---@return boolean ok
-function fault_campaign.run_selection(selector, network_seed, duration_ticks)
+function fault_campaign.run_selection(selector, network_seed, duration_ticks, topology)
     local rows, smoke_only, label = select_rows(selector)
+    local wire = topology or "star"
+    assert(wire == "star" or wire == "relay", "unknown fault harness topology: " .. tostring(wire))
+    ---@cast wire FaultHarnessTopology
     print("FAULT-HARNESS v" .. tostring(fault_campaign.MARKER_VERSION))
-    print("selection " .. label .. " rows=" .. tostring(#rows))
+    print("selection " .. label .. " rows=" .. tostring(#rows) .. " topology=" .. wire)
     print("hash-order-probe " .. fault_campaign.hash_order_probe())
     if smoke_only then
         -- Logged, never implied: the CI subset is a subset.
@@ -124,6 +130,7 @@ function fault_campaign.run_selection(selector, network_seed, duration_ticks)
         local ran, report = pcall(fault_scenarios.run, scenario, {
             network_seed = network_seed,
             duration_ticks = duration_ticks,
+            topology = wire,
         })
         if not ran then
             print(("finding %s scenario.crashed FAIL %s"):format(scenario.id, tostring(report)))
