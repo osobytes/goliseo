@@ -3,6 +3,7 @@
 -- control wires through the real framing, and completes the real manual
 -- offer/answer handshake. No browser, no JavaScript, no display.
 
+local coordinator = require("game.online.coordinator")
 local lobby_link = require("game.online.lobby_link")
 local lobby_model = require("game.screens.lobby_model")
 local protocol = require("game.online.protocol")
@@ -512,6 +513,58 @@ t.describe("lobby pair selection", function()
             driver:send(host, { kind = "pair", slot = "home_4" })
             t.is_true(view(host).error ~= nil, case.mode .. " must refuse a pair request")
             t.eq(view(host).preference, nil, "nothing was asked, so nothing is shown")
+        end
+    end)
+
+    t.it("stops waiting in plain language when the host never answers", function()
+        local driver, host, guests = locked_lobby("2v2", 3)
+        local chooser = guests[2]
+        local before = table.concat(owned(chooser, "guest_2"), ",")
+        -- The host is up and its link is open; it has simply stopped being
+        -- serviced, so it never reads the request and never replies. Nothing is
+        -- closed, so neither end takes the `transport_lost` path.
+        for index, peer in ipairs(driver.peers) do
+            if peer == host then
+                table.remove(driver.peers, index)
+                break
+            end
+        end
+
+        driver:send(chooser, { kind = "pair", slot = "away_3" })
+        t.eq(assert(view(chooser).preference).status, "pending")
+        driver:tick(coordinator.PREFERENCE_TIMEOUT_TICKS + 1)
+
+        local given_up = assert(view(chooser).preference)
+        t.eq(given_up.status, "rejected")
+        t.eq(given_up.reason, "no_response")
+        t.eq(given_up.text, lobby_model.PREFERENCE_TEXT.no_response)
+        t.eq(table.concat(given_up.slots, ","), "away_1,away_3", "the request stays legible")
+        t.eq(table.concat(owned(chooser, "guest_2"), ","), before, "nothing moved")
+        t.eq(view(chooser).terminal, nil, "a silent host does not end the session")
+        t.eq(view(chooser).phase, "assigned")
+    end)
+
+    -- An outcome with no text renders as its bare enum name, which is a defect
+    -- rather than a message. Derived from the protocol's own closed vocabulary
+    -- so a reason added there without lobby text fails here.
+    t.it("has plain language for every outcome a request can end on", function()
+        ---@type table<string, boolean>
+        local reachable = { pending = true }
+        for status in pairs(protocol.PREFERENCE_STATUSES) do
+            -- A refusal is shown by its typed reason, never by the bare status.
+            if status ~= "rejected" then
+                reachable[status] = true
+            end
+        end
+        for reason in pairs(protocol.PREFERENCE_REJECTIONS) do
+            reachable[reason] = true
+        end
+        for key in pairs(reachable) do
+            local text = lobby_model.PREFERENCE_TEXT[key]
+            t.is_true(type(text) == "string" and #text > 0, "no lobby text for " .. key)
+        end
+        for key in pairs(lobby_model.PREFERENCE_TEXT) do
+            t.is_true(reachable[key] == true, "lobby text for an unreachable outcome: " .. key)
         end
     end)
 end)
