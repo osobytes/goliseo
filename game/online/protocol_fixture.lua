@@ -153,6 +153,13 @@ function fixture.assignments()
     return result
 end
 
+-- The canonical requested owned set: a 2v2-shaped pair on the home line, in
+-- ascending canonical order.
+---@return InputSlotId[]
+function fixture.pair_slots()
+    return { "home_1", "home_2" }
+end
+
 ---@return SessionControlMessage[]
 function fixture.messages()
     local manifest = fixture.manifest()
@@ -204,6 +211,26 @@ function fixture.messages()
         {
             "disconnect",
             { target_peer_id = "guest_2", code = "peer_left" },
+        },
+        -- Appended, never inserted. Every sequence number above is part of its
+        -- message id and therefore of its pinned wire digest, so a new
+        -- conformance message goes on the end and moves nothing before it.
+        {
+            "pair_preference",
+            {
+                manifest_id = manifest_id,
+                assignment_id = assignment_id,
+                slots = fixture.pair_slots(),
+            },
+        },
+        {
+            "pair_preference_result",
+            {
+                manifest_id = manifest_id,
+                assignment_id = assignment_id,
+                slots = fixture.pair_slots(),
+                status = "granted",
+            },
         },
     }
     local result = {}

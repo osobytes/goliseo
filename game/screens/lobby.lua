@@ -232,19 +232,44 @@ function lobby.layout(state)
     end
 
     -- Roster: all eight canonical outfield slots, then both protected keepers.
+    -- A slot the local peer could ask the host for carries its own control. In
+    -- `1v1` and `4v4` no slot ever does, because there is no pair to choose.
     for index, slot in ipairs(view.slots) do
+        local row_y = ROW_TOP + (index - 1) * ROW_STEP
         push({
             id = "slot_" .. slot.slot,
             kind = "card",
             text = slot_text(slot),
             selected = slot.local_owner,
+            rect = { x = ROSTER_X, y = row_y, w = ROSTER_W - 66, h = ROW_H },
+            data = { align = "left", focusable = false },
+        })
+        if slot.can_prefer then
+            push({
+                id = "prefer_" .. slot.slot,
+                kind = "button",
+                text = "TAKE",
+                focused = state.focus == "prefer_" .. slot.slot,
+                rect = { x = ROSTER_X + ROSTER_W - 62, y = row_y, w = 62, h = ROW_H },
+                data = { align = "center" },
+            })
+        end
+    end
+    if view.preference then
+        push({
+            id = "preference",
+            kind = "label",
+            text = ("PAIR %s  %s"):format(
+                table.concat(view.preference.slots, " "):upper(),
+                view.preference.text:upper()
+            ),
             rect = {
                 x = ROSTER_X,
-                y = ROW_TOP + (index - 1) * ROW_STEP,
+                y = ROW_TOP + 8 * ROW_STEP + 2 * 22 + 6,
                 w = ROSTER_W,
-                h = ROW_H,
+                h = 40,
             },
-            data = { align = "left", focusable = false },
+            data = { align = "left", tone = "muted", focusable = false },
         })
     end
     for index, keeper in ipairs(view.keepers) do
@@ -381,6 +406,10 @@ local function command_for(id, view)
     local seat = id:match("^swap_(%d+)$")
     if seat then
         return { kind = "swap", index = tonumber(seat) }
+    end
+    local slot = id:match("^prefer_(.+)$")
+    if slot then
+        return { kind = "pair", slot = slot }
     end
     return nil
 end

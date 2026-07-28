@@ -52,8 +52,8 @@ REQUIRED_FIELDS = {
 REQUIRED_PROTOCOL_FIELDS = {
     "schema": "1",
     "manifest_id": "ea39ebe78423e0a0",
-    "transcript_id": "25a24b77f8167ab3",
-    "messages": "13",
+    "transcript_id": "48162b614e650bd2",
+    "messages": "15",
 }
 # Mirrors game/online/input_protocol_conformance.lua's GOLDEN. Regenerate BOTH
 # together: ./scripts/check.sh does not compare a browser run's marker against
@@ -772,7 +772,7 @@ def shard_gate_self_test() -> None:
             ),
             (
                 "protocol drift",
-                lambda payload: payload["records"][1]["protocol"].update(messages="12"),
+                lambda payload: payload["records"][1]["protocol"].update(messages="14"),
             ),
             (
                 "input protocol drift",
@@ -874,12 +874,12 @@ def shard_gate_self_test() -> None:
 def self_test() -> None:
     protocol_marker = (
         "GC_PROTOCOL|golden|schema=1|manifest_id=ea39ebe78423e0a0"
-        "|transcript_id=25a24b77f8167ab3|messages=13"
+        "|transcript_id=48162b614e650bd2|messages=15"
     )
     if parse_protocol_marker(protocol_marker) != REQUIRED_PROTOCOL_FIELDS:
         raise RuntimeError("protocol golden marker self-test failed")
     try:
-        parse_protocol_marker(protocol_marker.replace("messages=13", "messages=12"))
+        parse_protocol_marker(protocol_marker.replace("messages=15", "messages=14"))
     except RuntimeError:
         pass
     else:

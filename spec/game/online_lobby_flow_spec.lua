@@ -417,6 +417,105 @@ t.describe("lobby readiness and countdown", function()
     end)
 end)
 
+t.describe("lobby pair selection", function()
+    ---@param peer LobbyTestPeer
+    ---@param slot InputSlotId
+    ---@return boolean
+    local function offers_pair(peer, slot)
+        for _, row in ipairs(view(peer).slots) do
+            if row.slot == slot then
+                return row.can_prefer
+            end
+        end
+        return false
+    end
+
+    ---@param mode SessionMatchMode
+    ---@param guest_count integer
+    ---@return LobbyTestDriver, LobbyTestPeer, LobbyTestPeer[]
+    local function locked_lobby(mode, guest_count)
+        local driver, host, guests = seated_lobby(mode, guest_count)
+        driver:send(host, { kind = "lock" })
+        driver:pump(8)
+        return driver, host, guests
+    end
+
+    t.it("lets a guest choose its pair and shows the request through to the grant", function()
+        local driver, host, guests = locked_lobby("2v2", 3)
+        local chooser = guests[2]
+        t.eq(table.concat(owned(chooser, "guest_2"), ","), "away_1,away_2")
+        t.is_true(offers_pair(chooser, "away_3"), "a 2v2 guest must be able to ask")
+
+        driver:send(chooser, { kind = "pair", slot = "away_3" })
+        local pending = assert(view(chooser).preference, "the request must be visible at once")
+        t.eq(pending.status, "pending")
+        t.eq(table.concat(pending.slots, ","), "away_1,away_3")
+        t.eq(pending.text, lobby_model.PREFERENCE_TEXT.pending)
+
+        driver:pump(8)
+        local granted = assert(view(chooser).preference)
+        t.eq(granted.status, "granted")
+        t.eq(granted.text, lobby_model.PREFERENCE_TEXT.granted)
+        t.eq(table.concat(owned(chooser, "guest_2"), ","), "away_1,away_3")
+        t.eq(table.concat(owned(host, "guest_2"), ","), "away_1,away_3")
+        t.eq(table.concat(owned(host, "guest_3"), ","), "away_2,away_4")
+        t.is_true(not view(host).ready, "a granted pair clears readiness like any repartition")
+    end)
+
+    t.it("keeps a granted pair through the traffic that follows it", function()
+        local driver, host, guests = locked_lobby("2v2", 3)
+        driver:send(guests[2], { kind = "pair", slot = "away_3" })
+        driver:pump(8)
+        t.eq(table.concat(owned(host, "guest_2"), ","), "away_1,away_3")
+
+        -- Ordinary control traffic runs the host's publish path again; it must
+        -- not quietly restore the seating plan over the granted pair.
+        for _, peer in ipairs({ host, guests[1], guests[2], guests[3] }) do
+            driver:send(peer, { kind = "ready", ready = true })
+        end
+        driver:pump(8)
+        t.eq(view(host).phase, "ready")
+        t.eq(table.concat(owned(host, "guest_2"), ","), "away_1,away_3")
+        t.eq(table.concat(owned(guests[2], "guest_2"), ","), "away_1,away_3")
+    end)
+
+    t.it("shows the typed reason when the host refuses", function()
+        local driver, host, guests = locked_lobby("2v2", 3)
+        driver:send(guests[2], { kind = "pair", slot = "away_3" })
+        driver:pump(8)
+
+        -- `away_3` is now part of a pair its owner chose, so it is not up for
+        -- exchange any more.
+        driver:send(guests[3], { kind = "pair", slot = "away_3" })
+        driver:pump(8)
+        local refused = assert(view(guests[3]).preference)
+        t.eq(refused.status, "rejected")
+        t.eq(refused.reason, "already_taken")
+        t.eq(refused.text, lobby_model.PREFERENCE_TEXT.already_taken)
+        t.eq(
+            table.concat(owned(guests[3], "guest_3"), ","),
+            "away_2,away_4",
+            "a refusal leaves ownership exactly where it was"
+        )
+        t.eq(table.concat(owned(host, "guest_2"), ","), "away_1,away_3")
+    end)
+
+    t.it("offers nothing to choose in 1v1 or 4v4", function()
+        for _, case in ipairs({ { mode = "1v1", guests = 1 }, { mode = "4v4", guests = 7 } }) do
+            local driver, host = locked_lobby(case.mode, case.guests)
+            for _, row in ipairs(view(host).slots) do
+                t.is_true(
+                    not row.can_prefer,
+                    ("%s must offer no pair control on %s"):format(case.mode, row.slot)
+                )
+            end
+            driver:send(host, { kind = "pair", slot = "home_4" })
+            t.is_true(view(host).error ~= nil, case.mode .. " must refuse a pair request")
+            t.eq(view(host).preference, nil, "nothing was asked, so nothing is shown")
+        end
+    end)
+end)
+
 t.describe("online lobby screen shell", function()
     -- Drives the impure screen the product actually mounts: it owns the star,
     -- the clipboard, and the fixed-rate clock, and reaches the same start
