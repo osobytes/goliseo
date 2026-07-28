@@ -13,15 +13,18 @@ Input packets use protocol version 1 and carry `InputFrame` sample version 2.
 Changing the sample bytes, row layout, six-row redundancy, three-tick fairness
 delay, ordering, identity, or bounds requires an explicit version decision.
 
-**Decision on record:** #243 raised `MAX_HOST_ROWS` from 56 to 72 and added the
-`confirmed_span` field and `repair_rows` to the host batch, and both were folded
-into protocol version 1 rather than minting version 2. That is a bound change and
-a field addition, so this section's own rule requires the decision be written down
-rather than assumed.
+**Decision on record:** #243 raised `MAX_HOST_ROWS` from 56 to 72, added the
+`confirmed_span` field to **every** packet — guest and host alike, which is the
+whole mechanism, since a guest reporting its own confirmation is what lets the
+host stop fanning out blind — and folded `repair_rows` into the host batch's
+existing bounded `rows` array, where it is indistinguishable on the wire from an
+arrival row. All of it went into protocol version 1 rather than minting version 2.
+That is a bound change and a field addition, so this section's own rule requires
+the decision be written down rather than assumed.
 
 OMP-3 has never shipped and no peer outside this repository speaks version 1, so
 there is nothing to migrate and no compatibility claim to break — the same
-reasoning recorded twice in `session_protocol.md`. The change is additive at the
+reasoning `session_protocol.md` records for its own additive changes. The change is additive at the
 field level: no existing field changed meaning, no other bound moved, no error
 code was invented (`authority_conflict` is reused for repair-row conflicts), and
 the sample bytes, row layout, redundancy depth and fairness delay are all

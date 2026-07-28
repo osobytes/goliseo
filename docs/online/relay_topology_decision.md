@@ -71,8 +71,9 @@ isolation is something the star has and a relay does not**.
 
 **One unclaimed simplification.** `SETTLE_RELAY_QUIET_STEPS` and the host branch of
 `tail_delivered` are host-only and become unnecessary. Smaller than it looked when this was
-written: #243 turned that wait from a heuristic into a bound and reduced its ordinary cost to zero,
-so what the relay deletes is a fallback path, not a wait every clean match pays.
+written: #243 narrowed that wait with confirmation feedback and reduced its ordinary cost to zero,
+so what the relay deletes is mostly a fallback path rather than a wait every clean match pays. The
+quiet count is not yet strictly a fallback — silence can still override a report (#255).
 
 ### What still stands
 

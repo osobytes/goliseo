@@ -342,21 +342,34 @@ boundary is confirmed **and** every author it has heard from has confirmed the
 final boundary too. That is a bound, not a heuristic.
 
 `SETTLE_RELAY_QUIET_STEPS` (4, the fairness delay plus one) consecutive settle
-steps with no input traffic at all survives as the fallback for a peer that has
-stopped speaking altogether, which is the one case a report cannot cover. The
-settle deadline bounds it anyway. A clean match costs the host at most those four
-steps — 67 ms.
+steps with no input traffic at all survives as a fallback for the case where
+confirmation feedback has stopped arriving. The settle deadline bounds it anyway.
+A clean match costs the host at most those four steps — 67 ms.
 
-**It is a fallback by intent, not by construction.** `tail_delivered` tests the
-quiet count *before* it consults `_peer_confirmed`, so a peer that reported itself
-behind and then fell silent for exactly four consecutive steps still trips the
-short-circuit ahead of its own report. Reports narrow the window in every case
-where any report keeps arriving, which is why the measured behaviour improved —
-but silence does not yet strictly lose to evidence. Making that unconditional
-means retiring the quiet count entirely rather than reordering two checks, since
-the loop below it already returns `true` when nothing is known to be behind;
-tracked separately so it is a deliberate removal rather than a side effect of this
-change.
+**What it actually does is override a report, not substitute for a missing one.**
+An earlier draft justified it as covering "the one case a report cannot cover", a
+peer that never speaks at all. That is wrong twice over. `tail_delivered`'s loop
+treats a `nil` entry in `_peer_confirmed` as *not known to be behind*, so a peer
+that has never reported is already covered without the quiet count. And
+`remember_confirmation` runs on every host tick of the whole match, so any guest
+that sent even one packet before settle began already has a non-`nil` entry —
+a peer with zero reports ever is close to unreachable in practice.
+
+The situation the quiet count genuinely changes is the opposite one: a peer that
+**did** report itself behind and then went quiet. `tail_delivered` tests the quiet
+count *before* it consults `_peer_confirmed`, so four silent steps trip the
+short-circuit ahead of that peer's own report. Reports narrow the window wherever
+any report keeps arriving, which is why the measured behaviour improved — but
+silence does not yet strictly lose to evidence.
+
+Making that unconditional means retiring the quiet count rather than reordering
+two checks, since the loop below it already returns `true` when nothing is known
+to be behind. Tracked separately so it is a deliberate removal with its own
+measurement, not a side effect of this change.
+
+Note the counter is match-wide rather than per-peer: any inbound message on any
+link resets it, so "a peer went quiet" is only literally what it measures in 1v1,
+or once every other peer has already completed.
 
 It introduces no new wait. The phase's two existing deadlines still end it, and
 they no longer decide the status: a peer whose own final boundary is confirmed

@@ -482,8 +482,11 @@ any guest's — and leaves the *confirmation-depth* half untouched. The settle p
 and its host-only relay wait exist to work around the untouched half: the host
 confirms first by construction, so "confirmed, therefore done" made it leave first,
 every time, stranding guests that were still asking it to relay. Since #243 that wait
-reads each guest's reported confirmation directly and `SETTLE_RELAY_QUIET_STEPS = 4`
-is only the fallback for a peer that has stopped reporting at all.
+reads each guest's reported confirmation directly, and `SETTLE_RELAY_QUIET_STEPS = 4`
+is narrowed to a fallback rather than the primary signal. It is not yet strictly a
+fallback: `tail_delivered` still tests the quiet count before reading any report,
+so silence can still override a peer that reported itself behind. Tracked in #255;
+see [match driver](match_driver.md).
 
 Two further caveats on the value itself. Three ticks is a **fixed** guess: a guest
 100 ms away is under-compensated and one 10 ms away is over-compensated, so this is

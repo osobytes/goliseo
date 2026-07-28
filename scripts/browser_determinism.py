@@ -782,6 +782,10 @@ def shard_gate_self_test() -> None:
                 "input protocol margin drift",
                 lambda payload: payload["records"][1]["input_protocol"].update(margin="65"),
             ),
+            (
+                "input protocol row bound drift",
+                lambda payload: payload["records"][1]["input_protocol"].update(host_rows="73"),
+            ),
         )
         for label, mutate in mutations:
             hostile = Path(temp) / f"hostile-{label.replace(' ', '-')}"
@@ -903,6 +907,12 @@ def self_test() -> None:
         pass
     else:
         raise RuntimeError("input protocol golden marker accepted a changed wire margin")
+    try:
+        parse_input_protocol_marker(input_protocol_marker.replace("host_rows=72", "host_rows=73"))
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError("input protocol golden marker accepted a changed host row bound")
     if "--no-sandbox" not in chrome_arguments(True):
         raise RuntimeError("CI Chrome arguments omit --no-sandbox")
     if "--no-sandbox" in chrome_arguments(False):

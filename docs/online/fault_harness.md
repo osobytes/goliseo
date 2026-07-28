@@ -350,16 +350,21 @@ re-publishing — anchored at the window the host is actually missing rather tha
 its newest, which on that seed was the difference between seven rows aimed at the
 gap and sixty re-sends aimed past it.
 
-That also turns this document's one remaining heuristic into a bound. The settle
+That also narrows this document's one remaining heuristic, though it does not yet
+retire it (#255). The settle
 phase's relay-quiet check had to *infer* that guests were done from four silent
 steps, and was documented as covering everything except a worst-case burst
 followed by worst-case jitter. The host now leaves when every author it has heard
-from has **reported** confirming the final boundary; the quiet count survives as
-the fallback for a peer that has stopped speaking at all, which is the one case no
-report can cover. That fallback is intended rather than enforced — `tail_delivered`
-still tests the quiet count before it reads any report, so silence does not yet
-strictly lose to evidence. See `match_driver.md` for why closing that gap means
-retiring the quiet count rather than reordering it.
+from has **reported** confirming the final boundary; the quiet count survives as a
+fallback for the case where confirmation feedback has stopped arriving.
+
+That fallback is intended rather than enforced, and it does not do what an earlier
+draft of this line claimed. `tail_delivered` still tests the quiet count before it
+reads any report, so what it actually changes is the case where a peer *did* report
+itself behind and then went quiet — silence overriding evidence, rather than
+standing in for evidence that never came. See
+[match driver](match_driver.md) for why closing that gap means retiring the quiet
+count rather than reordering it, tracked in #255.
 
 Measured, on the same seeds before and after:
 

@@ -340,7 +340,7 @@ Of the decision's claims that this exercise can reach:
 | The relay never needs to parse a game packet | **Confirmed**, with one requirement the decision omits: it must frame per-origin, or ownership validation degrades to self-declaration. |
 | A relay adapter is a third implementation and the driver does not change | **Falsified.** `match_driver.guest_apply_authority` terminates on the first peer bundle. |
 | Host departure still ends the session | **Confirmed.** The coordinator's authority is untouched by the wire. |
-| The settle phase's relay-quiet heuristic becomes unnecessary | **Confirmed** that it is host-only, but smaller than claimed. #243 turned it from a heuristic into a bound and reduced its ordinary cost to zero, so what a relay deletes is a fallback path rather than a wait every clean match pays. |
+| The settle phase's relay-quiet heuristic becomes unnecessary | **Confirmed** that it is host-only, but smaller than claimed. #243 narrowed it with confirmation feedback and reduced its ordinary cost to zero, so what a relay deletes is mostly a fallback path rather than a wait every clean match pays. It is not yet strictly a fallback (#255). |
 
 The decision's *direction* survives measurement. Its *arithmetic* and its
 *migration cost* do not: the relay is cheaper on upload than claimed, more
