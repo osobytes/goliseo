@@ -137,6 +137,12 @@ At the scale this project actually operates, cost is not a decision input:
 | 10 matches, a few hours a day | 1.17 TB | **$5 to $7** |
 | 100 sustained | 93.9 TB | $8.50 to $30 |
 
+These are derived from **concurrency**, not from a match count, so they do not depend on how long a
+match runs. Worth stating because match length is currently inconsistent in the codebase — the
+online manifest defaults to 3,600 ticks while the simulation and the OMP-1 fixture use 7,200
+(tracked separately). That discrepancy changes the per-match total; it does not change the figures
+above.
+
 So the choice is made on latency and operational burden, and a self-placed VM wins both: the region
 is chosen deliberately, and a forwarding relay needs no capacity planning.
 
@@ -165,9 +171,28 @@ guest's input has to travel, so the host confirms sooner and rolls back less. #2
 the clearest evidence: the host reached full time and terminated first precisely *because* as
 sequencer it confirms first.
 
-The current compensation is also crude. Three ticks is 50 ms — a fixed guess at guest-to-host
-latency. A guest 100 ms away is under-compensated; one 10 ms away is over-compensated. It is
-approximate fairness by construction.
+**The compensation only covers half the advantage, and the half it misses is the one that matters.**
+An earlier draft of this record described the constant as "a fixed guess at guest-to-host latency".
+Reading the gate rather than assuming it (`input_protocol.lua:965-971`, `match_driver.lua:1755-1760`,
+`:516-520`) shows something narrower.
+
+The gate rejects a host-local arrival whose `arrival_tick - transport_tick` is under
+`FAIRNESS_DELAY_TICKS`, so a host row authored at step T becomes due at step T+3 — exactly the step
+that simulates the tick it is stamped for. That stops the sequencer from shortening its **own input
+latency**. It is the responsiveness half, and it works.
+
+It does nothing about **leg count**. A guest's row reaches the host in one network hop and reaches
+another guest in two, so the same three-tick budget is spent once on the host's inbound path and
+twice on a guest's. The host therefore predicts less and confirms sooner, and that half is entirely
+uncompensated.
+
+This is not a theoretical gap. It is why the settle phase and `SETTLE_RELAY_QUIET_STEPS` exist at
+all: #241's tail stall happened because the host reached full time and terminated first, removing
+the star's only relay while guests were still confirming. Had the delay equalised confirmation
+depth, #237 would not have been necessary.
+
+So the relay does not merely tidy up an approximate compensation — **it removes the half that was
+never compensated.**
 
 **The relay removes the structural advantage entirely.** With a framing relay there is no
 sequencer. Every client sends one hop to the relay and receives every other client's input two hops
