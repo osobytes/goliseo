@@ -1226,11 +1226,15 @@ function coordinator.evaluate_preference(state, peer_id, slots)
     if keeps == #current then
         return { status = "unchanged", slots = requested }
     end
-    return {
-        status = "granted",
-        slots = requested,
-        assignments = exchange_assignments(state, peer_id, requested),
-    }
+    local assignments = exchange_assignments(state, peer_id, requested)
+    -- The rules above already bound the exchange to one team and to the mode's
+    -- owned-set size, so this can only fire on a coding error -- but it fires
+    -- here, where nothing has been published yet, rather than inside the digest.
+    assert(
+        validate_local_assignments(state, assignments),
+        "a granted pair preference produced ownership the host would refuse"
+    )
+    return { status = "granted", slots = requested, assignments = assignments }
 end
 
 -- One human's control moves within their owned set and nowhere else. The rule

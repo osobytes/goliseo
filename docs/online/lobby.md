@@ -68,10 +68,12 @@ nothing to trade — a single slot in `4v4`, a whole outfield line in `1v1` —
 offers none at all. No mode is named to make that true.
 
 The host stays authoritative: the lobby sends `prefer_pair` and presents the
-answer. `PAIR HOME_1 HOME_3 WAITING FOR THE HOST…` becomes the granted pair, or
-the plain-language equivalent of the typed reason the host refused it with, from
-`lobby_model.PREFERENCE_TEXT`. The wire vocabulary stays closed; these strings
-never cross a link.
+answer beside the roster as `PAIR <slots> <what happened>`. While the request is
+in flight that reads as waiting; afterwards it is the grant, "you already
+control that pair", or the plain-language equivalent of the typed reason the
+host refused it with. Every one of those strings comes from
+`lobby_model.PREFERENCE_TEXT`; the wire vocabulary stays closed and these
+strings never cross a link.
 
 The `SWAP` control is unchanged and still belongs to the host, but it now
 deliberately outranks guest choices: it reasserts the host's seating order, so
