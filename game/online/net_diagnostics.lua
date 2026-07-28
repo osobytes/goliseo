@@ -242,6 +242,8 @@ local CONTROL_KIND = schema.enum({
     "peer_assignment",
     "slot_assignment",
     "ready",
+    "pair_preference",
+    "pair_preference_result",
     "countdown",
     "start",
     "match_phase",

@@ -160,6 +160,8 @@ All message bodies have closed field allowlists:
 | `manifest_proposal` / `manifest_accept` | Propose the complete manifest and accept its canonical digest. |
 | `peer_assignment` / `slot_assignment` | Name a stable peer and publish all peer/bot slot producers. |
 | `ready` | Assert or revoke readiness for one ownership generation. |
+| `pair_preference` | Ask the host for the outfield slots this peer wants to control. |
+| `pair_preference_result` | The host's typed verdict on one pair preference. |
 | `countdown` / `start` | Bind a countdown id to the first input tick. |
 | `match_phase` | Report kickoff, play, goal stoppage, full time, or result. |
 | `hash_report` | Report a canonical 16-hex boundary hash at one tick. |
@@ -180,6 +182,30 @@ validation; a new terminal-state message is rejected, so reliable-channel
 delivery cannot revive or rewrite a completed session. Slot assignment must
 also pass `validate_assignment_manifest` so its player ids agree with the
 accepted manifest rather than merely having valid canonical slot shapes.
+
+## Pair preferences
+
+A `pair_preference` is the one thing a guest may say about ownership, and it is
+a *request*: it names a manifest, the ownership generation it answers, and the
+owned set the peer wants, and it changes nothing by itself. The host answers
+every one with a `pair_preference_result` carrying a closed status —
+`granted`, `unchanged`, or `rejected` with a closed typed reason — and a grant
+republishes ownership through the ordinary `slot_assignment` path. There is no
+route by which a guest writes ownership.
+
+The requested `slots` array is validated for *shape* here and for *size* where
+the mode is known, exactly as published owned sets are: the wire requires one to
+eight canonical outfield slot ids in strictly ascending canonical order, so one
+set has exactly one encoding and no duplicate can hide inside it, and the
+coordinator requires the count the frozen mode fixes. Keeper protection needs no
+rule: keepers hold no canonical slot, so this vocabulary cannot name one.
+
+Both kinds are legal in `assigned`, `ready`, and `countdown`. The first two are
+where configuration can still change. `countdown` is included deliberately: the
+freeze lands there, and a preference already in flight when it does is an
+ordinary race that deserves the `after_freeze` refusal the host gives it rather
+than a terminated session. Past the countdown, every peer has seen `start`, and
+a preference is as much a protocol violation as a late `ready`.
 
 ## Ownership generations
 
@@ -302,6 +328,18 @@ how many slots a human owns. The `handshake`, `peer_assignment`, `match_phase`,
 manifest id and are unchanged, as are the 4v4 ownership goldens and the
 coordinator trace digest, which is the evidence that 4v4 behaviour itself did
 not move.
+
+**Decision on record:** the `pair_preference` and `pair_preference_result`
+messages were folded into protocol version 1 on the same terms. No existing
+field changed meaning, no bound moved, no existing rejection code changed, and
+**the manifest is untouched, so `manifest_id` does not move** — nor does any
+wire digest that embeds it. Two new message kinds cannot be digest-invisible,
+though: the conformance fixture carries one message per kind, so its transcript
+digest and message count move, and each new kind gets a pin of its own. The new
+messages are appended to the fixture rather than inserted, because a message's
+sequence number is part of its message id and therefore of its wire digest;
+appending leaves all thirteen shipped digests byte-identical, which is the
+evidence that no existing message moved.
 
 `combat_status = provisional_114` is the only valid pre-disposition status.
 It lets protocol, lobby, and transport foundations use the accepted interaction

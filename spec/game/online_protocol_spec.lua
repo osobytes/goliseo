@@ -91,13 +91,13 @@ t.describe("OMP-3 online protocol", function()
     t.it("matches literal wire, manifest, transcript, and per-kind golden evidence", function()
         local report = conformance.verify()
         t.eq(report.manifest_id, "ea39ebe78423e0a0")
-        t.eq(report.transcript_id, "25a24b77f8167ab3")
-        t.eq(report.message_count, 13)
+        t.eq(report.transcript_id, "48162b614e650bd2")
+        t.eq(report.message_count, 15)
         t.eq(fnv1a64.hash(conformance.GOLDEN.complete_wire), "a292fa4a99393456")
         t.eq(
             conformance.marker(report),
             "GC_PROTOCOL|golden|schema=1|manifest_id=ea39ebe78423e0a0"
-                .. "|transcript_id=25a24b77f8167ab3|messages=13"
+                .. "|transcript_id=48162b614e650bd2|messages=15"
         )
     end)
 
@@ -288,6 +288,8 @@ t.describe("OMP-3 online protocol", function()
             "result_ack",
             "abort",
             "disconnect",
+            "pair_preference",
+            "pair_preference_result",
         }
         t.eq(#messages, #expected_kinds)
         for index, message in ipairs(messages) do
@@ -463,6 +465,18 @@ t.describe("OMP-3 online protocol", function()
                 kind = "disconnect",
                 mutate = function(body)
                     body.code = "freeform_disconnect"
+                end,
+            },
+            {
+                kind = "pair_preference",
+                mutate = function(body)
+                    body.slots = { "home_2", "home_1" }
+                end,
+            },
+            {
+                kind = "pair_preference_result",
+                mutate = function(body)
+                    body.status = "maybe"
                 end,
             },
         }
