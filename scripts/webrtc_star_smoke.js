@@ -629,7 +629,7 @@ async function testBoundsAndOverflow() {
 // by assigning bufferedAmount directly -- deliberately NOT a browser
 // operation, and the one thing in this file that skips the low-water event --
 // so that everything this case proves is attributable to poll_event's
-// drainAll.
+// drainAll. The browser's own resumption path is testBufferedAmountLowDrain.
 async function testBackpressureLatchRearms() {
   const { host, guests } = await buildStar({
     guests: 1,
@@ -696,6 +696,283 @@ async function testBackpressureLatchRearms() {
     overflowed.overflow >= 1 && overflowed.dropped_outbound >= 1,
     "outbound overflow is not visible"
   );
+}
+
+// The browser's own drain-resumption path, end to end and without polling:
+// the bridge asks to be woken at half its bufferedAmount limit, the channel
+// crosses that threshold downwards, onbufferedamountlow fires on a later task,
+// and THAT is what empties the outbound queue. Nothing in this case calls
+// poll_event between congestion and relief.
+async function testBufferedAmountLowDrain() {
+  const bufferedLimit = 200;
+  const { host, guests } = await buildStar({
+    guests: 1,
+    queue_limit: 16,
+    buffered_amount_limit: bufferedLimit
+  });
+  const control = hostChannel(guests[0], "control");
+  const input = hostChannel(guests[0], "input");
+  drainEvents(host);
+
+  // 1. The threshold is part of the contract, not an implementation detail:
+  //    half the configured limit, on every channel of the link, so a channel
+  //    resumes well before its send buffer empties.
+  const threshold = Math.floor(bufferedLimit / 2);
+  check(
+    control.bufferedAmountLowThreshold === threshold,
+    "the control low-water threshold is " +
+      control.bufferedAmountLowThreshold +
+      ", expected half the " +
+      bufferedLimit +
+      "-byte limit (" +
+      threshold +
+      ")"
+  );
+  check(
+    input.bufferedAmountLowThreshold === threshold,
+    "the input low-water threshold is " +
+      input.bufferedAmountLowThreshold +
+      ", expected half the " +
+      bufferedLimit +
+      "-byte limit (" +
+      threshold +
+      ")"
+  );
+
+  // 2. Congest well past the limit, then queue a message behind it.
+  const line = "guest_1|control|" + wire("event", 4, null, "resumed");
+  control.congestTo(1000);
+  const baseline = control.sent.length;
+  check(host.send(line) === "ok", "a backpressured send was refused instead of queued");
+  check(control.sent.length === baseline, "a message was pushed into a saturated buffer");
+  check(peerRecord(host, "guest_1").control.outbound === 1, "the message was not queued");
+
+  // 3. Drain the buffer down to just ABOVE the threshold. No crossing means no
+  //    event, and with nothing polling there is nothing else to resume the
+  //    queue. A threshold set any higher than half the limit fires here.
+  control.releaseBytes(1000 - (threshold + 1));
+  check(
+    control.bufferedAmount === threshold + 1,
+    "the fixture did not land one byte above the threshold"
+  );
+  await delay(5);
+  check(
+    control.sent.length === baseline,
+    "the outbound queue drained before the buffer crossed the low-water threshold"
+  );
+  check(
+    peerRecord(host, "guest_1").control.outbound === 1,
+    "the outbound queue emptied before the buffer crossed the low-water threshold"
+  );
+
+  // 4. Cross it. The event is queued on a later task, exactly like a browser,
+  //    so the drain must not have happened yet when releaseBytes returns.
+  control.releaseBytes(1);
+  check(control.bufferedAmount === threshold, "the fixture did not land on the threshold");
+  check(
+    control.sent.length === baseline,
+    "the drain resumed synchronously instead of from the low-water event"
+  );
+  await delay(5);
+  check(
+    control.sent.length === baseline + 1,
+    "onbufferedamountlow did not resume the drain: the queued message never reached the channel"
+  );
+  check(
+    peerRecord(host, "guest_1").control.outbound === 0,
+    "onbufferedamountlow did not empty the outbound queue"
+  );
+
+  // 5. The message the browser resumed actually arrives at the far end, and
+  //    the latch cleared with it.
+  check(
+    guests[0].star.poll() === "host|control|" + wire("event", 4, null, "resumed"),
+    "the guest never received the message the low-water event released"
+  );
+  check(
+    backpressureEvents(drainEvents(host)).length === 1,
+    "the single congestion was not reported exactly once"
+  );
+  check(
+    host.send("guest_1|control|" + wire("event", 5, null, "after")) === "ok",
+    "the link stopped accepting traffic after a low-water resumption"
+  );
+  check(
+    control.sent.length === baseline + 2,
+    "a healthy send after resumption did not reach the channel"
+  );
+}
+
+// A browser guarantees neither which data channel opens first nor that either
+// opens during the call that created it. The bridge must hold the peer at
+// "connecting" until BOTH are open, whichever order they arrive in, and must
+// then carry traffic on both.
+async function testChannelOpenOrdering() {
+  const orders = [["control", "input"], ["input", "control"]];
+  for (const order of orders) {
+    const label = order.join(" then ");
+    const { host, guests } = await buildStar({
+      guests: 1,
+      link: { order, open: "deferred" }
+    });
+    const link = guests[0];
+    check(
+      peerRecord(host, "guest_1").state === "connecting",
+      "the peer was connected before either channel opened (" + label + ")"
+    );
+
+    // Each open lands on its own later task, the way a browser delivers one.
+    await openLater(link.openings[0]);
+    check(
+      peerRecord(host, "guest_1").state === "connecting",
+      "the peer was called connected after only " + order[0] + " opened (" + label + ")"
+    );
+    check(
+      peerRecord(link.star, "host").state === "connecting",
+      "the guest called the link connected after only " + order[0] + " opened (" + label + ")"
+    );
+    const early = host.send("guest_1|control|" + wire("event", 0, null, "early"));
+    check(
+      early.startsWith("error|not_connected|"),
+      "a half-open link accepted traffic (" + label + "): " + early
+    );
+
+    await openLater(link.openings[1]);
+    check(
+      peerRecord(host, "guest_1").state === "connected",
+      "the peer never connected after both channels opened (" + label + ")"
+    );
+
+    // Both channels carry traffic, in both directions, whichever opened first.
+    check(
+      host.send("guest_1|control|" + wire("event", 1, null, "ctl")) === "ok",
+      "the control channel did not carry traffic (" + label + ")"
+    );
+    check(
+      host.send("guest_1|input|" + wire("input", 1, 30, "inp")) === "ok",
+      "the input channel did not carry traffic (" + label + ")"
+    );
+    const received = [link.star.poll(), link.star.poll()].sort();
+    check(
+      received[0] === "host|control|" + wire("event", 1, null, "ctl") &&
+        received[1] === "host|input|" + wire("input", 1, 30, "inp"),
+      "the guest did not receive both messages (" + label + "): " + received.join(" , ")
+    );
+    check(
+      link.star.send("host|input|" + wire("input", 2, 31, "back")) === "ok",
+      "the guest could not send back (" + label + ")"
+    );
+    check(
+      host.poll() === "guest_1|input|" + wire("input", 2, 31, "back"),
+      "the host did not receive the guest reply (" + label + ")"
+    );
+    host.shutdown();
+    link.star.shutdown();
+    await delay(10);
+  }
+
+  // Both opens scheduled up front on staggered later tasks, with nothing
+  // stepping them: the link still settles on its own.
+  const { host, guests } = await buildStar({
+    guests: 1,
+    link: { order: ["input", "control"], open: "deferred" }
+  });
+  const link = guests[0];
+  setTimeout(link.openings[0], 1);
+  setTimeout(link.openings[1], 8);
+  await delay(25);
+  check(
+    peerRecord(host, "guest_1").state === "connected",
+    "an unattended staggered open never reached connected"
+  );
+  host.shutdown();
+  link.star.shutdown();
+  await delay(10);
+}
+
+// A star whose window.setTimeout is stubbed, so waitForIce's fallback timer is
+// inspectable and fireable on demand instead of really waiting out
+// ICE_TIMEOUT_MS -- and so no live five-second timer outlives the case.
+// waitForIce is the bridge's only user of window.setTimeout.
+function createStarWithTimers(rtc) {
+  const timers = [];
+  const star = createStar({
+    RTCPeerConnection: rtc.FakePeerConnection,
+    setTimeout: (handler, ms) => {
+      timers.push({ handler, ms });
+      return timers.length;
+    },
+    clearTimeout: () => {}
+  });
+  return { star, timers };
+}
+
+// waitForIce's async branch. A real connection is rarely "complete" by the
+// time setLocalDescription resolves, so the offer is published either from
+// onicegatheringstatechange or from the ICE timeout fallback.
+async function testIceGatheringTransition() {
+  const rtc = createRtc({ ice_gathering: "gathering" });
+  const { star: host, timers } = createStarWithTimers(rtc);
+  check(host.initialize("host", 64, 7, 65536) === "star|connected", "host did not initialize");
+  check(host.open_peer("guest_1") === "slot|1", "host did not allocate a slot");
+  check(host.request_offer("guest_1") === "ok", "request_offer was refused");
+  await delay(5);
+
+  const pc = rtc.instances[0];
+  check(pc !== undefined, "request_offer did not create a peer connection");
+  check(pc.iceGatheringState === "gathering", "the fixture did not start mid-gathering");
+  check(
+    host.take_signal("guest_1") === "",
+    "the offer was published before ICE gathering completed"
+  );
+
+  pc.completeIceGathering();
+  await delay(5);
+  check(
+    host.take_signal("guest_1").startsWith("signal|"),
+    "onicegatheringstatechange did not release the offer"
+  );
+  // The state change won the race: the fallback was armed but never fired.
+  check(timers.length === 1, "waitForIce armed " + timers.length + " fallback timers, expected 1");
+  host.shutdown();
+  await delay(10);
+}
+
+// The same branch, taken by the fallback instead: gathering never completes.
+async function testIceGatheringTimeoutFallback() {
+  const rtc = createRtc({ ice_gathering: "gathering" });
+  const { star: host, timers } = createStarWithTimers(rtc);
+  check(host.initialize("host", 64, 7, 65536) === "star|connected", "host did not initialize");
+  check(host.open_peer("guest_1") === "slot|1", "host did not allocate a slot");
+  check(host.request_offer("guest_1") === "ok", "request_offer was refused");
+  await delay(5);
+
+  // Gathering never completes, so nothing but the fallback can publish.
+  check(
+    rtc.instances[0].iceGatheringState === "gathering",
+    "the fixture completed gathering on its own"
+  );
+  check(host.take_signal("guest_1") === "", "the offer was published without a gathering signal");
+  check(timers.length === 1, "waitForIce armed " + timers.length + " fallback timers, expected 1");
+  check(
+    timers[0].ms === 5000,
+    "the ICE fallback is armed at " + timers[0].ms + "ms, expected ICE_TIMEOUT_MS (5000)"
+  );
+
+  timers[0].handler();
+  await delay(5);
+  check(
+    host.take_signal("guest_1").startsWith("signal|"),
+    "the ICE timeout fallback never published the offer"
+  );
+
+  // The late transition is harmless: the promise is already settled and the
+  // handler must not publish a second signal.
+  rtc.instances[0].completeIceGathering();
+  await delay(5);
+  check(host.take_signal("guest_1") === "", "a late gathering transition republished the offer");
+  host.shutdown();
+  await delay(10);
 }
 
 async function testIceAndConnectionFailure() {
@@ -846,6 +1123,10 @@ async function main() {
   await testPermissions();
   await testBoundsAndOverflow();
   await testBackpressureLatchRearms();
+  await testBufferedAmountLowDrain();
+  await testChannelOpenOrdering();
+  await testIceGatheringTransition();
+  await testIceGatheringTimeoutFallback();
   await testIceAndConnectionFailure();
   await testDisconnectAndTeardown();
   await testSignalingFaults();
