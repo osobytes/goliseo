@@ -100,10 +100,11 @@ lobby_model.TERMINAL_TEXT = {
     hash_mismatch = "Peers disagreed about the simulation.",
 }
 
--- Plain-language equivalents of a pair request's state and of every reason the
--- host can refuse one. Keyed by status for the outcomes that are not refusals
--- and by the typed reason for the ones that are; the two vocabularies are
--- disjoint, so one table serves both.
+-- Plain-language equivalents of a pair request's state and of every reason it
+-- can be refused for -- by the host, or by the requester's own expiring wait.
+-- Keyed by status for the outcomes that are not refusals and by the typed reason
+-- for the ones that are; the two vocabularies are disjoint, so one table serves
+-- both. Every reason in `protocol.PREFERENCE_REJECTIONS` must appear here.
 ---@type table<string, string>
 lobby_model.PREFERENCE_TEXT = {
     pending = "Waiting for the host to answer your pair request.",
@@ -116,6 +117,7 @@ lobby_model.PREFERENCE_TEXT = {
     not_seated = "You control no players in this ownership.",
     superseded = "Ownership changed while your request was in flight. Ask again.",
     after_freeze = "The countdown froze the pairs; they cannot change now.",
+    no_response = "The host never answered your pair request. Ask again.",
 }
 
 -- The developer lobby proposes the pinned fixture manifest. It is the only
