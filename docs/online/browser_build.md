@@ -61,6 +61,16 @@ host-star transport (one host plus seven guests, capacity, permissions,
 queue bounds, backpressure, disconnect, teardown, and manual signaling) with
 each endpoint in its own VM context and no browser.
 
+Its `RTCPeerConnection` double is deliberately as unforgiving as a browser, so
+that a green run is evidence the bridge works in one. `bufferedAmount` is real
+state and `onbufferedamountlow` fires only on a downward crossing of the
+threshold, so the browser's own drain-resumption path is covered end to end
+rather than stood in for by polling; data channels open in either order and on
+later tasks; and `iceGatheringState` can start mid-gathering, so both exits from
+`waitForIce` run. When you change one of those production paths, revert your
+change against the suite and confirm the case fails — a case that merely passes
+alongside a path is not evidence the path is exercised.
+
 CI can run this command without opening a browser. A normal browser should be
 used for the title-screen and complete-flow checks; those compatibility and
 performance checks remain part of issue #3.
