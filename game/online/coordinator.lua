@@ -15,6 +15,7 @@ local input_frame = require("sim.input_frame")
 ---| "transport_lost"
 ---| "protocol_violation"
 ---| "manifest_mismatch"
+---| "build_mismatch" -- The peers are not running the same build.
 ---| "invalid_assignment"
 ---| "start_ack_timeout"
 ---| "input_channel_failure"
@@ -243,6 +244,10 @@ coordinator.TERMINAL_CODES = {
     transport_lost = "peer_disconnect",
     protocol_violation = "malformed_message",
     manifest_mismatch = "manifest_mismatch",
+    -- A build disagreement is a manifest disagreement on the wire: the closed
+    -- #161 rejection codes do not name builds, and inventing a code would be a
+    -- protocol change to say locally what `manifest_mismatch` already says.
+    build_mismatch = "manifest_mismatch",
     invalid_assignment = "invalid_assignment",
     start_ack_timeout = "peer_disconnect",
     input_channel_failure = "peer_disconnect",
@@ -278,6 +283,19 @@ local EXPECTATION_FIELDS = {
     "combat_rules_id",
     "gameplay_ai_policy_id",
     "combat_status",
+}
+
+-- Which identity disagreed decides how a tester should read it. `build_id` and
+-- `source_id` both come from `game.build_info` and the control vocabulary, so a
+-- difference in either means the peers are running different builds — the one
+-- failure whose fix is "deploy the same commit to both", and the one a tester
+-- must not have to infer from a field name. Every other expectation field is a
+-- content or configuration disagreement between builds that could otherwise
+-- have played, and stays `manifest_mismatch`.
+---@type table<string, CoordinatorTerminalReason>
+local IDENTITY_REASONS = {
+    ["manifest.build_id"] = "build_mismatch",
+    ["manifest.source_id"] = "build_mismatch",
 }
 
 ---@type table<SessionMatchPhase, table<SessionMatchPhase, boolean>>
@@ -2088,7 +2106,7 @@ local function apply_manifest_proposal(state, peer, message)
     local difference = coordinator.expectation_difference(state.expectation, body.manifest)
     if difference then
         return terminate_from(state, {
-            reason = "manifest_mismatch",
+            reason = IDENTITY_REASONS[difference.path] or "manifest_mismatch",
             origin = "remote",
             peer_id = peer.peer_id,
             detail = "local identity differs at " .. difference.path,

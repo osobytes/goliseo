@@ -3,6 +3,7 @@ local protocol = require("game.online.protocol")
 local fixture = require("game.online.protocol_fixture")
 
 ---@class SessionProtocolGolden
+---@field vocabulary_id string
 ---@field manifest_id string
 ---@field transcript_id string
 ---@field complete_kind SessionMessageKind
@@ -19,6 +20,13 @@ local conformance = {}
 
 ---@type SessionProtocolGolden
 conformance.GOLDEN = {
+    -- The vocabulary digest rides in `build_id`, so a kind, a body field, or a
+    -- phase rule cannot change without changing which builds will play each
+    -- other. Pinning it here makes that consequence part of the diff instead of
+    -- something a reviewer has to notice. It is deliberately absent from
+    -- `conformance.marker`: the browser evidence parser compares the marker's
+    -- field set exactly, and this pin has no browser-specific meaning.
+    vocabulary_id = "7c8fcb0146a73494",
     manifest_id = "ea39ebe78423e0a0",
     transcript_id = "48162b614e650bd2",
     complete_kind = "manifest_accept",
@@ -46,6 +54,15 @@ conformance.GOLDEN = {
 
 ---@return SessionProtocolConformanceReport
 function conformance.verify()
+    local vocabulary_id = protocol.vocabulary_id()
+    assert(
+        vocabulary_id == conformance.GOLDEN.vocabulary_id,
+        ("protocol vocabulary golden changed: expected %s, got %s"):format(
+            conformance.GOLDEN.vocabulary_id,
+            vocabulary_id
+        )
+    )
+
     local manifest_id = protocol.manifest_id(fixture.manifest())
     assert(manifest_id == conformance.GOLDEN.manifest_id, "protocol manifest golden changed")
 

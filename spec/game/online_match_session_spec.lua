@@ -72,6 +72,41 @@ t.describe("content-derived online manifest", function()
         )
     end)
 
+    t.it("separates two builds that speak different control vocabularies", function()
+        local same_build = match_manifest.build_id()
+        -- `build_info` is three constants a commit does not move, so the only
+        -- way to stand in for "the same version built from another commit" is
+        -- to give this build the vocabulary that other commit would have had.
+        local original = protocol.vocabulary_id
+        protocol.vocabulary_id = function()
+            return original() .. "0"
+        end
+        local ok, foreign_build = pcall(match_manifest.build_id)
+        local ok_manifest, foreign_manifest = pcall(match_manifest.template, "2v2")
+        protocol.vocabulary_id = original
+        assert(ok and ok_manifest, tostring(foreign_build) .. " " .. tostring(foreign_manifest))
+
+        t.is_true(
+            foreign_build ~= same_build,
+            "a different control vocabulary has to mint a different build id"
+        )
+        t.eq(foreign_manifest.build_id, foreign_build)
+        t.eq(foreign_manifest.source_id, foreign_build)
+        -- Only the build identity moves: everything a session agrees about
+        -- besides which code is running is untouched, so this cannot be
+        -- mistaken for a content or tuning disagreement.
+        local local_manifest = match_manifest.template("2v2")
+        t.eq(foreign_manifest.content_id, local_manifest.content_id)
+        t.eq(foreign_manifest.tuning_id, local_manifest.tuning_id)
+        t.eq(foreign_manifest.match_config_id, local_manifest.match_config_id)
+        t.eq(foreign_manifest.arena_id, local_manifest.arena_id)
+        t.eq(#foreign_manifest.slots, #local_manifest.slots)
+
+        -- And restoring the vocabulary restores the identity: peers that agree
+        -- are exactly as compatible as they were before the fold.
+        t.eq(match_manifest.build_id(), same_build)
+    end)
+
     t.it("describes rosters the protocol and the simulation both accept", function()
         local manifest = match_manifest.template("4v4")
         for _, team in ipairs(manifest.teams) do

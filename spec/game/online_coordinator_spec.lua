@@ -189,6 +189,7 @@ t.describe("online coordinator construction", function()
             "transport_lost",
             "protocol_violation",
             "manifest_mismatch",
+            "build_mismatch",
             "invalid_assignment",
             "start_ack_timeout",
             "input_channel_failure",
@@ -992,6 +993,39 @@ t.describe("online coordinator duplicate and invalid traffic", function()
         t.eq(refused.terminal, nil)
     end)
 
+    t.it("still ends the session mid-lobby on a kind this build never heard of", function()
+        -- Folding the vocabulary into `build_id` moves this failure to the
+        -- manifest check for peers that compute one. It does not replace it: a
+        -- hand-written client, or anything that reaches an admitted peer with
+        -- traffic this build cannot read, still meets the announced
+        -- termination that has always been here.
+        local state = assigned_host(1)
+        local wire = assert(protocol.encode(message("ready", "guest.1", 2, {
+            manifest_id = assert(state.manifest_id),
+            assignment_id = assert(state.assignment_id),
+            ready = true,
+        })))
+        -- `relay` is exactly as long as `ready`, so every canonical length
+        -- prefix still holds and the wire is well formed in every way except
+        -- naming a kind this build has no rule for.
+        local forged, substitutions = wire:gsub("s4:kinds5:ready", "s4:kinds5:relay")
+        t.eq(substitutions, 1)
+
+        local next_state, outcome = coordinator.receive(state, fixture.link_id("guest.1"), forged)
+        t.eq(next_state.phase, "terminal")
+        local terminal = assert(next_state.terminal)
+        t.eq(terminal.reason, "protocol_violation")
+        t.eq(terminal.code, "malformed_message")
+        t.eq(terminal.origin, "remote")
+        local announced = nil
+        for _, action in ipairs(outcome.actions) do
+            if action.kind == "send" and action.message.kind == "abort" then
+                announced = action.message.body.code
+            end
+        end
+        t.eq(announced, "malformed_message", "the termination is still announced")
+    end)
+
     t.it("refuses unknown events and post-terminal traffic", function()
         local state = fixture.host()
         local _, outcome = coordinator.step(state, { kind = "teleport" })
@@ -1062,6 +1096,47 @@ t.describe("online coordinator guest validation", function()
         local difference = assert(coordinator.expectation_difference(expectation, manifest))
         t.eq(difference.path, "manifest.build_id")
         t.eq(difference.actual, manifest.build_id)
+    end)
+
+    t.it("names a build disagreement as one, and every other identity as a manifest", function()
+        -- `build_id` and `source_id` are the two expectation fields derived
+        -- from the build and its control vocabulary, so they get the reason
+        -- whose fix is "install the same build on both". The rest are content
+        -- or configuration disagreements between builds that could have played.
+        local cases = {
+            { field = "build_id", value = "build.other", reason = "build_mismatch" },
+            { field = "source_id", value = "source.other", reason = "build_mismatch" },
+            { field = "content_id", value = "content.other.v1", reason = "manifest_mismatch" },
+            { field = "tuning_id", value = "tuning.other.v1", reason = "manifest_mismatch" },
+            { field = "arena_id", value = "arena.other", reason = "manifest_mismatch" },
+        }
+        for _, case in ipairs(cases) do
+            local other = fixture.manifest()
+            other[case.field] = case.value
+            local refused, outcome = deliver(
+                (coordinator.step(fixture.guest(1), { kind = "connect" })),
+                "guest.1",
+                message("manifest_proposal", HOST, 0, {
+                    manifest_id = protocol.manifest_id(other),
+                    manifest = other,
+                })
+            )
+            t.eq(refused.phase, "terminal", case.field .. " has to end the session")
+            local terminal = assert(refused.terminal)
+            t.eq(terminal.reason, case.reason, case.field .. " reported the wrong reason")
+            t.eq(terminal.detail, "local identity differs at manifest." .. case.field)
+            -- The wire vocabulary is untouched: both reasons announce the same
+            -- closed #161 code, so a peer on either side of the split reads the
+            -- session ending identically.
+            t.eq(terminal.code, "manifest_mismatch")
+            local announced = nil
+            for _, action in ipairs(outcome.actions) do
+                if action.kind == "send" and action.message.kind == "abort" then
+                    announced = action.message.body.code
+                end
+            end
+            t.eq(announced, "manifest_mismatch", case.field .. " announced the wrong code")
+        end
     end)
 
     t.it("refuses ownership that seats no local slot", function()

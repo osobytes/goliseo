@@ -92,6 +92,7 @@ lobby_model.TERMINAL_TEXT = {
     transport_lost = "The connection to a peer was lost.",
     protocol_violation = "A peer sent traffic this session cannot accept.",
     manifest_mismatch = "Match identity differs between peers.",
+    build_mismatch = "The peers are running different builds. Install the same build on both.",
     invalid_assignment = "Published slot ownership was unusable.",
     start_ack_timeout = "A peer never reached the start boundary.",
     input_channel_failure = "The input channel failed.",
