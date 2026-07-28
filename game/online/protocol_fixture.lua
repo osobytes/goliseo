@@ -166,7 +166,14 @@ function fixture.messages()
     local manifest_id = protocol.manifest_id(manifest)
     local assignment_id = protocol.assignment_id(fixture.assignments(), 1)
     local bodies = {
-        { "handshake", { role = "host", runtime = fixture.runtime() } },
+        -- The fixture peer declares exactly the build its fixture manifest
+        -- names, so the pinned handshake wire is the fullest legal one. A
+        -- golden that omitted the optional field would leave its encoding
+        -- unpinned, which is the one thing a wire change must not do.
+        {
+            "handshake",
+            { role = "host", runtime = fixture.runtime(), build_id = manifest.build_id },
+        },
         { "manifest_proposal", { manifest_id = manifest_id, manifest = manifest } },
         { "manifest_accept", { manifest_id = manifest_id } },
         { "peer_assignment", { assigned_peer_id = "host", role = "host" } },

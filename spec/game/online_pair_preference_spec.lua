@@ -23,7 +23,7 @@ local SESSION = fixture.manifest().session_id
 -- message kinds were appended to the conformance fixture, never inserted, so
 -- every one of these must still be byte-identical.
 local SHIPPED_DIGESTS = {
-    handshake = "839047279d13a02d",
+    handshake = "2722abf054051350",
     manifest_proposal = "6d3818a72c39032b",
     manifest_accept = "a292fa4a99393456",
     peer_assignment = "fa48b31571dfe543",

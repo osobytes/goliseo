@@ -158,13 +158,32 @@ putting them in the deterministic manifest, snapshot, tape, or simulation
 hash. A presentation/theme swap can therefore change runtime compatibility
 while leaving manifest identity and outcomes unchanged.
 
+### The declared build
+
+The handshake also carries an optional `build_id`: the peer's own
+`match_manifest.build_id()`, the same value the lobby prints in its `BUILD` row.
+
+It is **never compared for admission.** A host that refused a differing build
+here would take the skew away from the guest that detects it — the guest
+compares manifests locally and mints its own `build_mismatch`, and that reading
+must not change. The declaration exists for the other end of the same failure:
+when a guest refuses the manifest and the host drops it, the host can say
+*why* instead of recording a generic protocol error. See
+[the coordinator document](session_coordinator.md#departures).
+
+It is optional for the same reason. A peer built before the field existed still
+speaks a handshake this build accepts, so its disagreement lands where the guest
+detects it rather than as a malformed message the host refuses outright. Absence
+against a host that does declare a build is itself a build difference, and is
+named as one.
+
 ## Message set and lifecycle validation
 
 All message bodies have closed field allowlists:
 
 | Message | Purpose |
 | --- | --- |
-| `handshake` | Declare host/guest role and runtime compatibility. |
+| `handshake` | Declare host/guest role, runtime compatibility, and optionally this peer's build. |
 | `manifest_proposal` / `manifest_accept` | Propose the complete manifest and accept its canonical digest. |
 | `peer_assignment` / `slot_assignment` | Name a stable peer and publish all peer/bot slot producers. |
 | `ready` | Assert or revoke readiness for one ownership generation. |

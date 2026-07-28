@@ -26,15 +26,15 @@ conformance.GOLDEN = {
     -- something a reviewer has to notice. It is deliberately absent from
     -- `conformance.marker`: the browser evidence parser compares the marker's
     -- field set exactly, and this pin has no browser-specific meaning.
-    vocabulary_id = "7c8fcb0146a73494",
+    vocabulary_id = "e13e3647001a0a7e",
     manifest_id = "ea39ebe78423e0a0",
-    transcript_id = "48162b614e650bd2",
+    transcript_id = "3283847c417923e5",
     complete_kind = "manifest_accept",
     complete_wire = "GCOP;1;t7:s4:bodyt1:s11:manifest_ids16:ea39ebe78423e0a0s4:kinds15:"
         .. "manifest_accepts10:message_ids32:GCMI;1;13:session_alpha4:host1:2s7:peer_ids4:"
         .. "hosts8:sequencei1:2s10:session_ids13:session_alphas7:versioni1:1",
     wire_digests = {
-        handshake = "839047279d13a02d",
+        handshake = "2722abf054051350",
         manifest_proposal = "6d3818a72c39032b",
         manifest_accept = "a292fa4a99393456",
         peer_assignment = "fa48b31571dfe543",
