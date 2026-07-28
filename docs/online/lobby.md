@@ -82,6 +82,14 @@ it. Everything else leaves granted ownership alone — the lobby only publishes 
 seating plan when ownership does not already seat the whole roster, so ordinary
 control traffic cannot quietly undo a pair a guest was given.
 
+A roster change is the one case that has to publish a plan over granted pairs,
+and it is the one case that does not simply overrule them. The lobby asks the
+coordinator to seat the new roster *around* the claims it can still hold, so a
+pair the new roster still has room for comes through untouched. A pair it cannot
+hold is dropped on purpose and the player is told: the status line reads the
+plain-language `reseated` text, in the same place a grant and every refusal are
+read.
+
 The roster shows all eight canonical slots with their producer and driver:
 
 - `LIVE` — the human's opening live slot, taken from
