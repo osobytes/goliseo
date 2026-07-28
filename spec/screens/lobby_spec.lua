@@ -277,4 +277,39 @@ t.describe("online lobby screen", function()
             assert(assert(hit.find(layout, "slot_away_1")).text):find("AI FILL", 1, true) ~= nil
         )
     end)
+
+    t.it("offers a pair control only where there is a pair to choose", function()
+        local state = hosting()
+        state = (click(state, "mode_2v2"))
+        state = (dispatch(state, { kind = "bot_fill" }))
+        state = (dispatch(state, { kind = "lock" }))
+        local layout = lobby.layout(state)
+        t.eq(hit.find(layout, "prefer_home_1"), nil, "a slot already owned needs no control")
+        t.is_true(hit.find(layout, "prefer_home_3") ~= nil, "the rest of the line is a choice")
+        t.eq(hit.find(layout, "prefer_away_1"), nil, "the other team is never a choice")
+
+        state = (click(state, "prefer_home_3"))
+        local preference = assert(view(state).preference, "the request must reach the view")
+        t.eq(table.concat(preference.slots, ","), "home_1,home_3")
+        t.eq(preference.status, "granted")
+        local label = assert(hit.find(lobby.layout(state), "preference"))
+        t.is_true(assert(label.text):find("HOME_1 HOME_3", 1, true) ~= nil)
+        local taken = assert(hit.find(lobby.layout(state), "slot_home_3"))
+        t.is_true(assert(taken.text):find("HOST", 1, true) ~= nil, "the pair moved on the roster")
+    end)
+
+    t.it("offers no pair control at all in 1v1 or 4v4", function()
+        for _, mode in ipairs({ "1v1", "4v4" }) do
+            local state = hosting()
+            state = (click(state, "mode_" .. mode))
+            state = (dispatch(state, { kind = "bot_fill" }))
+            state = (dispatch(state, { kind = "lock" }))
+            for _, widget in ipairs(lobby.layout(state)) do
+                t.is_true(
+                    widget.id:match("^prefer_") == nil,
+                    mode .. " must offer no pair control: " .. widget.id
+                )
+            end
+        end
+    end)
 end)
