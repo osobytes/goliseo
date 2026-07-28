@@ -350,21 +350,21 @@ re-publishing — anchored at the window the host is actually missing rather tha
 its newest, which on that seed was the difference between seven rows aimed at the
 gap and sixty re-sends aimed past it.
 
-That also narrows this document's one remaining heuristic, though it does not yet
-retire it (#255). The settle
+That also removed this document's one remaining heuristic (#255). The settle
 phase's relay-quiet check had to *infer* that guests were done from four silent
 steps, and was documented as covering everything except a worst-case burst
 followed by worst-case jitter. The host now leaves when every author it has heard
-from has **reported** confirming the final boundary; the quiet count survives as a
-fallback for the case where confirmation feedback has stopped arriving.
+from has **reported** confirming the final boundary, and that is the only thing it
+consults: the quiet count is gone, not demoted.
 
-That fallback is intended rather than enforced, and it does not do what an earlier
-draft of this line claimed. `tail_delivered` still tests the quiet count before it
-reads any report, so what it actually changes is the case where a peer *did* report
-itself behind and then went quiet — silence overriding evidence, rather than
-standing in for evidence that never came. See
-[match driver](match_driver.md) for why closing that gap means retiring the quiet
-count rather than reordering it, tracked in #255.
+Retiring it rather than reordering it was the point. It had never been a fallback
+for a peer that never speaks — the report loop already treats "no report" as "not
+known to be behind" — so the only case it still decided was a peer that *did*
+report itself behind and then went quiet, where silence overrode that peer's own
+evidence. Such a peer is now bounded by the settle deadline instead of by four
+steps: it waits longer for the same typed terminal, and every clean row measured
+here settles in the same 2 steps it did before. See
+[match driver](match_driver.md#silence-never-pre-empts-a-peers-own-report-255).
 
 Measured, on the same seeds before and after:
 
