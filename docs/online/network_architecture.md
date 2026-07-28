@@ -317,10 +317,13 @@ Properties that follow from the shape:
   **one**.
 - Seven NAT-traversal pairs, any of which can fail.
 - The host leaving ends the session. The settle phase exists partly because of
-  this: the host is the star's relay, so it stays until either its own final
-  boundary is confirmed *and* four consecutive settle steps brought no inbound
-  input traffic, or a hard deadline expires
-  (`match_driver.md`, "The host is the star's relay, so it leaves last").
+  this: the host is the star's relay, so it stays until its own final boundary is
+  confirmed *and* every author it has heard from has reported confirming that
+  boundary too, bounded either way by the settle deadline
+  (`match_driver.md`, "The host is the star's relay, so it leaves last"). Until
+  #255 it could also leave after four consecutive settle steps with no inbound
+  input traffic; that escape is retired, and reports are now the only evidence it
+  acts on.
 
 ### Decided: dedicated relay (OMP-4, accepted, not built)
 

@@ -375,14 +375,21 @@ rather than per-peer, so "a peer went quiet" was only literally what it measured
 in 1v1 or once every other peer had completed; and it was the one heuristic in a
 phase whose other bounds are hard.
 
-**It cost nothing to remove.** Measured on the fault harness's clean rows before
-and after, every peer in 1v1, 2v2 and 4v4 settles in 2 steps either way — since
-#243 the reports arrive on the bundles already in flight, so the quiet window was
-never the binding constraint on a healthy match. What changed is the one case it
-used to decide: a peer that reported behind and then vanished is now bounded by
-`SETTLE_TIMEOUT_TICKS` / `SETTLE_TIMEOUT_SECONDS` instead of by four steps. It
-waits longer before reporting the same typed terminal, and nothing became
-unbounded. `spec/game/online_match_driver_spec.lua` pins exactly that case.
+**A clean match paid nothing for this; a lossy one pays the host's whistle.**
+Measured on the fault harness's clean rows before and after, every peer in 1v1,
+2v2 and 4v4 settles in 2 steps either way — since #243 the reports arrive on the
+bundles already in flight, so the quiet window was never the binding constraint on
+a healthy match. On impaired rows the host's wait grew, in some seeds to the whole
+settle window; the before-and-after figures and what they revealed are in
+[What the settle bounds cost, measured](#what-the-settle-bounds-cost-measured)
+below, and they are the most useful thing this change produced. Guests are
+unaffected on every row.
+
+What changed in behaviour is the one case the quiet count used to decide: a peer
+that reported behind and then vanished is now bounded by `SETTLE_TIMEOUT_TICKS` /
+`SETTLE_TIMEOUT_SECONDS` instead of by four steps. It waits longer before
+reporting the same typed terminal, and nothing became unbounded.
+`spec/game/online_match_driver_spec.lua` pins exactly that case.
 
 ### A guest leaves last too, for the mirror-image reason
 
@@ -432,14 +439,44 @@ re-checked exactly once per `advance`. The tick bound is a liveness choice, not 
 correctness one: nothing is simulated while settling, so waiting can never push
 the tail out of the retained window.
 
+#### What the settle bounds cost, measured
+
 Those bounds are now **measured** rather than reasoned. The #169
 [fault harness](fault_harness.md) drives the documented profiles from
 `data/network_profiles.lua` through `sim.network_conditions`. The same campaign
 found the two #241 stalls this document now describes — a tail stall the host's
 early exit made unrecoverable, and a mid-match stall confirmation liveness now
-reports — and neither of them was a bound that needed raising. Across the whole
-declared matrix the worst settle a peer actually completed from is well inside the
-60-step bound.
+reports — and neither of them was a bound that needed raising.
+
+**The 60-step bound is genuinely exercised, and since #255 it is reached.** A
+guest's worst completed settle across the declared matrix is 23 steps, and every
+guest figure is unchanged by #255. The *host* is the peer that moved, because it
+is the one waiting on other peers' reports. Measured over `4v4` seeds 4703–4750,
+48 seeds per row, before and after #255:
+
+| Row | host mean, before → after | host worst, before → after | host completed at the 60-step bound |
+| --- | ---: | ---: | ---: |
+| `4v4.clean` | 2.00 → 2.00 | 2 → 2 | 0/48 → 0/48 |
+| `4v4.omp0_parity` | 9.10 → 9.10 | 10 → 10 | 0/48 → 0/48 |
+| `4v4.playable` | 12.52 → 15.21 | 18 → **60** | 0/48 → 3/48 |
+| `4v4.stress` | 24.48 → 32.42 | 32 → **60** | 0/48 → **12/48** |
+
+A quarter of `stress` seeds now settle for the full second rather than well
+inside it. Every one of those 192 runs still ends `completed` on an agreed final
+hash — the bound is where the *whistle* lands, not a failure — but the earlier
+claim that the worst real settle sits comfortably inside the bound is false as of
+#255 and is corrected here rather than left standing.
+
+**What the measurement revealed is worth more than the number.** The exposure the
+quiet count was covering is not silence, it is *stale evidence*. Under loss a
+guest's last confirmation report can be the one that is dropped, so the host goes
+on holding a report saying that peer is behind after the peer has already
+confirmed, completed and gone quiet. Nothing further will ever arrive to update
+it, so the host relays to the deadline. That is why removing the quiet count is
+free on a clean match and costs a full settle window on a lossy one, and it is
+the fact a future reader touching this phase needs: shortening this wait again
+means giving a peer a way to *say* it is finished — a departure report — not
+re-deriving a way to infer it from silence.
 
 It is deliberately **not** gated on hash agreement. The driver cannot see another
 peer's hash, so waiting for one would be an unbounded wait on a fact that never
