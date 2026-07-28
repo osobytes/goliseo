@@ -475,6 +475,7 @@ t.describe("relay topology probe: no peer is the sequencer", function()
             local counters = endpoint:wire_counters()
             local up = counters.input_uplink_bytes / ticks
             local down = counters.input_downlink_bytes / ticks
+            local framed = counters.downlink_framed_bytes / ticks
             t.eq(counters.uplink_units, ticks, member_id(index) .. " uploads once per tick")
             t.eq(counters.downlink_frames, ticks, "and receives one framed message per tick")
             -- One own bundle up; seven other bundles down. The uplink is an
@@ -483,6 +484,20 @@ t.describe("relay topology probe: no peer is the sequencer", function()
             t.is_true(up > 180 and up < 200, ("uplink %.1f B/tick"):format(up))
             t.is_true(down > 1300 and down < 1400, ("downlink %.1f B/tick"):format(down))
             t.near(down / up, 7, 0.05, "a member receives exactly the other seven bundles")
+            -- `input_downlink_bytes` counts envelopes only, so that it compares
+            -- with the star's figure. The wire also carries the per-line origin
+            -- that finding 2 makes mandatory, plus the separators between lines,
+            -- so the true downlink is strictly higher and the envelope figure is
+            -- a floor. Pinned here so the doc's 1.76x-to-1.90x bracket cannot
+            -- drift silently.
+            t.is_true(
+                framed > down,
+                ("framed %.1f must exceed the envelope figure %.1f"):format(framed, down)
+            )
+            t.is_true(
+                framed > 1420 and framed < 1445,
+                ("framed downlink %.1f B/tick"):format(framed)
+            )
         end
     end)
 end)

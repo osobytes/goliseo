@@ -843,6 +843,10 @@ function FakeStarTransport:wire_counters()
         uplink_units = self._uplink_units,
         input_uplink_bytes = self._input_uplink_bytes,
         input_downlink_bytes = self._input_downlink_bytes,
+        -- A star pays no addressing on the wire: each guest link is its own
+        -- data channel, so the origin of an arrival is the channel it arrived
+        -- on. The framed figure is therefore the envelope figure.
+        downlink_framed_bytes = self._downlink_bytes,
         downlink_frames = self._downlink_frames,
         -- A star delivers one envelope per message; there is no framing layer
         -- above the envelope to pay for.

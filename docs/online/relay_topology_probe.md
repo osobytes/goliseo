@@ -20,7 +20,7 @@ recorded here rather than removed.
 | --- | --- |
 | `game/transport/fake_relay.lua` | A third adapter beside `fake_star` and `browser_star`. Every member holds one link to a `FakeRelayRoom`; the room concatenates the opaque lines it received for each destination and hands down one frame. It decodes nothing and never returns a member's own line. |
 | `--topology relay` | The whole declared 25-row matrix, and the separate-process campaign, run over the relay instead of the star. |
-| `wire_counters()` | Per-copy uplink and downlink bytes on **both** adapters, split by channel. |
+| `wire_counters()` | Per-copy uplink and downlink bytes on **both** adapters, split by channel, plus `downlink_framed_bytes` — what crossed the link once addressing and separators are included. |
 | `spec/game/transport_relay_spec.lua` | The adapter's contract rows, and the sequencer-less probe rows below. |
 
 ### Why the recorder could not answer the bandwidth question
@@ -53,11 +53,12 @@ where it stops.
 **No. It fails identically.**
 
 The whole 25-row matrix produces byte-identical markers under both topologies.
-Excluding the new `marker wire` lines, the `topology=` fields and the hash-order
-probe, the star and relay streams differ in exactly **nine lines out of 1,733**,
-and all nine are inside `2v2.backpressure` (below). Every checkpoint hash, every
-client status, every terminal and every scenario result agrees. `4v4.stress`
-fails the same way on both:
+Each stream is **1,733 lines** with the hash-order probe excluded; removing the
+new `marker wire` lines and the one `selection` line carrying `topology=` leaves
+**1,571 comparable lines, of which exactly nine differ**, and all nine are inside
+`2v2.backpressure` (below). Every checkpoint hash, every client status, every
+terminal and every scenario result agrees. `4v4.stress` fails the same way on
+both:
 
 ```
 marker client host    status=confirmation_stalled terminal=confirmation_stalled final=56142afa03699a10 confirmed_output=43
@@ -66,6 +67,13 @@ marker client guest_7 status=confirmation_stalled terminal=confirmation_stalled 
 
 — the same eight statuses, the same eight final hashes, the same stalled
 confirmation ticks, on the star and on the relay.
+
+**Reproducing the line counts.** The 1,733 figure is the marker stream of
+`python3 -B scripts/fault_harness.py --selection full --topology {star,relay}` at
+the default seed (4703) and default duration, which is what the controller prints
+as `markers=1733`. Ad hoc `love . --fault-harness` invocations with a different
+seed, duration or selector produce a different count; quote the command with the
+number.
 
 This does **not** falsify #243's diagnosis; it falsifies the inference drawn from
 it. #243 is a capacity limit of the **56-row canonical batch**, which lives in
@@ -113,7 +121,8 @@ Measured on `4v4.clean`, input channel only, over 129 driver steps:
 | host-star, a guest | ~170 B/tick | **168.6 B/tick** | |
 | relay wire, sequencer kept (host) | — | **755.9 B/tick** | one copy of the canonical batch |
 | relay, sequencer-less (every client) | 1,190 B/tick | **190.4 B/tick** | measured in `transport_relay_spec` |
-| relay downlink, framing | ~650 B/tick | **1,332.8 B/tick** | |
+| relay downlink, framing (envelopes only) | ~650 B/tick | **1,332.8 B/tick** | comparable with the star figure |
+| relay downlink, framing (on the wire) | — | **1,433.8 B/tick** | addressing and separators included |
 
 Two corrections:
 
@@ -127,8 +136,38 @@ cannot be cheaper than a canonicalising one, and the reason is the property that
 makes it attractive: it does not parse, so it cannot merge. Each client receives
 the other seven bundles whole — seven protocol headers, seven sender ids, seven
 sequences — where a canonical batch carries the union of their rows under one
-header. Measured: **1,332.8 B/tick framed versus 755.9 B/tick canonical**, so the
-framing relay costs **1.76× more downstream**, not 16% less.
+header. Measured: **1,332.8 B/tick of envelopes versus 755.9 B/tick canonical**,
+so the framing relay costs **1.76× more downstream**, not 16% less.
+
+### The 1,332.8 figure is a floor, not the wire cost
+
+That number counts **encoded envelopes only**, deliberately, so that it is
+comparable with the star's 755.9 B/tick, which is also an envelope figure. It
+excludes the `origin|channel|` addressing on each forwarded line and the
+separators between lines. Both are real costs a relay has to pay and a star does
+not:
+
+- finding 2 below establishes that a relay **must** name the origin of every line
+  it forwards, or ownership validation degrades to a self-declared `sender_id`.
+  The overhead is therefore a requirement, not an artefact of this
+  implementation;
+- a star pays nothing equivalent, because each guest link is its own data channel
+  and the origin of an arrival *is* the channel it arrived on.
+
+`wire_counters().downlink_framed_bytes` counts what actually crossed the link.
+Measured on the same run: **1,433.8 B/tick** for a member receiving one `host`
+line and six `guest_N` lines, and 1,436.8 B/tick for the member receiving seven
+`guest_N` lines. Against the 755.9 B canonical batch that is **1.90×**, not
+1.76×.
+
+So the honest bracket is **1.76× to 1.90×**, and where it lands inside that
+depends on how compactly a real relay encodes origin. This adapter uses the
+transport contract's own `peer_id|channel|` text form, which is verbose — 11 to
+14 bytes per line here — so 1.90× is the pessimistic end and a compact binary
+origin tag would sit near the optimistic one. **It cannot be below 1.76×**, and
+the direction of the correction is what matters: opaque framing is more expensive
+downstream than canonicalising, and the gap is wider than the envelope figure
+alone suggests.
 
 The trade is real either way — 190 B up and 1,333 B down beats 5,292 B up on the
 worst node by a wide margin — but the decision's table understates the relay's
@@ -290,7 +329,7 @@ Of the decision's claims that this exercise can reach:
 | --- | --- |
 | The relay concentrates nothing on one player's uplink | **Confirmed.** 5,291.5 → 755.9 B/tick at the wire, → 190.4 B/tick sequencer-less. |
 | Worst-node upload 5,285 → 1,190 B/tick | **Star figure confirmed; relay figure wrong.** The true sequencer-less figure is 190.4 B/tick; 1,190 is the mesh column. |
-| Opaque framing is *cheaper* than canonicalising (~650 vs 755 B) | **Falsified.** 1,332.8 B/tick measured; framing costs 1.76× more downstream because it cannot merge rows. |
+| Opaque framing is *cheaper* than canonicalising (~650 vs 755 B) | **Falsified.** 1,332.8 B/tick of envelopes and 1,433.8 B/tick on the wire; framing costs **1.76× to 1.90×** more downstream because it cannot merge rows and must name every origin. |
 | #243 disappears structurally | **Not at the wire.** `4v4.stress` fails identically under a relay. The claim is about removing the sequencer, and the driver refuses that today. |
 | The relay never needs to parse a game packet | **Confirmed**, with one requirement the decision omits: it must frame per-origin, or ownership validation degrades to self-declaration. |
 | A relay adapter is a third implementation and the driver does not change | **Falsified.** `match_driver.guest_apply_authority` terminates on the first peer bundle. |

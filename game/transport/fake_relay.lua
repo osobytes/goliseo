@@ -126,6 +126,7 @@ local contract = require("game.transport.contract")
 ---@field _downlink_bytes integer
 ---@field _input_uplink_bytes integer
 ---@field _input_downlink_bytes integer
+---@field _downlink_framed_bytes integer
 ---@field _uplink_units integer
 ---@field _downlink_frames integer
 ---@field _frame_overhead integer
@@ -246,6 +247,7 @@ function FakeRelayTransport.new(options)
         _downlink_bytes = 0,
         _input_uplink_bytes = 0,
         _input_downlink_bytes = 0,
+        _downlink_framed_bytes = 0,
         _uplink_units = 0,
         _downlink_frames = 0,
         _frame_overhead = 0,
@@ -765,6 +767,14 @@ end
 ---@param frame string
 function FakeRelayTransport:_receive_frame(frame)
     self._downlink_frames = self._downlink_frames + 1
+    -- The exact byte count that crossed the link, addressing and separators
+    -- included. `_downlink_bytes` below counts envelope wires only, so that it
+    -- is comparable with the star's figure; this one is what a real relay would
+    -- actually have to send, because a framing relay has to name the origin of
+    -- every line it forwards (see the ownership finding in
+    -- `docs/online/relay_topology_probe.md`) while a star gets origin for free
+    -- from the dedicated per-peer data channel.
+    self._downlink_framed_bytes = self._downlink_framed_bytes + #frame
     for _, line in ipairs(split(frame, "\n")) do
         local addressed, err, code = contract.decode_addressed(line)
         if addressed == nil then
@@ -971,6 +981,7 @@ end
 ---@field downlink_bytes integer
 ---@field input_uplink_bytes integer -- The `input` channel alone, which is the per-tick match cost.
 ---@field input_downlink_bytes integer
+---@field downlink_framed_bytes integer -- What actually crossed the link: addressing and separators included.
 ---@field uplink_units integer
 ---@field downlink_frames integer
 ---@field frame_overhead_bytes integer
@@ -982,6 +993,7 @@ function FakeRelayTransport:wire_counters()
         downlink_bytes = self._downlink_bytes,
         input_uplink_bytes = self._input_uplink_bytes,
         input_downlink_bytes = self._input_downlink_bytes,
+        downlink_framed_bytes = self._downlink_framed_bytes,
         uplink_units = self._uplink_units,
         downlink_frames = self._downlink_frames,
         frame_overhead_bytes = self._frame_overhead,
