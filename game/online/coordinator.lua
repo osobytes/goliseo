@@ -60,6 +60,7 @@ local input_frame = require("sim.input_frame")
 ---@field link_id string? -- nil for the local peer; a transport link id otherwise.
 ---@field role SessionRole
 ---@field runtime SessionRuntimeIdentity
+---@field build_id string? -- The build this peer declared in its handshake, if any.
 ---@field accepted_manifest_id string?
 ---@field assigned boolean
 ---@field ready boolean
@@ -130,6 +131,18 @@ local input_frame = require("sim.input_frame")
 ---@field away_score integer
 ---@field final_hash string
 
+-- Why the host last dropped a guest, in the host's own words. A drop is not a
+-- terminal event -- the lobby stands and can still be filled -- so the reason
+-- has nowhere else to live, and without it the host watches a seat empty itself
+-- for reasons only the departed peer knows. It reuses `CoordinatorTerminalReason`
+-- because a drop and a termination answer the same question with the same
+-- vocabulary; `code` is what actually went on the wire.
+---@class CoordinatorDeparture
+---@field peer_id string
+---@field reason CoordinatorTerminalReason
+---@field code SessionDisconnectCode
+---@field detail string?
+
 ---@class CoordinatorTerminal
 ---@field reason CoordinatorTerminalReason
 ---@field code SessionRejectCode? -- nil only for a completed session.
@@ -160,6 +173,7 @@ local input_frame = require("sim.input_frame")
 ---@field host_peer_id string
 ---@field host_link_id string? -- Guest only: the single link back to the host.
 ---@field runtime SessionRuntimeIdentity
+---@field build_id string? -- This peer's own build, declared in its handshake.
 ---@field expectation CoordinatorManifestExpectation?
 ---@field phase SessionLifecyclePhase
 ---@field clock integer
@@ -178,6 +192,7 @@ local input_frame = require("sim.input_frame")
 ---@field result CoordinatorResult?
 ---@field local_result CoordinatorResult?
 ---@field hashes CoordinatorHashRecord[]
+---@field departure CoordinatorDeparture? -- Host only: why the last guest was dropped.
 ---@field terminal CoordinatorTerminal?
 
 ---@class CoordinatorOptions
@@ -187,6 +202,7 @@ local input_frame = require("sim.input_frame")
 ---@field host_peer_id string?
 ---@field host_link_id string?
 ---@field runtime SessionRuntimeIdentity
+---@field build_id string? -- This peer's build, declared in its handshake.
 ---@field expectation CoordinatorManifestExpectation?
 
 ---@class CoordinatorSummary
@@ -262,13 +278,17 @@ coordinator.NETCODE_REASONS = {
     desync = "hash_mismatch",
 }
 
+-- Every wire disconnect code, and the local reason it becomes. Public because a
+-- reader that reports departures has to cover all of them: a code added here
+-- without host-side language is a reason rendered as its bare enum name.
 ---@type table<SessionDisconnectCode, CoordinatorTerminalReason>
-local DISCONNECT_REASONS = {
+coordinator.DISCONNECT_REASONS = {
     peer_left = "guest_left",
     transport_lost = "transport_lost",
     host_left = "host_left",
     protocol_error = "protocol_violation",
 }
+local DISCONNECT_REASONS = coordinator.DISCONNECT_REASONS
 
 -- Fixed comparison order keeps guest-side manifest rejection deterministic.
 ---@type string[]
@@ -372,6 +392,7 @@ local function copy_peer(peer)
         link_id = peer.link_id,
         role = peer.role,
         runtime = peer.runtime,
+        build_id = peer.build_id,
         accepted_manifest_id = peer.accepted_manifest_id,
         assigned = peer.assigned,
         ready = peer.ready,
@@ -405,6 +426,7 @@ local function copy_state(state)
         host_peer_id = state.host_peer_id,
         host_link_id = state.host_link_id,
         runtime = state.runtime,
+        build_id = state.build_id,
         expectation = state.expectation,
         phase = state.phase,
         clock = state.clock,
@@ -423,6 +445,7 @@ local function copy_state(state)
         result = state.result,
         local_result = state.local_result,
         hashes = hashes,
+        departure = state.departure,
         terminal = state.terminal,
     }
 end
@@ -994,6 +1017,11 @@ function coordinator.new(options)
     if not runtime then
         return nil, runtime_err, runtime_code
     end
+    local build_ok, build_err, build_code = protocol.validate_build_id(options.build_id)
+    if not build_ok then
+        return nil, build_err, build_code
+    end
+    local build_id = options.build_id
     -- Probe the identity bounds by minting the peer's first message id.
     local _, id_err, id_code = protocol.message_id(options.session_id, options.peer_id, 0)
     if id_err then
@@ -1005,6 +1033,7 @@ function coordinator.new(options)
         link_id = nil,
         role = options.role,
         runtime = runtime,
+        build_id = build_id,
         accepted_manifest_id = nil,
         assigned = options.role == "host",
         ready = false,
@@ -1041,6 +1070,7 @@ function coordinator.new(options)
         host_peer_id = host_peer_id,
         host_link_id = options.host_link_id,
         runtime = runtime,
+        build_id = build_id,
         expectation = options.expectation and copy_value(options.expectation) or nil,
         -- The host admits itself at construction; a guest is unheard until it
         -- sends its handshake, so only guests observe the `new` phase.
@@ -1061,6 +1091,7 @@ function coordinator.new(options)
         result = nil,
         local_result = nil,
         hashes = {},
+        departure = nil,
         terminal = nil,
     }
     return state
@@ -1520,7 +1551,7 @@ local function handle_connect(state)
     emit(
         next_state,
         "handshake",
-        { role = "guest", runtime = next_state.runtime },
+        { role = "guest", runtime = next_state.runtime, build_id = next_state.build_id },
         link_targets(next_state),
         actions
     )
@@ -2125,17 +2156,55 @@ local function remove_peer(next_state, peer_id)
     end
 end
 
+-- Whether this peer told the host it runs a different build. Only the local
+-- declaration makes the comparison possible, so a host that declares nothing
+-- never claims a build disagreement; a peer that declares nothing against a host
+-- that does is a build predating the handshake field, which is a real build
+-- difference and named as one.
+---@param state CoordinatorState
+---@param peer CoordinatorPeer
+---@return boolean
+local function build_skew(state, peer)
+    return state.build_id ~= nil and peer.build_id ~= state.build_id
+end
+
+-- The host's own name for a drop. `peer_left` and `transport_lost` describe a
+-- peer that simply went, whatever it was built from, so only the protocol case
+-- is reconsidered: a peer whose traffic this session could not accept *and*
+-- whose declared build differs was almost certainly refusing the manifest for
+-- that reason, and "different builds" is the sentence a tester can act on.
+---@param state CoordinatorState
+---@param peer CoordinatorPeer
+---@param code SessionDisconnectCode
+---@return CoordinatorTerminalReason
+local function departure_reason(state, peer, code)
+    local reason = DISCONNECT_REASONS[code]
+    if reason == "protocol_violation" and build_skew(state, peer) then
+        return "build_mismatch"
+    end
+    return reason
+end
+
 -- A pre-countdown departure invalidates any published ownership, so the host
 -- drops back to the manifest phase and republishes rather than silently
 -- running a slot with no declared source.
 ---@param state CoordinatorState
 ---@param peer CoordinatorPeer
 ---@param code SessionDisconnectCode
+---@param detail string?
 ---@return CoordinatorState, CoordinatorOutcome
-local function drop_guest(state, peer, code)
+local function drop_guest(state, peer, code, detail)
     local actions = {}
     local next_state = copy_state(state)
     local departed = peer.peer_id
+    -- The wire code stays exactly what it was; only the host's local record of
+    -- why the seat emptied is specific. Nothing here is announced.
+    next_state.departure = {
+        peer_id = departed,
+        reason = departure_reason(state, peer, code),
+        code = code,
+        detail = detail,
+    }
     -- Announce to every current link, including the departing one, so a peer
     -- that is being removed learns its own stable reason before teardown.
     local targets = link_targets(next_state)
@@ -2253,11 +2322,18 @@ local function admit_guest(state, link_id, message)
         return reject_link(state, link_id, "runtime_mismatch", compat_err or "runtime mismatch", {})
     end
     local next_state = copy_state(state)
+    -- A seat just filled, so whatever emptied the last one is no longer the
+    -- lobby's news. The declared build is recorded and never compared here: an
+    -- admission refused on build identity would take the skew away from the
+    -- guest that detects it, and the guest's own reading is the one this must
+    -- not disturb.
+    next_state.departure = nil
     next_state.peers[#next_state.peers + 1] = {
         peer_id = message.peer_id,
         link_id = link_id,
         role = "guest",
         runtime = copy_value(body.runtime),
+        build_id = body.build_id,
         accepted_manifest_id = nil,
         assigned = false,
         ready = false,
@@ -2324,7 +2400,12 @@ local function apply_manifest_accept(state, peer, message)
     local body = message.body
     ---@cast body SessionManifestAcceptBody
     if body.manifest_id ~= state.manifest_id then
-        return drop_guest(state, peer, "protocol_error")
+        return drop_guest(
+            state,
+            peer,
+            "protocol_error",
+            "a guest accepted a manifest this session never proposed"
+        )
     end
     if peer.accepted_manifest_id == body.manifest_id then
         return state, idempotent()
@@ -2842,7 +2923,10 @@ local function apply_abort(state, peer, message)
     local body = message.body
     ---@cast body SessionAbortBody
     if state.role == "host" and not state.freeze then
-        return drop_guest(state, peer, "protocol_error")
+        -- Pre-freeze, one guest's abort drops that guest and leaves the lobby
+        -- standing (#163). The host keeps the guest's declared build long enough
+        -- to say whether that is why the seat emptied.
+        return drop_guest(state, peer, "protocol_error", "a guest aborted with " .. body.code)
     end
     return terminate_from(state, {
         reason = "peer_abort",

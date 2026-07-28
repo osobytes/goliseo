@@ -329,9 +329,16 @@ function lobby.layout(state)
         rect = { x = LEFT_X, y = 428, w = 620, h = 20 },
         data = { align = "left", focusable = false },
     })
+    -- A terminated session outranks a dropped guest: once the lobby is over,
+    -- which seat emptied first is no longer the line to read.
     local trouble = view.error or view.terminal_text
-    if view.terminal and view.terminal.detail then
-        trouble = (trouble or "") .. "  (" .. view.terminal.detail .. ")"
+    local detail = view.terminal and view.terminal.detail or nil
+    if not trouble and view.departure then
+        trouble = view.departure_text
+        detail = view.departure.detail
+    end
+    if detail then
+        trouble = (trouble or "") .. "  (" .. detail .. ")"
     end
     push({
         id = "trouble",

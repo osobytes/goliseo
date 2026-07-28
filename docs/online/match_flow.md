@@ -125,6 +125,14 @@ new crosses the wire. A guest that disagrees terminates with the coordinator's
 `build_mismatch` reason, which the lobby renders as "The peers are running
 different builds. Install the same build on both."
 
+The host reaches the same conclusion from the other side. Only a guest holds an
+expectation, so only a guest can *detect* the skew; the host sees an abort and
+an empty seat. So the handshake now declares each peer's `build_id`, and the
+host uses it for exactly one thing: naming the drop `build_mismatch` instead of
+`protocol_violation`. It is never grounds for refusing admission, because that
+would take the detection away from the peer that does it. See
+[the coordinator document](session_coordinator.md#departures).
+
 ## The request is a pure function of the freeze
 
 `match_session.request` takes a role, a peer id, the frozen manifest, and the

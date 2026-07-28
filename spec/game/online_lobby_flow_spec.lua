@@ -730,6 +730,70 @@ t.describe("lobby build skew", function()
         t.eq(host_state.terminal, nil, "one skewed guest must not end the host's lobby")
         t.eq(#host_state.peers, 1, "the host dropped the peer it could not play with")
         t.eq(host.freeze, nil)
+
+        -- And now the host is told why. The lobby it is left holding cannot be
+        -- filled from that device, and its own screen says the same thing the
+        -- guest's already did -- which is what makes a two-device test
+        -- diagnosable from either screen instead of only one.
+        local departure = assert(host_state.departure, "the host was told nothing")
+        t.eq(departure.reason, "build_mismatch")
+        t.eq(departure.peer_id, "guest_1")
+        t.eq(departure.code, "protocol_error", "the wire code is the one it always was")
+        t.eq(
+            view(host).departure_text,
+            "A guest was dropped: it is running a different build. "
+                .. "Install the same build on both."
+        )
+        t.eq(view(host).terminal_text, nil, "the host's lobby is not over")
+    end)
+
+    t.it("says only that a guest went when the two builds agree", function()
+        -- The no-false-positive half. Both peers are this build; the guest is
+        -- dropped for something that has nothing to do with builds, and the
+        -- host must not name one.
+        local driver = new_driver()
+        local host = driver:add("host", "host", match_manifest.template)
+        driver:send(host, { kind = "mode", mode = "1v1" })
+        local guest = driver:add("guest", "guest_1", match_manifest.template)
+        t.eq(build_row(host), build_row(guest))
+        driver:connect(host, guest)
+        driver:send(host, { kind = "lock" })
+        driver:pump(6)
+        t.eq(view(host).departure, nil, "a healthy lobby has no departure notice")
+
+        driver:send(guest, { kind = "leave" })
+        driver:pump(6)
+        local host_state = assert(host.model.coordinator)
+        local departure = assert(host_state.departure, "the host lost a guest and said nothing")
+        t.eq(departure.reason, "guest_left")
+        t.eq(view(host).departure_text, "A guest left the lobby.")
+        t.eq(host_state.terminal, nil)
+    end)
+
+    t.it("has host-side language for every reason a drop can carry", function()
+        -- A departure with no text renders as its bare enum name, which is a
+        -- defect rather than a message.
+        for reason, text in pairs(lobby_model.DEPARTURE_TEXT) do
+            t.is_true(type(text) == "string" and #text > 0, "no departure text for " .. reason)
+            t.is_true(
+                lobby_model.TERMINAL_TEXT[reason] ~= nil,
+                "a departure reason has to be a coordinator reason: " .. reason
+            )
+        end
+        -- Every wire disconnect code a drop can carry lands on a reason, and
+        -- every one of those reasons has a sentence: a code added to the
+        -- protocol without host-side language fails here rather than rendering
+        -- as its bare enum name on a tester's screen.
+        for code, reason in pairs(coordinator.DISCONNECT_REASONS) do
+            t.is_true(
+                lobby_model.DEPARTURE_TEXT[reason] ~= nil,
+                "no host-side sentence for " .. code .. " -> " .. reason
+            )
+        end
+        t.is_true(
+            lobby_model.DEPARTURE_TEXT.build_mismatch ~= nil,
+            "the reason this table exists is the one that must be in it"
+        )
     end)
 
     t.it("leaves peers on the same vocabulary exactly as compatible as before", function()
@@ -755,6 +819,8 @@ t.describe("lobby build skew", function()
         t.eq(guest_freeze.manifest_id, freeze.manifest_id)
         t.eq(assert(host.model.coordinator).terminal, nil)
         t.eq(assert(guest.model.coordinator).terminal, nil)
+        t.eq(view(host).departure, nil, "matching builds must produce no drop at all")
+        t.eq(view(host).departure_text, nil)
     end)
 end)
 

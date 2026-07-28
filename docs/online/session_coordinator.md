@@ -383,6 +383,41 @@ the control vocabulary; every other field stays `manifest_mismatch`. See
 [the match flow document](match_flow.md) for why the vocabulary is part of
 `build_id` at all.
 
+## Departures
+
+Before the freeze, a guest that aborts or sends traffic the session cannot
+accept is **dropped**: the lobby stands and can still be filled. That is #163's
+rule and it is unchanged. What is new is that the host records why.
+
+`state.departure` is the host's own account of the last seat it lost —
+`{ peer_id, reason, code, detail }`. `code` is the `disconnect` code actually
+announced, so the wire is untouched; `reason` is a local
+`CoordinatorTerminalReason`, because a drop and a termination answer the same
+question and deserve the same vocabulary. `coordinator.DISCONNECT_REASONS` is
+the mapping from one to the other, and it is public because a reader that shows
+departures has to cover all of it.
+
+One reason is chosen rather than mapped. A drop for `protocol_error` from a peer
+whose *declared build* differs from this one's is recorded as `build_mismatch`
+instead of `protocol_violation`. `peer_left` and `transport_lost` are never
+reconsidered: a peer that simply left, left, whatever it was built from.
+
+The comparison uses only what the handshake declared (see
+[the protocol document](session_protocol.md#the-declared-build)). A host that
+declares no build of its own never claims a build disagreement — which is why
+every session built from `coordinator_fixture` still records
+`protocol_violation` exactly as it did, and why no pinned coordinator transcript
+moved for this. A peer that declares nothing against a host that does is a build
+from before the field existed; that is a real difference and is named as one.
+
+The record is cleared when another guest is admitted — a filled seat is no
+longer news. The lobby renders it through `lobby_model.DEPARTURE_TEXT`, and a
+terminated session outranks it.
+
+Without this the host learned nothing at all. Build skew is detected locally by
+the guest, so only the guest ever knew; in a two-device test the host was left
+holding a lobby it could not fill and no sentence explaining why.
+
 ## Duplicates and out-of-order control traffic
 
 Sequences are sender-local and strictly increasing but not contiguous, because
