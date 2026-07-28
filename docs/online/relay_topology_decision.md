@@ -212,10 +212,10 @@ At the scale this project actually operates, cost is not a decision input:
 | 100 sustained | 93.9 TB | $8.50 to $30 |
 
 These are derived from **concurrency**, not from a match count, so they do not depend on how long a
-match runs. Worth stating because match length is currently inconsistent in the codebase — the
-online manifest defaults to 3,600 ticks while the simulation and the OMP-1 fixture use 7,200
-(tracked separately). That discrepancy changes the per-match total; it does not change the figures
-above.
+match runs. That was worth stating when this was written, because match length was then inconsistent
+in the codebase: the online manifest defaulted to 3,600 ticks while the simulation and the OMP-1
+fixture used 7,200. [#251](https://github.com/osobytes/goliseo/issues/251) settled it at **7,200
+everywhere**, which is the value the 120-second figure above already assumed, so nothing here moves.
 
 So the choice is made on latency and operational burden, and a self-placed VM wins both: the region
 is chosen deliberately, and a forwarding relay needs no capacity planning.

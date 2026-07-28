@@ -37,16 +37,20 @@ decision to move off the host-star in OMP-4.
 | `match_driver.SETTLE_RELAY_QUIET_STEPS` | `4` = `DELAY_TICKS + 1`, the fallback when a peer stops reporting | `game/online/match_driver.lua` |
 | `match_driver.SETTLE_TIMEOUT_TICKS` / `_SECONDS` | `60` / `2` | `game/online/match_driver.lua:254,261` |
 
-A note on match length, because the figure is quoted inconsistently and it is
-worth being exact. `sim.match` defaults a match to **120 seconds**
-(`sim/match.lua:958`) and the OMP-1 determinism fixture pins 120 seconds / 7,200
-ticks (`data/omp1_determinism.lua:34`). The content-derived **online** manifest,
-however, currently defaults to `DEFAULT_DURATION_TICKS = 3600`
-(`game/online/match_manifest.lua:41`), which is 60 seconds at 60 Hz. The bandwidth
-arithmetic in the relay decision record is stated over a 120-second, 7,200-tick
-match. Nothing in this document depends on which is right — the per-tick figures
-are identical either way — but do not treat "120 seconds" as the online default
-without checking the manifest.
+A note on match length, because it used to be quoted inconsistently. A match is
+**120 seconds — 7,200 ticks** — everywhere: `sim.match` (`sim/match.lua:958`),
+the OMP-1 determinism fixture (`data/omp1_determinism.lua:34`), the protocol
+conformance fixture (`game/online/protocol_fixture.lua:118`), and the
+content-derived online manifest
+(`match_manifest.DEFAULT_DURATION_TICKS = 7200`). That last one said `3600` when
+this document was first written, which is what raised
+[#251](https://github.com/osobytes/goliseo/issues/251); it was a divergence
+nobody had chosen and is now resolved in favour of 120 seconds. The decision and
+its reasoning are recorded in [`match_flow.md`](match_flow.md#a-match-is-120-seconds-online-and-offline).
+The bandwidth arithmetic in the relay decision record is stated over a
+120-second, 7,200-tick match and is therefore consistent with this. Nothing in
+this document ever depended on which value was right — the per-tick figures are
+identical either way.
 
 ## Three clocks
 
