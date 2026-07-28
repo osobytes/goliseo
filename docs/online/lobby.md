@@ -58,11 +58,27 @@ it does the same thing to whole lines and single slots. Every republication is a
 new ownership generation, so the coordinator clears readiness exactly as it does
 for any other pre-freeze configuration change.
 
-**Pair selection is host-authoritative, for now.** A guest cannot request a
-pair, because the protocol message set is closed and carries no preference
-field. A guest sees the pair it has been given and answers with readiness or by
-leaving. Letting each player choose their own pair is the intended behaviour and
-needs a protocol addition; that is tracked as issue #233.
+**Every player chooses the players it controls.** The `TAKE` control beside a
+roster slot asks the host for it. The request is that slot plus the slots the
+peer already owns, minus the last one it does not open the match on: a
+preference refines the pair you already control, which is exactly the rule the
+host enforces, and is why a peer keeps its opening live slot across one. The
+control is offered only where it could do something, so an owned set with
+nothing to trade — a single slot in `4v4`, a whole outfield line in `1v1` —
+offers none at all. No mode is named to make that true.
+
+The host stays authoritative: the lobby sends `prefer_pair` and presents the
+answer. `PAIR HOME_1 HOME_3 WAITING FOR THE HOST…` becomes the granted pair, or
+the plain-language equivalent of the typed reason the host refused it with, from
+`lobby_model.PREFERENCE_TEXT`. The wire vocabulary stays closed; these strings
+never cross a link.
+
+The `SWAP` control is unchanged and still belongs to the host, but it now
+deliberately outranks guest choices: it reasserts the host's seating order, so
+it republishes over every granted pair and the coordinator drops the claims with
+it. Everything else leaves granted ownership alone — the lobby only publishes a
+seating plan when ownership does not already seat the whole roster, so ordinary
+control traffic cannot quietly undo a pair a guest was given.
 
 The roster shows all eight canonical slots with their producer and driver:
 
