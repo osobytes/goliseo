@@ -118,6 +118,11 @@ lobby_model.PREFERENCE_TEXT = {
     superseded = "Ownership changed while your request was in flight. Ask again.",
     after_freeze = "The countdown froze the pairs; they cannot change now.",
     no_response = "The host never answered your pair request. Ask again.",
+    -- Cause-neutral on purpose. A roster change reaches this, and so does the
+    -- host reasserting its seating order, and the peer that lost the pair
+    -- cannot tell those apart from the ownership it is holding -- which is the
+    -- only thing this reason is derived from.
+    reseated = "Ownership changed and your pair had to be seated again. Ask again.",
 }
 
 -- The developer lobby proposes the pinned fixture manifest. It is the only
@@ -360,7 +365,16 @@ local function publish_assignments(model, effects, force)
     if not assignments then
         return
     end
-    step(model, { kind = "assign_slots", assignments = assignments }, effects)
+    step(model, {
+        kind = "assign_slots",
+        assignments = assignments,
+        -- The plan is derived from `model.seating`, which knows the roster and
+        -- nothing about the pairs guests were granted. A roster change asks the
+        -- coordinator to seat the new roster around the claims that still fit
+        -- and to drop the rest with a reason; only the host reasserting its own
+        -- order overrules them all.
+        preserve_claims = not force,
+    }, effects)
 end
 
 ---@param model LobbyModel

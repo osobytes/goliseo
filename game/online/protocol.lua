@@ -80,6 +80,7 @@ local match_snapshot = require("sim.match_snapshot")
 ---| "superseded" -- The preference answers an ownership generation no longer in force.
 ---| "after_freeze" -- Ownership is frozen and cannot move again this session.
 ---| "no_response" -- The request expired unanswered. Minted locally, never on the wire.
+---| "reseated" -- A publication seated the pair again. Minted locally, never on the wire.
 
 ---@class SessionRuntimeIdentity
 ---@field version integer
@@ -422,16 +423,27 @@ protocol.PREFERENCE_REJECTIONS = {
     superseded = true,
     after_freeze = true,
     no_response = true,
+    reseated = true,
 }
 
--- The refusals a host may put on the wire: every typed reason except the one a
--- requester mints for itself. Silence is only observable at the end that waited,
--- so a host claiming `no_response` is malformed, and the accepted message
--- vocabulary is exactly what it was before the expiry existed.
+-- The refusals no host ever sends, because neither is a verdict on a request.
+-- Each is minted by the peer that observes it: silence is only observable at the
+-- end that waited, and a pair a publication seated away is only observable
+-- against the ownership that took it, which every peer holds for itself. A host
+-- claiming either is malformed.
+---@type table<SessionPreferenceRejection, boolean>
+protocol.LOCAL_PREFERENCE_REJECTIONS = {
+    no_response = true,
+    reseated = true,
+}
+
+-- The refusals a host may put on the wire: every typed reason except the ones a
+-- peer mints for itself. The accepted message vocabulary is therefore exactly
+-- what it was before either local reason existed.
 ---@type table<SessionPreferenceRejection, boolean>
 local WIRE_PREFERENCE_REJECTIONS = {}
 for reason in pairs(protocol.PREFERENCE_REJECTIONS) do
-    if reason ~= "no_response" then
+    if not protocol.LOCAL_PREFERENCE_REJECTIONS[reason] then
         WIRE_PREFERENCE_REJECTIONS[reason] = true
     end
 end
