@@ -192,6 +192,58 @@ Consequences:
   did nothing wrong: it answered honestly for what it knew. It will answer again
   for the generation it now holds.
 
+## Pair preferences
+
+`prefer_pair` is how a peer asks for the outfield slots it wants to control. A
+guest cannot decide — only the host holds every peer's ownership and every
+peer's claim — so a guest records the request as pending and sends a
+`pair_preference`. The host is a seated peer like any other and answers its own
+request with the same rule.
+
+`coordinator.evaluate_preference(state, peer_id, slots)` is that rule, and it is
+pure. It refuses in a fixed order, so two hosts would report the same reason:
+
+| Reason | Refused because |
+| --- | --- |
+| `after_freeze` | Ownership is frozen; there is no next generation to name. |
+| `superseded` | The request names an ownership generation no longer in force. |
+| `not_seated` | The peer owns nothing in the ownership in force. |
+| `invalid_slot` | The set is malformed, or is not `slots_per_human` slots. |
+| `wrong_team` | A requested slot is not on the team the peer is seated on. |
+| `detached` | The set keeps none of the slots the peer already owns. |
+| `already_taken` | A requested slot is inside another peer's claimed pair. |
+
+Anything else is granted, and a request for the set the peer already owns is
+`unchanged`: nothing is published and no readiness clears, which is what makes a
+repeated preference harmless.
+
+**Why the path is inert in `1v1` and `4v4`.** Not by naming them. A request must
+be a same-team set of exactly `slots_per_human` slots that keeps at least one
+slot the peer already owns. In `1v1` an owned set is the team's whole outfield
+line, so the only set that satisfies it is the one already owned; in `4v4` an
+owned set is a single slot, so a set that keeps one of the peer's slots *is*
+that slot. Both modes answer `unchanged` to everything they can express — the
+same shape of argument that makes switching inert in `4v4`.
+
+**Claims, and why `already_taken` exists.** The seating a host plans is
+provisional; a granted or `unchanged` preference is a peer's explicit choice and
+is recorded as its claim. A grant may move a peer that has not claimed — it
+receives the requester's vacated slots, so every owned set keeps the size the
+mode fixed — but it can never move a peer that has. That is what settles two
+guests racing for one pair: the first is granted and claims it, and the second
+is refused `already_taken` instead of taking it straight back.
+`publish_ownership` asserts that invariant on every publication.
+
+Claims die whenever the ownership they describe does: an explicit host
+republication drops all of them, because the host has just overruled every
+guest's choice, and so does a pre-countdown departure that voids ownership.
+
+**One generation mechanism.** A granted preference mints nothing of its own. It
+calls `publish_ownership`, the same function the host's own `assign_slots`
+calls, which bumps the epoch, mints `protocol.assignment_id(assignments,
+epoch)`, clears readiness, and emits the `slot_assignment`. There is exactly one
+place a generation is decided, however ownership came to move.
+
 ## Countdown, freeze, and the start boundary
 
 `begin_countdown` requires the `ready` phase and freezes a `CoordinatorFreeze`:

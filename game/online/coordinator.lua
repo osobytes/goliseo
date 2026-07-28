@@ -35,6 +35,7 @@ local input_frame = require("sim.input_frame")
 ---| "link_lost"
 ---| "propose_manifest"
 ---| "assign_slots"
+---| "prefer_pair"
 ---| "set_ready"
 ---| "begin_countdown"
 ---| "tick"
@@ -66,6 +67,22 @@ local input_frame = require("sim.input_frame")
 ---@field hash_mismatches integer
 ---@field last_sequence integer -- -1 until the peer has been heard from.
 ---@field window CoordinatorWireRecord[] -- Bounded recent inbound wires, oldest first.
+---@field pair_choice InputSlotId[]? -- Host-side: the owned set this peer chose for itself.
+
+-- The local peer's last pair preference and the host's answer to it. Purely a
+-- record of what was asked and what came back; the ownership in force is always
+-- `state.assignments`, never this.
+---@class CoordinatorPreference
+---@field slots InputSlotId[] -- The requested owned set, ascending canonical order.
+---@field assignment_id string -- The ownership generation the request answered.
+---@field status "pending"|SessionPreferenceStatus
+---@field reason SessionPreferenceRejection?
+
+---@class CoordinatorPreferenceVerdict
+---@field status SessionPreferenceStatus
+---@field reason SessionPreferenceRejection? -- Set exactly when `status` is `rejected`.
+---@field slots InputSlotId[] -- The requested set as it was received.
+---@field assignments SessionSlotProducer[]? -- Ownership to publish; `granted` only.
 
 ---@class CoordinatorManifestExpectation
 ---@field build_id string?
@@ -151,6 +168,7 @@ local input_frame = require("sim.input_frame")
 ---@field assignments SessionSlotProducer[]?
 ---@field assignment_id string? -- Identity of the ownership generation in force.
 ---@field assignment_epoch integer -- Monotonic count of ownership publications.
+---@field preference CoordinatorPreference? -- The local peer's last pair request and its answer.
 ---@field freeze CoordinatorFreeze?
 ---@field countdown_remaining integer?
 ---@field start_deadline integer?
@@ -337,6 +355,7 @@ local function copy_peer(peer)
         hash_mismatches = peer.hash_mismatches,
         last_sequence = peer.last_sequence,
         window = window,
+        pair_choice = peer.pair_choice and copy_value(peer.pair_choice) or nil,
     }
 end
 
@@ -371,6 +390,7 @@ local function copy_state(state)
         assignments = state.assignments,
         assignment_id = state.assignment_id,
         assignment_epoch = state.assignment_epoch,
+        preference = state.preference,
         freeze = state.freeze,
         countdown_remaining = state.countdown_remaining,
         start_deadline = state.start_deadline,
@@ -709,6 +729,21 @@ local function owns_slot(state, peer_id)
     return false
 end
 
+---@param slots InputSlotId[]
+---@param other InputSlotId[]
+---@return boolean
+local function slot_lists_equal(slots, other)
+    if #slots ~= #other then
+        return false
+    end
+    for index, slot in ipairs(slots) do
+        if slot ~= other[index] then
+            return false
+        end
+    end
+    return true
+end
+
 ---@param next_state CoordinatorState
 local function clear_readiness(next_state)
     for _, peer in ipairs(next_state.peers) do
@@ -741,6 +776,51 @@ local function refresh_ready_phase(next_state)
         return
     end
     next_state.phase = all_ready(next_state) and "ready" or "assigned"
+end
+
+-- The one place an ownership generation is minted, for every reason ownership
+-- can move: the host's own plan and a granted pair preference both land here.
+-- `protocol.assignment_id` is therefore the only thing that decides generation
+-- identity, and readiness clears through exactly one path however ownership
+-- changed.
+--
+-- `claimant` is the peer whose granted preference caused this publication, and
+-- naming one is what keeps every peer's claim alive. When the host decides
+-- ownership itself it names nobody, because it has just overruled every guest's
+-- choice, and every claim is dropped.
+---@param next_state CoordinatorState
+---@param assignments SessionSlotProducer[]
+---@param claimant string?
+---@param actions CoordinatorAction[]
+local function publish_ownership(next_state, assignments, claimant, actions)
+    -- Every publication is its own generation, even one that restores byte-
+    -- identical ownership, because the epoch is part of the identity. Readiness
+    -- for any earlier generation can no longer be mistaken for readiness now.
+    next_state.assignment_epoch = next_state.assignment_epoch + 1
+    next_state.assignment_id = protocol.assignment_id(assignments, next_state.assignment_epoch)
+    next_state.assignments = assignments
+    next_state.phase = "assigned"
+    clear_readiness(next_state)
+    for _, peer in ipairs(next_state.peers) do
+        if not claimant then
+            peer.pair_choice = nil
+        end
+        -- A claim a peer made for itself is never moved by somebody else's
+        -- preference: `already_taken` refuses a request over claimed slots
+        -- before it can be granted. This is that invariant, checked.
+        local claim = peer.pair_choice
+        if claim then
+            assert(
+                slot_lists_equal(protocol.owned_slots(assignments, peer.peer_id), claim),
+                "a published ownership moved a pair its owner had claimed"
+            )
+        end
+    end
+    emit(next_state, "slot_assignment", {
+        manifest_id = assert(next_state.manifest_id),
+        assignment_id = next_state.assignment_id,
+        assignments = assignments,
+    }, link_targets(next_state), actions)
 end
 
 ---@param next_state CoordinatorState
@@ -896,6 +976,7 @@ function coordinator.new(options)
         assignments = nil,
         assignment_id = nil,
         assignment_epoch = 0,
+        preference = nil,
         freeze = nil,
         countdown_remaining = nil,
         start_deadline = nil,
@@ -967,6 +1048,189 @@ function coordinator.owned_slots(state, producer_id)
         return {}
     end
     return protocol.owned_slots(assignments, producer_id)
+end
+
+-- True when the ownership in force already seats exactly the admitted roster for
+-- the frozen mode. A host that plans ownership from a seating order asks this
+-- before republishing: reasserting a plan over an ownership that is already
+-- valid would discard granted pair preferences for nothing.
+---@param state CoordinatorState
+---@return boolean
+function coordinator.ownership_seats_roster(state)
+    if not state.assignments then
+        return false
+    end
+    return validate_local_assignments(state, state.assignments) == true
+end
+
+-- Ownership after a granted preference: the requester takes the slots it asked
+-- for and hands back exactly as many, so every owned set keeps the size the
+-- frozen mode fixed.
+--
+-- Producers that lose a slot are paid in canonical order -- the Nth gained slot
+-- returns the Nth vacated one -- so two peers evaluating the same grant would
+-- build the same array. A slot a declared bot was filling returns to a bot fill
+-- derived exactly as `plan_assignments` derives it, from the manifest seed and
+-- the canonical slot index, so a slot's bot identity never depends on history.
+---@param state CoordinatorState
+---@param peer_id string
+---@param slots InputSlotId[] -- The requested owned set, ascending canonical order.
+---@return SessionSlotProducer[]
+local function exchange_assignments(state, peer_id, slots)
+    local manifest = assert(state.manifest)
+    local current = protocol.owned_slots(assert(state.assignments), peer_id)
+    ---@type table<InputSlotId, boolean>
+    local requested = {}
+    for _, slot in ipairs(slots) do
+        requested[slot] = true
+    end
+    ---@type table<InputSlotId, boolean>
+    local held = {}
+    for _, slot in ipairs(current) do
+        held[slot] = true
+    end
+    ---@type InputSlotId[]
+    local gained = {}
+    for _, slot in ipairs(slots) do
+        if not held[slot] then
+            gained[#gained + 1] = slot
+        end
+    end
+    ---@type InputSlotId[]
+    local vacated = {}
+    for _, slot in ipairs(current) do
+        if not requested[slot] then
+            vacated[#vacated + 1] = slot
+        end
+    end
+    assert(#gained == #vacated, "a pair preference must trade slot for slot")
+    ---@type table<InputSlotId, string>
+    local returned_to = {}
+    for index, slot in ipairs(gained) do
+        returned_to[vacated[index]] =
+            assert(state.assignments)[assert(protocol.slot_index(slot))].producer_id
+    end
+    ---@type SessionSlotProducer[]
+    local assignments = {}
+    for index = 1, input_frame.SLOT_COUNT do
+        local slot = assert(input_frame.slot(index))
+        local entry = manifest.slots[index]
+        local producer_id = requested[slot.id] and peer_id or returned_to[slot.id]
+        if producer_id and peer_by_id(state, producer_id) then
+            assignments[index] = {
+                slot = slot.id,
+                team = slot.team,
+                player_id = entry.player_id,
+                producer_kind = "peer",
+                producer_id = producer_id,
+            }
+        elseif producer_id then
+            assignments[index] = {
+                slot = slot.id,
+                team = slot.team,
+                player_id = entry.player_id,
+                producer_kind = "bot",
+                producer_id = coordinator.BOT_PRODUCER_PREFIX .. slot.id,
+                bot_seed = (manifest.seed + index * coordinator.BOT_SEED_STRIDE)
+                    % (protocol.MAX_SEED + 1),
+            }
+        else
+            assignments[index] = copy_value(assert(state.assignments)[index])
+        end
+    end
+    return assignments
+end
+
+-- The host's verdict on one pair preference. Pure: it reads the ownership in
+-- force and answers, and the caller decides what to publish.
+--
+-- The rules are mode-agnostic, and that is the whole of why the path is inert in
+-- `1v1` and `4v4`. A request must be a same-team set of exactly
+-- `slots_per_human` slots that keeps at least one slot the peer already owns.
+-- In `1v1` an owned set is the team's whole outfield line, so the only set that
+-- can satisfy that is the one already owned. In `4v4` an owned set is a single
+-- slot, so a set that keeps one of the peer's slots *is* that slot. Both modes
+-- answer `unchanged` to everything they can express, exactly the way switching
+-- is inert in `4v4`, and neither is named anywhere in this function.
+--
+-- Keepers need no check either: they hold no canonical slot, so a request
+-- cannot name one.
+--
+-- Reasons are evaluated in a fixed order -- frozen, seated, shape, team,
+-- continuity, claimed -- so two hosts answering the same request would report
+-- the same one.
+---@param state CoordinatorState
+---@param peer_id string
+---@param slots any
+---@return CoordinatorPreferenceVerdict
+function coordinator.evaluate_preference(state, peer_id, slots)
+    ---@type InputSlotId[]
+    local requested = type(slots) == "table" and copy_value(slots) or {}
+    ---@param reason SessionPreferenceRejection
+    ---@return CoordinatorPreferenceVerdict
+    local function refuse(reason)
+        return { status = "rejected", reason = reason, slots = requested }
+    end
+    if state.freeze then
+        return refuse("after_freeze")
+    end
+    local manifest = state.manifest
+    if not manifest or not state.assignments then
+        return refuse("not_seated")
+    end
+    local current = protocol.owned_slots(state.assignments, peer_id)
+    if #current == 0 then
+        return refuse("not_seated")
+    end
+    if not protocol.validate_slot_set(slots) then
+        return refuse("invalid_slot")
+    end
+    local shape = assert(protocol.MATCH_MODES[manifest.match_mode])
+    if #requested ~= shape.slots_per_human then
+        return refuse("invalid_slot")
+    end
+    local team = state.assignments[assert(protocol.slot_index(current[1]))].team
+    for _, slot in ipairs(requested) do
+        if state.assignments[assert(protocol.slot_index(slot))].team ~= team then
+            return refuse("wrong_team")
+        end
+    end
+    ---@type table<InputSlotId, boolean>
+    local held = {}
+    for _, slot in ipairs(current) do
+        held[slot] = true
+    end
+    local keeps = 0
+    for _, slot in ipairs(requested) do
+        if held[slot] then
+            keeps = keeps + 1
+        end
+    end
+    if keeps == 0 then
+        return refuse("detached")
+    end
+    ---@type table<InputSlotId, boolean>
+    local claimed = {}
+    for _, peer in ipairs(state.peers) do
+        if peer.peer_id ~= peer_id then
+            for _, slot in ipairs(peer.pair_choice or {}) do
+                claimed[slot] = true
+            end
+        end
+    end
+    for _, slot in ipairs(requested) do
+        if not held[slot] and claimed[slot] then
+            return refuse("already_taken")
+        end
+    end
+    if keeps == #current then
+        return { status = "unchanged", slots = requested }
+    end
+    return {
+        status = "granted",
+        slots = requested,
+        assignments = exchange_assignments(state, peer_id, requested),
+    }
 end
 
 -- One human's control moves within their owned set and nowhere else. The rule
@@ -1171,20 +1435,62 @@ local function handle_assign_slots(state, event)
     end
     local actions = {}
     local next_state = copy_state(state)
-    local assignments = copy_value(event.assignments)
-    -- Every publication is its own generation, even one that restores byte-
-    -- identical ownership, because the epoch is part of the identity. Readiness
-    -- for any earlier generation can no longer be mistaken for readiness now.
-    next_state.assignment_epoch = state.assignment_epoch + 1
-    next_state.assignment_id = protocol.assignment_id(assignments, next_state.assignment_epoch)
-    next_state.assignments = assignments
-    next_state.phase = "assigned"
-    clear_readiness(next_state)
-    emit(next_state, "slot_assignment", {
-        manifest_id = assert(next_state.manifest_id),
-        assignment_id = next_state.assignment_id,
-        assignments = assignments,
-    }, link_targets(next_state), actions)
+    publish_ownership(next_state, copy_value(event.assignments), nil, actions)
+    return next_state, applied(actions)
+end
+
+-- Ask for the outfield slots this peer wants to control. A guest cannot decide:
+-- only the host holds every peer's ownership and every peer's claim, so a guest
+-- records the request as pending and asks. A host is a seated peer like any
+-- other and answers its own request with the same rule.
+---@param state CoordinatorState
+---@param event table
+---@return CoordinatorState, CoordinatorOutcome
+local function handle_prefer_pair(state, event)
+    if state.phase ~= "assigned" and state.phase ~= "ready" then
+        return state, rejected("invalid_phase", "pair preference is closed in " .. state.phase)
+    end
+    if not state.manifest_id or not state.assignment_id then
+        return state,
+            rejected("invalid_phase", "a pair preference answers a published ownership generation")
+    end
+    local ok, err, code = protocol.validate_slot_set(event.slots)
+    if not ok then
+        return state, rejected(code or "malformed", err or "invalid requested slot set")
+    end
+    local slots = copy_value(event.slots)
+    local actions = {}
+    local next_state = copy_state(state)
+    if state.role == "guest" then
+        next_state.preference = {
+            slots = slots,
+            assignment_id = assert(state.assignment_id),
+            status = "pending",
+        }
+        emit(next_state, "pair_preference", {
+            manifest_id = assert(state.manifest_id),
+            -- Name the generation this peer actually holds, exactly as
+            -- readiness does. A preference against ownership the host has
+            -- already replaced is refused rather than applied to a pair the
+            -- requester never saw.
+            assignment_id = assert(state.assignment_id),
+            slots = slots,
+        }, link_targets(next_state), actions)
+        return next_state, applied(actions)
+    end
+    local verdict = coordinator.evaluate_preference(state, state.peer_id, slots)
+    next_state.preference = {
+        slots = slots,
+        assignment_id = assert(state.assignment_id),
+        status = verdict.status,
+        reason = verdict.reason,
+    }
+    if verdict.status == "granted" then
+        local_peer(next_state).pair_choice = slots
+        publish_ownership(next_state, assert(verdict.assignments), state.peer_id, actions)
+    elseif verdict.status == "unchanged" then
+        local_peer(next_state).pair_choice = slots
+    end
     return next_state, applied(actions)
 end
 
@@ -1600,6 +1906,11 @@ local function drop_guest(state, peer, code)
         -- refuses on the ownership check.
         next_state.assignments = nil
         next_state.assignment_id = nil
+        -- A pair claim describes an owned set inside that ownership, so it dies
+        -- with it. The republication that follows seats everyone afresh.
+        for _, peer_entry in ipairs(next_state.peers) do
+            peer_entry.pair_choice = nil
+        end
     end
     actions[#actions + 1] = { kind = "close", link_id = assert(peer.link_id) }
     return next_state, applied(actions)
@@ -1904,6 +2215,98 @@ local function apply_ready(state, peer, message)
     local next_state = copy_state(state)
     assert(peer_by_id(next_state, peer.peer_id)).ready = body.ready
     refresh_ready_phase(next_state)
+    return next_state, applied()
+end
+
+-- Host side. A preference is a request, so a refusal is an *answer*, not a
+-- refused event: the host replies with a typed reason and the requester's
+-- ownership is left exactly where it was. Only a grant republishes, and it does
+-- so through the ordinary ownership path.
+---@param state CoordinatorState
+---@param peer CoordinatorPeer
+---@param message SessionControlMessage
+---@return CoordinatorState, CoordinatorOutcome
+local function apply_pair_preference(state, peer, message)
+    local body = message.body
+    ---@cast body SessionPairPreferenceBody
+    if body.manifest_id ~= state.manifest_id then
+        return terminate_from(state, {
+            reason = "manifest_mismatch",
+            origin = "remote",
+            peer_id = peer.peer_id,
+            detail = "pair preference names a different manifest",
+            announce = true,
+        })
+    end
+    ---@type CoordinatorPreferenceVerdict
+    local verdict
+    if state.freeze then
+        -- Checked before the generation, because a frozen session has no next
+        -- generation to name and `after_freeze` is the honest reason.
+        verdict = { status = "rejected", reason = "after_freeze", slots = body.slots }
+    elseif body.assignment_id ~= state.assignment_id then
+        verdict = { status = "rejected", reason = "superseded", slots = body.slots }
+    else
+        verdict = coordinator.evaluate_preference(state, peer.peer_id, body.slots)
+    end
+    local actions = {}
+    local next_state = copy_state(state)
+    if verdict.status == "granted" then
+        assert(peer_by_id(next_state, peer.peer_id)).pair_choice = copy_value(verdict.slots)
+        publish_ownership(next_state, assert(verdict.assignments), peer.peer_id, actions)
+    elseif verdict.status == "unchanged" then
+        assert(peer_by_id(next_state, peer.peer_id)).pair_choice = copy_value(verdict.slots)
+    end
+    -- Answered after any republication, so the requester already holds the
+    -- ownership the verdict describes by the time it reads the verdict.
+    emit(next_state, "pair_preference_result", {
+        manifest_id = assert(state.manifest_id),
+        assignment_id = body.assignment_id,
+        slots = copy_value(body.slots),
+        status = verdict.status,
+        reason = verdict.reason,
+    }, { assert(peer.link_id) }, actions)
+    return next_state, applied(actions)
+end
+
+-- Guest side. The result carries no authority of its own: ownership arrived, or
+-- did not, on the `slot_assignment` the host publishes. This only records what
+-- the host answered so the lobby can say why.
+---@param state CoordinatorState
+---@param peer CoordinatorPeer
+---@param message SessionControlMessage
+---@return CoordinatorState, CoordinatorOutcome
+local function apply_pair_preference_result(state, peer, message)
+    local body = message.body
+    ---@cast body SessionPairPreferenceResultBody
+    if body.manifest_id ~= state.manifest_id then
+        return terminate_from(state, {
+            reason = "manifest_mismatch",
+            origin = "remote",
+            peer_id = peer.peer_id,
+            detail = "pair preference result names a different manifest",
+            announce = true,
+        })
+    end
+    local pending = state.preference
+    if
+        not pending
+        or pending.status ~= "pending"
+        or pending.assignment_id ~= body.assignment_id
+        or not slot_lists_equal(pending.slots, body.slots)
+    then
+        -- A result for a request this peer is no longer waiting on. Dropping is
+        -- strictly safer than adopting it, and it costs nothing: the ownership
+        -- in force is published separately and is unaffected either way.
+        return state, stale("pair preference result answers no pending request")
+    end
+    local next_state = copy_state(state)
+    next_state.preference = {
+        slots = copy_value(pending.slots),
+        assignment_id = pending.assignment_id,
+        status = body.status,
+        reason = body.reason,
+    }
     return next_state, applied()
 end
 
@@ -2251,6 +2654,8 @@ local MESSAGE_HANDLERS = {
     peer_assignment = apply_peer_assignment,
     slot_assignment = apply_slot_assignment,
     ready = apply_ready,
+    pair_preference = apply_pair_preference,
+    pair_preference_result = apply_pair_preference_result,
     countdown = apply_countdown,
     start = apply_start,
     match_phase = apply_match_phase,
@@ -2271,6 +2676,8 @@ local SENDER_ROLE = {
     peer_assignment = "host",
     slot_assignment = "host",
     ready = "guest",
+    pair_preference = "guest",
+    pair_preference_result = "host",
     countdown = "host",
     match_phase = "host",
 }
@@ -2473,6 +2880,7 @@ local EVENT_HANDLERS = {
     link_lost = handle_link_lost,
     propose_manifest = handle_propose_manifest,
     assign_slots = handle_assign_slots,
+    prefer_pair = handle_prefer_pair,
     set_ready = handle_set_ready,
     begin_countdown = handle_begin_countdown,
     tick = handle_tick,
