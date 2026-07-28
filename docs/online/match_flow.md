@@ -41,6 +41,57 @@ arena, or player, a disagreeing position or loadout, or a slot table that
 disagrees with the locally computed ownership all fail rather than producing a
 quietly different match.
 
+## A match is 120 seconds, online and offline
+
+**Decision on record** (repository owner, 2026-07-28, [#251](https://github.com/osobytes/goliseo/issues/251)):
+a match is **120 seconds — 7,200 ticks at 60 Hz — everywhere**.
+
+It was not, until now. `match_manifest.DEFAULT_DURATION_TICKS` said `3600`, so an
+ordinary online match ended at the whistle **twice as early** as an offline one,
+with nothing in the lobby explaining why. Every other source already said 120
+seconds: `sim.match` defaults `opts.duration or 120` (`sim/match.lua:958`), the
+OMP-1 determinism fixture pins `duration_seconds = 120`
+(`data/omp1_determinism.lua:34`), the protocol conformance fixture pins
+`duration_ticks = 7200` (`game/online/protocol_fixture.lua:118`), and the
+committed scope calls it "a two-minute match" (`docs/showcase_release.md`). The
+online default was the only dissenter, and it was a divergence nobody chose — so
+it was raised to `7200` rather than pulling the other four down.
+
+The reasoning for 120 over 60: one mental model across online and offline, and
+offline evidence that stays directly transferable. A shorter online match would
+narrow the window for a desync and reach a result sooner, which is a real
+argument — but it buys that by making every offline measurement need a caveat
+about which path produced it, and it asks a player to learn two match lengths for
+one game.
+
+Two things a reader asking "can we add extra time later?" should not have to
+rediscover:
+
+- **The wire is not the constraint.** `protocol.MAX_DURATION_TICKS = 216000`
+  (`game/online/protocol.lua:268`) is enforced at manifest validation
+  (`game/online/protocol.lua:941`) — 60 minutes at 60 Hz. 7,200 ticks is about 3%
+  of it, so the ceiling leaves ample room and this decision does not move toward
+  it in any meaningful way.
+- **The frozen manifest is the constraint.** `duration_ticks` is part of the
+  immutable session manifest, and the driver's full-time and settle logic keys
+  off it, so extra time can never be added by extending the value mid-match.
+  It would need either a duration agreed upfront that already contains the
+  maximum extra time, or a canonical extra-time event carried in the confirmed
+  input stream — a deliberate wire addition, out of scope here and unaffected by
+  the choice of 120 over 60.
+
+The OMP-3 fault campaign does not read this default. `fault_harness` builds on
+`match_manifest.template` and then overwrites `duration_ticks` with its own
+`DEFAULT_DURATION_TICKS = 150` (`game/online/fault_harness.lua:145,227`), as the
+session spec fixture does with its `90`
+(`spec/fixtures/online_match_session.lua:30,42-43`). `match_driver_fixture` does
+not reach this constant at all: its manifests come from
+`protocol_fixture.manifest` (`game/online/match_driver_fixture.lua:106,150`),
+and its own `DEFAULT_DURATION = 6` is a `sim.match.new` duration in **seconds**
+for `initial_snapshot`, not a manifest `duration_ticks`. The campaign runtime is
+therefore unchanged by this decision, which is why a two-minute online match
+costs nothing to validate.
+
 ## `build_id` carries the control vocabulary
 
 `build_info` is three constants — name, version, channel — and a working commit

@@ -38,7 +38,12 @@ match_manifest.AWAY_TEAM_ID = "orion"
 match_manifest.ARENA_ID = "helios_crown"
 match_manifest.DEFAULT_SESSION_ID = "session_goliseo"
 match_manifest.DEFAULT_SEED = 20003
-match_manifest.DEFAULT_DURATION_TICKS = 3600
+-- 7,200 ticks is 120 seconds at `fixed_clock.TICK_RATE`, which is the one match
+-- length this project has: `sim.match`'s default, the OMP-1 determinism fixture,
+-- and `game.online.protocol_fixture` all say 120 seconds. This constant used to
+-- say 3600 and nobody had decided that; see the decision record in
+-- `docs/online/match_flow.md`.
+match_manifest.DEFAULT_DURATION_TICKS = 7200
 match_manifest.DEFAULT_MAX_GOALS = 5
 
 -- The combat disposition is still provisional: #114 has not accepted a default,
