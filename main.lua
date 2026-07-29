@@ -5,6 +5,7 @@
 --   love . --snapshot-measure [n] -> measure canonical snapshot operations n times
 --   love . --combat-feedback-fixture -> visually review the crowded #147 feedback fixture
 --   love . --keeper-pose-snapshots [write] -> check or refresh #46 visual baselines
+--   love . --outfield-pose-snapshots [write] -> check or refresh the #58 visual baseline
 --   love . --rollback-lab [profile] [seed] [corrupt] -> run the OMP-2 lab
 --   love . --rollback-validation SUITE [profile] [seed] -> gate OMP-2 evidence
 --   love . --fault-harness [row|smoke|full] [net seed] [ticks] -> OMP-3 fault matrix
@@ -111,6 +112,16 @@ if has_flag("--keeper-pose-snapshots") then
     function love.load()
         local mode = args_after("--keeper-pose-snapshots")
         local ok, report = require("spec.support.keeper_pose_snapshots").run(mode == "write")
+        print(report)
+        os.exit(ok and 0 or 1)
+    end
+    return
+end
+
+if has_flag("--outfield-pose-snapshots") then
+    function love.load()
+        local mode = args_after("--outfield-pose-snapshots")
+        local ok, report = require("spec.support.outfield_pose_snapshots").run(mode == "write")
         print(report)
         os.exit(ok and 0 or 1)
     end
