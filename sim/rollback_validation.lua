@@ -6,6 +6,7 @@ local fnv1a64 = require("core.fnv1a64")
 local Vec2 = require("core.vec2")
 local config = require("data.omp2_rollback_validation")
 local network_profiles = require("data.network_profiles")
+local player_pool = require("data.players")
 local teams = require("data.teams")
 local combat = require("sim.combat")
 local combat_identity = require("sim.combat_identity")
@@ -66,6 +67,105 @@ local tuning = require("sim.tuning")
 ---@field success boolean
 ---@field case_count integer
 ---@field logical_digest string
+
+--- Per-slot equipment cadence for a combat load fixture.
+--- `offset` is the first tick that presses, `period` the ticks between presses, and
+--- `hold` how long equipment stays held before the release edge. One shape drives all
+--- four families: a press family ignores the hold, `guard` spends it guarding, and
+--- `ranged` needs it to outlast the windup so the release lands in the aim phase.
+--- `move_x` is a quantized lateral push applied only for the first `approach` ticks of
+--- each cycle, which is what keeps a scrum crowded. Neither extreme works: with no push
+--- at all the first landed hit displaces its target out of reach and the tape spends its
+--- remaining ticks idle, while a push held every tick walks the two lines straight
+--- through each other -- bodies do not collide -- and they separate for good. A short
+--- burst per cycle recovers roughly the displacement the cycle just inflicted.
+---@class Omp2CombatLoadSlotPlan
+---@field offset integer
+---@field period integer
+---@field hold integer
+---@field move_x integer
+---@field approach integer
+
+--- Start-of-tape body positions, in `MatchState.players` order: home keeper, the four
+--- home outfielders in roster order, then the away side the same way.
+---
+--- `crowded` is the ten-player mixed-family scrum. It follows the crowding pattern of
+--- `game/presentation/combat_feedback_fixture.lua` -- opposing families interleaved
+--- inside one contested pocket rather than spread over the pitch -- without depending
+--- on it, because `sim/` may not require `game/`.
+---
+--- The rows are paired deliberately rather than merely crowded. `select_melee_target`
+--- takes the nearest legal target along the attacker's facing, so pairing each melee
+--- family opposite a *guard* is the only way the guarded-contact and guard-recoil paths
+--- are exercised at all; a symmetric layout gives four unguarded exchanges and never
+--- touches them. Rows read: guard against light melee, light melee against guard, a
+--- ranged duel, and an unarmed exchange. Every gap is 38 px, inside light melee's
+--- 42 px reach plus the 12 px target radius and inside unarmed's 30 px plus the same.
+---
+--- `pocket` packs all eight outfielders into one 40 px-deep contest, four a side, for
+--- the repeated-family load. Every body carries the same loadout there, so unlike
+--- `crowded` there is no pairing to respect -- the point is the density of simultaneous
+--- same-family resolutions rather than the variety of them.
+---@type table<string, number[][]>
+local COMBAT_LOAD_LAYOUTS = {
+    crowded = {
+        { 95, 270 },
+        { 452, 240 },
+        { 452, 290 },
+        { 452, 200 },
+        { 452, 340 },
+        { 865, 270 },
+        { 490, 288 },
+        { 490, 242 },
+        { 490, 202 },
+        { 490, 338 },
+    },
+    pocket = {
+        { 95, 270 },
+        { 460, 210 },
+        { 460, 250 },
+        { 460, 290 },
+        { 460, 330 },
+        { 865, 270 },
+        { 500, 212 },
+        { 500, 252 },
+        { 500, 292 },
+        { 500, 332 },
+    },
+}
+
+--- Where the ball starts. It sits clear of the contest on purpose, so the measured load
+--- is combat rather than a possession scramble, and because a carried ball costs
+--- retained snapshot bytes the pinned budget has no room for -- see the budget note on
+--- `combat_load_tape`. The cost of parking it is one `ball_spill` event the crowded
+--- fixture would otherwise cover.
+---@type number[]
+local COMBAT_LOAD_BALL = { 480, 470 }
+
+--- Input cadence per slot, in canonical slot order (four home, then four away).
+---@type table<string, Omp2CombatLoadSlotPlan[]>
+local COMBAT_LOAD_SLOT_PLANS = {
+    crowded = {
+        { offset = 0, period = 40, hold = 30, move_x = 38, approach = 5 },
+        { offset = 4, period = 46, hold = 1, move_x = 38, approach = 5 },
+        { offset = 8, period = 60, hold = 20, move_x = 38, approach = 4 },
+        { offset = 2, period = 30, hold = 1, move_x = 38, approach = 6 },
+        { offset = 0, period = 40, hold = 30, move_x = -38, approach = 5 },
+        { offset = 4, period = 46, hold = 1, move_x = -38, approach = 5 },
+        { offset = 12, period = 60, hold = 20, move_x = -38, approach = 4 },
+        { offset = 6, period = 30, hold = 1, move_x = -38, approach = 6 },
+    },
+    pocket = {
+        { offset = 0, period = 30, hold = 1, move_x = 38, approach = 6 },
+        { offset = 5, period = 30, hold = 1, move_x = 38, approach = 6 },
+        { offset = 10, period = 30, hold = 1, move_x = 38, approach = 6 },
+        { offset = 15, period = 30, hold = 1, move_x = 38, approach = 6 },
+        { offset = 20, period = 30, hold = 1, move_x = -38, approach = 6 },
+        { offset = 25, period = 30, hold = 1, move_x = -38, approach = 6 },
+        { offset = 0, period = 30, hold = 1, move_x = -38, approach = 6 },
+        { offset = 5, period = 30, hold = 1, move_x = -38, approach = 6 },
+    },
+}
 
 ---@class RollbackValidationModule
 local rollback_validation = {}
@@ -256,6 +356,160 @@ local function combat_validation_tape()
     return tape
 end
 
+--- A roster index whose outfielders all carry one loadout, so a fixture can demand a
+--- repeated action family the authored mixed roster deliberately never produces.
+--- Keepers keep their absent loadout: `sim.combat` refuses them an action anyway, and
+--- rewriting them would put a combat identity on a body that can never use it.
+---@param loadout_id string
+---@return table<string, PlayerData>
+local function repeated_family_roster(loadout_id)
+    local by_id = {}
+    for _, player in ipairs(player_pool) do
+        ---@type PlayerData
+        local copy = {
+            id = player.id,
+            name = player.name,
+            number = player.number,
+            position = player.position,
+            stats = player.stats,
+            presentation_id = player.presentation_id,
+            cosmetic_variant_id = player.cosmetic_variant_id,
+            loadout_id = player.loadout_id ~= nil and loadout_id or nil,
+        }
+        by_id[copy.id] = copy
+    end
+    return by_id
+end
+
+---@param fixture Omp2RollbackCombatLoadFixture
+---@return InputFrame[]
+local function combat_load_frames(fixture)
+    local plans = assert(
+        COMBAT_LOAD_SLOT_PLANS[fixture.layout],
+        "unknown combat load layout: " .. tostring(fixture.layout)
+    )
+    local frames = {}
+    for tick = 0, fixture.frame_count - 1 do
+        local frame = assert(input_frame.neutral(tick))
+        for slot = 1, input_frame.SLOT_COUNT do
+            local plan = assert(plans[slot], "combat load layout is missing a slot plan")
+            assert(plan.hold < plan.period, "combat load hold must end inside its period")
+            local held = 0
+            local edges = 0
+            local move_x = 0
+            local elapsed = tick - plan.offset
+            if elapsed >= 0 then
+                local cycle = elapsed % plan.period
+                if cycle == 0 then
+                    held = input_frame.HELD_BITS.equipment
+                    edges = input_frame.EDGE_BITS.equipment_pressed
+                elseif cycle < plan.hold then
+                    held = input_frame.HELD_BITS.equipment
+                elseif cycle == plan.hold then
+                    edges = input_frame.EDGE_BITS.equipment_released
+                end
+                if cycle < plan.approach then
+                    move_x = plan.move_x
+                end
+            end
+            frame.slots[slot] = assert(input_frame.new_sample({
+                move_x = move_x,
+                held = held,
+                edges = edges,
+            }))
+        end
+        frames[#frames + 1] = frame
+    end
+    return frames
+end
+
+--- Build one crowded combat load tape, or the same-seed combat-disabled twin of one.
+---
+--- The twin is not a second fixture with similar settings: it is this function with
+--- `fixture.combat` false, so the match options, seed, body layout, ball and the whole
+--- frame sequence are shared by construction and only the CombatMatchState companion
+--- differs. That is what makes the paired cost attributable to combat rather than to
+--- two workloads that merely resemble each other. Without a companion the equipment
+--- bits are inert, and the tape is an ordinary soccer tape on InputTape v1 /
+--- MatchSnapshot v11.
+---
+--- These fixtures are designed against a hard ceiling. `budgets.snapshot_bytes` caps the
+--- 31-boundary retained window at 768 KiB, `main.lua` applies that gate to every case
+--- regardless of profile, and the existing `omp2-combat-rollback-v1` already measures
+--- 777,309 bytes of it. A ten-player combat snapshot is roughly 25 KB, so the whole
+--- remaining margin is about 9 KB across 31 boundaries -- a few hundred bytes per
+--- snapshot. Three consequences are baked in above: the ball is parked rather than
+--- carried, the tapes are 160 ticks rather than longer (retained bytes grow with tick
+--- count), and neither fixture sustains more than about two concurrent projectiles.
+---@param fixture Omp2RollbackCombatLoadFixture
+---@return InputTape
+local function combat_load_tape(fixture)
+    local layout = assert(
+        COMBAT_LOAD_LAYOUTS[fixture.layout],
+        "unknown combat load layout: " .. tostring(fixture.layout)
+    )
+    local players_by_id = fixture.repeated_loadout_id
+        and repeated_family_roster(fixture.repeated_loadout_id)
+    local ownership = match.ownership_for_teams(teams.nebula, teams.orion)
+    local state = match.new({
+        home = teams.nebula,
+        away = teams.orion,
+        field = { w = 960, h = 540 },
+        duration = fixture.duration,
+        max_goals = 99,
+        seed = fixture.seed,
+        input_ownership = ownership,
+    })
+    state.kickoff_hold = 0
+    state.owner = nil
+    state.ball = Vec2.new(COMBAT_LOAD_BALL[1], COMBAT_LOAD_BALL[2])
+    state.ball_vel = Vec2.new(0, 0)
+    for index, player in ipairs(state.players) do
+        local position = assert(layout[index], "combat load layout does not cover the match")
+        player.pos = Vec2.new(position[1], position[2])
+        player.facing = Vec2.new(player.team == "home" and 1 or -1, 0)
+    end
+
+    local combat_state = fixture.combat and combat.new_state(state, players_by_id) or nil
+    local initial = match_snapshot.capture(state, combat_state)
+    local identity = {
+        tape_version = combat_state and input_tape.COMBAT_VERSION or input_tape.VERSION,
+        input_version = input_frame.VERSION,
+        snapshot_version = combat_state and match_snapshot.COMBAT_VERSION or match_snapshot.VERSION,
+        build = fixture.id,
+        source = "issue-150-combat-load-v1",
+        content = "nebula-orion-showcase-content-v1",
+        tuning = tuning.serialize(),
+        config = ("field=960x540;duration=%d;max_goals=99;tick_rate=60;ticks=%d;layout=%s;loadout=%s"):format(
+            fixture.duration,
+            fixture.frame_count,
+            fixture.layout,
+            fixture.repeated_loadout_id or "roster"
+        ),
+        fixture = fixture.id,
+        seed = fixture.seed,
+        tick_rate = fixed_clock.TICK_RATE,
+        ownership = ownership,
+        combat = combat_state and combat_identity.for_state(combat_state) or nil,
+    }
+    local tape = input_tape.new(identity, initial, combat_load_frames(fixture))
+    local actual_initial = tape.boundary_hashes[1]
+    local actual_final = tape.boundary_hashes[#tape.boundary_hashes]
+    local actual_digest = rollback_lab.tape_digest(tape)
+    assert(
+        actual_initial == fixture.initial_hash
+            and actual_final == fixture.final_hash
+            and actual_digest == fixture.tape_digest,
+        ("%s identity changed: initial=%s final=%s digest=%s"):format(
+            fixture.id,
+            actual_initial,
+            actual_final,
+            actual_digest
+        )
+    )
+    return tape
+end
+
 ---@return InputTape
 local function late_window_tape()
     local source = determinism_evidence.fixture_tape()
@@ -341,6 +595,42 @@ local function scenario_cases(measure, profile_name, network_seed)
     return cases
 end
 
+---@type table<string, Omp2RollbackCombatLoadFixture>
+local combat_load_by_scenario = {}
+for _, fixture in ipairs(config.combat_load_fixtures) do
+    assert(
+        combat_load_by_scenario[fixture.scenario] == nil,
+        "combat load scenarios must be unique: " .. fixture.scenario
+    )
+    combat_load_by_scenario[fixture.scenario] = fixture
+end
+
+---@param scenario string
+---@return string
+local function combat_load_case_prefix(scenario)
+    return (scenario:gsub("_", "-"))
+end
+
+---@param measure RollbackSessionMeasure?
+---@param network_seed integer
+---@return RollbackValidationCaseSpec[]
+local function combat_load_cases(measure, network_seed)
+    local cases = {}
+    for _, fixture in ipairs(config.combat_load_fixtures) do
+        cases[#cases + 1] = case_spec(
+            ("%s-%s-%d"):format(
+                combat_load_case_prefix(fixture.scenario),
+                config.stress_profile,
+                network_seed
+            ),
+            fixture.scenario,
+            combat_load_tape(fixture),
+            lab_options(config.stress_profile, network_seed, measure)
+        )
+    end
+    return cases
+end
+
 ---@param target RollbackValidationCaseSpec[]
 ---@param added RollbackValidationCaseSpec[]
 local function append_cases(target, added)
@@ -384,6 +674,7 @@ local function plan_cases(suite, options)
                 combat_tape,
                 lab_options(config.stress_profile, network_seed, options.measure)
             )
+            append_cases(cases, combat_load_cases(options.measure, network_seed))
         end
     elseif suite == "browser-full" then
         local profile_name = assert(options.profile_name, "browser-full requires a profile")
@@ -410,6 +701,7 @@ local function plan_cases(suite, options)
             combat_tape,
             lab_options(profile_name, network_seed, options.measure)
         )
+        append_cases(cases, combat_load_cases(options.measure, network_seed))
     elseif suite == "late-window" then
         local tape = late_window_tape()
         for _, delay in ipairs({ 30, 31 }) do
@@ -449,12 +741,37 @@ local function plan_cases(suite, options)
     return cases
 end
 
+--- A combat load case is covered when it replayed the exact pinned artifact and when
+--- combat was present or absent as its fixture declares. The disabled twin asserting
+--- *zero* confirmed combat events is the load-bearing half: it is what stops the
+--- comparison silently becoming combat-against-combat and reporting no overhead.
+---@param result RollbackLabResult
+---@param fixture Omp2RollbackCombatLoadFixture
+---@return boolean
+local function combat_load_covered(result, fixture)
+    local expected_version = fixture.combat and match_snapshot.COMBAT_VERSION
+        or match_snapshot.VERSION
+    local combat_events = result.event_metrics.confirmed_combat_events
+    local combat_present = fixture.combat and combat_events > 0 or combat_events == 0
+    return result.input_ticks == fixture.frame_count
+        and result.initial_hash == fixture.initial_hash
+        and result.reference_final_hash == fixture.final_hash
+        and result.tape_digest == fixture.tape_digest
+        and combat_present
+        and result.reference_final_snapshot.version == expected_version
+        and result.client_final_snapshot.version == expected_version
+end
+
 ---@param result RollbackLabResult
 ---@param scenario string
 ---@return boolean
 local function scenario_covered(result, scenario)
     if scenario == "complete_fixture" or scenario == "late_window" then
         return true
+    end
+    local load_fixture = combat_load_by_scenario[scenario]
+    if load_fixture then
+        return combat_load_covered(result, load_fixture)
     end
     if scenario == "combat" then
         local fixture = config.combat_fixture
@@ -665,6 +982,18 @@ end
 ---@return Omp2RollbackValidationData
 function rollback_validation.config()
     return config
+end
+
+--- Build a pinned combat load tape by scenario id. Exposed so the fixtures can be
+--- exercised and their pinned identity checked without standing up a whole campaign.
+---@param scenario string
+---@return InputTape
+function rollback_validation.combat_load_tape(scenario)
+    local fixture = assert(
+        combat_load_by_scenario[scenario],
+        "unknown combat load scenario: " .. tostring(scenario)
+    )
+    return combat_load_tape(fixture)
 end
 
 ---@return string

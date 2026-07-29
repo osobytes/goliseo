@@ -68,6 +68,30 @@ BROWSER_CPU_FIXTURES = {
     "complete_fixture": "omp1-nebula-orion-eight-streams-v2",
     "combat": "omp2-combat-rollback-v1",
 }
+# The #150 crowded-combat load fixtures, in pinned plan order. Each combat-active fixture
+# is immediately followed by its same-seed combat-disabled twin, which is what lets a
+# reader attribute the difference to combat rather than to two workloads that merely look
+# alike. They ride the stress sub-suite, so they carry the snapshot, history and game
+# gates while their CPU numbers stay diagnostic; #150's slice 2 owns the timing evidence
+# that would justify promoting them to an absolute or normalized gate.
+#
+# They are deliberately not added to BROWSER_CPU_SCENARIOS. That would extend
+# max_p95_work_over_clean_p95 to distributions it was never fitted against, and
+# docs/online/omp2_rollback_validation.md records that calibration set as
+# complete_fixture-only.
+COMBAT_LOAD_SCENARIOS = (
+    "combat_crowded",
+    "combat_crowded_disabled",
+    "combat_repeated_family",
+    "combat_repeated_family_disabled",
+)
+# Scenarios whose tapes carry a CombatMatchState companion, and therefore InputTape v2,
+# the combat snapshot version, and at least one confirmed combat event. The disabled
+# twins are deliberately absent: they must look exactly like an ordinary soccer case.
+COMBAT_ACTIVE_SCENARIOS = frozenset(
+    {"combat"}
+    | {name for name in COMBAT_LOAD_SCENARIOS if not name.endswith("_disabled")}
+)
 CAMPAIGNS = ("all", "matrix", "soak", "stress")
 BROWSER_ONLY_CAMPAIGNS = frozenset({"stress"})
 # Only the seed-partitioned runtime matrix shards. The short stress campaign is
@@ -697,6 +721,14 @@ def expected_case_plan(
             "scenario": scenario,
         }
 
+    def combat_load_case(scenario: str, seed: int) -> dict[str, str]:
+        return {
+            "case": f"{scenario.replace('_', '-')}-{STRESS_PROFILE}-{seed}",
+            "network_seed": str(seed),
+            "profile": STRESS_PROFILE,
+            "scenario": scenario,
+        }
+
     if suite == "native":
         seeds = NETWORK_SEEDS
         if arguments:
@@ -719,6 +751,8 @@ def expected_case_plan(
                     f"combat-stress-evidence-{seed}",
                 )
             )
+            for scenario in COMBAT_LOAD_SCENARIOS:
+                plan.append(combat_load_case(scenario, seed))
     elif suite == "browser-full":
         if len(arguments) != 2:
             raise RuntimeError("browser-full requires profile and network seed")
@@ -745,6 +779,8 @@ def expected_case_plan(
                 f"combat-stress-evidence-{seed}",
             )
         )
+        for scenario in COMBAT_LOAD_SCENARIOS:
+            plan.append(combat_load_case(scenario, seed))
     elif suite == "late-window":
         if arguments:
             raise RuntimeError("late-window validation does not accept case filters")
@@ -866,7 +902,7 @@ def validate_case_integrity(
             raise RuntimeError(f"{case_id} did not cover its declared scenario")
         if fields["hidden_progress"] != "0":
             raise RuntimeError(f"{case_id} made hidden progress after a terminal result")
-        combat_case = fields.get("scenario") == "combat"
+        combat_case = fields.get("scenario") in COMBAT_ACTIVE_SCENARIOS
         expected_tape_version = "2" if combat_case else "1"
         expected_snapshot_version = (
             COMBAT_SNAPSHOT_VERSION if combat_case else SOCCER_SNAPSHOT_VERSION
@@ -4020,9 +4056,9 @@ def run_self_test() -> None:
         else:
             raise RuntimeError("malformed raw browser version passed self-test")
     expected_counts = {
-        ("native", ()): 54,
+        ("native", ()): 66,
         ("browser-full", ("clean", "2001")): 2,
-        ("browser-stress", ("stress", "2001")): 10,
+        ("browser-stress", ("stress", "2001")): 14,
         ("late-window", ()): 2,
         ("soak", ()): 10,
     }
@@ -4098,7 +4134,15 @@ def run_self_test() -> None:
             for suite, arguments in native_campaign_plan("all", shard)
             for case in expected_case_plan(suite, arguments)
         ]
-        if shard_cases != expected_case_plan("native", (shard,)) or len(shard_cases) != 18:
+        # One complete-fixture and one combat case per profile, the stress scenario
+        # sweep, the combat stress-evidence case, and the #150 combat load fixtures.
+        expected_shard_case_count = (
+            len(NATIVE_PROFILES) * 2 + len(SCENARIOS) + 1 + len(COMBAT_LOAD_SCENARIOS)
+        )
+        if (
+            shard_cases != expected_case_plan("native", (shard,))
+            or len(shard_cases) != expected_shard_case_count
+        ):
             raise RuntimeError(f"native seed shard {shard} changed the pinned case order")
     if native_campaign_plan("all", TAIL_SHARD) != [("late-window", ()), ("soak", ())]:
         raise RuntimeError("native tail shard campaign plan self-test failed")
@@ -5927,7 +5971,7 @@ def run_self_test() -> None:
             raise RuntimeError("incomplete rollback shard evidence passed the aggregate")
 
     def native_case_marker(case: dict[str, str]) -> str:
-        combat = case["scenario"] == "combat"
+        combat = case["scenario"] in COMBAT_ACTIVE_SCENARIOS
         profile = case["profile"]
         mode = cpu_gate_mode("native", profile, False)
         gate = "1" if mode == "absolute" else "not_applied"
