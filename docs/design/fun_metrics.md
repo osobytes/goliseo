@@ -277,14 +277,18 @@ combat-disabled gameplay-AI **policy id** plus a common-seed **baseline** that
 `sim/outfield_ai_policy.lua` publishes the identity, e.g.
 
 ```text
-outfield_ai_policy/v1/combat_disabled/d656a51bf35f121f
+outfield_ai_policy/v1/combat_disabled/303228d776b65a19
 ```
 
 It is `schema / schema version / combat mode / FNV-1a-64 of a canonical
 serialization`. What gets hashed is an explicitly **declared** surface —
 `outfield_ai_policy.SURFACE` plus the `AI`-category tuning defaults — not
-whatever happens to be in the AI modules. That is what makes it stable in both
-directions:
+whatever happens to be in the AI modules. The surface covers five modules:
+`sim/outfield_decision.lua`, `sim/outfield_press.lua`, `sim/offball_runs.lua`,
+`sim/possession_transition.lua`, and `sim/ai.lua`, whose off-ball support
+weights (`IMPORTANCE_K`, `CENTER_SIGMA`, `LANE_WIDTH`, `LANE_BLOCK`) feed
+`offball_runs`' pass-lane scoring. Declaring the surface is what makes the id
+stable in both directions:
 
 - adding, renaming, or reordering an *undeclared* field does not move the id,
   so it does not churn on refactors;
@@ -296,10 +300,17 @@ directions:
 A live tuning-panel nudge does **not** move the id: the policy is the shipped
 balance, so `knob.default` is hashed and `tuning.values` is not.
 
-Behaviour that changes without touching the declared surface (a file-local
-constant, a rewritten heuristic) is caught by the metric signature below, never
-absorbed. Each AI module's own `VERSION` is in the surface precisely so a
-deliberate policy change always has somewhere to land.
+Some genuinely behavioural constants stay file-local — `sim/ai.lua`'s
+intercept-sampling grid, `sim/offball_runs.lua`'s run-shape geometry,
+`sim/outfield_press.lua`'s contain and lane weights. Changing one of those
+moves the recorded metrics but not the id on its own. **Every** module in the
+surface therefore exposes a `VERSION` as the declared landing spot for such a
+change, and `sim/outfield_ai_policy.lua` asserts at load that each one exists
+and leads its field list, so the promise cannot quietly rot. A spec checks the
+same thing. Bumping `VERSION` is how a file-local policy change is declared.
+
+Whether or not anyone remembers to bump it, behaviour that moves play is caught
+by the metric signature below. It is never absorbed.
 
 ### The baseline artifact
 
@@ -330,11 +341,15 @@ and `seed_hash`. `signature` covers identity plus every recorded statistic.
 ### Commands
 
 ```sh
-love . --ai-baseline                          # verify (exit 1 when it moved)
+love . --ai-baseline                          # verify (exit 1 when a metric moved)
 love . --ai-baseline write --refreeze-ack     # deliberately re-freeze
 ```
 
-`./scripts/check.sh` runs the verification.
+Both `./scripts/check.sh` and the `quality` job in `.github/workflows/ci.yml`
+run the verification. That CI job mirrors `check.sh` by hand, so a gate added
+to only one of them is a gate that does not run; `--ai-baseline` is also listed
+in `conf.lua`'s `headless_flags`, because this check belongs to the no-display
+tier of AGENTS.md §9 and must not try to open a GL context on a CI runner.
 
 ### The non-refresh rule
 
@@ -344,21 +359,32 @@ only record that the control moved.
 
 Unlike the fun tripwire this comparison is **exact**. The batch is
 deterministic per seed, and recorded values round-trip through `%.17g`, so any
-movement at all is real. A mismatch means one of:
+metric movement at all is real.
 
-1. the AI policy changed — the `policy_id` row will differ;
-2. the fixture, content, or tuning defaults changed — the corresponding hash
-   row will differ;
-3. sim behaviour changed underneath an unchanged policy — the identity matches
-   and one or more metric rows read `MOVED[...]`.
+Two outcomes are possible, and only one of them blocks:
 
-In every case the resolution is the same order of operations: confirm the
-change is intended, add an entry to the drift log below naming the moved
-metrics, and only then run `love . --ai-baseline write --refreeze-ack`. Writing
-without the acknowledgement flag is refused. Every re-freeze bumps
-`baseline_version`, and the `signature` deliberately excludes it, so a
-re-freeze that changes nothing shows up in git as a lone version bump rather
-than hiding inside a churned file.
+**`AI BASELINE MOVED` — fails, exit 1.** A tracked metric changed, so this
+build no longer plays the frozen control. Confirm the change is intended, add a
+drift-log entry below naming the moved metrics, then re-freeze.
+
+**`AI BASELINE STALE` — warns, exit 0.** Every tracked metric held but the
+recorded identity is out of date. This happens because identity is deliberately
+wider than play: `tuning_hash` covers all 40 knob defaults, not just the nine
+`AI`-category ones in the policy id, and `content_hash` covers every authored
+roster, formation, and tactic. Registering an unrelated knob or renaming a
+reserve player moves the identity while combat-disabled play stays bit-for-bit
+identical. Such an edit still owes a drift-log entry and a re-freeze, but it
+does **not** fail the shared gate — taxing unrelated branches with the
+deliberately awkward `--refreeze-ack` ceremony would make that ceremony routine
+and hollow out the one guardrail this artifact has.
+
+In both cases the resolution is the same order of operations: confirm the
+change is intended, log it, and only then run
+`love . --ai-baseline write --refreeze-ack`. Writing without the
+acknowledgement flag is refused. Every re-freeze bumps `baseline_version`, and
+the `signature` deliberately excludes it, so a re-freeze that changes nothing
+shows up in git as a lone version bump rather than hiding inside a churned
+file.
 
 Downstream issues cite the `policy_id` and `fixture_hash` strings. They do not
 copy the numbers, and they do not re-record the control themselves.

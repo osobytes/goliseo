@@ -15,7 +15,7 @@ return {
     identity = {
         schema = "outfield_ai_baseline",
         schema_version = 1,
-        policy_id = "outfield_ai_policy/v1/combat_disabled/d656a51bf35f121f",
+        policy_id = "outfield_ai_policy/v1/combat_disabled/303228d776b65a19",
         fixture = "combat_disabled_control_a",
         config = "field=960x540;duration=120;max_goals=3;tick_rate=60;bot=none;combat=disabled;tactic=balanced",
         config_hash = "48c4a66267142b10",
@@ -27,7 +27,7 @@ return {
         seed_first = 20001,
         seed_count = 60,
         seed_hash = "accc11e953c394d0",
-        fixture_hash = "1419733f6a7a78e7",
+        fixture_hash = "766e9087d00023c3",
     },
     stats = {
         fun = {
@@ -192,5 +192,5 @@ return {
             max = 44,
         },
     },
-    signature = "18fdb20a9e7f130d",
+    signature = "8fa6a781d26002fe",
 }

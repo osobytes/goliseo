@@ -26,6 +26,7 @@
 -- Pure module: no love, no I/O.
 
 local fnv1a64 = require("core.fnv1a64")
+local ai = require("sim.ai")
 local match_snapshot = require("sim.match_snapshot")
 local offball_runs = require("sim.offball_runs")
 local outfield_decision = require("sim.outfield_decision")
@@ -75,6 +76,7 @@ outfield_ai_policy.SURFACE = {
     {
         module = "offball_runs",
         fields = {
+            "VERSION",
             "RUN_LIFETIME_SECONDS",
             "TELEGRAPH_SECONDS",
             "MAX_ACTIVE_PER_TEAM",
@@ -88,15 +90,36 @@ outfield_ai_policy.SURFACE = {
         module = "possession_transition",
         fields = { "VERSION", "ESTABLISH_SECONDS", "MAX_PRESSERS" },
     },
+    {
+        -- `sim.ai` supplies the off-ball support scoring `sim.offball_runs`
+        -- consumes, so its weights are policy. Its intercept-sampling
+        -- constants stay file-local for the hot loop and are covered by
+        -- `VERSION`.
+        module = "ai",
+        fields = { "VERSION", "IMPORTANCE_K", "CENTER_SIGMA", "LANE_WIDTH", "LANE_BLOCK" },
+    },
 }
 
 ---@type table<string, table<string, any>>
 local MODULES = {
+    ai = ai,
     offball_runs = offball_runs,
     outfield_decision = outfield_decision,
     outfield_press = outfield_press,
     possession_transition = possession_transition,
 }
+
+-- Every module in the surface must offer a `VERSION` to bump: it is the
+-- documented landing spot for a behaviour change that moves no declared
+-- constant, and the docs promise it exists.
+for _, group in ipairs(outfield_ai_policy.SURFACE) do
+    local module_table = assert(MODULES[group.module], "unknown policy module: " .. group.module)
+    assert(
+        type(module_table.VERSION) == "number",
+        "policy surface module has no VERSION to bump: " .. group.module
+    )
+    assert(group.fields[1] == "VERSION", "VERSION must lead the surface of " .. group.module)
+end
 
 ---@class OutfieldAiPolicyRow
 ---@field key string

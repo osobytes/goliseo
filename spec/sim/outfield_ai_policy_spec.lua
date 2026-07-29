@@ -1,6 +1,9 @@
 local t = require("spec.support.runner")
 local frozen = require("data.outfield_ai_baseline")
+local ai = require("sim.ai")
 local offball_runs = require("sim.offball_runs")
+local outfield_press = require("sim.outfield_press")
+local possession_transition = require("sim.possession_transition")
 local outfield_ai_policy = require("sim.outfield_ai_policy")
 local outfield_decision = require("sim.outfield_decision")
 local tuning = require("sim.tuning")
@@ -58,6 +61,56 @@ t.describe("sim.outfield_ai_policy", function()
                 t.is_true(seen[group.module .. "." .. field], group.module .. "." .. field)
             end
         end
+    end)
+
+    t.it("gives every surface module a VERSION to bump", function()
+        -- The docs promise a deliberate policy change always has somewhere to
+        -- land, including for constants that stay file-local. That promise is
+        -- only true if every module in the surface actually exposes one.
+        local modules = {
+            outfield_decision = outfield_decision,
+            outfield_press = outfield_press,
+            offball_runs = offball_runs,
+            possession_transition = possession_transition,
+            ai = ai,
+        }
+        local covered = {}
+        for _, group in ipairs(outfield_ai_policy.SURFACE) do
+            covered[group.module] = true
+            local module_table = assert(modules[group.module], "untested module " .. group.module)
+            t.is_true(
+                type(module_table.VERSION) == "number",
+                group.module .. " has no VERSION to bump"
+            )
+            t.eq(group.fields[1], "VERSION", group.module .. " leads its surface with VERSION")
+        end
+        for name in pairs(modules) do
+            t.is_true(covered[name], name .. " is not registered in the policy surface")
+        end
+    end)
+
+    t.it("covers the off-ball support weights sim.ai supplies", function()
+        -- sim/ai.lua feeds sim/offball_runs.lua's pass-lane scoring, so these
+        -- weights are policy rather than incidental helpers.
+        local base = outfield_ai_policy.id()
+        local previous = ai.LANE_WIDTH
+        local moved = id_with(function()
+            ai.LANE_WIDTH = previous + 1
+        end, function()
+            ai.LANE_WIDTH = previous
+        end)
+        t.is_true(moved ~= base, "a pass-lane blocking width change must move the policy id")
+    end)
+
+    t.it("detects a bumped module VERSION", function()
+        local base = outfield_ai_policy.id()
+        local previous = offball_runs.VERSION
+        local moved = id_with(function()
+            offball_runs.VERSION = previous + 1
+        end, function()
+            offball_runs.VERSION = previous
+        end)
+        t.is_true(moved ~= base, "bumping VERSION is how a file-local change is declared")
     end)
 
     t.it("detects a changed decision constant", function()

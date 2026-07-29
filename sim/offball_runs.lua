@@ -38,6 +38,11 @@ local formations = require("data.formations")
 ---@class OffballRunModule
 local offball_runs = {}
 
+-- Bump when run selection or geometry changes without moving one of the public
+-- constants below — `sim.outfield_ai_policy` hashes it, so this is where a
+-- deliberate policy change to the file-local shape constants is recorded.
+offball_runs.VERSION = 1
+
 offball_runs.RUN_LIFETIME_SECONDS = outfield_decision.RUN_LIFETIME_SECONDS
 offball_runs.TELEGRAPH_SECONDS = 0.2
 offball_runs.MAX_ACTIVE_PER_TEAM = 2

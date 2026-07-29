@@ -4,6 +4,12 @@ local Vec2 = require("core.vec2")
 
 local ai = {}
 
+-- Bump when this module's steering/selection behaviour changes without moving
+-- one of the public constants below — `sim.outfield_ai_policy` hashes it, so
+-- this is where a deliberate policy change to the file-local intercept
+-- sampling constants is recorded.
+ai.VERSION = 1
+
 ---@param point Vec2
 ---@param positions Vec2[]
 ---@param exclude integer?  -- index to skip (e.g. self)
@@ -104,10 +110,19 @@ local function point_seg_dist(p, a, b)
     return p:dist(a:add(ab:scale(tt)))
 end
 
-local IMPORTANCE_K = 4 -- sigmoid steepness over normalized attacking depth
-local CENTER_SIGMA = 0.28 -- gaussian width toward vertical centre (fraction of field height)
-local LANE_WIDTH = 26 -- an opponent within this of the pass line blocks the lane
-local LANE_BLOCK = 0.25 -- score multiplier when the passing lane is blocked
+-- Off-ball support scoring weights. Public because they ARE gameplay-AI
+-- policy: `sim.outfield_ai_policy` hashes them into the frozen policy id, so a
+-- change here is visible to the evidence that cites it (#59). The locals below
+-- are load-time copies, kept only so the scoring loop stays upvalue-cheap.
+ai.IMPORTANCE_K = 4 -- sigmoid steepness over normalized attacking depth
+ai.CENTER_SIGMA = 0.28 -- gaussian width toward vertical centre (fraction of field height)
+ai.LANE_WIDTH = 26 -- an opponent within this of the pass line blocks the lane
+ai.LANE_BLOCK = 0.25 -- score multiplier when the passing lane is blocked
+
+local IMPORTANCE_K = ai.IMPORTANCE_K
+local CENTER_SIGMA = ai.CENTER_SIGMA
+local LANE_WIDTH = ai.LANE_WIDTH
+local LANE_BLOCK = ai.LANE_BLOCK
 
 -- Pick the best off-ball support point: the candidate that is most open (far from
 -- opponents), in a valuable area (upfield toward the attacking goal x central),
