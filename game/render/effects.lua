@@ -164,7 +164,7 @@ local FAMILY_COLORS = {
 ---@param event CombatEvent
 ---@param event_id string
 local function spawn_combat_event(event, event_id)
-    local link = combat_feedback.accepted(event, event_id)
+    local link = combat_feedback.link(event, event_id)
     local disposition = link.disposition
     local color = (event.family_id and FAMILY_COLORS[event.family_id]) or { 1, 0.9, 0.55 }
     local life = reduced_flash and 0.16 or 0.32

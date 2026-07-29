@@ -17,16 +17,8 @@ local combat_presentation = require("game.presentation.combat")
 ---| "guard_recoil"
 ---| "rejected"
 
----@alias CombatRequestRejectionReason
----| "protected_keeper_or_no_loadout"
----| "kickoff_hold"
----| "soccer_commitment"
----| "aerial_state_or_recovery"
----| "forced_state"
----| "already_committed"
----| "cooldown"
----| "missing_press_edge"
----| "malformed_input"
+-- `CombatRequestRejectionReason` is declared by `sim.combat`, which is now the
+-- authority that emits it. Presentation only renders the closed set.
 
 ---@class CombatFeedbackDisposition
 ---@field vfx CombatFeedbackVfx
@@ -189,8 +181,44 @@ local DISPOSITIONS = {
         camera_strength = 1,
         reversible = true,
     },
+    -- Lifecycle terminals are evidence rows: they close an accepted encounter
+    -- that the player already saw commit, and they add no second cue for a beat
+    -- the commit, contact, or recovery pose has already told.
+    ["combat.miss"] = {
+        vfx = "none",
+        audio = nil,
+        hud_text = nil,
+        glyph = "none",
+        camera_strength = 0,
+        reversible = true,
+    },
+    ["combat.interrupted"] = {
+        vfx = "none",
+        audio = nil,
+        hud_text = nil,
+        glyph = "none",
+        camera_strength = 0,
+        reversible = true,
+    },
+    ["combat.cancelled"] = {
+        vfx = "none",
+        audio = nil,
+        hud_text = nil,
+        glyph = "none",
+        camera_strength = 0,
+        reversible = true,
+    },
+    ["combat.match_terminated"] = {
+        vfx = "none",
+        audio = nil,
+        hud_text = nil,
+        glyph = "none",
+        camera_strength = 0,
+        reversible = true,
+    },
 }
 
+---@type table<CombatRequestRejectionReason, string>
 local REJECTION_LABELS = {
     protected_keeper_or_no_loadout = "NO EQUIPMENT",
     kickoff_hold = "WAIT FOR KICKOFF",
@@ -203,6 +231,7 @@ local REJECTION_LABELS = {
     malformed_input = "INPUT INVALID",
 }
 
+---@param reason CombatRequestRejectionReason
 ---@return CombatFeedbackDisposition
 local function rejected_disposition(reason)
     return {
@@ -213,6 +242,13 @@ local function rejected_disposition(reason)
         camera_strength = 0,
         reversible = true,
     }
+end
+
+-- The authoritative stream now carries rejected requests, so the same
+-- dispositions have to be reachable through the shared event lookup instead of
+-- only through the direct constructor below.
+for reason in pairs(REJECTION_LABELS) do
+    DISPOSITIONS["combat.request.rejected." .. reason] = rejected_disposition(reason)
 end
 
 ---@return CombatFeedbackDisposition
@@ -286,6 +322,24 @@ function feedback.rejected_request(stable_id, tick, player_index, reason)
         y = nil,
         disposition = rejected_disposition(reason),
     }
+end
+
+-- The one entry point for an authoritative combat row. An accepted encounter and
+-- a rejected request are different link kinds, and only the simulation knows
+-- which one a row is, so the caller must not have to ask.
+---@param event CombatEvent
+---@param stable_id string
+---@return CombatFeedbackLink
+function feedback.link(event, stable_id)
+    if event.kind == "request_rejected" then
+        return feedback.rejected_request(
+            stable_id,
+            event.tick,
+            assert(event.source_index, "a rejected combat request names its requesting player"),
+            assert(event.reason, "a rejected combat request requires its typed reason")
+        )
+    end
+    return feedback.accepted(event, stable_id)
 end
 
 ---@param request_id string

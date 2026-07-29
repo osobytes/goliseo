@@ -62,6 +62,19 @@ local loadouts = require("data.loadouts")
 ---| "combat.ball_spill"
 ---| "combat.forced"
 ---| "combat.guard_recoil"
+---| "combat.miss"
+---| "combat.interrupted"
+---| "combat.cancelled"
+---| "combat.match_terminated"
+---| "combat.request.rejected.protected_keeper_or_no_loadout"
+---| "combat.request.rejected.kickoff_hold"
+---| "combat.request.rejected.soccer_commitment"
+---| "combat.request.rejected.aerial_state_or_recovery"
+---| "combat.request.rejected.forced_state"
+---| "combat.request.rejected.already_committed"
+---| "combat.request.rejected.cooldown"
+---| "combat.request.rejected.missing_press_edge"
+---| "combat.request.rejected.malformed_input"
 
 ---@class CombatEventPresentation
 ---@field stable_id string?
@@ -232,6 +245,9 @@ function presentation.event(event, stable_id)
         semantic_id = "combat.projectile.expire"
     elseif event.kind == "contact" then
         semantic_id = "combat.contact." .. assert(event.result, "combat contact result is required")
+    elseif event.kind == "request_rejected" then
+        semantic_id = "combat.request.rejected."
+            .. assert(event.reason, "a rejected combat request requires its typed reason")
     else
         semantic_id = "combat." .. event.kind
     end

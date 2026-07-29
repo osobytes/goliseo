@@ -248,7 +248,7 @@ local function audio_cue(event)
         return AUDIO_KINDS[event.payload.kind] and event.payload.kind or nil
     elseif event.domain:sub(1, 7) == "combat/" then
         local payload = event.payload --[[@as CombatEvent]]
-        return combat_feedback.accepted(payload, event.id).disposition.audio
+        return combat_feedback.link(payload, event.id).disposition.audio
     elseif event.domain == "lifecycle/goal" then
         return "goal"
     elseif event.domain == "lifecycle/kickoff" then
