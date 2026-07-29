@@ -17,8 +17,8 @@ end
 ---@return string[]
 local function credit_lines()
     local lines = {
-        "GALACTIC CUP",
-        "Designed and developed by the Galactic Cup contributors",
+        "GOLISEO",
+        "Designed and developed by the GOLISEO contributors",
         "",
         "Third-party runtime: LÖVE 11.5 and LuaJIT",
         "Third-party media: none bundled",

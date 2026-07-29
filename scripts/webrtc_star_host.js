@@ -26,7 +26,7 @@
     input: { ordered: false, maxRetransmits: 0 }
   };
 
-  window.GalacticCupStarTransport = window.GalacticCupStarTransport || (function () {
+  window.GoliseoStarTransport = window.GoliseoStarTransport || (function () {
     var star = {
       role: "host",
       state: "new",

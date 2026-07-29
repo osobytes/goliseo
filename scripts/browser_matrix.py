@@ -240,7 +240,7 @@ def wait_until(predicate: Any, timeout: float, description: str) -> Any:
 
 
 def fetch_json(url: str) -> dict[str, Any]:
-    request = urllib.request.Request(url, headers={"User-Agent": "galactic-cup-evidence/1"})
+    request = urllib.request.Request(url, headers={"User-Agent": "goliseo-evidence/1"})
     with urllib.request.urlopen(request, timeout=30) as response:
         value = json.load(response)
     if not isinstance(value, dict):
@@ -249,7 +249,7 @@ def fetch_json(url: str) -> dict[str, Any]:
 
 
 def fetch_bytes(url: str) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": "galactic-cup-evidence/1"})
+    request = urllib.request.Request(url, headers={"User-Agent": "goliseo-evidence/1"})
     with urllib.request.urlopen(request, timeout=60) as response:
         return response.read()
 
@@ -669,7 +669,7 @@ def set_viewport(driver: Any, width: int, height: int) -> dict[str, Any]:
 
 
 PAGE_STATE = """
-const compat = window.__GALACTIC_CUP__ || {};
+const compat = window.__GOLISEO__ || {};
 const canvas = document.getElementById("canvas");
 let renderer = null;
 let vendor = null;
@@ -723,7 +723,7 @@ const done = arguments[arguments.length - 1];
 const deadline = performance.now() + timeoutMs;
 let cursor = 0;
 function inspect() {
-  const compat = window.__GALACTIC_CUP__ || {};
+  const compat = window.__GOLISEO__ || {};
   const status = compat.status || "missing";
   const entries = compat.console_entries || [];
   while (cursor < entries.length) {

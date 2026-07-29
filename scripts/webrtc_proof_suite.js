@@ -19,7 +19,7 @@
   }
 
   function runner(id) {
-    return frame(id).contentWindow.GalacticCupWebRTCProofRunner;
+    return frame(id).contentWindow.GoliseoWebRTCProofRunner;
   }
 
   function childUrl(role, profile, extra) {
@@ -158,7 +158,7 @@
     report();
   };
 
-  window.GalacticCupWebRTCProofSuite = { diagnostics: report };
+  window.GoliseoWebRTCProofSuite = { diagnostics: report };
   report();
   window.setInterval(report, 1000);
 })();

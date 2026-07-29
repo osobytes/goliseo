@@ -108,13 +108,13 @@ if [ "$self_test" -eq 1 ]; then
 fi
 
 if [ -z "$output" ]; then
-    evidence_root="$(mktemp -d "${TMPDIR:-/tmp}/galactic-cup-omp2-rollback.XXXXXX")"
+    evidence_root="$(mktemp -d "${TMPDIR:-/tmp}/goliseo-omp2-rollback.XXXXXX")"
     output="$evidence_root/omp2_rollback.json"
 fi
 
 if [ "$mode" = "browser" ] || [ "$mode" = "full" ]; then
     if [ -z "$artifact" ]; then
-        artifact_root="$(mktemp -d "${TMPDIR:-/tmp}/galactic-cup-omp2-web.XXXXXX")"
+        artifact_root="$(mktemp -d "${TMPDIR:-/tmp}/goliseo-omp2-web.XXXXXX")"
         artifact="$artifact_root/artifact"
         "$project_root/scripts/web_build.sh" "$artifact"
     fi

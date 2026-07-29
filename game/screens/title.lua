@@ -27,7 +27,7 @@ function title.layout(state)
         {
             id = "title",
             kind = "hero_title",
-            text = "GALACTIC CUP",
+            text = "GOLISEO",
             rect = { x = 0, y = 104, w = state.viewport.w, h = 58 },
             data = { align = "center" },
         },

@@ -26,7 +26,7 @@ vm.runInNewContext(source, {
   Math
 });
 
-const api = window.GalacticCupWebRTCProof;
+const api = window.GoliseoWebRTCProof;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));

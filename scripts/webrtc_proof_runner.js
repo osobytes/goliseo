@@ -7,11 +7,11 @@
   var profile = query.get("profile") === "shaped" ? "shaped" : "baseline";
   var duration = Math.max(1000, Number(query.get("duration_ms")) || 600000);
   var protocolVersion = Number(query.get("protocol_version")) || 1;
-  var buildId = query.get("build_id") || window.__GALACTIC_CUP__.build_id;
+  var buildId = query.get("build_id") || window.__GOLISEO__.build_id;
   var profileOptions = profile === "shaped"
     ? { one_way_delay_ms: 50, input_loss_percent: 1, loss_seed: role === "host" ? 17 : 29 }
     : {};
-  var proof = window.GalacticCupWebRTCProof.create(Object.assign({
+  var proof = window.GoliseoWebRTCProof.create(Object.assign({
     role: role,
     protocol_version: protocolVersion,
     build_id: buildId,
@@ -127,7 +127,7 @@
   startTraffic.onclick = beginTraffic;
   stopTraffic.onclick = endTraffic;
 
-  window.GalacticCupWebRTCProofRunner = {
+  window.GoliseoWebRTCProofRunner = {
     create_offer: createLocalOffer,
     accept_offer: acceptRemoteOffer,
     accept_answer: acceptRemoteAnswer,

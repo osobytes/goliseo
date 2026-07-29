@@ -67,8 +67,8 @@
   }
 
   function buildId() {
-    return window.__GALACTIC_CUP__ && window.__GALACTIC_CUP__.build_id
-      ? window.__GALACTIC_CUP__.build_id
+    return window.__GOLISEO__ && window.__GOLISEO__.build_id
+      ? window.__GOLISEO__.build_id
       : "unknown";
   }
 
@@ -656,7 +656,7 @@
   Proof.prototype.stop_input = Proof.prototype.stopInput;
   Proof.prototype.wait_for_handshake = Proof.prototype.waitForHandshake;
 
-  window.GalacticCupWebRTCProof = window.GalacticCupWebRTCProof || {
+  window.GoliseoWebRTCProof = window.GoliseoWebRTCProof || {
     VERSION: VERSION,
     create: function (options) { return new Proof(options); },
     encode: wire,

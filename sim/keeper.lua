@@ -78,7 +78,7 @@ local deterministic_math = require("core.deterministic_math")
 ---@field gravity number
 
 local CLAIM_DEPTH = 160
--- The issue's fixed context deliberately omits field dimensions. Galactic Cup's canonical
+-- The issue's fixed context deliberately omits field dimensions. GOLISEO's canonical
 -- 960px pitch therefore supplies the 480px goal-line-to-midfield half-depth.
 local MIDFIELD_DEPTH = 480
 local CONTEXT_LATERAL_GUARD = 28

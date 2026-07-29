@@ -35,7 +35,7 @@ vm.runInNewContext(source.slice(0, proofMarker) + "\n})();", {
   unescape
 });
 
-const bridge = window.GalacticCupTransportBridge;
+const bridge = window.GoliseoTransportBridge;
 const wire = "1|input|1|1|move";
 
 if (bridge.initialize(1) !== "state|connected") {

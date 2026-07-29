@@ -6,7 +6,7 @@
 
 ---@type BuildInfo
 return {
-    name = "Galactic Cup",
+    name = "GOLISEO",
     version = "0.1.0-dev",
     channel = "development",
     source_url = nil,

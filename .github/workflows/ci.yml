@@ -109,7 +109,7 @@ jobs:
                   LUALS_VERSION: 3.18.2
                   LUALS_SHA256: ca71415dd19f19e30aaa35a4915aefca9fdb5fec31b98331cc3d77f778d539c5
               run: |
-                  tool_dir="$RUNNER_TEMP/galactic-cup-tools"
+                  tool_dir="$RUNNER_TEMP/goliseo-tools"
                   mkdir -p "$tool_dir/bin" "$tool_dir/stylua" "$tool_dir/luals" "$tool_dir/love"
 
                   curl --fail --location --retry 3 --silent --show-error \
@@ -352,7 +352,7 @@ jobs:
                   LOVE_VERSION: 11.5
                   LOVE_SHA256: 65a673406431eff7167a15a032bf7a2e4ba50108e091eb7b176465831f9b5e00
               run: |
-                  tool_dir="$RUNNER_TEMP/galactic-cup-love"
+                  tool_dir="$RUNNER_TEMP/goliseo-love"
                   mkdir -p "$tool_dir/bin" "$tool_dir/love"
                   curl --fail --location --retry 3 --silent --show-error \
                       --output "$tool_dir/love.AppImage" \

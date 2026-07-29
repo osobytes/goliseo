@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serve a generated Galactic Cup browser artifact with WASM headers."""
+"""Serve a generated GOLISEO browser artifact with WASM headers."""
 
 from __future__ import annotations
 

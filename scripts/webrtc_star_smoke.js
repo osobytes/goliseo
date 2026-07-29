@@ -76,7 +76,7 @@ function createStar(extra) {
     decodeURIComponent,
     unescape
   });
-  return window.GalacticCupStarTransport;
+  return window.GoliseoStarTransport;
 }
 
 function wire(type, seq, tick, payload) {

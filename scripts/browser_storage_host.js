@@ -176,7 +176,7 @@
     };
   }
 
-  root.GalacticCupBrowserStorage = {
+  root.GoliseoBrowserStorage = {
     create: create
   };
 })(window);

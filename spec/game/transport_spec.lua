@@ -19,8 +19,7 @@ end
 ---@return fun(command: string): string
 local function fake_browser_host(fake)
     return function(command)
-        local name, argument =
-            command:match("^window%.GalacticCupTransportBridge%.([%w_]+)%((.*)%)$")
+        local name, argument = command:match("^window%.GoliseoTransportBridge%.([%w_]+)%((.*)%)$")
         assert(name, "unexpected browser command: " .. command)
         if name == "initialize" then
             assert(fake:initialize())

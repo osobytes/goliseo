@@ -586,7 +586,7 @@ local function star_bridge(host)
     end
 
     return function(command)
-        local name, argument = command:match("^window%.GalacticCupStarTransport%.([%w_]+)%((.*)%)$")
+        local name, argument = command:match("^window%.GoliseoStarTransport%.([%w_]+)%((.*)%)$")
         assert(name, "unexpected browser star command: " .. command)
         local args, raw = arguments(argument)
         if name == "initialize" then
@@ -815,7 +815,7 @@ t.describe("browser host-star transport", function()
         local browser = transport.browser_star({
             eval = function(command)
                 local name, argument =
-                    command:match("^window%.GalacticCupStarTransport%.([%w_]+)%((.*)%)$")
+                    command:match("^window%.GoliseoStarTransport%.([%w_]+)%((.*)%)$")
                 if name == "initialize" then
                     return "star|connected"
                 elseif name == "open_peer" then
@@ -852,7 +852,7 @@ t.describe("browser host-star transport", function()
         local browser = transport.browser_star({
             eval = function(command)
                 local name, argument =
-                    command:match("^window%.GalacticCupStarTransport%.([%w_]+)%((.*)%)$")
+                    command:match("^window%.GoliseoStarTransport%.([%w_]+)%((.*)%)$")
                 if name == "initialize" then
                     return "star|connected"
                 elseif name == "open_peer" then
@@ -1046,7 +1046,7 @@ t.describe("transport layering", function()
         local forbidden = {
             "love%.js%.eval",
             "RTCPeerConnection",
-            "GalacticCup%w+",
+            "Goliseo%w+",
             "RTCDataChannel",
         }
         ---@param dir string
