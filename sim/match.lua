@@ -5190,6 +5190,10 @@ end
 -- (world units) — drawn from the same numbers the rules use.
 match.CROSSBAR_H = CROSSBAR
 match.PENALTY_BOX = { depth = PENALTY_DEPTH, h = PENALTY_H }
+-- Renderer data: the meter a spent player must rebuild before another sprint
+-- engages. Presentation reads the drained window from the same number the
+-- hysteresis uses, so a fatigue pose can never disagree with the simulation.
+match.SPRINT_ENGAGE = SPRINT_ENGAGE
 
 -- Test seam: expose the pure off-ball target computation for assertions.
 match._offball_targets = offball_targets

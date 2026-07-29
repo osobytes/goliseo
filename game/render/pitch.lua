@@ -9,6 +9,7 @@ local player_renderer = require("game.render.player_renderer")
 local player_pose = require("game.presentation.player_pose")
 local identity = require("game.presentation.identity")
 local view_state = require("game.render.view_state")
+local release_follow = require("game.render.release_follow")
 local effects = require("game.render.effects")
 local arenas = require("data.arenas")
 local sim_match = require("sim.match") -- CROSSBAR_H: the goal frame height
@@ -367,6 +368,19 @@ function pitch.draw(s, vp, opts)
                     tip = tip_event ~= nil,
                 }
             end
+            -- Outfield pose inputs. The press mode is team-owned simulation
+            -- state, the telegraph window is measured against the match clock,
+            -- and the follow-through is the render-owned release window. Both
+            -- teams read from the same three sources.
+            local outfield_context = nil
+            if not p.is_keeper then
+                local press = s.outfield_press[p.team]
+                outfield_context = {
+                    now = -s.time_left,
+                    containing = press.mode == "contain" and press.presser_index == it.idx,
+                    kick_follow = release_follow.active(p.id),
+                }
+            end
             local aerial_duration = 0.22
             if p.aerial_style == "bicycle" then
                 aerial_duration = 0.6
@@ -400,7 +414,7 @@ function pitch.draw(s, vp, opts)
                 species_color = presentation.palette,
                 team = p.team,
                 combat = combat_sample,
-                pose = player_pose.select(p, combat_sample, keeper_context),
+                pose = player_pose.select(p, combat_sample, keeper_context, outfield_context),
             })
         elseif not keeper_holds then
             -- Loose / dribbled ball. (A keeper-held ball is drawn in its hands by the
