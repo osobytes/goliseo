@@ -22,6 +22,7 @@
 -- Field-by-field source, unit, visibility, and history rules live in
 -- docs/design/learning_environment.md.
 
+local combat_observation = require("sim.combat_observation")
 local fixed_clock = require("sim.fixed_clock")
 local input_frame = require("sim.input_frame")
 local match_snapshot = require("sim.match_snapshot")
@@ -321,22 +322,26 @@ local function phase_of(state)
     return "live"
 end
 
----@param state MatchState
+-- One shared derivation from presented combat state.
+-- `docs/design/learning_environment.md:255-263` warns that this schema and
+-- `combat_sim_observation/v1` must not grow two independent readings of the
+-- same telegraph, so the projection lives in `sim.combat_observation` and this
+-- schema takes the strict presented subset of it: the drawn arc colour, its
+-- alpha phase, and the stagger/knockback pose. Remaining phase ticks, cooldown,
+-- release latch, and loadout identity stay withheld here because the renderer
+-- does not draw them for a player the viewer does not control.
 ---@param combat_state CombatMatchState?
 ---@param player_index integer
 ---@return EnvObservedEquipment?
-local function equipment_telegraph(state, combat_state, player_index)
-    if not combat_state then
-        return nil
-    end
-    local runtime = combat_state.players[player_index]
-    if not runtime or not runtime.family_id then
+local function equipment_telegraph(combat_state, player_index)
+    local row = combat_observation.telegraph(combat_state, player_index)
+    if not row then
         return nil
     end
     return {
-        family_id = runtime.family_id,
-        phase = runtime.phase,
-        forced_state = runtime.forced_state,
+        family_id = row.family_id,
+        phase = row.phase,
+        forced_state = row.forced_state,
     }
 end
 
@@ -391,7 +396,7 @@ local function observed_player(state, combat_state, player_index, view_team)
         diving = player.dive_timer > 0,
         airborne = player.aerial_jump > 0,
         winding_up = player.windup_timer > 0,
-        equipment = equipment_telegraph(state, combat_state, player_index),
+        equipment = equipment_telegraph(combat_state, player_index),
     }
 end
 
