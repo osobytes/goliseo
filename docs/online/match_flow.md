@@ -300,6 +300,30 @@ These criteria are **not** claimed satisfied:
   is the *balance* of that usability, which is #149's calibration and #114's
   disposition.
 
+### Where a bot fill's combat reason comes out
+
+`sim.match` emits a `combat_commit_<reason>` MatchEvent for gameplay-AI
+outfielders, but in slot mode every outfielder is slot-covered, so that path is a
+structural no-op online — and declared fills are the dominant online population.
+
+The slot path therefore reports its decisions as a **return value**:
+`slot_input.materialize` returns a second value, an array of `SlotBotDecision`
+records (slot, player index, action, stable reason, target, unavailable reason,
+and the `combat_sim_observation/v1` digest the decision was made on), and
+`slot_input.last_decision(producer, slot)` reads the most recent one back.
+
+It is deliberately *not* a MatchEvent. In slot mode the decision happens inside
+the producer, before the boundary; `state.events` is a hashed snapshot field, so
+appending to it would make two peers diverge on whether their caller opted into
+collecting the diagnostic. The materialized tape stays the only replay authority,
+and `spec/sim/combat_ai_match_spec.lua` pins that collecting the report leaves
+every boundary hash unchanged.
+
+This is the #112 side of `ai_reason_reconciliation` (section 4.6 of the combat
+evidence contract). #148 still recomputes the eligibility bitset and the
+intervention envelope independently; it must not trust these labels as ground
+truth.
+
 ## Full time is settled, not merely reached
 
 The driver no longer terminates the moment its *present* simulation reaches full

@@ -18,6 +18,31 @@ local rng = require("core.rng")
 ---@class SlotBotState
 ---@field rng integer
 ---@field intent CombatIntentState -- Producer-side combat intent; never enters the tape.
+---@field decision SlotBotDecision? -- Last combat decision this fill made, for diagnostics.
+
+-- One AI combat decision, reported OUT of the producer rather than into the
+-- simulation.
+--
+-- In slot mode every outfielder is slot-covered, so the `combat_commit_*`
+-- MatchEvent that `sim.match` emits for gameplay-AI outfielders is a structural
+-- no-op online -- and slot fills are the dominant online population. Without
+-- this, a bot fill's combat commits would be diagnostically invisible in the
+-- primary online mode, and `ai_reason_reconciliation` (section 4.6 of the combat
+-- evidence contract) would have nothing to compare against for that population.
+--
+-- It is a RETURN VALUE, not a MatchEvent, and deliberately so. In slot mode the
+-- decision happens in the producer, before the boundary; appending it to
+-- `state.events` would put producer state into a hashed simulation field, so two
+-- peers would diverge on whether their caller opted into the diagnostic. The
+-- materialized tape stays the only replay authority.
+---@class SlotBotDecision
+---@field slot integer -- Canonical input slot.
+---@field player_index integer
+---@field action "commit"|"decline"|"unavailable"
+---@field reason CombatDecisionReason
+---@field target_player integer?
+---@field unavailable_reason CombatUnavailableReason?
+---@field digest string -- combat_sim_observation/v1 digest the decision was made on.
 
 ---@class SlotInputProducerState
 ---@field sources MatchSlotSource[] -- Canonical InputFrame slot order.
@@ -164,6 +189,7 @@ function slot_input.new_producer(sources)
             bots[index] = {
                 rng = rng.seed(assert(copied[index].seed)),
                 intent = combat_intent.new_state(),
+                decision = nil,
             }
         end
     end
@@ -184,8 +210,10 @@ end
 ---@param combat_state CombatMatchState?
 ---@param player_idx integer
 ---@param bot_state SlotBotState
+---@param slot integer
 ---@return CombatIntentSignals?
-local function bot_combat_signals(state, combat_state, player_idx, bot_state)
+local function bot_combat_signals(state, combat_state, player_idx, bot_state, slot)
+    bot_state.decision = nil
     if not combat_state then
         return nil
     end
@@ -222,8 +250,17 @@ local function bot_combat_signals(state, combat_state, player_idx, bot_state)
         combat_intent.decision_seed(combat_state.tick, player_idx),
         temperature
     )
+    bot_state.decision = {
+        slot = slot,
+        player_index = player_idx,
+        action = decision.action,
+        reason = decision.reason,
+        target_player = decision.target_player,
+        unavailable_reason = decision.unavailable_reason,
+        digest = decision.digest,
+    }
     if decision.action ~= "commit" then
-        bot_state.intent = combat_intent.decline(bot_state.intent)
+        bot_state.intent = combat_intent.decline(bot_state.intent, decision.action)
         return nil
     end
     assert(
@@ -244,8 +281,9 @@ end
 ---@param combat_state CombatMatchState?
 ---@param player_idx integer
 ---@param bot_state SlotBotState
+---@param slot integer
 ---@return MatchInput
-local function bot_input(state, combat_state, player_idx, bot_state)
+local function bot_input(state, combat_state, player_idx, bot_state, slot)
     local player = state.players[player_idx]
     local target
     local dash = false
@@ -273,7 +311,7 @@ local function bot_input(state, combat_state, player_idx, bot_state)
 
     local delta = target:sub(player.pos)
     local move = delta:length() > 1 and delta:normalized() or Vec2.new(0, 0)
-    local equipment = bot_combat_signals(state, combat_state, player_idx, bot_state)
+    local equipment = bot_combat_signals(state, combat_state, player_idx, bot_state, slot)
     return {
         move = move,
         shoot = shoot,
@@ -302,25 +340,41 @@ end
 ---@param frame InputFrame
 ---@param combat_state CombatMatchState? -- Required for bot fills to use equipment.
 ---@return InputFrame frame
+---@return SlotBotDecision[] decisions -- Combat decisions this tick, in slot order.
 function slot_input.materialize(producer, state, frame, combat_state)
     assert(state.slot_mode, "slot producer requires a slot-mode match")
     assert(input_frame.validate(frame), "slot producer requires a valid InputFrame")
     assert(frame.tick == state.input_tick, "input frame tick does not match match state")
     local slots = {}
+    local decisions = {}
     for index = 1, input_frame.SLOT_COUNT do
         local player_idx = assert(state.slot_players[index], "slot mapping is incomplete")
         local source = producer.sources[index]
         if source.kind == "frame" then
             slots[index] = frame.slots[index]
         elseif source.kind == "bot" then
-            slots[index] = slot_input.to_sample(
-                bot_input(state, combat_state, player_idx, assert(producer.bots[index]))
-            )
+            local bot_state = assert(producer.bots[index])
+            slots[index] =
+                slot_input.to_sample(bot_input(state, combat_state, player_idx, bot_state, index))
+            if bot_state.decision then
+                decisions[#decisions + 1] = bot_state.decision
+            end
         else
             slots[index] = input_frame.neutral_sample()
         end
     end
-    return assert(input_frame.new(frame.tick, slots))
+    return assert(input_frame.new(frame.tick, slots)), decisions
+end
+
+-- The last combat decision a declared bot fill made on `slot`, or nil if it has
+-- not decided yet. `materialize` returns the same records for the tick it just
+-- produced; this is for a caller that wants to read one back later.
+---@param producer SlotInputProducerState
+---@param slot integer
+---@return SlotBotDecision?
+function slot_input.last_decision(producer, slot)
+    local bot_state = producer.bots[slot]
+    return bot_state and bot_state.decision or nil
 end
 
 return slot_input

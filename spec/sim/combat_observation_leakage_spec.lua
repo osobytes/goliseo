@@ -20,10 +20,12 @@ local teams = require("data.teams")
 local t = require("spec.support.runner")
 
 -- Keys that may never appear anywhere inside a combat observation.
+--
+-- The section 4.7 exclusions are taken FROM the module rather than restated
+-- here: two lists that can drift apart is the failure mode, and the module's is
+-- the one a reader of `sim/combat_observation.lua` will find. Everything below
+-- is this spec's own broader set, layered on top.
 local FORBIDDEN_KEYS = {
-    loadout_id = true,
-    presentation_id = true,
-    cosmetic_variant_id = true,
     equipment_presentation_id = true,
     species_id = true,
     theme = true,
@@ -56,6 +58,10 @@ local FORBIDDEN_KEYS = {
     composure = true,
     scan_rate = true,
 }
+
+for _, field in ipairs(combat_observation.FORBIDDEN_FIELDS) do
+    FORBIDDEN_KEYS[field] = true
+end
 
 ---@param root any
 ---@return table<string, boolean> keys

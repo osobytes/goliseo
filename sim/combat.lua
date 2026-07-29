@@ -1009,9 +1009,11 @@ end
 ---@param combat_state CombatMatchState
 function combat.reset(combat_state)
     for index, runtime in ipairs(combat_state.players) do
-        -- The decision stream survives a restart: a player is the same decider
-        -- either side of it, and re-seeding here would make the AI replay the
-        -- same choices after every kickoff.
+        -- A restart clears the retained intent itself -- no half-materialized
+        -- press survives a kickoff. What survives is the decision CADENCE and
+        -- SEED, because both are derived from `combat_state.tick`, which keeps
+        -- counting: the AI does not replay the same choices after every restart
+        -- the way a per-record stream reset here would make it.
         combat_state.players[index] = new_player_state(
             runtime.loadout_id,
             runtime.family_id,
