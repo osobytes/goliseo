@@ -167,10 +167,10 @@ the viewer does not control.** The permitted set is pinned in code as
 | `radius` | drawn size |
 | `has_ball` | the ball is drawn at the carrier's feet |
 | `sprinting` | limb cadence from speed (`player_renderer.lua:182`); also implied by `vx`/`vy` |
-| `sliding` | `pitch.lua:382` `dashing`; `player_pose.lua:151` |
-| `diving` | `pitch.lua:385` `dive`; `player_pose.lua:102` |
-| `airborne` | `pitch.lua:373`/`:398` `aerial_jump`; `player_renderer.lua:515` lift |
-| `winding_up` | `pitch.lua:392` `windup`; `player_pose.lua:96`/`:148` |
+| `sliding` | `pitch.lua:396` `dashing`; `player_pose.lua:215` |
+| `diving` | `pitch.lua:399` `dive`; `player_pose.lua:173` |
+| `airborne` | `pitch.lua:384`/`:412` `aerial_jump`; `player_renderer.lua:617` lift |
+| `winding_up` | `pitch.lua:406` `windup`; `player_pose.lua:88`/`:212` |
 | `equipment` | telegraph arc, see below |
 
 They expose **no** remaining timer values and **no** meters: another player's
@@ -186,17 +186,31 @@ non-local player:
   `game/render/replay.lua` zeroes both for playback. Exposing it let a policy read
   that an opponent was holding shoot or pass *before any windup or animation
   existed*, which no human opponent or spectator can perceive.
-- `jockeying`, `tackling`, `dodging`, `stunned` — zero rendering hits;
-  `game/render/replay.lua` does not even carry the tackle/stun/dodge timers into
-  the renderable player. The comment at `sim/match.lua:1798` ("poke pose for the
-  renderer") describes intent that was never wired up.
+- `jockeying`, `tackling`, `dodging`, `stunned` — at the time of that revision,
+  zero rendering hits: `game/render/replay.lua` did not even carry the
+  tackle/stun/dodge timers into the renderable player, and the comment at
+  `sim/match.lua` ("poke pose for the renderer") described intent that was never
+  wired up.
 
 Note the distinction: the discrete `tackle` **MatchEvent** does have presentation
-(`game/render/effects.lua:239`, `game/audio.lua:205-207`) and reaches observations
-through the confirmed-event channel. That is a separate, legitimate channel and is
-not the same as a continuous `tackling` boolean covering the whole 0.22 s
-`STAND_TIMER` window (`sim/match.lua:130`). The fix was to remove the fields, not
-to add render cues to justify them.
+(`game/render/effects.lua`, `game/audio.lua`) and reaches observations through the
+confirmed-event channel. That is a separate, legitimate channel and is not the
+same as a continuous `tackling` boolean covering the whole 0.22 s `STAND_TIMER`
+window (`sim/match.lua`). The fix was to remove the fields, not to add render
+cues to justify them.
+
+> **Stale rationale — issue #58.** The outfield pose work has since given
+> `tackle_timer`, `stun_timer`, and `jockey_timer` real poses
+> (`game/presentation/player_pose.lua`, `game/render/player_renderer.lua`) and
+> carried them into `game/render/replay.lua`, so the "zero rendering hits"
+> justification above no longer holds for `tackling`, `stunned`, and
+> `jockeying`. #58 deliberately changed **no** observation field:
+> `env_observation.PLAYER_FIELDS` is unchanged and those three remain excluded.
+> Whether the render-legibility rule now readmits them is a decision for the
+> owner of this contract, not a side effect of a presentation change.
+> `dodging` still has no pose. `outfield_press` also stays excluded: contain is
+> now legible as a *stance*, but the team press state table itself is not
+> handed to a policy.
 
 Their `equipment` telegraph is `{ family_id, phase, forced_state }` — the arc
 colour (`game/render/combat.lua:37` `FAMILY_COLORS`), its alpha by phase
