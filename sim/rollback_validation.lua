@@ -441,6 +441,8 @@ end
 --- snapshot. Three consequences are baked in above: the ball is parked rather than
 --- carried, the tapes are 160 ticks rather than longer (retained bytes grow with tick
 --- count), and neither fixture sustains more than about two concurrent projectiles.
+--- The headroom itself is tracked by issue #209; the measurements and the levers for
+--- widening it are in docs/online/omp2_rollback_validation.md.
 ---@param fixture Omp2RollbackCombatLoadFixture
 ---@return InputTape
 local function combat_load_tape(fixture)
@@ -742,9 +744,16 @@ local function plan_cases(suite, options)
 end
 
 --- A combat load case is covered when it replayed the exact pinned artifact and when
---- combat was present or absent as its fixture declares. The disabled twin asserting
---- *zero* confirmed combat events is the load-bearing half: it is what stops the
---- comparison silently becoming combat-against-combat and reporting no overhead.
+--- combat was present or absent as its fixture declares. Both directions are
+--- load-bearing: an active fixture that confirmed nothing measured no combat at all,
+--- and a twin that confirmed something is not a control -- the paired comparison would
+--- silently become combat-against-combat and report no overhead.
+---
+--- Spell the two directions out separately, because `a and b or c` is not a conditional
+--- in Lua. It parses as `(a and b) or c`, so an active fixture with zero confirmed
+--- events fell through to the `combat_events == 0` arm and reported itself covered,
+--- defeating the check exactly when it was needed. `scenario_pass` feeds
+--- `completed.accepted` and the `success=` marker field that CI trusts as a gate.
 ---@param result RollbackLabResult
 ---@param fixture Omp2RollbackCombatLoadFixture
 ---@return boolean
@@ -752,7 +761,8 @@ local function combat_load_covered(result, fixture)
     local expected_version = fixture.combat and match_snapshot.COMBAT_VERSION
         or match_snapshot.VERSION
     local combat_events = result.event_metrics.confirmed_combat_events
-    local combat_present = fixture.combat and combat_events > 0 or combat_events == 0
+    local combat_present = (fixture.combat and combat_events > 0)
+        or (not fixture.combat and combat_events == 0)
     return result.input_ticks == fixture.frame_count
         and result.initial_hash == fixture.initial_hash
         and result.reference_final_hash == fixture.final_hash
@@ -982,6 +992,23 @@ end
 ---@return Omp2RollbackValidationData
 function rollback_validation.config()
     return config
+end
+
+--- Whether a lab result covers the combat load scenario it claims to. This is the same
+--- predicate `scenario_covered` applies when it decides `scenario_pass`, exposed so a
+--- test can drive both fixture kinds against both zero and non-zero confirmed combat
+--- events. A campaign only ever produces the two passing corners of that truth table,
+--- so the rejecting corners are unreachable from a normal run and go unchecked unless
+--- they are asserted directly.
+---@param result RollbackLabResult
+---@param scenario string
+---@return boolean
+function rollback_validation.combat_load_covered(result, scenario)
+    local fixture = assert(
+        combat_load_by_scenario[scenario],
+        "unknown combat load scenario: " .. tostring(scenario)
+    )
+    return combat_load_covered(result, fixture)
 end
 
 --- Build a pinned combat load tape by scenario id. Exposed so the fixtures can be

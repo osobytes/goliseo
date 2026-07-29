@@ -63,6 +63,21 @@ local function run_lab(tape, network_seed)
     return result
 end
 
+---@type table<string, RollbackLabResult>
+local lab_cache = {}
+
+--- One lab campaign per scenario, shared across the tests below. Each is a real
+--- 160-tick rollback run; caching keeps this spec to four of them.
+---@param scenario string
+---@return RollbackLabResult
+local function lab_result(scenario)
+    if lab_cache[scenario] == nil then
+        lab_cache[scenario] =
+            run_lab(rollback_validation.combat_load_tape(scenario), config.network_seeds[1])
+    end
+    return lab_cache[scenario]
+end
+
 t.describe("OMP-2 crowded combat load fixtures", function()
     t.it("builds every pinned fixture at its recorded identity", function()
         t.eq(#config.combat_load_fixtures, 4)
@@ -188,8 +203,7 @@ t.describe("OMP-2 crowded combat load fixtures", function()
     -- says so in seconds instead of in CI.
     t.it("converges inside the pinned snapshot and history budgets", function()
         for _, fixture in ipairs(config.combat_load_fixtures) do
-            local tape = rollback_validation.combat_load_tape(fixture.scenario)
-            local result = run_lab(tape, config.network_seeds[1])
+            local result = lab_result(fixture.scenario)
             local peaks = result.metrics.peaks
             t.is_true(result.success, fixture.id .. " did not converge")
             t.eq(result.status, "converged", fixture.id)
@@ -222,6 +236,43 @@ t.describe("OMP-2 crowded combat load fixtures", function()
             else
                 t.eq(confirmed, 0, fixture.id .. " confirmed a combat event with combat off")
             end
+        end
+    end)
+
+    -- A healthy campaign only ever reaches the two passing corners of this truth table,
+    -- so the rejecting corners are unreachable from a normal run. They still decide
+    -- `scenario_pass`, which becomes the `success=` marker CI enforces, so assert all
+    -- four directly. The active/zero corner is the one that matters most: an operator
+    -- precedence slip there let a fixture that measured no combat at all pass as
+    -- covered, which is precisely the regression this fixture pair exists to catch.
+    t.it("rejects a case whose combat presence contradicts its fixture", function()
+        for _, scenario in ipairs({ "combat_crowded", "combat_crowded_disabled" }) do
+            local result = lab_result(scenario)
+            local metrics = result.event_metrics
+            local observed = metrics.confirmed_combat_events
+            local active = fixture_for(scenario).combat
+
+            t.is_true(
+                rollback_validation.combat_load_covered(result, scenario),
+                scenario .. " should cover itself as measured"
+            )
+            t.eq(observed > 0, active, scenario .. " measured the wrong combat presence")
+
+            metrics.confirmed_combat_events = 0
+            t.eq(
+                rollback_validation.combat_load_covered(result, scenario),
+                not active,
+                scenario .. " mishandled zero confirmed combat events"
+            )
+
+            metrics.confirmed_combat_events = 1
+            t.eq(
+                rollback_validation.combat_load_covered(result, scenario),
+                active,
+                scenario .. " mishandled a non-zero confirmed combat event count"
+            )
+
+            metrics.confirmed_combat_events = observed
         end
     end)
 end)
