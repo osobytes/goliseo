@@ -3,6 +3,13 @@
 -- would: decisions refresh only every reaction window (not every frame), aim
 -- carries noise, and heuristics are deliberately simple. Balance results are
 -- only comparable under the same bot — see docs/design/fun_metrics.md.
+--
+-- This is a SEPARATELY IDENTIFIED human-proxy population, not the gameplay AI.
+-- It emits no equipment intent: every `equipment_*` field below is deliberately
+-- false. `gameplay_ai/combat/v1` lives in `sim.combat_policy` and drives the
+-- match AI and the declared fixed-slot bot fills; this driver may only gain
+-- combat capability behind its own explicit policy id, and must never be
+-- reported as the gameplay AI by accident.
 
 local Vec2 = require("core.vec2")
 local rng = require("core.rng")

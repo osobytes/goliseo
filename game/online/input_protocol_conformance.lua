@@ -32,16 +32,16 @@ local conformance = {}
 ---@type InputProtocolGolden
 conformance.GOLDEN = {
     snapshot_version = 11,
-    combat_version = 12,
-    guest_wire = "GCIP;1;G;2;ea39ebe78423e0a0;7;f6f6f9dbe278dccb;12;0;4;3;7;"
+    combat_version = 13,
+    guest_wire = "GCIP;1;G;2;24fb82e932881333;7;f6f6f9dbe278dccb;12;0;4;3;7;"
         .. "AAAAAAJ/fwAAAAAAAQIA/gUJAAAAAgJ/f4AgAAAAAwJ/f4AAAAAABAJ/fwBAAAAABQJ/f38f"
         .. "AAAABgL+ABIW",
-    guest_digest = "cc1e2be6d59472ee",
-    host_wire = "GCIP;1;H;2;ea39ebe78423e0a0;13;65c65955c65cc80a;15;0;5;3;16;"
+    guest_digest = "73cc537da31ececb",
+    host_wire = "GCIP;1;H;2;24fb82e932881333;13;65c65955c65cc80a;15;0;5;3;16;"
         .. "AAAABQGwTgAAAAAABQKvTwEBAAAABQOuUAICAAAABQStUQMDAAAABQWsUgQEAAAABQarUwUF"
         .. "AAAABQeqVAYGAAAABQipVYAgAAAABgG6RAAAAAAABgK5RQEBAAAABgO4RgICAAAABgS3RwMD"
         .. "AAAABgW2SAQEAAAABga1SQUFAAAABge0SgYGAAAABgizS4Ag",
-    host_digest = "9f5892e524d62b33",
+    host_digest = "7afd6640eb5856de",
     maximal_wire_bytes = 958,
     maximal_wire_margin = 66,
 }

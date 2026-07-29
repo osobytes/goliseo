@@ -378,6 +378,12 @@ local SPRINT_ENGAGE = 0.25 -- min meter to start a sprint (hysteresis: no flicke
 ---|"press_commit_cover"
 ---|"press_commit_box_desperation"
 ---|"press_commit_low_discipline"
+---|"combat_commit_carrier_contest"
+---|"combat_commit_carrier_protection"
+---|"combat_commit_loose_ball_contest"
+---|"combat_commit_passing_lane_or_shot_denial"
+---|"combat_commit_recovery_punish"
+---|"combat_commit_unattributed_off_ball"
 ---|"catch"
 ---|"parry"
 ---|"tip"
@@ -4224,6 +4230,161 @@ local function ai_outfield_decision(s, owner_idx, owner)
     end
 end
 
+-- The gameplay AI's equipment-intent channel.
+--
+-- Gameplay-AI outfielders steer by mutating MatchState, so before this they
+-- never reached `combat.prepare_inputs` at all and no AI player could express an
+-- equipment intent. They now materialize an ordinary MatchInput carrying only
+-- the three abstract equipment signals, so the same commit gate, the same
+-- `suppress_soccer_actions` arbitration, and the same keeper protection that
+-- govern a human govern them too.
+--
+-- Slots are untouched: `is_human_player` is true for every fixed slot in slot
+-- mode and for the human-controlled player otherwise, and any index that
+-- already carries a supplied row is skipped. Keepers are combat-disabled.
+---@param s MatchState
+---@param combat_state CombatMatchState
+---@param inputs table<integer, MatchInput>
+function match._ai_combat_inputs(s, combat_state, inputs)
+    local intents = require("sim.combat_intent")
+    local observations = require("sim.combat_observation")
+    local policy = require("sim.combat_policy")
+    local feasibility = require("sim.combat_feasibility")
+
+    for index, player in ipairs(s.players) do
+        local runtime = combat_state.players[index]
+        if
+            runtime ~= nil
+            and not player.is_keeper
+            and not is_human_player(s, index)
+            and inputs[index] == nil
+        then
+            if runtime.forced_ticks > 0 and runtime.intent.stage ~= "idle" then
+                -- A landed hit cancelled the action this materialization was
+                -- serving. Do not carry its release edge into a new situation.
+                runtime.intent = intents.reset(runtime.intent)
+            end
+
+            local signals, next_intent = intents.materialize(runtime.intent)
+            runtime.intent = next_intent
+            if signals then
+                inputs[index] = match._combat_equipment_input(signals)
+            elseif
+                runtime.family_id ~= nil
+                and runtime.phase == "ready"
+                and runtime.forced_ticks == 0
+                and runtime.cooldown_ticks == 0
+                and s.kickoff_hold <= 0
+                and not s.finished
+                and intents.should_decide(combat_state.tick, index, player.scan_rate)
+            then
+                local observation =
+                    observations.build(s, combat_state, index, policy.POLICY_ID, nil)
+                -- Composure sharpens the choice exactly as it does for carrier
+                -- decisions: a settled player takes the argmax and spends no RNG.
+                local temperature = player.composure >= policy.SHARP_COMPOSURE and 0
+                    or policy.BASE_TEMPERATURE * (1 - player.composure)
+                local decision = policy.decide(
+                    observation,
+                    intents.decision_seed(combat_state.tick, index),
+                    temperature
+                )
+                if decision.action == "commit" then
+                    assert(
+                        not decision.context_violation,
+                        "representative_policy_context_violation: gameplay_ai/combat/v1 committed "
+                            .. "without a purpose context"
+                    )
+                    local reason = decision.reason
+                    assert(
+                        policy.is_commit_reason(reason),
+                        "AI combat commit requires a stable reason"
+                    )
+                    local target_index = assert(decision.target_player)
+                    runtime.intent = intents.commit(
+                        runtime.intent,
+                        reason,
+                        target_index,
+                        policy.hold_ticks(observation, decision)
+                    )
+                    inputs[index] = match._combat_equipment_input(intents.commit_signals())
+                    local commit_kind = "combat_commit_" .. reason
+                    ---@cast commit_kind MatchEventKind
+                    s.events[#s.events + 1] = {
+                        kind = commit_kind,
+                        x = player.pos.x,
+                        y = player.pos.y,
+                        player = player.id,
+                    }
+                else
+                    runtime.intent = intents.decline(runtime.intent, decision.action)
+                    -- Not committing is the spacing answer: hold the ground the
+                    -- formation wants. A telegraphed threat that is genuinely
+                    -- about to land gets the existing sidestep instead.
+                    --
+                    -- This runs for `unavailable` as well as `decline`. Evading
+                    -- is a soccer primitive, not an equipment request, so a
+                    -- player with no loadout or no reachable target still has to
+                    -- be allowed to step out of an incoming projectile. The
+                    -- evade's own gate covers the states where a sidestep is
+                    -- impossible.
+                    match._ai_combat_evade(s, player, observation, feasibility)
+                end
+            end
+        end
+    end
+end
+
+---@param signals CombatIntentSignals
+---@return MatchInput
+function match._combat_equipment_input(signals)
+    local input = slot_input.neutral_match_input()
+    input.equipment_held = signals.equipment_held
+    input.equipment_pressed = signals.equipment_pressed
+    input.equipment_released = signals.equipment_released
+    return input
+end
+
+-- Sidestep a telegraphed threat that is genuinely about to land. This reuses
+-- the existing juke primitive and its authored constants; it adds no new
+-- steering. `sim.combat` skips a dodging body when it selects melee and
+-- projectile targets, so the sidestep is the mechanical evasion, not a pose.
+---@param s MatchState
+---@param player MatchPlayer
+---@param observation CombatObservation
+---@param feasibility CombatFeasibilityModule
+function match._ai_combat_evade(s, player, observation, feasibility)
+    if
+        player.dodge_cd > 0
+        or player.dodge_timer > 0
+        or player.slide_timer > 0
+        or player.aerial_recovery > 0
+        or player.stun_timer > 0
+    then
+        return
+    end
+    local policy = require("sim.combat_policy")
+    local ticks, _, threat_x, threat_y =
+        feasibility.incoming_threat(observation, policy.EVADE_WINDOW_TICKS)
+    if not ticks or not threat_x or not threat_y or ticks < policy.EVADE_MIN_LEAD_TICKS then
+        return
+    end
+    -- Step away from the THREAT, not from the player who launched it. For melee
+    -- the two coincide; for a projectile already in flight the shooter can be
+    -- anywhere, including directly behind the body it is about to hit, and
+    -- reading the shooter would sidestep straight into the shot.
+    local away = player.pos:sub(Vec2.new(threat_x, threat_y))
+    local perp = Vec2.new(-player.facing.y, player.facing.x)
+    if away.x * perp.x + away.y * perp.y < 0 then
+        perp = perp:scale(-1)
+    end
+    player.dodge_timer = DODGE_DURATION
+    player.dodge_cd = DODGE_CD
+    player.dodge_dir = perp
+    s.events[#s.events + 1] =
+        { kind = "juke", x = player.pos.x, y = player.pos.y, player = player.id }
+end
+
 ---@param s MatchState
 ---@param dt number
 ---@param inputs table<integer, MatchInput>
@@ -4881,6 +5042,7 @@ function match.step(s, dt, input, combat_state)
         inputs[s.controlled] = input
     end
     if combat_state then
+        match._ai_combat_inputs(s, combat_state, inputs)
         local equipment_ineligible = {}
         for player_index, player_input in pairs(inputs) do
             equipment_ineligible[player_index] =

@@ -278,19 +278,51 @@ These criteria are **not** claimed satisfied:
   `combat_status = "provisional_114"` and a placeholder
   `combat_rules_id`/`gameplay_ai_policy_id`. When #114 accepts a disposition,
   `match_manifest` and the protocol fixture are the only places that change.
-- **#112, combat-aware gameplay AI.** Non-live owned slots and declared bot fills
-  materialize `sim.slot_input`'s existing deterministic bot, which is not combat
-  aware. 1v1 leans on this hardest: three of every human's four owned slots are
-  AI-driven at any instant. The plumbing is proven; the behaviour is not.
-- Consequently the **seven combat correction phases** the issue names — wind-up,
-  guard, contact, projectile flight, stagger, ball spill, immunity expiry — are
-  not individually pinned. The pre-#112 bot never reaches them, so a spec for
-  each would pin an absence. The *mechanism* is covered: the combat companion
-  survives correction and resimulation on every peer.
-- **"All four accepted families remain intentionally usable"** likewise cannot be
-  demonstrated end to end online until the AI can use equipment; what is proven
-  is that the fixed loadout and family reach the request, the HUD, and the
-  renderer for every seated slot.
+- ~~**#112, combat-aware gameplay AI.**~~ **Closed.** Non-live owned slots and
+  declared bot fills now materialize `gameplay_ai/combat/v1` (`sim.combat_policy`)
+  through `sim.slot_input`, using the same observation schema, option ordering,
+  and reason vocabulary as the gameplay match AI. 1v1 leaned on this hardest —
+  three of every human's four owned slots are AI-driven at any instant — and
+  those slots can now use and counter all four families. The manifest names the
+  policy as `gameplay_ai.combat.v1`; the contract spells it
+  `gameplay_ai/combat/v1`, and manifest ids may not contain slashes.
+- The **seven combat correction phases** the issue names — wind-up, guard,
+  contact, projectile flight, stagger, ball spill, immunity expiry — are still
+  not individually pinned as online rollback scenarios. A combat-capable bot
+  fill now reaches all of them, so a spec for each would no longer pin an
+  absence; writing those scenarios is follow-up work, not a blocked one. The
+  *mechanism* remains covered: the combat companion survives correction and
+  resimulation on every peer, and it now also carries the AI's retained combat
+  intent through that correction.
+- **"All four accepted families remain intentionally usable"** is now
+  demonstrable end to end for AI-driven slots: `spec/sim/combat_ai_match_spec.lua`
+  drives a commit and its resolver phase for each family. What remains unproven
+  is the *balance* of that usability, which is #149's calibration and #114's
+  disposition.
+
+### Where a bot fill's combat reason comes out
+
+`sim.match` emits a `combat_commit_<reason>` MatchEvent for gameplay-AI
+outfielders, but in slot mode every outfielder is slot-covered, so that path is a
+structural no-op online — and declared fills are the dominant online population.
+
+The slot path therefore reports its decisions as a **return value**:
+`slot_input.materialize` returns a second value, an array of `SlotBotDecision`
+records (slot, player index, action, stable reason, target, unavailable reason,
+and the `combat_sim_observation/v1` digest the decision was made on), and
+`slot_input.last_decision(producer, slot)` reads the most recent one back.
+
+It is deliberately *not* a MatchEvent. In slot mode the decision happens inside
+the producer, before the boundary; `state.events` is a hashed snapshot field, so
+appending to it would make two peers diverge on whether their caller opted into
+collecting the diagnostic. The materialized tape stays the only replay authority,
+and `spec/sim/combat_ai_match_spec.lua` pins that collecting the report leaves
+every boundary hash unchanged.
+
+This is the #112 side of `ai_reason_reconciliation` (section 4.6 of the combat
+evidence contract). #148 still recomputes the eligibility bitset and the
+intervention envelope independently; it must not trust these labels as ground
+truth.
 
 ## Full time is settled, not merely reached
 

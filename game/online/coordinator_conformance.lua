@@ -27,23 +27,23 @@ local conformance = {}
 
 ---@type SessionCoordinatorGolden
 conformance.GOLDEN = {
-    full_transcript_id = "eb2c1b2dc3c0fd9d",
+    full_transcript_id = "c766fb1e79b4d828",
     full_trace_digest = "2fa7235df619b00a",
     full_message_count = 51,
-    bot_transcript_id = "5b116fe28762082f",
+    bot_transcript_id = "088139f30e9a863b",
     bot_sources = "home_1=peer:host:nil|home_2=peer:guest.1:nil|home_3=peer:guest.2:nil|"
         .. "home_4=bot:bot.home_4:51677|away_1=bot:bot.away_1:59596|away_2=bot:bot.away_2:67515|"
         .. "away_3=bot:bot.away_3:75434|away_4=bot:bot.away_4:83353",
     solo_sources = "home_1=peer:host:nil|home_2=bot:bot.home_2:35839|home_3=bot:bot.home_3:43758|"
         .. "home_4=bot:bot.home_4:51677|away_1=bot:bot.away_1:59596|away_2=bot:bot.away_2:67515|"
         .. "away_3=bot:bot.away_3:75434|away_4=bot:bot.away_4:83353",
-    duo_transcript_id = "bd3afe7315a6d8a5",
+    duo_transcript_id = "865aefa2e24e20d4",
     duo_sources = "home_1=peer:host:nil|home_2=peer:host:nil|home_3=peer:host:nil|"
         .. "home_4=peer:host:nil|away_1=peer:guest.1:nil|away_2=peer:guest.1:nil|"
         .. "away_3=peer:guest.1:nil|away_4=peer:guest.1:nil",
     duo_owned = "host=[home_1,home_2,home_3,home_4]>home_1|"
         .. "guest.1=[away_1,away_2,away_3,away_4]>away_1",
-    pair_transcript_id = "92eedc28f6046811",
+    pair_transcript_id = "9d3508c576327f1f",
     pair_sources = "home_1=peer:host:nil|home_2=peer:host:nil|home_3=peer:guest.1:nil|"
         .. "home_4=peer:guest.1:nil|away_1=peer:guest.2:nil|away_2=peer:guest.2:nil|"
         .. "away_3=peer:guest.3:nil|away_4=peer:guest.3:nil",

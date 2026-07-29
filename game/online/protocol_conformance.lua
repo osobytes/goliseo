@@ -27,23 +27,23 @@ conformance.GOLDEN = {
     -- `conformance.marker`: the browser evidence parser compares the marker's
     -- field set exactly, and this pin has no browser-specific meaning.
     vocabulary_id = "e13e3647001a0a7e",
-    manifest_id = "ea39ebe78423e0a0",
-    transcript_id = "3283847c417923e5",
+    manifest_id = "24fb82e932881333",
+    transcript_id = "8acb1d1ec1efc821",
     complete_kind = "manifest_accept",
-    complete_wire = "GCOP;1;t7:s4:bodyt1:s11:manifest_ids16:ea39ebe78423e0a0s4:kinds15:"
+    complete_wire = "GCOP;1;t7:s4:bodyt1:s11:manifest_ids16:24fb82e932881333s4:kinds15:"
         .. "manifest_accepts10:message_ids32:GCMI;1;13:session_alpha4:host1:2s7:peer_ids4:"
         .. "hosts8:sequencei1:2s10:session_ids13:session_alphas7:versioni1:1",
     wire_digests = {
         handshake = "2722abf054051350",
-        manifest_proposal = "6d3818a72c39032b",
-        manifest_accept = "a292fa4a99393456",
+        manifest_proposal = "e34b30fed75499a1",
+        manifest_accept = "42e3f50da05e6463",
         peer_assignment = "fa48b31571dfe543",
-        slot_assignment = "aae4def8b6d64d92",
-        ready = "d1a83352b259e76b",
-        pair_preference = "a8f84f2616677df5",
-        pair_preference_result = "df611e121f1ce5ba",
-        countdown = "3c40b7699ce5861e",
-        start = "d4fff9c7d4ba31b7",
+        slot_assignment = "c99d986a0e3b57b3",
+        ready = "3a083893e4b3edc4",
+        pair_preference = "99d0dce0cfcf08fa",
+        pair_preference_result = "03568bb60a6de925",
+        countdown = "5553956811b0616f",
+        start = "e307b88296c484f4",
         match_phase = "1671940891b78f1f",
         hash_report = "4405d9323b1e5b0f",
         result_ack = "5f466e6740c6d4cf",

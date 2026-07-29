@@ -476,7 +476,7 @@ local function advance_reference(lab, local_sample)
     end
     slots[lab._local_slot] = copy_sample(local_sample)
     local base = assert(input_frame.new(lab._transport_tick, slots))
-    local frame = slot_input.materialize(lab._producer, lab._reference, base)
+    local frame = slot_input.materialize(lab._producer, lab._reference, base, lab._reference_combat)
     match.step(lab._reference, fixed_clock.TICK_SECONDS, frame, lab._reference_combat)
     local boundary = match_snapshot.capture_owned(lab._reference, lab._reference_combat)
     assert(rollback_snapshot_history.store_owned(lab._reference_history, boundary))
