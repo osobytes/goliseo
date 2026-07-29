@@ -213,6 +213,54 @@ and that is tracked separately in
 [#179](https://github.com/osobytes/goliseo/issues/179). Until #179 lands, browser combat rollback
 tail behaviour is observed, published, and unenforced.
 
+### The crowded combat load fixtures
+
+The `combat` fixture above is a generic "combat is switched on" probe: every player presses the
+same equipment input on the same ticks. It does not answer [#150](https://github.com/osobytes/goliseo/issues/150)'s
+question, which is whether *crowded* combat stays inside the frame budget. Four further fixtures
+ride the stress sub-suite, defined in `data/omp2_rollback_validation.lua` and built by
+`sim/rollback_validation.lua`:
+
+| Scenario | Fixture | Ticks | What it loads |
+| --- | --- | ---: | --- |
+| `combat_crowded` | `omp2-combat-crowded-v1` | 160 | Ten bodies in one pocket, all four action families paired so guarded contacts, guard recoil, unguarded hits, forced states and projectiles all resolve |
+| `combat_crowded_disabled` | `omp2-combat-crowded-disabled-v1` | 160 | The same seed, layout and input frames with no `CombatMatchState` companion |
+| `combat_repeated_family` | `omp2-combat-repeated-family-v1` | 160 | All eight outfielders forced onto one action family, four a side in a 40 px pocket |
+| `combat_repeated_family_disabled` | `omp2-combat-repeated-family-disabled-v1` | 160 | Its same-seed combat-disabled twin |
+
+Each twin is the *same* builder call with combat switched off, so the pair shares its match
+options, seed, body layout, ball and every input frame by construction and differs only by the
+combat companion. `spec/sim/combat_load_fixtures_spec.lua` compares the encoded frames of each
+pair, because a twin that quietly diverged would still share a seed while measuring a different
+match.
+
+Their CPU numbers are recorded and **not** gated. `cpu_gate_mode` returns `diagnostic` for the
+stress profile, so these cases carry the snapshot, history and game gates without an absolute or
+normalized CPU threshold. They are also absent from `BROWSER_CPU_SCENARIOS`: the `6.7` ratio was
+fitted on `complete_fixture` alone, and extending it to two more distributions without calibrating
+them is exactly the borrowing the tail-threshold guard above exists to prevent. Establishing the
+timing evidence, and with it whether these fixtures earn a gate, is #150's own follow-on work.
+
+#### What the snapshot budget leaves for crowded combat
+
+`budgets.snapshot_bytes` caps the retained 31-boundary window at 768 KiB and `main.lua` applies
+that gate to every case, regardless of profile or CPU gate mode. On this revision the existing
+`omp2-combat-rollback-v1` already measures **777,309 bytes, 98.83% of the cap**, leaving 9,123
+bytes. A ten-player combat snapshot is roughly 25 KB, so the entire remaining margin is a few
+hundred bytes per boundary. The fixtures above are shaped by that ceiling rather than by taste:
+the ball is parked clear of the contest instead of carried (a carried ball costs about 6.7 KB of
+window), the tapes are 160 ticks rather than longer because retained bytes grow with tick count,
+and neither fixture sustains more than about two concurrent projectiles. Measured worst-of-three-seed
+peaks are 776,273 bytes for `combat_crowded` and 777,468 for `combat_repeated_family`, against
+647,289 and 652,702 for their combat-disabled twins.
+
+That ceiling is also why there is no sustained *projectile* stress fixture. A retained projectile
+costs roughly 175 bytes per boundary, about 5.4 KB across the window, so the budget funds one or
+two of them and no more. Measured attempts: eight concurrent projectiles reach 813,629–826,418
+bytes (103.5–105.1% of the cap), five reach 796,451–804,366, and three still reach 785,603 —
+99.89%, inside by 829 bytes. Raising projectile concurrency therefore requires either a cheaper
+combat snapshot or a deliberate decision about the budget, and neither belongs in a fixture change.
+
 ### Why the rollback tail is normalized against the playable case
 
 Contract 6 divided the playable rollback p99.9 by the **paired clean control's** p95 work. Both
@@ -681,9 +729,10 @@ the persistent soak:
 `--campaign soak` selects only the persistent native soak. Omitting it runs both in pinned order.
 
 `--shard` restricts a run to one pinned network seed, which is how CI parallelises the campaign
-without weakening it. The 54 native matrix cases partition exactly by seed — every profile
-contributes one complete-fixture and one combat case per seed, and each seed owns its ten stress
-cases — so `--shard 2001`, `--shard 2002`, and `--shard 2003` reconstruct the pinned plan between
+without weakening it. The 66 native matrix cases partition exactly by seed — every profile
+contributes one complete-fixture and one combat case per seed, and each seed owns its fourteen
+stress cases (the nine scenarios, the combat stress-evidence case, and the four crowded-combat
+load fixtures) — so `--shard 2001`, `--shard 2002`, and `--shard 2003` reconstruct the plan between
 them. The seed-independent remainder, the late-window pair and the persistent native soak, is the
 `tail` shard:
 
@@ -829,7 +878,7 @@ and the gate fails closed naming it. An artifact the manifest does not account f
 too, so an added evidence job cannot slip past the gate unexamined. Each shard's evidence must
 additionally report the pinned schema and gate contract, its own `pass`, a clean checkout at the
 gate's exact revision, and its own declared shard, campaign, and runtime, so evidence from another
-commit or another seed cannot be substituted. The gate then reassembles the pinned 54-case native
+commit or another seed cannot be substituted. The gate then reassembles the pinned 66-case native
 plan across the three seed shards, requires the tail shard's late-window pair and passing native
 soak, merges each browser's three seed shards, applies the full six-pair CPU acceptance per
 browser, and requires each browser's whole soak and complete stress seed coverage before it
