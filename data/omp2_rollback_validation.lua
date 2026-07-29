@@ -23,6 +23,25 @@
 ---@field final_hash string
 ---@field tape_digest string
 
+--- A crowded combat *load* fixture and its same-seed combat-disabled twin.
+--- `combat` false builds the identical match, layout, and input frames without a
+--- CombatMatchState companion, so the pair differs only by combat being active and
+--- the combat cost is attributable rather than merely asserted.
+--- `repeated_loadout_id` forces one action family onto every outfielder, which is how
+--- a fixture reaches the repeated-family load the authored mixed roster cannot produce.
+---@class Omp2RollbackCombatLoadFixture
+---@field id string
+---@field scenario string
+---@field layout "crowded"|"pocket"
+---@field seed integer
+---@field frame_count integer
+---@field duration integer
+---@field combat boolean
+---@field repeated_loadout_id string?
+---@field initial_hash string
+---@field final_hash string
+---@field tape_digest string
+
 ---@class Omp2RollbackValidationData
 ---@field schema integer
 ---@field fixture_seed integer
@@ -33,6 +52,7 @@
 ---@field stress_profile string
 ---@field scenarios Omp2RollbackScenario[]
 ---@field combat_fixture Omp2RollbackCombatFixture
+---@field combat_load_fixtures Omp2RollbackCombatLoadFixture[]
 ---@field budgets Omp2RollbackBudgets
 ---@field soak_network_seeds integer[]
 ---@field soak_samples string[]
@@ -113,6 +133,58 @@ return {
         initial_hash = "254f0b9cd4311e7e",
         final_hash = "58f858fdff81ecda",
         tape_digest = "4b08690fb65d22c8",
+    },
+    combat_load_fixtures = {
+        {
+            id = "omp2-combat-crowded-v1",
+            scenario = "combat_crowded",
+            layout = "crowded",
+            seed = 941,
+            frame_count = 160,
+            duration = 20,
+            combat = true,
+            initial_hash = "e623153075463f65",
+            final_hash = "1e373cd0a423d773",
+            tape_digest = "19b5290891124edd",
+        },
+        {
+            id = "omp2-combat-crowded-disabled-v1",
+            scenario = "combat_crowded_disabled",
+            layout = "crowded",
+            seed = 941,
+            frame_count = 160,
+            duration = 20,
+            combat = false,
+            initial_hash = "0c6f04fe7cdbdcb6",
+            final_hash = "307cff049c8ea93f",
+            tape_digest = "452e841205b6f510",
+        },
+        {
+            id = "omp2-combat-repeated-family-v1",
+            scenario = "combat_repeated_family",
+            layout = "pocket",
+            seed = 977,
+            frame_count = 160,
+            duration = 20,
+            combat = true,
+            repeated_loadout_id = "loadout_spring_gloves",
+            initial_hash = "e7b13a5e300dfee4",
+            final_hash = "2b1c282fd1ce42e6",
+            tape_digest = "bd1afaccda071e07",
+        },
+        {
+            id = "omp2-combat-repeated-family-disabled-v1",
+            scenario = "combat_repeated_family_disabled",
+            layout = "pocket",
+            seed = 977,
+            frame_count = 160,
+            duration = 20,
+            combat = false,
+            repeated_loadout_id = "loadout_spring_gloves",
+            initial_hash = "11e9080994725ece",
+            final_hash = "37b90de104d12a42",
+            tape_digest = "f75bb3356ab89f8e",
+        },
     },
     budgets = {
         p95_work_ms = 16.67,

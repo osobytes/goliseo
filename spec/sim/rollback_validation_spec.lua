@@ -35,7 +35,10 @@ t.describe("OMP-2 rollback validation campaign", function()
             profile_name = "stress",
             network_seed = 2001,
         })
-        t.eq(#browser.cases, 10)
+        -- Nine stress scenarios, the bounded combat case, and the four #150 combat
+        -- load fixtures, which ride this sub-suite so the native shards keep
+        -- partitioning by seed.
+        t.eq(#browser.cases, 14)
         local seen = {}
         for _, case in ipairs(browser.cases) do
             seen[case.scenario] = true
@@ -44,6 +47,9 @@ t.describe("OMP-2 rollback validation campaign", function()
             t.is_true(seen[scenario.id], "missing scenario " .. scenario.id)
         end
         t.is_true(seen.combat, "missing bounded combat scenario")
+        for _, fixture in ipairs(config.combat_load_fixtures) do
+            t.is_true(seen[fixture.scenario], "missing combat load scenario " .. fixture.scenario)
+        end
     end)
 
     t.it("accepts delay thirty and classifies delay thirty-one as the explicit terminal", function()
