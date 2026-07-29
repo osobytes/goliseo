@@ -6,6 +6,7 @@ local release_follow = require("game.render.release_follow")
 local outfield_decision = require("sim.outfield_decision")
 local offball_runs = require("sim.offball_runs")
 local outfield_press = require("sim.outfield_press")
+local possession_transition = require("sim.possession_transition")
 local replay = require("game.render.replay")
 local match = require("sim.match")
 local teams = require("data.teams")
@@ -575,5 +576,237 @@ t.describe("outfield poses through the goal replay buffer", function()
         )
         t.eq(frame.outfield_press.home.mode, "inactive")
         replay.reset()
+    end)
+end)
+
+t.describe("outfield follow-through driven by the simulation", function()
+    ---@type MatchInput
+    local NO_INPUT = {
+        move = Vec2.new(0, 0),
+        shoot = false,
+        shoot_held = false,
+        pass = false,
+        pass_held = false,
+        switch = false,
+        dash = false,
+        dodge = false,
+        lob = false,
+        sprint = false,
+        jockey = false,
+        equipment_held = false,
+        equipment_pressed = false,
+        equipment_released = false,
+    }
+
+    -- An AI carrier with a committed wind-up and a challenger stood over it,
+    -- mirroring the cancellation fixture in
+    -- `spec/sim/ai_kick_execution_spec.lua`.
+    ---@param challenged boolean
+    ---@return MatchState, integer carrier_index
+    local function committed_windup(challenged)
+        local state = match.new({
+            home = teams.nebula,
+            away = teams.orion,
+            field = { w = 960, h = 540 },
+            seed = 97,
+        })
+        local carrier_index
+        for index, player in ipairs(state.players) do
+            if player.team == "away" and not player.is_keeper then
+                carrier_index = index
+                break
+            end
+        end
+        carrier_index = assert(carrier_index)
+        local carrier = state.players[carrier_index]
+        carrier.pos = Vec2.new(300, 270)
+        carrier.facing = Vec2.new(-1, 0)
+        carrier.vel = Vec2.new(0, 0)
+        carrier.run_vel = Vec2.new(0, 0)
+        carrier.windup_timer = challenged and 0.12 or 0
+        carrier.windup_shot = {
+            dir = Vec2.new(-1, 0),
+            speed = 500,
+            vz = 0,
+            spin = 0,
+            shot_type = "ground",
+        }
+        state.owner = carrier_index
+        state.ball = carrier.pos:add(carrier.facing:scale(18))
+        for index, player in ipairs(state.players) do
+            if player.team == "away" and not player.is_keeper and index ~= carrier_index then
+                player.pos = Vec2.new(40, 380 + index * 15)
+            end
+        end
+        local challenger = state.players[state.controlled]
+        challenger.pos = challenged and Vec2.new(carrier.pos.x - 24, carrier.pos.y)
+            or Vec2.new(80, 60)
+        challenger.vel = Vec2.new(0, 0)
+        challenger.run_vel = Vec2.new(0, 0)
+        return state, carrier_index
+    end
+
+    ---@param state MatchState
+    ---@return boolean
+    local function saw_shot(state)
+        for _, event in ipairs(state.events) do
+            if event.kind == "shot" then
+                return true
+            end
+        end
+        return false
+    end
+
+    -- Exactly what the match screen does with a frame batch, then the real
+    -- draw path. Counting is identity-free: at most one player can hold a
+    -- release window in these fixtures.
+    ---@param state MatchState
+    ---@param dt number
+    ---@return integer
+    local function drawn_kick_follow_count(state, dt)
+        release_follow.update(state.events, dt)
+        local count = 0
+        local saved_graphics = love.graphics
+        local saved_draw = player_renderer.draw
+        love.graphics = stub_graphics()
+        player_renderer.draw = function(_, _, _, _, _, draw_opts)
+            if draw_opts.pose.id == "kick_follow" then
+                count = count + 1
+            end
+        end
+        local ok, err = pcall(function()
+            pitch.draw(state, { w = 1280, h = 720 }, {
+                home_color = teams.nebula.color,
+                away_color = teams.orion.color,
+            })
+        end)
+        player_renderer.draw = saved_draw
+        love.graphics = saved_graphics
+        t.is_true(ok, "release pose draw error: " .. tostring(err))
+        return count
+    end
+
+    t.it("shows follow-through when a wind-up actually releases", function()
+        release_follow.reset()
+        local state, carrier_index = committed_windup(false)
+        local carrier = state.players[carrier_index]
+
+        match.step(state, 0, NO_INPUT)
+
+        t.is_true(saw_shot(state), "the fixture must actually release")
+        t.eq(carrier.windup_shot, nil)
+        t.eq(release_follow.active(carrier.id), false, "the window opens from the frame batch")
+        t.eq(drawn_kick_follow_count(state, 0), 1)
+        release_follow.reset()
+    end)
+
+    t.it("shows no follow-through when a tackle cancels the wind-up", function()
+        release_follow.reset()
+        local state, carrier_index = committed_windup(true)
+        local carrier = state.players[carrier_index]
+        local tackle = {}
+        for key, value in pairs(NO_INPUT) do
+            tackle[key] = value
+        end
+        tackle.dash = true
+        ---@cast tackle MatchInput
+
+        match.step(state, 1 / 60, tackle)
+
+        -- Fail loudly if the cancellation path itself stops firing, so this
+        -- can never pass for the wrong reason.
+        t.eq(carrier.windup_shot, nil, "the tackle must cancel the committed shot")
+        t.is_true(not saw_shot(state), "a cancelled wind-up emits no release")
+        t.eq(release_follow.active(carrier.id), false)
+        t.eq(drawn_kick_follow_count(state, 1 / 60), 0)
+
+        -- And it stays closed for the whole window a real release would fill.
+        for _ = 1, 12 do
+            match.step(state, 1 / 60, NO_INPUT)
+            if saw_shot(state) then
+                break
+            end
+            t.eq(drawn_kick_follow_count(state, 1 / 60), 0)
+        end
+        release_follow.reset()
+    end)
+end)
+
+t.describe("outfield contain against the counter-press window", function()
+    -- The possession memory exactly where a just-established turnover leaves
+    -- it, matching `spec/sim/transition_windows_match_spec.lua`.
+    ---@param state MatchState
+    ---@param winner "home"|"away"
+    ---@param elapsed number
+    local function arm_turnover(state, winner, elapsed)
+        state.transition.last_team = winner
+        state.transition.holding_team = winner
+        state.transition.hold = possession_transition.ESTABLISH_SECONDS
+        state.transition.turnover_team = winner
+        state.transition.elapsed = elapsed
+    end
+
+    ---@param state MatchState
+    ---@return integer
+    local function drawn_contain_count(state)
+        local count = 0
+        local saved_graphics = love.graphics
+        local saved_draw = player_renderer.draw
+        love.graphics = stub_graphics()
+        player_renderer.draw = function(_, _, _, _, _, draw_opts)
+            if draw_opts.pose.id == "contain" then
+                count = count + 1
+            end
+        end
+        local ok, err = pcall(function()
+            pitch.draw(state, { w = 1280, h = 720 }, {
+                home_color = teams.nebula.color,
+                away_color = teams.orion.color,
+            })
+        end)
+        player_renderer.draw = saved_draw
+        love.graphics = saved_graphics
+        t.is_true(ok, "contain pose draw error: " .. tostring(err))
+        return count
+    end
+
+    t.it("drops the shepherding stance while the presser is counter-pressing", function()
+        release_follow.reset()
+        local state = fixture()
+        state.kickoff_hold = 0
+        state.owner = 7
+        state.ball = state.players[7].pos
+        state.outfield_press.home = outfield_press.contain(2)
+
+        -- Home has just lost the ball: its presser is a full-speed hunter, and
+        -- `sim.match` exempts it from the contain slowdown and ball-facing lock.
+        arm_turnover(state, "away", 0)
+        t.eq(
+            possession_transition.phase(
+                state.transition,
+                "home",
+                "away",
+                state.transition_windows.home
+            ),
+            "counterpress"
+        )
+        t.eq(drawn_contain_count(state), 0, "a counter-press hunter is not shepherding")
+
+        -- Same press mode, window spent: now the stance is the truth.
+        state.transition = possession_transition.new_state()
+        state.transition.last_team = "away"
+        state.transition.holding_team = "away"
+        state.transition.hold = possession_transition.ESTABLISH_SECONDS
+        t.eq(
+            possession_transition.phase(
+                state.transition,
+                "home",
+                "away",
+                state.transition_windows.home
+            ),
+            "defend"
+        )
+        t.eq(drawn_contain_count(state), 1)
+        release_follow.reset()
     end)
 end)
