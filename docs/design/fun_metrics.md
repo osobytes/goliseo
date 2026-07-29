@@ -713,3 +713,36 @@ until phase 4 automates it).
   stopped the refresh. `goals_total` now sits nearest its lower edge
   (desirability 0.79) and is the field to watch if counter-pressing is
   calibrated further.
+
+- **2026-07-28 — deterministic combat AI (#112). NO DRIFT; baseline NOT
+  refreshed.** `gameplay_ai/combat/v1` gives AI outfielders an equipment-intent
+  channel and the four combat families. That is a real gameplay-AI behaviour
+  change, so the ritual was run rather than assumed.
+
+  The 30-seed tripwire moved **every tracked metric by ±0.000**: fun 0.496,
+  goals 2.133, shots/goal 20.327, save rate 0.803, pass completion 0.577,
+  turnovers/min 3.726, possession balance 0.410, drought 10.269 s, decided-late
+  0.541, and all ten dribble diagnostics unchanged to six decimal places.
+  `data/fun_baseline.lua` is therefore left exactly as it was: refreshing an
+  unmoved baseline would only destroy the evidence that it did not move.
+
+  The reason is structural, not luck. `sim.tripwire` and `love . --sim 100` both
+  run through `sim.headless`, which builds soccer-only matches: it never
+  constructs a `CombatMatchState`. `match._ai_combat_inputs` is called only
+  inside `if combat_state then`, so in a soccer-only match the combat AI does
+  not run, allocates nothing, and consumes no RNG. The new per-decision seed is
+  derived from the canonical combat tick rather than drawn from `s.rng`, so even
+  an executed combat decision cannot perturb the soccer stream.
+
+  The 100-match validation confirms it: fun 0.477, goals 2.040, shots/goal
+  21.514, save rate 0.841, pass completion 0.576, turnovers/min 4.013,
+  possession balance 0.405, drought 10.926 s, decided-late 0.550 — the same
+  numbers as the previous entry, whose band status therefore still stands
+  unchanged, including the two inherited quality exceptions.
+
+  **What this baseline does NOT cover.** It measures combat-disabled play, so it
+  says nothing about combat balance. The fun signature of combat-enabled matches
+  is #149's calibration and #114's disposition; #59 freezes the combat-disabled
+  policy this entry describes. When a combat-enabled fun signature is introduced,
+  it needs its own baseline and its own tripwire entry — reading this one as
+  evidence about combat would be reading it backwards.

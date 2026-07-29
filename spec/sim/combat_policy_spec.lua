@@ -17,6 +17,11 @@ local t = require("spec.support.runner")
 local SOURCE = 2
 local TARGET = 7
 
+-- `formation_risk_tradeoff` is a cost flag, never a purpose or a reason. Looking
+-- it up through a variable keeps the absence assertions honest without asking
+-- the type checker to accept a field that must not exist.
+local COST_FLAG = "formation_risk_tradeoff"
+
 ---@param overrides table<string, any>?
 ---@return CombatPolicyCandidate
 local function candidate(overrides)
@@ -124,7 +129,7 @@ t.describe("gameplay_ai/combat/v1 scoring", function()
             candidate({ purpose = "carrier_protection", formation_risk = true })
         )
         t.eq(safe - risky, combat_policy.FORMATION_RISK_PENALTY)
-        t.is_true(combat_policy.PURPOSE_BASE.formation_risk_tradeoff == nil)
+        t.is_true(combat_policy.PURPOSE_BASE[COST_FLAG] == nil)
 
         -- Chasing the ball IS leaving the anchor, so the flag is still raised
         -- and reported for an on-ball purpose but does not veto the contest.
@@ -309,8 +314,9 @@ t.describe("gameplay_ai/combat/v1 decisions", function()
     end)
 
     t.it("rejects any observation that is not this schema", function()
-        local ok = pcall(combat_policy.decide, { schema = "human_proxy_observation/v1" }, 1, 0)
-        t.is_true(not ok)
+        local foreign = { schema = "human_proxy_observation/v1", version = 1 }
+        ---@cast foreign any
+        t.is_true(not pcall(combat_policy.decide, foreign, 1, 0))
     end)
 end)
 
@@ -328,7 +334,7 @@ t.describe("combat decision reasons", function()
         }) do
             t.is_true(combat_intent.COMMIT_REASONS[purpose], purpose .. " is not a commit reason")
         end
-        t.is_true(combat_intent.REASONS.formation_risk_tradeoff == nil)
+        t.is_true(combat_intent.REASONS[COST_FLAG] == nil)
     end)
 
     t.it("refuses to label a commit with decline", function()

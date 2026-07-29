@@ -256,10 +256,16 @@ maintenance trap, so state the intended relationship explicitly:
   state through one shared projection, with the evidence contract taking the wider
   slice and this contract the narrower one, rather than each hand-rolling its own
   field list from `CombatPlayerState`.
-- Until that shared projection exists, a change to combat state that affects
-  visibility has to be reflected in both documents. Whoever unifies them should
-  treat this contract's set as the floor: widening it requires the same
-  render-citation justification as any other field here.
+- **The shared projection now exists (#112).** `sim/combat_observation.lua`
+  reads `CombatPlayerState` once and publishes the public row;
+  `combat_observation.telegraph` is the narrow presented slice, and
+  `env_observation`'s `EnvObservedEquipment` is built from it rather than from a
+  second hand-rolled read. The evidence schema takes the wider slice of the same
+  projection. A change to combat state that affects visibility is therefore made
+  in one place, and only its exposure has to be decided per contract.
+- This contract's set remains the floor. Widening it still requires the same
+  render-citation justification as any other field here, and the wider evidence
+  slice is not a licence to promote a field into a player-observable view.
 
 ## Performance profile
 
