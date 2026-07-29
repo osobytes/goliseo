@@ -15,10 +15,12 @@
 --     player index; projectile rows follow `(source_sequence, source_player_id,
 --     projectile_id)`. `validate` rejects a reordered array.
 --   * No field is ever nil. Optional values materialize as explicit sentinels
---     (`0` for integers, `"none"` for enums, `false` for flags), so an absent
---     field is distinguishable from a present one and `validate` can reject a
---     missing field. Lua cannot tell "absent" from "nil", so a total encoding is
---     the only way to make an allowlist real.
+--     (`0` for integers, `"none"` for enums, `false` for flags). Lua cannot hold
+--     an explicit-nil key, so `nil` already means "missing" and `validate` can
+--     reject it either way; what the sentinels buy is that a legitimately
+--     INAPPLICABLE value -- no accepted action, so no source sequence -- does not
+--     read as a missing field. Every row is therefore total, which is also what
+--     lets the canonical encoding stay a fixed-width walk of the field list.
 --
 -- The digest is FNV-1a-64 over the canonical encoding below. Section 4.0 of
 -- `docs/design/combat_fun_evidence_contract.md` names SHA-256 for #148's export
@@ -356,8 +358,10 @@ combat_observation.ANCHOR_FIELDS = {
 }
 
 -- Fields a caller could plausibly try to smuggle in. `validate` already rejects
--- every undeclared key; this list exists so the leakage spec can name the ones
--- the contract explicitly forbids and prove the rejection is real.
+-- every undeclared key, so this is not a second enforcement path; it is the
+-- named subset that section 4.7 explicitly excludes.
+-- `spec/sim/combat_observation_leakage_spec.lua` consumes this list and adds its
+-- own broader entries on top, so the two cannot drift apart.
 combat_observation.FORBIDDEN_FIELDS = {
     "loadout_id",
     "presentation_id",
@@ -448,7 +452,8 @@ local function catalog_version()
             end
         end
     end
-    return "family_catalog." .. fnv1a64.hash(table.concat(parts)):sub(1, 16)
+    -- `fnv1a64.hash` already returns exactly 16 lowercase hex characters.
+    return "family_catalog." .. fnv1a64.hash(table.concat(parts))
 end
 
 combat_observation.FAMILY_CATALOG_VERSION = catalog_version()
@@ -1055,6 +1060,7 @@ function combat_observation.validate(observation)
         if type(rows) ~= "table" then
             return nil, "observation." .. key .. " must be an array"
         end
+        local same_team = key == "teammates"
         local previous = 0
         for index, row in ipairs(rows) do
             local path = "observation." .. key .. "." .. index
@@ -1066,6 +1072,19 @@ function combat_observation.validate(observation)
             ) or check_enums(row, path)
             if err then
                 return nil, err
+            end
+            -- Which array a row sits in IS its team, for every consumer:
+            -- `combat_policy.candidates` only ever targets `opponents`,
+            -- `teammate_coverage` only counts `teammates`, and
+            -- `combat_feasibility.hostile_paths` reads `opponents` as hostile.
+            -- Checking the `team` field against the closed vocabulary is
+            -- therefore not enough; it has to agree with the array it is in, or
+            -- a hand-built table could make the policy treat a teammate as a
+            -- target. `build` cannot produce that, but `validate` is what an
+            -- adversarial harness (section 4.7) leans on, so it must be the
+            -- thing that says no.
+            if (row.team == observation.self.team) ~= same_team then
+                return nil, path .. " is in the wrong team array for its team"
             end
             if not is_integer(row.player_index) or row.player_index < 1 then
                 return nil, path .. " needs a canonical player index"

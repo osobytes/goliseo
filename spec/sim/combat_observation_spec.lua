@@ -79,6 +79,31 @@ t.describe("combat_sim_observation/v1", function()
         t.is_true(tostring(err):find("canonical player order") ~= nil, err)
     end)
 
+    t.it("rejects a row filed under the wrong team array", function()
+        local state, combat_state = new_match()
+        local observation = build(state, combat_state)
+        -- Home is 1..5 and away is 6..10 and the observer is player 2, so moving
+        -- opponent 6 onto the end of the teammate array keeps the canonical
+        -- ascending player order intact. Only the team disagrees.
+        local moved = table.remove(observation.opponents, 1)
+        t.eq(moved.player_index, 6)
+        observation.teammates[#observation.teammates + 1] = moved
+        -- Recompute the digest so a stale hash cannot mask the real rejection:
+        -- this has to fail on the team, not on the digest.
+        observation.digest = combat_observation.digest(observation)
+        local ok, err = combat_observation.validate(observation)
+        t.is_true(ok == nil, "a team-swapped row was accepted")
+        t.is_true(tostring(err):find("wrong team array") ~= nil, err)
+
+        -- Every consumer reads array membership as team ground truth, so the
+        -- mirror case has to be rejected too.
+        local mirrored = build(state, combat_state)
+        local mate = table.remove(mirrored.teammates, 1)
+        table.insert(mirrored.opponents, 1, mate)
+        mirrored.digest = combat_observation.digest(mirrored)
+        t.is_true(combat_observation.validate(mirrored) == nil)
+    end)
+
     t.it("rejects a missing declared field", function()
         local state, combat_state = new_match()
         local observation = build(state, combat_state)
@@ -117,9 +142,16 @@ t.describe("combat_sim_observation/v1", function()
 
     t.it("rejects a duplicated peer row and a duplicated projectile row", function()
         local state, combat_state = new_match()
-        local observation = build(state, combat_state)
-        observation.teammates[#observation.teammates + 1] = observation.opponents[1]
-        t.is_true(combat_observation.validate(observation) == nil)
+        -- A peer row cannot be duplicated without ALSO breaking something else:
+        -- within one array it breaks the strict player-index ordering, and
+        -- across arrays it breaks team membership. Both rejections are asserted
+        -- here; `seen_index` stays as defence in depth behind them.
+        local across = build(state, combat_state)
+        across.teammates[#across.teammates + 1] = across.opponents[1]
+        t.is_true(combat_observation.validate(across) == nil)
+        local within = build(state, combat_state)
+        within.teammates[#within.teammates + 1] = within.teammates[1]
+        t.is_true(combat_observation.validate(within) == nil)
 
         combat_state.projectiles[1] = {
             family_id = "ranged",
@@ -209,6 +241,43 @@ t.describe("combat_sim_observation/v1", function()
                 t.eq(peer.projected_spawn_tick, 0)
             end
         end
+    end)
+
+    t.it("holds the same sentinel discipline on the self row", function()
+        local state, combat_state = new_match()
+        -- A player with no accepted action: every optional value is present as
+        -- its sentinel rather than absent, which is what keeps the row total.
+        local idle = build(state, combat_state, 2)
+        t.eq(idle.self.source_sequence, 0)
+        t.eq(idle.self.forced_state, "none")
+        t.eq(idle.self.release_latched, false)
+        t.eq(idle.self.projected_spawn_tick, 0)
+        t.is_true(assert(combat_observation.validate(idle)))
+
+        -- A ranged self row publishes its spawn tick only once its own release
+        -- latch is set, exactly as a peer row does.
+        local runtime = combat_state.players[2]
+        runtime.family_id = "ranged"
+        runtime.loadout_id = "loadout_pulse_blaster"
+        runtime.phase = "windup"
+        runtime.phase_ticks = 6
+        runtime.source_sequence = 3
+        combat_state.tick = 100
+        local unlatched = build(state, combat_state, 2)
+        t.eq(unlatched.self.release_latched, false)
+        t.eq(unlatched.self.projected_spawn_tick, 0)
+
+        runtime.release_latched = true
+        local latched = build(state, combat_state, 2)
+        t.eq(latched.self.release_latched, true)
+        t.eq(latched.self.projected_spawn_tick, 106)
+
+        -- A non-ranged family never claims a latch or a spawn tick.
+        runtime.family_id = "light_melee"
+        runtime.loadout_id = "loadout_vector_blade"
+        local melee = build(state, combat_state, 2)
+        t.eq(melee.self.release_latched, false)
+        t.eq(melee.self.projected_spawn_tick, 0)
     end)
 
     t.it("publishes a ranged spawn tick only once the release latch is public", function()
