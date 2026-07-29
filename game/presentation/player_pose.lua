@@ -1,3 +1,7 @@
+local offball_runs = require("sim.offball_runs")
+local outfield_decision = require("sim.outfield_decision")
+local sim_match = require("sim.match")
+
 ---@alias PlayerPoseId
 ---| "keeper_grab"
 ---| "keeper_throw"
@@ -23,6 +27,13 @@
 ---| "combat_recovery"
 ---| "soccer_windup"
 ---| "slide"
+---| "tackle"
+---| "stumble"
+---| "kick_follow"
+---| "settle"
+---| "run_telegraph"
+---| "contain"
+---| "fatigue"
 ---| "locomotion"
 
 ---@alias PlayerPoseSource "soccer"|"combat"|"locomotion"
@@ -36,6 +47,15 @@
 ---@field near_ball boolean
 ---@field shuffling boolean
 ---@field tip boolean
+
+-- The outfield signals the renderer cannot read off `MatchPlayer` alone: the
+-- match clock the run telegraph window is measured against, the team-owned
+-- press mode, and the render-owned release follow-through. Every field is
+-- supplied by the caller; this module never samples a clock or a global.
+---@class OutfieldPoseContext
+---@field now number?  -- seconds since kickoff (`-MatchState.time_left`)
+---@field containing boolean?  -- team press state holds this player in contain
+---@field kick_follow boolean?  -- a confirmed release is still following through
 
 ---@class PlayerPoseModule
 local player_pose = {}
@@ -66,7 +86,20 @@ player_pose.PRIORITY = {
     combat_aim = 81,
     combat_recovery = 80,
     soccer_windup = 70,
+    -- Outfield ground poses, all below the combat band so a forced state or a
+    -- committed combat phase keeps presentation precedence. The order reads
+    -- down from most committed to least: challenges (slide, tackle) outrank the
+    -- recovery they can cause (stumble), which outranks what the player is
+    -- doing with the ball (kick_follow, settle), which outranks intent
+    -- off the ball (run_telegraph, contain) and finally condition (fatigue).
     slide = 60,
+    tackle = 55,
+    stumble = 50,
+    kick_follow = 45,
+    settle = 40,
+    run_telegraph = 35,
+    contain = 30,
+    fatigue = 20,
     locomotion = 0,
 }
 
@@ -77,11 +110,41 @@ local function selection(id, source)
     return { id = id, priority = assert(player_pose.PRIORITY[id]), source = source }
 end
 
+-- The opening beat of a run the simulation has already granted. The window and
+-- its edge handling belong to `sim.offball_runs`; presentation only asks.
+---@param player MatchPlayer
+---@param now number?
+---@return boolean
+local function run_telegraphing(player, now)
+    if now == nil then
+        return false
+    end
+    local decision = player.outfield_decision
+    if not outfield_decision.is_run_intent(decision.intent) then
+        return false
+    end
+    local expires_at = decision.run_expires_at
+    if expires_at == nil then
+        return false
+    end
+    return offball_runs.telegraphing(now, expires_at)
+end
+
+-- The sprint tank is spent when the player is not sprinting and cannot engage
+-- one: the same hysteresis boundary `sim.match` uses, so the pose never claims
+-- a burst is available when it is not.
+---@param player MatchPlayer
+---@return boolean
+local function sprint_spent(player)
+    return not player.sprinting and player.sprint_meter <= sim_match.SPRINT_ENGAGE
+end
+
 ---@param player MatchPlayer
 ---@param combat CombatPlayerPresentation?
 ---@param keeper_context KeeperPoseContext?
+---@param outfield_context OutfieldPoseContext?
 ---@return PlayerPoseSelection
-function player_pose.select(player, combat, keeper_context)
+function player_pose.select(player, combat, keeper_context, outfield_context)
     ---@type PlayerPoseSelection[]
     local candidates = {}
     local function add(id, source)
@@ -150,6 +213,34 @@ function player_pose.select(player, combat, keeper_context)
     end
     if player.slide_timer > 0 then
         add("slide", "soccer")
+    end
+    -- Outfield poses. Keepers keep their own vocabulary end to end, so a keeper
+    -- punt or a keeper stumble never borrows an outfielder's silhouette.
+    if not player.is_keeper then
+        if player.tackle_timer > 0 then
+            add("tackle", "soccer")
+        end
+        if player.stun_timer > 0 then
+            add("stumble", "soccer")
+        end
+        if outfield_context and outfield_context.kick_follow then
+            add("kick_follow", "soccer")
+        end
+        if player.settle_timer > 0 then
+            add("settle", "soccer")
+        end
+        if run_telegraphing(player, outfield_context and outfield_context.now) then
+            add("run_telegraph", "soccer")
+        end
+        -- One shared silhouette, two independent mechanics: the human jockey
+        -- stance and the AI presser's contain mode read the same on screen and
+        -- keep their own reach, speed, and trigger rules in `sim.match`.
+        if player.jockey_timer > 0 or (outfield_context and outfield_context.containing) then
+            add("contain", "soccer")
+        end
+        if sprint_spent(player) then
+            add("fatigue", "soccer")
+        end
     end
     add("locomotion", "locomotion")
 

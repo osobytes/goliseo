@@ -9,6 +9,7 @@ local effects = require("game.render.effects")
 local match_hud_render = require("game.render.match_hud")
 local pitch = require("game.render.pitch")
 local view_state = require("game.render.view_state")
+local release_follow = require("game.render.release_follow")
 local match_hud = require("game.match_hud")
 
 ---@class CombatFeedbackFixtureScreen
@@ -50,6 +51,7 @@ function Fixture.new(capture_path)
         exit_seconds = nil,
     }, Fixture)
     view_state.reset()
+    release_follow.reset()
     view_state.update(self.fixture.state.players, 0)
     refresh(self)
     return self

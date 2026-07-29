@@ -16,6 +16,7 @@ local correction_smoothing = require("game.render.correction_smoothing")
 local effects = require("game.render.effects")
 local match_hud_render = require("game.render.match_hud")
 local view_state = require("game.render.view_state")
+local release_follow = require("game.render.release_follow")
 local combat_presentation = require("game.presentation.combat")
 local combat_feedback = require("game.presentation.combat_feedback")
 local match_event_batch = require("game.presentation.match_event_batch")
@@ -177,6 +178,7 @@ local function clear_render_smoothing(self, reset_view)
     self._render_pose = correction_smoothing.pose(self._render_smoothing)
     if reset_view ~= false then
         view_state.reset()
+        release_follow.reset()
     end
     refresh_smoothing_debug(self)
 end
@@ -202,6 +204,7 @@ local function update_render_smoothing(self, dt, corrected, lifecycle_reset, upd
     end
     if update_view then
         view_state.update(self.state.players, dt, self._render_pose)
+        release_follow.update(self._frame_events, dt)
     end
 end
 
@@ -265,6 +268,7 @@ local function advance_rollback_replay(self, dt)
     self._replay_state = replay.step(dt)
     if self._replay_state then
         view_state.update(self._replay_state.players, dt)
+        release_follow.update(self._replay_state.events, dt)
     else
         finish_replay(self)
     end
@@ -566,6 +570,7 @@ function Match:restart()
         replay.record_boundary(0, self.state, self._combat_state)
     end
     view_state.reset()
+    release_follow.reset()
     effects.reset()
     audio.load()
     audio.reset()
@@ -792,6 +797,7 @@ function Match:update(dt)
         self._replay_state = replay.step(dt)
         if self._replay_state then
             view_state.update(self._replay_state.players, dt)
+            release_follow.update(self._replay_state.events, dt)
             effects.update(self._replay_state, dt)
         else
             finish_replay(self)
@@ -985,6 +991,7 @@ function Match:update(dt)
                 effects.reset_visuals()
                 combat_feedback.reset_visuals(self._combat_feedback)
                 view_state.reset()
+                release_follow.reset()
                 self._replay_state = nil
             end
         end
