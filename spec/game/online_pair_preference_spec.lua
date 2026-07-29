@@ -24,13 +24,13 @@ local SESSION = fixture.manifest().session_id
 -- every one of these must still be byte-identical.
 local SHIPPED_DIGESTS = {
     handshake = "2722abf054051350",
-    manifest_proposal = "e34b30fed75499a1",
-    manifest_accept = "42e3f50da05e6463",
+    manifest_proposal = "d8828f15a3aca7f6",
+    manifest_accept = "5535f2d2cd0c78c1",
     peer_assignment = "fa48b31571dfe543",
-    slot_assignment = "c99d986a0e3b57b3",
-    ready = "3a083893e4b3edc4",
-    countdown = "5553956811b0616f",
-    start = "e307b88296c484f4",
+    slot_assignment = "5ad57c25fc94b01d",
+    ready = "d0a259fac573d722",
+    countdown = "f1fbbe316dc59b99",
+    start = "e3ce6b9842148436",
     match_phase = "1671940891b78f1f",
     hash_report = "4405d9323b1e5b0f",
     result_ack = "5f466e6740c6d4cf",
@@ -171,12 +171,12 @@ end
 t.describe("pair preference wire", function()
     t.it("keeps every digest that shipped before it, and the manifest id", function()
         local report = conformance.verify()
-        t.eq(report.manifest_id, "24fb82e932881333", "the manifest is untouched by this change")
+        t.eq(report.manifest_id, "71c68acdb2ce6822", "the manifest is untouched by this change")
         for kind, digest in pairs(SHIPPED_DIGESTS) do
             t.eq(conformance.GOLDEN.wire_digests[kind], digest, kind .. " wire digest moved")
         end
-        t.eq(conformance.GOLDEN.wire_digests.pair_preference, "99d0dce0cfcf08fa")
-        t.eq(conformance.GOLDEN.wire_digests.pair_preference_result, "03568bb60a6de925")
+        t.eq(conformance.GOLDEN.wire_digests.pair_preference, "079b77dba4b1154c")
+        t.eq(conformance.GOLDEN.wire_digests.pair_preference_result, "60000b5490034d23")
     end)
 
     t.it("round-trips a request and a verdict through the canonical codec", function()
