@@ -7,6 +7,7 @@
 
 local Vec2 = require("core.vec2")
 local combat = require("sim.combat")
+local combat_intent = require("sim.combat_intent")
 local combat_policy = require("sim.combat_policy")
 local fixed_clock = require("sim.fixed_clock")
 local input_frame = require("sim.input_frame")
@@ -226,6 +227,107 @@ t.describe("deterministic combat AI in a match", function()
         t.eq(reason, "recovery_punish")
     end)
 
+    t.it("sidesteps an in-flight projectile it has no reason to contest", function()
+        local state, combat_state = family_match("unarmed")
+        park_everyone(state)
+        local source = state.players[SOURCE]
+        local shooter = state.players[TARGET]
+        local juked, dodged, contacted = false, false, false
+        for _ = 1, 60 do
+            -- No purpose predicate can hold: the ball is loose and nowhere near
+            -- either body, so this player has nothing to contest and the policy
+            -- has no candidate at all. Spacing is the only answer available.
+            source.pos = Vec2.new(400, 270)
+            source.facing = Vec2.new(1, 0)
+            source.vel = Vec2.new(0, 0)
+            shooter.pos = Vec2.new(900, 60)
+            state.owner = nil
+            state.ball = Vec2.new(900, 60)
+            state.ball_vel = Vec2.new(0, 0)
+            -- Re-arm the same inbound projectile every tick so the threat is
+            -- always the same distance out whenever the personal cadence beat
+            -- lands. At 300 px/s the 40 px gap closes in 7 ticks, which sits
+            -- between EVADE_MIN_LEAD_TICKS and EVADE_WINDOW_TICKS: late enough
+            -- to be real, early enough that a player could have read it.
+            combat_state.projectiles[1] = {
+                family_id = "ranged",
+                source_index = TARGET,
+                source_sequence = 1,
+                pos = Vec2.new(440, 270),
+                dir = Vec2.new(-1, 0),
+                remaining_ticks = 40,
+            }
+            match.step(
+                state,
+                fixed_clock.TICK_SECONDS,
+                slot_input.neutral_match_input(),
+                combat_state
+            )
+            for _, event in ipairs(state.events) do
+                if event.kind == "juke" and event.player == source.id then
+                    juked = true
+                end
+            end
+            if source.dodge_timer > 0 then
+                dodged = true
+            end
+            for _, event in ipairs(combat_state.events) do
+                if event.kind == "contact" and event.target_index == SOURCE then
+                    contacted = true
+                end
+            end
+        end
+        t.is_true(juked, "the AI never emitted the juke its sidestep is made of")
+        t.is_true(dodged, "the AI never entered the dodge window")
+        -- The sidestep is mechanical, not a pose: `sim.combat` skips a dodging
+        -- body when it selects projectile targets.
+        t.is_true(not contacted, "the sidestep did not actually avoid the projectile")
+    end)
+
+    t.it("sidesteps away from the threat rather than into it", function()
+        local state, combat_state = family_match("unarmed")
+        park_everyone(state)
+        local source = state.players[SOURCE]
+        local shooter = state.players[TARGET]
+        -- Facing +x with the threat arriving from below: the sidestep has to
+        -- carry the body upward. Getting the perpendicular sign backwards would
+        -- step into the projectile and still pass a "did it dodge" assertion.
+        for _ = 1, 60 do
+            source.pos = Vec2.new(400, 270)
+            source.facing = Vec2.new(1, 0)
+            source.vel = Vec2.new(0, 0)
+            shooter.pos = Vec2.new(900, 60)
+            state.owner = nil
+            state.ball = Vec2.new(900, 60)
+            state.ball_vel = Vec2.new(0, 0)
+            combat_state.projectiles[1] = {
+                family_id = "ranged",
+                source_index = TARGET,
+                source_sequence = 1,
+                pos = Vec2.new(400, 310),
+                dir = Vec2.new(0, -1),
+                remaining_ticks = 40,
+            }
+            match.step(
+                state,
+                fixed_clock.TICK_SECONDS,
+                slot_input.neutral_match_input(),
+                combat_state
+            )
+            if source.dodge_timer > 0 then
+                -- The projectile comes from +y, so a correct sidestep points at
+                -- -y. `dodge_dir` is the authored juke direction the movement
+                -- path then follows.
+                t.is_true(
+                    source.dodge_dir.y < 0,
+                    "the sidestep pointed toward the incoming projectile"
+                )
+                return
+            end
+        end
+        t.is_true(false, "the AI never sidestepped a threat arriving from the side")
+    end)
+
     t.it("never commits against a protected keeper or lets a keeper commit", function()
         local state, combat_state = family_match("unarmed")
         park_everyone(state)
@@ -441,6 +543,73 @@ t.describe("deterministic combat AI on fixed slots", function()
             end
             match.step(state, fixed_clock.TICK_SECONDS, effective, combat_state)
         end
+    end)
+
+    t.it("reports the reason and digest behind every bot-fill commit", function()
+        local state, combat_state, producer = slot_fixture()
+        local commits, declines = 0, 0
+        local seen_digest = nil
+        for tick = 0, 300 do
+            local base = assert(input_frame.neutral(tick))
+            local frame, decisions = slot_input.materialize(producer, state, base, combat_state)
+            for _, decision in ipairs(decisions) do
+                t.eq(decision.player_index, state.slot_players[decision.slot])
+                t.eq(#decision.digest, 16)
+                if decision.action == "commit" then
+                    commits = commits + 1
+                    -- Exactly one stable reason from the five purposes, with the
+                    -- frozen target it names.
+                    t.is_true(
+                        combat_intent.COMMIT_REASONS[decision.reason],
+                        "a bot fill committed with reason " .. tostring(decision.reason)
+                    )
+                    t.is_true(decision.target_player ~= nil)
+                    t.eq(decision.unavailable_reason, nil)
+                    seen_digest = decision.digest
+                    -- Readable back off the producer as well as off the return.
+                    local recalled = assert(slot_input.last_decision(producer, decision.slot))
+                    t.eq(recalled.reason, decision.reason)
+                    t.eq(recalled.digest, decision.digest)
+                elseif decision.action == "decline" then
+                    declines = declines + 1
+                    t.eq(decision.reason, "decline")
+                    t.eq(decision.target_player, nil)
+                else
+                    t.eq(decision.action, "unavailable")
+                    t.eq(decision.reason, "none")
+                    t.is_true(decision.unavailable_reason ~= nil)
+                end
+            end
+            match.step(state, fixed_clock.TICK_SECONDS, frame, combat_state)
+        end
+        t.is_true(commits > 0, "no bot fill ever committed, so nothing was reported")
+        t.is_true(declines > 0, "declines are never surfaced")
+        t.is_true(seen_digest ~= nil)
+    end)
+
+    t.it("keeps the decision report out of the hashed simulation boundary", function()
+        -- The report is a producer return value, never a MatchEvent: two peers
+        -- must not diverge on whether their caller collected the diagnostic.
+        ---@param collect boolean
+        ---@return string
+        local function run(collect)
+            local state, combat_state, producer = slot_fixture()
+            local hashes = {}
+            for tick = 0, 120 do
+                local base = assert(input_frame.neutral(tick))
+                local frame, decisions = slot_input.materialize(producer, state, base, combat_state)
+                if collect then
+                    for _, decision in ipairs(decisions) do
+                        t.is_true(decision.digest ~= nil)
+                    end
+                end
+                match.step(state, fixed_clock.TICK_SECONDS, frame, combat_state)
+                hashes[#hashes + 1] =
+                    match_snapshot.hash(match_snapshot.capture(state, combat_state))
+            end
+            return table.concat(hashes, ";")
+        end
+        t.eq(run(true), run(false))
     end)
 
     t.it("uses the same policy id the session manifest names", function()

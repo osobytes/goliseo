@@ -170,13 +170,19 @@ function combat_intent.reset(state)
     return combat_intent.new_state()
 end
 
+-- Close an episode without an action. `decline` is the contract's outcome for an
+-- episode that had a ready tick and chose not to act; an episode that was never
+-- action-ready is `unavailable:<reason>` and must NOT be labelled a decline, so
+-- it carries no reason at all.
 ---@param state CombatIntentState
+---@param action "commit"|"decline"|"unavailable"? -- The decision's own action.
 ---@return CombatIntentState
-function combat_intent.decline(state)
+function combat_intent.decline(state, action)
+    assert(action ~= "commit", "a commit closes an episode through commit, not decline")
     local next_state = combat_intent.copy_state(state)
     next_state.stage = "idle"
     next_state.hold_ticks = 0
-    next_state.reason = "decline"
+    next_state.reason = (action == "unavailable") and "none" or "decline"
     next_state.target_player = nil
     return combat_intent.copy_state(next_state)
 end

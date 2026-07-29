@@ -384,7 +384,6 @@ local SPRINT_ENGAGE = 0.25 -- min meter to start a sprint (hysteresis: no flicke
 ---|"combat_commit_passing_lane_or_shot_denial"
 ---|"combat_commit_recovery_punish"
 ---|"combat_commit_unattributed_off_ball"
----|"combat_decline"
 ---|"catch"
 ---|"parry"
 ---|"tip"
@@ -4317,17 +4316,19 @@ function match._ai_combat_inputs(s, combat_state, inputs)
                         y = player.pos.y,
                         player = player.id,
                     }
-                elseif decision.action == "decline" then
-                    runtime.intent = intents.decline(runtime.intent)
-                    -- Declining is the spacing answer: hold the ground the
-                    -- formation wants. A telegraphed threat that is actually
-                    -- about to land gets the existing sidestep instead.
-                    match._ai_combat_evade(s, player, observation, feasibility)
                 else
-                    -- `unavailable`: no tick was action-ready. Do not label the
-                    -- episode a decline, and re-read on the next cadence beat.
-                    runtime.intent = intents.decline(runtime.intent)
-                    runtime.intent.reason = "none"
+                    runtime.intent = intents.decline(runtime.intent, decision.action)
+                    -- Not committing is the spacing answer: hold the ground the
+                    -- formation wants. A telegraphed threat that is genuinely
+                    -- about to land gets the existing sidestep instead.
+                    --
+                    -- This runs for `unavailable` as well as `decline`. Evading
+                    -- is a soccer primitive, not an equipment request, so a
+                    -- player with no loadout or no reachable target still has to
+                    -- be allowed to step out of an incoming projectile. The
+                    -- evade's own gate covers the states where a sidestep is
+                    -- impossible.
+                    match._ai_combat_evade(s, player, observation, feasibility)
                 end
             end
         end
@@ -4363,12 +4364,16 @@ function match._ai_combat_evade(s, player, observation, feasibility)
         return
     end
     local policy = require("sim.combat_policy")
-    local ticks, source = feasibility.incoming_threat(observation, policy.EVADE_WINDOW_TICKS)
-    if not ticks or not source or ticks < policy.EVADE_MIN_LEAD_TICKS then
+    local ticks, _, threat_x, threat_y =
+        feasibility.incoming_threat(observation, policy.EVADE_WINDOW_TICKS)
+    if not ticks or not threat_x or not threat_y or ticks < policy.EVADE_MIN_LEAD_TICKS then
         return
     end
-    local threat = s.players[source]
-    local away = player.pos:sub(threat.pos)
+    -- Step away from the THREAT, not from the player who launched it. For melee
+    -- the two coincide; for a projectile already in flight the shooter can be
+    -- anywhere, including directly behind the body it is about to hit, and
+    -- reading the shooter would sidestep straight into the shot.
+    local away = player.pos:sub(Vec2.new(threat_x, threat_y))
     local perp = Vec2.new(-player.facing.y, player.facing.x)
     if away.x * perp.x + away.y * perp.y < 0 then
         perp = perp:scale(-1)

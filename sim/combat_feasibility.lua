@@ -543,14 +543,22 @@ end
 -- `window_ticks`. This is the spacing/evade read: it asks only whether a
 -- telegraphed threat lands, never whether it would hit, be guarded, or be
 -- superseded.
+-- Also returns where the threat IS, which is not the same thing as where its
+-- source player stands. An in-flight projectile's shooter may be across the
+-- pitch, or dead astern of it; a caller that wants to step out of the way has to
+-- read the projectile, not the body that launched it.
 ---@param observation CombatObservation
 ---@param window_ticks integer
 ---@return integer? ticks_to_contact
 ---@return integer? source_player
+---@return number? threat_x -- Current public position of the arriving threat.
+---@return number? threat_y
 function combat_feasibility.incoming_threat(observation, window_ticks)
     local own = observation.self
     local best_tick ---@type integer?
     local best_source ---@type integer?
+    local best_x ---@type number?
+    local best_y ---@type number?
     for _, path in ipairs(combat_feasibility.hostile_paths(observation, nil)) do
         local last = math.min(path.last_tick, window_ticks)
         for tick = path.start_tick, last do
@@ -567,6 +575,7 @@ function combat_feasibility.incoming_threat(observation, window_ticks)
                 if length(hx - body.x, hy - body.y) <= reach then
                     local source = path.source and path.source.player_index
                         or assert(path.projectile).source_player_index
+                    local origin = path.projectile or assert(path.source)
                     if
                         best_tick == nil
                         or tick < best_tick
@@ -574,13 +583,15 @@ function combat_feasibility.incoming_threat(observation, window_ticks)
                     then
                         best_tick = tick
                         best_source = source
+                        best_x = origin.x
+                        best_y = origin.y
                     end
                     break
                 end
             end
         end
     end
-    return best_tick, best_source
+    return best_tick, best_source, best_x, best_y
 end
 
 -- `family_commit_feasibility/v1`. Family feasibility ignores which family is

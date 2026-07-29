@@ -228,9 +228,16 @@ t.describe("family_commit_feasibility/v1", function()
         local witness = combat_feasibility.family_commit(observation, TARGET, "guard", nil)
         t.is_true(witness.feasible)
 
-        local ticks, source = combat_feasibility.incoming_threat(observation, 30)
+        local ticks, source, threat_x, threat_y =
+            combat_feasibility.incoming_threat(observation, 30)
         t.is_true(ticks ~= nil)
         t.eq(source, TARGET)
+        -- The threat position is the PROJECTILE's, not the shooter's. The
+        -- shooter stands at x=600, well behind the body it is about to hit, so a
+        -- caller that stepped away from the shooter would step into the shot.
+        t.eq(threat_x, 480)
+        t.eq(threat_y, 270)
+        t.is_true(threat_x ~= state.players[TARGET].pos.x)
     end)
 end)
 
