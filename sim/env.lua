@@ -560,7 +560,8 @@ end
 ---@return InputFrame effective
 ---@return string wire
 local function advance_tick(instance, frame, step_tick)
-    local effective = slot_input.materialize(instance._producer, instance._state, frame)
+    local effective =
+        slot_input.materialize(instance._producer, instance._state, frame, instance._combat)
     fixed_clock.step(instance._clock, effective, step_tick)
     return effective, assert(input_frame.encode(effective))
 end

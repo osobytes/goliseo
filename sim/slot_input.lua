@@ -3,6 +3,9 @@
 -- whether a row began as a recording, a neutral fill, or a deterministic bot.
 
 local Vec2 = require("core.vec2")
+local combat_intent = require("sim.combat_intent")
+local combat_observation = require("sim.combat_observation")
+local combat_policy = require("sim.combat_policy")
 local input_frame = require("sim.input_frame")
 local rng = require("core.rng")
 
@@ -14,6 +17,7 @@ local rng = require("core.rng")
 
 ---@class SlotBotState
 ---@field rng integer
+---@field intent CombatIntentState -- Producer-side combat intent; never enters the tape.
 
 ---@class SlotInputProducerState
 ---@field sources MatchSlotSource[] -- Canonical InputFrame slot order.
@@ -157,17 +161,91 @@ function slot_input.new_producer(sources)
         local source = assert(sources[index], "slot source " .. index .. " is required")
         copied[index] = copy_source(source, index)
         if copied[index].kind == "bot" then
-            bots[index] = { rng = rng.seed(assert(copied[index].seed)) }
+            bots[index] = {
+                rng = rng.seed(assert(copied[index].seed)),
+                intent = combat_intent.new_state(),
+            }
         end
     end
     return { sources = copied, bots = bots }
 end
 
+-- The declared fixed-slot bot fill runs the SAME `gameplay_ai/combat/v1` policy,
+-- the same observation schema, the same option ordering, and the same reason
+-- vocabulary as the gameplay match AI. Its retained intent lives here, on the
+-- producer, not in MatchState: a materialized tape is the replay authority, and
+-- inserting producer policy state into the simulation would make a replay
+-- without this producer diverge.
+--
+-- `sim.bot` is a different population and deliberately does not get this. It is
+-- the human-proxy evidence driver, and it may only gain combat capability behind
+-- its own explicit policy id.
 ---@param state MatchState
+---@param combat_state CombatMatchState?
+---@param player_idx integer
+---@param bot_state SlotBotState
+---@return CombatIntentSignals?
+local function bot_combat_signals(state, combat_state, player_idx, bot_state)
+    if not combat_state then
+        return nil
+    end
+    local runtime = combat_state.players[player_idx]
+    local player = state.players[player_idx]
+    if not runtime or player.is_keeper then
+        return nil
+    end
+    if runtime.forced_ticks > 0 and bot_state.intent.stage ~= "idle" then
+        bot_state.intent = combat_intent.reset(bot_state.intent)
+    end
+    local signals, next_intent = combat_intent.materialize(bot_state.intent)
+    bot_state.intent = next_intent
+    if signals then
+        return signals
+    end
+    if
+        runtime.family_id == nil
+        or runtime.phase ~= "ready"
+        or runtime.forced_ticks > 0
+        or runtime.cooldown_ticks > 0
+        or state.kickoff_hold > 0
+        or state.finished
+        or not combat_intent.should_decide(combat_state.tick, player_idx, player.scan_rate)
+    then
+        return nil
+    end
+    local observation =
+        combat_observation.build(state, combat_state, player_idx, combat_policy.POLICY_ID, nil)
+    local temperature = player.composure >= combat_policy.SHARP_COMPOSURE and 0
+        or combat_policy.BASE_TEMPERATURE * (1 - player.composure)
+    local decision = combat_policy.decide(
+        observation,
+        combat_intent.decision_seed(combat_state.tick, player_idx),
+        temperature
+    )
+    if decision.action ~= "commit" then
+        bot_state.intent = combat_intent.decline(bot_state.intent)
+        return nil
+    end
+    assert(
+        not decision.context_violation,
+        "representative_policy_context_violation: gameplay_ai/combat/v1 committed without a "
+            .. "purpose context"
+    )
+    bot_state.intent = combat_intent.commit(
+        bot_state.intent,
+        decision.reason,
+        assert(decision.target_player),
+        combat_policy.hold_ticks(observation, decision)
+    )
+    return combat_intent.commit_signals()
+end
+
+---@param state MatchState
+---@param combat_state CombatMatchState?
 ---@param player_idx integer
 ---@param bot_state SlotBotState
 ---@return MatchInput
-local function bot_input(state, player_idx, bot_state)
+local function bot_input(state, combat_state, player_idx, bot_state)
     local player = state.players[player_idx]
     local target
     local dash = false
@@ -195,6 +273,7 @@ local function bot_input(state, player_idx, bot_state)
 
     local delta = target:sub(player.pos)
     local move = delta:length() > 1 and delta:normalized() or Vec2.new(0, 0)
+    local equipment = bot_combat_signals(state, combat_state, player_idx, bot_state)
     return {
         move = move,
         shoot = shoot,
@@ -209,9 +288,9 @@ local function bot_input(state, player_idx, bot_state)
         jockey = false,
         aerial_strike = state.ball_z > 18 and player.pos:dist(state.ball) < 72,
         aerial_acrobatic = false,
-        equipment_held = false,
-        equipment_pressed = false,
-        equipment_released = false,
+        equipment_held = equipment ~= nil and equipment.equipment_held,
+        equipment_pressed = equipment ~= nil and equipment.equipment_pressed,
+        equipment_released = equipment ~= nil and equipment.equipment_released,
     }
 end
 
@@ -221,8 +300,9 @@ end
 ---@param producer SlotInputProducerState
 ---@param state MatchState
 ---@param frame InputFrame
+---@param combat_state CombatMatchState? -- Required for bot fills to use equipment.
 ---@return InputFrame frame
-function slot_input.materialize(producer, state, frame)
+function slot_input.materialize(producer, state, frame, combat_state)
     assert(state.slot_mode, "slot producer requires a slot-mode match")
     assert(input_frame.validate(frame), "slot producer requires a valid InputFrame")
     assert(frame.tick == state.input_tick, "input frame tick does not match match state")
@@ -233,8 +313,9 @@ function slot_input.materialize(producer, state, frame)
         if source.kind == "frame" then
             slots[index] = frame.slots[index]
         elseif source.kind == "bot" then
-            slots[index] =
-                slot_input.to_sample(bot_input(state, player_idx, assert(producer.bots[index])))
+            slots[index] = slot_input.to_sample(
+                bot_input(state, combat_state, player_idx, assert(producer.bots[index]))
+            )
         else
             slots[index] = input_frame.neutral_sample()
         end

@@ -444,8 +444,9 @@ end
 -- snapshot's plain vector tables.
 ---@param driver MatchDriver
 ---@return MatchState
+---@return CombatMatchState?
 local function present_state(driver)
-    return (match_snapshot.restore(rollback_session.current_snapshot(driver._session)))
+    return match_snapshot.restore(rollback_session.current_snapshot(driver._session))
 end
 
 -- Extend the live timeline through the boundary that has just been simulated.
@@ -608,8 +609,9 @@ end
 ---@param input_tick integer
 ---@param human_sample InputSample?
 ---@param geometry MatchState? -- A present-boundary state the caller already holds.
+---@param geometry_combat CombatMatchState? -- Its combat companion, when the fixture has one.
 ---@return table<integer, InputSample>
-local function materialize_authored(driver, input_tick, human_sample, geometry)
+local function materialize_authored(driver, input_tick, human_sample, geometry, geometry_combat)
     local control = nil
     if #driver._owned > 0 then
         control =
@@ -620,13 +622,15 @@ local function materialize_authored(driver, input_tick, human_sample, geometry)
         return { [control] = human }
     end
 
-    geometry = geometry or present_state(driver)
+    if not geometry then
+        geometry, geometry_combat = present_state(driver)
+    end
     local slots = {}
     for index = 1, input_frame.SLOT_COUNT do
         slots[index] = input_frame.neutral_sample()
     end
     local base = assert(input_frame.new(geometry.input_tick, slots))
-    local frame = slot_input.materialize(driver._producer, geometry, base)
+    local frame = slot_input.materialize(driver._producer, geometry, base, geometry_combat)
     ---@type table<integer, InputSample>
     local authored = {}
     for _, slot_index in ipairs(driver._authored) do
@@ -1830,9 +1834,12 @@ local function prime(driver)
     -- zero, which every peer shares.
     -- Nothing is simulated between these ticks, so the boundary-zero state is
     -- restored once and reused rather than re-derived per priming tick.
-    local geometry = #driver._authored > 1 and present_state(driver) or nil
+    local geometry, geometry_combat ---@type MatchState?, CombatMatchState?
+    if #driver._authored > 1 then
+        geometry, geometry_combat = present_state(driver)
+    end
     for tick = driver._first, driver._first + match_driver.DELAY_TICKS - 1 do
-        local authored = materialize_authored(driver, tick, nil, geometry)
+        local authored = materialize_authored(driver, tick, nil, geometry, geometry_combat)
         for _, slot_index in ipairs(driver._authored) do
             record_authored(driver, slot_index, tick, authored[slot_index])
         end
