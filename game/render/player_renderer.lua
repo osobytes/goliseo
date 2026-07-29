@@ -214,6 +214,18 @@ local function figure(bx, gy, r, color, v, opts)
         action_lean = fx * r * 0.18
     elseif pose_id == "keeper_get_up" then
         action_lean = -fx * r * 0.25
+    elseif pose_id == "tackle" then
+        -- A committed challenge throws the mass at the ball.
+        action_lean = fx * r * 0.8
+    elseif pose_id == "run_telegraph" then
+        action_lean = fx * r * 0.5
+    elseif pose_id == "kick_follow" then
+        action_lean = fx * r * 0.28
+    elseif pose_id == "contain" then
+        -- Contain holds its weight back: it shepherds, it does not commit.
+        action_lean = -fx * r * 0.3
+    elseif pose_id == "fatigue" then
+        action_lean = -fx * r * 0.12
     end
 
     local cx = bx + lean * r * 0.5 + windup_lean + action_lean
@@ -225,19 +237,42 @@ local function figure(bx, gy, r, color, v, opts)
         stance_drop = r * 0.18
     elseif pose_id == "keeper_get_up" then
         stance_drop = r * 0.42
+    elseif pose_id == "settle" then
+        stance_drop = r * 0.3
+    elseif pose_id == "contain" then
+        stance_drop = r * 0.26
+    elseif pose_id == "tackle" then
+        stance_drop = r * 0.2
+    elseif pose_id == "fatigue" then
+        stance_drop = r * 0.16
     end
+    -- A slump lowers the shoulders and head without dropping the hips, so a
+    -- spent player reads as heavy rather than merely crouched.
+    local slump = (pose_id == "fatigue") and r * 0.24 or 0
     local hip_y = gy - r * 1.35 - bounce - breath + stance_drop
-    local sh_y = gy - r * 2.15 - bounce - breath + stance_drop
-    local head_y = gy - r * 2.75 - bounce - breath + stance_drop
+    local sh_y = gy - r * 2.15 - bounce - breath + stance_drop + slump
+    local head_y = gy - r * 2.75 - bounce - breath + stance_drop + slump * 1.35
 
     local stride = run * r * 0.65
     if pose_id == "keeper_shuffle" then
         stride = r * 0.28
+    elseif pose_id == "run_telegraph" then
+        -- The first strides of a granted run drive harder than the gait the
+        -- player has actually reached yet.
+        stride = math.max(stride, r * 0.58)
+    elseif pose_id == "fatigue" then
+        stride = math.min(stride, r * 0.22)
     end
     local wide_stance = pose_id == "keeper_ready_low"
         or pose_id == "keeper_set"
         or pose_id == "keeper_spread"
+        or pose_id == "contain"
     local hip_dx = r * (wide_stance and 0.52 or 0.34)
+    if pose_id == "settle" then
+        -- Squarest, widest base on the pitch: the player is standing over the
+        -- ball, not travelling anywhere.
+        hip_dx = r * 0.74
+    end
 
     -- Legs (pump in opposite phase). Boots are chunky blocks at the feet.
     local limb_scale = silhouette.limb_scale
@@ -246,10 +281,35 @@ local function figure(bx, gy, r, color, v, opts)
     local lfx = cx - hip_dx + swing * stride
     local rfx = cx + hip_dx - swing * stride
     local lfy, rfy = foot_y, foot_y
+    local strike_sign = (fx >= 0) and 1 or -1
     if aerial_style == "volley" or aerial_style == "leg_control" then
-        local strike_sign = (fx >= 0) and 1 or -1
         lfx = cx + strike_sign * r * 1.45 * aerial
         lfy = foot_y - r * 0.85 * aerial
+    elseif pose_id == "kick_follow" then
+        -- The striking leg keeps travelling after the ball has gone.
+        lfx = cx + strike_sign * r * 1.5
+        lfy = foot_y - r * 0.6
+        rfx = cx - strike_sign * r * 0.28
+    elseif pose_id == "tackle" then
+        -- A directional reach: the near leg extends past any contain stance,
+        -- the trailing leg stays planted behind the hips.
+        lfx = cx + strike_sign * r * 2.0
+        rfx = cx - strike_sign * r * 0.45
+    elseif pose_id == "settle" then
+        -- Planted and square over the ball: no stride at all.
+        lfx = cx - hip_dx
+        rfx = cx + hip_dx
+    elseif pose_id == "contain" then
+        -- Side-on: leading foot toward the ball, trailing foot well behind it,
+        -- both flat. A long stance, but nothing leaves the ground, so it never
+        -- reads as a challenge.
+        lfx = cx + strike_sign * r * 1.15
+        rfx = cx - strike_sign * r * 0.8
+    elseif pose_id == "stumble" then
+        -- Feet crossed under a body that is already past its balance point.
+        lfx = cx - hip_dx * 1.7
+        rfx = cx + hip_dx * 0.35
+        lfy = foot_y - r * 0.22
     end
     love.graphics.line(cx - hip_dx, hip_y, lfx, lfy)
     love.graphics.line(cx + hip_dx, hip_y, rfx, rfy)
@@ -309,6 +369,48 @@ local function figure(bx, gy, r, color, v, opts)
     elseif pose_id == "combat_active" or pose_id == "combat_aim" then
         love.graphics.line(cx - r * 0.5, sh_y, cx + fx * r * 0.7, sh_y + r * 0.35)
         love.graphics.line(cx + r * 0.5, sh_y, cx + fx * r * 1.0, sh_y + r * 0.15)
+    elseif pose_id == "tackle" then
+        local side = fx >= 0 and 1 or -1
+        love.graphics.line(cx - r * 0.5, sh_y, cx + side * r * 1.6, sh_y + r * 0.6)
+        love.graphics.line(cx + r * 0.5, sh_y, cx - side * r * 0.9, sh_y + r * 0.1)
+    elseif pose_id == "contain" then
+        love.graphics.line(cx - r * 0.5, sh_y, cx - r * 0.95, hip_y + r * 0.55)
+        love.graphics.line(cx + r * 0.5, sh_y, cx + r * 0.95, hip_y + r * 0.55)
+    elseif pose_id == "settle" then
+        -- Both arms out level for balance, forearms angled back in over the
+        -- ball: a shape no travelling or challenging pose uses.
+        love.graphics.line(
+            cx - r * 0.5,
+            sh_y,
+            cx - r * 1.35,
+            sh_y - r * 0.05,
+            cx - r * 1.05,
+            sh_y + r * 0.5
+        )
+        love.graphics.line(
+            cx + r * 0.5,
+            sh_y,
+            cx + r * 1.35,
+            sh_y - r * 0.05,
+            cx + r * 1.05,
+            sh_y + r * 0.5
+        )
+    elseif pose_id == "run_telegraph" then
+        -- Hard arm drive: the leading arm punches up and across, the trailing
+        -- arm is thrown all the way back.
+        local side = fx >= 0 and 1 or -1
+        love.graphics.line(cx - r * 0.5, sh_y, cx + side * r * 0.9, sh_y - r * 0.3)
+        love.graphics.line(cx + r * 0.5, sh_y, cx - side * r * 1.0, hip_y + r * 0.1)
+    elseif pose_id == "kick_follow" then
+        local side = fx >= 0 and 1 or -1
+        love.graphics.line(cx - r * 0.5, sh_y, cx - side * r * 1.15, sh_y + r * 0.08)
+        love.graphics.line(cx + r * 0.5, sh_y, cx + side * r * 0.55, hip_y + r * 0.28)
+    elseif pose_id == "stumble" then
+        love.graphics.line(cx - r * 0.5, sh_y, cx - r * 1.3, sh_y - r * 0.5)
+        love.graphics.line(cx + r * 0.5, sh_y, cx + r * 1.0, sh_y - r * 0.75)
+    elseif pose_id == "fatigue" then
+        love.graphics.line(cx - r * 0.55, sh_y, cx - r * 0.66, hip_y + r * 0.6)
+        love.graphics.line(cx + r * 0.55, sh_y, cx + r * 0.64, hip_y + r * 0.6)
     elseif aerial_style == "chest_control" then
         love.graphics.line(cx - r * 0.5, sh_y, cx - r * (0.55 + 0.55 * aerial), sh_y + r * 0.2)
         love.graphics.line(cx + r * 0.5, sh_y, cx + r * (0.55 + 0.55 * aerial), sh_y + r * 0.2)
@@ -540,6 +642,21 @@ function renderer.draw(sx, gy, r, color, v, opts)
         love.graphics.push()
         love.graphics.translate(sx, gy + r * 0.28)
         love.graphics.rotate(math.rad(8))
+        love.graphics.translate(-sx, -gy)
+        figure(sx, gy, r, color, v, opts)
+        love.graphics.pop()
+        return
+    end
+
+    -- A failed challenge tips the figure away from the direction it committed
+    -- to. Steeper than a combat stagger and pivoted off the trailing heel, so
+    -- the two never read as the same recovery.
+    if pose_id == "stumble" then
+        local fx = (opts.facing and opts.facing.x) or 1
+        local sign = (fx >= 0) and 1 or -1
+        love.graphics.push()
+        love.graphics.translate(sx - sign * r * 0.35, gy + r * 0.12)
+        love.graphics.rotate(-sign * math.rad(24))
         love.graphics.translate(-sx, -gy)
         figure(sx, gy, r, color, v, opts)
         love.graphics.pop()
