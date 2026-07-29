@@ -1586,3 +1586,256 @@ t.describe("online coordinator transition matrix", function()
         t.eq(checked, (7 + 8) * #events * 2)
     end)
 end)
+
+t.describe("host-side departure reasons", function()
+    local HOST_BUILD = "build.host_commit"
+    local GUEST_BUILD = "build.guest_commit"
+
+    ---@param build_id string?
+    ---@return CoordinatorState
+    local function host_declaring(build_id)
+        return assert(coordinator.new({
+            role = "host",
+            session_id = SESSION,
+            peer_id = HOST,
+            runtime = fixture.runtime(),
+            build_id = build_id,
+        }))
+    end
+
+    ---@param state CoordinatorState
+    ---@param peer_id string
+    ---@return CoordinatorPeer?
+    local function peer_of(state, peer_id)
+        for _, peer in ipairs(state.peers) do
+            if peer.peer_id == peer_id then
+                return peer
+            end
+        end
+        return nil
+    end
+
+    ---@param peer_id string
+    ---@param sequence integer
+    ---@param build_id string?
+    ---@return SessionControlMessage
+    local function declaring_handshake(peer_id, sequence, build_id)
+        return message("handshake", peer_id, sequence, {
+            role = "guest",
+            runtime = fixture.runtime(),
+            build_id = build_id,
+        })
+    end
+
+    -- A host that has admitted one guest and proposed its manifest, which is
+    -- the exact point a skewed guest refuses and goes.
+    ---@param host_build string?
+    ---@param guest_build string?
+    ---@return CoordinatorState, string
+    local function proposed(host_build, guest_build)
+        local peer_id = fixture.guest_peer_id(1)
+        local state = host_declaring(host_build)
+        state = (deliver(state, peer_id, declaring_handshake(peer_id, 0, guest_build)))
+        state = (
+            coordinator.step(state, { kind = "propose_manifest", manifest = fixture.manifest() })
+        )
+        return state, peer_id
+    end
+
+    ---@param state CoordinatorState
+    ---@param peer_id string
+    ---@param code SessionRejectCode
+    ---@return CoordinatorState, CoordinatorOutcome
+    local function guest_aborts(state, peer_id, code)
+        return deliver(state, peer_id, message("abort", peer_id, 1, { code = code }))
+    end
+
+    t.it("records the build a guest declared in its handshake", function()
+        local state, peer_id = proposed(HOST_BUILD, GUEST_BUILD)
+        t.eq(state.build_id, HOST_BUILD)
+        t.eq(assert(peer_of(state, peer_id)).build_id, GUEST_BUILD)
+        t.eq(state.peers[1].build_id, HOST_BUILD, "the host declares its own build too")
+        -- Admission is never refused on it: the guest has to reach the manifest
+        -- check and mint its own reason, exactly as it did before.
+        t.eq(state.terminal, nil)
+        t.eq(#state.peers, 2)
+    end)
+
+    t.it("names the build when it drops a guest that is running a different one", function()
+        local state, peer_id = proposed(HOST_BUILD, GUEST_BUILD)
+        local next_state, outcome = guest_aborts(state, peer_id, "manifest_mismatch")
+        t.eq(outcome.disposition, "applied")
+        t.eq(next_state.terminal, nil, "one skewed guest does not end the host's lobby")
+        t.eq(#next_state.peers, 1)
+
+        local departure = assert(next_state.departure, "the host recorded no reason at all")
+        t.eq(departure.reason, "build_mismatch")
+        t.eq(departure.peer_id, peer_id)
+        t.eq(departure.detail, "a guest aborted with manifest_mismatch")
+
+        -- The wire is untouched: the announced disconnect still carries the
+        -- closed #161 code it always did, so the specific reason is local.
+        t.eq(departure.code, "protocol_error")
+        local announced = 0
+        for _, action in ipairs(outcome.actions) do
+            if action.kind == "send" and action.message.kind == "disconnect" then
+                announced = announced + 1
+                t.eq(action.message.body.code, "protocol_error")
+                t.eq(action.message.body.target_peer_id, peer_id)
+            end
+        end
+        t.eq(announced, 1)
+    end)
+
+    t.it("blames the build only for an abort over session identity", function()
+        -- The width that is not bought. A guest can abort pre-freeze for
+        -- reasons that have nothing to do with builds, and on a mixed-build
+        -- run it is *always* also built differently -- so a rule keyed on the
+        -- skew alone would report every one of them as a build problem and
+        -- send a tester to reinstall instead of to the bug.
+        for _, code in ipairs({
+            "invalid_assignment",
+            "invalid_phase",
+            "malformed_message",
+            "unsupported_message",
+            "capacity",
+            "protocol_mismatch",
+            "runtime_mismatch",
+            "host_abort",
+            "peer_disconnect",
+            "desync",
+        }) do
+            local state, peer_id = proposed(HOST_BUILD, GUEST_BUILD)
+            local next_state = (guest_aborts(state, peer_id, code))
+            local departure = assert(next_state.departure, code .. " recorded no departure")
+            t.eq(departure.reason, "protocol_violation", code .. " must not blame the build")
+            t.eq(departure.detail, "a guest aborted with " .. code)
+        end
+        -- And the one that does, for contrast, against the same skew.
+        local state, peer_id = proposed(HOST_BUILD, GUEST_BUILD)
+        t.eq(
+            assert((guest_aborts(state, peer_id, "manifest_mismatch")).departure).reason,
+            "build_mismatch"
+        )
+    end)
+
+    t.it("keeps a generic reason when the two peers agree on the build", function()
+        local state, peer_id = proposed(HOST_BUILD, HOST_BUILD)
+        local next_state = (guest_aborts(state, peer_id, "manifest_mismatch"))
+        local departure = assert(next_state.departure)
+        t.eq(departure.reason, "protocol_violation")
+        t.eq(departure.code, "protocol_error")
+    end)
+
+    t.it("claims nothing about builds when neither peer declared one", function()
+        -- Every session built from `coordinator_fixture` is this case, which is
+        -- why no pinned coordinator transcript moved.
+        local state, peer_id = proposed(nil, nil)
+        local next_state = (guest_aborts(state, peer_id, "manifest_mismatch"))
+        t.eq(assert(next_state.departure).reason, "protocol_violation")
+    end)
+
+    t.it("claims nothing about builds when only the guest declared one", function()
+        local state, peer_id = proposed(nil, GUEST_BUILD)
+        local next_state = (guest_aborts(state, peer_id, "manifest_mismatch"))
+        t.eq(assert(next_state.departure).reason, "protocol_violation")
+    end)
+
+    t.it("names the build when a guest declares none against a host that does", function()
+        -- A build from before the handshake carried an identity. It is a
+        -- different build, and saying so is the whole point.
+        local state, peer_id = proposed(HOST_BUILD, nil)
+        local next_state = (guest_aborts(state, peer_id, "manifest_mismatch"))
+        t.eq(assert(next_state.departure).reason, "build_mismatch")
+    end)
+
+    t.it("does not blame the build for a link that simply ended", function()
+        -- `handle_link_lost`, the fourth drop site. Its code comes from the
+        -- local transport, and every value it accepts -- including
+        -- `protocol_error` -- keeps its own reason against a skewed peer.
+        for _, case in ipairs({
+            { code = "peer_left", reason = "guest_left" },
+            { code = "transport_lost", reason = "transport_lost" },
+            { code = "host_left", reason = "host_left" },
+            { code = "protocol_error", reason = "protocol_violation" },
+        }) do
+            local state, peer_id = proposed(HOST_BUILD, GUEST_BUILD)
+            local next_state = (
+                coordinator.step(state, {
+                    kind = "link_lost",
+                    link_id = fixture.link_id(peer_id),
+                    code = case.code,
+                })
+            )
+            local departure = assert(next_state.departure)
+            t.eq(departure.reason, case.reason, case.code .. " must keep its own reason")
+            t.eq(departure.code, case.code)
+            t.eq(departure.detail, "a guest's link ended as " .. case.code)
+        end
+    end)
+
+    t.it("never lets a guest's own disconnect code name a build", function()
+        -- `apply_disconnect`, the third drop site, and the only one whose code
+        -- arrives verbatim from the peer. A guest that announces its departure
+        -- as `protocol_error` while running a different build would otherwise
+        -- pick the sentence its own departure is reported under.
+        for _, case in ipairs({
+            { code = "protocol_error", reason = "protocol_violation" },
+            { code = "peer_left", reason = "guest_left" },
+            { code = "transport_lost", reason = "transport_lost" },
+            { code = "host_left", reason = "host_left" },
+        }) do
+            local state, peer_id = proposed(HOST_BUILD, GUEST_BUILD)
+            local next_state = (
+                deliver(
+                    state,
+                    peer_id,
+                    message(
+                        "disconnect",
+                        peer_id,
+                        1,
+                        { target_peer_id = peer_id, code = case.code }
+                    )
+                )
+            )
+            local departure = assert(next_state.departure, case.code .. " recorded no departure")
+            t.eq(departure.reason, case.reason, case.code .. " must not be able to name a build")
+            t.eq(departure.code, case.code)
+            t.eq(departure.detail, "a guest announced its own disconnect as " .. case.code)
+        end
+    end)
+
+    t.it("names the build on a drop the manifest acceptance caused", function()
+        -- The second of the two host-judged drop sites: a guest accepting a
+        -- manifest this session never proposed. Its trigger is already a
+        -- specific identity disagreement, so it needs no further gate.
+        local state, peer_id = proposed(HOST_BUILD, GUEST_BUILD)
+        local next_state = (
+            deliver(
+                state,
+                peer_id,
+                message("manifest_accept", peer_id, 1, { manifest_id = string.rep("a", 16) })
+            )
+        )
+        local departure = assert(next_state.departure)
+        t.eq(departure.reason, "build_mismatch")
+        t.eq(departure.detail, "a guest accepted a manifest this session never proposed")
+    end)
+
+    t.it("clears the reason once another guest takes the seat", function()
+        -- A guest that gives up before the manifest is proposed leaves the
+        -- host still admitting, so the same lobby can be filled again -- which
+        -- is when the notice about the empty seat stops being true.
+        local skewed = fixture.guest_peer_id(1)
+        local state = host_declaring(HOST_BUILD)
+        state = (deliver(state, skewed, declaring_handshake(skewed, 0, GUEST_BUILD)))
+        state = (guest_aborts(state, skewed, "manifest_mismatch"))
+        t.eq(assert(state.departure).reason, "build_mismatch")
+        t.eq(state.phase, "handshake", "a drop leaves the lobby open")
+
+        local replacement = fixture.guest_peer_id(2)
+        state = (deliver(state, replacement, declaring_handshake(replacement, 0, HOST_BUILD)))
+        t.eq(state.departure, nil, "a filled seat is no longer news")
+        t.eq(#state.peers, 2)
+    end)
+end)

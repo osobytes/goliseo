@@ -383,6 +383,68 @@ the control vocabulary; every other field stays `manifest_mismatch`. See
 [the match flow document](match_flow.md) for why the vocabulary is part of
 `build_id` at all.
 
+## Departures
+
+Before the freeze, a guest that aborts or sends traffic the session cannot
+accept is **dropped**: the lobby stands and can still be filled. That is #163's
+rule and it is unchanged. What is new is that the host records why.
+
+`state.departure` is the host's own account of the last seat it lost —
+`{ peer_id, reason, code, detail }`. `code` is the `disconnect` code actually
+announced, so the wire is untouched; `reason` is a local
+`CoordinatorTerminalReason`, because a drop and a termination answer the same
+question and deserve the same vocabulary. `coordinator.DISCONNECT_REASONS` is
+the mapping from one to the other, and it is public because a reader that shows
+departures has to cover all of it.
+
+One reason may be chosen rather than mapped, and **which drops may choose it is
+decided at each call site, not inside `drop_guest`.** There are four:
+
+| Site | Code | May name a build? |
+| --- | --- | --- |
+| `apply_abort` | always `protocol_error` | only when the abort carried `manifest_mismatch` |
+| `apply_manifest_accept` | always `protocol_error` | yes — the trigger is already a specific manifest disagreement |
+| `apply_disconnect` | **the peer's**, verbatim from the wire | never |
+| `handle_link_lost` | the local transport's | never |
+
+The narrowness is the point. The host is correlating, not proving: it can see
+that a guest disagreed about session identity and that the guest declared a
+different build, and it cannot see that the second caused the first. Gating on
+`manifest_mismatch` keeps the correlation worth stating. A guest aborting over a
+bad assignment or a phase race, on a mixed-build run where *everything*
+correlates with the build, would otherwise be reported as a build problem and
+send a tester to reinstall instead of to the bug.
+
+`apply_disconnect` is excluded for a different reason: its code arrives verbatim
+from the peer, so a guest could otherwise choose the sentence its own departure
+is reported under. A remote value never selects a local attribution.
+`handle_link_lost` is excluded because a link that went, went, whatever the peer
+behind it was built from.
+
+The comparison uses only what the handshake declared (see
+[the protocol document](session_protocol.md#the-declared-build)). A host that
+declares no build of its own never claims a build disagreement — which is why
+every session built from `coordinator_fixture` still records
+`protocol_violation` exactly as it did, and why no pinned coordinator transcript
+moved for this. A peer that declares nothing against a host that does is a build
+from before the field existed; that is a real difference and is named as one.
+
+The record is cleared when another guest is admitted — a filled seat is no
+longer news. The lobby renders it through `lobby_model.DEPARTURE_TEXT`, and a
+terminated session outranks it. That text states the two observations and
+asserts no cause between them, for the same reason the trigger is narrow.
+
+None of this reaches the traffic that ends a session outright. A decode
+failure, a validation failure, a session-id or sender-role violation, or an
+illegal phase all route through `terminate_from`, not `drop_guest`: they end the
+whole session as `protocol_violation` and render through `TERMINAL_TEXT`. A
+departure is only ever the pre-freeze case where one guest goes and the lobby
+stays.
+
+Without this the host learned nothing at all. Build skew is detected locally by
+the guest, so only the guest ever knew; in a two-device test the host was left
+holding a lobby it could not fill and no sentence explaining why.
+
 ## Duplicates and out-of-order control traffic
 
 Sequences are sender-local and strictly increasing but not contiguous, because

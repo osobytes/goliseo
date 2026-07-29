@@ -261,6 +261,35 @@ t.describe("online lobby screen", function()
         t.is_true(assert(trouble.text):find("YOU ENDED THE SESSION", 1, true) ~= nil)
     end)
 
+    t.it("surfaces a dropped guest's build on a lobby that is still standing", function()
+        local state = hosting()
+        -- The coordinator's own record, written where a real drop writes it.
+        -- The session is not terminal, so this is the only line there is.
+        assert(state.model.coordinator).departure = {
+            peer_id = "guest_1",
+            reason = "build_mismatch",
+            code = "protocol_error",
+            detail = "a guest aborted with manifest_mismatch",
+        }
+        local text = assert(assert(hit.find(lobby.layout(state), "trouble")).text)
+        t.is_true(text:find("DIFFERENT BUILD", 1, true) ~= nil, text)
+        t.is_true(text:find("INSTALL THE SAME BUILD ON BOTH", 1, true) ~= nil, text)
+        t.is_true(text:find("MANIFEST_MISMATCH", 1, true) ~= nil, "the detail is kept")
+    end)
+
+    t.it("lets a finished session outrank a dropped guest", function()
+        local state = hosting()
+        assert(state.model.coordinator).departure = {
+            peer_id = "guest_1",
+            reason = "build_mismatch",
+            code = "protocol_error",
+        }
+        state = (dispatch(state, { kind = "leave" }))
+        local text = assert(assert(hit.find(lobby.layout(state), "trouble")).text)
+        t.is_true(text:find("YOU ENDED THE SESSION", 1, true) ~= nil)
+        t.is_true(text:find("DIFFERENT BUILD", 1, true) == nil)
+    end)
+
     t.it("names the AI-driven slots inside a human's owned set", function()
         local state = hosting()
         state = (click(state, "mode_1v1"))

@@ -100,6 +100,27 @@ lobby_model.TERMINAL_TEXT = {
     hash_mismatch = "Peers disagreed about the simulation.",
 }
 
+-- What the host says when a seat empties without the session ending. A drop is
+-- the one failure a host used to watch in silence: the guest reads its own
+-- reason and goes, and the lobby it left behind cannot be filled by the peer
+-- that just tried. Every reason `drop_guest` can record appears here.
+---@type table<CoordinatorTerminalReason, string>
+lobby_model.DEPARTURE_TEXT = {
+    guest_left = "A guest left the lobby.",
+    transport_lost = "The connection to a guest was lost.",
+    -- A guest announcing `host_left` to the host is saying the link is going
+    -- from its side, whatever it believes about who left.
+    host_left = "A guest closed its link to the lobby.",
+    protocol_violation = "A guest was dropped: it sent traffic this session cannot accept.",
+    -- Two observations, and no claim about which caused which. The host can see
+    -- that the guest disagreed about this session's identity and that it
+    -- declared a different build; it cannot see that the second is why the
+    -- first happened. A diagnostic that is confidently wrong is worse than a
+    -- generic one, so this one says what is known and names the check.
+    build_mismatch = "A guest was dropped: it disagreed about this session's identity, "
+        .. "and it declared a different build. Install the same build on both to rule that out.",
+}
+
 -- Plain-language equivalents of a pair request's state and of every reason it
 -- can be refused for -- by the host, or by the requester's own expiring wait.
 -- Keyed by status for the outcomes that are not refusals and by the typed reason
@@ -198,6 +219,16 @@ local function expectation_for(model)
         gameplay_ai_policy_id = manifest.gameplay_ai_policy_id,
         combat_status = manifest.combat_status,
     }
+end
+
+-- The build this peer declares in its handshake. It is the same value the
+-- lobby's own BUILD row prints and the same one a guest holds as an
+-- expectation, taken from the injected template so a test's build is whatever
+-- its template says it is.
+---@param model LobbyModel
+---@return string
+local function build_id_for(model)
+    return manifest_for(model, model.mode).build_id
 end
 
 ---@param options LobbyModelOptions?
@@ -409,6 +440,7 @@ local function choose_role(model, role, effects)
             session_id = model.session_id,
             peer_id = model.peer_id,
             runtime = protocol_fixture.runtime(),
+            build_id = build_id_for(model),
         }))
         model.status = "Pick a match mode, then invite peers."
     else
@@ -419,6 +451,7 @@ local function choose_role(model, role, effects)
             host_peer_id = transport_contract.HOST_PEER_ID,
             host_link_id = transport_contract.HOST_PEER_ID,
             runtime = protocol_fixture.runtime(),
+            build_id = build_id_for(model),
             expectation = expectation_for(model),
         }))
         model.status = "Paste the host's offer to connect."
@@ -885,6 +918,8 @@ end
 ---@field preference LobbyPreferenceView? -- The local peer's last pair request.
 ---@field identity LobbyIdentityRow[]
 ---@field countdown integer?
+---@field departure CoordinatorDeparture? -- Host-side: why the last guest was dropped.
+---@field departure_text string?
 ---@field terminal CoordinatorTerminal?
 ---@field terminal_text string?
 ---@field exported LobbySignalRecord?
@@ -1087,6 +1122,7 @@ function lobby_model.view(model)
     end
     local phase = state and state.phase or "role"
     local terminal = state and state.terminal or nil
+    local departure = state and state.departure or nil
     return {
         role = model.role,
         peer_id = model.peer_id,
@@ -1104,6 +1140,8 @@ function lobby_model.view(model)
         preference = preference_view(model),
         identity = identity_view(model),
         countdown = state and state.countdown_remaining or nil,
+        departure = departure,
+        departure_text = departure and lobby_model.DEPARTURE_TEXT[departure.reason] or nil,
         terminal = terminal,
         terminal_text = terminal and lobby_model.TERMINAL_TEXT[terminal.reason] or nil,
         exported = model.exported,

@@ -91,18 +91,18 @@ t.describe("OMP-3 online protocol", function()
     t.it("matches literal wire, manifest, transcript, and per-kind golden evidence", function()
         local report = conformance.verify()
         t.eq(report.manifest_id, "ea39ebe78423e0a0")
-        t.eq(report.transcript_id, "48162b614e650bd2")
+        t.eq(report.transcript_id, "3283847c417923e5")
         t.eq(report.message_count, 15)
         t.eq(fnv1a64.hash(conformance.GOLDEN.complete_wire), "a292fa4a99393456")
         t.eq(
             conformance.marker(report),
             "GC_PROTOCOL|golden|schema=1|manifest_id=ea39ebe78423e0a0"
-                .. "|transcript_id=48162b614e650bd2|messages=15"
+                .. "|transcript_id=3283847c417923e5|messages=15"
         )
     end)
 
     t.it("pins the control vocabulary this build speaks", function()
-        t.eq(protocol.vocabulary_id(), "7c8fcb0146a73494")
+        t.eq(protocol.vocabulary_id(), "e13e3647001a0a7e")
         t.eq(protocol.vocabulary_id(), conformance.GOLDEN.vocabulary_id)
         t.eq(protocol.vocabulary_id(), protocol.vocabulary_id())
         t.is_true(
@@ -1101,5 +1101,72 @@ t.describe("OMP-3 online protocol", function()
 
         messages[10].body.tick = 61
         t.is_true(protocol.transcript_id(messages) ~= first)
+    end)
+end)
+
+t.describe("handshake build declaration", function()
+    ---@param build_id string?
+    ---@return SessionControlMessage?, string?, SessionProtocolErrorCode?
+    local function handshake(build_id)
+        return protocol.new("handshake", "session_alpha", "guest_1", 0, {
+            role = "guest",
+            runtime = fixture.runtime(),
+            build_id = build_id,
+        })
+    end
+
+    t.it("carries a declared build through the canonical codec", function()
+        local message = assert(handshake("build.abc123"))
+        local wire = assert(protocol.encode(message))
+        local decoded = assert(protocol.decode(wire))
+        t.eq(decoded.body.build_id, "build.abc123")
+        t.eq(protocol.encode(decoded), wire, "the declaration has one encoding")
+    end)
+
+    t.it("accepts a handshake that declares no build at all", function()
+        -- The field is additive on purpose: a peer built before it existed must
+        -- still be admitted, so that its disagreement is named at the manifest
+        -- check rather than turned into a malformed message the host refuses.
+        local message = assert(handshake(nil))
+        t.eq(message.body.build_id, nil)
+        local decoded = assert(protocol.decode(assert(protocol.encode(message))))
+        t.eq(decoded.body.build_id, nil)
+    end)
+
+    t.it("refuses a build declaration that is not an opaque bounded id", function()
+        for _, bad in ipairs({
+            "",
+            "build id with spaces",
+            string.rep("b", protocol.MAX_ID_BYTES + 1),
+            17,
+            true,
+        }) do
+            local value, _, code = handshake(bad)
+            t.eq(value, nil, "accepted a bad build declaration: " .. tostring(bad))
+            t.eq(code, "malformed", tostring(bad))
+        end
+    end)
+
+    t.it("counts the declaration as part of the vocabulary this build speaks", function()
+        -- A peer whose handshake body has a different field set cannot be
+        -- talked to, so the difference has to reach `build_id` -- which is what
+        -- makes the guest's own manifest check fire in the first place.
+        local kinds = {}
+        for kind, fields in pairs({
+            handshake = { role = true, runtime = true },
+            abort = { code = true },
+        }) do
+            kinds[kind] = fields
+        end
+        local phases = {
+            handshake = { new = true, handshake = true },
+            abort = { new = true },
+        }
+        local without = protocol.vocabulary_digest(kinds, phases)
+        kinds.handshake.build_id = true
+        t.is_true(
+            protocol.vocabulary_digest(kinds, phases) ~= without,
+            "declaring a build has to move the vocabulary digest"
+        )
     end)
 end)

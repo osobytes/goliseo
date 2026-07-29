@@ -52,7 +52,7 @@ REQUIRED_FIELDS = {
 REQUIRED_PROTOCOL_FIELDS = {
     "schema": "1",
     "manifest_id": "ea39ebe78423e0a0",
-    "transcript_id": "48162b614e650bd2",
+    "transcript_id": "3283847c417923e5",
     "messages": "15",
 }
 # Mirrors game/online/input_protocol_conformance.lua's GOLDEN. Regenerate BOTH
@@ -878,7 +878,7 @@ def shard_gate_self_test() -> None:
 def self_test() -> None:
     protocol_marker = (
         "GC_PROTOCOL|golden|schema=1|manifest_id=ea39ebe78423e0a0"
-        "|transcript_id=48162b614e650bd2|messages=15"
+        "|transcript_id=3283847c417923e5|messages=15"
     )
     if parse_protocol_marker(protocol_marker) != REQUIRED_PROTOCOL_FIELDS:
         raise RuntimeError("protocol golden marker self-test failed")

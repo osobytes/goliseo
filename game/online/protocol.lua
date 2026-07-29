@@ -148,6 +148,13 @@ local match_snapshot = require("sim.match_snapshot")
 ---@class SessionHandshakeBody
 ---@field role SessionRole
 ---@field runtime SessionRuntimeIdentity
+-- The build this peer runs, exactly as `game.online.match_manifest.build_id`
+-- computes it. Optional, and deliberately never a reason to refuse admission:
+-- it exists so the peer on the other end can *name* a build disagreement it
+-- would otherwise only ever see as generic protocol trouble. A handshake that
+-- declares nothing comes from a build that predates the field, which is itself
+-- a build difference worth naming.
+---@field build_id string?
 
 ---@class SessionManifestProposalBody
 ---@field manifest_id string
@@ -349,7 +356,7 @@ local SLOT_PRODUCER_FIELDS = {
     bot_seed = true,
 }
 local BODY_FIELDS = {
-    handshake = { role = true, runtime = true },
+    handshake = { role = true, runtime = true, build_id = true },
     manifest_proposal = { manifest_id = true, manifest = true },
     manifest_accept = { manifest_id = true },
     peer_assignment = { assigned_peer_id = true, role = true },
@@ -793,6 +800,19 @@ function protocol.match_mode(mode)
         )
     end
     return shape
+end
+
+-- A declared build identity is an ordinary opaque id, or absent. Absence is
+-- legal on purpose: the field is additive, so a peer built before it existed
+-- still speaks a handshake this build accepts, and the disagreement it does have
+-- gets named rather than turned into a malformed message.
+---@param build_id any
+---@return boolean?, string?, SessionProtocolErrorCode?
+function protocol.validate_build_id(build_id)
+    if build_id == nil then
+        return true
+    end
+    return validate_id(build_id, "handshake build id")
 end
 
 ---@param runtime any
@@ -1387,6 +1407,10 @@ function protocol.validate(message)
     if message.kind == "handshake" then
         if not ROLES[body.role] then
             return failure("malformed", "handshake role is invalid")
+        end
+        ok, err, code = protocol.validate_build_id(body.build_id)
+        if not ok then
+            return nil, err, code
         end
         return protocol.validate_runtime(body.runtime)
     elseif message.kind == "manifest_proposal" then
