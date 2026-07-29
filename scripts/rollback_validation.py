@@ -72,13 +72,17 @@ BROWSER_CPU_FIXTURES = {
 # is immediately followed by its same-seed combat-disabled twin, which is what lets a
 # reader attribute the difference to combat rather than to two workloads that merely look
 # alike. They ride the stress sub-suite, so they carry the snapshot, history and game
-# gates while their CPU numbers stay diagnostic; #150's slice 2 owns the timing evidence
-# that would justify promoting them to an absolute or normalized gate.
+# gates while their CPU numbers stay diagnostic; #150's follow-on work owns the timing
+# evidence that would justify promoting them to an absolute or normalized gate.
 #
-# They are deliberately not added to BROWSER_CPU_SCENARIOS. That would extend
-# max_p95_work_over_clean_p95 to distributions it was never fitted against, and
-# docs/online/omp2_rollback_validation.md records that calibration set as
-# complete_fixture-only.
+# They are correspondingly absent from BROWSER_CPU_SCENARIOS. That follows from where they
+# run rather than being a separate decision: browser_cpu_case pairs a clean control with a
+# playable case from browser-full, and these run under neither. Promoting them there later
+# would first require calibrating max_p95_work_over_clean_p95 against their own
+# distributions, which docs/online/omp2_rollback_validation.md records as fitted on
+# complete_fixture alone.
+#
+# Snapshot headroom for these fixtures is tracked by #209, not here.
 COMBAT_LOAD_SCENARIOS = (
     "combat_crowded",
     "combat_crowded_disabled",

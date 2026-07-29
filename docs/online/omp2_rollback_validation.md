@@ -236,30 +236,53 @@ match.
 
 Their CPU numbers are recorded and **not** gated. `cpu_gate_mode` returns `diagnostic` for the
 stress profile, so these cases carry the snapshot, history and game gates without an absolute or
-normalized CPU threshold. They are also absent from `BROWSER_CPU_SCENARIOS`: the `6.7` ratio was
-fitted on `complete_fixture` alone, and extending it to two more distributions without calibrating
-them is exactly the borrowing the tail-threshold guard above exists to prevent. Establishing the
-timing evidence, and with it whether these fixtures earn a gate, is #150's own follow-on work.
+normalized CPU threshold. They are correspondingly absent from `BROWSER_CPU_SCENARIOS`, which is
+structural rather than a judgement call: `browser_cpu_case` pairs a `clean` control with a
+`playable` case from `browser-full`, and these fixtures run only under the stress profile, so they
+could not have entered that ratio comparison in any event. Were they ever promoted to
+`browser-full`, the `6.7` threshold would need calibrating against their own distributions first,
+for the reason the tail-threshold guard above exists. Establishing the timing evidence, and with it
+whether these fixtures earn a gate at all, is #150's own follow-on work.
 
 #### What the snapshot budget leaves for crowded combat
 
-`budgets.snapshot_bytes` caps the retained 31-boundary window at 768 KiB and `main.lua` applies
-that gate to every case, regardless of profile or CPU gate mode. On this revision the existing
-`omp2-combat-rollback-v1` already measures **777,309 bytes, 98.83% of the cap**, leaving 9,123
-bytes. A ten-player combat snapshot is roughly 25 KB, so the entire remaining margin is a few
-hundred bytes per boundary. The fixtures above are shaped by that ceiling rather than by taste:
-the ball is parked clear of the contest instead of carried (a carried ball costs about 6.7 KB of
-window), the tapes are 160 ticks rather than longer because retained bytes grow with tick count,
-and neither fixture sustains more than about two concurrent projectiles. Measured worst-of-three-seed
-peaks are 776,273 bytes for `combat_crowded` and 777,468 for `combat_repeated_family`, against
-647,289 and 652,702 for their combat-disabled twins.
+This ceiling is tracked by [#209](https://github.com/osobytes/goliseo/issues/209), which already
+records the cost model — bytes per snapshot × 31 retained boundaries — and the three candidate
+levers for when it runs out. What follows is the crowded-fixture view of that same budget. Take any
+decision about widening it to #209 rather than to a fixture change.
 
-That ceiling is also why there is no sustained *projectile* stress fixture. A retained projectile
+`budgets.snapshot_bytes` caps the retained 31-boundary window at 768 KiB and `main.lua` applies
+that gate to every case, regardless of profile or CPU gate mode. Two different numbers describe the
+remaining margin and they are not interchangeable:
+
+- the `snapshot_active_ai_budget` diagnostic in `spec/sim/match_snapshot_spec.lua`, which is what
+  #209 tracks, computes a synthetic `(combat_base + combined_delta) * 31` window. It currently
+  reads `combat_window=767095`, `combat_headroom=19337`, against 29,567 when #209 was filed.
+- the rollback lab's actual retained peak is larger, and it is the quantity the campaign gate
+  compares. The existing `omp2-combat-rollback-v1` measures **777,309 bytes, 98.83% of the cap**,
+  leaving **9,123**.
+
+A ten-player combat snapshot is roughly 25 KB, so on the gated measure the whole remaining margin
+is a few hundred bytes per boundary. The fixtures above are shaped by that ceiling rather than by
+taste: the ball is parked clear of the contest instead of carried, the tapes are 160 ticks rather
+than longer because retained bytes grow with tick count, and neither fixture sustains more than
+about two concurrent projectiles. Measured worst-of-three-seed peaks are 776,273 bytes for
+`combat_crowded` and 777,468 for `combat_repeated_family`, against 647,289 and 652,702 for their
+combat-disabled twins.
+
+Parking the ball is a margin decision, not a feasibility one. The same fixture with the ball
+contested in the scrum measures **782,961 bytes, 99.56%** — inside the cap, but by 3,471 bytes, and
+the carrier holds the ball for 159 of the 160 ticks. Live-possession crowded combat is therefore
+measurable today and would not survive the next team-level snapshot field: #209's worked example
+from #57 cost ~278 bytes per snapshot, ~8,618 across the window, which exceeds that 3,471 outright
+and would consume most of the parked variant's 9,765 as well.
+
+The ceiling is also why there is no sustained *projectile* stress fixture. A retained projectile
 costs roughly 175 bytes per boundary, about 5.4 KB across the window, so the budget funds one or
 two of them and no more. Measured attempts: eight concurrent projectiles reach 813,629–826,418
 bytes (103.5–105.1% of the cap), five reach 796,451–804,366, and three still reach 785,603 —
-99.89%, inside by 829 bytes. Raising projectile concurrency therefore requires either a cheaper
-combat snapshot or a deliberate decision about the budget, and neither belongs in a fixture change.
+99.89%, inside by 829 bytes. Raising projectile concurrency therefore needs one of #209's levers,
+and none of them belongs in a fixture change.
 
 ### Why the rollback tail is normalized against the playable case
 
@@ -717,6 +740,14 @@ gate:
 ```sh
 ./scripts/check.sh
 ```
+
+Note what `./scripts/check_rollback.sh --self-test` does *not* cover. It validates the Python case
+plan against itself — pinned counts, shard partitioning, marker contracts — using synthesised
+markers. It never launches LÖVE, so it cannot detect the Lua plan in `sim/rollback_validation.lua`
+disagreeing with `expected_case_plan`: a case added to one and not the other passes the self-test
+and fails only in the real `rollback_native` / `rollback_browser_stress` jobs. When changing either
+plan, run `love . --rollback-validation <suite> [profile] [seed]` and check the emitted case
+markers against the Python plan before relying on a green self-test.
 
 The required native campaign, including two fresh logical executions, the late-window pair, and
 the persistent soak:
