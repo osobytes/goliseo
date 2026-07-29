@@ -18,6 +18,14 @@
 -- failing verification is evidence, not a chore: refreshing to make it green
 -- destroys the only record that the control moved.
 --
+-- What blocks. Only a moved tracked metric fails the check. Identity covers
+-- more than play does — all 40 knob defaults and every authored roster,
+-- formation and tactic — so it moves for edits that provably cannot change
+-- combat-disabled play. Those are reported loudly as STALE and still owe a
+-- drift-log entry and a re-freeze, but they do not fail a shared gate, because
+-- taxing unrelated branches with the `--refreeze-ack` ceremony would make it
+-- routine and hollow out the one guardrail this artifact has.
+--
 -- Comparison is EXACT. The batch is deterministic per seed (see
 -- docs/design/fun_metrics.md, "Determinism & variance"), values round-trip
 -- through `%.17g`, and this is a frozen control rather than a drift band, so
@@ -397,14 +405,25 @@ end
 ---@field ok boolean
 
 ---@class OutfieldAiBaselineComparison
----@field ok boolean
----@field identity_ok boolean
+---@field ok boolean  -- blocking: false only when a tracked metric actually moved
+---@field metrics_ok boolean
+---@field identity_ok boolean  -- non-blocking: stale identity is warned, not failed
 ---@field signature_ok boolean
+---@field stale boolean  -- identity drifted while every tracked metric held
 ---@field identity_rows OutfieldAiBaselineIdentityRow[]
 ---@field rows OutfieldAiBaselineMetricRow[]
 
 -- Compare a frozen record against a fresh measurement. Exact, per §"Comparison
 -- is EXACT" above.
+--
+-- Only `metrics_ok` blocks. `content_hash` covers every authored roster,
+-- formation and tactic and `tuning_hash` covers all 40 knob defaults, so
+-- identity moves for edits that provably do not change combat-disabled play —
+-- registering an unrelated knob, renaming a reserve player. Failing a shared
+-- gate on those would tax every unrelated branch with the deliberately awkward
+-- `--refreeze-ack` ceremony and teach people to run it reflexively, which is
+-- the exact habit this artifact exists to prevent. A stale identity is
+-- therefore loud and still owes a drift-log entry; it just is not a hard stop.
 ---@param baseline OutfieldAiBaselineRecord
 ---@param current OutfieldAiBaselineRecord
 ---@return OutfieldAiBaselineComparison
@@ -446,9 +465,11 @@ function outfield_ai_baseline.compare(baseline, current)
 
     local signature_ok = baseline.signature == current.signature
     return {
-        ok = identity_ok and metrics_ok and signature_ok,
+        ok = metrics_ok,
+        metrics_ok = metrics_ok,
         identity_ok = identity_ok,
         signature_ok = signature_ok,
+        stale = metrics_ok and not identity_ok,
         identity_rows = identity_rows,
         rows = rows,
     }
@@ -479,6 +500,9 @@ function outfield_ai_baseline.report(comparison, baseline, current)
             end
         end
     end
+    if not comparison.signature_ok then
+        lines[#lines + 1] = "signature differs (it covers identity as well as the statistics)"
+    end
     lines[#lines + 1] = ("%-32s %14s %14s %14s"):format("metric", "base mean", "now mean", "delta")
     for _, row in ipairs(comparison.rows) do
         lines[#lines + 1] = ("%-32s %14.6f %14.6f %+14.6f  %s"):format(
@@ -489,7 +513,16 @@ function outfield_ai_baseline.report(comparison, baseline, current)
             row.ok and "ok" or ("MOVED[" .. table.concat(row.moved, ",") .. "]")
         )
     end
-    if comparison.ok then
+    if comparison.stale then
+        -- Warning, not a failure: play is provably identical, only the
+        -- description of the fixture is out of date.
+        lines[#lines + 1] = "AI BASELINE STALE — every tracked metric is unchanged, so this build"
+        lines[#lines + 1] = "still plays the frozen control exactly; only the recorded identity is"
+        lines[#lines + 1] = "out of date. Not a failure, but it does owe a drift-log entry in"
+        lines[#lines + 1] = "docs/design/fun_metrics.md naming what moved, then a re-freeze with"
+        lines[#lines + 1] = "`love . --ai-baseline write --refreeze-ack`. Until then #148/#149 are"
+        lines[#lines + 1] = "citing an identity that no longer describes this build."
+    elseif comparison.ok then
         lines[#lines + 1] = "AI BASELINE OK"
     else
         lines[#lines + 1] = "AI BASELINE MOVED — the frozen combat-disabled control is no longer"

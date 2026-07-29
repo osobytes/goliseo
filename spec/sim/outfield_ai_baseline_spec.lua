@@ -3,6 +3,7 @@ local frozen = require("data.outfield_ai_baseline")
 local outfield_ai_baseline = require("sim.outfield_ai_baseline")
 local outfield_ai_policy = require("sim.outfield_ai_policy")
 local tripwire = require("sim.tripwire")
+local tuning = require("sim.tuning")
 
 -- The frozen record is shared module state; never hand a mutable copy of it to
 -- a comparison test.
@@ -37,12 +38,24 @@ t.describe("sim.outfield_ai_baseline", function()
         end
     end)
 
-    t.it("keeps its seeds clear of the soccer tripwire and historical evaluation sets", function()
-        -- Locked in docs/design/combat_fun_evidence_contract.md §3.3: the
-        -- tripwire owns 1..30 and 1001..1060 is spent evaluation history.
+    t.it("keeps its seeds clear of every other locked block", function()
+        -- Locked in docs/design/combat_fun_evidence_contract.md §3.3. The
+        -- holdout blocks matter most: a control that quietly overlapped
+        -- 30001..30060 would spend the untouched confirmatory set.
+        local reserved = {
+            { name = "adversarial", first = 21001, last = 21060 },
+            { name = "untouched holdout", first = 30001, last = 30060 },
+            { name = "replacement holdout", first = 31001, last = 31060 },
+        }
         for _, seed in ipairs(outfield_ai_baseline.seeds()) do
             t.is_true(seed > tripwire.DEFAULT_N, "seed " .. seed .. " collides with the tripwire")
             t.is_true(seed < 1001 or seed > 1060, "seed " .. seed .. " is a spent evaluation seed")
+            for _, block in ipairs(reserved) do
+                t.is_true(
+                    seed < block.first or seed > block.last,
+                    "seed " .. seed .. " collides with the " .. block.name .. " block"
+                )
+            end
         end
     end)
 
@@ -90,11 +103,21 @@ t.describe("sim.outfield_ai_baseline", function()
         t.eq(outfield_ai_baseline.signature(frozen), frozen.signature)
     end)
 
+    t.it("keeps baseline_version out of the signature", function()
+        -- The freeze counter must not enter the evidence hash, or a re-freeze
+        -- that changes nothing would look like a changed recording.
+        local bumped = clone(frozen)
+        bumped.baseline_version = frozen.baseline_version + 7
+        t.eq(outfield_ai_baseline.signature(bumped), frozen.signature)
+    end)
+
     t.it("passes when a record is compared against itself", function()
         local comparison = outfield_ai_baseline.compare(clone(frozen), clone(frozen))
         t.is_true(comparison.ok)
+        t.is_true(comparison.metrics_ok)
         t.is_true(comparison.identity_ok)
         t.is_true(comparison.signature_ok)
+        t.is_true(not comparison.stale)
         t.eq(#comparison.rows, #outfield_ai_baseline.TRACKED)
     end)
 
@@ -117,16 +140,38 @@ t.describe("sim.outfield_ai_baseline", function()
         t.eq(moved[1], "pass_completion")
     end)
 
-    t.it("flags a changed policy even when every metric matches", function()
+    t.it("warns about a stale identity without blocking unrelated work", function()
+        -- Identity covers all 40 knob defaults and every authored roster, so it
+        -- moves for edits that provably cannot change combat-disabled play.
+        -- Those must stay visible without taxing an unrelated branch with the
+        -- `--refreeze-ack` ceremony.
         local current = clone(frozen)
-        current.identity.policy_id = "outfield_ai_policy/v1/combat_disabled/deadbeefdeadbeef"
+        current.identity.tuning_hash = "deadbeefdeadbeef"
         current.signature = outfield_ai_baseline.signature(current)
         local comparison = outfield_ai_baseline.compare(clone(frozen), current)
-        t.is_true(not comparison.ok, "identical numbers under a new policy is still a mismatch")
+        t.is_true(comparison.ok, "identical play must not fail the shared gate")
+        t.is_true(comparison.stale, "but the stale identity is still called out")
         t.is_true(not comparison.identity_ok)
+        t.is_true(not comparison.signature_ok)
         for _, row in ipairs(comparison.rows) do
             t.is_true(row.ok, "no metric moved")
         end
+        local report = outfield_ai_baseline.report(comparison, clone(frozen), current)
+        t.is_true(report:find("AI BASELINE STALE", 1, true) ~= nil, "the report names staleness")
+        t.is_true(report:find("tuning_hash", 1, true) ~= nil, "and which identity field moved")
+        t.is_true(report:find("drift-log entry", 1, true) ~= nil, "and still demands the drift log")
+        t.is_true(report:find("AI BASELINE MOVED", 1, true) == nil, "without claiming a failure")
+    end)
+
+    t.it("still fails when a changed policy actually moves a metric", function()
+        local current = clone(frozen)
+        current.identity.policy_id = "outfield_ai_policy/v1/combat_disabled/deadbeefdeadbeef"
+        current.stats.goals_total.mean = current.stats.goals_total.mean + 0.25
+        current.signature = outfield_ai_baseline.signature(current)
+        local comparison = outfield_ai_baseline.compare(clone(frozen), current)
+        t.is_true(not comparison.ok, "moved play under a new policy is a hard failure")
+        t.is_true(not comparison.stale, "which is a failure, not a staleness warning")
+        t.is_true(not comparison.identity_ok)
     end)
 
     t.it("tells the reader not to refresh a failure away", function()
@@ -173,6 +218,44 @@ t.describe("sim.outfield_ai_baseline", function()
         t.eq(first.signature, second.signature)
     end)
 
+    t.it("detects a real policy change by re-running the fixture", function()
+        -- The end-to-end half of the guarantee: mutate a hashed policy
+        -- constant, play the SAME seeds again, and require the recording to
+        -- move. `tuning_blob = ""` resets live values from the defaults, so
+        -- moving a default really does change how the match is played.
+        local seeds = { outfield_ai_baseline.SEED_FIRST, outfield_ai_baseline.SEED_FIRST + 1 }
+        local before = outfield_ai_baseline.measure({ seeds = seeds })
+        local knob = assert(tuning.by_key["AI_SHOOT_RANGE"])
+        local previous = knob.default
+        knob.default = knob.max
+        local ok, after = pcall(outfield_ai_baseline.measure, { seeds = seeds })
+        knob.default = previous
+        tuning.reset()
+        assert(ok, after)
+        ---@cast after OutfieldAiBaselineRecord
+
+        local comparison = outfield_ai_baseline.compare(before, after)
+        t.is_true(
+            not comparison.ok,
+            "doubling AI shoot range must move the recording, not be absorbed"
+        )
+        t.is_true(not comparison.identity_ok, "and it is visible as a policy change")
+        t.is_true(
+            before.identity.policy_id ~= after.identity.policy_id,
+            "the policy id moves with the declared constant"
+        )
+        local moved = 0
+        for _, row in ipairs(comparison.rows) do
+            if not row.ok then
+                moved = moved + 1
+            end
+        end
+        t.is_true(moved > 0, "at least one tracked metric reports MOVED")
+
+        -- And the mutation left nothing behind for later specs.
+        t.eq(outfield_ai_baseline.identity().policy_id, frozen.identity.policy_id)
+    end)
+
     t.it("cannot mistake a probe run for the frozen freeze", function()
         local probe = outfield_ai_baseline.measure({
             seeds = { outfield_ai_baseline.SEED_FIRST },
@@ -181,7 +264,10 @@ t.describe("sim.outfield_ai_baseline", function()
         t.is_true(probe.identity.seed_hash ~= frozen.identity.seed_hash, "different seed set")
         t.is_true(probe.identity.fixture_hash ~= frozen.identity.fixture_hash, "different fixture")
         local comparison = outfield_ai_baseline.compare(clone(frozen), probe)
-        t.is_true(not comparison.ok, "a truncated run can never satisfy the freeze")
-        t.is_true(not comparison.identity_ok)
+        t.is_true(not comparison.identity_ok, "a truncated run can never satisfy the freeze")
+        t.is_true(
+            probe.identity.seed_count ~= frozen.identity.seed_count,
+            "the recorded seed count is what actually ran"
+        )
     end)
 end)
