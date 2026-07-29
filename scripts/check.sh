@@ -35,6 +35,16 @@ else
     echo "   ! love not installed — skipping"
 fi
 
+# The frozen combat-disabled control #148/#149 measure combat against. Unlike
+# the fun tripwire it compares exactly and cannot be refreshed without
+# `--refreeze-ack`; a failure here is a finding, not a chore.
+echo "==> Outfield AI baseline (love . --ai-baseline)"
+if command -v love >/dev/null 2>&1; then
+    love . --ai-baseline || fail=1
+else
+    echo "   ! love not installed — skipping"
+fi
+
 echo "==> OMP-1 determinism (two fresh native processes)"
 if command -v love >/dev/null 2>&1; then
     ./scripts/check_determinism.sh --self-test || fail=1

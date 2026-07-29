@@ -22,6 +22,9 @@
 --                                defaults) on held-out seeds, exit
 --   love . --tripwire [write] -> compare the fun signature against the checked-in
 --                                baseline (exit 1 on drift); `write` refreshes it
+--   love . --ai-baseline [write] -> verify the frozen combat-disabled Outfield AI
+--                                common-seed baseline (exit 1 when it moved);
+--                                `write` needs `--refreeze-ack` and re-freezes it
 
 ---@param a string
 ---@return boolean
@@ -787,6 +790,53 @@ if has_flag("--tripwire") then
         local ok, rows = tripwire.compare(baseline, current)
         print(tripwire.report(rows, ok, n))
         os.exit(ok and 0 or 1)
+    end
+    return
+end
+
+-- #59: the frozen combat-disabled Outfield AI control that #148/#149 cite.
+-- Verification is the default and writing is deliberately awkward — the whole
+-- point of the artifact is that it cannot be silently refreshed.
+if has_flag("--ai-baseline") then
+    function love.load()
+        local sub = args_after("--ai-baseline")
+        local baseline = require("sim.outfield_ai_baseline")
+        local path = "data/outfield_ai_baseline.lua"
+        local ok_load, frozen = pcall(require, "data.outfield_ai_baseline")
+        local have_frozen = ok_load and type(frozen) == "table"
+        if sub == "write" then
+            if not has_flag("--refreeze-ack") then
+                print("refusing to re-freeze " .. path .. " without an explicit acknowledgement.")
+                print("#148/#149 cite this baseline; refreshing it deletes the evidence that")
+                print("the control moved. If the change is intended, log it in the drift log")
+                print("of docs/design/fun_metrics.md and re-run with:")
+                print("    love . --ai-baseline write --refreeze-ack")
+                os.exit(2)
+            end
+            local previous = have_frozen and frozen.baseline_version or 0
+            local record = baseline.measure({ baseline_version = previous + 1 })
+            local file = assert(io.open(path, "w"))
+            file:write(baseline.serialize(record))
+            file:close()
+            print(
+                ("outfield AI baseline re-frozen: %s (v%d, %d seeds, policy %s)"):format(
+                    path,
+                    record.baseline_version,
+                    baseline.SEED_COUNT,
+                    record.identity.policy_id
+                )
+            )
+            os.exit(0)
+        end
+        if not have_frozen then
+            print("no baseline: " .. path .. " missing — create it with:")
+            print("    love . --ai-baseline write --refreeze-ack")
+            os.exit(1)
+        end
+        local current = baseline.measure({ baseline_version = frozen.baseline_version })
+        local comparison = baseline.compare(frozen, current)
+        print(baseline.report(comparison, frozen, current))
+        os.exit(comparison.ok and 0 or 1)
     end
     return
 end
