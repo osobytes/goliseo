@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a deterministic browser artifact for the Galactic Cup LÖVE project."""
+"""Build a deterministic browser artifact for the GOLISEO LÖVE project."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ RUNTIME_FILES = {
 }
 
 BROWSER_STYLE_OVERRIDE = r'''
-/* Galactic Cup preserves its 960x540 canvas aspect ratio in windowed mode. */
+/* GOLISEO preserves its 960x540 canvas aspect ratio in windowed mode. */
 html,
 body {
   width: 100%;
@@ -52,11 +52,11 @@ body {
 }
 '''
 
-BROWSER_LOADER = r'''/* Galactic Cup browser bootstrap. */
+BROWSER_LOADER = r'''/* GOLISEO browser bootstrap. */
 (function () {
   "use strict";
 
-  /*__GALACTIC_CUP_BROWSER_STORAGE__*/
+  /*__GOLISEO_BROWSER_STORAGE__*/
 
   /*
    * OMP-0 transport host. Lua calls this bounded queue API through the
@@ -65,7 +65,7 @@ BROWSER_LOADER = r'''/* Galactic Cup browser bootstrap. */
    * update call. The WebRTC proof host is embedded separately below and uses
    * the same envelope shape.
    */
-  window.GalacticCupTransportBridge = window.GalacticCupTransportBridge || (function () {
+  window.GoliseoTransportBridge = window.GoliseoTransportBridge || (function () {
     var VERSION = 1;
     var DEFAULT_QUEUE_LIMIT = 64;
     var MAX_QUEUE_LIMIT = 256;
@@ -290,9 +290,9 @@ BROWSER_LOADER = r'''/* Galactic Cup browser bootstrap. */
     };
   })();
 
-  /*__GALACTIC_CUP_WEBRTC_PROOF__*/
+  /*__GOLISEO_WEBRTC_PROOF__*/
 
-  /*__GALACTIC_CUP_STAR_TRANSPORT__*/
+  /*__GOLISEO_STAR_TRANSPORT__*/
 
   var script = document.currentScript;
   var canvas = document.getElementById("canvas");
@@ -302,9 +302,9 @@ BROWSER_LOADER = r'''/* Galactic Cup browser bootstrap. */
   var version = "11.5";
   var uri = script_query.get("g") || "goliseo.love";
   var args = [];
-  var browser_compat = window.__GALACTIC_CUP__ = {
-    artifact: "galactic-cup-web",
-    build_id: "__GALACTIC_CUP_BUILD_ID__",
+  var browser_compat = window.__GOLISEO__ = {
+    artifact: "goliseo-web",
+    build_id: "__GOLISEO_BUILD_ID__",
     console_entries: [],
     events: [],
     storage: { state: "pending" },
@@ -413,7 +413,7 @@ BROWSER_LOADER = r'''/* Galactic Cup browser bootstrap. */
         Module.args = [uri.substring(uri.lastIndexOf("/") + 1)].concat(args);
         Module.cache = cache;
         Module.prerun = function () {
-          var storage_host = window.GalacticCupBrowserStorage.create({
+          var storage_host = window.GoliseoBrowserStorage.create({
             fs: Module.FS,
             persistent_root: Module.env.HOME + "/love",
             force_unavailable: page_query.get("storage") === "unavailable",
@@ -482,12 +482,12 @@ INDEX_HTML = """<!doctype html>
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Galactic Cup</title>
+    <title>GOLISEO</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="style.css">
   </head>
   <body>
-    <canvas id="canvas" aria-label="Galactic Cup game"></canvas>
+    <canvas id="canvas" aria-label="GOLISEO game"></canvas>
     <div id="spinner" class="pending" aria-live="polite"></div>
     <script src="player.js?g=goliseo.love&amp;v=11.5"></script>
   </body>
@@ -499,7 +499,7 @@ WEBRTC_PROOF_HTML = """<!doctype html>
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Galactic Cup WebRTC proof</title>
+    <title>GOLISEO WebRTC proof</title>
     <style>
       :root { color-scheme: dark; font-family: system-ui, sans-serif; }
       body { background: #070b18; color: #f4f7ff; margin: 0 auto; max-width: 900px; padding: 24px; }
@@ -514,7 +514,7 @@ WEBRTC_PROOF_HTML = """<!doctype html>
     </style>
   </head>
   <body>
-    <h1>Galactic Cup WebRTC proof</h1>
+    <h1>GOLISEO WebRTC proof</h1>
     <div class="summary">
       <span>Role: <strong id="role-value"></strong></span>
       <span>Profile: <strong id="profile-value"></strong></span>
@@ -548,7 +548,7 @@ WEBRTC_PROOF_SUITE_HTML = """<!doctype html>
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Galactic Cup WebRTC proof suite</title>
+    <title>GOLISEO WebRTC proof suite</title>
     <style>
       :root { color-scheme: dark; font-family: system-ui, sans-serif; }
       body { background: #070b18; color: #f4f7ff; margin: 0 auto; max-width: 1200px; padding: 24px; }
@@ -562,7 +562,7 @@ WEBRTC_PROOF_SUITE_HTML = """<!doctype html>
     </style>
   </head>
   <body>
-    <h1>Galactic Cup WebRTC proof suite</h1>
+    <h1>GOLISEO WebRTC proof suite</h1>
     <p>
       Runs baseline and 100 ms RTT/1% input-loss profiles concurrently in four
       separate browsing contexts, plus a build-mismatch handshake.
@@ -667,7 +667,7 @@ def download_runtime(destination: Path) -> Path:
     archive_path = destination / "love.js.tar.gz"
     request = urllib.request.Request(
         RUNTIME_ARCHIVE_URL,
-        headers={"User-Agent": "galactic-cup-web-build/1"},
+        headers={"User-Agent": "goliseo-web-build/1"},
     )
     with urllib.request.urlopen(request) as response, archive_path.open("wb") as stream:
         shutil.copyfileobj(response, stream)
@@ -730,12 +730,12 @@ def write_browser_loader(output: Path) -> None:
     proof_host = (ROOT / "scripts" / "webrtc_proof_host.js").read_text(encoding="utf-8")
     star_host = (ROOT / "scripts" / "webrtc_star_host.js").read_text(encoding="utf-8")
     loader = BROWSER_LOADER.replace(
-        "  /*__GALACTIC_CUP_BROWSER_STORAGE__*/",
+        "  /*__GOLISEO_BROWSER_STORAGE__*/",
         storage_host,
     )
-    loader = loader.replace("  /*__GALACTIC_CUP_WEBRTC_PROOF__*/", proof_host)
-    loader = loader.replace("  /*__GALACTIC_CUP_STAR_TRANSPORT__*/", star_host)
-    loader = loader.replace("__GALACTIC_CUP_BUILD_ID__", source_revision())
+    loader = loader.replace("  /*__GOLISEO_WEBRTC_PROOF__*/", proof_host)
+    loader = loader.replace("  /*__GOLISEO_STAR_TRANSPORT__*/", star_host)
+    loader = loader.replace("__GOLISEO_BUILD_ID__", source_revision())
     (output / "player.js").write_text(loader, encoding="utf-8")
 
 
@@ -744,7 +744,7 @@ def write_webrtc_proof_runner(output: Path) -> None:
     proof_host = (ROOT / "scripts" / "webrtc_proof_host.js").read_text(encoding="utf-8")
     runner = (ROOT / "scripts" / "webrtc_proof_runner.js").read_text(encoding="utf-8")
     source = (
-        f"window.__GALACTIC_CUP__ = {{ build_id: {build_id} }};\n"
+        f"window.__GOLISEO__ = {{ build_id: {build_id} }};\n"
         f"{proof_host}\n"
         f"{runner}\n"
     )
@@ -762,7 +762,7 @@ def write_manifest(output: Path, package_hash: str) -> None:
             files[path.relative_to(output).as_posix()] = sha256(path)
 
     manifest = {
-        "artifact": "galactic-cup-web",
+        "artifact": "goliseo-web",
         "game_package": {
             "path": GAME_PACKAGE_NAME,
             "sha256": package_hash,

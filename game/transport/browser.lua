@@ -96,7 +96,7 @@ end
 ---@param argument string?
 ---@return string?, string?
 function BrowserTransport:_call(name, argument)
-    local command = "window.GalacticCupTransportBridge." .. name .. "("
+    local command = "window.GoliseoTransportBridge." .. name .. "("
     if argument then
         command = command .. argument
     end

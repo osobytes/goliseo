@@ -111,7 +111,7 @@ backpressure.
 ## Generated browser host
 
 `scripts/web_build.py` emits `player.js` with the maintained host object
-`window.GalacticCupTransportBridge`. The Lua browser adapter calls its small
+`window.GoliseoTransportBridge`. The Lua browser adapter calls its small
 method surface through the pinned runtime's existing `love.js.eval` hook:
 
 ```text
@@ -124,8 +124,8 @@ disconnect(reason?)     -> "state|disconnected"
 diagnostics()           -> pipe-separated diagnostic fields
 ```
 
-The `GalacticCupTransportBridge` host remains a bounded loopback seam. Issue #5
-adds a separate `GalacticCupWebRTCProof` host for manual peer connections while
+The `GoliseoTransportBridge` host remains a bounded loopback seam. Issue #5
+adds a separate `GoliseoWebRTCProof` host for manual peer connections while
 reusing this envelope shape; it does not turn the loopback adapter into a
 production network client. No JavaScript module is imported by `core/`, `data/`,
 or `sim/`, and no generated artifact is checked in. The browser build smoke
@@ -285,7 +285,7 @@ channel?, state?, code?, message? }`.
 ### Generated browser bridge
 
 `scripts/webrtc_star_host.js` is embedded into `player.js` as
-`window.GalacticCupStarTransport`. It owns one `RTCPeerConnection` per guest
+`window.GoliseoStarTransport`. It owns one `RTCPeerConnection` per guest
 and the two data channels per connection; no JavaScript object crosses into
 Lua. The Lua adapter exchanges bounded ASCII through `love.js.eval`:
 

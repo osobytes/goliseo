@@ -49,7 +49,7 @@ function makeFilesystem(remote, syncError) {
 }
 
 function attach(filesystem, options = {}) {
-  const host = window.GalacticCupBrowserStorage.create({
+  const host = window.GoliseoBrowserStorage.create({
     fs: filesystem,
     persistent_root: "/home/web_user/love",
     force_unavailable: options.forceUnavailable,
@@ -86,7 +86,7 @@ firstFilesystem.local = savedSettings;
 firstFilesystem.close({
   fd: 5,
   flags: 1,
-  path: "/home/web_user/love/galactic-cup/settings.txt"
+  path: "/home/web_user/love/goliseo/settings.txt"
 });
 drainScheduled();
 if (remote.contents !== savedSettings || firstHost.snapshot().flush_count !== 1) {
@@ -116,7 +116,7 @@ unavailableFilesystem.local = savedSettings;
 unavailableFilesystem.close({
   fd: 6,
   flags: 1,
-  path: "/home/web_user/love/galactic-cup/settings.txt"
+  path: "/home/web_user/love/goliseo/settings.txt"
 });
 drainScheduled();
 if (unavailableHost.snapshot().skipped_flush_count !== 1) {

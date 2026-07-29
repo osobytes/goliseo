@@ -435,6 +435,11 @@ def relevant_manifest(
 
 def fingerprint_manifest(manifest: dict[str, GitTreeEntry]) -> str:
     digest = hashlib.sha256()
+    # The `galactic-cup/` segment is a hash domain separator, not branding. It is
+    # deliberately not renamed with the GOLISEO migration: changing it changes
+    # every fingerprint, so recorded producer artifacts stop matching at the
+    # reuse check and every campaign fails open to a full run. Rename it only
+    # together with a `FINGERPRINT_FORMAT` bump.
     digest.update(
         (
             f"galactic-cup/omp2-relevant-content/v{FINGERPRINT_FORMAT}/"
@@ -742,7 +747,7 @@ def api_json(url: str, token: str) -> dict[str, Any]:
         headers={
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {token}",
-            "User-Agent": "galactic-cup-rollback-ci",
+            "User-Agent": "goliseo-rollback-ci",
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )

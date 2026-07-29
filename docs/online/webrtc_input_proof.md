@@ -9,7 +9,7 @@ production STUN/TURN services.
 
 The game-facing online path no longer uses this proof. Issue #164 replaced it
 with the host-star transport in `docs/online/transport_bridge.md`
-(`game.transport.browser_star` over `window.GalacticCupStarTransport`), which
+(`game.transport.browser_star` over `window.GoliseoStarTransport`), which
 carries #161 session messages and #162 input packets instead of a
 proof-specific vocabulary.
 
@@ -32,7 +32,7 @@ scripts/web_build.sh build/web
 scripts/web_serve.sh build/web 8000
 ```
 
-The generated `player.js` exposes `window.GalacticCupWebRTCProof`. It uses the
+The generated `player.js` exposes `window.GoliseoWebRTCProof`. It uses the
 version-1 envelope from `game.transport`:
 
 ```text
@@ -105,7 +105,7 @@ variables; reload both contexts before a repeat.
 1. In context A, create the host and export its offer:
 
    ```js
-   host = GalacticCupWebRTCProof.create({ role: "host" });
+   host = GoliseoWebRTCProof.create({ role: "host" });
    offer = await host.create_offer();
    copy(JSON.stringify(offer));
    ```
@@ -113,7 +113,7 @@ variables; reload both contexts before a repeat.
 2. In context B, paste the offer, create the guest, and export its answer:
 
    ```js
-   guest = GalacticCupWebRTCProof.create({ role: "guest" });
+   guest = GoliseoWebRTCProof.create({ role: "guest" });
    answer = await guest.accept_offer(JSON.parse(prompt("Paste host offer")));
    copy(JSON.stringify(answer));
    ```
@@ -156,7 +156,7 @@ Repeat the offer/answer flow with a deliberately incompatible guest. The host
 must report a useful error and must not set `handshake_complete`:
 
 ```js
-guest = GalacticCupWebRTCProof.create({ role: "guest", build_id: "mismatch" });
+guest = GoliseoWebRTCProof.create({ role: "guest", build_id: "mismatch" });
 ```
 
 Use `protocol_version: 2` instead to exercise the version rejection. These are

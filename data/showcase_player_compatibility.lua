@@ -1,4 +1,4 @@
--- Galactic Cup showcase-only identity and species seams. These records preserve
+-- GOLISEO showcase-only identity and species seams. These records preserve
 -- the shipped showcase while PlayerData moves to the presentation/loadout model.
 
 ---@class ShowcasePlayerCompatibilityData

@@ -117,14 +117,14 @@ if "Promise.all(paths.map(fetch_binary))" not in loader:
     raise SystemExit("browser loader does not use direct deterministic asset loading")
 if "page_query.get(\"arg\")" not in loader:
     raise SystemExit("browser loader does not read flow arguments from the page URL")
-if "GalacticCupBrowserStorage" not in loader:
+if "GoliseoBrowserStorage" not in loader:
     raise SystemExit("browser loader does not include the settings persistence host")
 if 'page_query.get("storage") === "unavailable"' not in loader:
     raise SystemExit("browser loader does not expose the unavailable-storage diagnostic")
 if "Module.FS.syncfs = function (_populate, callback)" in loader:
     raise SystemExit("browser loader still suppresses persistent filesystem synchronization")
 for marker in (
-    "window.__GALACTIC_CUP__",
+    "window.__GOLISEO__",
     "console_entries",
     'mark("first_frame")',
     "GC_BROWSER|",
@@ -132,13 +132,13 @@ for marker in (
 ):
     if marker not in loader:
         raise SystemExit(f"browser loader is missing compatibility marker: {marker}")
-if "GalacticCupTransportBridge" not in loader:
+if "GoliseoTransportBridge" not in loader:
     raise SystemExit("browser loader does not include the transport bridge host")
-for marker in ("GalacticCupWebRTCProof", "RTCPeerConnection", "GC_WEBRTC"):
+for marker in ("GoliseoWebRTCProof", "RTCPeerConnection", "GC_WEBRTC"):
     if marker not in loader:
         raise SystemExit(f"browser loader is missing WebRTC proof marker: {marker}")
 for marker in (
-    "GalacticCupStarTransport",
+    "GoliseoStarTransport",
     'maxRetransmits: 0',
     "open_peer",
     "take_signal",
@@ -155,7 +155,7 @@ for forbidden in ("attach_channel",):
 
 style = (artifact / "style.css").read_text(encoding="utf-8")
 for marker in (
-    "Galactic Cup preserves its 960x540 canvas aspect ratio",
+    "GOLISEO preserves its 960x540 canvas aspect ratio",
     "#canvas:not(:fullscreen)",
     "width: min(100vw, 177.7777777778vh) !important",
     "height: min(100vh, 56.25vw) !important",
@@ -170,7 +170,7 @@ for marker in ("signal-input", "signal-output", "start-traffic", "diagnostics"):
     if marker not in proof_page:
         raise SystemExit(f"WebRTC proof page is missing control: {marker}")
 for marker in (
-    "GalacticCupWebRTCProof",
+    "GoliseoWebRTCProof",
     "network_profile",
     "one_way_delay_ms",
     "input_loss_percent",
@@ -184,7 +184,7 @@ proof_suite = (artifact / "webrtc-proof-suite.js").read_text(encoding="utf-8")
 for marker in ("baseline-host", "shaped-host", "mismatch-host", "run-suite"):
     if marker not in proof_suite_page:
         raise SystemExit(f"WebRTC proof suite page is missing control: {marker}")
-for marker in ("GalacticCupWebRTCProofSuite", "suite_complete", "mismatch_complete"):
+for marker in ("GoliseoWebRTCProofSuite", "suite_complete", "mismatch_complete"):
     if marker not in proof_suite:
         raise SystemExit(f"WebRTC proof suite is missing marker: {marker}")
 

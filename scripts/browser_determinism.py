@@ -351,7 +351,7 @@ def quit_browser_bounded(
 def console_state(driver: Any) -> dict[str, Any]:
     value = driver.execute_script(
         """
-        const state = window.__GALACTIC_CUP__ || {};
+        const state = window.__GOLISEO__ || {};
         return {
           status: state.status || null,
           entries: (state.console_entries || []).map((entry) => String(entry.message || ""))

@@ -14,7 +14,7 @@ end
 
 ---@param t table  -- love config table
 function love.conf(t)
-    t.identity = "galactic_cup"
+    t.identity = "goliseo"
     t.version = "11.5"
 
     local headless_flags = {
@@ -47,7 +47,7 @@ function love.conf(t)
         t.modules.physics = false
         t.modules.touch = false
     else
-        t.window.title = "Galactic Cup"
+        t.window.title = "GOLISEO"
         t.window.width = 960
         t.window.height = 540
         t.window.resizable = false

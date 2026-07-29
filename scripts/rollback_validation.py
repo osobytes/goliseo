@@ -358,11 +358,11 @@ BROWSER_CONSOLE_WAIT_SCRIPT = """
 const cursor = arguments[0];
 const timeoutMs = arguments[1];
 const done = arguments[arguments.length - 1];
-const state = window.__GALACTIC_CUP__ || {};
+const state = window.__GOLISEO__ || {};
 const entries = state.console_entries || [];
 
 function result(timedOut) {
-  const current = window.__GALACTIC_CUP__ || {};
+  const current = window.__GOLISEO__ || {};
   const currentEntries = current.console_entries || entries;
   const nextCursor = currentEntries.length;
   const delta = currentEntries.slice(cursor, nextCursor)
@@ -6786,7 +6786,7 @@ def run_self_test() -> None:
 
 
 def default_output() -> Path:
-    directory = Path(tempfile.mkdtemp(prefix="galactic-cup-omp2-rollback-"))
+    directory = Path(tempfile.mkdtemp(prefix="goliseo-omp2-rollback-"))
     return directory / "omp2_rollback.json"
 
 

@@ -12,7 +12,7 @@ serializes a flush after each writable save-file close, so the existing
 `love.filesystem` settings path persists without a browser-specific Lua path.
 
 IndexedDB failure is recoverable. The loader records
-`window.__GALACTIC_CUP__.storage.state = "unavailable"` and emits a
+`window.__GOLISEO__.storage.state = "unavailable"` and emits a
 `GC_BROWSER|storage_error` warning with `recoverable=true`, then continues on
 the mounted in-memory filesystem. The issue #16 browser runner also loads
 `?storage=unavailable` as a deterministic failure probe and requires that page

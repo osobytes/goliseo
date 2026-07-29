@@ -187,9 +187,10 @@ not revoke permissions already granted for those versions.
 
 GOLISEO is in active development and is not yet a public release. Its complete
 title-to-result flow and deterministic 5v5 match are playable; release
-engineering, packaging, QA, and media remain. The repository slug and parts of
-the current showcase content still carry the Galactic Cup prototype name
-during the brand migration.
+engineering, packaging, QA, and media remain. The application now carries the
+GOLISEO name throughout its shell, window, browser artifact, and save identity.
+Completed online evidence, fixture ids, and content hashes keep the prototype
+name that produced them.
 
 Combat, rigged 3D characters, and the multi-theme roster remain bounded proof
 work rather than shipped features. Career mode, economies, progression, large

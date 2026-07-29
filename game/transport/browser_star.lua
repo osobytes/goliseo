@@ -1,7 +1,7 @@
 local contract = require("game.transport.contract")
 
 -- Browser host-star adapter. Every WebRTC object stays behind
--- `window.GalacticCupStarTransport`; this module only exchanges bounded ASCII
+-- `window.GoliseoStarTransport`; this module only exchanges bounded ASCII
 -- strings through the pinned runtime's `love.js.eval` hook, so no JavaScript
 -- value ever escapes `game/`. Nothing here is a simulation authority.
 
@@ -29,7 +29,7 @@ local contract = require("game.transport.contract")
 local BrowserStarTransport = {}
 BrowserStarTransport.__index = BrowserStarTransport
 
-local BRIDGE = "window.GalacticCupStarTransport."
+local BRIDGE = "window.GoliseoStarTransport."
 
 ---@param code TransportErrorCode
 ---@param message string

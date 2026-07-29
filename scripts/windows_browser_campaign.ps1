@@ -209,7 +209,7 @@ try {
             & $VenvPython @MatrixArguments
             $MatrixExitCode = $LASTEXITCODE
             $Packet = Get-OnlyPacket $RowRoot
-            $AudioHeard = Read-Decision "Was Galactic Cup audio audible during $Browser $Viewport?"
+            $AudioHeard = Read-Decision "Was GOLISEO audio audible during $Browser $Viewport?"
             $PhysicalButtons = Read-Decision (
                 "Did you press physical standard-mapped A then B during Match in " +
                 "$Browser $Viewport?"
