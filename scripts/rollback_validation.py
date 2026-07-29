@@ -47,6 +47,15 @@ HISTORICAL_SOCCER_EVIDENCE = (
     ROOT / "docs" / "online" / "evidence" / "omp2_rollback_linux_2026-07-24.json"
 )
 HISTORICAL_SOCCER_TAPE_DIGEST = "881917e3ba798703"
+# `sim.match_snapshot`'s two schema versions, as strings, because every use here
+# is a marker field. They were spelled as literals in seven places, which is how
+# a combat-only bump (#112 moved COMBAT_SNAPSHOT_VERSION 12 -> 13) can leave the
+# self-test fixture and the validator agreeing with each other while disagreeing
+# with the LOVE build the real campaign runs: the self-test stayed green and only
+# CI failed. Keep them here so the next bump is one edit.
+SOCCER_SNAPSHOT_VERSION = "11"
+COMBAT_SNAPSHOT_VERSION = "13"
+SNAPSHOT_VERSIONS = f"{SOCCER_SNAPSHOT_VERSION},{COMBAT_SNAPSHOT_VERSION}"
 MARKER_PREFIX = "GC_ROLLBACK_VALIDATION"
 METRICS_PREFIX = "GC_ROLLBACK_METRICS"
 TIMINGS_PREFIX = "GC_ROLLBACK_TIMINGS"
@@ -859,7 +868,9 @@ def validate_case_integrity(
             raise RuntimeError(f"{case_id} made hidden progress after a terminal result")
         combat_case = fields.get("scenario") == "combat"
         expected_tape_version = "2" if combat_case else "1"
-        expected_snapshot_version = "12" if combat_case else "11"
+        expected_snapshot_version = (
+            COMBAT_SNAPSHOT_VERSION if combat_case else SOCCER_SNAPSHOT_VERSION
+        )
         if fields["tape_version"] != expected_tape_version:
             raise RuntimeError(
                 f"{case_id} reports tape_version={fields['tape_version']!r}, "
@@ -1012,7 +1023,7 @@ def validate_runtime_metrics(
         "input_version": "2",
         "gate_contract": GATE_CONTRACT,
         "love": "11.5.0",
-        "snapshot_versions": "11,12",
+        "snapshot_versions": SNAPSHOT_VERSIONS,
         "suite": suite,
         "tape_versions": "1,2",
         "tick_rate": "60",
@@ -2842,7 +2853,7 @@ def browser_cpu_case(
             "input_version": "2",
             "love": "11.5.0",
             "profile_digest": EXPECTED_PROFILE_DIGEST,
-            "snapshot_versions": "11,12",
+            "snapshot_versions": SNAPSHOT_VERSIONS,
             "suite": "browser-full",
             "tape_versions": "1,2",
             "tick_rate": "60",
@@ -4250,7 +4261,8 @@ def run_self_test() -> None:
                 "lab_success=1|expected_failure=0|status=converged|late_tick=none|"
                 "hidden_progress=0|scenario_pass=1|"
                 f"tape_version={'2' if combat else '1'}|"
-                f"snapshot_version={'12' if combat else '11'}|"
+                f"snapshot_version="
+                f"{COMBAT_SNAPSHOT_VERSION if combat else SOCCER_SNAPSHOT_VERSION}|"
                 f"tape_digest={'1111111111111111' if combat else HISTORICAL_SOCCER_TAPE_DIGEST}|"
                 "initial_hash=0000000000000001|reference_hash=0000000000000002|"
                 f"client_hash=0000000000000002|rollbacks={rollbacks}|max_depth=8|"
@@ -4277,7 +4289,8 @@ def run_self_test() -> None:
         runtime_metric = parse_runtime_metric(
             f"{METRICS_PREFIX}|runtime|love=11.5.0|suite=browser-full|"
             f"gate_contract={GATE_CONTRACT}|profile_digest={EXPECTED_PROFILE_DIGEST}|"
-            "input_version=2|tape_versions=1,2|snapshot_versions=11,12|tick_rate=60"
+            "input_version=2|tape_versions=1,2|"
+            f"snapshot_versions={SNAPSHOT_VERSIONS}|tick_rate=60"
         )
 
         def case_metric(
@@ -5920,12 +5933,13 @@ def run_self_test() -> None:
         gate = "1" if mode == "absolute" else "not_applied"
         applied = "1" if mode == "absolute" else "0"
         digest = "0000000000000004" if combat else "0000000000000003"
-        # These two must track validate_case_integrity's expected_tape_version and
-        # expected_snapshot_version, which a gameplay change that alters the
-        # snapshot format bumps. If this fixture starts reporting the wrong
-        # version, update it there and here together.
+        # Both track validate_case_integrity's expectations, which a gameplay
+        # change that alters the snapshot format bumps. The snapshot version now
+        # reads the shared constants rather than a literal, so this fixture and
+        # the validator can no longer agree with each other while disagreeing
+        # with the LOVE build the real campaign runs.
         tape_version = "2" if combat else "1"
-        snapshot_version = "12" if combat else "11"
+        snapshot_version = COMBAT_SNAPSHOT_VERSION if combat else SOCCER_SNAPSHOT_VERSION
         return (
             f"{MARKER_PREFIX}|case|schema=1|case={case['case']}|"
             f"scenario={case['scenario']}|profile={profile}|"
@@ -6169,7 +6183,7 @@ def run_self_test() -> None:
         "cpu_gate_mode=absolute|"
         "snapshot_gate=1|"
         "history_gate=1|game_gate=1|rollbacks=6903|"
-        "tape_version=1|snapshot_version=11|"
+        f"tape_version=1|snapshot_version={SOCCER_SNAPSHOT_VERSION}|"
         "initial_hash=0000000000000001|reference_hash=0000000000000002|"
         "client_hash=0000000000000002|tape_digest=881917e3ba798703|resimulated=42|"
         "event_reference_digest=0000000000000003|"
@@ -6288,7 +6302,7 @@ def run_self_test() -> None:
     runtime_provenance = parse_runtime_metric(
         f"{METRICS_PREFIX}|runtime|love=11.5.0|suite=native|"
         f"gate_contract={GATE_CONTRACT}|profile_digest={EXPECTED_PROFILE_DIGEST}|input_version=2|"
-        "tape_versions=1,2|snapshot_versions=11,12|tick_rate=60"
+        f"tape_versions=1,2|snapshot_versions={SNAPSHOT_VERSIONS}|tick_rate=60"
     )
     passing_samples = (10000,) * 6897 + (33301, 33400, 34000, 35000, 40000, 46040)
     passing_timing = timing_series("integrity", passing_samples)
