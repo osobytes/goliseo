@@ -264,22 +264,67 @@ t.describe("deterministic combat AI in a match", function()
         end
     end)
 
-    t.it("reproduces the same match byte for byte from the same seed", function()
-        ---@return string
+    t.it("reproduces the same match byte for byte at every boundary", function()
+        -- Capturing every boundary, not just the last, is what proves the
+        -- retained intent survives strict snapshot capture: `capture` rejects a
+        -- combat commitment that conflicts with a live run assignment, so a tick
+        -- where the AI committed while holding a run would fail here rather than
+        -- silently later.
+        ---@return string[]
         local function run()
             local state, combat_state = family_match("light_melee", 8081)
-            state.kickoff_hold = 0
-            for _ = 1, 240 do
+            local hashes = {}
+            for _ = 1, 360 do
                 match.step(
                     state,
                     fixed_clock.TICK_SECONDS,
                     slot_input.neutral_match_input(),
                     combat_state
                 )
+                hashes[#hashes + 1] =
+                    match_snapshot.hash(match_snapshot.capture(state, combat_state))
             end
-            return match_snapshot.hash(match_snapshot.capture(state, combat_state))
+            return hashes
         end
-        t.eq(run(), run())
+        local first = run()
+        local second = run()
+        t.eq(#second, #first)
+        for index = 1, #first do
+            t.eq(second[index], first[index], "boundary " .. index .. " diverged")
+        end
+    end)
+
+    t.it("keeps off-ball commits rare over a whole match", function()
+        local state, combat_state = family_match("unarmed", 20003)
+        local by_reason = {}
+        local total = 0
+        for _ = 1, 3600 do
+            match.step(
+                state,
+                fixed_clock.TICK_SECONDS,
+                slot_input.neutral_match_input(),
+                combat_state
+            )
+            for _, event in ipairs(state.events) do
+                local prefix = "combat_commit_"
+                if event.kind:sub(1, #prefix) == prefix then
+                    local reason = event.kind:sub(#prefix + 1)
+                    by_reason[reason] = (by_reason[reason] or 0) + 1
+                    total = total + 1
+                end
+            end
+        end
+        t.is_true(total > 0, "a whole combat half produced no commit at all")
+        -- Every commit carries one of the five purposes, never the closed
+        -- zero-context outcome.
+        t.eq(by_reason.unattributed_off_ball, nil)
+        local on_ball = (by_reason.carrier_contest or 0)
+            + (by_reason.loose_ball_contest or 0)
+            + (by_reason.recovery_punish or 0)
+        t.is_true(
+            on_ball * 2 >= total,
+            "most commits should be ball contests, not off-ball actions"
+        )
     end)
 
     t.it("leaves the human-controlled slot's own input authoritative", function()
