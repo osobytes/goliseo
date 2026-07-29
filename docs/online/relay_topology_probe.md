@@ -242,28 +242,28 @@ relay does **not** remove the host: it removes the host's *input* privilege and
 leaves its *session* privilege in place, so host departure still ends the match
 and OMP-5 host migration is still required.
 
-### Finding 5 — the settle phase's relay-quiet wait is complexity the relay deletes
+### Finding 5 — the settle phase's host relay wait is complexity the relay deletes
 
-`match_driver.SETTLE_RELAY_QUIET_STEPS` and the host branch of `tail_delivered`
-are host-only. The host stays in the settle phase after confirming its own
-boundary because a departing player-host strands every guest's tail (#241), and a
-relay is not a player and cannot leave, so nothing under the new topology needs
-this at all. The finding stands.
+The host branch of `tail_delivered` is host-only. The host stays in the settle
+phase after confirming its own boundary because a departing player-host strands
+every guest's tail (#241), and a relay is not a player and cannot leave, so
+nothing under the new topology needs this at all. The finding stands.
 
-**Its weight does not, and this section is re-pinned.** When it was written the
-wait was a *heuristic* — `DELAY_TICKS + 1` consecutive silent steps — and the host
-paid all four on every clean match, which is what made deleting it the decision's
-clearest simplification. #243 gave guests a way to report their own confirmation
-in the bundles they already re-publish, so the host now leaves when every author
-it has heard from has confirmed the final boundary. The quiet count survives as the
-fallback for a peer that has stopped speaking at all — intended as a fallback
-rather than enforced as one, since `tail_delivered` still tests it before reading
-any report. See `match_driver.md`.
+**Its weight does not, and this section is re-pinned twice.** When it was written
+the wait was a *heuristic* — `match_driver.SETTLE_RELAY_QUIET_STEPS`,
+`DELAY_TICKS + 1` consecutive silent steps — and the host paid all four on every
+clean match, which is what made deleting it the decision's clearest
+simplification. #243 gave guests a way to report their own confirmation in the
+bundles they already re-publish, so the host now leaves when every author it has
+heard from has confirmed the final boundary. #255 then retired the quiet count
+outright: it could only ever override a peer's own report, never substitute for a
+missing one, so the reports are the whole mechanism. See
+[`match_driver.md`](match_driver.md#silence-never-pre-empts-a-peers-own-report-255).
 Measured on the same healthy 1v1: the host and its guest both settle in two steps,
 where the host used to need four or more.
 
-So the relay still deletes this code, but what it deletes is now a fallback path
-rather than a wait every clean match pays for. It is a smaller win than this
+So the relay still deletes this code, but what it deletes is a short evidence
+check rather than a wait every clean match pays for. It is a smaller win than this
 document originally claimed.
 
 ### Finding 6 — the fairness delay is universalised, not removed
@@ -340,7 +340,7 @@ Of the decision's claims that this exercise can reach:
 | The relay never needs to parse a game packet | **Confirmed**, with one requirement the decision omits: it must frame per-origin, or ownership validation degrades to self-declaration. |
 | A relay adapter is a third implementation and the driver does not change | **Falsified.** `match_driver.guest_apply_authority` terminates on the first peer bundle. |
 | Host departure still ends the session | **Confirmed.** The coordinator's authority is untouched by the wire. |
-| The settle phase's relay-quiet heuristic becomes unnecessary | **Confirmed** that it is host-only, but smaller than claimed. #243 narrowed it with confirmation feedback and reduced its ordinary cost to zero, so what a relay deletes is mostly a fallback path rather than a wait every clean match pays. It is not yet strictly a fallback (#255). |
+| The settle phase's relay-quiet heuristic becomes unnecessary | **Confirmed** that it is host-only, but smaller than claimed. #243 narrowed it with confirmation feedback and reduced its ordinary cost to zero; #255 retired the heuristic entirely, so what a relay deletes is a confirmation-report check rather than a wait every clean match pays. |
 
 The decision's *direction* survives measurement. Its *arithmetic* and its
 *migration cost* do not: the relay is cheaper on upload than claimed, more

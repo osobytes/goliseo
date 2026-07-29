@@ -420,25 +420,24 @@ t.describe("relay topology probe: no peer is the sequencer", function()
         t.eq(counted.reason, "only the host starts the countdown")
     end)
 
-    -- Finding 5. The settle phase's relay-quiet wait is host-only by
+    -- Finding 5. The settle phase's host relay wait is host-only by
     -- construction. It exists because a player-host that stops relaying strands
     -- everyone else's tail; a relay that is not a player cannot leave, so this
     -- is one piece of complexity the topology genuinely deletes.
     --
-    -- #243 re-pinned the *cost*, not the finding. When this landed the wait was a
-    -- heuristic -- four consecutive silent steps -- and the host paid all four on
-    -- every clean match. Guests now report their own confirmation in the bundles
-    -- they already re-publish, so the host leaves when every author it has heard
-    -- from has confirmed the final boundary, and the quiet count survives only as
-    -- the fallback for a peer that has stopped speaking at all. Under clean
-    -- delivery that is two steps rather than four-plus, which is why this asserts
-    -- an upper bound where it used to assert a lower one.
+    -- #243 re-pinned the *cost*, not the finding, and #255 finished the job. When
+    -- this landed the wait was a heuristic -- four consecutive silent steps,
+    -- `SETTLE_RELAY_QUIET_STEPS` -- and the host paid all four on every clean
+    -- match. Guests now report their own confirmation in the bundles they already
+    -- re-publish, so the host leaves when every author it has heard from has
+    -- confirmed the final boundary, and the quiet count is gone entirely. Under
+    -- clean delivery that is two steps rather than four-plus, which is why this
+    -- asserts an upper bound where it used to assert a lower one.
     --
-    -- The finding itself is untouched: `SETTLE_RELAY_QUIET_STEPS` is still
-    -- consulted by exactly one role, and a relay that is not a player still has
-    -- no settle phase to scope it to.
-    t.it("scopes the settle relay-quiet wait to the host alone", function()
-        t.eq(match_driver.SETTLE_RELAY_QUIET_STEPS, match_driver.DELAY_TICKS + 1)
+    -- The finding itself is untouched: the host branch of `tail_delivered` is
+    -- still consulted by exactly one role, and a relay that is not a player still
+    -- has no settle phase to scope it to.
+    t.it("scopes the settle relay wait to the host alone", function()
         local harness = fault_harness.new({
             topology = "relay",
             mode = "1v1",
@@ -458,8 +457,8 @@ t.describe("relay topology probe: no peer is the sequencer", function()
         t.eq(host.status, "completed")
         t.eq(guest.status, "completed")
         t.is_true(
-            host.settle_steps <= match_driver.SETTLE_RELAY_QUIET_STEPS,
-            ("the host fell back on the quiet window: %d steps"):format(host.settle_steps)
+            host.settle_steps <= 2,
+            ("the host settled slowly on a clean 1v1: %d steps"):format(host.settle_steps)
         )
         t.is_true(
             guest.settle_steps <= host.settle_steps,

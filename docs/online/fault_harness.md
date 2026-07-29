@@ -350,21 +350,34 @@ re-publishing — anchored at the window the host is actually missing rather tha
 its newest, which on that seed was the difference between seven rows aimed at the
 gap and sixty re-sends aimed past it.
 
-That also narrows this document's one remaining heuristic, though it does not yet
-retire it (#255). The settle
+That also removed this document's one remaining heuristic (#255). The settle
 phase's relay-quiet check had to *infer* that guests were done from four silent
 steps, and was documented as covering everything except a worst-case burst
 followed by worst-case jitter. The host now leaves when every author it has heard
-from has **reported** confirming the final boundary; the quiet count survives as a
-fallback for the case where confirmation feedback has stopped arriving.
+from has **reported** confirming the final boundary, and that is the only thing it
+consults: the quiet count is gone, not demoted.
 
-That fallback is intended rather than enforced, and it does not do what an earlier
-draft of this line claimed. `tail_delivered` still tests the quiet count before it
-reads any report, so what it actually changes is the case where a peer *did* report
-itself behind and then went quiet — silence overriding evidence, rather than
-standing in for evidence that never came. See
-[match driver](match_driver.md) for why closing that gap means retiring the quiet
-count rather than reordering it, tracked in #255.
+Retiring it rather than reordering it was the point. It had never been a fallback
+for a peer that never speaks — the report loop already treats "no report" as "not
+known to be behind" — so the only case it still decided was a peer that *did*
+report itself behind and then went quiet, where silence overrode that peer's own
+evidence. Such a peer is now bounded by the settle deadline instead of by four
+steps: it waits longer for the same typed terminal.
+
+**This matrix is where the price of that shows up, so state it here rather than
+only in the driver's document.** Every clean row settles in the same 2 steps it
+did before, and no guest's settle steps changed on any row. The **host's** did:
+across `4v4` seeds 4703–4750 its worst settle goes 18 → 60 steps on `playable`
+(reaching the 60-step bound on 3 of 48 seeds) and 32 → 60 on `stress` (12 of 48).
+In the default-seed `full` run the same thing moves `2v2.stress` and
+`2v2.poll_reversed` from 29 to 60 host settle steps. Every affected run still ends
+`completed` on an agreed final hash — `RESULT ok rows=25 failures=0` is unchanged
+— so what moved is the whistle, not a verdict. The cause is *stale* evidence
+rather than silence: under loss a guest's final confirmation report can be the one
+that drops, leaving the host holding a report that says the peer is behind after
+that peer has confirmed, completed and gone. See
+[match driver](match_driver.md#what-the-settle-bounds-cost-measured) for the full
+before-and-after table.
 
 Measured, on the same seeds before and after:
 

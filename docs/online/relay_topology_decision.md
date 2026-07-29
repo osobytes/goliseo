@@ -72,8 +72,11 @@ isolation is something the star has and a relay does not**.
 **One unclaimed simplification.** `SETTLE_RELAY_QUIET_STEPS` and the host branch of
 `tail_delivered` are host-only and become unnecessary. Smaller than it looked when this was
 written: #243 narrowed that wait with confirmation feedback and reduced its ordinary cost to zero,
-so what the relay deletes is mostly a fallback path rather than a wait every clean match pays. The
-quiet count is not yet strictly a fallback — silence can still override a report (#255).
+so what the relay deletes is mostly a fallback path rather than a wait every clean match pays.
+*(Superseded 2026-07-28, #255: `SETTLE_RELAY_QUIET_STEPS` no longer exists. It could only override
+a peer's own confirmation report, never substitute for a missing one, so it was retired rather than
+demoted and `SETTLE_TIMEOUT_TICKS` / `SETTLE_TIMEOUT_SECONDS` are now the settle phase's only
+bounds. What the relay deletes here is the confirmation-report check that remains.)*
 
 ### What still stands
 
@@ -263,7 +266,9 @@ uncompensated.
 This is not a theoretical gap. It is why the settle phase and `SETTLE_RELAY_QUIET_STEPS` exist at
 all: #241's tail stall happened because the host reached full time and terminated first, removing
 the star's only relay while guests were still confirming. Had the delay equalised confirmation
-depth, #237 would not have been necessary.
+depth, #237 would not have been necessary. *(Superseded 2026-07-28, #255: the settle phase still
+exists for exactly this reason; `SETTLE_RELAY_QUIET_STEPS` does not, having been replaced by the
+confirmation reports #243 added. The settle deadline is now its sole bound.)*
 
 So the relay does not merely tidy up an approximate compensation — **it removes the half that was
 never compensated.**

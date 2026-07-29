@@ -234,7 +234,6 @@ local slot_input = require("sim.slot_input")
 ---@field _full_time_boundary integer? -- Final boundary; non-nil once full time is reached.
 ---@field _settle_steps integer -- Settle steps taken so far, capped by `_settle_ticks`.
 ---@field _settle_deadline number? -- Monotonic second the settle phase expires at.
----@field _settle_quiet_steps integer -- Consecutive settle steps with no inbound input traffic.
 ---@field _settled boolean
 
 ---@class OnlineMatchDriverModule
@@ -267,41 +266,23 @@ match_driver.SETTLE_TIMEOUT_TICKS = 60
 -- patience, which is the closest comparable wait in the session.
 match_driver.SETTLE_TIMEOUT_SECONDS = 2
 
--- Consecutive silent settle steps after which the host stops relaying.
+-- **Those two are the only bounds on the settle phase, and #255 made that
+-- literally true.** There used to be a third: `SETTLE_RELAY_QUIET_STEPS`, four
+-- consecutive settle steps with no inbound input traffic, after which the host
+-- concluded nobody still needed it to relay and left (#237). It was the one
+-- heuristic in a phase whose other bounds are hard, and `tail_delivered` tested
+-- it *before* it read any confirmation report — so a peer that had reported
+-- itself behind and then fell silent for four steps was overruled by its own
+-- silence.
 --
--- The host is the star's only relay: a guest that is still missing a tail row
--- can only ever receive it as part of a canonical host batch. A settling guest
--- re-publishes its redundancy window on *every* settle step, so inbound input
--- traffic is exactly the signal that somebody still needs the relay, and silence
--- is the signal that nobody does. Four steps is the fairness delay plus one --
--- the longest a link that is still being used can legitimately go quiet -- so a
--- clean match costs the host four extra steps (67 ms) and a match with a
--- straggler keeps the relay alive for as long as the straggler keeps asking,
--- bounded by the settle phase's existing deadlines and by nothing new.
---
--- **This one is a heuristic, and it is the only bound in this phase that is.**
--- `SETTLE_TIMEOUT_TICKS` and `SETTLE_TIMEOUT_SECONDS` are hard: they end the
--- phase unconditionally, and nothing here can wait past them. This margin is
--- not of that class, and a future reader must not read it as though it were.
---
--- What "burst length plus one" actually covers is **one** worst-case burst. The
--- `stress` profile's maximum burst is three consecutive losses, so a straggler
--- that loses a whole burst of re-sends still breaks the silence on the fourth
--- step. What it does **not** cover is a worst-case burst immediately followed by
--- worst-case jitter: the next re-send after a three-loss burst can draw up to
--- three further ticks of positive delay, which pushes that straggler's silent
--- window past four steps and lets the host conclude "drained" while somebody is
--- still asking.
---
--- That compounding edge is real, low-probability, and does not appear anywhere
--- in the seed sweep this landed against. Its blast radius is bounded and is
--- deliberately not a new failure class: the straggler ends `settle_timeout`,
--- which is exactly the typed terminal it would have had before this relay
--- existed, just rarer. Widening the margin trades a longer whistle on every
--- clean match for a smaller tail here; making it a guarantee instead of a
--- heuristic needs the guest to be able to *say* it is still missing rows, which
--- is the same protocol addition #243 tracks.
-match_driver.SETTLE_RELAY_QUIET_STEPS = match_driver.DELAY_TICKS + 1
+-- #243 gave every settling peer a way to state where its confirmation has
+-- reached, in the bundle it already re-publishes each step, and the report loop
+-- treats "no report" as "not known to be behind". That made the quiet count
+-- reachable in exactly one situation: overriding a report that says a peer *is*
+-- behind. Retiring it therefore removes an override, not a fallback. Evidence
+-- beats inference; the settle deadline still bounds the wait, so the cost is
+-- that one straggler's whistle arrives later and its typed terminal is
+-- unchanged.
 
 ---@param value any
 ---@return boolean
@@ -1728,15 +1709,16 @@ end
 -- three steps into a sixty-step settle window while three of its guests were
 -- still asking (#237).
 --
--- Until now the host could only *infer* that nobody was still asking, from
--- `SETTLE_RELAY_QUIET_STEPS` consecutive steps with no inbound traffic. That
--- heuristic is documented above as the only one in a phase whose other bounds
--- are hard, and as covering everything except a worst-case burst followed by
--- worst-case jitter. Every settling guest now *states* its confirmation every
--- step, so the ordinary case is a bound: the host leaves when every author it
--- has heard from has confirmed the final boundary. The quiet count survives only
--- as the fallback for a peer that has stopped speaking altogether, which is the
--- one case a report cannot cover -- and which the settle deadline already bounds.
+-- #237 could only let the host *infer* that nobody was still asking, from four
+-- consecutive steps with no inbound traffic. Every settling guest now states its
+-- confirmation every step, so this is a bound rather than a heuristic: the host
+-- leaves when every author it has heard from has confirmed the final boundary.
+-- A slot that has never reported reads as `nil` here, which is *not* known to be
+-- behind, so a peer that never spoke at all is covered by the loop itself and
+-- needs no separate escape. #255 retired the quiet count on exactly that
+-- reading: the only case it could still change was a peer that reported itself
+-- behind and then went silent, where it let silence override the peer's own
+-- evidence. It is gone, and the settle deadline is what bounds that peer now.
 --
 -- **A guest owes its tail.** Its authored rows for the last ticks exist nowhere
 -- else until the host has them, and the host is the only peer that can fan them
@@ -1763,9 +1745,6 @@ local function tail_delivered(driver)
         -- Silence is not consent here: a guest that has never heard a host batch
         -- has no evidence its tail landed, and must keep re-publishing.
         return driver._host_confirmed ~= nil and driver._host_confirmed + 1 >= boundary
-    end
-    if driver._settle_quiet_steps >= match_driver.SETTLE_RELAY_QUIET_STEPS then
-        return true
     end
     for slot_index = 1, input_frame.SLOT_COUNT do
         local confirmed = driver._peer_confirmed[slot_index]
@@ -2021,7 +2000,6 @@ function match_driver.new(options)
         _full_time_boundary = nil,
         _settle_steps = 0,
         _settle_deadline = nil,
-        _settle_quiet_steps = 0,
         _settled = false,
     }
     ---@type table<string, InputSlotId>
@@ -2171,15 +2149,6 @@ function match_driver.advance(driver, sample)
 
     drain_events(driver)
     local messages = running(driver) and poll_input(driver, batch) or {}
-    if driver._full_time_boundary ~= nil then
-        -- Inbound input traffic during the settle phase is the only evidence the
-        -- host has that a guest is still asking it to relay.
-        if #messages > 0 then
-            driver._settle_quiet_steps = 0
-        else
-            driver._settle_quiet_steps = driver._settle_quiet_steps + 1
-        end
-    end
     if running(driver) then
         if driver._role == "host" then
             host_sequence_authority(driver, batch, transport_tick, messages)

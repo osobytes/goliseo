@@ -943,16 +943,14 @@ t.describe("online match driver", function()
                 -- One extra step -- 17 ms at the whistle -- buys the guarantee,
                 -- and it is pinned here so it can never quietly grow.
                 --
-                -- The host pays the relay quiet window on top, because it is the
-                -- star's only relay and "my own boundary is confirmed" is not
-                -- evidence that nobody still needs it -- it is, in fact, the
-                -- first peer to confirm. That is a bounded 67 ms at the whistle,
-                -- and it is pinned here so it can never quietly grow.
-                --
-                -- The host's bound is the quiet window plus two: the step it
-                -- reaches full time (its guests are still mid-play and sending),
-                -- and the step their last in-flight bundle lands on.
-                local allowed = index == 1 and match_driver.SETTLE_RELAY_QUIET_STEPS + 2 or 2
+                -- The host pays no more than a guest does. It waits on the same
+                -- evidence -- every author it has heard from reporting the final
+                -- boundary confirmed -- and under clean delivery those reports
+                -- ride the bundles already in flight. #255 removed the four-step
+                -- quiet window that used to sit above this as the host's own
+                -- bound; it was never the binding constraint on a clean match,
+                -- and this pins that the host is no slower without it.
+                local allowed = 2
                 local steps = match_driver.diagnostics(driver).settle_steps
                 t.is_true(
                     steps <= allowed,
@@ -1342,6 +1340,102 @@ t.describe("online match driver", function()
             t.eq(match_driver.status(state.drivers[1]), "completed")
             t.is_true(match_driver.settled(state.drivers[1]))
         end
+    end)
+
+    -- #255. The exact case the retired quiet count used to decide: a peer that
+    -- reported itself behind and *then* fell silent. `tail_delivered` tested four
+    -- consecutive silent settle steps before it read any report, so the host
+    -- concluded "drained" while holding that peer's own evidence to the contrary
+    -- -- silence overriding evidence rather than standing in for evidence that
+    -- never came.
+    --
+    -- The host now keeps relaying for that peer until the settle deadline. That
+    -- is the whole cost of the change, and it is bounded: this pins that the host
+    -- waits *all* of it and then leaves with a typed terminal rather than hanging,
+    -- and that a silent straggler still gets its own typed terminal too.
+    t.it("keeps relaying for a peer that reported behind and then went silent", function()
+        local settle_ticks = 20
+        -- Blocked inbound authority a few steps before full time, so the guest
+        -- cannot confirm the tail and every bundle it sends says so.
+        local blackout_from = FULL_TIME_STEP - 8
+        -- Silent from the first settle step onward, so the host's only evidence
+        -- about this peer is the stale report it already holds.
+        local silent_from = FULL_TIME_STEP + 1
+        local step = 0
+        ---@type DriverHarness
+        local state
+        state = harness("1v1", {
+            duration = SETTLE_DURATION,
+            settle_timeout_ticks = settle_ticks,
+            wrap_guest_transport = function(index, inner)
+                if index ~= 2 then
+                    return inner
+                end
+                local filter = setmetatable({}, { __index = inner })
+                function filter:poll_batch(limit)
+                    local messages = inner:poll_batch(limit)
+                    if step < blackout_from then
+                        return messages
+                    end
+                    local kept = {}
+                    for _, entry in ipairs(messages) do
+                        if entry.message.type ~= "input" then
+                            kept[#kept + 1] = entry
+                        end
+                    end
+                    return kept
+                end
+                function filter:send(peer_id, channel, envelope)
+                    if channel == "input" and step >= silent_from then
+                        -- The wire accepted it and the network ate it: the host
+                        -- hears nothing further from this peer.
+                        return true
+                    end
+                    return inner:send(peer_id, channel, envelope)
+                end
+                return filter
+            end,
+        })
+
+        local reported_at_silence = nil
+        for _ = 1, FULL_TIME_BOUNDARY + settle_ticks + 40 do
+            step = state.step
+            if step == silent_from then
+                reported_at_silence =
+                    match_driver.diagnostics(state.drivers[2]).confirmed_input_tick
+            end
+            for index, driver in ipairs(state.drivers) do
+                match_driver.advance(driver, moving_sample(step, index))
+            end
+            state.session.host_transport:pump()
+            state.step = step + 1
+        end
+
+        -- The premise: the guest really was behind the final boundary at the
+        -- moment it stopped speaking, so the host is holding a report that says
+        -- so. Without that this test would pass for the wrong reason.
+        local boundary = assert(match_driver.full_time_boundary(state.drivers[1]))
+        t.is_true(
+            assert(reported_at_silence) + 1 < boundary,
+            ("the guest was not behind when it went silent: %d vs %d"):format(
+                assert(reported_at_silence),
+                boundary
+            )
+        )
+
+        -- The host waited the whole phase out rather than four silent steps, and
+        -- still left -- completed, because its own final boundary is confirmed.
+        local host = match_driver.diagnostics(state.drivers[1])
+        t.eq(host.status, "completed")
+        t.is_true(match_driver.settled(state.drivers[1]))
+        t.eq(host.settle_steps, settle_ticks, "the host stopped relaying before the deadline")
+
+        -- And the straggler is bounded by the same deadline, with the typed
+        -- terminal it would have had either way.
+        local guest = match_driver.diagnostics(state.drivers[2])
+        t.eq(guest.status, "settle_timeout")
+        t.eq(assert(guest.terminal).failure, "input_channel")
+        t.eq(guest.settle_steps, settle_ticks)
     end)
 
     -- #243, the repair half. Blind redundancy re-sends a row for seven transport

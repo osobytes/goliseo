@@ -291,9 +291,12 @@ than over the last `DELAY` ticks of prediction — see
 [the driver's settle phase](match_driver.md#full-time-settles-before-it-completes)
 for the bounds and for why it is not gated on hash agreement. A peer whose tail
 never arrives ends `settle_timeout`, which is an input-channel failure and
-deliberately not a desync. The host stays a few steps past its own confirmation
-while any guest is still asking it to relay, because in a star it is the only
-peer that can fan a missing row back out.
+deliberately not a desync. The host stays past its own confirmation until every
+author it has heard from has reported confirming the final boundary too, because
+in a star it is the only peer that can fan a missing row back out. On a clean
+match that is two steps; on a lossy one it can be the whole settle window, and
+[the driver's document](match_driver.md#what-the-settle-bounds-cost-measured)
+measures both.
 
 A peer that stopped being able to confirm *at all* — an unconfirmed tick that
 fell below its retained rollback floor — ends `confirmation_stalled` at the step

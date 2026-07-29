@@ -34,8 +34,7 @@ decision to move off the host-star in OMP-4.
 | `rollback_input_history.ROLLBACK_WINDOW_TICKS` | `30` ticks = 500 ms | `sim/rollback_input_history.lua:86` |
 | `contract.MAX_GUESTS` | `7`, so one star is at most 1 + 7 endpoints | `game/transport/contract.lua:165` |
 | `contract.MAX_PAYLOAD_BYTES` | `1024` per transport message | `game/transport/contract.lua:162` |
-| `match_driver.SETTLE_RELAY_QUIET_STEPS` | `4` = `DELAY_TICKS + 1`, the fallback when a peer stops reporting | `game/online/match_driver.lua` |
-| `match_driver.SETTLE_TIMEOUT_TICKS` / `_SECONDS` | `60` / `2` | `game/online/match_driver.lua:254,261` |
+| `match_driver.SETTLE_TIMEOUT_TICKS` / `_SECONDS` | `60` / `2`, the only bounds on the settle phase (#255) | `game/online/match_driver.lua` |
 
 A note on match length, because it used to be quoted inconsistently. A match is
 **120 seconds — 7,200 ticks** — everywhere: `sim.match` (`sim/match.lua:958`),
@@ -318,10 +317,13 @@ Properties that follow from the shape:
   **one**.
 - Seven NAT-traversal pairs, any of which can fail.
 - The host leaving ends the session. The settle phase exists partly because of
-  this: the host is the star's relay, so it stays until either its own final
-  boundary is confirmed *and* four consecutive settle steps brought no inbound
-  input traffic, or a hard deadline expires
-  (`match_driver.md`, "The host is the star's relay, so it leaves last").
+  this: the host is the star's relay, so it stays until its own final boundary is
+  confirmed *and* every author it has heard from has reported confirming that
+  boundary too, bounded either way by the settle deadline
+  (`match_driver.md`, "The host is the star's relay, so it leaves last"). Until
+  #255 it could also leave after four consecutive settle steps with no inbound
+  input traffic; that escape is retired, and reports are now the only evidence it
+  acts on.
 
 ### Decided: dedicated relay (OMP-4, accepted, not built)
 
@@ -486,11 +488,11 @@ any guest's — and leaves the *confirmation-depth* half untouched. The settle p
 and its host-only relay wait exist to work around the untouched half: the host
 confirms first by construction, so "confirmed, therefore done" made it leave first,
 every time, stranding guests that were still asking it to relay. Since #243 that wait
-reads each guest's reported confirmation directly, and `SETTLE_RELAY_QUIET_STEPS = 4`
-is narrowed to a fallback rather than the primary signal. It is not yet strictly a
-fallback: `tail_delivered` still tests the quiet count before reading any report,
-so silence can still override a peer that reported itself behind. Tracked in #255;
-see [match driver](match_driver.md).
+reads each guest's reported confirmation directly, and since #255 that is *all* it
+reads: the four-step `SETTLE_RELAY_QUIET_STEPS` window is retired, because silence
+could only ever override a peer's own report rather than substitute for a missing
+one. See
+[match driver](match_driver.md#silence-never-pre-empts-a-peers-own-report-255).
 
 Two further caveats on the value itself. Three ticks is a **fixed** guess: a guest
 100 ms away is under-compensated and one 10 ms away is over-compensated, so this is
