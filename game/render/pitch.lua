@@ -14,6 +14,7 @@ local effects = require("game.render.effects")
 local arenas = require("data.arenas")
 local sim_match = require("sim.match") -- CROSSBAR_H: the goal frame height
 local keeper = require("sim.keeper")
+local possession_transition = require("sim.possession_transition")
 
 local pitch = {}
 
@@ -189,6 +190,21 @@ function pitch.draw(s, vp, opts)
         if event.kind == "tip" and event.player then
             tip_events[event.player] = event
         end
+    end
+    -- The counter-press window is what separates a presser shepherding the
+    -- carrier from one hunting it at full speed: `sim.match` exempts a
+    -- counter-pressing presser from the contain slowdown and its ball-facing
+    -- lock, so presentation must not claim contain there either. Read once per
+    -- team, not once per player.
+    local owner_team = s.owner and s.players[s.owner].team or nil
+    local counterpressing = {}
+    for _, team in ipairs({ "home", "away" }) do
+        counterpressing[team] = possession_transition.phase(
+            s.transition,
+            team,
+            owner_team,
+            s.transition_windows[team]
+        ) == "counterpress"
     end
     local function project(wx, wy)
         local sx, sy, scale = camera.project(wx, wy, field, vp)
@@ -377,7 +393,9 @@ function pitch.draw(s, vp, opts)
                 local press = s.outfield_press[p.team]
                 outfield_context = {
                     now = -s.time_left,
-                    containing = press.mode == "contain" and press.presser_index == it.idx,
+                    containing = press.mode == "contain"
+                        and press.presser_index == it.idx
+                        and not counterpressing[p.team],
                     kick_follow = release_follow.active(p.id),
                 }
             end

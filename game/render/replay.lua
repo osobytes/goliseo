@@ -12,6 +12,7 @@ local Vec2 = require("core.vec2")
 local combat_sim = require("sim.combat")
 local outfield_decision = require("sim.outfield_decision")
 local outfield_press = require("sim.outfield_press")
+local possession_transition = require("sim.possession_transition")
 local tuning = require("sim.tuning")
 
 local replay = {}
@@ -163,6 +164,14 @@ local function capture_frame(s, boundary, combat_state)
         outfield_press = {
             home = outfield_press.copy_state(s.outfield_press.home),
             away = outfield_press.copy_state(s.outfield_press.away),
+        },
+        -- The contain pose is narrowed by the counter-press window, so the
+        -- transition memory it decays from is a pose input too. `observe`
+        -- mutates this state in place, hence the copy.
+        transition = possession_transition.copy_state(s.transition),
+        transition_windows = {
+            home = possession_transition.copy_windows(s.transition_windows.home),
+            away = possession_transition.copy_windows(s.transition_windows.away),
         },
         controlled = s.controlled,
         owner = s.owner,
