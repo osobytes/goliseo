@@ -112,8 +112,13 @@ lobby_model.DEPARTURE_TEXT = {
     -- from its side, whatever it believes about who left.
     host_left = "A guest closed its link to the lobby.",
     protocol_violation = "A guest was dropped: it sent traffic this session cannot accept.",
-    build_mismatch = "A guest was dropped: it is running a different build. "
-        .. "Install the same build on both.",
+    -- Two observations, and no claim about which caused which. The host can see
+    -- that the guest disagreed about this session's identity and that it
+    -- declared a different build; it cannot see that the second is why the
+    -- first happened. A diagnostic that is confidently wrong is worse than a
+    -- generic one, so this one says what is known and names the check.
+    build_mismatch = "A guest was dropped: it disagreed about this session's identity, "
+        .. "and it declared a different build. Install the same build on both to rule that out.",
 }
 
 -- Plain-language equivalents of a pair request's state and of every reason it

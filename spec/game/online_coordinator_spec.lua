@@ -1687,6 +1687,38 @@ t.describe("host-side departure reasons", function()
         t.eq(announced, 1)
     end)
 
+    t.it("blames the build only for an abort over session identity", function()
+        -- The width that is not bought. A guest can abort pre-freeze for
+        -- reasons that have nothing to do with builds, and on a mixed-build
+        -- run it is *always* also built differently -- so a rule keyed on the
+        -- skew alone would report every one of them as a build problem and
+        -- send a tester to reinstall instead of to the bug.
+        for _, code in ipairs({
+            "invalid_assignment",
+            "invalid_phase",
+            "malformed_message",
+            "unsupported_message",
+            "capacity",
+            "protocol_mismatch",
+            "runtime_mismatch",
+            "host_abort",
+            "peer_disconnect",
+            "desync",
+        }) do
+            local state, peer_id = proposed(HOST_BUILD, GUEST_BUILD)
+            local next_state = (guest_aborts(state, peer_id, code))
+            local departure = assert(next_state.departure, code .. " recorded no departure")
+            t.eq(departure.reason, "protocol_violation", code .. " must not blame the build")
+            t.eq(departure.detail, "a guest aborted with " .. code)
+        end
+        -- And the one that does, for contrast, against the same skew.
+        local state, peer_id = proposed(HOST_BUILD, GUEST_BUILD)
+        t.eq(
+            assert((guest_aborts(state, peer_id, "manifest_mismatch")).departure).reason,
+            "build_mismatch"
+        )
+    end)
+
     t.it("keeps a generic reason when the two peers agree on the build", function()
         local state, peer_id = proposed(HOST_BUILD, HOST_BUILD)
         local next_state = (guest_aborts(state, peer_id, "manifest_mismatch"))
@@ -1717,10 +1749,15 @@ t.describe("host-side departure reasons", function()
         t.eq(assert(next_state.departure).reason, "build_mismatch")
     end)
 
-    t.it("does not blame the build for an ordinary departure", function()
+    t.it("does not blame the build for a link that simply ended", function()
+        -- `handle_link_lost`, the fourth drop site. Its code comes from the
+        -- local transport, and every value it accepts -- including
+        -- `protocol_error` -- keeps its own reason against a skewed peer.
         for _, case in ipairs({
             { code = "peer_left", reason = "guest_left" },
             { code = "transport_lost", reason = "transport_lost" },
+            { code = "host_left", reason = "host_left" },
+            { code = "protocol_error", reason = "protocol_violation" },
         }) do
             local state, peer_id = proposed(HOST_BUILD, GUEST_BUILD)
             local next_state = (
@@ -1733,12 +1770,45 @@ t.describe("host-side departure reasons", function()
             local departure = assert(next_state.departure)
             t.eq(departure.reason, case.reason, case.code .. " must keep its own reason")
             t.eq(departure.code, case.code)
+            t.eq(departure.detail, "a guest's link ended as " .. case.code)
+        end
+    end)
+
+    t.it("never lets a guest's own disconnect code name a build", function()
+        -- `apply_disconnect`, the third drop site, and the only one whose code
+        -- arrives verbatim from the peer. A guest that announces its departure
+        -- as `protocol_error` while running a different build would otherwise
+        -- pick the sentence its own departure is reported under.
+        for _, case in ipairs({
+            { code = "protocol_error", reason = "protocol_violation" },
+            { code = "peer_left", reason = "guest_left" },
+            { code = "transport_lost", reason = "transport_lost" },
+            { code = "host_left", reason = "host_left" },
+        }) do
+            local state, peer_id = proposed(HOST_BUILD, GUEST_BUILD)
+            local next_state = (
+                deliver(
+                    state,
+                    peer_id,
+                    message(
+                        "disconnect",
+                        peer_id,
+                        1,
+                        { target_peer_id = peer_id, code = case.code }
+                    )
+                )
+            )
+            local departure = assert(next_state.departure, case.code .. " recorded no departure")
+            t.eq(departure.reason, case.reason, case.code .. " must not be able to name a build")
+            t.eq(departure.code, case.code)
+            t.eq(departure.detail, "a guest announced its own disconnect as " .. case.code)
         end
     end)
 
     t.it("names the build on a drop the manifest acceptance caused", function()
-        -- The other pre-freeze drop: a guest accepting a manifest this session
-        -- never proposed. Same rule, one place.
+        -- The second of the two host-judged drop sites: a guest accepting a
+        -- manifest this session never proposed. Its trigger is already a
+        -- specific identity disagreement, so it needs no further gate.
         local state, peer_id = proposed(HOST_BUILD, GUEST_BUILD)
         local next_state = (
             deliver(

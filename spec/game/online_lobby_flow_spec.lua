@@ -19,6 +19,7 @@ local transport = require("game.transport")
 ---@field clipboard string?
 ---@field freeze CoordinatorFreeze?
 ---@field left boolean
+---@field sent string[] -- Every control wire this peer actually put on its links.
 
 ---@class LobbyTestDriver
 ---@field rendezvous FakeStarRendezvous
@@ -54,6 +55,11 @@ function Driver:_run(peer, effects)
         elseif effect.kind == "leave" then
             peer.left = true
         elseif effect.kind ~= "paste_request" then
+            if effect.kind == "send" then
+                -- Retained so a test can read what actually left this peer
+                -- rather than only what its own state says it sent.
+                peer.sent[#peer.sent + 1] = effect.wire
+            end
             if peer.link then
                 peer.link:apply(effect)
             end
@@ -79,6 +85,7 @@ function Driver:add(role, peer_id, template)
         id = peer_id,
         model = lobby_model.new({ peer_id = peer_id, template = template }),
         left = false,
+        sent = {},
     }
     self.peers[#self.peers + 1] = peer
     self:send(peer, { kind = "role", role = role })
@@ -741,10 +748,28 @@ t.describe("lobby build skew", function()
         t.eq(departure.code, "protocol_error", "the wire code is the one it always was")
         t.eq(
             view(host).departure_text,
-            "A guest was dropped: it is running a different build. "
-                .. "Install the same build on both."
+            "A guest was dropped: it disagreed about this session's identity, and it "
+                .. "declared a different build. Install the same build on both to rule that out."
         )
         t.eq(view(host).terminal_text, nil, "the host's lobby is not over")
+
+        -- The specific reason is local, and this reads the bytes rather than
+        -- the record that produced them: the announced disconnect the host
+        -- actually framed and put on its link carries the code it always did.
+        local announced = 0
+        for _, wire in ipairs(host.sent) do
+            local decoded = assert(protocol.decode(wire))
+            if decoded.kind == "disconnect" then
+                announced = announced + 1
+                t.eq(decoded.body.code, "protocol_error")
+                t.eq(decoded.body.target_peer_id, "guest_1")
+            end
+            t.is_true(
+                not tostring(wire):find("build_mismatch", 1, true),
+                "a local reason must never reach the wire"
+            )
+        end
+        t.eq(announced, 1, "the drop is announced exactly once")
     end)
 
     t.it("says only that a guest went when the two builds agree", function()
@@ -965,6 +990,7 @@ t.describe("lobby failure paths", function()
                 end,
             }),
             left = false,
+            sent = {},
         }
         driver.peers[#driver.peers + 1] = guest
         driver:send(guest, { kind = "role", role = "guest" })

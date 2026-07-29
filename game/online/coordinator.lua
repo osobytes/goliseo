@@ -2168,32 +2168,35 @@ local function build_skew(state, peer)
     return state.build_id ~= nil and peer.build_id ~= state.build_id
 end
 
--- The host's own name for a drop. `peer_left` and `transport_lost` describe a
--- peer that simply went, whatever it was built from, so only the protocol case
--- is reconsidered: a peer whose traffic this session could not accept *and*
--- whose declared build differs was almost certainly refusing the manifest for
--- that reason, and "different builds" is the sentence a tester can act on.
+-- `build_mismatch`, when this peer declared a different build from ours, and
+-- nothing otherwise. It is never applied by `drop_guest` itself: which drops it
+-- is allowed to describe is a decision each call site makes for itself and
+-- states in its own terms, because the host is correlating, not proving.
 ---@param state CoordinatorState
 ---@param peer CoordinatorPeer
----@param code SessionDisconnectCode
----@return CoordinatorTerminalReason
-local function departure_reason(state, peer, code)
-    local reason = DISCONNECT_REASONS[code]
-    if reason == "protocol_violation" and build_skew(state, peer) then
+---@return CoordinatorTerminalReason?
+local function skew_reason(state, peer)
+    if build_skew(state, peer) then
         return "build_mismatch"
     end
-    return reason
+    return nil
 end
 
 -- A pre-countdown departure invalidates any published ownership, so the host
 -- drops back to the manifest phase and republishes rather than silently
 -- running a slot with no declared source.
+--
+-- `reason` overrides the local name this drop is recorded under. It defaults to
+-- whatever `code` maps to, and only the two call sites where the *host* judged
+-- the traffic pass anything else -- never one where the code arrived from the
+-- peer.
 ---@param state CoordinatorState
 ---@param peer CoordinatorPeer
 ---@param code SessionDisconnectCode
 ---@param detail string?
+---@param reason CoordinatorTerminalReason?
 ---@return CoordinatorState, CoordinatorOutcome
-local function drop_guest(state, peer, code, detail)
+local function drop_guest(state, peer, code, detail, reason)
     local actions = {}
     local next_state = copy_state(state)
     local departed = peer.peer_id
@@ -2201,7 +2204,7 @@ local function drop_guest(state, peer, code, detail)
     -- why the seat emptied is specific. Nothing here is announced.
     next_state.departure = {
         peer_id = departed,
-        reason = departure_reason(state, peer, code),
+        reason = reason or DISCONNECT_REASONS[code],
         code = code,
         detail = detail,
     }
@@ -2260,7 +2263,10 @@ local function handle_link_lost(state, event)
             exclude_link = peer.link_id,
         })
     end
-    return drop_guest(state, peer, code)
+    -- The fourth drop site. The code comes from the local transport, not from a
+    -- peer, and it never names a build either: a link that went is a link that
+    -- went, whatever the peer behind it was built from.
+    return drop_guest(state, peer, code, "a guest's link ended as " .. code)
 end
 
 -- ---------------------------------------------------------------------------
@@ -2400,11 +2406,15 @@ local function apply_manifest_accept(state, peer, message)
     local body = message.body
     ---@cast body SessionManifestAcceptBody
     if body.manifest_id ~= state.manifest_id then
+        -- Narrow by construction: this is not "any protocol error", it is a
+        -- guest naming a manifest identity that is not the one on offer, which
+        -- is the same disagreement an abort would have carried.
         return drop_guest(
             state,
             peer,
             "protocol_error",
-            "a guest accepted a manifest this session never proposed"
+            "a guest accepted a manifest this session never proposed",
+            skew_reason(state, peer)
         )
     end
     if peer.accepted_manifest_id == body.manifest_id then
@@ -2924,9 +2934,21 @@ local function apply_abort(state, peer, message)
     ---@cast body SessionAbortBody
     if state.role == "host" and not state.freeze then
         -- Pre-freeze, one guest's abort drops that guest and leaves the lobby
-        -- standing (#163). The host keeps the guest's declared build long enough
-        -- to say whether that is why the seat emptied.
-        return drop_guest(state, peer, "protocol_error", "a guest aborted with " .. body.code)
+        -- standing (#163). The declared build is allowed to name the drop only
+        -- when the guest refused this session's *identity*: that is the abort a
+        -- build disagreement produces, and it is the only one whose coincidence
+        -- with a differing build says anything. A guest aborting over a bad
+        -- assignment or a phase race happens to be built differently; saying
+        -- "install the same build" would send a tester to reinstall instead of
+        -- to the bug.
+        local reason = body.code == "manifest_mismatch" and skew_reason(state, peer) or nil
+        return drop_guest(
+            state,
+            peer,
+            "protocol_error",
+            "a guest aborted with " .. body.code,
+            reason
+        )
     end
     return terminate_from(state, {
         reason = "peer_abort",
@@ -2981,7 +3003,18 @@ local function apply_disconnect(state, peer, message)
             exclude_link = peer.link_id,
         })
     end
-    return drop_guest(state, peer, body.code)
+    -- The third drop site, and the only one whose code the *peer* chose:
+    -- `body.code` arrives verbatim from the wire and may be `protocol_error`.
+    -- It therefore never names a build. The host observed no traffic it could
+    -- not accept here; it was told a link is going, and letting a remote value
+    -- select a local attribution would let the peer pick the sentence its own
+    -- departure is reported under.
+    return drop_guest(
+        state,
+        peer,
+        body.code,
+        "a guest announced its own disconnect as " .. body.code
+    )
 end
 
 ---@param state CoordinatorState
