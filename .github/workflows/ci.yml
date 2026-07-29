@@ -152,6 +152,12 @@ jobs:
             - name: Run gameplay tripwire
               run: love . --tripwire
 
+            # The frozen combat-disabled control #148/#149 measure against. This
+            # job mirrors scripts/check.sh by hand, so a gate that is not listed
+            # here is a gate that never runs.
+            - name: Verify the frozen Outfield AI baseline
+              run: love . --ai-baseline
+
             - name: Run OMP-1 deterministic replay twice
               run: |
                   ./scripts/check_determinism.sh --self-test

@@ -24,6 +24,7 @@ function love.conf(t)
         "--search",
         "--eval",
         "--tripwire",
+        "--ai-baseline",
         "--snapshot-measure",
         "--rollback-lab",
         "--determinism-refresh",
