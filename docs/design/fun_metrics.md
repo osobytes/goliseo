@@ -253,6 +253,126 @@ Conclusions:
   more knob search. Ship A (or B), play it, and recalibrate the bands against
   how it actually feels.
 
+## Frozen combat-disabled Outfield AI baseline (#59)
+
+Everything above is the **soccer fun tripwire**: a 30-seed human-proxy smoke
+test with a 5% tolerance band, checked in as `data/fun_baseline.lua`. This
+section is a *different* artifact with a different job, and the two must not be
+confused or merged. The locked evidence contract
+(`docs/design/combat_fun_evidence_contract.md` §4.4) requires the soccer
+tripwire to stay combat-disabled and to never be refreshed from a combat
+fixture; nothing in #59 touches `data/fun_baseline.lua`.
+
+### Why it exists
+
+Combat-family calibration (#149) compares combat-active play against
+combat-disabled play. Without a frozen, citable control, "combat changed X" is
+unfalsifiable: any inconvenient result can be explained away by re-running the
+control. #59's orchestrator refresh therefore requires a versioned
+combat-disabled gameplay-AI **policy id** plus a common-seed **baseline** that
+#112/#148/#149 reference *without copying or silently refreshing it*.
+
+### The policy id
+
+`sim/outfield_ai_policy.lua` publishes the identity, e.g.
+
+```text
+outfield_ai_policy/v1/combat_disabled/d656a51bf35f121f
+```
+
+It is `schema / schema version / combat mode / FNV-1a-64 of a canonical
+serialization`. What gets hashed is an explicitly **declared** surface —
+`outfield_ai_policy.SURFACE` plus the `AI`-category tuning defaults — not
+whatever happens to be in the AI modules. That is what makes it stable in both
+directions:
+
+- adding, renaming, or reordering an *undeclared* field does not move the id,
+  so it does not churn on refactors;
+- changing a *declared* constant, an `AI` knob default, or a module `VERSION`
+  does move it;
+- deleting or renaming a declared field raises instead of hashing `nil` into a
+  plausible-looking id.
+
+A live tuning-panel nudge does **not** move the id: the policy is the shipped
+balance, so `knob.default` is hashed and `tuning.values` is not.
+
+Behaviour that changes without touching the declared surface (a file-local
+constant, a rewritten heuristic) is caught by the metric signature below, never
+absorbed. Each AI module's own `VERSION` is in the surface precisely so a
+deliberate policy change always has somewhere to land.
+
+### The baseline artifact
+
+`data/outfield_ai_baseline.lua`, produced and verified by
+`sim/outfield_ai_baseline.lua`.
+
+| Field | Value |
+| --- | --- |
+| Fixture | `combat_disabled_control_a` — fixture A of the locked matrix (§3.2) |
+| Seeds | `20001..20060`, the locked paired calibration block (§3.3) |
+| Sides | all-AI (`bot = "none"`); the human proxy is a separate policy |
+| Config | `field=960x540; duration=120; max_goals=3; tick_rate=60; tactic=balanced` |
+| Combat | disabled — `sim.headless` never constructs a `CombatMatchState` |
+| Knobs | every knob at its default (applied and restored per match) |
+| Recorded | `n`, `mean`, `sd`, `min`, `max` for 23 metrics |
+
+Seeds `20001..20060` are the same block #149 runs its combat-active arm on, so
+this is a **paired** control under common random numbers rather than an
+independent sample. It deliberately avoids the tripwire's `1..30` and the spent
+evaluation seeds `1001..1060`.
+
+The file records the full identity #59 asks for: `policy_id`, `fixture_hash`,
+`config_hash`, `content_hash` (teams, rosters, player stats, species
+modifiers, formation anchors, tactic), `tuning_hash` (all 40 knob defaults),
+`snapshot_version`, `input_version`, `tick_rate`, `seed_first`, `seed_count`,
+and `seed_hash`. `signature` covers identity plus every recorded statistic.
+
+### Commands
+
+```sh
+love . --ai-baseline                          # verify (exit 1 when it moved)
+love . --ai-baseline write --refreeze-ack     # deliberately re-freeze
+```
+
+`./scripts/check.sh` runs the verification.
+
+### The non-refresh rule
+
+**A failing `love . --ai-baseline` is a finding, not a chore.** #148 and #149
+cite this artifact as their control, so refreshing it to go green destroys the
+only record that the control moved.
+
+Unlike the fun tripwire this comparison is **exact**. The batch is
+deterministic per seed, and recorded values round-trip through `%.17g`, so any
+movement at all is real. A mismatch means one of:
+
+1. the AI policy changed — the `policy_id` row will differ;
+2. the fixture, content, or tuning defaults changed — the corresponding hash
+   row will differ;
+3. sim behaviour changed underneath an unchanged policy — the identity matches
+   and one or more metric rows read `MOVED[...]`.
+
+In every case the resolution is the same order of operations: confirm the
+change is intended, add an entry to the drift log below naming the moved
+metrics, and only then run `love . --ai-baseline write --refreeze-ack`. Writing
+without the acknowledgement flag is refused. Every re-freeze bumps
+`baseline_version`, and the `signature` deliberately excludes it, so a
+re-freeze that changes nothing shows up in git as a lone version bump rather
+than hiding inside a churned file.
+
+Downstream issues cite the `policy_id` and `fixture_hash` strings. They do not
+copy the numbers, and they do not re-record the control themselves.
+
+### What this baseline does not cover
+
+It is observability and identity only — #59's full instrumentation contract
+(runs by type/role, passes to active runners, open options at pass release,
+press commit reasons, reaction time, counter-press/counter-attack timing,
+angular error by technique profile), its matched mental-2-vs-mental-8
+comparison, its technique and tactic comparisons, its constant sweeps, and its
+visual review all remain open. This section freezes the control those
+experiments — and #149's calibration — measure against.
+
 ## Baseline drift log
 
 Sim changes move the baseline; re-run `love . --sim 100` after touching
