@@ -212,8 +212,8 @@ end
 ---@param bot_state SlotBotState
 ---@param slot integer
 ---@return CombatIntentSignals?
+---@return SlotBotDecision? decision -- Made on THIS tick only; nil on a quiet tick.
 local function bot_combat_signals(state, combat_state, player_idx, bot_state, slot)
-    bot_state.decision = nil
     if not combat_state then
         return nil
     end
@@ -250,7 +250,7 @@ local function bot_combat_signals(state, combat_state, player_idx, bot_state, sl
         combat_intent.decision_seed(combat_state.tick, player_idx),
         temperature
     )
-    bot_state.decision = {
+    local record = {
         slot = slot,
         player_index = player_idx,
         action = decision.action,
@@ -259,9 +259,11 @@ local function bot_combat_signals(state, combat_state, player_idx, bot_state, sl
         unavailable_reason = decision.unavailable_reason,
         digest = decision.digest,
     }
+    ---@cast record SlotBotDecision
+    bot_state.decision = record
     if decision.action ~= "commit" then
         bot_state.intent = combat_intent.decline(bot_state.intent, decision.action)
-        return nil
+        return nil, record
     end
     assert(
         not decision.context_violation,
@@ -274,7 +276,7 @@ local function bot_combat_signals(state, combat_state, player_idx, bot_state, sl
         assert(decision.target_player),
         combat_policy.hold_ticks(observation, decision)
     )
-    return combat_intent.commit_signals()
+    return combat_intent.commit_signals(), record
 end
 
 ---@param state MatchState
@@ -283,6 +285,7 @@ end
 ---@param bot_state SlotBotState
 ---@param slot integer
 ---@return MatchInput
+---@return SlotBotDecision? decision -- Made on THIS tick only.
 local function bot_input(state, combat_state, player_idx, bot_state, slot)
     local player = state.players[player_idx]
     local target
@@ -311,7 +314,7 @@ local function bot_input(state, combat_state, player_idx, bot_state, slot)
 
     local delta = target:sub(player.pos)
     local move = delta:length() > 1 and delta:normalized() or Vec2.new(0, 0)
-    local equipment = bot_combat_signals(state, combat_state, player_idx, bot_state, slot)
+    local equipment, decision = bot_combat_signals(state, combat_state, player_idx, bot_state, slot)
     return {
         move = move,
         shoot = shoot,
@@ -329,7 +332,8 @@ local function bot_input(state, combat_state, player_idx, bot_state, slot)
         equipment_held = equipment ~= nil and equipment.equipment_held,
         equipment_pressed = equipment ~= nil and equipment.equipment_pressed,
         equipment_released = equipment ~= nil and equipment.equipment_released,
-    }
+    },
+        decision
 end
 
 -- Produce the complete effective frame consumed by sim.match. Bot decisions
@@ -354,10 +358,10 @@ function slot_input.materialize(producer, state, frame, combat_state)
             slots[index] = frame.slots[index]
         elseif source.kind == "bot" then
             local bot_state = assert(producer.bots[index])
-            slots[index] =
-                slot_input.to_sample(bot_input(state, combat_state, player_idx, bot_state, index))
-            if bot_state.decision then
-                decisions[#decisions + 1] = bot_state.decision
+            local input, decision = bot_input(state, combat_state, player_idx, bot_state, index)
+            slots[index] = slot_input.to_sample(input)
+            if decision then
+                decisions[#decisions + 1] = decision
             end
         else
             slots[index] = input_frame.neutral_sample()

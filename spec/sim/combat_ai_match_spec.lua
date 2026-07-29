@@ -585,6 +585,26 @@ t.describe("deterministic combat AI on fixed slots", function()
         t.is_true(commits > 0, "no bot fill ever committed, so nothing was reported")
         t.is_true(declines > 0, "declines are never surfaced")
         t.is_true(seen_digest ~= nil)
+
+        -- `materialize` reports only the decisions made on the tick it just
+        -- produced, while `last_decision` retains the most recent one across
+        -- quiet ticks. A slot that has decided at least once keeps answering.
+        local retained = 0
+        for slot = 1, input_frame.SLOT_COUNT do
+            if slot_input.last_decision(producer, slot) then
+                retained = retained + 1
+            end
+        end
+        t.is_true(retained > 0, "no slot retained its last decision")
+        local base = assert(input_frame.neutral(301))
+        local _, quiet = slot_input.materialize(producer, state, base, combat_state)
+        t.is_true(#quiet <= input_frame.SLOT_COUNT)
+        for slot = 1, input_frame.SLOT_COUNT do
+            if slot_input.last_decision(producer, slot) then
+                retained = retained - 1
+            end
+        end
+        t.is_true(retained <= 0, "a quiet tick erased a retained decision")
     end)
 
     t.it("keeps the decision report out of the hashed simulation boundary", function()
