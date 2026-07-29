@@ -111,7 +111,7 @@ function fixture.manifest(mode)
         fixture_id = "fixture.default_mixed.v1",
         arena_id = "arena.goliseo",
         combat_rules_id = "combat_interaction.accepted_2026_07_23",
-        gameplay_ai_policy_id = "gameplay_ai.provisional_issue_112",
+        gameplay_ai_policy_id = "gameplay_ai.combat.v1",
         combat_status = "provisional_114",
         seed = 20001,
         tick_rate = 60,

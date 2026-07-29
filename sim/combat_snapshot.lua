@@ -1,4 +1,5 @@
 local Vec2 = require("core.vec2")
+local combat_intent = require("sim.combat_intent")
 local action_families = require("data.action_families")
 local loadouts = require("data.loadouts")
 
@@ -11,7 +12,7 @@ local loadouts = require("data.loadouts")
 ---@class CombatSnapshotModule
 local combat_snapshot = {}
 
-combat_snapshot.VERSION = 1
+combat_snapshot.VERSION = 2
 
 combat_snapshot.STATE_FIELDS = {
     "version",
@@ -38,6 +39,7 @@ combat_snapshot.PLAYER_FIELDS = {
     "forced_ticks",
     "chain_ticks",
     "immunity_ticks",
+    "intent",
 }
 
 combat_snapshot.PROJECTILE_FIELDS = {
@@ -90,6 +92,7 @@ local EVENT_KINDS = field_set({
     "guard_recoil",
 })
 local CONTACT_RESULTS = field_set({ "hit", "extended", "guarded", "immune", "superseded" })
+local INTENT_FIELD_SET = field_set(combat_intent.FIELDS)
 local MAX_INTEGER = 2147483647
 
 ---@param value any
@@ -191,6 +194,17 @@ local function copy_optional_index(value, path, count)
     return value
 end
 
+-- The gameplay AI's retained combat intent. It lives on the combat companion,
+-- not on MatchState, because it only exists while a combat match does; the
+-- soccer-only snapshot schema is untouched by it.
+---@param source any
+---@param path string
+---@return CombatIntentState
+local function copy_intent(source, path)
+    assert_fields(source, INTENT_FIELD_SET, path)
+    return combat_intent.copy_state(source)
+end
+
 ---@param source any
 ---@param path string
 ---@return CombatPlayerState
@@ -237,6 +251,7 @@ local function copy_player(source, path)
         forced_ticks = copy_counter(source.forced_ticks, path .. ".forced_ticks"),
         chain_ticks = copy_counter(source.chain_ticks, path .. ".chain_ticks"),
         immunity_ticks = copy_counter(source.immunity_ticks, path .. ".immunity_ticks"),
+        intent = copy_intent(source.intent, path .. ".intent"),
     }
 end
 
@@ -386,7 +401,11 @@ function combat_snapshot.copy_owned(source, make_vec)
     for index, player in ipairs(source.players) do
         local copied = {}
         for _, field in ipairs(combat_snapshot.PLAYER_FIELDS) do
-            copied[field] = player[field]
+            if field == "intent" then
+                copied.intent = combat_intent.copy_state(player.intent)
+            else
+                copied[field] = player[field]
+            end
         end
         result.players[index] = copied
     end
@@ -429,7 +448,14 @@ function combat_snapshot.append(writer, combat_state)
             for _, player in ipairs(value) do
                 for _, player_field in ipairs(combat_snapshot.PLAYER_FIELDS) do
                     writer.name(player_field)
-                    writer.scalar(player[player_field])
+                    if player_field == "intent" then
+                        writer.literal("i;")
+                        for _, intent_field in ipairs(combat_intent.FIELDS) do
+                            writer.scalar(player.intent[intent_field])
+                        end
+                    else
+                        writer.scalar(player[player_field])
+                    end
                 end
             end
         elseif field == "projectiles" then
@@ -511,7 +537,17 @@ function combat_snapshot.first_difference(left, right, path)
                 or combat_snapshot.EVENT_FIELDS
             for index = 1, #a do
                 for _, child in ipairs(fields) do
-                    if not same_scalar(a[index][child], b[index][child]) then
+                    if child == "intent" then
+                        for _, leaf in ipairs(combat_intent.FIELDS) do
+                            if not same_scalar(a[index].intent[leaf], b[index].intent[leaf]) then
+                                return difference(
+                                    field_path .. "." .. index .. ".intent." .. leaf,
+                                    a[index].intent[leaf],
+                                    b[index].intent[leaf]
+                                )
+                            end
+                        end
+                    elseif not same_scalar(a[index][child], b[index][child]) then
                         return difference(
                             field_path .. "." .. index .. "." .. child,
                             a[index][child],

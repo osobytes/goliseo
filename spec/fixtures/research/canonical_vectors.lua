@@ -39,7 +39,7 @@ canonical_vectors.SAMPLE_HASH = "2c43b30a590f0da8"
 -- where input-packet goldens pinned at snapshot version 9 met a version-10 encoder
 -- and took `main` red.
 canonical_vectors.SNAPSHOT_VERSION = 11
-canonical_vectors.COMBAT_VERSION = 12
+canonical_vectors.COMBAT_VERSION = 13
 canonical_vectors.TAPE_CONTENT_HASH = "6f21da271b5a4603"
 canonical_vectors.TRACE_ID = "d7491ed5cc4cd10b"
 canonical_vectors.SIMULATION_IDENTITY_HASH = "4a9637a871966a67"

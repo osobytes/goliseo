@@ -1,4 +1,5 @@
 local Vec2 = require("core.vec2")
+local combat_intent = require("sim.combat_intent")
 local combat_rules = require("sim.combat_rules")
 local fixed_clock = require("sim.fixed_clock")
 local match_snapshot = require("sim.match_snapshot")
@@ -34,6 +35,7 @@ local player_pool = require("data.players")
 ---@field forced_ticks integer
 ---@field chain_ticks integer
 ---@field immunity_ticks integer
+---@field intent CombatIntentState -- Retained gameplay-AI combat intent (sim.combat_intent).
 
 ---@class CombatProjectile
 ---@field family_id ActionFamilyId
@@ -117,8 +119,9 @@ end
 
 ---@param loadout_id string?
 ---@param family_id ActionFamilyId?
+---@param intent CombatIntentState
 ---@return CombatPlayerState
-local function new_player_state(loadout_id, family_id)
+local function new_player_state(loadout_id, family_id, intent)
     return {
         loadout_id = loadout_id,
         family_id = family_id,
@@ -134,6 +137,7 @@ local function new_player_state(loadout_id, family_id)
         forced_ticks = 0,
         chain_ticks = 0,
         immunity_ticks = 0,
+        intent = intent,
     }
 end
 
@@ -162,7 +166,7 @@ function combat.new_state(state, players_by_id)
                 assert(action_families[family_id], "unknown action family: " .. tostring(family_id))
             end
         end
-        runtimes[index] = new_player_state(loadout_id, family_id)
+        runtimes[index] = new_player_state(loadout_id, family_id, combat_intent.new_state())
     end
     return {
         version = combat_snapshot.VERSION,
@@ -1005,7 +1009,14 @@ end
 ---@param combat_state CombatMatchState
 function combat.reset(combat_state)
     for index, runtime in ipairs(combat_state.players) do
-        combat_state.players[index] = new_player_state(runtime.loadout_id, runtime.family_id)
+        -- The decision stream survives a restart: a player is the same decider
+        -- either side of it, and re-seeding here would make the AI replay the
+        -- same choices after every kickoff.
+        combat_state.players[index] = new_player_state(
+            runtime.loadout_id,
+            runtime.family_id,
+            combat_intent.reset(runtime.intent)
+        )
     end
     combat_state.projectiles = {}
     combat_state.events = {}
@@ -1015,7 +1026,11 @@ end
 ---@param combat_state CombatMatchState
 function combat.reset_for_kickoff(combat_state)
     for index, runtime in ipairs(combat_state.players) do
-        combat_state.players[index] = new_player_state(runtime.loadout_id, runtime.family_id)
+        combat_state.players[index] = new_player_state(
+            runtime.loadout_id,
+            runtime.family_id,
+            combat_intent.reset(runtime.intent)
+        )
     end
     combat_state.projectiles = {}
 end

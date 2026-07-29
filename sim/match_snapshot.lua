@@ -28,7 +28,7 @@ local possession_transition = require("sim.possession_transition")
 local match_snapshot = {}
 
 match_snapshot.VERSION = 11
-match_snapshot.COMBAT_VERSION = 12
+match_snapshot.COMBAT_VERSION = 13
 
 ---@type table<MatchState, string>
 local unsupported_states = setmetatable({}, { __mode = "k" })

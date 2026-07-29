@@ -18,6 +18,7 @@ local loadouts = require("data.loadouts")
 local players_data = require("data.players")
 local teams_data = require("data.teams")
 local build_info = require("game.build_info")
+local combat_policy = require("sim.combat_policy")
 local protocol = require("game.online.protocol")
 local fixed_clock = require("sim.fixed_clock")
 local input_frame = require("sim.input_frame")
@@ -51,7 +52,10 @@ match_manifest.DEFAULT_MAX_GOALS = 5
 -- and the fixture's are the only two places that change.
 match_manifest.COMBAT_STATUS = "provisional_114"
 match_manifest.COMBAT_RULES_ID = "combat_interaction.accepted_2026_07_23"
-match_manifest.GAMEPLAY_AI_POLICY_ID = "gameplay_ai.provisional_issue_112"
+-- #112 shipped the real deterministic gameplay combat policy, so the manifest
+-- names it instead of the placeholder. The id is `sim.combat_policy.POLICY_ID`
+-- and section 4.7 of the combat evidence contract owns the vocabulary.
+match_manifest.GAMEPLAY_AI_POLICY_ID = combat_policy.MANIFEST_POLICY_ID
 match_manifest.MATCH_CONFIG_ID = "match_config.direct_host.v1"
 match_manifest.FIXTURE_ID = "fixture.content_derived.v1"
 
