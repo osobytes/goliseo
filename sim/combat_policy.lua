@@ -74,7 +74,10 @@ combat_policy.MANIFEST_POLICY_ID = "gameplay_ai.combat.v1"
 
 -- Scoring constants. Every one of them is a soccer-value weight; none of them
 -- reads a score line, a difficulty setting, or a hidden state.
-combat_policy.DECLINE_BASELINE = 60
+-- Declining has to beat a typical OFF-BALL candidate and lose to a real ball
+-- contest. Everything above this line commits, so the number is the whole
+-- "off-ball attacks are rare, ball contests are normal" policy in one place.
+combat_policy.DECLINE_BASELINE = 45
 combat_policy.BALL_VALUE_RANGE = 220
 combat_policy.BALL_VALUE_WEIGHT = 30
 combat_policy.TURNOVER_BONUS = 16
@@ -84,6 +87,16 @@ combat_policy.FORMATION_RISK_PENALTY = 18
 combat_policy.GUARD_URGENCY_TICKS = 24
 combat_policy.GUARD_URGENCY_WEIGHT = 34
 combat_policy.COVERAGE_RANGE_PX = 56
+
+-- The two purposes that ARE the ball. Chasing the ball necessarily means leaving
+-- the anchor and standing near teammates, so charging those two costs against a
+-- ball contest would simply forbid contesting the ball. They stay full costs for
+-- the off-ball purposes, which is where they were meant to bite.
+---@type table<CombatPurposeId, boolean>
+combat_policy.ON_BALL_PURPOSES = {
+    carrier_contest = true,
+    loose_ball_contest = true,
+}
 combat_policy.BASE_TEMPERATURE = 3
 -- Composure at or above this takes the exact argmax and spends no RNG, mirroring
 -- `outfield_decision.decide_carrier`'s authored boundary.
@@ -172,7 +185,7 @@ function combat_policy.score(candidate)
     score = score - math.max(0, candidate.teammate_coverage) * combat_policy.COVERAGE_PENALTY
     score = score
         - (candidate.commitment_ticks / fixed_clock.TICK_RATE) * combat_policy.COMMITMENT_WEIGHT
-    if candidate.formation_risk then
+    if candidate.formation_risk and not combat_policy.ON_BALL_PURPOSES[candidate.purpose] then
         score = score - combat_policy.FORMATION_RISK_PENALTY
     end
     if candidate.family_id == "guard" then
@@ -233,6 +246,10 @@ local function unavailable_reason(observation)
     return nil
 end
 
+-- How many teammates are ALREADY contesting this target with equipment. Mere
+-- proximity is not coverage: several players converging on the ball is ordinary
+-- soccer, and counting that as "someone has it" would stop the whole team from
+-- ever contesting a carrier.
 ---@param observation CombatObservation
 ---@param target CombatObservationPeer
 ---@return integer
@@ -241,6 +258,7 @@ local function teammate_coverage(observation, target)
     for _, mate in ipairs(observation.teammates) do
         if
             not mate.is_keeper
+            and mate.phase ~= "ready"
             and length(mate.x - target.x, mate.y - target.y) <= combat_policy.COVERAGE_RANGE_PX
         then
             count = count + 1
