@@ -10,6 +10,8 @@
 
 local Vec2 = require("core.vec2")
 local combat_sim = require("sim.combat")
+local outfield_decision = require("sim.outfield_decision")
+local outfield_press = require("sim.outfield_press")
 local tuning = require("sim.tuning")
 
 local replay = {}
@@ -116,6 +118,13 @@ local function capture_frame(s, boundary, combat_state)
             keeper_state = p.keeper_state,
             keeper_set = p.keeper_set,
             slide_timer = p.slide_timer,
+            tackle_timer = p.tackle_timer,
+            stun_timer = p.stun_timer,
+            settle_timer = p.settle_timer,
+            sprinting = p.sprinting,
+            -- `remaining` is decremented in place each tick, so the run grant
+            -- the telegraph pose reads has to be copied, not aliased.
+            outfield_decision = outfield_decision.copy_state(p.outfield_decision),
             dive_timer = p.dive_timer,
             dive_dir = p.dive_dir,
             keeper_get_up_timer = p.keeper_get_up_timer,
@@ -127,11 +136,14 @@ local function capture_frame(s, boundary, combat_state)
             aerial_style = p.aerial_style,
             aerial_outcome = p.aerial_outcome,
             aerial_jump = p.aerial_jump,
-            sprint_meter = 1, -- keeps the HUD meter hidden during playback
+            -- The HUD always models the live state, never a replay frame, so
+            -- the meter and the jockey stance can carry their real values and
+            -- let a replay show the condition the player was actually in.
+            sprint_meter = p.sprint_meter,
+            jockey_timer = p.jockey_timer,
             charge = 0,
             pass_charge = 0,
             pass_target = nil,
-            jockey_timer = 0,
         }
     end
     local events = {}
@@ -146,6 +158,12 @@ local function capture_frame(s, boundary, combat_state)
         goal_away = s.goal_away,
         score = { home = s.score.home, away = s.score.away },
         time_left = s.time_left,
+        -- Team-owned press state is a pose input, and `outfield_press.contain`
+        -- returns a fresh table per transition, so a copy pins this frame's.
+        outfield_press = {
+            home = outfield_press.copy_state(s.outfield_press.home),
+            away = outfield_press.copy_state(s.outfield_press.away),
+        },
         controlled = s.controlled,
         owner = s.owner,
         ball = Vec2.new(s.ball.x, s.ball.y),
