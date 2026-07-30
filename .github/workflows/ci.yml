@@ -146,8 +146,23 @@ jobs:
             - name: Check Lua types
               run: lua-language-server --check . --checklevel=Warning
 
+            # The log is kept for the headroom gate below, which reads a marker out of
+            # it rather than paying for a second four-minute suite run. pipefail is set
+            # explicitly: GitHub's default shell is `bash -e`, so without it a failing
+            # suite would be masked by a succeeding `tee`.
             - name: Run headless test suite
-              run: love . --test
+              run: |
+                  set -o pipefail
+                  love . --test 2>&1 | tee "$RUNNER_TEMP/test.log"
+
+            # #209: warn about the retained-snapshot margin while it can still be spent
+            # deliberately, ahead of the hard gate in the rollback campaign. The
+            # self-test runs first and proves the threshold can fire, including the
+            # shape where the marker is absent entirely.
+            - name: Check the retained snapshot headroom
+              run: |
+                  ./scripts/check_snapshot_headroom.sh --self-test
+                  ./scripts/check_snapshot_headroom.sh --log "$RUNNER_TEMP/test.log"
 
             - name: Run gameplay tripwire
               run: love . --tripwire

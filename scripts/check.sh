@@ -21,9 +21,27 @@ else
     echo "   ! lua-language-server not installed — skipping"
 fi
 
+# The suite output is retained because the retained-snapshot headroom gate below reads
+# a marker out of it. `love . --test` costs about four minutes, so it runs once here and
+# both gates read that one run.
+test_log="$(mktemp)"
+trap 'rm -f "$test_log"' EXIT
+
 echo "==> Tests (love . --test)"
 if command -v love >/dev/null 2>&1; then
-    love . --test || fail=1
+    love . --test 2>&1 | tee "$test_log" || fail=1
+else
+    echo "   ! love not installed — skipping"
+fi
+
+# #209: warn while the 31-boundary retained-snapshot margin can still be spent
+# deliberately, instead of only at the hard gate in the rollback campaign. The
+# self-test proves the threshold fires and covers each silent-pass shape -- including a
+# missing marker, because absent evidence must not read as a healthy budget.
+echo "==> Retained snapshot headroom (#209 warning threshold)"
+if command -v love >/dev/null 2>&1; then
+    ./scripts/check_snapshot_headroom.sh --self-test || fail=1
+    ./scripts/check_snapshot_headroom.sh --log "$test_log" || fail=1
 else
     echo "   ! love not installed — skipping"
 fi
