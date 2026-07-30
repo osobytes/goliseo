@@ -49,7 +49,8 @@ the desirabilities, so no config can score well by maxing five metrics while
 zeroing a sixth (a weighted average would happily trade a 0 for two 1.2s; the
 geometric mean will not).
 
-Provisional bands (per 120 s match, first-to-3; revisit after the baseline run):
+Provisional bands (per 120 s match — first-to-3 when these were set, no goal
+limit since #268; revisit after the baseline run):
 
 | Metric               | What it protects                       | Good band  | Zero at    |
 | -------------------- | -------------------------------------- | ---------- | ---------- |
@@ -897,3 +898,45 @@ until phase 4 automates it).
   policy this entry describes. When a combat-enabled fun signature is introduced,
   it needs its own baseline and its own tripwire entry — reading this one as
   evidence about combat would be reading it backwards.
+
+- **2026-07-30 — no goal limit (#268). DRIFT; baseline refreshed.** The goal cap
+  is gone: a match is decided on score at full time, in every mode
+  (`docs/online/match_flow.md`, "A match has no goal limit, online or offline").
+  `sim.tripwire` and `love . --sim 100` both run through `sim.headless`, which
+  did not pass a `max_goals` of its own and so inherited the simulation default.
+  Every batch match therefore used to stop at the third goal.
+
+  The 30-seed tripwire moved six metrics past tolerance: shots/goal
+  20.327 → 21.602, save rate 0.803 → 0.854, turnovers/min 3.726 → 3.916, drought
+  10.269 → 11.171 s, decided-late 0.541 → 0.466, and controlled dribble
+  touches/min 91.634 → 86.854. `fun` (0.496 → 0.506) and goals (2.133 → 2.233)
+  stayed in band.
+
+  Every one of those is the same effect seen from a different angle: matches that
+  used to be truncated by the cap now play out. The 100-match validation makes it
+  literal — `duration` is 120.017 s at min **and** max across all 100, where the
+  capped run ended some matches early, and `goals_total` now reaches a maximum of
+  7, above the old ceiling of 3. Play after the third goal is disproportionately
+  end-of-match play: the extra minutes are the ones with a settled scoreline, so
+  they add shots that no longer need to be converted (shots/goal up), saves in
+  low-danger situations (save rate up), scrappier possession (turnovers up), and
+  longer goalless stretches (drought up). `decided_late` falls because the
+  deciding goal is now measured as a fraction of a *full* match rather than of a
+  match that ended shortly after it.
+
+  100-match validation at the new rule: fun 0.470, goals 2.150, shots/goal
+  22.327, save rate 0.864, pass completion 0.578, turnovers/min 4.109, possession
+  balance 0.403, drought 11.333 s, decided-late 0.511. Band status is unchanged
+  in kind from the previous entry — goals in band at 0.78, pass completion,
+  turnovers, possession balance and drought healthy, and the two long-standing
+  quality exceptions (shots/goal 0.35, save rate 0.43) still the weak dimensions.
+  Nothing new collapsed, and nothing improved that would need explaining.
+
+  **This is a rules change, not a tuning change**, which is why the baseline is
+  refreshed rather than the drift investigated. The old baseline measured a game
+  that ended matches at three goals; that game no longer exists. The frozen
+  Outfield AI baseline is the opposite case and is deliberately *not* refreshed:
+  it passes `max_goals = 3` explicitly (`sim/outfield_ai_baseline.lua:67`), so
+  `love . --ai-baseline` still compares exactly and #148/#149 keep an intact
+  control. Whether that control should itself be re-frozen under the no-limit
+  rule is #149's calibration decision.
