@@ -56,7 +56,10 @@ local function direct_match(seed, duration)
         players_by_id = by_id,
         human_controlled = false,
         duration = duration,
-        max_goals = 3,
+        -- `env_config.DEFAULT_MAX_GOALS` since #268: no goal limit. Spelled as a
+        -- literal, like every other field here, so a silent change to what the
+        -- environment builds still breaks this equivalence.
+        max_goals = 99,
         seed = seed,
         input_ownership = match.ownership_for_teams(teams.nebula, teams.orion, by_id),
     })

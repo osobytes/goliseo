@@ -21,16 +21,23 @@ local SESSION = fixture.manifest().session_id
 
 -- The thirteen wire digests that shipped before pair preferences existed. Two
 -- message kinds were appended to the conformance fixture, never inserted, so
--- every one of these must still be byte-identical.
+-- appending must leave every one of these where it was.
+--
+-- #268 later moved the fixture manifest's `max_goals` from 5 to 99 (no goal
+-- limit), which moves `manifest_id` and therefore the six digests below that
+-- carry it. That is a manifest change, not an appended message, so it does not
+-- weaken what this table proves: the seven digests that carry no manifest id
+-- are still byte-identical to what shipped, and they are the ones an appended
+-- message kind would have disturbed.
 local SHIPPED_DIGESTS = {
     handshake = "2722abf054051350",
-    manifest_proposal = "d8828f15a3aca7f6",
-    manifest_accept = "5535f2d2cd0c78c1",
+    manifest_proposal = "171c298f6eeb77e1",
+    manifest_accept = "363c57d949586608",
     peer_assignment = "fa48b31571dfe543",
-    slot_assignment = "5ad57c25fc94b01d",
-    ready = "d0a259fac573d722",
-    countdown = "f1fbbe316dc59b99",
-    start = "e3ce6b9842148436",
+    slot_assignment = "db929e7cd34eab60",
+    ready = "a89d1e1747464a51",
+    countdown = "c26f26e05519c2c8",
+    start = "3fdf9b6a442b6755",
     match_phase = "1671940891b78f1f",
     hash_report = "4405d9323b1e5b0f",
     result_ack = "5f466e6740c6d4cf",
@@ -171,12 +178,14 @@ end
 t.describe("pair preference wire", function()
     t.it("keeps every digest that shipped before it, and the manifest id", function()
         local report = conformance.verify()
-        t.eq(report.manifest_id, "71c68acdb2ce6822", "the manifest is untouched by this change")
+        -- Repinned by #268 (`max_goals` 5 -> 99). Pair preferences added no
+        -- manifest field, so this id only ever moves when the manifest does.
+        t.eq(report.manifest_id, "eb59f113614c35b2", "the manifest id moved")
         for kind, digest in pairs(SHIPPED_DIGESTS) do
             t.eq(conformance.GOLDEN.wire_digests[kind], digest, kind .. " wire digest moved")
         end
-        t.eq(conformance.GOLDEN.wire_digests.pair_preference, "079b77dba4b1154c")
-        t.eq(conformance.GOLDEN.wire_digests.pair_preference_result, "60000b5490034d23")
+        t.eq(conformance.GOLDEN.wire_digests.pair_preference, "44cbe6dc14b4af77")
+        t.eq(conformance.GOLDEN.wire_digests.pair_preference_result, "e9bc40f5818037f4")
     end)
 
     t.it("round-trips a request and a verdict through the canonical codec", function()

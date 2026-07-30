@@ -33,15 +33,19 @@ local conformance = {}
 conformance.GOLDEN = {
     snapshot_version = 11,
     combat_version = 13,
-    guest_wire = "GCIP;1;G;2;71c68acdb2ce6822;7;f6f6f9dbe278dccb;12;0;4;3;7;"
+    -- The embedded manifest id moved with #268's `max_goals` 5 -> 99 (no goal
+    -- limit). The packet payloads either side of it are byte-identical, and
+    -- `maximal_wire_bytes` does not move: `fixture.maximal()` carries a manifest
+    -- id of its own.
+    guest_wire = "GCIP;1;G;2;eb59f113614c35b2;7;f6f6f9dbe278dccb;12;0;4;3;7;"
         .. "AAAAAAJ/fwAAAAAAAQIA/gUJAAAAAgJ/f4AgAAAAAwJ/f4AAAAAABAJ/fwBAAAAABQJ/f38f"
         .. "AAAABgL+ABIW",
-    guest_digest = "87d181043bd080b5",
-    host_wire = "GCIP;1;H;2;71c68acdb2ce6822;13;65c65955c65cc80a;15;0;5;3;16;"
+    guest_digest = "a099c86d6520d6bc",
+    host_wire = "GCIP;1;H;2;eb59f113614c35b2;13;65c65955c65cc80a;15;0;5;3;16;"
         .. "AAAABQGwTgAAAAAABQKvTwEBAAAABQOuUAICAAAABQStUQMDAAAABQWsUgQEAAAABQarUwUF"
         .. "AAAABQeqVAYGAAAABQipVYAgAAAABgG6RAAAAAAABgK5RQEBAAAABgO4RgICAAAABgS3RwMD"
         .. "AAAABgW2SAQEAAAABga1SQUFAAAABge0SgYGAAAABgizS4Ag",
-    host_digest = "68bc1f6ccfffb698",
+    host_digest = "fb46b26858818ead",
     maximal_wire_bytes = 958,
     maximal_wire_margin = 66,
 }
