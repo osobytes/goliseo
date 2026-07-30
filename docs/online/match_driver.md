@@ -584,30 +584,63 @@ and a connected in-process star. Producer ids double as transport link ids —
 link — so they satisfy `game.transport.contract.PEER_ID_PATTERN`, which the
 session coordinator's own test ids deliberately do not.
 
-The driver's *mechanical* behaviour is verified against those fixtures. Two
-acceptance criteria remain contingent on open work and are not claimed here:
+The driver's *mechanical* behaviour is verified against those fixtures. Of the
+two acceptance criteria that used to be contingent on open work, one still is
+and is not claimed here; the other has closed:
 
-- **#112, combat-aware gameplay AI.** Non-live owned slots and declared fills
-  currently materialize `sim.slot_input`'s existing deterministic bot, which is
-  not combat aware. 1v1 leans on this hardest: three of every human's four owned
-  slots are AI-driven at any instant. The plumbing — seeding, single authorship,
-  indistinguishability from a declared fill — is what is proven now.
 - **#114, the accepted default combat disposition.** The manifest identity the
   fixture pins is a fixture, not an accepted policy. When #114 lands, the
   identity changes in the fixture and nowhere else.
+- ~~**#112, combat-aware gameplay AI.**~~ **Closed.** Non-live owned slots and
+  declared bot fills materialize `gameplay_ai/combat/v1` (`sim.combat_policy`)
+  through `sim.slot_input`'s `bot_combat_signals`, reached from this driver at
+  `materialize_authored`. It is the same policy, observation schema, option
+  ordering, and reason vocabulary the gameplay match AI runs. 1v1 leaned on this
+  hardest — three of every human's four owned slots are AI-driven at any instant
+  — and those slots now use and counter all four families. (`sim.match`'s
+  `_ai_combat_inputs` is the *offline* path and is structurally dead online: in
+  slot mode `is_human_player` is true for every slotted player, so its AI branch
+  never fires. `sim.bot` is a third population, the human-proxy evidence driver,
+  and stays deliberately combat-incapable behind its own policy id.)
 
-The combat companion is a third, separate line, and it splits in two.
-`fixture.initial_snapshot(duration, true)` opts boundary zero into the combat
-snapshot schema (`match_snapshot.COMBAT_VERSION`), and the
+## Combat corrections
+
+The combat companion splits into a mechanism and a behaviour, and both are now
+pinned.
+
+The **mechanism**: `fixture.initial_snapshot(duration, true)` opts boundary zero
+into the combat snapshot schema (`match_snapshot.COMBAT_VERSION`), and the
 `carries the combat companion through correction and resimulation` spec drives
 that fixture through bursty delivery so restore and resimulation carry
-`CombatMatchState` alongside `MatchState` on every peer. The **mechanism** is
-therefore proven: the companion survives a correction.
+`CombatMatchState` alongside `MatchState` on every peer.
 
-The **behaviour** is not. The rows are still produced by the pre-#112 bot, which
-never drives the companion into wind-up, guard, contact, projectile flight,
-stagger, ball spill, or immunity expiry, so none of the combat correction cases
-the issue names are individually pinned. That is a distinct gap from "the AI is
-not combat-aware yet" — it is what the combat-aware AI would be needed to
-*test*, not merely what it would change — and those scenarios are worth pinning
-only once #112 can produce them.
+The **behaviour**: the seven combat correction phases #166 names — wind-up,
+guard, contact, projectile flight, stagger/knockback, ball spill, and immunity
+expiry — are each pinned as their own online rollback scenario in
+`spec/game/online_match_driver_spec.lua`
+(`converges a correction taken during <phase>`). Kickoff, possession change and
+full time were already covered by whole-match runs under impaired delivery; these
+are the combat half of the same matrix.
+
+The fixtures live in `spec/support/online_combat_phases.lua`, which owns the
+per-phase boundary zero, the live slot's input program, and the predicate that
+recognises the phase on a resimulated tick. What each scenario asserts is not
+that combat happened somewhere during a bursty run, but that a correction
+arriving **while a peer is in that phase** converges: the tick the rollback
+resimulated really was a tick of that phase, the peers that resimulated it landed
+on one identical MatchSnapshot v9, every confirmed boundary hash and live slot
+still agrees, and no peer terminated on invalid or duplicate authority.
+
+Five of the seven reach their phase through `gameplay_ai/combat/v1` itself: the
+scenario arranges only the equipped families and the opening pose, and the
+decision, the commit and the resolution are the shipped policy's. **Guard is the
+exception.** The policy raises a guard only while it can attribute a telegraphed
+hostile path to a purpose target (`combat_feasibility` guard feasibility), which
+needs the threat re-armed inside the deciding player's scan cadence;
+`spec/sim/combat_ai_match_spec.lua` arranges that by re-pinning the hostile every
+tick, and a driver-level scenario cannot, because boundary zero is the only thing
+it controls. So the guard scenario raises its guard from a live slot's own held
+equipment, carried on the canonical input stream like any other authority. No
+scenario force-sets a combat runtime field: every boundary zero opens `ready`,
+which `opens every combat phase scenario from a ready combat state` pins
+directly.

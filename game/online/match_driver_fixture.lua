@@ -1,11 +1,10 @@
 -- Versioned fixtures for the OMP-3 online match driver.
 --
--- The driver's acceptance depends on combat-aware gameplay AI (#112) and on the
--- accepted default combat disposition (#114), neither of which has landed. The
--- mechanical plumbing is therefore developed against *these* fixtures: a pinned
--- slot-mode boundary zero, a pinned frozen session, and an in-process star. When
--- #114 accepts a default disposition, the manifest identity changes here and
--- nowhere else.
+-- The driver's acceptance still depends on the accepted default combat
+-- disposition (#114), which has not landed. The mechanical plumbing is therefore
+-- developed against *these* fixtures: a pinned slot-mode boundary zero, a pinned
+-- frozen session, and an in-process star. When #114 accepts a default
+-- disposition, the manifest identity changes here and nowhere else.
 --
 -- Producer ids double as transport link ids, because `canonical_host_batch`
 -- requires a peer producer to arrive on its own selected link. They therefore
@@ -50,9 +49,12 @@ end
 --
 -- `combat_active` opts the fixture into the combat snapshot schema, so
 -- the driver's restore/resimulate path carries `CombatMatchState` as well as
--- `MatchState`. What that does *not* buy is combat-aware AI: the rows are still
--- produced by the pre-#112 deterministic bot, so the companion is carried and
--- corrected but is not driven to interesting states.
+-- `MatchState`. The rows are produced by `gameplay_ai/combat/v1` (#112), so the
+-- companion is genuinely driven rather than merely carried -- but *where* it
+-- goes is left to the policy and the seed. This boundary zero pins the
+-- mechanism; it deliberately does not pin any particular combat phase.
+-- `spec/support/online_combat_phases.lua` owns the per-phase boundary zeroes
+-- that do, one for each of the seven correction phases #166 names.
 --
 -- `seed` overrides the pinned match seed. Every peer shares one boundary zero in
 -- a real session, so a differing seed is not a configuration: it is the cheapest
