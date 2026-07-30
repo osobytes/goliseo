@@ -5,11 +5,12 @@
 -- confirmed event, published exactly once, and a correction that replaces the
 -- whole speculative tail rather than layering a second copy over it.
 --
--- What is *not* asserted, deliberately: the individual combat correction cases
--- (wind-up, guard, contact, projectile flight, stagger, ball spill, immunity
--- expiry). The rows are still produced by the pre-#112 deterministic bot, which
--- never drives the companion into those states, so pinning them here would pin
--- an absence. The mechanism — the companion surviving a correction — is covered.
+-- The individual combat correction cases (wind-up, guard, contact, projectile
+-- flight, stagger, ball spill, immunity expiry) are pinned at the driver layer,
+-- in `spec/game/online_match_driver_spec.lua`, against the boundary zeroes in
+-- `spec/support/online_combat_phases.lua`. Bot fills materialize
+-- `gameplay_ai/combat/v1` (#112), so those states are reachable and pinning them
+-- no longer pins an absence.
 
 local t = require("spec.support.runner")
 local fixture = require("spec.fixtures.online_match_session")
