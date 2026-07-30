@@ -8,11 +8,17 @@ compares every client at every confirmed checkpoint and at the final state.
 
 It has three tiers, and each one proves a different thing:
 
-| Tier | Command | Proves |
-| --- | --- | --- |
-| Bounded CI subset | `love . --test` (`spec/game/online_fault_harness_spec.lua`) | The harness's own mechanisms, on short deterministic rows. |
-| Headless matrix | `love . --fault-harness full` | The declared matrix converges, or names exactly where it does not. |
-| Separate-process campaign | `python3 -B scripts/fault_harness.py --selection full` | The agreement is independent of this build's per-process hash seed. |
+| Tier | Command | Proves | In CI |
+| --- | --- | --- | --- |
+| Bounded CI subset | `love . --test` (`spec/game/online_fault_harness_spec.lua`) | The harness's own mechanisms, on short deterministic rows. | yes, inside `quality` |
+| Headless matrix | `love . --fault-harness smoke` / `full` | The declared matrix converges, or names exactly where it does not. | the `smoke` subset, in `OMP-3 fault harness` |
+| Separate-process campaign | `python3 -B scripts/fault_harness.py --selection full` | The agreement is independent of this build's per-process hash seed. | no — only its controller's parsing logic |
+
+`./scripts/check_fault_harness.sh` is the gate around the headless tier. The
+`OMP-3 fault harness` CI job and `./scripts/check.sh` both call it, so a
+strengthened check cannot land in one and be missing from the other. Read
+[a self-test is not a run](#a-self-test-is-not-a-run) for why that distinction is
+written down at all.
 
 ## What it is made of
 
@@ -202,6 +208,14 @@ love . --fault-harness 4v4.playable 9001 240
 love . --fault-harness smoke
 love . --fault-harness full
 
+# The gated bounded subset: the same run, with its exit status, its RESULT
+# summary, and its per-row verdicts all required to agree. This is what CI and
+# ./scripts/check.sh run.
+./scripts/check_fault_harness.sh smoke 1 800
+
+# Prove that gate can still fail, against a fake harness and no LOVE process
+./scripts/check_fault_harness.sh --self-test
+
 # The same matrix over the in-process relay instead of the direct-host star
 love . --fault-harness full --topology relay
 
@@ -210,7 +224,7 @@ python3 -B scripts/fault_harness.py --selection smoke
 python3 -B scripts/fault_harness.py --selection full --processes 4 --seed 9001
 python3 -B scripts/fault_harness.py --selection full --topology relay
 
-# The controller's own logic, with no LOVE process (this is what CI runs)
+# The controller's parsing logic, with no LOVE process and no harness run
 python3 -B scripts/fault_harness.py --self-test
 ```
 
@@ -218,6 +232,49 @@ The marker stream is stable: `marker`, `note`, `known-gap`, `finding`,
 `scenario-result`, `RESULT`. `hash-order-probe` is deliberately excluded from the
 comparable stream, because it is *expected* to differ and it is the evidence that
 the processes differed.
+
+## A self-test is not a run
+
+From #169 until #279, the only OMP-3 step in CI and in `./scripts/check.sh` was
+`python3 -B scripts/fault_harness.py --self-test`, printed under a heading that
+named the fault harness. That command checks the *campaign controller's* marker
+parsing against a string literal. It starts no LOVE process, so it cannot observe
+the harness, the scenarios, the transport, or the simulation at all. The heading
+promised coverage the step could not deliver, and a reader of a green log had no
+way to tell.
+
+It cost a real defect. PR #279 passed `love . --test` (1735 assertions, 0
+failures), passed all nine CI checks, and passed `./scripts/check.sh`, while
+`love . --fault-harness smoke 1 800` failed 5 of 11 scenarios on
+`sim/rollback_events.lua:329: rollback combat event is missing its stable source
+sequence` — including `1v1.clean`, `1v1.playable`, and `2v2.playable`, rows with
+no injected fault at all. The defect broke every online match on the first
+blocked combat press.
+
+The generalisable rule, for any harness in this repository:
+
+- **A harness controller self-test proves the controller's own logic.** It parses
+  recorded output, or exercises a fixture. It is worth having, it is fast, and it
+  says nothing whatsoever about the system the harness measures.
+- **A real harness run proves the system.** It starts the process, exercises the
+  paths, and can fail for reasons nobody anticipated.
+- **A step must be named for what it runs.** If the command is `--self-test`, the
+  heading says so — see `scripts/check.sh`, where the controller step reads
+  "parsing logic only, starts no harness".
+- **Every gate needs a demonstration that it can fail.** A green step that
+  structurally cannot go red is indistinguishable from no step. The sibling gates
+  do this properly: `scripts/check_determinism.sh --self-test` really runs `love`
+  twice, `scripts/browser_determinism.py --self-test` really drives a browser, and
+  `scripts/check_fault_harness.sh --self-test` drives a fake harness through the
+  six ways a run can be wrong — including one that prints failures and still exits
+  0. Mutating any one of the wrapper's checks makes that self-test fail, which is
+  how it was verified.
+
+The residual case in this family is `./scripts/check_rollback.sh --self-test`,
+which does not perform its Lua↔Python cross-check locally. That gap is covered in
+CI by the `rollback_native` and `rollback_browser_stress` jobs, so it is a local
+convenience gap rather than an absence of coverage — unlike OMP-3, which had no
+real coverage anywhere.
 
 ## What this harness cannot prove
 
