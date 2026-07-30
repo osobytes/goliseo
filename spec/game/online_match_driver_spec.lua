@@ -1,4 +1,5 @@
 local t = require("spec.support.runner")
+local combat_phases = require("spec.support.online_combat_phases")
 local match_driver = require("game.online.match_driver")
 local fixture = require("game.online.match_driver_fixture")
 local input_protocol = require("game.online.input_protocol")
@@ -19,6 +20,7 @@ local rollback_session = require("sim.rollback_session")
 ---@field duration number?
 ---@field humans integer?
 ---@field combat boolean?
+---@field initial_snapshot MatchSnapshot? -- Boundary zero for every peer; overrides `combat`.
 ---@field hash_interval_ticks integer?
 ---@field max_rollback_ticks integer?
 ---@field settle_timeout_ticks integer?
@@ -34,7 +36,8 @@ local rollback_session = require("sim.rollback_session")
 local function harness(mode, options)
     options = options or {}
     local session = fixture.session(mode, nil, options.humans)
-    local snapshot = fixture.initial_snapshot(options.duration, options.combat)
+    local snapshot = options.initial_snapshot
+        or fixture.initial_snapshot(options.duration, options.combat)
     local divergent = options.divergent_peer
             and fixture.initial_snapshot(options.duration, options.combat, fixture.DEFAULT_SEED + 1)
         or nil
@@ -807,6 +810,9 @@ t.describe("online match driver", function()
         t.is_true(match_driver.diagnostics(state.drivers[1]).rollback_count > 0)
     end)
 
+    -- The mechanism: the companion is restored and resimulated at all. It says
+    -- nothing about *what* the companion was doing, which is what the seven
+    -- named phases below pin.
     t.it("carries the combat companion through correction and resimulation", function()
         local state = harness("2v2", { combat = true })
         local initial = match_driver.current_snapshot(state.drivers[1])
@@ -820,6 +826,191 @@ t.describe("online match driver", function()
         end
         t.is_true(assert_agreement(state) > 0)
         assert_confirmed_state(state)
+    end)
+
+    -- #166's seven combat correction phases, each pinned as its own online
+    -- rollback scenario.
+    --
+    -- The acceptance criterion is not "combat happened somewhere during a
+    -- bursty run" -- the companion test above already shows that, and it went on
+    -- passing unchanged through the whole period when the online bot fill could
+    -- not press an equipment button at all. It is that
+    -- a correction arriving *while a peer is in that phase* converges: the tick
+    -- the rollback resimulated really was a wind-up / guard / contact / flight /
+    -- forced / spill / expiry tick, the peers that resimulated it landed on one
+    -- identical MatchSnapshot v9, every confirmed boundary hash still agrees, and
+    -- nothing terminated on invalid or duplicate authority.
+    --
+    -- `spec/support/online_combat_phases.lua` owns the fixtures and the
+    -- predicates; the delivery pattern and the assertions are this spec's. Five
+    -- of the seven reach their phase through `gameplay_ai/combat/v1` itself, from
+    -- nothing but an opening pose. `guard` is the exception and says so.
+    for _, phase_id in ipairs(combat_phases.PHASES) do
+        local scenario = combat_phases.scenario(phase_id)
+        t.it(
+            ("converges a correction taken during %s (%s)"):format(phase_id, scenario.route),
+            function()
+                local snapshot = combat_phases.boundary_zero(phase_id)
+                t.eq(snapshot.version, match_snapshot.COMBAT_VERSION)
+                -- 1v1 is where the AI carries the most of the pitch: three of
+                -- every human's four owned slots are AI-driven at any instant,
+                -- so six of the eight slots fight without a human behind them.
+                local state = harness("1v1", { initial_snapshot = snapshot })
+                local first = state.session.freeze.first_input_tick
+
+                ---@type integer[]
+                local observed = {}
+                for index = 1, #state.drivers do
+                    observed[index] = 0
+                end
+                -- Input tick -> the first peer to resimulate it in this phase and
+                -- the hash it landed on, recorded only once that tick is fully
+                -- authoritative. Below confirmation a tick still holds predicted
+                -- rows, so peers may legitimately differ there.
+                ---@type table<integer, { peer: integer, hash: string }>
+                local phase_hashes = {}
+                local shared = 0
+
+                for step = 0, scenario.steps - 1 do
+                    for index, driver in ipairs(state.drivers) do
+                        local batch = match_driver.advance(
+                            driver,
+                            combat_phases.live_sample(phase_id, step, index)
+                        )
+                        if batch.rollbacks > 0 then
+                            local confirmed = match_driver.diagnostics(driver).confirmed_input_tick
+                            for _, output in ipairs(batch.outputs) do
+                                -- `RollbackTickOutput.tick` is session space.
+                                local tick = output.tick + first
+                                local before = match_driver.snapshot(driver, tick).snapshot
+                                local after = match_driver.snapshot(driver, tick + 1).snapshot
+                                if
+                                    before ~= nil
+                                    and after ~= nil
+                                    and combat_phases.observed(
+                                        phase_id,
+                                        before,
+                                        after,
+                                        output.combat_events or {}
+                                    )
+                                then
+                                    observed[index] = observed[index] + 1
+                                    if tick <= confirmed then
+                                        local hash = match_snapshot.hash(before)
+                                        local recorded = phase_hashes[tick]
+                                        if recorded == nil then
+                                            phase_hashes[tick] = { peer = index, hash = hash }
+                                        else
+                                            t.eq(
+                                                hash,
+                                                recorded.hash,
+                                                ("peers disagreed on the resimulated %s at tick %d"):format(
+                                                    phase_id,
+                                                    tick
+                                                )
+                                            )
+                                            -- Only a genuinely cross-peer
+                                            -- comparison counts: one peer
+                                            -- resimulating the same tick twice
+                                            -- agrees with itself for free.
+                                            if recorded.peer ~= index then
+                                                shared = shared + 1
+                                            end
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                    if (step + 1) % scenario.deliver_period == 0 then
+                        state.session.host_transport:pump()
+                    end
+                end
+
+                for index, driver in ipairs(state.drivers) do
+                    -- No terminal at all: a duplicate bundle that differed, or
+                    -- authority from outside a frozen owned set, would have ended
+                    -- this peer as `authority_conflict` / `ownership_violation`
+                    -- rather than left it playing.
+                    t.eq(
+                        match_driver.status(driver),
+                        "active",
+                        ("peer %d did not survive the %s run"):format(index, phase_id)
+                    )
+                    t.eq(match_driver.terminal(driver), nil)
+                    local diagnostics = match_driver.diagnostics(driver)
+                    t.is_true(
+                        diagnostics.rollback_count > 0,
+                        ("the %s burst never corrected peer %d"):format(phase_id, index)
+                    )
+                    t.eq(diagnostics.hash_mismatches, 0)
+                    t.is_true(
+                        observed[index] > 0,
+                        ("no correction on peer %d ever resimulated a %s tick"):format(
+                            index,
+                            phase_id
+                        )
+                    )
+                    -- One boundary is published once. A checkpoint republished
+                    -- under a second hash is the duplicate-authority shape the
+                    -- coordinator would have to arbitrate.
+                    ---@type table<integer, boolean>
+                    local published = {}
+                    for _, checkpoint in ipairs(match_driver.checkpoints(driver)) do
+                        t.is_true(
+                            not published[checkpoint.tick],
+                            ("peer %d published boundary %d twice"):format(index, checkpoint.tick)
+                        )
+                        published[checkpoint.tick] = true
+                        t.eq(#checkpoint.hash, 16)
+                    end
+                end
+                t.is_true(
+                    shared > 0,
+                    ("no confirmed %s tick was resimulated by more than one peer"):format(phase_id)
+                )
+                t.is_true(assert_agreement(state) > 0)
+                assert_confirmed_state(state)
+            end
+        )
+    end
+
+    -- The claim the seven scenarios above rest on: none of them starts already
+    -- in the phase it is named for. A fixture that force-set `phase = "windup"`
+    -- at boundary zero would pin the driver's restore path and nothing about the
+    -- simulation reaching wind-up, and the difference is invisible from the
+    -- scenario's own assertions.
+    t.it("opens every combat phase scenario from a ready combat state", function()
+        t.eq(#combat_phases.PHASES, 7)
+        for _, phase_id in ipairs(combat_phases.PHASES) do
+            local scenario = combat_phases.scenario(phase_id)
+            t.is_true(scenario.route == "policy" or scenario.route == "canonical_input")
+            local snapshot = combat_phases.boundary_zero(phase_id)
+            local companion = assert(snapshot.combat)
+            t.eq(#companion.projectiles, 0, phase_id)
+            t.eq(#companion.events, 0, phase_id)
+            local equipped = 0
+            for _, runtime in ipairs(companion.players) do
+                t.eq(runtime.phase, "ready", phase_id)
+                t.eq(runtime.forced_state, nil, phase_id)
+                t.eq(runtime.immunity_ticks, 0, phase_id)
+                t.eq(runtime.intent.stage, "idle", phase_id)
+                if runtime.family_id ~= nil then
+                    equipped = equipped + 1
+                    t.is_true(
+                        runtime.family_id == scenario.home_family
+                            or runtime.family_id == scenario.away_family,
+                        ("%s equipped an unexpected family: %s"):format(
+                            phase_id,
+                            tostring(runtime.family_id)
+                        )
+                    )
+                end
+            end
+            -- Both keepers are protected and slotless, so every other body is
+            -- armed with the family the scenario declares.
+            t.eq(equipped, input_frame.SLOT_COUNT, phase_id)
+        end
     end)
 
     -- A guest's own rows skip the reconciliation pass because they cannot open a
