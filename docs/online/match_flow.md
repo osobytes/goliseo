@@ -397,8 +397,9 @@ set makes switching inert. The away line is declared bot fill.
 `spec/screens/online_match_flow_spec.lua` plays that session in three windows:
 
 - **quiet** — nobody presses anything. `sim.match`'s 2.5 s kickoff hold expires
-  inside it and the AI-driven away line starts committing, so the window ends
-  with combat demonstrably *available*. Every human slot commits zero times.
+  inside it, and from the moment it does every controlled player reads `ready`:
+  equipped, off cooldown, in no forced state, committed to no soccer action.
+  Every human slot commits zero times across the window anyway.
 - **keyboard** — `j` is toggled on a fixed period and `game.screens.match` polls
   it. Toggled rather than held because the families activate differently: `press`
   for unarmed and light melee, `held` for guard, `held_release` for ranged.
@@ -411,7 +412,20 @@ one slot its peer authors for itself — `match_driver.materialize_authored` han
 the human sample straight to the control slot and never asks the policy for that
 row — so a confirmed `commit` carrying the live slot's player index can only have
 come from local input. The quiet window shows that from the outside instead of by
-reading the driver: no press, no commit, while the slots beside it commit.
+reading the driver, and the readiness measurement is what makes the zero mean
+something: every gate that could have refused a press — the kickoff hold, a
+cooldown, a forced state, a soccer commitment, a missing loadout — is provably
+open on every one of those frames, so the only thing missing is the press.
+
+**The bot fills do not commit in open play**, and the control deliberately does
+not lean on them. From a real kickoff, over 700 quiet frames, the declared away
+fills produced no combat commit at all. `gameplay_ai/combat/v1` commits readily
+from the rigged poses in `spec/support/online_combat_phases.lua`, where two lines
+face each other 24 to 36 px apart, and rarely from open play, where a purpose
+target inside reach *and* inside the front arc is a much scarcer event. Combined
+with #166's finding that the policy never chooses guard at all, that is a
+calibration observation for #149 and a disposition question for #114 — not
+something the presentation layer should paper over.
 
 Note what this says about **guard**. #166 found that `gameplay_ai/combat/v1`
 never chooses it — zero guard commits across four geometries and 300 steps each,

@@ -485,9 +485,10 @@ end)
 -- something:
 --
 --   quiet    -- nobody presses anything. `sim.match`'s 2.5 s kickoff hold
---               expires inside it and the AI-driven away line starts committing,
---               so the window ends with combat demonstrably *available*. Every
---               human slot commits zero times across it.
+--               expires inside it, and from the moment it does every controlled
+--               player reads `ready` -- equipped, off cooldown, in no forced
+--               state, committed to no soccer action. Every human slot commits
+--               zero times across the window anyway.
 --   keyboard -- `j` is toggled on a fixed period. `game.screens.match` polls it.
 --   gamepad  -- the gamepad's `b` is toggled instead, with `j` up.
 --
@@ -495,8 +496,20 @@ end)
 -- `match_driver.materialize_authored` hands the human sample straight to the
 -- control slot and never asks `gameplay_ai/combat/v1` for that row. So a
 -- confirmed `commit` carrying the live slot's player index can only have come
--- from local input. The quiet window proves that empirically instead of by
--- reading the driver: no press, no commit, while the slots beside it commit.
+-- from local input. The quiet window shows that from the outside rather than by
+-- reading the driver, and the readiness check is what makes the zero mean
+-- something: every gate that could have refused a press -- the kickoff hold, a
+-- cooldown, a forced state, a soccer commitment, a missing loadout -- is
+-- provably open on every one of those frames, so the only thing missing is the
+-- press.
+--
+-- It deliberately does *not* lean on the AI-driven away line committing during
+-- the window. It does not: from a real kickoff, over 700 quiet frames, the bot
+-- fills produced no commit at all. `gameplay_ai/combat/v1` commits readily from
+-- the rigged poses in `spec/support/online_combat_phases.lua` -- two lines 24 to
+-- 36 px apart -- and rarely from open play, where a purpose target inside reach
+-- and inside the front arc is a much scarcer event. That is a calibration
+-- observation for #149, not something for this spec to work around.
 --
 -- Both routes are toggled rather than held because the four families activate
 -- differently -- `press` for unarmed and light melee, `held` for guard,
@@ -536,7 +549,8 @@ t.describe("online combat families", function()
                 ---@field loadout_id string
                 ---@field player_index integer
                 ---@field commits table<string, integer> -- Window name -> own confirmed commits.
-                ---@field foreign table<string, integer> -- Window name -> confirmed commits by anyone else.
+                ---@field quiet_open integer -- Quiet frames after the kickoff hold expired.
+                ---@field quiet_ready integer -- Of those, frames the slot read `ready` on.
                 ---@field telegraphs table<string, boolean>
                 ---@field phases table<string, boolean>
                 ---@field readiness table<string, boolean>
@@ -568,7 +582,8 @@ t.describe("online combat families", function()
                         loadout_id = loadout_id,
                         player_index = player_index,
                         commits = { quiet = 0, keyboard = 0, gamepad = 0 },
-                        foreign = { quiet = 0, keyboard = 0, gamepad = 0 },
+                        quiet_open = 0,
+                        quiet_ready = 0,
                         telegraphs = {},
                         phases = {},
                         readiness = {},
@@ -614,8 +629,6 @@ t.describe("online combat families", function()
                                                 "a live slot committed outside its fixed family"
                                             )
                                             witness.commits[window] = witness.commits[window] + 1
-                                        else
-                                            witness.foreign[window] = witness.foreign[window] + 1
                                         end
                                     end
                                 end
@@ -630,6 +643,15 @@ t.describe("online combat families", function()
                                 "the presentation names the wrong equipment for this slot"
                             )
                             witness.readiness[controlled.readiness] = true
+                            -- The control measurement: once the kickoff hold is
+                            -- spent, was this slot actually able to commit while
+                            -- it was being asked for nothing?
+                            if window == "quiet" and match.state.kickoff_hold <= 0 then
+                                witness.quiet_open = witness.quiet_open + 1
+                                if controlled.readiness == "ready" then
+                                    witness.quiet_ready = witness.quiet_ready + 1
+                                end
+                            end
                             witness.phases[controlled.phase] = true
                             if controlled.telegraph_kind then
                                 witness.telegraphs[controlled.telegraph_kind] = true
@@ -689,15 +711,20 @@ t.describe("online combat families", function()
                         0,
                         ("%s committed with no local input at all"):format(label)
                     )
-                    -- In the *same* window, with the same clock and the same
-                    -- pitch, other players were committing. So the zero above is
-                    -- attributable to the absence of local input rather than to
-                    -- combat being unavailable.
+                    -- ...and it could have. Every quiet frame past the kickoff
+                    -- hold read `ready`, so the zero above is the absence of a
+                    -- press and not the absence of an opportunity.
                     t.is_true(
-                        witness.foreign.quiet > 0,
-                        ("%s: nobody committed during the quiet window either, so it "):format(
+                        witness.quiet_open >= 30,
+                        ("%s: the quiet window never outlasted the kickoff hold"):format(label)
+                    )
+                    t.eq(
+                        witness.quiet_ready,
+                        witness.quiet_open,
+                        ("%s was not ready to commit throughout the quiet window, so "):format(
                             label
-                        ) .. "proves nothing about routing"
+                        )
+                            .. "committing zero times there proves nothing"
                     )
                     t.is_true(
                         witness.commits.keyboard > 0,
