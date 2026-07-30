@@ -1,5 +1,6 @@
 local t = require("spec.support.runner")
 local Vec2 = require("core.vec2")
+local action_families = require("data.action_families")
 local combat = require("sim.combat")
 local combat_snapshot = require("sim.combat_snapshot")
 local fixed_clock = require("sim.fixed_clock")
@@ -11,6 +12,7 @@ local outfield_press = require("sim.outfield_press")
 local possession_transition = require("sim.possession_transition")
 local slot_input = require("sim.slot_input")
 local teams = require("data.teams")
+local validation_config = require("data.omp2_rollback_validation")
 
 ---@return MatchState
 local function new_state()
@@ -1559,11 +1561,18 @@ t.describe("canonical match snapshots", function()
             end
         end
         local combined_delta = four_run_delta + press_delta
-        local budget = 768 * 1024
-        local soccer_window = (soccer_bytes + combined_delta) * 31
-        local combat_window = (combat_bytes + combined_delta) * 31
+        -- Budget and boundary count come from the gated table rather than literals, so
+        -- this diagnostic and `main.lua`'s gate can never describe different ceilings.
+        -- spec/sim/rollback_validation_spec.lua pins the table's own values.
+        local budget = validation_config.budgets.snapshot_bytes
+        local boundaries = validation_config.budgets.snapshot_count
+        local soccer_window = (soccer_bytes + combined_delta) * boundaries
+        local combat_window = (combat_bytes + combined_delta) * boundaries
+        -- `budget=` is part of the marker because scripts/check_snapshot_headroom.sh
+        -- gates on this line and must not carry its own copy of the ceiling.
         print(
-            ("snapshot_active_ai_budget soccer_base=%d combat_base=%d run_delta=%d press_delta=%d combined_delta=%d soccer_window=%d combat_window=%d soccer_headroom=%d combat_headroom=%d"):format(
+            ("snapshot_active_ai_budget budget=%d soccer_base=%d combat_base=%d run_delta=%d press_delta=%d combined_delta=%d soccer_window=%d combat_window=%d soccer_headroom=%d combat_headroom=%d"):format(
+                budget,
                 soccer_bytes,
                 combat_bytes,
                 four_run_delta,
@@ -1575,6 +1584,7 @@ t.describe("canonical match snapshots", function()
                 budget - combat_window
             )
         )
+        t.eq(boundaries, 31)
         t.eq(soccer_bytes, 20697)
         t.eq(combat_bytes, 24373)
         t.eq(four_run_delta, 346)
@@ -1582,10 +1592,146 @@ t.describe("canonical match snapshots", function()
         t.eq(combined_delta, 372)
         t.eq(soccer_window, 653139)
         t.eq(combat_window, 767095)
-        t.eq(budget - soccer_window, 133293)
-        t.eq(budget - combat_window, 19337)
+        t.eq(budget - soccer_window, 264365)
+        t.eq(budget - combat_window, 150409)
         t.is_true(soccer_window < budget)
         t.is_true(combat_window < budget)
+    end)
+
+    -- The budget measurement above prices a `combat.new_state`, whose `events` array is
+    -- empty, so until now the per-event footprint was unpriced -- a gap a reviewer found
+    -- on #279, the change that added `outcome`, `reason` and `terminal` to every row.
+    -- `combat_snapshot.copy` requires every retained event to carry `tick ==
+    -- combat_state.tick - 1`, so a snapshot holds exactly one tick's events; the
+    -- quantity that matters is therefore bytes per row times rows per tick.
+    t.it("prices the worst-case combat event row against the retained window", function()
+        local state = new_state()
+        local combat_state = combat.new_state(state)
+        local snapshot = match_snapshot.capture(state, combat_state)
+        t.eq(#snapshot.combat.events, 0)
+
+        local budget = validation_config.budgets.snapshot_bytes
+        local boundaries = validation_config.budgets.snapshot_count
+        local combat_bytes = match_snapshot.encoded_size_canonical(snapshot)
+        t.eq(combat_bytes, 24373)
+        -- The active-AI delta priced by the measurement above.
+        local combined_delta = 372
+        local combat_window = (combat_bytes + combined_delta) * boundaries
+        t.eq(combat_window, 767095)
+
+        ---@param values string[]
+        ---@return string
+        local function longest(values)
+            local best = values[1]
+            for _, value in ipairs(values) do
+                -- Ties break lexicographically so the choice does not depend on
+                -- table order.
+                if #value > #best or (#value == #best and value < best) then
+                    best = value
+                end
+            end
+            return best
+        end
+
+        local family_ids = {}
+        for id in pairs(action_families) do
+            family_ids[#family_ids + 1] = id
+        end
+        table.sort(family_ids)
+
+        -- Every closed vocabulary is spelled verbatim into the row, so the widest row
+        -- the encoder can be asked to write uses the longest member of each. Numbers
+        -- take the widest canonical spelling the simulation actually produces: pitch
+        -- coordinates with a full fractional mantissa, a late-match tick, and a
+        -- four-digit sequence.
+        local worst_row = {
+            kind = longest(combat_snapshot.EVENT_KINDS),
+            tick = 3599,
+            family_id = longest(family_ids),
+            source_index = 10,
+            target_index = 10,
+            source_sequence = 9999,
+            result = longest(combat_snapshot.CONTACT_RESULTS),
+            outcome = longest(combat_snapshot.REQUEST_OUTCOMES),
+            reason = longest(combat_snapshot.REJECTION_REASONS),
+            terminal = longest(combat_snapshot.ENCOUNTER_TERMINALS),
+            x = 959.9999999999999,
+            y = 539.9999999999999,
+            interruption_ticks = 30,
+            displacement_px = 123.45678901234567,
+        }
+        t.eq(worst_row.kind, "projectile_expire")
+        t.eq(worst_row.reason, "protected_keeper_or_no_loadout")
+        t.eq(worst_row.terminal, "match_terminated")
+        t.eq(worst_row.result, "superseded")
+        t.eq(worst_row.family_id, "light_melee")
+
+        -- The marginal cost of a row, measured rather than derived: going from one row
+        -- to two isolates it from the array-length scalar, which changes width on its
+        -- own. Mutating the captured snapshot bypasses `combat_snapshot.copy`'s
+        -- validators on purpose -- this measures the encoder, not the simulator, and a
+        -- valid row of this exact width is not constructible from one tick of play.
+        snapshot.combat.events[1] = worst_row
+        local one_row = match_snapshot.encoded_size_canonical(snapshot)
+        snapshot.combat.events[2] = worst_row
+        local two_rows = match_snapshot.encoded_size_canonical(snapshot)
+        local row_bytes = two_rows - one_row
+
+        -- Field names are re-emitted for all fourteen fields on every row, including
+        -- the ones the row leaves nil. That share is the concrete target for narrowing
+        -- the canonical encoding.
+        local key_bytes = 0
+        for _, field in ipairs(combat_snapshot.EVENT_FIELDS) do
+            key_bytes = key_bytes + #("k" .. tostring(#field) .. ":" .. field .. ";")
+        end
+
+        -- Worst-case rows in one tick, from the emitter analysis recorded in
+        -- docs/online/omp2_rollback_validation.md:
+        --   P + 2*O + 1 + (1 + J) * R
+        -- with P = 10 players, O = 8 non-keeper outfielders, R <= O ranged players and
+        -- J = 2 concurrent projectiles per ranged player. It sums independently
+        -- maximised terms, so it is a ceiling rather than a constructed witness.
+        local worst_rows_per_tick = 10 + 2 * 8 + 1 + 3 * 8
+        t.eq(worst_rows_per_tick, 51)
+
+        local headroom = budget - combat_window
+        local rows_per_boundary = math.floor(headroom / boundaries / row_bytes)
+        local worst_tick_window = (combat_bytes + combined_delta + worst_rows_per_tick * row_bytes)
+            * boundaries
+
+        print(
+            ("snapshot_combat_event_cost row_bytes=%d key_bytes=%d key_share_percent=%.1f worst_rows_per_tick=%d worst_tick_window=%d rows_per_boundary=%d"):format(
+                row_bytes,
+                key_bytes,
+                key_bytes / row_bytes * 100,
+                worst_rows_per_tick,
+                worst_tick_window,
+                rows_per_boundary
+            )
+        )
+
+        t.eq(key_bytes, 179)
+        t.eq(row_bytes, 456)
+
+        -- The margin, pinned in rows rather than assumed. Each retained boundary can
+        -- absorb this many worst-case event rows before the 896-KiB gate; #279's three
+        -- added fields cost 33 key bytes plus their values out of the 456 above, so a
+        -- further schema addition of that shape moves this number.
+        t.eq(rows_per_boundary, 10)
+
+        -- A realistic sustained ceiling -- one own-encounter row per outfielder on every
+        -- one of the 31 retained boundaries -- fits with room to spare. The committed
+        -- crowded fixtures average well below one event per tick.
+        local sustained_window = (combat_bytes + combined_delta + 8 * row_bytes) * boundaries
+        t.is_true(sustained_window < budget)
+        t.eq(sustained_window, 880183)
+
+        -- A recorded limit, not an aspiration: the adversarial 51-row tick sustained
+        -- across all 31 boundaries does *not* fit, and no raise of this size would make
+        -- it fit -- it needs 1,488,031 bytes. Narrowing the canonical encoding is the
+        -- lever for that, and this assertion is what will tell us when it has moved.
+        t.is_true(worst_tick_window > budget)
+        t.eq(worst_tick_window, 1488031)
     end)
 
     t.it("rejects unhandled state and player fields", function()

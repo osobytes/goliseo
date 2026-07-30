@@ -190,8 +190,12 @@ return {
         p95_work_ms = 16.67,
         rollback_p999_ms = 33.3,
         snapshot_count = 31,
-        snapshot_bytes = 768 * 1024,
-        history_bytes = 1024 * 1024,
+        -- Raised one 128-KiB step from 768 KiB / 1 MiB by #209. Both moved together
+        -- so the 256-KiB gap between them is unchanged: the snapshot window stays the
+        -- binding gate and history stays the backstop for non-snapshot retention.
+        -- `scripts/rollback_validation.py` mirrors both; a stale mirror is a defect.
+        snapshot_bytes = 896 * 1024,
+        history_bytes = 1152 * 1024,
         memory_growth_ratio = 0.10,
     },
     soak_network_seeds = { 2001, 2002, 2003, 2001, 2002 },

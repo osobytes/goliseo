@@ -73,6 +73,29 @@ combat_snapshot.EVENT_FIELDS = {
 
 -- Closed, versioned vocabularies. Order is the contract's own and is the
 -- declared tie break wherever several reasons hold at once.
+--
+-- Every one of them is exported rather than kept local because each member is
+-- spelled verbatim into the canonical event row, so the *longest* member of each
+-- set is part of the retained-snapshot budget. The worst-case row measurement in
+-- spec/sim/match_snapshot_spec.lua derives that row from these tables, so adding a
+-- longer member changes a priced number instead of silently spending budget.
+combat_snapshot.EVENT_KINDS = {
+    "request_rejected",
+    "commit",
+    "projectile_spawn",
+    "projectile_expire",
+    "contact",
+    "ball_spill",
+    "forced",
+    "guard_recoil",
+    "miss",
+    "interrupted",
+    "cancelled",
+    "match_terminated",
+}
+
+combat_snapshot.CONTACT_RESULTS = { "hit", "extended", "guarded", "immune", "superseded" }
+
 combat_snapshot.REQUEST_OUTCOMES = { "accepted", "rejected" }
 
 combat_snapshot.REJECTION_REASONS = {
@@ -116,21 +139,8 @@ local EVENT_FIELD_SET = field_set(combat_snapshot.EVENT_FIELDS)
 local VECTOR_FIELD_SET = field_set({ "x", "y" })
 local PHASES = field_set({ "ready", "windup", "active", "aim", "guard", "recovery" })
 local FORCED_STATES = field_set({ "stagger", "knockback" })
-local EVENT_KINDS = field_set({
-    "request_rejected",
-    "commit",
-    "projectile_spawn",
-    "projectile_expire",
-    "contact",
-    "ball_spill",
-    "forced",
-    "guard_recoil",
-    "miss",
-    "interrupted",
-    "cancelled",
-    "match_terminated",
-})
-local CONTACT_RESULTS = field_set({ "hit", "extended", "guarded", "immune", "superseded" })
+local EVENT_KINDS = field_set(combat_snapshot.EVENT_KINDS)
+local CONTACT_RESULTS = field_set(combat_snapshot.CONTACT_RESULTS)
 local REQUEST_OUTCOMES = field_set(combat_snapshot.REQUEST_OUTCOMES)
 local REJECTION_REASONS = field_set(combat_snapshot.REJECTION_REASONS)
 local ENCOUNTER_TERMINALS = field_set(combat_snapshot.ENCOUNTER_TERMINALS)

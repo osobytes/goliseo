@@ -106,6 +106,18 @@ telemetry live in
 Research-session and participant data stay outside simulation and replay
 identity.
 
+**Before adding a team-level field here, price it.** Rollback retains 31 snapshot
+boundaries, so a field costing *k* bytes per snapshot costs 31*k* against the gated
+retained-snapshot budget. The worked example from
+[#57](https://github.com/osobytes/goliseo/issues/57) is ~278 bytes per snapshot and
+~8,618 against the budget, for one field. `scripts/check_snapshot_headroom.sh` warns
+when the remaining margin falls below 32 KiB; the full cost model, the current margin,
+and the levers for when it runs out are in
+[`docs/online/omp2_rollback_validation.md`](online/omp2_rollback_validation.md) under
+"The retained-storage cost model". Per-event fields are priced separately there — a
+snapshot retains one tick of `events`, and the worst-case row is 456 bytes of which 39%
+is field names.
+
 ### TacticData (`data/tactics.lua`)
 
 `id, name, press` (how many off-ball players hunt the ball), `line_shift` (anchor depth

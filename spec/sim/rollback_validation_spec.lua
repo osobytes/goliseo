@@ -26,8 +26,11 @@ t.describe("OMP-2 rollback validation campaign", function()
         t.eq(config.soak_samples[4], "600")
         t.eq(config.soak_samples[5], "final")
         t.eq(config.budgets.snapshot_count, 31)
-        t.eq(config.budgets.snapshot_bytes, 768 * 1024)
-        t.eq(config.budgets.history_bytes, 1024 * 1024)
+        -- The one place the retained-storage gates are spelled as literals. #209 raised
+        -- both a 128-KiB step; the 256-KiB gap between them is deliberate and pinned.
+        t.eq(config.budgets.snapshot_bytes, 896 * 1024)
+        t.eq(config.budgets.history_bytes, 1152 * 1024)
+        t.eq(config.budgets.history_bytes - config.budgets.snapshot_bytes, 256 * 1024)
         t.eq(config.budgets.memory_growth_ratio, 0.10)
         t.eq(rollback_validation.profile_digest(), "5fbf1e0d51a6f4d5")
 
