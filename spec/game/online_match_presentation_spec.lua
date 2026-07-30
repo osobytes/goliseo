@@ -322,6 +322,39 @@ end)
 -- own combat events, both read inside the step before the driver evicts them --
 -- and then asserts the presentation contract across the whole run.
 --
+-- # What `phase_ticks > 0` does and does not discriminate
+--
+-- The seven predicates are **not** mutually exclusive, and the helper reuses
+-- three geometries across five of the seven cases: `contact`, `ball_spill` and
+-- `immunity_expiry` are the same unarmed scrum, and `windup` and `stagger` are
+-- the same light-melee pair. Running every predicate against every fixture,
+-- counting corrected ticks it fires on over one 240-step run, measures exactly
+-- how much of the phase claim comes from the fixture and how much from the
+-- predicate:
+--
+--   fixture             windup guard contact flight stagger spill immunity
+--   windup                  62     0       3      0      53     3        1
+--   guard                   67   379       0      0       0     0        0
+--   contact                 76     0      11      0      70     8        7
+--   projectile_flight      119     0      12    235      57     6        4
+--   stagger                 62     0       3      0      53     3        1
+--   ball_spill              76     0      11      0      70     8        7
+--   immunity_expiry         76     0      11      0      70     8        7
+--
+-- Read it two ways. Down the diagonal every case's own predicate fires, which is
+-- the thing asserted and the thing that would go to zero if the fixture stopped
+-- reaching its phase. Across the rows, `guard` and `projectile_flight` are the
+-- only predicates that fire on their own fixture and nowhere else -- those two
+-- are pinned by fixture *and* predicate. The other five share geometry, so what
+-- separates them is the predicate alone: three different events picked out of
+-- one scrum at genuinely different rates (11 contacts, 8 spills, 7 expiries),
+-- and a forced state distinguished from the wind-up that caused it.
+--
+-- That is a real claim -- "a correction resimulated a tick during a ball spill"
+-- is exactly what `any_event(events, "ball_spill")` checks -- but it is weaker
+-- than "only during a ball spill", and a swap between two same-geometry cases
+-- would not fail. The rows above are the honest statement of which is which.
+--
 -- Delivery here is every 12th step rather than the scenario's own
 -- `deliver_period`, and every run is 240 steps rather than the scenario's own
 -- budget. The helper owns the fixture and the predicates; the caller owns its
@@ -462,18 +495,30 @@ t.describe("online match presentation combat phases", function()
         assert_confirmed_agreement(state)
     end)
 
-    -- The rest of the criterion's sweep: the same exactly-once contract has to
-    -- hold across the lifecycle rows too, not only the combat ones, and it has to
-    -- survive the end of the match rather than being read mid-run. Boundary zero
-    -- is a combat-active scrum with a four-second clock, so kickoff, goals, and
-    -- full time land in a timeline that is being corrected throughout.
+    -- The exactly-once contract has to survive the end of the match rather than
+    -- only being read mid-run, so this takes a combat-active boundary zero all
+    -- the way to full time under bursty delivery.
+    --
+    -- **The lifecycle row it pins is full time, and only full time.** The
+    -- fixture is the unarmed scrum -- eight bodies stacked around `LINE_X = 400`
+    -- on a 960 px pitch, fighting rather than advancing, under
+    -- `match.NO_GOAL_LIMIT` -- and it does not score. Measurement agrees: the
+    -- confirmed lifecycle rows across a whole run are `lifecycle/full_time`
+    -- twice, one per peer, and nothing else. An earlier version of this comment
+    -- claimed kickoff and goals landed here too. They never did.
+    --
+    -- The goal/kickoff count below is therefore a *record*, not a requirement.
+    -- `assert_published_once` would already hold those rows to exactly once if
+    -- they appeared; pinning the zero means the day this fixture starts scoring,
+    -- this case fails and someone decides what it now covers, instead of the
+    -- comment quietly claiming coverage the body never had.
     t.it("publishes the lifecycle exactly once through full time", function()
         local state = harness("1v1", {
             initial_snapshot = combat_phases.boundary_zero("contact", 4),
             duration_ticks = 4 * 60,
         })
         run(state, 4 * 60 + 90, { period = 6 })
-        local full_time, combat_rows = 0, 0
+        local full_time, restarts, combat_rows = 0, 0, 0
         for index, peer in ipairs(state.peers) do
             t.eq(match_driver.status(peer.driver), "completed", ("peer %d"):format(index))
             t.eq(match_presentation.status(peer.presentation), "active")
@@ -481,6 +526,10 @@ t.describe("online match presentation combat phases", function()
             for id in pairs(peer.confirmed) do
                 if id:find("lifecycle/full_time", 1, true) then
                     full_time = full_time + 1
+                elseif
+                    id:find("lifecycle/goal", 1, true) or id:find("lifecycle/kickoff", 1, true)
+                then
+                    restarts = restarts + 1
                 end
             end
             t.eq(
@@ -489,6 +538,12 @@ t.describe("online match presentation combat phases", function()
                 ("peer %d published full time %d times"):format(index, full_time)
             )
         end
+        t.eq(
+            restarts,
+            0,
+            "the scrum fixture scored, so this case now covers more than full time and "
+                .. "its comment needs rewriting"
+        )
         t.is_true(combat_rows > 0, "a combat-active run confirmed no combat feedback at all")
         assert_published_once(state)
         assert_confirmed_agreement(state)
