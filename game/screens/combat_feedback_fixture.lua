@@ -32,10 +32,7 @@ local function refresh(self)
     })
     local confirmed = self.fixture.events[3]
     effects.confirm_event(confirmed)
-    combat_feedback.confirm(
-        self.feedback,
-        combat_feedback.accepted(confirmed.payload, confirmed.id)
-    )
+    combat_feedback.confirm(self.feedback, combat_feedback.link(confirmed.payload, confirmed.id))
     self.refresh_seconds = 0.48
 end
 
