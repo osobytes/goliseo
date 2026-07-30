@@ -425,16 +425,17 @@ fills produced no combat commit at all. `gameplay_ai/combat/v1` commits readily
 from the rigged poses in `spec/support/online_combat_phases.lua`, where two lines
 face each other 24 to 36 px apart, and rarely from open play, where a purpose
 target inside reach *and* inside the front arc is a much scarcer event. Combined
-with #166's finding that the policy never chooses guard at all, that is a
+with #166's finding that the policy almost never chooses guard, that is a
 calibration observation for #149 and a disposition question for #114 — not
 something the presentation layer should paper over.
 
 Note what this says about **guard**. #166 found that `gameplay_ai/combat/v1`
-never chooses it — zero guard commits across four geometries and 300 steps each,
-even under fire — and its driver-level guard scenario therefore raises a guard
-from held equipment on the canonical input stream. Here that is not a workaround:
-a human on `home_1` raising a shield with the keyboard *is* the criterion, and the
-AI's reluctance is #149's and #114's business.
+almost never chooses it: `combat_phases.GUARD_PROBE` finds exactly one commit in a
+240-step unarmed scrum and none at all once the delivery cadence shifts, so its
+driver-level guard scenario raises a guard from held equipment on the canonical
+input stream instead. Here that is not a workaround — a human on `home_1` raising
+a shield with the keyboard *is* the criterion, and the AI's reluctance is #149's
+and #114's business.
 
 Readability is asserted from one frame per family — the first frame that family's
 own telegraph is on the pitch — so the rest is provably simultaneous with it
