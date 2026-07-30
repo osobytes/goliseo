@@ -79,8 +79,8 @@ diagnostically.
 | browser playable p99.9 rollback / **the same playable case's** p95 work, only when the playable case recorded `>= 1000` rollback samples | `< 2.6` | browser runtime matrix aggregate |
 | browser playable p99.9 rollback, absolute, scaled by how fast this shard's runner measured against the campaign's other shards, under the same sample-count precondition (a CI noise ceiling, **not** a frame budget) | `< 39.7 ms * runner scale`, the scale clamped to `1.0--1.6` | browser runtime matrix aggregate **only** |
 | retained snapshot boundaries | `<= 31` | every playable case |
-| canonical retained snapshot payload | `< 768 KiB` | every playable case |
-| exact accounted snapshot/input/output/event history | `< 1 MiB` | every playable case |
+| canonical retained snapshot payload | `< 896 KiB` | every playable case |
+| exact accounted snapshot/input/output/event history | `< 1152 KiB` | every playable case |
 | forced-GC Lua heap, process-tree RSS, and Chrome JS-heap growth, mean of the last two checkpoints over the mean of the first two | `<= 10%` | persistent soak |
 
 Only `complete_fixture` meets that sample-count precondition. The browser `combat` cases record
@@ -244,45 +244,92 @@ could not have entered that ratio comparison in any event. Were they ever promot
 for the reason the tail-threshold guard above exists. Establishing the timing evidence, and with it
 whether these fixtures earn a gate at all, is #150's own follow-on work.
 
-#### What the snapshot budget leaves for crowded combat
+#### The retained-storage cost model
 
-This ceiling is tracked by [#209](https://github.com/osobytes/goliseo/issues/209), which already
-records the cost model — bytes per snapshot × 31 retained boundaries — and the three candidate
-levers for when it runs out. What follows is the crowded-fixture view of that same budget. Take any
-decision about widening it to #209 rather than to a fixture change.
+Recorded here because [#209](https://github.com/osobytes/goliseo/issues/209) asked for it: the
+arithmetic that turns "one more field" into a budget spend, so the next author estimates before
+implementing rather than discovering a red gate afterwards.
 
-`budgets.snapshot_bytes` caps the retained 31-boundary window at 768 KiB and `main.lua` applies
-that gate to every case, regardless of profile or CPU gate mode. Two different numbers describe the
-remaining margin and they are not interchangeable:
+**A field costing *k* bytes per snapshot costs 31*k* against the gate.** The multiplier is the 31
+retained snapshot boundaries, and it is the whole point — team-level additions are expensive in a
+way that is not visible while writing them.
+
+The worked example is [#57](https://github.com/osobytes/goliseo/issues/57), which added one
+team-level field:
+
+| Quantity | Value |
+| --- | ---: |
+| bytes per snapshot | ~278 |
+| retained boundaries | 31 |
+| **cost against the budget** | **~8,618** |
+
+That single field took the tracked headroom from 38,185 to 29,567 bytes — 23% of the remaining
+margin for one addition.
+
+Two different numbers describe the margin and they are **not** interchangeable:
 
 - the `snapshot_active_ai_budget` diagnostic in `spec/sim/match_snapshot_spec.lua`, which is what
-  #209 tracks, computes a synthetic `(combat_base + combined_delta) * 31` window. It currently
-  reads `combat_window=767095`, `combat_headroom=19337`, against 29,567 when #209 was filed.
+  #209 tracks and what `scripts/check_snapshot_headroom.sh` gates, computes a synthetic
+  `(combat_base + combined_delta) * 31` window. It reads `combat_window=767095`,
+  `combat_headroom=150409` against the 896-KiB gate — the same window that left 19,337 at 768 KiB
+  and 29,567 when #209 was filed.
 - the rollback lab's actual retained peak is larger, and it is the quantity the campaign gate
-  compares. The existing `omp2-combat-rollback-v1` measures **777,309 bytes, 98.83% of the cap**,
-  leaving **9,123**.
+  compares. It is reported per case as `peak_snapshot_bytes`.
 
-A ten-player combat snapshot is roughly 25 KB, so on the gated measure the whole remaining margin
-is a few hundred bytes per boundary. The fixtures above are shaped by that ceiling rather than by
-taste: the ball is parked clear of the contest instead of carried, the tapes are 160 ticks rather
-than longer because retained bytes grow with tick count, and neither fixture sustains more than
-about two concurrent projectiles. Measured worst-of-three-seed peaks are 776,273 bytes for
-`combat_crowded` and 777,468 for `combat_repeated_family`, against 647,289 and 652,702 for their
-combat-disabled twins.
+Per-event cost is priced separately, because `combat.new_state` has an empty `events` array and the
+window measurement above therefore never exercised it — a gap a reviewer found on
+[#279](https://github.com/osobytes/goliseo/issues/279), the change that added `outcome`, `reason`
+and `terminal` to every row. `combat_snapshot.copy` requires every retained event to carry
+`tick == combat_state.tick - 1`, so a snapshot holds exactly **one tick's** events and the quantity
+is bytes per row times rows per tick. `spec/sim/match_snapshot_spec.lua` measures both:
 
-Parking the ball is a margin decision, not a feasibility one. The same fixture with the ball
-contested in the scrum measures **782,961 bytes, 99.56%** — inside the cap, but by 3,471 bytes, and
-the carrier holds the ball for 159 of the 160 ticks. Live-possession crowded combat is therefore
-measurable today and would not survive the next team-level snapshot field: #209's worked example
-from #57 cost ~278 bytes per snapshot, ~8,618 across the window, which exceeds that 3,471 outright
-and would consume most of the parked variant's 9,765 as well.
+| Quantity | Value |
+| --- | ---: |
+| worst-case event row | 456 bytes |
+| of which field names | 179 bytes (39%) |
+| worst-case rows per tick | 51 |
+| rows each boundary can absorb at 896 KiB | 10 |
 
-The ceiling is also why there is no sustained *projectile* stress fixture. A retained projectile
-costs roughly 175 bytes per boundary, about 5.4 KB across the window, so the budget funds one or
-two of them and no more. Measured attempts: eight concurrent projectiles reach 813,629–826,418
-bytes (103.5–105.1% of the cap), five reach 796,451–804,366, and three still reach 785,603 —
-99.89%, inside by 829 bytes. Raising projectile concurrency therefore needs one of #209's levers,
-and none of them belongs in a fixture change.
+The rows-per-tick ceiling is `P + 2*O + 1 + (1 + J) * R` with `P = 10` players, `O = 8` non-keeper
+outfielders, `R <= O` ranged players and `J = 2` concurrent projectiles per ranged player. Each
+term is independently maximised, so 51 is a ceiling rather than a constructed witness — the
+authored roster carries two ranged players and reaches 33. Nothing in `sim/combat.lua` or
+`sim/combat_snapshot.lua` caps event or projectile counts; `assert_array` validates both with no
+expected length.
+
+Two consequences worth stating plainly. A sustained realistic ceiling — one own-encounter row per
+outfielder on every one of the 31 boundaries — adds 113,088 bytes for a 880,183-byte window, and
+fits inside 896 KiB by 37,321. A sustained *adversarial* 51-row tick adds 721,056 for a
+**1,488,031-byte** window and does **not** fit, at 896 KiB or at any raise of that scale. That is a
+recorded limit on what fixtures can be authored, and it is the strongest argument for narrowing the
+encoding: 39% of every event row is field names, re-emitted for all fourteen fields on every row
+including the ones left nil, and the closed vocabularies add ~121 bytes more as literal text.
+
+#### What the snapshot budget leaves for crowded combat
+
+What follows is the crowded-fixture view of the same budget. Take any decision about widening it to
+#209 rather than to a fixture change.
+
+`budgets.snapshot_bytes` caps the retained 31-boundary window and `main.lua` applies that gate to
+every case, regardless of profile or CPU gate mode. The fixtures above were shaped by the **768-KiB**
+ceiling rather than by taste: the ball is parked clear of the contest instead of carried, the tapes
+are 160 ticks rather than longer because retained bytes grow with tick count, and neither fixture
+sustains more than about two concurrent projectiles.
+
+At 768 KiB those three constraints were forced. The existing `omp2-combat-rollback-v1` measured
+779,362 bytes, **99.10% of that cap**, leaving 7,070 — and 777,309 (98.83%) before #279 added its
+three event fields. Parking the ball was a margin decision rather than a feasibility one: the same
+fixture with the ball contested measured 782,961 bytes, 99.56%, inside by 3,471, with the carrier
+holding for 159 of the 160 ticks. The ceiling was also why there was no sustained *projectile*
+stress fixture. A retained projectile costs roughly 175 bytes per boundary, about 5.4 KB across the
+window: eight concurrent projectiles reached 813,629–826,418 bytes (103.5–105.1% of the 768-KiB
+cap), five reached 796,451–804,366, and three still reached 785,603 — 99.89%, inside by 829 bytes.
+
+#209 has since raised the gate to 896 KiB, so none of those three constraints is forced any longer.
+They remain what the *committed* fixtures measure, and the pinned hashes describe exactly that
+shape, so relaxing any of them is new fixture work with its own evidence rather than an edit to
+`sim/rollback_validation.lua`. The projectile-stress half of #150's acceptance criterion is
+unblocked: eight concurrent projectiles now sit 91,086–104,875 bytes inside the cap.
 
 ### Why the rollback tail is normalized against the playable case
 
@@ -591,10 +638,13 @@ The current contract keeps the soccer campaign on MatchSnapshot v11/InputTape v1
 without appending a synthetic combat-identity segment, and keeps bounded
 composite combat coverage on MatchSnapshot v12/InputTape v2. The current soccer
 digest is pinned separately from the historical InputFrame-v1 artifact.
-The 768-KiB snapshot gate is an explicit revision from 600 KiB: the previous
-peak was 611,274 bytes, leaving only 3,126 bytes for 31 retained boundaries,
-while the authoritative combat companion necessarily exceeds that margin.
-The 31-boundary limit and exact 1-MiB total-history gate are unchanged. Direct
+The 768-KiB snapshot gate was itself an explicit revision from 600 KiB: the
+previous peak was 611,274 bytes, leaving only 3,126 bytes for 31 retained
+boundaries, while the authoritative combat companion necessarily exceeds that
+margin. #209 has since revised it again, to 896 KiB, together with the
+total-history gate — see "Why the retained-storage gates moved". The
+31-boundary limit is unchanged and remains the one lever deliberately not
+pulled. Direct
 phase-boundary restore/replay tests cover wind-up, active contact, guard,
 projectile flight/expiry, stagger, knockback, and immunity; a dense delayed
 authority campaign additionally proves composite convergence and confirmed
