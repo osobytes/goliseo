@@ -348,6 +348,44 @@ because CI cannot produce soak evidence on a pull request (see the gating note b
 genuinely lower standard of proof than the first revision met, and a reader comparing the two should
 not be told they are equivalent.
 
+##### What the browser soak does and does not establish
+
+Read this before citing the soak figures as justification, because the obvious reading of them is
+wrong.
+
+**What it establishes.** At `f00aefb7`, on both Chrome and Firefox, the committed fixtures run the
+five-fixture persistent soak without retaining memory. Forced-GC Lua heap terminal growth is
+0.003572% (Chrome) and 0.000064% (Firefox) against a 10% limit — flat to four decimal places on a
+25.07 MB heap. Process-tree RSS is 0.167119% and 1.290640%. There is no leak in the rollback
+retention path.
+
+**What it does not establish: that a larger retained window is safe.** Raising
+`budgets.snapshot_bytes` changes a *comparison constant*. It allocates nothing, and it does not cause
+any case to retain one additional byte. The soak ran the same committed fixtures, which are shaped to
+the old 768-KiB ceiling and peak at ~779 KB — so **these numbers would have been identical had the
+gate not moved at all.** Nothing in this evidence exercised the 128 KiB that was added. A soak cannot,
+even in principle, validate headroom that no fixture has spent yet.
+
+**So what the evidence is for.** It is a clean leak check establishing that the retention path is
+healthy at the revision that raises the ceiling — a necessary precondition, not a justification. The
+raise itself rests on the argument above about *why* the margin is needed. The honest description of
+this change is **discretionary margin-building with a clean leak check**, and the forcing function
+that made the old tight ceiling useful is preserved by the 32,768-byte warning rather than by the
+ceiling remaining tight.
+
+**When the new headroom actually gets tested.** When #150's fixtures spend it — a live-possession
+crowded variant, a sustained projectile-stress fixture. Those genuinely retain more per boundary, and
+that is when browser retained-memory evidence becomes load-bearing rather than precautionary.
+Re-measure then; do not treat this soak as having covered it in advance.
+
+**On the Chrome JS-heap number specifically.** It reads 5.924112% terminal / 6.795617% peak. That is
+neither comfortable headroom nor near-failure — it is **not diagnostic either way**. Averaging two
+checkpoints at each end puts the gate's real detection floor at roughly 13.5% rather than 10% (see
+the memory-gate discussion below), so a 5.9% reading sits below the level at which this instrument
+distinguishes retention from noise. Confidence about retained memory should rest on the in-process
+Lua heap figures above, since the retained snapshot window is Lua-side allocation. Firefox exposes no
+supported JS-heap metric to this harness, so it has no equivalent row at all.
+
 **Why now.** The combat window was 99.10% consumed — `omp2-combat-rollback-v1` at 779,362 bytes of
 786,432, leaving 7,070. Two things that are not optional were blocked by that: the projectile-stress
 fixture #150 states as an acceptance criterion, and measuring crowded combat with a live ball at
