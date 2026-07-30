@@ -12,6 +12,7 @@ local rollback_lab = require("sim.rollback_lab")
 local rollback_session = require("sim.rollback_session")
 local teams = require("data.teams")
 local tuning = require("sim.tuning")
+local validation_config = require("data.omp2_rollback_validation")
 local t = require("spec.support.runner")
 
 ---@param options table?
@@ -221,8 +222,8 @@ t.describe("OMP-2 authoritative-reference rollback laboratory", function()
         t.eq(result.event_metrics.reference_digest, result.event_metrics.confirmed_digest)
         t.eq(assert(result.reference_final_snapshot.combat).tick, 80)
         t.eq(assert(result.client_final_snapshot.combat).tick, 80)
-        t.is_true(result.metrics.peaks.snapshot_bytes < 768 * 1024)
-        t.is_true(result.metrics.peaks.history_bytes < 1024 * 1024)
+        t.is_true(result.metrics.peaks.snapshot_bytes < validation_config.budgets.snapshot_bytes)
+        t.is_true(result.metrics.peaks.history_bytes < validation_config.budgets.history_bytes)
     end)
 
     t.it("matches every clean boundary without prediction or rollback", function()

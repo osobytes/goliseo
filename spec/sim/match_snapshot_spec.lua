@@ -11,6 +11,7 @@ local outfield_press = require("sim.outfield_press")
 local possession_transition = require("sim.possession_transition")
 local slot_input = require("sim.slot_input")
 local teams = require("data.teams")
+local validation_config = require("data.omp2_rollback_validation")
 
 ---@return MatchState
 local function new_state()
@@ -1559,11 +1560,18 @@ t.describe("canonical match snapshots", function()
             end
         end
         local combined_delta = four_run_delta + press_delta
-        local budget = 768 * 1024
-        local soccer_window = (soccer_bytes + combined_delta) * 31
-        local combat_window = (combat_bytes + combined_delta) * 31
+        -- Budget and boundary count come from the gated table rather than literals, so
+        -- this diagnostic and `main.lua`'s gate can never describe different ceilings.
+        -- spec/sim/rollback_validation_spec.lua pins the table's own values.
+        local budget = validation_config.budgets.snapshot_bytes
+        local boundaries = validation_config.budgets.snapshot_count
+        local soccer_window = (soccer_bytes + combined_delta) * boundaries
+        local combat_window = (combat_bytes + combined_delta) * boundaries
+        -- `budget=` is part of the marker because scripts/check_snapshot_headroom.sh
+        -- gates on this line and must not carry its own copy of the ceiling.
         print(
-            ("snapshot_active_ai_budget soccer_base=%d combat_base=%d run_delta=%d press_delta=%d combined_delta=%d soccer_window=%d combat_window=%d soccer_headroom=%d combat_headroom=%d"):format(
+            ("snapshot_active_ai_budget budget=%d soccer_base=%d combat_base=%d run_delta=%d press_delta=%d combined_delta=%d soccer_window=%d combat_window=%d soccer_headroom=%d combat_headroom=%d"):format(
+                budget,
                 soccer_bytes,
                 combat_bytes,
                 four_run_delta,
@@ -1575,6 +1583,7 @@ t.describe("canonical match snapshots", function()
                 budget - combat_window
             )
         )
+        t.eq(boundaries, 31)
         t.eq(soccer_bytes, 20697)
         t.eq(combat_bytes, 24373)
         t.eq(four_run_delta, 346)
@@ -1582,8 +1591,8 @@ t.describe("canonical match snapshots", function()
         t.eq(combined_delta, 372)
         t.eq(soccer_window, 653139)
         t.eq(combat_window, 767095)
-        t.eq(budget - soccer_window, 133293)
-        t.eq(budget - combat_window, 19337)
+        t.eq(budget - soccer_window, 264365)
+        t.eq(budget - combat_window, 150409)
         t.is_true(soccer_window < budget)
         t.is_true(combat_window < budget)
     end)

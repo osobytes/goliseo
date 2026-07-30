@@ -433,16 +433,19 @@ end
 --- bits are inert, and the tape is an ordinary soccer tape on InputTape v1 /
 --- MatchSnapshot v11.
 ---
---- These fixtures are designed against a hard ceiling. `budgets.snapshot_bytes` caps the
---- 31-boundary retained window at 768 KiB, `main.lua` applies that gate to every case
---- regardless of profile, and the existing `omp2-combat-rollback-v1` already measures
---- 777,309 bytes of it. A ten-player combat snapshot is roughly 25 KB, so the whole
---- remaining margin is about 9 KB across 31 boundaries -- a few hundred bytes per
---- snapshot. Three consequences are baked in above: the ball is parked rather than
---- carried, the tapes are 160 ticks rather than longer (retained bytes grow with tick
---- count), and neither fixture sustains more than about two concurrent projectiles.
---- The headroom itself is tracked by issue #209; the measurements and the levers for
---- widening it are in docs/online/omp2_rollback_validation.md.
+--- These fixtures were designed against a hard ceiling. `budgets.snapshot_bytes` caps the
+--- 31-boundary retained window and `main.lua` applies that gate to every case regardless
+--- of profile. At 768 KiB the existing `omp2-combat-rollback-v1` measured 779,362 bytes of
+--- it, leaving about 7 KB across 31 boundaries -- a couple of hundred bytes per snapshot.
+--- Three consequences are baked in above: the ball is parked rather than carried, the tapes
+--- are 160 ticks rather than longer (retained bytes grow with tick count), and neither
+--- fixture sustains more than about two concurrent projectiles.
+---
+--- #209 has since raised the gate to 896 KiB, so those three constraints are no longer
+--- forced -- but they are still what these committed fixtures measure, and the pinned
+--- hashes above describe exactly that shape. Relaxing any of them is new fixture work with
+--- its own evidence, not an edit here. The cost model and the levers are in
+--- docs/online/omp2_rollback_validation.md.
 ---@param fixture Omp2RollbackCombatLoadFixture
 ---@return InputTape
 local function combat_load_tape(fixture)

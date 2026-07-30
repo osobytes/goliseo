@@ -142,8 +142,12 @@ MAX_MEMORY_GROWTH_RATIO = 0.10
 # sensitivity back; the checkpoint itself is sub-second.
 SOAK_GROWTH_WINDOW = 2
 MAX_SNAPSHOT_COUNT = 31
-MAX_SNAPSHOT_BYTES = 768 * 1024
-MAX_HISTORY_BYTES = 1024 * 1024
+# Mirrors data/omp2_rollback_validation.lua budgets.snapshot_bytes / history_bytes.
+# #209 raised both one 128-KiB step from 768 KiB / 1 MiB, preserving the 256-KiB gap
+# between them so the snapshot window stays the binding gate. Keep both in sync with
+# the Lua table; spec/sim/rollback_validation_spec.lua pins the Lua side.
+MAX_SNAPSHOT_BYTES = 896 * 1024
+MAX_HISTORY_BYTES = 1152 * 1024
 MAX_P95_WORK_MS = 16.67
 MAX_ROLLBACK_P999_MS = 33.3
 MAX_ROLLBACK_P999_US = 33300
@@ -993,10 +997,18 @@ def validate_case_integrity(
             )
             if snapshot_count > MAX_SNAPSHOT_COUNT:
                 raise RuntimeError(f"{case_id} exceeded the 31-snapshot gate")
+            # The KiB figures are derived, not spelled: a hand-written "768 KiB" in a
+            # diagnostic outlives the constant it describes.
             if snapshot_bytes >= MAX_SNAPSHOT_BYTES:
-                raise RuntimeError(f"{case_id} exceeded the 768 KiB snapshot gate")
+                raise RuntimeError(
+                    f"{case_id} exceeded the {MAX_SNAPSHOT_BYTES // 1024} KiB snapshot gate"
+                    f" with {snapshot_bytes} bytes"
+                )
             if history_bytes >= MAX_HISTORY_BYTES:
-                raise RuntimeError(f"{case_id} exceeded the 1 MiB history gate")
+                raise RuntimeError(
+                    f"{case_id} exceeded the {MAX_HISTORY_BYTES // 1024} KiB history gate"
+                    f" with {history_bytes} bytes"
+                )
 
 
 def finite_non_negative_float(value: str, description: str) -> float:
@@ -6261,14 +6273,39 @@ def run_self_test() -> None:
         "native",
         "over-budget playable case",
     )
+    # Both retained-storage limits are exercised on each side of the boundary, and both
+    # are derived from the constants so that moving a gate moves its own proof with it.
+    # #209 raised these one 128-KiB step each; before that only the snapshot gate had a
+    # boundary pair, so the history gate had no demonstration it could still fire.
     near_snapshot_limit = parse_marker(
-        integrity_case.raw.replace("peak_snapshot_bytes=614399", "peak_snapshot_bytes=786431")
+        integrity_case.raw.replace(
+            "peak_snapshot_bytes=614399",
+            f"peak_snapshot_bytes={MAX_SNAPSHOT_BYTES - 1}",
+        )
     )
     validate_case_integrity([near_snapshot_limit], "native")
     expect_integrity_failure(
-        integrity_case.raw.replace("peak_snapshot_bytes=614399", "peak_snapshot_bytes=786432"),
+        integrity_case.raw.replace(
+            "peak_snapshot_bytes=614399",
+            f"peak_snapshot_bytes={MAX_SNAPSHOT_BYTES}",
+        ),
         "native",
-        "768 KiB inclusive snapshot limit",
+        f"{MAX_SNAPSHOT_BYTES // 1024} KiB inclusive snapshot limit",
+    )
+    near_history_limit = parse_marker(
+        integrity_case.raw.replace(
+            "peak_history_bytes=1048575",
+            f"peak_history_bytes={MAX_HISTORY_BYTES - 1}",
+        )
+    )
+    validate_case_integrity([near_history_limit], "native")
+    expect_integrity_failure(
+        integrity_case.raw.replace(
+            "peak_history_bytes=1048575",
+            f"peak_history_bytes={MAX_HISTORY_BYTES}",
+        ),
+        "native",
+        f"{MAX_HISTORY_BYTES // 1024} KiB inclusive history limit",
     )
     soak_case = parse_marker(
         integrity_case.raw.replace(
