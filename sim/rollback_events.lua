@@ -319,6 +319,36 @@ local function wrap_match_events(tick, events)
     return wrapped
 end
 
+-- An encounter row is keyed by the sequence it belongs to. A rejected request
+-- opens no encounter and has no sequence, so its domain carries the `0` that
+-- readers already interpret as "this source has no sequence", and its identity
+-- comes from the requesting player instead.
+--
+-- The player index is the ordinal rather than another domain segment for two
+-- reasons. A third numeric segment is read as a source sequence downstream, and a
+-- player index is not one. And a running per-domain counter would not be stable:
+-- a resimulation that refuses a different set of players would renumber the rows
+-- that survived, so one player's cue would be rewritten into another player's.
+-- Each player is offered its press exactly once per tick, so its index is unique
+-- within the tick and unchanged by whoever else was refused.
+--
+-- The typed reason deliberately stays out of the key. The same player refused on
+-- the same tick for a different reason is one corrected row, not a revoked cue
+-- plus a new one.
+---@param event CombatEvent
+---@return string domain
+---@return integer? fixed_ordinal
+local function combat_identity(event)
+    if event.kind == "request_rejected" then
+        local player_index =
+            assert(event.source_index, "rollback combat rejection is missing its requesting player")
+        return "combat/" .. event.kind .. "/0", player_index
+    end
+    local sequence =
+        assert(event.source_sequence, "rollback combat event is missing its stable source sequence")
+    return "combat/" .. event.kind .. "/" .. tostring(sequence), nil
+end
+
 ---@param tick integer
 ---@param events CombatEvent[]
 ---@return RollbackWrappedCombatEvent[]
@@ -326,13 +356,12 @@ local function wrap_combat_events(tick, events)
     local counts = {}
     local wrapped = {}
     for index, event in ipairs(events) do
-        local sequence = assert(
-            event.source_sequence,
-            "rollback combat event is missing its stable source sequence"
-        )
-        local domain = "combat/" .. event.kind .. "/" .. tostring(sequence)
-        local ordinal = (counts[domain] or 0) + 1
-        counts[domain] = ordinal
+        local domain, fixed_ordinal = combat_identity(event)
+        local ordinal = fixed_ordinal
+        if not ordinal then
+            ordinal = (counts[domain] or 0) + 1
+            counts[domain] = ordinal
+        end
         wrapped[index] = {
             id = event_id(tick, domain, ordinal),
             tick = tick,
