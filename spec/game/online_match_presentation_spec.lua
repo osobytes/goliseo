@@ -331,7 +331,7 @@ end)
 --     roughly 16 the confirmation ceiling falls behind `sim.rollback_events`'
 --     unconfirmed window, so the timeline gives up before the phase arrives;
 --   * and because these bursts are longer than the driver spec's, every phase --
---     including the two the helper budgets 480 and 600 steps for -- is reached
+--     including the three the helper budgets 480 or 600 steps for -- is reached
 --     inside 240. Nothing is assumed about that: `phase_ticks > 0` below is what
 --     enforces it, so a fixture retune that stops reaching a phase inside the
 --     budget fails here loudly rather than quietly asserting nothing.
