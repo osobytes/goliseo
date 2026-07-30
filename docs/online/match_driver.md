@@ -628,8 +628,23 @@ recognises the phase on a resimulated tick. What each scenario asserts is not
 that combat happened somewhere during a bursty run, but that a correction
 arriving **while a peer is in that phase** converges: the tick the rollback
 resimulated really was a tick of that phase, the peers that resimulated it landed
-on one identical MatchSnapshot v9, every confirmed boundary hash and live slot
-still agrees, and no peer terminated on invalid or duplicate authority.
+on one identical combat-bearing snapshot hash, every confirmed boundary hash and
+live slot still agrees, and no peer terminated on invalid or duplicate authority.
+The schema version is read from `match_snapshot.COMBAT_VERSION` and deliberately
+not written down here — it has moved several times and a copied number goes stale
+silently.
+
+A scenario counts a phase only on a tick the correction actually re-derived.
+`batch.outputs` mixes the reconciliation's `corrected_outputs` with the ordinary
+forward tick `step_to` appends on the same call, and nothing in
+`RollbackTickOutput` labels them, so the spec separates them by boundary: a
+corrected tick is strictly below the present as it stood before the call, because
+reconciliation restores to the divergence and resimulates back to the same
+present; a forward tick is that present. The separation was validated against
+instrumented ground truth from `rollback_session.reconcile` — 4,334 outputs across
+the seven scenarios, zero disagreements — rather than argued for, and the spec
+re-checks at runtime that every reported rollback yields at least one corrected
+tick.
 
 Five of the seven reach their phase through `gameplay_ai/combat/v1` itself: the
 scenario arranges only the equipped families and the opening pose, and the
@@ -644,3 +659,29 @@ equipment, carried on the canonical input stream like any other authority. No
 scenario force-sets a combat runtime field: every boundary zero opens `ready`,
 which `opens every combat phase scenario from a ready combat state` pins
 directly.
+
+That exception is itself evidence rather than an assertion.
+`combat_phases.GUARD_PROBE` holds four driver-level geometries — guard against
+light melee, against an unarmed scrum, and against ranged fire in both a spread
+and a single-lane pose — and
+`finds no driver-level geometry where the policy guards often enough` runs all
+four with no human input at all, counting the same thing a phase scenario counts.
+Ranged is in there on purpose: a latched release projects a public path out to
+the projectile's whole 60-tick lifetime, against roughly 17 ticks for light
+melee's wind-up plus active window, so it is the threat most likely to still be
+readable when a slow scanner's decision tick comes round
+(`combat_intent.should_decide` runs on a 9-tick period at the fast refresh and 27
+at the slow one).
+
+The result is about **rate, not possibility**, and the distinction matters. The
+policy *does* guard online — `vs_unarmed_scrum` produces exactly one commit in
+240 steps, and the other three geometries produce none — but one commit is not a
+scenario, and it is not even a stable one: it disappears when the burst period
+changes, because a bot fill authors from the state it currently predicts, so
+delivery timing moves the AI's own decisions. The bar is
+`combat_phases.GUARD_POLICY_ROUTE_MINIMUM`, set to the margin the thinnest
+scenario that actually shipped runs on, so promoting guard could never mean
+adopting a weaker scenario than the ones already trusted. When a geometry clears
+it the test fails and `guard` moves to the `policy` route. Whether the guard
+family is *usable enough* by AI-driven slots is a calibration question for
+#149/#114, not a netcode one.

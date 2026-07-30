@@ -63,13 +63,18 @@ local teams = require("data.teams")
 
 ---@alias OnlineCombatPhaseRoute "policy"|"canonical_input"
 
----@class OnlineCombatPhaseScenario
----@field id OnlineCombatPhaseId
----@field route OnlineCombatPhaseRoute
+-- Everything `boundary_zero` needs to lay out a fixture: who is armed with what,
+-- and how the two lines stand. A phase scenario and a guard probe geometry are
+-- both one of these plus their own metadata.
+---@class OnlineCombatFixtureShape
 ---@field home_family ActionFamilyId -- Loadout family every home outfielder carries.
 ---@field away_family ActionFamilyId -- Loadout family every away outfielder carries.
 ---@field separation_px number -- Opening gap between the two facing lines.
 ---@field row_spacing_px number -- Vertical gap between rows; a small one is a scrum.
+
+---@class OnlineCombatPhaseScenario: OnlineCombatFixtureShape
+---@field id OnlineCombatPhaseId
+---@field route OnlineCombatPhaseRoute
 ---@field steps integer -- Driver steps the scenario needs to reach the phase.
 ---@field deliver_period integer -- Transport drains every Nth step; the burst that corrects.
 ---@field hold_equipment boolean -- The host's live slot holds equipment on the canonical stream.
@@ -140,12 +145,16 @@ local SCENARIOS = {
         hold_equipment = true,
         note = "The policy raises a guard only while it can attribute a telegraphed "
             .. "hostile path to a purpose target (`sim.combat_feasibility`'s guard "
-            .. "witness), which needs the threat re-armed inside the deciding player's scan "
-            .. "cadence. `spec/sim/combat_ai_match_spec.lua` does that by re-pinning the "
-            .. "hostile every tick; a driver-level scenario cannot, because boundary zero "
-            .. "is the only thing it controls. So the guard here is raised by a live "
-            .. "slot's own held equipment, which reaches the resolver through the "
-            .. "canonical input stream rather than by mutating a runtime field.",
+            .. "witness), which needs the threat readable inside the deciding player's "
+            .. "scan cadence. `spec/sim/combat_ai_match_spec.lua` guarantees that by "
+            .. "re-pinning the hostile every tick; a driver-level scenario cannot, because "
+            .. "boundary zero is the only thing it controls. It is not that the policy "
+            .. "never guards online -- `combat_phases.GUARD_PROBE` finds exactly one "
+            .. "commit in a 240-step unarmed scrum, and none at all once the delivery "
+            .. "cadence shifts -- it is that one commit is far too thin to pin a scenario "
+            .. "on. So the guard here is raised by a live slot's own held equipment, which "
+            .. "reaches the resolver through the canonical input stream rather than by "
+            .. "mutating a runtime field.",
     },
     contact = {
         id = "contact",
@@ -244,7 +253,7 @@ local PLAYER_FIELDS = {
 -- exactly one pair of them. The copy is built by walking `PLAYER_FIELDS` with
 -- `ipairs`; the `pairs` pass below only rejects an unknown key and cannot
 -- influence the result, whatever order it runs in.
----@param scenario OnlineCombatPhaseScenario
+---@param scenario OnlineCombatFixtureShape
 ---@return table<string, PlayerData>
 local function pool_for(scenario)
     ---@type table<string, boolean>
@@ -286,7 +295,7 @@ end
 -- scenario proves is therefore attributable to the family rather than to a pose
 -- invented for it.
 ---@param state MatchState
----@param scenario OnlineCombatPhaseScenario
+---@param scenario OnlineCombatFixtureShape
 local function pose(state, scenario)
     local spacing = scenario.row_spacing_px
     local top = combat_phases.FIELD.h / 2 - spacing * 1.5
@@ -313,15 +322,11 @@ local function pose(state, scenario)
     state.kickoff_hold = 0
 end
 
--- The shared, combat-active boundary zero for one phase. Every peer in a session
--- must be given the *same* snapshot: a differing one is a desync fixture, not a
--- correction fixture.
----@param id OnlineCombatPhaseId
----@param duration number? -- Match seconds; defaults to `combat_phases.DURATION_SECONDS`.
+---@param shape OnlineCombatFixtureShape
+---@param duration number?
 ---@return MatchSnapshot
-function combat_phases.boundary_zero(id, duration)
-    local scenario = combat_phases.scenario(id)
-    local by_id = pool_for(scenario)
+local function capture_boundary_zero(shape, duration)
+    local by_id = pool_for(shape)
     local state = match.new({
         home = teams.nebula,
         away = teams.orion,
@@ -332,8 +337,18 @@ function combat_phases.boundary_zero(id, duration)
         players_by_id = by_id,
         input_ownership = match.ownership_for_teams(teams.nebula, teams.orion, by_id),
     })
-    pose(state, scenario)
+    pose(state, shape)
     return match_snapshot.capture(state, combat.new_state(state, by_id))
+end
+
+-- The shared, combat-active boundary zero for one phase. Every peer in a session
+-- must be given the *same* snapshot: a differing one is a desync fixture, not a
+-- correction fixture.
+---@param id OnlineCombatPhaseId
+---@param duration number? -- Match seconds; defaults to `combat_phases.DURATION_SECONDS`.
+---@return MatchSnapshot
+function combat_phases.boundary_zero(id, duration)
+    return capture_boundary_zero(combat_phases.scenario(id), duration)
 end
 
 -- The live slot's input for one driver step. Driver index 1 is the host, whose
@@ -438,6 +453,124 @@ function combat_phases.observed(id, before, after, events)
         end
     end
     return false
+end
+
+-- ---------------------------------------------------------------------------
+-- The guard probe
+-- ---------------------------------------------------------------------------
+--
+-- The evidence behind the `guard` scenario's `canonical_input` route, kept as
+-- runnable code rather than as a claim in a pull request. Each geometry arms
+-- every home outfielder with `guard` and every away outfielder with a family
+-- that produces a *public* hostile path, then lets the policy play with no human
+-- input at all. A caller drives them exactly like a phase scenario and counts how
+-- often a correction resimulates a genuine `guard` tick.
+--
+-- What it found, and the honest version of the claim: the policy does raise a
+-- guard online, but barely. Three of the four geometries produce none at all,
+-- and `vs_unarmed_scrum` produces exactly one commit in 240 steps -- which
+-- disappears entirely when the delivery cadence changes, because a bot fill
+-- authors from the state it currently predicts. One commit is not a scenario.
+-- The route decision is therefore about *rate*, not about possibility, and
+-- `GUARD_POLICY_ROUTE_MINIMUM` is where that judgement is written down.
+--
+-- Why the policy struggles here, in the numbers that decide it. A guard
+-- candidate is feasible only while `combat_feasibility.hostile_paths` reports a
+-- path whose contact would land on the guard's own body, and that path exists
+-- only for as long as the threat is publicly readable:
+--
+--   * melee (`unarmed`, `light_melee`) -- only while the hostile is in `windup`
+--     or `active`. Light melee is the widest: 12 + 5 = 17 ticks per commit.
+--     Unarmed is 6 + 4 = 10.
+--   * ranged -- a `release_latched` row projects forward to
+--     `spawn + projectile_lifetime_ticks`, and a projectile already in flight
+--     contributes its whole remaining horizon. That is up to 60 ticks, roughly
+--     four times the widest melee window.
+--
+-- Against that, a player decides on a fixed personal cadence:
+-- `combat_intent.should_decide` fires when `(tick + player_index) %
+-- decision_period(scan_rate) == 0`, a period of 9 ticks at the fast refresh and
+-- 27 at the slow one. A 10-to-17-tick melee window can therefore fall entirely
+-- between two of a slow scanner's decision ticks, while a 60-tick ranged window
+-- cannot. So `vs_ranged_lines` and `vs_ranged_scrum` are the geometries most
+-- likely to ever produce a policy guard, and they are included for exactly that
+-- reason -- a probe that only tried melee would be measuring the easy case.
+--
+-- The probe deliberately makes no claim about *why* the policy declines beyond
+-- feasibility; it records only how often it commits.
+--
+-- The bar a geometry must clear before `guard` should move to the `policy` route:
+-- every peer must see at least this many corrected-tick guard observations. It is
+-- set to the thinnest margin any scenario that actually shipped runs on --
+-- `ball_spill`, at 5 and 4 per peer -- so promoting guard would not be adopting a
+-- weaker scenario than the ones already trusted. The best geometry currently
+-- manages 1.
+combat_phases.GUARD_POLICY_ROUTE_MINIMUM = 4
+
+---@class OnlineGuardProbeGeometry: OnlineCombatFixtureShape
+---@field id string
+---@field steps integer
+---@field deliver_period integer
+---@field note string
+
+---@type OnlineGuardProbeGeometry[]
+combat_phases.GUARD_PROBE = {
+    {
+        id = "vs_light_melee_duels",
+        home_family = "guard",
+        away_family = "light_melee",
+        separation_px = 30,
+        row_spacing_px = 120,
+        steps = 240,
+        deliver_period = 5,
+        note = "The widest melee telegraph, one duel per row -- the geometry "
+            .. "`spec/sim/combat_ai_match_spec.lua` guards in when it re-pins the hostile "
+            .. "every tick.",
+    },
+    {
+        id = "vs_unarmed_scrum",
+        home_family = "guard",
+        away_family = "unarmed",
+        separation_px = 26,
+        row_spacing_px = 28,
+        steps = 240,
+        deliver_period = 5,
+        note = "The narrowest telegraph, but eight bodies inside one reach, so a "
+            .. "wind-up is nearly always in progress somewhere.",
+    },
+    {
+        id = "vs_ranged_lines",
+        home_family = "guard",
+        away_family = "ranged",
+        separation_px = 200,
+        row_spacing_px = 120,
+        steps = 240,
+        deliver_period = 5,
+        note = "The long public window: a latched release plus a 60-tick projectile "
+            .. "horizon is the threat most likely to still be readable on a slow "
+            .. "scanner's next decision tick.",
+    },
+    {
+        id = "vs_ranged_scrum",
+        home_family = "guard",
+        away_family = "ranged",
+        separation_px = 200,
+        row_spacing_px = 28,
+        steps = 240,
+        deliver_period = 5,
+        note = "The same long window aimed down one lane, so a projectile's path "
+            .. "crosses several guard bodies rather than one.",
+    },
+}
+
+-- Boundary zero for one guard probe geometry, built exactly like a phase
+-- scenario's so the probe measures the policy rather than a different fixture.
+---@param geometry OnlineGuardProbeGeometry
+---@param duration number?
+---@return MatchSnapshot
+function combat_phases.guard_probe_boundary_zero(geometry, duration)
+    assert(geometry.home_family == "guard", "a guard probe geometry must arm the home side")
+    return capture_boundary_zero(geometry, duration)
 end
 
 return combat_phases

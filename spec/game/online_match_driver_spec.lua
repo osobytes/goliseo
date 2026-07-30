@@ -838,8 +838,25 @@ t.describe("online match driver", function()
     -- a correction arriving *while a peer is in that phase* converges: the tick
     -- the rollback resimulated really was a wind-up / guard / contact / flight /
     -- forced / spill / expiry tick, the peers that resimulated it landed on one
-    -- identical MatchSnapshot v9, every confirmed boundary hash still agrees, and
-    -- nothing terminated on invalid or duplicate authority.
+    -- identical combat-bearing MatchSnapshot (`match_snapshot.COMBAT_VERSION`),
+    -- every confirmed boundary hash still agrees, and nothing terminated on
+    -- invalid or duplicate authority.
+    --
+    -- `batch.outputs` carries two kinds of tick and does not label them:
+    -- `apply_rows` appends the reconciliation's `corrected_outputs` first, then
+    -- `step_to` appends the ordinary forward tick of the same call. Only the
+    -- first kind answers the question, so a phase seen on a forward tick must not
+    -- count -- otherwise a break in combat restore-on-rollback specifically,
+    -- leaving forward simulation intact, could still pass here.
+    --
+    -- The two are separated without any production change: a corrected tick is
+    -- always strictly below the present boundary as it stood before the call,
+    -- because reconciliation restores to the divergence and resimulates back to
+    -- the *same* present, while a forward tick is the present itself. That was
+    -- checked against ground truth rather than reasoned about -- instrumenting
+    -- `rollback_session.reconcile` over all seven scenarios classified 4,334
+    -- outputs with zero disagreements -- and `assert_corrected` below keeps it
+    -- honest at runtime.
     --
     -- `spec/support/online_combat_phases.lua` owns the fixtures and the
     -- predicates; the delivery pattern and the assertions are this spec's. Five
@@ -873,15 +890,25 @@ t.describe("online match driver", function()
 
                 for step = 0, scenario.steps - 1 do
                     for index, driver in ipairs(state.drivers) do
+                        -- Read before the call: this is the boundary a corrected
+                        -- tick is strictly below and a forward tick starts at.
+                        local present_before = match_driver.diagnostics(driver).present_input_tick
                         local batch = match_driver.advance(
                             driver,
                             combat_phases.live_sample(phase_id, step, index)
                         )
                         if batch.rollbacks > 0 then
                             local confirmed = match_driver.diagnostics(driver).confirmed_input_tick
+                            local corrected = 0
                             for _, output in ipairs(batch.outputs) do
                                 -- `RollbackTickOutput.tick` is session space.
                                 local tick = output.tick + first
+                                if tick >= present_before then
+                                    -- `step_to`'s forward tick, not the
+                                    -- correction's. It proves nothing here.
+                                    goto continue
+                                end
+                                corrected = corrected + 1
                                 local before = match_driver.snapshot(driver, tick).snapshot
                                 local after = match_driver.snapshot(driver, tick + 1).snapshot
                                 if
@@ -919,7 +946,17 @@ t.describe("online match driver", function()
                                         end
                                     end
                                 end
+                                ::continue::
                             end
+                            -- The discriminator cannot quietly stop finding
+                            -- anything: a reconciliation that changed state
+                            -- re-derived at least one tick, by definition.
+                            t.is_true(
+                                corrected > 0,
+                                ("peer %d reported a rollback with no corrected tick below the present"):format(
+                                    index
+                                )
+                            )
                         end
                     end
                     if (step + 1) % scenario.deliver_period == 0 then
@@ -1010,6 +1047,99 @@ t.describe("online match driver", function()
             -- Both keepers are protected and slotless, so every other body is
             -- armed with the family the scenario declares.
             t.eq(equipped, input_frame.SLOT_COUNT, phase_id)
+        end
+    end)
+
+    -- The evidence behind the `guard` scenario's `canonical_input` route, and the
+    -- tripwire that will tell us when it can be promoted to `policy`.
+    --
+    -- Every geometry arms the whole home side with `guard` and the whole away
+    -- side with a family that publishes a readable threat, then lets
+    -- `gameplay_ai/combat/v1` play with no human input at all -- and counts the
+    -- same thing a phase scenario counts: corrected ticks a peer resimulated in
+    -- the `guard` phase.
+    --
+    -- The claim under test is about *rate*, not possibility. The policy does
+    -- guard online: `vs_unarmed_scrum` reaches it, thinly, and the other three
+    -- geometries never do. What none of them reaches is
+    -- `GUARD_POLICY_ROUTE_MINIMUM` observations on *every* peer, which is the
+    -- margin the thinnest shipped scenario runs on. Below that, a policy-route
+    -- guard scenario would be one that a tuning nudge or a change of delivery
+    -- cadence could silently empty out -- and the cadence really does decide it:
+    -- the single commit `vs_unarmed_scrum` produces disappears when the burst
+    -- period moves, because a bot fill authors from the state it predicts.
+    --
+    -- When a geometry does clear the bar this fails, and the fix is to move
+    -- `guard` onto the `policy` route in
+    -- `spec/support/online_combat_phases.lua` -- not to raise the bar.
+    t.it("finds no driver-level geometry where the policy guards often enough", function()
+        for _, geometry in ipairs(combat_phases.GUARD_PROBE) do
+            local state = harness("1v1", {
+                initial_snapshot = combat_phases.guard_probe_boundary_zero(geometry),
+            })
+            local first = state.session.freeze.first_input_tick
+            ---@type integer[]
+            local observed = {}
+            for index = 1, #state.drivers do
+                observed[index] = 0
+            end
+            local threat_ticks = 0
+            for step = 1, geometry.steps do
+                for index, driver in ipairs(state.drivers) do
+                    local present_before = match_driver.diagnostics(driver).present_input_tick
+                    local batch = match_driver.advance(driver, input_frame.neutral_sample())
+                    if batch.rollbacks > 0 then
+                        for _, output in ipairs(batch.outputs) do
+                            local tick = output.tick + first
+                            if tick < present_before then
+                                local before = match_driver.snapshot(driver, tick).snapshot
+                                local after = match_driver.snapshot(driver, tick + 1).snapshot
+                                if
+                                    before ~= nil
+                                    and after ~= nil
+                                    and combat_phases.observed(
+                                        "guard",
+                                        before,
+                                        after,
+                                        output.combat_events or {}
+                                    )
+                                then
+                                    observed[index] = observed[index] + 1
+                                end
+                            end
+                        end
+                    end
+                end
+                if step % geometry.deliver_period == 0 then
+                    state.session.host_transport:pump()
+                end
+                -- Away runtimes are indexes 7..10; 6 is the protected keeper.
+                local companion = assert(match_driver.current_snapshot(state.drivers[1]).combat)
+                for index = 7, #companion.players do
+                    local runtime = companion.players[index]
+                    if runtime.phase == "windup" or runtime.phase == "active" then
+                        threat_ticks = threat_ticks + 1
+                    end
+                end
+                threat_ticks = threat_ticks + #companion.projectiles
+            end
+            -- Without a readable threat the policy could not guard even in
+            -- principle, and a low count here would mean nothing at all.
+            t.is_true(
+                threat_ticks > 0,
+                ("%s never telegraphed a threat, so it probes nothing"):format(geometry.id)
+            )
+            local weakest = nil
+            for _, count in ipairs(observed) do
+                weakest = (weakest == nil or count < weakest) and count or weakest
+            end
+            t.is_true(
+                assert(weakest) < combat_phases.GUARD_POLICY_ROUTE_MINIMUM,
+                (
+                    "%s now reaches %d corrected guard ticks on every peer -- promote the guard "
+                    .. "scenario to the policy route"
+                ):format(geometry.id, assert(weakest))
+            )
         end
     end)
 
