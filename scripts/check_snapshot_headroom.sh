@@ -231,6 +231,14 @@ if [ "$self_test" -eq 1 ]; then
     # One byte under must fail.
     { marker_line 917504 $((917504 - MIN_HEADROOM_BYTES + 1)) 653139; } >"$work/under-threshold"
 
+    # Exactly zero headroom, and past the hard gate into negative. Both sit below the
+    # warning threshold so both must be rejected. The negative case also proves the
+    # field parser accepts a leading minus rather than reading the value as absent --
+    # otherwise the worst state the budget can reach would be a marker the gate could
+    # not read.
+    { marker_line 917504 917504 653139; } >"$work/zero-headroom"
+    { marker_line 917504 920000 653139; } >"$work/negative-headroom"
+
     # The state #209 was filed about: the old 768-KiB ceiling, whose 19,337-byte
     # combat headroom is what this threshold had to be re-derived away from.
     { marker_line 786432 767095 653139; } >"$work/old-ceiling"
@@ -301,6 +309,12 @@ if [ "$self_test" -eq 1 ]; then
     run_case old-ceiling 0 "$work/old-ceiling"
     expect_rejected "the 768-KiB ceiling #209 was filed on" "combat headroom is 19337 bytes"
 
+    run_case zero-headroom 0 "$work/zero-headroom"
+    expect_rejected "a fully spent budget" "combat headroom is 0 bytes"
+
+    run_case negative-headroom 0 "$work/negative-headroom"
+    expect_rejected "a budget already over the hard gate" "combat headroom is -2496 bytes"
+
     run_case soccer-breach 0 "$work/soccer-breach"
     expect_rejected "a soccer window against the budget" "soccer headroom is 8 bytes"
 
@@ -324,7 +338,7 @@ if [ "$self_test" -eq 1 ]; then
         exit 1
     fi
     echo "snapshot headroom gate self-test: OK" \
-        "(2 accepted margins, 8 rejected failure shapes, threshold $MIN_HEADROOM_BYTES)"
+        "(2 accepted margins, 10 rejected failure shapes, threshold $MIN_HEADROOM_BYTES)"
     exit 0
 fi
 

@@ -142,10 +142,14 @@ MAX_MEMORY_GROWTH_RATIO = 0.10
 # sensitivity back; the checkpoint itself is sub-second.
 SOAK_GROWTH_WINDOW = 2
 MAX_SNAPSHOT_COUNT = 31
-# Mirrors data/omp2_rollback_validation.lua budgets.snapshot_bytes / history_bytes.
-# #209 raised both one 128-KiB step from 768 KiB / 1 MiB, preserving the 256-KiB gap
-# between them so the snapshot window stays the binding gate. Keep both in sync with
-# the Lua table; spec/sim/rollback_validation_spec.lua pins the Lua side.
+# These mirror `budgets` in data/omp2_rollback_validation.lua, which is the authority.
+# `main.lua` gates live cases on the Lua table while this module gates the emitted
+# markers, so a one-sided edit would leave the two halves disagreeing about the same raw
+# bytes with nothing failing loudly. They are no longer kept in step by comment alone:
+# `verify_budget_mirror()` parses the Lua table and compares every mirrored value, and
+# `--self-test` runs it -- a step both scripts/check.sh and CI execute. #209 raised the
+# two byte budgets one 128-KiB step from 768 KiB / 1 MiB, preserving the 256-KiB gap
+# between them so the snapshot window stays the binding gate.
 MAX_SNAPSHOT_BYTES = 896 * 1024
 MAX_HISTORY_BYTES = 1152 * 1024
 MAX_P95_WORK_MS = 16.67
@@ -380,6 +384,95 @@ BROWSER_CPU_METRIC_FIELDS = frozenset(
         "work_samples",
     }
 )
+
+
+# Every `budgets` entry in the Lua table, mapped to the constant here that mirrors it.
+# A new entry on either side fails `verify_budget_mirror()` until it is mapped, so the
+# mirror cannot quietly grow a third unchecked half.
+MIRRORED_BUDGETS: dict[str, str] = {
+    "p95_work_ms": "MAX_P95_WORK_MS",
+    "rollback_p999_ms": "MAX_ROLLBACK_P999_MS",
+    "snapshot_count": "MAX_SNAPSHOT_COUNT",
+    "snapshot_bytes": "MAX_SNAPSHOT_BYTES",
+    "history_bytes": "MAX_HISTORY_BYTES",
+    "memory_growth_ratio": "MAX_MEMORY_GROWTH_RATIO",
+}
+
+
+def parse_lua_budgets(source: str) -> dict[str, float]:
+    """Read the `budgets` table out of data/omp2_rollback_validation.lua.
+
+    Deliberately not a Lua interpreter. It accepts exactly the shapes that table
+    uses -- `key = 31`, `key = 16.67`, `key = 896 * 1024` -- skips comments and blank
+    lines, and refuses anything else rather than guessing, so a table that grows a
+    shape this cannot read fails loudly instead of being silently under-checked.
+    """
+    opening = re.search(r"^\s*budgets\s*=\s*\{\s*$", source, re.MULTILINE)
+    if opening is None:
+        raise RuntimeError(
+            "budget mirror: could not find a `budgets = {` table in "
+            "data/omp2_rollback_validation.lua"
+        )
+    budgets: dict[str, float] = {}
+    for raw in source[opening.end() :].splitlines():
+        line = raw.strip()
+        if line.startswith("--") or not line:
+            continue
+        if line.startswith("}"):
+            break
+        entry = re.fullmatch(r"(\w+)\s*=\s*([0-9]+(?:\.[0-9]+)?)(?:\s*\*\s*([0-9]+))?\s*,", line)
+        if entry is None:
+            raise RuntimeError(f"budget mirror: unreadable `budgets` entry: {line!r}")
+        name, left, right = entry.group(1), entry.group(2), entry.group(3)
+        value = float(left) * (float(right) if right is not None else 1.0)
+        budgets[name] = value
+    if not budgets:
+        raise RuntimeError("budget mirror: the `budgets` table parsed as empty")
+    return budgets
+
+
+def verify_budget_mirror(source: str | None = None) -> None:
+    """Fail loudly when this module's budget constants drift from the Lua table.
+
+    The Lua table is the authority: `main.lua` gates live cases on it, this module
+    gates the markers those cases emit. Before #209 the two were held together by a
+    comment, so a PR that bumped one and forgot the other would have produced a
+    campaign where the runtime and the validator disagreed about the same bytes and
+    every check still passed. Asserting the Lua value against a literal inside
+    spec/sim/rollback_validation_spec.lua does not catch that -- both sides of that
+    comparison live in the Lua half.
+    """
+    if source is None:
+        source = (ROOT / "data" / "omp2_rollback_validation.lua").read_text(encoding="utf-8")
+    budgets = parse_lua_budgets(source)
+    mismatches: list[str] = []
+    for key, constant in MIRRORED_BUDGETS.items():
+        if key not in budgets:
+            mismatches.append(f"{key} is absent from the Lua budgets table")
+            continue
+        expected = budgets[key]
+        actual = float(globals()[constant])
+        if not math.isclose(expected, actual, rel_tol=1e-12, abs_tol=1e-12):
+            # Byte budgets are large integers; `%g` would render them in exponent form
+            # and make the diagnostic harder to act on than the drift it reports.
+            def spell(value: float) -> str:
+                return str(int(value)) if float(value).is_integer() else f"{value:g}"
+
+            mismatches.append(
+                f"{key}={spell(expected)} in data/omp2_rollback_validation.lua but "
+                f"{constant}={spell(actual)} here"
+            )
+    unmirrored = sorted(set(budgets) - set(MIRRORED_BUDGETS))
+    if unmirrored:
+        mismatches.append(
+            "the Lua budgets table has entries this module does not mirror or "
+            f"knowingly ignore: {', '.join(unmirrored)}"
+        )
+    if mismatches:
+        raise RuntimeError(
+            "budget mirror drift between data/omp2_rollback_validation.lua and "
+            "scripts/rollback_validation.py:\n  " + "\n  ".join(mismatches)
+        )
 
 
 def validate_historical_soccer_evidence() -> None:
@@ -3852,6 +3945,48 @@ def aggregate_shards(evidence: dict[str, Any], evidence_root: Path) -> None:
 
 
 def run_self_test() -> None:
+    # The budget constants in this module against the Lua table that owns them. First,
+    # because every byte gate below is meaningless if the two halves disagree.
+    verify_budget_mirror()
+    # And prove the check can fail, on each shape of drift it exists to catch: a value
+    # edited on the Lua side only, a budget deleted, and a budget added without a
+    # mirror. A comparison that cannot go red is how this mirror went unchecked.
+    real_source = (ROOT / "data" / "omp2_rollback_validation.lua").read_text(encoding="utf-8")
+    for label, mutated in (
+        (
+            "a snapshot budget raised on the Lua side only",
+            real_source.replace("snapshot_bytes = 896 * 1024", "snapshot_bytes = 1024 * 1024"),
+        ),
+        (
+            "a history budget lowered on the Lua side only",
+            real_source.replace("history_bytes = 1152 * 1024", "history_bytes = 1024 * 1024"),
+        ),
+        (
+            "a budget removed from the Lua table",
+            real_source.replace("        snapshot_bytes = 896 * 1024,\n", ""),
+        ),
+        (
+            "a new Lua budget with no mirror here",
+            real_source.replace(
+                "        memory_growth_ratio = 0.10,\n",
+                "        memory_growth_ratio = 0.10,\n        resimulation_bytes = 64 * 1024,\n",
+            ),
+        ),
+    ):
+        try:
+            verify_budget_mirror(mutated)
+        except RuntimeError:
+            continue
+        raise RuntimeError(f"budget mirror self-test: {label} passed the drift check")
+    # A table shape the parser cannot read must fail rather than parse as empty.
+    try:
+        verify_budget_mirror(
+            real_source.replace("snapshot_bytes = 896 * 1024,", "snapshot_bytes = SOME_CONSTANT,")
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError("budget mirror self-test: an unreadable entry passed the drift check")
     validate_historical_soccer_evidence()
     if Path("/proc").is_dir():
         current = read_process_table().get(os.getpid())
