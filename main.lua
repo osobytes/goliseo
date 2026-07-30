@@ -158,7 +158,7 @@ if has_flag("--snapshot-measure") then
             away = teams.orion,
             field = { w = 960, h = 540 },
             duration = 120,
-            max_goals = 3,
+            max_goals = sim_match.NO_GOAL_LIMIT,
             seed = 38,
             input_ownership = ownership,
         })

@@ -19,7 +19,7 @@ local headless = {}
 local FIELD = { w = 960, h = 540 } -- the real game's pitch (game/screens/match.lua)
 local DT = fixed_clock.TICK_SECONDS
 local DEFAULT_DURATION = 120
-local DEFAULT_MAX_GOALS = 3
+local DEFAULT_MAX_GOALS = match.NO_GOAL_LIMIT -- decided on score at full time
 local MAX_STEPS_SLACK = 600 -- overtime guard: a stuck sim must not hang the batch
 
 ---@type MatchInput

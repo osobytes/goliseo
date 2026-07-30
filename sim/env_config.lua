@@ -74,7 +74,11 @@ local env_config = {}
 env_config.VERSION = 1
 env_config.DEFAULT_CONTENT = "showcase-content-v1"
 env_config.DEFAULT_DURATION = 30
-env_config.DEFAULT_MAX_GOALS = 3
+-- No goal limit: an episode ends on its clock, not on a goal count. 99 is
+-- `sim.match.NO_GOAL_LIMIT`, spelled as a literal here because this module
+-- validates configs and deliberately does not pull in the match engine.
+-- See the decision record in `docs/online/match_flow.md`.
+env_config.DEFAULT_MAX_GOALS = 99
 env_config.DEFAULT_FIELD = { w = 960, h = 540 }
 env_config.DEFAULT_TACTIC_ID = "balanced"
 env_config.DEFAULT_HOME_TEAM_ID = "nebula"
