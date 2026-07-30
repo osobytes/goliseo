@@ -364,9 +364,11 @@ Three things that used to be listed here are closed, and what replaced them is
   through `sim.slot_input`, using the same observation schema, option ordering,
   and reason vocabulary as the gameplay match AI. 1v1 leaned on this hardest —
   three of every human's four owned slots are AI-driven at any instant — and
-  those slots can now use and counter all four families. The manifest names the
-  policy as `gameplay_ai.combat.v1`; the contract spells it
-  `gameplay_ai/combat/v1`, and manifest ids may not contain slashes.
+  those slots can now use and counter all four families. *Can*, structurally;
+  how often they actually do in open play is measured below, and the answer is
+  "rarely". The manifest names the policy as `gameplay_ai.combat.v1`; the
+  contract spells it `gameplay_ai/combat/v1`, and manifest ids may not contain
+  slashes.
 - ~~The **seven combat correction phases**.~~ **Pinned, twice.** #166 pinned them
   at the driver layer, as convergence on one snapshot hash through a correction
   taken in each phase. This flow pins the other half — what the *screen* is shown
