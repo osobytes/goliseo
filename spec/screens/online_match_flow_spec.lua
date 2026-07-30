@@ -536,7 +536,7 @@ t.describe("online combat families", function()
                 ---@field loadout_id string
                 ---@field player_index integer
                 ---@field commits table<string, integer> -- Window name -> own confirmed commits.
-                ---@field foreign integer -- Confirmed commits by any other player.
+                ---@field foreign table<string, integer> -- Window name -> confirmed commits by anyone else.
                 ---@field telegraphs table<string, boolean>
                 ---@field phases table<string, boolean>
                 ---@field readiness table<string, boolean>
@@ -568,7 +568,7 @@ t.describe("online combat families", function()
                         loadout_id = loadout_id,
                         player_index = player_index,
                         commits = { quiet = 0, keyboard = 0, gamepad = 0 },
-                        foreign = 0,
+                        foreign = { quiet = 0, keyboard = 0, gamepad = 0 },
                         telegraphs = {},
                         phases = {},
                         readiness = {},
@@ -615,7 +615,7 @@ t.describe("online combat families", function()
                                             )
                                             witness.commits[window] = witness.commits[window] + 1
                                         else
-                                            witness.foreign = witness.foreign + 1
+                                            witness.foreign[window] = witness.foreign[window] + 1
                                         end
                                     end
                                 end
@@ -689,10 +689,15 @@ t.describe("online combat families", function()
                         0,
                         ("%s committed with no local input at all"):format(label)
                     )
+                    -- In the *same* window, with the same clock and the same
+                    -- pitch, other players were committing. So the zero above is
+                    -- attributable to the absence of local input rather than to
+                    -- combat being unavailable.
                     t.is_true(
-                        witness.foreign > 0,
-                        ("%s: no other player ever committed, so the quiet window "):format(label)
-                            .. "proves nothing about routing"
+                        witness.foreign.quiet > 0,
+                        ("%s: nobody committed during the quiet window either, so it "):format(
+                            label
+                        ) .. "proves nothing about routing"
                     )
                     t.is_true(
                         witness.commits.keyboard > 0,
