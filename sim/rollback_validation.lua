@@ -444,8 +444,8 @@ end
 --- #209 has since raised the gate to 896 KiB, so those three constraints are no longer
 --- forced -- but they are still what these committed fixtures measure, and the pinned
 --- hashes above describe exactly that shape. Relaxing any of them is new fixture work with
---- its own evidence, not an edit here. The cost model and the levers are in
---- docs/online/omp2_rollback_validation.md.
+--- its own evidence, not an edit here. The cost model and the lever decision are in
+--- docs/online/omp2_rollback_validation.md; narrowing the encoding is #282.
 ---@param fixture Omp2RollbackCombatLoadFixture
 ---@return InputTape
 local function combat_load_tape(fixture)

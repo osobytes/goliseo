@@ -331,6 +331,54 @@ shape, so relaxing any of them is new fixture work with its own evidence rather 
 `sim/rollback_validation.lua`. The projectile-stress half of #150's acceptance criterion is
 unblocked: eight concurrent projectiles now sit 91,086–104,875 bytes inside the cap.
 
+#### Why the retained-storage gates moved
+
+`budgets.snapshot_bytes` went from 768 KiB to **896 KiB** and `budgets.history_bytes` from 1 MiB to
+**1152 KiB**, under [#209](https://github.com/osobytes/goliseo/issues/209). This is the second
+revision of the snapshot gate and it follows the first one's precedent exactly: neither figure is a
+hardware limit, both are product decisions, and a raise has to be earned with browser-runtime memory
+evidence rather than asserted.
+
+**Why now.** The combat window was 99.10% consumed — `omp2-combat-rollback-v1` at 779,362 bytes of
+786,432, leaving 7,070. Two things that are not optional were blocked by that: the projectile-stress
+fixture #150 states as an acceptance criterion, and measuring crowded combat with a live ball at
+anything other than a hair's margin. Crowded-combat performance is the point of #150, and a real
+scrum virtually always involves a live ball, so the scenario the harness could measure comfortably
+was the one that occurs least.
+
+**Why both gates, by the same step.** Raising the snapshot gate alone would have relocated the bind
+to the history gate rather than removing it: the crowded fixtures already peak at 842,649 bytes of
+retained history, and history is always the larger quantity because it accounts snapshots *plus*
+input, output and event history. Moving both by 128 KiB keeps the gap between them at exactly
+256 KiB, which is what it was before. The snapshot window therefore stays the binding gate and the
+single number to reason about; history stays a backstop sized for non-snapshot retention. The
+observed snapshot-to-history delta is 55,517–64,737 bytes across the combat fixtures, comfortably
+inside that 256 KiB, and `spec/sim/rollback_validation_spec.lua` pins the gap so the relationship
+cannot drift silently.
+
+**The levers, and which one was pulled.** #209 listed three. Written down here so the next decision
+is not made under a red gate:
+
+| Lever | Decision |
+| --- | --- |
+| Reduce the 31 retained boundaries | **Rejected, and stays rejected.** It shrinks the rollback correction window — a netcode regression traded for a storage number. |
+| Profile-specific budget | **Rejected.** It destroys the single number everyone reasons about, and the gate is deliberately applied to every case regardless of profile. |
+| Raise the gate with evidence | **Chosen this time.** Second use of this lever; the first took 600 KiB to 768 KiB. |
+| Narrow the canonical encoding | **The next lever**, tracked as [#282](https://github.com/osobytes/goliseo/issues/282). |
+
+The raise is not repeatable indefinitely and is not meant to be. 39% of every combat event row is
+field names and the closed vocabularies add ~121 bytes more as literal text, so #282 recovers margin
+without spending player-visible memory — which a third raise would. The adversarial-tick figure
+above (1,488,031 bytes, which 896 KiB does not accommodate) is the concrete argument that a raise of
+this scale cannot be the general answer.
+
+**The warning that arrives first.** `scripts/check_snapshot_headroom.sh` gates the
+`snapshot_active_ai_budget` marker at 32 KiB of remaining headroom, in both `scripts/check.sh` and
+the CI quality job, so the margin is reported while it can still be spent deliberately instead of
+only at zero. #209 suggested 20,000 bytes against the 768-KiB ceiling; that had to be re-derived,
+because the combat window's headroom at 768 KiB was already 19,337 and a threshold expressed against
+the old ceiling would have fired on the merge that raised it.
+
 ### Why the rollback tail is normalized against the playable case
 
 Contract 6 divided the playable rollback p99.9 by the **paired clean control's** p95 work. Both

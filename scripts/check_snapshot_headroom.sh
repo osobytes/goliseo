@@ -184,10 +184,10 @@ gate_log() {
        roughly $((headroom / 8618)) more comparable fields fit before the hard gate.
 
        Do not simply raise the budget to clear this. The levers, and which one was
-       chosen last time, are recorded in
-       docs/online/omp2_rollback_validation.md ("What the snapshot budget leaves for
-       crowded combat"). The next lever is narrowing the canonical encoding of
-       combat/team-level state, not another raise.
+       chosen last time, are recorded in docs/online/omp2_rollback_validation.md
+       under "Why the retained-storage gates moved". The next lever is narrowing
+       the canonical encoding of combat/team-level state -- issue #282 -- not
+       another raise.
 EOF
         fi
     done
