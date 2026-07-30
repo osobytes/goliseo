@@ -92,6 +92,83 @@ for `initial_snapshot`, not a manifest `duration_ticks`. The campaign runtime is
 therefore unchanged by this decision, which is why a two-minute online match
 costs nothing to validate.
 
+## A match has no goal limit, online or offline
+
+**Decision on record** (repository owner, 2026-07-30, [#268](https://github.com/osobytes/goliseo/issues/268)):
+there is **no goal limit**. A match is **decided on score at full time, in every
+mode**.
+
+It was not, until now, and the two paths did not even disagree consistently. The
+content-derived online manifest ended a match on the **fifth** goal
+(`match_manifest.DEFAULT_MAX_GOALS = 5`) and so did the protocol conformance
+fixture (`game/online/protocol_fixture.lua:119`), while everything offline ended
+it on the **third**: the simulation default (`sim/match.lua:965`), headless
+batches (`sim/headless.lua:22`), the learning environment
+(`sim/env_config.lua:77`), and both committed scope documents — "two minutes /
+first to three" (`docs/showcase_release.md:147`) and "the existing 5v5,
+two-minute / first-to-three match"
+(`docs/design/goliseo_theme_pivot.md:321`). Nothing recorded that anyone had
+decided either number, and nothing in the lobby explained the difference to a
+player.
+
+The reasoning for removing the limit rather than picking three or five. This
+project already has one termination rule that every mode agrees on, settled
+above: the clock. A goal cap is a **second** result condition layered on it, and
+the only thing it can ever do is end a match *early*, with time still on it —
+which at 120 seconds is a large fraction of the match. Keeping both means a
+player has to hold two ways for a match to end, and every measurement has to say
+which one produced it. Removing the cap leaves one rule that reads the same
+online and offline: play the clock, the better score wins. That is also why this
+issue closes by **convergence** rather than by documenting a deliberate
+divergence — there is no difference left to make visible in the lobby, so no
+lobby surface was added.
+
+Three things a reader asking "why is the field still there, then?" should not
+have to rediscover:
+
+- **The field stays; only the value moved.** `max_goals` is part of the frozen
+  session manifest and of the protocol's compared field set
+  (`game/online/protocol.lua:534`), so *removing* it would be a protocol-version
+  change. Nothing here is worth a version bump, so "no limit" is spelled as a
+  value instead: **99**, which is `protocol.MAX_GOALS`
+  (`game/online/protocol.lua:276`), enforced at manifest validation
+  (`game/online/protocol.lua:962`), and mirrored for the simulation as
+  `sim.match.NO_GOAL_LIMIT`. Ninety-nine goals is unreachable inside 7,200
+  ticks, so the value means in practice exactly what the decision says.
+- **The mechanism is still live, and still tested.** `sim/match.lua` still ends
+  a match the moment either score reaches `s.max_goals`, and a caller that wants
+  a goal-terminated match passes its own — evidence fixtures, rollback
+  laboratories, and short-match specs all do. This is a change of default, not a
+  removal of a rule, which is why a future "first to N" cup format needs no new
+  machinery.
+- **99 is the ceiling, and that is deliberate.** Unlike the duration, this value
+  cannot later be raised without moving a wire bound. That is not a constraint
+  anyone is pressing against: the point of the value is that it is unreachable,
+  and a format that genuinely wants a cap sets a *lower* one.
+
+Several fixtures deliberately keep an explicit `max_goals = 3` and are unchanged
+by this decision, because they pass the value rather than inheriting it:
+
+| Fixture | Why it overrides |
+| --- | --- |
+| `data/omp1_determinism.lua:45`, `sim/determinism_evidence.lua:147` | The OMP-1 authoritative recording. Its identity string is part of what the campaign pins; re-freezing it to restate a default would move determinism goldens for no evidentiary gain. |
+| `data/outfield_ai_baseline.lua:20`, `sim/outfield_ai_baseline.lua:67` | The frozen combat-disabled control #148/#149 calibrate against, protected by `--refreeze-ack`. A control that moves is not a control. |
+| `sim/rollback_validation.lua`, `spec/fixtures/short_match_tape.lua` | Laboratory and tape fixtures that want a short, goal-terminated match on purpose. |
+
+The OMP-3 fault campaign is the one place that *does* inherit the new value:
+unlike `duration_ticks`, `fault_harness` does not overwrite `max_goals`
+(`game/online/fault_harness.lua:226-227`), nor does the session spec fixture
+(`spec/fixtures/online_match_session.lua:42-43`). Both now carry 99. Neither
+notices — their matches are 150 and 90 ticks — but it is worth knowing that the
+campaign runs under the shipped rule rather than an overridden one.
+
+One thing this decision defers rather than settles: the frozen Outfield AI
+baseline was calibrated under a three-goal cap, so some of its matches ended
+early. Whether #149's control should be re-frozen under the no-limit rule is a
+calibration question for that issue, not a consequence of this one — but its
+combat-active arm has to run under whichever rule the control does, or the two
+arms stop being paired.
+
 ## `build_id` carries the control vocabulary
 
 `build_info` is three constants — name, version, channel — and a working commit

@@ -49,7 +49,8 @@ the desirabilities, so no config can score well by maxing five metrics while
 zeroing a sixth (a weighted average would happily trade a 0 for two 1.2s; the
 geometric mean will not).
 
-Provisional bands (per 120 s match, first-to-3; revisit after the baseline run):
+Provisional bands (per 120 s match — first-to-3 when these were set, no goal
+limit since #268; revisit after the baseline run):
 
 | Metric               | What it protects                       | Good band  | Zero at    |
 | -------------------- | -------------------------------------- | ---------- | ---------- |
@@ -75,8 +76,10 @@ reading the per-metric table: goalless matches therefore inflate the
 `decided_late` column mean. The fun score is unaffected — `goals_total`
 hard-zeros those matches — but the column looks healthier than it is whenever
 goalless matches are common. `lead_changes`
-is reported but unbanded for now: with a 3-goal cap the honest range is 0–2 and
-it's too coarse to score.
+is reported but unbanded for now: it was too coarse to score under the 3-goal
+cap these runs were measured with, where the honest range was 0–2. #268 removed
+the cap, so a re-measurement is free to widen that range — but nothing here has
+been re-measured, and the column stays unbanded until something is.
 
 ## The human proxy (the big caveat)
 
@@ -214,9 +217,12 @@ Caveats before shipping either:
 - ~~**Range-edge optima.**~~ Resolved by round 2 (below): with widened ranges
   the ascent kept `AI_SHOOT_RANGE=340` and `SAVE_SPEED_REF=700` — both are
   interior optima, not fence artifacts.
-- **Matches got shorter.** Under A the 3-goal cap ends matches at ~78 s mean
-  (min 21 s); under B ~106 s. If full-length matches matter, raise `max_goals`
-  or prefer B.
+- ~~**Matches got shorter.**~~ Resolved by [#268](https://github.com/osobytes/goliseo/issues/268):
+  under A the 3-goal cap ended matches at ~78 s mean (min 21 s) and under B at
+  ~106 s, and the advice here was to raise `max_goals` if full-length matches
+  mattered. There is no goal cap any more — a match runs its 120 seconds and is
+  decided on score — so neither candidate shortens one. The measurements above
+  were taken under the cap and are left as recorded.
 - **Bot-relative.** All numbers are under the `sim/bot.lua` proxy. Verify by
   playing: both candidates ship as F1-panel presets (`data/tuning_presets.lua`,
   F4 cycles Defaults → A → B; F2 persists the choice across runs). Defaults in
@@ -892,3 +898,54 @@ until phase 4 automates it).
   policy this entry describes. When a combat-enabled fun signature is introduced,
   it needs its own baseline and its own tripwire entry — reading this one as
   evidence about combat would be reading it backwards.
+
+- **2026-07-30 — no goal limit (#268). DRIFT; baseline refreshed.** The goal cap
+  is gone: a match is decided on score at full time, in every mode
+  (`docs/online/match_flow.md`, "A match has no goal limit, online or offline").
+  `sim.tripwire` and `love . --sim 100` both run through `sim.headless`, which
+  did not pass a `max_goals` of its own and so inherited the simulation default.
+  Every batch match therefore used to stop at the third goal.
+
+  The 30-seed tripwire moved six metrics past tolerance: shots/goal
+  20.327 → 21.602, save rate 0.803 → 0.854, turnovers/min 3.726 → 3.916, drought
+  10.269 → 11.171 s, decided-late 0.541 → 0.466, and controlled dribble
+  touches/min 91.634 → 86.854. `fun` (0.496 → 0.506) and goals (2.133 → 2.233)
+  stayed in band.
+
+  One row in the refreshed baseline is worth pre-empting: **`ai_dribble_heavy_losses_per_min`
+  is `0.609424` before and after, to all six decimal places** — the only one of
+  the nineteen tracked metrics that did not move at all. That is a real
+  coincidence, not an un-refreshed cell: it was reproduced independently, twice,
+  in an isolated checkout with and without the capped-default revert. Heavy
+  losses are rare per-match events on the AI side (mean well under one), so the
+  handful of extra post-third-goal minutes happened to add none across the 30
+  seeds. Do not read it as stale data.
+
+  Every one of those is the same effect seen from a different angle: matches that
+  used to be truncated by the cap now play out. The 100-match validation makes it
+  literal — `duration` is 120.017 s at min **and** max across all 100, where the
+  capped run ended some matches early, and `goals_total` now reaches a maximum of
+  7, above the old ceiling of 3. Play after the third goal is disproportionately
+  end-of-match play: the extra minutes are the ones with a settled scoreline, so
+  they add shots that no longer need to be converted (shots/goal up), saves in
+  low-danger situations (save rate up), scrappier possession (turnovers up), and
+  longer goalless stretches (drought up). `decided_late` falls because the
+  deciding goal is now measured as a fraction of a *full* match rather than of a
+  match that ended shortly after it.
+
+  100-match validation at the new rule: fun 0.470, goals 2.150, shots/goal
+  22.327, save rate 0.864, pass completion 0.578, turnovers/min 4.109, possession
+  balance 0.403, drought 11.333 s, decided-late 0.511. Band status is unchanged
+  in kind from the previous entry — goals in band at 0.78, pass completion,
+  turnovers, possession balance and drought healthy, and the two long-standing
+  quality exceptions (shots/goal 0.35, save rate 0.43) still the weak dimensions.
+  Nothing new collapsed, and nothing improved that would need explaining.
+
+  **This is a rules change, not a tuning change**, which is why the baseline is
+  refreshed rather than the drift investigated. The old baseline measured a game
+  that ended matches at three goals; that game no longer exists. The frozen
+  Outfield AI baseline is the opposite case and is deliberately *not* refreshed:
+  it passes `max_goals = 3` explicitly (`sim/outfield_ai_baseline.lua:67`), so
+  `love . --ai-baseline` still compares exactly and #148/#149 keep an intact
+  control. Whether that control should itself be re-frozen under the no-limit
+  rule is #149's calibration decision.

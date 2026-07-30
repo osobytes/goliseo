@@ -18,7 +18,8 @@ return {
     {
         -- Candidate A: +0.47 fun vs defaults on held-out seeds. Direct play —
         -- AI shoots/heads from range, presses less, keepers a touch softer.
-        -- Matches run hot (~4 goals) and can hit the 3-goal cap early.
+        -- Matches run hot (~4 goals). They used to hit the 3-goal cap early;
+        -- since #268 there is no cap and a hot match runs its full 120 seconds.
         id = "candidate_a",
         name = "Candidate A - direct play",
         blob = table.concat({

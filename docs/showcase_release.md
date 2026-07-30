@@ -144,7 +144,7 @@ communication are part of the product.
 | Formations | 2-1-1, 1-2-1, 1-1-2 |
 | Tactics | Balanced, Press High, Counter Attack |
 | Competition | One self-contained showcase fixture |
-| Match | Existing 5v5 rules, two minutes / first to three |
+| Match | Existing 5v5 rules, two minutes, decided on score at full time |
 | Input | Keyboard plus one standard gamepad layout |
 | Screens | Title, How to Play, Settings, Squad, Formation, Tactic, Pause, Match, Result, Credits |
 | Presentation | One cohesive UI theme and one distinctive arena treatment |

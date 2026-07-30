@@ -448,6 +448,19 @@ local SPRINT_ENGAGE = 0.25 -- min meter to start a sprint (hysteresis: no flicke
 
 local match = {}
 
+-- There is no goal limit: a match is decided on score at full time, in every
+-- mode. `max_goals` stays in the state, the snapshot, and the session manifest
+-- because removing it would be a wire-vocabulary change, so "no limit" is
+-- spelled as the largest value the protocol accepts (`protocol.MAX_GOALS`, 99)
+-- — a total 120 seconds cannot reach. Callers that deliberately want a match to
+-- end on goals — evidence fixtures, rollback laboratories, specs that need a
+-- short match — pass their own `max_goals`. See the decision record in
+-- `docs/online/match_flow.md`.
+--
+-- It lives on the module table rather than in a file-local because this chunk
+-- is at LuaJIT's 200-local ceiling; one more `local` here is a syntax error.
+match.NO_GOAL_LIMIT = 99
+
 ---@return table<string, PlayerData>
 local function pool_by_id()
     local by_id = {}
@@ -962,7 +975,7 @@ function match.new(opts)
         controlled = most_advanced_home(players),
         score = { home = 0, away = 0 },
         time_left = opts.duration or 120,
-        max_goals = opts.max_goals or 3,
+        max_goals = opts.max_goals or match.NO_GOAL_LIMIT,
         finished = false,
         pickup_cd = 0,
         press = { home = home_tactic.press, away = away_tactic.press },

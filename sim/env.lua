@@ -180,7 +180,7 @@ function env.reference_config(id, overrides)
         content = env_config.DEFAULT_CONTENT,
         seed = 1,
         duration = 4,
-        max_goals = 3,
+        max_goals = match.NO_GOAL_LIMIT,
         field = { w = env_config.DEFAULT_FIELD.w, h = env_config.DEFAULT_FIELD.h },
         home_team_id = env_config.DEFAULT_HOME_TEAM_ID,
         away_team_id = env_config.DEFAULT_AWAY_TEAM_ID,

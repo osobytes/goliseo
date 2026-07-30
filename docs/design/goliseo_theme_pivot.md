@@ -318,7 +318,7 @@ clips make the pivot more feasible; they do not replace the sports set.
 
 ### Scope
 
-- Preserve the existing 5v5, two-minute / first-to-three match.
+- Preserve the existing 5v5 two-minute match, decided on score at full time.
 - Use authored players/stats and fixed loadouts on both teams.
 - Prototype four families: **unarmed**, **guard**, **light melee**, and
   **ranged**.

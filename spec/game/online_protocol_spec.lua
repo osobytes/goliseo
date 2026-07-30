@@ -90,14 +90,14 @@ t.describe("OMP-3 online protocol", function()
 
     t.it("matches literal wire, manifest, transcript, and per-kind golden evidence", function()
         local report = conformance.verify()
-        t.eq(report.manifest_id, "71c68acdb2ce6822")
-        t.eq(report.transcript_id, "1f5389a62c1aeaaa")
+        t.eq(report.manifest_id, "eb59f113614c35b2")
+        t.eq(report.transcript_id, "653cba3b32c62ce9")
         t.eq(report.message_count, 15)
-        t.eq(fnv1a64.hash(conformance.GOLDEN.complete_wire), "5535f2d2cd0c78c1")
+        t.eq(fnv1a64.hash(conformance.GOLDEN.complete_wire), "363c57d949586608")
         t.eq(
             conformance.marker(report),
-            "GC_PROTOCOL|golden|schema=1|manifest_id=71c68acdb2ce6822"
-                .. "|transcript_id=1f5389a62c1aeaaa|messages=15"
+            "GC_PROTOCOL|golden|schema=1|manifest_id=eb59f113614c35b2"
+                .. "|transcript_id=653cba3b32c62ce9|messages=15"
         )
     end)
 

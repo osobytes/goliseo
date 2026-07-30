@@ -45,7 +45,12 @@ match_manifest.DEFAULT_SEED = 20003
 -- say 3600 and nobody had decided that; see the decision record in
 -- `docs/online/match_flow.md`.
 match_manifest.DEFAULT_DURATION_TICKS = 7200
-match_manifest.DEFAULT_MAX_GOALS = 5
+-- There is no goal limit: an online match is decided on score at full time,
+-- exactly like an offline one. This constant used to say 5 while the simulation
+-- default said 3, and nobody had decided either; see the same decision record.
+-- 99 is both `sim.match.NO_GOAL_LIMIT` and `protocol.MAX_GOALS` — the largest
+-- value a frozen manifest may carry, and unreachable inside 7,200 ticks.
+match_manifest.DEFAULT_MAX_GOALS = sim_match.NO_GOAL_LIMIT
 
 -- The combat disposition is still provisional: #114 has not accepted a default,
 -- so the manifest says so rather than pretending. When #114 lands this constant

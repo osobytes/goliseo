@@ -116,7 +116,9 @@ function fixture.manifest(mode)
         seed = 20001,
         tick_rate = 60,
         duration_ticks = 7200,
-        max_goals = 5,
+        -- 99 is `protocol.MAX_GOALS`: no goal limit, the shipped rule since #268.
+        -- Spelled as a literal like every other field of this fixture.
+        max_goals = 99,
         match_mode = mode or "4v4",
         teams = {
             { team = "home", team_id = "team_nova", roster = home },
