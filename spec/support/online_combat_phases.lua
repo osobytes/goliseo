@@ -332,7 +332,10 @@ local function capture_boundary_zero(shape, duration)
         away = teams.orion,
         field = { w = combat_phases.FIELD.w, h = combat_phases.FIELD.h },
         duration = duration or combat_phases.DURATION_SECONDS,
-        max_goals = 99,
+        -- The goal limit is not part of any scenario: #302 made
+        -- `match.NO_GOAL_LIMIT` the default, and a phase fixture must never end
+        -- early on a scoreline while a correction is still the thing under test.
+        max_goals = match.NO_GOAL_LIMIT,
         seed = combat_phases.SEED,
         players_by_id = by_id,
         input_ownership = match.ownership_for_teams(teams.nebula, teams.orion, by_id),
