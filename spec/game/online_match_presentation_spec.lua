@@ -354,9 +354,19 @@ local function run_phase(state, phase_id)
         end,
         on_batch = function(peer, index, batch)
             local first = peer.request.first_input_tick
+            -- `batch.outputs` mixes the ticks a correction re-derived with the
+            -- ordinary forward tick the driver appends on nearly every call, and
+            -- `RollbackTickOutput` does not distinguish them. This never reads a
+            -- forward tick as a corrected one, because the lookup below is bounded
+            -- by the correction's own reported interval and
+            -- `match_presentation.consume` can only correct at or below the tick
+            -- already applied before the batch -- strictly under the forward one.
+            -- The assertion is here so that stays true by construction rather
+            -- than by argument: a repeated tick would silently replace an entry.
             ---@type table<integer, RollbackTickOutput>
             local by_tick = {}
             for _, output in ipairs(batch.outputs) do
+                assert(by_tick[output.tick] == nil, "one presentation batch reported a tick twice")
                 by_tick[output.tick] = output
             end
             for _, correction in ipairs(batch.corrections) do
