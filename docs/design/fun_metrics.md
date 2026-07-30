@@ -912,6 +912,15 @@ until phase 4 automates it).
   touches/min 91.634 → 86.854. `fun` (0.496 → 0.506) and goals (2.133 → 2.233)
   stayed in band.
 
+  One row in the refreshed baseline is worth pre-empting: **`ai_dribble_heavy_losses_per_min`
+  is `0.609424` before and after, to all six decimal places** — the only one of
+  the nineteen tracked metrics that did not move at all. That is a real
+  coincidence, not an un-refreshed cell: it was reproduced independently, twice,
+  in an isolated checkout with and without the capped-default revert. Heavy
+  losses are rare per-match events on the AI side (mean well under one), so the
+  handful of extra post-third-goal minutes happened to add none across the 30
+  seeds. Do not read it as stale data.
+
   Every one of those is the same effect seen from a different angle: matches that
   used to be truncated by the cap now play out. The 100-match validation makes it
   literal — `duration` is 120.017 s at min **and** max across all 100, where the

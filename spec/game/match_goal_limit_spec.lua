@@ -20,6 +20,11 @@ local teams = require("data.teams")
 
 local TICK = 1 / 60
 
+-- Spelled out here rather than imported. Every layer below is checked against
+-- this literal so that moving any one of them -- including the constant the
+-- other layers are defined in terms of -- fails a row.
+local NO_LIMIT = 99
+
 ---@type MatchInput
 local NO_INPUT = {
     move = Vec2.new(0, 0),
@@ -68,22 +73,39 @@ end
 
 t.describe("the goal limit", function()
     t.it("is the same value in every source that states one", function()
-        -- 99 is `protocol.MAX_GOALS`, the largest a frozen manifest may carry.
-        -- Unreachable in 7,200 ticks, which is what makes it mean "no limit"
-        -- without removing the field from the wire.
-        t.eq(match.NO_GOAL_LIMIT, 99)
-        t.eq(protocol.MAX_GOALS, match.NO_GOAL_LIMIT, "the wire ceiling is the no-limit value")
-        t.eq(new_match().max_goals, match.NO_GOAL_LIMIT, "the simulation default")
-        t.eq(env_config.DEFAULT_MAX_GOALS, match.NO_GOAL_LIMIT, "the learning environment default")
-        t.eq(
-            match_manifest.DEFAULT_MAX_GOALS,
-            match.NO_GOAL_LIMIT,
-            "the content-derived online manifest"
-        )
-        t.eq(
-            protocol_fixture.manifest().max_goals,
-            match.NO_GOAL_LIMIT,
-            "the protocol conformance fixture"
+        -- Every layer is asserted against the bare literal, never against
+        -- `match.NO_GOAL_LIMIT`. Two of these sources *define* their value as a
+        -- reference to that constant (`sim/match.lua`'s default and
+        -- `match_manifest.DEFAULT_MAX_GOALS`), so comparing them to it would
+        -- assert a constant equals itself and could not fail. Against the
+        -- literal, moving the constant fails here — which is the point of the
+        -- file.
+        t.eq(NO_LIMIT, 99, "the spec's own literal, so the rows below are independent")
+        t.eq(match.NO_GOAL_LIMIT, NO_LIMIT, "the named simulation constant")
+        t.eq(protocol.MAX_GOALS, NO_LIMIT, "the wire ceiling")
+        t.eq(new_match().max_goals, NO_LIMIT, "the simulation default")
+        t.eq(env_config.DEFAULT_MAX_GOALS, NO_LIMIT, "the learning environment default")
+        t.eq(match_manifest.DEFAULT_MAX_GOALS, NO_LIMIT, "the content-derived online manifest")
+        t.eq(protocol_fixture.manifest().max_goals, NO_LIMIT, "the protocol conformance fixture")
+    end)
+
+    t.it("means no limit because it is exactly the largest value the wire allows", function()
+        -- The chain the decision rests on, pinned as a link rather than as two
+        -- copies of a number: 99 is not an arbitrary large value, it is the
+        -- manifest bound. If someone raises `protocol.MAX_GOALS` for an
+        -- unrelated reason, the simulation constant stops meaning "no limit"
+        -- and this fails.
+        t.eq(match.NO_GOAL_LIMIT, protocol.MAX_GOALS, "no-limit must be the manifest ceiling")
+        -- And a manifest carrying it has to actually validate. The bound is
+        -- inclusive today; if it ever became exclusive, or the field's range
+        -- moved, the shipped lobby would propose a manifest the wire rejects --
+        -- an online match that cannot start, from a constant that still reads
+        -- fine at every call site above.
+        local manifest = match_manifest.template("4v4")
+        t.eq(manifest.max_goals, protocol.MAX_GOALS, "the lobby proposes the ceiling itself")
+        t.is_true(
+            protocol.validate_manifest(manifest),
+            "a manifest at the ceiling must be accepted by the wire"
         )
     end)
 
@@ -91,7 +113,7 @@ t.describe("the goal limit", function()
         for _, mode in ipairs({ "1v1", "2v2", "4v4" }) do
             t.eq(
                 match_manifest.template(mode).max_goals,
-                match.NO_GOAL_LIMIT,
+                NO_LIMIT,
                 mode .. " must not end on a different goal count"
             )
         end
