@@ -498,10 +498,24 @@ end)
 -- confirmed `commit` carrying the live slot's player index can only have come
 -- from local input. The quiet window shows that from the outside rather than by
 -- reading the driver, and the readiness check is what makes the zero mean
--- something: every gate that could have refused a press -- the kickoff hold, a
--- cooldown, a forced state, a soccer commitment, a missing loadout -- is
--- provably open on every one of those frames, so the only thing missing is the
--- press.
+-- something -- but only for the gates it actually reads, so it is worth being
+-- exact about which those are.
+--
+-- `sim.combat`'s `request_rejection` refuses a press for seven reasons. The
+-- quiet window covers five of them directly: `readiness == "ready"`
+-- (`game/presentation/combat.lua`) is false unless the loadout exists,
+-- `forced_ticks` is zero, the phase is `ready` -- so nothing is already
+-- committed -- and `cooldown_ticks` is zero; and `kickoff_hold <= 0` is read
+-- separately off the match state.
+--
+-- The remaining two, `soccer_commitment` and `aerial_state_or_recovery`, are
+-- **not read**. They are unreachable instead, and by a property of the input
+-- stub rather than of the readiness reading: `with_keyboard` and `with_gamepad`
+-- below wire `j` and the pad's `b` and nothing else, so shoot, pass, dash,
+-- jockey, dodge and the aerial actions can never be pressed and no
+-- ground-commitment or aerial timer can arm on a live slot. A future edit that
+-- teaches the stub another key has to re-check that, which is why it is written
+-- down rather than left as an unexamined "every gate is open".
 --
 -- It deliberately does *not* lean on the AI-driven away line committing during
 -- the window. It does not: from a real kickoff, over 700 quiet frames, the bot

@@ -400,8 +400,8 @@ set makes switching inert. The away line is declared bot fill.
 
 - **quiet** — nobody presses anything. `sim.match`'s 2.5 s kickoff hold expires
   inside it, and from the moment it does every controlled player reads `ready`:
-  equipped, off cooldown, in no forced state, committed to no soccer action.
-  Every human slot commits zero times across the window anyway.
+  equipped, off cooldown, in no forced state, nothing already committed. Every
+  human slot commits zero times across the window anyway.
 - **keyboard** — `j` is toggled on a fixed period and `game.screens.match` polls
   it. Toggled rather than held because the families activate differently: `press`
   for unarmed and light melee, `held` for guard, `held_release` for ranged.
@@ -415,9 +415,20 @@ the human sample straight to the control slot and never asks the policy for that
 row — so a confirmed `commit` carrying the live slot's player index can only have
 come from local input. The quiet window shows that from the outside instead of by
 reading the driver, and the readiness measurement is what makes the zero mean
-something: every gate that could have refused a press — the kickoff hold, a
-cooldown, a forced state, a soccer commitment, a missing loadout — is provably
-open on every one of those frames, so the only thing missing is the press.
+something — for the gates it actually reads.
+
+`sim.combat`'s `request_rejection` refuses a press for seven reasons, and the
+quiet window covers five directly: `readiness == "ready"` is false unless the
+loadout exists, the forced counter is zero, the phase is `ready` (nothing already
+committed) and the cooldown is zero; and `kickoff_hold <= 0` is read separately
+off the match state. The other two — `soccer_commitment` and
+`aerial_state_or_recovery` — are **not read**. They are unreachable instead, and
+by a property of the input stub rather than of the readiness reading: the spec
+wires `j` and the pad's `b` and nothing else, so shoot, pass, dash, jockey, dodge
+and the aerial actions can never be pressed, and no ground-commitment or aerial
+timer can arm on a live slot. The zero-commit result is sound either way; it is
+written down this way so that teaching the stub another key is a change somebody
+has to re-check, rather than one that quietly invalidates the claim.
 
 **The bot fills do not commit in open play**, and the control deliberately does
 not lean on them. From a real kickoff, over 700 quiet frames, the declared away
@@ -452,6 +463,12 @@ rather than merely present at some other moment. On that frame:
   and the selection state (`control`, `owned`, `family`);
 - and the frame really draws: `game.render.pitch` and `game.render.match_hud`
   both execute over it under a stubbed `love.graphics`.
+
+These are presence checks against a no-op graphics stub, which is the ceiling
+`AGENTS.md` §9 sets for UI work — "UI testing means testing UI *logic*, not
+pixels". They prove each family's telegraph reaches the model and that the real
+draw code runs over it. They cannot see overlap or occlusion, and nothing here
+claims they can.
 
 ### What the screen is shown through a correction
 
