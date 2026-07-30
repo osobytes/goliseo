@@ -348,34 +348,163 @@ coordinator.
 
 ## What is still contingent
 
-The flow is built against versioned fixtures, and two dependencies are open.
-These criteria are **not** claimed satisfied:
+The flow is built against versioned fixtures, and one dependency is open. This
+criterion is **not** claimed satisfied:
 
 - **#114, the accepted default combat disposition.** The manifest carries
   `combat_status = "provisional_114"` and a placeholder
   `combat_rules_id`/`gameplay_ai_policy_id`. When #114 accepts a disposition,
   `match_manifest` and the protocol fixture are the only places that change.
+
+Three things that used to be listed here are closed, and what replaced them is
+[the section below](#combat-through-the-online-path):
+
 - ~~**#112, combat-aware gameplay AI.**~~ **Closed.** Non-live owned slots and
   declared bot fills now materialize `gameplay_ai/combat/v1` (`sim.combat_policy`)
   through `sim.slot_input`, using the same observation schema, option ordering,
   and reason vocabulary as the gameplay match AI. 1v1 leaned on this hardest —
   three of every human's four owned slots are AI-driven at any instant — and
-  those slots can now use and counter all four families. The manifest names the
-  policy as `gameplay_ai.combat.v1`; the contract spells it
-  `gameplay_ai/combat/v1`, and manifest ids may not contain slashes.
-- The **seven combat correction phases** the issue names — wind-up, guard,
-  contact, projectile flight, stagger, ball spill, immunity expiry — are still
-  not individually pinned as online rollback scenarios. A combat-capable bot
-  fill now reaches all of them, so a spec for each would no longer pin an
-  absence; writing those scenarios is follow-up work, not a blocked one. The
-  *mechanism* remains covered: the combat companion survives correction and
-  resimulation on every peer, and it now also carries the AI's retained combat
-  intent through that correction.
-- **"All four accepted families remain intentionally usable"** is now
-  demonstrable end to end for AI-driven slots: `spec/sim/combat_ai_match_spec.lua`
-  drives a commit and its resolver phase for each family. What remains unproven
-  is the *balance* of that usability, which is #149's calibration and #114's
-  disposition.
+  those slots can now use and counter all four families. *Can*, structurally;
+  how often they actually do in open play is measured below, and the answer is
+  "rarely". The manifest names the policy as `gameplay_ai.combat.v1`; the
+  contract spells it `gameplay_ai/combat/v1`, and manifest ids may not contain
+  slashes.
+- ~~The **seven combat correction phases**.~~ **Pinned, twice.** #166 pinned them
+  at the driver layer, as convergence on one snapshot hash through a correction
+  taken in each phase. This flow pins the other half — what the *screen* is shown
+  while that happens.
+- ~~**"All four accepted families remain intentionally usable"**.~~ **Demonstrated
+  through the online path**, from local keyboard and gamepad input rather than
+  only at `sim` level. What remains unproven is the *balance* of that usability,
+  which is #149's calibration and #114's disposition.
+
+## Combat through the online path
+
+### All four families, from the keyboard and the gamepad
+
+The seating is content, not a fixture. This build's canonical home line carries
+exactly one accepted family per slot:
+
+| Slot | Player | Loadout | Family |
+| --- | --- | --- | --- |
+| `home_1` | brakka | Emberguard Shield | guard |
+| `home_2` | veil_nyx | Tournament Sword | light melee |
+| `home_3` | rok_tann | Pulse Blaster | ranged |
+| `home_4` | zyro_vex | Spring Gloves | unarmed |
+
+A 4v4 seats one human per slot, so four online match screens mounted off one
+real lobby cover all four families with no loadout chosen for the test, and each
+peer's single owned slot stays live for the whole match because a singleton owned
+set makes switching inert. The away line is declared bot fill.
+`spec/screens/online_match_flow_spec.lua` plays that session in three windows:
+
+- **quiet** — nobody presses anything. `sim.match`'s 2.5 s kickoff hold expires
+  inside it, and from the moment it does every controlled player reads `ready`:
+  equipped, off cooldown, in no forced state, nothing already committed. Every
+  human slot commits zero times across the window anyway.
+- **keyboard** — `j` is toggled on a fixed period and `game.screens.match` polls
+  it. Toggled rather than held because the families activate differently: `press`
+  for unarmed and light melee, `held` for guard, `held_release` for ranged.
+- **gamepad** — the gamepad's `b` is toggled instead, with `j` up. It has to be a
+  real held button: the match screen re-polls the pad every update, so an
+  abstract action event alone would be overwritten before the next tick.
+
+The quiet window is what makes the other two mean something. A live slot is the
+one slot its peer authors for itself — `match_driver.materialize_authored` hands
+the human sample straight to the control slot and never asks the policy for that
+row — so a confirmed `commit` carrying the live slot's player index can only have
+come from local input. The quiet window shows that from the outside instead of by
+reading the driver, and the readiness measurement is what makes the zero mean
+something — for the gates it actually reads.
+
+`sim.combat`'s `request_rejection` refuses a press for seven reasons, and the
+quiet window covers five directly: `readiness == "ready"` is false unless the
+loadout exists, the forced counter is zero, the phase is `ready` (nothing already
+committed) and the cooldown is zero; and `kickoff_hold <= 0` is read separately
+off the match state. The other two — `soccer_commitment` and
+`aerial_state_or_recovery` — are **not read**. They are unreachable instead, and
+by a property of the input stub rather than of the readiness reading: the spec
+wires `j` and the pad's `b` and nothing else, so shoot, pass, dash, jockey, dodge
+and the aerial actions can never be pressed, and no ground-commitment or aerial
+timer can arm on a live slot. The zero-commit result is sound either way; it is
+written down this way so that teaching the stub another key is a change somebody
+has to re-check, rather than one that quietly invalidates the claim.
+
+**The bot fills do not commit in open play**, and the control deliberately does
+not lean on them. From a real kickoff, over 700 quiet frames, the declared away
+fills produced no combat commit at all. `gameplay_ai/combat/v1` commits readily
+from the rigged poses in `spec/support/online_combat_phases.lua`, where two lines
+face each other 24 to 36 px apart, and rarely from open play, where a purpose
+target inside reach *and* inside the front arc is a much scarcer event. Combined
+with #166's finding that the policy almost never chooses guard, that is a
+calibration observation for #149 and a disposition question for #114 — not
+something the presentation layer should paper over.
+
+Note what this says about **guard**. #166 found that `gameplay_ai/combat/v1`
+almost never chooses it: `combat_phases.GUARD_PROBE` finds exactly one commit in a
+240-step unarmed scrum and none at all once the delivery cadence shifts, so its
+driver-level guard scenario raises a guard from held equipment on the canonical
+input stream instead. Here that is not a workaround — a human on `home_1` raising
+a shield with the keyboard *is* the criterion, and the AI's reluctance is #149's
+and #114's business.
+
+Readability is asserted from one frame per family — the first frame that family's
+own telegraph is on the pitch — so the rest is provably simultaneous with it
+rather than merely present at some other moment. On that frame:
+
+- the presentation model gives the controlled player that family's telegraph:
+  `guard_arc` for guard, `line` for ranged, `arc` for the two melee families, and
+  the pitch renderer branches on exactly that field;
+- ranged additionally has a projectile of its own in flight in the model;
+- the HUD names the family (`equipment_label`) and its live phase
+  (`equipment_state`) **beside** the scorebug, the clock, and possession, not
+  instead of them;
+- the online overlay still reports the network state (`net tick`, `rollbacks`)
+  and the selection state (`control`, `owned`, `family`);
+- and the frame really draws: `game.render.pitch` and `game.render.match_hud`
+  both execute over it under a stubbed `love.graphics`.
+
+These are presence checks against a no-op graphics stub, which is the ceiling
+`AGENTS.md` §9 sets for UI work — "UI testing means testing UI *logic*, not
+pixels". They prove each family's telegraph reaches the model and that the real
+draw code runs over it. They cannot see overlap or occlusion, and nothing here
+claims they can.
+
+### What the screen is shown through a correction
+
+`spec/game/online_match_presentation_spec.lua` takes #166's seven phases one
+layer up. The driver-level claim is that peers converge on one snapshot hash; a
+screen consumes the timeline, not the hash, so a driver that converges perfectly
+can still leave a swing drawn twice or a hit drawn that never happened. Each case
+rigs the phase's boundary zero, bursts delivery until real corrections happen,
+checks that a correction really resimulated a tick *in* that phase — read inside
+the step, before the driver evicts the boundary — and then asserts the
+presentation contract over the whole run.
+
+The contract has three operations, and they are deliberately not collapsed:
+
+- **added** — the corrected timeline has a cue the speculative one did not. It
+  publishes, once.
+- **replaced** — the id survives with a different payload, because
+  `sim.rollback_events` derives identity from causality. The confirmation owes
+  the *corrected* payload; publishing the stale one is a distinct defect from
+  publishing twice, and is counted separately.
+- **revoked** — the id is gone. It must never be confirmed.
+
+**A combat cue is almost never revoked, and that is a property of the netcode
+rather than of the fixtures.** `sim.rollback_input_history` predicts a missing row
+by repeating its held bits with `edges = 0`, and every combat encounter opens on a
+press edge, so no peer ever speculates a commit it later has to take back. What
+*can* be revoked is a cue derived from an already-open encounter — the contact it
+lands, the forced state it inflicts, the ball it spills — when corrected geometry
+resolves that encounter differently. One case exists solely to produce one, in the
+unarmed scrum where eight bodies sit inside one 30 px reach; without it the
+"a revoked cue is never confirmed" assertion would be vacuous.
+
+Delivery in these cases is every 12th step rather than each scenario's own
+period: a shorter burst corrects too little to rewrite a cue at all, and past
+roughly 16 the confirmation ceiling falls behind `sim.rollback_events`'
+unconfirmed window and the timeline gives up before the phase arrives.
 
 ### Where a bot fill's combat reason comes out
 
