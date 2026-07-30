@@ -368,6 +368,27 @@ sequence number is part of its message id and therefore of its wire digest;
 appending leaves all thirteen shipped digests byte-identical, which is the
 evidence that no existing message moved.
 
+**Decision on record:** [#268](https://github.com/osobytes/goliseo/issues/268)
+took the goal limit to 99 — no limit — and needed **no protocol change at all**.
+`max_goals` is untouched as a field: same name, same position in the compared
+set, same `1..MAX_GOALS` bound, same rejection code. Only the *value* the
+conformance fixture and the content-derived manifest carry moved, from 5. Removing
+the field would have been a version decision; changing what it says is not, which
+is precisely why the decision was implemented as a value rather than a deletion —
+see [the record in `match_flow.md`](match_flow.md#a-match-has-no-goal-limit-online-or-offline).
+
+The value is nevertheless inside the manifest digest, so this is a deliberate
+digest change: `manifest_id` moves, and with it the `manifest_proposal`,
+`manifest_accept`, `slot_assignment`, `ready`, `pair_preference`,
+`pair_preference_result`, `countdown`, and `start` wire digests, the protocol
+transcript digest, the four coordinator session transcripts, the two input-packet
+literals, and the browser evidence parser's pinned ids. The `handshake`,
+`peer_assignment`, `match_phase`, `hash_report`, `result_ack`, `abort`, and
+`disconnect` digests carry no manifest id and are byte-identical, as are
+`vocabulary_id`, the coordinator trace digest, every ownership golden, and
+`maximal_wire_bytes` — which together are the evidence that nothing but the
+manifest moved.
+
 `combat_status = provisional_114` is the only valid pre-disposition status.
 It lets protocol, lobby, and transport foundations use the accepted interaction
 contract without claiming that the prototype is approved. The final OMP-3

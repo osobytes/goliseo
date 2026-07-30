@@ -75,8 +75,10 @@ reading the per-metric table: goalless matches therefore inflate the
 `decided_late` column mean. The fun score is unaffected — `goals_total`
 hard-zeros those matches — but the column looks healthier than it is whenever
 goalless matches are common. `lead_changes`
-is reported but unbanded for now: with a 3-goal cap the honest range is 0–2 and
-it's too coarse to score.
+is reported but unbanded for now: it was too coarse to score under the 3-goal
+cap these runs were measured with, where the honest range was 0–2. #268 removed
+the cap, so a re-measurement is free to widen that range — but nothing here has
+been re-measured, and the column stays unbanded until something is.
 
 ## The human proxy (the big caveat)
 
@@ -214,9 +216,12 @@ Caveats before shipping either:
 - ~~**Range-edge optima.**~~ Resolved by round 2 (below): with widened ranges
   the ascent kept `AI_SHOOT_RANGE=340` and `SAVE_SPEED_REF=700` — both are
   interior optima, not fence artifacts.
-- **Matches got shorter.** Under A the 3-goal cap ends matches at ~78 s mean
-  (min 21 s); under B ~106 s. If full-length matches matter, raise `max_goals`
-  or prefer B.
+- ~~**Matches got shorter.**~~ Resolved by [#268](https://github.com/osobytes/goliseo/issues/268):
+  under A the 3-goal cap ended matches at ~78 s mean (min 21 s) and under B at
+  ~106 s, and the advice here was to raise `max_goals` if full-length matches
+  mattered. There is no goal cap any more — a match runs its 120 seconds and is
+  decided on score — so neither candidate shortens one. The measurements above
+  were taken under the cap and are left as recorded.
 - **Bot-relative.** All numbers are under the `sim/bot.lua` proxy. Verify by
   playing: both candidates ship as F1-panel presets (`data/tuning_presets.lua`,
   F4 cycles Defaults → A → B; F2 persists the choice across runs). Defaults in
