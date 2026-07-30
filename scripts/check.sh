@@ -60,7 +60,20 @@ else
     echo "   ! python3 not installed — skipping"
 fi
 
-echo "==> OMP-3 fault harness campaign controller self-test"
+# The real harness, and a self-test that proves this gate can fail. Until #279
+# there was no step anywhere — here or in CI — that started a harness process,
+# so a crash in every online match could pass a green run.
+echo "==> OMP-3 fault harness real campaign (love . --fault-harness smoke 1 800)"
+if command -v love >/dev/null 2>&1; then
+    ./scripts/check_fault_harness.sh --self-test || fail=1
+    ./scripts/check_fault_harness.sh smoke 1 800 || fail=1
+else
+    echo "   ! love not installed — skipping"
+fi
+
+# Controller logic only: this parses a recorded marker stream and starts no LOVE
+# process. It is not coverage of the harness — the step above is.
+echo "==> OMP-3 campaign controller self-test (parsing logic only, starts no harness)"
 if command -v python3 >/dev/null 2>&1; then
     python3 -B scripts/fault_harness.py --self-test || fail=1
 else

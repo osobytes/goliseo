@@ -166,6 +166,50 @@ jobs:
             - name: Check OMP-2 rollback orchestration
               run: ./scripts/check_rollback.sh --self-test
 
+    # Its own job on purpose: the harness is minutes of CPU, it needs nothing but
+    # LOVE, and nothing else waits on it, so it costs the critical path nothing.
+    # Until #279 no job ran it at all -- the only OMP-3 step in CI was the Python
+    # controller's self-test inside `quality`, which starts no harness process.
+    fault_harness:
+        name: OMP-3 fault harness
+        runs-on: ubuntu-24.04
+        timeout-minutes: 25
+
+        steps:
+            - name: Check out source
+              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+              with:
+                  ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+            - name: Install pinned LÖVE 11.5
+              env:
+                  LOVE_VERSION: 11.5
+                  LOVE_SHA256: 65a673406431eff7167a15a032bf7a2e4ba50108e091eb7b176465831f9b5e00
+              run: |
+                  tool_dir="$RUNNER_TEMP/goliseo-love"
+                  mkdir -p "$tool_dir/bin" "$tool_dir/love"
+                  curl --fail --location --retry 3 --silent --show-error \
+                      --output "$tool_dir/love.AppImage" \
+                      "https://github.com/love2d/love/releases/download/${LOVE_VERSION}/love-${LOVE_VERSION}-x86_64.AppImage"
+                  echo "${LOVE_SHA256}  $tool_dir/love.AppImage" | sha256sum --check --status
+                  chmod +x "$tool_dir/love.AppImage"
+                  (
+                      cd "$tool_dir/love"
+                      "$tool_dir/love.AppImage" --appimage-extract >/dev/null
+                  )
+                  ln -s "$tool_dir/love/squashfs-root/AppRun" "$tool_dir/bin/love"
+                  "$tool_dir/bin/love" --version
+                  printf '%s\n' "$tool_dir/bin" >> "$GITHUB_PATH"
+
+            # A gate that cannot fail is worse than no gate. This drives a fake
+            # harness through every shape the real one could fail in -- including
+            # a run that prints failures and still exits 0.
+            - name: Prove the fault harness gate detects failure
+              run: ./scripts/check_fault_harness.sh --self-test
+
+            - name: Run the real OMP-3 fault harness
+              run: ./scripts/check_fault_harness.sh smoke 1 800
+
     browser_artifact:
         name: Browser artifact smoke
         runs-on: ubuntu-24.04

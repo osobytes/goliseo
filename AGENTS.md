@@ -253,6 +253,23 @@ local s2 = formation.update(s, { kind = "click", x = cx, y = cy })
 assert(s2.selected == "1-2-1")
 ```
 
+### A harness self-test is not a harness run
+
+A `--self-test` proves a harness *controller's* own logic — its parsing, its
+fixtures. Only starting the harness proves the system it measures. The two are
+never interchangeable, and a step is named for the one it actually runs: a heading
+that says "fault harness" over a command that starts no harness is how a defect
+breaking every online match passed nine green checks (#279). So:
+
+- every gate in `scripts/check.sh` must also appear in `.github/workflows/ci.yml`,
+  and vice versa — prefer a shared `scripts/check_*.sh` over hand-mirrored steps;
+- every gate must come with a demonstration that it can go red, e.g.
+  `scripts/check_fault_harness.sh --self-test`; and
+- never trust one signal. A harness that prints failures and exits 0 must fail the
+  gate anyway.
+
+`docs/online/fault_harness.md` records the full case.
+
 ---
 
 ## 10. Workflow
