@@ -247,6 +247,92 @@ t.describe("rollback events", function()
         t.eq(#rollback_events.confirm(timeline, 0), 0)
     end)
 
+    t.it("carries a rejected request, which has no sequence, through the timeline", function()
+        -- Kickoff hold refuses every press, so this is the shortest fixture that
+        -- puts a sequence-less combat row on the wire.
+        local state = new_state()
+        t.is_true(state.kickoff_hold > 0, "the fixture relies on a live kickoff hold")
+        local combat_state = combat.new_state(state)
+        local equipped = {}
+        for index, runtime in ipairs(combat_state.players) do
+            if runtime.family_id and state.slot_for_player[index] then
+                equipped[#equipped + 1] = index
+            end
+        end
+        t.is_true(#equipped >= 2, "fixture requires two equipped outfielders")
+        local first, second = equipped[1], equipped[2]
+        local initial = match_snapshot.capture(state, combat_state)
+
+        ---@param pressing table<integer, boolean>
+        local function run(pressing)
+            local session = rollback_session.new(initial, sources())
+            for slot = 1, input_frame.SLOT_COUNT do
+                local row = input_frame.neutral_sample()
+                for player_index in pairs(pressing) do
+                    if slot == state.slot_for_player[player_index] then
+                        row = assert(input_frame.new_sample({
+                            held = input_frame.HELD_BITS.equipment,
+                            edges = input_frame.EDGE_BITS.equipment_pressed,
+                        }))
+                    end
+                end
+                assert(rollback_session.add_authoritative(session, 0, slot, row))
+            end
+            return assert(rollback_session.step(session)),
+                rollback_session.current_snapshot(session)
+        end
+
+        local both_output, both_snapshot = run({ [first] = true, [second] = true })
+        local timeline = rollback_events.new(initial)
+        local added = assert(rollback_events.apply(timeline, 0, 0, {
+            { output = both_output, snapshot = both_snapshot },
+        }))
+        t.eq(#added.added, 2)
+
+        local by_player = {}
+        for _, wrapped in ipairs(added.added) do
+            t.eq(wrapped.domain, "combat/request_rejected/0")
+            local payload = wrapped.payload
+            ---@cast payload CombatEvent
+            t.eq(payload.kind, "request_rejected")
+            t.eq(payload.outcome, "rejected")
+            t.eq(payload.reason, "kickoff_hold")
+            t.eq(payload.source_sequence, nil, "a rejection opens no encounter")
+            -- The requesting player is the identity, so the ordinal is its index
+            -- rather than a position in this tick's list.
+            t.eq(wrapped.ordinal, payload.source_index)
+            by_player[assert(payload.source_index)] = wrapped.id
+        end
+        t.is_true(by_player[first] ~= nil and by_player[second] ~= nil)
+
+        -- Confirmation copies the step, so the sequence-less rows have to survive
+        -- the confirmed-copy path too.
+        local confirmed = rollback_events.confirm(timeline, 0)
+        t.eq(#confirmed, 1)
+        local confirmed_combat = assert(confirmed[1].combat_events)
+        t.eq(#confirmed_combat, 2)
+        t.eq(confirmed_combat[1].payload.reason, "kickoff_hold")
+        t.eq(confirmed_combat[1].payload.source_sequence, nil)
+        t.eq(#rollback_events.confirm(timeline, 0), 0)
+
+        -- The regression this pins: a resimulation in which only the second
+        -- player presses must revoke the first player's row and leave the
+        -- second's identity untouched. A per-tick running ordinal would instead
+        -- rewrite the first player's cue into the second player's.
+        local single_output, single_snapshot = run({ [second] = true })
+        local corrected = rollback_events.new(initial)
+        assert(rollback_events.apply(corrected, 0, 0, {
+            { output = both_output, snapshot = both_snapshot },
+        }))
+        local diff = assert(rollback_events.apply(corrected, 0, 0, {
+            { output = single_output, snapshot = single_snapshot },
+        }))
+        t.eq(#diff.added, 0, "the surviving row is not a new event")
+        t.eq(#diff.replaced, 0, "the surviving row is not a corrected payload")
+        t.eq(#diff.revoked, 1)
+        t.eq(diff.revoked[1].id, by_player[first])
+    end)
+
     t.it("keeps per-domain ordinals stable and identical reapplication silent", function()
         local initial = initial_snapshot()
         local timeline = rollback_events.new(initial)

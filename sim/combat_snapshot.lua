@@ -12,7 +12,10 @@ local loadouts = require("data.loadouts")
 ---@class CombatSnapshotModule
 local combat_snapshot = {}
 
-combat_snapshot.VERSION = 2
+-- 3 adds the typed request outcome/reason and the encounter terminal to the
+-- event row. Every combat boundary hash and every combat tape therefore moves,
+-- which is exactly the build skew the version guard exists to reject.
+combat_snapshot.VERSION = 3
 
 combat_snapshot.STATE_FIELDS = {
     "version",
@@ -59,10 +62,41 @@ combat_snapshot.EVENT_FIELDS = {
     "target_index",
     "source_sequence",
     "result",
+    "outcome",
+    "reason",
+    "terminal",
     "x",
     "y",
     "interruption_ticks",
     "displacement_px",
+}
+
+-- Closed, versioned vocabularies. Order is the contract's own and is the
+-- declared tie break wherever several reasons hold at once.
+combat_snapshot.REQUEST_OUTCOMES = { "accepted", "rejected" }
+
+combat_snapshot.REJECTION_REASONS = {
+    "protected_keeper_or_no_loadout",
+    "kickoff_hold",
+    "soccer_commitment",
+    "aerial_state_or_recovery",
+    "forced_state",
+    "already_committed",
+    "cooldown",
+    "missing_press_edge",
+    "malformed_input",
+}
+
+combat_snapshot.ENCOUNTER_TERMINALS = {
+    "miss",
+    "expire",
+    "guarded",
+    "immune",
+    "superseded",
+    "hit",
+    "interrupted",
+    "cancelled",
+    "match_terminated",
 }
 
 ---@param values string[]
@@ -83,6 +117,7 @@ local VECTOR_FIELD_SET = field_set({ "x", "y" })
 local PHASES = field_set({ "ready", "windup", "active", "aim", "guard", "recovery" })
 local FORCED_STATES = field_set({ "stagger", "knockback" })
 local EVENT_KINDS = field_set({
+    "request_rejected",
     "commit",
     "projectile_spawn",
     "projectile_expire",
@@ -90,8 +125,15 @@ local EVENT_KINDS = field_set({
     "ball_spill",
     "forced",
     "guard_recoil",
+    "miss",
+    "interrupted",
+    "cancelled",
+    "match_terminated",
 })
 local CONTACT_RESULTS = field_set({ "hit", "extended", "guarded", "immune", "superseded" })
+local REQUEST_OUTCOMES = field_set(combat_snapshot.REQUEST_OUTCOMES)
+local REJECTION_REASONS = field_set(combat_snapshot.REJECTION_REASONS)
+local ENCOUNTER_TERMINALS = field_set(combat_snapshot.ENCOUNTER_TERMINALS)
 local INTENT_FIELD_SET = field_set(combat_intent.FIELDS)
 local MAX_INTEGER = 2147483647
 
@@ -289,6 +331,22 @@ local function copy_event(source, path, player_count)
     local tick = copy_counter(source.tick, path .. ".tick")
     assert(source.family_id == nil or action_families[source.family_id], path .. ".family_id")
     assert(source.result == nil or CONTACT_RESULTS[source.result], path .. ".result is unsupported")
+    assert(
+        source.outcome == nil or REQUEST_OUTCOMES[source.outcome],
+        path .. ".outcome is unsupported"
+    )
+    assert(
+        source.reason == nil or REJECTION_REASONS[source.reason],
+        path .. ".reason is unsupported"
+    )
+    assert(
+        source.terminal == nil or ENCOUNTER_TERMINALS[source.terminal],
+        path .. ".terminal is unsupported"
+    )
+    assert(
+        (source.reason ~= nil) == (source.outcome == "rejected"),
+        path .. " pairs a rejection reason with a rejected request"
+    )
     assert(is_finite_number(source.x), path .. ".x must be finite")
     assert(is_finite_number(source.y), path .. ".y must be finite")
     if source.interruption_ticks ~= nil then
@@ -316,6 +374,9 @@ local function copy_event(source, path, player_count)
             path .. ".source_sequence"
         ),
         result = source.result,
+        outcome = source.outcome,
+        reason = source.reason,
+        terminal = source.terminal,
         x = source.x,
         y = source.y,
         interruption_ticks = source.interruption_ticks,

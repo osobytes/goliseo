@@ -908,6 +908,10 @@ local MATCH_EVENT_FIELDS = {
     "on_target",
 }
 
+-- The digest has to cover every field that tells two rows apart, or a
+-- resimulation that changed one is reported as reconciling. A rejected request
+-- differs from another refusal of the same player only by its reason, and one
+-- terminal differs from another only by which terminal it is.
 local COMBAT_EVENT_FIELDS = {
     "kind",
     "tick",
@@ -916,6 +920,9 @@ local COMBAT_EVENT_FIELDS = {
     "target_index",
     "source_sequence",
     "result",
+    "outcome",
+    "reason",
+    "terminal",
     "x",
     "y",
     "interruption_ticks",

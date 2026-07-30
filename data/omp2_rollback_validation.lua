@@ -130,9 +130,9 @@ return {
         id = "omp2-combat-rollback-v1",
         seed = 733,
         frame_count = 80,
-        initial_hash = "254f0b9cd4311e7e",
-        final_hash = "58f858fdff81ecda",
-        tape_digest = "4b08690fb65d22c8",
+        initial_hash = "6edfabacb5ecc6cd",
+        final_hash = "822ca5cf529e725b",
+        tape_digest = "da9d009342add99a",
     },
     combat_load_fixtures = {
         {
@@ -143,9 +143,9 @@ return {
             frame_count = 160,
             duration = 20,
             combat = true,
-            initial_hash = "e623153075463f65",
-            final_hash = "1e373cd0a423d773",
-            tape_digest = "19b5290891124edd",
+            initial_hash = "ba131fc89cabd89a",
+            final_hash = "93206851a4a6455a",
+            tape_digest = "570e79d1e5ac32fd",
         },
         {
             id = "omp2-combat-crowded-disabled-v1",
@@ -168,9 +168,9 @@ return {
             duration = 20,
             combat = true,
             repeated_loadout_id = "loadout_spring_gloves",
-            initial_hash = "e7b13a5e300dfee4",
-            final_hash = "2b1c282fd1ce42e6",
-            tape_digest = "bd1afaccda071e07",
+            initial_hash = "bfc22640819ecd1b",
+            final_hash = "70c04d10f1e7ebf3",
+            tape_digest = "fbb700e6b65acf3d",
         },
         {
             id = "omp2-combat-repeated-family-disabled-v1",

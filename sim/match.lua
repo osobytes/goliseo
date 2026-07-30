@@ -4913,6 +4913,9 @@ function match.step(s, dt, input, combat_state)
         match._reset_run_states(s)
         match._reset_transition_state(s)
         if combat_state then
+            -- Full time closes every open encounter before the boundary moves,
+            -- so the lifecycle owes no orphan when the match becomes terminal.
+            assert(combat_module).terminate_open_sequences(s, combat_state)
             assert(combat_module).advance_boundary(combat_state)
         end
         for _, player in ipairs(s.players) do
@@ -5085,7 +5088,7 @@ function match.step(s, dt, input, combat_state)
                 player.outfield_decision = decisions.reset(player.outfield_decision)
             end
         end
-        assert(combat_module).finish_tick(combat_state)
+        assert(combat_module).finish_tick(s, combat_state)
     end
     match._sanitize_run_states(s, combat_state)
     match._sanitize_press_states(s, combat_state)
@@ -5165,7 +5168,7 @@ function match.step(s, dt, input, combat_state)
     local scorer = check_goal(s, prev_ball_x)
     if scorer then
         if combat_state then
-            assert(combat_module).reset_for_kickoff(combat_state)
+            assert(combat_module).reset_for_kickoff(s, combat_state)
         end
         for _, player in ipairs(s.players) do
             player.keeper_set = 0

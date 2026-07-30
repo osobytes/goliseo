@@ -76,8 +76,8 @@ loadout receive a neutral combat runtime and ignore equipment intent.
 
 Presentation, cosmetic, theme, and equipment-appearance ids never enter the
 companion. `data/action_families.lua` remains the sole tuning authority.
-Combat-active snapshot/hash/rollback integration uses match snapshot version 12,
-combat snapshot version 1, and input tape version 2. A combat-enabled match
+Combat-active snapshot/hash/rollback integration uses match snapshot version 13,
+combat snapshot version 3, and input tape version 2. A combat-enabled match
 must supply the companion at capture; passing only the soccer half fails
 loudly.
 

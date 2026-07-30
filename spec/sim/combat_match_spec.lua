@@ -248,7 +248,15 @@ t.describe("combat match integration", function()
 
         t.eq(combat_state.players[1].family_id, nil)
         t.eq(combat_state.players[1].phase, "ready")
-        t.eq(#combat_state.events, 0)
+        -- The signal is still refused, but the refusal is now evidence: one typed
+        -- rejected request that opened no encounter.
+        t.eq(#combat_state.events, 1)
+        local rejected = assert(event_of(combat_state.events, "request_rejected"))
+        t.eq(rejected.outcome, "rejected")
+        t.eq(rejected.reason, "protected_keeper_or_no_loadout")
+        t.eq(rejected.source_index, 1)
+        t.eq(rejected.source_sequence, nil)
+        t.eq(combat_state.next_source_sequence, 1)
     end)
 
     t.it("spills an interrupted carrier before loose-ball collection", function()
@@ -473,5 +481,149 @@ t.describe("combat match integration", function()
         t.eq(state.input_tick, 1)
         t.eq(combat_state.tick, 1)
         t.eq(match_snapshot.capture(state, combat_state).version, match_snapshot.COMBAT_VERSION)
+    end)
+
+    t.it("cancels an action the kickoff reset discards after a goal", function()
+        local state = new_match()
+        state.kickoff_hold = 0
+        state.controlled = 5
+        local combat_state = combat.new_state(state)
+
+        for index, player in ipairs(state.players) do
+            player.pos = Vec2.new(800 + index, 400 + index)
+        end
+        state.owner = nil
+        state.ball = Vec2.new(state.field.w - 5, state.field.h / 2)
+        state.ball_vel = Vec2.new(1000, 0)
+        state.pickup_cd = 1
+        -- A wind-up that has not contacted yet still owes its sequence a terminal
+        -- when the goal wipes the board.
+        combat_state.players[5].phase = "windup"
+        combat_state.players[5].phase_ticks = 6
+        combat_state.players[5].source_sequence = 7
+        combat_state.next_source_sequence = 8
+        combat_state.projectiles[1] = {
+            family_id = "ranged",
+            source_index = 4,
+            source_sequence = 6,
+            pos = Vec2.new(300, 300),
+            dir = Vec2.new(1, 0),
+            remaining_ticks = 40,
+        }
+
+        match.step(state, fixed_clock.TICK_SECONDS, input(), combat_state)
+
+        t.eq(state.score.home, 1)
+        t.eq(combat_state.players[5].phase, "ready")
+        t.eq(#combat_state.projectiles, 0)
+        local cancelled = {}
+        for _, event in ipairs(combat_state.events) do
+            if event.kind == "cancelled" then
+                cancelled[event.source_sequence] = event
+            end
+        end
+        t.eq(assert(cancelled[7]).terminal, "cancelled")
+        t.eq(assert(cancelled[6]).terminal, "cancelled")
+        t.eq(assert(cancelled[7]).tick, combat_state.tick - 1)
+        t.eq(match_snapshot.capture(state, combat_state).version, match_snapshot.COMBAT_VERSION)
+    end)
+
+    t.it("closes an action still open when full time arrives", function()
+        local state = new_match()
+        state.kickoff_hold = 0
+        state.time_left = fixed_clock.TICK_SECONDS * 2
+        local combat_state = combat.new_state(state)
+        local controlled = 5
+        state.controlled = controlled
+        state.owner = nil
+        t.eq(combat_state.players[controlled].family_id, "unarmed")
+
+        match.step(
+            state,
+            fixed_clock.TICK_SECONDS,
+            input({ equipment_pressed = true, equipment_held = true }),
+            combat_state
+        )
+        t.eq(combat_state.players[controlled].phase, "windup")
+        local sequence = assert(combat_state.players[controlled].source_sequence)
+
+        match.step(state, fixed_clock.TICK_SECONDS, input(), combat_state)
+        t.is_true(state.finished)
+        local terminated = assert(event_of(combat_state.events, "match_terminated"))
+        t.eq(terminated.terminal, "match_terminated")
+        t.eq(terminated.source_sequence, sequence)
+        t.eq(terminated.source_index, controlled)
+        -- Full time still names the causal input tick one behind the boundary.
+        t.eq(terminated.tick, combat_state.tick - 1)
+        t.eq(match_snapshot.capture(state, combat_state).version, match_snapshot.COMBAT_VERSION)
+    end)
+
+    t.it("reconciles every accepted sequence and typed rejection over a whole match", function()
+        ---@type table<CombatRequestRejectionReason, boolean>
+        local allowed = {
+            protected_keeper_or_no_loadout = true,
+            kickoff_hold = true,
+            soccer_commitment = true,
+            aerial_state_or_recovery = true,
+            forced_state = true,
+            already_committed = true,
+            cooldown = true,
+            missing_press_edge = true,
+            malformed_input = true,
+        }
+        for _, seed in ipairs({ 19, 733, 18001 }) do
+            local state = new_match(seed)
+            local combat_state = combat.new_state(state)
+            -- A mashing human is the adversarial case the evidence has to survive:
+            -- it presses on every tick, so most of its requests are refused.
+            local mashing = input({ equipment_pressed = true, equipment_held = true })
+            local opened, closed = {}, {}
+            local accepted, rejected = 0, 0
+
+            for _ = 1, 2400 do
+                match.step(state, fixed_clock.TICK_SECONDS, mashing, combat_state)
+                for _, event in ipairs(combat_state.events) do
+                    if event.kind == "commit" then
+                        t.eq(event.outcome, "accepted")
+                        local sequence = assert(event.source_sequence)
+                        t.eq(opened[sequence], nil, "a source sequence was opened twice")
+                        opened[sequence] = true
+                        closed[sequence] = 0
+                        accepted = accepted + 1
+                    elseif event.kind == "request_rejected" then
+                        t.eq(event.outcome, "rejected")
+                        t.eq(event.source_sequence, nil)
+                        t.is_true(
+                            allowed[assert(event.reason)] == true,
+                            "rejection reason outside the closed vocabulary"
+                        )
+                        rejected = rejected + 1
+                    end
+                    if event.terminal then
+                        local sequence = assert(event.source_sequence)
+                        t.is_true(opened[sequence] == true, "a terminal closed an unopened row")
+                        closed[sequence] = closed[sequence] + 1
+                    end
+                end
+            end
+            -- Whatever is still open at the end of the sample is closed the same
+            -- way a real full time closes it, so the reconciliation is total.
+            combat.terminate_open_sequences(state, combat_state)
+            for _, event in ipairs(combat_state.events) do
+                if event.terminal then
+                    closed[assert(event.source_sequence)] = closed[event.source_sequence] + 1
+                end
+            end
+
+            t.is_true(accepted > 0, "seed " .. seed .. " produced no accepted request")
+            t.is_true(rejected > 0, "seed " .. seed .. " recorded no rejected request")
+            for sequence in pairs(opened) do
+                t.eq(
+                    closed[sequence],
+                    1,
+                    ("seed %d sequence %d closed %d times"):format(seed, sequence, closed[sequence])
+                )
+            end
+        end
     end)
 end)

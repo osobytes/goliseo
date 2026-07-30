@@ -451,7 +451,7 @@ function audio.consume_confirmed(event, suppress_playback)
         end
     elseif event.domain:sub(1, 7) == "combat/" then
         local payload = event.payload --[[@as CombatEvent]]
-        local link = combat_feedback.accepted(payload, event.id)
+        local link = combat_feedback.link(payload, event.id)
         name = link.disposition.audio
     elseif event.domain == "lifecycle/goal" then
         name = "goal"

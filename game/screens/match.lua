@@ -347,7 +347,7 @@ function Match:consume_confirmed_step(step)
     end
     for _, event in ipairs(step.combat_events or {}) do
         effects.confirm_event(event, replay_owns_screen)
-        local link = combat_feedback.accepted(event.payload, event.id)
+        local link = combat_feedback.link(event.payload, event.id)
         combat_feedback.confirm(self._combat_feedback, link)
         if replay_owns_screen then
             combat_feedback.reset_visuals(self._combat_feedback)
@@ -925,7 +925,7 @@ function Match:update(dt)
                 audio.consume_combat(self._combat_state.events)
                 for ordinal, event in ipairs(self._combat_state.events) do
                     local link =
-                        combat_feedback.accepted(event, offline_combat_event_id(event, ordinal))
+                        combat_feedback.link(event, offline_combat_event_id(event, ordinal))
                     combat_feedback.confirm(self._combat_feedback, link)
                 end
             end

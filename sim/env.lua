@@ -502,6 +502,12 @@ local function copy_combat_event(event)
         target_index = event.target_index,
         source_sequence = event.source_sequence,
         result = event.result,
+        -- Without these a consumer cannot tell why a request was refused, nor
+        -- which terminal closed an encounter, so it cannot exclude rejected
+        -- requests from an encounter denominator.
+        outcome = event.outcome,
+        reason = event.reason,
+        terminal = event.terminal,
         x = event.x,
         y = event.y,
         interruption_ticks = event.interruption_ticks,

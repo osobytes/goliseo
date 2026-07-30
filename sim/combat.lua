@@ -11,7 +11,42 @@ local player_pool = require("data.players")
 ---@alias CombatActionPhase "ready"|"windup"|"active"|"aim"|"guard"|"recovery"
 ---@alias CombatForcedState "stagger"|"knockback"
 ---@alias CombatContactResult "hit"|"extended"|"guarded"|"immune"|"superseded"
+
+-- A physical equipment request is either accepted or rejected, and only an
+-- accepted one opens an encounter (a source sequence). The rejection vocabulary
+-- is closed and versioned; `unknown` is not a member and a new member is a
+-- schema change, not a local decision.
+---@alias CombatRequestOutcome "accepted"|"rejected"
+
+---@alias CombatRequestRejectionReason
+---| "protected_keeper_or_no_loadout"
+---| "kickoff_hold"
+---| "soccer_commitment"
+---| "aerial_state_or_recovery"
+---| "forced_state"
+---| "already_committed"
+---| "cooldown"
+---| "missing_press_edge"
+---| "malformed_input"
+
+-- An accepted encounter terminates exactly once. `expire`, `guarded`, `immune`,
+-- `superseded`, and `hit` ride the contact/projectile events that already exist;
+-- the remaining four are the terminal events this module adds.
+---@alias CombatEncounterTerminal
+---| "miss"
+---| "expire"
+---| "guarded"
+---| "immune"
+---| "superseded"
+---| "hit"
+---| "interrupted"
+---| "cancelled"
+---| "match_terminated"
+
+---@alias CombatTerminalEventKind "miss"|"interrupted"|"cancelled"|"match_terminated"
+
 ---@alias CombatEventKind
+---| "request_rejected"
 ---| "commit"
 ---| "projectile_spawn"
 ---| "projectile_expire"
@@ -19,6 +54,10 @@ local player_pool = require("data.players")
 ---| "ball_spill"
 ---| "forced"
 ---| "guard_recoil"
+---| "miss"
+---| "interrupted"
+---| "cancelled"
+---| "match_terminated"
 
 ---@class CombatPlayerState
 ---@field loadout_id string?
@@ -53,6 +92,9 @@ local player_pool = require("data.players")
 ---@field target_index integer?
 ---@field source_sequence integer?
 ---@field result CombatContactResult?
+---@field outcome CombatRequestOutcome? -- Set on the two request rows only.
+---@field reason CombatRequestRejectionReason? -- Set on a rejected request only.
+---@field terminal CombatEncounterTerminal? -- Set on the row that closes a sequence.
 ---@field x number
 ---@field y number
 ---@field interruption_ticks integer?
@@ -83,6 +125,18 @@ local KNOCKBACK_THRESHOLD_PX = combat_rules.KNOCKBACK_THRESHOLD_PX
 local PROJECTILE_STEP_PX = assert(action_families.ranged.projectile_speed_px_per_second)
     * fixed_clock.TICK_SECONDS
 local EPSILON = 1e-9
+
+-- The closed terminal vocabulary has no `extended` member: an extended contact is
+-- a landed contact that lengthened an existing forced state, so `hit` is the only
+-- lawful terminal it can carry.
+---@type table<CombatContactResult, CombatEncounterTerminal>
+local CONTACT_TERMINALS = {
+    hit = "hit",
+    extended = "hit",
+    guarded = "guarded",
+    immune = "immune",
+    superseded = "superseded",
+}
 
 ---@class CombatModule
 local combat = {}
@@ -231,15 +285,22 @@ local function soccer_has_priority(input)
         or input.jockey
 end
 
+-- The gate below reads one predicate; the evidence contract types the same
+-- refusal with two different reasons, so the predicate is split rather than
+-- widened. Their union is exactly the commitment set the gate has always used.
 ---@param player MatchPlayer
 ---@return boolean
-local function player_has_soccer_commitment(player)
+local function player_has_aerial_commitment(player)
+    return player.aerial_timer > 0 or player.aerial_recovery > 0
+end
+
+---@param player MatchPlayer
+---@return boolean
+local function player_has_ground_commitment(player)
     return player.slide_timer > 0
         or player.tackle_timer > 0
         or player.jockey_timer > 0
         or player.dodge_timer > 0
-        or player.aerial_timer > 0
-        or player.aerial_recovery > 0
         or player.windup_timer > 0
         or player.windup_shot ~= nil
 end
@@ -261,6 +322,9 @@ local function commit_action(state, family_id, player_index, runtime, input, pos
     runtime.control_held = input.equipment_held
     runtime.projectile_spawned = false
     state.next_source_sequence = state.next_source_sequence + 1
+    -- The commit row is the accepted request: it is the only row that opens a
+    -- source sequence, so it carries the typed acceptance rather than duplicating
+    -- itself as a second request event.
     state.events[#state.events + 1] = {
         kind = "commit",
         tick = state.tick,
@@ -269,6 +333,67 @@ local function commit_action(state, family_id, player_index, runtime, input, pos
         target_index = nil,
         source_sequence = runtime.source_sequence,
         result = nil,
+        outcome = "accepted",
+        reason = nil,
+        terminal = nil,
+        x = position.x,
+        y = position.y,
+        interruption_ticks = nil,
+        displacement_px = nil,
+    }
+end
+
+---@param combat_state CombatMatchState
+---@param player_index integer
+---@param runtime CombatPlayerState
+---@param position Vec2
+---@param reason CombatRequestRejectionReason
+local function reject_request(combat_state, player_index, runtime, position, reason)
+    combat_state.events[#combat_state.events + 1] = {
+        kind = "request_rejected",
+        tick = combat_state.tick,
+        family_id = runtime.family_id,
+        source_index = player_index,
+        target_index = nil,
+        source_sequence = nil, -- A rejected request never becomes an encounter.
+        result = nil,
+        outcome = "rejected",
+        reason = reason,
+        terminal = nil,
+        x = position.x,
+        y = position.y,
+        interruption_ticks = nil,
+        displacement_px = nil,
+    }
+end
+
+---@param combat_state CombatMatchState
+---@param terminal CombatTerminalEventKind
+---@param tick integer
+---@param family_id ActionFamilyId?
+---@param source_index integer
+---@param source_sequence integer
+---@param position Vec2
+local function emit_terminal(
+    combat_state,
+    terminal,
+    tick,
+    family_id,
+    source_index,
+    source_sequence,
+    position
+)
+    combat_state.events[#combat_state.events + 1] = {
+        kind = terminal,
+        tick = tick,
+        family_id = family_id,
+        source_index = source_index,
+        target_index = nil,
+        source_sequence = source_sequence,
+        result = nil,
+        outcome = nil,
+        reason = nil,
+        terminal = terminal,
         x = position.x,
         y = position.y,
         interruption_ticks = nil,
@@ -280,6 +405,59 @@ end
 ---@return boolean
 local function is_committed(runtime)
     return runtime.phase ~= "ready"
+end
+
+-- True while the action itself still owes its sequence a terminal. A melee
+-- contact and a spawned projectile both hand that debt away: the contact row and
+-- the projectile's own contact/expiry row are the terminals, so cancelling the
+-- action afterwards must not write a second one.
+---@param runtime CombatPlayerState
+---@return boolean
+local function owes_terminal(runtime)
+    if runtime.source_sequence == nil then
+        return false
+    end
+    if runtime.family_id == "ranged" then
+        return not runtime.projectile_spawned
+    end
+    if runtime.family_id == "guard" then
+        return true
+    end
+    return not runtime.contacted
+end
+
+-- Precedence is the gate's own shape, then the closed vocabulary's order. The
+-- committed/forced branch also suppresses soccer input, so it owns the refusal
+-- instead of losing it to a same-tick soccer press.
+---@param state MatchState
+---@param match_player MatchPlayer
+---@param runtime CombatPlayerState
+---@param input MatchInput
+---@param ineligible boolean
+---@return CombatRequestRejectionReason?
+local function request_rejection(state, match_player, runtime, input, ineligible)
+    if match_player.is_keeper or not runtime.family_id then
+        return "protected_keeper_or_no_loadout"
+    end
+    if runtime.forced_ticks > 0 then
+        return "forced_state"
+    end
+    if is_committed(runtime) then
+        return "already_committed"
+    end
+    if state.kickoff_hold ~= 0 then
+        return "kickoff_hold"
+    end
+    if soccer_has_priority(input) or player_has_ground_commitment(match_player) then
+        return "soccer_commitment"
+    end
+    if ineligible or player_has_aerial_commitment(match_player) then
+        return "aerial_state_or_recovery"
+    end
+    if runtime.cooldown_ticks ~= 0 then
+        return "cooldown"
+    end
+    return nil
 end
 
 ---@param state MatchState
@@ -333,32 +511,41 @@ function combat.prepare_inputs(state, combat_state, inputs, equipment_ineligible
                 end
             end
 
+            local ineligible = (equipment_ineligible and equipment_ineligible[player_index])
+                or false
             if is_committed(runtime) or runtime.forced_ticks > 0 then
+                -- The press edge dies here, so it is recorded here. Without a
+                -- press there is no request at all, and no row is owed.
+                if input.equipment_pressed then
+                    reject_request(
+                        combat_state,
+                        player_index,
+                        runtime,
+                        match_player.pos,
+                        assert(request_rejection(state, match_player, runtime, input, ineligible))
+                    )
+                end
                 suppress_soccer_actions(input)
                 input.equipment_pressed = false
-            elseif
-                runtime.family_id
-                and runtime.cooldown_ticks == 0
-                and input.equipment_pressed
-                and state.kickoff_hold == 0
-                and not match_player.is_keeper
-                and not soccer_has_priority(input)
-                and not player_has_soccer_commitment(match_player)
-                and not (equipment_ineligible and equipment_ineligible[player_index])
-            then
-                commit_action(
-                    combat_state,
-                    runtime.family_id,
-                    player_index,
-                    runtime,
-                    input,
-                    match_player.pos
-                )
-                match_player.charge = 0
-                match_player.pass_charge = 0
-                match_player.pass_target = nil
-                suppress_soccer_actions(input)
-                input.equipment_pressed = false
+            elseif input.equipment_pressed then
+                local reason = request_rejection(state, match_player, runtime, input, ineligible)
+                if reason then
+                    reject_request(combat_state, player_index, runtime, match_player.pos, reason)
+                else
+                    commit_action(
+                        combat_state,
+                        assert(runtime.family_id),
+                        player_index,
+                        runtime,
+                        input,
+                        match_player.pos
+                    )
+                    match_player.charge = 0
+                    match_player.pass_charge = 0
+                    match_player.pass_target = nil
+                    suppress_soccer_actions(input)
+                    input.equipment_pressed = false
+                end
             end
         end
     end
@@ -577,6 +764,9 @@ local function spawn_projectile(state, combat_state, source_index, source_sequen
         target_index = nil,
         source_sequence = source_sequence,
         result = nil,
+        outcome = nil,
+        reason = nil,
+        terminal = nil,
         x = projectile.pos.x,
         y = projectile.pos.y,
         interruption_ticks = nil,
@@ -695,6 +885,9 @@ function combat.collect_contacts(state, combat_state)
                     target_index = nil,
                     source_sequence = projectile.source_sequence,
                     result = nil,
+                    outcome = nil,
+                    reason = nil,
+                    terminal = "expire",
                     x = end_pos.x,
                     y = end_pos.y,
                     interruption_ticks = nil,
@@ -788,6 +981,9 @@ function combat.sanitize_forced_players(state, combat_state)
     end
 end
 
+-- Every collected contact emits exactly one row, and a melee action contacts at
+-- most once while a projectile is consumed by its contact. The contact row is
+-- therefore its sequence's terminal.
 ---@param state MatchState
 ---@param combat_state CombatMatchState
 ---@param contact CombatContact
@@ -803,6 +999,9 @@ local function emit_contact(state, combat_state, contact, result)
         target_index = contact.target_index,
         source_sequence = contact.source_sequence,
         result = result,
+        outcome = nil,
+        reason = nil,
+        terminal = assert(CONTACT_TERMINALS[result]),
         x = target.pos.x,
         y = target.pos.y,
         interruption_ticks = outcome.interruption_ticks,
@@ -831,6 +1030,9 @@ local function apply_guard_recoil(state, combat_state, contact)
         target_index = contact.target_index,
         source_sequence = contact.source_sequence,
         result = "guarded",
+        outcome = nil,
+        reason = nil,
+        terminal = nil, -- The guarded contact row already closed the sequence.
         x = target.pos.x,
         y = target.pos.y,
         interruption_ticks = 0,
@@ -860,6 +1062,17 @@ local function apply_unguarded_outcome(state, combat_state, contact)
     runtime.chain_ticks = MAX_DISABLE_TICKS
     runtime.forced_state = outcome.displacement_px >= KNOCKBACK_THRESHOLD_PX and "knockback"
         or "stagger"
+    if owes_terminal(runtime) then
+        emit_terminal(
+            combat_state,
+            "interrupted",
+            combat_state.tick,
+            runtime.family_id,
+            target_index,
+            assert(runtime.source_sequence),
+            target.pos
+        )
+    end
     cancel_action(runtime)
     cancel_soccer_commitments(target)
 
@@ -877,6 +1090,9 @@ local function apply_unguarded_outcome(state, combat_state, contact)
         target_index = target_index,
         source_sequence = contact.source_sequence,
         result = "hit",
+        outcome = nil,
+        reason = nil,
+        terminal = nil, -- Consequence of the hit row, not a second terminal.
         x = target.pos.x,
         y = target.pos.y,
         interruption_ticks = runtime.forced_ticks,
@@ -894,6 +1110,9 @@ local function apply_unguarded_outcome(state, combat_state, contact)
             target_index = target_index,
             source_sequence = contact.source_sequence,
             result = "hit",
+            outcome = nil,
+            reason = nil,
+            terminal = nil, -- Consequence of the hit row, not a second terminal.
             x = state.ball.x,
             y = state.ball.y,
             interruption_ticks = nil,
@@ -936,8 +1155,11 @@ function combat.resolve_contacts(state, combat_state, contacts)
     end
 end
 
+---@param state MatchState
+---@param combat_state CombatMatchState
+---@param player_index integer
 ---@param runtime CombatPlayerState
-local function finish_action_tick(runtime)
+local function finish_action_tick(state, combat_state, player_index, runtime)
     if runtime.phase == "windup" then
         runtime.phase_ticks = runtime.phase_ticks - 1
         if runtime.phase_ticks == 0 then
@@ -970,14 +1192,31 @@ local function finish_action_tick(runtime)
     elseif runtime.phase == "recovery" then
         runtime.phase_ticks = runtime.phase_ticks - 1
         if runtime.phase_ticks == 0 then
+            if owes_terminal(runtime) then
+                -- A melee window that ran its course without a contact is the
+                -- miss the contract names. Guard has no contact of its own, so
+                -- releasing it closes the encounter under a lifecycle rule.
+                local family_id = assert(runtime.family_id)
+                local missed = action_families[family_id].contact_kind == "melee"
+                emit_terminal(
+                    combat_state,
+                    missed and "miss" or "cancelled",
+                    combat_state.tick,
+                    family_id,
+                    player_index,
+                    assert(runtime.source_sequence),
+                    state.players[player_index].pos
+                )
+            end
             cancel_action(runtime)
         end
     end
 end
 
+---@param state MatchState
 ---@param combat_state CombatMatchState
-function combat.finish_tick(combat_state)
-    for _, runtime in ipairs(combat_state.players) do
+function combat.finish_tick(state, combat_state)
+    for player_index, runtime in ipairs(combat_state.players) do
         if runtime.cooldown_ticks > 0 then
             runtime.cooldown_ticks = runtime.cooldown_ticks - 1
         end
@@ -994,9 +1233,53 @@ function combat.finish_tick(combat_state)
             runtime.immunity_ticks = runtime.immunity_ticks - 1
         end
 
-        finish_action_tick(runtime)
+        finish_action_tick(state, combat_state, player_index, runtime)
     end
     combat_state.tick = combat_state.tick + 1
+end
+
+-- Close every still-open encounter under one terminal. Callers run after
+-- `finish_tick` has already advanced the boundary (a goal) or immediately before
+-- the boundary advances (full time), so the causal tick is passed in rather than
+-- guessed.
+---@param state MatchState
+---@param combat_state CombatMatchState
+---@param terminal CombatTerminalEventKind
+---@param tick integer
+local function close_open_sequences(state, combat_state, terminal, tick)
+    for player_index, runtime in ipairs(combat_state.players) do
+        if owes_terminal(runtime) then
+            emit_terminal(
+                combat_state,
+                terminal,
+                tick,
+                runtime.family_id,
+                player_index,
+                assert(runtime.source_sequence),
+                state.players[player_index].pos
+            )
+        end
+    end
+    for _, projectile in ipairs(combat_state.projectiles) do
+        emit_terminal(
+            combat_state,
+            terminal,
+            tick,
+            projectile.family_id,
+            projectile.source_index,
+            projectile.source_sequence,
+            projectile.pos
+        )
+    end
+end
+
+-- Full time discards every open action and in-flight projectile. Each one still
+-- owes its sequence a terminal, and `match_terminated` is the only one with no
+-- forward attribution window.
+---@param state MatchState
+---@param combat_state CombatMatchState
+function combat.terminate_open_sequences(state, combat_state)
+    close_open_sequences(state, combat_state, "match_terminated", combat_state.tick)
 end
 
 -- Full time still consumes one slot-mode InputFrame boundary, but it must not
@@ -1025,8 +1308,14 @@ function combat.reset(combat_state)
     combat_state.next_source_sequence = 1
 end
 
+-- A goal restarts play under an allowed lifecycle rule, so anything still open
+-- terminates as `cancelled`. The caller has already run `finish_tick`, so this
+-- tick's rows still name the causal input tick one behind the boundary.
+---@param state MatchState
 ---@param combat_state CombatMatchState
-function combat.reset_for_kickoff(combat_state)
+function combat.reset_for_kickoff(state, combat_state)
+    assert(combat_state.tick >= 1, "a kickoff reset cannot precede the first boundary")
+    close_open_sequences(state, combat_state, "cancelled", combat_state.tick - 1)
     for index, runtime in ipairs(combat_state.players) do
         combat_state.players[index] = new_player_state(
             runtime.loadout_id,
