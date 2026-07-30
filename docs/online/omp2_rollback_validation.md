@@ -334,10 +334,19 @@ unblocked: eight concurrent projectiles now sit 91,086–104,875 bytes inside th
 #### Why the retained-storage gates moved
 
 `budgets.snapshot_bytes` went from 768 KiB to **896 KiB** and `budgets.history_bytes` from 1 MiB to
-**1152 KiB**, under [#209](https://github.com/osobytes/goliseo/issues/209). This is the second
-revision of the snapshot gate and it follows the first one's precedent exactly: neither figure is a
-hardware limit, both are product decisions, and a raise has to be earned with browser-runtime memory
-evidence rather than asserted.
+**1152 KiB**, under [#209](https://github.com/osobytes/goliseo/issues/209). What both revisions share
+is only this: neither figure is a hardware limit, and both are product decisions.
+
+**This revision is weaker than the first one, and the difference is worth being explicit about.**
+The 600 KiB → 768 KiB revision was *structurally forced* — the combat-companion snapshot data
+introduced at the time did not fit, so the gate had to move or the feature could not exist — and its
+safety case came from a **full post-merge CI campaign with pinned digests** (recorded above under the
+issue-55 and issue-56 revalidations). This revision is a *discretionary* margin-building decision:
+nothing is impossible at 768 KiB, the fixtures merely have to be shaped around it. Its safety case is
+**single-run local browser evidence**, gathered pre-merge specifically to argue for the number,
+because CI cannot produce soak evidence on a pull request (see the gating note below). That is a
+genuinely lower standard of proof than the first revision met, and a reader comparing the two should
+not be told they are equivalent.
 
 **Why now.** The combat window was 99.10% consumed — `omp2-combat-rollback-v1` at 779,362 bytes of
 786,432, leaving 7,070. Two things that are not optional were blocked by that: the projectile-stress
@@ -371,6 +380,22 @@ field names and the closed vocabularies add ~121 bytes more as literal text, so 
 without spending player-visible memory — which a third raise would. The adversarial-tick figure
 above (1,488,031 bytes, which 896 KiB does not accommodate) is the concrete argument that a raise of
 this scale cannot be the general answer.
+
+Worth being precise about how much #282 can actually recover, so it is not picked up under-sized:
+fully eliminating **both** the field names and the closed-vocabulary literal text takes the
+worst-case row from 456 bytes to roughly **155**. Fitting the sustained 51-row tick inside 896 KiB
+needs a row of **≤ ~95 bytes**. So encoding narrowing as currently scoped closes most of the gap but
+**not all of it** — the remainder is in the canonical number spelling, where each of the row's eight
+numeric fields costs ~16 bytes in the `sign:exponent:mantissa_hi:mantissa_lo` form. The adversarial
+tick needs that too, or a bound on rows per tick, or an explicit decision that it stays out of scope.
+
+**Why this evidence is local rather than from CI.** `rollback_browser_soak` and
+`rollback_browser_matrix` are gated `if: github.event_name != 'pull_request'`
+(`.github/workflows/ci.yml:516` and `:454`), as is `rollback_native` (`:393`); only
+`rollback_browser_stress` runs on a pull request. So CI structurally cannot produce the browser
+retained-memory evidence a gate raise depends on until *after* a merge to `main`. Any future raise
+faces the same constraint, and should expect to justify itself on local evidence plus the post-merge
+campaign rather than on a green PR.
 
 **The warning that arrives first.** `scripts/check_snapshot_headroom.sh` gates the
 `snapshot_active_ai_budget` marker at 32 KiB of remaining headroom, in both `scripts/check.sh` and
