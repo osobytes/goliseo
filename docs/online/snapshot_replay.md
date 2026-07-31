@@ -52,7 +52,7 @@ live window on a finished match or one that outlived both tactic windows, so a
 leaked timer cannot survive a lifecycle boundary. Soccer-only
 input-tape envelopes remain version 1. The current soccer
 fixture uses InputFrame v2 and is pinned at tape digest
-`2cc6894e771f78f9`;
+`82f35facb89fd36d`;
 the published historical InputFrame-v1/InputTape-v1 artifact remains archived
 at `881917e3ba798703`. Version 11 preserves the version-1 soccer tape envelope
 and all 7,201 effective input wires, not snapshot byte identity.
@@ -191,8 +191,12 @@ runtime, performance, and offline compatibility evidence is recorded in
 [`omp1_determinism.md`](omp1_determinism.md). This snapshot/tape layer remains
 diagnostic only; rollback and network behavior are still deferred to OMP-2.
 
-Snapshot-v11 also has a bounded synthetic replay regression for the goal window
-missing from the frozen 0-0 match. It constructs a real `InputTape` at the
+Snapshot-v11 also has a bounded synthetic replay regression for the away-goal
+window the frozen match does not contain. (The possessed-ball touchline fix
+later moved that match from 0-0 to 1-0, but the goal is the home side's, and the
+`goal_kickoff` coverage predicate and its restore-window assertion are both
+written against an away goal, so this regression is still the only thing
+covering that window.) It constructs a real `InputTape` at the
 pre-goal boundary with all keeper behavior/release fields populated,
 replays three neutral frames through the goal, kickoff reset, and a post-kickoff
 boundary, checks every canonical hash, and compares an independently restored

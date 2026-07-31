@@ -18,8 +18,8 @@ The current campaign freezes a mixed artifact matrix at 60 Hz:
 
 - every case uses InputFrame v2 and network-profile digest `5fbf1e0d51a6f4d5`;
 - soccer cases use InputTape v1 / MatchSnapshot v11, final hash
-  `f5bc4aaade430afb`, sequence digest `b4e10bdddd965a31`, and live tape digest
-  `2cc6894e771f78f9`;
+  `a61032872f88fc64`, sequence digest `ba5b9fd1546d2339`, and live tape digest
+  `82f35facb89fd36d`;
 - combat cases use InputTape v2 / MatchSnapshot v12, initial hash
   `0f7c7c66b5a6bbf6`, final hash `32ffe60cbec9d83a`, and tape digest
   `f4140ca5b3b9d2fc`; and
@@ -29,7 +29,14 @@ Runtime provenance therefore declares InputFrame v2 plus tape versions 1/2
 and snapshot versions 11/12; every case repeats and validates its exact artifact
 versions. Any merge that changes simulation, gameplay data or tuning,
 input/snapshot/event schemas, a pinned fixture, or network profiles invalidates
-the current evidence. The historical artifact remains an archive rather than
+the current evidence.
+
+The soccer figures above were re-pinned for the possessed-ball touchline fix,
+which changed simulation behaviour and so regenerated `data/omp1_determinism.lua`
+under this rule. The identity is the refreshed fixture's, and the native,
+browser-stress and soak rollback jobs re-run against it in CI. The measured
+byte, memory and CPU numbers further down were NOT re-measured, so they remain
+pre-refresh evidence for the same reason the issue-57 figures below do. The historical artifact remains an archive rather than
 silently becoming evidence for the changed contract.
 
 ## Required matrix
@@ -1228,7 +1235,9 @@ The possession-transition contract (`MatchState.transition_windows` and
 `MatchState.transition`) moved soccer snapshots to v11 and combat snapshots to
 v12, superseding the issue-46 v10/v11 figures. The pinned artifact identity was
 regenerated from source — soccer final hash `f5bc4aaade430afb`, sequence digest
-`b4e10bdddd965a31`, live soccer tape digest `2cc6894e771f78f9`, and the combat
+`b4e10bdddd965a31`, live soccer tape digest `2cc6894e771f78f9` (the soccer three
+were later superseded by the possessed-ball refresh recorded above; these are the
+values as of this migration), and the combat
 fixture's `0f7c7c66b5a6bbf6` / `32ffe60cbec9d83a` / `f4140ca5b3b9d2fc` — and the
 harness self-tests plus the complete headless suite pass. The full 54-case
 native campaign, the late-window pair, the ten-case soak, and the browser

@@ -53,18 +53,37 @@ The authoritative values are:
 
 ```text
 boundaries=7202
-final_hash=f5bc4aaade430afb
-sequence_digest=b4e10bdddd965a31
-score=0-0
-outcome=draw
-final_snapshot_bytes=21937
+final_hash=a61032872f88fc64
+sequence_digest=ba5b9fd1546d2339
+score=1-0
+outcome=home
+final_snapshot_bytes=21867
 ```
 
 The complete match produced:
 
 ```text
-catch=1 claim=4 header=2 pass=5 reception=1 shot=1 tackle=147 touch=173
+catch=1 claim=3 header=2 pass=4 reception=1 shot=1 tackle=147 touch=184
 ```
+
+These values were last refreshed for the possessed-ball touchline fix. That
+fix clamps an owned ball to the arena, and this fixture is direct evidence the
+old code let one out: boundaries `0..2026` are bit-identical across the
+refresh and only `2027` onward moves, so the clamp is a genuine no-op until the
+first tick on which the ball actually leaves the pitch.
+
+Because a stranded ball no longer kills the attack it was part of, the fixture
+now runs to `1-0` rather than `0-0`; one `claim` and one `pass` become eleven
+more `touch` events, which is play continuing instead of stalling. The frozen
+input wires are unchanged byte-for-byte, as is every identity and schema field,
+so the authoritative input contract did not move -- only the state the same
+inputs now produce. `coverage` still reports `tackle,aerial,keeper,full_time`.
+Note that it does so even though the match now scores: the `goal_kickoff`
+predicate is written against an *away* goal (`score.away > 0`), and this one is
+the home side's, so the goal/kickoff window remains uncovered by the frozen
+match and is still carried by the bounded synthetic tape described in
+`snapshot_replay.md`. The fixture's outcome is also no longer a draw, so no
+OMP-1 evidence exercises a drawn full time.
 
 `sim.determinism_evidence` reports the causal tick and expected/actual hash on
 the first mismatch. A normal verification cannot regenerate its expectation.
@@ -101,7 +120,9 @@ capped hold streak, the turnover winner, and seconds since that turnover) that
 Fixed-slot players remain excluded from match AI, so the frozen score, event
 counts, and effective inputs do not change; every outfielder in this fixture
 owns an input slot, so no transition phase steers anyone in it. The new state
-grows the final snapshot from 21,659 to 21,937 bytes. Only schema identity,
+grew the final snapshot from 21,659 to 21,937 bytes at that migration; the
+possessed-ball refresh above later moved it to 21,867 by changing the state the
+same inputs reach, not the schema. Only schema identity,
 canonical bytes, boundary hashes, sequence digest, and snapshot size are
 refreshed.
 
@@ -163,9 +184,11 @@ and all 7,201 input wires, but deliberately regenerated boundary evidence. Base
 depth now varies from the physical one-radius inset at 12 px to an 18 px cap as
 the attack approaches; a bounded 40 px near-post bias makes the far-corner
 concession explicit without preserving the legacy lateral band.
-The frozen outcome is 0-0. The hashes, event counts, and final snapshot size
-above describe that final audited behavior rather than either earlier
-fixed-depth snapshot-v5 candidate.
+The frozen outcome was 0-0 at that point, and the hashes, event counts and
+final snapshot size described that audited behavior rather than either earlier
+fixed-depth snapshot-v5 candidate. The possessed-ball refresh recorded at the
+top of this file has since moved the outcome to 1-0, so the authoritative block
+above is no longer this paragraph's evidence.
 
 ## Restore/replay windows
 

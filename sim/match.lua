@@ -4581,16 +4581,31 @@ local function update_ball(s, dt, inputs, combat_state)
         -- carrier could not walk out to it either, so the only way to recover
         -- the ball was to shoot it back in.
         --
-        -- Goals sit outside the field, but a ball in the net is never dribbled:
-        -- a keeper holding one is positioned by keeper_hold_pos, which clamps
-        -- separately and does not reach here.
-        -- Clamp to the field EXACTLY, not to a ball-radius inset. Enforcing an
-        -- inset here would nudge a ball being dribbled along a goal line, which
-        -- is legal play -- and that changes match outcomes, which the pinned
-        -- determinism evidence rightly catches. Rescuing a ball that has left
-        -- the pitch must be a no-op everywhere else.
+        -- The region to keep it in is the ARENA -- the pitch plus the two net
+        -- boxes behind the goal mouths -- which is exactly what the loose-ball
+        -- walls below enforce. It is NOT the pitch. A dribbled ball genuinely
+        -- travels ahead of the carrier rather than being pinned to their feet,
+        -- and check_goal needs it to cross a goal line, so clamping a possessed
+        -- ball to the pitch would mean a ball walked into the net could never
+        -- be a goal. Away from the mouths the two regions coincide.
+        --
+        -- Clamp to the boundary EXACTLY, not to a ball-radius inset. An inset
+        -- would nudge a ball being dribbled along a goal line, which is legal
+        -- play. Rescuing a ball that has left the arena must be a no-op
+        -- everywhere else.
+        -- `in_mouth` tests the y band only, and both goals share that band, so
+        -- which side is open has to come from x -- exactly as the loose-ball
+        -- walls below pair the two. Testing the band alone matches whichever
+        -- goal is written first for any ball at mid-height, which silently
+        -- leaves the other goal line unreachable.
+        local min_x, max_x = 0, s.field.w
+        if s.ball.x < 0 and in_mouth(s.ball, s.goal_home) then
+            min_x = s.goal_home.x
+        elseif s.ball.x > s.field.w and in_mouth(s.ball, s.goal_away) then
+            max_x = s.goal_away.x + s.goal_away.w
+        end
         s.ball = Vec2.new(
-            math.max(0, math.min(s.field.w, s.ball.x)),
+            math.max(min_x, math.min(max_x, s.ball.x)),
             math.max(0, math.min(s.field.h, s.ball.y))
         )
         return
