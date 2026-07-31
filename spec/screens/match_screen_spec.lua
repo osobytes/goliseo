@@ -1,7 +1,12 @@
 local t = require("spec.support.runner")
 local Match = require("game.screens.match")
+local bindings = require("game.input.bindings")
 local fixed_clock = require("sim.fixed_clock")
 local sim_match = require("sim.match")
+
+-- Press the role, not the key: these follow a rebind instead of pinning one.
+local PLAY_KEY = bindings.control("play").keys[1]
+local MODIFIER_KEY = bindings.control("modifier").keys[1]
 
 t.describe("match screen rematch (tier 2)", function()
     t.it("R restarts a finished match with the same pre-match choices", function()
@@ -142,7 +147,7 @@ t.describe("match screen contextual controls (tier 2)", function()
         down.space = true
         m:update(1 / 60) -- hold one frame
         t.is_true(me.jockey_timer > 0, "holding Space off the ball engages jockey stance")
-        -- _space_held_prev is set; release now → poke fires next update.
+        -- _action_held_prev is set; release now → poke fires next update.
         -- The poke manifests as tackle_timer > 0 on the controlled player.
         me.tackle_cd = 0 -- ensure the poke isn't blocked by cooldown
         me.slide_timer = 0
@@ -200,26 +205,26 @@ t.describe("match screen lob latch (tier 2)", function()
         assert(ok, err)
     end
 
-    t.it("L held during a charged pass lofts it even if L lifts a frame early", function()
+    t.it("MODIFIER held during a charged pass lofts it even if it lifts early", function()
         with_keys(function(down)
             local m = Match.new() -- carrying at kickoff
-            down.k, down.l = true, true
-            m:update(1 / 60) -- charging the pass with L held
+            down[PLAY_KEY], down[MODIFIER_KEY] = true, true
+            m:update(1 / 60) -- charging the pass with the modifier held
             m:update(1 / 60)
-            down.l = false
-            m:update(1 / 60) -- L released a beat before K...
-            down.k = false
-            m:update(1 / 60) -- ...K release fires the pass
+            down[MODIFIER_KEY] = false
+            m:update(1 / 60) -- modifier released a beat before PLAY...
+            down[PLAY_KEY] = false
+            m:update(1 / 60) -- ...PLAY release fires the pass
             t.is_true(m.state.owner ~= m.state.controlled, "the pass released")
-            t.is_true(m.state.ball_vz > 0, "and it was lofted: the latch held L for us")
+            t.is_true(m.state.ball_vz > 0, "and it was lofted: the latch held the modifier for us")
         end)
     end)
 
-    t.it("holding K charges the pass range for an outfielder", function()
+    t.it("holding PLAY charges the pass range for an outfielder", function()
         with_keys(function(down)
             local m = Match.new()
-            down.k = true
-            for _ = 1, 20 do -- a third of a second of holding K
+            down[PLAY_KEY] = true
+            for _ = 1, 20 do -- a third of a second of holding PLAY
                 m:update(1 / 60) -- (a full meter would auto-fire and reset)
             end
             t.is_true(

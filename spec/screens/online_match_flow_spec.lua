@@ -11,6 +11,7 @@
 -- the whole thing is the production path with one number turned down.
 
 local t = require("spec.support.runner")
+local bindings = require("game.input.bindings")
 local lobby_model = require("game.screens.lobby_model")
 local live_slot = require("game.online.live_slot")
 local match_driver = require("game.online.match_driver")
@@ -621,8 +622,13 @@ t.describe("online combat families", function()
                     for frame = 1, frames do
                         local pressing = route ~= nil
                             and (frame - 1) % FAMILY_PRESS_PERIOD < FAMILY_PRESS_PERIOD / 2
-                        keys.j = route == "keyboard" and pressing or false
-                        buttons.b = route == "gamepad" and pressing or false
+                        -- The equipment role, not a pinned key: this follows a rebind.
+                        keys[bindings.control("equipment").keys[1]] = route == "keyboard"
+                                and pressing
+                            or false
+                        buttons[bindings.control("equipment").buttons[1]] = route == "gamepad"
+                                and pressing
+                            or false
                         run(state, 1)
                         for index, screen in ipairs(state.matches) do
                             local witness = witnesses[index]

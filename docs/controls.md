@@ -1,5 +1,10 @@
 # Controls
 
+Every binding below lives in `game/input/bindings.lua` and nowhere else. The
+menu action layer, the match's per-frame polling, and the in-game help card all
+read that one table, so this page describes a single source rather than
+shadowing three.
+
 ## Match
 
 Two contextual action buttons plus sprint. The same button does the natural
@@ -12,7 +17,7 @@ without pausing play.
 | **ACTION** — shoot / tackle | Space | A |
 | **PLAY** — pass / switch | K | X |
 | Sprint | Shift (hold) | LB (hold) |
-| Lob / chip modifier | L (hold) | Y (hold) |
+| **MODIFIER** — lob / chip | L (hold) | Y (hold) |
 | Juke / dodge | C | L3 |
 | Equipment | J (hold/tap) | B (hold/tap) |
 | Pause | P or Esc | Start |
@@ -23,19 +28,23 @@ without pausing play.
 Rematches are chosen on the dedicated result screen. Full time owns the pitch
 for a brief broadcast beat before that screen appears.
 
-- **Shooting** (Space with the ball) aims at the goal; hold up/down to place it into a corner.
-  Hold Space to **charge** a harder shot; holding left/right at release **curves** it.
-- **Tackling** (Space without the ball) has two modes: **tap** (release quickly) fires a
+The prose below names the **role** (ACTION, PLAY, MODIFIER, Sprint) rather than a
+key, because the role is what the mechanic is about and the table above is the
+only place a binding should be written down.
+
+- **Shooting** (ACTION with the ball) aims at the goal; hold up/down to place it into a corner.
+  Hold ACTION to **charge** a harder shot; holding left/right at release **curves** it.
+- **Tackling** (ACTION without the ball) has two modes: **tap** (release quickly) fires a
   standing poke; **hold** enters **jockey stance** — you slow to 75 % and your facing locks
-  toward the ball, shadowing the carrier. Releasing Space from jockey fires the poke with
+  toward the ball, shadowing the carrier. Releasing ACTION from jockey fires the poke with
   a **+6 bonus reach** as the reward for containing first. While **sprinting** instead of
   jockeying, the poke becomes a committed **slide tackle** whose speed scales with your pace.
   Slides reach further and knock the carrier off balance, but lock you in with a longer
-  recovery — *sprint + Space* is the big play, and it can miss.
-- **Sprint** (hold Shift) burns a **stamina meter** (shown above the help text when not full);
+  recovery — *Sprint + ACTION* is the big play, and it can miss.
+- **Sprint** (hold) burns a **stamina meter** (shown above the help text when not full);
   it refills whenever you're not sprinting, and the **stamina** stat sets how big the tank is.
   An empty tank means no boost until it meaningfully recovers.
-- **Switching** (K without the ball) hands control to the home outfielder **nearest the ball**;
+- **Switching** (PLAY without the ball) hands control to the home outfielder **nearest the ball**;
   winning the ball auto-switches control to the winner.
 - **Keeping the ball**: challenges reach for the *ball*, not your body — it sticks a step ahead
   of your facing, so turning between a defender and the ball **shields** it. Defenders commit
@@ -45,22 +54,23 @@ for a brief broadcast beat before that screen appears.
   will work around your body, and a defender leaning on you shoves you off your spot — standing
   still is never safe, keep turning or move.
 - **You control your keeper**: when your keeper gathers the ball, control switches to it.
-  **K** (hold to charge) throws — the longer you hold, the further along your aim it picks a
-  teammate; **Space** (hold to charge) is a **punt** off the foot, clearing high toward
+  **PLAY** (hold to charge) throws — the longer you hold, the further along your aim it picks a
+  teammate; **ACTION** (hold to charge) is a **punt** off the foot, clearing high toward
   mid/front field as far as you charge it. You can walk it around inside your box; after ~5
   seconds the keeper distributes on its own (six-second rule).
-- **Crosses**: a lofted pass (hold L + K) from wide in the attacking third becomes a **cross**
-  aimed at your teammate in the box — AI wingers swing them in too. **Control follows every
-  pass you make**: the moment the ball leaves your foot you're driving the receiver, so run
-  onto the cross and meet it with Space — holding a direction at contact **aims the header or
+- **Crosses**: a lofted pass (hold MODIFIER + PLAY) from wide in the attacking third becomes a
+  **cross** aimed at your teammate in the box — AI wingers swing them in too. **Control follows
+  every pass you make**: the moment the ball leaves your foot you're driving the receiver, so run
+  onto the cross and meet it with ACTION — holding a direction at contact **aims the header or
   volley** wherever you point (undirected strikes go at goal).
-- **Aerial reception**: do not press Space under a descending lob to control it. The player
+- **Aerial reception**: do not press ACTION under a descending lob to control it. The player
   automatically chooses an extended-leg or chest touch, jumping when needed, and cushions the
   real ball toward their feet. Technique, mental, distance, ball pace, drop speed, required
   jump, body alignment, movement, and pressure decide whether the touch is clean, heavy, or
   missed. Hold a direction to cushion into that space.
-- **Aerial finishing**: hold **Space** under a dropping ball for a standing or jumping header /
-  volley. Hold **L + Space** to request a **bicycle kick** when the ball is overhead or behind;
+- **Aerial finishing**: hold **ACTION** under a dropping ball for a standing or jumping header /
+  volley. Hold **MODIFIER + ACTION** to request a **bicycle kick** when the ball is overhead or
+  behind;
   invalid bicycle geometry safely falls back to a conventional strike. Bicycles are powerful
   but difficult and leave the player recovering on the ground. The arena is a **cage**: a skied
   strike bounces off the ceiling and rains back into play.
@@ -79,7 +89,8 @@ for a brief broadcast beat before that screen appears.
 - Players have **bodies**: they block and bump each other, and a slide that connects shoves and
   briefly stuns the player it hits.
 - Fast shots and driven passes **ricochet off bodies** — a defender in the lane blocks the shot,
-  so shoot around them, chip over them (L), or pass for a better angle. Slow balls are trapped,
+  so shoot around them, chip over them (MODIFIER), or pass for a better angle. Slow balls are
+  trapped,
   not deflected, and lobs sail over heads.
 - **Finishing**: charge and aim for a corner to beat the keeper. Whether a reached save is
   **held or parried** is a dice roll weighted by shot pace and the keeper's handling — soft,
