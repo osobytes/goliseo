@@ -17,13 +17,36 @@ without pausing play.
 | **ACTION** — shoot / tackle | Space | A |
 | **PLAY** — pass / switch | K | X |
 | Sprint | Shift (hold) | LB (hold) |
-| **MODIFIER** — lob / chip | L (hold) | Y (hold) |
-| Juke / dodge | C | L3 |
-| Equipment | J (hold/tap) | B (hold/tap) |
-| Pause | P or Esc | Start |
+| **MODIFIER** — lob / chip | J (hold) | RT (hold) |
+| Juke / dodge | L | Y |
+| Equipment | U (hold/tap) | RB (hold/tap) |
+| Pause | P or Esc | Start or B |
 | Skip replay / advance full time | Space or Enter | A |
 | Toggle mute | M | — |
 | Toggle fullscreen | F11 | — |
+
+### Why the bindings sit where they do
+
+The layout obeys four rules, and a rebinding screen should re-check them:
+
+1. **The left hand never leaves WASD.** Sprint is its pinky and ACTION its
+   thumb; no other hold lands on that hand.
+2. **A held modifier never shares a finger with what it modifies.** On keyboard
+   that is the right index (J) against PLAY on the right middle (K) — the most
+   independent same-hand pair. The modifier used to be L, the ring finger
+   directly beside K, which is why the code needs a latch to catch a modifier
+   released a frame early. On gamepad the modifier is a trigger, never a face
+   button: it used to be Y, and no thumb can hold Y while pressing A or X, which
+   made the bicycle kick (MODIFIER + ACTION) unreachable on a controller.
+3. **Movement-adjacent taps stay off the movement hand.** Juke was C, which
+   forced the left hand off WASD to perform a movement action, and L3, which
+   means clicking the stick you are steering with.
+4. **No edge action sits on a gamepad trigger.** LÖVE reports triggers as axes,
+   so `love.gamepadpressed` never fires for one. Triggers can carry holds only,
+   which is why the hold-only modifier is the single control bound to one.
+
+Gamepad **B is Back in every context**, including inside a match. It used to
+double as Equipment there; Equipment has RB now.
 
 Rematches are chosen on the dedicated result screen. Full time owns the pitch
 for a brief broadcast beat before that screen appears.
@@ -70,8 +93,7 @@ only place a binding should be written down.
   missed. Hold a direction to cushion into that space.
 - **Aerial finishing**: hold **ACTION** under a dropping ball for a standing or jumping header /
   volley. Hold **MODIFIER + ACTION** to request a **bicycle kick** when the ball is overhead or
-  behind;
-  invalid bicycle geometry safely falls back to a conventional strike. Bicycles are powerful
+  behind; invalid bicycle geometry safely falls back to a conventional strike. Bicycles are powerful
   but difficult and leave the player recovering on the ground. The arena is a **cage**: a skied
   strike bounces off the ceiling and rains back into play.
 - **The keeper is protected**: while a keeper holds the ball, everyone backs well off its ring
@@ -90,8 +112,7 @@ only place a binding should be written down.
   briefly stuns the player it hits.
 - Fast shots and driven passes **ricochet off bodies** — a defender in the lane blocks the shot,
   so shoot around them, chip over them (MODIFIER), or pass for a better angle. Slow balls are
-  trapped,
-  not deflected, and lobs sail over heads.
+  trapped, not deflected, and lobs sail over heads.
 - **Finishing**: charge and aim for a corner to beat the keeper. Whether a reached save is
   **held or parried** is a dice roll weighted by shot pace and the keeper's handling — soft,
   central shots stick in the gloves almost every time; hot or full-stretch balls usually get
@@ -109,7 +130,8 @@ simulation step), so taps don't get lost between frames.
 
 Equipment input likewise preserves held state plus distinct press and release edges at the
 fixed-tick boundary. A fast tap between ticks reaches the simulation as an ordered press and
-release on the next tick. Gamepad B remains the Back action outside a live match.
+release on the next tick. Equipment has its own button on both devices now, so
+gamepad B is the Back action in every context including a live match.
 
 Equipment is active only after choosing **Combat Prototype** on the title screen. **Play
 Showcase** remains the committed release path and constructs no combat state; its match rules

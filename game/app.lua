@@ -396,8 +396,7 @@ end
 ---@param event InputEvent|RawGamepadEvent
 function App:event(event)
     local route = self:current_route()
-    local in_match = route == "match" or route == "online_match"
-    local normalized = controller.normalize(event, self.transform, in_match)
+    local normalized = controller.normalize(event, self.transform)
     if not normalized then
         return
     end

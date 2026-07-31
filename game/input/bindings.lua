@@ -8,9 +8,17 @@
 -- `docs/controls.md` and the help screen both render `bindings.reference`, so a
 -- binding cannot drift from what the game tells the player it is.
 --
--- This commit moves the existing bindings here unchanged; it is a refactor and
--- nothing a player presses has moved. The ergonomics of the layout itself are
--- issue #311's second half.
+-- The layout obeys four ergonomic rules. They are the reason each binding sits
+-- where it does, and a future rebinding screen should re-check them:
+--   1. The left hand never leaves WASD. Sprint is its pinky and ACTION its
+--      thumb; no other hold lands on that hand.
+--   2. A held modifier never shares a finger with what it modifies. On keyboard
+--      that is the right index (J) against PLAY on the right middle (K), the
+--      most independent same-hand pair. On gamepad it is a trigger, never a
+--      face button, because one thumb cannot hold two.
+--   3. Movement-adjacent taps (juke) stay off the movement hand.
+--   4. No EDGE action sits on a gamepad trigger. LÖVE reports triggers as axes,
+--      so `love.gamepadpressed` never fires for one; triggers carry holds only.
 
 ---@alias ControlId
 ---|"move_up"
@@ -78,11 +86,18 @@ local CONTROLS = {
         buttons = { "leftshoulder" },
         axes = {},
     },
-    { id = "modifier", action = "lob", keys = { "l" }, buttons = { "y" }, axes = {} },
-    { id = "juke", action = "juke", keys = { "c" }, buttons = { "leftstick" }, axes = {} },
-    -- Equipment shares gamepad B with Back, which `actions.from_gamepad` still
-    -- has to disambiguate by context. Issue #311 gives it its own button.
-    { id = "equipment", action = "equipment", keys = { "j" }, buttons = { "b" }, axes = {} },
+    -- Hold-only, so it is free to take the trigger that rule 4 closes to edges.
+    -- It was gamepad Y, which no thumb can hold while pressing A or X.
+    { id = "modifier", action = "lob", keys = { "j" }, buttons = {}, axes = { "triggerright" } },
+    -- A tap, and never combined with the modifier, so it keeps a face button.
+    { id = "juke", action = "juke", keys = { "l" }, buttons = { "y" }, axes = {} },
+    {
+        id = "equipment",
+        action = "equipment",
+        keys = { "u" },
+        buttons = { "rightshoulder" },
+        axes = {},
+    },
     { id = "confirm", action = "confirm", keys = { "return", "kpenter" }, buttons = {}, axes = {} },
     { id = "back", action = "back", keys = { "escape" }, buttons = { "b" }, axes = {} },
     { id = "pause", action = "pause", keys = { "p" }, buttons = { "start" }, axes = {} },
