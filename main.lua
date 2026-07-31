@@ -37,6 +37,35 @@ local function has_flag(a)
     return false
 end
 
+-- Opt into the rigged 3D player renderer for a manual look. Off by default and
+-- deliberately a flag rather than a setting: the procedural renderer is still
+-- the shipping path until the ten-player benchmark says otherwise.
+if has_flag("--rigged-players") then
+    require("game.render.pitch").rigged_players = true
+end
+
+-- Opt into the broadcast-style following camera for a manual look. An optional
+-- value tunes the zoom (`--follow-cam 2.0`) so framing can be judged by playing
+-- rather than by editing a constant and restarting.
+if has_flag("--follow-cam") then
+    require("game.render.pitch").follow_camera = true
+    -- A following camera only makes sense with real perspective: magnifying the
+    -- fixed trapezoid flattens it the closer you get.
+    require("game.render.camera").perspective_mode = true
+    for index, value in ipairs(arg or {}) do
+        if value == "--follow-cam" then
+            local zoom = tonumber(arg[index + 1])
+            if zoom then
+                require("game.render.camera_follow").config.zoom = zoom
+            end
+        end
+    end
+end
+
+-- Boot straight into a match. Purely a playtest convenience: menus are not what
+-- anyone is trying to evaluate when looking at the renderer.
+local quick_match = has_flag("--quick-match")
+
 if has_flag("--test") then
     function love.load()
         local runner = require("spec.support.runner")
@@ -1029,6 +1058,7 @@ function love.load()
     metrics = compatibility_metrics.new(clock())
     local width, height = love.graphics.getDimensions()
     app = bootstrap.new(width, height, {
+        quick_match = quick_match,
         apply_settings = apply_settings,
         request_quit = function()
             love.event.quit()

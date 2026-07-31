@@ -96,8 +96,40 @@ local function ensure(w, h)
             print("bloom disabled (canvas creation failed): " .. tostring(err))
             return false
         end
+
+        -- Depth attachment for the scene pass. Optional on purpose: a runtime
+        -- that cannot supply one (some love.js builds) still gets bloom, it
+        -- just cannot host the 3D player pass. Callers check bloom.hasDepth().
+        state.depth = nil
+        local depth_ok, depth_err = pcall(function()
+            state.depth = love.graphics.newCanvas(math.floor(w), math.floor(h), {
+                format = "depth24stencil8",
+                readable = false,
+            })
+        end)
+        if not depth_ok then
+            state.depth = nil
+            print("3D depth pass unavailable (depth canvas failed): " .. tostring(depth_err))
+        end
     end
     return true
+end
+
+-- True when the scene pass has a depth buffer attached, i.e. a 3D phase inside
+-- `render_fn` can depth-test. False on runtimes where the depth canvas could
+-- not be created, which is a supported state -- the caller falls back.
+---@return boolean
+function bloom.hasDepth()
+    if not bloom.config.enabled then
+        -- Bloom off means render_fn draws straight to the window, so the
+        -- window's own depth buffer is what matters.
+        local ok, _, _, flags = pcall(love.window.getMode)
+        -- LÖVE's type definitions omit `depth` from the window flags table even
+        -- though conf.lua sets it and getMode returns it at runtime.
+        ---@diagnostic disable-next-line: undefined-field
+        return ok and flags ~= nil and (flags.depth or 0) > 0
+    end
+    return state.depth ~= nil
 end
 
 -- Render `render_fn` with bloom applied (or plain, if bloom is unavailable).
@@ -106,6 +138,12 @@ function bloom.draw(render_fn)
     local w, h = love.graphics.getDimensions()
     if not bloom.config.enabled or not ensure(w, h) then
         render_fn()
+        -- Same cleanup as the bloom path below. Without it the two differ: a 3D
+        -- phase inside render_fn that leaves depth or cull state applied would
+        -- leak into the rest of the frame only when bloom happens to be off.
+        love.graphics.setDepthMode()
+        love.graphics.setMeshCullMode("none")
+        love.graphics.setShader()
         return
     end
 
@@ -116,10 +154,20 @@ function bloom.draw(render_fn)
     local b = assert(state.b)
     local lw, lh = a:getWidth(), a:getHeight()
 
-    -- 1. Capture the frame.
-    love.graphics.setCanvas(scene)
-    love.graphics.clear(0, 0, 0, 1)
+    -- 1. Capture the frame. The depth buffer is bound for the whole scene pass
+    -- so a 3D phase inside render_fn can depth-test; 2D drawing ignores it
+    -- because depth mode stays off unless that phase turns it on.
+    if state.depth then
+        love.graphics.setCanvas({ scene, depthstencil = state.depth })
+    else
+        love.graphics.setCanvas(scene)
+    end
+    love.graphics.clear(0, 0, 0, 1, true, true)
     render_fn()
+    -- Whatever the 3D phase did, the rest of the pipeline is 2D.
+    love.graphics.setDepthMode()
+    love.graphics.setMeshCullMode("none")
+    love.graphics.setShader()
     love.graphics.setCanvas()
 
     -- 2. Bright-pass into the low-res buffer.

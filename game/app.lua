@@ -27,6 +27,7 @@ local ScreenStack = require("game.screen_stack")
 ---@field match_adapter MatchAdapter?
 ---@field apply_settings fun(settings: GameSettings)?
 ---@field request_quit fun()?
+---@field quick_match boolean?  -- playtest: boot straight into a match
 
 ---@class App
 ---@field stack ScreenStack
@@ -62,7 +63,13 @@ function App.new(opts)
     self.routes = {}
     self.quit_requested = false
     self.online_error = nil
-    self:show_title()
+    -- Playtest convenience: boot straight into a match. Menus are not what
+    -- anyone is evaluating when they are looking at the renderer.
+    if opts and opts.quick_match then
+        self:start_match()
+    else
+        self:show_title()
+    end
     return self
 end
 
