@@ -37,6 +37,13 @@ local function has_flag(a)
     return false
 end
 
+-- Opt into the rigged 3D player renderer for a manual look. Off by default and
+-- deliberately a flag rather than a setting: the procedural renderer is still
+-- the shipping path until the ten-player benchmark says otherwise.
+if has_flag("--rigged-players") then
+    require("game.render.pitch").rigged_players = true
+end
+
 if has_flag("--test") then
     function love.load()
         local runner = require("spec.support.runner")

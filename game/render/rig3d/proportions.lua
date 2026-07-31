@@ -1,0 +1,78 @@
+-- The single conformant rig.
+--
+-- An earlier pass in this prototype explored three proportion sets (a 7-head
+-- legionary, a 5-head hero and a 2.6-head mascot). That exploration is retired:
+-- docs/design/prototype_theme_roster.md puts "unrestricted character
+-- proportions or a second production rig" explicitly OUT OF SCOPE, and requires
+-- that "All six use one validated Rig_Medium skeleton contract".
+--
+-- So there is one rig here, and the three themes differ only in shape language,
+-- material and palette -- which is exactly the claim the roster makes and this
+-- prototype exists to test.
+--
+-- `seg` values are bone lengths in metres and drive the skeleton.
+-- `form` values drive the body shapes.
+-- `gear.over` is how far armour stands proud of the limb it wraps: the single
+-- number that decides whether kit reads as *equipped* or as body paint. Below
+-- about 1.10 the shell intersects the limb and the eye reads one blob.
+
+local proportions = {}
+
+-- A stylised medium humanoid: broad enough to carry plate, readable at match
+-- camera scale, roughly five heads tall.
+proportions.RIG_MEDIUM = {
+    key = "rig_medium",
+    label = "Rig_Medium",
+    seg = {
+        hips_y = 0.80,
+        spine = 0.09,
+        chest = 0.19,
+        neck = 0.10,
+        head = 0.05,
+        shoulder_x = 0.085, -- clavicle position on the chest
+        shoulder_y = 0.15,
+        arm_x = 0.155, -- upper arm offset from the clavicle
+        upperarm = 0.24,
+        lowerarm = 0.21,
+        thigh_x = 0.105,
+        thigh_y = -0.04,
+        upperleg = 0.36,
+        lowerleg = 0.30,
+    },
+    form = {
+        segments = 12,
+        head_r = 0.145,
+        head_round = 0.62,
+        eye_y = 0.52,
+        neck_r = 0.062,
+        torso_r = 0.185,
+        torso_bulge = 1.14,
+        arm_r = 0.074,
+        arm_taper = 0.86,
+        leg_r = 0.098,
+        leg_taper = 0.80,
+        hand_r = 0.058,
+        foot_len = 0.24,
+        foot_w = 0.120,
+        cap = 0.55,
+    },
+    gear = { over = 1.24 },
+    motion_scale = 0.88,
+}
+
+-- Approximate standing height in metres: the bone chain up to the head plus the
+-- skull the head builder puts on top of it. Used to frame the camera.
+---@param rig table
+---@return number
+function proportions.height(rig)
+    local s, f = rig.seg, rig.form
+    return s.hips_y
+        + s.spine
+        + s.chest
+        + s.neck
+        + s.head
+        + 0.02
+        + f.head_r * (2.5 - 0.5 * f.head_round)
+end
+
+return proportions
