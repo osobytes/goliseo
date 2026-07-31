@@ -3,6 +3,7 @@
 -- (Bloom/neon post-processing is a later pass; this is the geometry layer.)
 
 local camera = require("game.render.camera")
+local camera_follow = require("game.render.camera_follow")
 local arena_render = require("game.render.arena")
 local combat_render = require("game.render.combat")
 local player_renderer = require("game.render.player_renderer")
@@ -22,6 +23,10 @@ local pitch = {}
 -- Opt-in rigged 3D players. Off by default: the procedural 2.5D renderer stays
 -- the shipping path until the benchmark gate says otherwise.
 pitch.rigged_players = false
+
+-- Opt-in broadcast-style following camera. Off by default: it reframes the whole
+-- match, so it stays behind a flag until it has been played.
+pitch.follow_camera = false
 
 local HEX_RADIUS = 26 -- world units, centre to corner
 local NET_BACK_FRAC = 0.55 -- back frame height as a fraction of the crossbar
@@ -211,8 +216,12 @@ function pitch.draw(s, vp, opts)
             s.transition_windows[team]
         ) == "counterpress"
     end
+    -- One projection wrapper for the entire pitch: lines, goals, players,
+    -- effects and the ball all go through it, so the follow window moves every
+    -- one of them together and nothing has to know the camera exists.
+    local window = pitch.follow_camera and camera_follow.window(field) or nil
     local function project(wx, wy)
-        local sx, sy, scale = camera.project(wx, wy, field, vp)
+        local sx, sy, scale = camera.project(wx, wy, field, vp, nil, window)
         local offset = opts.camera_offset
         return sx + (offset and offset.x or 0), sy + (offset and offset.y or 0), scale
     end

@@ -16,6 +16,7 @@ local correction_smoothing = require("game.render.correction_smoothing")
 local effects = require("game.render.effects")
 local match_hud_render = require("game.render.match_hud")
 local view_state = require("game.render.view_state")
+local camera_follow = require("game.render.camera_follow")
 local release_follow = require("game.render.release_follow")
 local combat_presentation = require("game.presentation.combat")
 local combat_feedback = require("game.presentation.combat_feedback")
@@ -204,6 +205,7 @@ local function update_render_smoothing(self, dt, corrected, lifecycle_reset, upd
     end
     if update_view then
         view_state.update(self.state.players, dt, self._render_pose)
+        camera_follow.update(self.state, dt, self._render_pose)
         release_follow.update(self._frame_events, dt)
     end
 end

@@ -44,6 +44,21 @@ if has_flag("--rigged-players") then
     require("game.render.pitch").rigged_players = true
 end
 
+-- Opt into the broadcast-style following camera for a manual look. An optional
+-- value tunes the zoom (`--follow-cam 2.0`) so framing can be judged by playing
+-- rather than by editing a constant and restarting.
+if has_flag("--follow-cam") then
+    require("game.render.pitch").follow_camera = true
+    for index, value in ipairs(arg or {}) do
+        if value == "--follow-cam" then
+            local zoom = tonumber(arg[index + 1])
+            if zoom then
+                require("game.render.camera_follow").config.zoom = zoom
+            end
+        end
+    end
+end
+
 if has_flag("--test") then
     function love.load()
         local runner = require("spec.support.runner")
