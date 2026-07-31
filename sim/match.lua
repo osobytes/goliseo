@@ -4604,10 +4604,22 @@ local function update_ball(s, dt, inputs, combat_state)
         elseif s.ball.x > s.field.w and in_mouth(s.ball, s.goal_away) then
             max_x = s.goal_away.x + s.goal_away.w
         end
-        s.ball = Vec2.new(
-            math.max(min_x, math.min(max_x, s.ball.x)),
-            math.max(0, math.min(s.field.h, s.ball.y))
-        )
+        local cx = math.max(min_x, math.min(max_x, s.ball.x))
+        local cy = math.max(0, math.min(s.field.h, s.ball.y))
+        if cx ~= s.ball.x or cy ~= s.ball.y then
+            -- Reflect the outward pace, the same way the loose-ball walls below
+            -- do. Clamping position alone pins the ball against the boundary
+            -- while the carrier runs on, so the wall quietly takes the ball off
+            -- them -- this arena has no throw-in, its walls put the ball back
+            -- into play, and a possessed ball has to obey the same rule.
+            if cx ~= s.ball.x then
+                s.ball_vel.x = -s.ball_vel.x
+            end
+            if cy ~= s.ball.y then
+                s.ball_vel.y = -s.ball_vel.y
+            end
+            s.ball = Vec2.new(cx, cy)
+        end
         return
     end
 

@@ -53,17 +53,17 @@ The authoritative values are:
 
 ```text
 boundaries=7202
-final_hash=a61032872f88fc64
-sequence_digest=ba5b9fd1546d2339
+final_hash=bfbb106aea5480f8
+sequence_digest=a190b60058a64e63
 score=1-0
 outcome=home
-final_snapshot_bytes=21867
+final_snapshot_bytes=21820
 ```
 
 The complete match produced:
 
 ```text
-catch=1 claim=3 header=2 pass=4 reception=1 shot=1 tackle=147 touch=184
+catch=1 claim=3 header=2 pass=4 reception=1 shot=2 tackle=147 touch=180
 ```
 
 These values were last refreshed for the possessed-ball touchline fix. That
@@ -73,8 +73,9 @@ refresh and only `2027` onward moves, so the clamp is a genuine no-op until the
 first tick on which the ball actually leaves the pitch.
 
 Because a stranded ball no longer kills the attack it was part of, the fixture
-now runs to `1-0` rather than `0-0`; one `claim` and one `pass` become eleven
-more `touch` events, which is play continuing instead of stalling. The frozen
+now runs to `1-0` rather than `0-0`; one `claim` and one `pass` become seven
+more `touch` events and a second `shot`, which is play continuing instead of
+stalling. The frozen
 input wires are unchanged byte-for-byte, as is every identity and schema field,
 so the authoritative input contract did not move -- only the state the same
 inputs now produce. `coverage` still reports `tackle,aerial,keeper,full_time`.
@@ -121,7 +122,7 @@ Fixed-slot players remain excluded from match AI, so the frozen score, event
 counts, and effective inputs do not change; every outfielder in this fixture
 owns an input slot, so no transition phase steers anyone in it. The new state
 grew the final snapshot from 21,659 to 21,937 bytes at that migration; the
-possessed-ball refresh above later moved it to 21,867 by changing the state the
+possessed-ball refresh above later moved it to 21,820 by changing the state the
 same inputs reach, not the schema. Only schema identity,
 canonical bytes, boundary hashes, sequence digest, and snapshot size are
 refreshed.

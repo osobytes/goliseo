@@ -52,7 +52,7 @@ live window on a finished match or one that outlived both tactic windows, so a
 leaked timer cannot survive a lifecycle boundary. Soccer-only
 input-tape envelopes remain version 1. The current soccer
 fixture uses InputFrame v2 and is pinned at tape digest
-`82f35facb89fd36d`;
+`93bed4e168228a07`;
 the published historical InputFrame-v1/InputTape-v1 artifact remains archived
 at `881917e3ba798703`. Version 11 preserves the version-1 soccer tape envelope
 and all 7,201 effective input wires, not snapshot byte identity.

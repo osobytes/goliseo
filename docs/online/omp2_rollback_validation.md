@@ -18,8 +18,8 @@ The current campaign freezes a mixed artifact matrix at 60 Hz:
 
 - every case uses InputFrame v2 and network-profile digest `5fbf1e0d51a6f4d5`;
 - soccer cases use InputTape v1 / MatchSnapshot v11, final hash
-  `a61032872f88fc64`, sequence digest `ba5b9fd1546d2339`, and live tape digest
-  `82f35facb89fd36d`;
+  `bfbb106aea5480f8`, sequence digest `a190b60058a64e63`, and live tape digest
+  `93bed4e168228a07`;
 - combat cases use InputTape v2 / MatchSnapshot v12, initial hash
   `0f7c7c66b5a6bbf6`, final hash `32ffe60cbec9d83a`, and tape digest
   `f4140ca5b3b9d2fc`; and

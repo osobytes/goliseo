@@ -40,13 +40,13 @@ REQUIRED_FIELDS = {
     "ticks": "7201",
     "boundaries": "7202",
     "hash": "fnv1a64-canonical-snapshot-v11",
-    "final_hash": "a61032872f88fc64",
-    "sequence_digest": "ba5b9fd1546d2339",
+    "final_hash": "bfbb106aea5480f8",
+    "sequence_digest": "a190b60058a64e63",
     "score": "1-0",
     "outcome": "home",
-    "snapshot_bytes": "21867",
+    "snapshot_bytes": "21820",
     "coverage": "tackle,aerial,keeper,full_time",
-    "events": "catch:1,claim:3,header:2,pass:4,reception:1,shot:1,tackle:147,touch:184",
+    "events": "catch:1,claim:3,header:2,pass:4,reception:1,shot:2,tackle:147,touch:180",
     "love": "11.5.0",
 }
 # Mirrors game/online/protocol_conformance.lua's GOLDEN. Same warning as below:
