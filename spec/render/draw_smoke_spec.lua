@@ -72,6 +72,27 @@ t.describe("renderer smoke", function()
         t.is_true(ok, "pitch.draw error: " .. tostring(err))
     end)
 
+    t.it("rigged players fall back cleanly when 3D is unavailable", function()
+        -- The headless runner stubs love.graphics without newShader/newMesh, so
+        -- this is exactly the "runtime cannot host the 3D pass" case: the rigged
+        -- renderer must report unavailable and the procedural one must still
+        -- draw, rather than anything throwing.
+        pitch.rigged_players = true
+        local ok, err = with_stub(function()
+            local s = match_sim.new({
+                home = teams.nebula,
+                away = teams.orion,
+                field = { w = 960, h = 540 },
+            })
+            pitch.draw(s, { w = 1280, h = 720 }, {
+                home_color = teams.nebula.color,
+                away_color = teams.orion.color,
+            })
+        end)
+        pitch.rigged_players = false
+        t.is_true(ok, "pitch.draw with rigged players error: " .. tostring(err))
+    end)
+
     t.it("pitch.draw renders the pass-target marker without error", function()
         local ok, err = with_stub(function()
             local s = match_sim.new({
