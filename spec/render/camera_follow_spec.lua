@@ -123,3 +123,46 @@ t.describe("camera_follow", function()
         t.is_true(sx == sx and sy == sy, "projection should be finite")
     end)
 end)
+
+local view_state = require("game.render.view_state")
+
+t.describe("view_state gait phase", function()
+    local function player(x)
+        return { id = "p1", pos = { x = x, y = 100 } }
+    end
+
+    t.it("advances smoothly when speed changes", function()
+        -- Regression: the phase used to be derived as cumulative_distance /
+        -- current_stride. Because the stride lengthens with speed, changing it
+        -- retroactively rescaled every unit already travelled, so the phase
+        -- jumped most of a cycle whenever speed wobbled -- the animation
+        -- appeared to flick between two poses.
+        local x, prev, worst = 0, nil, 0
+        for i = 1, 400 do
+            -- Accelerate through the walk/run blend, where the stride changes
+            -- fastest and the old formulation was worst.
+            local step = 1.5 + i * 0.012
+            x = x + step
+            view_state.update({ player(x) }, 1 / 60)
+            local g = assert(view_state.get("p1")).gait
+            if prev then
+                local delta = (g - prev) % 1
+                worst = math.max(worst, delta)
+            end
+            prev = g
+        end
+        -- One frame can never advance more than a small slice of a cycle: at the
+        -- fastest stride a 60 Hz frame is well under a tenth of a cycle.
+        t.is_true(worst < 0.1, "per-frame gait advance was " .. worst)
+    end)
+
+    t.it("stays within [0, 1)", function()
+        local x = 0
+        for _ = 1, 600 do
+            x = x + 6
+            view_state.update({ player(x) }, 1 / 60)
+        end
+        local g = assert(view_state.get("p1")).gait
+        t.is_true(g >= 0 and g < 1, "gait out of range: " .. g)
+    end)
+end)

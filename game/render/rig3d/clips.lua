@@ -54,6 +54,34 @@ end
 -- the arm chain. That single number is what the swing clip animates: -35 at the
 -- windup (blade cocked overhead and back) through to +120 (blade driven down
 -- and forward).
+-- Relaxed carry stance: arms hang and swing freely. This -- not GUARD -- is the
+-- base for locomotion. A player jogging with the ball is not holding a shield up
+-- across their chest, and building every clip on the guard is a large part of
+-- why running looked stiff.
+local FREE = {
+    ["upper_arm.R"] = { 0, 0, 7 },
+    ["forearm.R"] = { -20, 0, 0 },
+    ["hand.R"] = { 0, -8, 0 },
+    ["upper_arm.L"] = { 0, 0, 9 },
+    ["forearm.L"] = { -20, 0, 0 },
+}
+
+-- Arm pose for a locomotion key. Arms counter-swing against the legs, and the
+-- elbow bends further the faster you go: reference walks sit near 30 degrees of
+-- elbow, runs near 90.
+---@param fwd_l number  -- left upper arm swing, negative is forward
+---@param elbow_l number
+---@param fwd_r number
+---@param elbow_r number
+local function arms(fwd_l, elbow_l, fwd_r, elbow_r)
+    return {
+        ["upper_arm.L"] = { fwd_l, 0, 9 },
+        ["forearm.L"] = { -elbow_l, 0, 0 },
+        ["upper_arm.R"] = { fwd_r, 0, 7 },
+        ["forearm.R"] = { -elbow_r, 0, 0 },
+    }
+end
+
 local GUARD = {
     ["upper_arm.R"] = { -18, 0, 6 },
     ["forearm.R"] = { -72, 0, 0 },
@@ -66,7 +94,10 @@ local GUARD = {
 }
 
 -- ---------------------------------------------------------------------------
--- Clip 1: IDLE -- breathing and a slow weight shift from one foot to the other
+-- Clip 1: IDLE -- breathing and a slow weight shift from one foot to the other.
+--
+-- Built on FREE like the rest of locomotion. Leaving idle on GUARD while walk
+-- and run were relaxed made the shield snap up the instant a player stopped.
 -- ---------------------------------------------------------------------------
 local IDLE = {
     name = "idle",
@@ -76,12 +107,12 @@ local IDLE = {
     keys = {
         {
             t = 0.0,
-            rot = stance(GUARD, {}),
+            rot = stance(FREE, {}),
             move = {},
         },
         {
             t = 0.85,
-            rot = stance(GUARD, {
+            rot = stance(FREE, {
                 spine = { -1.5, 0, 0 },
                 chest = { -2.5, 0, 0 },
                 head = { -2, 3, 0 },
@@ -94,7 +125,7 @@ local IDLE = {
         },
         {
             t = 1.70,
-            rot = stance(GUARD, {
+            rot = stance(FREE, {
                 spine = { 0.5, 0, 0 },
                 chest = { 1.0, 0, 0 },
                 head = { 1.5, -5, 0 },
@@ -103,7 +134,7 @@ local IDLE = {
         },
         {
             t = 2.55,
-            rot = stance(GUARD, {
+            rot = stance(FREE, {
                 spine = { -1.2, 0, 0 },
                 chest = { -2.0, 0, 0 },
                 head = { -1.5, -4, 0 },
@@ -116,15 +147,14 @@ local IDLE = {
         },
         {
             t = 3.4,
-            rot = stance(GUARD, {}),
+            rot = stance(FREE, {}),
             move = {},
         },
     },
 }
 
--- ---------------------------------------------------------------------------
--- Clip 2: WALK -- a two-step cycle, contact / passing / contact / passing
--- ---------------------------------------------------------------------------
+-- Builds a leg pose for one locomotion key: the forward leg's four joints, then
+-- the trailing leg's, then anything else this key sets.
 local function step(thigh_f, shin_f, foot_f, toe_f, thigh_b, shin_b, foot_b, toe_b, extra)
     local t = {
         ["thigh.R"] = { thigh_f, 0, -2 },
@@ -142,8 +172,8 @@ local function step(thigh_f, shin_f, foot_f, toe_f, thigh_b, shin_b, foot_b, toe
     return t
 end
 
--- Mirrors a leg pose left/right, so a cycle is authored once and the opposite
--- step comes for free -- and cannot drift out of sync with its own mirror.
+-- Mirrors a pose left/right, so a cycle is authored once and the opposite step
+-- comes for free -- and cannot drift out of sync with its own mirror.
 local function mirror(pose)
     local out = {}
     for name, v in pairs(pose) do
@@ -158,74 +188,79 @@ end
 -- ---------------------------------------------------------------------------
 -- Clip 2: WALK
 --
--- Timings and joint ranges are matched to reference locomotion: a 0.80 s cycle
--- with the knee peaking near 70 degrees through the passing pose. The previous
--- version ran a 0.77 s cycle with a 46 degree knee at every speed including a
--- sprint, which is what made it read as short, fast, robotic steps.
+-- 0.80 s cycle, knee peaking near 70 degrees, arms nearly straight (about 30
+-- degrees of elbow) swinging gently against the legs -- all matched to measured
+-- reference locomotion. Built on FREE, so the arms actually swing.
 -- ---------------------------------------------------------------------------
+local function walk_contact()
+    local pose = step(-26, 6, 10, -16, 22, 30, -16, -30, {
+        hips = { 0, -5, 2 },
+        chest = { 3, 5, 0 },
+    })
+    for k, v in pairs(arms(-24, 32, 16, 24)) do
+        pose[k] = v
+    end
+    return pose
+end
+
+local function walk_passing()
+    local pose = step(6, 12, -6, -4, -10, 70, -16, -12, {
+        hips = { 0, 0, 0 },
+        chest = { 3, 0, 0 },
+    })
+    for k, v in pairs(arms(-8, 28, -2, 26)) do
+        pose[k] = v
+    end
+    return pose
+end
+
 local WALK = {
     name = "walk",
     loop = true,
     root_motion = false,
-    -- World units covered by one full cycle. Phase advances with distance, so
-    -- this is what keeps the feet planted rather than sliding.
     stride = 130,
     duration = 0.80,
     keys = {
-        {
-            t = 0.0,
-            rot = stance(
-                GUARD,
-                step(-26, 6, 10, -16, 22, 30, -16, -30, {
-                    hips = { 0, -5, 2 },
-                    chest = { 3, 5, 0 },
-                })
-            ),
-            move = { root = { 0, 0, 0 } },
-        },
-        {
-            t = 0.20,
-            rot = stance(
-                GUARD,
-                step(6, 12, -6, -4, -10, 70, -16, -12, {
-                    hips = { 0, 0, 0 },
-                    chest = { 3, 0, 0 },
-                })
-            ),
-            move = { root = { 0, 0.036, 0 } },
-        },
-        {
-            t = 0.40,
-            rot = stance(GUARD, mirror(step(-26, 6, 10, -16, 22, 30, -16, -30, {}))),
-            move = { root = { 0, 0, 0 } },
-        },
-        {
-            t = 0.60,
-            rot = stance(GUARD, mirror(step(6, 12, -6, -4, -10, 70, -16, -12, {}))),
-            move = { root = { 0, 0.036, 0 } },
-        },
-        {
-            t = 0.80,
-            rot = stance(
-                GUARD,
-                step(-26, 6, 10, -16, 22, 30, -16, -30, {
-                    hips = { 0, -5, 2 },
-                    chest = { 3, 5, 0 },
-                })
-            ),
-            move = { root = { 0, 0, 0 } },
-        },
+        { t = 0.0, rot = stance(FREE, walk_contact()), move = { root = { 0, 0, 0 } } },
+        { t = 0.20, rot = stance(FREE, walk_passing()), move = { root = { 0, 0.036, 0 } } },
+        { t = 0.40, rot = stance(FREE, mirror(walk_contact())), move = { root = { 0, 0, 0 } } },
+        { t = 0.60, rot = stance(FREE, mirror(walk_passing())), move = { root = { 0, 0.036, 0 } } },
+        { t = 0.80, rot = stance(FREE, walk_contact()), move = { root = { 0, 0, 0 } } },
     },
 }
 
 -- ---------------------------------------------------------------------------
 -- Clip 3: RUN
 --
--- A run is not a fast walk. Against the same reference: a 0.60 s cycle, the
--- knee peaking near 120 degrees, a longer thigh swing, a forward torso lean and
--- a flight phase the walk does not have. Playing a walk faster gets none of
--- that, which is the whole reason this is a separate clip.
+-- A run is not a fast walk. 0.60 s cycle, knee near 120 degrees, longer thigh
+-- swing, forward torso lean, a flight phase -- and the elbow closed to about 90
+-- degrees with a much bigger arm swing, which is the single clearest visual
+-- difference between the two gaits.
 -- ---------------------------------------------------------------------------
+local function run_contact()
+    local pose = step(-42, 18, 14, -22, 34, 78, -24, -38, {
+        hips = { 0, -7, 3 },
+        spine = { 9, 0, 0 },
+        chest = { 4, 7, 0 },
+    })
+    for k, v in pairs(arms(-44, 88, 32, 72)) do
+        pose[k] = v
+    end
+    return pose
+end
+
+local function run_passing()
+    local pose = step(12, 34, -10, -8, -22, 118, -18, -16, {
+        hips = { 0, 0, 0 },
+        spine = { 11, 0, 0 },
+        chest = { 4, 0, 0 },
+    })
+    for k, v in pairs(arms(-14, 82, 6, 80)) do
+        pose[k] = v
+    end
+    return pose
+end
+
 local RUN = {
     name = "run",
     loop = true,
@@ -233,62 +268,28 @@ local RUN = {
     stride = 285,
     duration = 0.60,
     keys = {
-        {
-            t = 0.0,
-            rot = stance(
-                GUARD,
-                step(-42, 18, 14, -22, 34, 78, -24, -38, {
-                    hips = { 0, -7, 3 },
-                    spine = { 9, 0, 0 },
-                    chest = { 4, 7, 0 },
-                })
-            ),
-            move = { root = { 0, 0, 0 } },
-        },
-        {
-            t = 0.15,
-            rot = stance(
-                GUARD,
-                step(12, 34, -10, -8, -22, 118, -18, -16, {
-                    hips = { 0, 0, 0 },
-                    spine = { 11, 0, 0 },
-                    chest = { 4, 0, 0 },
-                })
-            ),
-            move = { root = { 0, 0.058, 0 } },
-        },
-        {
-            t = 0.30,
-            rot = stance(
-                GUARD,
-                mirror(step(-42, 18, 14, -22, 34, 78, -24, -38, {
-                    spine = { 9, 0, 0 },
-                }))
-            ),
-            move = { root = { 0, 0, 0 } },
-        },
-        {
-            t = 0.45,
-            rot = stance(
-                GUARD,
-                mirror(step(12, 34, -10, -8, -22, 118, -18, -16, {
-                    spine = { 11, 0, 0 },
-                }))
-            ),
-            move = { root = { 0, 0.058, 0 } },
-        },
-        {
-            t = 0.60,
-            rot = stance(
-                GUARD,
-                step(-42, 18, 14, -22, 34, 78, -24, -38, {
-                    hips = { 0, -7, 3 },
-                    spine = { 9, 0, 0 },
-                    chest = { 4, 7, 0 },
-                })
-            ),
-            move = { root = { 0, 0, 0 } },
-        },
+        { t = 0.0, rot = stance(FREE, run_contact()), move = { root = { 0, 0, 0 } } },
+        { t = 0.15, rot = stance(FREE, run_passing()), move = { root = { 0, 0.058, 0 } } },
+        { t = 0.30, rot = stance(FREE, mirror(run_contact())), move = { root = { 0, 0, 0 } } },
+        { t = 0.45, rot = stance(FREE, mirror(run_passing())), move = { root = { 0, 0.058, 0 } } },
+        { t = 0.60, rot = stance(FREE, run_contact()), move = { root = { 0, 0, 0 } } },
+    },
+}
+
+-- ---------------------------------------------------------------------------
+-- GUARD STANCE: a held defensive pose, layered over locomotion rather than
+-- baked into it. Raising the shield is something a player chooses to do, not
+-- how they always stand -- and as an overlay it composes with any gait.
+-- ---------------------------------------------------------------------------
+local GUARD_STANCE = {
+    name = "guard_stance",
+    loop = true,
+    root_motion = false,
+    duration = 1.6,
+    keys = {
+        { t = 0.0, rot = stance(GUARD, { chest = { 2, -4, 0 } }), move = {} },
+        { t = 0.8, rot = stance(GUARD, { chest = { 3, 4, 0 } }), move = {} },
+        { t = 1.6, rot = stance(GUARD, { chest = { 2, -4, 0 } }), move = {} },
     },
 }
 
@@ -452,6 +453,7 @@ local CHARGE = {
 
 clips.ORDER = { IDLE, WALK, SWING }
 clips.RUN = RUN
+clips.GUARD_STANCE = GUARD_STANCE
 clips.CHARGE = CHARGE
 
 -- Precomputes the set of bones a clip touches, so the sampler knows which
@@ -492,6 +494,7 @@ for _, clip in ipairs(clips.ORDER) do
 end
 prepare(CHARGE)
 prepare(RUN)
+prepare(GUARD_STANCE)
 
 local ZERO = { 0, 0, 0 }
 local IDENTITY = quat.identity()

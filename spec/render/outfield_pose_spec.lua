@@ -109,7 +109,7 @@ local function draw_signature(id)
             300,
             12,
             { 0.2, 0.8, 1 },
-            { px = 0, py = 0, speed = 42, phase = 1.1, lean = 0.2 },
+            { px = 0, py = 0, speed = 42, phase = 1.1, gait = 0.25, lean = 0.2 },
             {
                 facing = Vec2.new(1, 0),
                 is_keeper = false,
