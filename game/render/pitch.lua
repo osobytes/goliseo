@@ -219,9 +219,9 @@ function pitch.draw(s, vp, opts)
     -- One projection wrapper for the entire pitch: lines, goals, players,
     -- effects and the ball all go through it, so the follow window moves every
     -- one of them together and nothing has to know the camera exists.
-    local window = pitch.follow_camera and camera_follow.window(field) or nil
+    local view = pitch.follow_camera and camera_follow.view(field) or nil
     local function project(wx, wy)
-        local sx, sy, scale = camera.project(wx, wy, field, vp, nil, window)
+        local sx, sy, scale = camera.project(wx, wy, field, vp, nil, view)
         local offset = opts.camera_offset
         return sx + (offset and offset.x or 0), sy + (offset and offset.y or 0), scale
     end

@@ -68,15 +68,15 @@ function camera_follow.update(s, dt, pose)
     state.y = state.y + (target_y - state.y) * k
 end
 
--- The window to project through, or nil before the first update (in which case
+-- The view to project through, or nil before the first update (in which case
 -- the caller falls back to the whole-pitch view).
 ---@param field { w: number, h: number }
----@return CameraWindow?
-function camera_follow.window(field)
+---@return CameraView?
+function camera_follow.view(field)
     if not state.x then
         return nil
     end
-    return camera.window(state.x, state.y, field, camera_follow.config.zoom)
+    return camera.view(state.x, state.y, field, camera_follow.config.zoom)
 end
 
 return camera_follow

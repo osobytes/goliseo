@@ -22,55 +22,33 @@ camera.DEFAULTS = {
     bottom_frac = 0.88, -- margin below the pitch
 }
 
----@class CameraWindow
----@field x number  -- world x of the window's left edge
----@field y number  -- world y of the window's far edge
----@field w number  -- window width in world units
----@field h number  -- window depth in world units
+---@class CameraView
+---@field x number     -- focus world x
+---@field y number     -- focus world y
+---@field zoom number  -- 1 = whole pitch, >1 = magnified about the focus
 
--- The sub-rectangle of the pitch that fills the trapezoid.
+-- Clamped focus for a following camera.
 --
--- Zoom 1 shows the whole pitch (the original fixed view). Above 1 the camera
--- moves in and follows a focus point, the way a broadcast soccer game frames
--- the ball rather than the stadium. The window is clamped to the pitch so the
--- view never runs past the touchline -- which is what stops the framing from
--- lurching when play reaches a corner.
---
--- Pure: no love calls, no frame state. Smoothing lives in camera_follow.
----@param fx number  -- focus world x
----@param fy number  -- focus world y
+-- The focus is pulled back from the touchlines so a zoomed frame still lands on
+-- the pitch rather than off the end of it.
+---@param fx number
+---@param fy number
 ---@param field { w: number, h: number }
----@param zoom number  -- 1 = whole pitch, 2 = half of it
----@return CameraWindow
-function camera.window(fx, fy, field, zoom)
+---@param zoom number
+---@return CameraView
+function camera.view(fx, fy, field, zoom)
     zoom = math.max(1, zoom or 1)
-    local w, h = field.w / zoom, field.h / zoom
-    local x = math.max(0, math.min(field.w - w, fx - w / 2))
-    local y = math.max(0, math.min(field.h - h, fy - h / 2))
-    return { x = x, y = y, w = w, h = h }
+    local half_w, half_h = field.w / (2 * zoom), field.h / (2 * zoom)
+    return {
+        x = math.max(half_w, math.min(field.w - half_w, fx)),
+        y = math.max(half_h, math.min(field.h - half_h, fy)),
+        zoom = zoom,
+    }
 end
 
--- Project a world point onto the screen.
---
--- With a `window`, the projection frames that sub-rectangle instead of the whole
--- pitch. The trapezoid maths is unchanged -- the window simply becomes the field
--- as far as the projection is concerned, so every caller that draws through this
--- (pitch lines, goals, players, effects) follows the camera for free.
----@param wx number
----@param wy number
----@param field { w: number, h: number }
----@param vp { w: number, h: number }
----@param cfg CameraConfig?
----@param window CameraWindow?
----@return number sx
----@return number sy
----@return number scale
-function camera.project(wx, wy, field, vp, cfg, window)
-    cfg = cfg or camera.DEFAULTS
-    if window then
-        wx, wy = wx - window.x, wy - window.y
-        field = { w = window.w, h = window.h }
-    end
+-- The fixed whole-pitch projection: world point -> screen point + depth scale.
+---@return number, number, number
+local function project_fixed(wx, wy, field, vp, cfg)
     local t = wy / field.h -- 0 = far, 1 = near
     local scale = cfg.far_scale + (cfg.near_scale - cfg.far_scale) * t
     local horizon = vp.h * cfg.horizon_frac
@@ -78,6 +56,26 @@ function camera.project(wx, wy, field, vp, cfg, window)
     local sy = horizon + (bottom - horizon) * t
     local sx = vp.w / 2 + (wx - field.w / 2) * scale * (vp.w / field.w)
     return sx, sy, scale
+end
+
+function camera.project(wx, wy, field, vp, cfg, view)
+    cfg = cfg or camera.DEFAULTS
+    local sx, sy, scale = project_fixed(wx, wy, field, vp, cfg)
+    if not view or (view.zoom or 1) <= 1 then
+        return sx, sy, scale
+    end
+
+    -- Magnify in SCREEN space about the focus, which is what a longer lens
+    -- does. The earlier attempt re-mapped a sub-rectangle of the pitch onto the
+    -- same fixed trapezoid, which forced full convergence onto a region that
+    -- should look almost rectangular -- the pitch came out as a funnel.
+    --
+    -- Scaling the already-projected offsets keeps the perspective structure the
+    -- fixed view establishes: parallel lines stay as straight as they were, the
+    -- hex grid stays even, and only the framing changes.
+    local z = view.zoom
+    local fx, fy = project_fixed(view.x, view.y, field, vp, cfg)
+    return vp.w * 0.5 + (sx - fx) * z, vp.h * 0.5 + (sy - fy) * z, scale * z
 end
 
 return camera
