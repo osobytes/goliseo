@@ -35,6 +35,9 @@ local ELEVATION = math.rad(17)
 
 local state = { built = false, failed = false, rig = nil, teams = {} }
 
+---@type fun(sx: number, sy: number, r: number, color: number[], view: PlayerView|nil, opts: table)
+local draw_player
+
 -- Builds the shared rig and one draw list per team. Called once, lazily, so a
 -- headless or shader-less runtime never pays for it.
 ---@return boolean
@@ -177,7 +180,25 @@ function player_renderer_3d.draw(sx, sy, r, color, view, opts)
     if not build() then
         return
     end
+    -- A per-frame draw error must not take the match down. `build()` being
+    -- pcall'd only covered construction; an exception in here (a bad facing, a
+    -- mesh/material mismatch) would otherwise propagate into the match loop.
+    -- Latching `failed` means the fallback is permanent and the diagnostic is
+    -- printed once rather than every frame.
+    local ok, err = pcall(draw_player, sx, sy, r, color, view, opts)
+    if not ok then
+        state.failed = true
+        print("rigged 3D players disabled (draw failed): " .. tostring(err))
+    end
+end
 
+---@param sx number
+---@param sy number
+---@param r number
+---@param color number[]
+---@param view PlayerView|nil
+---@param opts table
+function draw_player(sx, sy, r, color, view, opts)
     local team = themes.TEAMS[(opts.team == "away") and 2 or 1]
     local parts = state.teams[team.key]
     if not parts then

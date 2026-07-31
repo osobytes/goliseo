@@ -579,6 +579,11 @@ t.describe("match screen rollback laboratory (tier 2)", function()
             "rotate",
             "print",
             "printf",
+            -- The draw path resets 3D state on the way out whether or not bloom
+            -- is on, so these are part of the surface it touches even here.
+            "setDepthMode",
+            "setMeshCullMode",
+            "setShader",
         }) do
             graphics[name] = noop
         end

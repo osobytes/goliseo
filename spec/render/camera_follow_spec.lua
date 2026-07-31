@@ -90,6 +90,42 @@ t.describe("camera_follow", function()
         t.is_true(fx > x, "focus should sit ahead of a moving ball")
     end)
 
+    t.it("leads a running ball by a useful distance, not a token one", function()
+        -- Regression: an exponential ease chasing a target moving at v settles
+        -- v/ease behind it, which at a running pace is the same order as the
+        -- lead itself. Both mechanisms were present and they cancelled, so the
+        -- carrier still could not see who was in front of them. Asserting only
+        -- "ahead by something" let that through -- this pins the magnitude.
+        camera_follow.reset()
+        local x = 200
+        for _ = 1, 180 do
+            camera_follow.update(fake_state(x, 270), 1 / 60)
+            x = x + 4 -- 240 units/s
+        end
+        local fx = assert((camera_follow.focus()))
+        t.is_true(fx - x > 60, "lead was only " .. (fx - x))
+    end)
+
+    t.it("does not let ball-keeping clamp away the lead during fast play", function()
+        -- KEEP is a backstop for when play outruns the ease. If the lead can ask
+        -- for more than KEEP allows, KEEP binds every frame of a fast break and
+        -- the look-ahead silently does nothing.
+        camera_follow.reset()
+        -- Kept clear of the touchlines: view() also applies the margin clamp,
+        -- which is a separate concern from KEEP and would mask it.
+        local x, y = 150, 120
+        for _ = 1, 120 do
+            camera_follow.update(fake_state(x, y), 1 / 60)
+            x, y = x + 4, y + 2 -- ~268 units/s diagonally, a genuine counter
+        end
+        local fx, fy = camera_follow.focus()
+        local view = assert(camera_follow.view(field))
+        -- view() applies KEEP to the raw focus; if KEEP did not bind, the two
+        -- agree exactly.
+        t.near(view.x, assert(fx), 0.001)
+        t.near(view.y, assert(fy), 0.001)
+    end)
+
     t.it("does not look ahead for a slow drift", function()
         camera_follow.reset()
         local x = 480

@@ -55,7 +55,10 @@ camera_follow.config = {
     -- jostling or slowly drifting ball from sliding the camera around.
     look_min_speed = 55,
     look_gain = 0.55, -- seconds of travel to look ahead by
-    look_max = 210, -- world units
+    look_max = 210, -- world units, before the ball-keeping cap below
+    -- Fraction of the KEEP budget the look-ahead may use. Below 1 so KEEP stays
+    -- a backstop rather than a cap that binds during ordinary fast play.
+    look_headroom = 0.85,
     look_ease = 2.4, -- how fast the offset itself follows, kept slow and smooth
 
     -- 3. KEEP ------------------------------------------------------------
@@ -144,6 +147,34 @@ function camera_follow.update(s, dt, pose)
         -- offset grows from zero instead of popping in at the boundary.
         local reach = math.min((speed - cfg.look_min_speed) * cfg.look_gain, cfg.look_max)
         want_lx, want_ly = state.vx / speed * reach, state.vy / speed * reach
+
+        -- Cap the lead itself, per axis, inside the ball-keeping budget. KEEP is
+        -- meant to be a backstop for when play outruns the ease; if LOOK can ask
+        -- for more offset than KEEP allows, KEEP ends up clamping every frame of
+        -- fast play and silently cancels the very feature it sits behind.
+        local cap_x = field.w * cfg.ball_keep_x * cfg.look_headroom
+        local cap_y = field.h * cfg.ball_keep_y * cfg.look_headroom
+        want_lx = math.max(-cap_x, math.min(cap_x, want_lx))
+        want_ly = math.max(-cap_y, math.min(cap_y, want_ly))
+
+        -- Then add back whatever the ease is currently trailing the target by.
+        --
+        -- Without this the two mechanisms cancel: an exponential ease chasing a
+        -- target moving at v settles a full v/ease behind it (75 units at a
+        -- running pace), which is the same order as the lead itself, so the
+        -- camera ends up looking at the ball rather than ahead of it. Adding the
+        -- trail back means `state.lx` measures the lead over the *target*, which
+        -- is what the cap above is expressed in and what KEEP later bounds.
+        --
+        -- Compensating against the tracking target rather than the ball keeps
+        -- `ball_weight` intact -- correcting toward the ball would drag the
+        -- framing off the player you are steering whenever the ball came loose.
+        --
+        -- Ramped in with speed so crossing `look_min_speed` sweeps rather than
+        -- steps: at walking pace there is barely any trail to give back anyway.
+        local comp = math.min(speed / cfg.deadzone_release_speed, 1)
+        want_lx = want_lx + (target_x - state.x) * comp
+        want_ly = want_ly + (target_y - state.y) * comp
     end
     local lk = 1 - math.exp(-cfg.look_ease * math.max(dt, 0))
     state.lx = state.lx + (want_lx - state.lx) * lk

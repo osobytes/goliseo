@@ -179,6 +179,7 @@ local function clear_render_smoothing(self, reset_view)
     self._render_pose = correction_smoothing.pose(self._render_smoothing)
     if reset_view ~= false then
         view_state.reset()
+        camera_follow.reset()
         release_follow.reset()
     end
     refresh_smoothing_debug(self)
@@ -572,6 +573,7 @@ function Match:restart()
         replay.record_boundary(0, self.state, self._combat_state)
     end
     view_state.reset()
+    camera_follow.reset()
     release_follow.reset()
     effects.reset()
     audio.load()
@@ -993,6 +995,7 @@ function Match:update(dt)
                 effects.reset_visuals()
                 combat_feedback.reset_visuals(self._combat_feedback)
                 view_state.reset()
+                camera_follow.reset()
                 release_follow.reset()
                 self._replay_state = nil
             end

@@ -108,8 +108,11 @@ local function project_perspective(wx, wy, field, vp, view)
         m[5] * wx + m[7] * wy + m[8],
         m[9] * wx + m[11] * wy + m[12],
         m[13] * wx + m[15] * wy + m[16]
-    if w <= 0.0001 then
-        w = 0.0001 -- behind the camera; clamp rather than divide by zero
+    -- Behind the camera. Clamping a negative w to a small positive would not
+    -- just avoid the divide -- it would flip the point to a finite but wildly
+    -- wrong screen position instead of pushing it out of frame.
+    if w < 0.0001 then
+        return -1e6, -1e6, 0
     end
     local _ = z
 

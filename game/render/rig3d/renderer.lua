@@ -99,6 +99,9 @@ local SHADER_SOURCE = [[
 ]]
 
 local shader
+-- How far away the shader is told the camera is. Only affects rim/specular
+-- direction, never the projection.
+local SHADING_EYE_DISTANCE = 24
 local light_dir = { -0.42, -0.78, -0.46 }
 
 function renderer.load()
@@ -163,28 +166,18 @@ function renderer.characterCamera(sx, sy, ppm, vw, vh, elevation)
         0,            0,  -0.35, 0,
         0,            0,  0,     1,
     }
-    return { view = mat4.lookAt(dir, { 0, 0, 0 }), proj = proj, eye = dir }
-end
-
--- Begins a 3D pass: clears colour + depth, enables depth testing, and uploads
--- the camera matrices once for every draw that follows.
----@param camera table  -- { view = mat4, proj = mat4, eye = {x, y, z} }
----@param sky number[]
-function renderer.beginFrame(camera, sky)
-    love.graphics.clear(sky[1], sky[2], sky[3], 1, true, true)
-    love.graphics.setShader(shader)
-    love.graphics.setDepthMode("less", true)
-    -- "none" keeps back faces: see the gl_FrontFacing note in the shader.
-    love.graphics.setMeshCullMode("none")
-    love.graphics.setColor(1, 1, 1, 1)
-
-    shader:send("u_view", camera.view)
-    shader:send("u_proj", camera.proj)
-    shader:send("u_cam_pos", camera.eye)
-    shader:send("u_light_dir", light_dir)
-    shader:send("u_unlit", 0)
-    shader:send("u_metal", 0)
-    shader:send("u_emissive", 0)
+    -- The rim and specular terms are written for a distant camera. `dir` is a
+    -- unit vector, which next to a ~1.8 unit tall figure is close enough that
+    -- the view direction swings wildly between the feet and the head and the
+    -- shading reads inconsistently across one character. The view matrix keeps
+    -- the near eye -- the orthographic depth mapping above is calibrated to it --
+    -- and only the position handed to the shader moves out.
+    local far = SHADING_EYE_DISTANCE
+    return {
+        view = mat4.lookAt(dir, { 0, 0, 0 }),
+        proj = proj,
+        eye = { dir[1] * far, dir[2] * far, dir[3] * far },
+    }
 end
 
 ---@param mesh love.Mesh
@@ -195,47 +188,6 @@ function renderer.draw(mesh, model, material)
     shader:send("u_metal", material == "metal" and 1 or 0)
     shader:send("u_emissive", material == "emissive" and 1 or 0)
     love.graphics.draw(mesh)
-end
-
--- Draws unlit, without writing depth: the ground shadow and the skeleton
--- gizmos, which must not occlude the figure.
----@param mesh love.Mesh
----@param model number[]
----@param depth_test boolean
-function renderer.drawOverlay(mesh, model, depth_test)
-    love.graphics.setDepthMode(depth_test and "less" or "always", false)
-    shader:send("u_unlit", 1)
-    shader:send("u_metal", 0)
-    shader:send("u_emissive", 0)
-    shader:send("u_model", model)
-    love.graphics.draw(mesh)
-    shader:send("u_unlit", 0)
-    love.graphics.setDepthMode("less", true)
-end
-
--- Restores LÖVE's normal 2D state so the HUD can be drawn.
-function renderer.endFrame()
-    love.graphics.setShader()
-    love.graphics.setDepthMode()
-    love.graphics.setMeshCullMode("none")
-    love.graphics.setColor(1, 1, 1, 1)
-end
-
--- Builds the view/projection pair for an orbiting camera.
----@param orbit table  -- { yaw, pitch, distance, target = {x, y, z} }
----@return table
-function renderer.camera(orbit, width, height)
-    local cp = math.cos(orbit.pitch)
-    local eye = {
-        orbit.target[1] + math.sin(orbit.yaw) * cp * orbit.distance,
-        orbit.target[2] + math.sin(orbit.pitch) * orbit.distance,
-        orbit.target[3] + math.cos(orbit.yaw) * cp * orbit.distance,
-    }
-    return {
-        eye = eye,
-        view = mat4.lookAt(eye, orbit.target),
-        proj = mat4.perspective(46, width / height, 0.05, 60),
-    }
 end
 
 return renderer

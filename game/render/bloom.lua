@@ -138,6 +138,12 @@ function bloom.draw(render_fn)
     local w, h = love.graphics.getDimensions()
     if not bloom.config.enabled or not ensure(w, h) then
         render_fn()
+        -- Same cleanup as the bloom path below. Without it the two differ: a 3D
+        -- phase inside render_fn that leaves depth or cull state applied would
+        -- leak into the rest of the frame only when bloom happens to be off.
+        love.graphics.setDepthMode()
+        love.graphics.setMeshCullMode("none")
+        love.graphics.setShader()
         return
     end
 
