@@ -53,5 +53,10 @@ function love.conf(t)
         t.window.height = 540
         t.window.resizable = false
         t.window.vsync = 1
+        -- Depth buffer for the rigged-player 3D pass. The pass normally runs on
+        -- the bloom scene canvas, which carries its own depth attachment; this
+        -- covers the path where bloom is disabled and rendering goes straight to
+        -- the window. Without it love.graphics.setDepthMode is silently a no-op.
+        t.window.depth = 24
     end
 end
