@@ -4570,6 +4570,29 @@ local function update_ball(s, dt, inputs, combat_state)
             -- Guarded: while winding up, the shot is already committed; no re-decisions.
             ai_outfield_decision(s, s.owner, owner)
         end
+
+        -- Keep a possessed ball on the pitch.
+        --
+        -- The touchline clamp below is on the LOOSE-ball path, and this branch
+        -- returns before reaching it. Players are clamped to the field but the
+        -- ball at their feet was not, so a ball that ended up outside -- the
+        -- body-block push resolves after that clamp, for one -- stayed outside
+        -- for as long as possession was held. Nothing pulled it back, and the
+        -- carrier could not walk out to it either, so the only way to recover
+        -- the ball was to shoot it back in.
+        --
+        -- Goals sit outside the field, but a ball in the net is never dribbled:
+        -- a keeper holding one is positioned by keeper_hold_pos, which clamps
+        -- separately and does not reach here.
+        -- Clamp to the field EXACTLY, not to a ball-radius inset. Enforcing an
+        -- inset here would nudge a ball being dribbled along a goal line, which
+        -- is legal play -- and that changes match outcomes, which the pinned
+        -- determinism evidence rightly catches. Rescuing a ball that has left
+        -- the pitch must be a no-op everywhere else.
+        s.ball = Vec2.new(
+            math.max(0, math.min(s.field.w, s.ball.x)),
+            math.max(0, math.min(s.field.h, s.ball.y))
+        )
         return
     end
 
