@@ -4570,6 +4570,56 @@ local function update_ball(s, dt, inputs, combat_state)
             -- Guarded: while winding up, the shot is already committed; no re-decisions.
             ai_outfield_decision(s, s.owner, owner)
         end
+
+        -- Keep a possessed ball on the pitch.
+        --
+        -- The touchline clamp below is on the LOOSE-ball path, and this branch
+        -- returns before reaching it. Players are clamped to the field but the
+        -- ball at their feet was not, so a ball that ended up outside -- the
+        -- body-block push resolves after that clamp, for one -- stayed outside
+        -- for as long as possession was held. Nothing pulled it back, and the
+        -- carrier could not walk out to it either, so the only way to recover
+        -- the ball was to shoot it back in.
+        --
+        -- The region to keep it in is the ARENA -- the pitch plus the two net
+        -- boxes behind the goal mouths -- which is exactly what the loose-ball
+        -- walls below enforce. It is NOT the pitch. A dribbled ball genuinely
+        -- travels ahead of the carrier rather than being pinned to their feet,
+        -- and check_goal needs it to cross a goal line, so clamping a possessed
+        -- ball to the pitch would mean a ball walked into the net could never
+        -- be a goal. Away from the mouths the two regions coincide.
+        --
+        -- Clamp to the boundary EXACTLY, not to a ball-radius inset. An inset
+        -- would nudge a ball being dribbled along a goal line, which is legal
+        -- play. Rescuing a ball that has left the arena must be a no-op
+        -- everywhere else.
+        -- `in_mouth` tests the y band only, and both goals share that band, so
+        -- which side is open has to come from x -- exactly as the loose-ball
+        -- walls below pair the two. Testing the band alone matches whichever
+        -- goal is written first for any ball at mid-height, which silently
+        -- leaves the other goal line unreachable.
+        local min_x, max_x = 0, s.field.w
+        if s.ball.x < 0 and in_mouth(s.ball, s.goal_home) then
+            min_x = s.goal_home.x
+        elseif s.ball.x > s.field.w and in_mouth(s.ball, s.goal_away) then
+            max_x = s.goal_away.x + s.goal_away.w
+        end
+        local cx = math.max(min_x, math.min(max_x, s.ball.x))
+        local cy = math.max(0, math.min(s.field.h, s.ball.y))
+        if cx ~= s.ball.x or cy ~= s.ball.y then
+            -- Reflect the outward pace, the same way the loose-ball walls below
+            -- do. Clamping position alone pins the ball against the boundary
+            -- while the carrier runs on, so the wall quietly takes the ball off
+            -- them -- this arena has no throw-in, its walls put the ball back
+            -- into play, and a possessed ball has to obey the same rule.
+            if cx ~= s.ball.x then
+                s.ball_vel.x = -s.ball_vel.x
+            end
+            if cy ~= s.ball.y then
+                s.ball_vel.y = -s.ball_vel.y
+            end
+            s.ball = Vec2.new(cx, cy)
+        end
         return
     end
 
