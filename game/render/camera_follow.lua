@@ -13,10 +13,10 @@ local camera = require("game.render.camera")
 local camera_follow = {}
 
 camera_follow.config = {
-    -- 1 = whole pitch. Tuned by eye: past about 2.0 the goals leave the frame
-    -- and the player loses the context needed to aim a pass, so this sits just
-    -- close enough to read a character while keeping a goal on screen.
-    zoom = 1.7,
+    -- In perspective mode this scales the camera's distance and height rather
+    -- than magnifying the image, so 1 is already the tuned framing. Values above
+    -- 1 move in; below 1 pull back.
+    zoom = 1.0,
     -- Seconds-ish to close most of the gap to the target. Low values feel
     -- glued to the ball and make the pitch swim; high values lag behind play.
     ease = 4.5,

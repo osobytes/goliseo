@@ -49,6 +49,9 @@ end
 -- rather than by editing a constant and restarting.
 if has_flag("--follow-cam") then
     require("game.render.pitch").follow_camera = true
+    -- A following camera only makes sense with real perspective: magnifying the
+    -- fixed trapezoid flattens it the closer you get.
+    require("game.render.camera").perspective_mode = true
     for index, value in ipairs(arg or {}) do
         if value == "--follow-cam" then
             local zoom = tonumber(arg[index + 1])
