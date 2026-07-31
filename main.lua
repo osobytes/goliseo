@@ -62,6 +62,10 @@ if has_flag("--follow-cam") then
     end
 end
 
+-- Boot straight into a match. Purely a playtest convenience: menus are not what
+-- anyone is trying to evaluate when looking at the renderer.
+local quick_match = has_flag("--quick-match")
+
 if has_flag("--test") then
     function love.load()
         local runner = require("spec.support.runner")
@@ -1054,6 +1058,7 @@ function love.load()
     metrics = compatibility_metrics.new(clock())
     local width, height = love.graphics.getDimensions()
     app = bootstrap.new(width, height, {
+        quick_match = quick_match,
         apply_settings = apply_settings,
         request_quit = function()
             love.event.quit()

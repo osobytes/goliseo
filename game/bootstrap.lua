@@ -5,6 +5,7 @@ local match_adapter = require("game.match_adapter")
 ---@field apply_settings fun(settings: GameSettings)?
 ---@field request_quit fun()?
 ---@field settings_storage SettingsStorage?
+---@field quick_match boolean?  -- playtest: boot straight into a match
 
 ---@class BootstrapModule
 local bootstrap = {}
@@ -22,6 +23,7 @@ function bootstrap.new(width, height, opts)
         apply_settings = opts.apply_settings,
         request_quit = opts.request_quit,
         settings_storage = opts.settings_storage,
+        quick_match = opts.quick_match,
     })
 end
 

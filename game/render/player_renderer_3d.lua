@@ -153,6 +153,21 @@ function player_renderer_3d.draw(sx, sy, r, color, view, opts)
         return
     end
 
+    -- Ground contact first, in 2D on the pitch plane, matching the billboard
+    -- renderer's shadow and selection rings exactly. Without a shadow a rigged
+    -- character reads as floating above the pitch rather than standing on it --
+    -- it is the cheapest thing that sells the ground plane.
+    love.graphics.setColor(0, 0, 0, 0.35)
+    love.graphics.ellipse("fill", sx, sy, r * 1.15, r * 0.5)
+    if opts.controlled then
+        love.graphics.setColor(1, 1, 1, 0.92)
+        love.graphics.setLineWidth(math.max(1, r * 0.12))
+        love.graphics.ellipse("line", sx, sy, r * 1.25, r * 0.6)
+        love.graphics.ellipse("line", sx, sy, r * 1.48, r * 0.72)
+        love.graphics.setLineWidth(1)
+    end
+    love.graphics.setColor(1, 1, 1, 1)
+
     local vw, vh = love.graphics.getDimensions()
     -- Feet sit at the projected point, so the character grows upward from it.
     local ppm = (r * HEIGHT_IN_RADII * 2) / state.height

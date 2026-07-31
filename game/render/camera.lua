@@ -34,19 +34,30 @@ camera.DEFAULTS = {
 
 -- Clamped focus for a following camera.
 --
--- The focus is pulled back from the touchlines so a zoomed frame still lands on
--- the pitch rather than off the end of it.
+-- `margin` is how far, in world units, the focus must stay inside each edge of
+-- the pitch. The caller supplies it because the right value depends on the
+-- projection: a lens zoom needs the whole frame to stay over the pitch, while a
+-- real camera only needs to not fly off the end of it -- and must still be able
+-- to reach the goals.
+--
+-- Deriving the margin from `field / (2 * zoom)` (the previous behaviour) pins
+-- the focus to the exact centre of the pitch at zoom 1, so the camera cannot
+-- follow anything at all.
 ---@param fx number
 ---@param fy number
 ---@param field { w: number, h: number }
 ---@param zoom number
+---@param margin { x: number, y: number }?
 ---@return CameraView
-function camera.view(fx, fy, field, zoom)
-    zoom = math.max(1, zoom or 1)
-    local half_w, half_h = field.w / (2 * zoom), field.h / (2 * zoom)
+function camera.view(fx, fy, field, zoom, margin)
+    zoom = math.max(0.25, zoom or 1)
+    local mx = margin and margin.x or field.w / (2 * zoom)
+    local my = margin and margin.y or field.h / (2 * zoom)
+    mx = math.min(mx, field.w / 2)
+    my = math.min(my, field.h / 2)
     return {
-        x = math.max(half_w, math.min(field.w - half_w, fx)),
-        y = math.max(half_h, math.min(field.h - half_h, fy)),
+        x = math.max(mx, math.min(field.w - mx, fx)),
+        y = math.max(my, math.min(field.h - my, fy)),
         zoom = zoom,
     }
 end
