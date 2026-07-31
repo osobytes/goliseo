@@ -43,6 +43,7 @@
 ---@field keys string[] -- LÖVE KeyConstant names.
 ---@field buttons string[] -- LÖVE GamepadButton names, edge-capable.
 ---@field axes string[] -- LÖVE GamepadAxis names read as a held trigger, hold-only.
+---@field edge boolean -- A consumer reads this control's press or release, not just its held state.
 
 ---@class BindingsModule
 local bindings = {}
@@ -51,15 +52,29 @@ local bindings = {}
 -- the movement stick already uses.
 bindings.TRIGGER_THRESHOLD = 0.5
 
+-- `edge` is what makes rule 4 checkable instead of a convention. It says a
+-- consumer reads this control's PRESS or RELEASE, not merely whether it is
+-- held. `bindings.layout_problems` then enforces that such a control always has
+-- a key or button to deliver that edge from, because an axis physically cannot.
 ---@type ControlBinding[]
 local CONTROLS = {
-    { id = "move_up", action = "up", keys = { "up", "w" }, buttons = { "dpup" }, axes = {} },
+    -- The four movement roles are polled into a vector for the match AND
+    -- dispatched as edges for menu navigation, so they are edge controls.
+    {
+        id = "move_up",
+        action = "up",
+        keys = { "up", "w" },
+        buttons = { "dpup" },
+        axes = {},
+        edge = true,
+    },
     {
         id = "move_down",
         action = "down",
         keys = { "down", "s" },
         buttons = { "dpdown" },
         axes = {},
+        edge = true,
     },
     {
         id = "move_left",
@@ -67,6 +82,7 @@ local CONTROLS = {
         keys = { "left", "a" },
         buttons = { "dpleft" },
         axes = {},
+        edge = true,
     },
     {
         id = "move_right",
@@ -74,41 +90,99 @@ local CONTROLS = {
         keys = { "right", "d" },
         buttons = { "dpright" },
         axes = {},
+        edge = true,
     },
     -- Space and gamepad A read as `confirm` in a menu and as ACTION in a match.
     -- One physical control, two contexts -- that is deliberate, not an overload.
-    { id = "action", action = "confirm", keys = { "space" }, buttons = { "a" }, axes = {} },
-    { id = "play", action = "pass_switch", keys = { "k" }, buttons = { "x" }, axes = {} },
+    -- The match derives its shot release from polled state, but the menu confirm
+    -- is a real edge.
+    {
+        id = "action",
+        action = "confirm",
+        keys = { "space" },
+        buttons = { "a" },
+        axes = {},
+        edge = true,
+    },
+    -- Off the ball, PLAY switches player on the press.
+    {
+        id = "play",
+        action = "pass_switch",
+        keys = { "k" },
+        buttons = { "x" },
+        axes = {},
+        edge = true,
+    },
+    -- Pure hold: nothing reads a sprint press or release.
     {
         id = "sprint",
         action = "sprint",
         keys = { "lshift", "rshift" },
         buttons = { "leftshoulder" },
         axes = {},
+        edge = false,
     },
-    -- Hold-only, so it is free to take the trigger that rule 4 closes to edges.
-    -- It was gamepad Y, which no thumb can hold while pressing A or X.
-    { id = "modifier", action = "lob", keys = { "j" }, buttons = {}, axes = { "triggerright" } },
+    -- Also a pure hold, which is exactly why it may take the trigger that rule 4
+    -- closes to edges. It was gamepad Y, which no thumb can hold while pressing
+    -- A or X, so the bicycle kick was unreachable on a pad.
+    {
+        id = "modifier",
+        action = "lob",
+        keys = { "j" },
+        buttons = {},
+        axes = { "triggerright" },
+        edge = false,
+    },
     -- A tap, and never combined with the modifier, so it keeps a face button.
-    { id = "juke", action = "juke", keys = { "l" }, buttons = { "y" }, axes = {} },
+    { id = "juke", action = "juke", keys = { "l" }, buttons = { "y" }, axes = {}, edge = true },
     {
         id = "equipment",
         action = "equipment",
         keys = { "u" },
         buttons = { "rightshoulder" },
         axes = {},
+        edge = true,
     },
-    { id = "confirm", action = "confirm", keys = { "return", "kpenter" }, buttons = {}, axes = {} },
-    { id = "back", action = "back", keys = { "escape" }, buttons = { "b" }, axes = {} },
-    { id = "pause", action = "pause", keys = { "p" }, buttons = { "start" }, axes = {} },
+    {
+        id = "confirm",
+        action = "confirm",
+        keys = { "return", "kpenter" },
+        buttons = {},
+        axes = {},
+        edge = true,
+    },
+    {
+        id = "back",
+        action = "back",
+        keys = { "escape" },
+        buttons = { "b" },
+        axes = {},
+        edge = true,
+    },
+    {
+        id = "pause",
+        action = "pause",
+        keys = { "p" },
+        buttons = { "start" },
+        axes = {},
+        edge = true,
+    },
     {
         id = "toggle_fullscreen",
         action = "toggle_fullscreen",
         keys = { "f11" },
         buttons = {},
         axes = {},
+        edge = true,
     },
-    { id = "toggle_mute", action = "toggle_mute", keys = { "m" }, buttons = {}, axes = {} },
+    {
+        id = "toggle_mute",
+        action = "toggle_mute",
+        keys = { "m" },
+        buttons = {},
+        axes = {},
+        edge = true,
+    },
 }
 
 bindings.CONTROLS = CONTROLS
@@ -118,14 +192,60 @@ local BY_ID = {}
 for _, control in ipairs(CONTROLS) do
     BY_ID[control.id] = control
 end
-bindings.BY_ID = BY_ID
-
+-- BY_ID stays private: `control()` is the only lookup, so a bad id fails loud
+-- instead of returning nil.
 ---@param id ControlId
 ---@return ControlBinding
 local function control(id)
     return assert(BY_ID[id], "unknown control: " .. tostring(id))
 end
 bindings.control = control
+
+-- The structural half of the layout rules, checked against the table rather
+-- than against a list of today's control names. A spec asserts this, but it
+-- lives here so the answer is derived from the binding a future editor writes
+-- and not from a second copy of the facts that editor would have to remember.
+---@return string[] problems -- Empty when the layout is sound.
+function bindings.layout_problems()
+    local problems = {}
+    local seen_keys, seen_buttons, seen_axes = {}, {}, {}
+    for _, entry in ipairs(CONTROLS) do
+        -- Rule 4: LÖVE reports a trigger as an axis, so `love.gamepadpressed`
+        -- never fires for one. A control whose edge is read needs a key or a
+        -- button to deliver it.
+        if entry.edge and #entry.keys == 0 and #entry.buttons == 0 then
+            problems[#problems + 1] = entry.id
+                .. " reads an edge but is bound only to an axis, which cannot fire one"
+        end
+        -- A control readable on the pad at all, whose edge is read, needs that
+        -- edge deliverable on the pad specifically.
+        if entry.edge and #entry.axes > 0 and #entry.buttons == 0 then
+            problems[#problems + 1] = entry.id
+                .. " reads an edge but its only gamepad binding is an axis"
+        end
+        local function claim(pool, name, kind)
+            if pool[name] then
+                problems[#problems + 1] = ("%s %s is bound to both %s and %s"):format(
+                    kind,
+                    name,
+                    pool[name],
+                    entry.id
+                )
+            end
+            pool[name] = entry.id
+        end
+        for _, key in ipairs(entry.keys) do
+            claim(seen_keys, key, "key")
+        end
+        for _, button in ipairs(entry.buttons) do
+            claim(seen_buttons, button, "button")
+        end
+        for _, axis in ipairs(entry.axes) do
+            claim(seen_axes, axis, "axis")
+        end
+    end
+    return problems
+end
 
 ---@return table<string, ActionName>
 function bindings.key_map()

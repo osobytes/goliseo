@@ -688,8 +688,9 @@ function Match:event(evt)
         return
     end
     -- After full time only the rematch keys act; match inputs stop buffering.
+    -- R stays literal: it is a dev-harness key, not a player control.
     if match_is_over(self) then
-        if self._profile == "playtest" and (evt.key == "r" or evt.key == "return") then
+        if self._profile == "playtest" and (evt.key == "r" or control_id == "confirm") then
             self:restart()
         end
         return

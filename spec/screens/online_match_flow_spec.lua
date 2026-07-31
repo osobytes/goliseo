@@ -259,10 +259,13 @@ local function stub_graphics()
     return g
 end
 
--- One gamepad with nothing held but the button the caller names. `b` inside a
--- match is the equipment button (`game.input.actions.from_gamepad`), and the
--- match screen *polls* it — an abstract action event alone would be overwritten
--- by the next poll, so a genuine gamepad hold has to come from here.
+-- One gamepad with nothing held but the button the caller names. The equipment
+-- button is whatever `game.input.bindings` says it is (RB today), and the match
+-- screen *polls* it — an abstract action event alone would be overwritten by the
+-- next poll, so a genuine gamepad hold has to come from here.
+--
+-- Triggers read as zero throughout, so the modifier is never pulled and no
+-- aerial or loft intent can arm from this stub.
 ---@param held table<string, boolean>
 ---@param fn fun()
 local function with_gamepad(held, fn)
@@ -490,8 +493,10 @@ end)
 --               player reads `ready` -- equipped, off cooldown, in no forced
 --               state, committed to no soccer action. Every human slot commits
 --               zero times across the window anyway.
---   keyboard -- `j` is toggled on a fixed period. `game.screens.match` polls it.
---   gamepad  -- the gamepad's `b` is toggled instead, with `j` up.
+--   keyboard -- the equipment KEY is toggled on a fixed period, read off
+--               `game.input.bindings` rather than pinned. `game.screens.match`
+--               polls it.
+--   gamepad  -- the equipment BUTTON is toggled instead, with the key up.
 --
 -- A live slot is the one slot its peer authors for itself:
 -- `match_driver.materialize_authored` hands the human sample straight to the
@@ -512,11 +517,12 @@ end)
 -- The remaining two, `soccer_commitment` and `aerial_state_or_recovery`, are
 -- **not read**. They are unreachable instead, and by a property of the input
 -- stub rather than of the readiness reading: `with_keyboard` and `with_gamepad`
--- below wire `j` and the pad's `b` and nothing else, so shoot, pass, dash,
--- jockey, dodge and the aerial actions can never be pressed and no
--- ground-commitment or aerial timer can arm on a live slot. A future edit that
--- teaches the stub another key has to re-check that, which is why it is written
--- down rather than left as an unexamined "every gate is open".
+-- below wire the equipment control and nothing else — no other key, no other
+-- button, and every trigger axis reads zero — so shoot, pass, dash, jockey,
+-- dodge and the aerial actions can never be pressed and no ground-commitment or
+-- aerial timer can arm on a live slot. A future edit that teaches the stub
+-- another control has to re-check that, which is why it is written down rather
+-- than left as an unexamined "every gate is open".
 --
 -- It deliberately does *not* lean on the AI-driven away line committing during
 -- the window. It does not: from a real kickoff, over 700 quiet frames, the bot

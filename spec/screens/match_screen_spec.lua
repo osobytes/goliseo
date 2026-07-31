@@ -21,11 +21,18 @@ t.describe("match screen rematch (tier 2)", function()
         t.eq(m.state.press.home, 2, "the tactic choice carries into the rematch")
     end)
 
-    t.it("Enter also triggers the rematch", function()
-        local m = Match.new()
-        m.state.finished = true
-        m:event({ kind = "key", key = "return" })
-        t.is_true(not m.state.finished)
+    -- Every key bound to CONFIRM, not just the first one. This branch used to
+    -- match the literal "return", so the second confirm key skipped a replay but
+    -- silently did not rematch.
+    t.it("rematches on every key bound to CONFIRM", function()
+        local confirm_keys = bindings.control("confirm").keys
+        t.is_true(#confirm_keys > 1, "this only proves something with more than one confirm key")
+        for _, key in ipairs(confirm_keys) do
+            local m = Match.new()
+            m.state.finished = true
+            m:event({ kind = "key", key = key })
+            t.is_true(not m.state.finished, key .. " should trigger the rematch")
+        end
     end)
 
     t.it("ignores the rematch keys while the match is live", function()

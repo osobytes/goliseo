@@ -22,46 +22,73 @@ local function contains(list, value)
 end
 
 t.describe("input bindings", function()
-    -- Rule 4 of the layout: LÖVE reports triggers as axes, so `love.gamepadpressed`
-    -- never fires for one. A control that carries an edge cannot live there, and a
-    -- future rebind must not quietly move one.
-    t.it("keeps every edge action off the gamepad triggers", function()
-        local edge_actions = {
-            confirm = true,
-            back = true,
-            pause = true,
-            pass_switch = true,
-            juke = true,
-            equipment = true,
-            toggle_mute = true,
-            toggle_fullscreen = true,
-            up = true,
-            down = true,
-            left = true,
-            right = true,
-        }
-        for _, entry in ipairs(bindings.CONTROLS) do
-            if #entry.axes > 0 then
-                t.is_true(
-                    not edge_actions[entry.action],
-                    entry.id .. " dispatches an edge action but is bound to a trigger"
-                )
-            end
-        end
+    -- Rule 4 of the layout, plus the no-double-binding check. Both are derived
+    -- from the table itself rather than from a list of today's control names --
+    -- a hand-copied list would read `nil` for a control added later and pass,
+    -- which is exactly the regression these are here to stop.
+    t.it("declares a sound layout", function()
+        t.eq(table.concat(bindings.layout_problems(), "; "), "")
     end)
 
-    t.it("binds no physical input to two different roles", function()
-        local keys, buttons = {}, {}
-        for _, entry in ipairs(bindings.CONTROLS) do
-            for _, key in ipairs(entry.keys) do
-                t.is_true(keys[key] == nil, "key " .. key .. " is bound twice")
-                keys[key] = entry.id
-            end
-            for _, button in ipairs(entry.buttons) do
-                t.is_true(buttons[button] == nil, "button " .. button .. " is bound twice")
-                buttons[button] = entry.id
-            end
+    -- The guard above is only worth having if it actually fires, so drive it
+    -- with each way a future rebind could break the layout.
+    t.it("rejects an edge control that only an axis could deliver", function()
+        local function with_extra(entry, fn)
+            bindings.CONTROLS[#bindings.CONTROLS + 1] = entry
+            local ok, result = pcall(fn)
+            bindings.CONTROLS[#bindings.CONTROLS] = nil
+            assert(ok, result)
+            return result
         end
+
+        -- An edge bound to nothing but a trigger: unreachable on both devices.
+        local trigger_only = with_extra({
+            id = "probe",
+            action = "juke",
+            keys = {},
+            buttons = {},
+            axes = { "triggerleft" },
+            edge = true,
+        }, function()
+            return table.concat(bindings.layout_problems(), "; ")
+        end)
+        t.is_true(
+            trigger_only:find("cannot fire one", 1, true) ~= nil,
+            "an axis-only edge control passed the layout check: " .. trigger_only
+        )
+
+        -- An edge with a keyboard binding but only a trigger on the pad: works
+        -- on a keyboard and is silently dead on a controller.
+        local pad_dead = with_extra({
+            id = "probe",
+            action = "juke",
+            keys = { "z" },
+            buttons = {},
+            axes = { "triggerleft" },
+            edge = true,
+        }, function()
+            return table.concat(bindings.layout_problems(), "; ")
+        end)
+        t.is_true(
+            pad_dead:find("only gamepad binding is an axis", 1, true) ~= nil,
+            "a pad-undeliverable edge passed the layout check: " .. pad_dead
+        )
+
+        -- And a straightforward double binding.
+        local clash = with_extra({
+            id = "probe",
+            action = "juke",
+            keys = { "k" },
+            buttons = {},
+            axes = {},
+            edge = true,
+        }, function()
+            return table.concat(bindings.layout_problems(), "; ")
+        end)
+        t.is_true(
+            clash:find("bound to both", 1, true) ~= nil,
+            "a double-bound key passed the layout check: " .. clash
+        )
     end)
 
     -- The ergonomic core of the keyboard layout: the modifier is the right index
