@@ -81,8 +81,8 @@ camera.PERSPECTIVE = {
     -- Tuned against arcade soccer reference framing: a player near the focus
     -- occupies roughly an eighth of the screen height, close enough to read a
     -- face while still showing enough pitch to aim a pass.
-    height = 150, -- world units above the pitch
-    distance = 180, -- world units back from the focus
+    height = 180, -- world units above the pitch
+    distance = 216, -- world units back from the focus
     fov = 45, -- degrees, vertical
     scale_k = 300,
 }
