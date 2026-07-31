@@ -26,7 +26,12 @@ end
 
 -- Gait cadence: radians of limb swing per world-unit travelled. Tuned so a
 -- full-speed runner pumps a few times a second.
-local CADENCE = 0.066
+--
+-- Exported because `phase` is distance-derived, and a consumer that wants the
+-- distance back (a clip whose stride is measured in world units) has to divide
+-- it out. Hardcoding the constant in two places is how they drift apart.
+view_state.CADENCE = 0.066
+local CADENCE = view_state.CADENCE
 
 ---@param players MatchPlayer[]
 ---@param dt number

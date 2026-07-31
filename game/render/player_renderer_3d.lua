@@ -23,6 +23,7 @@ local masks = require("game.render.rig3d.masks")
 local proportions = require("game.render.rig3d.proportions")
 local themes = require("game.render.rig3d.themes")
 local body = require("game.render.rig3d.body")
+local view_state = require("game.render.view_state")
 
 local player_renderer_3d = {}
 
@@ -31,9 +32,10 @@ local player_renderer_3d = {}
 local HEIGHT_IN_RADII = 3.0
 -- Match camera looks down at the pitch; this is the apparent elevation.
 local ELEVATION = math.rad(17)
--- World units/sec at which the walk blend reaches full. view_state caps display
--- speed at 480, and a jog sits well below that.
-local FULL_STRIDE_SPEED = 170
+-- Speeds at which each locomotion clip is fully weighted, in the sim's world
+-- units per second (view_state caps display speed at 480).
+local WALK_SPEED = 150
+local RUN_SPEED = 400
 
 local state = { built = false, failed = false, rig = nil, teams = {} }
 
@@ -107,23 +109,46 @@ end
 ---@return table
 local function poseFor(view, opts)
     local speed = view and view.speed or 0
-    local blend = math.min(speed / FULL_STRIDE_SPEED, 1)
-    -- The gait phase advances with DISTANCE travelled (view_state derives it
-    -- that way), which is what keeps the feet from sliding when a player
-    -- accelerates. Scaling it into clip seconds preserves that property.
-    local stride_time = (view and view.phase or 0) * 0.5
+    local idle, walk, run = clips.ORDER[1], clips.ORDER[2], clips.RUN
 
-    local idle, walk = clips.ORDER[1], clips.ORDER[2]
+    -- A run is not a fast walk, so the two are separate clips blended by speed
+    -- rather than one clip played quicker. Playing a walk faster gives short,
+    -- frantic steps with no knee lift and no lean -- which is exactly how it
+    -- looked before.
+    local walk_mix = math.min(speed / WALK_SPEED, 1)
+    local run_mix = math.max(0, math.min((speed - WALK_SPEED) / (RUN_SPEED - WALK_SPEED), 1))
+
+    -- Both cycles are two steps with contacts at 0 and 0.5, so one normalised
+    -- phase drives both and they stay in step through the blend. Advancing it by
+    -- DISTANCE over the blended stride is what keeps the feet planted: the
+    -- cadence follows how far the player has actually travelled.
+    -- view_state accumulates phase as distance * CADENCE (radians of swing), so
+    -- dividing that back out recovers the distance the clip stride is measured
+    -- against.
+    local stride = walk.stride + (run.stride - walk.stride) * run_mix
+    local distance = (view and view.phase or 0) / view_state.CADENCE
+    local cycles = distance / stride
+
     local pose = clips.layer(
         clips.sample(idle, love.timer.getTime() * 0.35),
-        clips.sample(walk, stride_time),
+        clips.sample(walk, cycles * walk.duration),
         masks.FULL_BODY,
-        blend
+        walk_mix
     )
+    if run_mix > 0 then
+        pose = clips.layer(pose, clips.sample(run, cycles * run.duration), masks.FULL_BODY, run_mix)
+    end
 
     local selected = clipFor(opts.pose and opts.pose.id)
     if selected == "charge" then
-        pose = clips.layer(pose, clips.sample(clips.CHARGE, stride_time), masks.UPPER_BODY, 1)
+        -- The charge is a held pose, so it only needs a phase to breathe on;
+        -- tying it to the stride keeps the sway in step with the legs.
+        pose = clips.layer(
+            pose,
+            clips.sample(clips.CHARGE, cycles * clips.CHARGE.duration),
+            masks.UPPER_BODY,
+            1
+        )
     elseif selected == "swing" then
         local swing = clips.ORDER[3]
         local t = (opts.windup and opts.windup > 0) and 0.3 or 0.55

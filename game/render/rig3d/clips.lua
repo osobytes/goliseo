@@ -125,103 +125,168 @@ local IDLE = {
 -- ---------------------------------------------------------------------------
 -- Clip 2: WALK -- a two-step cycle, contact / passing / contact / passing
 -- ---------------------------------------------------------------------------
+local function step(thigh_f, shin_f, foot_f, toe_f, thigh_b, shin_b, foot_b, toe_b, extra)
+    local t = {
+        ["thigh.R"] = { thigh_f, 0, -2 },
+        ["shin.R"] = { shin_f, 0, 0 },
+        ["foot.R"] = { foot_f, 0, 0 },
+        ["toe.R"] = { toe_f, 0, 0 },
+        ["thigh.L"] = { thigh_b, 0, 2 },
+        ["shin.L"] = { shin_b, 0, 0 },
+        ["foot.L"] = { foot_b, 0, 0 },
+        ["toe.L"] = { toe_b, 0, 0 },
+    }
+    for k, v in pairs(extra or {}) do
+        t[k] = v
+    end
+    return t
+end
+
+-- Mirrors a leg pose left/right, so a cycle is authored once and the opposite
+-- step comes for free -- and cannot drift out of sync with its own mirror.
+local function mirror(pose)
+    local out = {}
+    for name, v in pairs(pose) do
+        local base, side = name:match("^(.*)%.([LR])$")
+        local swapped = base and (base .. "." .. (side == "R" and "L" or "R")) or name
+        -- Y and Z are the twist and splay axes, so both flip with the side.
+        out[swapped] = { v[1], -v[2], -v[3] }
+    end
+    return out
+end
+
+-- ---------------------------------------------------------------------------
+-- Clip 2: WALK
+--
+-- Timings and joint ranges are matched to reference locomotion: a 0.80 s cycle
+-- with the knee peaking near 70 degrees through the passing pose. The previous
+-- version ran a 0.77 s cycle with a 46 degree knee at every speed including a
+-- sprint, which is what made it read as short, fast, robotic steps.
+-- ---------------------------------------------------------------------------
 local WALK = {
     name = "walk",
     loop = true,
-    root_motion = false, -- in-place; simulation owns displacement (#101)
-    duration = 0.77,
+    root_motion = false,
+    -- World units covered by one full cycle. Phase advances with distance, so
+    -- this is what keeps the feet planted rather than sliding.
+    stride = 130,
+    duration = 0.80,
     keys = {
-        { -- right foot forward, both feet planted
+        {
             t = 0.0,
-            rot = stance(GUARD, {
-                ["thigh.R"] = { -24, 0, -2 },
-                ["shin.R"] = { 5, 0, 0 },
-                ["foot.R"] = { 8, 0, 0 },
-                ["toe.R"] = { -14, 0, 0 },
-                ["toe.L"] = { -30, 0, 0 },
-                ["thigh.L"] = { 20, 0, 2 },
-                ["shin.L"] = { 24, 0, 0 },
-                ["foot.L"] = { -16, 0, 0 },
-                ["hips"] = { 0, -5, 2 },
-                chest = { 2, 5, 0 },
-                ["upper_arm.L"] = { -18, 0, 18 },
-                ["upper_arm.R"] = { -6, 0, 6 },
-                ["forearm.R"] = { -66, 0, 0 },
-            }),
+            rot = stance(
+                GUARD,
+                step(-26, 6, 10, -16, 22, 30, -16, -30, {
+                    hips = { 0, -5, 2 },
+                    chest = { 3, 5, 0 },
+                })
+            ),
             move = { root = { 0, 0, 0 } },
         },
-        { -- passing: left leg swings through, body at its highest
-            t = 0.1925,
-            rot = stance(GUARD, {
-                ["thigh.R"] = { 4, 0, -2 },
-                ["shin.R"] = { 6, 0, 0 },
-                ["foot.R"] = { -4, 0, 0 },
-                ["toe.R"] = { -4, 0, 0 },
-                ["toe.L"] = { -10, 0, 0 },
-                ["thigh.L"] = { -6, 0, 2 },
-                ["shin.L"] = { 46, 0, 0 },
-                ["foot.L"] = { -14, 0, 0 },
-                ["hips"] = { 0, 0, 0 },
-                chest = { 2, 0, 0 },
-                ["upper_arm.L"] = { -12, 0, 18 },
-                ["upper_arm.R"] = { -12, 0, 6 },
-            }),
-            move = { root = { 0, 0.030, 0 } },
+        {
+            t = 0.20,
+            rot = stance(
+                GUARD,
+                step(6, 12, -6, -4, -10, 70, -16, -12, {
+                    hips = { 0, 0, 0 },
+                    chest = { 3, 0, 0 },
+                })
+            ),
+            move = { root = { 0, 0.036, 0 } },
         },
-        { -- left foot forward
-            t = 0.385,
-            rot = stance(GUARD, {
-                ["thigh.L"] = { -24, 0, 2 },
-                ["shin.L"] = { 5, 0, 0 },
-                ["foot.L"] = { 8, 0, 0 },
-                ["toe.L"] = { -14, 0, 0 },
-                ["toe.R"] = { -30, 0, 0 },
-                ["thigh.R"] = { 20, 0, -2 },
-                ["shin.R"] = { 24, 0, 0 },
-                ["foot.R"] = { -16, 0, 0 },
-                ["hips"] = { 0, 5, -2 },
-                chest = { 2, -5, 0 },
-                ["upper_arm.R"] = { -32, 0, 6 },
-                ["forearm.R"] = { -78, 0, 0 },
-                ["upper_arm.L"] = { -8, 0, 18 },
-            }),
+        {
+            t = 0.40,
+            rot = stance(GUARD, mirror(step(-26, 6, 10, -16, 22, 30, -16, -30, {}))),
             move = { root = { 0, 0, 0 } },
         },
-        { -- passing: right leg swings through
-            t = 0.5775,
-            rot = stance(GUARD, {
-                ["thigh.L"] = { 4, 0, 2 },
-                ["shin.L"] = { 6, 0, 0 },
-                ["foot.L"] = { -4, 0, 0 },
-                ["toe.L"] = { -4, 0, 0 },
-                ["toe.R"] = { -10, 0, 0 },
-                ["thigh.R"] = { -6, 0, -2 },
-                ["shin.R"] = { 46, 0, 0 },
-                ["foot.R"] = { -14, 0, 0 },
-                ["hips"] = { 0, 0, 0 },
-                chest = { 2, 0, 0 },
-                ["upper_arm.R"] = { -22, 0, 6 },
-                ["upper_arm.L"] = { -14, 0, 18 },
-            }),
-            move = { root = { 0, 0.030, 0 } },
+        {
+            t = 0.60,
+            rot = stance(GUARD, mirror(step(6, 12, -6, -4, -10, 70, -16, -12, {}))),
+            move = { root = { 0, 0.036, 0 } },
         },
-        { -- loop back onto the first contact pose
-            t = 0.77,
-            rot = stance(GUARD, {
-                ["thigh.R"] = { -24, 0, -2 },
-                ["shin.R"] = { 5, 0, 0 },
-                ["foot.R"] = { 8, 0, 0 },
-                ["toe.R"] = { -14, 0, 0 },
-                ["toe.L"] = { -30, 0, 0 },
-                ["thigh.L"] = { 20, 0, 2 },
-                ["shin.L"] = { 24, 0, 0 },
-                ["foot.L"] = { -16, 0, 0 },
-                ["hips"] = { 0, -5, 2 },
-                chest = { 2, 5, 0 },
-                ["upper_arm.L"] = { -18, 0, 18 },
-                ["upper_arm.R"] = { -6, 0, 6 },
-                ["forearm.R"] = { -66, 0, 0 },
-            }),
+        {
+            t = 0.80,
+            rot = stance(
+                GUARD,
+                step(-26, 6, 10, -16, 22, 30, -16, -30, {
+                    hips = { 0, -5, 2 },
+                    chest = { 3, 5, 0 },
+                })
+            ),
+            move = { root = { 0, 0, 0 } },
+        },
+    },
+}
+
+-- ---------------------------------------------------------------------------
+-- Clip 3: RUN
+--
+-- A run is not a fast walk. Against the same reference: a 0.60 s cycle, the
+-- knee peaking near 120 degrees, a longer thigh swing, a forward torso lean and
+-- a flight phase the walk does not have. Playing a walk faster gets none of
+-- that, which is the whole reason this is a separate clip.
+-- ---------------------------------------------------------------------------
+local RUN = {
+    name = "run",
+    loop = true,
+    root_motion = false,
+    stride = 285,
+    duration = 0.60,
+    keys = {
+        {
+            t = 0.0,
+            rot = stance(
+                GUARD,
+                step(-42, 18, 14, -22, 34, 78, -24, -38, {
+                    hips = { 0, -7, 3 },
+                    spine = { 9, 0, 0 },
+                    chest = { 4, 7, 0 },
+                })
+            ),
+            move = { root = { 0, 0, 0 } },
+        },
+        {
+            t = 0.15,
+            rot = stance(
+                GUARD,
+                step(12, 34, -10, -8, -22, 118, -18, -16, {
+                    hips = { 0, 0, 0 },
+                    spine = { 11, 0, 0 },
+                    chest = { 4, 0, 0 },
+                })
+            ),
+            move = { root = { 0, 0.058, 0 } },
+        },
+        {
+            t = 0.30,
+            rot = stance(
+                GUARD,
+                mirror(step(-42, 18, 14, -22, 34, 78, -24, -38, {
+                    spine = { 9, 0, 0 },
+                }))
+            ),
+            move = { root = { 0, 0, 0 } },
+        },
+        {
+            t = 0.45,
+            rot = stance(
+                GUARD,
+                mirror(step(12, 34, -10, -8, -22, 118, -18, -16, {
+                    spine = { 11, 0, 0 },
+                }))
+            ),
+            move = { root = { 0, 0.058, 0 } },
+        },
+        {
+            t = 0.60,
+            rot = stance(
+                GUARD,
+                step(-42, 18, 14, -22, 34, 78, -24, -38, {
+                    hips = { 0, -7, 3 },
+                    spine = { 9, 0, 0 },
+                    chest = { 4, 7, 0 },
+                })
+            ),
             move = { root = { 0, 0, 0 } },
         },
     },
@@ -386,6 +451,7 @@ local CHARGE = {
 }
 
 clips.ORDER = { IDLE, WALK, SWING }
+clips.RUN = RUN
 clips.CHARGE = CHARGE
 
 -- Precomputes the set of bones a clip touches, so the sampler knows which
@@ -425,6 +491,7 @@ for _, clip in ipairs(clips.ORDER) do
     prepare(clip)
 end
 prepare(CHARGE)
+prepare(RUN)
 
 local ZERO = { 0, 0, 0 }
 local IDENTITY = quat.identity()
