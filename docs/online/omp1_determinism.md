@@ -53,8 +53,8 @@ The authoritative values are:
 
 ```text
 boundaries=7202
-final_hash=bfbb106aea5480f8
-sequence_digest=a190b60058a64e63
+final_hash=31f98f5764b39337
+sequence_digest=9a6683206f718542
 score=1-0
 outcome=home
 final_snapshot_bytes=21820
@@ -66,7 +66,17 @@ The complete match produced:
 catch=1 claim=3 header=2 pass=4 reception=1 shot=2 tackle=147 touch=180
 ```
 
-These values were last refreshed for the possessed-ball touchline fix. That
+These values were last refreshed by #316, which gave `InputSample` an aim byte
+and moved `InputFrame.VERSION` to 3. That refresh moved `final_hash` and
+`sequence_digest` **without changing a single simulated outcome**: the snapshot
+encoder folds `InputOwnership.version`, which mirrors the input version, so every
+snapshot hash necessarily moves with a version bump. Pinning the encoded version
+at its old value reproduces all 7202 boundary hashes byte-identically, and
+`score`, `outcome`, `final_snapshot_bytes`, `coverage` and every event count above
+are unchanged. The frame wires moved only by gaining a trailing `,255`
+(`AIM_NONE`) on each sample, with every axis and mask byte-identical.
+
+The values before that were refreshed for the possessed-ball touchline fix. That
 fix clamps an owned ball to the arena, and this fixture is direct evidence the
 old code let one out: boundaries `0..2026` are bit-identical across the
 refresh and only `2027` onward moves, so the clamp is a genuine no-op until the

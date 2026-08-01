@@ -51,8 +51,8 @@ turnover winner, and seconds elapsed since that turnover). Capture rejects a
 live window on a finished match or one that outlived both tactic windows, so a
 leaked timer cannot survive a lifecycle boundary. Soccer-only
 input-tape envelopes remain version 1. The current soccer
-fixture uses InputFrame v2 and is pinned at tape digest
-`93bed4e168228a07`;
+fixture uses InputFrame v3 and is pinned at tape digest
+`f0b089d4e24f417e`;
 the published historical InputFrame-v1/InputTape-v1 artifact remains archived
 at `881917e3ba798703`. Version 11 preserves the version-1 soccer tape envelope
 and all 7,201 effective input wires, not snapshot byte identity.

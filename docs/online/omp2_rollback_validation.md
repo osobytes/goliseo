@@ -16,16 +16,20 @@ acceptance evidence.
 
 The current campaign freezes a mixed artifact matrix at 60 Hz:
 
-- every case uses InputFrame v2 and network-profile digest `5fbf1e0d51a6f4d5`;
+- every case uses InputFrame v3 and network-profile digest `5fbf1e0d51a6f4d5`;
 - soccer cases use InputTape v1 / MatchSnapshot v11, final hash
-  `bfbb106aea5480f8`, sequence digest `a190b60058a64e63`, and live tape digest
-  `93bed4e168228a07`;
-- combat cases use InputTape v2 / MatchSnapshot v12, initial hash
-  `0f7c7c66b5a6bbf6`, final hash `32ffe60cbec9d83a`, and tape digest
-  `f4140ca5b3b9d2fc`; and
+  `31f98f5764b39337`, sequence digest `9a6683206f718542`, and live tape digest
+  `f0b089d4e24f417e`;
+- combat cases use InputTape v2 / MatchSnapshot v13, initial hash
+  `6cf1f873f439f17e`, final hash `40e0c1ab1984058c`, and tape digest
+  `5172e0f60b87978e`; and
 - stable rollback-event identity and confirmation semantics apply to both.
 
-Runtime provenance therefore declares InputFrame v2 plus tape versions 1/2
+The combat line above was already stale before #316: it still named MatchSnapshot
+v12 and the pre-#112 hashes. It is corrected here against
+`data/omp2_rollback_validation.lua`, which is the authority.
+
+Runtime provenance therefore declares InputFrame v3 plus tape versions 1/2
 and snapshot versions 11/12; every case repeats and validates its exact artifact
 versions. Any merge that changes simulation, gameplay data or tuning,
 input/snapshot/event schemas, a pinned fixture, or network profiles invalidates
