@@ -2,6 +2,9 @@ local Match = require("game.screens.match")
 local bindings = require("game.input.bindings")
 local t = require("spec.support.runner")
 
+-- Press the role, not the button: this follows a rebind instead of pinning one.
+local ACTION_BUTTON = bindings.control("action").buttons[1]
+
 -- Drive the match screen off a fake pad: no keyboard at all, `held` names the
 -- gamepad buttons that are down, and `pull` names the trigger axes.
 ---@param held table<string, boolean>
@@ -50,7 +53,7 @@ t.describe("match screen gamepad input", function()
                 return axis == "leftx" and 1 or 0
             end,
             isGamepadDown = function(_, button)
-                return button == "a"
+                return button == ACTION_BUTTON
             end,
         }
         love.joystick = {
@@ -64,7 +67,7 @@ t.describe("match screen gamepad input", function()
             local player = match.state.players[match.state.controlled]
             match:update(1 / 60)
             t.is_true(player.run_vel.x > 0, "left stick drives the controlled player")
-            t.is_true(player.charge > 0, "A holds the contextual shot charge")
+            t.is_true(player.charge > 0, "ACTION holds the contextual shot charge")
         end)
         love.keyboard = saved_keyboard
         love.joystick = saved_joystick

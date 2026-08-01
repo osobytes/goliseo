@@ -2,6 +2,7 @@ local t = require("spec.support.runner")
 local Vec2 = require("core.vec2")
 local teams = require("data.teams")
 local audio = require("game.audio")
+local bindings = require("game.input.bindings")
 local contract = require("game.match_contract")
 local match_observer = require("game.match_observer")
 local input_frame = require("sim.input_frame")
@@ -18,6 +19,12 @@ local correction_smoothing = require("game.render.correction_smoothing")
 local replay = require("game.render.replay")
 local view_state = require("game.render.view_state")
 local tuning_panel = require("game.ui.tuning_panel")
+
+-- Press the role, not the key: these follow a rebind instead of pinning one.
+local PLAY_KEY = bindings.control("play").keys[1]
+local ACTION_KEY = bindings.control("action").keys[1]
+local SPRINT_KEY = bindings.control("sprint").keys[1]
+local MOVE_RIGHT_KEY = bindings.control("move_right").keys[1]
 
 ---@param delay integer
 ---@return NetworkProfile
@@ -219,7 +226,7 @@ t.describe("match screen rollback laboratory (tier 2)", function()
                 },
             })
             screen.state.owner = nil
-            screen:event({ kind = "key", key = "k" })
+            screen:event({ kind = "key", key = PLAY_KEY })
             screen:update(fixed_clock.TICK_SECONDS / 2)
             t.eq(#screen._rollback_outputs, 0)
             t.is_true(screen._input_adapter.pending.switch)
@@ -276,8 +283,8 @@ t.describe("match screen rollback laboratory (tier 2)", function()
                 },
             })
             screen.state.owner = nil
-            screen:event({ kind = "key", key = "k" })
-            down.lshift = true
+            screen:event({ kind = "key", key = PLAY_KEY })
+            down[SPRINT_KEY] = true
             screen:update(3 * fixed_clock.TICK_SECONDS)
 
             t.eq(screen._clock.tick, 3)
@@ -307,8 +314,8 @@ t.describe("match screen rollback laboratory (tier 2)", function()
                     profile_name = "clean",
                 },
             })
-            down.right = true
-            down.lshift = true
+            down[MOVE_RIGHT_KEY] = true
+            down[SPRINT_KEY] = true
             screen:update(fixed_clock.TICK_SECONDS)
             screen:update(fixed_clock.TICK_SECONDS)
             local player = screen.state.players[screen.state.slot_players[1]]
@@ -418,7 +425,7 @@ t.describe("match screen rollback laboratory (tier 2)", function()
             screen._last_scoring_team = "home"
             screen._kickoff_banner = 0
             screen._replay_state = screen.state --[[@as ReplayFrame]]
-            screen:event({ kind = "key", key = "k" })
+            screen:event({ kind = "key", key = PLAY_KEY })
 
             screen:event({ kind = "key", key = "r" })
             t.is_true(assert(screen._rollback_lab) ~= old_lab)
@@ -534,7 +541,7 @@ t.describe("match screen rollback laboratory (tier 2)", function()
             start_actual_goal_replay(skipped)
             skipped:update(1 / 60)
             seed_render_correction(skipped)
-            skipped:event({ kind = "key", key = "space" })
+            skipped:event({ kind = "key", key = ACTION_KEY })
             t.is_true(not replay.active())
             t.is_true(skipped._replay_state == nil)
             local skipped_live = assert(view_state.get(skipped.state.players[1].id))

@@ -74,11 +74,13 @@ t.describe("input bindings", function()
             "a pad-undeliverable edge passed the layout check: " .. pad_dead
         )
 
-        -- And a straightforward double binding.
+        -- And a straightforward double binding. The clashing key is read off a
+        -- real control rather than written out, so this stays a genuine clash
+        -- after a rebind instead of quietly probing a key nobody is bound to.
         local clash = with_extra({
             id = "probe",
             action = "juke",
-            keys = { "k" },
+            keys = { control("play").keys[1] },
             buttons = {},
             axes = {},
             edge = true,
@@ -94,6 +96,12 @@ t.describe("input bindings", function()
     -- The ergonomic core of the keyboard layout: the modifier is the right index
     -- and PLAY the right middle, the most independent same-hand pair. The left
     -- hand keeps WASD plus its pinky and thumb, and nothing else.
+    --
+    -- These two literals are deliberate, and the only ones outside
+    -- `foundations_spec` that survive: which finger a key falls under is a fact
+    -- about hands, not about the table, so deriving it here would assert that
+    -- the table equals itself. A rebind is meant to fail this test and have a
+    -- human re-check the ergonomics -- which is why nothing else pins them.
     t.it("keeps the modifier off the movement hand and off PLAY's finger", function()
         t.eq(control("modifier").keys[1], "j")
         t.eq(control("play").keys[1], "k")
@@ -101,9 +109,25 @@ t.describe("input bindings", function()
         t.is_true(contains(control("modifier").axes, "triggerright"))
     end)
 
+    -- The movement hand is derived, not copied: it is whatever the movement
+    -- roles, sprint and ACTION are bound to today. A hardcoded list would keep
+    -- naming a key none of those roles held after a rebind, and the check would
+    -- go quietly vacuous.
     t.it("keeps juke off the movement hand", function()
+        local movement = {}
+        for _, id in ipairs({
+            "move_up",
+            "move_down",
+            "move_left",
+            "move_right",
+            "sprint",
+            "action",
+        }) do
+            for _, key in ipairs(control(id).keys) do
+                movement[#movement + 1] = key
+            end
+        end
         for _, key in ipairs(control("juke").keys) do
-            local movement = { "w", "a", "s", "d", "lshift", "rshift", "space" }
             t.is_true(not contains(movement, key), "juke on " .. key .. " sits on the left hand")
         end
         t.is_true(not contains(control("juke").buttons, "leftstick"), "juke must leave L3 alone")
