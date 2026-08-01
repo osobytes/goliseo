@@ -1,5 +1,9 @@
 # Design: Defensive jockey / contain
 
+> This record names the keys that were bound when it was written. "Space" is the
+> **ACTION** role and "L" the **MODIFIER** role; `docs/controls.md` and
+> `game/input/bindings.lua` are authoritative for what they are bound to now.
+
 ## Why
 
 Defending is chase-and-poke only; there is no deliberate stance. Every soccer

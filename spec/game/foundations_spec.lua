@@ -11,27 +11,32 @@ t.describe("input actions", function()
         t.eq(actions.from_gamepad("a").action, "confirm")
         t.eq(actions.from_key("escape").action, "back")
         t.eq(actions.from_gamepad("b").action, "back")
-        t.eq(actions.from_key("j").action, "equipment")
-        t.eq(actions.from_gamepad("b", true, true).action, "equipment")
-        t.eq(actions.from_gamepad("b", false, true).pressed, false)
+        t.eq(actions.from_key("u").action, "equipment")
+        t.eq(actions.from_gamepad("rightshoulder").action, "equipment")
         t.is_true(actions.from_key("unknown") == nil)
+    end)
+
+    -- Equipment used to ride gamepad B and shadow Back inside a match. It has
+    -- its own button now, so B means Back in every context.
+    t.it("keeps Back unconditional on gamepad B", function()
+        local transform = viewport.new(960, 540)
+        t.eq(actions.from_gamepad("b").action, "back")
+        t.eq(
+            controller.normalize({ kind = "gamepad", button = "b", pressed = false }, transform),
+            nil
+        )
     end)
 
     t.it("forwards only equipment releases through normalized app input", function()
         local transform = viewport.new(960, 540)
         local equipment = assert(
             controller.normalize(
-                { kind = "gamepad", button = "b", pressed = false },
-                transform,
-                true
+                { kind = "gamepad", button = "rightshoulder", pressed = false },
+                transform
             )
         )
         t.eq(equipment.action, "equipment")
         t.eq(equipment.pressed, false)
-        t.eq(
-            controller.normalize({ kind = "gamepad", button = "b", pressed = false }, transform),
-            nil
-        )
     end)
 
     t.it("converts pointer input through a letterboxed viewport", function()

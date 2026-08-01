@@ -1,4 +1,22 @@
 local focus = require("game.ui.focus")
+local bindings = require("game.input.bindings")
+
+local CARD_LABEL_WIDTH = 18
+
+-- The card is rendered from `bindings.reference`, never hand-written, so a
+-- rebinding cannot leave the how-to-play screen lying to the player.
+---@param heading string
+---@param device "keyboard"|"gamepad"
+---@return string
+local function control_card(heading, device)
+    local lines = { heading }
+    for _, row in ipairs(bindings.reference("match")) do
+        local label = row.label:upper() .. (row.footnote and "*" or "")
+        local pad = math.max(1, CARD_LABEL_WIDTH - #label)
+        lines[#lines + 1] = label .. (" "):rep(pad) .. row[device]
+    end
+    return table.concat(lines, "\n")
+end
 
 ---@class HelpScreenState
 ---@field viewport { w: number, h: number }
@@ -27,14 +45,14 @@ function help.layout(state)
         {
             id = "keyboard",
             kind = "card",
-            text = "MATCH CONTROLS · KEYBOARD\nMove / Navigate   WASD or Arrows\nACTION              Space\nPLAY                   K\nSPRINT                Shift\nMODIFIER             L\nJUKE                    C\nEQUIPMENT*        J\nPAUSE                  P or Esc",
+            text = control_card("MATCH CONTROLS · KEYBOARD", "keyboard"),
             rect = { x = 92, y = 112, w = 360, h = 292 },
             data = { focusable = false },
         },
         {
             id = "gamepad",
             kind = "card",
-            text = "MATCH CONTROLS · GAMEPAD\nMove / Navigate   Left Stick or D-Pad\nACTION              A\nPLAY                   X\nSPRINT                LB\nMODIFIER             Y\nJUKE                    L3\nEQUIPMENT*        B\nPAUSE                  Start",
+            text = control_card("MATCH CONTROLS · GAMEPAD", "gamepad"),
             rect = { x = 508, y = 112, w = 360, h = 292 },
             data = { focusable = false },
         },

@@ -27,6 +27,7 @@ local onboarding = require("game.match_onboarding")
 local tuning_panel = require("game.ui.tuning_panel")
 local replay = require("game.render.replay")
 local match_input_adapter = require("game.match_input_adapter")
+local bindings = require("game.input.bindings")
 local Vec2 = require("core.vec2")
 
 local FIELD_W = 960
@@ -108,7 +109,7 @@ local FIELD_H = 540
 ---@field _switch boolean
 ---@field _dash boolean
 ---@field _dodge boolean
----@field _space_held_prev boolean  -- tracks Space held off the ball for jockey stance
+---@field _action_held_prev boolean  -- tracks ACTION held off the ball for jockey stance
 ---@field _equipment_keyboard_down boolean
 ---@field _equipment_gamepad_down boolean
 ---@field _equipment_abstract_down boolean
@@ -545,7 +546,7 @@ function Match:restart()
     self._shoot_held_prev = false
     self._pass_held_prev = false
     self._lob_latch = false
-    self._space_held_prev = false
+    self._action_held_prev = false
     self._equipment_keyboard_down = false
     self._equipment_gamepad_down = false
     self._equipment_abstract_down = false
@@ -683,15 +684,17 @@ function Match:event(evt)
     end
     -- A confirmed goal replay remains skippable after the rollback simulation
     -- has converged. The next Return may then use the normal rematch behavior.
+    local control_id = bindings.control_for_key(evt.key)
     if replay.active() then
-        if evt.key == "space" or evt.key == "return" or evt.key == "k" then
+        if control_id == "action" or control_id == "confirm" or control_id == "play" then
             finish_replay(self)
         end
         return
     end
     -- After full time only the rematch keys act; match inputs stop buffering.
+    -- R stays literal: it is a dev-harness key, not a player control.
     if match_is_over(self) then
-        if self._profile == "playtest" and (evt.key == "r" or evt.key == "return") then
+        if self._profile == "playtest" and (evt.key == "r" or control_id == "confirm") then
             self:restart()
         end
         return
@@ -706,23 +709,25 @@ function Match:event(evt)
         tuning_panel.key(evt.key, love.keyboard.isDown("lshift", "rshift"))
         return
     end
-    -- Contextual actions: the same key means the natural thing for the moment.
-    -- Space = shoot with the ball (polled: hold to charge) / jockey off the ball
+    -- Contextual actions: the same control means the natural thing for the moment.
+    -- ACTION = shoot with the ball (polled: hold to charge) / jockey off the ball
     --   (hold to contain; release fires the poke — mirroring shoot's hold/release).
-    -- K = pass with the ball / switch player without it.
+    -- PLAY = pass with the ball / switch player without it.
     local carrying = self.state.owner == self.state.controlled
-    if evt.key == "k" then
-        -- Passing is polled while carrying (hold to charge the range, release
-        -- to play it); off the ball K switches player on the press.
+    if control_id == "play" then
+        -- Passing is polled while carrying (hold to charge the range, release to
+        -- play it); off the ball PLAY switches player on the press.
         if not carrying then
             self._switch = true
         end
-    elseif evt.key == "c" then
+    elseif control_id == "juke" then
         self._dodge = true
-    elseif self._profile == "playtest" and evt.key == "b" then
-        bloom.config.enabled = not bloom.config.enabled
-    elseif evt.key == "m" then
+    elseif control_id == "toggle_mute" then
         audio.toggle_mute()
+    elseif self._profile == "playtest" and evt.key == "b" then
+        -- Dev-harness keys (B, F1, R above) are not player controls and stay
+        -- literal on purpose: they never appear in the control reference.
+        bloom.config.enabled = not bloom.config.enabled
     end
 end
 
@@ -735,49 +740,43 @@ local function active_gamepad()
     return joysticks[1]
 end
 
----@param button love.GamepadButton
+-- Held state for one control, on whichever device the player is using. Every
+-- gameplay poll below goes through here so the match and the menus can never
+-- disagree about what a key means.
+---@param id ControlId
 ---@return boolean
-local function gamepad_down(button)
-    local joystick = active_gamepad()
-    return joystick ~= nil and joystick:isGamepadDown(button)
+local function control_down(id)
+    return bindings.is_down(id, active_gamepad())
 end
+
+local STICK_DEADZONE = 0.2
 
 ---@return Vec2
 local function read_move_axis()
     local x, y = 0, 0
-    if love.keyboard.isDown("left", "a") then
+    if control_down("move_left") then
         x = x - 1
     end
-    if love.keyboard.isDown("right", "d") then
+    if control_down("move_right") then
         x = x + 1
     end
-    if love.keyboard.isDown("up", "w") then
+    if control_down("move_up") then
         y = y - 1
     end
-    if love.keyboard.isDown("down", "s") then
+    if control_down("move_down") then
         y = y + 1
     end
+    -- The analog stick is the one input with no discrete binding to declare: it
+    -- is read straight off the axis and added to whatever the D-pad and keys say.
     local joystick = active_gamepad()
     if joystick then
         local gx = joystick:getGamepadAxis("leftx")
         local gy = joystick:getGamepadAxis("lefty")
-        if math.abs(gx) >= 0.2 then
+        if math.abs(gx) >= STICK_DEADZONE then
             x = x + gx
         end
-        if math.abs(gy) >= 0.2 then
+        if math.abs(gy) >= STICK_DEADZONE then
             y = y + gy
-        end
-        if joystick:isGamepadDown("dpleft") then
-            x = x - 1
-        end
-        if joystick:isGamepadDown("dpright") then
-            x = x + 1
-        end
-        if joystick:isGamepadDown("dpup") then
-            y = y - 1
-        end
-        if joystick:isGamepadDown("dpdown") then
-            y = y + 1
         end
     end
     return Vec2.new(x, y)
@@ -818,8 +817,8 @@ function Match:update(dt)
     end
     self._kickoff_banner = math.max(0, self._kickoff_banner - dt)
     local equipment_before_poll = equipment_down(self)
-    self._equipment_keyboard_down = love.keyboard.isDown("j")
-    self._equipment_gamepad_down = gamepad_down("b")
+    self._equipment_keyboard_down = bindings.keyboard_down("equipment")
+    self._equipment_gamepad_down = bindings.gamepad_down("equipment", active_gamepad())
     local equipment_held = equipment_down(self)
     if equipment_before_poll ~= equipment_held then
         if equipment_held then
@@ -828,26 +827,28 @@ function Match:update(dt)
             self._equipment_released = true
         end
     end
-    -- Space reads as "shoot" while carrying (hold to charge, release to fire);
+    -- ACTION reads as "shoot" while carrying (hold to charge, release to fire);
     -- off the ball it is "jockey" while held and fires the poke on release
     -- — mirroring the on-ball hold/release pattern so muscle memory transfers.
     local carrying = self.state.owner == self.state.controlled
-    local shoot_down = love.keyboard.isDown("space") or gamepad_down("a")
-    local held = carrying and shoot_down
-    local space_down_offball = (not carrying) and shoot_down
-    local k_held = carrying and (love.keyboard.isDown("k") or gamepad_down("x"))
-    -- Jockey release: Space was held last frame off the ball and is now up.
-    if self._space_held_prev and not space_down_offball and not carrying then
+    local action_down = control_down("action")
+    local held = carrying and action_down
+    local action_down_offball = (not carrying) and action_down
+    local play_held = carrying and control_down("play")
+    -- Jockey release: ACTION was held last frame off the ball and is now up.
+    if self._action_held_prev and not action_down_offball and not carrying then
         self._dash = true
     end
-    -- L is a modifier, and fingers naturally lift it a frame before the action
-    -- key on release. LATCH it across the hold so "L + K/Space" always lofts,
-    -- even when L comes up first.
-    local l_down = love.keyboard.isDown("l") or gamepad_down("y")
-    local firing = (self._shoot_held_prev and not held) or (self._pass_held_prev and not k_held)
-    local lob = l_down or (firing and self._lob_latch) or false
-    if held or k_held then
-        self._lob_latch = self._lob_latch or l_down
+    -- MODIFIER is a hold, and fingers naturally lift it a frame before the action
+    -- key on release. LATCH it across the hold so the loft always registers, even
+    -- when the modifier comes up first. It is now on the right index against PLAY
+    -- on the right middle (and on a trigger, off the thumb, on gamepad), so the
+    -- latch is a safety net rather than the load-bearing fix it used to be.
+    local modifier_down = control_down("modifier")
+    local firing = (self._shoot_held_prev and not held) or (self._pass_held_prev and not play_held)
+    local lob = modifier_down or (firing and self._lob_latch) or false
+    if held or play_held then
+        self._lob_latch = self._lob_latch or modifier_down
     else
         self._lob_latch = false
     end
@@ -857,23 +858,23 @@ function Match:update(dt)
         move = move,
         shoot = self._shoot_held_prev and not held, -- fire on release
         shoot_held = held,
-        pass = self._pass_held_prev and not k_held, -- pass fires on release too
-        pass_held = k_held,
+        pass = self._pass_held_prev and not play_held, -- pass fires on release too
+        pass_held = play_held,
         switch = self._switch,
         dash = self._dash,
         dodge = self._dodge,
         lob = lob,
-        sprint = love.keyboard.isDown("lshift", "rshift") or gamepad_down("leftshoulder"),
-        jockey = space_down_offball, -- hold Space off the ball: slow shadow stance
-        aerial_strike = space_down_offball,
-        aerial_acrobatic = space_down_offball and l_down,
+        sprint = control_down("sprint"),
+        jockey = action_down_offball, -- hold ACTION off the ball: slow shadow stance
+        aerial_strike = action_down_offball,
+        aerial_acrobatic = action_down_offball and modifier_down,
         equipment_held = equipment_held,
         equipment_pressed = self._equipment_pressed,
         equipment_released = self._equipment_released,
     }
     self._shoot_held_prev = held
-    self._pass_held_prev = k_held
-    self._space_held_prev = space_down_offball
+    self._pass_held_prev = play_held
+    self._action_held_prev = action_down_offball
     self._pass, self._switch, self._dash, self._dodge = false, false, false, false
     self._equipment_pressed, self._equipment_released = false, false
 
