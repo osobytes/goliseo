@@ -45,7 +45,7 @@ offline adapter are documented in [`slot_match.md`](slot_match.md).
 
 ## One frame per simulation tick
 
-`InputFrame` version 2 contains a non-negative `tick` and one `InputSample`
+`InputFrame` version 3 contains a non-negative `tick` and one `InputSample`
 per canonical slot. The supported tick range is `0` through `2147483647`.
 The module constructs a neutral frame with:
 
@@ -55,8 +55,8 @@ local input_frame = require("sim.input_frame")
 local frame = assert(input_frame.neutral(120))
 ```
 
-Every neutral sample has zero axes, no held actions, and no edge actions. The
-frame is self-contained: a recorder, bot, or transport adapter must supply all
+Every neutral sample has zero axes, no held actions, no edge actions, and no
+aim (`aim = AIM_NONE`, never `0` — see below). The frame is self-contained: a recorder, bot, or transport adapter must supply all
 eight samples for every tick and may not infer a missing input from render
 time, the previous selected player, or hidden latch state.
 
@@ -74,6 +74,41 @@ Use `input_frame.quantize_move(raw_x, raw_y)` at an input boundary and
 non-finite axis values are rejected. This stores only integer input state, so
 recording/replay and future wire parsing do not depend on platform analog-float
 representation.
+
+## Aim
+
+`aim` is a second, independent direction, added by #316 so a player can run one
+way and play the ball another. It is one byte, because every consumer normalizes
+the aim vector: magnitude carries no information and only the angle survives.
+
+`AIM_STEPS` = 255 uniform steps of `2*pi/255` (about 1.412 degrees) cover the
+full circle, so the valid direction codes are `0` through `254`. Code `255`
+would name `2*pi`, which is code `0` again, so it is the one byte value that
+cannot denote a distinct direction — and therefore the "no aim" sentinel,
+`AIM_NONE`, by construction rather than by convention.
+
+**The default is `AIM_NONE`, never `0`.** Zero is a legal direction (straight
+toward the away goal), so a zero default would silently aim every bot, neutral
+slot and predicted row at the same point.
+
+The angle convention is pinned by spec and must not be inferred. Pitch space has
+`x` increasing the way home attacks and `y` increasing toward the near touchline,
+i.e. downward on screen:
+
+```text
+theta = aim * (2 * math.pi / 255)
+dir   = (math.cos(theta), math.sin(theta))
+```
+
+so code `0` is `(1, 0)` and increasing codes wind from `+x` toward `+y` —
+clockwise as drawn. Use `input_frame.quantize_aim(x, y)` at an input boundary and
+`input_frame.dequantize_aim(aim)` at the simulation boundary. A zero-length
+direction quantizes to `AIM_NONE`, and `dequantize_aim` refuses `AIM_NONE`
+rather than inventing a direction for it.
+
+Aim is carried across the wire and the rollback tape as of #316 but is not yet
+read by `sim.match`; a sample whose aim is `AIM_NONE` behaves exactly as a
+version-2 sample did.
 
 ## Holds and edges
 
@@ -121,33 +156,37 @@ held` and the other contradictory combinations are malformed. No edge is
 derived from adjacent frames: every recorder must set the applicable `edges`
 bit explicitly and clear it on the next frame.
 
-`encode_sample` / `decode_sample` expose the four-byte version-2 sample used by
-OMP-3 input packets as eight lowercase hex characters. The axes are biased by
-127, followed by the complete held and edge bytes. This compact form does not
-derive or omit equipment transitions; it passes the same validation above.
+`encode_sample` / `decode_sample` expose the five-byte version-3 sample used by
+OMP-3 input packets as ten lowercase hex characters. The axes are biased by
+127, followed by the complete held and edge bytes and the aim byte, which needs
+no bias because it is already unsigned. This compact form does not derive or omit
+equipment transitions; it passes the same validation above.
 
 ## Canonical bounded wire form
 
 `input_frame.encode(frame)` validates and emits one ASCII form:
 
 ```text
-version|tick|move_x,move_y,held,edges|... eight slot samples total
+version|tick|move_x,move_y,held,edges,aim|... eight slot samples total
 ```
 
 The field count, slot count, slot order, number spelling, axis/mask bounds,
 and version are all strict. Integers have no leading zeroes (except `0`), and
-`-0` is invalid. Version 2 can never exceed 156 bytes, including the largest
-supported tick and all eight maximal samples. `decode` rejects a longer wire,
+`-0` is invalid. Version 3 can never exceed 188 bytes — one version digit, ten
+tick digits, eight samples of `len("-127,-127,255,127,255")` = 21, and nine pipe
+separators — including the largest supported tick and all eight maximal samples. `decode` rejects a longer wire,
 noncanonical number spelling, unsupported versions, missing/extra fields, and
 out-of-range values. Encoding the same valid frame always produces the same
 bytes; decoding then encoding a valid canonical wire reproduces those bytes.
 
-Version 1 frames and ownership records are rejected with the typed
-`unsupported_version` failure. There is no general runtime coercion: callers
-must either produce version 2 or deliberately migrate a known artifact. The
-checked-in OMP-1 determinism fixture has one narrow migration that changes only
-its version header and identity while preserving every axis and legacy input
-mask.
+Version 1 and version 2 frames and ownership records are rejected with the typed
+`unsupported_version` failure. There is no general runtime coercion: callers must
+either produce version 3 or deliberately migrate a known artifact. The checked-in
+OMP-1 determinism fixture has one narrow migration, one rung per historical
+version, that rewrites only the version header and appends `AIM_NONE` while
+preserving every axis and legacy input mask — and it validates each wire against
+the bounds its own version enforced, so it stays narrower than a general decoder
+for any of them.
 
 Complete eight-slot frame wires remain tape/simulation records. OMP-3's
 [per-slot bundles](input_packets.md) use the compact sample form and carry

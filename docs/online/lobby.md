@@ -128,7 +128,9 @@ which invitation it is answering before the session starts.
 ## Control framing
 
 A session control wire is bounded at 8,192 bytes; a transport payload is bounded
-at 1,024. A manifest proposal is about 2.5 kB, so it cannot travel as one
+at 1,280 (1,024 until #316). `lobby_link.MAX_CHUNK_BYTES` is 960 and is sized
+independently of that bound, so it did not move. A manifest proposal is about
+2.5 kB, so it cannot travel as one
 message. `lobby_link` adds the bounded framing the transport bridge document
 leaves to its caller:
 

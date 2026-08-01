@@ -352,11 +352,18 @@ Two further characteristics to account for rather than to "fix":
 
 ## Action contract
 
-An `EnvSlotAction` is `{ version?, move?, held?, edges? }`:
+An `EnvSlotAction` is `{ version?, move?, aim?, held?, edges? }`:
 
 - `move` — continuous `{ x, y }` inside the unit disc. Quantized through
   `input_frame.quantize_move` (7-bit signed per axis), exactly like a recorded
   human row. `nil` means "still".
+- `aim` — continuous `{ x, y }` direction, quantized through
+  `input_frame.quantize_aim` into one of 255 angle codes. Unlike `move` it is not
+  confined to the unit disc, because only its angle survives quantization. `nil`
+  or a zero-length vector means "not aiming", which encodes as
+  `input_frame.AIM_NONE` and is **not** the same as aiming at code `0`. Added by
+  #316 so a policy expresses aim and movement independently; `sim.match` does not
+  read it yet, so a policy that sets it sees no behavioural difference today.
 - `held` — `shoot`, `pass`, `sprint`, `jockey`, `lob`, `aerial_strike`,
   `aerial_acrobatic`, `equipment`. Held for this tick.
 - `edges` — `shoot`, `pass`, `switch`, `dash`, `dodge`, `equipment_pressed`,
@@ -373,8 +380,8 @@ for the whole fixture. `sim.match` already ignores `switch` in slot mode; the
 contract makes that explicit by masking it out and rejecting it with a reason
 rather than silently dropping it.
 
-**Neutral / no-op** is `env_action.neutral()` — zero move, no held, no edges. It
-quantizes to `input_frame.neutral_sample()`.
+**Neutral / no-op** is `env_action.neutral()` — zero move, no aim, no held, no
+edges. It quantizes to `input_frame.neutral_sample()`.
 
 Illegal actions return `nil, err, code` with codes `malformed`,
 `move_out_of_range`, `unknown_held_action`, `unknown_edge_action`, and
@@ -390,6 +397,7 @@ cannot encode privileged legality by construction. A mask built from the
 | Intent | Gate (all from the view) |
 | ------ | ------------------------ |
 | `move` | always |
+| `aim` | always |
 | `held.shoot/pass/sprint/jockey/lob` | always |
 | `held.aerial_strike` / `aerial_acrobatic` | `own.header_ready` and `ball.airborne` and not `own.stunned` |
 | `held.equipment` | the slot has a loadout |

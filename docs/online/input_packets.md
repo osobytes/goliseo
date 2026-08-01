@@ -9,7 +9,7 @@ authority.
 
 ## Identity and clocks
 
-Input packets use protocol version 1 and carry `InputFrame` sample version 2.
+Input packets use protocol version 1 and carry `InputFrame` sample version 3.
 Changing the sample bytes, row layout, six-row redundancy, three-tick fairness
 delay, ordering, identity, or bounds requires an explicit version decision.
 
@@ -38,6 +38,34 @@ and the mirrored pins in `scripts/browser_determinism.py`. That last file is eas
 to miss: `./scripts/check.sh` does not compare a browser run's marker against it,
 so a stale value there passes locally and fails the OMP-1 browser determinism gate
 in CI every time. Regenerate it in the same change as the Lua goldens.
+
+**Decision on record:** #316 gave `InputSample` a fifth byte for aim, taking
+`RECORD_BYTES` from 9 to 10 and `InputFrame.VERSION` from 2 to 3. Nine raw bytes
+divided evenly into base64's three-byte groups, so a row used to cost a flat 12
+wire bytes; ten do not, and the block now costs `4 * ceil(rows * 10 / 3)` over a
+fixed 94-byte header-plus-row-count prefix. The maximal 72-row batch therefore
+moved 958 → **1,054 bytes**, past the old 1,024-byte bound before any margin at
+all.
+
+Two ways out were weighed. Cutting `HOST_WINDOW_ROWS` from 9 to 8 keeps the
+transport bound and costs 64 rows, the largest sizing that still clears the
+declared 64-byte margin — but those two ticks above the guest's seven-row window
+are the budget `match_driver`'s targeted repair spends under the `stress`
+profile, so that pays for an input field out of netcode headroom, which is a
+behaviour change hiding inside an encoding change. **The decision was to raise
+the transport bound instead:** `contract.MAX_PAYLOAD_BYTES` and
+`input_protocol.MAX_WIRE_BYTES` both move 1,024 → **1,280**, `contract.VERSION`
+moves 1 → 2, and `HOST_WINDOW_ROWS` stays 9.
+
+1,280 is the IPv6 minimum MTU — the smallest datagram every path is required to
+carry — so it is a bound with an external meaning rather than a round number
+picked to fit. It leaves the maximal batch **226 spare bytes** against the
+64-byte margin, an 84-row ceiling with the margin intact and 88 without, and room
+for one further additive sample byte (`RECORD_BYTES` 11 → 1,150 bytes, 130 spare)
+before the question is due again. A second additive byte after that would break
+the margin and force the decision to be made deliberately rather than by drift.
+The bridges in `scripts/webrtc_star_host.js` and `scripts/web_build.py` enforce
+the same number and move with it.
 
 Once a build ships that a player can connect with, this option closes and any
 further bound or field change takes a version bump.
@@ -70,7 +98,7 @@ No input tick is derived from a transport tick.
 
 ## Canonical sample and row encoding
 
-`sim.input_frame.encode_sample` maps one complete version-2 sample to four
+`sim.input_frame.encode_sample` maps one complete version-3 sample to five
 explicit bytes:
 
 | Byte | Meaning |
@@ -79,15 +107,16 @@ explicit bytes:
 | 2 | `move_y + 127`, range 0 through 254 |
 | 3 | complete held mask, including equipment hold |
 | 4 | complete edge mask, including equipment press/release |
+| 5 | aim direction code 0 through 254, or 255 for `AIM_NONE` |
 
-Its public ASCII form is eight lowercase hex characters. Packet records carry
-the same four bytes directly; combat edges are never omitted, repeated, or
-inferred.
+Its public ASCII form is ten lowercase hex characters. Packet records carry the
+same five bytes directly; combat edges are never omitted, repeated, or inferred,
+and aim is never defaulted to `0`, which is a legal direction.
 
-Each packet record is nine bytes:
+Each packet record is ten bytes:
 
 ```text
-u32 big-endian input tick | u8 canonical slot index | four sample bytes
+u32 big-endian input tick | u8 canonical slot index | five sample bytes
 ```
 
 The complete record block is base64 encoded canonically. Rows must be strictly
@@ -190,7 +219,7 @@ There are two identities:
   identity is idempotent only when the canonical bytes are identical. Reuse
   with different bytes is `packet_conflict`.
 - `(slot, input tick)` identifies authority. Repeating it is idempotent only
-  when all four sample bytes are identical. Different bytes are
+  when all five sample bytes are identical. Different bytes are
   `authority_conflict`/`conflicting_authoritative`.
 
 Sequence gaps and lower sequences arriving after higher ones are valid on the
@@ -210,9 +239,9 @@ semantics.
 
 ## Size, queues, and backpressure
 
-Both guest and host packets have an explicit 1,024-byte payload limit, matching
-`game.transport.contract`. The input codec does not reuse the reliable control
-protocol's separate 8,192-byte bound.
+Both guest and host packets have an explicit 1,280-byte payload limit, matching
+`game.transport.contract` (1,024 until #316). The input codec does not reuse the
+reliable control protocol's separate 8,192-byte bound.
 
 The checked-in maximum fixture uses:
 
@@ -224,15 +253,18 @@ The checked-in maximum fixture uses:
   digits, which is not the same thing as each being at its maximum — the span is
   bounded by `MAX_TICK - first_input_tick + 1`, so pushing the first tick to its
   ceiling would collapse the span to one digit and understate the header; and
-- explicit valid axis, held, and edge bytes.
+- explicit valid axis, held, edge, and aim bytes.
 
 Full context ids affect the fixed-size packet id rather than being repeated on
-wire. The resulting packet is **958 bytes**, leaving **66 payload bytes** below
-the 1,024-byte limit. Each row costs 9 raw bytes and exactly 12 canonical base64
-bytes, so the hard ceiling is **77 rows at 1,018 bytes** and a 78th row is
-refused `wire_too_large`. The 72-row bound therefore sits five rows under the
+wire. The resulting packet is **1,054 bytes**, leaving **226 payload bytes** below
+the 1,280-byte limit. Each row costs 10 raw bytes, and the concatenated block
+costs `4 * ceil(rows * 10 / 3)` canonical base64 bytes over a fixed 94-byte
+prefix, so rows average 13.33 bytes rather than the flat 12 they cost while
+`RECORD_BYTES` was 9. The hard ceiling is **88 rows at 1,270 bytes** and an 89th
+is refused `wire_too_large`; **84 rows** is the last sizing that still clears the
+declared margin. The 72-row bound therefore sits twelve rows under the margin
 wall rather than on it, and `MIN_WIRE_MARGIN_BYTES` pins that slack so the next
-additive header field has to notice it. Any oversized message returns
+additive field has to notice it. Any oversized message returns
 `wire_too_large`; there is no implicit fragmentation or partial host batch.
 
 The bound is a **measurement**, not a design intent. It was `SLOT_COUNT *
@@ -252,8 +284,9 @@ Ordinary next-tick guest bundles normally fail this check because the oldest
 row falls out. The caller must then report/drop through its explicit overflow
 policy rather than pretending redundancy preserved the row.
 
-The 958-byte application payload is below the proof bridge's 1,024-byte payload
-cap, but percent-escaped outer envelopes, SCTP/DTLS/IP overhead, browser
+The 1,054-byte application payload is below the proof bridge's 1,280-byte payload
+cap — #316 raised both together, and `scripts/webrtc_star_host.js` is where the
+bridge enforces it — but percent-escaped outer envelopes, SCTP/DTLS/IP overhead, browser
 scheduling, and actual MTU fragmentation remain #164/#170 measurements. A
 passing codec size test is not a claim that a browser data channel never
 fragments.
@@ -265,7 +298,7 @@ fragments.
 - one complete literal guest wire and digest;
 - one complete literal host wire and digest;
 - schema, InputFrame, redundancy, and fairness versions;
-- the exact 958-byte maximum fixture and its 66-byte margin; and
+- the exact 1,054-byte maximum fixture and its 226-byte margin; and
 - the snapshot and combat schema versions the literals were generated against.
 
 The `manifest-id` field of every wire is a hash over the session manifest, which

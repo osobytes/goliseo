@@ -411,6 +411,16 @@ Sim changes move the baseline; re-run `love . --sim 100` after touching
 `sim/match.lua` and log meaningful shifts here (this is the manual tripwire
 until phase 4 automates it).
 
+- **2026-08-01 — identity-only re-freeze for the aim input channel (#316).** Not
+  a sim change and not a drift. `InputFrame.VERSION` moved 2 -> 3 when
+  `InputSample` gained its aim byte, and `fixture_hash` folds `input_version`, so
+  the frozen identity stopped describing this build even though nothing it
+  measures moved. The re-freeze to `baseline_version = 2` changed exactly four
+  lines — `baseline_version`, `input_version`, `fixture_hash`, and the
+  `signature` computed over them. **Every measured statistic is byte-identical**,
+  which is precisely the evidence that the encoding change did not touch
+  behaviour: nothing in `sim/match.lua` reads aim yet.
+
 - **2026-07-31 — possessed ball kept inside the arena.** The touchline walls
   only ran on the loose-ball path, so a ball that ended up outside while owned
   was never pulled back: it stranded, the carrier could not walk out to it

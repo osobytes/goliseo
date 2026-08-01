@@ -72,7 +72,8 @@ contain pipes, newlines, percent signs, and binary-looking UTF-8 without
 confusing the delimiter parser. The bridge treats payload contents as opaque;
 issue #5 owns the input payload schema and any later binary encoding.
 
-The maximum payload is 1,024 bytes. A message must have a non-negative integer
+The maximum payload is 1,280 bytes, raised from 1,024 by #316 when the input
+record grew its aim byte. A message must have a non-negative integer
 `seq`; input messages must also have a non-negative integer `tick`. Malformed
 messages, unsupported versions, and oversized payloads are rejected before
 queue insertion and increment diagnostics counters.
@@ -373,8 +374,9 @@ Expected failures are returned as `nil, message, code` and are also visible via
 `poll_event()` and diagnostics. The important codes are:
 
 - `malformed` — invalid fields or payload shape;
-- `unsupported_version` — an envelope version other than 1;
-- `payload_too_large` — payload over 1,024 bytes;
+- `unsupported_version` — an envelope version other than `contract.VERSION`,
+  which is 2 as of #316;
+- `payload_too_large` — payload over 1,280 bytes;
 - `overflow` — bounded queue capacity was reached;
 - `disconnected` — the host reported a peer/connection loss;
 - `not_initialized`, `not_connected`, and `closed` — lifecycle misuse.
