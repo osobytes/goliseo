@@ -77,7 +77,7 @@ t.describe("transport envelope", function()
         local original = message(7, 42, "left|right\n%\255")
         local wire = assert(contract.encode(original))
         local decoded = assert(contract.decode(wire))
-        t.eq(decoded.version, 1)
+        t.eq(decoded.version, contract.VERSION)
         t.eq(decoded.type, "input")
         t.eq(decoded.seq, 7)
         t.eq(decoded.tick, 42)
@@ -85,12 +85,13 @@ t.describe("transport envelope", function()
     end)
 
     t.it("rejects malformed, unsupported, and oversized messages", function()
-        local malformed, _, malformed_code = contract.decode("1|input|not-a-seq|2|payload")
+        local malformed, _, malformed_code =
+            contract.decode(contract.VERSION .. "|input|not-a-seq|2|payload")
         t.is_true(malformed == nil)
         t.eq(malformed_code, "malformed")
 
         local unsupported, _, unsupported_code = contract.new({
-            version = 2,
+            version = contract.VERSION + 1,
             type = "input",
             seq = 1,
             tick = 1,
@@ -182,7 +183,7 @@ t.describe("fake loopback transport", function()
         assert(fake:initialize())
         ---@type any
         local malformed_message = {
-            version = 1,
+            version = contract.VERSION,
             type = "bogus",
             seq = 1,
             payload = "bad",
@@ -220,7 +221,7 @@ t.describe("fake loopback transport", function()
         for seq = 1, 3 do
             ---@type any
             local malformed_message = {
-                version = 1,
+                version = contract.VERSION,
                 type = "invalid",
                 seq = seq,
                 payload = "bad",

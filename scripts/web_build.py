@@ -66,10 +66,10 @@ BROWSER_LOADER = r'''/* GOLISEO browser bootstrap. */
    * the same envelope shape.
    */
   window.GoliseoTransportBridge = window.GoliseoTransportBridge || (function () {
-    var VERSION = 1;
+    var VERSION = 2;
     var DEFAULT_QUEUE_LIMIT = 64;
     var MAX_QUEUE_LIMIT = 256;
-    var MAX_PAYLOAD_BYTES = 1024;
+    var MAX_PAYLOAD_BYTES = 1280;
     var MESSAGE_TYPES = { input: true, event: true, state: true };
     var state = "new";
     var queueLimit = DEFAULT_QUEUE_LIMIT;

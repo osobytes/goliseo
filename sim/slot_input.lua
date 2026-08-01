@@ -98,6 +98,10 @@ function slot_input.to_match_input(sample)
     }
 end
 
+-- `MatchInput` has no aim channel yet (#316 slice 2), so every sample produced
+-- here is explicitly aimless. `new_sample` supplies `AIM_NONE` for the omitted
+-- field; a zero here would be a legal direction and would silently aim every
+-- converted input at the away goal.
 ---@param input MatchInput
 ---@return InputSample
 function slot_input.to_sample(input)

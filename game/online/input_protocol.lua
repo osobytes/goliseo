@@ -82,23 +82,31 @@ input_protocol.MAX_GUEST_ROWS = input_protocol.RETAINED_ROWS
 --
 -- This used to be `RETAINED_ROWS`, so `MAX_HOST_ROWS` was 56 and read as "the
 -- guest's own retained window, eight times". That was a design intent and never
--- a transport limit, and #243 measured what the transport actually allows. Each
--- row costs `RECORD_BYTES` base64-expanded to exactly 12 bytes, on top of a
--- worst-case header of 92 bytes plus the row-count digits. Measured against
+-- a transport limit, and #243 measured what the transport actually allows. The
+-- whole concatenated row block costs `4 * ceil(rows * RECORD_BYTES / 3)` base64
+-- bytes on top of a fixed 94-byte header-plus-row-count prefix, measured against
 -- `input_protocol_fixture.maximal`, which pins every variable-width header field
--- at its worst case at once:
+-- at its worst case at once.
 --
---     rows  bytes  spare        rows  bytes  spare
---       70    934     90          75    994     30
---       71    946     78          76   1006     18
---       72    958     66          77   1018      6
---       73    970     54          78      -  refused `wire_too_large`
---       74    982     42
+-- #316 added a fifth sample byte for aim, taking `RECORD_BYTES` from 9 to 10.
+-- Nine raw bytes divided evenly into base64's three-byte groups, so a row used to
+-- cost a flat 12 wire bytes; ten do not, so a row now averages 13.33:
 --
--- So 77 rows is the hard ceiling and 72 is the largest whole-slot-window sizing
--- with real slack under it; ten ticks would need 80 rows and does not fit. The
--- 66 spare bytes are pinned by `input_protocol_conformance` against
--- `MIN_WIRE_MARGIN_BYTES` so the next additive header field has to notice them.
+--     rows   raw    b64   wire  spare        rows   raw    b64   wire  spare
+--       64   640    856    950    330          80   800   1068   1162    118
+--       72   720    960   1054    226          84   840   1120   1214     66
+--       76   760   1016   1110    170          85   850   1136   1230     50
+--
+-- Under the previous 1024-byte bound the 72-row sizing came to 1054 bytes and was
+-- refused `wire_too_large`; only 64 rows still cleared the declared margin.
+-- Cutting `HOST_WINDOW_ROWS` to 8 would have paid for aim out of the host's
+-- repair budget (see below), so #316 raised the transport payload bound instead:
+-- `MAX_WIRE_BYTES` is now 1280, the IPv6 minimum MTU and the next such landmark
+-- above 1024. That leaves 226 spare at 72 rows, an 84-row ceiling with the margin
+-- intact and 88 without, and room for one further additive sample byte
+-- (`RECORD_BYTES` 11 -> 1150 bytes, 130 spare) before this decision is due again.
+-- The 226 spare bytes are pinned by `input_protocol_conformance` against
+-- `MIN_WIRE_MARGIN_BYTES` so the next additive field has to notice them.
 --
 -- The two ticks above the guest's own seven-row window are not decoration. They
 -- are the budget the targeted repair in `match_driver` spends: a batch under the
@@ -106,8 +114,13 @@ input_protocol.MAX_GUEST_ROWS = input_protocol.RETAINED_ROWS
 -- a fresh row to fit is not a repair. See `docs/online/match_driver.md`.
 input_protocol.HOST_WINDOW_ROWS = 9
 input_protocol.MAX_HOST_ROWS = input_frame.SLOT_COUNT * input_protocol.HOST_WINDOW_ROWS
-input_protocol.RECORD_BYTES = 9
-input_protocol.MAX_WIRE_BYTES = 1024
+-- u32 tick + u8 slot index + one byte per sample component.
+input_protocol.RECORD_BYTES = 10
+input_protocol.MAX_WIRE_BYTES = 1280
+assert(
+    input_protocol.RECORD_BYTES == 5 + input_frame.MAX_SAMPLE_WIRE_BYTES / 2,
+    "input record size disagrees with the sample codec"
+)
 -- The slack a maximally-full host batch must still leave inside the wire bound.
 -- `input_protocol_conformance` measures the real encoded size against this, so a
 -- future header field cannot quietly consume the last byte: it either fits in the
@@ -276,6 +289,7 @@ local function samples_equal(left, right)
         and left.move_y == right.move_y
         and left.held == right.held
         and left.edges == right.edges
+        and left.aim == right.aim
 end
 
 ---@param left InputAuthorityRow
@@ -389,7 +403,9 @@ end
 local function decode_row(value, index)
     local slot_index = assert(value:byte(index + 4))
     local sample_wire = {}
-    for offset = 5, 8 do
+    -- Sized from the record layout, not hard-coded: `encode_row` already walks
+    -- `MAX_SAMPLE_WIRE_BYTES`, and the two loops have to agree byte for byte.
+    for offset = 5, input_protocol.RECORD_BYTES - 1 do
         sample_wire[#sample_wire + 1] = ("%02x"):format(assert(value:byte(index + offset)))
     end
     return {

@@ -128,6 +128,7 @@ local function samples_equal(left, right)
         and left.move_y == right.move_y
         and left.held == right.held
         and left.edges == right.edges
+        and left.aim == right.aim
 end
 
 ---@param value any
@@ -156,6 +157,7 @@ local function sample_wire(sample)
         tostring(sample.move_y),
         tostring(sample.held),
         tostring(sample.edges),
+        tostring(sample.aim),
     }, ",")
 end
 
@@ -529,11 +531,15 @@ function rollback_input_history.materialize(history, tick)
             if prior == nil then
                 sample = input_frame.neutral_sample()
             else
+                -- Aim repeats like `held` and unlike `edges`: it is a continuous
+                -- channel, so "still aiming where they last aimed" is the same
+                -- prediction "still holding what they last held" already makes.
                 sample = {
                     move_x = prior.move_x,
                     move_y = prior.move_y,
                     held = prior.held,
                     edges = 0,
+                    aim = prior.aim,
                 }
             end
         end

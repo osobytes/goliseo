@@ -134,15 +134,15 @@ end
 t.describe("OMP-3 input packet protocol", function()
     t.it("pins literal native and love.js conformance vectors", function()
         local report = input_conformance.verify()
-        t.eq(report.guest_digest, "a099c86d6520d6bc")
-        t.eq(report.host_digest, "fb46b26858818ead")
-        t.eq(report.maximal_wire_bytes, 958)
-        t.eq(report.maximal_wire_margin, 66)
+        t.eq(report.guest_digest, "3a2b968fdc4b83e1")
+        t.eq(report.host_digest, "463f77060de039a7")
+        t.eq(report.maximal_wire_bytes, 1054)
+        t.eq(report.maximal_wire_margin, 226)
         t.eq(
             input_conformance.marker(report),
-            "GC_INPUT_PROTOCOL|golden|schema=1|input=2|history=6|delay=3|vectors=2"
-                .. "|guest=a099c86d6520d6bc|host=fb46b26858818ead|host_rows=72"
-                .. "|max_bytes=958|margin=66"
+            "GC_INPUT_PROTOCOL|golden|schema=1|input=3|history=6|delay=3|vectors=2"
+                .. "|guest=3a2b968fdc4b83e1|host=463f77060de039a7|host_rows=72"
+                .. "|max_bytes=1054|margin=226"
         )
     end)
 
@@ -312,7 +312,13 @@ t.describe("OMP-3 input packet protocol", function()
 
         for _, case in ipairs({
             { wire = wire:gsub("^GCIP;1;", "GCIP;2;"), code = "unsupported_version" },
-            { wire = wire:gsub("^GCIP;1;G;2;", "GCIP;1;G;3;"), code = "unsupported_version" },
+            {
+                wire = wire:gsub(
+                    "^GCIP;1;G;" .. input_frame.VERSION .. ";",
+                    "GCIP;1;G;" .. (input_frame.VERSION + 1) .. ";"
+                ),
+                code = "unsupported_version",
+            },
             { wire = wire:gsub(";7;", ";07;", 1), code = "malformed" },
             { wire = wire:sub(1, -2) .. "*", code = "malformed" },
             { wire = string.rep("x", input_protocol.MAX_WIRE_BYTES + 1), code = "wire_too_large" },
@@ -505,7 +511,7 @@ t.describe("OMP-3 input packet protocol", function()
         local wire = assert(input_protocol.encode(maximal))
         t.eq(#maximal.rows, 72)
         t.eq(#maximal.rows, input_protocol.MAX_HOST_ROWS)
-        t.eq(#wire, 958)
+        t.eq(#wire, 1054)
         t.is_true(#wire <= input_protocol.MAX_WIRE_BYTES)
         t.is_true(input_protocol.MAX_WIRE_BYTES - #wire >= input_protocol.MIN_WIRE_MARGIN_BYTES)
         local decoded = assert(input_protocol.decode(wire, {
@@ -603,18 +609,30 @@ t.describe("OMP-3 input packet protocol", function()
     end)
 
     -- The bound above is where *rows* stop fitting; this is where *bytes* stop,
-    -- and #243 sized one against the other. Each row costs `RECORD_BYTES`
-    -- base64-expanded, which is exactly 12 bytes because 9 divides by 3, so the
-    -- ceiling is arithmetic from the measured maximal packet: 77 rows is the last
-    -- one the 1024-byte budget admits and 78 is refused. The 72-row sizing
-    -- therefore sits five rows below a hard wall rather than on it.
-    t.it("leaves five rows of headroom under the hard byte ceiling", function()
+    -- and #243 sized one against the other. #316 took `RECORD_BYTES` from 9 to 10,
+    -- so a row no longer costs a flat 12 bytes: nine divided evenly into base64's
+    -- three-byte groups and ten does not, so the block costs
+    -- `4 * ceil(rows * RECORD_BYTES / 3)` over a fixed header. The ceiling is
+    -- arithmetic from that: 88 rows is the last the 1280-byte bound admits, and 84
+    -- is the last that still clears the declared margin. The 72-row sizing
+    -- therefore sits twelve rows below the margin wall rather than on it.
+    t.it("leaves twelve rows of headroom under the declared byte margin", function()
         local wire = assert(input_protocol.encode(input_fixture.maximal()))
-        local row_bytes = input_protocol.RECORD_BYTES * 4 / 3
-        t.eq(row_bytes, 12)
+        ---@param rows integer
+        ---@return integer
+        local function block_bytes(rows)
+            return 4 * math.ceil(rows * input_protocol.RECORD_BYTES / 3)
+        end
+        local fixed = #wire - block_bytes(input_protocol.MAX_HOST_ROWS)
+        t.eq(fixed, 94, "header plus row-count digits is a fixed cost at the worst case")
         t.eq(input_protocol.MAX_HOST_ROWS, 72)
-        t.is_true(#wire + 5 * row_bytes <= input_protocol.MAX_WIRE_BYTES)
-        t.is_true(#wire + 6 * row_bytes > input_protocol.MAX_WIRE_BYTES)
+        t.eq(input_protocol.RECORD_BYTES, 10)
+
+        local margin_wall = input_protocol.MAX_WIRE_BYTES - input_protocol.MIN_WIRE_MARGIN_BYTES
+        t.is_true(fixed + block_bytes(84) <= margin_wall)
+        t.is_true(fixed + block_bytes(85) > margin_wall)
+        t.is_true(fixed + block_bytes(88) <= input_protocol.MAX_WIRE_BYTES)
+        t.is_true(fixed + block_bytes(89) > input_protocol.MAX_WIRE_BYTES)
     end)
 
     t.it("coalesces only when no unsent authority can fall through backpressure", function()

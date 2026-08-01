@@ -49,12 +49,13 @@ local function outcome(conditions)
     for delivery_index, delivery in ipairs(deliveries) do
         local record_parts = {}
         for record_index, record in ipairs(network_conditions.records(delivery)) do
-            record_parts[record_index] = ("%d/%d/%d/%d/%d"):format(
+            record_parts[record_index] = ("%d/%d/%d/%d/%d/%d"):format(
                 record.tick,
                 record.sample.move_x,
                 record.sample.move_y,
                 record.sample.held,
-                record.sample.edges
+                record.sample.edges,
+                record.sample.aim
             )
         end
         delivery_parts[delivery_index] = ("%d:%d:%d:%d:%d:%s"):format(
@@ -225,12 +226,30 @@ t.describe("OMP-2 deterministic network conditions", function()
             held = 127,
             edges = 127,
         }))
-        t.eq(assert(network_conditions.sample_key(minimum)), 0)
-        t.eq(assert(network_conditions.sample_key(before_rollover)), (254 * 256 + 127) * 128 + 127)
-        t.eq(assert(network_conditions.sample_key(after_rollover)), 255 * 256 * 128)
+        -- Every sample here leaves `aim` at AIM_NONE, so the aim radix contributes
+        -- a constant 255 to each key; the whole point is that no two distinct
+        -- samples share a key, and the extrema still bracket the declared bound.
+        local none = input_frame.AIM_NONE
+        t.eq(assert(network_conditions.sample_key(minimum)), none)
+        t.eq(
+            assert(network_conditions.sample_key(before_rollover)),
+            ((254 * 256 + 127) * 128 + 127) * 256 + none
+        )
+        t.eq(assert(network_conditions.sample_key(after_rollover)), 255 * 256 * 128 * 256 + none)
         t.eq(
             assert(network_conditions.sample_key(maximum)),
-            ((254 * 255 + 254) * 256 + 127) * 128 + 127
+            (((254 * 255 + 254) * 256 + 127) * 128 + 127) * 256 + none
+        )
+        t.is_true(
+            assert(network_conditions.sample_key(maximum)) < 2 ^ 53,
+            "the mixed-radix key must stay exactly representable"
+        )
+        local aimed = assert(input_frame.new_sample({ aim = 0 }))
+        local aimless = assert(input_frame.new_sample({}))
+        t.is_true(
+            assert(network_conditions.sample_key(aimed))
+                ~= assert(network_conditions.sample_key(aimless)),
+            "two samples differing only in aim must not share a key"
         )
     end)
 

@@ -1,13 +1,17 @@
-/* OMP-3 browser WebRTC host-star transport. The generated player embeds this source. */
+/* OMP-3 browser WebRTC host-star transport. The generated player embeds this source.
+ * VERSION, MAX_PAYLOAD_BYTES and the peer/queue bounds below mirror
+ * game/transport/contract.lua exactly. They are not independent knobs: a value
+ * that drifts from the Lua side rejects traffic the simulation considers legal.
+ * #316 raised MAX_PAYLOAD_BYTES 1024 -> 1280 for the ten-byte input record. */
 (function () {
   "use strict";
 
-  var VERSION = 1;
+  var VERSION = 2;
   var MAX_GUESTS = 7;
   var HOST_PEER_ID = "host";
   var DEFAULT_QUEUE_LIMIT = 64;
   var MAX_QUEUE_LIMIT = 256;
-  var MAX_PAYLOAD_BYTES = 1024;
+  var MAX_PAYLOAD_BYTES = 1280;
   var DEFAULT_BUFFERED_AMOUNT_LIMIT = 65536;
   var MAX_BUFFERED_AMOUNT_LIMIT = 1048576;
   var MAX_PEER_ID_BYTES = 128;

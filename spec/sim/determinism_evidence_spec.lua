@@ -45,48 +45,66 @@ t.describe("OMP-1 determinism evidence", function()
         t.is_true(not pcall(determinism_evidence.migration_identity, malformed))
     end)
 
-    t.it("explicitly migrates only the frozen v1 fixture identity to input v2", function()
-        local legacy = input_tape.copy_identity(fixture.identity)
-        legacy.fixture = "omp1-nebula-orion-eight-streams-v1"
-        legacy.input_version = 1
-        legacy.ownership.version = 1
+    t.it(
+        "carries the frozen v1 fixture identity all the way to the current input version",
+        function()
+            local legacy = input_tape.copy_identity(fixture.identity)
+            legacy.fixture = "omp1-nebula-orion-eight-streams-v1"
+            legacy.input_version = 1
+            legacy.ownership.version = 1
 
-        local migrated = determinism_evidence.migration_identity(legacy)
-        t.eq(migrated.fixture, "omp1-nebula-orion-eight-streams-v2")
-        t.eq(migrated.input_version, 2)
-        t.eq(migrated.ownership.version, 2)
-        t.eq(migrated.build, legacy.build)
-        t.eq(migrated.source, legacy.source)
-        t.eq(migrated.content, legacy.content)
-        t.eq(migrated.config, legacy.config)
-        t.eq(migrated.tuning, legacy.tuning)
-        t.eq(migrated.seed, legacy.seed)
-        t.eq(migrated.tick_rate, legacy.tick_rate)
-        for _, team in ipairs({ "home", "away" }) do
-            for index, player_id in ipairs(legacy.ownership.rosters[team]) do
-                t.eq(migrated.ownership.rosters[team][index], player_id)
+            local migrated = determinism_evidence.migration_identity(legacy)
+            t.eq(migrated.fixture, "omp1-nebula-orion-eight-streams-v2")
+            t.eq(migrated.input_version, input_frame.VERSION)
+            t.eq(migrated.ownership.version, input_frame.VERSION)
+            t.eq(migrated.build, legacy.build)
+            t.eq(migrated.source, legacy.source)
+            t.eq(migrated.content, legacy.content)
+            t.eq(migrated.config, legacy.config)
+            t.eq(migrated.tuning, legacy.tuning)
+            t.eq(migrated.seed, legacy.seed)
+            t.eq(migrated.tick_rate, legacy.tick_rate)
+            for _, team in ipairs({ "home", "away" }) do
+                for index, player_id in ipairs(legacy.ownership.rosters[team]) do
+                    t.eq(migrated.ownership.rosters[team][index], player_id)
+                end
+            end
+            for index, assignment in ipairs(legacy.ownership.slots) do
+                t.eq(migrated.ownership.slots[index].slot, assignment.slot)
+                t.eq(migrated.ownership.slots[index].team, assignment.team)
+                t.eq(migrated.ownership.slots[index].player_id, assignment.player_id)
             end
         end
-        for index, assignment in ipairs(legacy.ownership.slots) do
-            t.eq(migrated.ownership.slots[index].slot, assignment.slot)
-            t.eq(migrated.ownership.slots[index].team, assignment.team)
-            t.eq(migrated.ownership.slots[index].player_id, assignment.player_id)
-        end
-    end)
+    )
 
-    t.it("migrates only wires that were canonical within the v1 bounds", function()
+    -- Every legacy version wrote four sample fields; the current one writes five.
+    -- Migrating forward appends AIM_NONE, which is what a recording made before
+    -- aim existed actually means.
+    t.it("migrates only wires that were canonical within their own version bounds", function()
         local current = assert(input_frame.encode(assert(input_frame.neutral(0))))
-        local legacy = "1" .. current:sub(2)
+        local aimless = current:gsub("0,0,0,0," .. input_frame.AIM_NONE, "0,0,0,0")
+        local legacy = "1" .. aimless:sub(2)
         t.eq(determinism_evidence.migrate_legacy_fixture_wire(legacy), current)
 
+        local v2 = "2" .. aimless:sub(2)
+        t.eq(determinism_evidence.migrate_legacy_fixture_wire(v2), current)
+
+        -- The v2-only masks are legal under v2 and must be refused as v1.
         local v2_only_held = legacy:gsub("0,0,0,0", "0,0,128,0", 1)
         t.is_true(not pcall(determinism_evidence.migrate_legacy_fixture_wire, v2_only_held))
+        t.is_true(
+            pcall(determinism_evidence.migrate_legacy_fixture_wire, "2" .. v2_only_held:sub(2)),
+            "the same masks are canonical on the v2 rung"
+        )
 
         local v2_only_edge = legacy:gsub("0,0,0,0", "0,0,0,64", 1)
         t.is_true(not pcall(determinism_evidence.migrate_legacy_fixture_wire, v2_only_edge))
 
         local oversized = legacy .. string.rep("0", 149)
         t.is_true(not pcall(determinism_evidence.migrate_legacy_fixture_wire, oversized))
+
+        -- A wire already at the current version is not a legacy wire.
+        t.is_true(not pcall(determinism_evidence.migrate_legacy_fixture_wire, current))
     end)
 
     t.it("pins the full fixed-input match on the explicit evidence command", function()

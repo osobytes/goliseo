@@ -391,7 +391,7 @@ t.describe("OMP-2 rollback input history", function()
                 history,
                 0,
                 1,
-                { move_x = 999, move_y = 0, held = 0, edges = 0 }
+                { move_x = 999, move_y = 0, held = 0, edges = 0, aim = input_frame.AIM_NONE }
             )
             t.eq(accepted, nil)
             t.eq(code, "malformed")

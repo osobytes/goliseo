@@ -41,12 +41,14 @@
 ---@field move_y integer -- Signed quantized vertical axis in [-127, 127].
 ---@field held integer -- Bitmask of InputHeldAction values currently held for this tick.
 ---@field edges integer -- Bitmask of InputEdgeAction values that occurred during this tick only.
+---@field aim integer -- Quantized aim direction in [0, 254], or InputFrame.AIM_NONE for none.
 
 ---@class InputSampleOptions
 ---@field move_x integer?
 ---@field move_y integer?
 ---@field held integer?
 ---@field edges integer?
+---@field aim integer?
 
 ---@class InputFrame
 ---@field version integer -- Exactly InputFrame.VERSION.
@@ -74,7 +76,7 @@
 ---@class InputFrameModule
 local input_frame = {}
 
-input_frame.VERSION = 2
+input_frame.VERSION = 3
 input_frame.HOME_SLOT_COUNT = 4
 input_frame.AWAY_SLOT_COUNT = 4
 input_frame.SLOT_COUNT = input_frame.HOME_SLOT_COUNT + input_frame.AWAY_SLOT_COUNT
@@ -82,8 +84,21 @@ input_frame.FIXTURE_TEAM_SIZE = input_frame.HOME_SLOT_COUNT + 1
 input_frame.MOVE_SCALE = 127
 input_frame.MAX_TICK = 2147483647
 input_frame.MAX_PLAYER_ID_BYTES = 64
-input_frame.MAX_SAMPLE_WIRE_BYTES = 8 -- ASCII bytes: two hex characters per sample byte.
-input_frame.MAX_WIRE_BYTES = 156
+input_frame.MAX_SAMPLE_WIRE_BYTES = 10 -- ASCII bytes: two hex characters per sample byte.
+-- `1` version digit + `10` tick digits + eight samples of `len("-127,-127,255,127,255")`
+-- = 21 + nine pipe separators: `1 + 10 + 8 * 21 + 9 = 188`.
+input_frame.MAX_WIRE_BYTES = 188
+
+-- Aim is a direction and nothing else: every consumer normalizes it, so magnitude
+-- carries no information and one quantized angle reproduces the whole channel.
+--
+-- `AIM_STEPS` uniform steps cover the full circle, so the valid codes are `0`
+-- through `AIM_STEPS - 1`. Code `AIM_STEPS` would name `2*pi`, which is code `0`
+-- again — it is the one byte value that cannot denote a distinct direction, so it
+-- is the sentinel by construction rather than by convention. This mirrors
+-- `MOVE_SCALE`, where the biased axis range likewise stops one short of 255.
+input_frame.AIM_STEPS = 255
+input_frame.AIM_NONE = 255
 
 ---@type table<InputHeldAction, integer>
 input_frame.HELD_BITS = {
@@ -134,7 +149,23 @@ local SAMPLE_FIELDS = {
     move_y = true,
     held = true,
     edges = true,
+    aim = true,
 }
+
+local TAU = math.pi * 2
+
+-- Aim decoding is a frozen lookup built once, not a `math.cos` per call: a sample
+-- is decoded many times per tick inside the rollback resimulation loop, and the
+-- table costs 255 entries once. It does not by itself remove the cross-runtime
+-- libm question — the entries are still produced by the host's `math.cos`/`sin`
+-- at load — but it does keep a single value per code for the life of a process.
+local AIM_COS = {}
+local AIM_SIN = {}
+for code = 0, input_frame.AIM_STEPS - 1 do
+    local theta = code * (TAU / input_frame.AIM_STEPS)
+    AIM_COS[code] = math.cos(theta)
+    AIM_SIN[code] = math.sin(theta)
+end
 
 local OWNERSHIP_FIELDS = {
     version = true,
@@ -191,6 +222,12 @@ local function is_axis(value)
     return is_integer(value)
         and value >= -input_frame.MOVE_SCALE
         and value <= input_frame.MOVE_SCALE
+end
+
+---@param value any
+---@return boolean
+local function is_aim(value)
+    return is_integer(value) and value >= 0 and value <= input_frame.AIM_NONE
 end
 
 ---@param value any
@@ -270,6 +307,9 @@ function input_frame.validate_sample(sample)
     if not is_mask(sample.edges, MAX_EDGE_MASK) then
         return failure("malformed", "input sample edge mask is invalid")
     end
+    if not is_aim(sample.aim) then
+        return failure("malformed", "input sample aim must be a direction code or AIM_NONE")
+    end
     local equipment_held = has_bit(sample.held, input_frame.HELD_BITS.equipment)
     local equipment_pressed = has_bit(sample.edges, input_frame.EDGE_BITS.equipment_pressed)
     local equipment_released = has_bit(sample.edges, input_frame.EDGE_BITS.equipment_released)
@@ -282,10 +322,11 @@ function input_frame.validate_sample(sample)
     return true
 end
 
--- The compact packet codec uses one explicit byte for each version-2 sample
+-- The compact packet codec uses one explicit byte for each version-3 sample
 -- component. Axes are biased into [0, 254]; held and edge masks retain their
--- complete canonical bytes. Lowercase hexadecimal keeps the result ASCII-safe
--- without allowing a transport to infer or repeat combat edges.
+-- complete canonical bytes; aim is already unsigned and needs no bias. Lowercase
+-- hexadecimal keeps the result ASCII-safe without allowing a transport to infer
+-- or repeat combat edges.
 ---@param sample InputSample
 ---@return string?, string?, InputFrameErrorCode?
 function input_frame.encode_sample(sample)
@@ -293,11 +334,12 @@ function input_frame.encode_sample(sample)
     if not ok then
         return nil, err, code
     end
-    return ("%02x%02x%02x%02x"):format(
+    return ("%02x%02x%02x%02x%02x"):format(
         sample.move_x + input_frame.MOVE_SCALE,
         sample.move_y + input_frame.MOVE_SCALE,
         sample.held,
-        sample.edges
+        sample.edges,
+        sample.aim
     )
 end
 
@@ -311,7 +353,7 @@ function input_frame.decode_sample(wire)
     then
         return failure(
             "malformed",
-            "input sample wire must be eight lowercase hex characters encoding four bytes"
+            "input sample wire must be ten lowercase hex characters encoding five bytes"
         )
     end
     local sample = {
@@ -319,6 +361,7 @@ function input_frame.decode_sample(wire)
         move_y = assert(tonumber(wire:sub(3, 4), 16)) - input_frame.MOVE_SCALE,
         held = assert(tonumber(wire:sub(5, 6), 16)),
         edges = assert(tonumber(wire:sub(7, 8), 16)),
+        aim = assert(tonumber(wire:sub(9, 10), 16)),
     }
     local ok, err, code = input_frame.validate_sample(sample)
     if not ok then
@@ -339,11 +382,15 @@ function input_frame.new_sample(options)
     if not has_only_fields(options, SAMPLE_FIELDS) then
         return failure("malformed", "input sample options must contain only canonical fields")
     end
+    -- `aim` defaults to AIM_NONE and never to zero. Zero is a legal direction --
+    -- straight toward the away goal -- so a zero default would silently aim every
+    -- bot, every neutral slot and every predicted row at the same point.
     local sample = {
         move_x = options.move_x == nil and 0 or options.move_x,
         move_y = options.move_y == nil and 0 or options.move_y,
         held = options.held == nil and 0 or options.held,
         edges = options.edges == nil and 0 or options.edges,
+        aim = options.aim == nil and input_frame.AIM_NONE or options.aim,
     }
     local ok, err, code = input_frame.validate_sample(sample)
     if not ok then
@@ -359,6 +406,7 @@ function input_frame.neutral_sample()
         move_y = 0,
         held = 0,
         edges = 0,
+        aim = input_frame.AIM_NONE,
     }
 end
 
@@ -435,6 +483,52 @@ function input_frame.dequantize_axis(axis)
         return failure("malformed", "quantized movement axis must be signed 8-bit")
     end
     return axis / input_frame.MOVE_SCALE
+end
+
+-- Pitch space is x in [0, field.w] with home attacking +x, and y in [0, field.h]
+-- with y = 0 the far edge on screen. +y therefore points down the screen, toward
+-- the viewer, which makes this a y-down frame.
+--
+-- Code `0` is `(1, 0)`: the direction home attacks. Increasing codes increase
+-- theta, which winds from +x toward +y, i.e. clockwise as drawn. Code 64 is very
+-- nearly straight down the screen. A sign flip here mirrors every aimed action
+-- across the halfway line without failing anything else, so the convention is
+-- pinned by spec at both of those codes.
+--
+-- A zero-length direction is not an error: it is the absence of one, and the
+-- honest encoding of that is AIM_NONE.
+---@param raw_x number
+---@param raw_y number
+---@return integer?, string?, InputFrameErrorCode?
+function input_frame.quantize_aim(raw_x, raw_y)
+    if type(raw_x) ~= "number" or type(raw_y) ~= "number" then
+        return failure("malformed", "raw aim direction must be numeric")
+    end
+    if raw_x ~= raw_x or raw_y ~= raw_y then
+        return failure("malformed", "raw aim direction must be finite")
+    end
+    if raw_x == math.huge or raw_x == -math.huge or raw_y == math.huge or raw_y == -math.huge then
+        return failure("malformed", "raw aim direction must be finite")
+    end
+    if raw_x == 0 and raw_y == 0 then
+        return input_frame.AIM_NONE
+    end
+    local theta = math.atan2(raw_y, raw_x) % TAU
+    local code = math.floor((theta / TAU) * input_frame.AIM_STEPS + 0.5) % input_frame.AIM_STEPS
+    ---@cast code integer
+    return code
+end
+
+--- Decode one aim direction code into a unit vector. AIM_NONE names no
+--- direction, so it is rejected here rather than mapped to an arbitrary vector;
+--- callers test `sample.aim ~= input_frame.AIM_NONE` first.
+---@param aim integer
+---@return number?, number?, string?, InputFrameErrorCode?
+function input_frame.dequantize_aim(aim)
+    if not is_integer(aim) or aim < 0 or aim >= input_frame.AIM_STEPS then
+        return nil, nil, "quantized aim must name a direction, not AIM_NONE", "malformed"
+    end
+    return AIM_COS[aim], AIM_SIN[aim]
 end
 
 ---@param sample InputSample
@@ -802,6 +896,7 @@ local function encode_frame_sample(sample)
         tostring(sample.move_y),
         tostring(sample.held),
         tostring(sample.edges),
+        tostring(sample.aim),
     }, ",")
 end
 
@@ -845,8 +940,8 @@ function input_frame.decode(wire)
 
     local slots = {}
     for index = 1, input_frame.SLOT_COUNT do
-        local raw_x, raw_y, raw_held, raw_edges =
-            fields[index + 2]:match("^([^,]*),([^,]*),([^,]*),([^,]*)$")
+        local raw_x, raw_y, raw_held, raw_edges, raw_aim =
+            fields[index + 2]:match("^([^,]*),([^,]*),([^,]*),([^,]*),([^,]*)$")
         if raw_x == nil then
             return failure("malformed", ("input frame wire slot %d is invalid"):format(index))
         end
@@ -854,7 +949,8 @@ function input_frame.decode(wire)
         local move_y = parse_axis(raw_y)
         local held = parse_unsigned(raw_held)
         local edges = parse_unsigned(raw_edges)
-        if move_x == nil or move_y == nil or held == nil or edges == nil then
+        local aim = parse_unsigned(raw_aim)
+        if move_x == nil or move_y == nil or held == nil or edges == nil or aim == nil then
             return failure("malformed", ("input frame wire slot %d is not canonical"):format(index))
         end
         slots[index] = {
@@ -862,6 +958,7 @@ function input_frame.decode(wire)
             move_y = move_y,
             held = held,
             edges = edges,
+            aim = aim,
         }
     end
 
