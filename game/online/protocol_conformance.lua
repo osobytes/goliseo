@@ -27,27 +27,30 @@ conformance.GOLDEN = {
     -- `conformance.marker`: the browser evidence parser compares the marker's
     -- field set exactly, and this pin has no browser-specific meaning.
     vocabulary_id = "e13e3647001a0a7e",
-    -- Repinned by #268: the fixture manifest's `max_goals` moved 5 -> 99 (no goal
-    -- limit), so `manifest_id` moves and every wire that embeds it moves with it.
-    -- The seven digests below that do not carry a manifest id are unchanged, which
-    -- is the evidence nothing else moved.
-    manifest_id = "eb59f113614c35b2",
-    transcript_id = "653cba3b32c62ce9",
+    -- Repinned by #316: `input_frame.VERSION` moved 2 -> 3 for the aim channel, and
+    -- the manifest declares the input version, so `manifest_id` moves and every
+    -- wire that embeds it moves with it. The seven digests below that do not carry
+    -- a manifest id -- handshake, peer_assignment, match_phase, hash_report,
+    -- result_ack, abort, disconnect -- are unchanged, which is the evidence nothing
+    -- but the version tag moved. (#268 repinned the same eight for the same
+    -- structural reason when `max_goals` moved 5 -> 99.)
+    manifest_id = "93585c1b7179daf3",
+    transcript_id = "25b993dc669667c2",
     complete_kind = "manifest_accept",
-    complete_wire = "GCOP;1;t7:s4:bodyt1:s11:manifest_ids16:eb59f113614c35b2s4:kinds15:"
+    complete_wire = "GCOP;1;t7:s4:bodyt1:s11:manifest_ids16:93585c1b7179daf3s4:kinds15:"
         .. "manifest_accepts10:message_ids32:GCMI;1;13:session_alpha4:host1:2s7:peer_ids4:"
         .. "hosts8:sequencei1:2s10:session_ids13:session_alphas7:versioni1:1",
     wire_digests = {
         handshake = "2722abf054051350",
-        manifest_proposal = "171c298f6eeb77e1",
-        manifest_accept = "363c57d949586608",
+        manifest_proposal = "920423abd80800a6",
+        manifest_accept = "6994cc7ff1405236",
         peer_assignment = "fa48b31571dfe543",
-        slot_assignment = "db929e7cd34eab60",
-        ready = "a89d1e1747464a51",
-        pair_preference = "44cbe6dc14b4af77",
-        pair_preference_result = "e9bc40f5818037f4",
-        countdown = "c26f26e05519c2c8",
-        start = "3fdf9b6a442b6755",
+        slot_assignment = "6004714a8f597982",
+        ready = "4d7495632f79d957",
+        pair_preference = "268cc7d89d9677a9",
+        pair_preference_result = "0a3a7e68daf6410a",
+        countdown = "05329c46427575ca",
+        start = "baf483c3789ed9d7",
         match_phase = "1671940891b78f1f",
         hash_report = "4405d9323b1e5b0f",
         result_ack = "5f466e6740c6d4cf",

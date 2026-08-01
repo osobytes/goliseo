@@ -33,21 +33,25 @@ local conformance = {}
 conformance.GOLDEN = {
     snapshot_version = 11,
     combat_version = 13,
-    -- The embedded manifest id moved with #268's `max_goals` 5 -> 99 (no goal
-    -- limit). The packet payloads either side of it are byte-identical, and
-    -- `maximal_wire_bytes` does not move: `fixture.maximal()` carries a manifest
-    -- id of its own.
-    guest_wire = "GCIP;1;G;2;eb59f113614c35b2;7;f6f6f9dbe278dccb;12;0;4;3;7;"
-        .. "AAAAAAJ/fwAAAAAAAQIA/gUJAAAAAgJ/f4AgAAAAAwJ/f4AAAAAABAJ/fwBAAAAABQJ/f38f"
-        .. "AAAABgL+ABIW",
-    guest_digest = "a099c86d6520d6bc",
-    host_wire = "GCIP;1;H;2;eb59f113614c35b2;13;65c65955c65cc80a;15;0;5;3;16;"
-        .. "AAAABQGwTgAAAAAABQKvTwEBAAAABQOuUAICAAAABQStUQMDAAAABQWsUgQEAAAABQarUwUF"
-        .. "AAAABQeqVAYGAAAABQipVYAgAAAABgG6RAAAAAAABgK5RQEBAAAABgO4RgICAAAABgS3RwMD"
-        .. "AAAABgW2SAQEAAAABga1SQUFAAAABge0SgYGAAAABgizS4Ag",
-    host_digest = "fb46b26858818ead",
-    maximal_wire_bytes = 958,
-    maximal_wire_margin = 66,
+    -- Repinned by #316. Two independent things moved at once here, unlike #268
+    -- where only the embedded manifest id did: the declared input version is now 3,
+    -- and every record grew a fifth sample byte, so the base64 row block changed
+    -- too. `maximal_wire_bytes` moved 958 -> 1054 with it -- 72 rows of ten raw
+    -- bytes is `4 * ceil(720 / 3) = 960` base64 bytes over a fixed 94-byte header --
+    -- and the margin moved 66 -> 226 because #316 raised `MAX_WIRE_BYTES` to 1280
+    -- rather than cut the host window. `fixture.maximal()` carries a manifest id of
+    -- its own, so its size does not track the manifest golden above.
+    guest_wire = "GCIP;1;G;3;93585c1b7179daf3;7;f6f6f9dbe278dccb;12;0;4;3;7;"
+        .. "AAAAAAJ/fwAA/wAAAAECAP4FCf8AAAACAn9/gCD/AAAAAwJ/f4AA/wAAAAQCf38AQP8AAAAF"
+        .. "An9/fx//AAAABgL+ABIW/w==",
+    guest_digest = "3a2b968fdc4b83e1",
+    host_wire = "GCIP;1;H;3;93585c1b7179daf3;13;65c65955c65cc80a;15;0;5;3;16;"
+        .. "AAAABQGwTgAA/wAAAAUCr08BAf8AAAAFA65QAgL/AAAABQStUQMD/wAAAAUFrFIEBP8AAAAF"
+        .. "BqtTBQX/AAAABQeqVAYG/wAAAAUIqVWAIP8AAAAGAbpEAAD/AAAABgK5RQEB/wAAAAYDuEYC"
+        .. "Av8AAAAGBLdHAwP/AAAABgW2SAQE/wAAAAYGtUkFBf8AAAAGB7RKBgb/AAAABgizS4Ag/w==",
+    host_digest = "463f77060de039a7",
+    maximal_wire_bytes = 1054,
+    maximal_wire_margin = 226,
 }
 
 ---@return InputProtocolConformanceReport

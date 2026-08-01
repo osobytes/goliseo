@@ -24,20 +24,21 @@ local SESSION = fixture.manifest().session_id
 -- appending must leave every one of these where it was.
 --
 -- #268 later moved the fixture manifest's `max_goals` from 5 to 99 (no goal
--- limit), which moves `manifest_id` and therefore the six digests below that
--- carry it. That is a manifest change, not an appended message, so it does not
+-- limit), and #316 moved `input_frame.VERSION` 2 -> 3, which the manifest also
+-- declares. Both move `manifest_id` and therefore the six digests below that
+-- carry it. Those are manifest changes, not appended messages, so they do not
 -- weaken what this table proves: the seven digests that carry no manifest id
 -- are still byte-identical to what shipped, and they are the ones an appended
 -- message kind would have disturbed.
 local SHIPPED_DIGESTS = {
     handshake = "2722abf054051350",
-    manifest_proposal = "171c298f6eeb77e1",
-    manifest_accept = "363c57d949586608",
+    manifest_proposal = "920423abd80800a6",
+    manifest_accept = "6994cc7ff1405236",
     peer_assignment = "fa48b31571dfe543",
-    slot_assignment = "db929e7cd34eab60",
-    ready = "a89d1e1747464a51",
-    countdown = "c26f26e05519c2c8",
-    start = "3fdf9b6a442b6755",
+    slot_assignment = "6004714a8f597982",
+    ready = "4d7495632f79d957",
+    countdown = "05329c46427575ca",
+    start = "baf483c3789ed9d7",
     match_phase = "1671940891b78f1f",
     hash_report = "4405d9323b1e5b0f",
     result_ack = "5f466e6740c6d4cf",
@@ -178,14 +179,15 @@ end
 t.describe("pair preference wire", function()
     t.it("keeps every digest that shipped before it, and the manifest id", function()
         local report = conformance.verify()
-        -- Repinned by #268 (`max_goals` 5 -> 99). Pair preferences added no
-        -- manifest field, so this id only ever moves when the manifest does.
-        t.eq(report.manifest_id, "eb59f113614c35b2", "the manifest id moved")
+        -- Repinned by #268 (`max_goals` 5 -> 99) and #316 (`input_version`
+        -- 2 -> 3). Pair preferences added no manifest field, so this id only
+        -- ever moves when the manifest does.
+        t.eq(report.manifest_id, "93585c1b7179daf3", "the manifest id moved")
         for kind, digest in pairs(SHIPPED_DIGESTS) do
             t.eq(conformance.GOLDEN.wire_digests[kind], digest, kind .. " wire digest moved")
         end
-        t.eq(conformance.GOLDEN.wire_digests.pair_preference, "44cbe6dc14b4af77")
-        t.eq(conformance.GOLDEN.wire_digests.pair_preference_result, "e9bc40f5818037f4")
+        t.eq(conformance.GOLDEN.wire_digests.pair_preference, "268cc7d89d9677a9")
+        t.eq(conformance.GOLDEN.wire_digests.pair_preference_result, "0a3a7e68daf6410a")
     end)
 
     t.it("round-trips a request and a verdict through the canonical codec", function()

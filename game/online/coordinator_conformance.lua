@@ -34,23 +34,23 @@ conformance.GOLDEN = {
     -- every ownership golden are unchanged — the trace records only
     -- "peer>peer kind" and seating never reads the goal limit — which is the
     -- evidence that no coordinator behaviour moved.
-    full_transcript_id = "ff64c7d63513ef5f",
+    full_transcript_id = "fd8986b1ff008ae6",
     full_trace_digest = "2fa7235df619b00a",
     full_message_count = 51,
-    bot_transcript_id = "e2be1edb69c0a3bd",
+    bot_transcript_id = "68a0b9f11cc2b788",
     bot_sources = "home_1=peer:host:nil|home_2=peer:guest.1:nil|home_3=peer:guest.2:nil|"
         .. "home_4=bot:bot.home_4:51677|away_1=bot:bot.away_1:59596|away_2=bot:bot.away_2:67515|"
         .. "away_3=bot:bot.away_3:75434|away_4=bot:bot.away_4:83353",
     solo_sources = "home_1=peer:host:nil|home_2=bot:bot.home_2:35839|home_3=bot:bot.home_3:43758|"
         .. "home_4=bot:bot.home_4:51677|away_1=bot:bot.away_1:59596|away_2=bot:bot.away_2:67515|"
         .. "away_3=bot:bot.away_3:75434|away_4=bot:bot.away_4:83353",
-    duo_transcript_id = "c0ba274fffec6509",
+    duo_transcript_id = "1c37a3641437a796",
     duo_sources = "home_1=peer:host:nil|home_2=peer:host:nil|home_3=peer:host:nil|"
         .. "home_4=peer:host:nil|away_1=peer:guest.1:nil|away_2=peer:guest.1:nil|"
         .. "away_3=peer:guest.1:nil|away_4=peer:guest.1:nil",
     duo_owned = "host=[home_1,home_2,home_3,home_4]>home_1|"
         .. "guest.1=[away_1,away_2,away_3,away_4]>away_1",
-    pair_transcript_id = "271694acded4093a",
+    pair_transcript_id = "449ee65b02ff5075",
     pair_sources = "home_1=peer:host:nil|home_2=peer:host:nil|home_3=peer:guest.1:nil|"
         .. "home_4=peer:guest.1:nil|away_1=peer:guest.2:nil|away_2=peer:guest.2:nil|"
         .. "away_3=peer:guest.3:nil|away_4=peer:guest.3:nil",

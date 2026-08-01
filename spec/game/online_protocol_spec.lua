@@ -82,7 +82,7 @@ end
 t.describe("OMP-3 online protocol", function()
     t.it("pins the accepted input, snapshot, tape, and combat schema versions", function()
         t.eq(protocol.CURRENT_VERSIONS.protocol, 1)
-        t.eq(protocol.CURRENT_VERSIONS.input, 2)
+        t.eq(protocol.CURRENT_VERSIONS.input, 3)
         t.eq(protocol.CURRENT_VERSIONS.snapshot, 13)
         t.eq(protocol.CURRENT_VERSIONS.tape, 2)
         t.eq(protocol.CURRENT_VERSIONS.combat, 3)
@@ -90,14 +90,14 @@ t.describe("OMP-3 online protocol", function()
 
     t.it("matches literal wire, manifest, transcript, and per-kind golden evidence", function()
         local report = conformance.verify()
-        t.eq(report.manifest_id, "eb59f113614c35b2")
-        t.eq(report.transcript_id, "653cba3b32c62ce9")
+        t.eq(report.manifest_id, "93585c1b7179daf3")
+        t.eq(report.transcript_id, "25b993dc669667c2")
         t.eq(report.message_count, 15)
-        t.eq(fnv1a64.hash(conformance.GOLDEN.complete_wire), "363c57d949586608")
+        t.eq(fnv1a64.hash(conformance.GOLDEN.complete_wire), "6994cc7ff1405236")
         t.eq(
             conformance.marker(report),
-            "GC_PROTOCOL|golden|schema=1|manifest_id=eb59f113614c35b2"
-                .. "|transcript_id=653cba3b32c62ce9|messages=15"
+            "GC_PROTOCOL|golden|schema=1|manifest_id=93585c1b7179daf3"
+                .. "|transcript_id=25b993dc669667c2|messages=15"
         )
     end)
 
