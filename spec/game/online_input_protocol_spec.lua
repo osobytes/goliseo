@@ -606,6 +606,29 @@ t.describe("OMP-3 input packet protocol", function()
         local value, _, code = input_protocol.canonical_host_batch(conflicting, arrivals)
         t.eq(value, nil)
         t.eq(code, "authority_conflict")
+
+        -- #316. The same conflict driven by `aim` and nothing else. The check is a
+        -- field-by-field sample comparison, so a field it forgets makes two
+        -- genuinely different authority rows read as an idempotent repeat and the
+        -- conflict is dropped instead of raised. Every other case here diverges
+        -- through an axis or a mask, which would leave that hole green.
+        local first = input_protocol.rows(packet)[1]
+        local aim_only = host_options(63, 20)
+        local aimed = assert(input_frame.new_sample({
+            move_x = first.sample.move_x,
+            move_y = first.sample.move_y,
+            held = first.sample.held,
+            edges = first.sample.edges,
+            aim = first.sample.aim == 64 and 65 or 64,
+        }))
+        t.eq(aimed.move_x, first.sample.move_x)
+        t.eq(aimed.held, first.sample.held)
+        t.eq(aimed.edges, first.sample.edges)
+        t.is_true(aimed.aim ~= first.sample.aim, "aim is the only field that differs")
+        aim_only.repair_rows = { row(first.tick, first.slot_index, aimed) }
+        value, _, code = input_protocol.canonical_host_batch(aim_only, arrivals)
+        t.eq(value, nil, "a repair row differing only in aim must not read as idempotent")
+        t.eq(code, "authority_conflict")
     end)
 
     -- The bound above is where *rows* stop fitting; this is where *bytes* stop,

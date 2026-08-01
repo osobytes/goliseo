@@ -699,6 +699,65 @@ t.describe("canonical match snapshots", function()
         t.near(owned_restored.players[2].pos:length(), public_restored.players[2].pos:length())
     end)
 
+    -- #316. Every OMP-1/OMP-2 snapshot hash moved when `InputFrame.VERSION` went
+    -- 2 -> 3, `expected_final_hash` included, which reads exactly like a gameplay
+    -- regression. It is not one: `append_ownership` writes the ownership version
+    -- into the encoded bytes and that field mirrors the input version, so a bump
+    -- necessarily moves every snapshot hash while changing nothing the simulation
+    -- does.
+    --
+    -- That was verified once by hand, by pinning the encoded version and
+    -- reproducing all 7202 OMP-1 boundary hashes byte-identically. This is the
+    -- re-runnable form: substituting exactly one version scalar turns one encoding
+    -- into the other, so the version tag is provably the entire delta and any
+    -- other moved byte fails here. Slice 2 touches gameplay, where this stops
+    -- being corroborative and becomes the thing that separates a real regression
+    -- from a version bump.
+    t.it("moves an encoding by exactly one scalar when only the ownership version does", function()
+        local snapshot = match_snapshot.capture(new_state())
+        local baseline = match_snapshot.encode_canonical(snapshot)
+        t.eq(baseline, match_snapshot.encode(snapshot), "the canonical encoder is the same encoder")
+
+        local ownership = assert(snapshot.state.input_ownership)
+        t.eq(ownership.version, input_frame.VERSION, "ownership mirrors the input frame version")
+
+        ownership.version = input_frame.VERSION + 1
+        local bumped = match_snapshot.encode_canonical(snapshot)
+        t.is_true(
+            bumped ~= baseline,
+            "the ownership version is inside the hashed bytes -- this is why the hashes moved"
+        )
+
+        -- Find the single position at which replacing one encoded version scalar
+        -- converts the baseline into the bumped encoding. If anything else moved,
+        -- no substitution succeeds and this stays nil.
+        local old_token = match_snapshot.number_bytes(input_frame.VERSION)
+        local new_token = match_snapshot.number_bytes(input_frame.VERSION + 1)
+        local at = nil
+        for index = 1, #baseline - #old_token + 1 do
+            if baseline:sub(index, index + #old_token - 1) == old_token then
+                local candidate = baseline:sub(1, index - 1)
+                    .. new_token
+                    .. baseline:sub(index + #old_token)
+                if candidate == bumped then
+                    at = index
+                    break
+                end
+            end
+        end
+        t.is_true(
+            at ~= nil,
+            "one substituted version scalar must reproduce the other encoding exactly"
+        )
+
+        ownership.version = input_frame.VERSION
+        t.eq(
+            match_snapshot.encode_canonical(snapshot),
+            baseline,
+            "restoring the version restores every byte"
+        )
+    end)
+
     t.it("guards the shallow trusted-copy ownership contract", function()
         t.is_true(not pcall(match_snapshot.capture_owned, nil))
         t.is_true(not pcall(match_snapshot.restore_owned, nil))

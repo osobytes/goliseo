@@ -129,7 +129,7 @@ local function run_bursty(harness_state, steps, period, samples)
     end
 end
 
----@param sample_options InputSampleOptions
+---@param sample_options InputSampleOptions?
 ---@return InputSample
 local function sample(sample_options)
     return assert(input_frame.new_sample(sample_options))
@@ -531,15 +531,18 @@ t.describe("online match driver", function()
         local guest_transport = assert(state.session.guest_transports[guest_id])
         local owned_slot = live_slot.slot_index(assert(state.session.freeze.owned[guest_id])[1])
 
-        ---@param edges integer
+        -- Takes whole sample options rather than an edge mask so a conflict can be
+        -- driven through any one field. #316 needed `aim` specifically: it is the
+        -- newest field in the comparison and the only one no test reached.
+        ---@param divergence InputSampleOptions?
         ---@return TransportMessage
-        local function bundle(edges)
+        local function bundle(divergence)
             local rows = {}
             for tick = 0, 6 do
                 rows[#rows + 1] = {
                     tick = tick,
                     slot_index = owned_slot,
-                    sample = sample({ edges = tick == 6 and edges or 0 }),
+                    sample = sample(tick == 6 and divergence or nil),
                 }
             end
             local packet = assert(input_protocol.new_guest({
@@ -560,7 +563,7 @@ t.describe("online match driver", function()
         end
 
         -- The same sender sequence with byte-identical authority is a no-op.
-        local repeated = bundle(0)
+        local repeated = bundle()
         assert(guest_transport:send(transport_contract.HOST_PEER_ID, "input", repeated))
         assert(guest_transport:send(transport_contract.HOST_PEER_ID, "input", repeated))
         state.session.host_transport:pump()
@@ -568,14 +571,64 @@ t.describe("online match driver", function()
         t.eq(match_driver.status(state.drivers[1]), "active")
 
         -- The same identity with different bytes is not.
-        assert(guest_transport:send(transport_contract.HOST_PEER_ID, "input", bundle(0)))
+        assert(guest_transport:send(transport_contract.HOST_PEER_ID, "input", bundle()))
         assert(
             guest_transport:send(
                 transport_contract.HOST_PEER_ID,
                 "input",
-                bundle(input_frame.EDGE_BITS.dash)
+                bundle({ edges = input_frame.EDGE_BITS.dash })
             )
         )
+        state.session.host_transport:pump()
+        advance(state)
+        t.eq(match_driver.status(state.drivers[1]), "authority_conflict")
+        t.eq(assert(match_driver.terminal(state.drivers[1])).failure, "input_channel")
+    end)
+
+    -- #316. Same shape as the case above, diverging only in `aim`, driven through
+    -- the real transport and codec. This is a wire-level guarantee, not a
+    -- field-comparison one: it proves aim survives encode/decode and that two
+    -- bundles differing only in aim are not collapsed as an idempotent replay.
+    -- The field-by-field comparison that folds `aim` is pinned directly in
+    -- `online_input_protocol_spec` (repair-row conflict) and `rollback_session_spec`
+    -- (aim-only correction), both of which go red if `aim` is dropped from it.
+    t.it("terminates on two bundles whose authority differs only in aim", function()
+        local state = harness("2v2")
+        run(state, 6)
+        local guest_id = state.session.guest_peer_ids[1]
+        local guest_transport = assert(state.session.guest_transports[guest_id])
+        local owned_slot = live_slot.slot_index(assert(state.session.freeze.owned[guest_id])[1])
+
+        ---@param divergence InputSampleOptions?
+        ---@return TransportMessage
+        local function bundle(divergence)
+            local rows = {}
+            for tick = 0, 6 do
+                rows[#rows + 1] = {
+                    tick = tick,
+                    slot_index = owned_slot,
+                    sample = sample(tick == 6 and divergence or nil),
+                }
+            end
+            local packet = assert(input_protocol.new_guest({
+                session_id = state.session.manifest.session_id,
+                manifest_id = protocol.manifest_id(state.session.manifest),
+                sender_id = guest_id,
+                sequence = 4343,
+                transport_tick = 9,
+                first_input_tick = 0,
+                rows = rows,
+            }))
+            return assert(transport_contract.new({
+                type = "input",
+                seq = packet.sequence,
+                tick = packet.transport_tick,
+                payload = assert(input_protocol.encode(packet)),
+            }))
+        end
+
+        assert(guest_transport:send(transport_contract.HOST_PEER_ID, "input", bundle()))
+        assert(guest_transport:send(transport_contract.HOST_PEER_ID, "input", bundle({ aim = 64 })))
         state.session.host_transport:pump()
         advance(state)
         t.eq(match_driver.status(state.drivers[1]), "authority_conflict")

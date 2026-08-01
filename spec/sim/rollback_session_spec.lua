@@ -322,6 +322,47 @@ t.describe("rollback session", function()
         )
     end)
 
+    -- #316. `sample_differs` compares the sample field by field, so a field it
+    -- forgets is a field that can never cause a rollback. Every other divergence
+    -- test here drives the difference through `move_x`, `held` or `edges`, which
+    -- means dropping `aim` from that comparison would leave this whole file green
+    -- while a mispredicted remote aim silently desynced two humans.
+    --
+    -- The prediction for an unseen remote slot is `neutral_sample()`, whose aim is
+    -- AIM_NONE, so an authority row carrying only an aim differs from it in
+    -- exactly one field and nothing else.
+    t.it("treats a remote row differing only in aim as a correction", function()
+        local initial = initial_snapshot()
+
+        -- Control: authority byte-identical to the prediction is not a correction.
+        -- Without this the assertion below could pass for the wrong reason.
+        local matched = rollback_session.new(initial, sources())
+        step_many(matched, 3)
+        local agreed = assert(rollback_session.add_authoritative(matched, 0, 1, sample()))
+        t.is_true(
+            not agreed.correction,
+            "a row identical to the prediction must not be reported as a correction"
+        )
+
+        local session = rollback_session.new(initial, sources())
+        step_many(session, 3)
+        local aimed = sample({ aim = 64 })
+        local predicted = assert(rollback_session.output(session, 0)).input.slots[1].sample
+        t.eq(predicted.move_x, aimed.move_x)
+        t.eq(predicted.move_y, aimed.move_y)
+        t.eq(predicted.held, aimed.held)
+        t.eq(predicted.edges, aimed.edges)
+        t.is_true(predicted.aim ~= aimed.aim, "aim is the only field that differs")
+
+        local arrival = assert(rollback_session.add_authoritative(session, 0, 1, aimed))
+        t.is_true(arrival.correction, "an aim-only mispredict must trigger a rollback")
+
+        local result = rollback_session.reconcile(session, true)
+        t.is_true(result.changed)
+        t.eq(result.causal_tick, 0)
+        t.eq(assert(rollback_session.output(session, 0)).input.slots[1].sample.aim, 64)
+    end)
+
     t.it("converges one correction and replaces the affected snapshots and output", function()
         local initial = initial_snapshot()
         local corrected = sample({ move_x = 127 })
