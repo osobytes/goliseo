@@ -32,6 +32,20 @@ const vm = require("vm");
 
 const source = fs.readFileSync(require.resolve("./webrtc_star_host.js"), "utf8");
 
+// The envelope version is read out of the host, never written down here. It was
+// a literal `1` until #316 moved `contract.VERSION` to 2, at which point every
+// send in this suite produced an envelope the host under test rejected -- and the
+// first assertion to notice reported "addressed control send failed", which reads
+// like a routing bug and is nothing of the sort. Deriving it means a future bump
+// is carried, not diagnosed.
+const VERSION = (function () {
+  const match = /^ {2}var VERSION = (\d+);$/m.exec(source);
+  if (!match) {
+    throw new Error("webrtc_star_host.js does not define VERSION");
+  }
+  return Number(match[1]);
+})();
+
 const callbackErrors = [];
 
 function fire(target, name, argument) {
@@ -81,7 +95,7 @@ function createStar(extra) {
 
 function wire(type, seq, tick, payload) {
   return [
-    1,
+    VERSION,
     encodeURIComponent(type),
     seq,
     tick === null ? "" : tick,
@@ -583,7 +597,9 @@ async function testPermissions() {
     "a malformed wire was accepted"
   );
   check(
-    host.send("guest_1|control|2|event|0||x").startsWith("error|unsupported_version|"),
+    host
+      .send("guest_1|control|" + (VERSION + 1) + "|event|0||x")
+      .startsWith("error|unsupported_version|"),
     "an unsupported envelope version was accepted"
   );
   check(
