@@ -411,6 +411,32 @@ Sim changes move the baseline; re-run `love . --sim 100` after touching
 `sim/match.lua` and log meaningful shifts here (this is the manual tripwire
 until phase 4 automates it).
 
+- **2026-07-31 — possessed ball kept inside the arena.** The touchline walls
+  only ran on the loose-ball path, so a ball that ended up outside while owned
+  was never pulled back: it stranded, the carrier could not walk out to it
+  (players are clamped), and only a shot recovered it. An owned ball is now
+  clamped to the arena — the pitch plus the two net boxes — with the outward
+  pace reflected, the same as the loose walls do. The 30-seed tripwire moved
+  fun 0.506 -> 0.442, goals 2.233 -> 2.100, shots_per_goal 21.602 -> 23.725,
+  turnovers 3.916 -> 3.783, and ai_dribble_heavy_losses 0.609 -> 0.839.
+
+  The 100-match validation says most of that was small-sample noise: fun 0.491,
+  goals 2.220, save_rate 0.856, pass_completion 0.577, turnovers 4.054,
+  possession_balance 0.402, decided_late 0.516 — all within noise of the old
+  baseline. Two shifts survive the larger sample and are the intended ones:
+  **shots_per_goal 21.6 -> 23.1** and **ai_dribble_heavy_losses 0.609 -> 0.985**.
+  Both come from the same thing. The clamp binds on only 0.24% of possessed
+  ticks (worst excursion 34 px), but on those ticks the boundary now takes the
+  ball off a carrier who runs on, where previously the ball simply travelled
+  outside the pitch alongside them. Running the ball out of play costing you
+  possession is the behaviour we want; the touchline is no longer free space.
+
+  Reflecting the outward pace rather than merely pinning the position is what
+  keeps this proportionate — pinning alone cost roughly twice as much
+  (ai_dribble_heavy_losses 0.992, goals 1.900, fun 0.401 on the same 30 seeds).
+  No band collapsed; the known scoring-scarcity and keeper-wall weaknesses are
+  unchanged in kind.
+
 - **2026-07-08 — keeper dive/save sync fix.** Saves now resolve only at glove
   contact, dives launch timed to the ball's friction-true arrival and stop at
   the intercept point, and shots that die short release to the claim logic
