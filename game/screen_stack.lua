@@ -8,6 +8,21 @@
 ---@field teardown fun(self: Screen)?
 ---@field apply_settings fun(self: Screen, settings: GameSettings)?
 
+-- Not every variant below reaches a screen by every route, and the difference
+-- decides where a new handler belongs.
+--
+-- `App` forwards only *normalized* events: `controller.normalize` turns a key
+-- into an `ActionEvent` via the binding table and returns `nil` when the key is
+-- unbound, so a raw `key` event never travels through `App` to the stack. The
+-- `key` variant reaches a screen only when something constructs that screen
+-- directly and calls `:event(...)` on it — the specs and the playtest harness.
+-- That is why the dev-harness keys (F1, R, B) live behind a directly-mounted
+-- `playtest` profile and do nothing in a launched game; see `docs/controls.md`
+-- and `docs/showcase_release.md`.
+--
+-- So: a handler for a bound control belongs in the `action` branch, or it will
+-- never fire for a player. A raw `key` handler is reachable from a spec and
+-- will pass its test while being dead through the shipped app.
 ---@alias InputEvent ActionEvent | { kind: "key", key: string, pressed: boolean? } | { kind: "click", x: number, y: number, button: number } | RawGamepadEvent
 
 ---@class ScreenStack
