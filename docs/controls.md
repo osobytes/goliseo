@@ -161,6 +161,22 @@ AI), editable mid-session the way studio balance tools work:
   defaults.
 - **F1/Esc** closes and resumes play.
 
+### How the playtest profile is entered
+
+There is no launch flag for it, and no shipped launch reaches it. Every match
+the app mounts names its profile explicitly — a normal match is `product`
+(`game/screens/real_match.lua`) and a networked one is `online`
+(`game/screens/online_match.lua`) — so in a launched game **F1** (tuning panel),
+**R** (restart) and **B** (bloom toggle) do nothing. That includes
+`love . --quick-match`, which skips the menus but still builds the same product
+match. It is deliberate rather than a gap: release builds hide playtest-only
+controls and tuning surfaces (see `docs/showcase_release.md`, "One polished
+match").
+
+`playtest` is the default `profile` of `Match.new` in `game/screens/match.lua`,
+so the only way in is to construct that screen directly and pass no profile —
+in practice the specs that mount it, such as `spec/screens/tuning_panel_spec.lua`.
+
 ## Menus (pre-match flow)
 
 Use the mouse, arrows/WASD plus Enter, or D-pad plus A. Every setup screen has
