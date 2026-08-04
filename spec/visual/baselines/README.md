@@ -19,5 +19,17 @@ renderer with the checked-in images.
 
 Run `./scripts/check_outfield_pose_snapshots.sh` to compare.
 
-Pass `write` to either script only after intentionally reviewing a renderer
-change. A baseline nobody looked at is worse than no baseline.
+## rig3d palette slots (issue #337)
+
+- `rig3d_palette_crimson.png` / `rig3d_palette_azure.png` — the SAME medieval
+  Rig_Medium character and mesh drawlist, rendered with two different resolved
+  team palettes. Colour is a per-vertex palette slot resolved to a uniform at
+  draw time (not baked geometry), so these two images differing while coming
+  from one shared mesh build is the actual point of the pair.
+
+Run `./scripts/check_rig3d_palette_snapshots.sh` to compare, or `self-test` to
+prove the compare itself rejects a crimson/azure mismatch (a demonstration
+this gate can go red, per AGENTS.md #9).
+
+Pass `write` to any of these scripts only after intentionally reviewing a
+renderer change. A baseline nobody looked at is worse than no baseline.

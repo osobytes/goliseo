@@ -33,13 +33,14 @@ local HEIGHT_IN_RADII = 3.0
 -- Match camera looks down at the pitch; this is the apparent elevation.
 local ELEVATION = math.rad(17)
 
-local state = { built = false, failed = false, rig = nil, teams = {} }
+local state = { built = false, failed = false, rig = nil, parts = nil, palettes = {} }
 
 ---@type fun(sx: number, sy: number, r: number, color: number[], view: PlayerView|nil, opts: table)
 local draw_player
 
--- Builds the shared rig and one draw list per team. Called once, lazily, so a
--- headless or shader-less runtime never pays for it.
+-- Builds the shared rig, the ONE shared draw list (colour-free), and one
+-- resolved palette per team. Called once, lazily, so a headless or
+-- shader-less runtime never pays for it.
 ---@return boolean
 local function build()
     if state.built then
@@ -48,7 +49,7 @@ local function build()
     state.built = true
 
     local ok, err = pcall(function()
-        renderer.load()
+        renderer.load(themes.SLOT_COUNT)
         local rig = proportions.RIG_MEDIUM
         state.rig = skeleton.new(rig)
         state.height = proportions.height(rig)
@@ -56,8 +57,13 @@ local function build()
         -- presentation data that belongs with the roster, not in the renderer.
         local theme = themes.LIST[1]
         local figure = themes.FIGURES[1]
+        -- Meshes carry a palette SLOT INDEX per vertex now, not a literal
+        -- colour (#337), so they no longer depend on team at all -- one build
+        -- serves every team. Only the small resolved-colour array differs per
+        -- team, and that is a uniform, not a mesh.
+        state.parts = body.build(rig, theme, figure)
         for _, team in ipairs(themes.TEAMS) do
-            state.teams[team.key] = body.build(rig, theme, team, figure)
+            state.palettes[team.key] = themes.resolvedPalette(theme, team)
         end
     end)
 
@@ -200,8 +206,9 @@ end
 ---@param opts table
 function draw_player(sx, sy, r, color, view, opts)
     local team = themes.TEAMS[(opts.team == "away") and 2 or 1]
-    local parts = state.teams[team.key]
-    if not parts then
+    local parts = state.parts
+    local palette = state.palettes[team.key]
+    if not parts or not palette then
         return
     end
 
@@ -234,7 +241,7 @@ function draw_player(sx, sy, r, color, view, opts)
     local yaw = facing and math.atan2(facing.x, facing.y) or 0
     local world = mat4.rotationY(yaw)
 
-    renderer.beginPass(cam)
+    renderer.beginPass(cam, palette)
     for _, part in ipairs(parts) do
         local bone_world = mat4.multiply(world, state.rig.world[part.bone])
         local model = part.attach and mat4.multiply(bone_world, part.attach) or bone_world

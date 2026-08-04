@@ -257,7 +257,7 @@ end
 -- Builds one item by id. Returns the solid mesh plus an optional emissive mesh
 -- (nil for everything that does not glow).
 ---@param id string
----@param c table  -- resolved theme palette
+---@param c table  -- themes.SLOT_INDEX: slot name -> palette slot index
 ---@return love.Mesh, love.Mesh|nil
 function equipment.build(id, c)
     local fn = equipment[id]
