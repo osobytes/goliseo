@@ -67,3 +67,7 @@ coverage/
 
 # Local benchmark evidence; the report in docs/ carries the reviewed numbers.
 .bench/
+
+# Rust host build artifacts (#327).
+wasm/sim-host/target/
+wasm/sim-host/dist/

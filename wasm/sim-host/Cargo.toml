@@ -1,0 +1,16 @@
+[package]
+name = "goliseo-sim-host"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Lua 5.1 deliberately. Lua 5.3 introduced a distinct integer subtype, which
+# changes arithmetic against this codebase's doubles-only model and would
+# silently invalidate every determinism hash. `vendored` builds Lua from source
+# so the same interpreter is used natively and under Emscripten.
+[dependencies]
+mlua = { version = "0.10", features = ["lua51", "vendored"] }
+
+[[bin]]
+name = "simhost"
+path = "src/main.rs"
