@@ -70,3 +70,4 @@ coverage/
 
 # Rust host build artifacts (#327).
 wasm/sim-host/target/
+wasm/sim-host/dist/

@@ -14,7 +14,9 @@
 //! identical work and the numbers are directly comparable.
 
 use mlua::Lua;
-use std::path::{Path, PathBuf};
+#[cfg(not(target_os = "emscripten"))]
+use std::path::Path;
+use std::path::PathBuf;
 use std::time::Instant;
 
 /// Repository root, so the probe's relative `package.path` and `require` calls
@@ -23,7 +25,21 @@ fn repo_root() -> PathBuf {
     if let Ok(explicit) = std::env::var("GOLISEO_ROOT") {
         return PathBuf::from(explicit);
     }
-    // The crate lives at <root>/wasm/sim-host.
+    default_root()
+}
+
+/// Under Emscripten the Lua tree is preloaded into the module's virtual
+/// filesystem at the root, so the build-time source path does not exist and
+/// must not be consulted. Emscripten also does not forward the process
+/// environment by default, so GOLISEO_ROOT cannot be relied on here either.
+#[cfg(target_os = "emscripten")]
+fn default_root() -> PathBuf {
+    PathBuf::from("/")
+}
+
+/// Natively the crate lives at <root>/wasm/sim-host.
+#[cfg(not(target_os = "emscripten"))]
+fn default_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)
