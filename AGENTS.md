@@ -41,9 +41,12 @@ game/   LÖVE-specific: rendering, input, screens, the love.* callbacks
 
 - `core/` may require other `core/` only. No `love`, no game state.
 - `data/` requires **nothing**.
-- `sim/` may require `core/`, `data/`, and other `sim/`. It must **never** `require("love")` or anything in `game/`.
-- `render/` may require `core/`, `data/`, `sim/`, and other `render/`. It must **never**
-  `require("love")` or anything in `game/`.
+- `sim/` may require `core/`, `data/`, and other `sim/`. It must **never** require a rendering
+  engine — today that is `love`, and it covers any future engine binding just as much — nor
+  anything in `game/`.
+- `render/` may require `core/`, `data/`, `sim/`, and other `render/`. It must **never** require a
+  rendering engine — today that is `love`, and it covers any future engine binding just as much —
+  nor anything in `game/`.
 - `game/` may require anything.
 
 Why: `sim/`, `data/` and `render/` stay pure, unit-testable without a window, and portable to
