@@ -1,5 +1,10 @@
 # Controls
 
+Every binding below lives in `game/input/bindings.lua` and nowhere else. The
+menu action layer, the match's per-frame polling, and the in-game help card all
+read that one table, so this page describes a single source rather than
+shadowing three.
+
 ## Match
 
 Two contextual action buttons plus sprint. The same button does the natural
@@ -12,30 +17,57 @@ without pausing play.
 | **ACTION** — shoot / tackle | Space | A |
 | **PLAY** — pass / switch | K | X |
 | Sprint | Shift (hold) | LB (hold) |
-| Lob / chip modifier | L (hold) | Y (hold) |
-| Juke / dodge | C | L3 |
-| Equipment | J (hold/tap) | B (hold/tap) |
-| Pause | P or Esc | Start |
+| **MODIFIER** — lob / chip | J (hold) | RT (hold) |
+| Juke / dodge | L | Y |
+| Equipment | U (hold/tap) | RB (hold/tap) |
+| Pause | P or Esc | Start or B |
 | Skip replay / advance full time | Space or Enter | A |
 | Toggle mute | M | — |
 | Toggle fullscreen | F11 | — |
 
+### Why the bindings sit where they do
+
+The layout obeys four rules, and a rebinding screen should re-check them:
+
+1. **The left hand never leaves WASD.** Sprint is its pinky and ACTION its
+   thumb; no other hold lands on that hand.
+2. **A held modifier never shares a finger with what it modifies.** On keyboard
+   that is the right index (J) against PLAY on the right middle (K) — the most
+   independent same-hand pair. The modifier used to be L, the ring finger
+   directly beside K, which is why the code needs a latch to catch a modifier
+   released a frame early. On gamepad the modifier is a trigger, never a face
+   button: it used to be Y, and no thumb can hold Y while pressing A or X, which
+   made the bicycle kick (MODIFIER + ACTION) unreachable on a controller.
+3. **Movement-adjacent taps stay off the movement hand.** Juke was C, which
+   forced the left hand off WASD to perform a movement action, and L3, which
+   means clicking the stick you are steering with.
+4. **No edge action sits on a gamepad trigger.** LÖVE reports triggers as axes,
+   so `love.gamepadpressed` never fires for one. Triggers can carry holds only,
+   which is why the hold-only modifier is the single control bound to one.
+
+Gamepad **B is Back in every context**, including inside a match. It used to
+double as Equipment there; Equipment has RB now.
+
 Rematches are chosen on the dedicated result screen. Full time owns the pitch
 for a brief broadcast beat before that screen appears.
 
-- **Shooting** (Space with the ball) aims at the goal; hold up/down to place it into a corner.
-  Hold Space to **charge** a harder shot; holding left/right at release **curves** it.
-- **Tackling** (Space without the ball) has two modes: **tap** (release quickly) fires a
+The prose below names the **role** (ACTION, PLAY, MODIFIER, Sprint) rather than a
+key, because the role is what the mechanic is about and the table above is the
+only place a binding should be written down.
+
+- **Shooting** (ACTION with the ball) aims at the goal; hold up/down to place it into a corner.
+  Hold ACTION to **charge** a harder shot; holding left/right at release **curves** it.
+- **Tackling** (ACTION without the ball) has two modes: **tap** (release quickly) fires a
   standing poke; **hold** enters **jockey stance** — you slow to 75 % and your facing locks
-  toward the ball, shadowing the carrier. Releasing Space from jockey fires the poke with
+  toward the ball, shadowing the carrier. Releasing ACTION from jockey fires the poke with
   a **+6 bonus reach** as the reward for containing first. While **sprinting** instead of
   jockeying, the poke becomes a committed **slide tackle** whose speed scales with your pace.
   Slides reach further and knock the carrier off balance, but lock you in with a longer
-  recovery — *sprint + Space* is the big play, and it can miss.
-- **Sprint** (hold Shift) burns a **stamina meter** (shown above the help text when not full);
+  recovery — *Sprint + ACTION* is the big play, and it can miss.
+- **Sprint** (hold) burns a **stamina meter** (shown above the help text when not full);
   it refills whenever you're not sprinting, and the **stamina** stat sets how big the tank is.
   An empty tank means no boost until it meaningfully recovers.
-- **Switching** (K without the ball) hands control to the home outfielder **nearest the ball**;
+- **Switching** (PLAY without the ball) hands control to the home outfielder **nearest the ball**;
   winning the ball auto-switches control to the winner.
 - **Keeping the ball**: challenges reach for the *ball*, not your body — it sticks a step ahead
   of your facing, so turning between a defender and the ball **shields** it. Defenders commit
@@ -45,23 +77,23 @@ for a brief broadcast beat before that screen appears.
   will work around your body, and a defender leaning on you shoves you off your spot — standing
   still is never safe, keep turning or move.
 - **You control your keeper**: when your keeper gathers the ball, control switches to it.
-  **K** (hold to charge) throws — the longer you hold, the further along your aim it picks a
-  teammate; **Space** (hold to charge) is a **punt** off the foot, clearing high toward
+  **PLAY** (hold to charge) throws — the longer you hold, the further along your aim it picks a
+  teammate; **ACTION** (hold to charge) is a **punt** off the foot, clearing high toward
   mid/front field as far as you charge it. You can walk it around inside your box; after ~5
   seconds the keeper distributes on its own (six-second rule).
-- **Crosses**: a lofted pass (hold L + K) from wide in the attacking third becomes a **cross**
-  aimed at your teammate in the box — AI wingers swing them in too. **Control follows every
-  pass you make**: the moment the ball leaves your foot you're driving the receiver, so run
-  onto the cross and meet it with Space — holding a direction at contact **aims the header or
+- **Crosses**: a lofted pass (hold MODIFIER + PLAY) from wide in the attacking third becomes a
+  **cross** aimed at your teammate in the box — AI wingers swing them in too. **Control follows
+  every pass you make**: the moment the ball leaves your foot you're driving the receiver, so run
+  onto the cross and meet it with ACTION — holding a direction at contact **aims the header or
   volley** wherever you point (undirected strikes go at goal).
-- **Aerial reception**: do not press Space under a descending lob to control it. The player
+- **Aerial reception**: do not press ACTION under a descending lob to control it. The player
   automatically chooses an extended-leg or chest touch, jumping when needed, and cushions the
   real ball toward their feet. Technique, mental, distance, ball pace, drop speed, required
   jump, body alignment, movement, and pressure decide whether the touch is clean, heavy, or
   missed. Hold a direction to cushion into that space.
-- **Aerial finishing**: hold **Space** under a dropping ball for a standing or jumping header /
-  volley. Hold **L + Space** to request a **bicycle kick** when the ball is overhead or behind;
-  invalid bicycle geometry safely falls back to a conventional strike. Bicycles are powerful
+- **Aerial finishing**: hold **ACTION** under a dropping ball for a standing or jumping header /
+  volley. Hold **MODIFIER + ACTION** to request a **bicycle kick** when the ball is overhead or
+  behind; invalid bicycle geometry safely falls back to a conventional strike. Bicycles are powerful
   but difficult and leave the player recovering on the ground. The arena is a **cage**: a skied
   strike bounces off the ceiling and rains back into play.
 - **The keeper is protected**: while a keeper holds the ball, everyone backs well off its ring
@@ -79,8 +111,8 @@ for a brief broadcast beat before that screen appears.
 - Players have **bodies**: they block and bump each other, and a slide that connects shoves and
   briefly stuns the player it hits.
 - Fast shots and driven passes **ricochet off bodies** — a defender in the lane blocks the shot,
-  so shoot around them, chip over them (L), or pass for a better angle. Slow balls are trapped,
-  not deflected, and lobs sail over heads.
+  so shoot around them, chip over them (MODIFIER), or pass for a better angle. Slow balls are
+  trapped, not deflected, and lobs sail over heads.
 - **Finishing**: charge and aim for a corner to beat the keeper. Whether a reached save is
   **held or parried** is a dice roll weighted by shot pace and the keeper's handling — soft,
   central shots stick in the gloves almost every time; hot or full-stretch balls usually get
@@ -98,7 +130,8 @@ simulation step), so taps don't get lost between frames.
 
 Equipment input likewise preserves held state plus distinct press and release edges at the
 fixed-tick boundary. A fast tap between ticks reaches the simulation as an ordered press and
-release on the next tick. Gamepad B remains the Back action outside a live match.
+release on the next tick. Equipment has its own button on both devices now, so
+gamepad B is the Back action in every context including a live match.
 
 Equipment is active only after choosing **Combat Prototype** on the title screen. **Play
 Showcase** remains the committed release path and constructs no combat state; its match rules
@@ -127,6 +160,22 @@ AI), editable mid-session the way studio balance tools work:
   match starts, so experiments persist across runs. Tests always run on
   defaults.
 - **F1/Esc** closes and resumes play.
+
+### How the playtest profile is entered
+
+There is no launch flag for it, and no shipped launch reaches it. Every match
+the app mounts names its profile explicitly — a normal match is `product`
+(`game/screens/real_match.lua`) and a networked one is `online`
+(`game/screens/online_match.lua`) — so in a launched game **F1** (tuning panel),
+**R** (restart) and **B** (bloom toggle) do nothing. That includes
+`love . --quick-match`, which skips the menus but still builds the same product
+match. It is deliberate rather than a gap: release builds hide playtest-only
+controls and tuning surfaces (see `docs/showcase_release.md`, "One polished
+match").
+
+`playtest` is the default `profile` of `Match.new` in `game/screens/match.lua`,
+so the only way in is to construct that screen directly and pass no profile —
+in practice the specs that mount it, such as `spec/screens/tuning_panel_spec.lua`.
 
 ## Menus (pre-match flow)
 
