@@ -44,14 +44,17 @@ end
 
 -- Draws a face onto `mb`.
 ---@param mb table
----@param c table                        -- resolved palette
+---@param c table                        -- themes.SLOT_INDEX: slot name -> palette slot index
 ---@param hr number                      -- head half-width
 ---@param style string                   -- "expressive" | "minifig" | "vinyl"
 ---@param front fun(y: number): number   -- front-surface Z at a given height
 ---@param eye_y number                   -- world-space Y of the eye line
 function face.build(mb, c, hr, style, front, eye_y)
-    local ink = c.ink or { 0.12, 0.11, 0.13 }
-    local white = { 0.97, 0.97, 0.98 }
+    -- `ink` and `white` are constant slots (see themes.lua CONSTANT_COLOR):
+    -- no theme has ever overridden them, so they are always just `c.ink` /
+    -- `c.white` now rather than a literal with a theme-override fallback.
+    local ink = c.ink
+    local white = c.white
 
     if style == "vinyl" then
         -- Two big solid eyes and nothing else. Funko's read is the blankness.

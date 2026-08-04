@@ -195,15 +195,91 @@ function themes.resolve(slot, team)
     return slot
 end
 
--- Returns a flat colour table with every slot resolved, so builders never have
--- to think about team colour again.
+-- ---------------------------------------------------------------------------
+-- Palette slots (#337)
+--
+-- A vertex used to carry its literal {r,g,b,a} baked in at mesh-build time,
+-- which meant every colour variant -- every team, every future cosmetic skin
+-- -- needed its own copy of every mesh. Instead each vertex now carries a
+-- SLOT INDEX (a small integer, one of `themes.SLOTS` below) and the actual
+-- colours are resolved once per (theme, team) into a small array that is
+-- uploaded to the shader as a uniform. Meshes become colour-agnostic: the
+-- same geometry is redrawn for any palette by swapping the uniform, at zero
+-- extra meshes and zero extra draw calls.
+--
+-- This is the same eight names `theme.color` already speaks (skin, cloth,
+-- plate, plate_dark, accent, strap, crest, joint), plus the two theme-color
+-- keys that are only meshed by some themes (limbs, seam) and the two literal
+-- constants face.lua reaches for regardless of theme (ink, white). Twelve
+-- slots total -- cheap next to WebGL1's minimum guaranteed uniform budget
+-- (128 vertex / 16 fragment uniform *vectors*; this is 12 vec4s plus three
+-- 4x4 matrices, nowhere close).
+-- ---------------------------------------------------------------------------
+
+---@type string[]  -- canonical order; index-1 IS the shader's u_palette index
+themes.SLOTS = {
+    "skin",
+    "cloth",
+    "plate",
+    "plate_dark",
+    "accent",
+    "strap",
+    "crest",
+    "joint",
+    "limbs",
+    "seam",
+    "ink",
+    "white",
+}
+
+themes.SLOT_COUNT = #themes.SLOTS
+
+-- Builders reference `SLOT_INDEX.skin`, `SLOT_INDEX.cloth`, etc. exactly the
+-- way they used to reference a resolved colour table -- the value baked per
+-- vertex is now this fixed index rather than a literal colour, and it does
+-- NOT depend on theme or team, so it is computed once at load time.
+---@type table<string, integer>  -- 0-based: matches the shader array index directly
+themes.SLOT_INDEX = {}
+for i, name in ipairs(themes.SLOTS) do
+    themes.SLOT_INDEX[name] = i - 1
+end
+
+-- Colours that never vary by theme or team, so they are not part of any
+-- theme's `color` table. face.lua reaches for these for pupils/brows/mouths
+-- (`ink`) and sclera/catchlights (`white`) on every figure style.
+local CONSTANT_COLOR = {
+    ink = { 0.12, 0.11, 0.13 },
+    white = { 0.97, 0.97, 0.98 },
+}
+
+-- A theme may leave a slot unset when its own default already reads right --
+-- e.g. Medieval Fantasy shows bare skin on the forearms, so `limbs` is simply
+-- not authored. This is the exact fallback the pre-slice code applied once
+-- per build (`c.limbs = c.limbs or c.skin`), moved here so it resolves once
+-- per (theme, team) rather than once per vertex.
+local SLOT_FALLBACK = { limbs = "skin" }
+
+-- Resolves every palette slot for one (theme, team) pair into the flat array
+-- the shader wants: `out[i]` is the RGBA for `themes.SLOTS[i]`, i.e. shader
+-- index `i - 1`. Slots a theme's shape flags never actually mesh (e.g.
+-- `seam` on a theme with `shape.seams = false`) are filled with an inert
+-- placeholder -- correct because no vertex in that theme's build ever carries
+-- that slot index, so the value is never sampled.
 ---@param theme table
 ---@param team table
----@return table
-function themes.palette(theme, team)
+---@return number[][]
+function themes.resolvedPalette(theme, team)
     local out = {}
-    for name, slot in pairs(theme.color) do
-        out[name] = themes.resolve(slot, team)
+    for i, name in ipairs(themes.SLOTS) do
+        local raw = CONSTANT_COLOR[name]
+        if not raw then
+            local slot = theme.color[name]
+            if slot == nil and SLOT_FALLBACK[name] then
+                slot = theme.color[SLOT_FALLBACK[name]]
+            end
+            raw = slot and themes.resolve(slot, team) or { 0, 0, 0 }
+        end
+        out[i] = { raw[1], raw[2], raw[3], raw[4] or 1 }
     end
     return out
 end

@@ -8,6 +8,11 @@
 -- Points are transformed by a mat4 as they are added ("baking"), so a part
 -- generator can be written in convenient local coordinates and then placed
 -- wherever it belongs on the rig.
+--
+-- Colour is NOT baked here (#337). Every vertex carries a palette SLOT INDEX
+-- (see rig3d/themes.lua `SLOT_INDEX`) instead of a literal {r,g,b,a}; the
+-- vertex shader resolves that index against a `u_palette` uniform sent once
+-- per draw. That is what lets one mesh serve every team/theme colour variant.
 
 local mat4 = require("core.mat4")
 
@@ -15,7 +20,7 @@ local meshbuilder = {}
 local Builder = {}
 Builder.__index = Builder
 
--- Position(3) + TexCoord(2) + Normal(3) + Color(4).
+-- Position(3) + TexCoord(2) + Normal(3) + PaletteSlot(1).
 -- TexCoord is never sampled by our shader, but LÖVE's generated vertex-shader
 -- boilerplate always declares the VertexTexCoord attribute, so we supply it
 -- rather than rely on an undefined attribute default.
@@ -23,7 +28,7 @@ meshbuilder.VERTEX_FORMAT = {
     { "VertexPosition", "float", 3 },
     { "VertexTexCoord", "float", 2 },
     { "VertexNormal", "float", 3 },
-    { "VertexColor", "float", 4 },
+    { "VertexPaletteSlot", "float", 1 },
 }
 
 ---@return table
@@ -45,8 +50,12 @@ end
 ---@param a number[]
 ---@param b number[]
 ---@param c number[]
----@param color number[]  -- {r, g, b} or {r, g, b, a}
-function Builder:triangle(tf, a, b, c, color)
+---@param slot integer  -- palette slot index, see rig3d/themes.lua SLOT_INDEX
+function Builder:triangle(tf, a, b, c, slot)
+    assert(
+        type(slot) == "number",
+        "triangle color must be a palette slot index (themes.SLOT_INDEX.<name>), got " .. type(slot)
+    )
     local ax, ay, az = a[1], a[2], a[3]
     local bx, by, bz = b[1], b[2], b[3]
     local cx, cy, cz = c[1], c[2], c[3]
@@ -68,17 +77,16 @@ function Builder:triangle(tf, a, b, c, color)
     end
     nx, ny, nz = normalize(nx, ny, nz)
 
-    local r, g, b, alpha = color[1], color[2], color[3], color[4] or 1
     local verts = self.verts
-    verts[#verts + 1] = { ax, ay, az, 0, 0, nx, ny, nz, r, g, b, alpha }
-    verts[#verts + 1] = { bx, by, bz, 0, 0, nx, ny, nz, r, g, b, alpha }
-    verts[#verts + 1] = { cx, cy, cz, 0, 0, nx, ny, nz, r, g, b, alpha }
+    verts[#verts + 1] = { ax, ay, az, 0, 0, nx, ny, nz, slot }
+    verts[#verts + 1] = { bx, by, bz, 0, 0, nx, ny, nz, slot }
+    verts[#verts + 1] = { cx, cy, cz, 0, 0, nx, ny, nz, slot }
 end
 
 -- Adds a planar quad as two triangles, wound a -> b -> c -> d.
-function Builder:quad(tf, a, b, c, d, color)
-    self:triangle(tf, a, b, c, color)
-    self:triangle(tf, a, c, d, color)
+function Builder:quad(tf, a, b, c, d, slot)
+    self:triangle(tf, a, b, c, slot)
+    self:triangle(tf, a, c, d, slot)
 end
 
 ---@return number
