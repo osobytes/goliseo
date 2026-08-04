@@ -44,30 +44,38 @@ export TARGET_CFLAGS="$EH"
 export CFLAGS_wasm32_unknown_emscripten="$EH"
 export EMCC_CFLAGS="$EH"
 
-# The Lua tree is preloaded into Emscripten's virtual filesystem for now, which
-# is why a .data file is produced alongside the .wasm. Embedding the sources in
-# the binary instead is tracked separately -- the preload costs real startup
-# time and an extra artifact to ship.
+# No --preload-file: build.rs compiles the Lua tree into the binary (#334), so
+# there is no virtual filesystem to populate and no .data package to ship or
+# keep in sync. The deliverable is the .wasm plus its JS glue, full stop.
+#
+# --remap-path-prefix makes "the shipped artifact contains no build-machine
+# paths" a GUARANTEE rather than an observation. It is currently true by luck:
+# release debuginfo is off and nothing on a panic-capable path traces back to an
+# included file, so /app and the host checkout never appear. Any of those could
+# change silently -- and now that 87 source files are compiled in by absolute
+# path, a leak would embed the builder's directory layout in something we hand
+# to every player. Remap both roots so the property survives.
 export RUSTFLAGS="\
+--remap-path-prefix=/app=goliseo \
+--remap-path-prefix=/build=cargo \
 -Clink-arg=-fwasm-exceptions \
 -Clink-arg=-sSUPPORT_LONGJMP=wasm \
 -Clink-arg=-sALLOW_MEMORY_GROWTH=1 \
 -Clink-arg=-sEXIT_RUNTIME=1 \
--Clink-arg=-sTOTAL_STACK=8MB \
--Clink-arg=--preload-file=/app/sim@/sim \
--Clink-arg=--preload-file=/app/core@/core \
--Clink-arg=--preload-file=/app/data@/data \
--Clink-arg=--preload-file=/app/scripts@/scripts"
+-Clink-arg=-sTOTAL_STACK=8MB"
 
 cd /app/wasm/sim-host
 CARGO_TARGET_DIR=/build/target cargo build --release --target wasm32-unknown-emscripten
 
-# emcc writes the preload .data beside the linker's own output, which is deps/,
-# not the copied artifact directory.
-deps=/build/target/wasm32-unknown-emscripten/release/deps
-cp -f /build/target/wasm32-unknown-emscripten/release/simhost.wasm "$deps/" 2>/dev/null || true
+release=/build/target/wasm32-unknown-emscripten/release
+# emcc writes side artifacts beside the linker's own output, which is deps/,
+# not the copied artifact directory -- so look in both.
+if compgen -G "$release/*.data" >/dev/null || compgen -G "$release/deps/*.data" >/dev/null; then
+    echo "FAIL: a preload package was produced; the sources should be embedded" >&2
+    exit 1
+fi
 mkdir -p /out
-cp -f "$deps/simhost.js" "$deps/simhost.wasm" "$deps/simhost.data" /out/
+cp -f "$release/simhost.js" "$release/simhost.wasm" /out/
 INNER
 
 mkdir -p "$out_dir"
