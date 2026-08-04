@@ -47,7 +47,17 @@ export EMCC_CFLAGS="$EH"
 # No --preload-file: build.rs compiles the Lua tree into the binary (#334), so
 # there is no virtual filesystem to populate and no .data package to ship or
 # keep in sync. The deliverable is the .wasm plus its JS glue, full stop.
+#
+# --remap-path-prefix makes "the shipped artifact contains no build-machine
+# paths" a GUARANTEE rather than an observation. It is currently true by luck:
+# release debuginfo is off and nothing on a panic-capable path traces back to an
+# included file, so /app and the host checkout never appear. Any of those could
+# change silently -- and now that 87 source files are compiled in by absolute
+# path, a leak would embed the builder's directory layout in something we hand
+# to every player. Remap both roots so the property survives.
 export RUSTFLAGS="\
+--remap-path-prefix=/app=goliseo \
+--remap-path-prefix=/build=cargo \
 -Clink-arg=-fwasm-exceptions \
 -Clink-arg=-sSUPPORT_LONGJMP=wasm \
 -Clink-arg=-sALLOW_MEMORY_GROWTH=1 \

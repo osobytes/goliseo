@@ -61,11 +61,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// far from its cause.
 ///
 /// The searcher is inserted at position 2: after the `package.preload` searcher,
-/// whose precedence is part of Lua's contract, and ahead of the two filesystem
-/// ones. That ordering is the reason there is no `cfg` split between native and
-/// wasm any more. Both targets now execute exactly the bytes `build.rs` baked
-/// in, so a native run genuinely rehearses the browser run instead of quietly
-/// reading a different copy off disk.
+/// whose precedence is part of Lua's contract, and ahead of the filesystem one.
+/// Singular — mlua's safe `Lua::new()` applies `disable_c_modules()`, which
+/// replaces loader 3 (the C-path searcher) with a permanently-failing stub and
+/// drops loader 4 (the all-in-one loader). The live table is therefore
+/// `[preload, Lua path, disabled C stub]`, not stock Lua 5.1's four.
+///
+/// That ordering is the reason there is no `cfg` split between native and wasm
+/// any more. Both targets now execute exactly the bytes `build.rs` baked in, so
+/// a native run genuinely rehearses the browser run instead of quietly reading a
+/// different copy off disk.
+///
+/// A module reading `...` at file scope behaves identically here and under the
+/// stock loader, which is worth recording because it is not obvious and 5.2+
+/// would answer differently. Lua 5.1's `require` calls the winning loader with
+/// exactly one argument, the module name (`lua_call(L, 1, 1)`, loadlib.c:473);
+/// the extra loader-data value that 5.2 added, and which would show up as a
+/// second vararg, does not exist in this version. No embedded module reads
+/// chunk-scope `...` today, and if one starts to, it sees the same thing it
+/// would under `lua`.
 fn install_embedded_searcher(lua: &Lua) -> mlua::Result<()> {
     let searcher = lua.create_function(|lua, name: String| {
         // The same dotted-name -> path translation the stock `?.lua` and

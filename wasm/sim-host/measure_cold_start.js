@@ -17,8 +17,9 @@
 //                  core/ and data/ modules have been resolved and executed, so
 //                  the first tick can now be taken.
 //
-// Timing a child process rather than hooking Module means node's own startup
-// (~30 ms, reported below so it can be subtracted) is inside both marks. That
+// Timing a child process rather than hooking Module means node's own startup is
+// inside both marks. It is not assumed: nodeFloor() measures it on every run and
+// prints it (~18 ms on this machine) so it can be subtracted. That
 // is deliberate: the emscripten glue declares its own `var Module`, which
 // shadows any globalThis.Module a harness sets, so in-process hooks would be
 // measuring a module we had quietly failed to instrument. An honest number
