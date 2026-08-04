@@ -10,6 +10,10 @@ render benchmark. This measures pure computation with no GPU involvement, so
 software rasterisation is irrelevant; there is nothing to rasterise. The rule is
 not "never headless", it is "never headless when the GPU is the thing under test".
 
+It also reports cold start -- the time before the first tick can be taken -- per
+browser, because that is the number #334 set out to move and node, reading the
+artifacts off local disk, cannot measure it honestly.
+
     python3 wasm/sim-host/verify_browser.py            # after build.sh
 """
 
@@ -38,10 +42,12 @@ PAGE = """<!doctype html>
 // integration has to put the simulation in a worker and leave the main thread
 // to rendering. So the verification runs it the way it will actually be used.
 window.__OUT__ = [];
+window.__MARKS__ = [];
 window.__DONE__ = false;
 const worker = new Worker("worker.js");
 worker.onmessage = (e) => {
   if (e.data && e.data.line !== undefined) window.__OUT__.push(String(e.data.line));
+  if (e.data && e.data.mark !== undefined) window.__MARKS__.push(e.data);
   if (e.data && e.data.done) window.__DONE__ = true;
 };
 worker.onerror = (e) => {
@@ -52,9 +58,30 @@ worker.onerror = (e) => {
 """
 
 WORKER = """
+// Cold start, measured where it actually costs something: over HTTP, in a
+// browser, with the fetch and the wasm compile in the clock. Node reads the
+// artifacts off local disk, so its numbers understate this. T0 is taken before
+// importScripts, so both marks include fetching and compiling the module.
+//
+//   runtime ready  the module is instantiated and main() is about to run.
+//                  Under the old preload build this also covered downloading
+//                  and mounting the 3.2 MB .data package.
+//   sim ready      all 13 sim/, core/ and data/ modules are loaded, so the
+//                  first tick can be taken.
+var __T0__ = performance.now();
+var __SEEN_SIM_READY__ = false;
+function __mark__(name) { postMessage({ mark: name, ms: performance.now() - __T0__ }); }
 var Module = {
-  print:    function (t) { postMessage({ line: String(t) }); },
+  print:    function (t) {
+    var line = String(t);
+    if (!__SEEN_SIM_READY__ && line.indexOf("== frozen determinism contract") === 0) {
+      __SEEN_SIM_READY__ = true;
+      __mark__("sim ready");
+    }
+    postMessage({ line: line });
+  },
   printErr: function (t) { postMessage({ line: "ERR: " + String(t) }); },
+  onRuntimeInitialized: function () { __mark__("runtime ready"); },
   onExit:   function ()  { postMessage({ done: true }); },
   onAbort:  function (w) { postMessage({ line: "ABORT: " + String(w) }); postMessage({ done: true }); }
 };
@@ -94,20 +121,22 @@ def launch(browser: str, headless: bool) -> Any:
     return webdriver.Firefox(options=options, service=Service(executable_path=driver_path))
 
 
-def run(browser: str, url: str, timeout: int, headless: bool) -> tuple[bool, list[str]]:
+def run(browser: str, url: str, timeout: int, headless: bool) -> tuple[list[str], list[dict]]:
     driver = launch(browser, headless)
     try:
         driver.set_page_load_timeout(120)
         driver.get(url)
         deadline = time.monotonic() + timeout
         out: list[str] = []
+        marks: list[dict] = []
         while time.monotonic() < deadline:
             out = driver.execute_script("return window.__OUT__ || [];")
+            marks = driver.execute_script("return window.__MARKS__ || [];")
             done = driver.execute_script("return window.__DONE__ === true;")
             if done or any("PHASE0 OK" in line or "FAILED" in line for line in out):
                 break
             time.sleep(1.0)
-        return True, out
+        return out, marks
     finally:
         try:
             driver.quit()
@@ -166,12 +195,14 @@ def main() -> int:
         for browser in [b.strip() for b in args.browsers.split(",") if b.strip()]:
             print(f"==> {browser}", flush=True)
             try:
-                _, out = run(browser, url, args.timeout_seconds, not args.headed)
+                out, marks = run(browser, url, args.timeout_seconds, not args.headed)
             except Exception as error:  # noqa: BLE001 - reported, not swallowed
                 failures.append(f"{browser}: {error}")
                 print(f"    LAUNCH FAILED: {error}", flush=True)
                 continue
             ok, detail = check(out)
+            for mark in marks:
+                print(f"    cold start: {mark['mark']:<14}{mark['ms']:.1f} ms", flush=True)
             for line in out:
                 if any(k in line for k in ("hash", "verdict", "per tick", "8-tick", "ERR", "ABORT")):
                     print("    " + line[:160], flush=True)
