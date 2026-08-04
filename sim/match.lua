@@ -5256,6 +5256,10 @@ end
 -- (world units) — drawn from the same numbers the rules use.
 match.CROSSBAR_H = CROSSBAR
 match.PENALTY_BOX = { depth = PENALTY_DEPTH, h = PENALTY_H }
+-- Renderer data: ball gravity. Presentation solves where a lofted ball will come
+-- down (`render.frame`), and it has to fall at the rate the simulation drops it
+-- at, so there is one number here rather than a renderer-side copy that drifts.
+match.GRAVITY = GRAVITY
 -- Renderer data: the meter a spent player must rebuild before another sprint
 -- engages. Presentation reads the drained window from the same number the
 -- hysteresis uses, so a fatigue pose can never disagree with the simulation.

@@ -96,12 +96,14 @@ local match_snapshot = require("sim.match_snapshot")
 -- set so a new field cannot be added without justifying it the same way.
 --
 -- Deliberately absent, because an exhaustive read of `game/render/*.lua` and
--- `game/presentation/player_pose.lua` finds no pose, colour, or icon for them on a
--- non-local player: `charging` (charge / pass_charge are drawn only as a HUD bar
--- under the locally controlled player, `game/render/pitch.lua:474-499`, and
+-- `render/player_pose.lua` finds no pose, colour, or icon for them on a
+-- non-local player: `charging` (charge / pass_charge reach the renderer only as
+-- `RenderFrameControl.charge_kind` / `.charge` for the locally controlled
+-- player, drawn as a single HUD bar in `game/render/pitch.lua`, and
 -- `game/render/replay.lua` zeroes both for playback), plus `jockeying`,
--- `tackling`, `dodging`, and `stunned` (zero rendering hits; `render/replay.lua`
--- does not even carry the tackle/stun/dodge timers into the renderable player).
+-- `tackling`, `dodging`, and `stunned` (zero rendering hits;
+-- `game/render/replay.lua` does not even carry the tackle/stun/dodge timers into
+-- the renderable player).
 -- The discrete `tackle` MatchEvent does have presentation and reaches an
 -- observation through the confirmed-event channel; that is a separate, legitimate
 -- channel and is not the same as a continuous boolean covering the whole

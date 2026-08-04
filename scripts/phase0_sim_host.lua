@@ -26,7 +26,7 @@ local function heading(text)
 end
 
 -- 1. Does the pure layer load at all outside the engine?
-heading("loading sim/ core/ data/ under bare Lua " .. _VERSION)
+heading("loading sim/ core/ data/ render/ under bare Lua " .. _VERSION)
 
 local modules = {
     "core.vec2",
@@ -42,6 +42,12 @@ local modules = {
     "sim.bot",
     "sim.metrics",
     "sim.headless",
+    -- The sim-to-renderer boundary. It is pure by construction, and this is the
+    -- step that proves it: a stray `love` reference in the payload builder or in
+    -- the pose/identity derivations it calls fails here, not in a browser.
+    "render.identity",
+    "render.player_pose",
+    "render.frame",
 }
 
 for _, name in ipairs(modules) do

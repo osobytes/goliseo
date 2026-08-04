@@ -46,6 +46,20 @@ function release_follow.active(id)
     return (remaining[id] or 0) > 0
 end
 
+-- Every open window as a plain id -> true map, the shape `render.frame` takes as
+-- its `kick_follow` input. Handing the payload builder a snapshot keeps this
+-- module's state renderer-owned: the builder never reaches back in here.
+---@return table<string, boolean>
+function release_follow.windows()
+    local open = {}
+    for id, left in pairs(remaining) do
+        if left > 0 then
+            open[id] = true
+        end
+    end
+    return open
+end
+
 -- Drop every window (fresh match, kickoff, correction reset, replay boundary)
 -- so a follow-through can never survive the timeline that produced it.
 function release_follow.reset()

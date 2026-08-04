@@ -128,15 +128,20 @@ local function draw_line(project, sample, position)
     love.graphics.setLineWidth(1)
 end
 
----@param model CombatPresentationModel
+-- Telegraphs sit on the ground under the players. Positions come off the render
+-- frame's player arrays rather than the combat sample, so a telegraph tracks the
+-- position actually drawn (correction smoothing included) instead of the
+-- authoritative one the sample captured.
+---@param frame RenderFrame
 ---@param project fun(wx: number, wy: number): number, number, number
----@param pose CorrectionSmoothingPose?
-function combat_render.draw_under(model, project, pose)
-    if not model.enabled then
+function combat_render.draw_under(frame, project)
+    local model = frame.combat
+    if model == nil or not model.enabled then
         return
     end
     for _, sample in ipairs(model.players) do
-        local position = (pose and pose.players[sample.player_id]) or sample.position
+        local slot = sample.player_index
+        local position = { x = frame.players.x[slot], y = frame.players.y[slot] }
         if sample.telegraph_kind == "line" then
             draw_line(project, sample, position)
         elseif sample.telegraph_kind then
@@ -145,10 +150,11 @@ function combat_render.draw_under(model, project, pose)
     end
 end
 
----@param model CombatPresentationModel
+---@param frame RenderFrame
 ---@param project fun(wx: number, wy: number): number, number, number
-function combat_render.draw_over(model, project)
-    if not model.enabled then
+function combat_render.draw_over(frame, project)
+    local model = frame.combat
+    if model == nil or not model.enabled then
         return
     end
     for _, projectile in ipairs(model.projectiles) do
