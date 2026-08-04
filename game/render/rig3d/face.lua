@@ -50,11 +50,11 @@ end
 ---@param front fun(y: number): number   -- front-surface Z at a given height
 ---@param eye_y number                   -- world-space Y of the eye line
 function face.build(mb, c, hr, style, front, eye_y)
-    -- `ink` and `white` are constant slots (see themes.lua CONSTANT_COLOR):
+    -- `ink` and `sclera` are constant slots (see themes.lua CONSTANT_COLOR):
     -- no theme has ever overridden them, so they are always just `c.ink` /
-    -- `c.white` now rather than a literal with a theme-override fallback.
+    -- `c.sclera` now rather than a literal with a theme-override fallback.
     local ink = c.ink
-    local white = c.white
+    local sclera = c.sclera
 
     if style == "vinyl" then
         -- Two big solid eyes and nothing else. Funko's read is the blankness.
@@ -84,7 +84,7 @@ function face.build(mb, c, hr, style, front, eye_y)
                 ew * 0.24,
                 4,
                 8,
-                white
+                sclera
             )
         end
         return
@@ -120,7 +120,7 @@ function face.build(mb, c, hr, style, front, eye_y)
     -- plus angled brows, which is where nearly all of the personality lives.
     for _, side in ipairs({ -1, 1 }) do
         local z = front(eye_y)
-        shapes.sphere(mb, mat4.translation(side * hr * 0.36, eye_y, z), hr * 0.165, 5, 10, white)
+        shapes.sphere(mb, mat4.translation(side * hr * 0.36, eye_y, z), hr * 0.165, 5, 10, sclera)
         shapes.sphere(
             mb,
             mat4.translation(side * hr * 0.36 + side * hr * 0.02, eye_y, z + hr * 0.10),

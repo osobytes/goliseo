@@ -54,7 +54,7 @@ end
 function Builder:triangle(tf, a, b, c, slot)
     assert(
         type(slot) == "number",
-        "triangle color must be a palette slot index (themes.SLOT_INDEX.<name>), got " .. type(slot)
+        "triangle slot must be a palette slot index (themes.SLOT_INDEX.<name>), got " .. type(slot)
     )
     local ax, ay, az = a[1], a[2], a[3]
     local bx, by, bz = b[1], b[2], b[3]
