@@ -2,6 +2,10 @@
 
 **Status:** implemented 2026-07-10
 
+> This record names the keys that were bound when it was written. "Space" is the
+> **ACTION** role and "L" the **MODIFIER** role; `docs/controls.md` and
+> `game/input/bindings.lua` are authoritative for what they are bound to now.
+
 ## Why
 
 Galactic Cup already gives the ball a vertical position and supports first-time headers and

@@ -1,3 +1,12 @@
+-- Edge layer: one key or button press becomes one ActionEvent. Menus and the
+-- global toggles consume these. The match screen additionally POLLS the same
+-- controls for held state -- see `game.screens.match`.
+--
+-- Both maps are derived from `game.input.bindings`. Never add a literal key
+-- here; add the control there.
+
+local bindings = require("game.input.bindings")
+
 ---@alias ActionName
 ---|"up"
 ---|"down"
@@ -6,7 +15,6 @@
 ---|"confirm"
 ---|"back"
 ---|"pause"
----|"shoot_tackle"
 ---|"pass_switch"
 ---|"sprint"
 ---|"lob"
@@ -25,44 +33,10 @@
 local actions = {}
 
 ---@type table<string, ActionName>
-local KEY_MAP = {
-    up = "up",
-    w = "up",
-    down = "down",
-    s = "down",
-    left = "left",
-    a = "left",
-    right = "right",
-    d = "right",
-    ["return"] = "confirm",
-    kpenter = "confirm",
-    space = "confirm",
-    escape = "back",
-    p = "pause",
-    k = "pass_switch",
-    lshift = "sprint",
-    rshift = "sprint",
-    l = "lob",
-    c = "juke",
-    j = "equipment",
-    f11 = "toggle_fullscreen",
-    m = "toggle_mute",
-}
+local KEY_MAP = bindings.key_map()
 
 ---@type table<string, ActionName>
-local GAMEPAD_MAP = {
-    dpup = "up",
-    dpdown = "down",
-    dpleft = "left",
-    dpright = "right",
-    a = "confirm",
-    b = "back",
-    start = "pause",
-    x = "pass_switch",
-    y = "lob",
-    leftstick = "juke",
-    leftshoulder = "sprint",
-}
+local GAMEPAD_MAP = bindings.gamepad_map()
 
 ---@param name ActionName
 ---@param pressed boolean?
@@ -85,15 +59,13 @@ function actions.from_key(key, pressed)
     return action and actions.event(action, pressed, "keyboard") or nil
 end
 
+-- Equipment used to ride gamepad B and shadow Back inside a match. It has its
+-- own button now, so Back means Back everywhere and this needs no context.
 ---@param button string
 ---@param pressed boolean?
----@param in_match boolean?
 ---@return ActionEvent?
-function actions.from_gamepad(button, pressed, in_match)
+function actions.from_gamepad(button, pressed)
     local action = GAMEPAD_MAP[button]
-    if button == "b" and in_match then
-        action = "equipment"
-    end
     return action and actions.event(action, pressed, "gamepad") or nil
 end
 
