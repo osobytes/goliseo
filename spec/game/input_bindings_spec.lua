@@ -74,11 +74,16 @@ t.describe("input bindings", function()
             "a pad-undeliverable edge passed the layout check: " .. pad_dead
         )
 
-        -- And a straightforward double binding.
+        -- And a straightforward double binding. The clashing key is read off a
+        -- real control rather than written out, so it stays a genuine clash
+        -- after a rebind. Pinned to a literal it probes a key nobody holds once
+        -- PLAY moves, and this test then fails saying the detector let a double
+        -- binding through -- a false alarm aimed at `layout_problems` when the
+        -- only stale thing is this line.
         local clash = with_extra({
             id = "probe",
             action = "juke",
-            keys = { "k" },
+            keys = { control("play").keys[1] },
             buttons = {},
             axes = {},
             edge = true,
@@ -94,6 +99,15 @@ t.describe("input bindings", function()
     -- The ergonomic core of the keyboard layout: the modifier is the right index
     -- and PLAY the right middle, the most independent same-hand pair. The left
     -- hand keeps WASD plus its pinky and thumb, and nothing else.
+    --
+    -- CANONICAL RULE for literal keys in `spec/`: a spec asserts the role read
+    -- off the binding table, never the key (#315). There are exactly two
+    -- exemptions -- the two literals just below, and
+    -- `spec/game/foundations_spec.lua`. Both pin what the bindings actually
+    -- ARE, so deriving them would assert that the table equals itself: which
+    -- finger a key falls under is a fact about hands, not about the table. A
+    -- rebind is MEANT to fail this test and make a human re-check the
+    -- ergonomics, which is why nothing else anywhere pins them.
     t.it("keeps the modifier off the movement hand and off PLAY's finger", function()
         t.eq(control("modifier").keys[1], "j")
         t.eq(control("play").keys[1], "k")
@@ -101,10 +115,36 @@ t.describe("input bindings", function()
         t.is_true(contains(control("modifier").axes, "triggerright"))
     end)
 
+    -- The movement hand is derived, not copied: it is whatever the movement
+    -- roles, sprint and ACTION are bound to today. A hardcoded list would keep
+    -- naming keys none of those roles held after a rebind, and this check would
+    -- go genuinely vacuous -- juke could land on the NEW action key and still
+    -- pass, because a stale list cannot contain it.
+    --
+    -- Deriving widens the set: it now picks up the arrow-key alternates, which
+    -- the old hand-written list never covered. That is the reading rule 3 in
+    -- `bindings.lua` asks for. Rule 1 is about the LEFT hand specifically, but
+    -- rule 3 is about "the movement hand", and with arrows bound that hand can
+    -- be either one -- so juke has to stay off both sets, not just WASD.
     t.it("keeps juke off the movement hand", function()
+        local movement = {}
+        for _, id in ipairs({
+            "move_up",
+            "move_down",
+            "move_left",
+            "move_right",
+            "sprint",
+            "action",
+        }) do
+            for _, key in ipairs(control(id).keys) do
+                movement[#movement + 1] = key
+            end
+        end
         for _, key in ipairs(control("juke").keys) do
-            local movement = { "w", "a", "s", "d", "lshift", "rshift", "space" }
-            t.is_true(not contains(movement, key), "juke on " .. key .. " sits on the left hand")
+            t.is_true(
+                not contains(movement, key),
+                "juke on " .. key .. " sits on the movement hand"
+            )
         end
         t.is_true(not contains(control("juke").buttons, "leftstick"), "juke must leave L3 alone")
     end)

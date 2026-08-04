@@ -1,7 +1,13 @@
 local t = require("spec.support.runner")
+local bindings = require("game.input.bindings")
 local panel = require("game.ui.tuning_panel")
 local tuning = require("sim.tuning")
 local Match = require("game.screens.match")
+
+-- Press the role, not the key: this follows a rebind instead of pinning one.
+-- The panel's own navigation keys stay literal below: they are a dev-harness
+-- keymap that lives in `game/ui/tuning_panel.lua`, not in the binding table.
+local PLAY_KEY = bindings.control("play").keys[1]
 
 t.describe("tuning panel (tier 2)", function()
     t.it("navigates categories and rows, and adjusts the selected knob", function()
@@ -58,8 +64,8 @@ t.describe("tuning panel (tier 2)", function()
         local m = Match.new()
         m.state.owner = nil
         m:event({ kind = "key", key = "f1" })
-        m:event({ kind = "key", key = "k" }) -- would be a switch if it leaked
-        t.is_true(not m._switch, "K is consumed by the panel, not the match")
+        m:event({ kind = "key", key = PLAY_KEY }) -- would be a switch if it leaked
+        t.is_true(not m._switch, "PLAY is consumed by the panel, not the match")
         m:event({ kind = "key", key = "f1" })
         tuning.reset()
     end)

@@ -6,6 +6,11 @@ local t = require("spec.support.runner")
 local viewport = require("game.ui.viewport")
 
 t.describe("input actions", function()
+    -- The literal keys and buttons below are a deliberate exemption, not a
+    -- leftover: everywhere else in `spec/` reads the role off
+    -- `game.input.bindings` (#315). Do not derive these. The rule and the
+    -- reasoning are recorded once, in `spec/game/input_bindings_spec.lua` above
+    -- "keeps the modifier off the movement hand and off PLAY's finger".
     t.it("maps keyboard and gamepad to the same abstract actions", function()
         t.eq(actions.from_key("return").action, "confirm")
         t.eq(actions.from_gamepad("a").action, "confirm")

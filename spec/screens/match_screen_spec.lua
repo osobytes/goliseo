@@ -6,6 +6,7 @@ local sim_match = require("sim.match")
 
 -- Press the role, not the key: these follow a rebind instead of pinning one.
 local PLAY_KEY = bindings.control("play").keys[1]
+local ACTION_KEY = bindings.control("action").keys[1]
 local MODIFIER_KEY = bindings.control("modifier").keys[1]
 
 t.describe("match screen rematch (tier 2)", function()
@@ -45,7 +46,7 @@ t.describe("match screen rematch (tier 2)", function()
     t.it("ignores match inputs after full time", function()
         local m = Match.new()
         m.state.finished = true
-        m:event({ kind = "key", key = "k" })
+        m:event({ kind = "key", key = PLAY_KEY })
         t.is_true(not m._pass, "pass input does not buffer on the full-time screen")
     end)
 
@@ -118,21 +119,21 @@ t.describe("match screen contextual controls (tier 2)", function()
         t.is_true(runtime.source_sequence ~= nil)
     end)
 
-    t.it("K never switches while carrying the ball (it charges a pass)", function()
+    t.it("PLAY never switches while carrying the ball (it charges a pass)", function()
         local m = Match.new() -- at kickoff the controlled player has the ball
-        m:event({ kind = "key", key = "k" })
-        t.is_true(not m._switch, "on the ball, K is the (polled) pass charge, not a switch")
+        m:event({ kind = "key", key = PLAY_KEY })
+        t.is_true(not m._switch, "on the ball, PLAY is the (polled) pass charge, not a switch")
     end)
 
-    t.it("K switches player when not carrying", function()
+    t.it("PLAY switches player when not carrying", function()
         local m = Match.new()
         m.state.owner = nil
-        m:event({ kind = "key", key = "k" })
-        t.is_true(m._switch, "K is a switch off the ball")
+        m:event({ kind = "key", key = PLAY_KEY })
+        t.is_true(m._switch, "PLAY is a switch off the ball")
         t.is_true(not m._pass)
     end)
 
-    t.it("Space hold = jockey, release = poke (off the ball)", function()
+    t.it("ACTION hold = jockey, release = poke (off the ball)", function()
         -- Drive polled inputs with a stubbed keyboard (same pattern as lob-latch test).
         local saved = love.keyboard
         local down = {}
@@ -146,25 +147,25 @@ t.describe("match screen contextual controls (tier 2)", function()
                 return false
             end,
         }
-        -- Off the ball: holding Space produces jockey stance (jockey_timer > 0).
+        -- Off the ball: holding ACTION produces jockey stance (jockey_timer > 0).
         local m = Match.new()
         m.state.owner = nil
         m.state.pickup_cd = 5 -- nobody picks the ball up during this test
         local me = m.state.players[m.state.controlled]
-        down.space = true
+        down[ACTION_KEY] = true
         m:update(1 / 60) -- hold one frame
-        t.is_true(me.jockey_timer > 0, "holding Space off the ball engages jockey stance")
+        t.is_true(me.jockey_timer > 0, "holding ACTION off the ball engages jockey stance")
         -- _action_held_prev is set; release now → poke fires next update.
         -- The poke manifests as tackle_timer > 0 on the controlled player.
         me.tackle_cd = 0 -- ensure the poke isn't blocked by cooldown
         me.slide_timer = 0
-        down.space = false
+        down[ACTION_KEY] = false
         m:update(1 / 60) -- release
-        t.is_true(me.tackle_timer > 0, "releasing Space off the ball fires the poke")
+        t.is_true(me.tackle_timer > 0, "releasing ACTION off the ball fires the poke")
         love.keyboard = saved
     end)
 
-    t.it("Space never produces a poke while carrying (it charges the shot)", function()
+    t.it("ACTION never produces a poke while carrying (it charges the shot)", function()
         local saved = love.keyboard
         local down = {}
         love.keyboard = {
@@ -178,15 +179,15 @@ t.describe("match screen contextual controls (tier 2)", function()
             end,
         }
         local m = Match.new() -- carrying at kickoff
-        down.space = true
+        down[ACTION_KEY] = true
         m:update(1 / 60) -- hold while carrying
-        down.space = false
+        down[ACTION_KEY] = false
         local me = m.state.players[m.state.controlled]
         local tackle_before = me.tackle_timer
         m:update(1 / 60) -- release while still carrying
         t.is_true(
             me.tackle_timer == tackle_before,
-            "Space release while carrying does not fire a poke"
+            "ACTION release while carrying does not fire a poke"
         )
         love.keyboard = saved
     end)
@@ -275,8 +276,8 @@ t.describe("match screen goal replay (tier 2)", function()
             local t0 = m.state.time_left
             m:update(1 / 60)
             t.eq(m.state.time_left, t0, "the sim is frozen during the replay")
-            m:event({ kind = "key", key = "space" })
-            t.is_true(not replay.active(), "Space skips the replay")
+            m:event({ kind = "key", key = ACTION_KEY })
+            t.is_true(not replay.active(), "ACTION skips the replay")
             m:update(1 / 60)
             t.is_true(m.state.time_left < t0, "live play resumes")
         end)

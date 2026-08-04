@@ -1,5 +1,6 @@
 local actions = require("game.input.actions")
 local App = require("game.app")
+local bindings = require("game.input.bindings")
 local combat_feedback = require("game.presentation.combat_feedback")
 local fake_result = require("game.fake_result")
 local Match = require("game.screens.match")
@@ -7,6 +8,15 @@ local settings = require("game.settings")
 local hit = require("game.ui.hit")
 local t = require("spec.support.runner")
 local viewport = require("game.ui.viewport")
+
+-- Press the role, not the key: these follow a rebind instead of pinning one.
+local MOVE_DOWN_KEY = bindings.control("move_down").keys[1]
+local BACK_KEY = bindings.control("back").keys[1]
+local BACK_BUTTON = bindings.control("back").buttons[1]
+local PAUSE_KEY = bindings.control("pause").keys[1]
+local PAUSE_BUTTON = bindings.control("pause").buttons[1]
+-- The pad's confirm is the ACTION control: one physical button, two contexts.
+local CONFIRM_BUTTON = bindings.control("action").buttons[1]
 
 ---@param app App
 ---@param id string
@@ -108,11 +118,11 @@ t.describe("product application flow", function()
 
     t.it("maps keyboard and gamepad through nested shell routes", function()
         local app = App.new()
-        app:event({ kind = "key", key = "down" })
-        app:event({ kind = "key", key = "down" })
-        app:event({ kind = "gamepad", button = "a" })
+        app:event({ kind = "key", key = MOVE_DOWN_KEY })
+        app:event({ kind = "key", key = MOVE_DOWN_KEY })
+        app:event({ kind = "gamepad", button = CONFIRM_BUTTON })
         t.eq(app:current_route(), "help")
-        app:event({ kind = "gamepad", button = "b" })
+        app:event({ kind = "gamepad", button = BACK_BUTTON })
         t.eq(app:current_route(), "title")
     end)
 
@@ -133,7 +143,7 @@ t.describe("product application flow", function()
         local app = App.new()
         click_widget(app, "credits")
         t.eq(app:current_route(), "credits")
-        app:event({ kind = "key", key = "escape" })
+        app:event({ kind = "key", key = BACK_KEY })
         t.eq(app:current_route(), "title")
         click_widget(app, "quit")
         t.eq(app.quit_requested, true)
@@ -161,9 +171,9 @@ t.describe("product application flow", function()
         t.is_true(assert(saved):match("master_volume=0.90") ~= nil)
 
         reach_fake_match(app)
-        app:event({ kind = "key", key = "p" })
+        app:event({ kind = "key", key = PAUSE_KEY })
         t.eq(app:current_route(), "pause")
-        app:event({ kind = "gamepad", button = "start" })
+        app:event({ kind = "gamepad", button = PAUSE_BUTTON })
         t.eq(app:current_route(), "match")
     end)
 
@@ -187,12 +197,12 @@ t.describe("product application flow", function()
         local match_screen = assert(active_match)
         t.is_true(not combat_feedback.diagnostics(match_screen._combat_feedback).reduced_motion)
 
-        app:event({ kind = "key", key = "p" })
+        app:event({ kind = "key", key = PAUSE_KEY })
         click_widget(app, "settings")
         click_widget(app, "screen_shake")
         t.is_true(combat_feedback.diagnostics(match_screen._combat_feedback).reduced_motion)
         click_widget(app, "back")
-        app:event({ kind = "gamepad", button = "start" })
+        app:event({ kind = "gamepad", button = PAUSE_BUTTON })
 
         t.eq(app:current_route(), "match")
         t.is_true(combat_feedback.diagnostics(match_screen._combat_feedback).reduced_motion)
@@ -201,7 +211,7 @@ t.describe("product application flow", function()
     t.it("requires confirmation before restarting a paused fixture", function()
         local app = App.new()
         reach_fake_match(app)
-        app:event({ kind = "key", key = "p" })
+        app:event({ kind = "key", key = PAUSE_KEY })
         click_widget(app, "restart")
         t.eq(app:current_route(), "pause")
         local paused = assert(app.stack:current())
@@ -223,10 +233,10 @@ t.describe("product application flow", function()
         }
         local app = App.new({ settings_storage = storage })
         reach_fake_match(app)
-        app:event({ kind = "key", key = "p" })
+        app:event({ kind = "key", key = PAUSE_KEY })
         click_widget(app, "controls")
         t.eq(app:current_route(), "help")
-        app:event({ kind = "gamepad", button = "b" })
+        app:event({ kind = "gamepad", button = BACK_BUTTON })
         t.eq(app:current_route(), "pause")
         click_widget(app, "settings")
         t.eq(app:current_route(), "settings")

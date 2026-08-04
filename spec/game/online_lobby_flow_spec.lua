@@ -3,6 +3,7 @@
 -- control wires through the real framing, and completes the real manual
 -- offer/answer handshake. No browser, no JavaScript, no display.
 
+local bindings = require("game.input.bindings")
 local coordinator = require("game.online.coordinator")
 local lobby_link = require("game.online.lobby_link")
 local lobby_model = require("game.screens.lobby_model")
@@ -10,6 +11,9 @@ local match_manifest = require("game.online.match_manifest")
 local protocol = require("game.online.protocol")
 local t = require("spec.support.runner")
 local transport = require("game.transport")
+
+-- Press the role, not the key: this follows a rebind instead of pinning one.
+local BACK_KEY = bindings.control("back").keys[1]
 
 ---@class LobbyTestPeer
 ---@field id string
@@ -946,7 +950,7 @@ t.describe("online lobby screen shell", function()
         )
         app:event({ kind = "click", x = x, y = y, button = 1 })
         t.eq(app:current_route(), "lobby")
-        app:event({ kind = "key", key = "escape" })
+        app:event({ kind = "key", key = BACK_KEY })
         t.eq(app:current_route(), "title")
     end)
 end)

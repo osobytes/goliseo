@@ -32,6 +32,9 @@ local transport = require("game.transport")
 
 local DURATION_TICKS = 90
 
+-- Press the role, not the key: this follows a rebind instead of pinning one.
+local PLAY_KEY = bindings.control("play").keys[1]
+
 ---@param fn fun(down: table<string, boolean>)
 local function with_keyboard(fn)
     local saved = love.keyboard
@@ -367,7 +370,7 @@ t.describe("online match screen flow", function()
 
             -- Hold the switch key so the canonical switch edge is set on every
             -- sampled tick, then check where control can legally land.
-            down.k = true
+            down[PLAY_KEY] = true
             run(state, 60)
             local seen = {}
             for _ = 1, 40 do
@@ -403,7 +406,7 @@ t.describe("online match screen flow", function()
             mount_matches(state, "4v4")
             local host = state.matches[1]
             t.eq(#host.request.owned, 1, "a 4v4 human owns exactly one slot")
-            down.k = true
+            down[PLAY_KEY] = true
             run(state, 60)
             t.eq(
                 host.live[host.request.peer_id],
