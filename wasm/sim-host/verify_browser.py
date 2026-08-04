@@ -14,6 +14,10 @@ It also reports cold start -- the time before the first tick can be taken -- per
 browser, because that is the number #334 set out to move and node, reading the
 artifacts off local disk, cannot measure it honestly.
 
+The page, the worker and the verdict rule live in `verify_common.py`, shared
+with `verify_webview.py` so the desktop-webview comparison in #342 runs the
+identical experiment rather than a lookalike.
+
     python3 wasm/sim-host/verify_browser.py            # after build.sh
 """
 
@@ -21,77 +25,20 @@ from __future__ import annotations
 
 import argparse
 import sys
-import threading
-import time
-from functools import partial
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parent
-EXPECTED_HASH = "bfbb106aea5480f8"
-EXPECTED_DIGEST = "a190b60058a64e63"
+import verify_common
+from verify_common import ROOT, check, stage
 
-PAGE = """<!doctype html>
-<meta charset="utf-8">
-<title>goliseo wasm sim host</title>
-<script>
-// The module runs the full 7201-tick determinism fixture synchronously. On the
-// main thread that blocks the renderer for minutes and every browser automation
-// call times out -- which is not a harness quirk, it is exactly why the real
-// integration has to put the simulation in a worker and leave the main thread
-// to rendering. So the verification runs it the way it will actually be used.
-window.__OUT__ = [];
-window.__MARKS__ = [];
-window.__DONE__ = false;
-const worker = new Worker("worker.js");
-worker.onmessage = (e) => {
-  if (e.data && e.data.line !== undefined) window.__OUT__.push(String(e.data.line));
-  if (e.data && e.data.mark !== undefined) window.__MARKS__.push(e.data);
-  if (e.data && e.data.done) window.__DONE__ = true;
-};
-worker.onerror = (e) => {
-  window.__OUT__.push("WORKER_ERROR: " + (e && e.message));
-  window.__DONE__ = true;
-};
-</script>
-"""
+# Re-exported for callers and readers that expect these names here, where they
+# lived before the shared module existed.
+EXPECTED_HASH = verify_common.EXPECTED_HASH
+EXPECTED_DIGEST = verify_common.EXPECTED_DIGEST
+PAGE = verify_common.PAGE
+WORKER = verify_common.WORKER
 
-WORKER = """
-// Cold start, measured where it actually costs something: over HTTP, in a
-// browser, with the fetch and the wasm compile in the clock. Node reads the
-// artifacts off local disk, so its numbers understate this. T0 is taken before
-// importScripts, so both marks include fetching and compiling the module.
-//
-//   runtime ready  the module is instantiated and main() is about to run.
-//                  Under the old preload build this also covered downloading
-//                  and mounting the 3.2 MB .data package.
-//   sim ready      all 13 sim/, core/ and data/ modules are loaded, so the
-//                  first tick can be taken.
-var __T0__ = performance.now();
-var __SEEN_SIM_READY__ = false;
-function __mark__(name) { postMessage({ mark: name, ms: performance.now() - __T0__ }); }
-var Module = {
-  print:    function (t) {
-    var line = String(t);
-    if (!__SEEN_SIM_READY__ && line.indexOf("== frozen determinism contract") === 0) {
-      __SEEN_SIM_READY__ = true;
-      __mark__("sim ready");
-    }
-    postMessage({ line: line });
-  },
-  printErr: function (t) { postMessage({ line: "ERR: " + String(t) }); },
-  onRuntimeInitialized: function () { __mark__("runtime ready"); },
-  onExit:   function ()  { postMessage({ done: true }); },
-  onAbort:  function (w) { postMessage({ line: "ABORT: " + String(w) }); postMessage({ done: true }); }
-};
-try {
-  importScripts("simhost.js");
-} catch (err) {
-  postMessage({ line: "IMPORT_ERROR: " + err });
-  postMessage({ done: true });
-}
-"""
+__all__ = ["EXPECTED_DIGEST", "EXPECTED_HASH", "PAGE", "ROOT", "WORKER", "check", "main", "run"]
 
 
 def launch(browser: str, headless: bool) -> Any:
@@ -121,40 +68,27 @@ def launch(browser: str, headless: bool) -> Any:
     return webdriver.Firefox(options=options, service=Service(executable_path=driver_path))
 
 
-def run(browser: str, url: str, timeout: int, headless: bool) -> tuple[list[str], list[dict]]:
+def run(browser: str, url: str, timeout: int, headless: bool) -> tuple[list[str], list[dict], str]:
+    """Run the fixture and return its output, its cold-start marks and the engine.
+
+    The engine string is read from the live session rather than from a version
+    flag, because #342 compares runtimes: a result is only comparable if the
+    build that produced it is recorded beside it.
+    """
     driver = launch(browser, headless)
     try:
-        driver.set_page_load_timeout(120)
-        driver.get(url)
-        deadline = time.monotonic() + timeout
-        out: list[str] = []
-        marks: list[dict] = []
-        while time.monotonic() < deadline:
-            out = driver.execute_script("return window.__OUT__ || [];")
-            marks = driver.execute_script("return window.__MARKS__ || [];")
-            done = driver.execute_script("return window.__DONE__ === true;")
-            if done or any("PHASE0 OK" in line or "FAILED" in line for line in out):
-                break
-            time.sleep(1.0)
-        return out, marks
+        capabilities = driver.capabilities or {}
+        engine = "{} {}".format(
+            capabilities.get("browserName", browser),
+            capabilities.get("browserVersion", "unknown"),
+        )
+        out, marks = verify_common.poll_webdriver(driver, url, timeout)
+        return out, marks, engine
     finally:
         try:
             driver.quit()
         except Exception:
             pass
-
-
-def check(out: list[str]) -> tuple[bool, str]:
-    text = "\n".join(out)
-    if EXPECTED_HASH not in text:
-        return False, f"frozen hash {EXPECTED_HASH} not found in output"
-    if EXPECTED_DIGEST not in text:
-        return False, f"sequence digest {EXPECTED_DIGEST} not found in output"
-    if "DIVERGED" in text or "FAILED" in text:
-        return False, "probe reported divergence"
-    if "verdict          MATCH" not in text and "MATCH" not in text:
-        return False, "no MATCH verdict"
-    return True, "hashes match the frozen contract"
 
 
 def main() -> int:
@@ -165,47 +99,27 @@ def main() -> int:
     parser.add_argument("--headed", action="store_true", help="show the browser window")
     args = parser.parse_args()
 
-    dist = args.dist.resolve()
-    for required in ("simhost.js", "simhost.wasm"):
-        if not (dist / required).exists():
-            print(f"missing {dist / required}; run wasm/sim-host/build.sh first")
-            return 1
+    try:
+        serve_dir = stage(args.dist)
+    except verify_common.ArtifactsMissing as error:
+        print(error)
+        return 1
 
-    # Served from a copy rather than from dist/ itself: the build runs in Docker
-    # so dist/ is root-owned, and a verifier has no business writing into build
-    # output regardless.
-    import shutil
-    import tempfile
-
-    serve_dir = Path(tempfile.mkdtemp(prefix="goliseo-wasm-verify-"))
-    for artifact in dist.iterdir():
-        if artifact.is_file():
-            shutil.copy2(artifact, serve_dir / artifact.name)
-    (serve_dir / "index.html").write_text(PAGE)
-    (serve_dir / "worker.js").write_text(WORKER)
-
-    server = ThreadingHTTPServer(
-        ("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, directory=str(serve_dir))
-    )
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    url = f"http://127.0.0.1:{server.server_port}/index.html"
+    server, url = verify_common.serve(serve_dir)
 
     failures = []
     try:
         for browser in [b.strip() for b in args.browsers.split(",") if b.strip()]:
             print(f"==> {browser}", flush=True)
             try:
-                out, marks = run(browser, url, args.timeout_seconds, not args.headed)
+                out, marks, engine = run(browser, url, args.timeout_seconds, not args.headed)
             except Exception as error:  # noqa: BLE001 - reported, not swallowed
                 failures.append(f"{browser}: {error}")
                 print(f"    LAUNCH FAILED: {error}", flush=True)
                 continue
             ok, detail = check(out)
-            for mark in marks:
-                print(f"    cold start: {mark['mark']:<14}{mark['ms']:.1f} ms", flush=True)
-            for line in out:
-                if any(k in line for k in ("hash", "verdict", "per tick", "8-tick", "ERR", "ABORT")):
-                    print("    " + line[:160], flush=True)
+            print(f"    engine: {engine}", flush=True)
+            verify_common.print_run(out, marks)
             print(f"    -> {'PASS' if ok else 'FAIL'}: {detail}", flush=True)
             if not ok:
                 failures.append(f"{browser}: {detail}")
