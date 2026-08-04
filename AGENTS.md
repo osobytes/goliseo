@@ -51,12 +51,18 @@ another engine later. If you feel the urge to draw or read input inside `sim/`, 
 wrong — return data and let `game/` act on it.
 
 `render/` is the sim-to-renderer boundary, not a renderer. `render.frame` turns one `MatchState`
-into one versioned, flat `RenderFrame` payload; `game/render/` draws that payload with LÖVE and a
-future renderer draws the same payload without it. The payload is crossed **once per rendered
-frame, in batch** — never per entity, never per tick. Presentation-derived state (gait, lean,
-correction smoothing, follow-through windows) is **not** simulation: it stays in `game/render/`
-and feeds the builder as an explicit input. `scripts/phase0_sim_host.lua` loads `render/` under a
-bare Lua interpreter, so an accidental `love` dependency fails there.
+into one versioned `RenderFrame` payload; `game/render/` draws that payload with LÖVE and a future
+renderer draws the same payload without it. The payload is crossed **once per rendered frame, in
+batch** — never per entity, never per tick. Per-entity data is flat, scalar, structure-of-arrays,
+with one disclosed exception: `RenderFrame.combat` still carries the nested combat telegraph model
+(and its `Vec2` values) until that is flattened. Presentation-derived state (gait, lean, correction
+smoothing, follow-through windows) is **not** simulation: it stays in `game/render/` and feeds the
+builder as an explicit input.
+
+`scripts/phase0_sim_host.lua` loads `render/` under a bare Lua interpreter and exits non-zero on an
+accidental `love` dependency — but **nothing runs it automatically today**: it is referenced from
+neither `scripts/check.sh` nor `.github/workflows/ci.yml`. Per §9 that makes it evidence you run by
+hand, not a gate. Wiring it into both is #324.
 
 A function is "pure" here if it has no side effects and no I/O: same inputs → same outputs.
 All gameplay math lives in pure functions; `game/` is the only place with mutation and effects.

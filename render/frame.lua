@@ -34,8 +34,15 @@
 -- pass it back in as `opts.roster` so it is not rebuilt. Everything else in
 -- `RenderFrame` is rebuilt each frame.
 --
--- Versioning follows `sim.input_frame` and `sim.match_snapshot`: an integer
--- `VERSION` stamped into every payload, bumped whenever the shape changes.
+-- Versioning borrows the STAMPING convention of `sim.input_frame` and
+-- `sim.match_snapshot` -- an integer `VERSION` written into every payload and
+-- bumped whenever the shape changes -- and only that half. Those two protocols
+-- also hard-assert the version on every read, because they deserialize bytes
+-- that came from somewhere else. Nothing validates `frame.version` today: the
+-- payload never leaves the process, so there is no foreign producer to reject.
+-- The read-side assertion belongs to the first consumer that deserializes this
+-- across a boundary (#332), and it is that change's job to add it, not an
+-- oversight to be inherited.
 
 local keeper = require("sim.keeper")
 local sim_match = require("sim.match")
@@ -140,10 +147,32 @@ local player_pose = require("render.player_pose")
 ---@field species_shape RenderSpeciesShape
 ---@field species_color number[]
 
+-- Optional booleans are TRI-STATE, not sparse. A sparse boolean array cannot be
+-- decoded from the payload alone: absent ("this event kind does not report it")
+-- and `false` ("it reports it, and the answer is no") would both encode to 0,
+-- and both states genuinely occur -- `sim/match.lua` sets `on_target = false`
+-- explicitly, `sim/aerial.lua` computes `jumping` as a real boolean. Kind alone
+-- does not disambiguate either: a released outfield shot carries `on_target`
+-- while a keeper's distribution kick, also `kind == "shot"`, does not.
+---@alias RenderFrameTriState integer -- 0 = not reported, 1 = false, 2 = true.
+
 -- This frame's discrete match events, flattened. This is the effect-trigger
 -- channel: a renderer spawns particles, shakes and audio cues from it without
--- ever seeing a `MatchEvent` table. Sparse arrays leave holes where the event
--- kind does not carry that field.
+-- ever seeing a `MatchEvent` table.
+--
+-- The non-boolean optional arrays are sparse: an absent entry is `nil`, which a
+-- buffer encoding maps to a zero enum. Which kinds report which field:
+--
+--   save_style                  catch, parry
+--   keeper_state, keeper_depth  shot (released, keeper threatened), tip, catch, parry
+--   shot_type, on_target        shot (released outfield shot only)
+--   style, outcome,             header, volley, bicycle, reception
+--     jumping, difficulty
+--   player, slot                every kind whose emitter attributes one; a
+--                               deflection or an unattributed event has neither
+--
+-- That table is documentation, not the decoder. `player`/`slot` being `nil` and
+-- the tri-state booleans being 0 are each self-describing on their own.
 ---@class RenderFrameEvents
 ---@field count integer
 ---@field kind MatchEventKind[]
@@ -154,12 +183,12 @@ local player_pose = require("render.player_pose")
 ---@field save_style table<integer, SaveStyle> -- sparse
 ---@field style table<integer, AerialStyle> -- sparse
 ---@field outcome table<integer, AerialOutcome> -- sparse
----@field jumping table<integer, boolean> -- sparse
 ---@field difficulty table<integer, number> -- sparse
 ---@field shot_type table<integer, KeeperShotType> -- sparse
 ---@field keeper_state table<integer, KeeperBehaviorState> -- sparse
 ---@field keeper_depth table<integer, number> -- sparse
----@field on_target table<integer, boolean> -- sparse
+---@field jumping RenderFrameTriState[] -- dense; see RenderFrameTriState
+---@field on_target RenderFrameTriState[] -- dense; see RenderFrameTriState
 
 ---@class RenderFrame
 ---@field version integer -- Exactly render_frame.VERSION.
@@ -197,13 +226,24 @@ local AERIAL_EASE_BICYCLE = 0.6
 local AERIAL_EASE_JUMP = 0.35
 local AERIAL_EASE_CONTROL = 0.18
 
--- Loose-ball ballistics for the landing reticle. Mirrors the sim's GRAVITY; the
--- solve is presentation (where will this cross come down?), so it lives here
--- rather than making the simulation compute something it never uses.
-local BALL_GRAVITY = 900
+-- Loose-ball ballistics for the landing reticle. The solve is presentation
+-- (where will this cross come down?), so it lives here rather than making the
+-- simulation compute something it never uses -- but it falls at the simulation's
+-- own gravity, read from `sim.match`, so the two can never drift apart.
+local BALL_GRAVITY = sim_match.GRAVITY
 local RETICLE_MIN_HEIGHT = 20
 local RETICLE_MIN_TIME = 0.05
 local RETICLE_MAX_TIME = 3
+
+-- Absent, false and true have to survive the crossing as three distinct values.
+---@param value boolean?
+---@return RenderFrameTriState
+local function tri_state(value)
+    if value == nil then
+        return 0
+    end
+    return value and 2 or 1
+end
 
 ---@param timer number?
 ---@param ease number
@@ -373,12 +413,12 @@ local function build_events(state, events, roster)
         out.save_style[index] = event.save_style
         out.style[index] = event.style
         out.outcome[index] = event.outcome
-        out.jumping[index] = event.jumping
+        out.jumping[index] = tri_state(event.jumping)
         out.difficulty[index] = event.difficulty
         out.shot_type[index] = event.shot_type
         out.keeper_state[index] = event.keeper_state
         out.keeper_depth[index] = event.keeper_depth
-        out.on_target[index] = event.on_target
+        out.on_target[index] = tri_state(event.on_target)
     end
     return out
 end

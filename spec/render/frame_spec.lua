@@ -307,11 +307,40 @@ t.describe("render frame payload", function()
         t.eq(frame.events.y[1], 200)
         t.eq(frame.events.player[1], striker.id)
         t.eq(frame.events.slot[1], 4, "the payload resolves an event's player to a roster slot")
-        t.eq(frame.events.on_target[1], true)
+        t.eq(frame.events.on_target[1], 2, "a reported true encodes as 2")
         t.eq(frame.events.kind[2], "reception")
         t.eq(frame.events.outcome[2], "clean")
         t.eq(frame.events.player[2], nil)
         t.eq(frame.events.slot[2], nil)
+    end)
+
+    t.it("keeps absent, false and true distinguishable for optional booleans", function()
+        local state = fixture()
+        -- All three states occur for real: `sim/match.lua` sets `on_target`
+        -- explicitly on a released shot, and a keeper's distribution kick is
+        -- also `kind == "shot"` but reports nothing. Kind alone cannot tell
+        -- them apart, so the payload must.
+        ---@type MatchEvent[]
+        local events = {
+            { kind = "shot", x = 0, y = 0, on_target = true },
+            { kind = "shot", x = 0, y = 0, on_target = false },
+            { kind = "shot", x = 0, y = 0 },
+            { kind = "header", x = 0, y = 0, jumping = false },
+            { kind = "header", x = 0, y = 0 },
+        }
+
+        local flat = render_frame.build(state, { events = events }).events
+        t.eq(flat.on_target[1], 2, "true")
+        t.eq(flat.on_target[2], 1, "reported false is NOT the same as absent")
+        t.eq(flat.on_target[3], 0, "absent")
+        t.eq(flat.jumping[4], 1)
+        t.eq(flat.jumping[5], 0)
+
+        -- Tri-state arrays are dense, so a buffer write can copy the whole run.
+        for index = 1, flat.count do
+            t.eq(type(flat.on_target[index]), "number")
+            t.eq(type(flat.jumping[index]), "number")
+        end
     end)
 
     t.it("resolves a tip event into the drawn dive direction", function()
