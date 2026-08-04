@@ -1,4 +1,4 @@
-local identity = require("game.presentation.identity")
+local identity = require("render.identity")
 local player_renderer = require("game.render.player_renderer")
 local players = require("data.players")
 local showcase_players = require("data.showcase_player_compatibility")

@@ -43,6 +43,7 @@ local arenas = require("data.arenas")
 local teams = require("data.teams")
 local bloom = require("game.render.bloom")
 local pitch = require("game.render.pitch")
+local render_frame = require("render.frame")
 local player_renderer_3d = require("game.render.player_renderer_3d")
 local view_state = require("game.render.view_state")
 
@@ -156,6 +157,9 @@ function benchmark.new(opts)
         -- starts sampling a result screen instead of a match.
         duration = (self.warmup_frames + self.frames) * DT + 60,
     })
+    -- Match-constant identity for the payload build; derived once, exactly as
+    -- the real match screen does.
+    self.render_roster = render_frame.roster(self.state)
     self.bot = bot.new({ seed = self.seed })
     self.metrics = metrics.new(self.state)
     self.clock = fixed_clock.new()
@@ -248,7 +252,10 @@ function Benchmark:draw()
     -- it is part of what a shipped frame pays.
     local started = love.timer.getTime()
     bloom.draw(function()
-        pitch.draw(self.state, self.viewport, {
+        -- The payload build is inside the measurement on purpose: deriving the
+        -- render frame is part of what a shipped frame pays.
+        local frame = render_frame.build(self.state, { roster = self.render_roster })
+        pitch.draw(frame, self.viewport, {
             home_color = teams.nebula.color,
             away_color = teams.orion.color,
             arena = arenas.helios_crown,

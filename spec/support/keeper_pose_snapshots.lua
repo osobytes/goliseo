@@ -1,5 +1,6 @@
 local Vec2 = require("core.vec2")
 local pitch = require("game.render.pitch")
+local render_payload = require("spec.support.render_payload")
 local match = require("sim.match")
 local teams = require("data.teams")
 
@@ -60,7 +61,7 @@ local function render(scenario)
 
     local canvas = love.graphics.newCanvas(WIDTH, HEIGHT)
     love.graphics.setCanvas(canvas)
-    pitch.draw(state, { w = WIDTH, h = HEIGHT }, {
+    pitch.draw(render_payload.frame(state), { w = WIDTH, h = HEIGHT }, {
         home_color = teams.nebula.color,
         away_color = teams.orion.color,
     })

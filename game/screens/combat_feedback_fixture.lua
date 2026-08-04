@@ -8,6 +8,7 @@ local bloom = require("game.render.bloom")
 local effects = require("game.render.effects")
 local match_hud_render = require("game.render.match_hud")
 local pitch = require("game.render.pitch")
+local render_frame = require("render.frame")
 local view_state = require("game.render.view_state")
 local release_follow = require("game.render.release_follow")
 local match_hud = require("game.match_hud")
@@ -73,17 +74,20 @@ end
 function Fixture:draw()
     local viewport = { w = love.graphics.getWidth(), h = love.graphics.getHeight() }
     local model = combat_presentation.model(self.fixture.state, self.fixture.combat)
+    local frame = render_frame.build(self.fixture.state, {
+        kick_follow = release_follow.windows(),
+        combat = model,
+    })
     bloom.draw(function()
-        pitch.draw(self.fixture.state, viewport, {
+        pitch.draw(frame, viewport, {
             home_color = teams.nebula.color,
             away_color = teams.orion.color,
             arena = arenas.helios_crown,
             arena_pulse = 0.35,
-            combat = model,
             camera_offset = combat_feedback.camera_offset(self.feedback),
         })
         match_hud_render.draw(
-            match_hud.model(self.fixture.state, {
+            match_hud.model(frame.hud, {
                 home_name = teams.nebula.name,
                 away_name = teams.orion.name,
                 arena_name = arenas.helios_crown.name,

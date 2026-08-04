@@ -1,6 +1,6 @@
 local Vec2 = require("core.vec2")
 local combat_presentation = require("game.presentation.combat")
-local player_pose = require("game.presentation.player_pose")
+local player_pose = require("render.player_pose")
 local combat = require("sim.combat")
 local match = require("sim.match")
 local match_snapshot = require("sim.match_snapshot")

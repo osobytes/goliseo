@@ -23,6 +23,8 @@ local OnlineMatch = require("game.screens.online_match")
 local match_hud = require("game.match_hud")
 local match_hud_render = require("game.render.match_hud")
 local pitch = require("game.render.pitch")
+local render_payload = require("spec.support.render_payload")
+local render_frame = require("render.frame")
 local combat_presentation = require("game.presentation.combat")
 local protocol = require("game.online.protocol")
 local action_families = require("data.action_families")
@@ -702,7 +704,7 @@ t.describe("online combat families", function()
                                 witness.legible = {
                                     combat = combat,
                                     controlled = controlled,
-                                    hud = match_hud.model(match.state, {
+                                    hud = match_hud.model(render_frame.hud(match.state), {
                                         home_name = match.home_name,
                                         away_name = match.away_name,
                                         arena_name = match.arena.name,
@@ -831,13 +833,15 @@ t.describe("online combat families", function()
                     love.graphics = stub_graphics()
                     local drew, draw_err = pcall(function()
                         local viewport = { w = 1280, h = 720 }
-                        pitch.draw(frame_state, viewport, {
+                        local frame = render_payload.frame(frame_state, {
+                            combat = legible.combat,
+                            events = frame_state.events,
+                        })
+                        pitch.draw(frame, viewport, {
                             home_color = match.home_color,
                             away_color = match.away_color,
                             arena = match.arena,
                             arena_pulse = 0,
-                            combat = legible.combat,
-                            events = frame_state.events,
                         })
                         match_hud_render.draw(hud, viewport)
                     end)
@@ -978,17 +982,19 @@ t.describe("online match renderer smoke", function()
                 local viewport = { w = 1280, h = 720 }
                 local combat = combat_presentation.model(match.state, match._combat_state)
                 t.is_true(combat.enabled, "an online match always renders the combat model")
-                pitch.draw(match.state, viewport, {
-                    home_color = match.home_color,
-                    away_color = match.away_color,
-                    arena = match.arena,
-                    arena_pulse = 0,
+                local frame = render_payload.frame(match.state, {
                     render_pose = match._render_pose,
                     combat = combat,
                     events = match.state.events,
                 })
+                pitch.draw(frame, viewport, {
+                    home_color = match.home_color,
+                    away_color = match.away_color,
+                    arena = match.arena,
+                    arena_pulse = 0,
+                })
                 match_hud_render.draw(
-                    match_hud.model(match.state, {
+                    match_hud.model(frame.hud, {
                         home_name = match.home_name,
                         away_name = match.away_name,
                         arena_name = match.arena.name,

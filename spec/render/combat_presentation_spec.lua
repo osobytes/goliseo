@@ -1,9 +1,10 @@
 local Vec2 = require("core.vec2")
 local combat_presentation = require("game.presentation.combat")
-local player_pose = require("game.presentation.player_pose")
+local player_pose = require("render.player_pose")
 local camera = require("game.render.camera")
 local correction_smoothing = require("game.render.correction_smoothing")
 local pitch = require("game.render.pitch")
+local render_payload = require("spec.support.render_payload")
 local player_renderer = require("game.render.player_renderer")
 local combat = require("sim.combat")
 local match = require("sim.match")
@@ -165,10 +166,12 @@ t.describe("combat procedural renderer", function()
             remaining_ticks = 40,
         }
         local calls = with_graphics(function()
-            pitch.draw(state, { w = 1280, h = 720 }, {
+            local frame = render_payload.frame(state, {
+                combat = combat_presentation.model(state, combat_state),
+            })
+            pitch.draw(frame, { w = 1280, h = 720 }, {
                 home_color = teams.nebula.color,
                 away_color = teams.orion.color,
-                combat = combat_presentation.model(state, combat_state),
             })
         end)
 
@@ -220,12 +223,14 @@ t.describe("combat procedural renderer", function()
             camera.project(authoritative.x + range, authoritative.y, state.field, viewport)
 
         local calls = with_graphics(function()
-            pitch.draw(state, viewport, {
-                home_color = teams.nebula.color,
-                away_color = teams.orion.color,
-                render_pose = pose,
-                combat = model,
-            })
+            pitch.draw(
+                render_payload.frame(state, { render_pose = pose, combat = model }),
+                viewport,
+                {
+                    home_color = teams.nebula.color,
+                    away_color = teams.orion.color,
+                }
+            )
         end)
 
         t.is_true(

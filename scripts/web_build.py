@@ -23,7 +23,7 @@ RUNTIME_ARCHIVE_SHA256 = "89b56e7953935d6cb06c454d0ee0c0d8903e433b9a94d1d6d501fb
 RUNTIME_ARCHIVE_URL = f"{RUNTIME_REPOSITORY}/archive/{RUNTIME_COMMIT}.tar.gz"
 
 PACKAGE_ROOT_FILES = ("conf.lua", "main.lua")
-PACKAGE_ROOT_DIRECTORIES = ("core", "data", "game", "sim")
+PACKAGE_ROOT_DIRECTORIES = ("core", "data", "game", "render", "sim")
 RUNTIME_FILES = {
     ".htaccess": ".htaccess",
     "11.5/love.js": "11.5/love.js",

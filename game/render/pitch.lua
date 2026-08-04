@@ -1,6 +1,12 @@
--- Impure 2.5D match renderer: draws the simulation state through the camera
--- projection as a perspective pitch with depth-sorted billboard players.
+-- Impure 2.5D match renderer: draws a RenderFrame through the camera projection
+-- as a perspective pitch with depth-sorted billboard players.
 -- (Bloom/neon post-processing is a later pass; this is the geometry layer.)
+--
+-- This module never sees a `MatchState`. Everything it draws comes off the
+-- versioned payload built by `render.frame`, which is the whole point: the same
+-- payload can be handed to a renderer that is not written in Lua. The only
+-- things read from outside it are renderer-owned presentation state
+-- (`view_state` gait/lean, the particle systems) and per-match theming.
 
 local camera = require("game.render.camera")
 local camera_follow = require("game.render.camera_follow")
@@ -8,15 +14,9 @@ local arena_render = require("game.render.arena")
 local combat_render = require("game.render.combat")
 local player_renderer = require("game.render.player_renderer")
 local player_renderer_3d = require("game.render.player_renderer_3d")
-local player_pose = require("game.presentation.player_pose")
-local identity = require("game.presentation.identity")
 local view_state = require("game.render.view_state")
-local release_follow = require("game.render.release_follow")
 local effects = require("game.render.effects")
 local arenas = require("data.arenas")
-local sim_match = require("sim.match") -- CROSSBAR_H: the goal frame height
-local keeper = require("sim.keeper")
-local possession_transition = require("sim.possession_transition")
 
 local pitch = {}
 
@@ -31,29 +31,15 @@ pitch.follow_camera = false
 local HEX_RADIUS = 26 -- world units, centre to corner
 local NET_BACK_FRAC = 0.55 -- back frame height as a fraction of the crossbar
 
+-- Per-match theming and screen-space presentation. Deliberately NOT part of the
+-- render frame: colours, arena art and the combat-feedback camera shake are
+-- renderer concerns the simulation knows nothing about.
 ---@class PitchDrawOptions
 ---@field home_color number[]
 ---@field away_color number[]
 ---@field arena ArenaData?
 ---@field arena_pulse number?
----@field render_pose CorrectionSmoothingPose?
----@field combat CombatPresentationModel?
 ---@field camera_offset { x: number, y: number }?
----@field events MatchEvent[]?
-
----@param player MatchPlayer
----@param pose CorrectionSmoothingPose?
----@return { x: number, y: number }
-local function player_position(player, pose)
-    return (pose and pose.players[player.id]) or player.pos
-end
-
----@param state MatchState
----@param pose CorrectionSmoothingPose?
----@return { x: number, y: number }
-local function ball_position(state, pose)
-    return (pose and pose.ball) or state.ball
-end
 
 -- Screen-space mesh shader for the goal nets. Lazily created and fully
 -- optional: headless tests stub love.graphics without newShader, and a failed
@@ -108,7 +94,7 @@ end
 
 -- Soft additive luminance toward the pitch centre so the floor reads as lit.
 ---@param project fun(wx: number, wy: number): number, number, number
----@param field { w: number, h: number }
+---@param field RenderFrameField
 local function draw_floor_glow(project, field)
     local cx, cy = project(field.w / 2, field.h / 2)
     love.graphics.setBlendMode("add")
@@ -121,7 +107,7 @@ end
 
 -- Bright, blooming pitch markings: halfway line + circle + spot, and goal boxes.
 ---@param project fun(wx: number, wy: number): number, number, number
----@param field { w: number, h: number }
+---@param field RenderFrameField
 local function draw_markings(project, field)
     love.graphics.setLineWidth(2)
     set({ 0.35, 0.72, 1.0 }, 0.85)
@@ -135,7 +121,7 @@ local function draw_markings(project, field)
     local sx, sy = project(field.w / 2, field.h / 2)
     love.graphics.circle("fill", sx, sy, 3)
 
-    local depth, box_h = sim_match.PENALTY_BOX.depth, sim_match.PENALTY_BOX.h
+    local depth, box_h = field.penalty_box_depth, field.penalty_box_h
     local top, bot = field.h / 2 - box_h / 2, field.h / 2 + box_h / 2
     ---@param xa number
     ---@param xb number
@@ -156,7 +142,7 @@ end
 -- follow the perspective. Corners are clamped to the field so edge cells meet the
 -- touchlines instead of spilling onto the space backdrop.
 ---@param project fun(wx: number, wy: number): number, number, number
----@param field { w: number, h: number }
+---@param field RenderFrameField
 local function draw_hex_floor(project, field)
     local r = HEX_RADIUS
     local col_step = math.sqrt(3) * r
@@ -186,36 +172,16 @@ local function draw_hex_floor(project, field)
 end
 
 -- Render the whole pitch + entities for one frame.
----@param s MatchState
+---@param frame RenderFrame
 ---@param vp { w: number, h: number }
 ---@param opts PitchDrawOptions
-function pitch.draw(s, vp, opts)
-    local field = s.field
+function pitch.draw(frame, vp, opts)
+    local field = frame.field
+    local roster = frame.roster
+    local players = frame.players
+    local ball = frame.ball
     local arena = opts.arena or arenas.helios_crown
-    local render_pose = opts.render_pose
-    local rendered_ball = ball_position(s, render_pose)
-    local frame_events = opts.events or s.events
-    local tip_events = {}
-    for _, event in ipairs(frame_events) do
-        if event.kind == "tip" and event.player then
-            tip_events[event.player] = event
-        end
-    end
-    -- The counter-press window is what separates a presser shepherding the
-    -- carrier from one hunting it at full speed: `sim.match` exempts a
-    -- counter-pressing presser from the contain slowdown and its ball-facing
-    -- lock, so presentation must not claim contain there either. Read once per
-    -- team, not once per player.
-    local owner_team = s.owner and s.players[s.owner].team or nil
-    local counterpressing = {}
-    for _, team in ipairs({ "home", "away" }) do
-        counterpressing[team] = possession_transition.phase(
-            s.transition,
-            team,
-            owner_team,
-            s.transition_windows[team]
-        ) == "counterpress"
-    end
+
     -- One projection wrapper for the entire pitch: lines, goals, players,
     -- effects and the ball all go through it, so the follow window moves every
     -- one of them together and nothing has to know the camera exists.
@@ -269,7 +235,7 @@ function pitch.draw(s, vp, opts)
     ---@param line_x number
     ---@param back_x number
     local function draw_goal(g, color, line_x, back_x)
-        local bar = sim_match.CROSSBAR_H
+        local bar = field.crossbar_h
         local lfx, lfy, lfs = project(line_x, g.y) -- far post base (on the line)
         local lnx, lny, lns = project(line_x, g.y + g.h) -- near post base
         local bfx, bfy, bfs = project(back_x, g.y) -- back frame, far
@@ -347,121 +313,72 @@ function pitch.draw(s, vp, opts)
         love.graphics.line(bnx, bny, bnx, bny - back_h * bns)
         love.graphics.line(bfx, bfy - back_h * bfs, bnx, bny - back_h * bns)
     end
-    draw_goal(s.goal_home, opts.home_color, s.goal_home.x + s.goal_home.w, s.goal_home.x)
-    draw_goal(s.goal_away, opts.away_color, s.goal_away.x, s.goal_away.x + s.goal_away.w)
+    local goal_home, goal_away = field.goal_home, field.goal_away
+    draw_goal(goal_home, opts.home_color, goal_home.x + goal_home.w, goal_home.x)
+    draw_goal(goal_away, opts.away_color, goal_away.x, goal_away.x + goal_away.w)
 
     -- Ball trail sits on the ground, under the entities.
     effects.draw_trail(project)
-    if opts.combat then
-        combat_render.draw_under(opts.combat, project, render_pose)
-    end
+    combat_render.draw_under(frame, project)
 
-    -- Depth-sorted drawables (far first).
+    -- Depth-sorted drawables (far first). `index == nil` is the ball.
     local items = {}
-    for i, p in ipairs(s.players) do
-        local pos = player_position(p, render_pose)
-        items[#items + 1] = { kind = "player", p = p, pos = pos, idx = i, depth = pos.y }
+    for index = 1, players.count do
+        items[#items + 1] = { index = index, depth = players.y[index] }
     end
-    items[#items + 1] = { kind = "ball", depth = rendered_ball.y }
+    items[#items + 1] = { index = nil, depth = ball.y }
     table.sort(items, function(a, b)
         return a.depth < b.depth
     end)
 
-    -- Held in the HANDS only: a keeper with a back-pass at its feet dribbles a
-    -- ground ball like anyone else.
-    local keeper_holds = s.owner ~= nil
-        and s.players[s.owner].is_keeper
-        and not s.players[s.owner].feet_ball
     for _, it in ipairs(items) do
-        if it.kind == "player" then
-            local p = it.p
-            local pos = it.pos
-            local sx, sy, scale = project(pos.x, pos.y)
-            local r = p.radius * scale
-            local color = (p.team == "home") and opts.home_color or opts.away_color
-            local presentation =
-                assert(identity.for_player(p.id), "missing pitch identity for " .. p.id)
-            local combat_sample = opts.combat and opts.combat.players[it.idx] or nil
-            local tip_event = tip_events[p.id]
-            local tip_dir = nil
-            if tip_event then
-                local delta = tip_event.y - p.pos.y
-                tip_dir = { x = 0, y = delta >= 0 and 1 or -1 }
-            end
-            local keeper_context = nil
-            if p.is_keeper then
-                keeper_context = {
-                    near_ball = keeper.in_smother_range(p.pos:dist(s.ball)),
-                    shuffling = p.keeper_state == "base" and p.run_vel ~= nil and math.abs(
-                        p.run_vel.y
-                    ) > 0,
-                    tip = tip_event ~= nil,
-                }
-            end
-            -- Outfield pose inputs. The press mode is team-owned simulation
-            -- state, the telegraph window is measured against the match clock,
-            -- and the follow-through is the render-owned release window. Both
-            -- teams read from the same three sources.
-            local outfield_context = nil
-            if not p.is_keeper then
-                local press = s.outfield_press[p.team]
-                outfield_context = {
-                    now = -s.time_left,
-                    containing = press.mode == "contain"
-                        and press.presser_index == it.idx
-                        and not counterpressing[p.team],
-                    kick_follow = release_follow.active(p.id),
-                }
-            end
-            local aerial_duration = 0.22
-            if p.aerial_style == "bicycle" then
-                aerial_duration = 0.6
-            elseif (p.aerial_jump or 0) > 0 then
-                aerial_duration = 0.35
-            elseif p.aerial_style == "leg_control" or p.aerial_style == "chest_control" then
-                aerial_duration = 0.18
-            end
+        local index = it.index
+        if index then
+            local sx, sy, scale = project(players.x[index], players.y[index])
+            local r = roster.radius[index] * scale
+            local color = (roster.teams[index] == "home") and opts.home_color or opts.away_color
+            ---@type PlayerRenderOptions
             local player_opts = {
-                facing = p.facing,
-                is_keeper = p.is_keeper,
-                controlled = (it.idx == s.controlled),
-                dashing = p.slide_timer > 0,
-                -- 0.3 is a visual normalizer (~ the sim's dive duration); exactness
-                -- doesn't matter, it just eases the lunge back upright.
-                dive = (p.dive_timer > 0) and math.min(1, p.dive_timer / 0.3) or 0,
-                dive_dir = tip_dir or p.dive_dir,
+                facing = { x = players.facing_x[index], y = players.facing_y[index] },
+                is_keeper = roster.is_keeper[index],
+                controlled = players.controlled[index],
+                dashing = players.dashing[index],
+                dive = players.dive[index],
+                dive_dir = { x = players.dive_dir_x[index], y = players.dive_dir_y[index] },
                 -- Keeper holding the ball: render it cradled in the hands (below).
-                holding = (it.idx == s.owner and p.is_keeper and not p.feet_ball),
-                grab = (p.grab_timer > 0) and math.min(1, p.grab_timer / 0.25) or 0,
-                throw = (p.throw_timer > 0) and math.min(1, p.throw_timer / 0.25) or 0,
-                -- Wind-up back-swing: 0 = no windup, 1 = just committed.
-                windup = (p.windup_timer > 0) and (p.windup_timer / 0.15) or 0,
-                aerial = ((p.aerial_timer or 0) > 0)
-                        and math.min(1, p.aerial_timer / aerial_duration)
-                    or 0,
-                aerial_style = p.aerial_style,
-                aerial_outcome = p.aerial_outcome,
-                aerial_jump = p.aerial_jump or 0,
-                species_shape = presentation.shape,
-                species_color = presentation.palette,
-                team = p.team,
-                combat = combat_sample,
-                pose = player_pose.select(p, combat_sample, keeper_context, outfield_context),
+                holding = players.holding[index],
+                grab = players.grab[index],
+                throw = players.throw[index],
+                windup = players.windup[index],
+                aerial = players.aerial[index],
+                aerial_style = players.aerial_style[index],
+                aerial_outcome = players.aerial_outcome[index],
+                aerial_jump = players.aerial_jump[index],
+                species_shape = roster.species_shape[index],
+                species_color = roster.species_color[index],
+                team = roster.teams[index],
+                combat = frame.combat and frame.combat.players[index] or nil,
+                pose = {
+                    id = players.pose_id[index],
+                    priority = players.pose_priority[index],
+                    source = players.pose_source[index],
+                },
             }
             -- One call site, two renderers. The rigged path reports
             -- unavailability (no depth buffer, failed shader) rather than
             -- throwing, and the procedural renderer stays the fallback.
+            local v = view_state.get(roster.ids[index])
             if pitch.rigged_players and player_renderer_3d.available() then
-                player_renderer_3d.draw(sx, sy, r, color, view_state.get(p.id), player_opts)
+                player_renderer_3d.draw(sx, sy, r, color, v, player_opts)
             else
-                player_renderer.draw(sx, sy, r, color, view_state.get(p.id), player_opts)
+                player_renderer.draw(sx, sy, r, color, v, player_opts)
             end
-        elseif not keeper_holds then
+        elseif ball.visible then
             -- Loose / dribbled ball. (A keeper-held ball is drawn in its hands by the
             -- keeper avatar, so skip the ground ball then.) The shadow stays on the
             -- ground and shrinks/fades with height; the ball lifts by its height.
-            local sx, sy, scale = project(rendered_ball.x, rendered_ball.y)
-            local z = s.ball_z or 0
+            local sx, sy, scale = project(ball.x, ball.y)
+            local z = ball.z
             local hk = 1 / (1 + z / 80)
             love.graphics.setColor(0, 0, 0, 0.3 * hk)
             love.graphics.ellipse("fill", sx, sy, 6 * scale * hk, 3 * scale * hk)
@@ -470,53 +387,33 @@ function pitch.draw(s, vp, opts)
         end
     end
 
-    if opts.combat then
-        combat_render.draw_over(opts.combat, project)
-    end
+    combat_render.draw_over(frame, project)
 
     -- Landing reticle: a lofted, loose ball projects where it will come down, so
-    -- a player can time a run to meet a cross. Only for a genuinely airborne ball
-    -- (a cross/lob), not a grounded pass. Ballistic solve to z = 0.
-    do
-        local bz = s.ball_z or 0
-        if not s.owner and bz > 20 then
-            local g = 900 -- matches the sim's GRAVITY
-            local vz = s.ball_vz or 0
-            local tland = (vz + math.sqrt(vz * vz + 2 * g * bz)) / g
-            local lx = rendered_ball.x + s.ball_vel.x * tland
-            local ly = rendered_ball.y + s.ball_vel.y * tland
-            if
-                tland > 0.05
-                and tland < 3
-                and lx > 0
-                and lx < field.w
-                and ly > 0
-                and ly < field.h
-            then
-                local sx, sy, scale = project(lx, ly)
-                local t_now = (love.timer and love.timer.getTime and love.timer.getTime()) or 0
-                local pulse = 0.6 + 0.4 * math.abs(math.sin(t_now * 6))
-                love.graphics.setLineWidth(math.max(1, 1.5 * scale))
-                love.graphics.setColor(1, 0.85, 0.35, 0.85 * pulse)
-                love.graphics.circle("line", sx, sy, 12 * scale * pulse)
-                love.graphics.setColor(1, 0.85, 0.35, 0.4)
-                love.graphics.circle("line", sx, sy, 7 * scale)
-                love.graphics.setLineWidth(1)
-            end
-        end
+    -- a player can time a run to meet a cross. The ballistic solve belongs to the
+    -- payload; this only draws the ring it hands back.
+    local landing_x, landing_y = ball.landing_x, ball.landing_y
+    if landing_x and landing_y then
+        local sx, sy, scale = project(landing_x, landing_y)
+        local t_now = (love.timer and love.timer.getTime and love.timer.getTime()) or 0
+        local pulse = 0.6 + 0.4 * math.abs(math.sin(t_now * 6))
+        love.graphics.setLineWidth(math.max(1, 1.5 * scale))
+        love.graphics.setColor(1, 0.85, 0.35, 0.85 * pulse)
+        love.graphics.circle("line", sx, sy, 12 * scale * pulse)
+        love.graphics.setColor(1, 0.85, 0.35, 0.4)
+        love.graphics.circle("line", sx, sy, 7 * scale)
+        love.graphics.setLineWidth(1)
     end
 
     -- Pass-target preview: a small pulsing double-ring at the intended receiver's
     -- feet while the pass button is held. Guards love.timer access so the smoke
     -- test (which stubs love.graphics but not love.timer) stays green.
-    local cp = s.players[s.controlled]
-    if cp.pass_target then
-        local tp = s.players[cp.pass_target]
-        local target_pos = player_position(tp, render_pose)
-        local tsx, tsy, tscale = project(target_pos.x, target_pos.y)
+    local target = frame.control.pass_target
+    if target then
+        local tsx, tsy, tscale = project(players.x[target], players.y[target])
         local t_now = (love.timer and love.timer.getTime and love.timer.getTime()) or 0
         local pulse = 0.65 + 0.35 * math.abs(math.sin(t_now * 5))
-        local team_color = (tp.team == "home") and opts.home_color or opts.away_color
+        local team_color = (roster.teams[target] == "home") and opts.home_color or opts.away_color
         love.graphics.setLineWidth(math.max(1, 1.5 * tscale))
         love.graphics.setColor(team_color[1], team_color[2], team_color[3], 0.85 * pulse)
         love.graphics.circle("line", tsx, tsy, 10 * tscale * pulse)
@@ -527,15 +424,13 @@ function pitch.draw(s, vp, opts)
 
     -- Charge meter under the controlled player (soccer-game power bar):
     -- warm while charging a shot/punt, cool while charging a pass range.
-    local amt, ccol, label
-    if cp.charge > 0.02 then
-        amt, ccol, label = cp.charge, { 1, 0.72, 0.3 }, "SHOT"
-    elseif cp.pass_charge > 0.02 then
-        amt, ccol, label = cp.pass_charge, { 0.45, 0.85, 1 }, "PASS"
-    end
-    if amt then
-        local controlled_pos = player_position(cp, render_pose)
-        local sx, sy, scale = project(controlled_pos.x, controlled_pos.y)
+    local charge_kind = frame.control.charge_kind
+    if charge_kind then
+        local amt = frame.control.charge
+        local ccol = (charge_kind == "shot") and { 1, 0.72, 0.3 } or { 0.45, 0.85, 1 }
+        local label = (charge_kind == "shot") and "SHOT" or "PASS"
+        local controlled = frame.control.controlled
+        local sx, sy, scale = project(players.x[controlled], players.y[controlled])
         local w, h = 34 * scale, math.max(3, 4 * scale)
         local y0 = sy + 12 * scale
         love.graphics.setColor(0, 0, 0, 0.55)

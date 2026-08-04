@@ -1,6 +1,7 @@
 local Vec2 = require("core.vec2")
-local player_pose = require("game.presentation.player_pose")
+local player_pose = require("render.player_pose")
 local pitch = require("game.render.pitch")
+local render_payload = require("spec.support.render_payload")
 local player_renderer = require("game.render.player_renderer")
 local release_follow = require("game.render.release_follow")
 local outfield_decision = require("sim.outfield_decision")
@@ -432,7 +433,7 @@ t.describe("outfield pose pitch projection", function()
             poses[index] = draw_opts.pose.id
         end
         local ok, err = pcall(function()
-            pitch.draw(state, { w = 1280, h = 720 }, opts)
+            pitch.draw(render_payload.frame(state), { w = 1280, h = 720 }, opts)
         end)
         player_renderer.draw = saved_draw
         love.graphics = saved_graphics
@@ -514,7 +515,7 @@ t.describe("outfield poses through the goal replay buffer", function()
                 if not frame then
                     break
                 end
-                pitch.draw(frame, { w = 1280, h = 720 }, {
+                pitch.draw(render_payload.frame(frame), { w = 1280, h = 720 }, {
                     home_color = teams.nebula.color,
                     away_color = teams.orion.color,
                 })
@@ -675,7 +676,7 @@ t.describe("outfield follow-through driven by the simulation", function()
             end
         end
         local ok, err = pcall(function()
-            pitch.draw(state, { w = 1280, h = 720 }, {
+            pitch.draw(render_payload.frame(state), { w = 1280, h = 720 }, {
                 home_color = teams.nebula.color,
                 away_color = teams.orion.color,
             })
@@ -759,7 +760,7 @@ t.describe("outfield contain against the counter-press window", function()
             end
         end
         local ok, err = pcall(function()
-            pitch.draw(state, { w = 1280, h = 720 }, {
+            pitch.draw(render_payload.frame(state), { w = 1280, h = 720 }, {
                 home_color = teams.nebula.color,
                 away_color = teams.orion.color,
             })
