@@ -64,3 +64,6 @@ coverage/
 /docs/design/manager-mode.md
 /docs/design/manager-mode-council-review.md
 /docs/design/season_metrics.md
+
+# Local benchmark evidence; the report in docs/ carries the reviewed numbers.
+.bench/
