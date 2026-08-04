@@ -1,6 +1,7 @@
 local Vec2 = require("core.vec2")
-local player_pose = require("game.presentation.player_pose")
+local player_pose = require("render.player_pose")
 local pitch = require("game.render.pitch")
+local render_payload = require("spec.support.render_payload")
 local player_renderer = require("game.render.player_renderer")
 local match = require("sim.match")
 local teams = require("data.teams")
@@ -261,7 +262,7 @@ t.describe("goalkeeper pose projection", function()
             end
         end
         local ok, err = pcall(function()
-            pitch.draw(state, { w = 1280, h = 720 }, {
+            pitch.draw(render_payload.frame(state), { w = 1280, h = 720 }, {
                 home_color = teams.nebula.color,
                 away_color = teams.orion.color,
             })
@@ -269,12 +270,14 @@ t.describe("goalkeeper pose projection", function()
 
             selected = nil
             state.ball = Vec2.new(400, 270)
-            pitch.draw(state, { w = 1280, h = 720 }, {
-                home_color = teams.nebula.color,
-                away_color = teams.orion.color,
+            local tipped = render_payload.frame(state, {
                 events = {
                     { kind = "tip", x = keeper.pos.x, y = keeper.pos.y - 40, player = keeper.id },
                 },
+            })
+            pitch.draw(tipped, { w = 1280, h = 720 }, {
+                home_color = teams.nebula.color,
+                away_color = teams.orion.color,
             })
             t.eq(selected, "keeper_tip")
         end)

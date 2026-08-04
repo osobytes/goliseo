@@ -23,7 +23,7 @@ A wrapper lives at `./scripts/check.sh` (see §9).
 
 ---
 
-## 2. Architecture — three layers, one direction
+## 2. Architecture — four layers, one direction
 
 ```
 core/   pure utilities (vec2, math helpers) — no love, no game state
@@ -31,6 +31,8 @@ core/   pure utilities (vec2, math helpers) — no love, no game state
 data/   pure data tables (players, teams, formations, tactics, traits)
   ▲
 sim/    pure logic (stats math, xp/leveling, tactic effects, match rules)
+  ▲
+render/ pure derivation of a drawable frame from simulation state — no love
   ▲
 game/   LÖVE-specific: rendering, input, screens, the love.* callbacks
 ```
@@ -40,11 +42,21 @@ game/   LÖVE-specific: rendering, input, screens, the love.* callbacks
 - `core/` may require other `core/` only. No `love`, no game state.
 - `data/` requires **nothing**.
 - `sim/` may require `core/`, `data/`, and other `sim/`. It must **never** `require("love")` or anything in `game/`.
+- `render/` may require `core/`, `data/`, `sim/`, and other `render/`. It must **never**
+  `require("love")` or anything in `game/`.
 - `game/` may require anything.
 
-Why: `sim/` and `data/` stay pure, unit-testable without a window, and portable to another
-engine later. If you feel the urge to draw or read input inside `sim/`, the boundary is wrong —
-return data and let `game/` act on it.
+Why: `sim/`, `data/` and `render/` stay pure, unit-testable without a window, and portable to
+another engine later. If you feel the urge to draw or read input inside `sim/`, the boundary is
+wrong — return data and let `game/` act on it.
+
+`render/` is the sim-to-renderer boundary, not a renderer. `render.frame` turns one `MatchState`
+into one versioned, flat `RenderFrame` payload; `game/render/` draws that payload with LÖVE and a
+future renderer draws the same payload without it. The payload is crossed **once per rendered
+frame, in batch** — never per entity, never per tick. Presentation-derived state (gait, lean,
+correction smoothing, follow-through windows) is **not** simulation: it stays in `game/render/`
+and feeds the builder as an explicit input. `scripts/phase0_sim_host.lua` loads `render/` under a
+bare Lua interpreter, so an accidental `love` dependency fails there.
 
 A function is "pure" here if it has no side effects and no I/O: same inputs → same outputs.
 All gameplay math lives in pure functions; `game/` is the only place with mutation and effects.

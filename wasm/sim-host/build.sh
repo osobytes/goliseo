@@ -57,6 +57,7 @@ export RUSTFLAGS="\
 -Clink-arg=--preload-file=/app/sim@/sim \
 -Clink-arg=--preload-file=/app/core@/core \
 -Clink-arg=--preload-file=/app/data@/data \
+-Clink-arg=--preload-file=/app/render@/render \
 -Clink-arg=--preload-file=/app/scripts@/scripts"
 
 cd /app/wasm/sim-host

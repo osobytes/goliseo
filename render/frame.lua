@@ -1,0 +1,572 @@
+-- The one interface between the simulation and any renderer.
+--
+-- `render_frame.build` turns a `MatchState` into a flat, engine-free
+-- description of ONE drawable frame. Nothing downstream of it needs to know
+-- what a `MatchState` is, and nothing in it needs `love`.
+--
+-- Three rules shape this module, and none of them are style preferences:
+--
+-- 1. THE BOUNDARY IS CROSSED ONCE PER RENDERED FRAME, IN BATCH. Never per
+--    entity, never per tick. Rollback re-simulates up to eight ticks inside a
+--    single rendered frame; a per-tick crossing is the thing that would make a
+--    non-Lua renderer unaffordable. `build` is therefore one call producing one
+--    whole frame.
+--
+-- 2. PER-ENTITY DATA IS STRUCTURE-OF-ARRAYS. `frame.players` is a set of
+--    parallel arrays indexed by roster slot, not an array of tables. An array
+--    of tables cannot be written into a shared buffer without touching every
+--    field individually across the boundary; parallel scalar arrays can be
+--    copied wholesale. The optional arrays (`aerial_style`, ...) are typed as
+--    `table<integer, T>` because they are sparse: an absent entry is `nil`, and
+--    a buffer encoding maps that to a zero enum. Booleans encode as 0/1.
+--
+-- 3. PRESENTATION-DERIVED STATE STAYS ON THE RENDERER SIDE. Gait, lean, the
+--    smoothed on-screen speed (`game.render.view_state`), the correction
+--    smoothing state machine (`game.render.correction_smoothing`) and the
+--    release follow-through window (`game.render.release_follow`) are NOT
+--    simulation and are not derived here. Two of them feed in as explicit
+--    inputs (`opts.render_pose`, `opts.kick_follow`) because the frame must
+--    report the positions and poses actually shown; their state machines stay
+--    where they are.
+--
+-- The frame splits into a static half and a per-frame half. `RenderFrameRoster`
+-- is match-constant (ids, teams, species shape and palette) and crosses once —
+-- pass it back in as `opts.roster` so it is not rebuilt. Everything else in
+-- `RenderFrame` is rebuilt each frame.
+--
+-- Versioning follows `sim.input_frame` and `sim.match_snapshot`: an integer
+-- `VERSION` stamped into every payload, bumped whenever the shape changes.
+
+local keeper = require("sim.keeper")
+local sim_match = require("sim.match")
+local possession_transition = require("sim.possession_transition")
+local identity = require("render.identity")
+local player_pose = require("render.player_pose")
+
+---@alias RenderTeam "home"|"away"
+---@alias RenderSpeciesShape "round"|"broad"|"angular"|"cluster"
+---@alias RenderChargeKind "shot"|"pass"
+
+-- Match-constant per-player identity. Crosses the boundary once, not per frame.
+---@class RenderFrameRoster
+---@field version integer -- Exactly render_frame.VERSION.
+---@field count integer
+---@field ids string[]
+---@field names string[]
+---@field teams RenderTeam[]
+---@field is_keeper boolean[]
+---@field radius number[]
+---@field species_shape RenderSpeciesShape[]
+---@field species_color number[][] -- One rgb triple per slot; static, so nesting is free here.
+
+-- Pitch geometry the renderer draws lines and goals from. Constant for a match,
+-- carried on the frame because it is three numbers and a pair of rects.
+---@class RenderFrameField
+---@field w number
+---@field h number
+---@field crossbar_h number
+---@field penalty_box_depth number
+---@field penalty_box_h number
+---@field goal_home Rect
+---@field goal_away Rect
+
+-- Structure of arrays, indexed 1..count by roster slot. Every array is the same
+-- length; the sparse ones (`table<integer, T>`) leave holes where a value does
+-- not apply. Timers arrive already normalised to 0..1 so no renderer has to
+-- re-derive a duration constant.
+---@class RenderFramePlayers
+---@field count integer
+---@field x number[] -- Displayed world position (correction smoothing applied).
+---@field y number[]
+---@field facing_x number[]
+---@field facing_y number[]
+---@field speed number[] -- Locomotion speed in world units/sec, straight off the sim.
+---@field pose_id PlayerPoseId[]
+---@field pose_priority integer[]
+---@field pose_source PlayerPoseSource[]
+---@field controlled boolean[]
+---@field dashing boolean[]
+---@field holding boolean[] -- Keeper carrying the ball in the hands.
+---@field dive number[] -- 0..1
+---@field dive_dir_x number[]
+---@field dive_dir_y number[]
+---@field grab number[] -- 0..1
+---@field throw number[] -- 0..1
+---@field windup number[] -- 0..1
+---@field aerial number[] -- 0..1
+---@field aerial_jump number[] -- 0..1
+---@field aerial_style table<integer, AerialStyle> -- sparse
+---@field aerial_outcome table<integer, AerialOutcome> -- sparse
+
+---@class RenderFrameBall
+---@field x number -- Displayed world position (correction smoothing applied).
+---@field y number
+---@field z number -- Height above the pitch.
+---@field vx number
+---@field vy number
+---@field vz number
+---@field visible boolean -- False while a keeper holds it in the hands.
+---@field landing_x number? -- Ballistic landing point of a lofted loose ball, nil if none.
+---@field landing_y number?
+
+---@class RenderFramePossession
+---@field owner integer? -- Roster slot holding the ball, nil if loose.
+---@field owner_team RenderTeam?
+---@field keeper_holds boolean -- Owner is a keeper carrying it in the hands.
+
+-- What the locally controlled player is doing with the input. Distinct from
+-- `possession`: a player can be charging a shot without the ball.
+---@class RenderFrameControl
+---@field controlled integer -- Roster slot.
+---@field pass_target integer? -- Roster slot the pass would go to, nil if none.
+---@field charge_kind RenderChargeKind? -- nil when nothing is charging.
+---@field charge number -- 0..1, 0 when `charge_kind` is nil.
+
+-- Scoreboard/identity facts a HUD needs, all derived from the simulation.
+-- Match metadata (team names, arena, tactic) is authored content supplied by the
+-- screen, not per-frame simulation state, so it stays out of the payload.
+---@class RenderFrameHud
+---@field home_score integer
+---@field away_score integer
+---@field time_left number
+---@field finished boolean
+---@field possession_team RenderTeam? -- nil while the ball is loose.
+---@field controlled integer
+---@field controlled_id string
+---@field controlled_team RenderTeam
+---@field controlled_is_keeper boolean
+---@field controlled_owns_ball boolean
+---@field controlled_stamina number -- 0..1
+---@field species_shape RenderSpeciesShape
+---@field species_color number[]
+
+-- This frame's discrete match events, flattened. This is the effect-trigger
+-- channel: a renderer spawns particles, shakes and audio cues from it without
+-- ever seeing a `MatchEvent` table. Sparse arrays leave holes where the event
+-- kind does not carry that field.
+---@class RenderFrameEvents
+---@field count integer
+---@field kind MatchEventKind[]
+---@field x number[]
+---@field y number[]
+---@field player table<integer, string> -- sparse; roster id
+---@field slot table<integer, integer> -- sparse; roster slot for `player`
+---@field save_style table<integer, SaveStyle> -- sparse
+---@field style table<integer, AerialStyle> -- sparse
+---@field outcome table<integer, AerialOutcome> -- sparse
+---@field jumping table<integer, boolean> -- sparse
+---@field difficulty table<integer, number> -- sparse
+---@field shot_type table<integer, KeeperShotType> -- sparse
+---@field keeper_state table<integer, KeeperBehaviorState> -- sparse
+---@field keeper_depth table<integer, number> -- sparse
+---@field on_target table<integer, boolean> -- sparse
+
+---@class RenderFrame
+---@field version integer -- Exactly render_frame.VERSION.
+---@field roster RenderFrameRoster
+---@field field RenderFrameField
+---@field players RenderFramePlayers
+---@field ball RenderFrameBall
+---@field possession RenderFramePossession
+---@field control RenderFrameControl
+---@field hud RenderFrameHud
+---@field events RenderFrameEvents
+---@field combat CombatPresentationModel? -- Combat telegraphs, carried unflattened (see below).
+
+-- Inputs the frame cannot derive from `MatchState` alone.
+---@class RenderFrameOptions
+---@field roster RenderFrameRoster? -- Reuse a roster built earlier for this match.
+---@field render_pose CorrectionSmoothingPose? -- Displayed positions from correction smoothing.
+---@field events MatchEvent[]? -- Frame event batch; defaults to `state.events`.
+---@field kick_follow table<string, boolean>? -- Renderer-owned release follow-through windows.
+---@field combat CombatPresentationModel? -- Combat telegraph model for this frame.
+
+---@class RenderFrameModule
+local render_frame = {}
+
+render_frame.VERSION = 1
+
+-- Pose-timer normalisers. These are presentation eases, not simulation
+-- durations: they only decide how fast a pose relaxes back to neutral.
+local DIVE_EASE = 0.3
+local GRAB_EASE = 0.25
+local THROW_EASE = 0.25
+local WINDUP_EASE = 0.15
+local AERIAL_EASE = 0.22
+local AERIAL_EASE_BICYCLE = 0.6
+local AERIAL_EASE_JUMP = 0.35
+local AERIAL_EASE_CONTROL = 0.18
+
+-- Loose-ball ballistics for the landing reticle. Mirrors the sim's GRAVITY; the
+-- solve is presentation (where will this cross come down?), so it lives here
+-- rather than making the simulation compute something it never uses.
+local BALL_GRAVITY = 900
+local RETICLE_MIN_HEIGHT = 20
+local RETICLE_MIN_TIME = 0.05
+local RETICLE_MAX_TIME = 3
+
+---@param timer number?
+---@param ease number
+---@return number
+local function eased(timer, ease)
+    local value = timer or 0
+    if value <= 0 then
+        return 0
+    end
+    return math.min(1, value / ease)
+end
+
+---@param player MatchPlayer
+---@return number
+local function aerial_ease(player)
+    if player.aerial_style == "bicycle" then
+        return AERIAL_EASE_BICYCLE
+    elseif (player.aerial_jump or 0) > 0 then
+        return AERIAL_EASE_JUMP
+    elseif player.aerial_style == "leg_control" or player.aerial_style == "chest_control" then
+        return AERIAL_EASE_CONTROL
+    end
+    return AERIAL_EASE
+end
+
+-- Match-constant per-player identity. Build once and pass back in as
+-- `opts.roster`: nothing in it can change while a match is running.
+---@param state MatchState
+---@return RenderFrameRoster
+function render_frame.roster(state)
+    local ids, names, teams = {}, {}, {}
+    local is_keeper, radius, shapes, colors = {}, {}, {}, {}
+    for index, player in ipairs(state.players) do
+        local presentation =
+            assert(identity.for_player(player.id), "missing pitch identity for " .. player.id)
+        ids[index] = player.id
+        -- The authored presentation name, not `MatchPlayer.name`: it is the one
+        -- a HUD actually shows, and it survives a replay frame's partial copy.
+        names[index] = presentation.name
+        teams[index] = player.team
+        is_keeper[index] = player.is_keeper
+        radius[index] = player.radius
+        shapes[index] = presentation.shape
+        colors[index] = presentation.palette
+    end
+    return {
+        version = render_frame.VERSION,
+        count = #state.players,
+        ids = ids,
+        names = names,
+        teams = teams,
+        is_keeper = is_keeper,
+        radius = radius,
+        species_shape = shapes,
+        species_color = colors,
+    }
+end
+
+-- The scoreboard half of the payload. Exposed on its own because a broadcast
+-- HUD outlives the frame the pitch is drawing: during a goal replay the pitch
+-- shows a past frame while the HUD keeps reporting the live match.
+---@param state MatchState
+---@param roster RenderFrameRoster?
+---@return RenderFrameHud
+function render_frame.hud(state, roster)
+    roster = roster or render_frame.roster(state)
+    local controlled = state.players[state.controlled]
+    local owner = state.owner and state.players[state.owner] or nil
+    return {
+        home_score = state.score.home,
+        away_score = state.score.away,
+        time_left = state.time_left,
+        finished = state.finished,
+        possession_team = owner and owner.team or nil,
+        controlled = state.controlled,
+        controlled_id = controlled.id,
+        controlled_team = controlled.team,
+        controlled_is_keeper = controlled.is_keeper,
+        controlled_owns_ball = state.owner == state.controlled,
+        controlled_stamina = math.max(0, math.min(1, controlled.sprint_meter)),
+        species_shape = roster.species_shape[state.controlled],
+        species_color = roster.species_color[state.controlled],
+    }
+end
+
+---@param state MatchState
+---@return RenderFrameField
+local function build_field(state)
+    return {
+        w = state.field.w,
+        h = state.field.h,
+        crossbar_h = sim_match.CROSSBAR_H,
+        penalty_box_depth = sim_match.PENALTY_BOX.depth,
+        penalty_box_h = sim_match.PENALTY_BOX.h,
+        goal_home = state.goal_home,
+        goal_away = state.goal_away,
+    }
+end
+
+-- The counter-press window is what separates a presser shepherding the carrier
+-- from one hunting it at full speed: `sim.match` exempts a counter-pressing
+-- presser from the contain slowdown and its ball-facing lock, so presentation
+-- must not claim contain there either. Read once per team, not once per player.
+---@param state MatchState
+---@return table<RenderTeam, boolean>
+local function counterpressing_teams(state)
+    local owner_team = state.owner and state.players[state.owner].team or nil
+    local out = {}
+    for _, team in ipairs({ "home", "away" }) do
+        out[team] = possession_transition.phase(
+            state.transition,
+            team,
+            owner_team,
+            state.transition_windows[team]
+        ) == "counterpress"
+    end
+    return out
+end
+
+-- A tip is a keeper event that overrides the dive direction for one frame, so
+-- it resolves here and the renderer never scans the event batch for it.
+---@param events MatchEvent[]
+---@return table<string, MatchEvent>
+local function tip_events_by_player(events)
+    local tips = {}
+    for _, event in ipairs(events) do
+        if event.kind == "tip" and event.player then
+            tips[event.player] = event
+        end
+    end
+    return tips
+end
+
+---@param state MatchState
+---@param events MatchEvent[]
+---@param roster RenderFrameRoster
+---@return RenderFrameEvents
+local function build_events(state, events, roster)
+    local slot_of = {}
+    for index = 1, roster.count do
+        slot_of[roster.ids[index]] = index
+    end
+    ---@type RenderFrameEvents
+    local out = {
+        count = #events,
+        kind = {},
+        x = {},
+        y = {},
+        player = {},
+        slot = {},
+        save_style = {},
+        style = {},
+        outcome = {},
+        jumping = {},
+        difficulty = {},
+        shot_type = {},
+        keeper_state = {},
+        keeper_depth = {},
+        on_target = {},
+    }
+    for index, event in ipairs(events) do
+        out.kind[index] = event.kind
+        out.x[index] = event.x
+        out.y[index] = event.y
+        out.player[index] = event.player
+        out.slot[index] = event.player and slot_of[event.player] or nil
+        out.save_style[index] = event.save_style
+        out.style[index] = event.style
+        out.outcome[index] = event.outcome
+        out.jumping[index] = event.jumping
+        out.difficulty[index] = event.difficulty
+        out.shot_type[index] = event.shot_type
+        out.keeper_state[index] = event.keeper_state
+        out.keeper_depth[index] = event.keeper_depth
+        out.on_target[index] = event.on_target
+    end
+    return out
+end
+
+-- Where a lofted, loose ball will come down. Only for a genuinely airborne ball
+-- (a cross or a lob), never a grounded pass, and only when it lands on the
+-- pitch inside a readable window.
+---@param state MatchState
+---@param ball_x number
+---@param ball_y number
+---@return number?, number?
+local function landing_point(state, ball_x, ball_y)
+    local height = state.ball_z or 0
+    if state.owner ~= nil or height <= RETICLE_MIN_HEIGHT then
+        return nil, nil
+    end
+    local vz = state.ball_vz or 0
+    local fall = (vz + math.sqrt(vz * vz + 2 * BALL_GRAVITY * height)) / BALL_GRAVITY
+    if fall <= RETICLE_MIN_TIME or fall >= RETICLE_MAX_TIME then
+        return nil, nil
+    end
+    local x = ball_x + state.ball_vel.x * fall
+    local y = ball_y + state.ball_vel.y * fall
+    if x <= 0 or x >= state.field.w or y <= 0 or y >= state.field.h then
+        return nil, nil
+    end
+    return x, y
+end
+
+-- Turn one `MatchState` into one drawable frame. Pure: it reads the state and
+-- allocates a new payload, and never mutates anything it was handed.
+---@param state MatchState
+---@param opts RenderFrameOptions?
+---@return RenderFrame
+function render_frame.build(state, opts)
+    opts = opts or {}
+    local roster = opts.roster or render_frame.roster(state)
+    local render_pose = opts.render_pose
+    local kick_follow = opts.kick_follow
+    local combat = opts.combat
+    local events = opts.events or state.events
+    local tips = tip_events_by_player(events)
+    local counterpressing = counterpressing_teams(state)
+    local now = -state.time_left
+
+    -- Held in the HANDS only: a keeper with a back-pass at its feet dribbles a
+    -- ground ball like anyone else.
+    local owner = state.owner and state.players[state.owner] or nil
+    local keeper_holds = owner ~= nil and owner.is_keeper and not owner.feet_ball
+
+    ---@type RenderFramePlayers
+    local players = {
+        count = roster.count,
+        x = {},
+        y = {},
+        facing_x = {},
+        facing_y = {},
+        speed = {},
+        pose_id = {},
+        pose_priority = {},
+        pose_source = {},
+        controlled = {},
+        dashing = {},
+        holding = {},
+        dive = {},
+        dive_dir_x = {},
+        dive_dir_y = {},
+        grab = {},
+        throw = {},
+        windup = {},
+        aerial = {},
+        aerial_jump = {},
+        aerial_style = {},
+        aerial_outcome = {},
+    }
+
+    for index = 1, roster.count do
+        local player = state.players[index]
+        -- Displayed position: correction smoothing has already decided where
+        -- this player is shown. Every distance the SIMULATION reasons about
+        -- (smother range, tip direction) keeps reading the authoritative pos.
+        local displayed = (render_pose and render_pose.players[player.id]) or player.pos
+
+        local tip = tips[player.id]
+        local dive_dir_x, dive_dir_y
+        if tip then
+            dive_dir_x, dive_dir_y = 0, (tip.y - player.pos.y) >= 0 and 1 or -1
+        else
+            dive_dir_x, dive_dir_y = player.dive_dir.x, player.dive_dir.y
+        end
+
+        local keeper_context = nil
+        if player.is_keeper then
+            keeper_context = {
+                near_ball = keeper.in_smother_range(player.pos:dist(state.ball)),
+                shuffling = player.keeper_state == "base" and player.run_vel ~= nil and math.abs(
+                    player.run_vel.y
+                ) > 0,
+                tip = tip ~= nil,
+            }
+        end
+
+        -- Outfield pose inputs. The press mode is team-owned simulation state,
+        -- the telegraph window is measured against the match clock, and the
+        -- follow-through is the render-owned release window supplied by the
+        -- caller. Both teams read from the same three sources.
+        local outfield_context = nil
+        if not player.is_keeper then
+            local press = state.outfield_press[player.team]
+            outfield_context = {
+                now = now,
+                containing = press.mode == "contain"
+                    and press.presser_index == index
+                    and not counterpressing[player.team],
+                kick_follow = kick_follow ~= nil and kick_follow[player.id] == true,
+            }
+        end
+
+        local combat_sample = combat and combat.players[index] or nil
+        local pose = player_pose.select(player, combat_sample, keeper_context, outfield_context)
+
+        players.x[index] = displayed.x
+        players.y[index] = displayed.y
+        players.facing_x[index] = player.facing.x
+        players.facing_y[index] = player.facing.y
+        players.speed[index] = player.run_vel and player.run_vel:length() or 0
+        players.pose_id[index] = pose.id
+        players.pose_priority[index] = pose.priority
+        players.pose_source[index] = pose.source
+        players.controlled[index] = index == state.controlled
+        players.dashing[index] = player.slide_timer > 0
+        players.holding[index] = index == state.owner and player.is_keeper and not player.feet_ball
+        players.dive[index] = eased(player.dive_timer, DIVE_EASE)
+        players.dive_dir_x[index] = dive_dir_x
+        players.dive_dir_y[index] = dive_dir_y
+        players.grab[index] = eased(player.grab_timer, GRAB_EASE)
+        players.throw[index] = eased(player.throw_timer, THROW_EASE)
+        -- The wind-up back-swing is deliberately unclamped: 0 = no windup,
+        -- 1 = just committed, and a long charge reads above 1.
+        players.windup[index] = player.windup_timer > 0 and player.windup_timer / WINDUP_EASE or 0
+        players.aerial[index] = eased(player.aerial_timer, aerial_ease(player))
+        players.aerial_jump[index] = player.aerial_jump or 0
+        players.aerial_style[index] = player.aerial_style
+        players.aerial_outcome[index] = player.aerial_outcome
+    end
+
+    local ball_point = (render_pose and render_pose.ball) or state.ball
+    local landing_x, landing_y = landing_point(state, ball_point.x, ball_point.y)
+
+    local controlled = state.players[state.controlled]
+    local charge_kind, charge = nil, 0
+    if controlled.charge > 0.02 then
+        charge_kind, charge = "shot", controlled.charge
+    elseif controlled.pass_charge > 0.02 then
+        charge_kind, charge = "pass", controlled.pass_charge
+    end
+
+    return {
+        version = render_frame.VERSION,
+        roster = roster,
+        field = build_field(state),
+        players = players,
+        ball = {
+            x = ball_point.x,
+            y = ball_point.y,
+            z = state.ball_z or 0,
+            vx = state.ball_vel.x,
+            vy = state.ball_vel.y,
+            vz = state.ball_vz or 0,
+            visible = not keeper_holds,
+            landing_x = landing_x,
+            landing_y = landing_y,
+        },
+        possession = {
+            owner = state.owner,
+            owner_team = owner and owner.team or nil,
+            keeper_holds = keeper_holds,
+        },
+        control = {
+            controlled = state.controlled,
+            pass_target = controlled.pass_target,
+            charge_kind = charge_kind,
+            charge = charge,
+        },
+        hud = render_frame.hud(state, roster),
+        events = build_events(state, events, roster),
+        combat = combat,
+    }
+end
+
+return render_frame

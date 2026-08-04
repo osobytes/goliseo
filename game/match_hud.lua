@@ -1,4 +1,4 @@
-local identity = require("game.presentation.identity")
+local identity = require("render.identity")
 
 ---@alias BroadcastPhase "kickoff"|"goal"|"replay"|"full_time"
 
@@ -70,26 +70,29 @@ function hud.format_clock(seconds)
     return ("%d:%02d"):format(math.floor(whole / 60), whole % 60)
 end
 
----@param state MatchState
+-- The HUD reads the scoreboard section of the same versioned render payload the
+-- pitch draws from, never a `MatchState`. Only authored match metadata (team
+-- names, arena, tactic, onboarding) comes in as context: none of it is
+-- simulation state.
+---@param scoreboard RenderFrameHud
 ---@param context MatchHudContext
 ---@return MatchHudModel
-function hud.model(state, context)
-    local controlled = state.players[state.controlled]
+function hud.model(scoreboard, context)
     local presentation = assert(
-        identity.for_player(controlled.id),
-        "missing presentation identity for " .. controlled.id
+        identity.for_player(scoreboard.controlled_id),
+        "missing presentation identity for " .. scoreboard.controlled_id
     )
-    local owner = state.owner and state.players[state.owner] or nil
+    local owner_team = scoreboard.possession_team
     local possession = "LOOSE BALL"
-    if owner then
-        possession = ((owner.team == "home") and context.home_name or context.away_name)
+    if owner_team then
+        possession = ((owner_team == "home") and context.home_name or context.away_name)
             .. " POSSESSION"
     end
 
     local player_state = "DEFENDING"
-    if state.owner == state.controlled then
-        player_state = controlled.is_keeper and "KEEPER BALL" or "ON BALL"
-    elseif not owner then
+    if scoreboard.controlled_owns_ball then
+        player_state = scoreboard.controlled_is_keeper and "KEEPER BALL" or "ON BALL"
+    elseif not owner_team then
         player_state = "CONTESTING"
     end
 
@@ -100,7 +103,7 @@ function hud.model(state, context)
     elseif context.phase == "goal" then
         local team_name = context.scoring_team == "away" and context.away_name or context.home_name
         title = "GOAL · " .. string.upper(team_name)
-        detail = ("%d  —  %d"):format(state.score.home, state.score.away)
+        detail = ("%d  —  %d"):format(scoreboard.home_score, scoreboard.away_score)
     elseif context.phase == "replay" then
         title = "REPLAY"
         detail = "[A / SPACE] SKIP"
@@ -108,8 +111,8 @@ function hud.model(state, context)
         title = "FULL TIME"
         detail = ("%s  %d — %d  %s"):format(
             string.upper(context.home_name),
-            state.score.home,
-            state.score.away,
+            scoreboard.home_score,
+            scoreboard.away_score,
             string.upper(context.away_name)
         )
     end
@@ -141,18 +144,20 @@ function hud.model(state, context)
     return {
         home_name = string.upper(context.home_name),
         away_name = string.upper(context.away_name),
-        home_score = state.score.home,
-        away_score = state.score.away,
-        clock = hud.format_clock(state.time_left),
+        home_score = scoreboard.home_score,
+        away_score = scoreboard.away_score,
+        clock = hud.format_clock(scoreboard.time_left),
         venue = string.upper(context.arena_name .. " · " .. context.arena_location),
         possession = string.upper(possession),
-        possession_marker = owner and owner.team == controlled.team and "filled" or "outline",
+        possession_marker = (owner_team ~= nil and owner_team == scoreboard.controlled_team)
+                and "filled"
+            or "outline",
         player_name = string.upper(presentation.name),
         player_detail = string.upper(presentation.species_name .. " " .. presentation.position),
         player_state = player_state,
-        species_shape = presentation.shape,
-        species_color = presentation.palette,
-        stamina = clamp01(controlled.sprint_meter),
+        species_shape = scoreboard.species_shape,
+        species_color = scoreboard.species_color,
+        stamina = clamp01(scoreboard.controlled_stamina),
         plan = string.upper("PLAN · " .. context.tactic_name .. " · " .. context.formation_name),
         prompt = context.prompt,
         announcement_title = title,

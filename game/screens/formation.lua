@@ -1,5 +1,5 @@
 local focus = require("game.ui.focus")
-local identity = require("game.presentation.identity")
+local identity = require("render.identity")
 local formations = require("data.formations")
 local player_pool = require("data.players")
 

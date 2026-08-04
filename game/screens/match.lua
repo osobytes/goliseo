@@ -11,6 +11,7 @@ local arenas = require("data.arenas")
 local teams = require("data.teams")
 local tactics = require("data.tactics")
 local pitch = require("game.render.pitch")
+local render_frame = require("render.frame")
 local bloom = require("game.render.bloom")
 local correction_smoothing = require("game.render.correction_smoothing")
 local effects = require("game.render.effects")
@@ -131,6 +132,7 @@ local FIELD_H = 540
 ---@field _render_pose CorrectionSmoothingPose
 ---@field _replay_state ReplayFrame?
 ---@field _combat_feedback CombatFeedbackState
+---@field _render_roster RenderFrameRoster?
 local Match = {}
 Match.__index = Match
 
@@ -542,6 +544,7 @@ function Match:restart()
     end
     self._render_smoothing = correction_smoothing.new(self.state)
     self._render_pose = correction_smoothing.pose(self._render_smoothing)
+    self._render_roster = nil
     self._pass, self._switch, self._dash, self._dodge = false, false, false, false
     self._shoot_held_prev = false
     self._pass_held_prev = false
@@ -1022,26 +1025,49 @@ function Match:broadcast_phase()
     return nil
 end
 
+-- The match-constant half of the render payload: player ids, teams, radii and
+-- species presentation cannot change while a match runs, so it is derived once
+-- and handed to every frame build instead of being rebuilt sixty times a second.
+---@return RenderFrameRoster
+function Match:render_roster()
+    local roster = self._render_roster
+    if roster == nil then
+        roster = render_frame.roster(self.state)
+        self._render_roster = roster
+    end
+    return roster
+end
+
 ---@param s MatchState
 ---@param vp { w: number, h: number }
 ---@param combat_state CombatMatchState?
 function Match:draw_frame(s, vp, combat_state)
     local combat_model = combat_presentation.model(s, combat_state)
+    -- One boundary crossing per rendered frame: the whole drawable state is
+    -- derived here, in batch, and everything below draws only from it.
+    local live = s == self.state
+    local frame = render_frame.build(s, {
+        roster = self:render_roster(),
+        render_pose = live and self._render_pose or nil,
+        events = live and self._frame_events or s.events,
+        kick_follow = release_follow.windows(),
+        combat = combat_model,
+    })
     -- World: 2.5D perspective pitch + billboard players.
-    pitch.draw(s, vp, {
+    pitch.draw(frame, vp, {
         home_color = self.home_color,
         away_color = self.away_color,
         arena = self.arena,
         arena_pulse = math.min(1, self._kickoff_banner),
-        render_pose = s == self.state and self._render_pose or nil,
-        combat = combat_model,
         camera_offset = combat_feedback.camera_offset(self._combat_feedback),
-        events = s == self.state and self._frame_events or s.events,
     })
 
     local phase = self:broadcast_phase()
     local tactic = self._opts.tactic and tactics[self._opts.tactic] or nil
-    local model = match_hud.model(self.state, {
+    -- The scoreboard reports the LIVE match even while the pitch is replaying a
+    -- past frame, so it reads its own section rather than this frame's.
+    local scoreboard = live and frame.hud or render_frame.hud(self.state, self:render_roster())
+    local model = match_hud.model(scoreboard, {
         home_name = self.home_name,
         away_name = self.away_name,
         arena_name = self.arena.name,

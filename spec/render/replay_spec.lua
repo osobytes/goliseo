@@ -1,5 +1,5 @@
 local t = require("spec.support.runner")
-local player_pose = require("game.presentation.player_pose")
+local player_pose = require("render.player_pose")
 local replay = require("game.render.replay")
 local match = require("sim.match")
 local teams = require("data.teams")

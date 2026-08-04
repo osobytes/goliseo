@@ -4,6 +4,8 @@
 
 local t = require("spec.support.runner")
 local pitch = require("game.render.pitch")
+local render_payload = require("spec.support.render_payload")
+local render_frame = require("render.frame")
 local match_hud = require("game.match_hud")
 local match_hud_render = require("game.render.match_hud")
 local ui_draw = require("game.ui.draw")
@@ -64,7 +66,7 @@ t.describe("renderer smoke", function()
                 field = { w = 960, h = 540 },
             })
             s.players[s.controlled].charge = 0.6 -- exercise the charge-meter path
-            pitch.draw(s, { w = 1280, h = 720 }, {
+            pitch.draw(render_payload.frame(s), { w = 1280, h = 720 }, {
                 home_color = teams.nebula.color,
                 away_color = teams.orion.color,
             })
@@ -84,7 +86,7 @@ t.describe("renderer smoke", function()
                 away = teams.orion,
                 field = { w = 960, h = 540 },
             })
-            pitch.draw(s, { w = 1280, h = 720 }, {
+            pitch.draw(render_payload.frame(s), { w = 1280, h = 720 }, {
                 home_color = teams.nebula.color,
                 away_color = teams.orion.color,
             })
@@ -102,7 +104,7 @@ t.describe("renderer smoke", function()
             })
             -- Point at player index 2 (a home outfielder) as the preview target.
             s.players[s.controlled].pass_target = 2
-            pitch.draw(s, { w = 1280, h = 720 }, {
+            pitch.draw(render_payload.frame(s), { w = 1280, h = 720 }, {
                 home_color = teams.nebula.color,
                 away_color = teams.orion.color,
             })
@@ -157,7 +159,7 @@ t.describe("renderer smoke", function()
                 away = teams.orion,
                 field = { w = 960, h = 540 },
             })
-            local model = match_hud.model(s, {
+            local model = match_hud.model(render_frame.hud(s), {
                 home_name = teams.nebula.name,
                 away_name = teams.orion.name,
                 arena_name = "Helios Crown",

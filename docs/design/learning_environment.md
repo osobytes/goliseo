@@ -178,7 +178,7 @@ animation is visible, their private clock is not.
 
 Five states that an earlier revision of this contract exposed have been **removed**
 because an exhaustive read of `game/render/*.lua` and
-`game/presentation/player_pose.lua` found no pose, colour, or icon for them on a
+`render/player_pose.lua` found no pose, colour, or icon for them on a
 non-local player:
 
 - `charging` — `charge` / `pass_charge` drive only a HUD bar under the *locally
@@ -201,7 +201,7 @@ cues to justify them.
 
 > **Stale rationale — issue #58.** The outfield pose work has since given
 > `tackle_timer`, `stun_timer`, and `jockey_timer` real poses
-> (`game/presentation/player_pose.lua`, `game/render/player_renderer.lua`) and
+> (`render/player_pose.lua`, `game/render/player_renderer.lua`) and
 > carried them into `game/render/replay.lua`, so the "zero rendering hits"
 > justification above no longer holds for `tackling`, `stunned`, and
 > `jockeying`. #58 deliberately changed **no** observation field:
