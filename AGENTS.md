@@ -26,20 +26,21 @@ A wrapper lives at `./scripts/check.sh` (see §9).
 ## 2. Architecture — four layers, one direction
 
 ```
-core/   pure utilities (vec2, math helpers) — no love, no game state
+core/   pure utilities (vec2, math helpers) — no engine, no game state
   ▲
 data/   pure data tables (players, teams, formations, tactics, traits)
   ▲
 sim/    pure logic (stats math, xp/leveling, tactic effects, match rules)
   ▲
-render/ pure derivation of a drawable frame from simulation state — no love
+render/ pure derivation of a drawable frame from simulation state — no engine
   ▲
 game/   LÖVE-specific: rendering, input, screens, the love.* callbacks
 ```
 
 **The only allowed dependency direction is upward.** Concretely:
 
-- `core/` may require other `core/` only. No `love`, no game state.
+- `core/` may require other `core/` only. No rendering engine — today that is `love` — and no
+  game state.
 - `data/` requires **nothing**.
 - `sim/` may require `core/`, `data/`, and other `sim/`. It must **never** require a rendering
   engine — today that is `love`, and it covers any future engine binding just as much — nor
