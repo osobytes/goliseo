@@ -104,6 +104,18 @@ if has_flag("--fault-harness") then
     return
 end
 
+-- Runs the Phase 0 portable-sim probe under LOVE's own Lua VM, so its hash can
+-- be compared against the same script run on a bare interpreter. Identical
+-- hashes are what prove the simulation is genuinely portable rather than merely
+-- loadable elsewhere.
+if has_flag("--phase0") then
+    function love.load()
+        dofile("scripts/phase0_sim_host.lua")
+        os.exit(0)
+    end
+    return
+end
+
 if has_flag("--combat-feedback-fixture") then
     local fixture ---@type CombatFeedbackFixtureScreen
     local capture_path ---@type string?
@@ -140,7 +152,7 @@ end
 -- rate and reports 16.67 ms whether the renderer has huge headroom or none.
 if has_flag("--benchmark") then
     local fixture ---@type table
-    local benchmark = require("game.render.benchmark")
+    local benchmark ---@type table
     local frames_arg, warmup, mode
     for index, value in ipairs(arg or {}) do
         if value == "--benchmark" then
@@ -149,7 +161,15 @@ if has_flag("--benchmark") then
         end
     end
     function love.load()
-        love.window.setVSync(0)
+        -- Required here, not at file scope: love.js initialises the window
+        -- later than the native runtime, and pulling in the render stack before
+        -- it exists fails the boot before anything can report why.
+        benchmark = require("game.render.benchmark")
+        -- Best-effort: love.js does not always expose vsync control, and losing
+        -- the setting costs measurement headroom, not correctness.
+        pcall(function()
+            love.window.setVSync(0)
+        end)
         fixture = benchmark.new({
             frames = tonumber(frames_arg) or 3600,
             warmup_frames = tonumber(warmup) or 300,
