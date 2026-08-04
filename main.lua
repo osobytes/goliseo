@@ -3,6 +3,8 @@
 --   love . --test             -> run the headless test suite and exit with status code
 --   love . --sim [n]          -> play n unattended matches, print fun-proxy metrics, exit
 --   love . --snapshot-measure [n] -> measure canonical snapshot operations n times
+--   love . --benchmark [frames] [warmup] [rigged|procedural] -> #100 ten-player
+--                                render benchmark; windowed, needs a GL context
 --   love . --combat-feedback-fixture -> visually review the crowded #147 feedback fixture
 --   love . --keeper-pose-snapshots [write] -> check or refresh #46 visual baselines
 --   love . --outfield-pose-snapshots [write] -> check or refresh the #58 visual baseline
@@ -116,6 +118,50 @@ if has_flag("--combat-feedback-fixture") then
     end
     function love.update(dt)
         fixture:update(dt)
+    end
+    function love.draw()
+        fixture:draw()
+    end
+    function love.keypressed(key)
+        if key == "escape" then
+            love.event.quit()
+        end
+    end
+    return
+end
+
+-- The #100 ten-player render benchmark. Windowed on purpose: it measures the
+-- real match render path, so unlike every other harness above it needs a GL
+-- context and cannot run through the headless path in conf.lua.
+--
+--   love . --benchmark [frames] [warmup] [rigged|procedural]
+--
+-- Vsync is turned off for the run. Left on, frame time is pinned to the refresh
+-- rate and reports 16.67 ms whether the renderer has huge headroom or none.
+if has_flag("--benchmark") then
+    local fixture ---@type table
+    local benchmark = require("game.render.benchmark")
+    local frames_arg, warmup, mode
+    for index, value in ipairs(arg or {}) do
+        if value == "--benchmark" then
+            frames_arg, warmup, mode = arg[index + 1], arg[index + 2], arg[index + 3]
+            break
+        end
+    end
+    function love.load()
+        love.window.setVSync(0)
+        fixture = benchmark.new({
+            frames = tonumber(frames_arg) or 3600,
+            warmup_frames = tonumber(warmup) or 300,
+            rigged = mode ~= "procedural",
+        })
+    end
+    function love.update(dt)
+        fixture:update(dt)
+        if fixture:finished() then
+            benchmark.emit(fixture:result())
+            os.exit(0)
+        end
     end
     function love.draw()
         fixture:draw()
