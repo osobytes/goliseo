@@ -128,9 +128,55 @@ browser evidence. The browser evidence is the headed run below.
 
 ### Measured
 
-Headed Chrome 151.0.7922.76 and Firefox 153.0.1 on an RTX 2070 SUPER, driving
-`love . --gl-probe` through a `scripts/web_build.py` artifact of the pinned
-`2dengine/love.js@495c5eb` runtime.
+**Reproducing this needs two branches, and neither one alone.** `--gl-probe` and
+`game/render/gl_probe.lua` are not on `main` and are not in the change that
+carries this section: they arrive with
+[#390](https://github.com/osobytes/goliseo/pull/390)
+(`agent/2026-08-05-issue-360-lovejs-depth`), whose merge base with the #391 fix
+branch is plain `main`. A checkout of either branch on its own cannot run what
+is below.
+
+The exact tree that produced every number here is tagged
+[`issue-391-verification-81c0904`](https://github.com/osobytes/goliseo/tree/issue-391-verification-81c0904)
+-- an evidence-only merge, not a branch to build on:
+
+| ingredient | revision |
+| --- | --- |
+| the `--gl-probe` harness and `game/render/gl_probe.lua` | `ddfd86c73fb146191dea4cfe586e4e3da05c42f4` (#390 tip) |
+| the #391 fix (loader hoist + uniform stage placement) | `f42a588c34d021ab3c1edadaaf0cfa1f1213abaa` |
+| three-line relocation of the ladder rungs' own uniforms, which belongs to #390 and is posted there | `81c0904682dc30649a2576fe36b40dd624c5afc5` |
+| merged evidence tree | `81c0904682dc30649a2576fe36b40dd624c5afc5`, `source_dirty: false` |
+
+Only the middle row is in this change.
+
+The fix branch did not stop at `f42a588`, so the difference is stated rather
+than glossed. Everything after it is this document, plus two review fixes that
+cannot move any of the numbers above: a refusal to hoist a conditionally-guarded
+declaration when no `#line` directive exists below `main()` to absorb the line
+shift -- a path LÖVE cannot reach, because its stitcher always emits `#line 1`,
+so every shader measured here takes the same branch either way -- and a
+tightening of `check_shader_hoist.sh`, which is a gate and ships in no
+artifact.
+
+Artifacts, all built by `scripts/web_build.py` from that tree against the pinned
+`2dengine/love.js@495c5eb7eb55b54aaadfc21405c58f50a6d819c4` runtime:
+
+| artifact | `goliseo.love` SHA-256 | difference |
+| --- | --- | --- |
+| both fixes | `d9ce67ac9109640558e6e634a3f1162c3e68aa360a8d82c27528811fef46c2ce` | -- |
+| hoist disabled | `d9ce67ac…` (same package) | one line of the built `player.js`: `installed: install()` replaced by `installed: []` |
+| uniforms outside the stage blocks | `e1c574a27a6a50a962e830f953e97e05ed57446d18f6713b4d58108fee22ad3f` | `renderer.lua` and `gl_probe.lua` reverted to `ddfd86c` |
+
+The hoist-disabled control shares its package with the fixed run on purpose: the
+Lua is byte-identical and only the loader differs, so nothing but the hoist can
+account for the result.
+
+The console marker lines each row is read from are quoted in
+[PR #395](https://github.com/osobytes/goliseo/pull/395). The raw per-page JSON
+records are not committed, per the same policy as every other row in this file:
+generated evidence stays out of the tree.
+
+Headed Chrome 151.0.7922.76 and Firefox 153.0.1 on an RTX 2070 SUPER.
 
 | run | baseline rung | rig3d rung | `bloom.hasDepth` | `player_renderer_3d.available` |
 | --- | --- | --- | --- | --- |
