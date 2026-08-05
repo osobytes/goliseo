@@ -615,7 +615,20 @@
             // Normalised pitch space, not world space: rotating a metric offset
             // by 137 degrees throws half a copy off a 105x60 rectangle, and
             // characters standing over the void are not a football frame.
-            // Rotating the normalised offset keeps every copy on the grass.
+            //
+            // This is a strong mitigation, NOT a proven invariant, and the
+            // difference matters to anyone reusing it. Rotation preserves the
+            // magnitude of the offset, so a point inside the unit disc stays
+            // inside it and therefore on the pitch — but a corner of the
+            // normalised rectangle reaches sqrt(2), and 25 of the 18000
+            // player-frames in the shipped capture do sit outside the disc.
+            // What has been VERIFIED is empirical, not algebraic: across those
+            // 18000 frames and the three copy rotations actually used, the worst
+            // rotated component is 0.985, so nothing left the pitch in the
+            // measured runs. A different capture or a different rotation could
+            // exceed 1; the ground mesh is 1.15x1.3 the pitch, so such a
+            // character would still stand on drawn geometry rather than in the
+            // void, but it would be outside the markings.
             let dx = (p.x[idx] - halfW) / halfW;
             let dz = (p.y[idx] - halfH) / halfH;
             let fx = p.facing_x[idx];

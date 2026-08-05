@@ -54,16 +54,22 @@ DISPLAY=:1 python3 -B scripts/babylon_bench.py
 - `bench/babylon/` loads a CC0 rigged humanoid, instantiates N independent
   skeletons, and drives every one of them from those streams: position, facing,
   locomotion blended by speed across `Idle`/`Walking_A`/`Running_A`, plus a pose
-  clip per pose family. The capture exercised **19 of the 34 pose families**
-  (`locomotion`, the full keeper vocabulary including `keeper_dive`,
-  `keeper_spread`, `keeper_stretch`, `keeper_central`, `keeper_grab`,
-  `keeper_throw`, `keeper_get_up`, plus `aerial_action`, `contain`, `settle`,
-  `slide`, `tackle`, `stumble`, `run_telegraph`, `soccer_windup`).
+  clip per pose family. `render/player_pose.lua` defines 32 families and the
+  capture exercised **19 of them, 59%** (`locomotion`, the keeper vocabulary
+  including `keeper_dive`, `keeper_spread`, `keeper_stretch`, `keeper_central`,
+  `keeper_grab`, `keeper_throw`, `keeper_get_up`, `keeper_set`,
+  `keeper_shuffle`, `keeper_ready_tall`, plus `aerial_action`, `contain`,
+  `settle`, `slide`, `tackle`, `stumble`, `run_telegraph`, `soccer_windup`).
+  **The 13 that are missing are not a random sample, and their absence favours
+  Babylon** — see "The coverage gap has a direction" below.
 - The scene is a football frame, not a character viewer: pitch with real marking
   geometry, two goals, ball, directional light with a shadow pass, hemispheric
   fill.
 - `scripts/babylon_bench.py` serves it, drives headed Chrome and Firefox, and
-  folds the `GC_BENCH_*` markers into `.bench/babylon/report.json`.
+  folds the `GC_BENCH_*` markers into `.bench/babylon/report.json`. That filename
+  means "the whole matrix ran": a run with any failed configuration writes
+  `report_incomplete.json` and deletes any stale `report.json`, so a reader that
+  forgets to check the exit code cannot pick up a partial matrix and believe it.
 
 Babylon's cost to animate ten skinned characters does not depend on where the
 poses came from, which is why this could be answered before the wasm boundary
@@ -149,18 +155,65 @@ dies on:
 Draw calls per character: 16.0 in every `authored` step, 6.0 in every `merged`
 step, at both ends of the range, in both browsers. Exactly linear.
 
-**Reading.** Nothing here flattens. Five of six configurations get *more*
-expensive per character as the count rises; the sixth is flat. #330's stated test
-was "a materially flatter marginal cost per character supports the assumption;
-curves rising in parallel with Babylon merely lower means the win is constant
-overhead, not skeleton handling." This is the second one. Babylon's curves sit
-lower and rise in parallel.
+**How much of this table is signal.** The per-configuration percentage changes
+in the right-hand column are *within* the ~10% run-to-run spread documented in
+the caveats below, so the precise slope of any one row is not load-bearing and
+should not be quoted as one. What survives the spread is the absence of the
+thing the assumption needed: no configuration shows a materially *flatter*
+marginal cost at 40 characters than at 10, in either browser, and the draw-call
+column is exact.
+
+**Reading.** Nothing here flattens. Five of six configurations measure *more*
+expensive per character as the count rises and the sixth is flat — but for four
+of those five the rise is inside the spread, so the defensible statement is
+"flat, not flattening" rather than "steepening". Only `chrome merged_static`
+(+98%) moves far enough to be a genuine steepening on its own.
+
+#330's stated test was "a materially flatter marginal cost per character supports
+the assumption; curves rising in parallel with Babylon merely lower means the win
+is constant overhead, not skeleton handling." This is unambiguously the second
+one: no configuration comes close to flatter, in either browser, at any spread
+you care to allow. Babylon's curves sit lower and run parallel.
 
 The `merged_static` control says the same thing from the other side: strip the
 blending entirely and the per-character cost falls by about a fifth to a quarter,
-but the curve keeps its shape — and in Chrome it steepens. So the linearity is not an artefact of blending four clips
-per character — it is the base cost of an independently posed skinned character,
-and Babylon does not amortise it away.
+but the curve keeps its shape — and in Chrome it steepens. So the linearity is
+not an artefact of blending four clips per character — it is the base cost of an
+independently posed skinned character, and Babylon does not amortise it away.
+
+## The coverage gap has a direction
+
+19 of 32 pose families is not a random 59% sample, and the 13 that are missing
+are systematically the *expensive* ones:
+
+| missing family | priority | maps to |
+| --- | ---: | --- |
+| `keeper_punt` | 121 | `Unarmed_Melee_Attack_Kick` |
+| `keeper_tip` | 110 | `Dodge_Right` |
+| `aerial_bicycle` | 95 | `2H_Melee_Attack_Spin` |
+| `combat_knockback` | 90 | `Hit_B` |
+| `combat_stagger` | 89 | `Hit_A` |
+| `combat_guard` | 84 | `Blocking` |
+| `combat_active` | 83 | `Unarmed_Melee_Attack_Punch_A` |
+| `combat_windup` | 82 | `Unarmed_Melee_Attack_Punch_B` |
+| `combat_aim` | 81 | `1H_Ranged_Aiming` |
+| `combat_recovery` | 80 | `Interact` |
+| `kick_follow` | 45 | `Unarmed_Melee_Attack_Kick` |
+| `fatigue` | 20 | `Unarmed_Idle` |
+| `keeper_ready_low` | 15 | `Blocking` |
+
+All seven `combat_*` families are absent, and they sit at priority 80–90 in
+`render/player_pose.lua` — above everything except keeper saves — so in a match
+with combat enabled they would be *selected* often, not occasionally.
+`aerial_bicycle` is also absent, and it maps to `2H_Melee_Attack_Spin`, the most
+elaborate clip in the whole mapping. The fixture is #100's, which runs combat
+disabled; that is why they never appear.
+
+**So the finding above is a best case for Babylon.** A capture that exercised the
+combat band would put more full-body clips into the action slot more of the time,
+which makes the per-character cost higher and the curve worse, not better. Since
+the finding is already the unfavourable reading, the gap strengthens it — but a
+#330 reader must not mistake 59% coverage for a neutral sample.
 
 ## Against the native LÖVE baseline
 
@@ -192,6 +245,15 @@ bought-not-built rather than on frame cost.
 - **Feature sets differ.** The Babylon frame pays a shadow pass (which is why
   draw calls double); the LÖVE baseline pays bloom. Neither draws the other's
   effects. The comparison is indicative, not like-for-like.
+- **The sample windows differ.** These runs measure 600 frames, about 10 seconds
+  of match; `game/render/benchmark.lua` defaults to 3600 frames, about 60
+  seconds, and that is what the #328 native baseline was taken over. Both
+  disable vsync and both emit the same summary fields, so the comparison is not
+  invalid — but a 10-second window has fewer chances to catch a rare stall, so
+  read the Babylon `max` and `over33` columns as less complete than the native
+  ones rather than as better. The medians are what the finding rests on.
+- **Pose-family coverage is 19 of 32, and the gap is not neutral** — see "The
+  coverage gap has a direction" above.
 - **Characters past ten are not new simulation.** Copies read the same ten
   captured streams from a different point in time and rotated into a different
   part of the pitch. Every skeleton is independently posed and independently
@@ -210,6 +272,24 @@ bought-not-built rather than on frame cost.
   clock ramp all landed on whichever configuration went first. One session with
   interleaved passes and a 300-frame warm-up fixed it. Anyone re-running this
   should keep both.
+- **Run-to-run spread is about 10%, and it bounds what can be claimed.** Across
+  the three passes the min-to-max span of draw p50 ranges from 2% to 21% of the
+  median depending on configuration, ~10% typically. That is far smaller than the
+  differences under test — the steps from 10 to 20 to 40 characters are 2–3x
+  each — but it is larger than the percentage changes in the marginal-cost table,
+  which is why the finding is stated as "does not flatten" rather than as a
+  precise slope. Every median in the tables is accompanied by its span so a
+  reader can apply this themselves.
+- **Ordering within a pass is still fixed.** `run_browser` repeats the matrix
+  three times, but visits the variants in the same order inside each pass, so a
+  monotonic session drift would land at the same relative position every time
+  rather than being cancelled by the median across passes. The 300-frame warm-up
+  removes most of what would drift, but shuffling the order per pass would close
+  it properly.
+- **The machine was not idle.** These runs were taken with several agents working
+  on the same box; `uptime` reported a load average of roughly 2–5 during the
+  measurement window. The three-pass spread is the evidence that this did not
+  dominate, not an assumption that the machine was quiet.
 
 ## The software-rasteriser refusal
 

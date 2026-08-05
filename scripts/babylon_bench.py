@@ -496,6 +496,17 @@ def run_browser(
     return rows, failures
 
 
+def report_path(output: Path, failures: list[str]) -> Path:
+    """Where this run's evidence goes.
+
+    `report.json` is the evidence of record and means "the whole matrix ran".
+    A run with any failed configuration writes `report_incomplete.json` instead,
+    because a caller that reads the file without checking the exit code would
+    otherwise pick up a partial matrix and never know.
+    """
+    return output / ("report_incomplete.json" if failures else "report.json")
+
+
 def serve(directory: Path, port: int) -> tuple[ThreadingHTTPServer, str]:
     handler = partial(BenchHandler, directory=str(directory))
     server = ThreadingHTTPServer(("127.0.0.1", port), handler)
@@ -627,6 +638,13 @@ def self_test() -> None:
     if [round(v, 3) for _, _, v in marginals] != [9.0, 9.0]:
         raise RuntimeError(f"marginal cost arithmetic self-test failed: {marginals}")
 
+    # A partial matrix must never be able to land on the evidence-of-record path.
+    output = Path("/nonexistent-for-self-test")
+    if report_path(output, []).name != "report.json":
+        raise RuntimeError("a complete run must write report.json")
+    if report_path(output, ["chrome merged x40: timed out"]).name != "report_incomplete.json":
+        raise RuntimeError("a run with failures must NOT write report.json")
+
     print("babylon bench controller self-test OK (no browser was started)")
 
 
@@ -757,15 +775,24 @@ def main() -> int:
         "frames": args.frames,
         "warmup": args.warmup,
         "repeats": args.repeats,
+        "complete": not failures,
         "rows": rows,
         "failures": failures,
     }
-    (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    destination = report_path(output, failures)
+    if failures:
+        # A partial matrix must not be able to masquerade as the evidence of
+        # record. It lands under a different name, and any `report.json` from an
+        # earlier run is removed rather than left to be read as this one's.
+        (output / "report.json").unlink(missing_ok=True)
+    else:
+        (output / "report_incomplete.json").unlink(missing_ok=True)
+    destination.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     if rows:
         print()
         print(render_report(rows))
     print()
-    print(f"report written to {output / 'report.json'}")
+    print(f"report written to {destination}")
     if failures:
         print("\nFAILURES:")
         for failure in failures:
