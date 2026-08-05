@@ -54,6 +54,17 @@ const EXCLUDED_ROOTS: [&str; 2] = [
     "spec",
 ];
 
+/// Lua files sitting at the repository ROOT that are deliberately not embedded.
+/// `ROOTS` cannot express "this one file", so root-level Lua needs its own
+/// list -- without it a `.lua` dropped beside `main.lua` is in no root, is
+/// therefore unembedded, and nothing would say so.
+const EXCLUDED_ROOT_FILES: [&str; 2] = [
+    // The LOVE entry point.
+    "main.lua",
+    // LOVE's window/config callback.
+    "conf.lua",
+];
+
 fn main() {
     let manifest = PathBuf::from(
         std::env::var("CARGO_MANIFEST_DIR").expect("cargo always sets CARGO_MANIFEST_DIR"),
@@ -120,8 +131,9 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 }
 
-/// Fail the build if a top-level directory containing Lua is in neither `ROOTS`
-/// nor `EXCLUDED_ROOTS`. THIS is the guard that would have caught #343.
+/// Fail the build if top-level Lua -- a directory or a root-level file -- is
+/// classified by none of `ROOTS`, `EXCLUDED_ROOTS` or `EXCLUDED_ROOT_FILES`.
+/// THIS is the guard that would have caught #343.
 ///
 /// `assert_closed` below is the other half, and on its own it was not enough:
 /// it only sees LITERAL `require("a.b")` calls, and the probe that #336 broke
@@ -131,14 +143,23 @@ fn main() {
 /// actually causes the problem: a new top-level Lua directory appearing.
 ///
 /// The failure is deliberately not "add it to ROOTS". Some directories must
-/// not be embedded. It is "decide", and record the decision in one of the two
+/// not be embedded. It is "decide", and record the decision in one of the
 /// lists, so the next reader can tell a choice from an oversight.
+///
+/// THE RESIDUAL RISK, NAMED: an exclusion silences this check exactly as
+/// cleanly as a correct classification does. Someone who hits the failure and
+/// reaches for `EXCLUDED_ROOTS` to make the build pass, on a directory the host
+/// genuinely needs, recreates #343 precisely -- and this guard will agree with
+/// them. Nothing here can distinguish a considered exclusion from a careless
+/// one; only review can. What the guard buys is that the decision now has to
+/// be made, written down, and shown in a diff.
 fn assert_roots_cover_the_tree(repo_root: &Path) {
     // Watched, so adding a top-level directory re-runs this check rather than
     // passing on a cached build script result.
     println!("cargo:rerun-if-changed={}", repo_root.display());
 
     let known: BTreeSet<&str> = ROOTS.into_iter().chain(EXCLUDED_ROOTS).collect();
+    let excluded_files: BTreeSet<&str> = EXCLUDED_ROOT_FILES.into_iter().collect();
     let mut undecided: BTreeSet<String> = BTreeSet::new();
 
     let entries = fs::read_dir(repo_root)
@@ -151,19 +172,29 @@ fn assert_roots_cover_the_tree(repo_root: &Path) {
             continue;
         };
         // Dotfiles are tooling (.git, .github); they are not source layers.
-        if !path.is_dir() || name.starts_with('.') || known.contains(name) {
+        if name.starts_with('.') {
             continue;
         }
-        if contains_lua(&path) {
-            undecided.insert(name.to_string());
+        if path.is_dir() {
+            if !known.contains(name) && contains_lua(&path) {
+                undecided.insert(format!("{name}/  (directory)"));
+            }
+        } else if path.extension().is_some_and(|extension| extension == "lua")
+            && !excluded_files.contains(name)
+        {
+            // A .lua dropped at the repository root is in no root at all, so it
+            // is unembedded and, before this arm existed, unflagged. `ROOTS`
+            // cannot express "this one file", which is why it needs its own
+            // list rather than a directory entry.
+            undecided.insert(format!("{name}   (file at the repository root)"));
         }
     }
 
     assert!(
         undecided.is_empty(),
-        "these top-level directories contain Lua but appear in neither ROOTS nor \
-         EXCLUDED_ROOTS -- decide whether the wasm host needs them and say so in one \
-         of the two lists:\n  {}",
+        "these top-level Lua sources appear in none of ROOTS, EXCLUDED_ROOTS or \
+         EXCLUDED_ROOT_FILES -- decide whether the wasm host needs them and say so in \
+         one of the three lists:\n  {}",
         undecided.into_iter().collect::<Vec<_>>().join("\n  ")
     );
 }
