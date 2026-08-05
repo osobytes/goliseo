@@ -451,10 +451,132 @@ local CHARGE = {
     },
 }
 
+-- ---------------------------------------------------------------------------
+-- Clip 5: KEEPER_GATHER -- both arms wrapped around a held ball
+-- ---------------------------------------------------------------------------
+-- An upper-body overlay, so a keeper can carry the ball while walking it out to
+-- the edge of the box. The arms come forward and IN: `socket_ball` sits just
+-- ahead of the chest, and the hands have to arrive there or the ball reads as
+-- floating in front of a keeper who happens to be standing near it.
+--
+-- Bringing them in means REDUCING z, which is the natural outward splay every
+-- other stance carries (FREE hangs at 7 and 9).
+local KEEPER_GATHER = {
+    name = "keeper_gather",
+    loop = true,
+    root_motion = false,
+    duration = 2.0,
+    keys = {
+        -- Negative x on a limb swings it forward; the elbows fold the hands in
+        -- to the ball. A little spine lean puts the chest over it.
+        {
+            t = 0.0,
+            rot = {
+                spine = { 6, 0, 0 },
+                chest = { 4, 0, 0 },
+                head = { 6, 0, 0 },
+                ["upper_arm.R"] = { -72, 0, 2 },
+                ["forearm.R"] = { -58, 0, 0 },
+                ["upper_arm.L"] = { -72, 0, 2 },
+                ["forearm.L"] = { -58, 0, 0 },
+            },
+            move = {},
+        },
+        -- Breathing, so a held ball is not a freeze-frame.
+        {
+            t = 1.0,
+            rot = {
+                spine = { 8, 0, 0 },
+                chest = { 5, 0, 0 },
+                head = { 5, 0, 0 },
+                ["upper_arm.R"] = { -75, 0, 2 },
+                ["forearm.R"] = { -60, 0, 0 },
+                ["upper_arm.L"] = { -75, 0, 2 },
+                ["forearm.L"] = { -60, 0, 0 },
+            },
+            move = {},
+        },
+        {
+            t = 2.0,
+            rot = {
+                spine = { 6, 0, 0 },
+                chest = { 4, 0, 0 },
+                head = { 6, 0, 0 },
+                ["upper_arm.R"] = { -72, 0, 2 },
+                ["forearm.R"] = { -58, 0, 0 },
+                ["upper_arm.L"] = { -72, 0, 2 },
+                ["forearm.L"] = { -58, 0, 0 },
+            },
+            move = {},
+        },
+    },
+}
+
+-- ---------------------------------------------------------------------------
+-- Clip 6: KEEPER_SLING -- the overarm throw out
+-- ---------------------------------------------------------------------------
+-- A one-shot. The right arm cocks overhead and behind (the same -125-ish reach
+-- the SWING windup uses) and comes through to a follow-through, while the left
+-- arm points out the target. The chest twists to his right on the cock and
+-- unwinds through the release -- negative y twists toward his right.
+--
+-- The ball reparents to socket_hand.R for the throw (see skeleton.lua), so the
+-- hand path IS the ball path here.
+local KEEPER_SLING = {
+    name = "keeper_sling",
+    loop = false,
+    root_motion = false,
+    fallback = "idle",
+    duration = 0.5,
+    keys = {
+        { -- cocked
+            t = 0.0,
+            rot = {
+                spine = { -4, -12, 0 },
+                chest = { -6, -20, 0 },
+                head = { 4, 6, 0 },
+                ["upper_arm.R"] = { -140, 0, 14 },
+                ["forearm.R"] = { -62, 0, 0 },
+                ["upper_arm.L"] = { -62, 0, 12 },
+                ["forearm.L"] = { -22, 0, 0 },
+            },
+            move = {},
+        },
+        { -- release: arm through the top, torso unwound and over the front foot
+            t = 0.28,
+            rot = {
+                spine = { 10, 6, 0 },
+                chest = { 8, 12, 0 },
+                head = { 6, 0, 0 },
+                ["upper_arm.R"] = { -96, 0, 6 },
+                ["forearm.R"] = { -10, 0, 0 },
+                ["upper_arm.L"] = { -30, 0, 14 },
+                ["forearm.L"] = { -34, 0, 0 },
+            },
+            move = {},
+        },
+        { -- follow-through, settling back toward the carry stance
+            t = 0.5,
+            rot = {
+                spine = { 8, 2, 0 },
+                chest = { 6, 4, 0 },
+                head = { 4, 0, 0 },
+                ["upper_arm.R"] = { -44, 0, 8 },
+                ["forearm.R"] = { -26, 0, 0 },
+                ["upper_arm.L"] = { -20, 0, 12 },
+                ["forearm.L"] = { -28, 0, 0 },
+            },
+            move = {},
+        },
+    },
+}
+
 clips.ORDER = { IDLE, WALK, SWING }
 clips.RUN = RUN
 clips.GUARD_STANCE = GUARD_STANCE
 clips.CHARGE = CHARGE
+clips.KEEPER_GATHER = KEEPER_GATHER
+clips.KEEPER_SLING = KEEPER_SLING
 
 -- Precomputes the set of bones a clip touches, so the sampler knows which
 -- channels to emit without re-scanning every keyframe each frame.
@@ -495,6 +617,8 @@ end
 prepare(CHARGE)
 prepare(RUN)
 prepare(GUARD_STANCE)
+prepare(KEEPER_GATHER)
+prepare(KEEPER_SLING)
 
 local ZERO = { 0, 0, 0 }
 local IDENTITY = quat.identity()
