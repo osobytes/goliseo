@@ -613,7 +613,9 @@ reader who forgets the exit code cannot pick up half a table. Same rule, and the
 same reason, as `scripts/babylon_bench.py`.
 
 The Babylon Native spike needs a Babylon Native build, which this repository
-does not vendor:
+does not vendor. **This needs `libcurl4-openssl-dev` on the system include
+path** — see [the stale `BUILDING.md`](#13-building-it--measured) for why
+pointing CMake elsewhere does not work:
 
 ```bash
 git clone --recursive --depth 1 https://github.com/BabylonJS/BabylonNative.git
@@ -622,9 +624,10 @@ cd BabylonNative && cmake -G Ninja -B build/Linux \
   -D NAPI_JAVASCRIPT_ENGINE=JavaScriptCore -D CMAKE_BUILD_TYPE=RelWithDebInfo \
   -D OpenGL_GL_PREFERENCE=GLVND . && ninja -C build/Linux
 
-# The spike needs the same pinned character the #341 bench uses.
+# The spike needs the same pinned character the #341 bench uses. Either bench
+# runner stages it; take it from whichever has been run.
 cp bench/babylon_native/spike.js  <BabylonNative>/build/Linux/Apps/Playground/Scripts/
-cp .bench/babylon/site/vendor/character.glb \
+cp .bench/native_shell/site/vendor/character.glb \
    <BabylonNative>/build/Linux/Apps/Playground/Scripts/character.glb
 cd <BabylonNative>/build/Linux/Apps/Playground
 DISPLAY=:1 ./Playground app:///Scripts/spike.js
@@ -634,6 +637,8 @@ DISPLAY=:1 ./Playground app:///Scripts/spike.js
 
 The Babylon bundles and the character are fetched on demand and verified against
 pinned SHA-256 hashes, never committed — see `scripts/babylon_bench.py` and
-THIRD_PARTY.md. `bench/native_shell/tauri/icons/` holds three generated solid
-squares, present only because the bundlers require an icon; nothing displays
-them.
+THIRD_PARTY.md. The three bundler icons under `bench/native_shell/tauri/icons/`
+are **generated** by `native_shell_bench.py` and gitignored — solid squares,
+present only because both bundlers refuse to package without an icon, and
+nothing ever displays them. Generating rather than committing them keeps
+THIRD_PARTY.md's "no tracked image asset" audit true.
