@@ -13,6 +13,10 @@
 --   love . --rig3d-palette-snapshots [write|self-test] -> check/refresh the #337
 --                                palette-slot visual baselines, or prove the compare
 --                                itself can detect a colour regression
+--   love . --rig3d-player-draw [write|self-test] -> the #340 gate that actually runs
+--                                game/render/player_renderer_3d.lua: the real match
+--                                draw path plus a pinned baseline of what it hands
+--                                the GPU
 --   love . --rollback-lab [profile] [seed] [corrupt] -> run the OMP-2 lab
 --   love . --rollback-validation SUITE [profile] [seed] -> gate OMP-2 evidence
 --   love . --fault-harness [row|smoke|full] [net seed] [ticks] -> OMP-3 fault matrix
@@ -49,6 +53,11 @@ end
 -- the shipping path until the ten-player benchmark says otherwise.
 if has_flag("--rigged-players") then
     require("game.render.pitch").rigged_players = true
+    -- Asking for the rigged renderer makes its failure an invariant violation
+    -- rather than a recoverable fallback (#340). Someone who typed this flag
+    -- wants to look at rigged players; handing them the 2.5D renderer plus a
+    -- line of stdout is how the rigged path went unexercised for four issues.
+    require("game.render.player_renderer_3d").required = true
 end
 
 -- Opt into the broadcast-style following camera for a manual look. An optional
@@ -255,6 +264,18 @@ if has_flag("--rig3d-palette-snapshots") then
     function love.load()
         local mode = args_after("--rig3d-palette-snapshots") or "check"
         local ok, report = require("spec.support.rig3d_palette_snapshots").run(mode)
+        print(report)
+        os.exit(ok and 0 or 1)
+    end
+    return
+end
+
+-- #340: the gate that executes player_renderer_3d.lua itself, rather than
+-- mirroring its wiring. Needs a GL context and a depth buffer, like the match.
+if has_flag("--rig3d-player-draw") then
+    function love.load()
+        local mode = args_after("--rig3d-player-draw") or "check"
+        local ok, report = require("spec.support.rig3d_player_draw").run(mode)
         print(report)
         os.exit(ok and 0 or 1)
     end

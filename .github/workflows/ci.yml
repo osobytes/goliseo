@@ -164,6 +164,37 @@ jobs:
                   ./scripts/check_snapshot_headroom.sh --self-test
                   ./scripts/check_snapshot_headroom.sh --log "$RUNNER_TEMP/test.log"
 
+            # #340. This is the FIRST CI step in this repository that executes
+            # game/render/player_renderer_3d.lua. The headless suite above
+            # cannot: with no window there is no shader compiler, so the rigged
+            # renderer disables itself, prints one line, and every rigged
+            # assertion made through it passes vacuously -- which is how four
+            # issues of rigged-renderer work shipped behind a green count that
+            # had never run the renderer.
+            #
+            # It needs a GL context, which this job did not previously have.
+            # xvfb plus Mesa's llvmpipe supplies one; four other jobs in this
+            # file already run under xvfb-run, so the capability was present and
+            # simply unused. Nothing this gate pins is GPU-dependent -- it
+            # compares the payload crossing into the GPU, not pixels -- and it
+            # was verified to produce identical numbers, and coverage figures
+            # agreeing to three decimal places, under llvmpipe and on an NVIDIA
+            # card. The pixel-exact rig3d/keeper/outfield snapshot gates are the
+            # opposite case and deliberately stay out of CI; see AGENTS.md #9.
+            - name: Install a GL stack for the rigged renderer gate
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install --no-install-recommends --yes \
+                      xvfb libgl1-mesa-dri libglx-mesa0
+
+            - name: Prove the rigged renderer gate detects failure
+              run: |
+                  ./scripts/check_rig3d_player_draw.sh --self-test
+                  ./scripts/check_rig3d_player_draw.sh self-test
+
+            - name: Run the rigged 3D player renderer gate
+              run: ./scripts/check_rig3d_player_draw.sh
+
             - name: Run gameplay tripwire
               run: love . --tripwire
 
