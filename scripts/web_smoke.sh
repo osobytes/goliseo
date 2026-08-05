@@ -13,6 +13,7 @@ node --check "$project_root/scripts/webrtc_star_smoke.js"
 node --check "$project_root/scripts/browser_storage_host.js"
 node --check "$project_root/scripts/browser_storage_smoke.js"
 node "$project_root/scripts/browser_storage_smoke.js"
+"$project_root/scripts/check_shader_hoist.sh"
 node "$project_root/scripts/webrtc_proof_smoke.js"
 node "$project_root/scripts/webrtc_star_smoke.js"
 python3 "$project_root/scripts/browser_matrix.py" --self-test
@@ -119,6 +120,13 @@ if "page_query.get(\"arg\")" not in loader:
     raise SystemExit("browser loader does not read flow arguments from the page URL")
 if "GoliseoBrowserStorage" not in loader:
     raise SystemExit("browser loader does not include the settings persistence host")
+# #391. Checked on the BUILT artifact, not just on the assembled string: without
+# this the browser build ships to Firefox with no shader at all that declares a
+# varying, which is every shader the rigged 3D renderer uses.
+if "GoliseoShaderHoist" not in loader:
+    raise SystemExit("browser loader does not include the #391 shader varying hoist")
+if loader.index("GoliseoShaderHoist") > loader.index("function start()"):
+    raise SystemExit("the #391 shader hoist is installed after the runtime bootstrap")
 if 'page_query.get("storage") === "unavailable"' not in loader:
     raise SystemExit("browser loader does not expose the unavailable-storage diagnostic")
 if "Module.FS.syncfs = function (_populate, callback)" in loader:
