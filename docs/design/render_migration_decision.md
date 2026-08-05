@@ -448,10 +448,12 @@ now available, stated without choosing for it:
   refuses the *packed 24-bit* format `bloom` used to hardcode and offers
   `depth16`, which is all the 3D pass ever needed, so the fix was one list in
   `bloom.lua` rather than a renderer. Firefox is still out, for an unrelated
-  defect: no LÖVE shader compiles there at all, not even a two-line one that
-  touches none of rig3d's features. The browser leg therefore passes in Chrome
-  and fails in Firefox, and it fails for a reason this document was not
-  reasoning from.
+  defect: a LÖVE shader that declares a `varying` does not compile there, and
+  asking for one aborts the runtime rather than falling back. The browser leg
+  therefore passes in Chrome and fails in Firefox, and it fails for a reason this
+  document was not reasoning from. Rigged players consequently stay opt-in until
+  #391 is fixed — the flip is #361's, and it is gated on that defect rather than
+  on any number.
 - #100 forbids silently loosening a gate: "any revised threshold requires the
   original failure evidence, measured bottleneck, bounded optimization,
   tradeoff, and before/after rerun". PR #350 supplies exactly that shape of

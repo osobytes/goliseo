@@ -49,7 +49,8 @@ What the love.js runtime actually gives LÖVE -- WebGL version, canvas formats,
 whether a depth attachment and the rigged 3D renderer are available, and whether
 LÖVE's shaders compile -- is measured by `scripts/lovejs_depth_probe.py` and
 recorded in [`browser_rigged_3d.md`](browser_rigged_3d.md). Short version:
-Chrome renders rigged 3D players; Firefox compiles no LÖVE shader at all.
+Chrome renders rigged 3D players; Firefox cannot compile a LÖVE shader that
+declares a `varying`, which rules out rig3d there but leaves bloom working.
 
 ## Packaging smoke check
 

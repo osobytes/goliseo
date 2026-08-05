@@ -13,7 +13,9 @@ re-measured". It has now.
 The sentence is **false**. love.js supplies a depth attachment, LÖVE's rig3d
 shader links, and ten rigged players render in a browser at 33 draw calls. What
 blocks Firefox is a completely different defect that has nothing to do with
-depth: no LÖVE shader compiles there at all, not even a two-line one.
+depth: **a LÖVE shader that declares a `varying` does not compile there**, and
+asking for one takes the whole runtime down rather than falling back — which is
+why rigged players stay opt-in for now (#391).
 
 ## How to reproduce
 
@@ -109,8 +111,10 @@ depth buffer.
 ### Asking for an unsupported format was not survivable
 
 The old code wrapped the creation in a `pcall` on the theory that a runtime
-which cannot supply the attachment degrades gracefully. In Chrome it did not:
-running `love . --benchmark 300 120 rigged` against the pre-fix build printed
+which cannot supply the attachment degrades gracefully. In **both** browsers it
+did not. Rebuilding base `main` (`d61e441`) and running
+`love . --benchmark 300 120 rigged` against it printed, in Chrome *and* in
+Firefox,
 
 ```
 The depth24stencil8 canvas format is not supported by your graphics drivers.
@@ -118,11 +122,13 @@ The depth24stencil8 canvas format is not supported by your graphics drivers.
 
 as its last console line and then raised love.js's own
 `alert('An error occurred before the game window could be initialised. Please
-check the console!')`. The run produced no further output. The same command
-against the post-fix build completes and passes its gate. Since
+check the console!')`. Neither browser reached `GC_BENCH_GATE`; both alerted. The
+same command against the post-fix build completes and passes its gate in Chrome,
+and completes in Firefox for the procedural renderer. Since
 `game/screens/match.lua` composes every match frame through `bloom.draw`, that
-was a live crash on entering a match in the browser build, not a theoretical
-one.
+was a live crash on entering a match in the browser build **on every browser**,
+not a theoretical one and not a Chrome-only one — this fix is worth more than an
+earlier draft of this document credited it with.
 
 The narrow probe mode exists because of this: `--gl-probe canvas FORMAT
 READABLE` creates exactly one canvas per process, so a format that takes the
@@ -139,10 +145,15 @@ quoting it and gets 102, and both browsers report 1024 vectors available, so the
 budget was never close on this hardware. **In Chrome the shader links.** The
 prediction holds.
 
-**In Firefox no LÖVE shader compiles**, including a two-line one that touches
-none of rig3d's features. The ladder in `gl_probe.SHADER_LADDER` walks from a
-trivial `position()`/`effect()` pair up to the real shader, and every rung fails
-identically:
+**In Firefox a LÖVE shader that declares a `varying` does not compile.** The
+ladder in `gl_probe.SHADER_LADDER` is built to straddle exactly that boundary,
+and it does:
+
+| rung | what it adds | Firefox |
+| --- | --- | --- |
+| `no_varying` | LÖVE entry points, no user `varying` — bloom's own shape | **compiles** |
+| `baseline` | the same shader plus one `varying vec3` | **fails** |
+| everything above, incl. `rig3d` | attributes, uniform arrays, dynamic indexing | fails |
 
 ```
 Cannot compile vertex shader code:
@@ -150,23 +161,43 @@ Cannot compile vertex shader code:
 ```
 
 The count of undefined identifiers tracks the number of user-declared
-`varying`s — one for each ladder rung, four for rig3d, which declares
+`varying`s — one for each failing ladder rung, four for rig3d, which declares
 `v_normal`, `v_world`, `v_slot_color` and `v_material`. The mangled names are
 the shader translator's; the `0(21) : error C1503` format is the NVIDIA GLSL
-compiler's. So the translated vertex shader reaches the driver referencing
-varyings it never declared. This reproduces with stock Firefox preferences as
-well as with the ones `scripts/babylon_bench.py` uses, so it is not an artefact
-of the harness.
+compiler's. The most likely reading is that the translated vertex shader reaches
+the driver referencing varyings it never declared — **an inference, not a
+measurement**: Firefox does not expose `WEBGL_debug_shaders`, so the translated
+source was never read. What is measured is the boundary and the identifier
+count. Both reproduce with stock Firefox preferences as well as with the ones
+`scripts/babylon_bench.py` uses, so neither is a harness artefact.
 
-That is a love.js ↔ Firefox incompatibility in LÖVE's shader generation, not
-anything about depth and not anything about rig3d. The failure is therefore not
-confined to the rigged path: `bloom`'s own threshold and blur shaders are
-strictly more complex than the failing baseline rung, so Firefox runs the
-browser build with bloom off too. It degrades rather than crashing — both
-`bloom` and `player_renderer_3d` `pcall` their shader creation and fall back,
-and Firefox's procedural benchmark completes and passes — but the repeated
-aborts do kill the WebDriver session, which is why the Firefox shader rows in
-`report.json` are recorded as incomplete rather than as refusals.
+**Bloom is not affected, and the browser build has not been running without it.**
+An earlier draft of this document said otherwise, reasoning that bloom's shaders
+are "more complex" than the failing rung. Complexity is not the axis — varyings
+are, and `bloom.lua`'s `THRESHOLD_SRC` and `BLUR_SRC` declare none. Measured on
+the post-fix build in Firefox: a full `--benchmark 300 120 procedural` run
+completes, `GC_BENCH_GATE|renderer=procedural|pass=true`, and a complete console
+capture contains **zero** "bloom disabled" lines.
+
+What *is* affected is anything that reaches the rig3d shader, and it does not
+degrade — it crashes. Reproduced first-hand in headed Firefox 153 on a build at
+this HEAD, with `--benchmark 300 120 rigged`:
+
+```
+game/render/player_renderer_3d.lua:122: in function 'available'
+game/render/pitch.lua:386: in function 'draw'
+game/render/benchmark.lua:258: in function 'render_fn'
+game/render/bloom.lua:237: in function 'draw'
+```
+
+followed by love.js's `alert("An error occurred before the game window could be
+initialised…")`, and **no** "rigged 3D players disabled" line — the `pcall` in
+`build()` never gets the chance to report, because the failure escapes it through
+a secondary fault inside LÖVE's own `boot.lua` error path. This is the same shape
+as the depth-canvas crash above, arriving a second time through the shader path,
+and it is why `pitch.rigged_players` stays `false`: `pitch.draw` calls
+`available()` unconditionally, so a default-on flip makes this every player,
+every match. Tracked as #391; the flip is #361's.
 
 ## Ten rigged players, measured
 
@@ -212,16 +243,24 @@ crossing Lua → JS → WebGL per call costs.
 `rigged_active` is `true` for every rigged row that ran, so no row is a
 procedural run wearing a rigged label.
 
-### One thing measured and not explained
+### The cross-runtime hash difference is #325, not a new mystery
 
 The final simulation hash agrees perfectly *within* a runtime and differs
 *between* runtimes. Both Chrome renderers and Firefox's procedural run all end
 at `8c51961a801e136e`; both native renderers end at `15566ea777b5373e`. That the
 renderer choice never changes the hash is the property the benchmark exists to
 check, and it holds on both runtimes — presentation does not reach the
-simulation. Why the two runtimes land on different states from the same seed and
-the same 900 ticks was **not investigated here**; it is outside this issue and
-is recorded rather than diagnosed or dismissed.
+simulation.
+
+The runtime-to-runtime difference is the known bot-driven divergence tracked by
+**#325**. This fixture is bot-driven (`game/render/benchmark.lua` drives it with
+`sim.bot`), native LÖVE is LuaJIT and love.js is PUC Lua 5.1, and
+`scripts/phase0_sim_host.lua` already records that the bot's state hash differs
+between the two VMs — almost certainly `pairs()` iteration order, which the Lua
+spec leaves unspecified. The bot is deliberately not part of the determinism
+contract, which is why the OMP-1 browser determinism gate is unaffected and
+stays green. Nothing new is being reported here; the numbers are just consistent
+with #325.
 
 ## What this does and does not settle
 
@@ -236,8 +275,13 @@ is recorded rather than diagnosed or dismissed.
   need it, since the fix is one list in `bloom.lua`.
 - **Not settled:** minimum spec. The extension lists and limits captured in the
   report are the raw material for that, and it remains out of scope.
-- **Not settled:** why native LÖVE and love.js end the same 900-tick fixture on
-  different simulation hashes. Recorded above, not diagnosed.
+- **Not settled:** *why* a `varying` is what Firefox chokes on. The boundary is
+  measured and the identifier count is measured; "the translator drops the
+  declarations" is the inference that fits both, and it is not evidence. Firefox
+  exposes no `WEBGL_debug_shaders`, so the translated source was never read.
+  #391 owns closing that.
+- **Not settled, and now attributed rather than open:** the cross-runtime hash
+  difference is #325's known bot-driven divergence, not a finding of this issue.
 
 ## A side effect worth knowing about
 
@@ -249,6 +293,43 @@ fall back safely. It also means the tier-4 pose gates
 call `pitch.draw` into a plain colour canvas created directly by
 `spec/support/*_pose_snapshots.lua`, never through `bloom.draw`, so
 `bloom.hasDepth()` is false and the procedural path is the only one reachable.
-Making rigged the default did not change a single pixel of their baselines, and
-that is the demonstration — not the assertion — that those gates are
-procedural-only. Closing that hole is #340.
+Turning the default on — tried on this branch and reverted — did not change a
+single pixel of their baselines, and that is the demonstration, not the
+assertion, that those gates are procedural-only. Closing that hole is #340, and
+**#352 does not close it**: #352 gates on an explicit
+`player_renderer_3d.required` flag, which covers "nothing tests rig3d" but not
+"the gates cannot see the shipped default".
+
+Related, and unmet: #361's "never a silent fallback" criterion. Where a real
+fallback happens today the only signal is a `print()` to devtools — nothing
+in-game, nothing a player or a gate can see. That belongs with the flip.
+
+## Session deaths: two fingerprints, one of which is not ours
+
+The Firefox WebDriver sessions in the published run died repeatedly, and an
+earlier draft of this document attributed all of them to LÖVE aborting the
+runtime. The raw geckodriver logs show two distinct signatures, and only one
+supports that reading:
+
+- **Attributable** — the page loaded, console entries were read back, a real Lua
+  crash appears, then `AsyncShutdown`/`ABORT` on quit. Sessions 91–150 s. These
+  are the low ladder rungs, and the conclusion drawn from them stands.
+- **Unattributable** — no console entry was ever observed, sessions 3.5–82 s,
+  `Exiting due to channel error`, no ABORT sequence. These are the high rungs.
+  They are indistinguishable from the browser being killed from outside, and
+  during that run one was: windows were being closed by hand on the same
+  desktop.
+
+No published number is contaminated — Firefox's rigged row is correctly "did not
+run", the one published Firefox figure has an attributable fingerprint, and the
+`report_incomplete.json` quarantine did its job. But the *causal* claim for the
+high rungs rested on probes that may never have loaded, so it is now stated as
+an inference from the low rungs, which are genuine and which the
+`no_varying`/`baseline` pair reproduces cleanly on demand.
+
+`scripts/lovejs_depth_probe.py` now records `saw_console_entry`,
+`console_reads_ok` and the session duration on every death, and
+`death_fingerprint()` turns them into `attributable` / `unattributable` so a
+future run does not need the log archaeology. Runs should also be isolated on
+their own display; that this one was not is a harness gap, not a browser
+finding.
