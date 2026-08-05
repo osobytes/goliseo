@@ -215,7 +215,7 @@ end
 -- `head` carries the geometry of the skull this helm has to fit:
 --   { hr = half-width, base = base Y, hh = height, eye = eye-line Y }
 ---@param id string
----@param c table
+---@param c table  -- themes.SLOT_INDEX: slot name -> palette slot index
 ---@param head table
 ---@return love.Mesh, love.Mesh|nil
 function headgear.build(id, c, head)

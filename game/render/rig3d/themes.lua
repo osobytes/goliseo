@@ -112,6 +112,11 @@ themes.LIST = {
             strap = { 0.30, 0.20, 0.13 },
             crest = "trim",
             joint = { 0.34, 0.30, 0.28 },
+            -- unused: shape.seams = false, so no vertex in this theme ever
+            -- carries the `seam` slot. Authored explicitly (rather than left
+            -- absent) so themes.resolvedPalette's "every slot must be
+            -- authored" invariant holds without a special case.
+            seam = { 0, 0, 0 },
         },
         head = "great_helm",
         loadout = { right = "tournament_sword", left = "heater_shield" },
@@ -174,6 +179,9 @@ themes.LIST = {
             strap = { 0.28, 0.28, 0.32 },
             crest = "trim",
             joint = { 0.24, 0.24, 0.28 }, -- dark exposed ball joints
+            -- unused: shape.seams = false, see the medieval theme's `seam`
+            -- for why this is authored rather than left absent.
+            seam = { 0, 0, 0 },
         },
         head = "figure_helm",
         loadout = { right = "foam_champion", left = "spring_glove" },
@@ -195,15 +203,121 @@ function themes.resolve(slot, team)
     return slot
 end
 
--- Returns a flat colour table with every slot resolved, so builders never have
--- to think about team colour again.
+-- ---------------------------------------------------------------------------
+-- Palette slots (#337)
+--
+-- A vertex used to carry its literal {r,g,b,a} baked in at mesh-build time,
+-- which meant every colour variant -- every team, every future cosmetic skin
+-- -- needed its own copy of every mesh. Instead each vertex now carries a
+-- SLOT INDEX (a small integer, one of `themes.SLOTS` below) and the actual
+-- colours are resolved once per (theme, team) into a small array that is
+-- uploaded to the shader as a uniform. Meshes become colour-agnostic: the
+-- same geometry is redrawn for any palette by swapping the uniform, at zero
+-- extra meshes and zero extra draw calls.
+--
+-- This is the same eight names `theme.color` already speaks (skin, cloth,
+-- plate, plate_dark, accent, strap, crest, joint), plus the two theme-color
+-- keys that are only meshed by some themes (limbs, seam) and the two literal
+-- constants face.lua reaches for regardless of theme (ink, sclera). Twelve
+-- slots total. This shader's own vertex-stage uniforms are `u_palette[12]`
+-- (12 vec4s) plus `u_model`/`u_view`/`u_proj` (3 more 4x4 matrices, 12
+-- vec4-equivalents) -- about 24 vectors -- on top of which LÖVE always adds
+-- its own per-draw block (ViewSpaceFromLocal, ClipSpaceFromView,
+-- ClipSpaceFromLocal, ViewNormalFromLocal, love_ScreenSize, ...), roughly 16
+-- more, for ~40 vertex-stage vectors in total. Still comfortable against
+-- WebGL1's minimum guaranteed floor of 128 vertex-shader uniform *vectors*
+-- (`GL_MAX_VERTEX_UNIFORM_VECTORS`); the fragment stage's own uniforms
+-- (`u_light_dir`, `u_cam_pos`, three material flags) are unaffected by this
+-- change and were already comfortably under the 16-vector fragment floor.
+-- ---------------------------------------------------------------------------
+
+---@type string[]  -- canonical order; index-1 IS the shader's u_palette index
+themes.SLOTS = {
+    "skin",
+    "cloth",
+    "plate",
+    "plate_dark",
+    "accent",
+    "strap",
+    "crest",
+    "joint",
+    "limbs",
+    "seam",
+    "ink",
+    "sclera",
+}
+
+themes.SLOT_COUNT = #themes.SLOTS
+
+-- Builders reference `SLOT_INDEX.skin`, `SLOT_INDEX.cloth`, etc. exactly the
+-- way they used to reference a resolved colour table -- the value baked per
+-- vertex is now this fixed index rather than a literal colour, and it does
+-- NOT depend on theme or team, so it is computed once at load time.
+---@type table<string, integer>  -- 0-based: matches the shader array index directly
+themes.SLOT_INDEX = {}
+for i, name in ipairs(themes.SLOTS) do
+    themes.SLOT_INDEX[name] = i - 1
+end
+
+-- Colours that never vary by theme or team, so they are not part of any
+-- theme's `color` table. face.lua reaches for these for pupils/brows/mouths
+-- (`ink`) and eye whites/catchlights (`sclera`) on every figure style. A
+-- species that needed a non-white sclera (or non-near-black ink) would need
+-- these two to graduate from a constant into a per-theme `theme.color` entry
+-- -- they are slots today only because every vertex must carry one, not
+-- because any theme has ever wanted to vary them.
+local CONSTANT_COLOR = {
+    ink = { 0.12, 0.11, 0.13 },
+    sclera = { 0.97, 0.97, 0.98 },
+}
+
+-- A theme may leave a slot unset when its own default already reads right --
+-- e.g. Medieval Fantasy shows bare skin on the forearms, so `limbs` is simply
+-- not authored. This is the exact fallback the pre-slice code applied once
+-- per build (`c.limbs = c.limbs or c.skin`), moved here so it resolves once
+-- per (theme, team) rather than once per vertex.
+local SLOT_FALLBACK = { limbs = "skin" }
+
+-- Resolves every palette slot for one (theme, team) pair into the flat array
+-- the shader wants: `out[i]` is the RGBA for `themes.SLOTS[i]`, i.e. shader
+-- index `i - 1`.
+--
+-- Every non-constant slot MUST be authored by the theme (directly, or via
+-- SLOT_FALLBACK) -- this asserts rather than substituting a placeholder,
+-- because a theme whose shape never meshes a slot (e.g. `seam` when
+-- `shape.seams = false`) still authors an explicit, documented "unused"
+-- colour for it (see themes.LIST). That is a deliberate content contract,
+-- not a formality: the previous silent `{0, 0, 0}` fallback would render an
+-- opaque black patch instead of crashing if a NEW theme's shape flags ever
+-- referenced a slot it forgot to author, which is exactly the shape of
+-- mistake new content (#338) is likely to make. AGENTS.md #7 reserves
+-- `assert` for invariants precisely so this fails loud instead.
 ---@param theme table
 ---@param team table
----@return table
-function themes.palette(theme, team)
+---@return number[][]
+function themes.resolvedPalette(theme, team)
     local out = {}
-    for name, slot in pairs(theme.color) do
-        out[name] = themes.resolve(slot, team)
+    for i, name in ipairs(themes.SLOTS) do
+        local raw = CONSTANT_COLOR[name]
+        if not raw then
+            local slot = theme.color[name]
+            if slot == nil and SLOT_FALLBACK[name] then
+                slot = theme.color[SLOT_FALLBACK[name]]
+            end
+            assert(
+                slot ~= nil,
+                string.format(
+                    "theme '%s' has no colour authored for palette slot '%s' -- add theme.color.%s "
+                        .. "(even an explicit, documented placeholder if the theme's shape never "
+                        .. "meshes it), or add a themes.SLOT_FALLBACK entry for it",
+                    theme.key,
+                    name,
+                    name
+                )
+            )
+            raw = themes.resolve(slot, team)
+        end
+        out[i] = { raw[1], raw[2], raw[3], raw[4] or 1 }
     end
     return out
 end

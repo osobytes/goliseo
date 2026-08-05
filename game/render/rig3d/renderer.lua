@@ -14,16 +14,32 @@ local renderer = {}
 -- Cel/toon shading: a directional key light quantised into three bands, plus a
 -- view-dependent rim so silhouettes separate from the background. Enough to
 -- make the 3D form read without pretending to be physically based.
+--
+-- Colour (#337): a vertex no longer carries a literal {r,g,b,a}. It carries a
+-- small integer palette-slot index (VertexPaletteSlot), and the VERTEX stage
+-- resolves that against `u_palette[]` -- a uniform array sent once per draw --
+-- into a varying that the pixel stage shades. The lookup happens in the
+-- vertex stage deliberately: GLSL ES 1.00 (WebGL1/love.js) allows dynamic
+-- (non-constant) array indexing in vertex shaders but NOT in fragment
+-- shaders, so doing this indexing in `effect()` would compile on desktop and
+-- silently fail to compile on the web target.
+--
+-- `%d` is the palette size, baked into the source at load time (GLSL array
+-- sizes must be compile-time constants) rather than hardcoded, so it can
+-- never drift from `themes.SLOT_COUNT`.
 local SHADER_SOURCE = [[
     varying vec3 v_normal;
     varying vec3 v_world;
+    varying vec4 v_slot_color;
 
     uniform mat4 u_model;
     uniform mat4 u_view;
     uniform mat4 u_proj;
+    uniform vec4 u_palette[%d];
 
 #ifdef VERTEX
     attribute vec3 VertexNormal;
+    attribute float VertexPaletteSlot;
 
     vec4 position(mat4 transform_projection, vec4 vertex_position) {
         // LÖVE's own transform is ignored: this is a real 3D pipeline, so we
@@ -33,6 +49,9 @@ local SHADER_SOURCE = [[
         // Every model transform is rotation + translation + uniform scale, so
         // the upper-left 3x3 is a valid normal matrix -- no inverse-transpose.
         v_normal = mat3(u_model) * VertexNormal;
+        // +0.5 before truncating: slots are written as exact small integers
+        // (0.0, 1.0, ...), so this is just safe rounding against float noise.
+        v_slot_color = u_palette[int(VertexPaletteSlot + 0.5)];
         return u_proj * u_view * world;
     }
 #endif
@@ -40,13 +59,13 @@ local SHADER_SOURCE = [[
 #ifdef PIXEL
     uniform vec3 u_light_dir;   // direction the light travels
     uniform vec3 u_cam_pos;
-    uniform float u_unlit;      // 1.0 = emit vertex colour flat (shadow, gizmos)
+    uniform float u_unlit;      // 1.0 = emit resolved colour flat (shadow, gizmos)
     uniform float u_metal;      // 1.0 = armour: hard specular band + hotter rim
     uniform float u_emissive;   // 1.0 = self-lit: energy blades, panel seams
 
     vec4 effect(vec4 color, Image tex, vec2 tc, vec2 sc) {
         if (u_unlit > 0.5) {
-            return color;
+            return v_slot_color;
         }
 
         // Emissive surfaces ignore the lighting model entirely and are pushed
@@ -55,7 +74,7 @@ local SHADER_SOURCE = [[
         if (u_emissive > 0.5) {
             vec3 n_e = normalize(v_normal);
             float facing = abs(dot(n_e, normalize(u_cam_pos - v_world)));
-            return vec4(color.rgb * (1.25 + 0.55 * facing), color.a);
+            return vec4(v_slot_color.rgb * (1.25 + 0.55 * facing), v_slot_color.a);
         }
 
         vec3 n = normalize(v_normal);
@@ -82,7 +101,7 @@ local SHADER_SOURCE = [[
         float rim = pow(1.0 - max(dot(n, view_dir), 0.0), 3.0);
         rim = smoothstep(0.35, 0.95, rim);
 
-        vec3 lit = color.rgb * (band + bounce)
+        vec3 lit = v_slot_color.rgb * (band + bounce)
                  + vec3(0.42, 0.52, 0.70) * rim * mix(0.55, 1.05, u_metal);
 
         // Metal gets one hard specular band. Skin and cloth get none, and that
@@ -93,7 +112,7 @@ local SHADER_SOURCE = [[
             lit += vec3(1.0, 0.97, 0.88) * smoothstep(0.20, 0.42, spec) * 0.60;
         }
 
-        return vec4(lit, color.a);
+        return vec4(lit, v_slot_color.a);
     }
 #endif
 ]]
@@ -104,8 +123,13 @@ local shader
 local SHADING_EYE_DISTANCE = 24
 local light_dir = { -0.42, -0.78, -0.46 }
 
-function renderer.load()
-    shader = love.graphics.newShader(SHADER_SOURCE)
+---@param palette_size integer  -- must match the length of every palette passed to beginPass
+function renderer.load(palette_size)
+    assert(
+        type(palette_size) == "number" and palette_size > 0,
+        "renderer.load needs a positive palette_size (see themes.SLOT_COUNT)"
+    )
+    shader = love.graphics.newShader(string.format(SHADER_SOURCE, palette_size))
 end
 
 -- Begins a 3D pass INSIDE an existing 2D frame: sets depth and shader state but
@@ -113,8 +137,14 @@ end
 -- Depth alone is cleared, so each character self-occludes without inheriting the
 -- previous one's depth -- inter-character ordering comes from the match's own
 -- back-to-front draw order.
+--
+-- `palette` is sent once here rather than per part (#337): every part drawn
+-- until the next beginPass shares one character's colours, so this is one
+-- uniform upload per PLAYER, not per mesh -- swapping an entire cosmetic
+-- variant costs exactly this one extra send, zero extra meshes or draw calls.
 ---@param camera table
-function renderer.beginPass(camera)
+---@param palette number[][]  -- RGBA per slot, see themes.resolvedPalette
+function renderer.beginPass(camera, palette)
     love.graphics.setShader(shader)
     love.graphics.clear(false, false, true)
     love.graphics.setDepthMode("less", true)
@@ -127,6 +157,7 @@ function renderer.beginPass(camera)
     shader:send("u_unlit", 0)
     shader:send("u_metal", 0)
     shader:send("u_emissive", 0)
+    shader:send("u_palette", unpack(palette))
 end
 
 -- Restores 2D state. Must be paired with beginPass.
