@@ -35,6 +35,18 @@ vec4 effect(vec4 color, Image tex, vec2 tc, vec2 sc) {
 }
 ]]
 
+-- Depth attachment formats for the scene pass, most capable first.
+--
+-- A LIST RATHER THAN A CONSTANT, because of what #360 measured in love.js:
+-- `love.graphics.getCanvasFormats()` there reports `depth24stencil8=false`,
+-- `depth24=false` and `depth16=TRUE`. LÖVE's WebGL 1 backend gates the packed
+-- and 24-bit formats on desktop/ES3 extensions the emscripten build does not
+-- advertise, and offers only the 16-bit depth renderbuffer that WebGL 1 has in
+-- core. The 3D pass only ever needed depth -- the stencil half was never used --
+-- so falling back costs nothing here and is the difference between rigged 3D
+-- rendering in a browser and not.
+bloom.DEPTH_FORMATS = { "depth24stencil8", "depth24", "depth16" }
+
 bloom.config = {
     enabled = true,
     threshold = 0.55, -- brightness above which pixels glow
@@ -54,6 +66,10 @@ local state = {
     a = nil,
     ---@type love.Canvas?
     b = nil,
+    ---@type love.Canvas?
+    depth = nil,
+    ---@type string?
+    depth_format = nil,
     ---@type love.Shader?
     threshold_shader = nil,
     ---@type love.Shader?
@@ -98,18 +114,43 @@ local function ensure(w, h)
         end
 
         -- Depth attachment for the scene pass. Optional on purpose: a runtime
-        -- that cannot supply one (some love.js builds) still gets bloom, it
-        -- just cannot host the 3D player pass. Callers check bloom.hasDepth().
+        -- that cannot supply one still gets bloom, it just cannot host the 3D
+        -- player pass. Callers check bloom.hasDepth().
+        --
+        -- ASK FIRST, CREATE SECOND -- and the `pcall` below is NOT what makes
+        -- that safe. #360 measured love.js aborting the entire runtime inside
+        -- `newCanvas` on an unsupported depth format: no Lua error is raised, so
+        -- `pcall` returns nothing, the browser gets an alert and the game is
+        -- gone. The guard that actually works is never requesting a format the
+        -- runtime has not already reported as supported. The `pcall` stays for
+        -- the runtimes that do raise, e.g. a driver that advertises a format and
+        -- then fails to allocate it.
         state.depth = nil
-        local depth_ok, depth_err = pcall(function()
-            state.depth = love.graphics.newCanvas(math.floor(w), math.floor(h), {
-                format = "depth24stencil8",
-                readable = false,
-            })
-        end)
-        if not depth_ok then
-            state.depth = nil
-            print("3D depth pass unavailable (depth canvas failed): " .. tostring(depth_err))
+        state.depth_format = nil
+        local formats = love.graphics.getCanvasFormats()
+        for _, format in ipairs(bloom.DEPTH_FORMATS) do
+            if formats[format] then
+                local depth_ok, depth_err = pcall(function()
+                    state.depth = love.graphics.newCanvas(math.floor(w), math.floor(h), {
+                        format = format,
+                        readable = false,
+                    })
+                end)
+                if depth_ok and state.depth then
+                    state.depth_format = format
+                    break
+                end
+                state.depth = nil
+                print(
+                    "depth canvas "
+                        .. format
+                        .. " was reported supported but failed: "
+                        .. tostring(depth_err)
+                )
+            end
+        end
+        if not state.depth then
+            print("3D depth pass unavailable: no supported depth canvas format")
         end
     end
     return true
@@ -130,6 +171,16 @@ function bloom.hasDepth()
         return ok and flags ~= nil and (flags.depth or 0) > 0
     end
     return state.depth ~= nil
+end
+
+-- Which of `bloom.DEPTH_FORMATS` the scene pass actually got, or nil.
+--
+-- Reported rather than assumed: `hasDepth()` true no longer implies
+-- `depth24stencil8`, and a runtime silently one rung down the list is a fact
+-- worth being able to read from a report.
+---@return string?
+function bloom.depthFormat()
+    return state.depth_format
 end
 
 -- Render `render_fn` with bloom applied (or plain, if bloom is unavailable).
