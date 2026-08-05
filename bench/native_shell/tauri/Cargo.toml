@@ -1,0 +1,23 @@
+[package]
+name = "goliseo-native-shell"
+version = "0.0.0"
+edition = "2021"
+description = "Minimal Tauri shell used to measure the #329 native desktop route"
+license = "MIT"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+# The installer-size number this shell exists to produce is only honest if the
+# binary is built the way a release would be. Debug symbols and an unoptimised
+# build would inflate it by an order of magnitude and prove nothing.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -58,6 +58,44 @@ updated to say so. Babylon's Apache-2.0 terms in particular require the licence
 text and attribution notices to travel with any redistribution; CC0 imposes no
 such obligation on the character.
 
+## Measurement-only native shells (#329)
+
+`bench/native_shell/` contains two minimal desktop shells — one Electron, one
+Tauri — built solely to measure installer size, cold start and frame cost for
+the native-route decision in `docs/design/native_route_decision.md`. **Neither
+is part of the authored game package or any shipped artifact, and neither
+vendors a third-party binary.** What is tracked is source and lockfiles:
+
+- `bench/native_shell/electron/package.json` and `package-lock.json` pin
+  [Electron](https://github.com/electron/electron) 43.3.0 (MIT, © Electron
+  contributors) and
+  [electron-builder](https://github.com/electron-userland/electron-builder)
+  26.15.3 (MIT). Both are `devDependencies`, fetched by `npm install` into the
+  gitignored `node_modules/`. Electron redistributes Chromium (BSD-3-Clause and
+  a long list of component licences) and Node.js (MIT); an Electron build that
+  is ever *distributed* must ship Electron's `LICENSES.chromium.html` and its
+  own `LICENSE`, and this section must be updated to say so.
+- `bench/native_shell/tauri/Cargo.toml` and `Cargo.lock` pin
+  [Tauri](https://github.com/tauri-apps/tauri) 2.x (MIT or Apache-2.0 at the
+  user's option, © Tauri Programme within The Commons Conservancy) and its
+  dependency tree, fetched by `cargo` into the gitignored `target/`. On Linux a
+  Tauri build links the system WebKitGTK (LGPL-2.1 / BSD); a distributed Tauri
+  package must satisfy WebKitGTK's relinking obligations, and this section must
+  be updated before that happens.
+- `@tauri-apps/cli` 2.11.4 is invoked through `npx` at build time and is never
+  installed into the tree.
+- The three bundler icons under `bench/native_shell/tauri/icons/` are
+  **generated**, not vendored: `scripts/native_shell_bench.py` writes them with
+  the Python standard library, and they are gitignored. That keeps the audit
+  below true.
+
+`bench/babylon_native/spike.js` is repository-owned source. It runs inside a
+[Babylon Native](https://github.com/BabylonJS/BabylonNative) `Playground` build
+(MIT, © Microsoft Corporation), which this repository does **not** vendor,
+build or distribute — the reader builds it themselves per the instructions in
+`docs/design/native_route_decision.md`. The character it loads is the CC0
+KayKit `Knight.glb` already recorded above.
+
 ## Native runtime
 
 LÖVE 11.5 and LuaJIT are development/runtime prerequisites; their source is
@@ -79,10 +117,17 @@ As of 2026-08-04:
 
 - Every literal Lua `require` in tracked source resolves to a module in this
   repository.
-- The repository has no dependency manifest, Git submodule, vendored library,
-  or tracked third-party binary. The #341 benchmark artifacts above are fetched
-  and hash-verified at run time into the gitignored `.bench/`, not tracked.
-- No third-party image, font, model, audio, or video asset is tracked.
+- The repository has **no Git submodule, no vendored library, and no tracked
+  third-party binary**. The #341 benchmark artifacts above are fetched and
+  hash-verified at run time into the gitignored `.bench/`, not tracked.
+- The repository now tracks **two dependency manifests**, both added by #329 and
+  both measurement-only: `bench/native_shell/electron/package.json` (with its
+  `package-lock.json`) and `bench/native_shell/tauri/Cargo.toml` (with its
+  `Cargo.lock`), described above. Neither is required to build, test or run the
+  game; `scripts/check.sh` does not install from either. The game itself still
+  has no dependency manifest.
+- No third-party image, font, model, audio, or video asset is tracked. The
+  bundler icons #329 needs are generated at build time and gitignored.
 
 Any new dependency or asset must record its author, source, exact version or
 retrieval date, license, required notices, and distribution obligations here

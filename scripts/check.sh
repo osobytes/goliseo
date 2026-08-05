@@ -138,6 +138,23 @@ else
     echo "   ! python3 not installed — skipping"
 fi
 
+# #329: the same standing and the same reason as the step above. Measuring a
+# native shell needs a GPU, a display and a packaged Electron and Tauri build,
+# so the measurement is run by hand and recorded in
+# docs/design/native_route_decision.md. What is gated here is the logic that
+# decides whether a run may be published: the software-rasteriser refusal, the
+# WebKit "Apple GPU" spoof (a renderer string that names a GPU the machine does
+# not have, and which the #341 classifier accepts as hardware), the /proc reader
+# that has to survive the process it is reading exiting underneath it, and the
+# rule that a partial matrix cannot land on report.json.
+# THIS STARTS NO SHELL AND NO BROWSER — a green run here is not shell evidence.
+echo "==> #329 native shell bench controller self-test (GPU refusal + parsing; starts no shell)"
+if command -v python3 >/dev/null 2>&1; then
+    python3 -B scripts/native_shell_bench.py --self-test || fail=1
+else
+    echo "   ! python3 not installed — skipping"
+fi
+
 echo "==> OMP-2 rollback validation harness self-test"
 if command -v python3 >/dev/null 2>&1; then
     ./scripts/check_rollback.sh --self-test || fail=1
