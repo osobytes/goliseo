@@ -95,8 +95,12 @@ t.describe("gl_probe.budget", function()
         t.is_true(gl_probe.budget(12, 26, 3) <= gl_probe.MIN_VERTEX_UNIFORM_VECTORS)
     end)
 
-    t.it("shows four-row bones would blow the floor, which is why they are three", function()
-        t.is_true(gl_probe.budget(12, 26, 4) > gl_probe.MIN_VERTEX_UNIFORM_VECTORS)
+    t.it("shows four-row bones land exactly on the floor, which is why they are three", function()
+        -- 26 x 4 = 104, +12 palette +12 matrix = 128. Not over the guarantee,
+        -- but with zero headroom -- which is renderer.lua's stated reason for
+        -- dropping the always-(0,0,0,1) fourth row. Three rows leave 26 spare.
+        t.eq(gl_probe.budget(12, 26, 4), gl_probe.MIN_VERTEX_UNIFORM_VECTORS)
+        t.eq(gl_probe.MIN_VERTEX_UNIFORM_VECTORS - gl_probe.budget(12, 26, 3), 26)
     end)
 end)
 
