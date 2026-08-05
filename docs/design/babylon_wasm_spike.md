@@ -276,13 +276,42 @@ the renderer.** Per frame:
 The `update` gap is roughly five-fold and it is **not** like-for-like: LÖVE's
 0.365 ms is one simulation tick, while Babylon's 1.745 ms is a tick *plus* the
 rollback snapshot capture, the `RenderFrame` build, the encode into linear
-memory, the JavaScript read and the placement of ten characters. `#332`'s own
-node breakdown apportions it: 0.838 ms mean for the tick and its snapshot,
-0.203 ms for the whole payload extraction. So the payload boundary this issue
-was built on is **not** the expensive part — the simulation running as wasm
-rather than as LuaJIT is. That is a finding about hosting the simulation in a
-browser at all, which is #327/#332's territory rather than Babylon's, and it
-would be paid by any browser renderer including a love.js one.
+memory, the JavaScript read and the placement of ten characters.
+
+**Which of those two is the expensive one decides whether the payload boundary
+belongs in the indictment**, so it is measured rather than reasoned about. Five
+consecutive runs of the unchanged `node wasm/sim-host/verify_payload.js` on this
+machine, at load average 3.30–3.58 on 16 cores, quoted from the run output:
+
+```
+### run 1  loadavg 3.58 3.50 4.93
+simulation  1 tick + snapshot capture             0.6451 ms mean   1.2532 ms p95   1.9801 ms max
+payload     EXTRACTION, 0 ticks, wall clock       0.1442 ms mean   0.2358 ms p95   0.5407 ms max
+frame call  1 tick + payload, wall clock          0.7950 ms mean   1.4619 ms p95   2.1255 ms max
+### run 5  loadavg 3.42 3.46 4.90
+simulation  1 tick + snapshot capture             0.6331 ms mean   1.2390 ms p95   1.9825 ms max
+payload     EXTRACTION, 0 ticks, wall clock       0.1384 ms mean   0.2113 ms p95   0.4149 ms max
+frame call  1 tick + payload, wall clock          0.7801 ms mean   1.4299 ms p95   2.1318 ms max
+```
+
+Across all five runs the tick with its snapshot capture ranged **0.6210–0.6694 ms
+mean** and the whole payload extraction **0.1353–0.1442 ms mean**: the simulation
+costs about **4.5x** the boundary, and the two sum to the frame-call line in every
+run, which is the internal check that they are the same event decomposed rather
+than two separate measurements.
+
+Two things this is not. It is **node, not a browser** — node reads the artifacts
+off local disk and tiers its JIT differently — so it is used here for the *split*
+between simulation and boundary, never for an absolute that gets compared against
+the browser rows above. And it is **this run's number, not #332's**: PR #346
+published p95 figures for these lines and no means at all, so nothing here is
+quoted from it.
+
+So the payload boundary this issue was built on is **not** the expensive part —
+the simulation running as wasm rather than as LuaJIT is. That is a finding about
+hosting the simulation in a browser at all, which is #327/#332's territory rather
+than Babylon's, and it would be paid by any browser renderer including a love.js
+one.
 
 **Firefox does not clear the budget with headroom by any reading.** `frame` p95
 of 14.76 ms is 89% of a 60 Hz frame with ten characters, a pitch and nothing
