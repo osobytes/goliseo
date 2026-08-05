@@ -606,9 +606,16 @@ def self_test() -> None:
         {"crossings_per_frame": "1.00", "other_crossings_per_frame": "0.00"},
         # Nothing measured is not a pass either.
         crossing_result(crossings_frames="0"),
-        # And the mean is still checked beside the extremes.
-        crossing_result(crossings_per_frame="2.00", crossings_min="2", crossings_max="2"),
+        # And the mean is still checked beside the extremes. These two isolate
+        # it: the extremes are perfectly well formed and only the mean
+        # disagrees with them, which is an internally inconsistent report --
+        # the exact thing a second signal exists to catch. Without them,
+        # deleting the mean check would leave the self-test green, and a gate
+        # whose second signal can be removed unnoticed does not have one.
+        crossing_result(crossings_per_frame="1.50"),
         crossing_result(other_crossings_per_frame="0.02"),
+        # Belt and braces: caught by either signal alone.
+        crossing_result(crossings_per_frame="2.00", crossings_min="2", crossings_max="2"),
         crossing_result(crossings_per_frame="0.50", crossings_min="0"),
     ):
         if not crossing_failures(bad, "t"):
