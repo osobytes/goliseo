@@ -73,7 +73,12 @@ end)
 
 t.describe("rig3d clips", function()
     t.it("every clip loops: the last keyframe matches the first", function()
-        for _, clip in ipairs({ clips.ORDER[1], clips.ORDER[2], clips.RUN, clips.CHARGE }) do
+        -- Looping clips only. KEEPER_SLING is a one-shot with a `fallback`, so
+        -- its last keyframe is a follow-through and must NOT match its first.
+        local looping =
+            { clips.ORDER[1], clips.ORDER[2], clips.RUN, clips.CHARGE, clips.KEEPER_GATHER }
+        for _, clip in ipairs(looping) do
+            t.is_true(clip.loop == true, clip.name .. " is listed here but does not declare loop")
             local first = clips.sample(clip, 0)
             local last = clips.sample(clip, clip.duration - 1e-6)
             for bone, q in pairs(first.rot) do

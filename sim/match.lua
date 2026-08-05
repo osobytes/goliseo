@@ -5256,6 +5256,12 @@ end
 -- (world units) — drawn from the same numbers the rules use.
 match.CROSSBAR_H = CROSSBAR
 match.PENALTY_BOX = { depth = PENALTY_DEPTH, h = PENALTY_H }
+-- Renderer data: the two radii that set the scale of everything on the pitch.
+-- The rigged renderer draws characters in metres and needs one honest
+-- conversion from world units; deriving it from these means a ball drawn in a
+-- keeper's hands is the same size as the ball rolling on the grass.
+match.PLAYER_RADIUS = PLAYER_RADIUS
+match.BALL_RADIUS = BALL_RADIUS
 -- Renderer data: ball gravity. Presentation solves where a lofted ball will come
 -- down (`render.frame`), and it has to fall at the rate the simulation drops it
 -- at, so there is one number here rather than a renderer-side copy that drifts.
