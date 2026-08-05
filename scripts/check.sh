@@ -155,6 +155,23 @@ else
     echo "   ! python3 not installed — skipping"
 fi
 
+# #360: the same standing as the three steps above. Measuring what love.js gives
+# LÖVE needs a GPU, a display and two real browsers, so the measurement is run by
+# hand and recorded in docs/online/browser_rigged_3d.md. What IS gated here is
+# every rule that decides its verdict: the marker percent-decoding that stops a
+# LÖVE error string splitting a marker, the terminator rule that stops an aborted
+# runtime reading as a clean negative, each clause of the per-browser verdict,
+# the refusal to publish an unproven GPU or a partial matrix, and the agreement
+# between the shader/canvas ladders the controller drives and the ones
+# game/render/gl_probe.lua defines. THIS STARTS NO BROWSER — a green run here is
+# not browser evidence.
+echo "==> #360 love.js depth probe controller self-test (verdict + GPU refusal; starts no browser)"
+if command -v python3 >/dev/null 2>&1; then
+    python3 -B scripts/lovejs_depth_probe.py --self-test || fail=1
+else
+    echo "   ! python3 not installed — skipping"
+fi
+
 echo "==> OMP-2 rollback validation harness self-test"
 if command -v python3 >/dev/null 2>&1; then
     ./scripts/check_rollback.sh --self-test || fail=1
