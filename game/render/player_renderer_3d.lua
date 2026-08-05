@@ -14,8 +14,10 @@
 -- keeps the procedural 2.5D renderer, which is the parity/fallback rule the
 -- rigged-player contract requires.
 
+local action_pose = require("game.render.rig3d.action_pose")
 local bloom = require("game.render.bloom")
 local mat4 = require("core.mat4")
+local match = require("sim.match")
 local renderer = require("game.render.rig3d.renderer")
 local skeleton = require("game.render.rig3d.skeleton")
 local clips = require("game.render.rig3d.clips")
@@ -34,6 +36,21 @@ local HEIGHT_IN_RADII = 3.0
 local ELEVATION = math.rad(17)
 
 local state = { built = false, failed = false, rig = nil, parts = nil, palettes = {} }
+
+-- The one conversion between the pitch's world units and the rig's metres.
+--
+-- Worth stating because it looks depth-dependent and is not. World-to-pixels is
+-- the projection's `scale`, and pixels-to-metres is `ppm`, which is built from
+-- `r = radius * scale`. The two `scale` terms cancel:
+--
+--     metres = world * height / (PLAYER_RADIUS * HEIGHT_IN_RADII * 2)
+--
+-- so anything sized through here is the same size at the halfway line as it is
+-- on the goal line, which is what you want for a ball.
+---@return number
+local function metresPerWorldUnit()
+    return state.height / (match.PLAYER_RADIUS * HEIGHT_IN_RADII * 2)
+end
 
 ---@type fun(sx: number, sy: number, r: number, color: number[], view: PlayerView|nil, opts: table)
 local draw_player
@@ -84,17 +101,37 @@ function player_renderer_3d.available()
     return bloom.hasDepth()
 end
 
--- Maps a presentation pose id onto the clips that exist today.
+-- Maps a presentation pose id onto the LIMB clips that exist today.
 --
--- Coverage is deliberately honest: the contract defines 32 pose ids and this
--- library has four clips, so most ids resolve to idle. Anything unmapped simply
--- falls back rather than erroring, and the table is the single place new clips
--- get wired in as they are authored.
+-- Three mechanisms cover the pose contract between them, and which one owns an
+-- id is not arbitrary:
+--
+--   * rig3d/action_pose.lua owns the ids the body performs as a whole -- dives,
+--     aerials, knockback, stagger, stumble, get-up. Those are continuous
+--     transforms driven by the simulation's own timers, not clips.
+--   * The keeper's hands are driven off possession (`holding` / `throw`) rather
+--     than a pose id, because a keeper carrying the ball has their arms around
+--     it whatever else they are doing.
+--   * This table owns the rest: stances and gaits that are genuinely limb
+--     animation.
+--
+-- Coverage is still partial and deliberately honest about it. The keeper's
+-- positioning family (ready-tall, ready-low, set, shuffle) and the outfield
+-- contact family (slide, tackle, kick_follow, settle) have no authored clips
+-- yet and resolve to idle or locomotion -- they are #101 and #102's scope.
+-- Anything unmapped falls back rather than erroring, and this table is the
+-- single place new clips get wired in as they land.
 local POSE_CLIP = {
     locomotion = "locomotion",
     contain = "locomotion",
     run_telegraph = "locomotion",
     fatigue = "idle",
+    -- A keeper shuffling across the goal is still travelling, so the gait
+    -- blend reads better here than a standing idle would.
+    keeper_shuffle = "locomotion",
+    -- A settle and a kick follow-through both happen mid-stride.
+    settle = "locomotion",
+    kick_follow = "locomotion",
     -- Guard is a STANCE the player chooses, layered over whatever gait is
     -- playing -- not something baked into how they always run.
     combat_guard = "guard",
@@ -169,7 +206,33 @@ local function poseFor(view, opts)
         local t = (opts.windup and opts.windup > 0) and 0.3 or 0.55
         pose = clips.layer(pose, clips.sample(swing, t * swing.duration), masks.UPPER_BODY, 1)
     end
-    return pose
+
+    -- The keeper's hands follow possession, not the pose id: arms wrapped
+    -- around a ball outrank whatever else the keeper is doing, and they have to
+    -- arrive at socket_ball or the held ball reads as floating.
+    if (opts.throw or 0) > 0 then
+        -- throw_timer counts DOWN, so 1 is the moment of commitment. Playing
+        -- the sling as it drains runs cock -> release -> follow-through in the
+        -- order a throw actually happens.
+        local sling = clips.KEEPER_SLING
+        pose = clips.layer(
+            pose,
+            clips.sample(sling, (1 - math.min(opts.throw, 1)) * sling.duration),
+            masks.UPPER_BODY,
+            1
+        )
+    elseif opts.holding then
+        pose = clips.layer(
+            pose,
+            clips.sample(clips.KEEPER_GATHER, love.timer.getTime()),
+            masks.UPPER_BODY,
+            1
+        )
+    end
+
+    -- Whole-body actions last: they move the root, so they ride on top of
+    -- whatever gait and stance resolved instead of competing with them.
+    return action_pose.apply(pose, opts)
 end
 
 -- Drop-in replacement for player_renderer.draw.
