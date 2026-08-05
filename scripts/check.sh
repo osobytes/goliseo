@@ -86,7 +86,7 @@ fi
 # a determinism harness and a harness-shaped thing that always says MATCH.
 echo "==> wasm webview determinism verdict self-test (verdict logic only, launches no webview)"
 if command -v python3 >/dev/null 2>&1; then
-    python3 -B wasm/sim-host/verify_webview.py --self-test || fail=1
+    ./scripts/check_verify_webview.sh || fail=1
 else
     echo "   ! python3 not installed — skipping"
 fi

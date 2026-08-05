@@ -42,14 +42,29 @@ every row**, so a difference could only have come from the runtime.
 
 Expected: final hash `bfbb106aea5480f8`, sequence digest `a190b60058a64e63`.
 
-| Runtime | JS engine | Version | Final hash | Sequence digest | Verdict | Cold start (runtime / sim ready) | Per tick |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| **WebKitGTK** | JavaScriptCore | 2.52.3 (WebKit2-4.1) | `bfbb106aea5480f8` | `a190b60058a64e63` | **MATCH** | 38.0 ms / 86.0 ms | 0.3683 ms |
-| Chrome | V8 | 150.0.7871.181 | `bfbb106aea5480f8` | `a190b60058a64e63` | MATCH | 19.1 ms / 45.4 ms | 0.4762 ms |
-| Firefox | SpiderMonkey | 153.0.1 | `bfbb106aea5480f8` | `a190b60058a64e63` | MATCH | 58.0 ms / 78.0 ms | 0.4317 ms |
-| node (reference, not a webview) | V8 | 22.22.0 | `bfbb106aea5480f8` | `a190b60058a64e63` | MATCH | — (reads from disk) | 0.4566 ms |
-| **WebView2** | V8 | — | — | — | **NOT RUN** | — | — |
-| **WKWebView** | JavaScriptCore | — | — | — | **NOT RUN** | — | — |
+"The same binary in every row" is recorded, not asserted. Both runners sha256
+the artifacts they actually served and print them, so the claim a sceptical
+reader most needs to check is checkable from the evidence instead of resting on
+operator discipline — which matters more than usual here, because this module
+was deliberately built off `main` (see [the build caveat](#the-build-caveat)):
+
+```
+simhost.js    sha256 29fe069feb37a2c4f990ee4ed1eb5a74a3d67383030c2ebc777b85afc03d8e79
+simhost.wasm  sha256 933cf2c7f674d22da26479193ae781af2fb880e1700d5bd74894a691367bce37
+```
+
+The **module** column is the first 16 hex of the `simhost.wasm` sha256, quoted
+at the width every other hash in this project uses. It is identical in every row
+that ran, across two separate harness invocations.
+
+| Runtime | JS engine | Version | Module | Final hash | Sequence digest | Verdict | Cold start (runtime / sim ready) | Per tick |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **WebKitGTK** | JavaScriptCore | 2.52.3 (WebKit2-4.1) | `933cf2c7f674d22d` | `bfbb106aea5480f8` | `a190b60058a64e63` | **MATCH** | 52.0 ms / 151.0 ms | 0.4500 ms |
+| Chrome | V8 | 150.0.7871.181 | `933cf2c7f674d22d` | `bfbb106aea5480f8` | `a190b60058a64e63` | MATCH | 21.4 ms / 54.0 ms | 0.4868 ms |
+| Firefox | SpiderMonkey | 153.0.1 | `933cf2c7f674d22d` | `bfbb106aea5480f8` | `a190b60058a64e63` | MATCH | 54.0 ms / 73.0 ms | 0.4550 ms |
+| node (reference, not a webview) | V8 | 22.22.0 | `933cf2c7f674d22d` | `bfbb106aea5480f8` | `a190b60058a64e63` | MATCH | — (reads from disk) | 0.4566 ms |
+| **WebView2** | V8 | — | — | — | — | **NOT RUN** | — | — |
+| **WKWebView** | JavaScriptCore | — | — | — | — | **NOT RUN** | — | — |
 
 Host: Linux 7.0.0-28-generic x86_64, `DISPLAY=:1`. Measured 2026-08-04.
 
@@ -59,13 +74,17 @@ contract: the performance run that follows the fixture prints
 that same value. It is a second, independent 64-bit agreement over a different
 tick count.
 
-Cold start and per-tick cost differ between runtimes by up to a third, and vary
-by tens of percent between runs of the same runtime on an otherwise busy
-machine. That is expected and is not a determinism signal: it is JIT tiering and
-wasm compilation strategy, which change *how fast* the same arithmetic is
-performed and not *what it computes*. The hashes did not move at all. Firefox's
-and WebKitGTK's marks land on whole milliseconds because worker
-`performance.now()` is clamped there.
+**Read the timings as single-run figures, not as a benchmark.** They move
+substantially between runs of the *same* runtime on a machine doing other work:
+across the three WebKitGTK runs taken here, `sim ready` ranged 66–151 ms and per
+tick 0.368–0.450 ms. Per-tick cost across all runtimes sits in a 0.37–0.49 ms
+band with no stable ordering. That variance is expected and is not a determinism
+signal — it is JIT tiering and wasm compilation strategy, which change *how
+fast* the same arithmetic is performed and not *what it computes*. **The hashes
+did not move at all, in any run.** For an honest cold-start comparison use
+`measure_cold_start.js`, which repeats runs; this table's timings are context,
+and the hash columns are the result. Firefox's and WebKitGTK's marks land on
+whole milliseconds because worker `performance.now()` is clamped there.
 
 ### Why WebView2 and WKWebView were not run
 
@@ -140,9 +159,10 @@ directly comparable to the Chrome and Firefox evidence recorded there.
 
 The measurement is run by hand. It needs a built module, a display and a real
 webview, so it is **not** a CI gate — the same standing as
-`scripts/phase0_sim_host.lua`. `scripts/check.sh` and CI run only
-`verify_webview.py --self-test`, which proves the verdict rule rejects bad runs
-and which **starts no webview**. Do not read a green CI run as webview evidence.
+`scripts/phase0_sim_host.lua`. `scripts/check.sh` and CI both run
+`scripts/check_verify_webview.sh`, which is `verify_webview.py --self-test`: it
+proves the verdict rule rejects bad runs and it **starts no webview**. Do not
+read a green CI run as webview evidence.
 
 ```bash
 wasm/sim-host/build.sh                       # Docker supplies emcc
@@ -168,5 +188,6 @@ driven through PyGObject rather than WebDriver because `WebKitWebDriver` is not
 packaged on the development box and installing it needs root. The runner says
 this rather than dying on an `ImportError`.
 
-`--json <path>` writes a machine-readable record of every runtime, including the
-ones that did not run and why.
+`--json <path>` writes a machine-readable record of every runtime: the engine,
+the observed hashes, the cold-start marks, the sha256 of every artifact that was
+served, and — for the runtimes that did not run — the reason why.

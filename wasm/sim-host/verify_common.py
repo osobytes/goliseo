@@ -16,9 +16,12 @@ attributed to the JavaScript engine, which is the only thing #342 is measuring.
 
 from __future__ import annotations
 
+import hashlib
+import re
 import shutil
 import tempfile
 import threading
+from collections.abc import Sequence
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -29,6 +32,9 @@ EXPECTED_DIGEST = "a190b60058a64e63"
 
 #: Artifacts a staged directory must contain before anything is worth running.
 REQUIRED_ARTIFACTS = ("simhost.js", "simhost.wasm")
+
+#: A MATCH verdict that is not the tail of a MISMATCH. See `check`.
+VERDICT_MATCH = re.compile(r"(?<!MIS)MATCH")
 
 PAGE = """<!doctype html>
 <meta charset="utf-8">
@@ -107,15 +113,26 @@ class ArtifactsMissing(RuntimeError):
     """A dist directory does not hold a built module."""
 
 
-def stage(dist: Path) -> Path:
+def stage(
+    dist: Path,
+    page: str = PAGE,
+    worker: str = WORKER,
+    required: Sequence[str] = REQUIRED_ARTIFACTS,
+) -> Path:
     """Copy a built dist into a fresh servable directory with page and worker.
 
     Served from a copy rather than from dist/ itself: the build runs in Docker
     so dist/ is root-owned, and a verifier has no business writing into build
     output regardless.
+
+    `page`, `worker` and `required` default to the determinism fixture's, so
+    every existing caller is unchanged. They are parameters because #332 builds
+    a payload-reading harness on this module: a second experiment needs its own
+    page and its own artifact list, and duplicating the staging to get them is
+    how the two would drift apart.
     """
     dist = dist.resolve()
-    missing = [name for name in REQUIRED_ARTIFACTS if not (dist / name).exists()]
+    missing = [name for name in required if not (dist / name).exists()]
     if missing:
         raise ArtifactsMissing(
             f"missing {', '.join(str(dist / name) for name in missing)}; "
@@ -126,9 +143,46 @@ def stage(dist: Path) -> Path:
     for artifact in dist.iterdir():
         if artifact.is_file():
             shutil.copy2(artifact, serve_dir / artifact.name)
-    (serve_dir / "index.html").write_text(PAGE)
-    (serve_dir / "worker.js").write_text(WORKER)
+    (serve_dir / "index.html").write_text(page)
+    (serve_dir / "worker.js").write_text(worker)
     return serve_dir
+
+
+def artifact_digests(
+    directory: Path, required: Sequence[str] = REQUIRED_ARTIFACTS
+) -> dict[str, str]:
+    """sha256 every served artifact, so "the same binary" stops being a claim.
+
+    A cross-runtime comparison is only a comparison if every runtime ran the
+    same module, and until this existed that rested entirely on the operator
+    having pointed each run at the same `--dist`. It matters more than usual
+    here: #342's evidence was deliberately taken with a module built off `main`
+    (see #343), which is exactly the circumstance where a sceptical reader most
+    needs to check identity rather than take it on trust. Digesting what was
+    *served* -- not what was asked for -- also catches a half-copied stage.
+    """
+    digests: dict[str, str] = {}
+    for name in required:
+        path = directory / name
+        if not path.exists():
+            continue
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(block)
+        digests[name] = digest.hexdigest()
+    return digests
+
+
+def short_digest(digests: dict[str, str], name: str = "simhost.wasm") -> str:
+    """The first 16 hex of one artifact's sha256, for a report column.
+
+    Sixteen because that is the width every other hash in this project is
+    quoted at, so a reader compares like with like. The full value is in the
+    header block and in `--json`.
+    """
+    value = digests.get(name)
+    return value[:16] if value else "(not digested)"
 
 
 def serve(serve_dir: Path) -> tuple[ThreadingHTTPServer, str]:
@@ -189,7 +243,11 @@ def check(out: list[str]) -> tuple[bool, str]:
         return False, f"sequence digest {EXPECTED_DIGEST} not found in output"
     if "DIVERGED" in text or "FAILED" in text:
         return False, "probe reported divergence"
-    if "verdict          MATCH" not in text and "MATCH" not in text:
+    # `(?<!MIS)` because "MISMATCH" contains "MATCH". A plain substring test
+    # accepts the exact word that means the opposite -- not reachable from
+    # today's fixture, which only ever prints MATCH or DIVERGED, but a verdict
+    # rule that can be satisfied by its own negation is not one to leave armed.
+    if not VERDICT_MATCH.search(text):
         return False, "no MATCH verdict"
     return True, "hashes match the frozen contract"
 

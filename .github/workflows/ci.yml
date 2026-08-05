@@ -187,7 +187,7 @@ jobs:
             # docs/online/wasm_webview_determinism.md. This step launches no
             # webview and must never be read as evidence that one passed.
             - name: Check the wasm webview determinism verdict (launches no webview)
-              run: python3 -B wasm/sim-host/verify_webview.py --self-test
+              run: ./scripts/check_verify_webview.sh
 
     # Its own job on purpose: the harness is minutes of CPU, it needs nothing but
     # LOVE, and nothing else waits on it, so it costs the critical path nothing.

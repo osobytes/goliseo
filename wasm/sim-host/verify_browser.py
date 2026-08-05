@@ -105,6 +105,13 @@ def main() -> int:
         print(error)
         return 1
 
+    # Recorded so a result from this script and a result from verify_webview.py
+    # can be shown to have run the same module rather than asserted to have.
+    artifacts = verify_common.artifact_digests(serve_dir)
+    for name, digest in artifacts.items():
+        print(f"served    {name:<14}sha256 {digest}", flush=True)
+    module = verify_common.short_digest(artifacts)
+
     server, url = verify_common.serve(serve_dir)
 
     failures = []
@@ -118,7 +125,7 @@ def main() -> int:
                 print(f"    LAUNCH FAILED: {error}", flush=True)
                 continue
             ok, detail = check(out)
-            print(f"    engine: {engine}", flush=True)
+            print(f"    engine: {engine}  module {module}", flush=True)
             verify_common.print_run(out, marks)
             print(f"    -> {'PASS' if ok else 'FAIL'}: {detail}", flush=True)
             if not ok:

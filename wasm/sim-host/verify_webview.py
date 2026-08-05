@@ -80,9 +80,16 @@ class Result:
     engine: str = "not determined"
     out: list[str] = field(default_factory=list)
     marks: list[dict] = field(default_factory=list)
+    #: sha256 of the artifacts this runtime was actually served. Carried per
+    #: result rather than once per invocation because the comparison that
+    #: matters spans invocations -- this run against the Chrome/Firefox one.
+    artifacts: dict[str, str] = field(default_factory=dict)
 
     def hashes(self) -> dict[str, str]:
         return verify_common.observed_hashes(self.out)
+
+    def module(self) -> str:
+        return verify_common.short_digest(self.artifacts)
 
 
 # --------------------------------------------------------------------------
@@ -338,8 +345,15 @@ def run_wkwebview(url: str, timeout: int) -> tuple[list[str], list[dict], str]:
 # --------------------------------------------------------------------------
 
 
-def run_runtime(runtime: str, url: str, timeout: int, host_app: str | None) -> Result:
+def run_runtime(
+    runtime: str,
+    url: str,
+    timeout: int,
+    host_app: str | None,
+    artifacts: dict[str, str] | None = None,
+) -> Result:
     """Run one runtime and turn whatever happened into a Result."""
+    artifacts = dict(artifacts or {})
     try:
         if runtime == "webkitgtk":
             out, marks, engine = run_webkitgtk(url, timeout)
@@ -350,9 +364,15 @@ def run_runtime(runtime: str, url: str, timeout: int, host_app: str | None) -> R
         else:
             raise WebviewUnavailable(f"unknown runtime {runtime!r}")
     except WebviewUnavailable as error:
-        return Result(runtime=runtime, ran=False, ok=False, detail=str(error))
+        return Result(runtime=runtime, ran=False, ok=False, detail=str(error), artifacts=artifacts)
     except Exception as error:  # noqa: BLE001 - reported, not swallowed
-        return Result(runtime=runtime, ran=False, ok=False, detail=f"launch failed: {error}")
+        return Result(
+            runtime=runtime,
+            ran=False,
+            ok=False,
+            detail=f"launch failed: {error}",
+            artifacts=artifacts,
+        )
 
     ok, detail = check(out)
     return Result(
@@ -363,6 +383,7 @@ def run_runtime(runtime: str, url: str, timeout: int, host_app: str | None) -> R
         engine=engine,
         out=out,
         marks=marks,
+        artifacts=artifacts,
     )
 
 
@@ -388,7 +409,8 @@ def summarise(results: list[Result]) -> tuple[int, list[str]]:
         lines.append(
             f"  {result.runtime:<12} {'MATCH' if result.ok else 'MISMATCH':<9}"
             f"{hashes.get('final_hash', '(none printed)')} / "
-            f"{hashes.get('sequence_digest', '(none printed)')}  [{result.engine}]"
+            f"{hashes.get('sequence_digest', '(none printed)')}  "
+            f"module {result.module()}  [{result.engine}]"
         )
 
     if not ran:
@@ -453,6 +475,13 @@ def self_test() -> int:
         "worker error only": ["WORKER_ERROR: undefined"],
         "abort only": ["ABORT: memory access out of bounds"],
         "wrong hash": [line.replace(EXPECTED_HASH, "0123456789abcdef") for line in PASSING_OUTPUT],
+        # "MISMATCH" contains "MATCH". A substring test for the verdict accepts
+        # the exact word that means the opposite, so the word that must never
+        # pass is asserted directly rather than left to the earlier clauses.
+        "a MISMATCH verdict": [
+            line.replace("verdict          MATCH", "verdict          MISMATCH")
+            for line in PASSING_OUTPUT
+        ],
     }
     for label, out in bad_cases.items():
         ok, _ = check(out)
@@ -467,7 +496,15 @@ def self_test() -> int:
     expect("an exited run is finished", verify_common.is_finished([], True))
     expect("a failed run is finished", verify_common.is_finished(["FAILED: nope"], False))
 
-    passing = Result("webkitgtk", ran=True, ok=True, detail="ok", out=PASSING_OUTPUT)
+    sample_module = "a1b2c3d4" * 8
+    passing = Result(
+        "webkitgtk",
+        ran=True,
+        ok=True,
+        detail="ok",
+        out=PASSING_OUTPUT,
+        artifacts={"simhost.wasm": sample_module},
+    )
     failing = Result("webkitgtk", ran=False, ok=False, detail="no display")
     mismatch = Result("webview2", ran=True, ok=False, detail="no MATCH verdict", out=["nothing"])
 
@@ -484,6 +521,83 @@ def self_test() -> int:
         "an unexercised runtime is not reported as a pass",
         any("NOT RUN" in line for line in summarise([failing])[1]),
     )
+
+    expect(
+        "the module identity reaches the report",
+        any(f"module {sample_module[:16]}" in line for line in summarise([passing])[1]),
+    )
+    expect(
+        "an undigested run says so instead of showing a hash",
+        any("module (not digested)" in line for line in summarise([mismatch])[1]),
+    )
+
+    # The identity of the served module. "Every row ran the same binary" is the
+    # load-bearing claim of a cross-runtime comparison, so the machinery that
+    # makes it checkable is tested like any other verdict input.
+    import hashlib
+    import shutil
+    import tempfile
+
+    scratch = Path(tempfile.mkdtemp(prefix="goliseo-wasm-selftest-"))
+    staged_dirs: list[Path] = []
+    try:
+        (scratch / "simhost.js").write_text("glue")
+        (scratch / "simhost.wasm").write_bytes(b"module")
+        digests = verify_common.artifact_digests(scratch)
+        expect(
+            "a served artifact is digested with sha256",
+            digests.get("simhost.wasm") == hashlib.sha256(b"module").hexdigest(),
+        )
+        expect(
+            "both required artifacts are digested",
+            set(digests) == {"simhost.js", "simhost.wasm"},
+        )
+        expect(
+            "the report column is the first 16 hex of the module",
+            verify_common.short_digest(digests) == digests["simhost.wasm"][:16],
+        )
+        (scratch / "simhost.wasm").write_bytes(b"a different module")
+        expect(
+            "a different module is not reported as the same one",
+            verify_common.artifact_digests(scratch).get("simhost.wasm")
+            != digests["simhost.wasm"],
+        )
+        expect(
+            "a missing artifact is not silently digested",
+            verify_common.short_digest({}) == "(not digested)",
+        )
+
+        # stage() serves what it is given, so #332's payload harness can reuse it
+        # instead of copying the staging and drifting from it.
+        staged = verify_common.stage(
+            scratch, page="<p>other</p>", worker="// other", required=("simhost.wasm",)
+        )
+        staged_dirs.append(staged)
+        expect("a caller's page is staged", (staged / "index.html").read_text() == "<p>other</p>")
+        expect("a caller's worker is staged", (staged / "worker.js").read_text() == "// other")
+
+        default_staged = verify_common.stage(scratch)
+        staged_dirs.append(default_staged)
+        expect(
+            "the default staging is still the fixture's",
+            (default_staged / "index.html").read_text() == verify_common.PAGE
+            and (default_staged / "worker.js").read_text() == verify_common.WORKER,
+        )
+        expect(
+            "staging digests what was copied, not what was asked for",
+            verify_common.artifact_digests(default_staged)
+            == verify_common.artifact_digests(scratch),
+        )
+
+        enforced = False
+        try:
+            verify_common.stage(scratch, required=("nothing-here.wasm",))
+        except verify_common.ArtifactsMissing:
+            enforced = True
+        expect("a caller's required list is enforced", enforced)
+    finally:
+        for directory in (scratch, *staged_dirs):
+            shutil.rmtree(directory, ignore_errors=True)
 
     for failure in failures:
         print(f"SELF-TEST FAIL: {failure}")
@@ -535,12 +649,18 @@ def main() -> int:
         print(error)
         return 1
 
+    artifacts = verify_common.artifact_digests(serve_dir)
+    for name, digest in artifacts.items():
+        print(f"served    {name:<14}sha256 {digest}", flush=True)
+
     server, url = verify_common.serve(serve_dir)
     results: list[Result] = []
     try:
         for runtime in requested:
             print(f"==> {runtime}", flush=True)
-            result = run_runtime(runtime, url, args.timeout_seconds, args.webview2_host_app)
+            result = run_runtime(
+                runtime, url, args.timeout_seconds, args.webview2_host_app, artifacts
+            )
             results.append(result)
             if not result.ran:
                 print(f"    NOT RUN: {result.detail}", flush=True)
@@ -570,6 +690,7 @@ def main() -> int:
                             "detail": r.detail,
                             "engine": r.engine,
                             "observed": r.hashes(),
+                            "artifacts_sha256": r.artifacts,
                             "cold_start_ms": {m["mark"]: m["ms"] for m in r.marks},
                         }
                         for r in results
