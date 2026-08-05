@@ -43,8 +43,28 @@ vec4 effect(vec4 color, Image tex, vec2 tc, vec2 sc) {
 -- and 24-bit formats on desktop/ES3 extensions the emscripten build does not
 -- advertise, and offers only the 16-bit depth renderbuffer that WebGL 1 has in
 -- core. The 3D pass only ever needed depth -- the stencil half was never used --
--- so falling back costs nothing here and is the difference between rigged 3D
--- rendering in a browser and not.
+-- so the fallback is the difference between rigged 3D rendering in a browser
+-- and not.
+--
+-- WHAT DROPPING TO 16 BITS COSTS, since a PR that indicts an unmeasured
+-- assumption has no business shipping one. The character camera is ORTHOGRAPHIC
+-- (rig3d/renderer.lua characterCamera: the projection's fourth row is constant,
+-- so w does not vary with z) and there is no perspective divide to crowd
+-- precision near the eye -- depth steps are UNIFORM across the range, which is
+-- the whole reason this is safe:
+--
+--   clip-valid depth range = 2 / 0.35            = 5.7143 m   (proj z-scale -0.35)
+--   16-bit step            = 5.7143 m / 65535    = 0.0872 mm
+--   24-bit step, for scale = 5.7143 m / 16777215 = 0.00034 mm
+--
+-- A character occupies about ±1 m of that, i.e. 35% of the range, and the depth
+-- deltas that have to resolve are limb-versus-torso: centimetres. One centimetre
+-- is ~115 depth steps at 16 bits, so z-fighting is not close to plausible.
+--
+-- RE-CHECK THIS IF any of three things move: the -0.35 z-scale, the eye distance,
+-- or the character's own extent. Halving the z-scale doubles the step; a
+-- character ten times smaller spends ten times less of the range on the deltas
+-- that matter.
 bloom.DEPTH_FORMATS = { "depth24stencil8", "depth24", "depth16" }
 
 bloom.config = {

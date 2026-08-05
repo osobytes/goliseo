@@ -69,7 +69,14 @@ BENCH_PREFIX = "GC_BENCH_"
 #: Ladder rungs, in the order they must be attempted. Mirrors
 #: `gl_probe.SHADER_LADDER` plus the real shader; the controller asserts the
 #: two agree rather than trusting the copy.
+#:
+#: `no_varying` is rung zero and it earns its place: the first version of this
+#: ladder started at `baseline` and concluded "no LÖVE shader compiles in
+#: Firefox", which is false. Shaders with no user-declared varying -- the shape
+#: bloom's own threshold and blur shaders have -- compile and run there. A ladder
+#: that cannot straddle the boundary cannot locate it.
 SHADER_STEPS = (
+    "no_varying",
     "baseline",
     "one_custom_attribute",
     "four_custom_attributes",
@@ -379,19 +386,38 @@ def run_page(
     timeout: float,
     done: Any,
     force_software: bool = False,
+    record: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """One page load. `done(messages)` decides when the phase has finished."""
+    """One page load. `done(messages)` decides when the phase has finished.
+
+    The caller may pass `record` in so that when this raises -- which is what a
+    browser dying underneath it looks like -- the forensics gathered up to that
+    point are still in the caller's hands. A dead session that took its own
+    evidence with it cannot be told apart from any other dead session.
+    """
     query = urllib.parse.urlencode({"arg": json.dumps(love_args, separators=(",", ":"))})
     url = f"{base_url}?{query}" if love_args else base_url
+    if record is None:
+        record = {}
     driver = launch(browser, binary, driver_path, log, force_software)
     service_pid = driver.service.process.pid
-    record: dict[str, Any] = {
+    record.update({
         "browser": browser,
         "args": love_args,
         "alerts": [],
         "messages": [],
         "loadavg_start": loadavg(),
-    }
+        # Forensics for telling "the thing we measured killed the browser" apart
+        # from "something killed the browser". A run of this probe once shared a
+        # desktop with a human closing windows by hand, and the two look
+        # identical in the report unless the record says whether the page was
+        # ever observed to be alive. `saw_console_entry` false means no love.js
+        # console line was ever read back: the page may never have loaded, and
+        # nothing may be attributable to what the page was asked to do.
+        "started_at": time.monotonic(),
+        "console_reads_ok": 0,
+        "saw_console_entry": False,
+    })
     try:
         record["browser_version"] = str(driver.capabilities.get("browserVersion"))
         driver.set_page_load_timeout(120)
@@ -405,7 +431,11 @@ def run_page(
             state, alerts = script_with_alerts(driver, CONSOLE_SCRIPT)
             record["alerts"].extend(alerts)
             if isinstance(state, dict):
+                record["console_reads_ok"] += 1
                 messages = [str(entry) for entry in state.get("entries") or []]
+                if messages:
+                    record["saw_console_entry"] = True
+                record["messages"] = messages
                 record["loader_status"] = state.get("status")
                 if done(messages):
                     break
@@ -426,7 +456,24 @@ def run_page(
         except Exception:  # noqa: BLE001 - a dead browser is not a measurement failure
             pass
     record["loadavg_end"] = loadavg()
+    record["seconds"] = round(time.monotonic() - record["started_at"], 1)
     return record
+
+
+def death_fingerprint(record: dict[str, Any]) -> str:
+    """Classify a dead session by whether the page was ever observed alive.
+
+    `attributable` -- console entries were read back, so love.js loaded and ran
+    and whatever it was asked to do is a candidate cause.
+
+    `unattributable` -- no console entry was ever observed. The page may never
+    have loaded at all, and an external cause (a human closing the window, an OOM
+    kill, a display going away) is indistinguishable from the probe's own effect.
+    A conclusion must not rest on one of these.
+    """
+    if record.get("saw_console_entry"):
+        return "attributable"
+    return "unattributable"
 
 
 def gpu_from(record: dict[str, Any]) -> dict[str, Any]:
@@ -541,8 +588,9 @@ def measure_browser(
 
     def page(label: str, love_args: list[str], done: Any, timeout: float) -> dict[str, Any]:
         print(f"    {browser}: {label}", flush=True)
+        record: dict[str, Any] = {"browser": browser, "args": love_args, "messages": []}
         try:
-            record = run_page(
+            run_page(
                 browser,
                 binary,
                 driver_path,
@@ -551,25 +599,31 @@ def measure_browser(
                 logs / f"{label}.log",
                 timeout,
                 done,
+                record=record,
             )
         except Exception as error:  # noqa: BLE001
             # A page that kills the browser outright is a RESULT, not a lost
-            # run. Firefox's session dies partway through the shader ladder
-            # because LÖVE keeps aborting the runtime under it; letting that
-            # abort the whole leg would have thrown away the very evidence the
-            # leg exists to collect. Each page owns its own browser process, so
-            # the next one starts clean.
-            print(f"      {label}: browser session died ({type(error).__name__})", flush=True)
-            record = {
-                "browser": browser,
-                "args": love_args,
-                "messages": [],
-                "alerts": [],
-                "gl": {},
-                "session_died": True,
-                "session_error": str(error)[:400],
-                "loadavg_end": loadavg(),
-            }
+            # run. Firefox's session dies partway through the shader ladder;
+            # letting that abort the whole leg would have thrown away the very
+            # evidence the leg exists to collect. Each page owns its own browser
+            # process, so the next one starts clean.
+            #
+            # WHETHER THE PAGE CAUSED IT is a separate question, and the record
+            # answers it rather than assuming: see `death_fingerprint`.
+            record.setdefault("gl", {})
+            record["session_died"] = True
+            record["session_error"] = str(error)[:400]
+            record["death_fingerprint"] = death_fingerprint(record)
+            record.setdefault("loadavg_end", loadavg())
+            if "started_at" in record:
+                record.setdefault("seconds", round(time.monotonic() - record["started_at"], 1))
+            print(
+                f"      {label}: browser session died ({type(error).__name__}, "
+                f"{record['death_fingerprint']}, "
+                f"{record.get('console_reads_ok', 0)} console reads)",
+                flush=True,
+            )
+        record.pop("started_at", None)
         record["label"] = label
         records.append(record)
         return record
@@ -617,7 +671,16 @@ def measure_browser(
     return {
         "browser": browser,
         "browser_version": survey.get("browser_version") or gl_record.get("browser_version"),
-        "sessions_died": [r["label"] for r in records if r.get("session_died")],
+        "sessions_died": [
+            {
+                "label": r["label"],
+                "fingerprint": r.get("death_fingerprint"),
+                "seconds": r.get("seconds"),
+                "console_reads_ok": r.get("console_reads_ok", 0),
+            }
+            for r in records
+            if r.get("session_died")
+        ],
         "webgl": {
             "version": gl.get("version"),
             "webgl2": gl.get("webgl2"),
@@ -688,6 +751,17 @@ def self_test() -> None:
     dead = summarise_single({"messages": []}, "shader_step")
     if dead.get("complete") or dead.get("ok") != "false":
         raise RuntimeError("a dead browser session was not classified as incomplete")
+
+    # The death fingerprint. A session that was never observed alive must not be
+    # attributed to whatever the page was asked to do -- one of these runs shared
+    # a desktop with a human closing browser windows, and the report said "the
+    # runtime aborted" for both kinds.
+    if death_fingerprint({"saw_console_entry": True}) != "attributable":
+        raise RuntimeError("a session observed alive was not marked attributable")
+    if death_fingerprint({"saw_console_entry": False}) != "unattributable":
+        raise RuntimeError("a session never observed alive was marked attributable")
+    if death_fingerprint({}) != "unattributable":
+        raise RuntimeError("a record with no observation defaulted to attributable")
     if summarise_bench({"messages": []})["complete"]:
         raise RuntimeError("a benchmark that never ran was treated as complete")
 

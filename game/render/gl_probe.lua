@@ -265,7 +265,34 @@ local LADDER_PIXEL = [[
 ]]
 
 gl_probe.SHADER_LADDER = {
-    -- Nothing but the LÖVE entry points: proves the runtime compiles anything.
+    -- Rung zero: the LÖVE entry points and NO user-declared varying. This is the
+    -- shape bloom.lua's own threshold and blur shaders have, and it is here
+    -- because the first version of this ladder started one rung too high and
+    -- concluded "no LÖVE shader compiles in Firefox" from it. That was wrong:
+    -- shaders in this shape compile and run there. The boundary the ladder has
+    -- to locate sits between this rung and the next one, so both must exist.
+    --
+    -- It carries its own pixel stage because every other rung's reads v_probe.
+    {
+        name = "no_varying",
+        source = [[
+        #ifdef VERTEX
+            vec4 position(mat4 transform_projection, vec4 vertex_position) {
+                return transform_projection * vertex_position;
+            }
+        #endif
+        #ifdef PIXEL
+            extern number probe_threshold;
+            vec4 effect(vec4 color, Image tex, vec2 tc, vec2 sc) {
+                vec4 c = Texel(tex, tc);
+                number b = max(c.r, max(c.g, c.b));
+                return vec4(c.rgb * smoothstep(probe_threshold, probe_threshold + 0.15, b), 1.0);
+            }
+        #endif
+        ]],
+        pixel = false,
+    },
+    -- The same shader plus ONE user-declared varying, and nothing else.
     {
         name = "baseline",
         source = [[
@@ -384,7 +411,12 @@ function gl_probe.shaderStep(step, emit)
         local source
         for _, rung in ipairs(gl_probe.SHADER_LADDER) do
             if rung.name == step then
-                source = rung.source .. LADDER_PIXEL
+                -- `pixel = false` means the rung brought its own pixel stage,
+                -- because the shared one reads a varying the rung must not have.
+                source = rung.source
+                if rung.pixel ~= false then
+                    source = source .. LADDER_PIXEL
+                end
             end
         end
         if not source then
