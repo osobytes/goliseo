@@ -478,6 +478,13 @@ def summarise_single(record: dict[str, Any], kind: str) -> dict[str, Any]:
     found = marker_kind(markers, kind)
     complete = until_probe_end(record["messages"])
     result: dict[str, Any] = {"complete": complete}
+    # The announcement marker is printed BEFORE the thing that might abort, so
+    # it survives when the result marker does not. Without it a row that killed
+    # the runtime would not even say which format or rung it was.
+    for announcement in ("attempting", "compiling"):
+        announced = marker_kind(markers, announcement)
+        if announced:
+            result.update({k: v for k, v in announced.items() if k != "_kind"})
     if found:
         result.update({k: v for k, v in found.items() if k != "_kind"})
     if not complete:
@@ -670,6 +677,14 @@ def self_test() -> None:
     # A page whose browser session died leaves no messages at all. That must
     # read as incomplete, never as a clean negative -- it is the same trap as
     # the terminator rule, one level up.
+    # An aborted rung must still name itself, from the marker printed before the
+    # call that killed the runtime.
+    named = summarise_single(
+        {"messages": ["GC_GLPROBE|compiling|step=rig3d"]}, "shader_step"
+    )
+    if named.get("step") != "rig3d" or named.get("complete"):
+        raise RuntimeError("an aborted shader rung lost the step name it announced")
+
     dead = summarise_single({"messages": []}, "shader_step")
     if dead.get("complete") or dead.get("ok") != "false":
         raise RuntimeError("a dead browser session was not classified as incomplete")
