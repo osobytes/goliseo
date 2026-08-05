@@ -78,6 +78,19 @@ else
     echo "   ! python3 not installed — skipping"
 fi
 
+# Verdict logic only. The real measurement (#342) needs a built wasm module, a
+# display and a desktop webview, so it is run by hand and recorded in
+# docs/online/wasm_webview_determinism.md — this step starts no webview and is
+# not coverage of one. What it does gate is the rule that decides PASS: sabotage
+# that rule and these expectations go red, which is the whole difference between
+# a determinism harness and a harness-shaped thing that always says MATCH.
+echo "==> wasm webview determinism verdict self-test (verdict logic only, launches no webview)"
+if command -v python3 >/dev/null 2>&1; then
+    ./scripts/check_verify_webview.sh || fail=1
+else
+    echo "   ! python3 not installed — skipping"
+fi
+
 # The real harness, and a self-test that proves this gate can fail. Until #279
 # there was no step anywhere — here or in CI — that started a harness process,
 # so a crash in every online match could pass a green run.
