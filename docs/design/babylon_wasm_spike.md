@@ -66,10 +66,18 @@ entity.
 
 That is not taken on trust. The page wraps **every** `_goliseo_payload_*` export
 in a counter — discovered dynamically, exactly as `verify_payload.js` does it, so
-a second call made anywhere inside the render loop is counted — and reports the
-measured rate. Every row in the tables below reported **1.00 payload crossings
-and 0.00 other crossings per rendered frame**, over 900 frames each, and the
-runner fails the run on anything else.
+a second call made anywhere inside the render loop is counted, and with no
+export exempted on the grounds that it cannot matter.
+
+**The measurement is per frame, not an average of frames**, and the distinction
+is the whole value of it. A mean of 1.00 crossings is what a correct loop
+produces — and equally what "twice on one frame, never on the next" produces. So
+each frame's delta is recorded and the minimum and maximum travel with the mean
+into the result marker. Every row in the tables below reported a per-frame
+payload crossing count of **min 1, max 1 over 900 frames**, and non-payload
+crossings of **min 0, max 0**. `scripts/babylon_wasm_bench.py` gates on
+`min == max == 1`, which no offsetting pattern can satisfy, and keeps the mean
+beside it as a second signal rather than the only one — AGENTS.md §9.
 
 The block is **266 words, 2128 bytes** for ten players, matching #332's figure
 exactly.
@@ -359,6 +367,20 @@ as two different hashes.
 agreement… nobody chose it as a contract", printed there by the phase-0 probe
 and here by the payload host, which are different entry points of the same
 module driven by different callers.
+
+**Why this is not the frozen contract hash, and why that is deliberate.** The
+frozen contract (`bfbb106aea5480f8` / `a190b60058a64e63`) is over the 7201-tick
+fixture; `ab55d5912c3b6009` is over 600 ticks of a different, unpinned one. They
+are not alternatives and neither substitutes for the other — the frozen contract
+is checked separately, immediately below. Both are the **PUC Lua 5.1 arm** of the
+open divergence in [#325](https://github.com/osobytes/goliseo/issues/325)
+(*"Resolve the bot-driven hash divergence between Lua VMs"*):
+`wasm/sim-host/Cargo.toml` pins
+`mlua = { version = "0.10", features = ["lua51", "vendored"] }`, so this module
+compiles PUC Lua 5.1 into the `.wasm` itself and produces the PUC-side values,
+never LuaJIT's. A reader comparing these against a LuaJIT run should expect a
+different number and should read #325 before treating the difference as a
+regression here.
 
 ### 2. The frozen 7201-tick contract, in a worker, while the page renders
 

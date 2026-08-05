@@ -88,6 +88,13 @@
     const crossings = new Map();
     let api = null;
 
+    // Running totals as well as the per-name map. The map is the surface report;
+    // these two are what the PER-FRAME counter reads, and they are scalars so
+    // reading them inside the timed `update` region costs two loads rather than
+    // a walk over the map.
+    let totalCalls = 0;
+    let frameCalls = 0;
+
     function instrument() {
         const wrapped = {};
         for (const name of Object.keys(Module)) {
@@ -95,13 +102,61 @@
                 continue;
             }
             const original = Module[name];
+            const isFrame = name === "_goliseo_payload_frame";
             crossings.set(name, 0);
             wrapped[name] = (...args) => {
                 crossings.set(name, crossings.get(name) + 1);
+                totalCalls += 1;
+                if (isFrame) {
+                    frameCalls += 1;
+                }
                 return original(...args);
             };
         }
         return wrapped;
+    }
+
+    /*
+     * PER-FRAME crossing counts, not an average of them.
+     *
+     * The first version of this reported `frameCalls / renderedFrames` and
+     * nothing else. That mean is 1.00 for a loop that crosses exactly once every
+     * frame -- and equally 1.00 for one that crosses twice on one frame and not
+     * at all on the next. The rule this boundary exists to enforce is "one
+     * crossing per rendered frame", so a counter that cannot tell "always 1"
+     * from "averages 1" is weaker than the claim it backs. AGENTS.md section 9:
+     * never trust one signal.
+     *
+     * So every frame's delta is recorded, and min and max travel with the mean
+     * into the result marker. The Python runner gates on `min == max == 1`; the
+     * mean is kept beside it as the second signal rather than the only one.
+     */
+    const perFrame = {
+        frames: 0,
+        payloadMin: Infinity,
+        payloadMax: 0,
+        payloadSum: 0,
+        otherMin: Infinity,
+        otherMax: 0,
+        otherSum: 0,
+    };
+
+    function recordFrameCrossings(payload, other) {
+        perFrame.frames += 1;
+        perFrame.payloadSum += payload;
+        perFrame.otherSum += other;
+        if (payload < perFrame.payloadMin) {
+            perFrame.payloadMin = payload;
+        }
+        if (payload > perFrame.payloadMax) {
+            perFrame.payloadMax = payload;
+        }
+        if (other < perFrame.otherMin) {
+            perFrame.otherMin = other;
+        }
+        if (other > perFrame.otherMax) {
+            perFrame.otherMax = other;
+        }
     }
 
     function crossingTotal(exclude) {
@@ -129,8 +184,15 @@
         });
     }
 
+    // Through `api`, not through `Module`. This is only ever reached on a call
+    // that already failed and is about to throw, so routing it around the
+    // wrapper would cost nothing measurable -- but "every `_goliseo_payload_*`
+    // export is wrapped" is the sentence that makes the crossing count
+    // trustworthy, and one export quietly exempt from it is exactly the kind of
+    // hole that makes the whole claim unverifiable. No export escapes the
+    // counter, including the ones that cannot matter.
     function lastError() {
-        return Module.UTF8ToString(Module._goliseo_payload_error());
+        return Module.UTF8ToString(api._goliseo_payload_error());
     }
 
     function hashNow() {
@@ -373,16 +435,25 @@
             warmup: config.warmup,
             frames: config.frames,
             update() {
+                // Bracketing the frame's work with two scalar reads is what
+                // turns the crossing count from an average into a per-frame
+                // measurement. Warm-up frames are counted too: a loop that
+                // crossed twice during warm-up and once afterwards would be a
+                // violation of the same rule.
+                const payloadBefore = frameCalls;
+                const totalBefore = totalCalls;
                 applyFrame(nextFrame(1));
+                const payloadDelta = frameCalls - payloadBefore;
+                recordFrameCrossings(payloadDelta, totalCalls - totalBefore - payloadDelta);
             },
             finish(stats) {
                 // Counted before anything else in this callback crosses the
                 // boundary, so the diagnostic hash below cannot inflate the
                 // number that describes the render loop.
                 const rendered = config.warmup + stats.measured;
-                const frameCalls = crossings.get("_goliseo_payload_frame") - framesBefore;
-                const otherCalls = crossingTotal(null) - beforeLoop - frameCalls;
-                const frameCrossings = frameCalls / rendered;
+                const loopFrameCalls = crossings.get("_goliseo_payload_frame") - framesBefore;
+                const otherCalls = crossingTotal(null) - beforeLoop - loopFrameCalls;
+                const frameCrossings = loopFrameCalls / rendered;
                 const otherCrossings = otherCalls / rendered;
                 const renderer = `babylon-wasm-${config.variant}`;
                 const result = S.resultMarker(
@@ -397,6 +468,14 @@
                         `|combat_present=${first.combatPresent ? 1 : 0}` +
                         `|crossings_per_frame=${frameCrossings.toFixed(2)}` +
                         `|other_crossings_per_frame=${otherCrossings.toFixed(2)}` +
+                        // The per-frame extremes. These are what the runner
+                        // gates on; the two means above are the second signal,
+                        // not the only one.
+                        `|crossings_frames=${perFrame.frames}` +
+                        `|crossings_min=${perFrame.payloadMin === Infinity ? -1 : perFrame.payloadMin}` +
+                        `|crossings_max=${perFrame.payloadMax}` +
+                        `|other_crossings_min=${perFrame.otherMin === Infinity ? -1 : perFrame.otherMin}` +
+                        `|other_crossings_max=${perFrame.otherMax}` +
                         `|roster_crossings=${rosterCrossings}` +
                         `|fixture_live_at_start=${fixtureLiveAtStart ? "yes" : "no"}` +
                         `|active_meshes=${scene.getActiveMeshes().length}` +

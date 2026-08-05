@@ -14,9 +14,11 @@ WHAT THIS RUNNER IS ACCOUNTABLE FOR, beyond collecting numbers:
      exactly that. The refusal is `scripts/babylon_bench.py`'s and is IMPORTED
      rather than re-implemented, so there is one refusal in the repository and
      `--prove-refusal` over there demonstrates this one too.
-  2. ONE CROSSING PER RENDERED FRAME. The page wraps every `_goliseo_payload_*`
-     export in a counter and reports the measured rate; anything but 1.00
-     payload crossings and 0.00 other crossings per frame fails the run.
+  2. ONE CROSSING PER RENDERED FRAME -- on EVERY frame, not on average. The
+     page wraps every `_goliseo_payload_*` export in a counter and reports the
+     per-frame minimum and maximum as well as the mean. The gate is on the
+     extremes: a mean of 1.00 is also what "twice on one frame, never on the
+     next" produces, and that is not the rule this boundary enforces.
   3. RENDERING MUST NOT PERTURB THE SIMULATION. Three independent checks, and
      all three have to hold:
        * the same match run WITH and WITHOUT rendering, in one page, must reach
@@ -143,19 +145,71 @@ def print_conditions(label: str, c: dict[str, Any]) -> None:
 
 
 def crossing_failures(result: dict[str, str], label: str) -> list[str]:
-    """One payload crossing per rendered frame, and nothing else.
+    """EVERY rendered frame crosses the boundary exactly once, and nothing else.
 
-    The page measures this by wrapping every export, so a second call made
+    The page wraps every `_goliseo_payload_*` export, so a second call made
     anywhere inside the render loop lands here as a number rather than being
     argued about from the source.
+
+    THE GATE IS ON THE EXTREMES, NOT ON THE MEAN, and the difference is the
+    point. `crossings_per_frame` is a mean over ~900 frames: it reads 1.00 for a
+    loop that crosses exactly once every frame, and equally 1.00 for one that
+    crosses twice on one frame and not at all on the next. Since "one crossing
+    per rendered frame" is the architectural rule this whole boundary exists to
+    enforce, a check that cannot distinguish "always 1" from "averages 1" is
+    weaker than the claim it backs. So the page reports per-frame min and max and
+    this requires `min == max == 1`, which no offsetting pattern can satisfy.
+
+    The means are still checked, beside the extremes rather than instead of
+    them: two independent statistics over the same counters have to agree, and
+    AGENTS.md section 9 is explicit that one signal is not enough.
+
+    A page that reports no extremes at all fails. Absent evidence must never read
+    as a passing measurement -- that is the shape the mean-only version had.
     """
     failures = []
     payload = float(result.get("crossings_per_frame", "nan"))
     other = float(result.get("other_crossings_per_frame", "nan"))
     if payload != 1.0:
-        failures.append(f"{label}: {payload} payload crossings per rendered frame, want exactly 1")
+        failures.append(
+            f"{label}: {payload} payload crossings per rendered frame on average, want exactly 1"
+        )
     if other != 0.0:
-        failures.append(f"{label}: {other} non-payload crossings per rendered frame, want 0")
+        failures.append(
+            f"{label}: {other} non-payload crossings per rendered frame on average, want 0"
+        )
+
+    required = (
+        "crossings_frames",
+        "crossings_min",
+        "crossings_max",
+        "other_crossings_min",
+        "other_crossings_max",
+    )
+    missing = [key for key in required if key not in result]
+    if missing:
+        failures.append(
+            f"{label}: the page reported no per-frame crossing extremes ({', '.join(missing)}); "
+            "a mean alone cannot tell 'always one' from 'averages one'"
+        )
+        return failures
+
+    frames = int(result["crossings_frames"])
+    low, high = int(result["crossings_min"]), int(result["crossings_max"])
+    other_low = int(result["other_crossings_min"])
+    other_high = int(result["other_crossings_max"])
+    if frames <= 0:
+        failures.append(f"{label}: {frames} frames were counted, so nothing was measured")
+    if low != 1 or high != 1:
+        failures.append(
+            f"{label}: payload crossings per frame ranged {low}..{high} over {frames} frames, "
+            "want exactly 1 on every frame"
+        )
+    if other_low != 0 or other_high != 0:
+        failures.append(
+            f"{label}: non-payload crossings per frame ranged {other_low}..{other_high} over "
+            f"{frames} frames, want 0 on every frame"
+        )
     return failures
 
 
@@ -320,6 +374,13 @@ def summarise(
         "payload_bytes": int(last.get("payload_bytes", "0")),
         "crossings_per_frame": float(last.get("crossings_per_frame", "nan")),
         "other_crossings_per_frame": float(last.get("other_crossings_per_frame", "nan")),
+        # The per-frame extremes, carried into the report because they -- not
+        # the means above -- are what the gate decided on.
+        "crossings_frames": int(last.get("crossings_frames", "0")),
+        "crossings_min": int(last.get("crossings_min", "-1")),
+        "crossings_max": int(last.get("crossings_max", "-1")),
+        "other_crossings_min": int(last.get("other_crossings_min", "-1")),
+        "other_crossings_max": int(last.get("other_crossings_max", "-1")),
         "state_hash": last.get("state_hash", ""),
         "draw_p50_ms": statistics.median(values("draw_p50")),
         "draw_p95_ms": statistics.median(values("draw_p95")),
@@ -382,7 +443,9 @@ def run_browser(
                         f"    {float(result['draw_calls_mean']):.1f} draw calls, "
                         f"draw p95 {float(result['draw_p95']):.3f} ms, "
                         f"update p95 {float(result['update_p95']):.3f} ms, "
-                        f"{result.get('crossings_per_frame')} crossings/frame",
+                        f"crossings/frame {result.get('crossings_min')}-"
+                        f"{result.get('crossings_max')} over "
+                        f"{result.get('crossings_frames')} frames",
                         flush=True,
                     )
 
@@ -515,17 +578,41 @@ def render_table(rows: list[dict[str, Any]]) -> str:
 
 def self_test() -> None:
     """Controller logic only. Starts no browser, loads no wasm, draws nothing."""
-    # 1. One crossing per rendered frame, and the ways it can be wrong.
-    good = {"crossings_per_frame": "1.00", "other_crossings_per_frame": "0.00"}
-    if crossing_failures(good, "t"):
-        raise RuntimeError("an exactly-one-crossing result was rejected")
+    # 1. EVERY rendered frame crosses once, and the ways that can be wrong.
+    def crossing_result(**overrides: str) -> dict[str, str]:
+        base = {
+            "crossings_per_frame": "1.00",
+            "other_crossings_per_frame": "0.00",
+            "crossings_frames": "900",
+            "crossings_min": "1",
+            "crossings_max": "1",
+            "other_crossings_min": "0",
+            "other_crossings_max": "0",
+        }
+        base.update(overrides)
+        return base
+
+    if crossing_failures(crossing_result(), "t"):
+        raise RuntimeError("an exactly-one-crossing-every-frame result was rejected")
     for bad in (
-        {"crossings_per_frame": "2.00", "other_crossings_per_frame": "0.00"},
-        {"crossings_per_frame": "1.00", "other_crossings_per_frame": "0.02"},
-        {"crossings_per_frame": "0.50", "other_crossings_per_frame": "0.00"},
+        # THE CASE A MEAN CANNOT SEE: 900 frames, 900 crossings, mean 1.00 --
+        # but two on one frame and none on another. This is why the gate moved
+        # off the mean, and it is the one case that would have passed before.
+        crossing_result(crossings_min="0", crossings_max="2"),
+        crossing_result(crossings_min="1", crossings_max="2"),
+        crossing_result(crossings_min="0", crossings_max="1"),
+        crossing_result(other_crossings_max="1"),
+        # A page that reports no extremes at all must not pass on its mean.
+        {"crossings_per_frame": "1.00", "other_crossings_per_frame": "0.00"},
+        # Nothing measured is not a pass either.
+        crossing_result(crossings_frames="0"),
+        # And the mean is still checked beside the extremes.
+        crossing_result(crossings_per_frame="2.00", crossings_min="2", crossings_max="2"),
+        crossing_result(other_crossings_per_frame="0.02"),
+        crossing_result(crossings_per_frame="0.50", crossings_min="0"),
     ):
         if not crossing_failures(bad, "t"):
-            raise RuntimeError(f"crossing rate {bad} was NOT rejected")
+            raise RuntimeError(f"crossing shape {bad} was NOT rejected")
 
     # 2. Rendering must not perturb the simulation -- including the silent shape
     #    where the page reported no hash at all.
@@ -600,6 +687,8 @@ def self_test() -> None:
     fields = babylon_bench.parse_marker(
         "GC_BENCH_RESULT|renderer=babylon-wasm-merged|source=wasm|characters=10"
         "|crossings_per_frame=1.00|other_crossings_per_frame=0.00"
+        "|crossings_frames=900|crossings_min=1|crossings_max=1"
+        "|other_crossings_min=0|other_crossings_max=0"
         "|hash_rendered=a703074b9f33faa0|hash_control=a703074b9f33faa0|hash_agrees=yes"
     )
     if fields["source"] != "wasm" or fields["hash_agrees"] != "yes":
