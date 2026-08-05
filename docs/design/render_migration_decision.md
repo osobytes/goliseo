@@ -135,17 +135,24 @@ baking the bone-parented gear into the skin at weight 1.
 
 | | update p95 | draw p95 | sum | of a 16.67 ms frame |
 | --- | ---: | ---: | ---: | ---: |
-| LÖVE rigged, optimised (native) | 0.345 | 2.300 | **2.65 ms** | 16% |
+| LÖVE rigged, optimised (native) | 0.345 | 2.300 | **2.64 ms** | 16% |
 | Babylon `merged_all` (Chrome) | 1.665 | 1.675 | **3.34 ms** | 20% |
 | Babylon `merged_all` (Firefox) | 1.880 | 3.440 | **5.32 ms** | 32% |
+
+Reproduced from `babylon_wasm_spike.md`'s table, including its rounding: the
+first row's exact sum is 2.645 ms and that document prints 2.64.
 
 The ~5x `update` gap is the simulation running as PUC Lua 5.1 under wasm rather
 than as LuaJIT, **not** the payload boundary. #328 decomposed it with five runs
 of `node wasm/sim-host/verify_payload.js`: one tick with its snapshot capture
 cost **0.6210–0.6694 ms mean** and the whole payload extraction **0.1353–0.1442 ms
-mean**, so the simulation is about **4.5x** the boundary. PR #346 measured the
-boundary in browsers at **0.25–0.31 ms p95, about 3–4% of the 8 ms update
-budget**.
+mean**, so the simulation is about **4.5x** the boundary. PR #346's measurement
+table puts the boundary at **0.2000 ms p95 in Chrome (2.5% of the 8 ms update
+budget) and 0.3000 ms p95 in Firefox (3.8%)** — both marked `*` in that table,
+meaning they are p95 over batch means rather than per-call samples and are
+therefore **lower bounds** on the true per-call p95. (#346's own summary prose
+says "0.25–0.31 ms p95 … about 3–4%", which does not match its table; the table
+is quoted here. See §9.)
 
 That cost is paid by *any* browser renderer that hosts the simulation in wasm,
 including a love.js one. It is #327/#332 territory, not Babylon's, and it does
@@ -303,11 +310,12 @@ across 116 files, all presentation". Recounted at `c181c55`:
 | `game/presentation` | 1,012 | 4 | 0 | 0 |
 | `game/ui` | 794 | 7 | 525 (2 files) | 65 |
 | `game/input` | 599 | 3 | 487 (1 file) | 0 |
-| **total** | **42,914** | **116** | **11,798 (28 files)** | **446** |
+| **total** | **42,914** | **116** | **11,798 (26 files)** | **446** |
 
-Three things fall out of that, all checkable by `grep`:
+Three things fall out of that, all checkable by `grep` — the file total is
+`grep -rl 'love\.' game --include='*.lua' | wc -l` → **26**:
 
-1. **88 of 116 files never mention `love.` at all.** 11,798 lines (27.5%) live in
+1. **90 of 116 files never mention `love.` at all.** 11,798 lines (27.5%) live in
    a file that does. That is a coarse proxy for engine coupling — a file can be
    engine-bound without the literal token, and a file with one
    `love.timer.getTime()` call is not wholesale engine-bound — but it is a
@@ -369,7 +377,7 @@ Ordered so that each step is independently landable and the game keeps running:
 2. **The desktop shell** — Electron (#329), so the native and browser builds share
    one V8/Chromium surface and #341's browser numbers transfer instead of needing
    to be retaken.
-3. **`game/screens` + `game/ui`** — 6,238 lines across 26 files, 89
+3. **`game/screens` + `game/ui`** — 6,238 lines across 26 files (19 + 7), 89
    `love.graphics` references concentrated in 5 of them; only 2 of `game/screens`'
    19 files draw a pitch. AGENTS.md §9's model/layout/update split means
    `layout`, `update` and `hit` are already pure and portable; only `draw` is
@@ -561,7 +569,14 @@ numbers in §1 and every one of them is load-bearing.
   interleaved launches. 1829 ms is outside the table's own recorded Tauri span,
   and the table's pair is what its "1.89x cold start" ratio is computed from
   (1657.3 / 876.6 = 1.891). **§3's table is the figure to quote.** Reported here
-  rather than silently picking one.
+  rather than silently picking one. Filed as
+  [#358](https://github.com/osobytes/goliseo/issues/358).
+- **PR #346 disagrees with itself the same way.** Its summary prose gives the
+  payload boundary as "0.25–0.31 ms p95 … about 3–4% of the 8 ms update budget";
+  its measurement table gives Chrome **0.2000 ms p95 (2.5%)** and Firefox
+  **0.3000 ms p95 (3.8%)**. Neither reading changes the conclusion the boundary
+  is nowhere near the line, and the table is what §1 quotes. Inherited from that
+  PR, not introduced here.
 - **Babylon Native's frame cost is unknown**, so the possibility that it is
   faster than Electron is untested. It does not change #329's recommendation — a
   route with no audio, no particles and no releases is not blocked on being fast.
@@ -574,17 +589,42 @@ numbers in §1 and every one of them is load-bearing.
 
 ## 9. What was verified for this document, and what was taken on trust
 
-Numbers in this measurement area have been mis-stated more than once during this
-campaign — this document found one more (§8, the cold-start discrepancy inside
-`native_route_decision.md`) — so this section is part of the deliverable rather
+Numbers in this measurement area have been mis-stated repeatedly during this
+campaign — this document found two more (§8: `native_route_decision.md`'s cold
+start, and PR #346's payload boundary), and review found one **in this
+document**, corrected below — so this section is part of the deliverable rather
 than a footnote.
+
+**The failure has one shape every time: prose restating a table from memory.**
+Not a disputed measurement, not a methodology difference — a figure retyped a
+paragraph away from the table it came from, and then travelling. Two of the
+seven known instances are in this campaign's own review trail; #358 raises the
+systemic point.
+
+**Recommendation, made with the standing of having just done it by hand.** A
+document like this one should not carry hand-transcribed figures at all. The
+three benchmark runners already emit machine-readable evidence
+(`.bench/babylon/report.json`, `.bench/native_shell/report.json`) whose filenames
+are chosen so a partial matrix cannot be mistaken for a complete one, and the
+`game/` composition numbers in §4.2 are one `grep` each. Both classes of figure
+should be **generated into this document rather than typed into it**, with the
+generator checked in and its output diffed in CI — which would turn the whole
+class of error into a red build instead of a review catch. That is a real change
+with a real gate and it is deliberately **not** in this PR: it is code, it needs
+its own demonstration that it can go red (AGENTS.md §9), and this PR is
+documentation-only. Filing it is the right next step regardless of how the
+decision above lands.
 
 **Recomputed from source at `c181c55`:**
 
 - `game/` size and composition: **42,914 lines, 116 files**, the per-directory
-  table in §4.2, the `love.`-mentioning file counts, and the 446 `love.graphics`
-  references and their distribution. **The issue's "41,825 lines" is stale**;
-  the file count is unchanged at 116.
+  table in §4.2, the **26** `love.`-mentioning files and their line totals, and
+  the 446 `love.graphics` references and their distribution. **The issue's
+  "41,825 lines" is stale**; the file count is unchanged at 116.
+  *Corrected in review:* an earlier revision printed a total of 28
+  `love.`-mentioning files and therefore "88 of 116" — an addition slip over
+  correct per-directory cells (2+4+9+3+2+3+0+2+1 = 26), not a
+  matching-methodology difference. The figures are **26** and **90 of 116**.
 - **32 pose families** in `player_pose.PRIORITY`, and every priority quoted in
   §8 read off `render/player_pose.lua` directly. 19 covered + 13 missing = 32.
 - Two of `game/screens`' 19 files require the pitch renderer, not one.
@@ -595,8 +635,9 @@ than a footnote.
   `(331.6 − 14.0)/10 = 31.76`; `(303.4 − 14.0)/10 = 28.94`; the added-draw
   percentages (1.246/2 = 62.3%, 1.143/2 = 57.2%, 1.1324/2 = 56.6%,
   1.8243/2 = 91.2%); the whole-frame sums and their percentages of 16.67 ms
-  (2.65/16%, 3.34/20%, 5.32/32%); Firefox 12.860/16.67 = 77%; the §2.1 marginal
-  percentages; 205/720 = 28%; and `1657.3/876.6 = 1.891`.
+  (2.64/16%, 3.34/20%, 5.32/32% — the first is 2.645 exactly, printed as 2.64 to
+  match its source); Firefox 12.860/16.67 = 77%; the §2.1 marginal percentages;
+  205/720 = 28%; and `1657.3/876.6 = 1.891`.
 
 **Read directly from the artifact each number is attributed to** — every table
 cell in §1 against `babylon_wasm_spike.md`, `babylon_skinned_benchmark.md`,
