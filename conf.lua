@@ -29,6 +29,9 @@ function love.conf(t)
         "--rollback-lab",
         "--determinism-refresh",
         "--fault-harness",
+        -- #341 builds the render payload and writes it to a file; it never
+        -- draws, so it must not demand a GL context to run over ssh or in CI.
+        "--capture-frames",
     }
     if not has_flag("--browser-runtime") then
         headless_flags[#headless_flags + 1] = "--determinism"
