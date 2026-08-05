@@ -31,9 +31,15 @@
 //
 // Everything else here DOES fail the script: more than one crossing per frame,
 // an undetected version mismatch, a rollback that does not reproduce its own
-// state, and -- under `--require-budget` -- an over-budget burst. The closing
-// OK line is printed only when all of them held, because per AGENTS.md §9 a
-// harness that prints failures and exits 0 must fail the gate anyway.
+// state, and -- under `--require-budget` -- an over-budget burst. Per AGENTS.md
+// §9, a harness that prints failures and exits 0 must fail the gate anyway.
+//
+// The closing OK line is deliberately precise about which of those it covers.
+// It is printed only when every PROTOCOL check held. An over-budget run without
+// `--require-budget` still reaches it, annotated "(budget finding above)",
+// because that verdict is a measurement this harness does not gate by default.
+// It is never printed when a protocol check failed, and never printed when
+// `--require-budget` is on and the budget was missed.
 //
 // Machine conditions are printed beside every number. A run at load average 7
 // and a run at load average 0.2 give materially different answers here, and

@@ -119,7 +119,36 @@ make_fake_tree() {
     printf 'return {}\n' >"$root/conf.lua"
 }
 
-# Prove the gate can go red, in the shapes that actually occur.
+# Require a rejection, AND require it to come from the check being targeted.
+#
+# This is the correction that mattered most in review. Scenario "required but
+# not embedded" used to delete `render/` while leaving `render` in ROOTS, so the
+# probe aborted in the earlier per-root check and never reached `assert_closed`
+# at all -- while the summary line claimed that guard had been demonstrated red.
+# A scenario that goes red for the wrong reason is indistinguishable from one
+# that works, right up until the day the guard it names actually breaks. So
+# every scenario now pins the message, not just the exit status.
+expect_rejection() {
+    local label="$1"
+    local expected="$2"
+    local out_dir="$3"
+    if run_probe "$fake_crate" "$out_dir"; then
+        echo "SELF-TEST FAIL: $label was ACCEPTED"
+        return 1
+    fi
+    if ! grep -qF "$expected" "$out_dir/stderr.log"; then
+        echo "SELF-TEST FAIL: $label was rejected, but not by the check it targets."
+        echo "                wanted a message containing: $expected"
+        echo "                got:"
+        grep -v '^[[:space:]]*$' "$out_dir/stderr.log" | sed 's/^/                  /' | head -4
+        return 1
+    fi
+    echo "ok  $label"
+    return 0
+}
+
+# Prove the gate can go red, in the shapes that actually occur -- one per guard,
+# each pinned to the assertion it exercises.
 self_test() {
     local failures=0
     local fake="$work_dir/fake_repo"
@@ -136,43 +165,61 @@ self_test() {
         failures=1
     fi
 
-    # 1. An unclassified top-level Lua directory: the true cause of #343.
+    # 1. assert_roots_cover_the_tree, directory arm: the true cause of #343.
     mkdir -p "$fake/presentation"
     printf 'return {}\n' >"$fake/presentation/module.lua"
-    if run_probe "$fake_crate" "$work_dir/self1"; then
-        echo "SELF-TEST FAIL: an unclassified top-level Lua directory was accepted"
-        failures=1
-    else
-        echo "ok  unclassified top-level Lua directory rejected"
-    fi
+    expect_rejection "unclassified top-level Lua directory" \
+        "appear in none of ROOTS, EXCLUDED_ROOTS or EXCLUDED_ROOT_FILES" \
+        "$work_dir/self1" || failures=1
     rm -rf "$fake/presentation"
 
-    # 2. A Lua file dropped at the repository root: in no root, so unembedded.
+    # 2. assert_roots_cover_the_tree, file arm: a .lua in no root at all.
     printf 'return {}\n' >"$fake/stray.lua"
-    if run_probe "$fake_crate" "$work_dir/self2"; then
-        echo "SELF-TEST FAIL: a root-level .lua file was accepted"
-        failures=1
-    else
-        echo "ok  root-level .lua file rejected"
-    fi
+    expect_rejection "root-level .lua file" \
+        "(file at the repository root)" \
+        "$work_dir/self2" || failures=1
     rm -f "$fake/stray.lua"
 
-    # 3. #343 itself: a module required by an embedded source but not embedded.
-    printf 'local frame = require("render.frame")\nreturn frame\n' \
-        >"$fake/scripts/needs_render.lua"
-    rm -rf "$fake/render"
-    if run_probe "$fake_crate" "$work_dir/self3"; then
-        echo "SELF-TEST FAIL: a required-but-unembedded module was accepted (#343)"
-        failures=1
+    # 3. assert_closed: a module required by embedded code but not embedded.
+    #
+    #    The namespace must have NO backing directory anywhere, or
+    #    assert_roots_cover_the_tree preempts this and the scenario proves the
+    #    wrong thing -- which is exactly what the earlier version of this
+    #    scenario did by deleting a live ROOTS directory instead.
+    printf 'local telegraph = require("presentation.telegraph")\nreturn telegraph\n' \
+        >"$fake/scripts/needs_presentation.lua"
+    expect_rejection "module required by embedded code but not embedded" \
+        "are not embedded" \
+        "$work_dir/self3" || failures=1
+    rm -f "$fake/scripts/needs_presentation.lua"
+
+    # 4. Per-root check: a ROOTS entry that is not a directory.
+    mv "$fake/render" "$fake/render_moved"
+    expect_rejection "ROOTS entry that is not a directory" \
+        "which is not a directory under" \
+        "$work_dir/self4" || failures=1
+    mv "$fake/render_moved" "$fake/render"
+
+    # 5. Per-root check: a ROOTS entry contributing no .lua at all.
+    mv "$fake/render/placeholder.lua" "$fake/render_placeholder.bak"
+    expect_rejection "ROOTS entry with no .lua files" \
+        "contains no .lua files" \
+        "$work_dir/self5" || failures=1
+    mv "$fake/render_placeholder.bak" "$fake/render/placeholder.lua"
+
+    # 6. And the tree is clean again, so no scenario left it permanently red.
+    if run_probe "$fake_crate" "$work_dir/self6"; then
+        echo "ok  the tree is accepted again after every scenario"
     else
-        echo "ok  required-but-unembedded module rejected (#343 shape)"
+        echo "SELF-TEST FAIL: a scenario did not restore the tree"
+        failures=1
     fi
 
     if [ "$failures" -ne 0 ]; then
         echo "wasm embed manifest gate self-test: FAILED"
         return 1
     fi
-    echo "wasm embed manifest gate self-test: OK"
+    echo "wasm embed manifest gate self-test: OK (5 guards demonstrated red, by message)"
     return 0
 }
 
