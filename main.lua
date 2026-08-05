@@ -2,6 +2,8 @@
 --   love .                    -> run the game (screen stack)
 --   love . --test             -> run the headless test suite and exit with status code
 --   love . --sim [n]          -> play n unattended matches, print fun-proxy metrics, exit
+--   love . --capture-frames [frames] [warmup] [path] -> record a match as a file of
+--                                RenderFrame payloads for an off-LOVE renderer (#341)
 --   love . --snapshot-measure [n] -> measure canonical snapshot operations n times
 --   love . --benchmark [frames] [warmup] [rigged|procedural] -> #100 ten-player
 --                                render benchmark; windowed, needs a GL context
@@ -103,6 +105,26 @@ if has_flag("--fault-harness") then
         local ok =
             runner.main(selector, tonumber(seed), ticks and math.floor(ticks) or nil, topology)
         os.exit(ok and 0 or 1)
+    end
+    return
+end
+
+-- Records a match as a file of `RenderFrame` payloads (#341). Headless: it
+-- builds the payload and never draws it, which is the point -- the file is what
+-- lets a renderer that does not exist yet be measured against this match.
+--
+--   love . --capture-frames [frames] [warmup] [path]
+if has_flag("--capture-frames") then
+    function love.load()
+        local frames, warmup, path
+        for index, value in ipairs(arg or {}) do
+            if value == "--capture-frames" then
+                frames, warmup, path = arg[index + 1], arg[index + 2], arg[index + 3]
+                break
+            end
+        end
+        local capture = require("scripts.capture_render_frames")
+        os.exit(capture.main(frames, warmup, path) and 0 or 1)
     end
     return
 end

@@ -111,6 +111,18 @@ else
     echo "   ! python3 not installed — skipping"
 fi
 
+# Controller logic only. The benchmark itself needs a GPU, a display and two
+# real browsers, so it is not a blocking gate -- but the refusal that keeps a
+# SwiftShader number out of the report is pure logic, and #100 already published
+# one false negative for want of it. `--prove-refusal` is the run that starts a
+# browser; this step deliberately does not.
+echo "==> #341 Babylon bench controller self-test (marker parsing + software-rasteriser refusal; starts no browser)"
+if command -v python3 >/dev/null 2>&1; then
+    python3 -B scripts/babylon_bench.py --self-test || fail=1
+else
+    echo "   ! python3 not installed — skipping"
+fi
+
 echo "==> OMP-2 rollback validation harness self-test"
 if command -v python3 >/dev/null 2>&1; then
     ./scripts/check_rollback.sh --self-test || fail=1
