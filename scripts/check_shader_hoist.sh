@@ -33,23 +33,37 @@ run_gate() {
     node --check "$root/scripts/browser_shader_hoist_smoke.js" >>"$log" 2>&1 || status=1
     node "$root/scripts/browser_shader_hoist_smoke.js" >>"$log" 2>&1 || status=1
 
+    # `+`, not `*`. With `[0-9]*` a truncated terminator such as
+    # `GC_SHADER_HOIST|pass=25|fail=` still matches, `fails` captures empty,
+    # `[ "" -ne 0 ]` fails with "integer expression expected" on STDERR, and the
+    # branch that sets status=1 never runs -- a gate written to catch the #279
+    # silent-pass shape, silently passing. Nothing in the runner can emit an
+    # empty digit run today; it is fixed because a gate may not have the defect
+    # it exists to detect. Every capture is then re-validated as numeric, so a
+    # terminator that matched loosely for any other reason is a hard failure and
+    # not a no-op comparison.
     local terminator
-    terminator="$(grep -o 'GC_SHADER_HOIST|pass=[0-9]*|fail=[0-9]*' "$log" | tail -n 1)"
+    terminator="$(grep -o 'GC_SHADER_HOIST|pass=[0-9]\+|fail=[0-9]\+' "$log" | tail -n 1)"
     if [ -z "$terminator" ]; then
-        echo "   ! the hoist suite produced no terminator: absent evidence is not a pass" >>"$log"
+        echo "   ! the hoist suite produced no well-formed terminator: absent evidence is not a pass" >>"$log"
         status=1
     else
         local passes fails
         passes="${terminator#*pass=}"
         passes="${passes%%|*}"
         fails="${terminator##*fail=}"
-        if [ "$fails" -ne 0 ]; then
-            echo "   ! the hoist suite reported $fails failing case(s)" >>"$log"
+        if ! [[ "$passes" =~ ^[0-9]+$ ]] || ! [[ "$fails" =~ ^[0-9]+$ ]]; then
+            echo "   ! unreadable hoist terminator '$terminator': not counted as a pass" >>"$log"
             status=1
-        fi
-        if [ "$passes" -lt "$MIN_CASES" ]; then
-            echo "   ! the hoist suite ran $passes case(s), fewer than the $MIN_CASES required" >>"$log"
-            status=1
+        else
+            if [ "$fails" -ne 0 ]; then
+                echo "   ! the hoist suite reported $fails failing case(s)" >>"$log"
+                status=1
+            fi
+            if [ "$passes" -lt "$MIN_CASES" ]; then
+                echo "   ! the hoist suite ran $passes case(s), fewer than the $MIN_CASES required" >>"$log"
+                status=1
+            fi
         fi
     fi
 
@@ -159,7 +173,9 @@ self_test() {
     sabotage "preprocessor guard dropped" "$shim" \
         's/block = block\.concat\(found\[k\]\.branch\);//'
     sabotage "declaration deleted instead of blanked" "$shim" \
-        's/lines\[found\[i\]\.line\] = "";/lines.splice(found[i].line, 1);/'
+        's/lines\[found\[b\]\.line\] = "";/lines.splice(found[b].line, 1);/'
+    sabotage "guarded path inserts lines with no #line to absorb them" "$shim" \
+        's/      if \(!canRenumber\) \{\n        return source;\n      \}//'
     sabotage "hoist disabled entirely" "$shim" \
         's/function hoist\(source\) \{/function hoist(source) { return source;/'
     sabotage "declaration matched by bare substring" "$shim" \
@@ -171,6 +187,12 @@ self_test() {
     sabotage "broken transform + runner exits 0 with failures printed" \
         "$shim" 's/function hoist\(source\) \{/function hoist(source) { return source;/' \
         "$suite" 's/  process\.exit\(1\);/  process.exit(0);/'
+    # A terminator with an empty digit run. Before the `[0-9]+` fix this was the
+    # gate's own silent pass: the count comparison errored to stderr and left
+    # status untouched.
+    sabotage "runner reports a truncated terminator" \
+        "$shim" 's/function hoist\(source\) \{/function hoist(source) { return source;/' \
+        "$suite" 's/"\|fail=" \+ failures\.length/"|fail=" + (failures.length ? "" : failures.length)/'
     sabotage "runner reports no terminator" "$suite" \
         's/console\.log\("GC_SHADER_HOIST\|/console.log(("GC_SHADER_HOIST_"+"/'
     sabotage "runner runs no cases at all" "$suite" \
