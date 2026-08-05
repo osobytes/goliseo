@@ -46,6 +46,22 @@
 --      build failure, a missing depth buffer or a draw failure raises here
 --      instead of printing a line and falling back. A gate that measures the
 --      procedural renderer while reporting on the rigged one is what #340 is.
+--
+-- WHAT THIS GATE DOES NOT COVER, stated here because #340 is the issue about
+-- not overstating coverage. Level B is CPU-side and level C is deliberately
+-- coarse, so **a shader that compiles and runs while computing the wrong thing
+-- passes both**: flipped toon band thresholds, a sign error on `ndl`, a swapped
+-- `light_dir` component, a wrong specular exponent or rim curve. So does a **GL
+-- state regression** -- `renderer.beginPass`'s depth polarity
+-- (`setDepthMode("less", true)`), its cull mode, or blend state have no spec
+-- anywhere in this repo, and flipping any of them still rasterises something
+-- inside level C's 3%..40% coverage and 1% team-difference bounds. The red
+-- demonstration this gate shipped with breaks the shader at COMPILE time, which
+-- proves only that a compile failure is now loud.
+--
+-- Closing that would mean pinning shader OUTPUT, i.e. pixel baselines -- and
+-- pixel baselines pin the GPU that made them, which is the whole reason this
+-- gate is numbers (see above) and why the three PNG gates are not gates (#351).
 
 local bloom = require("game.render.bloom")
 local pitch = require("game.render.pitch")
@@ -436,7 +452,11 @@ end
 local function row(values)
     local parts = {}
     for index, value in ipairs(values) do
-        parts[index] = string.format("%.9g", value)
+        -- `value == 0` is true for negative zero, so this normalises it.
+        -- mat4.rotationY(0) produces -0, which "%.9g" writes as "-0"; it
+        -- compares equal to 0 so it never affected the gate, but this file is
+        -- meant to be read in a diff and "-0" reads as a change.
+        parts[index] = string.format("%.9g", value == 0 and 0 or value)
     end
     return table.concat(parts, " ")
 end

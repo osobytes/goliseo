@@ -62,16 +62,26 @@ t.describe("player_renderer_3d request semantics", function()
         )
     end)
 
-    t.it("raises from draw() too, not only from available()", function()
-        -- pitch.lua guards with available(), but the benchmark and any future
-        -- caller may not, and draw() has its own pcall that swallowed errors
-        -- independently of build()'s.
+    t.it("refuses from draw() too, instead of silently returning", function()
+        -- pitch.lua guards with available(), but a caller need not, and draw()
+        -- opens with `if not build() then return end` -- a silent no-op for
+        -- someone who demanded the rigged path. This covers that entry point.
+        --
+        -- BE PRECISE ABOUT WHICH PATH THIS REACHES. The failure is already
+        -- latched by the test above, so the raise comes from `build()`'s
+        -- "a previous build or draw already disabled it" short-circuit, NOT
+        -- from the draw-specific `refuse("a draw failed: ...")`. Reaching that
+        -- one needs a build that SUCCEEDS and a draw that then fails, which is
+        -- unreachable headless -- there is no shader compiler, so build() can
+        -- never succeed here -- and faking one would only test the fake. It is
+        -- covered by nothing today; see the gap list at the top of
+        -- spec/support/rig3d_player_draw.lua.
         player_renderer_3d.required = true
         local raised, message = raises(function()
             player_renderer_3d.draw(0, 0, 1, { 1, 1, 1 }, nil, { team = "home" })
         end)
         player_renderer_3d.required = false
-        t.is_true(raised, "draw() must not swallow a failure the caller required not to happen")
+        t.is_true(raised, "draw() must not silently return for a caller that required rigged")
         t.is_true(
             message:find("rigged 3D players were required", 1, true) ~= nil,
             "the diagnostic must say the rigged path was required, got: " .. message

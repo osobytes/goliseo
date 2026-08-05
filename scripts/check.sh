@@ -55,7 +55,14 @@ fi
 # spec/support/rig3d_player_draw.lua for why a pixel baseline cannot be a gate.
 echo "==> #340 rigged 3D player renderer (real draw path + pinned GPU payload)"
 if command -v love >/dev/null 2>&1; then
+    # Three invocations, mirroring ci.yml exactly: the wrapper's own detection
+    # (starts no LOVE process), then the harness's own detection (a real LOVE
+    # process proving levels A-D can reject), then the gate itself. Dropping the
+    # middle one would let a regression in the harness's fault detection -- say
+    # compareScenario always returning true -- pass locally and surface only in
+    # CI, which is the asymmetry AGENTS.md #9 forbids.
     ./scripts/check_rig3d_player_draw.sh --self-test || fail=1
+    ./scripts/check_rig3d_player_draw.sh self-test || fail=1
     ./scripts/check_rig3d_player_draw.sh || fail=1
 else
     echo "   ! love not installed — skipping"

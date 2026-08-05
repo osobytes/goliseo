@@ -38,11 +38,17 @@ local player_renderer_3d = {}
 -- recoverable outcome and AGENTS.md #7 says the caller handles it.
 --
 -- It is NOT an expected outcome when a caller demanded this path -- `love .
--- --rigged-players`, the #100 benchmark, the rig3d draw gate. Then "disabled
--- itself and quietly drew something else" is a broken invariant, and #7 says
--- invariants fail loud. Printing a line into a log nobody reads is how the
--- rigged renderer went unexecuted through four issues of work on it (#340), so
--- set this and the same failure raises instead.
+-- --rigged-players`, or the rig3d draw gate. Then "disabled itself and quietly
+-- drew something else" is a broken invariant, and #7 says invariants fail loud.
+-- Printing a line into a log nobody reads is how the rigged renderer went
+-- unexecuted through four issues of work on it (#340), so set this and the same
+-- failure raises instead.
+--
+-- The #100 benchmark is deliberately NOT on that list and does not set this: it
+-- already protects itself, by sampling `available()` into `rigged_active` and
+-- asserting it in its own result gate (game/render/benchmark.lua). That predates
+-- this flag and stays as it is -- a benchmark wants a verdict it can report,
+-- not an exception part-way through a measurement.
 --
 -- Deliberately a module field rather than an argument: it is a property of the
 -- RUN (which binary was started, with which flag), not of a draw call, and the

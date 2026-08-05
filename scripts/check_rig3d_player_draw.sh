@@ -197,6 +197,12 @@ trap 'rm -f "$log"' EXIT
 timeout_bin=()
 if command -v timeout >/dev/null 2>&1; then
     timeout_bin=(timeout --kill-after=30s "${RIG3D_GATE_TIMEOUT:-300}")
+else
+    # Say so rather than degrading quietly. Losing this is the difference
+    # between a red gate and a job that hangs until its runner kills it, and a
+    # safeguard that disappears without a word is its own small #340.
+    echo "warning: coreutils \`timeout\` not found -- a hung LÖVE error screen" \
+        "will not be killed by this gate" >&2
 fi
 
 echo "==> love . --rig3d-player-draw $([ "$mode" = check ] || echo "$mode")"
