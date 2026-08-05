@@ -534,9 +534,35 @@ def measure_browser(
 
     def page(label: str, love_args: list[str], done: Any, timeout: float) -> dict[str, Any]:
         print(f"    {browser}: {label}", flush=True)
-        record = run_page(
-            browser, binary, driver_path, base_url, love_args, logs / f"{label}.log", timeout, done
-        )
+        try:
+            record = run_page(
+                browser,
+                binary,
+                driver_path,
+                base_url,
+                love_args,
+                logs / f"{label}.log",
+                timeout,
+                done,
+            )
+        except Exception as error:  # noqa: BLE001
+            # A page that kills the browser outright is a RESULT, not a lost
+            # run. Firefox's session dies partway through the shader ladder
+            # because LÖVE keeps aborting the runtime under it; letting that
+            # abort the whole leg would have thrown away the very evidence the
+            # leg exists to collect. Each page owns its own browser process, so
+            # the next one starts clean.
+            print(f"      {label}: browser session died ({type(error).__name__})", flush=True)
+            record = {
+                "browser": browser,
+                "args": love_args,
+                "messages": [],
+                "alerts": [],
+                "gl": {},
+                "session_died": True,
+                "session_error": str(error)[:400],
+                "loadavg_end": loadavg(),
+            }
         record["label"] = label
         records.append(record)
         return record
@@ -573,13 +599,18 @@ def measure_browser(
         )
         phases[f"bench_{renderer}"] = summarise_bench(record)
 
-    gpu = gpu_from(survey)
+    # Any page that got a context can supply the GPU evidence -- the survey
+    # usually does, but if its session died the run is not thereby allowed to
+    # skip the hardware proof, it just reads it from another page.
+    gl_record = next((r for r in records if (r.get("gl") or {}).get("gpu_renderer")), survey)
+    gpu = gpu_from(gl_record)
     require_hardware(gpu, f"{browser} love.js depth probe")
 
-    gl = survey.get("gl") or {}
+    gl = gl_record.get("gl") or {}
     return {
         "browser": browser,
-        "browser_version": survey.get("browser_version"),
+        "browser_version": survey.get("browser_version") or gl_record.get("browser_version"),
+        "sessions_died": [r["label"] for r in records if r.get("session_died")],
         "webgl": {
             "version": gl.get("version"),
             "webgl2": gl.get("webgl2"),
@@ -630,9 +661,20 @@ def self_test() -> None:
     if not until_probe_end(["GC_GLPROBE|env|love=11.5.0", "GC_GLPROBE|end|mode=survey"]):
         raise RuntimeError("a terminated phase was not treated as complete")
 
-    aborted = summarise_single({"messages": ["GC_GLPROBE|attempting|format=depth24stencil8"]}, "attempt")
+    aborted = summarise_single(
+        {"messages": ["GC_GLPROBE|attempting|format=depth24stencil8"]}, "attempt"
+    )
     if aborted.get("ok") != "false" or not aborted.get("aborted"):
         raise RuntimeError("an aborted canvas attempt was not classified as a failure")
+
+    # A page whose browser session died leaves no messages at all. That must
+    # read as incomplete, never as a clean negative -- it is the same trap as
+    # the terminator rule, one level up.
+    dead = summarise_single({"messages": []}, "shader_step")
+    if dead.get("complete") or dead.get("ok") != "false":
+        raise RuntimeError("a dead browser session was not classified as incomplete")
+    if summarise_bench({"messages": []})["complete"]:
+        raise RuntimeError("a benchmark that never ran was treated as complete")
 
     # The verdict rule, and every single clause of it. Sabotage one at a time;
     # each must flip the answer on its own, or that clause is decorative.
