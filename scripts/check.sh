@@ -123,6 +123,21 @@ else
     echo "   ! python3 not installed — skipping"
 fi
 
+# Controller logic only, and the heading says so. The #328 measurement needs a
+# built wasm module, a GPU, a display and two real browsers, so it is evidence
+# run by hand and recorded in docs/design/babylon_wasm_spike.md. What IS gated
+# here is every rule that decides its verdict: exactly one boundary crossing per
+# rendered frame, rendering not perturbing the simulation, cross-runtime hash
+# agreement, the frozen determinism contract, the software-rasteriser refusal,
+# and that a run with any failure exits non-zero. Sabotage any one of them and
+# this step goes red. It starts no browser and loads no wasm.
+echo "==> #328 Babylon wasm-payload verdict self-test (crossing, perturbation and hash rules; starts no browser, loads no wasm)"
+if command -v python3 >/dev/null 2>&1; then
+    python3 -B scripts/babylon_wasm_bench.py --self-test || fail=1
+else
+    echo "   ! python3 not installed — skipping"
+fi
+
 echo "==> OMP-2 rollback validation harness self-test"
 if command -v python3 >/dev/null 2>&1; then
     ./scripts/check_rollback.sh --self-test || fail=1
