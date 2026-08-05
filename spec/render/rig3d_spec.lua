@@ -6,10 +6,18 @@ local masks = require("game.render.rig3d.masks")
 local proportions = require("game.render.rig3d.proportions")
 local themes = require("game.render.rig3d.themes")
 local meshbuilder = require("game.render.rig3d.meshbuilder")
+local body = require("game.render.rig3d.body")
 
--- None of these modules touch love.* except meshbuilder's `Builder:build()`
--- (calls love.graphics.newMesh) -- and nothing below calls that, so the whole
--- file still runs in the headless tier.
+-- These modules are required DIRECTLY, never through player_renderer_3d. That
+-- is deliberate and it is the whole point of #340: player_renderer_3d.build()
+-- calls love.graphics.newShader, which does not exist headless, so the rigged
+-- renderer disables itself and every assertion made through it passes
+-- vacuously. Requiring the modules themselves is what makes this real coverage.
+--
+-- None of them touch love.* except meshbuilder's `Builder:build()` (calls
+-- love.graphics.newMesh) -- and nothing below calls that. `body.accumulate`
+-- exists precisely so the entire generation path up to that one call is
+-- reachable here.
 
 local RIG = proportions.RIG_MEDIUM
 
@@ -276,8 +284,9 @@ t.describe("rig3d meshbuilder palette-slot vertices (#337)", function()
         mb:triangle(nil, { 0, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 }, themes.SLOT_INDEX.skin)
         t.eq(#mb.verts, 3)
         for _, v in ipairs(mb.verts) do
-            -- position(3) + texcoord(2) + normal(3) + slot(1) = 9.
-            t.eq(#v, 9)
+            -- position(3) + texcoord(2) + normal(3) + slot(1) + bone(1)
+            -- + material(1) = 11 since #337 slice 2; the slot stays at 9.
+            t.eq(#v, 11)
             t.eq(v[9], themes.SLOT_INDEX.skin)
         end
     end)
@@ -309,5 +318,327 @@ t.describe("rig3d meshbuilder palette-slot vertices (#337)", function()
         local mb = meshbuilder.new()
         local ok = pcall(mb.triangle, mb, nil, { 0, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 }, nil)
         t.is_true(not ok, "triangle() must reject a nil slot")
+    end)
+end)
+
+-- #337 slice 2: rigid GPU skinning. Every part of a character is folded into
+-- ONE static mesh; the bone that drives a vertex and the material that shades
+-- it travel IN the vertex instead of in a per-part uniform, so ~28 draw calls
+-- per character become 1.
+--
+-- All of this is pure Lua up to the single love.graphics.newMesh call at the
+-- very end, so the accumulation -- bone assignment, material assignment,
+-- attach baking, the merge itself -- is fully covered headless.
+t.describe("rig3d vertex format (#337 slice 2)", function()
+    t.it("carries a bone index and a material alongside the palette slot", function()
+        local names = {}
+        for i, attribute in ipairs(meshbuilder.VERTEX_FORMAT) do
+            names[i] = attribute[1]
+            -- Floats, not integers: GLSL ES 1.00 (WebGL 1) has no integer
+            -- vertex attributes, so every index crosses as a float.
+            t.eq(attribute[2], "float", attribute[1] .. " must be a float attribute")
+        end
+        t.eq(
+            table.concat(names, ","),
+            "VertexPosition,VertexTexCoord,VertexNormal,"
+                .. "VertexPaletteSlot,VertexBoneIndex,VertexMaterial"
+        )
+    end)
+
+    t.it("emits one value per format component, in format order", function()
+        local components = 0
+        for _, attribute in ipairs(meshbuilder.VERTEX_FORMAT) do
+            components = components + attribute[3]
+        end
+        t.eq(components, 11)
+
+        local mb = meshbuilder.new()
+        mb:triangle(nil, { 0, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 }, themes.SLOT_INDEX.skin)
+        for _, v in ipairs(mb.verts) do
+            t.eq(#v, components)
+        end
+    end)
+
+    t.it("maps material names to the ids the shader branches on", function()
+        t.eq(meshbuilder.materialIndex(nil), meshbuilder.MATERIAL.plain)
+        t.eq(meshbuilder.materialIndex("metal"), meshbuilder.MATERIAL.metal)
+        t.eq(meshbuilder.materialIndex("emissive"), meshbuilder.MATERIAL.emissive)
+        -- The shader tests `v_material > 1.5` for emissive and `> 0.5` for
+        -- metal, so the ordering of these three ids is load-bearing.
+        t.is_true(
+            meshbuilder.MATERIAL.plain < meshbuilder.MATERIAL.metal
+                and meshbuilder.MATERIAL.metal < meshbuilder.MATERIAL.emissive,
+            "material ids must stay ordered plain < metal < emissive"
+        )
+    end)
+
+    t.it("rejects an unknown material rather than silently shading it plain", function()
+        local ok = pcall(meshbuilder.materialIndex, "chrome")
+        t.is_true(not ok, "an unknown material name must fail loud")
+    end)
+end)
+
+t.describe("rig3d bone index contract (#337 slice 2)", function()
+    t.it("indexes every bone densely from 0", function()
+        local bones = skeleton.bones(RIG)
+        local index = skeleton.boneIndex(RIG)
+        t.eq(skeleton.boneCount(RIG), #bones)
+        local seen = {}
+        for i, bone in ipairs(bones) do
+            t.eq(index[bone.name], i - 1, bone.name)
+            t.is_true(not seen[index[bone.name]], "bone index must be unique: " .. bone.name)
+            seen[index[bone.name]] = true
+        end
+    end)
+
+    t.it("flattens the posed skeleton into three rows per bone, in index order", function()
+        local rig = skeleton.new(RIG)
+        local rows = skeleton.boneRows(rig)
+        t.eq(#rows, skeleton.boneCount(RIG) * skeleton.ROWS_PER_BONE)
+        t.eq(skeleton.ROWS_PER_BONE, 3)
+
+        local index = skeleton.boneIndex(RIG)
+        for name, i in pairs(index) do
+            local m = rig.world[name]
+            for r = 0, 2 do
+                local row = rows[i * 3 + r + 1]
+                t.eq(#row, 4, name .. " row " .. r)
+                for c = 1, 4 do
+                    t.near(row[c], m[r * 4 + c], 1e-12, name .. " row " .. r .. " col " .. c)
+                end
+            end
+        end
+    end)
+
+    t.it("drops only the fourth row, which is always exactly (0, 0, 0, 1)", function()
+        -- This is what buys the uniform budget: 3 rows per bone instead of 4.
+        -- If a bone transform ever gained a projective or sheared component the
+        -- shader would silently drop it, so the assumption is asserted here
+        -- against a genuinely posed rig, not just the rest pose.
+        local rig = skeleton.new(RIG)
+        skeleton.apply(rig, {
+            rot = {
+                ["upper_arm.R"] = require("core.quat").fromEuler(math.rad(-70), 0.4, 0.2),
+                hips = require("core.quat").fromEuler(0.3, -0.5, 0.1),
+            },
+            move = { hips = { 0.1, 0.2, -0.3 } },
+        })
+        for _, name in ipairs(rig.order) do
+            local m = rig.world[name]
+            for c = 1, 3 do
+                t.near(m[12 + c], 0, 1e-12, name .. " fourth row must be (0,0,0,1)")
+            end
+            t.near(m[16], 1, 1e-12, name .. " fourth row must be (0,0,0,1)")
+        end
+    end)
+
+    t.it("refills a reused row buffer rather than reallocating it", function()
+        -- boneRows is called once per character per frame; the buffer is reused
+        -- on purpose (see its own note on GC pressure at ten players).
+        local rig = skeleton.new(RIG)
+        local buffer = {}
+        t.is_true(skeleton.boneRows(rig, buffer) == buffer, "must return the buffer it was given")
+        local first_row = buffer[1]
+        skeleton.apply(rig, {
+            rot = { hips = require("core.quat").fromEuler(0.5, 0, 0) },
+            move = {},
+        })
+        skeleton.boneRows(rig, buffer)
+        t.is_true(buffer[1] == first_row, "row tables must be reused, not replaced")
+        t.eq(#buffer, skeleton.boneCount(RIG) * skeleton.ROWS_PER_BONE)
+    end)
+end)
+
+t.describe("rig3d vertex uniform budget (#337 slice 2)", function()
+    t.it("fits the GLSL ES 1.00 guaranteed floor of 128 vertex uniform vectors", function()
+        -- 26 bones as mat4 would be 104 vec4 + 12 palette + 12 matrix = 128,
+        -- i.e. AT the floor and therefore unlinkable on a conforming minimum
+        -- implementation. Three rows per bone is what makes it fit.
+        local rows = skeleton.boneCount(RIG) * skeleton.ROWS_PER_BONE
+        local used = rows + themes.SLOT_COUNT + 12
+        t.is_true(used <= 128, "vertex uniform vectors used: " .. used)
+        t.is_true(
+            skeleton.boneCount(RIG) * 4 + themes.SLOT_COUNT + 12 > 128 - 1,
+            "the mat4 form really is at or over the floor, so 3 rows is load-bearing"
+        )
+    end)
+end)
+
+t.describe("rig3d part merge (#337 slice 2)", function()
+    local function tri(mb, slot, y)
+        mb:triangle(nil, { 0, y, 0 }, { 1, y, 0 }, { 0, y + 1, 0 }, slot)
+    end
+
+    t.it("stamps each part's bone index and material onto every one of its vertices", function()
+        local a, b = meshbuilder.new(), meshbuilder.new()
+        tri(a, themes.SLOT_INDEX.skin, 0)
+        tri(b, themes.SLOT_INDEX.plate, 0)
+        local merged = meshbuilder.merge({
+            { builder = a, bone = 4 },
+            { builder = b, bone = 17, material = "emissive" },
+        })
+        t.eq(#merged.verts, 6)
+        for i = 1, 3 do
+            t.eq(merged.verts[i][10], 4, "bone index")
+            t.eq(merged.verts[i][11], meshbuilder.MATERIAL.plain, "material")
+            t.eq(merged.verts[i][9], themes.SLOT_INDEX.skin, "palette slot survives the merge")
+        end
+        for i = 4, 6 do
+            t.eq(merged.verts[i][10], 17, "bone index")
+            t.eq(merged.verts[i][11], meshbuilder.MATERIAL.emissive, "material")
+            t.eq(merged.verts[i][9], themes.SLOT_INDEX.plate, "palette slot survives the merge")
+        end
+    end)
+
+    t.it("preserves part order, so triangles rasterise in submission order", function()
+        local a, b = meshbuilder.new(), meshbuilder.new()
+        tri(a, themes.SLOT_INDEX.skin, 10)
+        tri(b, themes.SLOT_INDEX.skin, 20)
+        local merged = meshbuilder.merge({ { builder = a, bone = 0 }, { builder = b, bone = 1 } })
+        t.near(merged.verts[1][2], 10, 1e-12)
+        t.near(merged.verts[4][2], 20, 1e-12)
+    end)
+
+    t.it("bakes a part's attach transform into its vertices", function()
+        -- The static per-part offset is what used to force a per-part model
+        -- matrix. Once it lives in the vertex the bone matrix alone drives it.
+        local plain, attached = meshbuilder.new(), meshbuilder.new()
+        tri(plain, themes.SLOT_INDEX.skin, 0)
+        tri(attached, themes.SLOT_INDEX.skin, 0)
+        local shift = mat4.translation(5, -2, 3)
+        local merged = meshbuilder.merge({
+            { builder = plain, bone = 0 },
+            { builder = attached, bone = 0, attach = shift },
+        })
+        for i = 1, 3 do
+            local before, after = merged.verts[i], merged.verts[i + 3]
+            t.near(after[1], before[1] + 5, 1e-12)
+            t.near(after[2], before[2] - 2, 1e-12)
+            t.near(after[3], before[3] + 3, 1e-12)
+            -- A pure translation must leave the normal alone.
+            for c = 6, 8 do
+                t.near(after[c], before[c], 1e-12)
+            end
+        end
+    end)
+
+    t.it("rotates normals with an attach and keeps them unit length", function()
+        local part = meshbuilder.new()
+        tri(part, themes.SLOT_INDEX.skin, 0)
+        local merged = meshbuilder.merge({
+            { builder = part, bone = 0, attach = mat4.rotationX(math.rad(37)) },
+        })
+        for _, v in ipairs(merged.verts) do
+            local len = math.sqrt(v[6] * v[6] + v[7] * v[7] + v[8] * v[8])
+            t.near(len, 1, 1e-9, "normal must stay unit length through an attach")
+        end
+    end)
+
+    t.it("rejects a part with no bone index", function()
+        local part = meshbuilder.new()
+        tri(part, themes.SLOT_INDEX.skin, 0)
+        local ok = pcall(meshbuilder.merge, { { builder = part } })
+        t.is_true(not ok, "merge must reject a part that names no bone")
+    end)
+
+    t.it("refuses to build a mesh from an unmerged part builder", function()
+        -- A part is not a draw call any more. Enforced rather than documented,
+        -- because a part builder's bone and material columns are zeros until
+        -- merge stamps them -- building one directly would render every part
+        -- on the root bone.
+        local part = meshbuilder.new()
+        tri(part, themes.SLOT_INDEX.skin, 0)
+        local ok, err = pcall(part.build, part)
+        t.is_true(not ok, "an unmerged builder must not build")
+        t.is_true(
+            tostring(err):find("merge", 1, true) ~= nil,
+            "the error should point at merge: " .. tostring(err)
+        )
+    end)
+end)
+
+t.describe("rig3d character accumulation (#337 slice 2)", function()
+    local THEME, FIGURE = themes.LIST[1], themes.FIGURES[1]
+
+    t.it("merges every part into one builder without losing a triangle", function()
+        local merged, parts = body.accumulate(RIG, THEME, FIGURE)
+        t.is_true(#parts > 1, "the character really is built from many parts: " .. #parts)
+        local sum = 0
+        for _, part in ipairs(parts) do
+            sum = sum + part.builder:triangleCount()
+        end
+        t.eq(merged:triangleCount(), sum, "the merge must lose nothing and invent nothing")
+        t.is_true(sum > 0, "the character must have geometry")
+    end)
+
+    t.it("gives every emitted vertex a bone index inside the skeleton", function()
+        local merged = body.accumulate(RIG, THEME, FIGURE)
+        local count = skeleton.boneCount(RIG)
+        -- An out-of-range index reads past the end of the bone uniform array,
+        -- which is undefined behaviour rather than a visible mistake.
+        local lowest, highest = math.huge, -math.huge
+        for _, v in ipairs(merged.verts) do
+            local bone = v[10]
+            t.is_true(
+                bone == math.floor(bone) and bone >= 0 and bone < count,
+                "bone index out of [0, " .. (count - 1) .. "]: " .. tostring(bone)
+            )
+            lowest, highest = math.min(lowest, bone), math.max(highest, bone)
+        end
+        t.is_true(highest > lowest, "the character must actually use more than one bone")
+    end)
+
+    t.it("keeps every part on a bone the skeleton declares", function()
+        local _, parts = body.accumulate(RIG, THEME, FIGURE)
+        local index = skeleton.boneIndex(RIG)
+        for _, part in ipairs(parts) do
+            t.eq(index[part.bone_name], part.bone, part.bone_name)
+        end
+    end)
+
+    t.it("resolves each part's material onto its vertices", function()
+        local merged, parts = body.accumulate(RIG, THEME, FIGURE)
+        local at, seen = 1, {}
+        for _, part in ipairs(parts) do
+            local expected = meshbuilder.materialIndex(part.material)
+            seen[expected] = (seen[expected] or 0) + 1
+            for _ = 1, #part.builder.verts do
+                t.eq(merged.verts[at][11], expected, part.bone_name .. " material")
+                at = at + 1
+            end
+        end
+        t.eq(at - 1, #merged.verts, "every merged vertex must belong to a part")
+        -- Medieval Fantasy is plate armour over bare skin: it must produce both
+        -- families, or "material is per vertex" would be untested in practice.
+        t.is_true((seen[meshbuilder.MATERIAL.plain] or 0) > 0, "expected plain parts")
+        t.is_true((seen[meshbuilder.MATERIAL.metal] or 0) > 0, "expected metal parts")
+    end)
+
+    t.it("mixes materials inside one mesh for a theme that glows", function()
+        -- Galactic Sci-Fi has emissive seams and an energy blade. Before slice 2
+        -- those forced their own draw calls; now all three families share one
+        -- mesh, which is the difference between ~3 draws per character and 1.
+        local scifi = themes.byKey("scifi")
+        local merged = body.accumulate(RIG, scifi, FIGURE)
+        local seen = {}
+        for _, v in ipairs(merged.verts) do
+            seen[v[11]] = true
+        end
+        for _, name in ipairs({ "plain", "metal", "emissive" }) do
+            t.is_true(seen[meshbuilder.MATERIAL[name]], "expected " .. name .. " vertices")
+        end
+    end)
+
+    t.it("builds every theme x figure pair without a bad bone or material", function()
+        for _, theme in ipairs(themes.LIST) do
+            for _, figure in ipairs(themes.FIGURES) do
+                local merged, parts = body.accumulate(RIG, theme, figure)
+                t.is_true(
+                    merged:triangleCount() > 0,
+                    theme.key .. "/" .. figure.key .. " produced no geometry"
+                )
+                t.is_true(#parts > 0, theme.key .. "/" .. figure.key .. " produced no parts")
+            end
+        end
     end)
 end)

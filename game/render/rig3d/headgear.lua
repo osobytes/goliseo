@@ -90,7 +90,7 @@ function headgear.great_helm(c, h)
     local top = h.base + h.hh
     shapes.box(mb, mat4.translation(0, top * 0.99, 0), r * 2.0, r * 0.14, r * 0.34, c.accent)
     crest(mb, r * 0.94, r * 0.80, top * 1.02, r * 0.12, c.crest)
-    return mb:build(), nil
+    return mb, nil
 end
 
 -- Galactic Sci-Fi: a swept helm whose emissive band sits ABOVE the eyes, so the
@@ -153,7 +153,7 @@ function headgear.visor_helm(c, h)
             c.seam
         )
     end
-    return mb:build(), glow:build()
+    return mb, glow
 end
 
 -- Toybox: a moulded action-figure cap plus the wind-up key. Sits high, so the
@@ -209,7 +209,7 @@ function headgear.figure_helm(c, h)
         )
     end
     crest(mb, r * 0.72, r * 0.42, h.base + h.hh * 1.02, r * 0.13, c.crest)
-    return mb:build(), nil
+    return mb, nil
 end
 
 -- `head` carries the geometry of the skull this helm has to fit:
@@ -217,7 +217,7 @@ end
 ---@param id string
 ---@param c table  -- themes.SLOT_INDEX: slot name -> palette slot index
 ---@param head table
----@return love.Mesh, love.Mesh|nil
+---@return table, table|nil  -- meshbuilder part builders, not meshes (#337 slice 2)
 function headgear.build(id, c, head)
     local fn = headgear[id]
     assert(fn, "unknown headgear id: " .. tostring(id))

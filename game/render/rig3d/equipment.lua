@@ -60,7 +60,7 @@ function equipment.tournament_sword(c)
         { y = 0.680, w = 0.024, d = 0.0055 },
         { y = 0.840, w = 0.002, d = 0.0006 },
     }, c.plate)
-    return mb:build(), nil
+    return mb, nil
 end
 
 -- Emberguard Shield: a heater shield -- wide flat top, tapering to a point.
@@ -127,7 +127,7 @@ function equipment.heater_shield(c)
     for _, y in ipairs({ -0.07, 0.09 }) do
         shapes.box(mb, mat4.translation(0, y, -0.045), 0.20, 0.035, 0.030, c.strap)
     end
-    return mb:build(), nil
+    return mb, nil
 end
 
 -- ---------------------------------------------------------------------------
@@ -160,7 +160,7 @@ function equipment.vector_blade(c)
         { y = 0.660, w = 0.027, d = 0.0065 },
         { y = 0.820, w = 0.002, d = 0.0006 },
     }, c.seam)
-    return mb:build(), glow:build()
+    return mb, glow
 end
 
 -- Pulse Blaster: a compact sidearm. Carried holstered on the hip, which also
@@ -189,7 +189,7 @@ function equipment.pulse_blaster(c)
         { { y = 0, w = 0.017 }, { y = 0.010, w = 0.017 } },
         c.seam
     )
-    return mb:build(), glow:build()
+    return mb, glow
 end
 
 -- ---------------------------------------------------------------------------
@@ -223,7 +223,7 @@ function equipment.foam_champion(c)
         { y = 0.300, w = 0.080 },
         { y = 0.330, w = 0.080 },
     }, c.plate_dark)
-    return mb:build(), nil
+    return mb, nil
 end
 
 -- Spring Glove: an oversized moulded gauntlet with a visible coil.
@@ -249,16 +249,18 @@ function equipment.spring_glove(c)
             i % 2 == 0 and c.plate_dark or c.accent
         )
     end
-    return mb:build(), nil
+    return mb, nil
 end
 
 -- ---------------------------------------------------------------------------
 
--- Builds one item by id. Returns the solid mesh plus an optional emissive mesh
--- (nil for everything that does not glow).
+-- Builds one item by id. Returns the solid PART BUILDER plus an optional
+-- emissive one (nil for everything that does not glow). Neither is a mesh: both
+-- are folded into the character's single merged mesh by body.build (#337 slice
+-- 2), which is what lets an emissive blade cost zero extra draw calls.
 ---@param id string
 ---@param c table  -- themes.SLOT_INDEX: slot name -> palette slot index
----@return love.Mesh, love.Mesh|nil
+---@return table, table|nil  -- meshbuilder part builders
 function equipment.build(id, c)
     local fn = equipment[id]
     assert(fn, "unknown equipment id: " .. tostring(id))
