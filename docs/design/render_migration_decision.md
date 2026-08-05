@@ -438,22 +438,31 @@ now available, stated without choosing for it:
   (57–62%) against a ≤2 ms target, and added update p95 is **0.033–0.040 ms**
   (0.345 − 0.305 and 0.338 − 0.305) against a ≤1 ms target — both inside, on an
   RTX 2070 SUPER.
-- **The browser leg cannot be delivered as #100 specifies it.** #100's required
-  runtime matrix is LÖVE 11.5 native Linux *plus the supported Chrome and Firefox
-  love.js builds*. #328 and #338 both record that love.js is WebGL 1 and cannot
-  supply a `DEPTH24_STENCIL8` depth attachment, which is what blocked #100's
-  browser leg in the first place. That constraint is carried from #328's and
-  #338's issue text and from `rig3d/renderer.lua`'s comments — **it has not been
-  re-measured for this document**.
+- **The browser leg is half deliverable, and the recorded reason it was not is
+  wrong.** #100's required runtime matrix is LÖVE 11.5 native Linux *plus the
+  supported Chrome and Firefox love.js builds*. #328 and #338 both record that
+  love.js is WebGL 1 and cannot supply a `DEPTH24_STENCIL8` depth attachment.
+  #360 measured it (`docs/online/browser_rigged_3d.md`) and the blanket claim is
+  **false**: love.js supplies a depth attachment, LÖVE's rig3d shader links, and
+  ten rigged players render in Chrome. What is true is much narrower — love.js
+  refuses the *packed 24-bit* format `bloom` used to hardcode and offers
+  `depth16`, which is all the 3D pass ever needed, so the fix was one list in
+  `bloom.lua` rather than a renderer. Firefox is still out, for an unrelated
+  defect: no LÖVE shader compiles there at all, not even a two-line one that
+  touches none of rig3d's features. The browser leg therefore passes in Chrome
+  and fails in Firefox, and it fails for a reason this document was not
+  reasoning from.
 - #100 forbids silently loosening a gate: "any revised threshold requires the
   original failure evidence, measured bottleneck, bounded optimization,
   tradeoff, and before/after rerun". PR #350 supplies exactly that shape of
   evidence for the *draw-call* bottleneck.
 
-The reading those three points support is **`revise` with a narrowed runtime
-matrix** — native Linux inside the measured envelope, browser rigged rendering
-out of scope for LÖVE — rather than `proceed` (which would claim a browser leg
-that cannot run) or `stop` (which the native numbers contradict). **Writing that
+The reading those three points support is still **`revise` with a narrowed
+runtime matrix**, but the narrowing is now one browser rather than the whole
+browser leg: native Linux inside the measured envelope, Chrome rendering rigged
+players but over #100's added-draw budget, Firefox blocked on a shader-compile
+defect. `proceed` would claim a Firefox leg that cannot run; `stop` is
+contradicted by the native numbers and now by Chrome as well. **Writing that
 record is #100's, and the owner's.**
 
 ---
@@ -654,9 +663,13 @@ table. Nothing is carried from another document's prose.
 - **The 89% figure in row 2** comes from #328's issue text describing a
   2026-08-03 run; no committed report for that run exists in `docs/`. Row 2b is
   the reproducible one.
-- **love.js being WebGL 1 and unable to supply `DEPTH24_STENCIL8`.** Recorded in
-  #328's and #338's issue text and in `game/render/rig3d/renderer.lua`'s
-  comments. Not re-measured here, and it is load-bearing for §6.2.
+- **love.js being WebGL 1 and unable to supply `DEPTH24_STENCIL8`.** Was
+  recorded in #328's and #338's issue text and in
+  `game/render/rig3d/renderer.lua`'s comments, and was not re-measured for this
+  document. **It has since been measured and corrected** — #360,
+  `docs/online/browser_rigged_3d.md`. love.js is WebGL 1 and does supply a depth
+  attachment; it refuses `depth24stencil8` and accepts `depth16`. §6.2 above is
+  updated; treat the original sentence as withdrawn wherever else it appears.
 - **Babylon Native's segfault is not root-caused**, and upstream CI is green on
   the same commit. #329 names `xvfb-run` as the untried experiment that would
   discriminate.

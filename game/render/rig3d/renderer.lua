@@ -233,11 +233,11 @@ end
 -- frame by reordering draws, because there are no longer any draws to reorder.
 --
 -- Sorting only ever bought one thing: self-occlusion WITHOUT a depth buffer, for
--- the WebGL 1 / love.js target that cannot offer DEPTH24_STENCIL8. #330 has
--- since dropped LÖVE rendering for the browser entirely -- Babylon takes the
--- pitch -- so that beneficiary no longer exists, and native LÖVE has a depth
--- buffer for free. Keeping the depth buffer and skipping the sort is strictly
--- better here.
+-- the WebGL 1 / love.js target believed unable to offer one. #360 measured that
+-- belief and it was wrong: love.js refuses DEPTH24_STENCIL8 specifically and
+-- supplies depth16, which is all this pass needs, so bloom falls back and the
+-- browser gets a depth buffer too. There is no depth-less target left to sort
+-- for, and native LÖVE has a depth buffer for free.
 --
 -- If a depth-less target ever matters again, the mechanism that restores it
 -- WITHOUT giving back the single draw call is: keep this one static vertex
