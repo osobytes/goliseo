@@ -181,6 +181,24 @@ jobs:
             - name: Check OMP-2 rollback orchestration
               run: ./scripts/check_rollback.sh --self-test
 
+            # Verdict logic only, and the step is named for that. The real #342
+            # measurement needs a built wasm module, a display and a desktop
+            # webview; it is run by hand and recorded in
+            # docs/online/wasm_webview_determinism.md. This step launches no
+            # webview and must never be read as evidence that one passed.
+            - name: Check the wasm webview determinism verdict (launches no webview)
+              run: ./scripts/check_verify_webview.sh
+
+            # Controller logic only: this parses fixture marker strings and
+            # starts no browser. The #341 benchmark itself needs a GPU, a
+            # display and headed Chrome and Firefox, so it cannot run on a CI
+            # runner -- but the refusal that keeps a SwiftShader result out of
+            # the report is pure logic, and #100 published one false negative
+            # for want of it. `--prove-refusal` is the step that starts a real
+            # browser, and it runs on the measuring machine, not here.
+            - name: Check the Babylon bench refusal logic (starts no browser)
+              run: python3 -B scripts/babylon_bench.py --self-test
+
     # Its own job on purpose: the harness is minutes of CPU, it needs nothing but
     # LOVE, and nothing else waits on it, so it costs the critical path nothing.
     # Until #279 no job ran it at all -- the only OMP-3 step in CI was the Python
