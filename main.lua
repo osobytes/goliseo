@@ -44,11 +44,15 @@ local function has_flag(a)
     return false
 end
 
--- Opt into the rigged 3D player renderer for a manual look. Off by default and
--- deliberately a flag rather than a setting: the procedural renderer is still
--- the shipping path until the ten-player benchmark says otherwise.
-if has_flag("--rigged-players") then
-    require("game.render.pitch").rigged_players = true
+-- Opt OUT of the rigged 3D player renderer, back to the procedural 2.5D one.
+--
+-- It used to be the other way round, because rigged players were waiting on the
+-- ten-player benchmark. That benchmark has reported (see the note on
+-- `pitch.rigged_players`), so rigged is the default and this flag is what keeps
+-- the procedural renderer reachable -- which #100's before/after evidence needs,
+-- and which anyone comparing the two by playing needs.
+if has_flag("--procedural-players") then
+    require("game.render.pitch").rigged_players = false
 end
 
 -- Opt into the broadcast-style following camera for a manual look. An optional

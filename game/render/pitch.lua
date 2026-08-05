@@ -20,9 +20,14 @@ local arenas = require("data.arenas")
 
 local pitch = {}
 
--- Opt-in rigged 3D players. Off by default: the procedural 2.5D renderer stays
--- the shipping path until the benchmark gate says otherwise.
-pitch.rigged_players = false
+-- Rigged 3D players, on by default. The gate this used to wait on has reported:
+-- #337 slice 2 draws ten rigged players in 33.4 draw calls at roughly 57% of the
+-- #100 added-draw budget, and #328 settled the comparison against the
+-- alternatives. The procedural 2.5D renderer stays reachable --
+-- `--procedural-players` selects it, and `player_renderer_3d.available()` falls
+-- back to it on any runtime that cannot host the 3D pass -- because #100's
+-- before/after evidence needs both paths runnable.
+pitch.rigged_players = true
 
 -- Opt-in broadcast-style following camera. Off by default: it reframes the whole
 -- match, so it stays behind a flag until it has been played.
