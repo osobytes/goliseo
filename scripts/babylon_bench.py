@@ -686,7 +686,10 @@ def prepare_stage(output: Path, args: argparse.Namespace) -> Path:
     """Assemble the served directory: harness + vendor + captured payload."""
     stage = output / "site"
     stage.mkdir(parents=True, exist_ok=True)
-    for name in ("index.html", "bench.js"):
+    # `scene.js` is the scene both drivers share (#328). Staging it here rather
+    # than inlining a copy is what keeps this page and the live-wasm page the
+    # same scene, which is the only reason their numbers can be compared.
+    for name in ("index.html", "scene.js", "bench.js"):
         (stage / name).write_bytes((BENCH_SOURCE / name).read_bytes())
     print("==> vendor artifacts (pinned, verified)", flush=True)
     ensure_vendor(stage / "vendor", offline=args.offline)

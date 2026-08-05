@@ -240,6 +240,28 @@ that estimate holds, LÖVE-optimised would have *fewer* draw calls than Babylon
 merged, and the migration case has to rest on the animation pipeline being
 bought-not-built rather than on frame cost.
 
+> **Settled since, in [#328](babylon_wasm_spike.md).** #337 slice 2 landed and
+> measured **33.4** draw calls for ten characters — 1.94 per character over a
+> 14-call procedural scene — so LÖVE-optimised does have fewer than the 87 in
+> the `merged` rows above, and the conclusion this paragraph anticipated is the
+> one that holds.
+>
+> **But 87 is not Babylon's floor, and quoting it against 33.4 is not
+> floor-to-floor.** `merged` collapses only the *skinned* meshes; the helmet and
+> cape carry no bone weights, `MergeMeshes` will not mix the two, and they stay
+> standing — three meshes per character, 6.0 draw calls with the shadow pass.
+> #337 slice 2 folded all 28 rigid parts *including gear* into one mesh. #328
+> adds a `merged_all` variant that does the same on the Babylon side, by baking
+> the bone-parented gear into the skin at weight 1, and measures **47 draw
+> calls, 2.00 per character** — against LÖVE's 1.94. Floor to floor the
+> draw-call cost is a tie, not a 2.6x gap, and Babylon's 2.00 buys a real shadow
+> pass where LÖVE's 0.94 is a 2D contact ellipse.
+>
+> The conclusion still lands where this paragraph put it, for a different
+> reason: not because LÖVE submits materially less, but because neither does.
+> See #328 for the whole-frame picture, which is less favourable to Babylon
+> still.
+
 ## Caveats a reader must have
 
 - **Feature sets differ.** The Babylon frame pays a shadow pass (which is why
@@ -338,6 +360,33 @@ locomotion, and that is what it buys.
 
 ## Out of scope here
 
-Live wasm integration (#332 and the rest of #328), the verdict against optimised
-LÖVE (#337 slice 2, decided in #330), IK (#318), native packaging (#329), and
-feature parity with the LÖVE renderer.
+Live wasm integration (#332 and the rest of #328 — **done since, in
+[babylon_wasm_spike.md](babylon_wasm_spike.md)**, which drives this same scene
+from the live simulation), the verdict against optimised LÖVE (#337 slice 2,
+decided in #330), IK (#318), native packaging (#329), and feature parity with
+the LÖVE renderer.
+
+`bench/babylon/bench.js` was reduced to the captured-file adapter in #328: the
+scene, the character build, the clip table and the measurement loop moved
+unchanged to `bench/babylon/scene.js` so the live-wasm driver renders the same
+thing rather than a copy of it.
+
+The move was checked by re-running three of this table's six Chrome rows
+afterwards, three passes each, at load average 2.9–3.5:
+
+| row | draw calls (was) | draw p50 (was, and this table's spread) |
+| --- | --- | --- |
+| `chrome authored 10` | **187 (187)** | 1.650 (1.86; spread 1.82–1.95) |
+| `chrome merged 10` | **87 (87)** | 1.300 (1.35; spread 1.31–1.44) |
+| `chrome merged_static 10` | **87 (87)** | 1.015 (1.08; spread 1.04–1.11) |
+
+**Draw calls — exact, deterministic, and the load-bearing signal — are identical
+in all three.** The timings are not "inside the documented spread" and saying so
+would be wrong: every one of the three lands *below* the recorded p50 spread, by
+9.3%, 0.8% and 2.4% respectively. What that pattern shows is a session-level
+offset in one direction across every variant, which is what a quieter machine
+looks like (#341's runs recorded load "roughly 2–5"), and not one variant
+regressing — a broken extraction would move rows relative to each other, and the
+ordering and the ratios between them are preserved. The mechanical diff is the
+primary evidence that the code path is unchanged; this is the corroboration, and
+it is quoted at what it actually measured.

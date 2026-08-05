@@ -199,6 +199,19 @@ jobs:
             - name: Check the Babylon bench refusal logic (starts no browser)
               run: python3 -B scripts/babylon_bench.py --self-test
 
+            # Controller logic only, and the step is named for that. The #328
+            # measurement drives Babylon from the LIVE wasm simulation, so it
+            # needs a built module, a GPU, a display and two real browsers; it is
+            # run by hand and recorded in docs/design/babylon_wasm_spike.md.
+            # What IS gated here is every rule that decides its verdict --
+            # exactly one boundary crossing per rendered frame, rendering not
+            # perturbing the simulation, cross-runtime hash agreement, the frozen
+            # determinism contract, the software-rasteriser refusal, and that a
+            # run with any failure exits non-zero. Sabotage any one of them and
+            # this goes red. It starts no browser and loads no wasm.
+            - name: Check the Babylon wasm-payload verdict logic (starts no browser, loads no wasm)
+              run: python3 -B scripts/babylon_wasm_bench.py --self-test
+
             # #329, and the same standing as the step above. Measuring a native
             # shell needs a GPU, a display and a packaged Electron and Tauri
             # build, so the measurement runs by hand on the measuring machine
