@@ -8,14 +8,28 @@
 --
 -- Kit rules -- what makes armour read as *equipped* rather than as body paint,
 -- learned the hard way when v1 buried the greaves inside the shins:
---   1. every piece is its own mesh and its own draw call;
+--   1. every piece is authored as its own PART: its own builder, in its own
+--      local space, riding its own bone, with its own material;
 --   2. it is `gear.over` times wider than the limb it wraps;
 --   3. it flares into a rim at each open end;
 --   4. a dark strap ring sits in the gap where it meets the body.
+--
+-- Rule 1 used to read "every piece is its own mesh and its own draw call", and
+-- #337 slice 2 overturned that MECHANISM: the parts are merged into one static
+-- mesh and the whole character is one draw call. The RULE survives because the
+-- draw call was never what did the work. What sells "equipped" is entirely
+-- geometry -- the `gear.over` standoff of 2, the rim flare of 3, the dark strap
+-- ring of 4 -- and geometry is authored per part whether or not each part is
+-- submitted separately. Keeping a piece a distinct part is still load-bearing:
+-- it is the unit that carries a bone, a material and an attach transform, and
+-- the unit whose local space lets 2-4 be written in limb-relative numbers
+-- instead of rig-absolute ones. Merge parts into one BUILDER, never into one
+-- shape.
 
 local mat4 = require("core.mat4")
 local meshbuilder = require("game.render.rig3d.meshbuilder")
 local shapes = require("game.render.rig3d.shapes")
+local skeleton = require("game.render.rig3d.skeleton")
 local themes = require("game.render.rig3d.themes")
 local equipment = require("game.render.rig3d.equipment")
 local headgear = require("game.render.rig3d.headgear")
@@ -26,7 +40,7 @@ local body = {}
 local SIDES = { { name = "R", sign = -1 }, { name = "L", sign = 1 } } -- his right is -X
 
 -- Where each item hangs. The three light_melee items deliberately share one
--- entry: same bone, same transform, different mesh. That is the reskin test.
+-- entry: same bone, same transform, different geometry. That is the reskin test.
 local SOCKETS = {
     tournament_sword = "hand_r",
     vector_blade = "hand_r",
@@ -190,12 +204,12 @@ local function buildBody(add, rig, theme, figure, c)
             { y = s.chest + s.neck * 0.62, w = f.torso_r * 0.72 },
         }, c.cloth)
     end
-    add("spine", torso:build())
+    add("spine", torso)
 
     if figure.neck then
         local neck = meshbuilder.new()
         limb(neck, f, f.neck_r, f.neck_r * 0.94, s.neck * 0.55, c.skin)
-        add("neck", neck:build())
+        add("neck", neck)
     end
 
     -- Head + face.
@@ -210,7 +224,7 @@ local function buildBody(add, rig, theme, figure, c)
         }, c.skin)
     end
     face.build(head, c, g.hr, figure.face, frontAt, g.eye)
-    add("head", head:build())
+    add("head", head)
 
     for _, side in ipairs(SIDES) do
         local n = side.name
@@ -220,11 +234,11 @@ local function buildBody(add, rig, theme, figure, c)
 
         local upper = meshbuilder.new()
         limb(upper, f, f.arm_r, f.arm_r * taper, s.upperarm, c.limbs)
-        add("upper_arm." .. n, upper:build())
+        add("upper_arm." .. n, upper)
 
         local lower = meshbuilder.new()
         limb(lower, f, f.arm_r * taper, f.arm_r * taper ^ 2, s.lowerarm, c.limbs)
-        add("forearm." .. n, lower:build())
+        add("forearm." .. n, lower)
 
         local hand = meshbuilder.new()
         if figure.hands == "clamp" then
@@ -232,15 +246,15 @@ local function buildBody(add, rig, theme, figure, c)
         else
             shapes.sphere(hand, mat4.translation(0, -f.hand_r * 0.95, 0), f.hand_r, 5, 10, c.limbs)
         end
-        add("hand." .. n, hand:build())
+        add("hand." .. n, hand)
 
         local thigh = meshbuilder.new()
         limb(thigh, f, f.leg_r, f.leg_r * leg_taper, s.upperleg, c.cloth)
-        add("thigh." .. n, thigh:build())
+        add("thigh." .. n, thigh)
 
         local shin = meshbuilder.new()
         limb(shin, f, f.leg_r * leg_taper, f.leg_r * leg_taper ^ 2, s.lowerleg, c.limbs)
-        add("shin." .. n, shin:build())
+        add("shin." .. n, shin)
 
         if shape.joint_balls then
             for _, joint in ipairs({
@@ -251,7 +265,7 @@ local function buildBody(add, rig, theme, figure, c)
             }) do
                 local ball = meshbuilder.new()
                 shapes.sphere(ball, nil, joint.r, 6, f.segments, c.joint)
-                add(joint.bone, ball:build())
+                add(joint.bone, ball)
             end
         end
     end
@@ -300,7 +314,7 @@ local function buildKit(add, rig, theme, c)
             c.accent
         )
     end
-    add("chest", cuirass:build(), nil, "metal")
+    add("chest", cuirass, nil, "metal")
 
     -- Sci-Fi: luminous seams tracing the panel joins.
     if shape.seams then
@@ -317,7 +331,7 @@ local function buildKit(add, rig, theme, c)
             0.022,
             c.seam
         )
-        add("chest", seam:build(), nil, "emissive")
+        add("chest", seam, nil, "emissive")
     end
 
     local belt = meshbuilder.new()
@@ -327,7 +341,7 @@ local function buildKit(add, rig, theme, c)
         { y = 0.048, w = br * 1.03 },
     }, c.strap)
     shapes.box(belt, mat4.translation(0, 0.018, br * 0.74), br * 0.30, 0.052, 0.030, c.accent)
-    add("hips", belt:build(), nil, "metal")
+    add("hips", belt, nil, "metal")
 
     for _, side in ipairs(SIDES) do
         local n = side.name
@@ -336,7 +350,7 @@ local function buildKit(add, rig, theme, c)
         local pr = f.arm_r * over * 1.62
         shapes.sphere(pauldron, mat4.translation(0, -pr * 0.16, 0), pr, 5, f.segments, c.plate)
         band(pauldron, f, pr * 0.96, -pr * 0.46, pr * 0.13, c.plate_dark)
-        add("shoulder." .. n, pauldron:build(), nil, "metal")
+        add("shoulder." .. n, pauldron, nil, "metal")
 
         local bracer = meshbuilder.new()
         sleeve(
@@ -348,7 +362,7 @@ local function buildKit(add, rig, theme, c)
             c.accent,
             c.strap
         )
-        add("forearm." .. n, bracer:build(), nil, "metal")
+        add("forearm." .. n, bracer, nil, "metal")
 
         local greave = meshbuilder.new()
         sleeve(
@@ -360,7 +374,7 @@ local function buildKit(add, rig, theme, c)
             c.plate,
             c.strap
         )
-        add("shin." .. n, greave:build(), nil, "metal")
+        add("shin." .. n, greave, nil, "metal")
 
         if shape.seams then
             local seam = meshbuilder.new()
@@ -372,7 +386,7 @@ local function buildKit(add, rig, theme, c)
                 s.lowerleg * 0.020,
                 c.seam
             )
-            add("shin." .. n, seam:build(), nil, "emissive")
+            add("shin." .. n, seam, nil, "emissive")
         end
 
         -- Heel and midfoot ride the ankle...
@@ -390,7 +404,7 @@ local function buildKit(add, rig, theme, c)
             f.foot_len * 0.66,
             c.plate_dark
         )
-        add("foot." .. n, boot:build())
+        add("foot." .. n, boot)
 
         -- ...and the toe box rides the ball of the foot, so a plant, a push-off
         -- or a kick contact can actually roll.
@@ -407,7 +421,7 @@ local function buildKit(add, rig, theme, c)
             f.foot_len * 0.36,
             c.plate_dark
         )
-        add("toe." .. n, toe:build())
+        add("toe." .. n, toe)
     end
 end
 
@@ -458,27 +472,63 @@ end
 
 -- ---------------------------------------------------------------------------
 
--- Builds every mesh for one theme. Colour is NOT baked in (#337): every
--- vertex carries a palette slot index, resolved against a team's actual
--- colours later by the shader via a uniform (see themes.resolvedPalette and
--- renderer.beginPass). That is what makes this build reusable across every
--- team -- and every future cosmetic palette -- without rebuilding a single
--- mesh.
+-- Generates every PART of one themed character and folds them into the single
+-- builder that becomes one draw call.
+--
+-- Deliberately separate from `body.build`: everything here is pure Lua, so the
+-- whole generation path -- bone assignment, material assignment, attach baking,
+-- the merge itself -- is exercised by the headless tier. Only `body.build`'s
+-- final `:build()` needs a GL context. #340 is open precisely because nothing
+-- used to test the rigged renderer at all; this seam is what makes that
+-- testable rather than hoping a green suite means something.
+--
+-- Colour is NOT baked in (#337 slice 1): every vertex carries a palette slot
+-- index, resolved against a team's actual colours later by the shader via a
+-- uniform (see themes.resolvedPalette and renderer.beginPass). That is what
+-- makes this build reusable across every team -- and every future cosmetic
+-- palette -- without rebuilding a single mesh.
 ---@param rig table    -- proportions.RIG_MEDIUM
 ---@param theme table  -- an entry from themes.LIST
 ---@param figure table -- an entry from themes.FIGURES
----@return table[]     -- { { bone, mesh, attach = mat4|nil, material = string|nil }, ... }
-function body.build(rig, theme, figure)
+---@return table       -- the merged meshbuilder Builder
+---@return table[]     -- the parts that went into it, for diagnostics and tests
+function body.accumulate(rig, theme, figure)
     local c = themes.SLOT_INDEX
-    local drawlist = {}
-    local function add(bone, mesh, attach, material)
-        drawlist[#drawlist + 1] = { bone = bone, mesh = mesh, attach = attach, material = material }
+    local bone_index = skeleton.boneIndex(rig)
+    local parts = {}
+    local function add(bone, builder, attach, material)
+        local index = bone_index[bone]
+        -- A typo'd bone name used to place a part at the identity transform and
+        -- render it at the character's feet; now it would index off the end of
+        -- the bone uniform array, which is undefined rather than merely wrong.
+        assert(index, "rig3d part refers to a bone the skeleton does not have: " .. tostring(bone))
+        parts[#parts + 1] = {
+            builder = builder,
+            bone_name = bone,
+            bone = index,
+            attach = attach,
+            material = material,
+        }
     end
 
     buildBody(add, rig, theme, figure, c)
     buildKit(add, rig, theme, c)
     buildLoadout(add, rig, theme, figure, c)
-    return drawlist
+    return meshbuilder.merge(parts), parts
+end
+
+-- Builds one theme's character as ONE static mesh (#337 slice 2).
+---@param rig table    -- proportions.RIG_MEDIUM
+---@param theme table  -- an entry from themes.LIST
+---@param figure table -- an entry from themes.FIGURES
+---@return table       -- { mesh = love.Mesh, part_count = integer, triangle_count = integer }
+function body.build(rig, theme, figure)
+    local merged, parts = body.accumulate(rig, theme, figure)
+    return {
+        mesh = merged:build(),
+        part_count = #parts,
+        triangle_count = merged:triangleCount(),
+    }
 end
 
 return body

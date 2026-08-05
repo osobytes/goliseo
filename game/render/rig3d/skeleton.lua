@@ -53,13 +53,28 @@
 -- and #95 both say these assumptions are tests, not facts.
 --
 -- Parts and gear ride a bone's world transform. There are no per-vertex skin
--- weights here -- a rigid part per bone is the prototype's arcade look. The
--- production asset will be skinned; the bone contract is what has to survive.
+-- WEIGHTS here -- one bone drives a vertex outright, which is the prototype's
+-- rigid arcade look. Since #337 slice 2 that single influence is carried IN the
+-- vertex (a bone index) and resolved on the GPU against `skeleton.boneRows`,
+-- rather than by issuing a draw call per part. The production asset will be
+-- smoothly skinned; the bone contract is what has to survive.
+--
+-- BONE INDEX CONTRACT: the order `skeleton.bones` returns IS the GPU bone
+-- index order, 0-based. Vertices baked against one order and matrices uploaded
+-- against another would silently render a scrambled character, so both sides
+-- go through `skeleton.boneIndex` / `skeleton.boneRows` and never count for
+-- themselves.
 
 local mat4 = require("core.mat4")
 local quat = require("core.quat")
 
 local skeleton = {}
+
+-- Rows uploaded per bone. Every bone transform in this rig is rotation +
+-- translation + uniform scale, so the fourth row is always exactly (0, 0, 0, 1)
+-- and carries no information -- sending it would burn a quarter of the bone
+-- uniform budget on a constant. See rig3d/renderer.lua for the budget maths.
+skeleton.ROWS_PER_BONE = 3
 
 local RIGHT, LEFT = -1, 1 -- X sign for each side (see note above)
 
@@ -164,13 +179,36 @@ function skeleton.bones(rig)
     return bones
 end
 
+-- Bone name -> 0-based GPU bone index, in the order `skeleton.bones` lists them.
+-- Mesh builders bake this into a vertex; `skeleton.boneRows` uploads matrices in
+-- the same order. Pure, and independent of any posed instance, so a mesh can be
+-- built long before a skeleton is instantiated.
+---@param rig table  -- proportions, e.g. proportions.RIG_MEDIUM
+---@return table<string, integer>
+function skeleton.boneIndex(rig)
+    local out = {}
+    for i, bone in ipairs(skeleton.bones(rig)) do
+        out[bone.name] = i - 1
+    end
+    return out
+end
+
+---@param rig table  -- proportions, e.g. proportions.RIG_MEDIUM
+---@return integer
+function skeleton.boneCount(rig)
+    return #skeleton.bones(rig)
+end
+
 local ZERO = { 0, 0, 0 }
 local IDENTITY = quat.identity()
 
 ---@param rig table
 ---@return table
 function skeleton.new(rig)
-    local out = { style = rig, defs = skeleton.bones(rig), world = {}, byName = {} }
+    local out = { style = rig, defs = skeleton.bones(rig), world = {}, byName = {}, order = {} }
+    for i, def in ipairs(out.defs) do
+        out.order[i] = def.name
+    end
     for _, def in ipairs(out.defs) do
         assert(
             def.parent == nil or out.byName[def.parent],
@@ -216,6 +254,35 @@ function skeleton.apply(rig, pose)
         rig.world[bone.name] = bone.parent and mat4.multiply(rig.world[bone.parent], localTf)
             or localTf
     end
+end
+
+-- Flattens the posed skeleton into the bone-matrix uniform payload: three vec4
+-- rows per bone, in bone-index order, ready for `Shader:send("u_bones", ...)`.
+--
+-- `out` is reused across frames on purpose. This runs once per character per
+-- frame and would otherwise allocate 3 * bone_count tables every time -- at ten
+-- players that is ~47k short-lived tables per second handed straight to the GC,
+-- which is exactly the kind of per-frame churn the frame-time gates notice.
+-- Shader:send copies immediately, so one buffer can serve every character.
+---@param rig table       -- a skeleton.new instance, already posed
+---@param out table|nil   -- reusable row buffer
+---@return table          -- `out`, filled: { {m11,m12,m13,m14}, {m21,...}, ... }
+function skeleton.boneRows(rig, out)
+    out = out or {}
+    for i, name in ipairs(rig.order) do
+        local m = rig.world[name]
+        local base = (i - 1) * skeleton.ROWS_PER_BONE
+        for r = 0, skeleton.ROWS_PER_BONE - 1 do
+            local row = out[base + r + 1]
+            if not row then
+                row = { 0, 0, 0, 0 }
+                out[base + r + 1] = row
+            end
+            local o = r * 4
+            row[1], row[2], row[3], row[4] = m[o + 1], m[o + 2], m[o + 3], m[o + 4]
+        end
+    end
+    return out
 end
 
 -- World-space position of a bone's origin. Used to place the drop shadow.

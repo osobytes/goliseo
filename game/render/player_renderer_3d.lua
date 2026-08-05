@@ -33,12 +33,22 @@ local HEIGHT_IN_RADII = 3.0
 -- Match camera looks down at the pitch; this is the apparent elevation.
 local ELEVATION = math.rad(17)
 
-local state = { built = false, failed = false, rig = nil, parts = nil, palettes = {} }
+local state = {
+    built = false,
+    failed = false,
+    rig = nil,
+    character = nil,
+    palettes = {},
+    -- Reused every frame by skeleton.boneRows. See its own note: allocating a
+    -- fresh row buffer per character per frame is real GC pressure at ten
+    -- players, and Shader:send copies immediately so one buffer is safe.
+    bone_rows = {},
+}
 
 ---@type fun(sx: number, sy: number, r: number, color: number[], view: PlayerView|nil, opts: table)
 local draw_player
 
--- Builds the shared rig, the ONE shared draw list (colour-free), and one
+-- Builds the shared rig, the ONE shared character mesh (colour-free), and one
 -- resolved palette per team. Called once, lazily, so a headless or
 -- shader-less runtime never pays for it.
 ---@return boolean
@@ -49,19 +59,21 @@ local function build()
     state.built = true
 
     local ok, err = pcall(function()
-        renderer.load(themes.SLOT_COUNT)
         local rig = proportions.RIG_MEDIUM
+        renderer.load(themes.SLOT_COUNT, skeleton.boneCount(rig))
         state.rig = skeleton.new(rig)
         state.height = proportions.height(rig)
         -- One theme for the first integration. Theme selection per player is
         -- presentation data that belongs with the roster, not in the renderer.
         local theme = themes.LIST[1]
         local figure = themes.FIGURES[1]
-        -- Meshes carry a palette SLOT INDEX per vertex now, not a literal
-        -- colour (#337), so they no longer depend on team at all -- one build
-        -- serves every team. Only the small resolved-colour array differs per
-        -- team, and that is a uniform, not a mesh.
-        state.parts = body.build(rig, theme, figure)
+        -- The mesh carries a palette SLOT INDEX per vertex, not a literal
+        -- colour (#337 slice 1), so it does not depend on team at all -- one
+        -- build serves every team. Only the small resolved-colour array differs
+        -- per team, and that is a uniform, not a mesh. Since slice 2 it also
+        -- carries a bone index and a material per vertex, so the whole
+        -- character is one static mesh and one draw call rather than ~28.
+        state.character = body.build(rig, theme, figure)
         for _, team in ipairs(themes.TEAMS) do
             state.palettes[team.key] = themes.resolvedPalette(theme, team)
         end
@@ -206,9 +218,9 @@ end
 ---@param opts table
 function draw_player(sx, sy, r, color, view, opts)
     local team = themes.TEAMS[(opts.team == "away") and 2 or 1]
-    local parts = state.parts
+    local character = state.character
     local palette = state.palettes[team.key]
-    if not parts or not palette then
+    if not character or not palette then
         return
     end
 
@@ -233,6 +245,7 @@ function draw_player(sx, sy, r, color, view, opts)
     local cam = renderer.characterCamera(sx, sy, ppm, vw, vh, ELEVATION)
 
     skeleton.apply(state.rig, poseFor(view, opts))
+    skeleton.boneRows(state.rig, state.bone_rows)
 
     -- Facing: the pitch's +y runs toward the near edge (toward the viewer), and
     -- the character's local +Z is its front, so a player running "down" the
@@ -241,12 +254,11 @@ function draw_player(sx, sy, r, color, view, opts)
     local yaw = facing and math.atan2(facing.x, facing.y) or 0
     local world = mat4.rotationY(yaw)
 
+    -- One character, one draw call (#337 slice 2). The bone each vertex rides
+    -- and the material each vertex shades with are both baked into the vertex,
+    -- so there is nothing left to iterate here.
     renderer.beginPass(cam, palette)
-    for _, part in ipairs(parts) do
-        local bone_world = mat4.multiply(world, state.rig.world[part.bone])
-        local model = part.attach and mat4.multiply(bone_world, part.attach) or bone_world
-        renderer.draw(part.mesh, model, part.material)
-    end
+    renderer.draw(character.mesh, world, state.bone_rows)
     renderer.endPass()
 end
 
