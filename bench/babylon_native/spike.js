@@ -36,6 +36,42 @@
     var FRAMES_AFTER = 30;
     var results = [];
 
+    /*
+     * The background is set to pure black EXPLICITLY, and the render check
+     * below depends on that.
+     *
+     * Babylon's default `Scene.clearColor` is (0.2, 0.2, 0.3, 1) -- that is
+     * R=51, G=51, B=76 in bytes. The first version of this file counted a pixel
+     * as drawn if any channel exceeded 8, which every pixel of that default
+     * background already does. The check therefore reported 240000 of 240000
+     * pixels "non-background" on any frame at all, including an empty one: a
+     * green signal that could not go red, which is precisely the #279 shape
+     * AGENTS.md section 9 exists to prevent. It is fixed by pinning the
+     * background to a known value and asserting a real window, and
+     * `prove_flat_fill.js` is the demonstration that the fixed check fails.
+     */
+    var CLEAR = { r: 0, g: 0, b: 0 };
+    // Comfortably above sensor/compression noise on a black clear, far below
+    // the character and the lit ground.
+    var LIT_THRESHOLD = 24;
+    // A frame that is entirely "lit" is the degenerate result the old check
+    // produced. Foreground must be a proper subset of the frame.
+    var MAX_LIT_FRACTION = 0.98;
+    var MIN_LIT_FRACTION = 0.001;
+
+    /*
+     * Set by `prove_flat_fill.js`, which the X11 Playground host loads as a
+     * separate argv entry ahead of this file:
+     *
+     *     ./Playground app:///Scripts/prove_flat_fill.js app:///Scripts/spike.js
+     *
+     * When set, the frame is turned into a uniform flat fill just before
+     * capture -- the exact shape the original broken check accepted -- and the
+     * render check MUST report FAIL. That is the section 9 demonstration that
+     * this gate can go red, run against a real renderer rather than a fixture.
+     */
+    var PROVE_FLAT_FILL = !!globalThis.GC_BN_PROVE_FLAT_FILL;
+
     /* Wall-clock marks, so the cold-start column of the #329 route table can be
      * filled for this route the same way it is for the shells: the caller
      * records the spawn time and subtracts. `Date.now()` rather than
@@ -75,6 +111,7 @@
     try {
         engine = new BABYLON.NativeEngine();
         scene = new BABYLON.Scene(engine);
+        scene.clearColor = new BABYLON.Color4(CLEAR.r, CLEAR.g, CLEAR.b, 1);
         marker("engine", {
             status: "OK",
             babylon: BABYLON.Engine.Version,
@@ -341,29 +378,88 @@
                 });
             }
 
-            /* --- did it draw anything? ------------------------------------ */
+            /* --- did it draw anything? ------------------------------------ *
+             *
+             * Two conditions, and BOTH have to hold. Something must be lit
+             * (otherwise nothing rendered), and the frame must NOT be entirely
+             * lit (otherwise this is measuring a flat fill and calling it a
+             * scene -- the failure the previous version of this check shipped).
+             * Against the explicit black clear, a real frame lands well inside
+             * that window, so the number is a discriminator rather than a
+             * formality.
+             */
             function captureAndExit() {
+                if (PROVE_FLAT_FILL) {
+                    /*
+                     * Reproduce the ORIGINAL BUG and require the fixed check to
+                     * reject it.
+                     *
+                     * The defect was not "nothing was drawn slipped through" --
+                     * it was that a *flat fill* counted as a drawn scene,
+                     * because Babylon's default clear colour (0.2, 0.2, 0.3)
+                     * already exceeded the old `> 8` threshold on every channel.
+                     * The old check scored an empty frame 240000/240000 and
+                     * called it success. Clearing to white re-creates exactly
+                     * that: a uniform frame, no geometry contribution, every
+                     * pixel above the threshold. The fixed check must fail it on
+                     * the `MAX_LIT_FRACTION` arm -- the arm that did not exist
+                     * before.
+                     *
+                     * Two other falsifications were tried first and are recorded
+                     * because each would have made this demonstration a lie:
+                     * `setEnabled(false)` threw inside `scene.render()` (red for
+                     * the wrong reason -- an exception proves the harness fails,
+                     * not that the threshold discriminates), and `isVisible =
+                     * false` and an emptied frustum both left the ground plane
+                     * drawing and made the frame BRIGHTER than the real scene
+                     * (0.847 lit against 0.782), because they removed the
+                     * character's shadow. Neither blanked the frame, so neither
+                     * tested what it claimed to.
+                     */
+                    scene.clearColor = new BABYLON.Color4(1, 1, 1, 1);
+                    renderFrames(4, capturePixels);
+                    return;
+                }
+                capturePixels();
+            }
+
+            function capturePixels() {
                 try {
                     TestUtils.getFrameBufferData(function (data) {
                         var width = engine.getRenderWidth();
                         var height = engine.getRenderHeight();
+                        var total = width * height;
                         var lit = 0;
+                        var brightest = 0;
                         for (var p = 0; p < data.length; p += 4) {
-                            if (data[p] > 8 || data[p + 1] > 8 || data[p + 2] > 8) {
+                            var peak = Math.max(data[p], data[p + 1], data[p + 2]);
+                            if (peak > brightest) {
+                                brightest = peak;
+                            }
+                            if (peak > LIT_THRESHOLD) {
                                 lit += 1;
                             }
                         }
+                        var fraction = total > 0 ? lit / total : 0;
+                        var drew = fraction >= MIN_LIT_FRACTION && fraction <= MAX_LIT_FRACTION;
                         var path = TestUtils.getOutputDirectory() + "/babylon_native_spike.png";
                         TestUtils.writePNG(data, width, height, path);
                         marker("render", {
-                            status: lit > 0 ? "OK" : "FAIL",
+                            status: drew ? "OK" : "FAIL",
                             width: width,
                             height: height,
-                            non_background_pixels: lit,
-                            total_pixels: width * height,
+                            clear_color: CLEAR.r + "," + CLEAR.g + "," + CLEAR.b,
+                            lit_threshold: LIT_THRESHOLD,
+                            lit_pixels: lit,
+                            total_pixels: total,
+                            lit_fraction: fraction.toFixed(5),
+                            accepted_fraction_window:
+                                MIN_LIT_FRACTION + ".." + MAX_LIT_FRACTION,
+                            brightest_channel: brightest,
+                            prove_flat_fill: PROVE_FLAT_FILL ? "yes" : "no",
                             png: path,
                         });
-                        finish(0);
+                        finish(drew ? 0 : 1);
                     });
                 } catch (error) {
                     fail("render", error);

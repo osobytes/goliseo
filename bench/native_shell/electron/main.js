@@ -15,10 +15,19 @@ const url = process.argv.find((a) => a.startsWith("http://") || a.startsWith("ht
 const width = Number(process.env.GC_SHELL_WIDTH || 1024);
 const height = Number(process.env.GC_SHELL_HEIGHT || 640);
 
-// Disable the frame-rate cap so the bench's own MessageChannel loop is not
-// silently vsync-limited, matching `scripts/babylon_bench.py`'s reasoning.
-app.commandLine.appendSwitch("disable-frame-rate-limit");
-app.commandLine.appendSwitch("disable-gpu-vsync");
+// NO vsync or frame-rate switches here, deliberately.
+//
+// An earlier version set `--disable-frame-rate-limit` and `--disable-gpu-vsync`
+// and justified them as "matching `scripts/babylon_bench.py`'s reasoning". That
+// precedent did not exist -- `babylon_bench.py` sets no such flags -- and worse,
+// the Tauri shell has no equivalent to set, because WebKitGTK exposes none. The
+// flags therefore gave one side of a two-sided comparison an anti-vsync control
+// the other side could not have, sitting directly underneath `frame_p50` and
+// `frame_p95`, which are precisely the samples compositor pacing leaks into.
+//
+// Pacing is now controlled identically for both shells from outside them, by
+// the driver-level environment variables `scripts/native_shell_bench.py` sets
+// in `launch_shell()`. Whatever they do, they do to both.
 
 function createWindow() {
     const win = new BrowserWindow({

@@ -15,23 +15,45 @@ Decides [issue #329](https://github.com/osobytes/goliseo/issues/329). Feeds
 Nothing, today — and that is the point of writing it down now. This decides
 which desktop application a player would eventually download, before any of the
 work that would be wasted by getting it wrong. The two shippable candidates
-differ by a factor of **72 in download size** and a factor of **3.6 in how much
-frame budget the window itself eats**, and the third candidate turns out not to
-be a shippable product at all yet. A player feels the frame cost immediately: on
-the same scene, on the same GPU, ten characters cost **1.89 ms** of draw time in
-one shell and **6.86 ms** in the other — and the slower one is already **past
-the 16.7 ms frame budget at ten characters** (21.56 ms frame p50), which is a
-football match that does not hold 60 fps before a single extra feature is added.
+differ by a factor of **72 in download size**, and — **on Linux, which is the
+only platform this project supports and the only one measured** — by a factor of
+**4.4 in how much frame budget the window itself eats**. The third candidate
+turns out not to be a shippable product at all yet.
+
+A player on Linux feels the frame cost immediately: on the same scene, the same
+GPU and the same 87 draw calls, ten characters cost **1.23 ms** of draw time in
+Electron and **5.42 ms** in Tauri.
+
+**That frame number is a WebKitGTK number, not a Tauri number.** Tauri renders
+in whatever webview the platform ships: WebKitGTK on Linux, **WebView2 on
+Windows — which is Chromium/V8, the same engine as Electron** — and WKWebView on
+macOS. Only the Linux arm was measured, and it is plausibly Tauri's worst case.
+Every restatement of the 4.4x below carries that scope, and the recommendation
+in §4 is built so it does not need the number at all.
 
 ## Verdict
 
-**Electron, and not as a close call.** On the one machine that can measure any
-of this, Electron renders the #341 benchmark scene at **1.89 ms draw p50 / 5.93
-ms frame p95** and Tauri at **6.86 ms / 25.66 ms — 3.6x and 4.3x more, for an
-identical 87 draw calls, on the same GPU, in the same interleaved session** —
-and Tauri costs 1.85x the cold start on top. Tauri wins only on the Debian
-package (1.3 MiB against 94.2 MiB), and it wins that by *not shipping a
-renderer*, which is the same fact that produces the frame cost.
+**Electron, on Linux — the only platform this project currently supports**
+(`docs/online/platform_decision.md`), and the only one measured here. On the one
+machine that can measure any of this, Electron renders the #341 benchmark scene
+at **1.23 ms draw p50** and **Tauri-on-WebKitGTK** at **5.42 ms — 4.4x more, for
+an identical 87 draw calls, on the same GPU, in the same interleaved session** —
+and Tauri costs 1.9x the cold start on top.
+
+**Lead on `draw`, not on `frame`.** `draw` is CPU time inside `scene.render()`;
+it cannot contain vsync or compositor pacing, so it is immune to the one
+confound this comparison could plausibly have had (see
+[the pacing control](#the-pacing-control)). `frame` brackets a `gl.finish()` and
+the inter-tick gap, so it can. Both are reported; the argument rests on `draw`. Tauri wins only on the Debian package (1.3 MiB against 94.2 MiB), and it
+wins that by *not shipping a renderer*, which is the same fact that produces the
+frame cost.
+
+**The 4.4x is scoped to WebKitGTK and does not generalise.** On Windows, Tauri's
+webview is WebView2 — Chromium and V8, the same engine as Electron — so the
+frame-cost gap would likely shrink or vanish there, and it was **not measured**.
+The recommendation below is deliberately not built on this number: Electron wins
+on engine uniformity, cold start and maturity, all of which hold whatever
+WebView2 would have measured.
 
 **Babylon Native is not a candidate on this evidence, and it is not close
 either.** It builds, and its capability spike passes every check this game needs
@@ -136,8 +158,20 @@ schedule.
 
 Timeboxed to one afternoon; it did not need the box.
 
-```
-git clone --recursive --depth 1 https://github.com/BabylonJS/BabylonNative.git   # 228 MB
+```bash
+# PINNED. `git clone --depth 1` takes whatever HEAD is on the day you run it,
+# and §1.1 measured upstream landing 15-34 commits a month -- so an unpinned
+# clone builds different C++ from the one this document reports on, and a
+# reader could not tell a failure to reproduce from a different subject.
+# Fetching the SHA directly keeps the clone shallow AND pinned; `--depth 1` on
+# `git clone` and a checkout of an arbitrary historical commit are otherwise in
+# tension, because the shallow clone does not contain that commit.
+git init BabylonNative && cd BabylonNative
+git remote add origin https://github.com/BabylonJS/BabylonNative.git
+git fetch --depth 1 origin aa244ec98c00660ee1832f68d4fdaa7f2620128e
+git checkout FETCH_HEAD
+git submodule update --init --recursive   # see the note below: currently a no-op
+
 cmake -G Ninja -B build/Linux \
   -D JAVASCRIPTCORE_LIBRARY=/usr/lib/x86_64-linux-gnu/libjavascriptcoregtk-4.1.so \
   -D NAPI_JAVASCRIPT_ENGINE=JavaScriptCore -D CMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -145,9 +179,18 @@ cmake -G Ninja -B build/Linux \
 ninja -C build/Linux
 ```
 
+Verified: that sequence lands on `HEAD = aa244ec98c00660ee1832f68d4fdaa7f2620128e`
+and costs the same 228 MB as the unpinned clone did.
+`git submodule update --init --recursive` is included because a checkout must
+re-sync submodules to the commit being built — but **at this commit it is a
+no-op**: `git submodule status` is empty, and every dependency (bgfx, glslang,
+googletest, JsRuntimeHost, UrlLib, SPIRV-Cross) is fetched by CMake at configure
+time instead. Keep the line anyway; it costs nothing and stops being a no-op the
+moment upstream adds a submodule.
+
 | Step | Result |
 | --- | --- |
-| Clone (`--recursive --depth 1`) | 228 MB, no git submodules — dependencies are fetched by CMake |
+| Clone (pinned, shallow) | 228 MB, no git submodules — dependencies are fetched by CMake |
 | CMake configure | 30.6 s, fetches bgfx, glslang, googletest, JsRuntimeHost, UrlLib, SPIRV-Cross, and runs `npm install` |
 | Build | 1157 targets, **107 s** wall (load average 18–27; other agents were building) |
 | `Apps/Playground/Playground` | 63,156,688 bytes (RelWithDebInfo) |
@@ -176,7 +219,7 @@ Measured, not read:
 `bench/babylon_native/spike.js` loads the **same CC0 KayKit Knight** the #341
 browser benchmark uses (sha256 `60428e3a…`, pinned in
 `scripts/babylon_bench.py`) and exercises the four things a replacement
-presentation layer has to do. Run against the RelWithDebInfo build above:
+presentation layer has to do.
 
 ```
 cp bench/babylon_native/spike.js  <build>/Apps/Playground/Scripts/spike.js
@@ -184,48 +227,102 @@ cp character.glb                  <build>/Apps/Playground/Scripts/character.glb
 DISPLAY=:1 ./Playground app:///Scripts/spike.js
 ```
 
-Output, verbatim (load average 27.5):
+The evidence of record is a **retained five-run batch** against the stripped
+`Release` build, on an idle box, not a single quoted transcript. All five runs
+returned `status=OK` for all six checks. One run in full, and the across-run
+spread underneath it:
 
 ```
 GC_BN|check=engine|status=OK|babylon=9.15.0|graphics_api=OpenGL|engine_description=Native2 - Parallel shader compilation
 GC_BN|check=gltf_load|status=OK|meshes=16|skinned_meshes=6|skeletons=1|bones=41|animation_groups=76|total_vertices=0
 GC_BN|check=shadows|status=OK|shadow_map_size=1024|casters=6|detail=shadow map allocated
-GC_BN|check=skeletal_animation|status=OK|clip=1H_Melee_Attack_Chop|clips_available=76|frames=30|bones_moved=34|bones_total=41|max_bone_delta=0.65763
-GC_BN|check=bone_ik|status=OK|bone=upperarm.l|bone_parent=chest|effector=lowerarm.l|frames_per_pose=30|effector_travel=0.32317|distance_to_target_pose_a=0.48178|distance_to_target_pose_b=1.10153
-GC_BN|check=render|status=OK|width=600|height=400|non_background_pixels=240000|total_pixels=240000|png=…/babylon_native_spike.png
+GC_BN|check=skeletal_animation|status=OK|clip=1H_Melee_Attack_Chop|clips_available=76|frames=30|bones_moved=34|bones_total=41|max_bone_delta=0.49609
+GC_BN|check=bone_ik|status=OK|bone=upperarm.l|bone_parent=chest|effector=lowerarm.l|frames_per_pose=30|effector_travel=0.29209|distance_to_target_pose_a=0.48586|distance_to_target_pose_b=1.11977
+GC_BN|check=render|status=OK|width=600|height=400|clear_color=0,0,0|lit_threshold=24|lit_pixels=187800|total_pixels=240000|lit_fraction=0.78250|accepted_fraction_window=0.001..0.98|brightest_channel=255|prove_flat_fill=no
 GC_BN|check=summary|status=OK|checks=6
-Playground: Finished in 3.229s. (exit 0)
 ```
+
+| across 5 runs | value |
+| --- | --- |
+| `summary` | `OK` in 5 of 5 |
+| `bones_moved` | 34 of 41, in every run |
+| `effector_travel` | 0.29209 – 0.29283 |
+| `lit_fraction` | 0.78250, identical in every run |
 
 Read that line by line, because it settles the #328 question:
 
 - **glTF loading works.** 41 joints, 6 skinned meshes and all 76 animation
   clips came off the same `.glb` the browser bench loads.
 - **Skeletal animation works.** 34 of 41 bones moved over 30 frames of a real
-  clip, largest displacement 0.66 units.
+  clip. `max_bone_delta` varies between runs (0.49 here, 0.66 on a loaded box)
+  because Babylon advances animation by wall-clock time, so a slower machine
+  samples a later pose at the same frame index. The bone *count* does not move.
 - **Shadows work.** A 1024 shadow map was allocated with six casters, and the
   scene rendered with it.
 - **`BoneIKController` works.** This is the decisive one. The controller
   attached to `upperarm.l`, and when the IK target was moved the end effector
-  travelled 0.323 units to follow it. **Built-in IK is the stated reason
-  Babylon was chosen over three.js in #328, and it runs natively.** That is not
-  a surprise once you look at the implementation — `BoneIKController` is
-  arithmetic over `Bone`, `Matrix` and `Vector3` with no DOM and no engine call
-  — but "should work" and "did work" are different claims and this is the
-  second one.
-- **It drew.** 240,000 of 240,000 pixels were non-background and the frame was
-  written to PNG.
+  travelled ~0.292 units to follow it, in all five runs. **Built-in IK is the
+  stated reason Babylon was chosen over three.js in #328, and it runs
+  natively.** That is not a surprise once you look at the implementation —
+  `BoneIKController` is arithmetic over `Bone`, `Matrix` and `Vector3` with no
+  DOM and no engine call — but "should work" and "did work" are different
+  claims and this is the second one.
+- **It drew** — and this line is now worth the paper it is written on, which it
+  previously was not. See below.
 
-**Reproducible, and not only in one build.** The same script was run five more
-times against a *third* build — `CMAKE_BUILD_TYPE=Release`, stripped — and
-returned `status=OK` for all six checks every time, with `bone_ik`'s effector
-travel between 0.300 and 0.321 units and `bones_moved=34` in every run. So the
-spike's pass is not a one-off and not an artefact of the debug build.
+#### The render check was broken, and what "it drew" now rests on
+
+The first version of this check counted a pixel as drawn if any channel exceeded
+8. **Babylon's default `Scene.clearColor` is (0.2, 0.2, 0.3, 1) — R=51, G=51,
+B=76 — so every pixel of an empty background already passed.** It scored a blank
+frame 240000 / 240000 and reported `status=OK`. It could not go red. An earlier
+revision of this document quoted exactly that `240000|240000` and said "It
+drew"; that claim was unsupported, and this section replaces it.
+
+The check now pins the background to pure black, counts pixels above 24, and
+requires the lit fraction to fall **inside** a window — something must be lit,
+and the frame must not be *entirely* lit, because a uniform fill is the
+degenerate case the old check accepted. The real scene measures **0.78250**,
+identically in all five runs.
+
+The demonstration that it can now go red is `bench/babylon_native/prove_flat_fill.js`,
+which reproduces the original bug against a real renderer — it turns the frame
+into a uniform fill immediately before capture:
+
+```
+$ ./Playground app:///Scripts/spike.js                                    # real scene
+GC_BN|check=render|status=OK  |lit_pixels=187800|lit_fraction=0.78250|prove_flat_fill=no
+GC_BN|check=summary|status=OK                                              exit 0
+
+$ ./Playground app:///Scripts/prove_flat_fill.js app:///Scripts/spike.js   # falsified
+GC_BN|check=prove_flat_fill|status=ARMED|expect=render FAIL and a non-zero exit
+GC_BN|check=render|status=FAIL|lit_pixels=240000|lit_fraction=1.00000|prove_flat_fill=yes
+GC_BN|check=summary|status=FAIL                                            exit 1
+```
+
+The red case prints `240000` — **the exact number the broken check published as
+success**. Two other falsifications were tried first and rejected as dishonest
+demonstrations: `setEnabled(false)` threw inside `scene.render()` (red for the
+wrong reason — an exception proves the harness fails, not that the threshold
+discriminates), and both `isVisible = false` and an emptied camera frustum left
+the ground plane drawing and made the frame *brighter* than the real scene
+(0.847 lit against 0.782), because they removed the character's shadow. Neither
+blanked anything; both are recorded in `spike.js` so nobody re-tries them.
+
+**What survives, and what does not.** The skeleton and IK results never depended
+on the pixel check — `bones_moved=34` and `effector_travel` come from bone
+matrices, and they are unchanged. What changed is that "Babylon Native rendered
+this scene" is now backed by a measurement that fails when it should.
 
 Two smaller things the spike surfaced. `scene.getTotalVertices()` returned **0**
 where the browser reports a real count, so at least one scene statistic is not
 wired up on the native path. And the graphics API is reported as plain
 `OpenGL` — bgfx's GL backend, not Vulkan.
+
+**Builds exercised.** The spike ran on two independently configured builds — the
+`RelWithDebInfo` one in §1.3 and a stripped `Release` one — for six runs in
+total, with every check `OK` in every run. So the result is not an artefact of a
+single build configuration.
 
 ### 1.5 The validation suite — measured, and it does not pass
 
@@ -261,6 +358,17 @@ developer's actual Linux desktop*, and the failure mode when it diverges is a
 segmentation fault with an empty callstack rather than a JavaScript exception.
 For a project whose whole value proposition is running the same JS everywhere,
 that is the wrong failure mode.
+
+**The experiment that would settle it, and why it was not run.** Upstream CI
+runs the suite under **`xvfb-run`**, and `LIBGL_ALWAYS_SOFTWARE=1` under a real
+X server is a reasonable proxy for that but not the same thing — Xvfb is a
+different X server, not just a different GL driver. Neither `xvfb-run` nor
+`Xvfb` is installed on this box and installing them needs root, which is not
+available here. **`xvfb-run ./Playground app:///Scripts/validation_native.js` is
+therefore the single named, untried experiment that would discriminate "upstream
+is immature" from "this environment differs"**, and it is cheap for anyone who
+has Xvfb. Until someone runs it, this document's reading of the crash is bounded
+by that.
 
 **The suite could not be bisected with the tool provided.** `--test`,
 `--test-index`, `--once` and `--list` are documented in
@@ -336,27 +444,37 @@ at a time**, median across launches with the min–max span under each figure.
 Cold start is five interleaved launches, same treatment.
 
 Host: Linux 7.0.0-28-generic, RTX 2070 SUPER, `DISPLAY=:1`, measured 2026-08-04.
-**Load average 5.77–6.59 for every pass of this run** — see
-[the load caveat](#the-load-caveat), which is not boilerplate here.
+**Load average 0.56–0.80 across the cold-start passes and 0.80–1.06 across the
+frame-cost passes** — an effectively idle box, recorded per pass in
+`report.json`. See [the load caveat](#the-load-caveat) and
+[the pacing control](#the-pacing-control), neither of which is boilerplate.
 
-| route | installer | unpacked | cold start `dom_ready` | cold start `scene_ready` | draw calls | draw p50 | draw p95 | frame p50 | frame p95 | GPU evidence |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| **Electron** 43.3.0 (Chromium/V8, reports `Chrome/150.0`) | **94.2 MiB** AppImage | 312.1 MiB | **664.8 ms** <br><sub>655.8–703.5</sub> | **987.8 ms** <br><sub>928.8–1203.9</sub> | 87.0 | **1.89 ms** <br><sub>1.66–2.08</sub> | **2.99 ms** <br><sub>2.85–3.90</sub> | **4.20 ms** <br><sub>3.62–4.66</sub> | **5.93 ms** <br><sub>5.67–8.04</sub> | `ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 2070 SUPER/PCIe/SSE2, OpenGL 4.5.0)` |
-| **Tauri** 2.11.5 (WebKitGTK 2.52.3 / JavaScriptCore, reports `Version/60.5 Safari/605.1.15`) | **1.3 MiB** `.deb` <br>73.8 MiB AppImage <br>3.2 MiB binary | — | **1464.4 ms** <br><sub>1438.5–1470.0</sub> | **1829.4 ms** <br><sub>1818.5–1873.0</sub> | 87.0 | **6.86 ms** <br><sub>6.66–6.94</sub> | **8.42 ms** <br><sub>7.88–8.88</sub> | **21.56 ms** <br><sub>21.06–22.24</sub> | **25.66 ms** <br><sub>24.06–27.26</sub> | mapped drivers `libEGL_nvidia`, `libnvidia-eglcore` — the engine's own string was rejected, see [below](#the-apple-gpu-problem) |
-| **Babylon Native** (bgfx GL / JavaScriptCore) | **NOT MEASURED** — no installer exists | — | — | 1592 ms *(different scene)* | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | — |
-| **WebView2** (Windows) | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | no Windows hardware |
-| **WKWebView** (macOS) | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | no macOS hardware |
+| route | installer | cold start `dom_ready` | cold start `scene_ready` | draw calls | **draw p50** | **draw p95** | frame p50 | frame p95 | GPU evidence |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| **Electron** 43.3.0 (Chromium/V8, reports `Chrome/150.0`) | **94.2 MiB** AppImage (312.1 MiB unpacked) | **622.6 ms** <sub>572.3–654.0</sub> | **876.6 ms** <sub>839.0–1132.0</sub> | 87.0 | **1.23 ms** <sub>1.17–1.24</sub> | **1.96 ms** <sub>1.69–2.12</sub> | 2.68 ms <sub>2.52–2.72</sub> | 4.09 ms <sub>3.43–4.49</sub> | `ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 2070 SUPER/PCIe/SSE2, OpenGL 4.5.0)`; `/dev/nvidia0` + `/dev/dri/renderD128` open |
+| **Tauri** 2.11.5 (WebKitGTK 2.52.3 / JavaScriptCore, reports `Version/60.5 Safari/605.1.15`) | **1.3 MiB** `.deb` <br>73.8 MiB AppImage <br>3.2 MiB binary | **1328.3 ms** <sub>1305.3–1340.5</sub> | **1657.3 ms** <sub>1624.3–1673.5</sub> | 87.0 | **5.42 ms** <sub>5.38–5.48</sub> | **6.22 ms** <sub>5.92–6.32</sub> | 17.62 ms <sub>17.42–17.78</sub> | 20.44 ms <sub>20.08–20.90</sub> | engine string rejected as spoofed; mapped `libEGL_nvidia`, `libnvidia-eglcore`; `/dev/nvidia0` + `/dev/dri/renderD128` open |
+| **Babylon Native** (bgfx GL / JavaScriptCore) | **NOT MEASURED** — no installer exists | — | 1592 ms *(different, smaller scene — excluded from every ratio)* | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | — |
+| **WebView2** (Windows) | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | no Windows hardware |
+| **WKWebView** (macOS) | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | no macOS hardware |
 
-Ratios, which are what the interleaved design protects: **Tauri costs 3.63x
-Electron's draw p50, 2.82x its draw p95, 5.13x its frame p50 and 4.33x its frame
-p95, and 1.85x its cold start to a rendered scene.** Both routes reported the
-same payload `state_hash 51875e4b2a3adac1` and the same 87 draw calls in all
-five passes, so they rendered the same thing.
+Ratios: **Tauri costs 4.41x Electron's draw p50, 3.17x its draw p95, 6.59x its
+frame p50, 5.00x its frame p95, and 1.89x its cold start to a rendered scene.**
+Both routes reported the same payload `state_hash 51875e4b2a3adac1` and the same
+87 draw calls in all five passes, so they rendered the same thing.
 
-**The one number a product decision turns on:** Tauri's frame p50 is
-**21.56 ms**. That is past the 16.7 ms a 60 fps frame allows, with ten
-characters, on an RTX 2070 SUPER, before any of the game's own work. Electron's
-is 4.20 ms.
+**Which of those columns the argument uses.** `draw` is CPU time inside
+`scene.render()` and cannot contain vsync or compositor pacing; `frame` brackets
+a `gl.finish()` and the inter-tick gap and can. **The decision rests on the two
+`draw` columns**, where Tauri is 3.2–4.4x more expensive. The `frame` columns
+are reported because a player feels them, and read with
+[the pacing caveat](#the-pacing-control).
+
+**On the 60 fps question.** Tauri-on-WebKitGTK's frame p50 is **17.62 ms**,
+which is over the 16.7 ms a 60 fps frame allows — but only by about 6%, and
+frame time is the pacing-inclusive column. Read it as *"WebKitGTK has no
+headroom at ten characters"* rather than as a large margin: the defensible
+version of the claim is the draw column, where Tauri spends 4.2 ms more CPU per
+frame than Electron before any of the game's own work.
 
 #### Babylon Native's two measurable cells
 
@@ -388,9 +506,53 @@ says so.
 - **Draw calls** are deterministic; the runner refuses a route whose draw-call
   count differs between passes, because that would mean the scene changed and
   the timings are not comparable.
+- **`draw` vs `frame`.** `draw` is CPU time inside `scene.render()`; `frame` is
+  one loop iteration including a `gl.finish()`. Only `frame` can contain
+  pacing — see [the pacing control](#the-pacing-control).
 - **GPU evidence** is the string the engine reported *when it can be trusted*,
-  and otherwise the graphics drivers the process actually had mapped. See
-  [the Apple GPU problem](#the-apple-gpu-problem).
+  and otherwise the drivers the process mapped plus the GPU device nodes it held
+  open. See [the Apple GPU problem](#the-apple-gpu-problem).
+
+### The pacing control
+
+`frame_p50`/`frame_p95` bracket a `gl.finish()` and the gap between ticks, which
+is exactly where vsync and compositor pacing leak in. So an asymmetry there
+would corrupt the one comparison this document is quoted on — and the first
+version of this work had one.
+
+`bench/native_shell/electron/main.js` set Chromium's `--disable-frame-rate-limit`
+and `--disable-gpu-vsync`, and justified them in a comment as matching
+`scripts/babylon_bench.py`. **That precedent did not exist** — `babylon_bench.py`
+sets no such flags — and WebKitGTK exposes no equivalent, so the Tauri shell
+could not have been given the same treatment. One side of a two-sided comparison
+was running free and the other was not.
+
+It is fixed by controlling pacing from **outside** both shells, identically:
+`scripts/native_shell_bench.py`'s `launch_shell()` sets `__GL_SYNC_TO_VBLANK=0`
+(NVIDIA) and `vblank_mode=0` (Mesa) for every route, and the Electron-only
+switches are gone. Whatever those variables do, they do to both processes.
+
+**Re-measured after the fix, the gap widened rather than closed:**
+
+| | before (asymmetric, load 5.8–6.6) | after (symmetric, load 0.8–1.1) |
+| --- | ---: | ---: |
+| Electron draw p50 | 1.89 ms | **1.23 ms** |
+| Tauri draw p50 | 6.86 ms | **5.42 ms** |
+| **ratio** | 3.63x | **4.41x** |
+| Electron frame p50 | 4.20 ms | **2.68 ms** |
+| Tauri frame p50 | 21.56 ms | **17.62 ms** |
+| **ratio** | 5.13x | **6.59x** |
+
+Both routes got faster, because the second run was on an idle machine; the
+*ratio* moved against Tauri. So the confound was real, it was worth removing,
+and removing it did not rescue Tauri.
+
+**What is still not fully controlled, stated plainly.** Tauri's frame p50 of
+17.62 ms sits close to a 60 Hz interval, so it is possible that WebKitGTK still
+paces to the compositor through a path those two environment variables do not
+reach. That possibility is precisely why the argument in §4 rests on the `draw`
+columns, which are measured inside `scene.render()` and cannot contain pacing at
+all. On `draw`, Tauri costs 4.41x — with no vsync interpretation available.
 
 ### The load caveat
 
@@ -406,11 +568,16 @@ documented and fixed for the same reason, in the same words: *"session and
 ordering matter more than expected."*
 
 The published run interleaves — one pass of Electron, one pass of Tauri, five
-times — so a drifting load lands on both routes, and it was taken with the box
-at load 5.77–6.59 throughout, recorded per pass in `report.json`. The spreads it
-produced are what a reader should judge it by: Tauri's five draw-p50 passes span
-**4%** of their median (6.66–6.94 ms) and Electron's span **22%** (1.66–2.08
-ms). The gap under test is 3.6x. That is far outside either spread.
+times — so a drifting load lands on both routes. It was taken on an effectively
+idle box: load 0.56–0.80 across the cold-start passes and 0.80–1.06 across the
+frame-cost passes, recorded per pass in `report.json`. (An earlier draft of this
+sentence said "5.77–6.59 for every pass" of the previous run; that range held
+for its frame-cost passes only, and its cold starts dipped to 5.51. Per-pass
+figures are in the report precisely so a reader never has to trust a prose
+range.) The spreads are what a reader should judge it by: Tauri's five draw-p50
+passes span **2%** of their median (5.38–5.48 ms) and Electron's span **6%**
+(1.17–1.24 ms). The gap under test is 4.4x — two orders of magnitude outside
+either spread.
 
 Absolute numbers here are still one machine on one afternoon. **The ratios are
 what this document argues from**, and they are what interleaving defends.
@@ -433,8 +600,21 @@ whatever it says. Both shells were checked this way, and the Tauri row's
 evidence is those mapped drivers, not a string.
 
 This matters for the verdict: **WebKitGTK's frame cost is not a
-software-rendering artefact.** It had the NVIDIA driver mapped and still cost
-3.6x Electron's draw time for the same 87 draw calls.
+software-rendering artefact.** WebKitGTK had the NVIDIA driver mapped and still
+cost 4.4x Electron's draw time for the same 87 draw calls. (What that does *not*
+establish is anything about Tauri's other two webviews — see
+[the recommendation](#4-the-recommendation).)
+
+**How far that evidence actually reaches.** A mapped `.so` proves the loader
+touched a driver, not that the GL context which drew the measured frame used it.
+So the runner also records the **GPU device nodes each shell's process tree has
+open**, which is one step closer to the hardware: both routes held
+`/dev/dri/renderD128`, `/dev/nvidia0`, `/dev/nvidiactl` and `/dev/nvidia-modeset`
+open during the measured passes. That is still not proof that *this particular
+frame* went through the device, and no cheap check available here would be. The
+residual risk is one-directional and against the conclusion, not for it: if
+Tauri were secretly on a software path despite all of that, its real hardware
+numbers would be *better* than published, not worse.
 
 ### Against the browser and native baselines
 
@@ -445,20 +625,22 @@ software-rendering artefact.** It had the NVIDIA driver mapped and still cost
 | **LÖVE optimised (native)** | **33.4** | — | — | #337 slice 2 |
 | Babylon merged, Chrome 150 | 87 | 1.35 ms | 2.29 ms | #341 |
 | Babylon merged, Firefox 153 | 87 | 2.80 ms | 4.08 ms | #341 |
-| **Babylon merged, Electron** | **87** | **1.89 ms** | **2.99 ms** | this document |
-| **Babylon merged, Tauri (WebKitGTK)** | **87** | **6.86 ms** | **8.42 ms** | this document |
+| **Babylon merged, Electron** | **87** | **1.23 ms** | **1.96 ms** | this document |
+| **Babylon merged, Tauri (WebKitGTK)** | **87** | **5.42 ms** | **6.22 ms** | this document |
 
 Electron's Chromium reports itself as `Chrome/150.0` in its user agent — the
 same major version #341 measured — which is why its draw times land next to the
-#341 Chrome row rather than somewhere unrelated. Treat that as a sanity check on
+#341 Chrome row rather than somewhere unrelated. Electron measures slightly
+*faster* than #341's Chrome (1.23 ms against 1.35 ms draw p50), which is what an
+idle box against a loaded one should look like. Treat that as a sanity check on
 the harness, not as a second measurement of Chrome.
 
 ### What could not be measured, and why
 
 | Route / target | Column | Why not |
 | --- | --- | --- |
-| **WebView2** (Windows) | installer, cold start, frame cost | Windows-only component; no Windows hardware. #342 reached the same wall for the determinism run and documented it there. |
-| **WKWebView** (macOS) | installer, cold start, frame cost | macOS-only framework; no macOS hardware. |
+| **WebView2** (Windows) | installer, cold start, frame cost | Windows-only component; no Windows hardware. #342 reached the same wall for the determinism run and documented it there. **This is the most consequential gap in the table**: WebView2 is Chromium and V8, the same engine Electron ships, so the Linux frame-cost gap that this document's §4 point 1 rests on is the one result least likely to reproduce on Windows. Tauri's case is strongest exactly where nothing was measured. |
+| **WKWebView** (macOS) | installer, cold start, frame cost | macOS-only framework; no macOS hardware. JavaScriptCore, the same engine family as the WebKitGTK that *was* measured — but a different embedding on a different graphics stack (Metal, not GL), so the Linux frame cost is a hint about it and not evidence. |
 | **Babylon Native** | installer size | **There is nothing to measure.** It publishes no installer, no package and no release; §1.1. The stripped `Playground` binary size in §3 is an application binary, not a distributable, and it excludes the JavaScriptCore, GL and X11 libraries it links against. |
 | **Babylon Native** | frame cost | Out of scope here and deliberately so. A comparable number needs the #341 scene *and* its captured payload driving the same ten skeletons inside the Playground host; anything less would produce a number that looks like the others and is not. Given §1.5, the route is not a candidate, so this is not the missing evidence. |
 | Electron, Tauri | Windows / macOS installer size | Both cross-compile, neither was built. Linux figures do not transfer: an Electron Windows installer carries the same Chromium, but Tauri's Windows size depends on WebView2 already being present on the machine. |
@@ -467,14 +649,21 @@ the harness, not as a second measurement of Chrome.
 
 ## 4. The recommendation
 
-**Ship Electron when a desktop build is scheduled.** In order of weight:
+**Ship Electron when a desktop build is scheduled, on Linux — the currently
+supported platform** (`docs/online/platform_decision.md` records Linux as the
+only one, and every number here is Linux-only). In order of weight:
 
-1. **Frame cost.** 3.6x is not a tuning gap, and Tauri's 21.56 ms frame p50 is
-   not a 60 fps product. #330 is already deciding whether
-   Babylon's frame cost justifies a rewrite against an optimised LÖVE renderer
-   that now draws ten players in 33.4 calls ([PR #350](https://github.com/osobytes/goliseo/pull/350));
-   a native shell that multiplies Babylon's draw time by 3.6 removes the
-   argument entirely on that platform.
+1. **Draw cost — on Linux, against WebKitGTK, and only there.** 4.41x on
+   `draw p50` is not a tuning gap, and it is measured inside `scene.render()`
+   where [pacing cannot reach it](#the-pacing-control). #330 is already deciding
+   whether Babylon's frame cost justifies a rewrite against an optimised LÖVE
+   renderer that now draws ten players in 33.4 calls
+   ([PR #350](https://github.com/osobytes/goliseo/pull/350)); a native shell
+   that multiplies Babylon's draw time by 4.4 removes that argument on Linux. **This reason does not transfer to Windows**, where Tauri's webview is
+   WebView2 — Chromium and V8, the same engine as Electron — and was not
+   measured; see [what could not be measured](#what-could-not-be-measured-and-why).
+   Reasons 2 to 4 do not depend on it, which is why the recommendation survives
+   this caveat instead of resting on it.
 2. **Engine uniformity, which is worth more here than it looks.** The same V8
    and the same Chromium in the desktop build and in the browser build means one
    rendering-quirk surface, one profile, one set of shader-compilation
@@ -490,7 +679,9 @@ the harness, not as a second measurement of Chrome.
 real cost and it should not be minimised — but a 3.6 MB character asset and a
 8.2 MB Babylon bundle are already in the product, the comparison is a one-time
 download against a per-frame cost, and Tauri's small package is small precisely
-because it borrows a renderer that then renders 3.6x slower.
+because it borrows the platform's renderer — which on Linux is WebKitGTK and
+then costs 4.4x the draw time. On Windows it would borrow Chromium instead, and that
+trade would look very different; it was not measured.
 
 **Reconsider if any of these change:**
 
@@ -500,9 +691,15 @@ because it borrows a renderer that then renders 3.6x slower.
   architectural case is worth re-running this spike against.
 - The product stops needing a browser build. Engine uniformity is the second
   reason for Electron and it evaporates without a web target.
-- A Windows or macOS support target is added. Both are unmeasured here, and
-  Tauri's Windows package in particular is a genuinely different proposition
-  because WebView2 ships with the OS.
+- **A Windows or macOS support target is added.** Both are unmeasured here, and
+  Windows changes *two* things at once, not one. The obvious one is installer
+  economics: WebView2 ships with the OS, so Tauri's package stays tiny without
+  an AppImage carrying a renderer. The load-bearing one is that **WebView2 is
+  Chromium and V8 — the same engine Electron ships — so the 4.4x draw-cost
+  finding, which is a WebKitGTK finding, would very likely not reproduce there
+  at all.** A Windows decision must re-measure rather than inherit this one; on
+  Windows the case for Electron narrows to engine uniformity with the browser
+  build and to maturity, and the frame-cost argument may simply not exist.
 
 **The fallback stays sound.** #329 notes that two different *renderers* on web
 and native cannot desync, because rendering is presentation-only and the
@@ -534,9 +731,14 @@ So the honest summary for whoever decides #330:
 - Migrating to Babylon does **not** buy better skeleton scaling (#341).
 - Migrating to Babylon does **not** now buy fewer draw calls than optimised
   LÖVE (#337 slice 2 vs the 87 in §3).
-- The native story for Babylon is **Electron or nothing** today, because
-  Babylon Native is not shippable and Tauri is 3.6x slower and already over
-  frame budget at ten characters (this document).
+- The native story for Babylon on **Linux** is **Electron** today, because
+  Babylon Native is not shippable (§1.5, §1.6) and Tauri-on-WebKitGTK costs
+  4.4x the draw time with no frame-budget headroom at ten characters. **The Tauri half of
+  that is Linux-only**: on Windows, Tauri's webview is WebView2 — Chromium and
+  V8, the same engine as Electron — and was not measured, so "Electron or
+  nothing" is a statement about the supported platform, not about Tauri in
+  general. Electron's other advantages (engine uniformity with the browser
+  build, cold start, maturity) do not depend on the Tauri frame number.
 - What migrating still buys is the thing it always bought: a bought-not-built
   animation pipeline, glTF assets, and `BoneIKController` — which, to be fair to
   it, **works everywhere it was tested, including natively** (§1.4).
@@ -551,11 +753,12 @@ resting on and prices the native half of the other.
 
 - **One machine, one afternoon.** Every measured number here comes from a single
   Linux box with an RTX 2070 SUPER under active load from other agents. The
-  3.6x Electron-versus-Tauri gap is far larger than the 4–22% within-run spread
-  the five interleaved passes measured, and interleaving plus the identical
-  draw-call count across passes is the evidence it is not noise — but a second
-  machine has not confirmed it, and a sequential version of this same runner
-  produced ratios between 1.4x and 5.8x before interleaving fixed it.
+  4.4x Electron-versus-Tauri draw gap is two orders of magnitude larger than
+  the 2–6% within-run spread the five interleaved passes measured, and
+  interleaving plus the identical draw-call count across passes is the evidence
+  it is not noise — but a second machine has not confirmed it, and a sequential
+  version of this same runner produced ratios between 1.4x and 5.8x before
+  interleaving fixed it.
 - **The Babylon Native crash is not root-caused.** It is reproducible here and
   green upstream. It could be a Mesa 25 / NVIDIA 595 interaction, a genuine
   upstream bug that GitHub's runners do not reach, or something about this box.
@@ -573,6 +776,16 @@ resting on and prices the native half of the other.
   *faster* than Electron is untested. It does not change the recommendation —
   a route with no audio, no particles and no releases is not blocked on being
   fast — but it is an open number.
+- **Tauri's `frame` numbers may still contain pacing.** `__GL_SYNC_TO_VBLANK=0`
+  and `vblank_mode=0` are applied to both shells, but WebKitGTK's 17.62 ms frame
+  p50 sits close to a 60 Hz interval and a compositor path those variables do
+  not reach cannot be excluded. The `draw` columns, which the recommendation
+  rests on, are measured inside `scene.render()` and cannot contain pacing.
+- **The GPU evidence proves a device is open, not that the frame used it.**
+  Mapped drivers plus open `/dev/dri/renderD128` and `/dev/nvidia0` are strong
+  circumstantial evidence and not a proof that the measured frame went through
+  the GPU. The risk is one-directional: a hidden software path would make
+  Tauri's real numbers better than published.
 - **`BoneIKController` was proved to run, not proved to be good.** The spike
   shows the effector follows a moving target. It does not measure convergence
   quality, cost per character, or behaviour under the pose blending #341
@@ -592,18 +805,26 @@ python3 -B scripts/native_shell_bench.py --self-test    # refusal + parsing logi
 ```
 
 Read that name literally. It proves the runner rejects a software rasteriser, a
-spoofed "Apple GPU", a page that errored, a run with no environment marker and a
-partial matrix, and it proves the process-map reader tolerates a process exiting
-underneath it. **It does not start Electron, Tauri or a browser, and a green CI
-run is not shell evidence.**
+spoofed "Apple GPU", a page that errored, a run with no environment marker, a
+route with no completed pass, passes whose draw-call counts disagree, and a
+partial matrix; and it proves the `/proc` readers survive a process exiting
+underneath them and find an open GPU device node when there is one. **It does
+not start Electron, Tauri or a browser, and a green CI run is not shell
+evidence.** The demonstrations that it goes red are in the PR for #329, run
+against a hermetic `mktemp -d` copy.
 
 The measurements:
 
 ```bash
-# Build both shells (npm + cargo + electron-builder + tauri bundler), then measure.
+# Build both shells, then measure. The build is pinned end to end: `npm ci`
+# (not `npm install`, which silently reconciles a drifted lockfile into a
+# different Electron), `@tauri-apps/cli@2.11.4` exactly, and `-- --locked` so
+# `Cargo.toml`'s `tauri = "2"` cannot resolve past what `Cargo.lock` pins.
 DISPLAY=:1 python3 -B scripts/native_shell_bench.py --build --routes electron,tauri
 
-# Measure only, against shells already built.
+# Measure only, against shells already built. This reproduces the published
+# table with no extra flags: the defaults ARE 5 cold starts and 5 interleaved
+# frame passes.
 DISPLAY=:1 python3 -B scripts/native_shell_bench.py --routes electron,tauri
 ```
 
@@ -618,8 +839,16 @@ path** — see [the stale `BUILDING.md`](#13-building-it--measured) for why
 pointing CMake elsewhere does not work:
 
 ```bash
-git clone --recursive --depth 1 https://github.com/BabylonJS/BabylonNative.git
-cd BabylonNative && cmake -G Ninja -B build/Linux \
+# Pinned to the commit every measurement in this document was taken against.
+# An unpinned clone builds a different upstream and reproduces a different
+# result -- see section 1.3.
+git init BabylonNative && cd BabylonNative
+git remote add origin https://github.com/BabylonJS/BabylonNative.git
+git fetch --depth 1 origin aa244ec98c00660ee1832f68d4fdaa7f2620128e
+git checkout FETCH_HEAD
+git submodule update --init --recursive
+
+cmake -G Ninja -B build/Linux \
   -D JAVASCRIPTCORE_LIBRARY=/usr/lib/x86_64-linux-gnu/libjavascriptcoregtk-4.1.so \
   -D NAPI_JAVASCRIPT_ENGINE=JavaScriptCore -D CMAKE_BUILD_TYPE=RelWithDebInfo \
   -D OpenGL_GL_PREFERENCE=GLVND . && ninja -C build/Linux
@@ -629,9 +858,18 @@ cd BabylonNative && cmake -G Ninja -B build/Linux \
 cp bench/babylon_native/spike.js  <BabylonNative>/build/Linux/Apps/Playground/Scripts/
 cp .bench/native_shell/site/vendor/character.glb \
    <BabylonNative>/build/Linux/Apps/Playground/Scripts/character.glb
+cp bench/babylon_native/prove_flat_fill.js \
+   <BabylonNative>/build/Linux/Apps/Playground/Scripts/
 cd <BabylonNative>/build/Linux/Apps/Playground
-DISPLAY=:1 ./Playground app:///Scripts/spike.js
+
+DISPLAY=:1 ./Playground app:///Scripts/spike.js                   # expect exit 0
+DISPLAY=:1 ./Playground app:///Scripts/prove_flat_fill.js \
+                       app:///Scripts/spike.js                    # expect exit 1
 ```
+
+The second command is the section 9 demonstration that the spike's render check
+can go red, run against a real renderer rather than a fixture. If it ever exits
+0, the check has stopped discriminating and §1.4's "it drew" is void again.
 
 ## Assets
 

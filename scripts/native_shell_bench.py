@@ -77,7 +77,10 @@ DEFAULT_WARMUP = 300
 DEFAULT_CHARACTERS = 10
 DEFAULT_VARIANT = "merged"
 DEFAULT_COLD_STARTS = 5
-DEFAULT_FRAME_REPEATS = 3
+# 5, not 3, so the command documented in
+# docs/design/native_route_decision.md reproduces the published table without a
+# flag a reader has to be told about separately.
+DEFAULT_FRAME_REPEATS = 5
 
 # Mapped shared objects that prove the process is rendering on real hardware.
 # These are drivers, not strings a renderer chose to print about itself, which
@@ -113,6 +116,12 @@ SOFTWARE_DRIVER_PATTERNS = (
 # because the string looks like a positive identification, so it would sail
 # through as hardware evidence and put a fabricated GPU name in a table. These
 # strings are demoted to "unproven", which sends the verdict to the process map.
+# This is an explicit list, not a heuristic, and that is a deliberate trade: a
+# heuristic that guessed at "implausible GPU names" would eventually reject a
+# real one. The cost is that it needs updating by hand if WebKit changes its
+# masking string -- the self-test asserts the inherited classifier still accepts
+# "Apple GPU", so if upstream ever starts refusing it, this wrapper is flagged as
+# dead code rather than left to rot silently.
 SPOOFED_RENDERER_VALUES = (
     "apple gpu",
     "apple inc.",
@@ -202,29 +211,50 @@ def classify_process_drivers(maps_text: str) -> tuple[str, list[str]]:
     return "unknown", []
 
 
-def process_tree_maps(pid: int, proc_root: Path = Path("/proc")) -> str:
-    """Concatenate /proc/<pid>/maps for a process and its descendants.
+#: GPU device nodes. An open fd on one of these is stronger evidence than a
+#: mapped `.so`: a library can be mapped by a probe that never rendered, but a
+#: process holding `/dev/dri/renderD128` open has an actual device.
+GPU_DEVICE_PREFIXES = ("/dev/dri/render", "/dev/dri/card", "/dev/nvidia")
 
-    Both shells are multi-process: Electron's GPU work happens in a child, and
-    WebKitGTK's happens in `WebKitWebProcess`. Reading only the parent would
-    find no driver at all and report `unknown` for a run that was on the GPU.
+
+def process_tree_gpu_devices(pid: int, proc_root: Path = Path("/proc")) -> list[str]:
+    """GPU device nodes any process in the tree currently holds open.
+
+    This narrows -- but does not close -- the gap the mapped-driver check
+    leaves: a driver `.so` being mapped proves the loader touched it, not that
+    the context which drew the measured frame used it. An open device node is
+    one step closer to the hardware. It is still not proof that *this frame*
+    went through it, and the doc says so.
     """
+    found: set[str] = set()
+    for current in process_tree_pids(pid, proc_root):
+        fd_dir = proc_root / str(current) / "fd"
+        try:
+            entries = list(fd_dir.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                target = os.readlink(entry)
+            except OSError:
+                continue
+            for prefix in GPU_DEVICE_PREFIXES:
+                if target.startswith(prefix):
+                    found.add(target)
+    return sorted(found)
+
+
+def process_tree_pids(pid: int, proc_root: Path = Path("/proc")) -> list[int]:
+    """Every pid in the tree rooted at `pid`, tolerant of processes exiting."""
     seen: set[int] = set()
     pending = [pid]
-    chunks: list[str] = []
     while pending:
         current = pending.pop()
         if current in seen:
             continue
-        seen.add(current)
-        try:
-            chunks.append((proc_root / str(current) / "maps").read_text(errors="replace"))
-        except OSError:
+        if not (proc_root / str(current)).is_dir():
             continue
-        # A process tree measured while it is running is a moving target: a
-        # thread or a child can exit between the listing and the read. Every
-        # step here tolerates that, because a disappearing child must degrade
-        # the evidence, never crash the run that is collecting it.
+        seen.add(current)
         try:
             tasks = list((proc_root / str(current) / "task").iterdir())
         except OSError:
@@ -235,6 +265,26 @@ def process_tree_maps(pid: int, proc_root: Path = Path("/proc")) -> str:
             except OSError:
                 continue
             pending.extend(int(k) for k in kids)
+    return sorted(seen)
+
+
+def process_tree_maps(pid: int, proc_root: Path = Path("/proc")) -> str:
+    """Concatenate /proc/<pid>/maps for a process and its descendants.
+
+    Both shells are multi-process: Electron's GPU work happens in a child, and
+    WebKitGTK's happens in `WebKitWebProcess`. Reading only the parent would
+    find no driver at all and report `unknown` for a run that was on the GPU.
+
+    The tree walk itself lives in `process_tree_pids` so there is exactly one
+    copy of it -- an earlier version had two, and a mutation test proved only
+    one of them was covered.
+    """
+    chunks: list[str] = []
+    for current in process_tree_pids(pid, proc_root):
+        try:
+            chunks.append((proc_root / str(current) / "maps").read_text(errors="replace"))
+        except OSError:
+            continue
     return "\n".join(chunks)
 
 
@@ -456,6 +506,18 @@ def launch_shell(route: ShellRoute, url: str, log: Path) -> subprocess.Popen[byt
     # AppImages need FUSE; extract-and-run is the documented fallback and costs
     # start-up time, which is why it is recorded rather than hidden.
     environment.setdefault("APPIMAGE_EXTRACT_AND_RUN", "1")
+    # Pacing, controlled IDENTICALLY for every route.
+    #
+    # `frame_p50`/`frame_p95` bracket a `gl.finish()` plus the inter-tick gap,
+    # which is exactly where vsync and compositor pacing leak in -- and
+    # frame_p50 is the number this whole measurement is quoted on. Electron
+    # accepts Chromium switches for this; WebKitGTK accepts none, so any
+    # in-shell control would necessarily be asymmetric and would bias the one
+    # comparison the decision rests on. These are driver-level and engine-blind:
+    # `__GL_SYNC_TO_VBLANK` for the NVIDIA GL stack, `vblank_mode` for Mesa.
+    # Both shells get both, so neither can be the one running free.
+    environment.setdefault("__GL_SYNC_TO_VBLANK", "0")
+    environment.setdefault("vblank_mode", "0")
     handle = log.open("wb")
     return subprocess.Popen(
         route.command(url),
@@ -496,6 +558,7 @@ def run_once(
     spawn_wall_ms = time.time() * 1000.0
     process = launch_shell(route, url, log)
     maps_text = ""
+    devices: list[str] = []
     deadline = time.time() + timeout
     try:
         while time.time() < deadline:
@@ -503,6 +566,8 @@ def run_once(
                 text = process_tree_maps(process.pid)
                 if any(p in text.lower() for p in HARDWARE_DRIVER_PATTERNS + SOFTWARE_DRIVER_PATTERNS):
                     maps_text = text
+            if capture_maps and not devices:
+                devices = process_tree_gpu_devices(process.pid)
             if any(m.get("name") == "finished" for m in ShellBenchHandler.marks):
                 break
             if process.poll() is not None and not ShellBenchHandler.marks:
@@ -516,6 +581,8 @@ def run_once(
     finally:
         if capture_maps and not maps_text:
             maps_text = process_tree_maps(process.pid)
+        if capture_maps and not devices:
+            devices = process_tree_gpu_devices(process.pid)
         stop(process)
 
     marks = list(ShellBenchHandler.marks)
@@ -530,6 +597,7 @@ def run_once(
         "timings": timings,
         "markers": markers,
         "maps_text": maps_text,
+        "gpu_devices": devices,
         "log": str(log),
         # Per launch, not per session. Other agents build in sibling worktrees on
         # this box and the load average moved between 6 and 38 across one run;
@@ -590,6 +658,7 @@ def frame_run(
     )
     env_pass, result_pass = summarise_run(run["markers"])
     result_pass["_loadavg"] = run["loadavg"]
+    result_pass["_gpu_devices"] = ",".join(run["gpu_devices"])
     print(
         f"    {route.name} pass {index}: draw_calls={result_pass.get('draw_calls_mean')} "
         f"draw_p50={result_pass.get('draw_p50')} frame_p95={result_pass.get('frame_p95')} "
@@ -613,6 +682,9 @@ def build_row(
     env = passes[0][0]
     maps_text = next((m for _, _, m, _ in passes if m), "")
     verdict = gpu_verdict(env, maps_text)
+    verdict["open_gpu_devices"] = sorted(
+        {d for _, r, _, _ in passes for d in (r.get("_gpu_devices") or "").split(",") if d}
+    )
     require_hardware(verdict, f"{route_name} frame cost")
 
     calls = {float(r.get("draw_calls_mean", 0.0)) for _, r, _, _ in passes}
@@ -747,6 +819,10 @@ def self_test() -> None:
         (fake_proc / "4242" / "maps").write_text(
             "7f00-7f01 r-xp /usr/lib/x86_64-linux-gnu/libGLX_nvidia.so.0\n"
         )
+        # No `task/` directory: the process is mid-exit. The pid walk must still
+        # yield this pid, and the map read must still return its contents.
+        if process_tree_pids(4242, proc_root=fake_proc) != [4242]:
+            raise RuntimeError("the pid walk lost a process whose task dir had vanished")
         vanished = process_tree_maps(4242, proc_root=fake_proc)
         if "libGLX_nvidia" not in vanished:
             raise RuntimeError("a process whose task dir vanished lost its map evidence entirely")
@@ -754,6 +830,27 @@ def self_test() -> None:
             raise RuntimeError("evidence survived the vanishing task dir but was misclassified")
     finally:
         shutil.rmtree(fake_proc, ignore_errors=True)
+
+    # The GPU device-fd reader, against a fake /proc. This is the evidence that
+    # narrows the mapped-driver gap: a `.so` can be mapped by a loader probe
+    # that never drew, an open `/dev/dri/renderD*` is a real device handle.
+    fake_fd = Path(tempfile.mkdtemp(prefix="gc329-fd-"))
+    try:
+        (fake_fd / "77" / "task" / "77").mkdir(parents=True)
+        (fake_fd / "77" / "task" / "77" / "children").write_text("")
+        (fake_fd / "77" / "fd").mkdir()
+        os.symlink("/dev/dri/renderD128", fake_fd / "77" / "fd" / "3")
+        os.symlink("/usr/lib/libc.so.6", fake_fd / "77" / "fd" / "4")
+        devices = process_tree_gpu_devices(77, proc_root=fake_fd)
+        if devices != ["/dev/dri/renderD128"]:
+            raise RuntimeError(f"the GPU device reader did not find the render node: {devices}")
+        os.unlink(fake_fd / "77" / "fd" / "3")
+        if process_tree_gpu_devices(77, proc_root=fake_fd) != []:
+            raise RuntimeError("a process with no GPU device open must report none")
+        if process_tree_gpu_devices(0x7FFFFFFF, proc_root=fake_fd) != []:
+            raise RuntimeError("a nonexistent process must report no devices, not raise")
+    finally:
+        shutil.rmtree(fake_fd, ignore_errors=True)
 
     # The combined verdict: a masked engine string must not block a run whose
     # process map proves hardware, and must not rescue one that proves software.
