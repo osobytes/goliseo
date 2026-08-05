@@ -20,14 +20,24 @@ local arenas = require("data.arenas")
 
 local pitch = {}
 
--- Rigged 3D players, on by default. The gate this used to wait on has reported:
--- #337 slice 2 draws ten rigged players in 33.4 draw calls at roughly 57% of the
--- #100 added-draw budget, and #328 settled the comparison against the
--- alternatives. The procedural 2.5D renderer stays reachable --
--- `--procedural-players` selects it, and `player_renderer_3d.available()` falls
--- back to it on any runtime that cannot host the 3D pass -- because #100's
--- before/after evidence needs both paths runnable.
-pitch.rigged_players = true
+-- Opt-in rigged 3D players. Still off by default, and #360 is why.
+--
+-- The performance gate this was waiting on has reported and it passes: #337
+-- slice 2 draws ten rigged players in 33.2 draw calls, inside #100's budget
+-- natively and rendering in Chrome under love.js. Turning it on was tried on
+-- this branch and reverted, because the fallback it relies on does not hold.
+--
+-- `player_renderer_3d.available()` is meant to make a runtime that cannot host
+-- the 3D pass fall back quietly. Under love.js in Firefox it does not: the rig3d
+-- shader fails to compile, the failure escapes the `pcall` in `build()` through
+-- a secondary fault inside LÖVE's own boot.lua error path, and love.js alerts
+-- and stops. With this flag true and `pitch.draw` calling `available()`
+-- unconditionally below, that is every player, every match, on stock Firefox.
+--
+-- An unverified claim of "recoverable" must not gate a default-on decision. The
+-- flip belongs to #361 and is blocked on #391 (the shader-compile defect), not
+-- on any number.
+pitch.rigged_players = false
 
 -- Opt-in broadcast-style following camera. Off by default: it reframes the whole
 -- match, so it stays behind a flag until it has been played.

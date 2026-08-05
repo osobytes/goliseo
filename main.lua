@@ -48,15 +48,14 @@ local function has_flag(a)
     return false
 end
 
--- Opt OUT of the rigged 3D player renderer, back to the procedural 2.5D one.
---
--- It used to be the other way round, because rigged players were waiting on the
--- ten-player benchmark. That benchmark has reported (see the note on
--- `pitch.rigged_players`), so rigged is the default and this flag is what keeps
--- the procedural renderer reachable -- which #100's before/after evidence needs,
--- and which anyone comparing the two by playing needs.
-if has_flag("--procedural-players") then
-    require("game.render.pitch").rigged_players = false
+-- Opt into the rigged 3D player renderer for a manual look. Off by default and
+-- deliberately a flag rather than a setting -- see the note on
+-- `pitch.rigged_players`. The ten-player benchmark it was waiting on passes; the
+-- fallback a default-on flip would depend on does not, under love.js in Firefox
+-- (#391), where this flag crashes the match instead of falling back. That is
+-- why it is still something someone types rather than something everyone gets.
+if has_flag("--rigged-players") then
+    require("game.render.pitch").rigged_players = true
 end
 
 -- Opt into the broadcast-style following camera for a manual look. An optional

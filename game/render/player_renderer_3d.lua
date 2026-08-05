@@ -10,9 +10,21 @@
 -- Everything is generated in code (game/render/rig3d/), so there are no asset
 -- files to load and nothing to fail at startup beyond a shader compile.
 --
--- Failure is always recoverable: `available()` reports false and the caller
+-- Failure is USUALLY recoverable: `available()` reports false and the caller
 -- keeps the procedural 2.5D renderer, which is the parity/fallback rule the
 -- rigged-player contract requires.
+--
+-- "Always" is what this said until #360 measured it false. Under love.js in
+-- Firefox the rig3d shader fails to compile and the failure escapes the `pcall`
+-- in `build()` below, through a secondary fault inside LÖVE's own boot.lua error
+-- path; love.js then alerts and stops. A `pcall` cannot make a runtime that
+-- aborts underneath it recoverable -- the same lesson bloom.lua learned about
+-- `newCanvas`, arriving a second time through the shader path.
+--
+-- So the contract holds wherever a compile failure is a Lua error, and does not
+-- hold on the one runtime where it is not. That is #391, and until it is fixed
+-- this renderer stays opt-in: an unverified claim of "recoverable" must not gate
+-- a default-on decision.
 
 local action_pose = require("game.render.rig3d.action_pose")
 local bloom = require("game.render.bloom")
