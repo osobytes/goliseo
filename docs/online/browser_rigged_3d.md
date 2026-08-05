@@ -14,8 +14,9 @@ The sentence is **false**. love.js supplies a depth attachment, LÖVE's rig3d
 shader links, and ten rigged players render in a browser at 33 draw calls. What
 blocks Firefox is a completely different defect that has nothing to do with
 depth: **a LÖVE shader that declares a `varying` does not compile there**, and
-asking for one takes the whole runtime down rather than falling back — which is
-why rigged players stay opt-in for now (#391).
+asking for one takes the whole runtime down rather than falling back (#391).
+Rigged players are on by default anyway, deliberately — see "The default is on,
+and Firefox crashes" below.
 
 ## How to reproduce
 
@@ -195,9 +196,8 @@ initialised…")`, and **no** "rigged 3D players disabled" line — the `pcall` 
 `build()` never gets the chance to report, because the failure escapes it through
 a secondary fault inside LÖVE's own `boot.lua` error path. This is the same shape
 as the depth-canvas crash above, arriving a second time through the shader path,
-and it is why `pitch.rigged_players` stays `false`: `pitch.draw` calls
-`available()` unconditionally, so a default-on flip makes this every player,
-every match. Tracked as #391; the flip is #361's.
+and `pitch.draw` calls `available()` unconditionally, so with the rigged default
+on this is every player, every match on stock Firefox. Tracked as #391.
 
 ## Ten rigged players, measured
 
@@ -269,6 +269,26 @@ with #325.
   prediction is correct.
 - **Settled:** the browser leg of #100 is deliverable in Chrome and not in
   Firefox, for a reason unrelated to the one on record.
+
+### The default is on, and Firefox crashes
+
+`pitch.rigged_players` is `true`. That is a decision, not an oversight: rigged 3D
+everywhere is the project's direction, retiring the procedural 2.5D look is the
+point of the current work, and the numbers above say it fits.
+
+It also means **a browser build produced from this tree crashes on entering a
+match in Firefox**, per the stack above. The two facts are held apart by release
+gating, not by code: no browser build ships until #391 resolves or a capability
+guard exists. `--procedural-players` is the workaround in the meantime, and it is
+what the tier-4 and benchmark comparisons use.
+
+The obvious-looking guard does not work, and it is worth writing down so nobody
+spends an afternoon on it: you cannot ask "does the rig3d shader compile?"
+without compiling it, and compiling it is what kills the runtime. The
+`getCanvasFormats()`-first trick that fixed the depth canvas has no equivalent
+here, because LÖVE exposes no "would this shader compile" query. A guard has to
+come from somewhere else — a runtime denylist, a fix in #391, or a love.js
+rebuild.
 - **Not settled:** anything about a love.js rebuild. Correcting Firefox's
   shader generation would mean rebuilding LÖVE under emscripten, which was not
   attempted here — the depth question it was meant to answer turned out not to

@@ -20,24 +20,24 @@ local arenas = require("data.arenas")
 
 local pitch = {}
 
--- Opt-in rigged 3D players. Still off by default, and #360 is why.
+-- Rigged 3D players, ON by default. That is the project's direction -- retiring
+-- the procedural 2.5D look is the point of the current work -- and the gate this
+-- waited on has reported: #337 slice 2 draws ten rigged players in 33.2 draw
+-- calls, inside #100's budget natively and rendering in Chrome under love.js.
 --
--- The performance gate this was waiting on has reported and it passes: #337
--- slice 2 draws ten rigged players in 33.2 draw calls, inside #100's budget
--- natively and rendering in Chrome under love.js. Turning it on was tried on
--- this branch and reverted, because the fallback it relies on does not hold.
+-- KNOWN HAZARD, DELIBERATELY LEFT IN. Under love.js in Firefox this default
+-- crashes the match on entry. The rig3d shader fails to compile; the failure
+-- escapes the `pcall` in `player_renderer_3d.build()` through a secondary fault
+-- inside LÖVE's own boot.lua error path; love.js alerts and stops. `pitch.draw`
+-- below calls `available()` unconditionally, so with this true it is every
+-- player, every match, on stock Firefox -- not an edge case.
 --
--- `player_renderer_3d.available()` is meant to make a runtime that cannot host
--- the 3D pass fall back quietly. Under love.js in Firefox it does not: the rig3d
--- shader fails to compile, the failure escapes the `pcall` in `build()` through
--- a secondary fault inside LÖVE's own boot.lua error path, and love.js alerts
--- and stops. With this flag true and `pitch.draw` calling `available()`
--- unconditionally below, that is every player, every match, on stock Firefox.
---
--- An unverified claim of "recoverable" must not gate a default-on decision. The
--- flip belongs to #361 and is blocked on #391 (the shader-compile defect), not
--- on any number.
-pitch.rigged_players = false
+-- #360 measured it, #391 is the defect. **A browser build must not ship with
+-- this on until #391 resolves or a capability guard exists.** The fallback that
+-- would otherwise make this safe (`available()` returning false) cannot be
+-- reached there, because learning whether the shader compiles requires compiling
+-- it, and compiling it is what kills the runtime.
+pitch.rigged_players = true
 
 -- Opt-in broadcast-style following camera. Off by default: it reframes the whole
 -- match, so it stays behind a flag until it has been played.

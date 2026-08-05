@@ -22,9 +22,13 @@
 -- `newCanvas`, arriving a second time through the shader path.
 --
 -- So the contract holds wherever a compile failure is a Lua error, and does not
--- hold on the one runtime where it is not. That is #391, and until it is fixed
--- this renderer stays opt-in: an unverified claim of "recoverable" must not gate
--- a default-on decision.
+-- hold on the one runtime where it is not. That is #391.
+--
+-- `pitch.rigged_players` is nevertheless true by default, which is a deliberate
+-- decision recorded there: the direction is rigged-everywhere, and the crash is
+-- held off players by not shipping a browser build until #391 resolves. Read
+-- that note before changing anything here -- and do not "fix" this by probing
+-- what compiles, because the probe is the thing that crashes.
 
 local action_pose = require("game.render.rig3d.action_pose")
 local bloom = require("game.render.bloom")

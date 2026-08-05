@@ -451,9 +451,9 @@ now available, stated without choosing for it:
   defect: a LÖVE shader that declares a `varying` does not compile there, and
   asking for one aborts the runtime rather than falling back. The browser leg
   therefore passes in Chrome and fails in Firefox, and it fails for a reason this
-  document was not reasoning from. Rigged players consequently stay opt-in until
-  #391 is fixed — the flip is #361's, and it is gated on that defect rather than
-  on any number.
+  document was not reasoning from. The rigged default is on regardless — that is
+  the recorded direction — so #391 is a release blocker for the browser build
+  rather than a reason to keep the renderer off.
 - #100 forbids silently loosening a gate: "any revised threshold requires the
   original failure evidence, measured bottleneck, bounded optimization,
   tradeoff, and before/after rerun". PR #350 supplies exactly that shape of
