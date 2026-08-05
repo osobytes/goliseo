@@ -56,6 +56,15 @@ BROWSER_LOADER = r'''/* GOLISEO browser bootstrap. */
 (function () {
   "use strict";
 
+  /*
+   * #391: wrap WebGLRenderingContext.shaderSource FIRST, before anything else
+   * in this bootstrap, so the workaround is installed long before `start()`
+   * fetches the runtime and LÖVE compiles its first shader. Without it,
+   * Firefox's shader translator emits invalid GLSL for every LÖVE shader that
+   * declares a varying -- which is every shader the rigged 3D renderer needs.
+   */
+  /*__GOLISEO_SHADER_HOIST__*/
+
   /*__GOLISEO_BROWSER_STORAGE__*/
 
   /*
@@ -724,18 +733,31 @@ def write_browser_style(output: Path) -> None:
 
 
 def write_browser_loader(output: Path) -> None:
+    shader_hoist = (ROOT / "scripts" / "browser_shader_hoist.js").read_text(
+        encoding="utf-8"
+    )
     storage_host = (ROOT / "scripts" / "browser_storage_host.js").read_text(
         encoding="utf-8"
     )
     proof_host = (ROOT / "scripts" / "webrtc_proof_host.js").read_text(encoding="utf-8")
     star_host = (ROOT / "scripts" / "webrtc_star_host.js").read_text(encoding="utf-8")
     loader = BROWSER_LOADER.replace(
+        "  /*__GOLISEO_SHADER_HOIST__*/",
+        shader_hoist,
+    )
+    loader = loader.replace(
         "  /*__GOLISEO_BROWSER_STORAGE__*/",
         storage_host,
     )
     loader = loader.replace("  /*__GOLISEO_WEBRTC_PROOF__*/", proof_host)
     loader = loader.replace("  /*__GOLISEO_STAR_TRANSPORT__*/", star_host)
     loader = loader.replace("__GOLISEO_BUILD_ID__", source_revision())
+    # A substitution that silently misses leaves a comment where a host should
+    # be, and the artifact ships without it. The #391 workaround is the one
+    # whose absence is invisible until a player opens the game in Firefox, so
+    # its placeholder is checked here rather than only in the smoke gate.
+    if "GoliseoShaderHoist" not in loader:
+        raise RuntimeError("browser loader lost the #391 shader hoist workaround")
     (output / "player.js").write_text(loader, encoding="utf-8")
 
 

@@ -65,12 +65,23 @@ local SHADER_SOURCE = [[
     varying vec4 v_slot_color;
     varying float v_material;
 
+#ifdef VERTEX
+    // EVERY UNIFORM BELOW IS INSIDE A STAGE BLOCK ON PURPOSE (#391). A uniform
+    // declared outside `#ifdef VERTEX` / `#ifdef PIXEL` is compiled into BOTH
+    // stages, and LÖVE's generated GLSL ES headers do not give the two stages
+    // the same default float precision -- highp in the vertex stage, mediump in
+    // the fragment stage. GLSL ES 1.00 requires a uniform shared across stages
+    // to match in precision; Firefox enforces that at link time and reports
+    // `Uniform 'u_palette' is not linkable between attached shaders`, while
+    // Chrome and desktop GL do not, so the bug was invisible until love.js met
+    // Firefox. These four are read only by `position()`, so the honest
+    // declaration is a vertex-stage one and the cross-stage question never
+    // arises. Varyings are exempt from the rule and stay above.
     uniform mat4 u_model;
     uniform mat4 u_view;
     uniform mat4 u_proj;
     uniform vec4 u_palette[%d];
 
-#ifdef VERTEX
     // Row-major, three rows per bone: rows 3k, 3k+1, 3k+2 are the bone's
     // world transform, its implicit fourth row being (0, 0, 0, 1).
     uniform vec4 u_bones[%d];
@@ -188,6 +199,17 @@ local shader
 local SHADING_EYE_DISTANCE = 24
 local light_dir = { -0.42, -0.78, -0.46 }
 
+-- The GLSL this renderer compiles, with the array sizes baked in. Exposed so
+-- the source itself can be tested: `renderer.load` needs a GL context and the
+-- headless suite has none, so without this the stage placement that #391 turns
+-- on could only be checked by opening a browser.
+---@param palette_size integer
+---@param bone_rows integer  -- bone count x skeleton.ROWS_PER_BONE
+---@return string
+function renderer.shaderSource(palette_size, bone_rows)
+    return string.format(SHADER_SOURCE, palette_size, bone_rows)
+end
+
 ---@param palette_size integer  -- must match the length of every palette passed to beginPass
 ---@param bone_count integer    -- see skeleton.boneCount
 function renderer.load(palette_size, bone_count)
@@ -218,7 +240,7 @@ function renderer.load(palette_size, bone_count)
             MIN_VERTEX_UNIFORM_VECTORS
         )
     )
-    shader = love.graphics.newShader(string.format(SHADER_SOURCE, palette_size, bone_rows))
+    shader = love.graphics.newShader(renderer.shaderSource(palette_size, bone_rows))
 end
 
 -- Begins a 3D pass INSIDE an existing 2D frame: sets depth and shader state but

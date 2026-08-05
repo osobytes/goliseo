@@ -178,6 +178,21 @@ jobs:
                   ./scripts/check_determinism.sh --self-test
                   ./scripts/check_determinism.sh
 
+            # #391: Firefox's WebGL shader translator emits invalid GLSL for
+            # every LÖVE shader that declares a varying (Bugzilla 2039887), so
+            # the browser bootstrap hoists those declarations above main()
+            # before WebGL sees them. Gated here: the transform, every construct
+            # it must NOT touch, and that the shipped loader actually embeds and
+            # installs it -- a green transform beside a build that never wires
+            # it in is the #279 shape. The self-test proves this step can go
+            # red. It starts NO browser; the headed Chrome and Firefox runs are
+            # evidence recorded in docs/online/browser_compatibility.md.
+            - name: Prove the #391 shader hoist gate detects failure
+              run: ./scripts/check_shader_hoist.sh --self-test
+
+            - name: Check the #391 shader varying hoist (starts no browser)
+              run: ./scripts/check_shader_hoist.sh
+
             - name: Check OMP-2 rollback orchestration
               run: ./scripts/check_rollback.sh --self-test
 
