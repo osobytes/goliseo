@@ -133,13 +133,14 @@ the same machine and the same GPU; only Chrome's string names it.
 configuration in a single browser session, median across passes. Draw calls are
 deterministic and identical across passes; the runner fails if they are not.
 
-**Machine load, recorded because other agents build on this box.** The browser
-matrix ran at load average 2.39 → 1.47 on 16 cores (uncontended). The native
-LÖVE baseline ran minutes earlier at load 3.35 → 3.03 (uncontended). Both are
-therefore quiet-machine numbers, and both are labelled as such. The earlier
-contended run of the same matrix — load 6.6 → 56 — produced draw p95 figures
-40–70% higher and is not reported here except as the reason the numbers carry
-their conditions.
+**Machine load, recorded because other agents build on this box, and the two
+sides deliberately paired.** The browser matrix ran at load average 0.44 → 2.21
+on 16 cores and the native LÖVE baseline immediately afterwards at 2.55 → 2.22,
+so the comparison below is between two measurements taken minutes apart in the
+same quiet window rather than between numbers collected whenever each happened to
+be convenient. Both are uncontended. An earlier run of this same matrix at load
+6.6 → 56 produced draw p95 figures 40–70% higher and is not reported here except
+as the reason every number carries its conditions.
 
 ### Variants, and why there are now three
 
@@ -183,25 +184,34 @@ Neither is a per-frame cost.
 Ten players, one per roster slot, each driven by its own stream out of the
 simulation.
 
-| browser | variant | chars | draw calls | calls/char | draw p50 (ms) | draw p95 (ms) | update p95 (ms) | frame p95 (ms) | crossings/frame |
+| browser | variant | chars | draw calls | calls/char | draw p50 (ms) | draw p95 (ms) | update p95 (ms) | frame p95 (ms) | crossings/frame (min–max) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| chrome | authored | 10 | 187 | 18.70 | 1.830 | 2.775 | 1.715 | 7.950 | 1.00 |
-| chrome | merged | 10 | 87 | 8.70 | 1.550 | 2.720 | 1.760 | 8.380 | 1.00 |
-| chrome | **merged_all** | 10 | **47** | **4.70** | **1.185** | **2.070** | 1.745 | 6.730 | 1.00 |
-| firefox | authored | 10 | 187 | 18.70 | 4.440 | 6.860 | 2.360 | 19.860 | 1.00 |
-| firefox | merged | 10 | 87 | 8.70 | 3.580 | 5.780 | 2.380 | 17.660 | 1.00 |
-| firefox | **merged_all** | 10 | **47** | **4.70** | **3.080** | **4.500** | 2.220 | 14.760 | 1.00 |
+| chrome | authored | 10 | 187 | 18.70 | 1.695 | 2.915 | 1.710 | 7.870 | 1–1 |
+| chrome | merged | 10 | 87 | 8.70 | 1.350 | 2.010 | 1.685 | 6.455 | 1–1 |
+| chrome | **merged_all** | 10 | **47** | **4.70** | **1.130** | **1.675** | 1.665 | 5.785 | 1–1 |
+| firefox | authored | 10 | 187 | 18.70 | 3.040 | 4.860 | 1.900 | 14.480 | 1–1 |
+| firefox | merged | 10 | 87 | 8.70 | 2.600 | 3.740 | 1.840 | 12.640 | 1–1 |
+| firefox | **merged_all** | 10 | **47** | **4.70** | **2.120** | **3.440** | 1.880 | 12.860 | 1–1 |
+
+The `crossings/frame` column is the per-frame **min–max over 900 frames**, not a
+mean: `1–1` means every single rendered frame crossed the boundary exactly once.
+Non-payload crossings were `0–0` on every frame of every row.
 
 Per-pass draw p95 spread, so nobody has to trust a median:
 
 | browser | variant | pass 1 | pass 2 | pass 3 |
 | --- | --- | ---: | ---: | ---: |
-| chrome | authored | 2.115 | 2.775 | 2.890 |
-| chrome | merged | 2.195 | 2.720 | 3.020 |
-| chrome | merged_all | 1.900 | 2.755 | 2.070 |
-| firefox | authored | 6.860 | 6.600 | 7.180 |
-| firefox | merged | 5.780 | 5.120 | 5.900 |
-| firefox | merged_all | 4.400 | 4.500 | 4.620 |
+| chrome | authored | 2.915 | 2.670 | 3.080 |
+| chrome | merged | 2.010 | 2.650 | 1.830 |
+| chrome | merged_all | 1.535 | 1.735 | 1.675 |
+| firefox | authored | 4.860 | 3.760 | 6.480 |
+| firefox | merged | 4.100 | 3.740 | 3.420 |
+| firefox | merged_all | 3.440 | 3.120 | 3.840 |
+
+The pass-to-pass spread is wide relative to the gaps between variants — Firefox
+`authored` spans 3.760–6.480 ms across three passes — which is why the draw-call
+column, exact and deterministic, is what the verdict leans on and the timings are
+read as bands rather than points.
 
 Draw calls are `27 + characters * meshes * 2`: 27 fixed for pitch, goals and
 ball, and every character drawn twice because of the shadow pass. The
@@ -225,26 +235,25 @@ including a `gl.finish()`, so the GPU has retired the frame; the LÖVE baseline'
 Re-measured on this same machine minutes before the browser run rather than
 quoted, because #337 slice 2 landed two hours before this work started and the
 comparator is the whole point. `love . --benchmark 1800 300 {procedural,rigged}`,
-vsync off, seed 20260803, 960x540, ten players, load average 3.35 → 3.03. Two
-paired runs each:
+vsync off, seed 20260803, 960x540, ten players, load average 2.55 → 2.22 — the
+same quiet window the browser matrix above ran in. Two paired runs each:
 
 | renderer | draw calls | calls/char (marginal) | draw p50 (ms) | draw p95 (ms) | update p95 (ms) | frame p95 (ms) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| LÖVE procedural (native) | 14.0 | — | 0.682 / 0.672 | 1.224 / 1.185 | 0.355 / 0.356 | 2.643 / 2.597 |
-| **LÖVE rigged, optimised (native)** | **33.4** | **1.94** | 1.019 / 1.017 | **2.482 / 2.501** | 0.365 / 0.355 | 3.842 / 3.951 |
-| Babylon `merged_all` (Chrome) | 47 | **2.00** | 1.185 | **2.070** | 1.745 | 6.730 |
-| Babylon `merged_all` (Firefox) | 47 | **2.00** | 3.080 | **4.500** | 2.220 | 14.760 |
-| Babylon `merged` (Chrome) | 87 | 6.00 | 1.550 | 2.720 | 1.760 | 8.380 |
-| Babylon `merged` (Firefox) | 87 | 6.00 | 3.580 | 5.780 | 2.380 | 17.660 |
+| LÖVE procedural (native) | 14.0 | — | 0.599 / 0.634 | 1.054 / 1.133 | 0.305 / 0.305 | 2.441 / 2.459 |
+| **LÖVE rigged, optimised (native)** | **33.4** | **1.94** | 0.952 / 0.913 | **2.300 / 2.276** | 0.345 / 0.338 | 3.666 / 3.684 |
+| Babylon `merged_all` (Chrome) | 47 | **2.00** | 1.130 | **1.675** | 1.665 | 5.785 |
+| Babylon `merged_all` (Firefox) | 47 | **2.00** | 2.120 | **3.440** | 1.880 | 12.860 |
+| Babylon `merged` (Chrome) | 87 | 6.00 | 1.350 | 2.010 | 1.685 | 6.455 |
+| Babylon `merged` (Firefox) | 87 | 6.00 | 2.600 | 3.740 | 1.840 | 12.640 |
 
 Both LÖVE runs report `state_hash=51875e4b2a3adac1`, identical across renderers:
 presentation does not reach the simulation on that side either.
 
 My 33.4 and 1.94 reproduce PR #350's exactly. My added draw p95 —
-2.482 − 1.224 = **1.258 ms**, and 2.501 − 1.185 = **1.316 ms**, i.e. 63–66% of
-the 2 ms feature-delta budget — is a little above the 1.132 ms (56.6%) that PR
-recorded, which is run-to-run spread on a machine that was not idle in either
-case. The draw-call columns are exact and identical.
+2.300 − 1.054 = **1.246 ms** and 2.276 − 1.133 = **1.143 ms**, i.e. **57–62% of
+the 2 ms feature-delta budget** — brackets the 1.132 ms (56.6%) that PR recorded.
+The draw-call columns are exact and identical.
 
 ---
 
@@ -265,24 +274,24 @@ it on headroom. Nothing here is a step change in either direction. Draw-call
 counts are exact and deterministic; every other number in this document is not.
 
 **2. On draw time alone Chrome is genuinely ahead, and that is the encouraging
-part.** 2.070 ms against native LÖVE's 2.482–2.501 ms — a browser beating a
-native renderer at the same character count, at 47 draw calls against 33.4. It
-is not a large margin, it sits inside the pass-to-pass spread of both, and it
-comes with a feature asymmetry in both directions (Babylon draws a shadow map
-LÖVE does not; LÖVE draws bloom Babylon does not). Read it as parity, not as a
-win.
+part.** 1.675 ms against native LÖVE's 2.276–2.300 ms — a browser beating a
+native renderer at the same character count, at 47 draw calls against 33.4. The
+margin is real but it should still be read as parity rather than as a win: the
+pass-to-pass spread on both sides is a substantial fraction of it, and the two
+frames are not drawing the same things (Babylon pays a shadow map LÖVE does not;
+LÖVE pays bloom Babylon does not).
 
 **3. On whole-frame CPU Babylon is behind, and the reason is the simulation, not
 the renderer.** Per frame:
 
 | | update p95 | draw p95 | sum | of a 16.67 ms frame |
 | --- | ---: | ---: | ---: | ---: |
-| LÖVE rigged, optimised (native) | 0.365 | 2.482 | **2.85 ms** | 17% |
-| Babylon `merged_all` (Chrome) | 1.745 | 2.070 | **3.82 ms** | 23% |
-| Babylon `merged_all` (Firefox) | 2.220 | 4.500 | **6.72 ms** | 40% |
+| LÖVE rigged, optimised (native) | 0.345 | 2.300 | **2.64 ms** | 16% |
+| Babylon `merged_all` (Chrome) | 1.665 | 1.675 | **3.34 ms** | 20% |
+| Babylon `merged_all` (Firefox) | 1.880 | 3.440 | **5.32 ms** | 32% |
 
 The `update` gap is roughly five-fold and it is **not** like-for-like: LÖVE's
-0.365 ms is one simulation tick, while Babylon's 1.745 ms is a tick *plus* the
+0.345 ms is one simulation tick, while Babylon's 1.665 ms is a tick *plus* the
 rollback snapshot capture, the `RenderFrame` build, the encode into linear
 memory, the JavaScript read and the placement of ten characters.
 
@@ -322,10 +331,10 @@ than Babylon's, and it would be paid by any browser renderer including a love.js
 one.
 
 **Firefox does not clear the budget with headroom by any reading.** `frame` p95
-of 14.76 ms is 89% of a 60 Hz frame with ten characters, a pitch and nothing
-else on screen, and that is measured with a `gl.finish()` in the loop on an
-uncontended RTX 2070 SUPER. Chrome's 6.73 ms is comfortable; Firefox's is not,
-and Firefox is 2.2x Chrome's draw time at every variant. A migration decision
+of 12.86 ms is **77%** of a 60 Hz frame with ten characters, a pitch and nothing
+else on screen, measured with a `gl.finish()` in the loop on an uncontended
+RTX 2070 SUPER. Chrome's 5.79 ms is comfortable; Firefox's is not, and Firefox is
+roughly 2x Chrome's draw time at every variant. A migration decision
 that only looks at Chrome is not looking at the web.
 
 **So the honest summary.** #341 found that Babylon's win over the *then* LÖVE
@@ -386,8 +395,8 @@ regression here.
 
 A second module instance runs the frozen determinism fixture in a Web Worker
 while the main thread renders ten characters from the live payload. The page
-does not stop rendering to let it finish — it rendered a further **128 378
-frames** (Chrome) and **105 679 frames** (Firefox) during the wait, on top of
+does not stop rendering to let it finish — it rendered a further **120 820
+frames** (Chrome) and **106 001 frames** (Firefox) during the wait, on top of
 the 900 measured ones.
 
 | browser | final hash | sequence digest | verdict |
@@ -412,8 +421,8 @@ control exists so that a hash agreeing between "rendering" and "not rendering"
 ### The worker starvation finding
 
 The frozen fixture takes about **3.3 s** of CPU on an idle machine. Behind this
-page's render loop it took **175.6 s in Chrome and 176.6 s in Firefox** — a
-~53x slowdown, near-identical in both engines, on an uncontended 16-core
+page's render loop it took **170.0 s in Chrome and 183.9 s in Firefox** — a
+~50x slowdown, the same order in both engines, on an uncontended 16-core
 machine.
 
 That is a property of the *benchmark* loop and not of the payload: `scene.js`
