@@ -33,7 +33,10 @@ computation with no GPU involvement. The rule is not "never headless", it is
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
+import os
+import platform
 import shutil
 import sys
 import tempfile
@@ -46,8 +49,12 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 
-# p95 update budget from docs/online/omp0_acceptance.md.
-UPDATE_BUDGET_MS = 8.0
+# p95 update budget from docs/online/omp0_acceptance.md. That number is
+# love.update's share measured inside a real LOVE loop; here it is applied to a
+# standalone wasm host driven from worker JS, so it is an ANALOGOUS 60 Hz target
+# rather than the same measurement. Overridable via --budget-ms so
+# --require-budget can be demonstrated red on a machine that currently passes.
+DEFAULT_BUDGET_MS = 8.0
 # sim.fixed_clock.MAX_TICKS_PER_UPDATE.
 MAX_RESIM_TICKS = 8
 
@@ -113,28 +120,60 @@ function ready() {
   return typeof Module._goliseo_payload_frame === "function";
 }
 
+// Wrap EVERY payload export, discovered dynamically, exactly as
+// verify_payload.js does. Hand-wrapping only the frame call would have made
+// "one crossing per frame" true by construction rather than by measurement:
+// a second export called inside the render loop would not have been counted.
+var counts = {};
+function instrument() {
+  var api = {};
+  Object.keys(Module).forEach(function (name) {
+    if (name.indexOf("_goliseo_payload_") !== 0) { return; }
+    var original = Module[name];
+    counts[name] = 0;
+    api[name] = function () {
+      counts[name] += 1;
+      return original.apply(Module, arguments);
+    };
+  });
+  return api;
+}
+
 function measure() {
   var payload = self.GoliseoFramePayload;
-  var calls = { frame: 0, other: 0 };
-  function frameCall(ticks, rollback) {
-    calls.frame += 1;
-    return Module._goliseo_payload_frame(ticks, rollback);
+  var api = instrument();
+  var surface = Object.keys(counts).sort();
+
+  // Defence in depth with a known limit: a name regex over today's surface.
+  // A future `_goliseo_payload_dump` would pass it. The real guarantee is that
+  // the Rust module exposes no snapshot-returning function at all.
+  var leaks = surface.filter(function (name) {
+    return /snapshot|restore|capture|state|tick/.test(name);
+  });
+  if (leaks.length > 0) {
+    return { ok: false, error: "exports could leak per-tick state: " + leaks.join(", ") };
   }
 
-  var count = Module._goliseo_payload_boot();
-  calls.other += 1;
+  function frameCall(ticks, rollback) {
+    return api._goliseo_payload_frame(ticks, rollback);
+  }
+
+  var count = api._goliseo_payload_boot();
   if (count < 0) {
-    return { ok: false, error: Module.UTF8ToString(Module._goliseo_payload_error()) };
+    return { ok: false, error: Module.UTF8ToString(api._goliseo_payload_error()) };
   }
 
   var roster = payload.readRoster(
     Module.HEAPF64,
-    Module._goliseo_payload_roster(),
-    Module.UTF8ToString(Module._goliseo_payload_roster_strings())
+    api._goliseo_payload_roster(),
+    Module.UTF8ToString(api._goliseo_payload_roster_strings())
   );
-  calls.other += 2;
 
   frameCall(WARMUP_TICKS, 0);
+  var framesBefore = counts._goliseo_payload_frame;
+  var othersBefore = surface.reduce(function (sum, name) {
+    return name === "_goliseo_payload_frame" ? sum : sum + counts[name];
+  }, 0);
 
   // BATCHED. performance.now() in a worker is coarsened -- 0.1 ms or worse,
   // and worse still with cross-origin isolation off -- which is the same order
@@ -157,7 +196,11 @@ function measure() {
     return { ok: false, error: "frame player count " + players + " != roster " + roster.count };
   }
 
-  var crossingsPerFrame = calls.frame / (FRAME_BATCHES * FRAMES_PER_BATCH + 1);
+  var renderedFrames = FRAME_BATCHES * FRAMES_PER_BATCH;
+  var crossingsPerFrame = (counts._goliseo_payload_frame - framesBefore) / renderedFrames;
+  var otherPerFrame = (surface.reduce(function (sum, name) {
+    return name === "_goliseo_payload_frame" ? sum : sum + counts[name];
+  }, 0) - othersBefore) / renderedFrames;
 
   // PAYLOAD EXTRACTION, ALONE. `ticks = 0` simulates nothing, so this call is
   // exactly build + encode + copy + read: the per-frame cost this issue is
@@ -173,7 +216,7 @@ function measure() {
     extractionMs.push((performance.now() - t0) / FRAMES_PER_BATCH);
   }
 
-  var hashBefore = Module.UTF8ToString(Module._goliseo_payload_hash());
+  var hashBefore = Module.UTF8ToString(api._goliseo_payload_hash());
   var depths = [];
   var worst = 0;
   [1, 2, 4, MAX_RESIM_TICKS].forEach(function (depth) {
@@ -189,7 +232,7 @@ function measure() {
     if (depth === MAX_RESIM_TICKS) { worst = p95; }
     depths.push({ depth: depth, mean: mean(burstMs), p95: p95, max: percentile(burstMs, 1) });
   });
-  var hashAfter = Module.UTF8ToString(Module._goliseo_payload_hash());
+  var hashAfter = Module.UTF8ToString(api._goliseo_payload_hash());
 
   // The mismatch gate, run where the payload is actually read. Corrupting the
   // live block rather than fabricating one means the reader has to reject a
@@ -218,6 +261,19 @@ function measure() {
     rosterIds: roster.ids,
     words: words,
     crossingsPerFrame: crossingsPerFrame,
+    otherCrossingsPerFrame: otherPerFrame,
+    exports: surface,
+    // Sample shape, so the reader can see these are percentiles over BATCH
+    // MEANS, not over individual calls. Averaging before percentiling damps
+    // the tail; it is unavoidable here because a browser worker's
+    // performance.now() is coarsened to the same order as one payload read,
+    // but it must not be presented as the same statistic node reports.
+    sampling: {
+      framesPerBatch: FRAMES_PER_BATCH,
+      frameBatches: FRAME_BATCHES,
+      burstsPerBatch: BURSTS_PER_BATCH,
+      burstBatches: BURST_BATCHES
+    },
     extraction: {
       mean: mean(extractionMs),
       p95: percentile(extractionMs, 0.95),
@@ -253,6 +309,40 @@ var timer = setInterval(function () {
 }, 20);
 })();
 """
+
+
+def conditions() -> dict:
+    """The machine conditions a measurement was taken under.
+
+    Not decoration. The difference between a 5.1 ms p95 and a 13.1 ms p95 for
+    the same artifact on this same machine was load average, so a number
+    reported without its conditions is not reproducible -- only re-runnable.
+    """
+    cores = os.cpu_count() or 1
+    try:
+        load1, load5, load15 = os.getloadavg()
+    except (OSError, AttributeError):  # not available on every platform
+        load1 = load5 = load15 = float("nan")
+    return {
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        "platform": platform.platform(),
+        "cores": cores,
+        "load1": load1,
+        "load5": load5,
+        "load15": load15,
+        # A rough flag, not a gate: more runnable work than half the cores
+        # inflates every tail number in the report.
+        "contended": load1 > cores * 0.5,
+    }
+
+
+def print_conditions(label: str, c: dict) -> None:
+    print(
+        f"    {label:<15} {c['timestamp']}   {c['cores']} cores   "
+        f"load {c['load1']:.2f}/{c['load5']:.2f}/{c['load15']:.2f}"
+        + ("   CONTENDED - tail numbers inflated" if c["contended"] else ""),
+        flush=True,
+    )
 
 
 def launch(browser: str, headless: bool) -> Any:
@@ -318,9 +408,28 @@ def report(result: dict, require_budget: bool) -> list[str]:
     budget = result["budget"]
     print(f"    roster          {result['rosterCount']} slots, once per match")
     print(f"    frame block     {result['words']} words ({result['words'] * 8} bytes)")
-    print(f"    crossings/frame {result['crossingsPerFrame']:.2f}")
-    if abs(result["crossingsPerFrame"] - 1.0) > 1e-9:
+    other = result.get("otherCrossingsPerFrame", 0.0)
+    print(
+        f"    crossings/frame {result['crossingsPerFrame']:.2f} payload + {other:.2f} other "
+        f"(every _goliseo_payload_* export wrapped: {len(result.get('exports', []))} of them)"
+    )
+    if abs(result["crossingsPerFrame"] - 1.0) > 1e-9 or abs(other) > 1e-9:
         failures.append("more than one boundary crossing per frame")
+
+    # SAMPLING SHAPE, stated because it is not the same statistic node reports.
+    # A browser worker's performance.now() is coarsened to roughly the cost of
+    # one payload read, so each sample here is the MEAN of a batch and the p95
+    # is a nearest-rank pick over those batch means. Averaging before
+    # percentiling damps the tail: these p95s are lower bounds on the true
+    # per-call p95, and the burst rows rest on only 40 samples.
+    sampling = result.get("sampling", {})
+    if sampling:
+        print(
+            f"    sampling        p95 over BATCH MEANS, not per-call: "
+            f"{sampling['frameBatches']}x{sampling['framesPerBatch']} frames, "
+            f"{sampling['burstBatches']}x{sampling['burstsPerBatch']} bursts "
+            f"(tail is damped; node reports per-call)"
+        )
 
     extraction = result["extraction"]
     print(
@@ -336,8 +445,8 @@ def report(result: dict, require_budget: bool) -> list[str]:
     for row in result["depths"]:
         verdict = "WITHIN BUDGET" if row["p95"] <= budget else "OVER BUDGET"
         print(
-            f"    {row['depth']}-tick burst   {row['mean']:.4f} ms mean   "
-            f"{row['p95']:.4f} ms p95   {row['max']:.4f} ms max   -> {verdict}"
+            f"    {row['depth']}-tick burst   {row['mean']:.4f} ms batch-mean   "
+            f"{row['p95']:.4f} ms p95*  {row['max']:.4f} ms max*  -> {verdict}"
         )
 
     print(f"    state hash      {result['hashBefore']} -> {result['hashAfter']}")
@@ -352,8 +461,12 @@ def report(result: dict, require_budget: bool) -> list[str]:
     over = result["worst"] > budget
     verdict = "OVER BUDGET" if over else "WITHIN BUDGET"
     print(
-        f"    {MAX_RESIM_TICKS}-tick worst    {result['worst']:.4f} ms p95 "
+        f"    {MAX_RESIM_TICKS}-tick worst    {result['worst']:.4f} ms p95* "
         f"vs {budget:.1f} ms budget -> {verdict}"
+    )
+    print(
+        "                    * over batch means; the budget is omp0_acceptance's love.update "
+        "share,\n                      applied here to a standalone wasm host as a 60 Hz analogue."
     )
     if over and require_budget:
         failures.append(
@@ -369,6 +482,17 @@ def main() -> int:
     parser.add_argument("--browsers", default="chrome,firefox")
     parser.add_argument("--timeout-seconds", type=int, default=600)
     parser.add_argument("--headed", action="store_true", help="show the browser window")
+    parser.add_argument(
+        "--budget-ms",
+        type=float,
+        default=DEFAULT_BUDGET_MS,
+        help="frame budget to judge bursts against (default %(default)s)",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="also emit each browser's full result, with machine conditions, as JSON",
+    )
     parser.add_argument(
         "--require-budget",
         action="store_true",
@@ -393,7 +517,7 @@ def main() -> int:
     shutil.copy2(ROOT / "frame_payload.js", serve_dir / "frame_payload.js")
     (serve_dir / "index.html").write_text(PAGE)
     (serve_dir / "payload_worker.js").write_text(
-        WORKER.replace("__BUDGET__", json.dumps(UPDATE_BUDGET_MS)).replace(
+        WORKER.replace("__BUDGET__", json.dumps(args.budget_ms)).replace(
             "__MAX_RESIM__", json.dumps(MAX_RESIM_TICKS)
         )
     )
@@ -405,9 +529,12 @@ def main() -> int:
     url = f"http://127.0.0.1:{server.server_port}/index.html"
 
     failures: list[str] = []
+    contended_any = False
     try:
         for browser in [b.strip() for b in args.browsers.split(",") if b.strip()]:
             print(f"==> {browser}", flush=True)
+            before = conditions()
+            print_conditions("conditions", before)
             try:
                 result = run(browser, url, args.timeout_seconds, not args.headed)
             except Exception as error:  # noqa: BLE001 - reported, not swallowed
@@ -416,9 +543,31 @@ def main() -> int:
                 continue
             for failure in report(result, args.require_budget):
                 failures.append(f"{browser}: {failure}")
+            after = conditions()
+            print_conditions("conditions", after)
+            contended_any = contended_any or before["contended"] or after["contended"]
+            if args.json:
+                print(
+                    "    JSON "
+                    + json.dumps(
+                        {
+                            "browser": browser,
+                            "conditions_before": before,
+                            "conditions_after": after,
+                            **result,
+                        }
+                    ),
+                    flush=True,
+                )
             print("", flush=True)
     finally:
         server.shutdown()
+
+    if contended_any:
+        print(
+            "NOTE: this machine was contended during the run; every tail number above is "
+            "inflated. Re-run on an idle machine before quoting these as capacity numbers.\n"
+        )
 
     if failures:
         print("FAILURES:")

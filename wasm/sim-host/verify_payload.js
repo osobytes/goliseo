@@ -22,12 +22,31 @@
 // `wasm/sim-host/verify_payload_browser.py` runs the same sequence in Chrome
 // and Firefox, in a worker, over HTTP. This runs first because it fails faster.
 //
-//   node wasm/sim-host/verify_payload.js [dist-dir]
+// THE BUDGET VERDICT IS REPORTED, NOT ENFORCED, unless `--require-budget` is
+// passed -- the same split `verify_payload_browser.py` makes, for the same
+// reason. It measures how fast the simulation runs on whatever machine, under
+// whatever load, happened to be present; it is not a property of the payload
+// protocol this harness verifies, and the payload's own share is printed
+// separately so the two are never confused.
+//
+// Everything else here DOES fail the script: more than one crossing per frame,
+// an undetected version mismatch, a rollback that does not reproduce its own
+// state, and -- under `--require-budget` -- an over-budget burst. The closing
+// OK line is printed only when all of them held, because per AGENTS.md §9 a
+// harness that prints failures and exits 0 must fail the gate anyway.
+//
+// Machine conditions are printed beside every number. A run at load average 7
+// and a run at load average 0.2 give materially different answers here, and
+// without the conditions recorded a reader cannot tell which one they are
+// looking at, nor which one they reproduced.
+//
+//   node wasm/sim-host/verify_payload.js [dist-dir] [--require-budget] [--budget-ms N]
 
 "use strict";
 
 const path = require("node:path");
 const fs = require("node:fs");
+const os = require("node:os");
 
 const payload = require("./frame_payload.js");
 
@@ -35,7 +54,7 @@ const payload = require("./frame_payload.js");
 // share for simulation, chosen there to leave room for draw and for browser
 // scheduling -- so it is the right budget for a rollback burst plus the one
 // payload read that feeds the renderer.
-const UPDATE_BUDGET_MS = 8.0;
+const DEFAULT_BUDGET_MS = 8.0;
 // sim.fixed_clock.MAX_TICKS_PER_UPDATE: the deepest resim a single rendered
 // frame can be asked for.
 const MAX_RESIM_TICKS = 8;
@@ -48,6 +67,34 @@ function fail(message) {
     console.error(`FAIL: ${message}`);
     process.exitCode = 1;
     throw new Error(message);
+}
+
+// The conditions the numbers below were produced under. Not decoration: the
+// difference between "5.1 ms p95" and "13.1 ms p95" for the same artifact on
+// the same machine was load average, so a result without its conditions is not
+// reproducible, only re-runnable.
+function conditions() {
+    const load = os.loadavg();
+    return {
+        timestamp: new Date().toISOString(),
+        cores: os.cpus().length,
+        load1: load[0],
+        load5: load[1],
+        load15: load[2],
+        // A rough flag, not a gate: a machine with more runnable work than
+        // cores will inflate every tail number here.
+        contended: load[0] > os.cpus().length * 0.5,
+    };
+}
+
+function reportConditions(where) {
+    const c = conditions();
+    console.log(
+        `${where.padEnd(16)}${c.timestamp}   ${c.cores} cores   ` +
+            `load ${c.load1.toFixed(2)}/${c.load5.toFixed(2)}/${c.load15.toFixed(2)}` +
+            `${c.contended ? "   CONTENDED — tail numbers below are inflated" : ""}`
+    );
+    return c;
 }
 
 function percentile(samples, quantile) {
@@ -124,17 +171,50 @@ function hashString(Module, api) {
     return Module.UTF8ToString(pointer);
 }
 
+function parseArgs(argv) {
+    let dist = path.join(__dirname, "dist");
+    let requireBudget = false;
+    // Overridable so `--require-budget` can be DEMONSTRATED red on a machine
+    // that currently passes. A gate nobody has ever seen fail is a gate nobody
+    // knows works -- AGENTS.md §9 again.
+    let budgetMs = DEFAULT_BUDGET_MS;
+    for (let i = 0; i < argv.length; i += 1) {
+        if (argv[i] === "--require-budget") {
+            requireBudget = true;
+        } else if (argv[i] === "--budget-ms") {
+            budgetMs = Number(argv[i + 1]);
+            i += 1;
+        } else {
+            dist = path.resolve(argv[i]);
+        }
+    }
+    return { dist, requireBudget, budgetMs };
+}
+
 async function main() {
-    const dist = path.resolve(process.argv[2] || path.join(__dirname, "dist"));
+    const { dist, requireBudget, budgetMs: UPDATE_BUDGET_MS } = parseArgs(process.argv.slice(2));
     const Module = await load(dist);
     const { wrapped: api, counts } = instrument(Module);
 
     console.log("== render frame payload over wasm (#332), node");
     console.log(`dist            ${dist}`);
+    const startedUnder = reportConditions("conditions");
+    console.log(
+        `budget gate     ${UPDATE_BUDGET_MS.toFixed(4)} ms, ` +
+            `${requireBudget ? "ENFORCED (--require-budget)" : "reported only"}` +
+            `${UPDATE_BUDGET_MS !== DEFAULT_BUDGET_MS ? "   [budget overridden]" : ""}`
+    );
 
     // Rollback snapshot/restore staying inside the module is a property of the
     // SURFACE, not of a measurement: if no export can return a snapshot, JS
     // cannot be touching per-tick simulation state whatever it does.
+    //
+    // DEFENCE IN DEPTH, AND ITS LIMIT: this is a name regex over the surface as
+    // it exists today. A future `_goliseo_payload_dump` would sail past it, and
+    // nothing here would notice. The real guarantee is that the Rust module
+    // exposes no function returning snapshot bytes -- reviewed by reading it,
+    // not by this check. What this catches is the likely accident: someone
+    // adding an export with an obvious name while extending the surface.
     const surface = [...counts.keys()].sort();
     console.log(`exports         ${surface.join(", ")}`);
     const leaks = surface.filter((name) => /snapshot|restore|capture|state|tick/.test(name));
@@ -230,6 +310,7 @@ async function main() {
     console.log(`rollback bursts, one crossing each, against a ${UPDATE_BUDGET_MS.toFixed(1)} ms budget`);
     const hashBefore = hashString(Module, api);
     let worst = 0;
+    const overBudget = [];
     for (const depth of [1, 2, 4, MAX_RESIM_TICKS]) {
         const burstMs = [];
         for (let index = 0; index < BURST_SAMPLES; index += 1) {
@@ -241,6 +322,9 @@ async function main() {
         const p95 = percentile(burstMs, 0.95);
         if (depth === MAX_RESIM_TICKS) {
             worst = p95;
+        }
+        if (p95 > UPDATE_BUDGET_MS) {
+            overBudget.push(`${depth}-tick burst at ${p95.toFixed(4)} ms p95`);
         }
         console.log(
             `  ${summarise(`${depth}-tick resim + payload`, burstMs)}  -> ` +
@@ -289,13 +373,39 @@ async function main() {
     payload.readFrame(Module.HEAPF64, pointer);
 
     console.log("");
-    console.log(`update budget             ${UPDATE_BUDGET_MS.toFixed(4)} ms p95 (omp0_acceptance)`);
+    // The budget is `love.update`'s p95 share from omp0_acceptance, measured
+    // there inside a real LÖVE loop. This is a standalone wasm host driven from
+    // node, so it is an ANALOGOUS 60 Hz target rather than the same
+    // measurement: no draw, no LÖVE event pump, no browser compositor.
+    console.log(`update budget             ${UPDATE_BUDGET_MS.toFixed(4)} ms p95 (omp0_acceptance`);
+    console.log("                          love.update share; applied here as a 60 Hz analogue)");
     console.log(
         `${MAX_RESIM_TICKS}-tick worst case        ${worst.toFixed(4)} ms p95  -> ` +
             (worst <= UPDATE_BUDGET_MS ? "WITHIN BUDGET" : "OVER BUDGET")
     );
+    const endedUnder = reportConditions("conditions");
+    if (startedUnder.contended || endedUnder.contended) {
+        console.log(
+            "NOTE: this machine was contended during the run; every tail number above is inflated."
+        );
+    }
+
+    if (overBudget.length > 0) {
+        // Loud whether or not it gates, so the number is never silently
+        // swallowed -- but it only decides the exit code when asked to.
+        console.log("");
+        console.log(`BUDGET FINDING: ${overBudget.join("; ")} (budget ${UPDATE_BUDGET_MS} ms)`);
+        if (requireBudget) {
+            fail(`over the update budget: ${overBudget.join("; ")}`);
+        }
+        console.log("  reported, not enforced; pass --require-budget to gate on it.");
+    }
+
     console.log("");
-    console.log("PAYLOAD OK: one crossing per frame, versioned, rollback inside the module.");
+    console.log(
+        "PAYLOAD OK: one crossing per frame, versioned, rollback inside the module" +
+            (overBudget.length > 0 ? " (budget finding above)." : ".")
+    );
 }
 
 main().catch((error) => {

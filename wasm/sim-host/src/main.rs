@@ -429,6 +429,7 @@ mod payload {
         const UPDATE_BUDGET_MS: f64 = 8.0;
 
         println!("== payload host (#332), native");
+        report_conditions();
         let count = goliseo_payload_boot();
         if count < 0 {
             return Err(last_error().into());
@@ -547,9 +548,37 @@ mod payload {
         if before != after {
             return Err("rollback did not reproduce the state it rolled back over".into());
         }
+        report_conditions();
         println!();
         println!("PAYLOAD OK: one crossing per frame, rollback reproduced its own state.");
         Ok(())
+    }
+
+    /// The conditions the numbers were produced under.
+    ///
+    /// Not decoration: the difference between a 5.1 ms and a 13.1 ms p95 for
+    /// the same artifact on the same machine was load average. A measurement
+    /// without its conditions is not reproducible, only re-runnable -- so this
+    /// prints before and after every run, and says plainly when the machine was
+    /// too busy for the tail numbers to mean anything.
+    #[cfg(not(target_os = "emscripten"))]
+    fn report_conditions() {
+        let cores = std::thread::available_parallelism().map_or(0, |count| count.get());
+        let load = std::fs::read_to_string("/proc/loadavg").unwrap_or_default();
+        let fields: Vec<&str> = load.split_whitespace().take(3).collect();
+        let load1: f64 = fields.first().and_then(|v| v.parse().ok()).unwrap_or(f64::NAN);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        println!(
+            "conditions      unix {stamp}   {cores} cores   load {}{}",
+            if fields.is_empty() { "unavailable".into() } else { fields.join("/") },
+            if load1 > cores as f64 * 0.5 {
+                "   CONTENDED - tail numbers below are inflated"
+            } else {
+                ""
+            }
+        );
     }
 
     #[cfg(not(target_os = "emscripten"))]
