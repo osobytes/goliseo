@@ -597,9 +597,10 @@ than a footnote.
 
 **The failure has one shape every time: prose restating a table from memory.**
 Not a disputed measurement, not a methodology difference — a figure retyped a
-paragraph away from the table it came from, and then travelling. Two of the
-seven known instances are in this campaign's own review trail; #358 raises the
-systemic point.
+paragraph away from the table it came from, and then travelling. Two instances
+are recorded in §8; a third is this document's own, recorded below.
+[#358](https://github.com/osobytes/goliseo/issues/358) raises the systemic point
+across the seven known so far.
 
 **Recommendation, made with the standing of having just done it by hand.** A
 document like this one should not carry hand-transcribed figures at all. The
