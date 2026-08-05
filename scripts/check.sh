@@ -46,6 +46,28 @@ else
     echo "   ! love not installed — skipping"
 fi
 
+# #340: the only gate in this file that executes game/render/player_renderer_3d.lua.
+# `love . --test` cannot: headless has no shader compiler, so the rigged renderer
+# disables itself and every rigged assertion made through it passes vacuously.
+# This one needs a GL context (xvfb-run, or a display) and fails rather than
+# skipping when it has neither -- a gate that opts out of itself is exactly the
+# silence #340 was filed about. It does NOT compare pixels; see
+# spec/support/rig3d_player_draw.lua for why a pixel baseline cannot be a gate.
+echo "==> #340 rigged 3D player renderer (real draw path + pinned GPU payload)"
+if command -v love >/dev/null 2>&1; then
+    # Three invocations, mirroring ci.yml exactly: the wrapper's own detection
+    # (starts no LOVE process), then the harness's own detection (a real LOVE
+    # process proving levels A-D can reject), then the gate itself. Dropping the
+    # middle one would let a regression in the harness's fault detection -- say
+    # compareScenario always returning true -- pass locally and surface only in
+    # CI, which is the asymmetry AGENTS.md #9 forbids.
+    ./scripts/check_rig3d_player_draw.sh --self-test || fail=1
+    ./scripts/check_rig3d_player_draw.sh self-test || fail=1
+    ./scripts/check_rig3d_player_draw.sh || fail=1
+else
+    echo "   ! love not installed — skipping"
+fi
+
 echo "==> Fun tripwire (love . --tripwire)"
 if command -v love >/dev/null 2>&1; then
     love . --tripwire || fail=1

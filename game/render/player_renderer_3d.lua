@@ -10,9 +10,10 @@
 -- Everything is generated in code (game/render/rig3d/), so there are no asset
 -- files to load and nothing to fail at startup beyond a shader compile.
 --
--- Failure is always recoverable: `available()` reports false and the caller
+-- Failure is recoverable BY DEFAULT: `available()` reports false and the caller
 -- keeps the procedural 2.5D renderer, which is the parity/fallback rule the
--- rigged-player contract requires.
+-- rigged-player contract requires. It stops being recoverable the moment a
+-- caller explicitly asks for this path -- see `player_renderer_3d.required`.
 
 local action_pose = require("game.render.rig3d.action_pose")
 local bloom = require("game.render.bloom")
@@ -28,6 +29,31 @@ local body = require("game.render.rig3d.body")
 local view_state = require("game.render.view_state")
 
 local player_renderer_3d = {}
+
+-- "Nobody asked" versus "someone demanded" (#340).
+--
+-- Falling back to the 2.5D renderer is correct behaviour while the rigged path
+-- is off by default: a runtime with no depth buffer or no shader compiler must
+-- still play the game, so `available()` returning false is an expected,
+-- recoverable outcome and AGENTS.md #7 says the caller handles it.
+--
+-- It is NOT an expected outcome when a caller demanded this path -- `love .
+-- --rigged-players`, or the rig3d draw gate. Then "disabled itself and quietly
+-- drew something else" is a broken invariant, and #7 says invariants fail loud.
+-- Printing a line into a log nobody reads is how the rigged renderer went
+-- unexecuted through four issues of work on it (#340), so set this and the same
+-- failure raises instead.
+--
+-- The #100 benchmark is deliberately NOT on that list and does not set this: it
+-- already protects itself, by sampling `available()` into `rigged_active` and
+-- asserting it in its own result gate (game/render/benchmark.lua). That predates
+-- this flag and stays as it is -- a benchmark wants a verdict it can report,
+-- not an exception part-way through a measurement.
+--
+-- Deliberately a module field rather than an argument: it is a property of the
+-- RUN (which binary was started, with which flag), not of a draw call, and the
+-- 2.5D and rigged call sites share one signature on purpose.
+player_renderer_3d.required = false
 
 -- Character height maps to roughly this many player-radii on screen. Tuned so a
 -- rigged player reads at the same visual weight as the billboard it replaces.
@@ -65,12 +91,30 @@ end
 ---@type fun(sx: number, sy: number, r: number, color: number[], view: PlayerView|nil, opts: table)
 local draw_player
 
+-- The single place "we were asked for the rigged path and cannot deliver it"
+-- stops being a printed line and becomes a failure. Every fallback route in this
+-- module goes through here, so there is no way to add a new one that is quiet
+-- when `required` is set.
+---@param reason string
+local function refuse(reason)
+    assert(
+        not player_renderer_3d.required,
+        "rigged 3D players were required but are unavailable: " .. reason
+    )
+end
+
 -- Builds the shared rig, the ONE shared character mesh (colour-free), and one
 -- resolved palette per team. Called once, lazily, so a headless or
 -- shader-less runtime never pays for it.
 ---@return boolean
 local function build()
     if state.built then
+        if state.failed then
+            -- Latched from an earlier frame. A caller that only sets `required`
+            -- after the first failure still gets told, rather than inheriting
+            -- someone else's silence.
+            refuse("a previous build or draw already disabled it")
+        end
         return not state.failed
     end
     state.built = true
@@ -98,6 +142,7 @@ local function build()
 
     if not ok then
         state.failed = true
+        refuse("the build failed: " .. tostring(err))
         print("rigged 3D players disabled (build failed): " .. tostring(err))
     end
     return not state.failed
@@ -110,7 +155,11 @@ function player_renderer_3d.available()
     if not build() then
         return false
     end
-    return bloom.hasDepth()
+    if not bloom.hasDepth() then
+        refuse("the current render target has no depth buffer")
+        return false
+    end
+    return true
 end
 
 -- Maps a presentation pose id onto the LIMB clips that exist today.
@@ -269,6 +318,7 @@ function player_renderer_3d.draw(sx, sy, r, color, view, opts)
     local ok, err = pcall(draw_player, sx, sy, r, color, view, opts)
     if not ok then
         state.failed = true
+        refuse("a draw failed: " .. tostring(err))
         print("rigged 3D players disabled (draw failed): " .. tostring(err))
     end
 end
@@ -284,6 +334,7 @@ function draw_player(sx, sy, r, color, view, opts)
     local character = state.character
     local palette = state.palettes[team.key]
     if not character or not palette then
+        refuse("the character mesh or the team palette is missing")
         return
     end
 

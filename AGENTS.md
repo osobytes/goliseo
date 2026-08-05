@@ -292,6 +292,35 @@ breaking every online match passed nine green checks (#279). So:
 
 `docs/online/fault_harness.md` records the full case.
 
+### What tier 4 does and does not gate today
+
+Tier 4 splits in two, and the split is not decorative — it decides which gates
+can be enforced at all:
+
+- **Pixel-exact snapshots pin the GPU that produced them.** `check_keeper_pose_snapshots.sh`,
+  `check_outfield_pose_snapshots.sh` and `check_rig3d_palette_snapshots.sh` compare
+  committed PNGs. Re-rendered under Mesa llvmpipe — what a CI runner has — against
+  baselines produced on an NVIDIA card, all three fail: the two pose gates by PNG-byte
+  inequality, the palette gate with 93% of pixels differing and a max deviation of
+  39/255. They are therefore referenced from **neither `scripts/check.sh` nor
+  `.github/workflows/ci.yml`**, and per the rule above that makes them evidence you run
+  by hand on the machine that owns the baselines, **not gates**. Re-pinning them to a
+  software rasteriser is a real option and a real trade (it forfeits the real-GPU
+  truth they currently hold); it is #351, not a thing to do quietly.
+- **What crosses into the GPU is machine-independent, and that is gated.**
+  `scripts/check_rig3d_player_draw.sh` (#340) runs the real
+  `game/render/player_renderer_3d.lua` draw path and pins the resolved palette, the
+  model matrix and every bone row — pure Lua arithmetic, identical on both backends —
+  plus two driver-robust pixel properties. It runs in `check.sh` **and** in the Lua
+  quality gate under `xvfb-run`, and it fails rather than skipping when it has no
+  display. It is the only automated coverage `player_renderer_3d.lua` has.
+
+The corollary is the rule this repository keeps relearning: **a test count is only
+evidence for the code the tests execute.** `love . --test` is headless, so it has no
+shader compiler; before #340 the rigged renderer disabled itself there, printed one
+line, and 1981 green tests included exactly zero that had run it. When a subsystem can
+disable itself, say so where the count is read.
+
 ---
 
 ## 10. Workflow
