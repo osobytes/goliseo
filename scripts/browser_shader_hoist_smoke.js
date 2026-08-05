@@ -291,6 +291,7 @@ check("replays the #ifdef guard around a conditional declaration", () => {
     "void main() {",
     "\tgl_Position = vec4(0.0);",
     "}",
+    "#line 1",
     "#ifdef VERTEX",
     "varying vec3 v_probe;",
     "#endif",
@@ -309,6 +310,7 @@ check("replays an #else branch as an #else, not as the #if", () => {
     "void main() {",
     "\tgl_Position = vec4(0.0);",
     "}",
+    "#line 1",
     "#ifdef VERTEX",
     "varying vec3 v_vertex_only;",
     "#else",
@@ -331,6 +333,7 @@ check("keeps nested guards nested", () => {
     "void main() {",
     "\tgl_Position = vec4(0.0);",
     "}",
+    "#line 1",
     "#ifdef VERTEX",
     "#ifdef GL_ES",
     "varying vec3 v_probe;",
@@ -367,6 +370,56 @@ check("shifts nothing below #line 1 even when it must insert lines", () => {
   assertSame(out[at + 1], "#ifdef VERTEX", "user code below #line 1 was rewritten");
   assertSame(out[at + 2], "", "the declaration line was not blanked in place");
   assertSame(out[at + 3], "#endif", "user code below #line 1 was rewritten");
+});
+
+check("refuses to shift lines when there is no #line to reset them", () => {
+  // The guarded path is the only one that inserts lines. Without a `#line`
+  // below main() the shift would be observable in every error message the
+  // driver reports, while the output stayed valid GLSL -- silently different is
+  // worse than unchanged, so it is left unchanged.
+  const src = [
+    "void main() { x(); }",
+    "#ifdef VERTEX",
+    "varying vec3 v_probe;",
+    "#endif",
+    "void extra() { y(); }",
+    ""
+  ].join("\n");
+  assertSame(hoist(src), src, "lines were shifted with no #line directive to absorb it");
+});
+
+check("still hoists an unguarded declaration with no #line, because nothing shifts", () => {
+  // The inline path needs no such protection: it adds no lines at all.
+  const src = ["void main() { x(); }", "varying vec3 v_probe;", ""].join("\n");
+  const out = hoist(src);
+  assert(out !== src, "an unguarded declaration was refused for want of a #line");
+  assertSame(out.split("\n").length, src.split("\n").length, "line count moved");
+  assert(out.split("\n")[0].indexOf("varying vec3 v_probe;") >= 0, "not hoisted onto main()");
+});
+
+check("handles CRLF line endings", () => {
+  const src = LOVE_STITCHED.split("\n").join("\r\n");
+  const out = hoist(src);
+  assert(out !== src, "a CRLF source was left unchanged");
+  assertSame(out.split("\n").length, src.split("\n").length, "line count moved");
+  const decl = declarationIndex(out, "vec3 v_probe");
+  assert(decl >= 0 && decl < mainIndex(out), "the declaration is still below main()");
+  assert(out.indexOf("varying vec3 v_probe;\r") < 0, "a stray CR rode along with the declaration");
+});
+
+check("leaves two declarations sharing one line alone", () => {
+  // Conservative on purpose: the line is not a single declaration, so it is not
+  // rewritten. A shader written this way stays broken in Firefox rather than
+  // being rewritten by a rule that was never designed for it.
+  const src = [
+    "void main() {",
+    "\tgl_Position = vec4(0.0);",
+    "}",
+    "#line 1",
+    "varying vec3 a; varying vec3 b;",
+    ""
+  ].join("\n");
+  assertSame(hoist(src), src, "a two-declaration line was rewritten");
 });
 
 /* ---- installation ------------------------------------------------------- */

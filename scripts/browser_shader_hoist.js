@@ -36,7 +36,10 @@
  * lines, so in the common case the output has exactly as many lines as the
  * input and every line keeps its number. Only a declaration that sits inside a
  * preprocessor conditional needs its directives replayed on their own lines,
- * and that insertion happens above `#line 1`, which resets numbering anyway.
+ * and that insertion does shift the lines below it -- so it is taken ONLY when
+ * a `#line` directive exists below `main()` to reset numbering, which is what
+ * makes the shift unobservable in user-code error messages. A source without
+ * one is returned unchanged rather than silently renumbered.
  *
  * It is applied in every browser, not only Firefox. Hoisting is semantically
  * neutral, and one shader source for all runtimes is worth more than skipping
@@ -183,10 +186,35 @@
 
     var unconditional = true;
     for (var i = 0; i < found.length; i++) {
-      lines[found[i].line] = "";
       if (found[i].depth > 0) {
         unconditional = false;
       }
+    }
+
+    /* A guarded declaration cannot ride on the `void main(` line, because a
+     * preprocessor directive must own its line. That means inserting lines, and
+     * inserting lines moves every line number below the insertion point --
+     * harmless only because LÖVE's `#line 1` resets numbering for the user code
+     * that error messages actually refer to. Without such a directive the
+     * promise this file makes about line numbers would quietly stop being true
+     * while still emitting valid GLSL, which is the worst way to be wrong.
+     * So: no `#line` below `main()`, no rewrite. Unreachable through LÖVE,
+     * which always emits one; the check is for whatever is added later. */
+    if (!unconditional) {
+      var canRenumber = false;
+      for (var m = mainLine; m < code.length; m++) {
+        if (/^\s*#\s*line\b/.test(code[m])) {
+          canRenumber = true;
+          break;
+        }
+      }
+      if (!canRenumber) {
+        return source;
+      }
+    }
+
+    for (var b = 0; b < found.length; b++) {
+      lines[found[b].line] = "";
     }
 
     if (unconditional) {
