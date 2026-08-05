@@ -67,11 +67,11 @@ end
 ---@param tf number[]|nil
 ---@param profile number[][]
 ---@param sections table[]
----@param color number[]|fun(section_index: number, point_index: number): number[]
-function shapes.extrude(mb, tf, profile, sections, color)
+---@param slot integer|fun(section_index: number, point_index: number): integer  -- palette slot index
+function shapes.extrude(mb, tf, profile, sections, slot)
     local n = #profile
-    local function colorFor(i, j)
-        return type(color) == "function" and color(i, j) or color
+    local function slotFor(i, j)
+        return type(slot) == "function" and slot(i, j) or slot
     end
 
     local function point(section, j)
@@ -91,7 +91,7 @@ function shapes.extrude(mb, tf, profile, sections, color)
                 point(lower, k),
                 point(upper, k),
                 point(upper, j),
-                colorFor(i, j)
+                slotFor(i, j)
             )
         end
     end
@@ -99,8 +99,8 @@ function shapes.extrude(mb, tf, profile, sections, color)
     -- Triangle-fan caps. Skipped automatically when the end ring is collapsed.
     local first, last = sections[1], sections[#sections]
     for j = 2, n - 1 do
-        mb:triangle(tf, point(first, 1), point(first, j + 1), point(first, j), colorFor(0, j))
-        mb:triangle(tf, point(last, 1), point(last, j), point(last, j + 1), colorFor(#sections, j))
+        mb:triangle(tf, point(first, 1), point(first, j + 1), point(first, j), slotFor(0, j))
+        mb:triangle(tf, point(last, 1), point(last, j), point(last, j + 1), slotFor(#sections, j))
     end
 end
 
@@ -110,20 +110,20 @@ end
 ---@param w number
 ---@param h number
 ---@param d number
----@param color number[]
-function shapes.box(mb, tf, w, h, d, color)
+---@param slot integer  -- palette slot index
+function shapes.box(mb, tf, w, h, d, slot)
     local x, y, z = w / 2, h / 2, d / 2
     -- stylua: ignore
     local p = {
         { -x, -y,  z }, { x, -y,  z }, { x, y,  z }, { -x, y,  z },  -- front (+Z)
         { -x, -y, -z }, { x, -y, -z }, { x, y, -z }, { -x, y, -z },  -- back  (-Z)
     }
-    mb:quad(tf, p[1], p[2], p[3], p[4], color) -- +Z
-    mb:quad(tf, p[6], p[5], p[8], p[7], color) -- -Z
-    mb:quad(tf, p[2], p[6], p[7], p[3], color) -- +X
-    mb:quad(tf, p[5], p[1], p[4], p[8], color) -- -X
-    mb:quad(tf, p[4], p[3], p[7], p[8], color) -- +Y
-    mb:quad(tf, p[5], p[6], p[2], p[1], color) -- -Y
+    mb:quad(tf, p[1], p[2], p[3], p[4], slot) -- +Z
+    mb:quad(tf, p[6], p[5], p[8], p[7], slot) -- -Z
+    mb:quad(tf, p[2], p[6], p[7], p[3], slot) -- +X
+    mb:quad(tf, p[5], p[1], p[4], p[8], slot) -- -X
+    mb:quad(tf, p[4], p[3], p[7], p[8], slot) -- +Y
+    mb:quad(tf, p[5], p[6], p[2], p[1], slot) -- -Y
 end
 
 -- A sphere, expressed as a circle profile swept along a sine silhouette. Used
@@ -133,9 +133,9 @@ end
 ---@param radius number
 ---@param rings number
 ---@param segments number
----@param color number[]
+---@param slot integer  -- palette slot index
 ---@param arc number?  -- 1 (default) = full sphere, 0.5 = hemisphere
-function shapes.sphere(mb, tf, radius, rings, segments, color, arc)
+function shapes.sphere(mb, tf, radius, rings, segments, slot, arc)
     local span = arc or 1
     local sections = {}
     for i = 0, rings do
@@ -143,7 +143,7 @@ function shapes.sphere(mb, tf, radius, rings, segments, color, arc)
         local phi = math.pi * (1 - span) + (i / rings) * math.pi * span
         sections[#sections + 1] = { y = -radius * math.cos(phi), w = radius * math.sin(phi) }
     end
-    shapes.extrude(mb, tf, shapes.circleProfile(segments), sections, color)
+    shapes.extrude(mb, tf, shapes.circleProfile(segments), sections, slot)
 end
 
 -- A rectangle bent around the vertical axis, for curved shield shells.
@@ -152,7 +152,8 @@ end
 --
 -- Local space: the panel is centred on the origin, curving away from +Z, so the
 -- painted face looks toward +Z.
----@param colorAt fun(u: number, v: number): number[]  -- u, v in [0, 1] across the face
+---@param colorAt fun(u: number, v: number): integer  -- u, v in [0, 1] across the face; returns a palette slot index
+---@param edge integer  -- palette slot index for the rim/back faces
 function shapes.curvedPanel(mb, tf, w, h, thickness, curve, segments, colorAt, edge)
     local radius = w / curve
     local half_h = h / 2
@@ -229,7 +230,7 @@ function shapes.curvedPanel(mb, tf, w, h, thickness, curve, segments, colorAt, e
 end
 
 -- A flat horizontal disc on the XZ plane. The arena floor and the drop shadow.
----@param colorAt fun(ring: number, angle: number): number[]
+---@param colorAt fun(ring: number, angle: number): integer  -- returns a palette slot index
 function shapes.disc(mb, tf, radius, rings, segments, colorAt)
     for r = 0, rings - 1 do
         local r0 = radius * (r / rings)
@@ -237,14 +238,14 @@ function shapes.disc(mb, tf, radius, rings, segments, colorAt)
         for s = 0, segments - 1 do
             local a0 = (s / segments) * math.pi * 2
             local a1 = ((s + 1) / segments) * math.pi * 2
-            local color = colorAt((r + 0.5) / rings, (s + 0.5) / segments)
+            local slot = colorAt((r + 0.5) / rings, (s + 0.5) / segments)
             mb:quad(
                 tf,
                 { r0 * math.cos(a0), 0, r0 * math.sin(a0) },
                 { r1 * math.cos(a0), 0, r1 * math.sin(a0) },
                 { r1 * math.cos(a1), 0, r1 * math.sin(a1) },
                 { r0 * math.cos(a1), 0, r0 * math.sin(a1) },
-                color
+                slot
             )
         end
     end

@@ -458,14 +458,18 @@ end
 
 -- ---------------------------------------------------------------------------
 
--- Builds every mesh for one theme in one team's colours.
+-- Builds every mesh for one theme. Colour is NOT baked in (#337): every
+-- vertex carries a palette slot index, resolved against a team's actual
+-- colours later by the shader via a uniform (see themes.resolvedPalette and
+-- renderer.beginPass). That is what makes this build reusable across every
+-- team -- and every future cosmetic palette -- without rebuilding a single
+-- mesh.
 ---@param rig table    -- proportions.RIG_MEDIUM
 ---@param theme table  -- an entry from themes.LIST
----@param team table   -- an entry from themes.TEAMS
+---@param figure table -- an entry from themes.FIGURES
 ---@return table[]     -- { { bone, mesh, attach = mat4|nil, material = string|nil }, ... }
-function body.build(rig, theme, team, figure)
-    local c = themes.palette(theme, team)
-    c.limbs = c.limbs or c.skin -- themes that seal the arms override this
+function body.build(rig, theme, figure)
+    local c = themes.SLOT_INDEX
     local drawlist = {}
     local function add(bone, mesh, attach, material)
         drawlist[#drawlist + 1] = { bone = bone, mesh = mesh, attach = attach, material = material }
