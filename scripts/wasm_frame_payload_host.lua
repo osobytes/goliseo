@@ -138,8 +138,14 @@ function host.rollback(ticks)
 
     local first = #history - ticks + 1
     current.state = match_snapshot.restore_owned(history[first].snapshot)
+    -- The tick counter rewinds with the state and steps forward with the resim.
+    -- It reported a stale value before: harmless while every caller discarded
+    -- it, and exactly the kind of thing that stops being harmless the first
+    -- time someone believes it.
+    current.tick = current.tick - ticks
     for index = first, #history do
         match.step(current.state, fixed_clock.TICK_SECONDS, history[index].input)
+        current.tick = current.tick + 1
     end
     -- The retained snapshots stay valid across the resim precisely because the
     -- resim reproduces the states they were taken from, so history is untouched.
