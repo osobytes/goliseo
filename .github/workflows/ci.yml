@@ -199,6 +199,31 @@ jobs:
             - name: Check the Babylon bench refusal logic (starts no browser)
               run: python3 -B scripts/babylon_bench.py --self-test
 
+            # #343: `render/` was added to the repository and never added to the
+            # wasm host's embed manifest, so the module built clean and then died
+            # at run time before reaching the determinism section it exists to
+            # prove. This gates the MANIFEST invariant only. It does NOT build the
+            # wasm artifact, does not run emcc and does not verify determinism --
+            # that build needs Docker plus emcc and remains evidence run by hand.
+            # The gate compiles build.rs standalone, so it needs rustc and nothing
+            # else; the runner image normally already has one.
+            - name: Install Rust (for the embed manifest gate)
+              run: |
+                  if command -v rustc >/dev/null 2>&1; then
+                      rustc --version
+                  else
+                      curl --fail --location --retry 3 --silent --show-error \
+                          https://sh.rustup.rs \
+                          | sh -s -- -y --profile minimal --default-toolchain stable
+                      printf '%s\n' "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+                  fi
+
+            - name: Prove the wasm embed manifest gate detects failure
+              run: ./scripts/check_wasm_embed_manifest.sh --self-test
+
+            - name: Check the wasm embed manifest
+              run: ./scripts/check_wasm_embed_manifest.sh
+
     # Its own job on purpose: the harness is minutes of CPU, it needs nothing but
     # LOVE, and nothing else waits on it, so it costs the critical path nothing.
     # Until #279 no job ran it at all -- the only OMP-3 step in CI was the Python

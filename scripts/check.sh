@@ -130,6 +130,19 @@ else
     echo "   ! python3 not installed — skipping"
 fi
 
+# #343: `render/` was added to the repository and never added to the wasm host's
+# embed manifest, so the module built clean and then died at run time before it
+# reached the determinism section. This gates the MANIFEST invariant only -- it
+# does not build the wasm artifact, which still needs Docker and emcc and is
+# still evidence run by hand.
+echo "==> wasm embed manifest (#343)"
+if command -v rustc >/dev/null 2>&1; then
+    ./scripts/check_wasm_embed_manifest.sh --self-test || fail=1
+    ./scripts/check_wasm_embed_manifest.sh || fail=1
+else
+    echo "   ! rustc not installed — skipping"
+fi
+
 if [ "$fail" -ne 0 ]; then
     echo "CHECK FAILED"
     exit 1

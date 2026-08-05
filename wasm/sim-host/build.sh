@@ -55,6 +55,25 @@ export EMCC_CFLAGS="$EH"
 # change silently -- and now that 87 source files are compiled in by absolute
 # path, a leak would embed the builder's directory layout in something we hand
 # to every player. Remap both roots so the property survives.
+#
+# EXPORTED_FUNCTIONS is the render frame payload surface (#332). Three things
+# about it are deliberate:
+#
+#   * `_main` STAYS FIRST and stays exported. Listing exports replaces the
+#     default set, so omitting it would silently turn the #327 fixture runner --
+#     which verify_browser.py drives and asserts the frozen hashes against --
+#     into a module that starts nothing. The default entry point is unchanged.
+#   * The list is also what keeps the symbols alive. Rust emits them with
+#     `#[no_mangle]`, but nothing in the binary calls them, so without an
+#     explicit export the linker's dead-code pass is entitled to drop them.
+#   * There is no `_goliseo_payload_frame_len`. The frame's own header carries
+#     its length, so a reader sizes its view from memory it already holds --
+#     which is what keeps "one boundary crossing per rendered frame" true
+#     rather than nearly true.
+#
+# EXPORTED_RUNTIME_METHODS: HEAPF64 is how the payload is read at all, and
+# UTF8ToString decodes the once-per-match roster blob. Neither is on Module by
+# default in current Emscripten.
 export RUSTFLAGS="\
 --remap-path-prefix=/app=goliseo \
 --remap-path-prefix=/build=cargo \
@@ -62,7 +81,9 @@ export RUSTFLAGS="\
 -Clink-arg=-sSUPPORT_LONGJMP=wasm \
 -Clink-arg=-sALLOW_MEMORY_GROWTH=1 \
 -Clink-arg=-sEXIT_RUNTIME=1 \
--Clink-arg=-sTOTAL_STACK=8MB"
+-Clink-arg=-sTOTAL_STACK=8MB \
+-Clink-arg=-sEXPORTED_FUNCTIONS=_main,_goliseo_payload_boot,_goliseo_payload_roster,_goliseo_payload_roster_strings,_goliseo_payload_frame,_goliseo_payload_hash,_goliseo_payload_timing,_goliseo_payload_error \
+-Clink-arg=-sEXPORTED_RUNTIME_METHODS=HEAPF64,UTF8ToString"
 
 cd /app/wasm/sim-host
 CARGO_TARGET_DIR=/build/target cargo build --release --target wasm32-unknown-emscripten
