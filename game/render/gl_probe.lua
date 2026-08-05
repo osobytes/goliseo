@@ -344,8 +344,8 @@ gl_probe.SHADER_LADDER = {
         name = "uniform_array_constant_index",
         source = [[
             varying vec3 v_probe;
-            uniform vec4 u_palette[12];
         #ifdef VERTEX
+            uniform vec4 u_palette[12];
             vec4 position(mat4 transform_projection, vec4 vertex_position) {
                 v_probe = u_palette[3].rgb;
                 return transform_projection * vertex_position;
@@ -360,8 +360,8 @@ gl_probe.SHADER_LADDER = {
         name = "uniform_array_dynamic_index",
         source = [[
             varying vec3 v_probe;
-            uniform vec4 u_palette[12];
         #ifdef VERTEX
+            uniform vec4 u_palette[12];
             attribute float VertexPaletteSlot;
             vec4 position(mat4 transform_projection, vec4 vertex_position) {
                 v_probe = u_palette[int(VertexPaletteSlot + 0.5)].rgb;
@@ -376,8 +376,8 @@ gl_probe.SHADER_LADDER = {
         name = "bone_array_dynamic_index",
         source = [[
             varying vec3 v_probe;
-            uniform vec4 u_bones[78];
         #ifdef VERTEX
+            uniform vec4 u_bones[78];
             attribute float VertexBoneIndex;
             vec4 position(mat4 transform_projection, vec4 vertex_position) {
                 int b = int(VertexBoneIndex + 0.5) * 3;
