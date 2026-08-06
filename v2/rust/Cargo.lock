@@ -45,8 +45,13 @@ version = "0.1.0"
 dependencies = [
  "gc-core",
  "gc-data",
+ "gc-test-alloc",
  "indexmap",
 ]
+
+[[package]]
+name = "gc-test-alloc"
+version = "0.1.0"
 
 [[package]]
 name = "hashbrown"

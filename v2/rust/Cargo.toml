@@ -15,6 +15,11 @@ gc-data = { path = "crates/gc-data" }
 gc-sim = { path = "crates/gc-sim" }
 gc-render = { path = "crates/gc-render" }
 gc-netcode = { path = "crates/gc-netcode" }
+# Dev-only counting global allocator (see crates/gc-test-alloc). Deliberately
+# not `[lints] workspace = true`, so it does not inherit `unsafe_code =
+# "forbid"` -- it exists to hold the one `unsafe impl GlobalAlloc` the
+# allocation-budget tests need. Consumed only via `[dev-dependencies]`.
+gc-test-alloc = { path = "crates/gc-test-alloc" }
 indexmap = { version = "2", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
