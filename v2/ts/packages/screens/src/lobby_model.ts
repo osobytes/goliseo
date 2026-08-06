@@ -352,7 +352,15 @@ export const TERMINAL_TEXT: Readonly<Record<CoordinatorTerminalReason, string>> 
 export const DEPARTURE_TEXT: Partial<Record<CoordinatorTerminalReason, string>> = {
   guest_left: "A guest left the lobby.",
   transport_lost: "The connection to a guest was lost.",
+  // A guest announcing `host_left` to the host is saying the link is going from
+  // its side, whatever it believes about who left.
   host_left: "A guest closed its link to the lobby.",
+  protocol_violation: "A guest was dropped: it sent traffic this session cannot accept.",
+  // Two observations, and no claim about which caused which. The host can see
+  // that the guest disagreed about this session's identity and that it declared
+  // a different build; it cannot see that the second is why the first happened.
+  // A diagnostic that is confidently wrong is worse than a generic one, so this
+  // says what is known and names the check.
   build_mismatch:
     "A guest was dropped: it disagreed about this session's identity, " +
     "and it declared a different build. Install the same build on both to rule that out.",

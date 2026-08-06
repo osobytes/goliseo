@@ -165,6 +165,10 @@ Work an agent correctly declined because it belongs to a layer someone else owns
 | `research_dataset.lua`, `research_trace.lua` | a follow-up agent | `research_trace` needs `input_tape` (which needs `sim/match.lua`); `research_dataset` needs both |
 | 2 `research_schema_spec` array-shape cases | **retired** | `Value::Array` is always dense in Rust, so Lua's sparse-array and keyed-table checks have no constructible counterpart |
 | `offball_runs::VERSION` was dropped in the first port | **fixed** | restored at source; it is part of the hashed policy identity, so its absence would have kept an outdated `outfield_ai_baseline` fixture looking valid |
+| widen `SessionPreferenceStatus` to include `"pending"` in `@gc/screens/lobby_model.ts` | a follow-up | `coordinator.lua:1703` sets `status = "pending"`, so the closed union genuinely narrows what the coordinator produces. The lobby-flow spec works around it with a documented cast; the Lua types this field as a bare `string`, so the port is stricter than the original either way |
+| add `@gc/online` to `@gc/screens`'s dependencies | orchestrator, at a consolidation point | `lobby_flow.spec.ts` cannot import the real `lobby_link.ts` and uses a hand-written `FakeTransport`. Real framing correctness is still covered for real in `@gc/online`'s own `lobby_link.spec.ts` |
+| `spec/game/online_lobby_flow_spec.lua`'s "is reachable from the title and returns to it" | `@gc/app` | needs menu routing, and `@gc/app` depends on `@gc/screens`, not the reverse |
+| delete `crates/gc-netcode/tests/lobby_flow.rs`'s 35 Rust stubs | orchestrator | superseded: 33 of 35 now run for real in TypeScript |
 
 ## Findings in the Lua worth revisiting later
 
