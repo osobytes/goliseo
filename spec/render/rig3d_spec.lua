@@ -734,3 +734,182 @@ t.describe("rig3d shader source", function()
         end
     end)
 end)
+
+t.describe("rig3d pose LOD policy (#394)", function()
+    local pose_lod = require("game.render.rig3d.pose_lod")
+
+    -- A ten-player whole-pitch frame: nobody controlled, plain gaits, small on
+    -- screen. This is the case the LOD exists for.
+    local SMALL = pose_lod.FULL_RATE_HEIGHT_PX - 1
+
+    -- Full-shape options, so the specs exercise exactly the type the renderer
+    -- passes. The cast covers the deliberate off-contract ids ("no_such") the
+    -- fail-toward-full-rate tests feed in.
+    ---@param id string|nil
+    ---@param extra table|nil
+    ---@return PlayerRenderOptions
+    local function opts_for(id, extra)
+        local opts = {
+            facing = { x = 0, y = 1 },
+            is_keeper = false,
+            controlled = false,
+        }
+        if id ~= nil then
+            opts.pose = { id = id, priority = 0, source = "gait" }
+        end
+        for key, value in pairs(extra or {}) do
+            opts[key] = value
+        end
+        return opts --[[@as PlayerRenderOptions]]
+    end
+
+    t.it("holds a small character in every plain-gait pose id, exhaustively", function()
+        -- Pinned as a SET, not a sample: a dropped or mistyped entry in the
+        -- whitelist must fail here, whichever direction it drifts.
+        local expected = {
+            "locomotion",
+            "contain",
+            "run_telegraph",
+            "fatigue",
+            "keeper_shuffle",
+            "settle",
+            "kick_follow",
+        }
+        local count = 0
+        for _ in pairs(pose_lod.RELAXED_POSE) do
+            count = count + 1
+        end
+        t.eq(count, #expected, "the gait family must be exactly these ids")
+        for _, id in ipairs(expected) do
+            t.is_true(pose_lod.RELAXED_POSE[id] == true, id .. " must be in the gait family")
+            t.eq(
+                pose_lod.interval(opts_for(id), SMALL),
+                pose_lod.REDUCED_INTERVAL,
+                id .. " is a plain gait and may be held"
+            )
+        end
+        -- No pose id at all is the plain gait fallback, not an unknown.
+        t.eq(pose_lod.interval(opts_for(nil), SMALL), pose_lod.REDUCED_INTERVAL)
+    end)
+
+    t.it("keeps a close-up character at full rate whatever it is doing", function()
+        t.eq(pose_lod.interval(opts_for("locomotion"), pose_lod.FULL_RATE_HEIGHT_PX + 1), 1)
+    end)
+
+    t.it("keeps the controlled player at full rate", function()
+        t.eq(pose_lod.interval(opts_for("locomotion", { controlled = true }), SMALL), 1)
+    end)
+
+    t.it("keeps every simulation-timer-driven action at full rate", function()
+        for _, active in ipairs({
+            { dive = 0.4 },
+            { aerial = 0.2 },
+            { throw = 0.9 },
+            { windup = 0.5 },
+            { holding = true },
+        }) do
+            local opts = opts_for("locomotion", active)
+            t.eq(pose_lod.interval(opts, SMALL), 1, "active option must force full rate")
+        end
+    end)
+
+    t.it("treats any pose id outside the gait family as full rate", function()
+        -- Includes ids that do not exist yet: an unlisted id must never be
+        -- degraded by accident, so the whitelist fails toward full rate.
+        for _, id in ipairs({ "keeper_stretch", "aerial_bicycle", "combat_windup", "no_such" }) do
+            t.eq(pose_lod.interval(opts_for(id), SMALL), 1, id)
+        end
+    end)
+
+    t.it("schedules refreshes deterministically from tick and stagger alone", function()
+        -- Interval 1 is always due; interval 2 alternates per character and
+        -- adjacent staggers land on opposite frames, so ten held characters
+        -- split five/five instead of ten/zero.
+        for tick = 0, 5 do
+            t.is_true(pose_lod.due(tick, 0, 1), "full rate is always due")
+            t.eq(pose_lod.due(tick, 0, 2), tick % 2 == 0)
+            t.eq(
+                pose_lod.due(tick, 0, 2),
+                not pose_lod.due(tick, 1, 2),
+                "adjacent staggers must refresh on opposite frames"
+            )
+            -- Pure: the same inputs answer the same way twice.
+            t.eq(pose_lod.due(tick, 3, 2), pose_lod.due(tick, 3, 2))
+        end
+    end)
+end)
+
+t.describe("rig3d pose LOD cache lifecycle (#394)", function()
+    local pose_lod = require("game.render.rig3d.pose_lod")
+
+    -- Bare tables stand in for the renderer's cache and PlayerView keys; the
+    -- lifecycle knows nothing about either beyond table identity, which is
+    -- exactly what makes it reachable headless (the renderer's own draw path
+    -- needs a compiled shader and never runs under the test stub).
+
+    t.it("always refreshes a character's very first draw", function()
+        -- Whatever the schedule says: unfilled rows must never reach the GPU.
+        -- Two consecutive entries have opposite schedule parity, so at
+        -- interval 2 at least one of them is NOT due on tick 0 -- and must
+        -- refresh anyway.
+        local cache = {}
+        local a, b = {}, {}
+        local entry_a, refresh_a = pose_lod.step(cache, a, 2)
+        local entry_b, refresh_b = pose_lod.step(cache, b, 2)
+        t.is_true(refresh_a, "first draw must refresh")
+        t.is_true(refresh_b, "first draw must refresh regardless of stagger parity")
+        t.is_true(entry_a.fresh and entry_b.fresh, "a refreshed entry is marked fresh")
+        t.is_true(
+            pose_lod.due(0, entry_a.stagger, 2) ~= pose_lod.due(0, entry_b.stagger, 2),
+            "consecutive entries must land on opposite schedule parity"
+        )
+    end)
+
+    t.it("reuses the same rows on held draws and re-evaluates on schedule", function()
+        local cache = {}
+        local key = {}
+        local first = pose_lod.step(cache, key, 2)
+        local rows = first.rows
+        -- Drive four more draws at interval 2: refreshes must follow the pure
+        -- schedule exactly, and the entry (with its rows table) must be the
+        -- SAME object throughout -- identity is what makes the hold free.
+        for _ = 1, 4 do
+            local entry, refresh = pose_lod.step(cache, key, 2)
+            t.is_true(entry == first, "one character, one entry")
+            t.is_true(entry.rows == rows, "held rows must be the same table, not a copy")
+            t.eq(refresh, pose_lod.due(entry.tick, entry.stagger, 2))
+        end
+    end)
+
+    t.it("refreshes immediately when an action forces full rate", function()
+        local cache = {}
+        local key = {}
+        pose_lod.step(cache, key, 2)
+        -- Find a held frame, then switch to interval 1 (what pose_lod.interval
+        -- answers the moment a dive/aerial/combat pose id arrives): the next
+        -- draw must re-evaluate, not wait out the reduced schedule.
+        local held = false
+        for _ = 1, 2 do
+            local _, refresh = pose_lod.step(cache, key, 2)
+            held = held or not refresh
+        end
+        t.is_true(held, "interval 2 must hold at least one of two draws")
+        local _, refresh = pose_lod.step(cache, key, 1)
+        t.is_true(refresh, "full rate must re-evaluate immediately, mid-schedule")
+    end)
+
+    t.it("lets entries die with their keys in a weak-keyed cache", function()
+        -- The renderer's cache is weak-keyed on PlayerViews, so
+        -- view_state.reset() (a new match) drops the entries without any
+        -- explicit invalidation hook. Pinned here because nothing else would
+        -- notice a strong reference creeping in until matches started leaking.
+        local cache = setmetatable({}, { __mode = "k" })
+        local key = { id = "transient" }
+        pose_lod.step(cache, key, 2)
+        t.is_true(next(cache) ~= nil, "entry exists while its key is alive")
+        key = nil ---@diagnostic disable-line: cast-local-type -- drop the only reference
+        collectgarbage("collect")
+        collectgarbage("collect")
+        t.is_true(next(cache) == nil, "entry must die with its key")
+    end)
+end)
