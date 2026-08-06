@@ -61,6 +61,41 @@ If yes it is Rust, even when it feels like presentation.
 `core.deterministic_math` (1). `core/mat4` is presentation-only: neither `sim/`
 nor `render/` ever requires it. That is why `core/` splits rather than moving.
 
+### 2.1 Where the line falls inside `game/online/`
+
+This was the one genuinely contested boundary, so it was decided by evidence: which
+modules import `sim.input_frame` / `sim.match_snapshot` / `sim.rollback_*`, and
+which of them produce state that two peers must agree on bit for bit.
+
+**Rust (`gc-netcode`), ~13,900 lines.** Wire encoding, resim scheduling, and the
+replicated session state machine:
+
+```
+coordinator.lua 3306          match_driver.lua 2297       protocol.lua 1904
+fault_harness.lua 1446        input_protocol.lua 1121     fault_scenarios.lua 602
+fault_transport.lua 553       coordinator_driver.lua 441  desync_package.lua 426
+match_manifest.lua 288        match_session.lua 279       protocol_fixture.lua 254
+coordinator_conformance.lua 224  match_driver_fixture.lua 183  live_slot.lua 171
+input_protocol_fixture.lua 162   input_protocol_conformance.lua 157
+protocol_conformance.lua 141     coordinator_fixture.lua 102
+```
+
+`coordinator.lua` is the surprising one — it reads like lobby code. It is Rust
+because it records per-tick hashes, decides `hash_mismatch` / `late_input` /
+`desync` outcomes, and freezes the session at an agreed `first_input_tick`. Both
+peers run it over the same event stream and must land in the same state; a
+divergence there is a protocol violation, not a cosmetic difference. It is already
+a pure `update(state, event) -> state, actions` reducer, so the port is mechanical.
+
+**TypeScript (`@gc/online`), ~4,000 lines.** Observability and coordination that
+no peer has to agree with:
+
+```
+net_diagnostics.lua 1770      diagnostics_schema.lua 764   diagnostic_transport.lua 441
+lobby_link.lua 314            net_diagnostics_fixture.lua 305
+match_presentation.lua 244    fault_campaign.lua 163
+```
+
 Two boundaries worth restating because they are easy to get backwards:
 
 - **Input capture is TS; input *encoding* is Rust.** Reading a gamepad is a
