@@ -3366,25 +3366,7 @@ fn aerial_active_for_input(s: &MatchState, player_index: i64, input: &MatchInput
         && s.ball_z > GROUND_GRAB_HEIGHT
         && s.ball_vz < 0.0
         && player.pos.dist(s.ball) <= AERIAL_ANTICIPATE
-        && (strike_requested(input) || player.receive_timer > 0.0)
-}
-
-/// Whether `input.aerial_strike`, or the fallback `jockey || dash`,
-/// requests a first-time strike this frame. `crate::aerial::strike_requested`
-/// operates on that module's own local `Option<bool>`-shaped view; this
-/// module's canonical [`MatchInput::aerial_strike`] is a plain, always-
-/// populated `bool` (README §5.1 — see `match_snapshot`'s `MatchInput` doc),
-/// so the equivalent fallback is inlined here directly.
-fn strike_requested(input: &MatchInput) -> bool {
-    input.aerial_strike || input.jockey || input.dash
-}
-
-/// Whether `input.aerial_acrobatic`, or the fallback
-/// `lob && strike_requested`, requests an acrobatic attempt this frame. See
-/// [`strike_requested`] for why this is inlined rather than calling
-/// `crate::aerial::acrobatic_requested`.
-fn acrobatic_requested(input: &MatchInput) -> bool {
-    input.aerial_acrobatic || (input.lob && strike_requested(input))
+        && (aerial::strike_requested(input) || player.receive_timer > 0.0)
 }
 
 /// Move every player one tick. Ports `move_players`.
@@ -3667,7 +3649,7 @@ fn move_human_player(
             }
         }
         apply_locomotion(field, p, desired, dt, tune);
-        if going_aerial && acrobatic_requested(&input) {
+        if going_aerial && aerial::acrobatic_requested(&input) {
             // Bicycle geometry reads the approach facing; the contact
             // magnet must not rotate the player to face a ball behind.
             p.facing = facing_before_aerial;
@@ -5314,175 +5296,17 @@ fn ai_combat_evade(
 }
 
 // ---------------------------------------------------------------------
-// Aerial adapter
+// Aerial glue
 // ---------------------------------------------------------------------
 //
-// `crate::aerial::resolve_play` still operates on that module's own local,
-// 0-based `MatchStateView`/`MatchPlayerView`/`MatchInput` (README §5.1) —
-// this port did not reach consolidating it onto the canonical types (see
-// this module's top-level doc and the final report). The functions below
-// are the call-boundary adapter: convert this tick's canonical state into
-// aerial's view, call it, and copy the mutated fields back. `s.rng` is
-// threaded through the view and copied back exactly once, preserving draw
-// order: aerial's own RNG draws happen inside `resolve()`, called from
-// `resolve_play`, at the same point in the per-tick sequence the Lua
-// original called `aerial.resolve_play(s, ...)` (mutating the same shared
-// `s.rng` table field in place).
+// `crate::aerial` now adopts this module's canonical `MatchState`/
+// `MatchPlayer`/`MatchInput`/`MatchEvent` directly (README §5.1 end state
+// 1 — see that module's doc), so no view conversion happens at this
+// boundary any more; [`aerial_resolve_play`] only builds the 0-based input
+// slice `aerial::resolve_play` expects and forwards `s` by mutable
+// reference.
 
-fn aerial_team(t: Team) -> aerial::Team {
-    match t {
-        Team::Home => aerial::Team::Home,
-        Team::Away => aerial::Team::Away,
-    }
-}
-
-fn aerial_match_input(input: &MatchInput) -> aerial::MatchInput {
-    aerial::MatchInput {
-        r#move: input.r#move,
-        shoot: input.shoot,
-        shoot_held: input.shoot_held,
-        pass: input.pass,
-        pass_held: input.pass_held,
-        switch: input.switch,
-        dash: input.dash,
-        dodge: input.dodge,
-        lob: input.lob,
-        sprint: input.sprint,
-        jockey: input.jockey,
-        aerial_strike: Some(input.aerial_strike),
-        aerial_acrobatic: Some(input.aerial_acrobatic),
-        equipment_held: input.equipment_held,
-        equipment_pressed: input.equipment_pressed,
-        equipment_released: input.equipment_released,
-    }
-}
-
-fn to_aerial_view(s: &MatchState) -> aerial::MatchStateView {
-    aerial::MatchStateView {
-        field: aerial::Field {
-            w: s.field.w,
-            h: s.field.h,
-        },
-        goal_home: aerial::Rect {
-            x: s.goal_home.x,
-            y: s.goal_home.y,
-            w: s.goal_home.w,
-            h: s.goal_home.h,
-        },
-        goal_away: aerial::Rect {
-            x: s.goal_away.x,
-            y: s.goal_away.y,
-            w: s.goal_away.w,
-            h: s.goal_away.h,
-        },
-        players: s
-            .players
-            .iter()
-            .map(|p| aerial::MatchPlayerView {
-                id: p.id.clone(),
-                team: aerial_team(p.team),
-                pos: p.pos,
-                vel: p.vel,
-                run_vel: p.run_vel,
-                facing: p.facing,
-                move_speed: p.move_speed,
-                shot_speed: p.shot_speed,
-                strength: p.strength,
-                first_touch: p.first_touch,
-                header_skill: p.header_skill,
-                volley_skill: p.volley_skill,
-                bicycle_skill: p.bicycle_skill,
-                owned_verb: p.owned_verb,
-                is_keeper: p.is_keeper,
-                sprinting: p.sprinting,
-                header_cd: p.header_cd,
-                aerial_recovery: p.aerial_recovery,
-                stun_timer: p.stun_timer,
-                slide_timer: p.slide_timer,
-                dodge_timer: p.dodge_timer,
-                receive_timer: p.receive_timer,
-                aerial_timer: p.aerial_timer,
-                aerial_style: p.aerial_style,
-                aerial_outcome: p.aerial_outcome,
-                aerial_jump: p.aerial_jump,
-            })
-            .collect(),
-        ball: s.ball,
-        ball_vel: s.ball_vel,
-        ball_z: s.ball_z,
-        ball_vz: s.ball_vz,
-        ball_spin: s.ball_spin,
-        pickup_cd: s.pickup_cd,
-        aerial_lock: s.aerial_lock,
-        rng: s.rng,
-        events: Vec::new(),
-        slot_mode: s.slot_mode,
-        slot_for_player: s
-            .slot_for_player
-            .iter()
-            .map(|v| v.map(|p| (p - 1) as usize))
-            .collect(),
-        human_controlled: s.human_controlled,
-        controlled: (s.controlled - 1) as usize,
-    }
-}
-
-fn aerial_event_kind(kind: aerial::MatchEventKind) -> MatchEventKind {
-    match kind {
-        aerial::MatchEventKind::Reception => MatchEventKind::Reception,
-        aerial::MatchEventKind::Header => MatchEventKind::Header,
-        aerial::MatchEventKind::Volley => MatchEventKind::Volley,
-        aerial::MatchEventKind::Bicycle => MatchEventKind::Bicycle,
-    }
-}
-
-fn apply_aerial_view(s: &mut MatchState, view: aerial::MatchStateView) {
-    s.ball = view.ball;
-    s.ball_vel = view.ball_vel;
-    s.ball_z = view.ball_z;
-    s.ball_vz = view.ball_vz;
-    s.ball_spin = view.ball_spin;
-    s.pickup_cd = view.pickup_cd;
-    s.aerial_lock = view.aerial_lock;
-    s.rng = view.rng;
-    for (i, pv) in view.players.into_iter().enumerate() {
-        let p = &mut s.players[i];
-        p.pos = pv.pos;
-        p.vel = pv.vel;
-        p.run_vel = pv.run_vel;
-        p.facing = pv.facing;
-        p.sprinting = pv.sprinting;
-        p.header_cd = pv.header_cd;
-        p.aerial_recovery = pv.aerial_recovery;
-        p.stun_timer = pv.stun_timer;
-        p.slide_timer = pv.slide_timer;
-        p.dodge_timer = pv.dodge_timer;
-        p.receive_timer = pv.receive_timer;
-        p.aerial_timer = pv.aerial_timer;
-        p.aerial_style = pv.aerial_style;
-        p.aerial_outcome = pv.aerial_outcome;
-        p.aerial_jump = pv.aerial_jump;
-    }
-    for event in view.events {
-        s.events.push(MatchEvent {
-            kind: aerial_event_kind(event.kind),
-            x: event.x,
-            y: event.y,
-            player: event.player,
-            save_style: None,
-            style: event.style,
-            outcome: event.outcome,
-            jumping: event.jumping,
-            difficulty: event.difficulty,
-            shot_type: None,
-            keeper_state: None,
-            keeper_depth: None,
-            on_target: None,
-        });
-    }
-}
-
-/// Resolve this frame's aerial play via the [`crate::aerial`] adapter.
+/// Resolve this frame's aerial play via [`crate::aerial::resolve_play`].
 /// Returns whether the ball's trajectory changed.
 fn aerial_resolve_play(
     s: &mut MatchState,
@@ -5490,9 +5314,8 @@ fn aerial_resolve_play(
     ineligible: Option<&[bool]>,
     tune: &Tuning,
 ) -> bool {
-    let mut view = to_aerial_view(s);
-    let aerial_inputs: Vec<Option<aerial::MatchInput>> = (0..s.players.len())
-        .map(|i| inputs.get(&((i + 1) as i64)).map(aerial_match_input))
+    let aerial_inputs: Vec<Option<MatchInput>> = (0..s.players.len())
+        .map(|i| inputs.get(&((i + 1) as i64)).copied())
         .collect();
     let config = aerial::AerialMatchConfig {
         ground_grab_height: GROUND_GRAB_HEIGHT,
@@ -5502,9 +5325,7 @@ fn aerial_resolve_play(
         clear_header_speed: CLEAR_HEADER_SPEED,
         volley_speed: VOLLEY_SPEED,
     };
-    let redirected = aerial::resolve_play(&mut view, &aerial_inputs, &config, ineligible, tune);
-    apply_aerial_view(s, view);
-    redirected
+    aerial::resolve_play(s, &aerial_inputs, &config, ineligible, tune)
 }
 
 #[allow(clippy::too_many_lines)]

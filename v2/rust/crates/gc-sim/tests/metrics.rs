@@ -5,7 +5,7 @@
 //! itself hand-builds a "minimal MatchState-shaped table: enough surface for
 //! the collector" rather than a real match — so nothing here is blocked on
 //! the unported `sim::match`. [`fake_state`]/[`frame`] below are that same
-//! minimal surface, typed against [`gc_sim::metrics::MatchStateView`].
+//! minimal surface, typed against [`gc_sim::metrics::MetricsMatchView`].
 //!
 //! `metrics::observe` additionally takes an explicit `&Tuning` (the Lua
 //! original closes over the global `sim.tuning` singleton, which this port
@@ -14,11 +14,13 @@
 //! `TUNE.DRIBBLE_CLOSE` default.
 
 use gc_core::vec2::Vec2;
-use gc_sim::metrics::{self, MatchEventView, MatchPlayerView, MatchStateView, MatchTeam, Score};
+use gc_sim::metrics::{
+    self, MatchTeam, MetricsEventView, MetricsMatchView, MetricsPlayerView, Score,
+};
 use gc_sim::tuning::Tuning;
 
-fn player(id: &str, team: MatchTeam, is_keeper: bool) -> MatchPlayerView {
-    MatchPlayerView {
+fn player(id: &str, team: MatchTeam, is_keeper: bool) -> MetricsPlayerView {
+    MetricsPlayerView {
         id: id.to_string(),
         team,
         is_keeper,
@@ -30,8 +32,8 @@ fn player(id: &str, team: MatchTeam, is_keeper: bool) -> MatchPlayerView {
     }
 }
 
-fn fake_state() -> MatchStateView {
-    MatchStateView {
+fn fake_state() -> MetricsMatchView {
+    MetricsMatchView {
         players: vec![
             player("h_keeper", MatchTeam::Home, true),
             player("h1", MatchTeam::Home, false),
@@ -47,8 +49,8 @@ fn fake_state() -> MatchStateView {
     }
 }
 
-fn event(kind: &str, player: Option<&str>) -> MatchEventView {
-    MatchEventView {
+fn event(kind: &str, player: Option<&str>) -> MetricsEventView {
+    MetricsEventView {
         kind: kind.to_string(),
         player: player.map(str::to_string),
         shot_type: None,
@@ -61,7 +63,7 @@ fn event(kind: &str, player: Option<&str>) -> MatchEventView {
 /// One observed frame: set the frame's events/owner, then observe `dt`
 /// (default 1 second, matching the Lua fixture's `o.dt or 1`).
 struct Frame {
-    events: Vec<MatchEventView>,
+    events: Vec<MetricsEventView>,
     owner: Option<usize>,
     dt: f64,
 }
@@ -76,7 +78,7 @@ impl Default for Frame {
     }
 }
 
-fn frame(c: &mut metrics::MetricsCollector, s: &mut MatchStateView, o: Frame, tuning: &Tuning) {
+fn frame(c: &mut metrics::MetricsCollector, s: &mut MetricsMatchView, o: Frame, tuning: &Tuning) {
     s.events = o.events;
     s.owner = o.owner;
     metrics::observe(c, s, o.dt, tuning);
@@ -352,7 +354,7 @@ fn metrics_observe_observes_keeper_state_release_depth_and_chip_outcomes_without
         &mut s,
         Frame {
             dt: 0.5,
-            events: vec![MatchEventView {
+            events: vec![MetricsEventView {
                 kind: "shot".to_string(),
                 player: Some("h1".to_string()),
                 shot_type: Some("chip".to_string()),
@@ -378,7 +380,7 @@ fn metrics_observe_observes_keeper_state_release_depth_and_chip_outcomes_without
         &mut c,
         &mut s,
         Frame {
-            events: vec![MatchEventView {
+            events: vec![MetricsEventView {
                 kind: "parry".to_string(),
                 player: Some("a_keeper".to_string()),
                 shot_type: None,

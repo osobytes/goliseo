@@ -6,7 +6,7 @@
 //! match physics. [`base_state`] below hand-builds that same minimal
 //! surface, the same way `spec/sim/metrics_spec.lua` and this crate's
 //! `tests/metrics.rs` already do for the identical reason (see that
-//! module's doc): a `MatchStateView` with two full 5-a-side rosters at
+//! module's doc): a `BotMatchView` with two full 5-a-side rosters at
 //! plausible positions, `controlled` pointing at a home outfielder, and
 //! `owner` defaulted to `controlled` — matching `sim/match.lua`'s
 //! `place_kickoff` default (the kicking team's most advanced player owns the
@@ -25,11 +25,11 @@
 //! `Tuning`, matching the Lua spec's untouched tuning defaults.
 
 use gc_core::vec2::Vec2;
-use gc_sim::bot::{self, BotOptions, Field, MatchPlayerView, MatchStateView, Team};
+use gc_sim::bot::{self, BotMatchView, BotOptions, BotPlayerView, Field, Team};
 use gc_sim::tuning::Tuning;
 
-fn player(team: Team, is_keeper: bool, pos: Vec2) -> MatchPlayerView {
-    MatchPlayerView {
+fn player(team: Team, is_keeper: bool, pos: Vec2) -> BotPlayerView {
+    BotPlayerView {
         team,
         is_keeper,
         pos,
@@ -44,7 +44,7 @@ fn player(team: Team, is_keeper: bool, pos: Vec2) -> MatchPlayerView {
 /// are home outfielders (1 is `controlled`), 5 is the away keeper, 6..9 are
 /// away outfielders. `owner` starts at `controlled`, mirroring
 /// `place_kickoff`'s "kicking team's most advanced player owns the ball".
-fn base_state() -> MatchStateView {
+fn base_state() -> BotMatchView {
     let players = vec![
         player(Team::Home, true, Vec2::new(40.0, 270.0)),
         player(Team::Home, false, Vec2::new(400.0, 270.0)),
@@ -57,7 +57,7 @@ fn base_state() -> MatchStateView {
         player(Team::Away, false, Vec2::new(0.0, 0.0)),
         player(Team::Away, false, Vec2::new(0.0, 0.0)),
     ];
-    MatchStateView {
+    BotMatchView {
         players,
         field: Field { w: 960.0, h: 540.0 },
         controlled: 1,
@@ -209,8 +209,9 @@ fn requests_an_aerial_strike_under_a_dropping_ball() {
         ..Default::default()
     });
     let input = bot::input(&mut b, &s, DT, &tune);
-    assert!(
+    assert_eq!(
         input.aerial_strike,
+        Some(true),
         "the proxy can represent first-time aerial intent"
     );
 }

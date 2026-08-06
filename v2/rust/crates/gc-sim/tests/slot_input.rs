@@ -36,7 +36,7 @@ fn fixed_match_input_slots_converts_a_neutral_sample_without_mistaking_valid_fal
     assert!(!input.shoot);
     assert!(!input.pass);
     assert!(!input.sprint);
-    assert!(!input.aerial_strike);
+    assert_eq!(input.aerial_strike, Some(false));
     assert!(!input.equipment_held);
     assert!(!input.equipment_pressed);
     assert!(!input.equipment_released);

@@ -7,19 +7,26 @@
 //!
 //! Design note (README §5.1): this module declares the canonical, fully
 //! typed [`MatchState`] / [`MatchPlayer`] / [`MatchEvent`] shapes — not a
-//! narrow read-only view like `metrics`/`bot`/`aerial`. It has to: this
-//! module's entire job is to capture/restore/hash *all* of `sim/match.lua`'s
+//! narrow read-only view like `metrics`/`bot`. It has to: this module's
+//! entire job is to capture/restore/hash *all* of `sim/match.lua`'s
 //! `MatchState` shape, so a narrowed view would defeat the module's purpose.
 //! Every field type below is taken from `sim/match.lua`'s own `---@field`
-//! LuaCATS annotations (that file is not ported — `gc_sim::r#match` is still
-//! a placeholder — but its type comments are authoritative and already
-//! describe the real shape). Downstream modules in this layer
-//! (`combat_snapshot`, `combat_identity`, `combat_observation`,
-//! `combat_policy`, `combat`, `slot_input`) reuse `MatchState`/`MatchPlayer`/
-//! `MatchInput` from here rather than declaring their own views, which is
-//! exactly what §5.1 asks a later module to do when one already fits.
-//! Whoever ports `sim/match.lua` should be able to adopt these types
-//! directly (end state 1 in §5.1) rather than replace them.
+//! LuaCATS annotations, which are authoritative for the real shape.
+//! Downstream modules in this layer (`combat_snapshot`, `combat_identity`,
+//! `combat_observation`, `combat_policy`, `combat`, `slot_input`) reuse
+//! `MatchState`/`MatchPlayer`/`MatchInput` from here rather than declaring
+//! their own views, which is exactly what §5.1 asks a later module to do
+//! when one already fits. `gc_sim::r#match` (`sim/match.lua`'s port) does
+//! the same (end state 1 in §5.1); so, since it landed, does `gc_sim::aerial`
+//! — its local view needed nearly this entire shape, so it was folded onto
+//! these canonical types directly rather than kept as a fourth duplicate
+//! (see that module's doc). `bot` and `metrics` stay on their own narrow
+//! views (§5.1 end state 2): each touches a small, genuinely different
+//! slice of match state, and giving that slice its own name next to its one
+//! consumer (`bot::BotMatchView`, `metrics::MetricsMatchView`, ...) already
+//! resolves the "three same-named structs" problem now that `aerial`'s
+//! duplicate is gone — a shared module would gain nothing but a longer
+//! import path, since the two shapes share almost no fields.
 //!
 //! ## `mark_unsupported` — a deliberate deviation
 //!
@@ -552,10 +559,18 @@ pub struct MatchInput {
     /// Hold Space off the ball: slow shadow stance, bonus poke reach on
     /// release.
     pub jockey: bool,
-    /// Abstract first-time strike intent.
-    pub aerial_strike: bool,
-    /// Abstract bicycle/acrobatic intent.
-    pub aerial_acrobatic: bool,
+    /// Abstract first-time strike intent. `None` (Lua `nil`) means "unset":
+    /// [`crate::aerial::strike_requested`] falls back to `jockey || dash`.
+    /// `Some` — set deliberately (`sim::bot`) or derived from input bits
+    /// (`sim::slot_input`) — is authoritative and skips the fallback. This
+    /// is the one field pair in `MatchInput` where `nil` and `false` are NOT
+    /// interchangeable; every other field is a plain, always-populated
+    /// `bool`.
+    pub aerial_strike: Option<bool>,
+    /// Abstract bicycle/acrobatic intent. `None` (Lua `nil`) falls back to
+    /// `lob && strike_requested` — see [`crate::aerial::acrobatic_requested`]
+    /// and [`MatchInput::aerial_strike`]'s doc.
+    pub aerial_acrobatic: Option<bool>,
     /// Equipment control is physically held.
     pub equipment_held: bool,
     /// Equipment press edge for this fixed tick.
@@ -1492,10 +1507,15 @@ pub fn validate(state: &MatchState) {
         PLAYER_COUNT,
         "state.players has the wrong length"
     );
-    assert_eq!(
-        state.slot_players.len(),
-        input_frame::SLOT_COUNT as usize,
-        "state.slot_players has the wrong length"
+    // Sparse for the same reason `marks` is, below: `sim/match_snapshot.lua:706`
+    // copies it with `copy_sparse_indices(..., input_frame.SLOT_COUNT)`, which
+    // only requires present keys to fall in `1..=SLOT_COUNT` and never asserts a
+    // length, while `sim/match.lua:929` starts it empty and fills entries
+    // conditionally — so a non-slot-mode match leaves it short. Requiring
+    // density here made `capture` panic on any non-slot-mode fixture.
+    assert!(
+        state.slot_players.len() <= input_frame::SLOT_COUNT as usize,
+        "state.slot_players has more entries than slots"
     );
     assert_eq!(
         state.slot_for_player.len(),
@@ -1534,6 +1554,11 @@ fn densify_marks(state: &mut MatchState) {
     let count = state.players.len();
     state.marks.home.resize(count, None);
     state.marks.away.resize(count, None);
+    // `slot_players` is sparse in the same way and pads to SLOT_COUNT, not to
+    // the roster size.
+    state
+        .slot_players
+        .resize(input_frame::SLOT_COUNT as usize, None);
 }
 
 /// Capture a validated, defensively-copied [`MatchSnapshot`] of `state`

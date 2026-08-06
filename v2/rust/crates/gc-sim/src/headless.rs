@@ -9,16 +9,23 @@
 //! ## Adapters this module owns (README §5.1)
 //!
 //! [`crate::bot`], [`crate::metrics`], and [`crate::slot_input`] were each
-//! ported before `sim::match` landed, so `bot`/`metrics` declared their own
-//! narrow `MatchStateView`/`MatchPlayerView` (`slot_input` adopted the real
-//! `match_snapshot` types directly and needs no adapter). This module is
-//! the one Lua caller that drives `bot` and `metrics` against a REAL,
-//! constructed `MatchState` every tick — exactly `sim/headless.lua`'s own
-//! job — so the call-boundary adapters that convert `match_snapshot::MatchState`
-//! into `bot::MatchStateView` / `metrics::MatchStateView` belong here
-//! (`to_bot_view`, `to_metrics_view`), the same pattern `sim::match` itself
-//! already uses privately for `aerial::MatchStateView`. This does not touch
-//! `bot.rs` or `metrics.rs`, which this porting pass does not own.
+//! ported before `sim::match` landed. `slot_input` adopted the real
+//! `match_snapshot` types directly and needs no adapter; `bot` and
+//! `metrics` kept their own narrow, differently-shaped views
+//! (`bot::BotMatchView`/`bot::BotPlayerView`,
+//! `metrics::MetricsMatchView`/`metrics::MetricsPlayerView`/
+//! `metrics::MetricsEventView` — renamed from the generic
+//! `MatchStateView`/`MatchPlayerView`/`MatchEventView` every module used
+//! before README §5.1's resolution; `crate::aerial`'s third copy needed
+//! nearly the whole shape and was folded onto `match_snapshot`'s canonical
+//! types instead). This module is the one caller that drives `bot` and
+//! `metrics` against a REAL, constructed `MatchState` every tick — exactly
+//! `sim/headless.lua`'s own job — so the call-boundary adapters
+//! (`to_bot_view`, `to_metrics_view`) belong here. `bot::input` now returns
+//! `match_snapshot::MatchInput` directly (its own local `MatchInput` was
+//! never legitimately narrow — every field was one the real simulation
+//! reads — so it was dropped rather than renamed), which is why there is no
+//! `from_bot_input` any more either.
 //!
 //! ## `tuning.lua`'s global becomes a local value, so "restore" is structural
 //!
@@ -160,8 +167,8 @@ fn default_away() -> &'static TeamData {
     teams::get("orion").expect("orion is an authored team")
 }
 
-fn to_bot_player(p: &MatchPlayer) -> bot::MatchPlayerView {
-    bot::MatchPlayerView {
+fn to_bot_player(p: &MatchPlayer) -> bot::BotPlayerView {
+    bot::BotPlayerView {
         team: match p.team {
             Team::Home => bot::Team::Home,
             Team::Away => bot::Team::Away,
@@ -175,8 +182,8 @@ fn to_bot_player(p: &MatchPlayer) -> bot::MatchPlayerView {
     }
 }
 
-fn to_bot_view(s: &MatchState) -> bot::MatchStateView {
-    bot::MatchStateView {
+fn to_bot_view(s: &MatchState) -> bot::BotMatchView {
+    bot::BotMatchView {
         players: s.players.iter().map(to_bot_player).collect(),
         field: bot::Field {
             w: s.field.w,
@@ -202,8 +209,8 @@ fn to_metrics_keeper_state(k: KeeperBehaviorState) -> metrics::KeeperState {
     }
 }
 
-fn to_metrics_event(e: &MatchEvent) -> metrics::MatchEventView {
-    metrics::MatchEventView {
+fn to_metrics_event(e: &MatchEvent) -> metrics::MetricsEventView {
+    metrics::MetricsEventView {
         kind: e.kind.wire_str().to_string(),
         player: e.player.clone(),
         shot_type: e.shot_type.map(|t| {
@@ -219,12 +226,12 @@ fn to_metrics_event(e: &MatchEvent) -> metrics::MatchEventView {
     }
 }
 
-fn to_metrics_view(s: &MatchState) -> metrics::MatchStateView {
-    metrics::MatchStateView {
+fn to_metrics_view(s: &MatchState) -> metrics::MetricsMatchView {
+    metrics::MetricsMatchView {
         players: s
             .players
             .iter()
-            .map(|p| metrics::MatchPlayerView {
+            .map(|p| metrics::MetricsPlayerView {
                 id: p.id.clone(),
                 team: match p.team {
                     Team::Home => metrics::MatchTeam::Home,
@@ -246,27 +253,6 @@ fn to_metrics_view(s: &MatchState) -> metrics::MatchStateView {
         },
         owner: s.owner.map(|i| (i - 1) as usize),
         events: s.events.iter().map(to_metrics_event).collect(),
-    }
-}
-
-fn from_bot_input(i: bot::MatchInput) -> MatchInput {
-    MatchInput {
-        r#move: i.r#move,
-        shoot: i.shoot,
-        shoot_held: i.shoot_held,
-        pass: i.pass,
-        pass_held: i.pass_held,
-        switch: i.switch,
-        dash: i.dash,
-        dodge: i.dodge,
-        lob: i.lob,
-        sprint: i.sprint,
-        jockey: i.jockey,
-        aerial_strike: i.aerial_strike,
-        aerial_acrobatic: i.aerial_acrobatic,
-        equipment_held: i.equipment_held,
-        equipment_pressed: i.equipment_pressed,
-        equipment_released: i.equipment_released,
     }
 }
 
@@ -375,7 +361,7 @@ pub fn run_match_debug(opts: &HeadlessOpts<'_>) -> (MatchResult, MatchState, Hea
         } else {
             let input = if let Some(bot_state) = bot_state.as_mut() {
                 let view = to_bot_view(&s);
-                from_bot_input(bot::input(bot_state, &view, DT, &tune))
+                bot::input(bot_state, &view, DT, &tune)
             } else {
                 MatchInput::default()
             };

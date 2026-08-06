@@ -3344,35 +3344,30 @@ fn an_ai_pass_never_moves_the_humans_control() {
     assert_eq!(s.controlled, before, "AI passes don't steal your control");
 }
 
-// This test found a real bug in `src/match.rs`, not in the port of the
-// test itself. `aerial::strike_requested` (crates/gc-sim/src/aerial.rs:716)
-// checks `if let Some(v) = input.aerial_strike { return v; }` before
-// falling back to `input.jockey || input.dash` — mirroring the Lua
-// original's `if input.aerial_strike ~= nil then return input.aerial_strike
-// end` (`nil` means "unset", so the fallback fires).
+// This test found a real bug (now fixed): `aerial::strike_requested`
+// (crates/gc-sim/src/aerial.rs) checks `if let Some(v) = input.aerial_strike
+// { return v; }` before falling back to `input.jockey || input.dash` —
+// mirroring the Lua original's `if input.aerial_strike ~= nil then return
+// input.aerial_strike end` (`nil` means "unset", so the fallback fires).
 //
-// But `match.rs`'s `aerial_match_input` adapter (src/match.rs:5343) builds
-// that `Option<bool>` as `aerial_strike: Some(input.aerial_strike)` —
-// unconditionally `Some`, from `match_snapshot::MatchInput::aerial_strike`,
-// which is a plain `bool` (always `false` unless a caller sets it, never
-// "unset"). So this call site always observes `Some(false)`, `strike_requested`
-// returns `false` immediately, and the `jockey`/`dash` fallback the Lua
-// depended on can never fire through this path.
+// But `match_snapshot::MatchInput::aerial_strike` was typed as a plain
+// `bool` (always `false` unless a caller set it, never "unset"), and
+// `match.rs`'s now-deleted `aerial_match_input` adapter wrapped it as
+// `Some(input.aerial_strike)` unconditionally. So this call site always
+// observed `Some(false)`, `strike_requested` returned `false` immediately,
+// and the `jockey`/`dash` fallback the Lua depended on could never fire
+// through this path.
 //
-// Verified directly: with `dash: true` and `aerial_strike` left at its
-// default `false` (this test's setup, matching the Lua original exactly),
-// `aerial::resolve_play` emits no `Header` event — `s.events` is just
-// `[Reception]`, `s.ball_vel` ends up `(-165.24, -113.55)` from some other
-// path, not a header redirect. Overriding the input to
-// `aerial_strike: true` directly (bypassing the `dash` fallback entirely)
-// makes the `Header` event fire correctly with `ball_vel` reflecting the
-// aim. So `sim::aerial`'s header logic itself is fine; the break is in the
-// `match_snapshot::MatchInput -> aerial::MatchInput` adapter losing Lua's
-// nil-vs-false distinction. Fix belongs in `aerial_match_input`
-// (src/match.rs:5343): only wrap `Some(true)` when the field is actually
-// set, never an unconditional `Some(input.aerial_strike)`.
+// Fixed by typing `MatchInput::aerial_strike`/`aerial_acrobatic` as
+// `Option<bool>` (matching `sim/match.lua`'s `---@field aerial_strike
+// boolean?`), and by folding `crate::aerial` onto `match_snapshot`'s
+// canonical types directly (README §5.1 end state 1) so there is no longer
+// an adapter to lose the nil-vs-false distinction at all: `aerial_strike`
+// left unset by `input()` below (`InputOpts` has no `aerial_strike` field,
+// so it falls through to `MatchInput::default()`'s `None`) now reaches
+// `aerial::strike_requested` as `None` and correctly falls back to
+// `dash`/`jockey`.
 #[test]
-#[ignore = "src/match.rs bug: aerial_match_input (line 5343) wraps aerial_strike as Some(input.aerial_strike) unconditionally, losing Lua's nil-vs-false 'unset' signal, so the jockey/dash fallback in aerial::strike_requested never fires for human headers; see the comment above this test for repro values"]
 fn a_directed_header_goes_where_you_aim() {
     let tune = Tuning::new();
     let mut s = new_match();

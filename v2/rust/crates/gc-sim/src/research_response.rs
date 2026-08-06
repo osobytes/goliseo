@@ -639,6 +639,44 @@ pub fn validate(set: &Value) -> Result<()> {
     Ok(())
 }
 
+/// Orphan-join guard for the trace side. A response set that names a trace
+/// must name one the caller actually holds. Mirrors
+/// `research_trace::validate_against_stream`. `manifest` is a
+/// [`crate::research_trace`]-shaped [`Value`]; read the same way
+/// `research_trace.rs` reads its own fields, so the field names/nesting here
+/// (`manifest.trace_id`, `manifest.simulation.last_boundary_tick`) match
+/// exactly what `research_trace::shape` declares.
+pub fn validate_against_trace(set: &Value, manifest: &Value) -> Result<()> {
+    validate(set)?;
+    let manifest_entries = manifest
+        .as_record()
+        .ok_or_else(|| "research trace manifest is required".to_string())?;
+    let trace_id = opt_text_field(manifest_entries, "trace_id")
+        .ok_or_else(|| "research trace manifest is required".to_string())?;
+    let entries = set.as_record().expect("validated record");
+    let timing = record_field(entries, "timing");
+    let Some(set_trace_id) = opt_text_field(timing, "trace_id") else {
+        return Err(
+            "research_response_set.timing.trace_id is required to join a trace".to_string(),
+        );
+    };
+    if set_trace_id != trace_id {
+        return Err("research_response_set.timing.trace_id is an orphan join".to_string());
+    }
+    if let Some(canonical_boundary_tick) = opt_number_field(timing, "canonical_boundary_tick") {
+        let simulation = record_field(manifest_entries, "simulation");
+        let last_boundary_tick =
+            opt_number_field(simulation, "last_boundary_tick").expect("validated integer");
+        if canonical_boundary_tick > last_boundary_tick {
+            return Err(
+                "research_response_set.timing.canonical_boundary_tick is past the trace"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Reject an administration set that pools instruments the register
 /// forbids pooling, and reject an accessibility fallback presented
 /// alongside the validated instrument it replaces.

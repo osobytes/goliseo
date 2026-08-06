@@ -150,8 +150,12 @@ fn suppress_soccer_actions(input: &mut MatchInput) {
     input.lob = false;
     input.sprint = false;
     input.jockey = false;
-    input.aerial_strike = false;
-    input.aerial_acrobatic = false;
+    // Deliberately `Some(false)`, not `None`: this is an explicit "no
+    // strike" while soccer actions are suppressed, not an absence of
+    // intent, so `aerial::strike_requested`'s jockey/dash fallback must not
+    // fire (mirrors `sim/combat.lua`'s `suppress_soccer_actions`).
+    input.aerial_strike = Some(false);
+    input.aerial_acrobatic = Some(false);
 }
 
 fn soccer_has_priority(input: &MatchInput) -> bool {

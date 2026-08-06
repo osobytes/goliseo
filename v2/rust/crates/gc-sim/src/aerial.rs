@@ -6,26 +6,38 @@
 //!
 //! The Lua original's second half (`aerial.resolve_play` and everything it
 //! calls) reads and mutates a `MatchState`/`MatchPlayer`/`MatchInput` table
-//! whose shape is defined by `sim/match.lua` — another agent's module, still
-//! an unported placeholder (`gc_sim::r#match`). Mechanically, none of that
-//! survives as-is:
+//! whose shape is defined by `sim/match.lua`. This module was ported before
+//! `gc_sim::r#match` landed and, for a while, carried its own local,
+//! 0-based `MatchStateView`/`MatchPlayerView`/`MatchInput`/`MatchEvent`
+//! mirror of that shape, converted at the boundary by an adapter in
+//! `gc_sim::r#match` (README §5.1's "view struct" debt).
 //!
-//! - This module never depends on `gc_sim::r#match`. [`MatchStateView`],
-//!   [`MatchPlayerView`], [`MatchInput`] and [`MatchEvent`] are a typed,
-//!   minimal surface — exactly the fields `resolve_play` and its helpers
-//!   touch, named the same as the Lua fields they mirror. When `sim::match`
-//!   lands, its real match state can be adapted into this view rather than
-//!   this module depending on it (the same shape [`crate::metrics`] already
-//!   uses for the identical reason — see that module's doc).
+//! Now that `gc_sim::r#match` (and its canonical
+//! [`crate::match_snapshot::MatchState`]/[`crate::match_snapshot::MatchPlayer`]/
+//! [`crate::match_snapshot::MatchInput`]) has landed, this module adopts
+//! those types directly instead (§5.1 end state 1) — the local view needed
+//! nearly the entire shape anyway, so keeping a fourth duplicate around
+//! bought nothing. The one wrinkle: `match_snapshot` indexes `players` with
+//! **one-based** `controlled`/`owner` fields (`gc_sim::r#match`'s
+//! convention, matching `sim/match.lua`'s `ipairs`), while this module's own
+//! loops walk `MatchState::players` with ordinary Rust `enumerate()` —
+//! zero-based, like any `Vec`. The two never conflict: a `Vec` index and a
+//! "one-based player identity" are different axes, and the *only* place
+//! this module compares one against the other is [`is_human_player`], which
+//! converts explicitly.
+//!
 //! - `sim/tuning.lua`'s `TUNE` is a shared mutable global the Lua closes
 //!   over; AGENTS.md §3 forbids that outside LÖVE callbacks, and this
 //!   crate's port of `sim/tuning.lua` ([`crate::tuning`]) is accordingly an
 //!   owned value, not a singleton. Every function here that the Lua reads
 //!   `TUNE` from takes an explicit `&Tuning` parameter instead.
-//! - `move` is a Rust keyword, so [`MatchInput::r#move`] uses a raw
-//!   identifier — the same convention `gc_sim::r#match` itself uses for the
-//!   module name (see `lib.rs`).
+//! - `move` is a Rust keyword, so [`crate::match_snapshot::MatchInput::r#move`]
+//!   uses a raw identifier — the same convention `gc_sim::r#match` itself
+//!   uses for the module name (see `lib.rs`).
 
+use crate::match_snapshot::{
+    MatchEvent, MatchEventKind, MatchInput, MatchPlayer, MatchState, Team,
+};
 use crate::species;
 use crate::tuning::Tuning;
 use gc_core::rng;
@@ -438,238 +450,21 @@ pub fn claim_score(
 
 // --- Match glue -------------------------------------------------------
 //
-// Everything below reads/mutates match state. See the module doc for why
-// these types are a local, minimal view rather than `gc_sim::r#match`'s
-// real `MatchState`/`MatchPlayer`/`MatchInput`.
-
-/// A fixture side.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Team {
-    /// Home side.
-    Home,
-    /// Away side.
-    Away,
-}
-
-/// The minimal per-player surface [`resolve_play`] and its helpers need.
-#[derive(Clone, Debug, PartialEq)]
-pub struct MatchPlayerView {
-    /// Stable player identity; used to break score ties deterministically.
-    pub id: String,
-    /// Fixture side.
-    pub team: Team,
-    /// Current position.
-    pub pos: Vec2,
-    /// Realized velocity (px/s) from the last tick's movement.
-    pub vel: Vec2,
-    /// Locomotion velocity (px/s); accel/decel toward desired each tick.
-    pub run_vel: Vec2,
-    /// Facing direction.
-    pub facing: Vec2,
-    /// Move speed, px/s.
-    pub move_speed: f64,
-    /// Shot speed, px/s.
-    pub shot_speed: f64,
-    /// Normalized 0..1 strength, used by aerial contests.
-    pub strength: f64,
-    /// 0..1 aerial reception quality.
-    pub first_touch: f64,
-    /// 0..1 header contact quality.
-    pub header_skill: f64,
-    /// 0..1 volley contact quality.
-    pub volley_skill: f64,
-    /// 0..1 bicycle-kick contact quality.
-    pub bicycle_skill: f64,
-    /// The species-owned simulation verb this player can trigger.
-    pub owned_verb: gc_data::species::SimVerb,
-    /// Whether this player is the keeper.
-    pub is_keeper: bool,
-    /// Currently sprint-boosted.
-    pub sprinting: bool,
-    /// Cooldown between aerial (header/volley) attempts.
-    pub header_cd: f64,
-    /// Movement/action recovery after an aerial attempt.
-    pub aerial_recovery: f64,
-    /// Seconds knocked off balance (slowed, can't tackle).
-    pub stun_timer: f64,
-    /// Seconds of an active slide tackle remaining.
-    pub slide_timer: f64,
-    /// Seconds of juke (sidestep + tackle immunity) remaining.
-    pub dodge_timer: f64,
-    /// Seconds this player is running onto an incoming pass.
-    pub receive_timer: f64,
-    /// Transient aerial pose timer, set by [`resolve_play`].
-    pub aerial_timer: f64,
-    /// Live aerial pose style, set by [`resolve_play`].
-    pub aerial_style: Option<AerialStyle>,
-    /// Live aerial pose outcome, set by [`resolve_play`].
-    pub aerial_outcome: Option<AerialOutcome>,
-    /// 0..1 required lift for rendering, set by [`resolve_play`].
-    pub aerial_jump: f64,
-}
-
-/// An axis-aligned goal rectangle.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Rect {
-    /// Left edge.
-    pub x: f64,
-    /// Top edge.
-    pub y: f64,
-    /// Width.
-    pub w: f64,
-    /// Height.
-    pub h: f64,
-}
-
-/// Pitch dimensions.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Field {
-    /// Width, px.
-    pub w: f64,
-    /// Height, px.
-    pub h: f64,
-}
-
-/// One frame's discrete action, produced for the renderer's juice layer.
-/// `sim/match.lua` (not yet ported) owns the full event vocabulary; this is
-/// only the subset [`resolve_play`] produces.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MatchEventKind {
-    /// A settled reception.
-    Reception,
-    /// A header contact.
-    Header,
-    /// A volley contact.
-    Volley,
-    /// A bicycle-kick contact.
-    Bicycle,
-}
-
-/// One frame's match event, in the shape [`resolve_play`] produces.
-#[derive(Clone, Debug, PartialEq)]
-pub struct MatchEvent {
-    /// Event kind.
-    pub kind: MatchEventKind,
-    /// World x position.
-    pub x: f64,
-    /// World y position.
-    pub y: f64,
-    /// The player this event is attributed to.
-    pub player: Option<String>,
-    /// The aerial style involved.
-    pub style: Option<AerialStyle>,
-    /// The resolved outcome.
-    pub outcome: Option<AerialOutcome>,
-    /// Whether the contact required a jump.
-    pub jumping: Option<bool>,
-    /// The evaluated difficulty.
-    pub difficulty: Option<f64>,
-}
-
-/// The controlled player's desired action for one frame. A local, minimal
-/// view of `sim/match.lua`'s `MatchInput` — see the module doc.
-#[derive(Clone, Debug, PartialEq)]
-pub struct MatchInput {
-    /// Controlled player's desired direction. `move` is a Rust keyword — see
-    /// the module doc.
-    pub r#move: Vec2,
-    /// Fire the shot (released this frame).
-    pub shoot: bool,
-    /// Shoot key currently down (builds charge).
-    pub shoot_held: bool,
-    /// Release the pass (fired on key release).
-    pub pass: bool,
-    /// Pass key currently down (builds pass range).
-    pub pass_held: bool,
-    /// Hand control to the outfielder nearest the ball.
-    pub switch: bool,
-    /// Tackle attempt (slide when moving fast, poke when slow).
-    pub dash: bool,
-    /// Sidestep juke with brief tackle immunity.
-    pub dodge: bool,
-    /// Loft modifier: chip a shot / lob a pass over a defender.
-    pub lob: bool,
-    /// Hold to sprint (drains the sprint meter).
-    pub sprint: bool,
-    /// Hold Space off the ball: slow shadow stance, bonus poke reach on
-    /// release.
-    pub jockey: bool,
-    /// Abstract first-time strike intent. `None` (Lua `nil`) falls back to
-    /// `jockey || dash` — see [`strike_requested`].
-    pub aerial_strike: Option<bool>,
-    /// Abstract bicycle/acrobatic intent. `None` (Lua `nil`) falls back to
-    /// `lob && strike_requested` — see [`acrobatic_requested`].
-    pub aerial_acrobatic: Option<bool>,
-    /// Equipment control is physically held.
-    pub equipment_held: bool,
-    /// Equipment press edge for this fixed tick.
-    pub equipment_pressed: bool,
-    /// Equipment release edge for this fixed tick.
-    pub equipment_released: bool,
-}
+// Everything below reads/mutates match state, via `match_snapshot`'s
+// canonical `MatchState`/`MatchPlayer`/`MatchInput`/`MatchEvent` — see the
+// module doc.
 
 /// A neutral (no input) `MatchInput`, used when a player has no live input
-/// for the frame.
+/// for the frame. `aerial_strike`/`aerial_acrobatic` are explicit
+/// `Some(false)`, matching `sim/aerial.lua`'s local `neutral_input`, which
+/// writes `aerial_strike = false` literally (not `nil`).
 #[must_use]
-pub fn neutral_input() -> MatchInput {
+fn neutral_input() -> MatchInput {
     MatchInput {
-        r#move: Vec2::new(0.0, 0.0),
-        shoot: false,
-        shoot_held: false,
-        pass: false,
-        pass_held: false,
-        switch: false,
-        dash: false,
-        dodge: false,
-        lob: false,
-        sprint: false,
-        jockey: false,
         aerial_strike: Some(false),
         aerial_acrobatic: Some(false),
-        equipment_held: false,
-        equipment_pressed: false,
-        equipment_released: false,
+        ..MatchInput::default()
     }
-}
-
-/// The minimal match-state surface [`resolve_play`] needs.
-#[derive(Clone, Debug, PartialEq)]
-pub struct MatchStateView {
-    /// Pitch dimensions.
-    pub field: Field,
-    /// Left goal; away scores here.
-    pub goal_home: Rect,
-    /// Right goal; home scores here.
-    pub goal_away: Rect,
-    /// Every player in the fixture.
-    pub players: Vec<MatchPlayerView>,
-    /// Ball ground position.
-    pub ball: Vec2,
-    /// Ball horizontal velocity.
-    pub ball_vel: Vec2,
-    /// Ball height above the pitch.
-    pub ball_z: f64,
-    /// Ball vertical velocity.
-    pub ball_vz: f64,
-    /// Lateral curve applied to the loose ball.
-    pub ball_spin: f64,
-    /// Seconds before the ball can be picked up again.
-    pub pickup_cd: f64,
-    /// Seconds until this loose ball can take another aerial contact.
-    pub aerial_lock: f64,
-    /// Seeded PRNG state (`core.rng`): same seed = same match.
-    pub rng: u32,
-    /// This frame's events.
-    pub events: Vec<MatchEvent>,
-    /// True when the fixture uses stable eight-slot `InputFrame` routing.
-    pub slot_mode: bool,
-    /// Outfielder player index (0-based) -> canonical slot index, when
-    /// `slot_mode`. `None` where the Lua table entry would be absent.
-    pub slot_for_player: Vec<Option<usize>>,
-    /// Whether a human is controlling the `controlled` slot.
-    pub human_controlled: bool,
-    /// Index (0-based) of the human-controllable player.
-    pub controlled: usize,
 }
 
 /// Tunable match constants [`resolve_play`] needs but does not own.
@@ -698,7 +493,7 @@ struct MatchAerialCandidate {
     score: f64,
 }
 
-fn is_human_player(s: &MatchStateView, player_idx: usize) -> bool {
+fn is_human_player(s: &MatchState, player_idx: usize) -> bool {
     if s.slot_mode {
         return s
             .slot_for_player
@@ -707,7 +502,9 @@ fn is_human_player(s: &MatchStateView, player_idx: usize) -> bool {
             .flatten()
             .is_some();
     }
-    s.human_controlled && player_idx == s.controlled
+    // `s.controlled` is one-based (`match_snapshot`'s convention); `player_idx`
+    // is an ordinary zero-based `Vec` position — see the module doc.
+    s.human_controlled && (player_idx as i64 + 1) == s.controlled
 }
 
 /// Whether `input.aerial_strike`, or the fallback `jockey || dash`, requests
@@ -730,7 +527,7 @@ pub fn acrobatic_requested(input: &MatchInput) -> bool {
     input.lob && strike_requested(input)
 }
 
-fn nearest_opponent(s: &MatchStateView, player: &MatchPlayerView) -> f64 {
+fn nearest_opponent(s: &MatchState, player: &MatchPlayer) -> f64 {
     let mut nearest = f64::INFINITY;
     for opponent in &s.players {
         if opponent.team != player.team {
@@ -740,7 +537,7 @@ fn nearest_opponent(s: &MatchStateView, player: &MatchPlayerView) -> f64 {
     nearest
 }
 
-fn style_skill(player: &MatchPlayerView, style: AerialStyle) -> f64 {
+fn style_skill(player: &MatchPlayer, style: AerialStyle) -> f64 {
     match style {
         AerialStyle::LegControl | AerialStyle::ChestControl => player.first_touch,
         AerialStyle::Header => player.header_skill,
@@ -750,7 +547,7 @@ fn style_skill(player: &MatchPlayerView, style: AerialStyle) -> f64 {
 }
 
 fn make_match_context(
-    s: &MatchStateView,
+    s: &MatchState,
     player_idx: usize,
     skill: f64,
     tune: &Tuning,
@@ -785,7 +582,7 @@ fn make_match_context(
 }
 
 fn contact_for_intent(
-    s: &MatchStateView,
+    s: &MatchState,
     player_idx: usize,
     intent: AerialIntent,
     tune: &Tuning,
@@ -810,7 +607,7 @@ fn own_third(field_w: f64, team: Team, pos_x: f64) -> bool {
 }
 
 fn match_intent(
-    s: &MatchStateView,
+    s: &MatchState,
     player_idx: usize,
     inputs: &[Option<MatchInput>],
     tune: &Tuning,
@@ -850,7 +647,7 @@ fn match_intent(
 }
 
 fn choose_candidate(
-    s: &MatchStateView,
+    s: &MatchState,
     inputs: &[Option<MatchInput>],
     ineligible: Option<&[bool]>,
     tune: &Tuning,
@@ -929,7 +726,7 @@ fn rotate_vector(vector: Vec2, angle: f64) -> Vec2 {
 }
 
 fn begin_action(
-    player: &mut MatchPlayerView,
+    player: &mut MatchPlayer,
     contact: &AerialContact,
     outcome: AerialOutcome,
     intent: AerialIntent,
@@ -956,7 +753,7 @@ fn begin_action(
 }
 
 fn apply_reception(
-    s: &mut MatchStateView,
+    s: &mut MatchState,
     candidate: &MatchAerialCandidate,
     inputs: &[Option<MatchInput>],
     resolution: &AerialResolution,
@@ -974,10 +771,15 @@ fn apply_reception(
         x: s.ball.x,
         y: s.ball.y,
         player: Some(s.players[idx].id.clone()),
+        save_style: None,
         style: Some(candidate.contact.style),
         outcome: Some(resolution.outcome),
         jumping: Some(candidate.contact.jumping),
         difficulty: Some(candidate.contact.difficulty),
+        shot_type: None,
+        keeper_state: None,
+        keeper_depth: None,
+        on_target: None,
     });
 
     if resolution.outcome == AerialOutcome::Miss {
@@ -1017,7 +819,7 @@ fn apply_reception(
 }
 
 fn apply_strike(
-    s: &mut MatchStateView,
+    s: &mut MatchState,
     candidate: &MatchAerialCandidate,
     inputs: &[Option<MatchInput>],
     resolution: &AerialResolution,
@@ -1048,10 +850,15 @@ fn apply_strike(
         x: s.ball.x,
         y: s.ball.y,
         player: Some(s.players[idx].id.clone()),
+        save_style: None,
         style: Some(style),
         outcome: Some(resolution.outcome),
         jumping: Some(candidate.contact.jumping),
         difficulty: Some(candidate.contact.difficulty),
+        shot_type: None,
+        keeper_state: None,
+        keeper_depth: None,
+        on_target: None,
     });
     for other in &mut s.players {
         other.receive_timer = 0.0;
@@ -1155,7 +962,7 @@ fn apply_strike(
 /// ball, and record an event. Returns whether the ball's trajectory changed
 /// (`false` on no candidate or a miss).
 pub fn resolve_play(
-    s: &mut MatchStateView,
+    s: &mut MatchState,
     inputs: &[Option<MatchInput>],
     config: &AerialMatchConfig,
     ineligible: Option<&[bool]>,

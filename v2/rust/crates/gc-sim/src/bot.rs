@@ -15,21 +15,40 @@
 //! explicit policy id, and must never be reported as the gameplay AI by
 //! accident.
 //!
-//! The Lua original's `s: MatchState` parameter is defined by `sim/match.lua`
-//! — another agent's module, still an unported placeholder
-//! (`gc_sim::r#match`). This module never depends on it. [`MatchStateView`],
-//! [`MatchPlayerView`], and [`MatchInput`] are a typed, minimal surface —
-//! exactly the fields [`input`] and its helpers touch, named the same as the
-//! Lua fields they mirror. When `sim::match` lands, its real match state can
-//! be adapted into this view (the same shape [`crate::aerial`] and
-//! [`crate::metrics`] already use for the identical reason — see their
-//! module docs). `sim/tuning.lua`'s `TUNE` global likewise becomes an
-//! explicit `&Tuning` parameter (AGENTS.md §3; see [`crate::tuning`]'s doc).
+//! The Lua original's `s: MatchState` parameter is defined by `sim/match.lua`.
+//! This module was ported before that landed and, like `crate::aerial` and
+//! `crate::metrics`, declared its own typed, minimal surface for it rather
+//! than depending on an unported placeholder — [`BotMatchView`] and
+//! [`BotPlayerView`], exactly the fields [`input`] and its helpers touch,
+//! named after the Lua fields they mirror.
 //!
-//! `move` is a Rust keyword, so [`MatchInput::r#move`] and
-//! [`BotState::r#move`] use a raw identifier — the same convention
-//! `gc_sim::r#match` itself uses for the module name (see `lib.rs`).
+//! Now that `gc_sim::r#match` has landed, README §5.1 gives two ways to
+//! resolve that debt. `crate::aerial`'s local view needed nearly the entire
+//! canonical `MatchState`/`MatchPlayer` shape, so it was folded onto
+//! [`crate::match_snapshot`]'s real types directly (end state 1). This
+//! module's view stays genuinely narrow — a human-proxy input driver has no
+//! business seeing keeper release timers, tactic state, or the rest of
+//! `MatchState` — so [`BotMatchView`]/[`BotPlayerView`] survive as a
+//! deliberately narrow read interface (end state 2), just renamed from the
+//! generic `MatchStateView`/`MatchPlayerView` every pre-consolidation module
+//! used (this crate had three colliding structs under those names; `aerial`'s
+//! is gone, and this one and `crate::metrics`'s narrow view are now unique).
+//! `crate::headless::to_bot_view` builds one from a real `MatchState`.
+//!
+//! [`input`]'s *output*, by contrast, was never legitimately narrow — every
+//! `MatchInput` field this driver produces is one the real simulation reads
+//! — so it returns [`crate::match_snapshot::MatchInput`] directly rather
+//! than a fourth local mirror.
+//!
+//! `sim/tuning.lua`'s `TUNE` global likewise becomes an explicit `&Tuning`
+//! parameter (AGENTS.md §3; see [`crate::tuning`]'s doc).
+//!
+//! `move` is a Rust keyword, so
+//! [`crate::match_snapshot::MatchInput::r#move`] and [`BotState::r#move`]
+//! use a raw identifier — the same convention `gc_sim::r#match` itself uses
+//! for the module name (see `lib.rs`).
 
+use crate::match_snapshot::MatchInput;
 use crate::tuning::Tuning;
 use gc_core::rng;
 use gc_core::vec2::Vec2;
@@ -58,9 +77,10 @@ pub enum Team {
     Away,
 }
 
-/// The minimal per-player surface [`input`] and its helpers need.
+/// The minimal per-player surface [`input`] and its helpers need (README
+/// §5.1 end state 2 — see the module doc).
 #[derive(Clone, Debug, PartialEq)]
-pub struct MatchPlayerView {
+pub struct BotPlayerView {
     /// Fixture side.
     pub team: Team,
     /// Whether this player is the keeper.
@@ -86,11 +106,12 @@ pub struct Field {
     pub h: f64,
 }
 
-/// The minimal match-state surface [`input`] and its helpers need.
+/// The minimal match-state surface [`input`] and its helpers need (README
+/// §5.1 end state 2 — see the module doc).
 #[derive(Clone, Debug, PartialEq)]
-pub struct MatchStateView {
+pub struct BotMatchView {
     /// Every player in the fixture.
-    pub players: Vec<MatchPlayerView>,
+    pub players: Vec<BotPlayerView>,
     /// Pitch dimensions.
     pub field: Field,
     /// Index (0-based) of the player this bot drives.
@@ -105,47 +126,6 @@ pub struct MatchStateView {
     pub ball_z: f64,
     /// Ball vertical velocity.
     pub ball_vz: f64,
-}
-
-/// The controlled player's desired action for one frame. A local, minimal
-/// view of `sim/match.lua`'s `MatchInput` — see the module doc.
-#[derive(Clone, Debug, PartialEq)]
-pub struct MatchInput {
-    /// Controlled player's desired direction. `move` is a Rust keyword — see
-    /// the module doc.
-    pub r#move: Vec2,
-    /// Fire the shot (released this frame).
-    pub shoot: bool,
-    /// Shoot key currently down (builds charge).
-    pub shoot_held: bool,
-    /// Release the pass (fired on key release).
-    pub pass: bool,
-    /// Pass key currently down (builds pass range).
-    pub pass_held: bool,
-    /// Hand control to the outfielder nearest the ball.
-    pub switch: bool,
-    /// Tackle attempt (slide when moving fast, poke when slow).
-    pub dash: bool,
-    /// Sidestep juke with brief tackle immunity.
-    pub dodge: bool,
-    /// Loft modifier: chip a shot / lob a pass over a defender.
-    pub lob: bool,
-    /// Hold to sprint (drains the sprint meter).
-    pub sprint: bool,
-    /// Hold Space off the ball: slow shadow stance, bonus poke reach on
-    /// release.
-    pub jockey: bool,
-    /// Abstract first-time strike intent.
-    pub aerial_strike: bool,
-    /// Abstract bicycle/acrobatic intent.
-    pub aerial_acrobatic: bool,
-    /// Equipment control is physically held. Always `false` — see the
-    /// module doc.
-    pub equipment_held: bool,
-    /// Equipment press edge for this fixed tick. Always `false`.
-    pub equipment_pressed: bool,
-    /// Equipment release edge for this fixed tick. Always `false`.
-    pub equipment_released: bool,
 }
 
 /// Construction options for [`new`].
@@ -233,7 +213,7 @@ fn noisy(b: &mut BotState, dir: Vec2) -> Vec2 {
     Vec2::new(dir.x * c - dir.y * s, dir.x * s + dir.y * c)
 }
 
-fn nearest_opponent(s: &MatchStateView, from: Vec2) -> (f64, Option<&MatchPlayerView>) {
+fn nearest_opponent(s: &BotMatchView, from: Vec2) -> (f64, Option<&BotPlayerView>) {
     let mut best = f64::INFINITY;
     let mut who = None;
     for p in &s.players {
@@ -252,10 +232,10 @@ fn nearest_opponent(s: &MatchStateView, from: Vec2) -> (f64, Option<&MatchPlayer
 /// passing range (crude — the sim's own aim cone does the real target
 /// pick).
 fn best_outlet<'a>(
-    s: &'a MatchStateView,
-    me: &MatchPlayerView,
+    s: &'a BotMatchView,
+    me: &BotPlayerView,
     tune: &Tuning,
-) -> Option<&'a MatchPlayerView> {
+) -> Option<&'a BotPlayerView> {
     let mut best = f64::NEG_INFINITY;
     let mut who = None;
     for (i, p) in s.players.iter().enumerate() {
@@ -275,7 +255,7 @@ fn best_outlet<'a>(
 }
 
 /// Decide a fresh intent (called once per reaction window).
-fn decide(b: &mut BotState, s: &MatchStateView, tune: &Tuning) {
+fn decide(b: &mut BotState, s: &BotMatchView, tune: &Tuning) {
     let me = &s.players[s.controlled];
     let goal = Vec2::new(s.field.w, s.field.h / 2.0);
     b.sprint = false;
@@ -397,7 +377,7 @@ fn decide(b: &mut BotState, s: &MatchStateView, tune: &Tuning) {
 }
 
 /// Produce this frame's input; call once per match tick with the same `dt`.
-pub fn input(b: &mut BotState, s: &MatchStateView, dt: f64, tune: &Tuning) -> MatchInput {
+pub fn input(b: &mut BotState, s: &BotMatchView, dt: f64, tune: &Tuning) -> MatchInput {
     // Finish an in-flight charged shot before considering anything else.
     if b.charge_t > 0.0 {
         b.charge_t -= dt;
@@ -416,8 +396,8 @@ pub fn input(b: &mut BotState, s: &MatchStateView, dt: f64, tune: &Tuning) -> Ma
                 lob: b.shot_lob,
                 sprint: false,
                 jockey: false,
-                aerial_strike: false,
-                aerial_acrobatic: false,
+                aerial_strike: Some(false),
+                aerial_acrobatic: Some(false),
                 equipment_held: false,
                 equipment_pressed: false,
                 equipment_released: false,
@@ -436,8 +416,8 @@ pub fn input(b: &mut BotState, s: &MatchStateView, dt: f64, tune: &Tuning) -> Ma
                 lob: b.shot_lob,
                 sprint: false,
                 jockey: false,
-                aerial_strike: false,
-                aerial_acrobatic: false,
+                aerial_strike: Some(false),
+                aerial_acrobatic: Some(false),
                 equipment_held: false,
                 equipment_pressed: false,
                 equipment_released: false,
@@ -465,8 +445,8 @@ pub fn input(b: &mut BotState, s: &MatchStateView, dt: f64, tune: &Tuning) -> Ma
                 lob: b.pass_lob,
                 sprint: false,
                 jockey: false,
-                aerial_strike: false,
-                aerial_acrobatic: false,
+                aerial_strike: Some(false),
+                aerial_acrobatic: Some(false),
                 equipment_held: false,
                 equipment_pressed: false,
                 equipment_released: false,
@@ -487,8 +467,8 @@ pub fn input(b: &mut BotState, s: &MatchStateView, dt: f64, tune: &Tuning) -> Ma
                 lob,
                 sprint: false,
                 jockey: false,
-                aerial_strike: false,
-                aerial_acrobatic: false,
+                aerial_strike: Some(false),
+                aerial_acrobatic: Some(false),
                 equipment_held: false,
                 equipment_pressed: false,
                 equipment_released: false,
@@ -520,8 +500,8 @@ pub fn input(b: &mut BotState, s: &MatchStateView, dt: f64, tune: &Tuning) -> Ma
         lob,
         sprint: b.sprint,
         jockey: b.jockey,
-        aerial_strike: b.aerial_strike,
-        aerial_acrobatic: b.aerial_acrobatic,
+        aerial_strike: Some(b.aerial_strike),
+        aerial_acrobatic: Some(b.aerial_acrobatic),
         equipment_held: false,
         equipment_pressed: false,
         equipment_released: false,

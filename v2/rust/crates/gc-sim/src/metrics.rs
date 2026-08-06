@@ -5,16 +5,26 @@
 //! match state after each step, never mutates it.
 //!
 //! The Lua original takes a `MatchState` duck-typed table (defined by
-//! `sim/match.lua`, not yet ported) and reads a runtime-tunable knob off a
-//! shared global (`local TUNE = require("sim.tuning").values`). Neither
-//! survives mechanically:
+//! `sim/match.lua`) and reads a runtime-tunable knob off a shared global
+//! (`local TUNE = require("sim.tuning").values`). Neither survives
+//! mechanically:
 //!
 //! - This module never `require`s `sim/match.lua` and `metrics_spec.lua`
 //!   never builds a real `MatchState` either — it hand-builds a "minimal
-//!   MatchState-shaped table: enough surface for the collector." [`MatchStateView`]
-//!   and [`MatchPlayerView`] are that same minimal surface, typed. When
-//!   `sim::match` lands, its real match state can be adapted into this view
-//!   rather than this module depending on it.
+//!   MatchState-shaped table: enough surface for the collector."
+//!   [`MetricsMatchView`] and [`MetricsPlayerView`] are that same minimal
+//!   surface, typed. `crate::headless::to_metrics_view` adapts a real
+//!   [`crate::match_snapshot::MatchState`] into one.
+//!
+//!   These were named `MatchStateView`/`MatchPlayerView` before README
+//!   §5.1's resolution: `crate::bot` declared an unrelated, differently
+//!   shaped pair under the same names, and `crate::aerial`'s (also
+//!   differently shaped) third copy needed nearly the whole canonical
+//!   `MatchState` and was folded onto `match_snapshot`'s real types instead
+//!   (end state 1). This module's view stays genuinely narrow — a fun-proxy
+//!   observer has no business seeing keeper release timers or tactic state
+//!   — so it survives (end state 2), renamed to stop colliding with
+//!   `crate::bot`'s equally narrow but differently shaped view.
 //! - AGENTS.md §3 forbids stray global mutable state, and this crate's port
 //!   of `sim/tuning.lua` ([`crate::tuning`]) is accordingly an owned value,
 //!   not a singleton (see that module's doc). [`observe`] therefore takes an
@@ -78,7 +88,7 @@ fn keeper_metric_index(state: Option<KeeperState>) -> usize {
 
 /// One player's collector-relevant state for one observed frame.
 #[derive(Clone, Debug, PartialEq)]
-pub struct MatchPlayerView {
+pub struct MetricsPlayerView {
     /// Stable player identity.
     pub id: String,
     /// Fixture side.
@@ -103,7 +113,7 @@ pub struct MatchPlayerView {
 /// full event vocabulary; this collector only branches on a subset of it and
 /// ignores everything else, exactly like the Lua original's `elseif` chain.
 #[derive(Clone, Debug, PartialEq)]
-pub struct MatchEventView {
+pub struct MetricsEventView {
     /// Event kind, e.g. `"pass"`, `"shot"`, `"catch"`, `"touch"`, `"juke"`.
     pub kind: String,
     /// The player this event is attributed to, if any.
@@ -130,9 +140,9 @@ pub struct Score {
 
 /// The minimal match-state surface [`observe`] needs.
 #[derive(Clone, Debug, PartialEq)]
-pub struct MatchStateView {
+pub struct MetricsMatchView {
     /// Every player in the fixture.
-    pub players: Vec<MatchPlayerView>,
+    pub players: Vec<MetricsPlayerView>,
     /// Whether a human is controlling the `controlled` slot.
     pub human_controlled: bool,
     /// Index (0-based; not a wire value, see README rule 5.3) of the
@@ -144,7 +154,7 @@ pub struct MatchStateView {
     pub owner: Option<usize>,
     /// This frame's events, populated by the same `dt` step [`observe`] is
     /// called with.
-    pub events: Vec<MatchEventView>,
+    pub events: Vec<MetricsEventView>,
 }
 
 /// Which population a dribble observation belongs to.
@@ -243,7 +253,7 @@ pub struct MetricsCollector {
     pub team_of: IndexMap<String, MatchTeam>,
     /// Player id -> is keeper.
     pub keeper: IndexMap<String, bool>,
-    /// Player id -> `MatchStateView.players` index.
+    /// Player id -> `MetricsMatchView.players` index.
     pub index_of: IndexMap<String, usize>,
     /// Ball owner id as of the last frame.
     pub prev_owner_id: Option<String>,
@@ -287,7 +297,7 @@ fn dribble_bucket_for_mut(
 
 /// A fresh collector, seeded from the match's starting state.
 #[must_use]
-pub fn new(s: &MatchStateView) -> MetricsCollector {
+pub fn new(s: &MetricsMatchView) -> MetricsCollector {
     let mut team_of = IndexMap::new();
     let mut keeper = IndexMap::new();
     let mut index_of = IndexMap::new();
@@ -346,7 +356,7 @@ pub fn new(s: &MatchStateView) -> MetricsCollector {
     }
 }
 
-fn dribble_role(s: &MatchStateView, player_id: &str) -> DribbleRole {
+fn dribble_role(s: &MetricsMatchView, player_id: &str) -> DribbleRole {
     let index = s.players.iter().position(|p| p.id == player_id);
     if s.human_controlled && index == Some(s.controlled) {
         DribbleRole::Controlled
@@ -357,7 +367,7 @@ fn dribble_role(s: &MatchStateView, player_id: &str) -> DribbleRole {
 
 /// Observe one frame, AFTER stepping the match for the same `dt` (so
 /// `s.events` holds exactly this frame's actions).
-pub fn observe(c: &mut MetricsCollector, s: &MatchStateView, dt: f64, tuning: &Tuning) {
+pub fn observe(c: &mut MetricsCollector, s: &MetricsMatchView, dt: f64, tuning: &Tuning) {
     c.t += dt;
 
     for player in &s.players {
@@ -692,7 +702,7 @@ pub struct MatchMetrics {
 
 /// Fold the collector and final match state into a [`MatchMetrics`] summary.
 #[must_use]
-pub fn finish(c: &mut MetricsCollector, s: &MatchStateView) -> MatchMetrics {
+pub fn finish(c: &mut MetricsCollector, s: &MetricsMatchView) -> MatchMetrics {
     c.longest_drought = c.longest_drought.max(c.t - c.last_chance_t);
     let longest_drought = c.longest_drought;
     let gh = s.score.home;
