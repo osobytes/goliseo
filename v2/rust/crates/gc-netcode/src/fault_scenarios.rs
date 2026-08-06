@@ -789,6 +789,7 @@ pub fn run(scenario: &FaultScenario, options: RunOptions) -> fault_harness::Faul
         .or(options.duration_ticks)
         .unwrap_or(SMOKE_DURATION_TICKS);
     let mut harness = FaultHarness::new(FaultHarnessOptions {
+        topology: None,
         mode: Some(scenario.mode),
         humans: scenario.humans,
         profile: Some(scenario.profile),

@@ -19,7 +19,8 @@
 //! | --- | --- |
 //! | `coordinator`, `protocol`, `protocol_fixture`, `match_manifest`, `match_session` | **ported** (`crate::coordinator`, `crate::protocol`, `crate::protocol_fixture`, `crate::match_manifest`, `crate::match_session`) |
 //! | `FakeStarTransport` | **ported** (`crate::fake_star`) — a real in-process Rust star |
-//! | `DiagnosticTransport`, `lobby_link`, `match_presentation`, `net_diagnostics`, `online_match_model`, `FakeRelayTransport` | TypeScript-owned (`v2/README.md` §2); no Rust type exists or is planned |
+//! | `FakeRelayTransport` | **ported** (`crate::fake_relay`) — a real in-process Rust relay, no sequencer |
+//! | `DiagnosticTransport`, `lobby_link`, `match_presentation`, `net_diagnostics`, `online_match_model` | TypeScript-owned (`v2/README.md` §2); no Rust type exists or is planned |
 //! | `fault_transport`, `match_driver`, `match_driver_fixture`, `input_frame`, `match_snapshot`, `rollback_input_history` | **available**, used below |
 //!
 //! Two prior passes over this file left the same note: the hard blockers —
@@ -194,6 +195,7 @@ use gc_sim::rollback_input_history;
 use indexmap::IndexMap;
 
 use crate::coordinator;
+use crate::fake_relay::{self, FakeRelayTransport};
 use crate::fake_star::{self, FakeStarTransport};
 use crate::fault_transport::{
     FaultTransport, FaultTransportOptions, FaultTransportPollOrder, StarTransportAdapter,
@@ -214,6 +216,184 @@ pub enum FaultHarnessTopology {
     Star,
     /// Every client holds one link to an in-process relay room.
     Relay,
+}
+
+impl FaultHarnessTopology {
+    /// The exact Lua wire string (`harness.topology`'s own value, used
+    /// verbatim in `fault_harness.lua`'s marker lines).
+    #[must_use]
+    fn wire_str(self) -> &'static str {
+        match self {
+            FaultHarnessTopology::Star => "star",
+            FaultHarnessTopology::Relay => "relay",
+        }
+    }
+}
+
+/// One seated client's own transport endpoint: either shape
+/// [`StarTransportAdapter`] admits. Mirrors the Lua `---@alias
+/// FaultHarnessEndpoint FakeStarTransport|FakeRelayTransport` — Lua's duck
+/// typing has no equivalent in Rust, so this crate needs an explicit sum type
+/// where the Lua original needed none. Every method below delegates to
+/// whichever concrete endpoint this client actually holds; the topology
+/// itself is decided once, in [`FaultHarness::new`].
+#[derive(Clone)]
+pub enum FaultHarnessEndpoint {
+    /// The shipped OMP-3 direct-host star.
+    Star(FakeStarTransport),
+    /// An in-process relay room member.
+    Relay(FakeRelayTransport),
+}
+
+impl FaultHarnessEndpoint {
+    /// Test seam: delivers everything currently buffered on this endpoint's
+    /// wire (and, for a star, on every endpoint linked to it too — see
+    /// `crate::fake_star::FakeStarTransport::pump`; a relay's single shared
+    /// room makes the same true of `crate::fake_relay::FakeRelayTransport::pump`).
+    pub fn pump(&self) {
+        match self {
+            FaultHarnessEndpoint::Star(star) => star.pump(),
+            FaultHarnessEndpoint::Relay(relay) => relay.pump(),
+        }
+    }
+
+    /// This endpoint's uplink/downlink envelope byte counters.
+    #[must_use]
+    pub fn wire_bytes(&self) -> (i64, i64) {
+        match self {
+            FaultHarnessEndpoint::Star(star) => star.wire_bytes(),
+            FaultHarnessEndpoint::Relay(relay) => relay.wire_bytes(),
+        }
+    }
+}
+
+impl StarTransportAdapter for FaultHarnessEndpoint {
+    fn initialize(&mut self) -> TransportResult<bool> {
+        match self {
+            FaultHarnessEndpoint::Star(star) => star.initialize(),
+            FaultHarnessEndpoint::Relay(relay) => relay.initialize(),
+        }
+    }
+    fn shutdown(&mut self) -> TransportResult<bool> {
+        match self {
+            FaultHarnessEndpoint::Star(star) => star.shutdown(),
+            FaultHarnessEndpoint::Relay(relay) => relay.shutdown(),
+        }
+    }
+    fn role(&self) -> TransportRole {
+        match self {
+            FaultHarnessEndpoint::Star(star) => star.role(),
+            FaultHarnessEndpoint::Relay(relay) => relay.role(),
+        }
+    }
+    fn capacity(&self) -> i64 {
+        match self {
+            FaultHarnessEndpoint::Star(star) => star.capacity(),
+            FaultHarnessEndpoint::Relay(relay) => relay.capacity(),
+        }
+    }
+    fn open_peer(&mut self, peer_id: &str) -> TransportResult<i64> {
+        match self {
+            FaultHarnessEndpoint::Star(star) => star.open_peer(peer_id),
+            FaultHarnessEndpoint::Relay(relay) => relay.open_peer(peer_id),
+        }
+    }
+    fn close_peer(&mut self, peer_id: &str, reason: Option<&str>) -> TransportResult<bool> {
+        match self {
+            FaultHarnessEndpoint::Star(star) => star.close_peer(peer_id, reason),
+            FaultHarnessEndpoint::Relay(relay) => relay.close_peer(peer_id, reason),
+        }
+    }
+    fn peer_ids(&self) -> Vec<String> {
+        match self {
+            FaultHarnessEndpoint::Star(star) => star.peer_ids(),
+            FaultHarnessEndpoint::Relay(relay) => relay.peer_ids(),
+        }
+    }
+    fn peer_state(&self, peer_id: &str) -> Option<TransportPeerState> {
+        match self {
+            FaultHarnessEndpoint::Star(star) => star.peer_state(peer_id),
+            FaultHarnessEndpoint::Relay(relay) => relay.peer_state(peer_id),
+        }
+    }
+    fn request_offer(&mut self, peer_id: &str) -> TransportResult<bool> {
+        match self {
+            FaultHarnessEndpoint::Star(star) => star.request_offer(peer_id),
+            FaultHarnessEndpoint::Relay(relay) => relay.request_offer(peer_id),
+        }
+    }
+    fn accept_offer(&mut self, signal: &str) -> TransportResult<bool> {
+        match self {
+            FaultHarnessEndpoint::Star(star) => star.accept_offer(signal),
+            FaultHarnessEndpoint::Relay(relay) => relay.accept_offer(signal),
+        }
+    }
+    fn accept_answer(&mut self, peer_id: &str, signal: &str) -> TransportResult<bool> {
+        match self {
+            FaultHarnessEndpoint::Star(star) => star.accept_answer(peer_id, signal),
+            FaultHarnessEndpoint::Relay(relay) => relay.accept_answer(peer_id, signal),
+        }
+    }
+    fn take_signal(&mut self, peer_id: &str) -> TransportResult<Option<String>> {
+        match self {
+            FaultHarnessEndpoint::Star(star) => star.take_signal(peer_id),
+            FaultHarnessEndpoint::Relay(relay) => relay.take_signal(peer_id),
+        }
+    }
+    fn send(
+        &mut self,
+        peer_id: &str,
+        channel: TransportChannel,
+        message: TransportMessage,
+    ) -> TransportResult<bool> {
+        match self {
+            FaultHarnessEndpoint::Star(star) => star.send(peer_id, channel, message),
+            FaultHarnessEndpoint::Relay(relay) => relay.send(peer_id, channel, message),
+        }
+    }
+    fn broadcast(
+        &mut self,
+        channel: TransportChannel,
+        message: TransportMessage,
+    ) -> TransportResult<i64> {
+        match self {
+            FaultHarnessEndpoint::Star(star) => star.broadcast(channel, message),
+            FaultHarnessEndpoint::Relay(relay) => relay.broadcast(channel, message),
+        }
+    }
+    fn poll(&mut self) -> Option<crate::fault_transport::TransportPeerMessage> {
+        match self {
+            FaultHarnessEndpoint::Star(star) => star.poll(),
+            FaultHarnessEndpoint::Relay(relay) => relay.poll(),
+        }
+    }
+    fn poll_batch(
+        &mut self,
+        limit: Option<i64>,
+    ) -> Vec<crate::fault_transport::TransportPeerMessage> {
+        match self {
+            FaultHarnessEndpoint::Star(star) => star.poll_batch(limit),
+            FaultHarnessEndpoint::Relay(relay) => relay.poll_batch(limit),
+        }
+    }
+    fn poll_event(&mut self) -> Option<TransportPeerEvent> {
+        match self {
+            FaultHarnessEndpoint::Star(star) => star.poll_event(),
+            FaultHarnessEndpoint::Relay(relay) => relay.poll_event(),
+        }
+    }
+    fn state(&self) -> TransportState {
+        match self {
+            FaultHarnessEndpoint::Star(star) => star.state(),
+            FaultHarnessEndpoint::Relay(relay) => relay.state(),
+        }
+    }
+    fn diagnostics(&self) -> TransportStarDiagnostics {
+        match self {
+            FaultHarnessEndpoint::Star(star) => star.diagnostics(),
+            FaultHarnessEndpoint::Relay(relay) => relay.diagnostics(),
+        }
+    }
 }
 
 /// Mirrors `fault_harness.HOST_PEER_ID` (`transport_contract.HOST_PEER_ID`,
@@ -607,12 +787,11 @@ pub fn declare_contingent(findings: &mut Vec<FaultHarnessFinding>) {
 // harness, and exactly what it proves" / "What still is not built, and why".
 // ---------------------------------------------------------------------------
 
-/// Inputs to [`FaultHarness::new`]. Mirrors `FaultHarnessOptions`. Only the
-/// `star` topology is offered — `game/transport/fake_relay.lua` has no Rust
-/// port (TypeScript-owned, `v2/README.md` §2), so there is no second
-/// endpoint shape to construct.
+/// Inputs to [`FaultHarness::new`]. Mirrors `FaultHarnessOptions`.
 #[derive(Clone, Debug, Default)]
 pub struct FaultHarnessOptions {
+    /// Wire shape; defaults to the shipped [`FaultHarnessTopology::Star`].
+    pub topology: Option<FaultHarnessTopology>,
     /// Which match mode to seat.
     pub mode: Option<protocol::MatchMode>,
     /// Seated humans; fewer than the mode allows declares bot fills.
@@ -822,7 +1001,7 @@ pub struct FaultHarnessClient {
     pub peer_id: String,
     /// Host or guest.
     pub role: coordinator::Role,
-    star: FakeStarTransport,
+    star: FaultHarnessEndpoint,
     transport: Rc<RefCell<FaultTransport>>,
     /// This client's own coordinator session state.
     pub coordinator: coordinator::CoordinatorState,
@@ -982,7 +1161,7 @@ impl FaultHarnessClient {
 /// teardown. Mirrors `FaultHarness`. See the module doc for exactly what
 /// this proves and what it does not.
 pub struct FaultHarness {
-    /// Always [`FaultHarnessTopology::Star`] — see [`FaultHarnessOptions`].
+    /// Which wire shape this run seated over — see [`FaultHarnessOptions::topology`].
     pub topology: FaultHarnessTopology,
     /// Which match mode this run seated.
     pub mode: protocol::MatchMode,
@@ -994,7 +1173,7 @@ pub struct FaultHarness {
     pub peer_ids: Vec<String>,
     /// Every client, host first then guests in seating order.
     pub clients: Vec<FaultHarnessClient>,
-    host_star: FakeStarTransport,
+    host_star: FaultHarnessEndpoint,
     /// The shared impairment clock every client's [`FaultTransport::tick`]
     /// advances with.
     pub transport_tick: i64,
@@ -1014,7 +1193,8 @@ pub struct FaultHarness {
 
 impl FaultHarness {
     /// Builds a new harness: one host plus `humans - 1` guests, every
-    /// endpoint initialized and linked over a real in-process star.
+    /// endpoint initialized and joined over a real in-process wire — a
+    /// direct-host star or a relay room, per `options.topology`.
     ///
     /// # Panics
     ///
@@ -1048,20 +1228,49 @@ impl FaultHarness {
         let profile = options.profile.unwrap_or(NetworkProfileName::Clean);
         let network_seed = options.network_seed.unwrap_or(DEFAULT_NETWORK_SEED);
 
-        let rendezvous = FakeStarTransport::new_rendezvous();
-        let mut host_star = FakeStarTransport::new(fake_star::FakeStarTransportOptions {
-            role: TransportRole::Host,
-            rendezvous: Some(rendezvous.clone()),
-            buffered_amount_limit: options.buffered_amount_limit,
-            ..Default::default()
-        });
-        host_star
-            .initialize()
-            .expect("harness host star initializes");
+        let topology = options.topology.unwrap_or(FaultHarnessTopology::Star);
+        // A star needs a shared signaling rendezvous; a relay needs a shared
+        // room. Only one is ever used, but both are cheap to mint (mirrors
+        // `fault_harness.lua`'s `rendezvous`/`room` locals, which the Lua
+        // original also builds unconditionally).
+        let star_rendezvous = FakeStarTransport::new_rendezvous();
+        let relay_room = FakeRelayTransport::new_room();
+
+        // The star topology needs a concrete, mutable `FakeStarTransport` to
+        // `open_peer`/`link` guests onto — operations `FaultHarnessEndpoint`
+        // does not expose generically because a relay has no equivalent (see
+        // the module doc: joining a relay room is the whole handshake, done
+        // entirely inside `initialize`). Kept alongside the boxed
+        // `host_endpoint` used everywhere else.
+        let mut host_star_concrete: Option<FakeStarTransport> = None;
+        let host_endpoint = match topology {
+            FaultHarnessTopology::Star => {
+                let mut star = FakeStarTransport::new(fake_star::FakeStarTransportOptions {
+                    role: TransportRole::Host,
+                    rendezvous: Some(star_rendezvous.clone()),
+                    buffered_amount_limit: options.buffered_amount_limit,
+                    ..Default::default()
+                });
+                star.initialize().expect("harness host star initializes");
+                host_star_concrete = Some(star.clone());
+                FaultHarnessEndpoint::Star(star)
+            }
+            FaultHarnessTopology::Relay => {
+                let mut relay = FakeRelayTransport::new(fake_relay::FakeRelayTransportOptions {
+                    role: TransportRole::Host,
+                    peer_id: Some(HOST_PEER_ID.to_string()),
+                    room: Some(relay_room.clone()),
+                    buffered_amount_limit: options.buffered_amount_limit,
+                    ..Default::default()
+                });
+                relay.initialize().expect("harness host relay initializes");
+                FaultHarnessEndpoint::Relay(relay)
+            }
+        };
 
         let mut clients = Vec::with_capacity(peer_ids.len());
         let host_fault = FaultTransport::new(FaultTransportOptions {
-            transport: Box::new(host_star.clone()),
+            transport: Box::new(host_endpoint.clone()),
             profile,
             seed: network_seed + 101.0,
             legs: peer_ids[1..].to_vec(),
@@ -1083,7 +1292,7 @@ impl FaultHarness {
             index: 1,
             peer_id: HOST_PEER_ID.to_string(),
             role: coordinator::Role::Host,
-            star: host_star.clone(),
+            star: host_endpoint.clone(),
             transport: Rc::new(RefCell::new(host_fault)),
             coordinator: host_state,
             started: false,
@@ -1098,25 +1307,52 @@ impl FaultHarness {
 
         for (offset, peer_id) in peer_ids.iter().enumerate().skip(1) {
             let index = offset as i64 + 1;
-            let mut guest_star = FakeStarTransport::new(fake_star::FakeStarTransportOptions {
-                role: TransportRole::Guest,
-                peer_id: Some(peer_id.clone()),
-                rendezvous: Some(rendezvous.clone()),
-                buffered_amount_limit: options.buffered_amount_limit,
-                ..Default::default()
-            });
-            guest_star
-                .initialize()
-                .expect("harness guest star initializes");
-            host_star
-                .open_peer(peer_id)
-                .expect("harness host opens a guest slot");
-            host_star
-                .link(&guest_star)
-                .expect("harness host links a guest");
+            let guest_endpoint = match topology {
+                FaultHarnessTopology::Star => {
+                    let mut guest_star =
+                        FakeStarTransport::new(fake_star::FakeStarTransportOptions {
+                            role: TransportRole::Guest,
+                            peer_id: Some(peer_id.clone()),
+                            rendezvous: Some(star_rendezvous.clone()),
+                            buffered_amount_limit: options.buffered_amount_limit,
+                            ..Default::default()
+                        });
+                    guest_star
+                        .initialize()
+                        .expect("harness guest star initializes");
+                    // The star needs the host to allocate a slot and join the
+                    // link. A relay's `initialize` already joins it to every
+                    // already-connected member symmetrically, with no member
+                    // acting as the opener — see the module doc.
+                    let host_star_mut = host_star_concrete
+                        .as_mut()
+                        .expect("star topology always has a concrete host star");
+                    host_star_mut
+                        .open_peer(peer_id)
+                        .expect("harness host opens a guest slot");
+                    host_star_mut
+                        .link(&guest_star)
+                        .expect("harness host links a guest");
+                    FaultHarnessEndpoint::Star(guest_star)
+                }
+                FaultHarnessTopology::Relay => {
+                    let mut guest_relay =
+                        FakeRelayTransport::new(fake_relay::FakeRelayTransportOptions {
+                            role: TransportRole::Guest,
+                            peer_id: Some(peer_id.clone()),
+                            room: Some(relay_room.clone()),
+                            buffered_amount_limit: options.buffered_amount_limit,
+                            ..Default::default()
+                        });
+                    guest_relay
+                        .initialize()
+                        .expect("harness guest relay initializes");
+                    FaultHarnessEndpoint::Relay(guest_relay)
+                }
+            };
 
             let guest_fault = FaultTransport::new(FaultTransportOptions {
-                transport: Box::new(guest_star.clone()),
+                transport: Box::new(guest_endpoint.clone()),
                 profile,
                 seed: network_seed + index as f64 * 101.0,
                 legs: vec![HOST_PEER_ID.to_string()],
@@ -1138,7 +1374,7 @@ impl FaultHarness {
                 index,
                 peer_id: peer_id.clone(),
                 role: coordinator::Role::Guest,
-                star: guest_star.clone(),
+                star: guest_endpoint,
                 transport: Rc::new(RefCell::new(guest_fault)),
                 coordinator: guest_state,
                 started: false,
@@ -1161,13 +1397,13 @@ impl FaultHarness {
         }
 
         FaultHarness {
-            topology: FaultHarnessTopology::Star,
+            topology,
             mode,
             profile,
             manifest,
             peer_ids,
             clients,
-            host_star,
+            host_star: host_endpoint,
             transport_tick: 0,
             step: 0,
             clock_ms: Rc::new(Cell::new(0.0)),
@@ -1205,11 +1441,13 @@ impl FaultHarness {
     /// host-level transport faults ([`StarTransportAdapter::close_peer`]/
     /// [`StarTransportAdapter::shutdown`], both `&mut self`) the way
     /// `crate::fault_scenarios::inject` does. A handle rather than `&mut
-    /// FakeStarTransport` because [`FakeStarTransport`] is itself just a
-    /// cheap `Rc<RefCell<_>>` wrapper (see `crate::fake_star`'s module doc);
-    /// mutating through a clone reaches the identical shared state.
+    /// FakeStarTransport` because both endpoint shapes
+    /// [`FaultHarnessEndpoint`] wraps are themselves just cheap
+    /// `Rc<RefCell<_>>` wrappers (see `crate::fake_star`'s and
+    /// `crate::fake_relay`'s module docs); mutating through a clone reaches
+    /// the identical shared state whichever topology this run seated.
     #[must_use]
-    pub fn host_star(&self) -> FakeStarTransport {
+    pub fn host_star(&self) -> FaultHarnessEndpoint {
         self.host_star.clone()
     }
 
@@ -1473,7 +1711,8 @@ impl FaultHarness {
         let mut markers = Vec::new();
 
         markers.push(format!(
-            "scenario topology=star mode={} profile={} clients={} steps={}",
+            "scenario topology={} mode={} profile={} clients={} steps={}",
+            self.topology.wire_str(),
             self.mode.wire_str(),
             profile_wire_str(self.profile),
             self.clients.len(),

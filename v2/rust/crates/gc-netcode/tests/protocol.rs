@@ -10,13 +10,16 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+use gc_data::network_profiles::NetworkProfileName;
 use gc_netcode::coordinator::{self, Event};
 use gc_netcode::coordinator_fixture;
-use gc_netcode::fault_transport::{TransportMessage, TransportMessageType};
+use gc_netcode::fault_harness::{FaultHarness, FaultHarnessOptions, FaultHarnessTopology};
+use gc_netcode::fault_transport::{TransportChannel, TransportMessage, TransportMessageType};
 use gc_netcode::input_protocol;
+use gc_netcode::live_slot;
 use gc_netcode::match_driver::{
-    HostBatchErrorCode, HostBatchRequest, InputPacketArrival, MatchDriverRules, ProducerKind,
-    SessionManifest as DriverSessionManifest, SlotAssignment,
+    self, HostBatchErrorCode, HostBatchRequest, InputPacketArrival, MatchDriverRules,
+    MatchDriverStatus, ProducerKind, SessionManifest as DriverSessionManifest, SlotAssignment,
 };
 use gc_netcode::match_driver_fixture::DriverRules;
 use gc_netcode::protocol::{self, ErrorCode, LifecyclePhase, MatchMode, MessageKind, Value};
@@ -1609,10 +1612,12 @@ fn differential_non_canonical_mutations_of_the_real_lua_wire_are_rejected() {
 // spec/game/transport_relay_spec.lua — second `describe` block ("relay
 // topology probe: no peer is the sequencer"), deferred to this crate from
 // the TypeScript port (per this agent's brief). `coordinator.rs` and
-// `match_driver.rs` have since landed, so the two findings below that do not
-// touch `game.transport.fake_relay` are ported for real; the remaining four
-// still need a Rust relay transport that does not exist (see each test's own
-// doc comment for the current, non-stale blocker).
+// `match_driver.rs` landed first, so the two findings that never touched
+// `game.transport.fake_relay` were ported for real early. `gc_netcode::fake_relay`
+// (a Rust port of `game/transport/fake_relay.lua`) and a `relay` topology
+// option on `gc_netcode::fault_harness::FaultHarnessOptions` have since
+// landed too, so the remaining four findings below are now real, running
+// tests rather than `#[ignore]`d stubs.
 // ---------------------------------------------------------------------------
 
 /// The 8 peer ids an 8-human `4v4` fixture manifest seats: the host plus
@@ -1842,60 +1847,326 @@ fn transport_relay_topology_probe_keeps_the_session_lifecycle_host_authoritative
 
 /// Finding 1. `match_driver`'s guest authority path accepts host batches and
 /// nothing else, so a client that receives another client's own bundle —
-/// which is all a framing relay can ever deliver — kills the match. The Lua
-/// case drives this through `fault_harness.new({ topology = "relay", ... })`;
-/// `gc_netcode::fault_harness::FaultHarnessOptions` offers only the `star`
-/// topology, because `game/transport/fake_relay.lua` has no Rust port
-/// (TypeScript-owned, `v2/README.md` §2 — no Rust `FakeRelayTransport` type
-/// exists or is planned; see `fault_harness.rs`'s own module doc table and
-/// `FaultHarnessOptions`'s doc comment). That is a real, current blocker,
-/// not the stale "coordinator/match_driver are placeholders" this test used
-/// to name.
+/// which is all a framing relay can ever deliver — kills the match. Drives
+/// `fault_harness::FaultHarness::new` with `topology:
+/// Some(FaultHarnessTopology::Relay)`, exactly as the Lua case drives
+/// `fault_harness.new({ topology = "relay", ... })`.
 #[test]
-#[ignore = "blocked on game.transport.fake_relay (TypeScript-owned per v2/README.md §2; \
-            no Rust FakeRelayTransport type exists or is planned); gc_netcode::fault_harness's \
-            FaultHarnessOptions offers only the star topology, so there is no relay session to drive"]
 fn transport_relay_topology_probe_terminates_a_guest_that_receives_a_peers_own_bundle() {
-    unimplemented!(
-        "needs a Rust game.transport.fake_relay and relay-topology fault_harness support"
+    let mut harness = FaultHarness::new(FaultHarnessOptions {
+        topology: Some(FaultHarnessTopology::Relay),
+        mode: Some(MatchMode::TwoVTwo),
+        profile: Some(NetworkProfileName::Clean),
+        duration_ticks: Some(60),
+        ..Default::default()
+    });
+    assert!(
+        harness.reach_start(None, None),
+        "the relay harness never reached start"
     );
+    harness.start_match();
+    for _ in 0..12 {
+        harness.advance();
+    }
+
+    let sender_peer_id = harness.client(2).peer_id.clone();
+    let target_peer_id = harness.client(3).peer_id.clone();
+    let freeze = harness
+        .client(2)
+        .coordinator
+        .freeze
+        .clone()
+        .expect("the sender has frozen a session");
+    let owned_slot = freeze
+        .owned
+        .get(&sender_peer_id)
+        .expect("the sender owns at least one slot")[0];
+    let slot_index = live_slot::slot_index(owned_slot);
+
+    let mut rows = Vec::new();
+    for tick in 0..=input_protocol::HISTORY_ROWS {
+        rows.push(input_protocol::AuthorityRow {
+            tick: freeze.first_input_tick + tick,
+            slot_index,
+            sample: input_frame::neutral_sample(),
+        });
+    }
+    let packet = input_protocol::new_guest(input_protocol::PacketOptions {
+        session_id: harness
+            .manifest
+            .get("session_id")
+            .and_then(Value::as_str)
+            .expect("the harness manifest has a session id")
+            .to_string(),
+        manifest_id: freeze.manifest_id.clone(),
+        sender_id: sender_peer_id.clone(),
+        sequence: 9100,
+        transport_tick: harness.step + match_driver::DELAY_TICKS,
+        first_input_tick: freeze.first_input_tick,
+        confirmed_span: None,
+        rows,
+    })
+    .expect("a well-formed guest packet");
+    let wire = input_protocol::encode(&packet).expect("a well-formed packet encodes");
+    let envelope = TransportMessage {
+        version: 1,
+        kind: TransportMessageType::Input,
+        seq: packet.sequence,
+        tick: Some(packet.transport_tick),
+        payload: wire,
+    };
+    // The relay accepts it. That is the point: the wire imposes nothing.
+    assert!(
+        harness
+            .client(2)
+            .send_raw(&target_peer_id, TransportChannel::Input, envelope)
+            .expect("the relay accepts an addressed send between two non-host members")
+    );
+
+    for _ in 0..6 {
+        harness.advance();
+    }
+
+    let target_driver = harness
+        .client(3)
+        .driver
+        .as_ref()
+        .expect("the target has a driver");
+    let terminal = match_driver::terminal(target_driver).expect("the target went terminal");
+    assert_eq!(terminal.status, MatchDriverStatus::OwnershipViolation);
+    assert_eq!(
+        terminal.detail,
+        "a guest received authority that was not a host batch"
+    );
+    harness.teardown();
 }
 
-/// Finding 3. Declared bot fills are authored by the host and by nobody else.
-/// Same blocker as Finding 1: the Lua case needs
-/// `fault_harness.new({ topology = "relay", ... })`, which has no Rust
-/// counterpart.
+/// Finding 3. Declared bot fills are authored by the host and by nobody else
+/// (`match_driver::new`: `role == Host && producer.producer_kind == Bot`).
+/// Remove the host and those slots have no author at all.
 #[test]
-#[ignore = "blocked on game.transport.fake_relay (TypeScript-owned per v2/README.md §2; \
-            no Rust FakeRelayTransport type exists or is planned); gc_netcode::fault_harness's \
-            FaultHarnessOptions offers only the star topology, so there is no relay session to drive"]
 fn transport_relay_topology_probe_gives_declared_bot_fills_no_author_but_the_host() {
-    unimplemented!(
-        "needs a Rust game.transport.fake_relay and relay-topology fault_harness support"
+    let mut harness = FaultHarness::new(FaultHarnessOptions {
+        topology: Some(FaultHarnessTopology::Relay),
+        mode: Some(MatchMode::FourVFour),
+        humans: Some(4),
+        profile: Some(NetworkProfileName::Clean),
+        duration_ticks: Some(60),
+        ..Default::default()
+    });
+    assert!(
+        harness.reach_start(None, None),
+        "the relay harness never reached start"
     );
+    harness.start_match();
+    let host = match_driver::diagnostics(
+        harness
+            .client(1)
+            .driver
+            .as_ref()
+            .expect("the host has a driver"),
+    );
+    let guest = match_driver::diagnostics(
+        harness
+            .client(2)
+            .driver
+            .as_ref()
+            .expect("the guest has a driver"),
+    );
+    assert_eq!(host.owned.len(), 1, "the host owns one slot");
+    assert_eq!(
+        host.authored.len(),
+        5,
+        "and authors its own plus all four bot fills"
+    );
+    assert_eq!(guest.owned.len(), 1);
+    assert_eq!(guest.authored.len(), 1, "a guest authors only what it owns");
+    harness.teardown();
 }
 
 /// Finding 5. The settle phase's host relay wait is host-only by
-/// construction. Same blocker as Finding 1: needs a relay-topology
-/// `fault_harness` session to drive to completion.
+/// construction. It exists because a player-host that stops relaying strands
+/// everyone else's tail; a relay that is not a player cannot leave, so this
+/// is one piece of complexity the topology genuinely deletes. See the Lua
+/// spec's own comment (`#243`/`#255`): guests report their own confirmation
+/// in the bundles they already re-publish, so under clean delivery the host
+/// leaves within two settle steps rather than the four-plus a quiet-count
+/// heuristic used to cost.
 #[test]
-#[ignore = "blocked on game.transport.fake_relay (TypeScript-owned per v2/README.md §2; \
-            no Rust FakeRelayTransport type exists or is planned); gc_netcode::fault_harness's \
-            FaultHarnessOptions offers only the star topology, so there is no relay session to drive"]
 fn transport_relay_topology_probe_scopes_the_settle_relay_wait_to_the_host_alone() {
-    unimplemented!(
-        "needs a Rust game.transport.fake_relay and relay-topology fault_harness support"
+    let mut harness = FaultHarness::new(FaultHarnessOptions {
+        topology: Some(FaultHarnessTopology::Relay),
+        mode: Some(MatchMode::OneVOne),
+        profile: Some(NetworkProfileName::Clean),
+        duration_ticks: Some(40),
+        ..Default::default()
+    });
+    assert!(
+        harness.reach_start(None, None),
+        "the relay harness never reached start"
     );
+    harness.start_match();
+    for _ in 0..200 {
+        harness.advance();
+        if harness.finished() {
+            break;
+        }
+    }
+    let host_driver = harness
+        .client(1)
+        .driver
+        .as_ref()
+        .expect("the host has a driver");
+    let guest_driver = harness
+        .client(2)
+        .driver
+        .as_ref()
+        .expect("the guest has a driver");
+    let host = match_driver::diagnostics(host_driver);
+    let guest = match_driver::diagnostics(guest_driver);
+    assert_eq!(
+        match_driver::status(host_driver),
+        MatchDriverStatus::Completed
+    );
+    assert_eq!(
+        match_driver::status(guest_driver),
+        MatchDriverStatus::Completed
+    );
+    assert!(
+        host.settle_steps <= 2,
+        "the host settled slowly on a clean 1v1: {} steps",
+        host.settle_steps
+    );
+    assert!(
+        guest.settle_steps <= host.settle_steps,
+        "a guest cannot outlast the relay it depends on"
+    );
+    harness.teardown();
 }
 
-/// Finding 6. Per-node wire cost of the sequencer-less shape, measured over
-/// `game.transport.fake_relay`'s `build_room`/`broadcast`/`wire_counters`.
-/// Same blocker as Finding 1, at the adapter level rather than the harness
-/// level: there is no Rust relay transport to build a room from at all.
+/// Finding 6. The per-node wire cost of the shape the decision actually
+/// proposes: every member publishes only its own bundle and receives the
+/// other seven, concatenated into one frame. Drives
+/// `gc_netcode::fake_relay::FakeRelayTransport` directly (mirrors the Lua
+/// spec's own `build_room`/`broadcast`/`wire_counters`), not through
+/// `fault_harness`: this finding measures the adapter's own byte accounting,
+/// which does not need a running match.
 #[test]
-#[ignore = "blocked on game.transport.fake_relay (TypeScript-owned per v2/README.md §2; \
-            no Rust FakeRelayTransport type exists or is planned, so there is no relay room \
-            to measure wire_counters() on)"]
 fn transport_relay_topology_probe_measures_sequencer_less_per_node_wire_cost() {
-    unimplemented!("needs a Rust game.transport.fake_relay");
+    use gc_netcode::fake_relay::{FakeRelayTransport, FakeRelayTransportOptions};
+    use gc_netcode::fault_transport::{StarTransportAdapter, TransportRole};
+
+    fn member_id(index: i64) -> String {
+        if index == 1 {
+            "host".to_string()
+        } else {
+            format!("guest_{}", index - 1)
+        }
+    }
+
+    fn guest_bundle(peer_id: &str, slot_index: i64, transport_tick: i64) -> TransportMessage {
+        let mut rows = Vec::new();
+        for tick in 0..=input_protocol::HISTORY_ROWS {
+            rows.push(input_protocol::AuthorityRow {
+                tick: transport_tick + tick,
+                slot_index,
+                sample: input_frame::neutral_sample(),
+            });
+        }
+        let packet = input_protocol::new_guest(input_protocol::PacketOptions {
+            session_id: "session_relay_probe01".to_string(),
+            manifest_id: "a".repeat(16),
+            sender_id: peer_id.to_string(),
+            sequence: transport_tick,
+            transport_tick,
+            first_input_tick: 0,
+            confirmed_span: None,
+            rows,
+        })
+        .expect("a well-formed guest packet");
+        TransportMessage {
+            version: 1,
+            kind: TransportMessageType::Input,
+            seq: packet.sequence,
+            tick: Some(packet.transport_tick),
+            payload: input_protocol::encode(&packet).expect("a well-formed packet encodes"),
+        }
+    }
+
+    let room = FakeRelayTransport::new_room();
+    let mut members: Vec<FakeRelayTransport> = Vec::new();
+    for index in 1..=8 {
+        let mut endpoint = FakeRelayTransport::new(FakeRelayTransportOptions {
+            role: if index == 1 {
+                TransportRole::Host
+            } else {
+                TransportRole::Guest
+            },
+            peer_id: Some(member_id(index)),
+            room: Some(room.clone()),
+            ..Default::default()
+        });
+        endpoint.initialize().expect("member initializes");
+        members.push(endpoint);
+    }
+
+    let ticks = 60i64;
+    for tick in 1..=ticks {
+        for (offset, endpoint) in members.iter_mut().enumerate() {
+            let index = offset as i64 + 1;
+            endpoint
+                .broadcast(
+                    TransportChannel::Input,
+                    guest_bundle(&member_id(index), index, tick),
+                )
+                .expect("a connected member's broadcast is accepted");
+        }
+        members[0].pump();
+        for endpoint in members.iter_mut() {
+            endpoint.poll_batch(Some(256));
+        }
+    }
+
+    for (offset, endpoint) in members.iter().enumerate() {
+        let index = offset as i64 + 1;
+        let counters = endpoint.wire_counters();
+        let up = counters.input_uplink_bytes as f64 / ticks as f64;
+        let down = counters.input_downlink_bytes as f64 / ticks as f64;
+        let framed = counters.downlink_framed_bytes as f64 / ticks as f64;
+        assert_eq!(
+            counters.uplink_units,
+            ticks,
+            "{} uploads once per tick",
+            member_id(index)
+        );
+        assert_eq!(
+            counters.downlink_frames, ticks,
+            "and receives one framed message per tick"
+        );
+        // One own bundle up; seven other bundles down. The uplink is an
+        // order of magnitude under the decision's predicted 1,190 B/tick,
+        // and the downlink is roughly double its predicted ~650 B/tick.
+        assert!(up > 180.0 && up < 200.0, "uplink {up:.1} B/tick");
+        assert!(down > 1300.0 && down < 1400.0, "downlink {down:.1} B/tick");
+        assert!(
+            (down / up - 7.0).abs() <= 0.05,
+            "a member receives exactly the other seven bundles: {}",
+            down / up
+        );
+        // `input_downlink_bytes` counts envelopes only, so that it compares
+        // with the star's figure. The wire also carries the per-line origin
+        // that finding 2 makes mandatory, plus the separators between
+        // lines, so the true downlink is strictly higher and the envelope
+        // figure is a floor.
+        assert!(
+            framed > down,
+            "framed {framed:.1} must exceed the envelope figure {down:.1}"
+        );
+        // Carries one `confirmed_span` header field per input packet, same
+        // as the Lua spec's pinned bracket.
+        assert!(
+            framed > 1450.0 && framed < 1475.0,
+            "framed downlink {framed:.1} B/tick"
+        );
+    }
 }
