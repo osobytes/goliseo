@@ -29,12 +29,18 @@ importers:
       '@gc/online':
         specifier: workspace:*
         version: link:../online
+      '@gc/presentation':
+        specifier: workspace:*
+        version: link:../presentation
       '@gc/render':
         specifier: workspace:*
         version: link:../render
       '@gc/screens':
         specifier: workspace:*
         version: link:../screens
+      '@gc/ui':
+        specifier: workspace:*
+        version: link:../ui
 
   packages/core: {}
 
