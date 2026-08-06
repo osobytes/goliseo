@@ -248,11 +248,13 @@ end
 
 -- A bisecting ladder from a trivial shader up to the real rig3d one.
 --
--- "The shader does not compile" is not a finding anyone can act on, and the one
--- runtime that rejects it reports four mangled undefined identifiers rather than
--- naming a construct. Each rung adds exactly ONE of rig3d's demands, so the
--- first rung that fails names the construct the runtime will not take. The rungs
--- are deliberately in dependency order and each is otherwise minimal.
+-- "The shader does not compile" is not a finding anyone can act on, and the
+-- runtime that rejected it (Firefox, #391) reported four mangled undefined
+-- identifiers rather than naming a construct. Each rung adds exactly ONE of
+-- rig3d's demands, so the first rung that fails names the construct the runtime
+-- will not take. The rungs are deliberately in dependency order and each is
+-- otherwise minimal. Every rung passes in both browsers today; the ladder earns
+-- its keep the next time one does not.
 --
 -- The uniform array sizes match `renderer.lua` exactly: 12 palette slots, and
 -- 26 bones x 3 rows = 78 bone rows.

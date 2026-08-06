@@ -438,34 +438,43 @@ now available, stated without choosing for it:
   (57–62%) against a ≤2 ms target, and added update p95 is **0.033–0.040 ms**
   (0.345 − 0.305 and 0.338 − 0.305) against a ≤1 ms target — both inside, on an
   RTX 2070 SUPER.
-- **The browser leg is half deliverable, and the recorded reason it was not is
+- **The browser leg is deliverable, and the recorded reason it was not is
   wrong.** #100's required runtime matrix is LÖVE 11.5 native Linux *plus the
   supported Chrome and Firefox love.js builds*. #328 and #338 both record that
   love.js is WebGL 1 and cannot supply a `DEPTH24_STENCIL8` depth attachment.
   #360 measured it (`docs/online/browser_rigged_3d.md`) and the blanket claim is
   **false**: love.js supplies a depth attachment, LÖVE's rig3d shader links, and
-  ten rigged players render in Chrome. What is true is much narrower — love.js
-  refuses the *packed 24-bit* format `bloom` used to hardcode and offers
-  `depth16`, which is all the 3D pass ever needed, so the fix was one list in
-  `bloom.lua` rather than a renderer. Firefox is still out, for an unrelated
-  defect: a LÖVE shader that declares a `varying` does not compile there, and
-  asking for one aborts the runtime rather than falling back. The browser leg
-  therefore passes in Chrome and fails in Firefox, and it fails for a reason this
-  document was not reasoning from. The rigged default is on regardless — that is
-  the recorded direction — so #391 is a release blocker for the browser build
-  rather than a reason to keep the renderer off.
+  ten rigged players render. What is true is much narrower — love.js refuses the
+  *packed 24-bit* format `bloom` used to hardcode and offers `depth16`, which is
+  all the 3D pass ever needed, so the fix was one list in `bloom.lua` rather than
+  a renderer.
+
+  **Firefox was excluded in an earlier revision of this bullet, and no longer
+  is.** That text said Firefox was out for an unrelated defect — a LÖVE shader
+  declaring a `varying` did not compile there, and asking for one aborted the
+  runtime instead of falling back — which made #391 a release blocker for the
+  browser build. It was measured and it is now fixed (#395: hoist those
+  declarations above `main()` at the WebGL boundary, and stop declaring
+  vertex-only uniforms in both stages at mismatched precision). #360 re-measured
+  afterwards on a single tree carrying both halves: the browser leg passes in
+  **both** browsers. The rigged default is on, and there is no release blocker
+  under it.
 - #100 forbids silently loosening a gate: "any revised threshold requires the
   original failure evidence, measured bottleneck, bounded optimization,
   tradeoff, and before/after rerun". PR #350 supplies exactly that shape of
   evidence for the *draw-call* bottleneck.
 
-The reading those three points support is still **`revise` with a narrowed
-runtime matrix**, but the narrowing is now one browser rather than the whole
-browser leg: native Linux inside the measured envelope, Chrome rendering rigged
-players but over #100's added-draw budget, Firefox blocked on a shader-compile
-defect. `proceed` would claim a Firefox leg that cannot run; `stop` is
-contradicted by the native numbers and now by Chrome as well. **Writing that
-record is #100's, and the owner's.**
+The reading those three points support is still **`revise`**, but no longer with
+a narrowed runtime *matrix* — that narrowing was Firefox, and Firefox is back.
+#100's full matrix runs: native Linux inside the measured envelope, and both
+browsers rendering rigged players over #100's added-draw budget — Chrome at 149%
+of it, Firefox at 200%. Firefox is also the one row that crosses an *absolute*
+omp0 gate, at `draw p95 8.64 ms > 8 ms` under contention, though it comes in
+around 7.0 ms on an idle box. What is left to revise is therefore the added-draw
+budget, measured on a browser runtime against a procedural renderer being
+retired, with Firefox's absolute headroom as the tighter of the two constraints.
+`stop` is contradicted by the native numbers and now by both browsers.
+**Writing that record is #100's, and the owner's.**
 
 ---
 
