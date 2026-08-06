@@ -110,3 +110,40 @@ be named in the agent's report**, with its three.js replacement.
 IK and bone masking stay hand-written: three.js's `CCDIKSolver` is example-tier and
 MMD-oriented, and `AnimationMixer` blends whole clips rather than masked bones.
 With native dropped these get written once instead of twice.
+
+---
+
+## Status
+
+| layer | tests | state |
+| --- | ---: | --- |
+| `gc-core` | 17 | done — differential-tested against Lua |
+| `gc-data` | 9 | done — 7,204 fixture hashes verified as an exact multiset |
+| `@gc/core` | 22 | done |
+| `@gc/presentation` | 10 | done |
+| `gc-sim` S1 primitives | — | in progress |
+| `@gc/ui` + `@gc/input` | — | in progress |
+| `@gc/transport` | — | in progress |
+| `@gc/render` rig3d | — | in progress |
+
+## Carry-forward
+
+Work an agent correctly declined because it belongs to a layer someone else owns.
+**Nothing here may be dropped.** Each line names who picks it up.
+
+| item | owner | why it was deferred |
+| --- | --- | --- |
+| `spec/game/combat_feedback_rollback_spec.lua` | `@gc/screens` (T8) | its subject is the Match screen's rollback consumption, plus `render/effects` and `render/replay` — not presentation |
+| pose-priority block of `spec/game/combat_presentation_spec.lua` | `gc-render` (R3) | exercises `render/player_pose.lua`, which is Rust |
+| `game/presentation/combat_feedback_fixture.lua` | `@gc/screens` (T8), after `gc-sim` | builds its baseline from `sim.match.new` / `sim.combat.new_state` / `data.teams`; porting it before the sim exists would mean inventing sim output rather than translating it |
+
+## Findings in the Lua worth revisiting later
+
+Not port defects — things the port surfaced about the original.
+
+- `data/tuning_presets.lua` builds a blob with `table.concat` at load time. That is
+  mechanism inside a data file, against AGENTS.md §8.
+- In a `combat_feedback` spec fixture, a `target_index` expression evaluates to the
+  Lua boolean `true` for the "commit" case, because of an `or`/`and` precedence
+  quirk — it reads like a ternary but is not one. No assertion depends on it, so
+  the behaviour is latent rather than broken, but the field is typed as a number.
