@@ -2,6 +2,7 @@
   "files": [],
   "references": [
     { "path": "packages/core" },
+    { "path": "packages/wasm" },
     { "path": "packages/ui" },
     { "path": "packages/input" },
     { "path": "packages/presentation" },
