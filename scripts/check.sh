@@ -155,6 +155,21 @@ else
     echo "   ! python3 not installed — skipping"
 fi
 
+# #391: Firefox's WebGL shader translator emits invalid GLSL for every LÖVE
+# shader that declares a varying, so the browser build hoists the declarations
+# above main() before WebGL sees them. This gates the transform (including every
+# construct it must NOT touch) AND that the shipped bootstrap embeds and
+# installs it -- a green transform beside a build that never wires it in is the
+# #279 shape. It starts no browser; the headed Chrome/Firefox runs are evidence
+# recorded in docs/online/browser_compatibility.md.
+echo "==> #391 shader varying hoist (transform + build wiring; starts no browser)"
+if command -v node >/dev/null 2>&1; then
+    ./scripts/check_shader_hoist.sh --self-test || fail=1
+    ./scripts/check_shader_hoist.sh || fail=1
+else
+    echo "   ! node not installed — skipping"
+fi
+
 # #360: the same standing as the three steps above. Measuring what love.js gives
 # LÖVE needs a GPU, a display and two real browsers, so the measurement is run by
 # hand and recorded in docs/online/browser_rigged_3d.md. What IS gated here is

@@ -642,3 +642,95 @@ t.describe("rig3d character accumulation (#337 slice 2)", function()
         end
     end)
 end)
+
+-- #391: the shader SOURCE is testable headless even though the shader is not.
+-- `renderer.load` calls love.graphics.newShader, which does not exist in this
+-- runner, so the stage placement below can only be checked by reading the GLSL.
+-- It has to be checked somewhere: getting it wrong costs nothing on desktop GL
+-- or in Chrome and costs every Firefox player the entire rigged renderer.
+local renderer = require("game.render.rig3d.renderer")
+
+---@class Rig3dGlslDeclaration
+---@field name string
+---@field stage string?  -- "VERTEX", "PIXEL", or nil for outside every stage block
+
+---Walk the GLSL and record which stage block each declaration sits in.
+---@param source string
+---@return table<string, string?> uniforms
+---@return table<string, string?> varyings
+local function declarations_by_stage(source)
+    local stack = {}
+    local uniforms = {}
+    local varyings = {}
+    for line in (source .. "\n"):gmatch("(.-)\n") do
+        local opened = line:match("^%s*#ifdef%s+([%u_]+)")
+        if opened then
+            stack[#stack + 1] = opened
+        elseif line:match("^%s*#endif") then
+            assert(#stack > 0, "unbalanced #endif in the rig3d shader")
+            stack[#stack] = nil
+        else
+            local stage = stack[#stack]
+            local uniform = line:match("^%s*uniform%s+[%w_]+%s+([%w_]+)")
+            if uniform then
+                uniforms[uniform] = stage or false
+            end
+            local varying = line:match("^%s*varying%s+[%w_]+%s+([%w_]+)")
+            if varying then
+                varyings[varying] = stage or false
+            end
+        end
+    end
+    assert(#stack == 0, "unbalanced #ifdef in the rig3d shader")
+    return uniforms, varyings
+end
+
+t.describe("rig3d shader source", function()
+    local SOURCE = renderer.shaderSource(12, 78)
+
+    t.it("bakes the array sizes it is given into the GLSL", function()
+        t.is_true(SOURCE:find("u_palette%[12%]") ~= nil, "palette size was not substituted")
+        t.is_true(SOURCE:find("u_bones%[78%]") ~= nil, "bone row count was not substituted")
+    end)
+
+    t.it("declares every uniform inside a stage block", function()
+        -- A uniform outside `#ifdef VERTEX` / `#ifdef PIXEL` is compiled into
+        -- BOTH stages, where LÖVE's headers give it different default float
+        -- precision. GLSL ES 1.00 requires cross-stage uniform precision to
+        -- match, and Firefox refuses to link when it does not:
+        -- `Uniform 'u_palette' is not linkable between attached shaders`.
+        local uniforms = declarations_by_stage(SOURCE)
+        local names = {}
+        for name in pairs(uniforms) do
+            names[#names + 1] = name
+        end
+        table.sort(names)
+        t.is_true(#names >= 8, "expected the shader's uniforms to be found, got " .. #names)
+        for _, name in ipairs(names) do
+            t.is_true(
+                uniforms[name] == "VERTEX" or uniforms[name] == "PIXEL",
+                name .. " is declared outside every stage block, so it compiles into both"
+            )
+        end
+    end)
+
+    t.it("puts each uniform in the one stage that reads it", function()
+        local uniforms = declarations_by_stage(SOURCE)
+        for _, name in ipairs({ "u_model", "u_view", "u_proj", "u_palette", "u_bones" }) do
+            t.eq(uniforms[name], "VERTEX", name .. " is read by position(), so it is vertex-stage")
+        end
+        for _, name in ipairs({ "u_light_dir", "u_cam_pos", "u_unlit" }) do
+            t.eq(uniforms[name], "PIXEL", name .. " is read by effect(), so it is pixel-stage")
+        end
+    end)
+
+    t.it("keeps every varying outside the stage blocks", function()
+        -- The mirror image of the rule above: a varying has to be visible to
+        -- both stages to carry anything between them, and varyings are exempt
+        -- from the cross-stage precision rule that moved the uniforms.
+        local _, varyings = declarations_by_stage(SOURCE)
+        for _, name in ipairs({ "v_normal", "v_world", "v_slot_color", "v_material" }) do
+            t.eq(varyings[name], false, name .. " must be declared for both stages")
+        end
+    end)
+end)
