@@ -1537,6 +1537,19 @@ pub fn validate(state: &MatchState) {
         );
     }
     let _ = possession_transition::copy_state(&state.transition);
+    // `sim/match_snapshot.lua` runs each player's decision state and each team's
+    // press state through their own validating copy (`:384`, `:765` and `:648`,
+    // `:868-869`). Those copies assert structural coherence — version, and the
+    // mode/presser/reason pairing — which the relational checks below do not:
+    // `validate_run_relations` skips any player whose intent is not a run, and
+    // `validate_press_eligibility` only checks an already-present presser. The
+    // copy is discarded; the assertion inside it is the point, exactly as for
+    // `transition` above.
+    for player in &state.players {
+        let _ = outfield_decision::copy_state(&player.outfield_decision);
+    }
+    let _ = outfield_press::copy_state(&state.outfield_press.home);
+    let _ = outfield_press::copy_state(&state.outfield_press.away);
     validate_run_relations(state);
     validate_press_eligibility(state);
     validate_formations(state);
@@ -1561,6 +1574,28 @@ fn densify_marks(state: &mut MatchState) {
         .resize(input_frame::SLOT_COUNT as usize, None);
 }
 
+/// Assert that no player with an active run intent is simultaneously committed
+/// in combat.
+///
+/// Ported from `sim/match_snapshot.lua:717`, where it guards both `capture` and
+/// `restore`. It had no Rust counterpart at all, so a snapshot could carry a
+/// player who was mid-run and mid-commitment — a contradiction the Lua refuses
+/// to hash or restore. `validate_run_relations` does not cover this: it checks
+/// run state against the match, never against the companion combat state.
+fn assert_combat_run_relations(state: &MatchState, combat_state: &CombatMatchState, path: &str) {
+    for (index, player) in state.players.iter().enumerate() {
+        if outfield_decision::is_run_intent(player.outfield_decision.intent) {
+            let runtime = &combat_state.players[index];
+            assert!(
+                runtime.phase == crate::combat_feasibility::CombatActionPhase::Ready
+                    && runtime.forced_ticks <= 0,
+                "{path}.players.{} combat commitment conflicts with an active run",
+                index + 1
+            );
+        }
+    }
+}
+
 /// Capture a validated, defensively-copied [`MatchSnapshot`] of `state`
 /// (and `combat_state`, when present).
 #[must_use]
@@ -1571,6 +1606,7 @@ pub fn capture(state: &MatchState, combat_state: Option<&CombatMatchState>) -> M
     densify_marks(&mut copied_state);
     if let Some(combat_state) = combat_state {
         let copied_combat = combat_snapshot::copy(combat_state, &copied_state);
+        assert_combat_run_relations(&copied_state, &copied_combat, "combat");
         MatchSnapshot {
             version: COMBAT_VERSION,
             state: copied_state,
@@ -1637,6 +1673,7 @@ pub fn restore(snapshot: &MatchSnapshot) -> (MatchState, Option<CombatMatchState
         .as_ref()
         .expect("combat snapshot companion is required");
     let combat_state = combat_snapshot::copy(combat_source, &state);
+    assert_combat_run_relations(&state, &combat_state, "snapshot.combat");
     mark_unsupported(
         &mut state,
         "combat-active match snapshots require their CombatMatchState companion",
