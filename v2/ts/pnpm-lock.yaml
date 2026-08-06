@@ -111,9 +111,16 @@ importers:
       '@gc/presentation':
         specifier: workspace:*
         version: link:../presentation
+      '@gc/render':
+        specifier: workspace:*
+        version: link:../render
       '@gc/ui':
         specifier: workspace:*
         version: link:../ui
+    devDependencies:
+      '@gc/wasm':
+        specifier: workspace:*
+        version: link:../wasm
 
   packages/transport:
     dependencies:
