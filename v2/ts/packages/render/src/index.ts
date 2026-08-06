@@ -41,6 +41,7 @@ export {
   characterCameraParams,
   available as player3dAvailable,
   draw as player3dDraw,
+  renderToSprite as player3dRenderToSprite,
 } from "./player_renderer_3d.ts";
 export { effects } from "./effects.ts";
 export { Bloom, DEFAULT_BLOOM_CONFIG } from "./bloom.ts";

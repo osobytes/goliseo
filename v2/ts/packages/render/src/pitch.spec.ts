@@ -6,7 +6,8 @@
 // `game.match_hud` (other packages) -- see this package's port report for
 // why those specs are not claimed wholesale.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, afterEach } from "vitest";
+import * as THREE from "three";
 import { pitchDrawCommands, pitch, type PitchDrawOptions, type RenderFrame } from "./pitch.ts";
 
 function emptyPlayers(count: number) {
@@ -115,5 +116,149 @@ describe("pitch config defaults", () => {
   it("defaults to rigged players on and the follow camera off, matching the Lua original", () => {
     expect(pitch.rigged_players).toBe(true);
     expect(pitch.follow_camera).toBe(false);
+  });
+});
+
+// PITCH.DRAW'S RIGGED COMPOSITING (defect #1's fix). `player_renderer_3d.ts`'s
+// `build()` only constructs plain three.js geometry/skeleton/material objects
+// -- no GL calls -- so `available()` genuinely returns true under this
+// workspace's "node" vitest environment (the same fact scene.spec.ts's header
+// notes and works around by forcing `pitch.rigged_players = false`; this
+// suite does the opposite and leans on it, since it is exactly the rigged
+// path being tested here). `renderToSprite` itself only needs a `renderer`
+// object exposing the handful of `THREE.WebGLRenderer` methods it calls
+// directly (`getRenderTarget`/`setRenderTarget`/`getClearColor`/
+// `getClearAlpha`/`setClearColor`/`clear`/`render`/`autoClear`) -- none of
+// which touch a live GL context for the assertions below, matching
+// scene.spec.ts's `stubRenderer()` boundary. What IS verified here: that a
+// rigged player lands in the object graph (not a direct canvas render) and
+// in the correct painter's-algorithm position relative to the ball; what is
+// NOT verified (same as everywhere else GPU-adjacent in this package): the
+// actual pixel content of the offscreen render.
+describe("pitch.draw (rigged compositing)", () => {
+  interface TrackedRenderer {
+    readonly renderTargetHistory: readonly (THREE.WebGLRenderTarget | null)[];
+    readonly renderCallTargets: readonly (THREE.WebGLRenderTarget | null)[];
+  }
+
+  function stubRenderer(): THREE.WebGLRenderer & TrackedRenderer {
+    let currentTarget: THREE.WebGLRenderTarget | null = null;
+    let clearColor = new THREE.Color(0, 0, 0);
+    let clearAlpha = 1;
+    const renderTargetHistory: (THREE.WebGLRenderTarget | null)[] = [];
+    const renderCallTargets: (THREE.WebGLRenderTarget | null)[] = [];
+    const stub = {
+      autoClear: true,
+      renderTargetHistory,
+      renderCallTargets,
+      getRenderTarget(): THREE.WebGLRenderTarget | null {
+        return currentTarget;
+      },
+      setRenderTarget(target: THREE.WebGLRenderTarget | null): void {
+        currentTarget = target;
+        renderTargetHistory.push(target);
+      },
+      getClearColor(target: THREE.Color): THREE.Color {
+        return target.copy(clearColor);
+      },
+      getClearAlpha(): number {
+        return clearAlpha;
+      },
+      setClearColor(color: THREE.ColorRepresentation, alpha = 1): void {
+        clearColor = new THREE.Color(color);
+        clearAlpha = alpha;
+      },
+      clear(): void {},
+      render(): void {
+        renderCallTargets.push(currentTarget);
+      },
+    };
+    return stub as unknown as THREE.WebGLRenderer & TrackedRenderer;
+  }
+
+  afterEach(() => {
+    pitch.rigged_players = true;
+  });
+
+  it("adds a rigged player to the object graph instead of rendering to the caller's own canvas target", () => {
+    const f = frame();
+    const group = new THREE.Group();
+    const renderer = stubRenderer();
+
+    pitch.draw(group, f, viewport, opts, renderer);
+
+    const sprites = group.children.filter((c) => c.userData["ownedRenderTarget"] instanceof THREE.WebGLRenderTarget);
+    expect(sprites.length).toBeGreaterThan(0);
+    // Every render() call this frame happened while a private off-screen
+    // target was bound -- never `null` (this stub's stand-in for "whatever
+    // the caller's own canvas/composite target is"). That is the specific
+    // invariant defect #1 was about: a rigged player used to render straight
+    // to whatever target the caller had bound, which `SceneRoot`'s later
+    // full-scene render would then clear.
+    expect(renderer.renderCallTargets.length).toBeGreaterThan(0);
+    expect(renderer.renderCallTargets.every((t) => t instanceof THREE.WebGLRenderTarget)).toBe(true);
+  });
+
+  it("restores the renderer's own target after each rigged player, leaving it bound to null (the caller's canvas) once done", () => {
+    const f = frame();
+    const group = new THREE.Group();
+    const renderer = stubRenderer();
+
+    pitch.draw(group, f, viewport, opts, renderer);
+
+    expect(renderer.getRenderTarget()).toBeNull();
+  });
+
+  it("interleaves a rigged player with the ball in painter's-algorithm order, matching pitchDrawCommands' depth sort", () => {
+    // Player 0 is far (small y), player 1 is near (large y); the ball sits
+    // between them. depthSortedItems draws far-to-near, so the expected
+    // object order is: player 0's sprite, then the ball, then player 1's sprite.
+    const f = frame({ players: { ...emptyPlayers(2), y: [50, 500] } });
+    const group = new THREE.Group();
+    const renderer = stubRenderer();
+
+    pitch.draw(group, f, viewport, opts, renderer);
+
+    const children = group.children;
+    const spriteIndices = children.map((c, i) => (c.userData["ownedRenderTarget"] instanceof THREE.WebGLRenderTarget ? i : -1)).filter((i) => i >= 0);
+    expect(spriteIndices).toHaveLength(2);
+    const [farIndex, nearIndex] = spriteIndices;
+    if (farIndex === undefined || nearIndex === undefined) {
+      throw new Error("expected two rigged player sprites");
+    }
+
+    const ballIndex = children.findIndex(
+      (c) =>
+        c instanceof THREE.Mesh &&
+        !Array.isArray(c.material) &&
+        c.material instanceof THREE.MeshBasicMaterial &&
+        Math.abs(c.material.color.r - 1) < 1e-6 &&
+        Math.abs(c.material.color.g - 0.95) < 1e-6 &&
+        Math.abs(c.material.color.b - 0.7) < 1e-6,
+    );
+    expect(ballIndex).toBeGreaterThan(-1);
+    expect(farIndex).toBeLessThan(ballIndex);
+    expect(ballIndex).toBeLessThan(nearIndex);
+  });
+
+  it("falls back to the procedural billboard (no renderer) without adding any owned render target", () => {
+    const f = frame();
+    const group = new THREE.Group();
+
+    pitch.draw(group, f, viewport, opts, undefined);
+
+    expect(group.children.length).toBeGreaterThan(0);
+    expect(group.children.some((c) => c.userData["ownedRenderTarget"] !== undefined)).toBe(false);
+  });
+
+  it("falls back to the procedural billboard when rigged_players is turned off, even with a renderer supplied", () => {
+    pitch.rigged_players = false;
+    const f = frame();
+    const group = new THREE.Group();
+
+    pitch.draw(group, f, viewport, opts, stubRenderer());
+
+    expect(group.children.length).toBeGreaterThan(0);
+    expect(group.children.some((c) => c.userData["ownedRenderTarget"] !== undefined)).toBe(false);
   });
 });

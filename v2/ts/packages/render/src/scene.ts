@@ -37,6 +37,7 @@ import * as THREE from "three";
 import { pitch, type PitchDrawOptions, type PitchViewport, type RenderFrame } from "./pitch.ts";
 import { Bloom, type BloomConfig } from "./bloom.ts";
 import { drawMatchHud, type MatchHudLayout, type MatchHudModel, type MatchHudTheme, type MatchHudViewport } from "./match_hud.ts";
+import { disposeObject } from "./draw2d.ts";
 
 /** `{w, h}` in pixels. Shared shape with `pitch.ts`'s `PitchViewport`. */
 export type SceneViewport = PitchViewport;
@@ -107,22 +108,23 @@ const CAMERA_FAR = 10;
  *      fills do not visibly glow -- flagged here as a conscious choice
  *      rather than left as a silent side effect.
  *
- * KNOWN GAP, inherited, not introduced here: when `pitch.rigged_players` is
- * active and a rigged pass is available, pitch.ts's own `pitch.draw` (see
- * its SCOPE NOTE) composites each rigged character by calling
- * `renderer.render()` DIRECTLY and IMMEDIATELY inside that call, rather than
- * adding the character to `pitchGroup`'s `Object3D` graph. `SceneRoot.render`
- * necessarily performs its OWN full-scene render afterward (that is the only
- * way `pitchGroup`'s freshly-painted flat content -- floor, arena, ball --
- * ever reaches the canvas at all, since `paint()` only populates the object
- * graph, it does not rasterize it). That later render clears the canvas by
- * default, which overwrites the characters pitch.draw already drew. This is
- * not a new defect: it is pitch.ts's own documented, untested, "needs a live
- * GL context to verify" limitation, surfacing here because this is the first
- * place anyone actually calls both `pitch.draw` (with a renderer) AND a
- * whole-scene render in the same frame. Solving it needs either a live GL
- * context to verify against, or a change to pitch.ts's own draw contract
- * (out of scope for this file, and not touched here).
+ * FIXED HERE (was a known gap): `pitch.draw`'s rigged-player pass used to
+ * composite each character by calling `renderer.render()` DIRECTLY and
+ * IMMEDIATELY, rather than adding the character to `pitchGroup`'s `Object3D`
+ * graph -- `SceneRoot.render`'s own later full-scene render would then clear
+ * the canvas and wipe out whatever `pitch.draw` had just painted onto it (see
+ * pitch.ts's SCOPE NOTE and player_renderer_3d.ts's `renderToSprite` for the
+ * fix: each rigged character now renders to a private OFFSCREEN
+ * `THREE.WebGLRenderTarget` during `populate`, and the result is wrapped in a
+ * viewport-sized textured object added to `pitchGroup` at the exact point in
+ * the painter's-algorithm depth order its procedural billboard would have
+ * occupied -- interleaved with the ball and the other players, not appended
+ * after them). The one, single render that touches the visible
+ * canvas/composite chain is still this class's own `render` below, and it is
+ * now genuinely the only one that does, which is what closes the gap. The
+ * pixel-level correctness of that offscreen composite (camera frustum
+ * alignment, texture orientation) still needs a live GL context to verify --
+ * see this port's report.
  *
  * The camera is one shared `THREE.OrthographicCamera` sized to the
  * viewport, `top = 0` / `bottom = viewport.h` -- matching draw2d.ts's
@@ -205,10 +207,17 @@ export class SceneRoot {
    *
    * `renderer.autoClear` is restored to whatever the caller had it set to
    * once `pitch.draw` returns; it is only forced `false` for the duration of
-   * that call, matching player_renderer_3d.ts's `draw` doc comment ("The
-   * caller is responsible for `renderer.autoClear = false` across a frame's
-   * players ... and for restoring it afterward"). See this class's own doc
-   * comment for the compositing gap that setting does not, by itself, close.
+   * that call. `pitch.draw`'s rigged pass no longer depends on this the way
+   * `player_renderer_3d.ts`'s old direct-render `draw` did (see that file's
+   * doc comment and this class's own "FIXED HERE" note) -- `renderToSprite`
+   * renders each character into its own private off-screen target, so
+   * nothing it does can be clobbered by another player's draw sharing the
+   * same target. `autoClear` is still forced off here because `pitch.draw`'s
+   * non-rigged fallback path and the procedural billboards interleaved with
+   * rigged sprites both paint into `pitchGroup` via `paint`/`appendCommands`,
+   * which build an object graph rather than rasterize, so this setting is
+   * defensive rather than load-bearing today; kept to avoid depending on
+   * `SceneRoot` being the only caller that ever sets it.
    */
   populate(frame: RenderFrame, options: SceneRenderOptions): void {
     this.assertNotDisposed();
@@ -243,15 +252,13 @@ export class SceneRoot {
 
   /**
    * Release everything this class owns: group children's geometries/
-   * materials (mirroring draw2d.ts's `paint` cleanup, the same instanceof
-   * check, so the two stay consistent), the groups themselves, and the
-   * renderer. Idempotent -- a second call is a no-op rather than an error,
-   * since callers commonly `dispose()` from more than one teardown path.
-   *
-   * NOTE: `Bloom` (bloom.ts) exposes no `dispose()`, so its `EffectComposer`
-   * and the `THREE.WebGLRenderTarget`s it owns cannot be released from here.
-   * Flagged in this port's report rather than reached into bloom.ts, which
-   * this file does not own.
+   * materials/textures/owned render targets (via draw2d.ts's `disposeObject`
+   * -- the same function `paint`'s own per-frame cleanup uses, so the two
+   * never drift apart the way two independent `instanceof` checks could),
+   * the groups themselves, `Bloom`'s `EffectComposer` and its render
+   * targets, and the renderer. Idempotent -- a second call is a no-op rather
+   * than an error, since callers commonly `dispose()` from more than one
+   * teardown path.
    */
   dispose(): void {
     if (this.disposed) {
@@ -260,6 +267,7 @@ export class SceneRoot {
     this.clearGroup(this.pitchGroup);
     this.clearGroup(this.hudGroup);
     this.scene.remove(this.pitchGroup, this.hudGroup);
+    this.bloomPass.dispose();
     this.renderer.dispose();
     this.disposed = true;
   }
@@ -267,15 +275,7 @@ export class SceneRoot {
   private clearGroup(group: THREE.Group): void {
     for (const child of [...group.children]) {
       group.remove(child);
-      if (child instanceof THREE.Mesh || child instanceof THREE.Line) {
-        child.geometry.dispose();
-        const material = child.material;
-        if (Array.isArray(material)) {
-          material.forEach((m) => m.dispose());
-        } else {
-          material.dispose();
-        }
-      }
+      disposeObject(child);
     }
   }
 

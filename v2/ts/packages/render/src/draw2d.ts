@@ -437,7 +437,7 @@ function buildTextSprite(c: TextCommand): THREE.Sprite {
   return sprite;
 }
 
-function buildOne(c: DrawCommand): THREE.Object3D {
+function buildOne(c: DrawCommand, opts?: PaintOptions): THREE.Object3D {
   switch (c.kind) {
     case "rect": {
       if (c.mode === "fill") {
@@ -508,7 +508,75 @@ function buildOne(c: DrawCommand): THREE.Object3D {
       return line;
     }
     case "text":
-      return buildTextSprite(c);
+      return opts?.buildText !== undefined ? opts.buildText(c) : buildTextSprite(c);
+  }
+}
+
+/**
+ * Substitutes part of `buildOne`'s output. The only case with a substitute
+ * today is `text`: `buildTextSprite` calls `document.createElement("canvas")`,
+ * which needs a real DOM (a browser, or a jsdom/happy-dom-scoped spec) and
+ * does not exist under this workspace's default `vitest` "node" environment
+ * (v2/ts/vitest.config.ts). Passing `buildText` lets a "node" spec exercise
+ * everything else `paint`/`appendCommands` do -- clearing, rebuilding,
+ * disposal, non-text object construction -- without a DOM polyfill. See
+ * match_hud.spec.ts's population suite for why this was chosen over a
+ * jsdom-scoped spec file.
+ */
+export interface PaintOptions {
+  readonly buildText?: (c: TextCommand) => THREE.Object3D;
+}
+
+/**
+ * Releases one paint-built object's own GPU-side resources: geometry,
+ * material(s), and any texture a material holds via `.map` (this reaches
+ * `buildTextSprite`'s `CanvasTexture`, which `paint`'s cleanup did not used
+ * to dispose). Also releases `userData.ownedRenderTarget` when present -- a
+ * `THREE.WebGLRenderTarget` some other module in this package attached to an
+ * object it built and added to the group itself (bypassing `buildOne`), the
+ * same way pitch.ts's rigged-player sprites do (see player_renderer_3d.ts's
+ * `renderToSprite`). Exported so scene.ts's `SceneRoot` can apply the exact
+ * same cleanup at teardown as `paint` applies every frame, instead of two
+ * copies of the same `instanceof` check drifting apart.
+ */
+export function disposeObject(child: THREE.Object3D): void {
+  if (child instanceof THREE.Mesh || child instanceof THREE.Line) {
+    child.geometry.dispose();
+    disposeMaterial(child.material);
+  } else if (child instanceof THREE.Sprite) {
+    disposeMaterial(child.material);
+  }
+  const owned: unknown = child.userData["ownedRenderTarget"];
+  if (owned instanceof THREE.WebGLRenderTarget) {
+    owned.dispose();
+  }
+}
+
+function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
+  const materials = Array.isArray(material) ? material : [material];
+  for (const m of materials) {
+    if ("map" in m && m.map instanceof THREE.Texture) {
+      m.map.dispose();
+    }
+    m.dispose();
+  }
+}
+
+/**
+ * Appends `commands` to `group` as new children, in order, WITHOUT clearing
+ * whatever is already there. `paint` (below) is `appendCommands` preceded by
+ * a clear; this half is exposed separately for callers that need to
+ * interleave `DrawCommand`-derived objects with content built some other way
+ * at specific points in the child order -- pitch.ts's mixed procedural/rigged
+ * player pass is the one today (see its file header and `pitch.draw`): the
+ * painter's-algorithm depth sort requires the ball, procedural billboards
+ * and rigged-player sprites to land in `group.children` interleaved by
+ * world-depth, not as one `paint()` replacing everything and a second
+ * wiping it out.
+ */
+export function appendCommands(group: THREE.Group, commands: readonly DrawCommand[], opts?: PaintOptions): void {
+  for (const c of commands) {
+    group.add(buildOne(c, opts));
   }
 }
 
@@ -524,20 +592,10 @@ function buildOne(c: DrawCommand): THREE.Object3D {
  * deliberately: this milestone has no renderer to profile against, so
  * optimizing object reuse here would be tuning against nothing.
  */
-export function paint(group: THREE.Group, commands: readonly DrawCommand[]): void {
+export function paint(group: THREE.Group, commands: readonly DrawCommand[], opts?: PaintOptions): void {
   for (const child of [...group.children]) {
     group.remove(child);
-    if (child instanceof THREE.Mesh || child instanceof THREE.Line) {
-      child.geometry.dispose();
-      const material = child.material;
-      if (Array.isArray(material)) {
-        material.forEach((m) => m.dispose());
-      } else {
-        material.dispose();
-      }
-    }
+    disposeObject(child);
   }
-  for (const c of commands) {
-    group.add(buildOne(c));
-  }
+  appendCommands(group, commands, opts);
 }

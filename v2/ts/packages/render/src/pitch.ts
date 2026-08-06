@@ -19,12 +19,25 @@
 // screen-space 2D content at the correct point in the painter's-algorithm
 // depth sort (so a rigged player occludes/is occluded exactly like its
 // procedural billboard would) is real GPU-integration work: it needs a live
-// `WebGLRenderer` to verify at all, and v2/README.md #1 scopes "a running
-// app" / the wasm-bindings glue out of this milestone. `pitch.draw` below
-// wires the two renderers together as faithfully as the Lua original (same
-// per-player choice, same call sites), but is -- like the rest of the
-// GPU-adjacent surface in this package -- untested. `pitchDrawCommands`
-// stays the fully-tested reference for the procedural path.
+// `WebGLRenderer` to verify pixel-for-pixel, and v2/README.md #1 scopes "a
+// running app" / the wasm-bindings glue out of this milestone.
+//
+// `pitch.draw`'s rigged pass CONTRIBUTES TO `group`'s `Object3D` GRAPH rather
+// than rasterizing immediately: each rigged character is rendered off-screen
+// (`player_renderer_3d.ts`'s `renderToSprite`, into a private
+// `THREE.WebGLRenderTarget`) and the result is added to `group` at the same
+// point in the depth-sorted iteration a procedural billboard would occupy,
+// interleaved with the ball and every other player via `depthSortedItems`
+// below -- the same ordering `pitchDrawCommands` uses internally, shared
+// through `drawPitchBeforeItems`/`drawPitchAfterItems`/`drawLooseBallCommands`
+// so the two paths cannot silently diverge. This is what lets exactly ONE
+// full-scene render (`SceneRoot.render`, see scene.ts) draw the whole frame,
+// flat content and rigged characters together, in the right order -- see
+// scene.ts's class doc comment for why that matters (it used to be the thing
+// that got cleared). `pitchDrawCommands` stays the fully-tested reference for
+// the pure procedural path; `pitch.draw`'s rigged branch is -- like the rest
+// of the GPU-adjacent surface in this package -- untested beyond what does
+// not need a live GL context (object-graph shape, ordering, disposal).
 //
 // Boundary note (v2/README.md rule 6.7): `RenderFrame` is the (Rust)
 // `render/frame.lua` producer's output (`render/**` -> Rust
@@ -47,7 +60,7 @@ import * as playerRenderer from "./player_renderer.ts";
 import type { AerialOutcome, AerialStyle, PlayerRenderOptions, SpeciesShape } from "./player_renderer.ts";
 import * as playerRenderer3d from "./player_renderer_3d.ts";
 import { viewState } from "./view_state.ts";
-import { DrawList, paint, type DrawCommand, type Project, type RGB } from "./draw2d.ts";
+import { DrawList, appendCommands, paint, type DrawCommand, type Project, type RGB } from "./draw2d.ts";
 
 const HEX_RADIUS = 26; // world units, centre to corner
 const NET_BACK_FRAC = 0.55; // back frame height as a fraction of the crossbar
@@ -399,28 +412,27 @@ export function staticSceneBuildCount(): number {
   return staticSceneBuilds;
 }
 
-/**
- * Render the whole pitch + entities for one frame, using the procedural 2.5D
- * player renderer throughout. Pure, tested reference -- see file header for
- * why the rigged-3D path is not folded in here.
- */
-export function pitchDrawCommands(frame: RenderFrame, vp: PitchViewport, opts: PitchDrawOptions, now = 0): DrawCommand[] {
-  const dl = new DrawList();
+function pitchProject(frame: RenderFrame, vp: PitchViewport, opts: PitchDrawOptions): Project {
   const field = frame.field;
-  const roster = frame.roster;
-  const players = frame.players;
-  const ball = frame.ball;
-  const arena = opts.arena ?? DEFAULT_ARENA;
-  const theme = opts.ui_theme ?? DEFAULT_UI_THEME;
-
   const view: CameraView | undefined = pitch.follow_camera ? cameraFollow.view(field) : undefined;
   const cameraField: CameraField = field;
   const cameraViewport: CameraViewport = vp;
-  const project: Project = (wx, wy) => {
+  return (wx, wy) => {
     const [sx, sy, scale] = camera.project(wx, wy, cameraField, cameraViewport, undefined, view);
     const offset = opts.camera_offset;
     return [sx + (offset?.x ?? 0), sy + (offset?.y ?? 0), scale];
   };
+}
+
+// Everything drawn BEFORE the depth-sorted players/ball: the static scene
+// (backdrop, floor, markings, goals -- memoised, see staticSceneCommands),
+// the dynamic arena frame chevrons, the ball trail and combat's "under"
+// layer. Shared by `pitchDrawCommands` and `pitch.draw`'s rigged branch so
+// the two paths cannot silently diverge on ordering.
+function drawPitchBeforeItems(dl: DrawList, frame: RenderFrame, vp: PitchViewport, opts: PitchDrawOptions, project: Project): void {
+  const field = frame.field;
+  const arena = opts.arena ?? DEFAULT_ARENA;
+  const theme = opts.ui_theme ?? DEFAULT_UI_THEME;
 
   const [ax, ay] = project(0, 0);
   const [bx, by] = project(field.w, 0);
@@ -442,41 +454,48 @@ export function pitchDrawCommands(frame: RenderFrame, vp: PitchViewport, opts: P
   // Ball trail sits on the ground, under the entities.
   dl.extend(effectsModule.effects.drawTrailCommands(project));
   dl.extend(combatRender.drawUnderCommands(frame, project));
+}
 
-  // Depth-sorted drawables (far first). `index === undefined` is the ball.
-  interface Drawable {
-    readonly index?: number;
-    readonly depth: number;
-  }
+// Depth-sorted drawables (far first). `index === undefined` is the ball.
+// Shared by `pitchDrawCommands` and `pitch.draw`'s rigged branch (see
+// `pitch.draw`, which needs the ball interleaved with players the same way
+// this pure path does -- a rigged player must occlude/be occluded by the
+// ball exactly as its procedural billboard would, not always draw over or
+// under it regardless of position).
+interface Drawable {
+  readonly index?: number;
+  readonly depth: number;
+}
+
+function depthSortedItems(players: RenderFramePlayers, ball: RenderFrameBall): Drawable[] {
   const items: Drawable[] = [];
   for (let index = 0; index < players.count; index += 1) {
     items.push({ index, depth: players.y[index] ?? 0 });
   }
   items.push({ depth: ball.y });
   items.sort((a, b) => a.depth - b.depth);
+  return items;
+}
 
-  for (const item of items) {
-    const index = item.index;
-    if (index !== undefined) {
-      const px = players.x[index] ?? 0;
-      const py = players.y[index] ?? 0;
-      const [sx, sy, scale] = project(px, py);
-      const r = (roster.radius[index] ?? 0) * scale;
-      const color = roster.teams[index] === "home" ? opts.home_color : opts.away_color;
-      const v = viewState.get(roster.ids[index] ?? "");
-      dl.extend(playerRenderer.playerDrawCommands(sx, sy, r, color, v, playerOptions(frame, index)));
-    } else if (ball.visible) {
-      // Loose / dribbled ball. (A keeper-held ball is drawn in its hands by
-      // the keeper avatar, so skip the ground ball then.) The shadow stays
-      // on the ground and shrinks/fades with height; the ball lifts by its
-      // height.
-      const [sx, sy, scale] = project(ball.x, ball.y);
-      const z = ball.z;
-      const hk = 1 / (1 + z / 80);
-      dl.ellipse("fill", sx, sy, 6 * scale * hk, 3 * scale * hk, [0, 0, 0], { alpha: 0.3 * hk });
-      dl.circle("fill", sx, sy - (z + 4) * scale, 5 * scale, [1, 0.95, 0.7]);
-    }
-  }
+// Loose / dribbled ball. (A keeper-held ball is drawn in its hands by the
+// keeper avatar, so skip the ground ball then.) The shadow stays on the
+// ground and shrinks/fades with height; the ball lifts by its height.
+function drawLooseBallCommands(dl: DrawList, project: Project, ball: RenderFrameBall): void {
+  const [sx, sy, scale] = project(ball.x, ball.y);
+  const z = ball.z;
+  const hk = 1 / (1 + z / 80);
+  dl.ellipse("fill", sx, sy, 6 * scale * hk, 3 * scale * hk, [0, 0, 0], { alpha: 0.3 * hk });
+  dl.circle("fill", sx, sy - (z + 4) * scale, 5 * scale, [1, 0.95, 0.7]);
+}
+
+// Everything drawn AFTER the depth-sorted players/ball: combat's "over"
+// layer, the landing reticle, the pass-target preview, the charge meter and
+// the effects "over" layer (flashes/sparks). Shared for the same reason
+// `drawPitchBeforeItems` is.
+function drawPitchAfterItems(dl: DrawList, frame: RenderFrame, opts: PitchDrawOptions, project: Project, now: number): void {
+  const players = frame.players;
+  const roster = frame.roster;
+  const ball = frame.ball;
 
   dl.extend(combatRender.drawOverCommands(frame, project));
 
@@ -530,6 +549,38 @@ export function pitchDrawCommands(frame: RenderFrame, vp: PitchViewport, opts: P
 
   // Flashes/sparks ride on top of everything.
   dl.extend(effectsModule.effects.drawOverCommands(project));
+}
+
+/**
+ * Render the whole pitch + entities for one frame, using the procedural 2.5D
+ * player renderer throughout. Pure, tested reference -- see file header for
+ * why the rigged-3D path is not folded in here.
+ */
+export function pitchDrawCommands(frame: RenderFrame, vp: PitchViewport, opts: PitchDrawOptions, now = 0): DrawCommand[] {
+  const dl = new DrawList();
+  const roster = frame.roster;
+  const players = frame.players;
+  const ball = frame.ball;
+  const project = pitchProject(frame, vp, opts);
+
+  drawPitchBeforeItems(dl, frame, vp, opts, project);
+
+  for (const item of depthSortedItems(players, ball)) {
+    const index = item.index;
+    if (index !== undefined) {
+      const px = players.x[index] ?? 0;
+      const py = players.y[index] ?? 0;
+      const [sx, sy, scale] = project(px, py);
+      const r = (roster.radius[index] ?? 0) * scale;
+      const color = roster.teams[index] === "home" ? opts.home_color : opts.away_color;
+      const v = viewState.get(roster.ids[index] ?? "");
+      dl.extend(playerRenderer.playerDrawCommands(sx, sy, r, color, v, playerOptions(frame, index)));
+    } else if (ball.visible) {
+      drawLooseBallCommands(dl, project, ball);
+    }
+  }
+
+  drawPitchAfterItems(dl, frame, opts, project, now);
 
   return dl.commands;
 }
@@ -549,12 +600,18 @@ export const pitch = {
   /**
    * Impure: paints one frame into `group` (all screen-space 2D content, via
    * draw2d.ts), and -- when `renderer` is supplied and the rigged pass is
-   * available -- composites each player's rigged 3D character on top of it
-   * through `player_renderer_3d.ts`'s own per-character render pass,
-   * exactly as the Lua original's per-player renderer choice does. Without
-   * a `renderer` (or when the rigged pass is unavailable/disabled), every
-   * player falls back to the procedural 2.5D renderer via `group`. Untested
-   * -- see file header's scope note.
+   * available -- composites each player's rigged 3D character INTO `group`,
+   * as a pre-rendered sprite (`player_renderer_3d.ts`'s `renderToSprite`),
+   * at the same point in the depth-sorted iteration a procedural billboard
+   * for that player would occupy. This is what lets a single later
+   * full-scene render (see scene.ts's `SceneRoot.render`) draw the flat
+   * content and the rigged characters together, correctly interleaved with
+   * the ball, instead of a direct `renderer.render()` call per character
+   * that a subsequent full-scene render would clear -- see file header.
+   * Without a `renderer` (or when the rigged pass is unavailable/disabled),
+   * every player falls back to the procedural 2.5D renderer via `group`.
+   * Untested beyond object-graph shape/ordering -- see file header's scope
+   * note.
    */
   draw(group: THREE.Group, frame: RenderFrame, vp: PitchViewport, opts: PitchDrawOptions, renderer?: THREE.WebGLRenderer, now = 0): void {
     const riggedActive = pitch.rigged_players && renderer !== undefined && playerRenderer3d.available();
@@ -562,50 +619,50 @@ export const pitch = {
       paint(group, pitchDrawCommands(frame, vp, opts, now));
       return;
     }
-    // At least one player may use the rigged pass: draw everything except
-    // players via the pure command list, then draw players individually so
-    // each can pick its renderer, preserving the original depth sort.
-    const field = frame.field;
+
     const roster = frame.roster;
     const players = frame.players;
-    const view = pitch.follow_camera ? cameraFollow.view(field) : undefined;
-    const project: Project = (wx, wy) => {
-      const [sx, sy, scale] = camera.project(wx, wy, field, vp, undefined, view);
-      const offset = opts.camera_offset;
-      return [sx + (offset?.x ?? 0), sy + (offset?.y ?? 0), scale];
-    };
-    paint(group, pitchWithoutPlayersCommands(frame, vp, opts, now));
-    for (let index = 0; index < players.count; index += 1) {
-      const px = players.x[index] ?? 0;
-      const py = players.y[index] ?? 0;
-      const [sx, sy, scale] = project(px, py);
-      const r = (roster.radius[index] ?? 0) * scale;
-      const color = roster.teams[index] === "home" ? opts.home_color : opts.away_color;
-      const v = viewState.get(roster.ids[index] ?? "");
-      const options = playerOptions(frame, index);
-      if (playerRenderer3d.available()) {
-        playerRenderer3d.draw(renderer, sx, sy, r, vp.w, vp.h, v, options, now);
-      } else {
-        paint(group, playerRenderer.playerDrawCommands(sx, sy, r, color, v, options));
+    const ball = frame.ball;
+    const project = pitchProject(frame, vp, opts);
+
+    // One `paint()` clears `group` and populates everything before the
+    // depth-sorted items; everything from here on uses `appendCommands` (or
+    // `group.add` directly for a rigged sprite) so it interleaves into the
+    // SAME child list instead of wiping out what came before it.
+    const before = new DrawList();
+    drawPitchBeforeItems(before, frame, vp, opts, project);
+    paint(group, before.commands);
+
+    for (const item of depthSortedItems(players, ball)) {
+      const index = item.index;
+      if (index !== undefined) {
+        const px = players.x[index] ?? 0;
+        const py = players.y[index] ?? 0;
+        const [sx, sy, scale] = project(px, py);
+        const r = (roster.radius[index] ?? 0) * scale;
+        const color = roster.teams[index] === "home" ? opts.home_color : opts.away_color;
+        const v = viewState.get(roster.ids[index] ?? "");
+        const options = playerOptions(frame, index);
+        // Re-checked per player, not just once via `riggedActive`: a build
+        // or render failure partway through a frame's roster flips
+        // `playerRenderer3d.available()` to false for the rest of it (see
+        // that module's `draw`/`renderToSprite`), and the remaining players
+        // should fall back gracefully rather than the whole frame failing.
+        const sprite = playerRenderer3d.available() ? playerRenderer3d.renderToSprite(renderer, sx, sy, r, vp.w, vp.h, v, options, now) : undefined;
+        if (sprite !== undefined) {
+          group.add(sprite);
+        } else {
+          appendCommands(group, playerRenderer.playerDrawCommands(sx, sy, r, color, v, options));
+        }
+      } else if (ball.visible) {
+        const ballCommands = new DrawList();
+        drawLooseBallCommands(ballCommands, project, ball);
+        appendCommands(group, ballCommands.commands);
       }
     }
+
+    const after = new DrawList();
+    drawPitchAfterItems(after, frame, opts, project, now);
+    appendCommands(group, after.commands);
   },
 };
-
-// Everything `pitchDrawCommands` draws except the depth-sorted players
-// (and the ball, drawn in its usual depth slot). Used only by `pitch.draw`'s
-// mixed-renderer path above.
-function pitchWithoutPlayersCommands(frame: RenderFrame, vp: PitchViewport, opts: PitchDrawOptions, now: number): DrawCommand[] {
-  const full = pitchDrawCommandsInternal(frame, vp, opts, now, true);
-  return full;
-}
-
-// Shares its body with `pitchDrawCommands`; `skipPlayers` is only set by the
-// mixed-renderer path in `pitch.draw`.
-function pitchDrawCommandsInternal(frame: RenderFrame, vp: PitchViewport, opts: PitchDrawOptions, now: number, skipPlayers: boolean): DrawCommand[] {
-  if (!skipPlayers) {
-    return pitchDrawCommands(frame, vp, opts, now);
-  }
-  const framePlayerless: RenderFrame = { ...frame, players: { ...frame.players, count: 0 } };
-  return pitchDrawCommands(framePlayerless, vp, opts, now);
-}

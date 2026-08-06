@@ -328,6 +328,62 @@ export function characterCameraParams(sx: number, sy: number, ppm: number, vw: n
 // draw call (matching the Lua original's one-draw-call-per-character shape).
 const scene = new THREE.Scene();
 
+interface PreparedCharacter {
+  readonly character: BuiltCharacter;
+  readonly cam: THREE.OrthographicCamera;
+}
+
+// Shared setup for both `draw` (direct render, kept for parity/diagnostics --
+// see its own doc comment) and `renderToSprite` (the path pitch.ts actually
+// calls): pose the shared rig onto the shared mesh, orient/colour it for this
+// player, build this player's camera, and stage the shared `scene` with just
+// that mesh. Split out so the two entry points cannot drift on how a
+// character is posed or framed -- only WHERE the result ends up differs.
+function prepareCharacter(
+  sx: number,
+  sy: number,
+  r: number,
+  vw: number,
+  vh: number,
+  view: PlayerView | undefined,
+  opts: PlayerRenderOptions,
+  now: number,
+): PreparedCharacter | undefined {
+  const character = build();
+  if (character === undefined) {
+    return undefined;
+  }
+  const pose = poseFor(view, opts, now);
+  skeleton.apply(character.rig, pose);
+  character.bones.forEach((bone, i) => {
+    const name = character.rig.order[i];
+    const world = name !== undefined ? character.rig.world[name] : undefined;
+    if (world !== undefined) {
+      bone.matrixWorld.copy(mat4ToThree(world));
+    }
+  });
+  character.mesh.skeleton.update();
+
+  const facing = opts.facing;
+  const yaw = facing !== undefined ? Math.atan2(facing.x, facing.y) : 0;
+  character.mesh.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+
+  const materials = materialsForTeam(opts.team ?? "home");
+  character.mesh.material = [...materials];
+
+  const ppm = (r * HEIGHT_IN_RADII * 2) / character.height;
+  const far = character.height * 4 + 10;
+  const params = characterCameraParams(sx, sy, ppm, vw, vh, ELEVATION, character.height);
+  const cam = new THREE.OrthographicCamera(params.left, params.right, params.top, params.bottom, 0.01, far);
+  cam.position.set(...params.eye);
+  cam.lookAt(...params.target);
+  cam.updateProjectionMatrix();
+
+  scene.clear();
+  scene.add(character.mesh);
+  return { character, cam };
+}
+
 /**
  * Impure: draws one rigged player, matching the Lua original's
  * `beginPass(cam, palette) / draw(mesh, world, bone_rows) / endPass()`
@@ -338,6 +394,14 @@ const scene = new THREE.Scene();
  * others) and for restoring it afterward, exactly as `bloom.ts`'s `draw`
  * resets depth/cull/shader state after its own render pass. Untested -- see
  * file header.
+ *
+ * NOT CALLED BY `pitch.ts` ANYMORE -- kept for parity/diagnostics (a
+ * standalone character preview has no "later full-scene render" to collide
+ * with). Do not combine a call to this function with a subsequent whole-scene
+ * render into the SAME target: that later render will clear what this one
+ * just drew (see scene.ts's class doc comment, "FIXED HERE", for the defect
+ * this shape caused once `SceneRoot` started doing both in one frame).
+ * `renderToSprite` below is the composable alternative `pitch.draw` uses.
  */
 export function draw(
   renderer: THREE.WebGLRenderer,
@@ -350,43 +414,106 @@ export function draw(
   opts: PlayerRenderOptions,
   now = 0,
 ): void {
-  const character = build();
-  if (character === undefined) {
-    return;
-  }
   try {
-    const pose = poseFor(view, opts, now);
-    skeleton.apply(character.rig, pose);
-    character.bones.forEach((bone, i) => {
-      const name = character.rig.order[i];
-      const world = name !== undefined ? character.rig.world[name] : undefined;
-      if (world !== undefined) {
-        bone.matrixWorld.copy(mat4ToThree(world));
-      }
-    });
-    character.mesh.skeleton.update();
-
-    const facing = opts.facing;
-    const yaw = facing !== undefined ? Math.atan2(facing.x, facing.y) : 0;
-    character.mesh.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
-
-    const materials = materialsForTeam(opts.team ?? "home");
-    character.mesh.material = [...materials];
-
-    const ppm = (r * HEIGHT_IN_RADII * 2) / character.height;
-    const far = character.height * 4 + 10;
-    const params = characterCameraParams(sx, sy, ppm, vw, vh, ELEVATION, character.height);
-    const cam = new THREE.OrthographicCamera(params.left, params.right, params.top, params.bottom, 0.01, far);
-    cam.position.set(...params.eye);
-    cam.lookAt(...params.target);
-    cam.updateProjectionMatrix();
-
-    scene.clear();
-    scene.add(character.mesh);
-    renderer.render(scene, cam);
+    const prepared = prepareCharacter(sx, sy, r, vw, vh, view, opts, now);
+    if (prepared === undefined) {
+      return;
+    }
+    renderer.render(scene, prepared.cam);
   } catch (error) {
     failed = true;
     // eslint-disable-next-line no-console
     console.warn(`rigged 3D players disabled (draw failed): ${String(error)}`);
+  }
+}
+
+/**
+ * Impure: renders one rigged player OFF-SCREEN, into a private
+ * `THREE.WebGLRenderTarget` sized to the FULL viewport, and returns the
+ * result as a `THREE.Mesh` (a `vw`x`vh` plane at `(vw/2, vh/2)`, matching
+ * every other draw2d.ts "fill" shape's own placement convention) ready to be
+ * added directly to `pitch.ts`'s `pitchGroup`. `characterCameraParams` is
+ * UNCHANGED from `draw`'s: it already frames the character at `(sx, sy)`
+ * across an asymmetric frustum spanning the WHOLE viewport (not a tight crop
+ * around the character), which is exactly what makes a viewport-sized
+ * transparent quad reproduce `draw`'s old direct-render compositing once it
+ * is part of the scene graph -- only the render TARGET changes, from
+ * whatever framebuffer `renderer` currently has bound to this private one, so
+ * this render never touches the visible canvas. Only the later single
+ * full-scene render does (see scene.ts's `SceneRoot.render`), with this mesh
+ * already part of what it draws, at the correct point in `pitch.draw`'s
+ * painter's-algorithm order.
+ *
+ * The renderer's previous target/clear-color/clear-alpha/autoClear are saved
+ * and restored, matching this file's own `draw` contract note on renderer
+ * state.
+ *
+ * The returned mesh's `userData.ownedRenderTarget` records the render
+ * target so `draw2d.ts`'s `disposeObject` (used by both `paint`'s per-frame
+ * rebuild and `SceneRoot.dispose`'s teardown) releases it -- an offscreen
+ * target this heavy must not outlive the frame it was built for.
+ *
+ * UNVERIFIED WITHOUT A LIVE GL CONTEXT: whether `target.texture`'s
+ * orientation lands right-side-up once sampled by a plain, unrotated
+ * `PlaneGeometry` under `SceneRoot`'s shared 2D orthographic camera.
+ * `THREE.WebGLRenderTarget` textures default to `flipY = false` (unlike an
+ * image-loaded `Texture`, which defaults to `true`) -- set explicitly below
+ * so the choice is visible rather than relying on the default silently being
+ * correct. If a live-GL check later shows the character upside down, this is
+ * the line to flip. See file header and this port's report.
+ */
+export function renderToSprite(
+  renderer: THREE.WebGLRenderer,
+  sx: number,
+  sy: number,
+  r: number,
+  vw: number,
+  vh: number,
+  view: PlayerView | undefined,
+  opts: PlayerRenderOptions,
+  now = 0,
+): THREE.Mesh | undefined {
+  try {
+    const prepared = prepareCharacter(sx, sy, r, vw, vh, view, opts, now);
+    if (prepared === undefined) {
+      return undefined;
+    }
+
+    const target = new THREE.WebGLRenderTarget(vw, vh, { format: THREE.RGBAFormat });
+    target.texture.flipY = false;
+
+    const previousTarget = renderer.getRenderTarget();
+    const previousClearColor = renderer.getClearColor(new THREE.Color());
+    const previousClearAlpha = renderer.getClearAlpha();
+    const previousAutoClear = renderer.autoClear;
+    try {
+      renderer.setRenderTarget(target);
+      renderer.setClearColor(0x000000, 0);
+      renderer.autoClear = true;
+      renderer.clear(true, true, true);
+      renderer.render(scene, prepared.cam);
+    } finally {
+      renderer.setRenderTarget(previousTarget);
+      renderer.setClearColor(previousClearColor, previousClearAlpha);
+      renderer.autoClear = previousAutoClear;
+    }
+
+    const material = new THREE.MeshBasicMaterial({
+      map: target.texture,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const geometry = new THREE.PlaneGeometry(vw, vh);
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(vw / 2, vh / 2, 0);
+    mesh.userData["ownedRenderTarget"] = target;
+    return mesh;
+  } catch (error) {
+    failed = true;
+    // eslint-disable-next-line no-console
+    console.warn(`rigged 3D players disabled (renderToSprite failed): ${String(error)}`);
+    return undefined;
   }
 }

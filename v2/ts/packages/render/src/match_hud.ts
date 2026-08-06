@@ -17,7 +17,7 @@
 //     the theme is threaded through as an explicit `MatchHudTheme` parameter.
 
 import * as THREE from "three";
-import { DrawList, paint, type DrawCommand, type RGB } from "./draw2d.ts";
+import { DrawList, paint, type DrawCommand, type PaintOptions, type RGB } from "./draw2d.ts";
 
 export type BroadcastPhase = "kickoff" | "goal" | "replay" | "full_time";
 export type SpeciesShape = "round" | "broad" | "angular" | "cluster";
@@ -269,7 +269,22 @@ export function matchHudCommands(model: MatchHudModel, layout: MatchHudLayout, t
   return dl.commands;
 }
 
-/** Impure: paints the HUD into `group`. Untested -- see draw2d.ts. */
-export function drawMatchHud(group: THREE.Group, model: MatchHudModel, layout: MatchHudLayout, theme: MatchHudTheme, viewport: MatchHudViewport): void {
-  paint(group, matchHudCommands(model, layout, theme, viewport));
+/**
+ * Impure: paints the HUD into `group`. `paintOptions` is forwarded verbatim
+ * to `paint` -- production callers never pass it (the default `buildText`
+ * needs a real DOM, which `game/`'s eventual canvas host provides); tests use
+ * it to substitute the text path so HUD *population* -- every command this
+ * module emits actually reaching `group` as a three.js object, in order --
+ * is exercised without a DOM polyfill. See match_hud.spec.ts and
+ * draw2d.ts's `PaintOptions` doc comment.
+ */
+export function drawMatchHud(
+  group: THREE.Group,
+  model: MatchHudModel,
+  layout: MatchHudLayout,
+  theme: MatchHudTheme,
+  viewport: MatchHudViewport,
+  paintOptions?: PaintOptions,
+): void {
+  paint(group, matchHudCommands(model, layout, theme, viewport), paintOptions);
 }

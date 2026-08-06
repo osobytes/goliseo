@@ -4,7 +4,9 @@
 // combat_feedback_spec.lua case this module is also blocked on.
 
 import { describe, expect, it } from "vitest";
-import { matchHudCommands, type MatchHudLayout, type MatchHudModel, type MatchHudTheme } from "./match_hud.ts";
+import * as THREE from "three";
+import { drawMatchHud, matchHudCommands, type MatchHudLayout, type MatchHudModel, type MatchHudTheme } from "./match_hud.ts";
+import type { TextCommand } from "./draw2d.ts";
 
 const rect = (x: number, y: number, w: number, h: number) => ({ x, y, w, h });
 
@@ -119,5 +121,85 @@ describe("match_hud.matchHudCommands", () => {
       const lowFillWidth = lowFill?.kind === "rect" ? lowFill.w : 0;
       expect(healthyFill.w).toBeGreaterThan(lowFillWidth);
     }
+  });
+});
+
+// HUD POPULATION (drawMatchHud -> draw2d.ts's `paint`). `matchHudCommands`
+// above is pure and needs nothing GPU/DOM-shaped to test; `drawMatchHud`
+// additionally has to turn every one of those commands into a real three.js
+// object and land it in a `THREE.Group`, and `drawMatchHud` *always* emits at
+// least a venue `dl.text(...)` command, whose default build path
+// (draw2d.ts's `buildTextSprite`) calls `document.createElement("canvas")` --
+// unavailable under this workspace's default `vitest` "node" environment
+// (v2/ts/vitest.config.ts has no per-file environment overrides, and no
+// jsdom/happy-dom is installed in this workspace to request one via a
+// `// @vitest-environment` docblock).
+//
+// Rather than add a DOM dependency this milestone does not otherwise need,
+// this suite uses the seam draw2d.ts's `paint`/`drawMatchHud` already expose
+// for exactly this: `PaintOptions.buildText` substitutes the text command's
+// three.js object with a plain stand-in, so every OTHER command kind the HUD
+// actually emits (rect, polygon, line -- see match_hud.ts, no circle/ellipse/
+// arc in this module) goes through draw2d.ts's real, unmodified builders.
+// That is real coverage of HUD population, not a mock of it: the only thing
+// substituted is the one code path that is DOM-shaped rather than
+// GL-shaped, and it is substituted with a real (if trivial) `THREE.Object3D`
+// so the group's child count and disposal behavior stay meaningful.
+describe("match_hud.drawMatchHud (population)", () => {
+  it("adds exactly one three.js object per DrawCommand, in order, without touching document", () => {
+    const group = new THREE.Group();
+    const m = model();
+    const commands = matchHudCommands(m, layout, theme, viewport);
+    let textCalls = 0;
+    drawMatchHud(group, m, layout, theme, viewport, {
+      buildText: (_c: TextCommand) => {
+        textCalls += 1;
+        return new THREE.Object3D();
+      },
+    });
+    expect(group.children).toHaveLength(commands.length);
+    expect(textCalls).toBe(commands.filter((c) => c.kind === "text").length);
+  });
+
+  it("repopulating the group clears the previous frame's objects instead of accumulating them", () => {
+    const group = new THREE.Group();
+    const buildText = (): THREE.Object3D => new THREE.Object3D();
+    drawMatchHud(group, model(), layout, theme, viewport, { buildText });
+    const first = group.children.length;
+    expect(first).toBeGreaterThan(0);
+
+    // A model with the combat panel active emits strictly more commands.
+    const withEquip = model({ equipment_label: "SWORD", equipment_state: "READY", equipment_progress: 0.5 });
+    drawMatchHud(group, withEquip, layout, theme, viewport, { buildText });
+    const expected = matchHudCommands(withEquip, layout, theme, viewport).length;
+    expect(group.children).toHaveLength(expected);
+    expect(group.children.length).not.toBe(first + expected); // would be true if paint() had accumulated instead of clearing
+  });
+
+  it("disposes each rebuilt frame's mesh geometry/material before the next one lands", () => {
+    const group = new THREE.Group();
+    const buildText = (): THREE.Object3D => new THREE.Object3D();
+    drawMatchHud(group, model(), layout, theme, viewport, { buildText });
+
+    const mesh = group.children.find((c): c is THREE.Mesh => c instanceof THREE.Mesh);
+    expect(mesh).toBeDefined();
+    let geometryDisposed = false;
+    let materialDisposed = false;
+    if (mesh !== undefined) {
+      mesh.geometry.dispose = () => {
+        geometryDisposed = true;
+      };
+      const material = mesh.material;
+      if (!Array.isArray(material)) {
+        material.dispose = () => {
+          materialDisposed = true;
+        };
+      }
+    }
+
+    drawMatchHud(group, model(), layout, theme, viewport, { buildText });
+
+    expect(geometryDisposed).toBe(true);
+    expect(materialDisposed).toBe(true);
   });
 });

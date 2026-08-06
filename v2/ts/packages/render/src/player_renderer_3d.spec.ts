@@ -1,12 +1,19 @@
 // New tests for player_renderer_3d.ts's pure half: pose selection and the
 // metres-per-world-unit conversion. No Lua spec targets
 // game/render/player_renderer_3d.lua directly (it has no `spec/render/`
-// counterpart in the Lua tree). The GPU-adjacent mesh/skeleton/camera half
-// is untested -- see this package's port report.
+// counterpart in the Lua tree). Most of the GPU-adjacent mesh/skeleton/camera
+// half is untested -- see this package's port report -- EXCEPT
+// `renderToSprite`'s object-graph shape (below), which needs only a stub
+// renderer, not a live GL context, to verify (the same boundary
+// scene.spec.ts's `stubRenderer()` and pitch.spec.ts's rigged-compositing
+// suite draw); `build()` itself only constructs plain three.js
+// geometry/skeleton objects with no GL calls, so it genuinely succeeds under
+// this workspace's "node" vitest environment.
 
 import { describe, expect, it } from "vitest";
+import * as THREE from "three";
 import { Vec2 } from "@gc/core";
-import { characterCameraParams, clipFor, metresPerWorldUnit, poseFor, DEFAULT_PLAYER_RADIUS } from "./player_renderer_3d.ts";
+import { available, characterCameraParams, clipFor, metresPerWorldUnit, poseFor, renderToSprite, DEFAULT_PLAYER_RADIUS } from "./player_renderer_3d.ts";
 import type { PlayerRenderOptions } from "./player_renderer.ts";
 import type { PlayerView } from "./view_state.ts";
 
@@ -104,5 +111,88 @@ describe("player_renderer_3d.characterCameraParams", () => {
     const params = characterCameraParams(640, 360, 40, 1280, 720, Math.PI / 6, 1.8);
     expect(params.eye[1]).toBeGreaterThan(params.target[1]);
     expect(params.target).toEqual([0, 0.9, 0]);
+  });
+});
+
+// RENDERTOSPRITE (defect #1's fix, see pitch.ts's file header and scene.ts's
+// class doc comment). A minimal renderer stub is enough to verify this
+// function's OWN contract -- it builds a viewport-sized quad with an owned
+// off-screen render target, and it restores the renderer's prior
+// target/clear state -- without needing a live GL context. What is NOT
+// verified here (or anywhere in this package) is the actual pixel content
+// the off-screen render produces; see this port's report.
+describe("player_renderer_3d.renderToSprite", () => {
+  interface StubRenderer {
+    autoClear: boolean;
+    readonly setRenderTargetCalls: (THREE.WebGLRenderTarget | null)[];
+    getRenderTarget(): THREE.WebGLRenderTarget | null;
+    setRenderTarget(t: THREE.WebGLRenderTarget | null): void;
+    getClearColor(target: THREE.Color): THREE.Color;
+    getClearAlpha(): number;
+    setClearColor(color: THREE.ColorRepresentation, alpha?: number): void;
+    clear(): void;
+    render(): void;
+  }
+
+  function stubRenderer(): THREE.WebGLRenderer & StubRenderer {
+    let current: THREE.WebGLRenderTarget | null = null;
+    const setRenderTargetCalls: (THREE.WebGLRenderTarget | null)[] = [];
+    const stub: StubRenderer = {
+      autoClear: true,
+      setRenderTargetCalls,
+      getRenderTarget: () => current,
+      setRenderTarget: (t) => {
+        current = t;
+        setRenderTargetCalls.push(t);
+      },
+      getClearColor: (target) => target.set(0, 0, 0),
+      getClearAlpha: () => 1,
+      setClearColor: () => {},
+      clear: () => {},
+      render: () => {},
+    };
+    return stub as unknown as THREE.WebGLRenderer & StubRenderer;
+  }
+
+  const idleView: PlayerView = { px: 0, py: 0, speed: 0, phase: 0, gait: 0, lean: 0 };
+
+  it("skips this environment's assertions if the rigged pass genuinely could not build", () => {
+    // Documents the precondition the rest of this describe block assumes,
+    // rather than silently no-op-ing if a future change to rig3d content
+    // makes `build()` start failing under vitest's "node" environment.
+    expect(available()).toBe(true);
+  });
+
+  it("returns a viewport-sized mesh positioned at the viewport's centre, tagged with its owned render target", () => {
+    const renderer = stubRenderer();
+    const mesh = renderToSprite(renderer, 640, 360, 12, 1280, 720, idleView, baseOptions(), 0);
+    expect(mesh).toBeInstanceOf(THREE.Mesh);
+    if (mesh === undefined) {
+      throw new Error("expected a mesh");
+    }
+    expect(mesh.position.x).toBeCloseTo(640, 9);
+    expect(mesh.position.y).toBeCloseTo(360, 9);
+    expect(mesh.userData["ownedRenderTarget"]).toBeInstanceOf(THREE.WebGLRenderTarget);
+  });
+
+  it("renders into a private off-screen target, never the renderer's own bound target", () => {
+    const renderer = stubRenderer();
+    renderToSprite(renderer, 640, 360, 12, 1280, 720, idleView, baseOptions(), 0);
+    expect(renderer.setRenderTargetCalls.length).toBeGreaterThanOrEqual(2);
+    const offscreenCall = renderer.setRenderTargetCalls[0];
+    expect(offscreenCall).toBeInstanceOf(THREE.WebGLRenderTarget);
+  });
+
+  it("restores the renderer's prior target once done", () => {
+    const renderer = stubRenderer();
+    renderToSprite(renderer, 640, 360, 12, 1280, 720, idleView, baseOptions(), 0);
+    expect(renderer.getRenderTarget()).toBeNull();
+  });
+
+  it("restores the renderer's prior autoClear value once done", () => {
+    const renderer = stubRenderer();
+    renderer.autoClear = false;
+    renderToSprite(renderer, 640, 360, 12, 1280, 720, idleView, baseOptions(), 0);
+    expect(renderer.autoClear).toBe(false);
   });
 });

@@ -62,8 +62,8 @@ export const DEFAULT_BLOOM_CONFIG: BloomConfig = {
 /** Additive bloom post-process, replacing game/render/bloom.lua. See file header. */
 export class Bloom {
   readonly config: BloomConfig;
-  private composer?: EffectComposer;
-  private bloomPass?: UnrealBloomPass;
+  private composer: EffectComposer | undefined;
+  private bloomPass: UnrealBloomPass | undefined;
   private w = 0;
   private h = 0;
 
@@ -100,5 +100,28 @@ export class Bloom {
       pass.threshold = this.config.threshold;
     }
     composer.render();
+  }
+
+  /**
+   * Releases every `THREE.WebGLRenderTarget` this instance owns: the
+   * `EffectComposer`'s own two ping-pong buffers (`EffectComposer.dispose`)
+   * plus `UnrealBloomPass`'s five-mip blur/bright render targets
+   * (`UnrealBloomPass.dispose`, which `EffectComposer.dispose` does NOT call
+   * on its own passes -- checked against the installed
+   * `three/examples/jsm/postprocessing` source, not assumed). A no-op if
+   * `draw` was never called (nothing was allocated yet via `ensure`).
+   * Idempotent -- safe to call more than once, matching `SceneRoot.dispose`'s
+   * own contract, which is what calls this. Wired up so `SceneRoot.dispose`
+   * can actually release this scene's post-processing resources instead of
+   * leaking an `EffectComposer` and its render targets on every teardown --
+   * see scene.ts's `dispose` doc comment (before this port) for the gap.
+   */
+  dispose(): void {
+    this.bloomPass?.dispose();
+    this.composer?.dispose();
+    this.composer = undefined;
+    this.bloomPass = undefined;
+    this.w = 0;
+    this.h = 0;
   }
 }
