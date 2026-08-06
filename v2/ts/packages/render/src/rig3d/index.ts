@@ -20,3 +20,4 @@ export * as face from "./face.ts";
 export * as headgear from "./headgear.ts";
 export * as equipment from "./equipment.ts";
 export * as body from "./body.ts";
+export * as poseLod from "./pose_lod.ts";
