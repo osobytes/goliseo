@@ -255,15 +255,23 @@ comment saying why, and report it — never delete it silently.
 `game/render/` is 9,339 lines. Roughly 2,900 of those are hand-written engine
 features three.js ships, and they should be **deleted, not translated**:
 
-| Lua | three.js replacement |
-| --- | --- |
-| `rig3d/skeleton.lua`, `rig3d/body.lua`, `rig3d/meshbuilder.lua`, `rig3d/shapes.lua` | `Skeleton`, `Bone`, `SkinnedMesh`, `BufferGeometry` |
-| `rig3d/renderer.lua` and its hand-written GLSL | `WebGLRenderer`, `MeshStandardMaterial` |
-| `bloom.lua` | `UnrealBloomPass` |
-| `gl_probe.lua` | three.js capability detection |
+**Separate the mechanism from the content before deleting anything.** A file
+that *implements* skinning is engine code three.js already ships. A file that
+*describes this game's characters* happens to be written in terms of that
+mechanism, but it is content, and deleting it throws away the game.
 
-**Do not delete anything without saying so in your report.** Name the file and
-the replacement.
+| Lua | verdict |
+| --- | --- |
+| `rig3d/meshbuilder.lua`, `rig3d/shapes.lua` | **replace** — primitive geometry construction → `BufferGeometry` and three.js primitives |
+| `rig3d/renderer.lua` and its hand-written GLSL | **replace** — `WebGLRenderer`, `MeshStandardMaterial` |
+| `bloom.lua` | **replace** — `UnrealBloomPass` |
+| `gl_probe.lua` | **replace** — three.js capability detection |
+| `rig3d/skeleton.lua` | **split** — the skinning maths is `Skeleton`/`Bone`; the specific bone hierarchy is content and must be ported |
+| `rig3d/body.lua`, `equipment`, `headgear`, `face` | **port** — these describe what the characters look like, expressed via `SkinnedMesh` instead of the old builder |
+| `rig3d/clips.lua`, `themes`, `action_pose`, `masks`, `proportions`, `palette`, `species_presentation` | **port** — pure game content and animation data |
+
+**Do not delete anything without saying so in your report.** Name the file, the
+replacement, and why you judged it mechanism rather than content.
 
 Two things three.js does **not** provide, which stay hand-written:
 
