@@ -7,14 +7,74 @@
 //! from whichever match happened to be simulated — so the "scoring" and
 //! "combat decision reasons" describe blocks below port in full. The
 //! "decisions" describe block's tests build their fixture via the Lua
-//! spec's `bare_match()`, which calls `match.new` (`sim/match.lua`, not yet
-//! ported); those are `#[ignore]`d per that blocker.
+//! spec's `bare_match()`, which calls `match.new` (`sim/match.lua`). That
+//! module is now ported (`gc_sim::r#match`), so the full block ports below.
 
+use gc_core::vec2::Vec2;
 use gc_data::action_families::ActionFamilyId;
 use gc_sim::brain::{self, OptionReference};
-use gc_sim::combat_feasibility::CombatPurposeId as Purpose;
+use gc_sim::combat::{self};
+use gc_sim::combat_feasibility::{CombatActionPhase, CombatPurposeId as Purpose};
 use gc_sim::combat_intent::{self, CombatDecisionReason};
-use gc_sim::combat_policy::{self, CombatPolicyCandidate};
+use gc_sim::combat_observation::{self, CombatObservation};
+use gc_sim::combat_policy::{self, CombatPolicyCandidate, CombatUnavailableReason, PolicyAction};
+use gc_sim::combat_snapshot::CombatMatchState;
+use gc_sim::r#match::{self as sim_match, NewMatchOptions};
+use gc_sim::match_snapshot::{MatchState, PitchSize, Team};
+
+/// The `bare_match()` fixture's fixed source/target player indices
+/// (1-based, matching `crate::r#match`'s indexing convention — see that
+/// module's "Indexing convention" doc). `SOURCE` sits on the home roster
+/// (nebula), `TARGET` on the away roster (orion).
+const SOURCE: i64 = 2;
+const TARGET: i64 = 7;
+
+/// Mirrors the spec's `bare_match()`: a fresh 5v5 fixture with every player
+/// parked on a diagonal, facing their attacking direction, and the ball
+/// sitting untouched in the corner — a blank canvas the "decisions" cases
+/// pose explicitly rather than relying on kickoff placement.
+fn bare_match() -> (MatchState, CombatMatchState) {
+    let home = gc_data::teams::get("nebula").expect("nebula team is authored");
+    let away = gc_data::teams::get("orion").expect("orion team is authored");
+    let mut state = sim_match::new(NewMatchOptions {
+        home,
+        away,
+        field: PitchSize { w: 960.0, h: 540.0 },
+        home_formation: None,
+        tactic: None,
+        away_tactic: None,
+        duration: None,
+        max_goals: None,
+        seed: Some(19.0),
+        players_by_id: None,
+        species_by_id: None,
+        showcase_players_by_id: None,
+        human_controlled: None,
+        input_ownership: None,
+    });
+    state.kickoff_hold = 0.0;
+    let combat_state = combat::new_state(&mut state, None);
+    for (zero_index, player) in state.players.iter_mut().enumerate() {
+        let index = (zero_index + 1) as f64;
+        player.pos = Vec2::new(40.0 + index * 3.0, 40.0 + index * 3.0);
+        player.vel = Vec2::new(0.0, 0.0);
+        player.facing = Vec2::new(if player.team == Team::Home { 1.0 } else { -1.0 }, 0.0);
+    }
+    state.ball = Vec2::new(900.0, 500.0);
+    state.owner = None;
+    (state, combat_state)
+}
+
+/// Mirrors the spec's `observe(state, combat_state)`.
+fn observe(state: &MatchState, combat_state: &CombatMatchState) -> CombatObservation {
+    combat_observation::build(
+        state,
+        Some(combat_state),
+        SOURCE,
+        combat_policy::POLICY_ID,
+        None,
+    )
+}
 
 /// Mirrors the spec's `candidate(overrides)`: `CombatPolicyCandidate` in its
 /// commit-a-carrier-contest baseline shape, so each test only names the
@@ -316,37 +376,144 @@ fn combat_decision_reasons_derives_a_stat_scaled_cadence_and_a_per_tick_decision
 
 // The remaining spec describe block ("gameplay_ai/combat/v1 decisions") builds
 // its fixture via the Lua spec's `bare_match()`, which calls `match.new`
-// (`sim/match.lua`). That module is still an unported placeholder
-// (`gc_sim::r#match`), so these six cases cannot be expressed yet.
+// (`sim/match.lua`, now ported as `gc_sim::r#match`). The first five cases
+// below use the `bare_match()`/`observe()` helpers above; the sixth
+// (`decisions_rejects_any_observation_that_is_not_this_schema`) needs no
+// match fixture at all, so it was already ported directly.
 
 #[test]
-#[ignore = "needs sim::match (sim/match.lua), not yet ported"]
 fn decisions_reports_the_closed_unavailability_reason_instead_of_guessing() {
-    unimplemented!("needs sim::match (sim/match.lua)")
+    let (mut state, mut combat_state) = bare_match();
+    state.players[(SOURCE - 1) as usize].pos = Vec2::new(400.0, 270.0);
+    state.players[(TARGET - 1) as usize].pos = Vec2::new(424.0, 270.0);
+    state.owner = Some(TARGET);
+    state.ball = state.players[(TARGET - 1) as usize].pos;
+
+    let original_family = combat_state.players[(SOURCE - 1) as usize].family_id;
+    combat_state.players[(SOURCE - 1) as usize].family_id = None;
+    combat_state.players[(SOURCE - 1) as usize].loadout_id = None;
+    let decision = combat_policy::decide(&observe(&state, &combat_state), 1, Some(0.0));
+    assert_eq!(
+        decision.unavailable_reason,
+        Some(CombatUnavailableReason::NoLoadout)
+    );
+
+    combat_state.players[(SOURCE - 1) as usize].family_id = original_family;
+    combat_state.players[(SOURCE - 1) as usize].loadout_id =
+        Some("loadout_spring_gloves".to_string());
+    combat_state.players[(SOURCE - 1) as usize].cooldown_ticks = 12;
+    let decision = combat_policy::decide(&observe(&state, &combat_state), 1, Some(0.0));
+    assert_eq!(
+        decision.unavailable_reason,
+        Some(CombatUnavailableReason::Cooldown)
+    );
+
+    combat_state.players[(SOURCE - 1) as usize].cooldown_ticks = 0;
+    combat_state.players[(SOURCE - 1) as usize].forced_ticks = 5;
+    let decision = combat_policy::decide(&observe(&state, &combat_state), 1, Some(0.0));
+    assert_eq!(
+        decision.unavailable_reason,
+        Some(CombatUnavailableReason::Forced)
+    );
+
+    combat_state.players[(SOURCE - 1) as usize].forced_ticks = 0;
+    combat_state.players[(SOURCE - 1) as usize].phase = CombatActionPhase::Windup;
+    combat_state.players[(SOURCE - 1) as usize].phase_ticks = 3;
+    combat_state.players[(SOURCE - 1) as usize].source_sequence = Some(1);
+    let decision = combat_policy::decide(&observe(&state, &combat_state), 1, Some(0.0));
+    assert_eq!(
+        decision.unavailable_reason,
+        Some(CombatUnavailableReason::AlreadyCommitted)
+    );
+
+    combat_state.players[(SOURCE - 1) as usize].phase = CombatActionPhase::Ready;
+    combat_state.players[(SOURCE - 1) as usize].phase_ticks = 0;
+    combat_state.players[(SOURCE - 1) as usize].source_sequence = None;
+    state.players[(SOURCE - 1) as usize].slide_timer = 0.4;
+    let decision = combat_policy::decide(&observe(&state, &combat_state), 1, Some(0.0));
+    assert_eq!(
+        decision.unavailable_reason,
+        Some(CombatUnavailableReason::SoccerCommitment)
+    );
 }
 
 #[test]
-#[ignore = "needs sim::match (sim/match.lua), not yet ported"]
 fn decisions_reports_no_reachable_opportunity_as_a_feasibility_unavailability() {
-    unimplemented!("needs sim::match (sim/match.lua)")
+    let (mut state, mut combat_state) = bare_match();
+    combat_state.players[(SOURCE - 1) as usize].family_id = Some(ActionFamilyId::Unarmed);
+    combat_state.players[(SOURCE - 1) as usize].loadout_id =
+        Some("loadout_spring_gloves".to_string());
+    state.players[(SOURCE - 1) as usize].pos = Vec2::new(60.0, 60.0);
+    state.players[(TARGET - 1) as usize].pos = Vec2::new(900.0, 500.0);
+    state.owner = Some(TARGET);
+    state.ball = state.players[(TARGET - 1) as usize].pos;
+
+    let decision = combat_policy::decide(&observe(&state, &combat_state), 1, Some(0.0));
+    assert_eq!(decision.action, PolicyAction::Unavailable);
+    assert_eq!(
+        decision.unavailable_reason,
+        Some(CombatUnavailableReason::FamilyCommitFeasibility)
+    );
+    assert_eq!(decision.reason, CombatDecisionReason::None);
 }
 
 #[test]
-#[ignore = "needs sim::match (sim/match.lua), not yet ported"]
 fn decisions_commits_with_exactly_one_purpose_reason_and_no_context_violation() {
-    unimplemented!("needs sim::match (sim/match.lua)")
+    let (mut state, mut combat_state) = bare_match();
+    combat_state.players[(SOURCE - 1) as usize].family_id = Some(ActionFamilyId::Unarmed);
+    combat_state.players[(SOURCE - 1) as usize].loadout_id =
+        Some("loadout_spring_gloves".to_string());
+    state.players[(SOURCE - 1) as usize].pos = Vec2::new(400.0, 270.0);
+    state.players[(SOURCE - 1) as usize].facing = Vec2::new(1.0, 0.0);
+    state.players[(TARGET - 1) as usize].pos = Vec2::new(424.0, 270.0);
+    state.owner = Some(TARGET);
+    state.ball = state.players[(TARGET - 1) as usize].pos;
+
+    let decision = combat_policy::decide(&observe(&state, &combat_state), 1, Some(0.0));
+    assert_eq!(decision.action, PolicyAction::Commit);
+    assert_eq!(decision.reason, CombatDecisionReason::CarrierContest);
+    assert_eq!(decision.target_player, Some(TARGET));
+    assert_eq!(decision.family_id, Some(ActionFamilyId::Unarmed));
+    assert!(!decision.context_violation);
+    assert!(combat_policy::is_commit_reason(decision.reason));
+    assert_eq!(decision.digest.len(), 16);
 }
 
 #[test]
-#[ignore = "needs sim::match (sim/match.lua), not yet ported"]
 fn decisions_is_byte_identical_for_the_same_observation_and_seed() {
-    unimplemented!("needs sim::match (sim/match.lua)")
+    let (mut state, mut combat_state) = bare_match();
+    combat_state.players[(SOURCE - 1) as usize].family_id = Some(ActionFamilyId::Unarmed);
+    combat_state.players[(SOURCE - 1) as usize].loadout_id =
+        Some("loadout_spring_gloves".to_string());
+    state.players[(SOURCE - 1) as usize].pos = Vec2::new(400.0, 270.0);
+    state.players[(SOURCE - 1) as usize].facing = Vec2::new(1.0, 0.0);
+    state.players[(TARGET - 1) as usize].pos = Vec2::new(424.0, 270.0);
+    state.owner = Some(TARGET);
+    state.ball = state.players[(TARGET - 1) as usize].pos;
+
+    let observation = observe(&state, &combat_state);
+    let first = combat_policy::decide(&observation, 20003, Some(3.0));
+    let second = combat_policy::decide(&observation, 20003, Some(3.0));
+    assert_eq!(second.option_id, first.option_id);
+    assert_eq!(second.reason, first.reason);
+    assert_eq!(second.target_player, first.target_player);
+    assert_eq!(second.rng_state, first.rng_state);
 }
 
 #[test]
-#[ignore = "needs sim::match (sim/match.lua), not yet ported"]
 fn decisions_spends_no_rng_at_zero_temperature() {
-    unimplemented!("needs sim::match (sim/match.lua)")
+    let (mut state, mut combat_state) = bare_match();
+    combat_state.players[(SOURCE - 1) as usize].family_id = Some(ActionFamilyId::Unarmed);
+    combat_state.players[(SOURCE - 1) as usize].loadout_id =
+        Some("loadout_spring_gloves".to_string());
+    state.players[(SOURCE - 1) as usize].pos = Vec2::new(400.0, 270.0);
+    state.players[(SOURCE - 1) as usize].facing = Vec2::new(1.0, 0.0);
+    state.players[(TARGET - 1) as usize].pos = Vec2::new(424.0, 270.0);
+    state.owner = Some(TARGET);
+    state.ball = state.players[(TARGET - 1) as usize].pos;
+
+    let decision = combat_policy::decide(&observe(&state, &combat_state), 20003, Some(0.0));
+    assert_eq!(decision.rng_state, 20003);
 }
 
 #[test]
