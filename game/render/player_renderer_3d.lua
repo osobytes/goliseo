@@ -75,6 +75,24 @@ local state = {
     bone_rows = {},
 }
 
+-- Opt-in per-character sub-phase instrumentation (#394), the same pattern as
+-- pitch.phase_sink (#393) one level down: when a sink table is attached, every
+-- drawn character splits its cost into pose evaluation (clip sampling +
+-- layering + the action overlay), skeleton evaluation, the bone-row build, the
+-- uniform/draw submission, and everything else (shadow, camera, yaw), each
+-- ACCUMULATED into the sink -- the caller owns zeroing it per frame. nil (the
+-- default) costs one branch per character and nothing else.
+---@class CharPhaseSink
+---@field pose_s number
+---@field apply_s number
+---@field rows_s number
+---@field submit_s number
+---@field other_s number
+---@field characters integer
+
+---@type CharPhaseSink?
+player_renderer_3d.phase_sink = nil
+
 -- The one conversion between the pitch's world units and the rig's metres.
 --
 -- Worth stating because it looks depth-dependent and is not. World-to-pixels is
@@ -315,6 +333,14 @@ function draw_player(sx, sy, r, color, view, opts)
         return
     end
 
+    -- Sub-phase timer (#394): sink attached and a real clock available.
+    local sink = player_renderer_3d.phase_sink
+    if sink and not (love.timer and love.timer.getTime) then
+        sink = nil
+    end
+    local clock = sink and love.timer.getTime
+    local t_start = clock and clock() or 0
+
     -- Ground contact first, in 2D on the pitch plane, matching the billboard
     -- renderer's shadow and selection rings exactly. Without a shadow a rigged
     -- character reads as floating above the pitch rather than standing on it --
@@ -335,8 +361,13 @@ function draw_player(sx, sy, r, color, view, opts)
     local ppm = (r * HEIGHT_IN_RADII * 2) / state.height
     local cam = renderer.characterCamera(sx, sy, ppm, vw, vh, ELEVATION)
 
-    skeleton.apply(state.rig, poseFor(view, opts))
+    local t_pose = clock and clock() or 0
+    local pose = poseFor(view, opts)
+    local t_apply = clock and clock() or 0
+    skeleton.apply(state.rig, pose)
+    local t_rows = clock and clock() or 0
     skeleton.boneRows(state.rig, state.bone_rows)
+    local t_submit = clock and clock() or 0
 
     -- Facing: the pitch's +y runs toward the near edge (toward the viewer), and
     -- the character's local +Z is its front, so a player running "down" the
@@ -351,6 +382,17 @@ function draw_player(sx, sy, r, color, view, opts)
     renderer.beginPass(cam, palette)
     renderer.draw(character.mesh, world, state.bone_rows)
     renderer.endPass()
+
+    if sink then
+        local t_done = clock()
+        sink.pose_s = (sink.pose_s or 0) + (t_apply - t_pose)
+        sink.apply_s = (sink.apply_s or 0) + (t_rows - t_apply)
+        sink.rows_s = (sink.rows_s or 0) + (t_submit - t_rows)
+        -- The yaw/world build rides in submit: it exists to feed the draw.
+        sink.submit_s = (sink.submit_s or 0) + (t_done - t_submit)
+        sink.other_s = (sink.other_s or 0) + (t_pose - t_start)
+        sink.characters = (sink.characters or 0) + 1
+    end
 end
 
 return player_renderer_3d

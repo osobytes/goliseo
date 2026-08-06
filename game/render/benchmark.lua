@@ -156,6 +156,11 @@ function benchmark.new(opts)
     -- `nocache` runs measure the uncached path from the same build, which is
     -- what makes interleaved before/after passes comparable.
     self.static_cache = opts.static_cache ~= false
+    -- #394: per-character sub-phase profiling. Opt-in rather than always-on
+    -- because it costs ~10 clock reads per character per frame, which is real
+    -- overhead under the wasm interpreter -- a profiling run accepts it, a
+    -- before/after comparison run should not carry it.
+    self.char_phases = opts.char_phases and true or false
 
     pitch.rigged_players = self.rigged
     pitch_static.enabled = self.static_cache
@@ -188,6 +193,17 @@ function benchmark.new(opts)
     self.scene_dynamic_samples = {}
     self.phase_sink = {}
     pitch.phase_sink = self.phase_sink
+    -- #394: the per-character split of scene_dynamic. One sample per frame per
+    -- phase, each the SUM across every character drawn that frame, so the rows
+    -- read in the same unit as scene_dynamic and add up against it.
+    self.char_phase_names = { "pose", "apply", "rows", "submit", "other" }
+    self.char_samples = {}
+    for _, name in ipairs(self.char_phase_names) do
+        self.char_samples[name] = {}
+    end
+    self.char_counts = {}
+    self.char_sink = self.char_phases and {} or nil
+    player_renderer_3d.phase_sink = self.char_sink
     self.draw_calls = {}
     -- Which pose ids the fixture actually exercised. Reported rather than
     -- asserted: a benchmark that silently covered only locomotion would look
@@ -271,6 +287,12 @@ function Benchmark:draw()
     --
     -- Bloom's own post-processing cost is inside the measurement on purpose:
     -- it is part of what a shipped frame pays.
+    local char_sink = self.char_sink
+    if char_sink then
+        -- The sink accumulates across characters; the frame owns zeroing it.
+        char_sink.pose_s, char_sink.apply_s, char_sink.rows_s = 0, 0, 0
+        char_sink.submit_s, char_sink.other_s, char_sink.characters = 0, 0, 0
+    end
     local started = love.timer.getTime()
     bloom.draw(function()
         -- The payload build is inside the measurement on purpose: deriving the
@@ -303,6 +325,13 @@ function Benchmark:draw()
                 self.phase_sink.scene_static_s
             self.scene_dynamic_samples[#self.scene_dynamic_samples + 1] =
                 self.phase_sink.scene_dynamic_s
+        end
+        if char_sink then
+            for _, name in ipairs(self.char_phase_names) do
+                local samples = self.char_samples[name]
+                samples[#samples + 1] = char_sink[name .. "_s"] or 0
+            end
+            self.char_counts[#self.char_counts + 1] = char_sink.characters or 0
         end
         local stats = love.graphics.getStats and love.graphics.getStats() or nil
         if stats then
@@ -341,6 +370,17 @@ function Benchmark:result()
         draw_call_total = draw_call_total + v
         draw_call_max = math.max(draw_call_max, v)
     end
+    -- #394: per-character sub-phase summaries, keyed by phase name. Empty
+    -- tables summarise to zeros when profiling was off, and emit() skips them.
+    local char = { raw = {} }
+    for _, name in ipairs(self.char_phase_names) do
+        char[name] = summarise(self.char_samples[name])
+        char.raw[name] = self.char_samples[name]
+    end
+    local chars_total = 0
+    for _, v in ipairs(self.char_counts) do
+        chars_total = chars_total + v
+    end
     return {
         renderer = self.rigged and "rigged" or "procedural",
         -- Requested vs actually used. These diverging is the failure this
@@ -362,6 +402,9 @@ function Benchmark:result()
         scene_dynamic = summarise(self.scene_dynamic_samples),
         static_cache = self.static_cache,
         static_cache_active = self.static_cache_active and true or false,
+        char_phases = self.char_phases,
+        char = char,
+        chars_per_frame_mean = #self.char_counts > 0 and (chars_total / #self.char_counts) or 0,
         draw_calls_mean = #self.draw_calls > 0 and (draw_call_total / #self.draw_calls) or 0,
         draw_calls_max = draw_call_max,
         texture_memory_bytes = self.texture_memory,
@@ -518,15 +561,38 @@ function benchmark.emit(result)
                 tostring(result.static_cache_active)
             )
     )
+    -- #394: the per-character split, on its own line rather than appended to
+    -- RESULT -- the split only exists when profiling was requested, and the
+    -- decoder reads pipe-delimited key=value pairs by name either way.
+    if result.char_phases then
+        print(
+            string.format(
+                "GC_BENCH_CHAR|renderer=%s|chars_per_frame=%.2f|%s|%s|%s|%s|%s",
+                result.renderer,
+                result.chars_per_frame_mean,
+                summary_fields(result.char.pose, "char_pose"),
+                summary_fields(result.char.apply, "char_apply"),
+                summary_fields(result.char.rows, "char_rows"),
+                summary_fields(result.char.submit, "char_submit"),
+                summary_fields(result.char.other, "char_other")
+            )
+        )
+    end
     -- Raw samples so a reviewer can recompute every percentile rather than
     -- trusting this file's arithmetic, which is what #100 means by reviewable.
-    for kind, values in pairs({
+    local sample_kinds = {
         update = result.raw_update_us,
         draw = result.raw_draw_us,
         frame = result.raw_frame_us,
         scene_static = result.raw_scene_static_us,
         scene_dynamic = result.raw_scene_dynamic_us,
-    }) do
+    }
+    if result.char_phases then
+        for name, values in pairs(result.char.raw) do
+            sample_kinds["char_" .. name] = values
+        end
+    end
+    for kind, values in pairs(sample_kinds) do
         print(
             string.format(
                 "GC_BENCH_SAMPLES|renderer=%s|kind=%s|unit=microseconds|samples=%s",
