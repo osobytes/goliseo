@@ -269,12 +269,13 @@ end
 
 -- The projected static scene, drawn through `project` into the current render
 -- target: floor trapezoid, glow, hex tiling, markings, neon outline, goals.
--- The screen-fixed backdrop is NOT included -- callers layer it separately so
--- the cache can shift this layer under camera shake without moving space.
+-- The screen-fixed backdrop is NOT included -- draw_scene and the cache build
+-- layer it separately so the cached copy of this layer can shift under camera
+-- shake without moving space. Local: nothing outside this module draws it.
 ---@param project fun(wx: number, wy: number): number, number, number
 ---@param field RenderFrameField
 ---@param opts PitchStaticOptions
-function pitch_static.draw_projected(project, field, opts)
+local function draw_projected(project, field, opts)
     -- Pitch surface (projected trapezoid).
     local ax, ay = project(0, 0)
     local bx, by = project(field.w, 0)
@@ -312,7 +313,7 @@ end
 ---@param opts PitchStaticOptions
 function pitch_static.draw_scene(project, field, vp, opts)
     arena_render.draw_backdrop(opts.arena, vp)
-    pitch_static.draw_projected(project, field, opts)
+    draw_projected(project, field, opts)
 end
 
 -- Everything the cached image depends on, as a comparable string. Complete on
@@ -445,7 +446,7 @@ function pitch_static.flush()
         arena_render.draw_backdrop(opts.arena, vp)
         g.setCanvas(state.scene)
         g.clear(0, 0, 0, 0)
-        pitch_static.draw_projected(project, field, opts)
+        draw_projected(project, field, opts)
         g.setCanvas()
         g.pop()
     end)

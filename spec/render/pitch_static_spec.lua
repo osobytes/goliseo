@@ -107,26 +107,80 @@ t.describe("pitch_static cache", function()
         local base = pitch_static.key(make_field(), VP, make_opts())
         t.eq(pitch_static.key(make_field(), VP, make_opts()), base, "same inputs, same key")
 
-        local field = make_field()
-        field.w = 961
-        t.is_true(pitch_static.key(field, VP, make_opts()) ~= base, "field size must invalidate")
+        -- One mutation per component pitch_static.key() serializes. A
+        -- component missing here could go stale without any test noticing,
+        -- which is the one failure mode a cache must not have.
+        ---@type table<string, fun(field: RenderFrameField, vp: { w: number, h: number }, opts: PitchStaticOptions)>
+        local mutations = {
+            ["field.w"] = function(field)
+                field.w = 961
+            end,
+            ["field.h"] = function(field)
+                field.h = 541
+            end,
+            ["field.penalty_box_depth"] = function(field)
+                field.penalty_box_depth = 111
+            end,
+            ["field.penalty_box_h"] = function(field)
+                field.penalty_box_h = 261
+            end,
+            ["field.crossbar_h"] = function(field)
+                field.crossbar_h = 41
+            end,
+            ["goal_home.x"] = function(field)
+                field.goal_home.x = -29
+            end,
+            ["goal_home.y"] = function(field)
+                field.goal_home.y = 221
+            end,
+            ["goal_home.w"] = function(field)
+                field.goal_home.w = 29
+            end,
+            ["goal_home.h"] = function(field)
+                field.goal_home.h = 101
+            end,
+            ["goal_away.x"] = function(field)
+                field.goal_away.x = 961
+            end,
+            ["goal_away.y"] = function(field)
+                field.goal_away.y = 221
+            end,
+            ["goal_away.w"] = function(field)
+                field.goal_away.w = 29
+            end,
+            ["goal_away.h"] = function(field)
+                field.goal_away.h = 101
+            end,
+            ["vp.w"] = function(_, vp)
+                vp.w = 1280
+            end,
+            ["vp.h"] = function(_, vp)
+                vp.h = 720
+            end,
+            ["opts.arena"] = function(_, _, opts)
+                opts.arena = OTHER_ARENA
+            end,
+            ["opts.home_color"] = function(_, _, opts)
+                opts.home_color = { 0.5, 0.5, 0.5 }
+            end,
+            ["opts.away_color"] = function(_, _, opts)
+                opts.away_color = { 0.5, 0.5, 0.5 }
+            end,
+        }
+        for name, mutate in pairs(mutations) do
+            local field, vp, opts = make_field(), { w = VP.w, h = VP.h }, make_opts()
+            mutate(field, vp, opts)
+            t.is_true(pitch_static.key(field, vp, opts) ~= base, name .. " must invalidate")
+        end
 
-        field = make_field()
-        field.crossbar_h = 41
-        t.is_true(pitch_static.key(field, VP, make_opts()) ~= base, "goal shape must invalidate")
-
-        t.is_true(
-            pitch_static.key(make_field(), { w = 1280, h = 720 }, make_opts()) ~= base,
-            "viewport must invalidate"
-        )
-
-        local opts = make_opts()
-        opts.home_color = { 0.5, 0.5, 0.5 }
-        t.is_true(pitch_static.key(make_field(), VP, opts) ~= base, "goal colour must invalidate")
-
-        opts = make_opts()
-        opts.arena = OTHER_ARENA
-        t.is_true(pitch_static.key(make_field(), VP, opts) ~= base, "arena must invalidate")
+        -- The projection mode is global camera state rather than an argument,
+        -- so it gets a save/restore rather than a mutator above.
+        local camera = require("game.render.camera")
+        local saved = camera.perspective_mode
+        camera.perspective_mode = not saved
+        local flipped = pitch_static.key(make_field(), VP, make_opts())
+        camera.perspective_mode = saved
+        t.is_true(flipped ~= base, "camera.perspective_mode must invalidate")
     end)
 
     t.it("misses, builds on flush, then blits", function()
@@ -196,18 +250,53 @@ t.describe("pitch_static cache", function()
         t.is_true(ok, tostring(err))
     end)
 
-    t.it("latches failure when the canvas build throws", function()
+    t.it("latches failure when the canvas build throws, diagnosing exactly once", function()
         with_stub(function(g)
             g.newCanvas = function()
                 error("out of memory")
             end
+            -- Count the diagnostic rather than silencing it: one latch, one
+            -- printed line, no matter how many frames and flushes follow.
+            local saved_print = print
+            local diagnostics = 0
+            _G.print = function(message, ...)
+                if
+                    type(message) == "string"
+                    and message:find("static pitch cache disabled", 1, true)
+                then
+                    diagnostics = diagnostics + 1
+                end
+                return saved_print(message, ...)
+            end
+            local ok, err = pcall(function()
+                pitch_static.draw_cached(make_field(), VP, make_opts(), nil)
+                pitch_static.flush()
+                t.is_true(pitch_static.status().failed, "a failed build must latch")
+                t.eq(diagnostics, 1, "the latch must print its diagnostic")
+
+                local drew = pitch_static.draw_cached(make_field(), VP, make_opts(), nil)
+                t.is_true(not drew, "a latched cache must draw direct")
+                t.is_true(not pitch_static.status().pending, "and must stop queueing builds")
+                pitch_static.flush()
+                pitch_static.flush()
+                t.eq(diagnostics, 1, "repeated flushes must not repeat the diagnostic")
+            end)
+            _G.print = saved_print
+            t.is_true(ok, tostring(err))
+        end)
+    end)
+
+    t.it("drops the cache and the latch on reset", function()
+        with_stub(function()
             pitch_static.draw_cached(make_field(), VP, make_opts(), nil)
             pitch_static.flush()
-            t.is_true(pitch_static.status().failed, "a failed build must latch")
+            t.is_true(pitch_static.status().cached, "precondition: a built cache")
 
-            local drew = pitch_static.draw_cached(make_field(), VP, make_opts(), nil)
-            t.is_true(not drew, "a latched cache must draw direct")
-            t.is_true(not pitch_static.status().pending, "and must stop queueing builds")
+            pitch_static.reset()
+            local status = pitch_static.status()
+            t.is_true(not status.cached, "reset must drop the canvases")
+            t.is_true(not status.pending, "reset must drop any pending build")
+            t.is_true(not status.failed, "reset must clear the failure latch")
         end)
     end)
 
