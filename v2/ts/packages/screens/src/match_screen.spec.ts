@@ -22,15 +22,28 @@
 // original Lua assertion -- e.g. "K never switches while carrying" now
 // checks `MatchScreen`'s buffered switch state rather than a real
 // `sim.match` never issuing a switch order. Two cases remain `it.skip`
-// because `SimHostPort` (the fixed five-method contract this milestone's
-// game loop is built against) genuinely cannot support them yet; see each
+// because `SimHostPort` (the fixed contract this milestone's game loop is
+// built against -- `step`/`planTicks`/`cancelPlannedTicks`/`frame`/
+// `roster`/`tick`/`dispose`) genuinely cannot support them yet; see each
 // skip's own comment for the specific blocker.
 
 import { describe, expect, it } from "vitest";
 import { bindings, inputSample } from "@gc/input";
 import type { KeyboardState } from "@gc/input";
-import { MatchScreen } from "./match.ts";
+import { MatchScreen, MatchScreenAsRealMatchScreen } from "./match.ts";
 import type { InputSample, RenderFrame, RenderFrameRoster, RenderPort, SimHostFactory, SimHostPort } from "./match.ts";
+
+// A test-only stand-in for the wasm session's `gc_sim::fixed_clock`-backed
+// `FixedClock` (`crates/gc-wasm/src/session.rs`, bound through `@gc/wasm`).
+// The production accumulator/catch-up/drop algorithm now has exactly one
+// implementation, in Rust (v2/README.md §2.1) -- `FakeSimHost.planTicks`
+// below mirrors it purely so this suite can drive `MatchScreen`'s CALLING
+// contract (does it call `step` the right number of times, with the right
+// sample) without a real wasm build, the same role every other `FakeSimHost`
+// method already plays for `SimSession`.
+const FAKE_TICK_SECONDS = 1 / 60;
+const FAKE_MAX_TICKS_PER_UPDATE = 8;
+const FAKE_CLOCK_EPSILON = FAKE_TICK_SECONDS * 1e-9;
 
 function nth<T>(items: readonly T[], index: number): T {
   const value = items[index];
@@ -64,15 +77,52 @@ const noopRenderer: RenderPort = {
 class FakeSimHost implements SimHostPort {
   readonly stepCalls: InputSample[] = [];
   disposeCalls = 0;
-  readonly hud: { finished: boolean; controlled_owns_ball: boolean } = {
+  readonly hud: {
+    finished: boolean;
+    controlled_owns_ball: boolean;
+    home_score: number;
+    away_score: number;
+    time_left: number;
+  } = {
     finished: false,
     controlled_owns_ball: true,
+    home_score: 0,
+    away_score: 0,
+    time_left: 300,
   };
   private tickCount = 0;
+  private clockAccumulator = 0;
+
+  planTicks(dt: number): number {
+    this.clockAccumulator += dt;
+    let ticks = 0;
+    while (
+      this.clockAccumulator + FAKE_CLOCK_EPSILON >= FAKE_TICK_SECONDS &&
+      ticks < FAKE_MAX_TICKS_PER_UPDATE
+    ) {
+      this.clockAccumulator -= FAKE_TICK_SECONDS;
+      if (this.clockAccumulator < 0) {
+        this.clockAccumulator = 0;
+      }
+      ticks += 1;
+    }
+    if (this.clockAccumulator + FAKE_CLOCK_EPSILON >= FAKE_TICK_SECONDS) {
+      const dropped = Math.floor((this.clockAccumulator + FAKE_CLOCK_EPSILON) / FAKE_TICK_SECONDS);
+      this.clockAccumulator -= dropped * FAKE_TICK_SECONDS;
+      if (this.clockAccumulator < 0) {
+        this.clockAccumulator = 0;
+      }
+    }
+    return ticks;
+  }
 
   step(sample: InputSample): void {
     this.stepCalls.push(sample);
     this.tickCount += 1;
+  }
+
+  cancelPlannedTicks(): void {
+    this.clockAccumulator = 0;
   }
 
   frame(): RenderFrame {
@@ -190,9 +240,10 @@ describe("match screen fixed simulation clock (tier 2)", () => {
 });
 
 describe("match screen contextual controls (tier 2)", () => {
-  // SimHostPort's fixed five-method contract (step/frame/roster/tick/
-  // dispose) has no combat toggle and no way to read per-player combat
-  // state (`self._combat_state.players[...].phase` in the Lua original).
+  // SimHostPort's fixed contract (step/planTicks/cancelPlannedTicks/frame/
+  // roster/tick/dispose) has no combat toggle and no way to read per-player
+  // combat state (`self._combat_state.players[...].phase` in the Lua
+  // original).
   // `sim.combat`'s wasm binding is a separate, out-of-scope surface this
   // milestone -- v2/README.md §1 scopes "the glue that makes a playable
   // browser build" (which this task IS building) as still not including
@@ -312,13 +363,84 @@ describe("match screen lob latch (tier 2)", () => {
   });
 });
 
+describe("match screen draw separation (tier 2)", () => {
+  it("update() no longer draws -- draw() is a separate, explicit call", () => {
+    let drawCalls = 0;
+    const renderer: RenderPort = {
+      draw: (): void => {
+        drawCalls += 1;
+      },
+    };
+    const { factory } = makeHostFactory();
+    const screen = new MatchScreen({ createHost: factory, renderer, keyboard: fakeKeyboard({}) });
+
+    screen.update(1 / 60);
+    expect(drawCalls, "update() alone must not draw -- see MatchScreen.update's doc").toBe(0);
+
+    screen.draw();
+    expect(drawCalls, "draw() draws exactly once").toBe(1);
+  });
+});
+
+describe("MatchScreenAsRealMatchScreen (tier 2)", () => {
+  it("adapts state/finished/draw/teardown to real_match.ts's RealMatchScreenPort", () => {
+    let drawCalls = 0;
+    const renderer: RenderPort = {
+      draw: (): void => {
+        drawCalls += 1;
+      },
+    };
+    const { factory, hosts } = makeHostFactory();
+    const screen = new MatchScreen({ createHost: factory, renderer, keyboard: fakeKeyboard({}) });
+    const port = new MatchScreenAsRealMatchScreen(screen);
+    const host = nth(hosts, 0);
+
+    host.hud.home_score = 2;
+    host.hud.away_score = 1;
+    host.hud.time_left = 42;
+
+    expect(port.state).toEqual({ time_left: 42, score: { home: 2, away: 1 } });
+    expect(port.rollbackLab).toBe(false);
+    expect(port.rollbackConfirmedSteps).toEqual([]);
+    expect(port.frameEvents).toEqual([]);
+    expect(port.fullTimeConfirmed()).toBe(false);
+    expect(port.resultCompletionBlocked()).toBe(false);
+
+    port.draw();
+    expect(drawCalls, "draw() forwards to the wrapped screen's draw()").toBe(1);
+
+    host.hud.finished = true;
+    expect(port.fullTimeConfirmed()).toBe(true);
+
+    port.teardown();
+    expect(host.disposeCalls, "teardown() disposes the wrapped screen's host").toBe(1);
+  });
+
+  it("bridges RealMatchInputEvent's action variant into the wrapped screen's event()", () => {
+    const { factory, hosts } = makeHostFactory();
+    const screen = new MatchScreen(
+      { createHost: factory, renderer: noopRenderer, keyboard: fakeKeyboard({}) },
+      { profile: "playtest" },
+    );
+    const port = new MatchScreenAsRealMatchScreen(screen);
+    nth(hosts, 0).hud.finished = true;
+
+    // `RealMatchInputEvent`'s action variant has no `pressed`/`source` --
+    // this is the boundary `toControllerInputEvent` bridges (see match.ts).
+    port.event({ kind: "action", action: "confirm" });
+
+    expect(screen.finished, "the bridged event reached the wrapped screen and triggered a rematch").toBe(false);
+  });
+});
+
 describe("match screen goal replay (tier 2)", () => {
   // `SimHostPort` has no replay/snapshot-recording capability (no analog of
-  // `game/render/replay.lua`'s recorded-footage buffer -- `step`/`frame`/
-  // `roster`/`tick`/`dispose` is the whole contract), and `@gc/render`
-  // (which owns the real `replay.ts`) is still not a declared dependency of
-  // `@gc/screens` -- both blockers the original skip already named, and
-  // both still accurate after this task.
+  // `game/render/replay.lua`'s recorded-footage buffer -- `step`/
+  // `planTicks`/`cancelPlannedTicks`/`frame`/`roster`/`tick`/`dispose` is
+  // the whole contract), and `@gc/render` (which owns the real `replay.ts`)
+  // is still not a declared dependency of `@gc/screens` -- both blockers
+  // the original skip already named, and both still accurate after this
+  // task.
   it.skip(
     "a goal freezes the sim into a slow-mo replay; skipping resumes [SimHostPort has no replay/snapshot capability; @gc/render not a declared dependency]",
     () => {},

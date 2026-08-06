@@ -148,6 +148,52 @@ describe("createSimHost", () => {
     }
   });
 
+  it("planTicks reports the fixed_clock tick count for a render dt, and step advances exactly that many times", () => {
+    const host = createSimHost(HOME, AWAY, 7, 20, 3);
+    try {
+      // A sub-tick dt plans zero ticks -- gc_sim::fixed_clock::TICK_SECONDS
+      // is 1/60; this render update banks less than one tick's worth.
+      expect(host.planTicks(1 / 120)).toBe(0);
+      expect(host.tick()).toBe(0);
+
+      // The banked 1/120s plus another 1/120s crosses one tick.
+      const ticks = host.planTicks(1 / 120);
+      expect(ticks).toBe(1);
+      for (let i = 0; i < ticks; i += 1) {
+        host.step(neutralSample());
+      }
+      expect(host.tick()).toBe(ticks);
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it("cancelPlannedTicks resets the clock's carried-over accumulator", () => {
+    const host = createSimHost(HOME, AWAY, 7, 20, 3);
+    try {
+      // Bank a fraction of a tick, then cancel -- mirrors MatchScreen
+      // stopping a catch-up batch early because the match finished
+      // mid-batch.
+      expect(host.planTicks(1 / 120)).toBe(0);
+      host.cancelPlannedTicks();
+      // If cancelPlannedTicks had not zeroed the accumulator, the banked
+      // 1/120s would combine with this call and plan a tick.
+      expect(host.planTicks(1 / 120)).toBe(0);
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it("planTicks rejects a non-finite or negative dt (SimSession's wasm-bindgen error path, exercised here rather than natively -- see crates/gc-wasm/src/session.rs)", () => {
+    const host = createSimHost(HOME, AWAY, 7, 20, 3);
+    try {
+      expect(() => host.planTicks(Number.NaN)).toThrow();
+      expect(() => host.planTicks(-0.001)).toThrow();
+    } finally {
+      host.dispose();
+    }
+  });
+
   it("growing the heap directly between two raw buildRenderFrame calls still decodes (lower-level proof)", () => {
     const rawHost = loadSimHost();
     const session = new rawHost.Session(HOME, AWAY, 7, 20, 3);

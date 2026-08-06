@@ -31,6 +31,7 @@
 use gc_data::teams;
 use gc_render::frame::{self as render_frame, RenderFrameOptions};
 use gc_render::frame_buffer;
+use gc_sim::fixed_clock;
 use gc_sim::input_frame::{self, InputFixtureRosters, InputOwnership, InputSlotAssignment};
 use gc_sim::r#match as sim_match;
 use gc_sim::match_snapshot::{self, PitchSize};
@@ -268,5 +269,144 @@ pub(crate) fn frame_options(entry: &Entry) -> RenderFrameOptions {
     RenderFrameOptions {
         roster: Some(entry.roster.clone()),
         ..Default::default()
+    }
+}
+
+/// A wasm-bound `gc_sim::fixed_clock::FixedClockState`: the render-driven
+/// tick-count decision for one match, planned once per render update from a
+/// `dt`. See v2/README.md §2.1 -- tick COUNT changes what the simulation
+/// computes (it decides how many [`Session::step`] calls run), so the policy
+/// that turns a render `dt` into a tick count must be computed here, not
+/// re-derived in TypeScript. That is exactly what happened before this type
+/// existed: `packages/screens/src/match.ts` hand-copied
+/// `gc_sim::fixed_clock::advance`'s accumulator/catch-up/drop algorithm,
+/// undetectably drifting from this crate the moment either side's constants
+/// changed. `FixedClock` below removes the second implementation instead of
+/// pinning it: TypeScript calls [`FixedClock::advance`] and gets back a tick
+/// count, nothing more.
+///
+/// `gc_sim::fixed_clock::advance` is generic over a per-tick input type and
+/// step callback so a native, single-process caller can supply both inline;
+/// across the wasm boundary that shape does not fit (a JS caller cannot hand
+/// wasm a closure to invoke once per simulated tick without a much larger
+/// marshalling layer), and it does not need to -- `MatchScreen`
+/// (`packages/screens/src/match.ts`) already advances one input sample per
+/// [`Session::step`] call itself, outside this clock. So [`FixedClock::advance`]
+/// below calls `fixed_clock::advance` with a trivial `()` input and a
+/// `step_fn` that always continues, and reports only the resulting tick
+/// COUNT -- an upper bound the caller must run via [`Session::step`],
+/// breaking out of that loop and calling [`FixedClock::stop_early`] instead
+/// of running the rest if it stops before running all of them (e.g. the
+/// match finishes mid-batch) -- exactly mirroring what a `false` return from
+/// `advance`'s own `step_fn` would have done to the accumulator.
+#[wasm_bindgen]
+pub struct FixedClock {
+    state: fixed_clock::FixedClockState,
+}
+
+#[wasm_bindgen]
+impl FixedClock {
+    /// A fresh clock at tick zero.
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> FixedClock {
+        FixedClock {
+            state: fixed_clock::new(),
+        }
+    }
+
+    /// Ticks this clock has authorized so far -- its own bookkeeping,
+    /// independent of (and expected to track) [`Session::input_tick`].
+    #[wasm_bindgen(getter)]
+    pub fn tick(&self) -> f64 {
+        self.state.tick as f64
+    }
+
+    /// Accumulate `render_dt` seconds and report how many ticks the caller
+    /// should run this render update -- `gc_sim::fixed_clock::advance`'s
+    /// exact catch-up/drop policy (`TICK_SECONDS`, `MAX_TICKS_PER_UPDATE`,
+    /// its epsilon), minus the `step_fn` early-stop hook (see this struct's
+    /// doc). The caller must run at most this many [`Session::step`] calls,
+    /// in order; if it runs fewer, it must call [`FixedClock::stop_early`]
+    /// afterward.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `JsValue` (a `String`) if `render_dt` is not finite and
+    /// non-negative -- mirrors `advance`'s own assertion.
+    pub fn advance(&mut self, render_dt: f64) -> Result<u32, JsValue> {
+        if !(render_dt.is_finite() && render_dt >= 0.0) {
+            return Err(JsValue::from_str(
+                "render dt must be a finite non-negative number",
+            ));
+        }
+        let outcome =
+            fixed_clock::advance(&mut self.state, render_dt, |_tick| (), |_tick, ()| true);
+        Ok(outcome.ticks)
+    }
+
+    /// The caller ran fewer ticks than the last [`FixedClock::advance`] call
+    /// authorized (its `step_fn` would have returned `false`) -- zeroes the
+    /// carried-over accumulator, exactly as `advance`'s own early-stop
+    /// branch does.
+    #[wasm_bindgen(js_name = stopEarly)]
+    pub fn stop_early(&mut self) {
+        self.state.accumulator = 0.0;
+    }
+}
+
+impl Default for FixedClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod fixed_clock_tests {
+    use super::*;
+
+    #[test]
+    fn a_fresh_clock_plans_zero_ticks_for_a_sub_tick_dt() {
+        let mut clock = FixedClock::new();
+        assert_eq!(
+            clock.advance(1.0 / 120.0).expect("finite non-negative dt"),
+            0
+        );
+    }
+
+    #[test]
+    fn ticks_accumulate_across_calls_exactly_like_gc_sim_fixed_clock() {
+        let mut clock = FixedClock::new();
+        assert_eq!(clock.advance(1.0 / 120.0).unwrap(), 0);
+        assert_eq!(clock.advance(1.0 / 120.0).unwrap(), 1);
+        assert_eq!(clock.advance(1.0 / 30.0).unwrap(), 2);
+    }
+
+    #[test]
+    fn a_long_frame_is_capped_at_max_ticks_per_update() {
+        let mut clock = FixedClock::new();
+        // Ten seconds of debt in one render update -- far more than
+        // MAX_TICKS_PER_UPDATE (8) whole ticks.
+        let ticks = clock.advance(10.0).unwrap();
+        assert_eq!(ticks, fixed_clock::MAX_TICKS_PER_UPDATE);
+    }
+
+    // `advance`'s error path returns a `JsValue`, which
+    // `wasm_bindgen::JsValue::from_str` cannot construct off the wasm32
+    // target ("function not implemented on non-wasm32 targets", aborting the
+    // whole native test process) -- see `coordinator_bridge.rs`'s identical
+    // note. `sim_host.spec.ts` (`@gc/app`, which exercises the real compiled
+    // artifact) covers `planTicks` rejecting a non-finite/negative `dt`.
+
+    #[test]
+    fn stop_early_zeroes_the_accumulator_so_the_next_advance_starts_fresh() {
+        let mut clock = FixedClock::new();
+        // Bank a fraction of a tick, then discard it via stop_early --
+        // mirrors what MatchScreen does when the match finishes mid-batch.
+        clock.advance(1.0 / 120.0).unwrap();
+        clock.stop_early();
+        // A dt just under one tick after a reset plans zero ticks -- if
+        // stop_early had not zeroed the accumulator, the banked 1/120s
+        // would combine with this call and plan one.
+        assert_eq!(clock.advance(1.0 / 120.0).unwrap(), 0);
     }
 }

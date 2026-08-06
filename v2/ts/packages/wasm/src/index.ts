@@ -27,6 +27,7 @@ import type {
   CoordinatorConstructor,
   ControlMessageHeader,
   DeterminismEvidence,
+  FixedClockConstructor,
   GcWasmModule,
   MatchDriverBridge,
   MatchDriverBridgeConstructor,
@@ -38,6 +39,8 @@ export type {
   CoordinatorConstructor,
   ControlMessageHeader,
   DeterminismEvidence,
+  FixedClock,
+  FixedClockConstructor,
   MatchDriverBridge,
   MatchDriverBridgeConstructor,
   RawExports,
@@ -62,6 +65,12 @@ export interface SimHost {
    * doc — `crates/gc-wasm/src/match_driver_bridge.rs`'s wave-2 bridge over
    * `gc_netcode::match_driver` and its `gc_sim::rollback_events` feed. */
   readonly MatchDriverBridge: MatchDriverBridgeConstructor;
+  /** Constructs a render-driven tick-count planner over
+   * `gc_sim::fixed_clock`. See `FixedClock`'s doc — this is the single
+   * source of truth for turning a render `dt` into a tick count
+   * (v2/README.md §2.1), so a caller like `@gc/app`'s `sim_host.ts` never
+   * has to re-derive that policy in TypeScript. */
+  readonly FixedClock: FixedClockConstructor;
   /** This build's protocol vocabulary id, for lobby version negotiation. */
   protocolVocabularyId(): string;
   /** Decodes a control message's routing header (kind/session/peer/
@@ -122,6 +131,7 @@ export function loadSimHost(): SimHost {
     Session: native.Session,
     Coordinator: native.Coordinator,
     MatchDriverBridge: native.MatchDriverBridge,
+    FixedClock: native.FixedClock,
     protocolVocabularyId: native.protocolVocabularyId,
     decodeControlMessageHeader: native.decodeControlMessageHeader,
     runDeterminismEvidence: native.runDeterminismEvidence,

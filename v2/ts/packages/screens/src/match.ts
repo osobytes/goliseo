@@ -32,10 +32,14 @@
 import { combatFeedback, matchEventBatch } from "@gc/presentation";
 import type { CombatEvent, CombatFeedbackState, MatchEvent, RollbackEventDiff, RollbackWrappedEvent } from "@gc/presentation";
 import type { LifecyclePayload } from "./online_match_model.ts";
+import type { GameSettings } from "./content.ts";
+import type { RealMatchInputEvent, RealMatchScreenPort, RealMatchState } from "./real_match.ts";
 import { bindings, captureFrame, controller, inputSample } from "@gc/input";
 import type {
+  ActionName,
   ControllerInputEvent,
   GamepadState,
+  InputSource,
   KeyboardState,
   ViewportMapper,
   ViewportTransform,
@@ -255,43 +259,32 @@ export function consumeRollbackPresentation(
 // ## `SimHostPort` -- not this module's free design
 //
 // `SimHostPort` below is a fixed contract, not something this file invented:
-// W2-A is concurrently implementing it in `@gc/app` (`app/src/sim_host.ts`)
-// against the exact same five-method shape. `@gc/screens` cannot depend on
-// `@gc/app` (the dependency runs the other way -- `@gc/app` assembles
-// screens, not the reverse), so the interface is declared here, independently,
-// and the two files are expected to structurally agree.
+// `@gc/app` (`app/src/sim_host.ts`) implements the exact same shape.
+// `@gc/screens` cannot depend on `@gc/app` (the dependency runs the other
+// way -- `@gc/app` assembles screens, not the reverse), so the interface is
+// declared here, independently, and the two files are expected to
+// structurally agree.
 //
-// They do NOT fully agree today, and that gap is worth naming plainly rather
-// than papering over. `app/src/sim_host.ts`'s `RenderFrame` is
-// `@gc/render`'s `pitchTypes.RenderFrame` (`packages/render/src/pitch.ts`) --
-// a slice sized for DRAWING (`field`/`roster`/`players`/`ball`/`control`)
-// that deliberately omits `hud`/`possession` (that package's own trimmed
-// decoder comment: "`hud`, `possession` and `events` ... are read past but
-// not constructed, since `RenderFrame` does not carry them and nothing here
-// consumes them"). This module's job is different from drawing: it has to
-// decide whether the match is over (`hud.finished`) and whether the
-// controlled player has the ball (`hud.controlled_owns_ball`, the direct
-// analog of `game/screens/match.lua`'s `self.state.owner ==
+// They used to NOT fully agree: `app/src/sim_host.ts`'s `RenderFrame` was
+// `@gc/render`'s `pitchTypes.RenderFrame` (`packages/render/src/pitch.ts`)
+// -- a slice sized for DRAWING (`field`/`roster`/`players`/`ball`/`control`)
+// that omitted `hud`/`possession`. This module's job is different from
+// drawing: it has to decide whether the match is over (`hud.finished`) and
+// whether the controlled player has the ball (`hud.controlled_owns_ball`,
+// the direct analog of `game/screens/match.lua`'s `self.state.owner ==
 // self.state.controlled`) before it can compute a single contextual input
-// field. Neither field exists on `pitchTypes.RenderFrame`. `@gc/render`'s
-// real `frame_buffer.ts` decoder DOES produce both (its full,
-// non-`pitch.ts`-trimmed `RenderFrameHud`/`RenderFramePossession`, verbatim
-// field names below) -- the gap is that `sim_host.ts`'s OWN header explains
-// it is a deliberate, temporary, hand-duplicated decoder trimmed to what
-// `pitch.ts` alone needs, not a statement that the wire lacks these fields.
-//
-// So: `RenderFrame` below is widened past `sim_host.ts`'s current return
-// type to the fields THIS module reads (`hud.finished`,
-// `hud.controlled_owns_ball`) on top of what a renderer needs, mirroring
-// `@gc/render/src/frame_buffer.ts`'s real `RenderFrameHud`/
-// `RenderFramePossession` field-for-field (verbatim names, since that is the
-// wire this eventually has to agree with bit-for-bit) rather than inventing
-// new ones. This is a real, reportable integration gap between two
-// concurrently-written files, not a mistake in either -- see this package's
-// porting report for the reconciliation this needs (most likely:
-// `sim_host.ts` decodes the HUD/possession words its own wire block already
-// carries, or `@gc/render` exports `frame_buffer` so it can call the real,
-// untrimmed `decode`/`decodeRoster`).
+// field, or expose `hud.home_score`/`away_score`/`time_left` to
+// [`MatchScreenAsRealMatchScreen`]'s `state` (`real_match.ts`'s
+// `RealMatchScreenPort`). `@gc/render`'s real `frame_buffer.ts` decoder
+// always produced all of these -- the gap was that `sim_host.ts` used to
+// carry its own trimmed, hand-duplicated decoder that only constructed the
+// drawing slice. `@gc/render` now exports `frame_buffer` directly
+// (`frameBuffer`), so `sim_host.ts` decodes through the real, untrimmed
+// `decode`/`decodeRoster`/`toRenderFrame` and its `RenderFrame` is that
+// module's complete wire type -- see that file's header. `RenderFrameHud`
+// below only declares the fields THIS module's own game-loop logic reads
+// (README rule 6.7): the wire carries more (`possession_team`,
+// `controlled_stamina`, ...), but nothing here inspects them.
 //
 // `field`/`players`/`ball`/`control`/`events`/`roster`'s per-player arrays
 // are NOT declared here: this module never reads them, only forwards
@@ -303,11 +296,17 @@ export function consumeRollbackPresentation(
 /** `gc_sim::input_frame::InputSample` (`@gc/input`'s TS mirror; see `input_sample.ts`'s header). Re-exported so a `SimHostPort` implementation need not also import `@gc/input` merely to name this type. */
 export type InputSample = inputSampleTypes.InputSample;
 
-/** `crates/gc-render/src/frame.rs`'s `RenderFrameHud` (mirrored via `@gc/render`'s `frame_buffer.ts`'s `RenderFrameHud`, field-for-field) -- only the fields this module's own game-loop logic reads. See this section's header for why this is wider than `@gc/app`'s current `sim_host.ts` return type. */
+/** `crates/gc-render/src/frame.rs`'s `RenderFrameHud` (mirrored via `@gc/render`'s `frame_buffer.ts`'s `RenderFrameHud`, field-for-field) -- only the fields this module's own game-loop logic reads. See this section's header. */
 export interface RenderFrameHud {
   readonly finished: boolean;
   /** `self.state.owner == self.state.controlled` in `game/screens/match.lua` -- "carrying". */
   readonly controlled_owns_ball: boolean;
+  /** Read by [`MatchScreenAsRealMatchScreen`]'s `state` (`real_match.ts`'s `RealMatchState.score.home`). */
+  readonly home_score: number;
+  /** Read by [`MatchScreenAsRealMatchScreen`]'s `state` (`real_match.ts`'s `RealMatchState.score.away`). */
+  readonly away_score: number;
+  /** Read by [`MatchScreenAsRealMatchScreen`]'s `state` (`real_match.ts`'s `RealMatchState.time_left`). */
+  readonly time_left: number;
 }
 
 /** `crates/gc-render/src/frame.rs`'s `RenderFramePossession` -- declared for parity with the real wire shape; this module does not currently read a field off it (carrying comes off `hud.controlled_owns_ball` instead, matching the Lua original's own comparison). */
@@ -340,12 +339,31 @@ export type RenderFrameRoster = Readonly<Record<string, unknown>>;
 /**
  * The seam between this screen and whatever is actually simulating --
  * `@gc/wasm`'s compiled `gc-sim`, in the real build. A fixed contract shared
- * with `@gc/app`'s concurrently-written `sim_host.ts`; see this section's
- * header for where the two do not yet structurally agree.
+ * with `@gc/app`'s `sim_host.ts`; see this section's header.
  */
 export interface SimHostPort {
+  /**
+   * Plan how many fixed ticks this render update should simulate, given
+   * `dt` seconds elapsed since the last call -- delegates to
+   * `gc_sim::fixed_clock`'s accumulator/catch-up/drop policy
+   * (v2/README.md §2.1) via the wasm session, so this decision has exactly
+   * one implementation, in Rust: this screen used to hand-copy that
+   * algorithm (see this class's own history/[`MatchScreen.update`]'s doc),
+   * which is exactly the kind of drift README §2.1 warns changing
+   * `MAX_TICKS_PER_UPDATE` in Rust alone would silently produce. Call once
+   * per render update, then call `step` up to that many times, in order.
+   */
+  planTicks(dt: number): number;
   /** Advance the simulation by exactly one fixed tick with the given sample. */
   step(sample: InputSample): void;
+  /**
+   * The caller stopped running `step` before using every tick `planTicks`
+   * authorized (e.g. the match finished mid-batch) -- must be called in
+   * that case so the clock's carried-over accumulator resets, matching
+   * what stopping early means to `gc_sim::fixed_clock::advance`'s own step
+   * callback.
+   */
+  cancelPlannedTicks(): void;
   /** The current frame. Cheap to call; may return a reused object. */
   frame(): RenderFrame;
   /** Match-constant roster. */
@@ -500,19 +518,21 @@ const NOOP_TRANSFORM: ViewportTransform = {
 const NOOP_VIEWPORT_MAPPER: ViewportMapper = { toVirtual: () => null };
 
 // -----------------------------------------------------------------------
-// THE FIXED SIMULATION CLOCK -- a from-scratch, faithful mirror of
-// `sim/fixed_clock.lua` / `crates/gc-sim/src/fixed_clock.rs`'s `advance`,
-// not an import: `gc_sim::fixed_clock` has no TS binding, and `SimHostPort`
-// (by contract) exposes only a one-fixed-tick `step`, not a batched
-// `advance`. This is the render-driven scheduling policy the task brief
-// means by "drive from it" -- same constants, same accumulator algorithm,
-// same catch-up/drop behavior, just with `SimHostPort.step` in place of
-// `sim.match.step`/`fixed_clock.step`'s inner callback.
+// THE FIXED SIMULATION CLOCK. This used to be a from-scratch, hand-copied
+// mirror of `sim/fixed_clock.lua` / `crates/gc-sim/src/fixed_clock.rs`'s
+// `advance` -- `gc_sim::fixed_clock` had no TS binding, and `SimHostPort`
+// exposed only a one-fixed-tick `step`, not a batched `advance`. That was a
+// determinism-relevant algorithm (tick COUNT changes what the simulation
+// computes) with two implementations and no way to keep them honest against
+// each other: change `MAX_TICKS_PER_UPDATE` in Rust and this copy would
+// silently keep the old behavior (v2/README.md §2.1).
+//
+// `SimHostPort.planTicks` (`crates/gc-wasm/src/session.rs`'s `FixedClock`,
+// bound through `@gc/wasm`) removes the second implementation instead of
+// pinning it: this screen now only calls `planTicks`/`step`/
+// `cancelPlannedTicks` in a loop, below. There is exactly one accumulator
+// algorithm, and it lives in Rust.
 // -----------------------------------------------------------------------
-
-const TICK_SECONDS = 1 / 60; // gc_sim::fixed_clock::TICK_SECONDS
-const MAX_TICKS_PER_UPDATE = 8; // gc_sim::fixed_clock::MAX_TICKS_PER_UPDATE
-const CLOCK_EPSILON = TICK_SECONDS * 1e-9; // gc_sim::fixed_clock's EPSILON
 
 export type MatchScreenProfile = "product" | "playtest" | "online";
 
@@ -562,7 +582,6 @@ export class MatchScreen {
   private host: SimHostPort;
   private readonly latches: MatchControlLatches = newMatchControlLatches();
   private switchPending = false;
-  private accumulator = 0;
   private capture: captureFrame.InputSampleCapture;
   private pendingKeyEvents: ControllerInputEvent[] = [];
   private pendingGamepadEvents: ControllerInputEvent[] = [];
@@ -597,6 +616,11 @@ export class MatchScreen {
     return this.host.frame().hud.finished;
   }
 
+  /** The current frame's HUD slice, read live off the host -- used by [`MatchScreenAsRealMatchScreen`]'s `state` (score/clock) and by this class's own `finished`/`carrying`. */
+  get hud(): RenderFrameHud {
+    return this.host.frame().hud;
+  }
+
   /** `self._clock.tick` -- delegated straight to the host, which is this screen's only tick authority. */
   get tick(): number {
     return this.host.tick();
@@ -625,7 +649,9 @@ export class MatchScreen {
     this.latches.actionHeldPrev = false;
     this.latches.lobLatch = false;
     this.switchPending = false;
-    this.accumulator = 0;
+    // No accumulator to reset here -- the fixed clock (and its
+    // carried-over render-time debt) lives entirely in the new host's own
+    // `SimHostPort.planTicks`/`cancelPlannedTicks`, constructed fresh above.
     this.pendingKeyEvents = [];
     this.pendingGamepadEvents = [];
     this.lastStepSample = undefined;
@@ -694,11 +720,18 @@ export class MatchScreen {
   }
 
   /**
-   * `Match:update(dt)`. Samples this frame's input once, drives the fixed
-   * clock, and hands the resulting frame to the renderer. A no-op once the
-   * match is finished -- `Match:update`'s own `match_is_over(self)` early
-   * return, minus the rollback-replay/onboarding bookkeeping this milestone
-   * does not implement.
+   * `Match:update(dt)`. Samples this frame's input once and drives the
+   * fixed clock (`SimHostPort.planTicks`/`step`/`cancelPlannedTicks` -- see
+   * this section's header; the accumulator algorithm itself lives only in
+   * Rust now). A no-op once the match is finished -- `Match:update`'s own
+   * `match_is_over(self)` early return, minus the rollback-replay/
+   * onboarding bookkeeping this milestone does not implement.
+   *
+   * Drawing is NOT done here -- see [`MatchScreen.draw`]: this class follows
+   * the model/view seam every other screen in this codebase uses
+   * (AGENTS.md §9), `update(dt)` steps the simulation and `draw()` is the
+   * only impure rendering call, called separately by whoever owns the
+   * render loop.
    */
   update(dt: number): void {
     if (this.finished) {
@@ -720,34 +753,33 @@ export class MatchScreen {
     }
     this.lastStepSample = sample;
 
-    this.accumulator += dt;
-    let steps = 0;
-    while (this.accumulator + CLOCK_EPSILON >= TICK_SECONDS && steps < MAX_TICKS_PER_UPDATE) {
+    const ticks = this.host.planTicks(dt);
+    for (let step = 0; step < ticks; step += 1) {
       // KNOWN SIMPLIFICATION: every tick this render call produces is fed
       // the SAME sample -- see this class's doc comment.
       this.host.step(sample);
-      this.accumulator -= TICK_SECONDS;
-      if (this.accumulator < 0) {
-        this.accumulator = 0;
-      }
-      steps += 1;
       // `fixed_clock.advance`'s `step` callback returns `not
       // self.state.finished and not scored` to stop a catch-up batch as
       // soon as the match ends or a goal starts a replay. This milestone
-      // has no replay, so only the "finished" half applies.
+      // has no replay, so only the "finished" half applies -- and telling
+      // the host to cancel the remaining planned ticks is what makes that
+      // match what a `false` step_fn return does to the accumulator on the
+      // Rust side (see `SimHostPort.cancelPlannedTicks`'s doc).
       if (this.host.frame().hud.finished) {
-        this.accumulator = 0;
+        this.host.cancelPlannedTicks();
         return;
       }
     }
-    if (this.accumulator + CLOCK_EPSILON >= TICK_SECONDS) {
-      const dropped = Math.floor((this.accumulator + CLOCK_EPSILON) / TICK_SECONDS);
-      this.accumulator -= dropped * TICK_SECONDS;
-      if (this.accumulator < 0) {
-        this.accumulator = 0;
-      }
-    }
+  }
 
+  /**
+   * Draw the current frame. Separated from `update` (see that method's
+   * doc) so callers control the render cadence independently of the
+   * simulation cadence, and so this class satisfies
+   * [`RealMatchScreenPort.draw`] (`real_match.ts`) via
+   * [`MatchScreenAsRealMatchScreen`].
+   */
+  draw(): void {
     const frame = this.host.frame();
     const roster = this.host.roster();
     this.ports.renderer.draw(frame, roster);
@@ -757,4 +789,128 @@ export class MatchScreen {
   dispose(): void {
     this.host.dispose();
   }
+}
+
+// =============================================================================
+// RECONCILING TWO MatchScreen CONTRACTS. `real_match.ts`'s
+// `RealMatchScreenPort<TState, TStep>` (`state.score.home/away`,
+// `state.time_left`, `rollbackLab`, `frameEvents`, a no-arg `draw()`,
+// `teardown()`, `applySettings()`) was written first, against a `Match`
+// class that did not exist yet -- it is generic, and already used that way
+// by `online_match.ts`'s `OnlineMatchState`. `MatchScreen` above (this
+// file's game loop, built afterward) satisfies none of it directly: no
+// `state`/`rollbackLab`/`frameEvents`, `event()` takes `@gc/input`'s
+// `ControllerInputEvent` rather than `real_match.ts`'s smaller
+// `RealMatchInputEvent`, and `teardown`/`applySettings` do not exist.
+//
+// Rather than mutate `MatchScreen.event`'s signature to a union it mostly
+// does not need (real_match.ts deliberately does not depend on `@gc/input`
+// -- see that module's header -- so its `RealMatchInputEvent.action` is a
+// plain `string`, not `@gc/input`'s closed `ActionName`), this section is
+// the one adapter that bridges the two: [`MatchScreenAsRealMatchScreen`]
+// composes a `MatchScreen` and implements `RealMatchScreenPort` around it,
+// so `RealMatchScreen` (real_match.ts) can actually drive the real match
+// screen wave 2 built. This is "one shape, not two" the way the codebase
+// elsewhere handles a genuine vocabulary gap between two packages that must
+// not depend on each other (`@gc/online`'s `match_presentation.ts`'s ported
+// types), not a redesign of either existing contract -- `real_match.ts` is
+// unchanged, and `MatchScreen`'s own `event`/`update`/`draw`/`dispose` keep
+// their existing, stricter types for every other caller.
+// =============================================================================
+
+/**
+ * Bridges `@gc/input`'s `ControllerInputEvent` (`MatchScreen`'s own input
+ * vocabulary) and `real_match.ts`'s smaller, package-agnostic
+ * `RealMatchInputEvent` -- both describe the same closed key/action
+ * vocabulary (`@gc/input`'s `ActionName`/`bindings`), just typed
+ * differently because `real_match.ts` deliberately does not import
+ * `@gc/input`. This is the one place that gap is bridged: widen to a shape
+ * both variants satisfy, then narrow `action` back to `ActionName`. `key`/
+ * `gamepad`/`click` events need no bridging -- `RealMatchInputEvent`'s key
+ * variant (no `pressed`) is already assignable to `@gc/input`'s `KeyEvent`
+ * (`pressed` is optional there), and `gamepad`/`click` are not part of
+ * `RealMatchInputEvent`'s vocabulary at all.
+ */
+function toControllerInputEvent(evt: ControllerInputEvent | RealMatchInputEvent): ControllerInputEvent {
+  if (evt.kind !== "action") {
+    return evt;
+  }
+  const wide = evt as { kind: "action"; action: string; pressed?: boolean; source?: InputSource };
+  return {
+    kind: "action",
+    action: wide.action as ActionName,
+    ...(wide.pressed !== undefined ? { pressed: wide.pressed } : {}),
+    ...(wide.source !== undefined ? { source: wide.source } : {}),
+  };
+}
+
+/**
+ * Adapts a {@link MatchScreen} to `real_match.ts`'s `RealMatchScreenPort`,
+ * so {@link RealMatchScreen} (real_match.ts) can drive the real game-loop
+ * screen this file builds -- see this section's header. `TStep` is `never`:
+ * this milestone's `MatchScreen` has no rollback lab (`rollbackLab` is
+ * always `false`), so `RealMatchScreen` never reads
+ * `rollbackConfirmedSteps`, and an empty array satisfies `readonly TStep[]`
+ * for any `TStep`.
+ */
+export class MatchScreenAsRealMatchScreen implements RealMatchScreenPort<RealMatchState, never> {
+  private readonly screen: MatchScreen;
+
+  constructor(screen: MatchScreen) {
+    this.screen = screen;
+  }
+
+  /** `real_match.ts`'s `RealMatchState` -- read live off the screen's current frame, mirroring `MatchScreen.finished`'s own "never cached" rule. */
+  get state(): RealMatchState {
+    const hud = this.screen.hud;
+    return { time_left: hud.time_left, score: { home: hud.home_score, away: hud.away_score } };
+  }
+
+  /** This milestone's `MatchScreen` has no rollback lab -- see this class's doc. */
+  readonly rollbackLab = false;
+
+  /** Never read: `rollbackLab` is always `false` -- see this class's doc. */
+  readonly rollbackConfirmedSteps: readonly never[] = [];
+
+  /**
+   * Not yet wired: this milestone's `MatchScreen` does not itself call
+   * `consumeRollbackPresentation` (the rollback-consumption seam this
+   * file's header describes) to populate a per-frame match-event batch, so
+   * there is nothing to report here yet. Honestly empty, not a lie -- see
+   * this file's own scope note on what is/is not wired this milestone.
+   */
+  readonly frameEvents: readonly unknown[] = [];
+
+  fullTimeConfirmed(): boolean {
+    return this.screen.finished;
+  }
+
+  /** No replay is wired into `MatchScreen` this milestone (see this file's header), so completion is never blocked. */
+  resultCompletionBlocked(): boolean {
+    return false;
+  }
+
+  update(dt: number): void {
+    this.screen.update(dt);
+  }
+
+  event(evt: RealMatchInputEvent): void {
+    this.screen.event(toControllerInputEvent(evt));
+  }
+
+  draw(): void {
+    this.screen.draw();
+  }
+
+  teardown(): void {
+    this.screen.dispose();
+  }
+
+  /**
+   * Settings (audio/graphics volume, ...) are not wired into `MatchScreen`
+   * this milestone -- no ported module owns them yet (this file's header).
+   * A no-op, not a lie: nothing in this milestone's `MatchScreen` reads a
+   * setting, so there is nothing to apply.
+   */
+  applySettings(_settings: GameSettings): void {}
 }

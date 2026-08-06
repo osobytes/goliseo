@@ -78,7 +78,7 @@
 import type { CombatPresentationModel } from "@gc/presentation";
 import type { RGB } from "./draw2d.ts";
 import type {
-  RenderFrame,
+  RenderFrame as PitchRenderFrame,
   RenderFrameBall,
   RenderFrameControl,
   RenderFrameField,
@@ -579,7 +579,7 @@ function eventKindFromCode(code: number): MatchEventKind | undefined {
 // in a computation.
 // ---------------------------------------------------------------------------
 
-function at(words: readonly number[], index: number): number {
+function at(words: ArrayLike<number>, index: number): number {
   const value = words[index];
   if (value === undefined) {
     throw new Error(`frame_buffer: word ${index} out of range (block has ${words.length} words)`);
@@ -643,7 +643,7 @@ function soaIndex(fieldIndex: number, slotIndex: number, count: number): number 
 
 // Field-major structure-of-arrays column read: `at0` is the first word of
 // the section, `fieldIndex` selects which run of `count` words.
-function column(words: readonly number[], at0: number, fieldIndex: number, count: number): number[] {
+function column(words: ArrayLike<number>, at0: number, fieldIndex: number, count: number): number[] {
   const start = at0 + soaIndex(fieldIndex, 0, count);
   const out: number[] = [];
   for (let i = 0; i < count; i += 1) {
@@ -662,13 +662,20 @@ function column(words: readonly number[], at0: number, fieldIndex: number, count
  * .lua`'s `frame_buffer.decode`, with every enum resolved inline (see this
  * module's header for why).
  *
+ * `words` is `ArrayLike<number>` rather than `readonly number[]` so a caller
+ * holding a zero-copy `Float64Array` VIEW over wasm linear memory (`@gc/app`'s
+ * `sim_host.ts`, over `@gc/wasm`'s raw per-frame export) can pass it straight
+ * through -- both `number[]` and `Float64Array` satisfy it, and converting a
+ * `Float64Array` to a plain array would copy every frame, defeating the
+ * zero-copy design that raw export exists for.
+ *
  * @throws If the magic word, layout version or render-frame version do not
  *   match, if a header field count disagrees with this module's constants,
  *   if `total_words` disagrees with the header's own counts, or if any enum
  *   word carries an unrecognised nonzero code. Each is a corrupted or
  *   foreign block, not a value this reader is meant to recover from.
  */
-export function decode(words: readonly number[]): DecodedRenderFrame {
+export function decode(words: ArrayLike<number>): DecodedRenderFrame {
   if (at(words, 0) !== MAGIC) {
     throw new Error(`frame_buffer: not a render frame block: magic ${at(words, 0)}`);
   }
@@ -828,12 +835,15 @@ export function decode(words: readonly number[]): DecodedRenderFrame {
  * mirror of that module's `decode_roster` / `render/frame_buffer.lua`'s
  * `frame_buffer.decode_roster`.
  *
+ * `words` is `ArrayLike<number>` -- see `decode`'s doc for why (the same
+ * zero-copy `Float64Array`-view rationale applies to a roster block).
+ *
  * @throws On a bad magic word, a layout/version mismatch, a field count that
  *   disagrees with `ROSTER_FIELD_COUNT`, an unrecognised enum code, or a
  *   string blob that does not hold exactly `2 * count` newline-delimited
  *   parts.
  */
-export function decodeRoster(words: readonly number[], strings: string): DecodedRenderFrameRoster {
+export function decodeRoster(words: ArrayLike<number>, strings: string): DecodedRenderFrameRoster {
   if (at(words, 0) !== ROSTER_MAGIC) {
     throw new Error(`frame_buffer: not a render roster block: magic ${at(words, 0)}`);
   }
@@ -901,10 +911,30 @@ function at2(parts: readonly string[], index: number): string {
 }
 
 /**
+ * The complete `RenderFrame` the wire carries: `pitch.ts`'s drawing slice
+ * (`PitchRenderFrame` -- `field`/`roster`/`players`/`ball`/`control`/
+ * `combat`) plus `hud`/`possession`, which drawing does not need but other
+ * consumers do -- `@gc/app`'s `sim_host.ts` decides whether a match is over
+ * (`hud.finished`) and `@gc/screens`' `MatchScreen` decides whether the
+ * controlled player is carrying (`hud.controlled_owns_ball`) before either
+ * can compute a single contextual input field or a HUD frame; neither field
+ * existed on `pitchTypes.RenderFrame`, which is sized for DRAWING only. This
+ * is the one canonical frame type both packages import instead of each
+ * hand-declaring their own (previously-drifting) slice -- see this
+ * decoder's header and README rule 6.7. `pitch.draw` keeps accepting this
+ * type via ordinary structural typing: it only reads the `PitchRenderFrame`
+ * fields it already declared, and this type is a strict superset of those.
+ */
+export interface RenderFrame extends PitchRenderFrame {
+  readonly possession: RenderFramePossession;
+  readonly hud: RenderFrameHud;
+}
+
+/**
  * Combine a decoded frame with its match-constant decoded roster (and, when
  * the app has one, an externally-sourced combat presentation model -- see
  * this module's header on why combat never travels on the wire) into the
- * real `RenderFrame` `pitch.ts` consumes.
+ * real, complete `RenderFrame` above.
  */
 export function toRenderFrame(
   frame: DecodedRenderFrame,
@@ -917,6 +947,8 @@ export function toRenderFrame(
     players: frame.players,
     ball: frame.ball,
     control: frame.control,
+    possession: frame.possession,
+    hud: frame.hud,
     ...(combat !== undefined ? { combat } : {}),
   };
 }

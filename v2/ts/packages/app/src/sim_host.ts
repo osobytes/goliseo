@@ -30,65 +30,42 @@
 // that is the test this file's task brief asked for; a cached view would
 // make it throw or silently read garbage.
 //
-// ## A duplicated decoder, and why it exists here instead of an import
+// ## The decoder is `@gc/render`'s, not a copy
 //
-// The natural shape of this file imports `decode`/`decodeRoster`/
-// `toRenderFrame` from `@gc/render`'s `frame_buffer.ts` -- that module exists
-// precisely to turn the wire block `buildRenderFrame` hands back into the
-// `RenderFrame` shape `SimHostPort.frame()` promises. It is NOT reachable
-// from here: `packages/render/src/index.ts` re-exports `pitch.ts`,
-// `arena.ts`, `scene.ts` and the rest of the wave-1 surface, but never
-// `frame_buffer.ts` (its own header explicitly lists what index.ts leaves
-// off -- `draw2d.ts`, `gl_probe.ts` -- and `frame_buffer.ts` is not on that
-// list either; it is simply not wired up yet). `packages/render/package.json`
-// also only maps `"."` to `src/index.ts`, and this workspace's
-// `moduleResolution: "bundler"` honors that -- there is no subpath import
-// that reaches an unexported module.
+// `@gc/render` now exports `frame_buffer.ts` as `frameBuffer` (its
+// `index.ts`: `export * as frameBuffer from "./frame_buffer.ts";`, the same
+// pattern `@gc/input`'s `index.ts` uses for `inputSample`) -- this module
+// used to carry a deliberate, temporary, hand-duplicated decoder here
+// (trimmed to the fields `pitchTypes.RenderFrame` declares) precisely
+// because that export did not exist yet. It does now, so that duplicate is
+// gone: `frame()`/`roster()` below call `@gc/render`'s real
+// `frameBuffer.decode`/`decodeRoster`/`toRenderFrame` directly, and this
+// file's `RenderFrame` is `@gc/render`'s complete wire type (`hud`/
+// `possession` included, not just `pitch.ts`'s drawing slice) -- see
+// `frame_buffer.ts`'s own doc on why one canonical type replaces two
+// drifting ones.
 //
-// This task's file ownership is `sim_host.ts`/its spec/this package's
-// manifest only -- `packages/render` is explicitly out of scope this wave
-// (three other agents are concurrently editing other packages, `packages/
-// render` among them), so adding the one-line fix
-// (`export * as frameBuffer from "./frame_buffer.ts";`, matching the exact
-// pattern `packages/input/src/index.ts` already uses for `inputSample`) is
-// not this file's call to make. Leaving the import unresolved was also not
-// an option: an unresolved import fails `tsc --build` for the WHOLE `@gc/app`
-// project (composite build, one compilation unit), breaking every other
-// file in this package, not just this one.
-//
-// So `decodeFrameWords`/`decodeRosterWords`/`toRenderFrame` below are a
-// **deliberate, temporary duplicate** of `packages/render/src/frame_buffer
-// .ts`'s `decode`/`decode_roster`/`toRenderFrame`, trimmed to the subset
-// `RenderFrame` (`pitch.ts`) actually declares -- field/ball/control/players/
-// roster. `hud`, `possession` and `events` (which a full decode also
-// produces) are read past but not constructed, since `RenderFrame` does not
-// carry them and nothing here consumes them. Every constant, offset and enum
-// mapping below is copied verbatim from that module rather than
-// re-derived, specifically to avoid introducing a second, silently-drifting
-// implementation of a wire format two languages already need to agree on.
-// See this file's end-of-module report for the flagged follow-up: once
-// `packages/render` exports `frame_buffer`, this whole DUPLICATED DECODER
-// section should be deleted and replaced with the import it stands in for.
+// `frame_buffer.decode`/`decodeRoster` take `ArrayLike<number>` rather than
+// `readonly number[]` specifically so the `Float64Array` VIEW
+// `buildRenderFrame` hands back (see this file's memory-view-invalidation
+// section above) can be passed straight through with no copy: converting it
+// to a plain array would copy every frame and defeat the zero-copy design
+// the raw per-frame export exists for.
 
 import { loadSimHost } from "@gc/wasm";
-import type { SimHost, SimSession } from "@gc/wasm";
+import type { FixedClock, SimHost, SimSession } from "@gc/wasm";
 import { inputSample } from "@gc/input";
 import type { inputSampleTypes } from "@gc/input";
-import type { pitchTypes } from "@gc/render";
+import { frameBuffer } from "@gc/render";
+import type { frameBufferTypes } from "@gc/render";
 
 /** Re-exported so callers of this module need not also import `@gc/input`. */
 export type InputSample = inputSampleTypes.InputSample;
 
 /** Re-exported so callers of this module need not also import `@gc/render`. */
-export type RenderFrame = pitchTypes.RenderFrame;
+export type RenderFrame = frameBufferTypes.RenderFrame;
 /** Re-exported so callers of this module need not also import `@gc/render`. */
-export type RenderFrameRoster = pitchTypes.RenderFrameRoster;
-
-type Field = pitchTypes.RenderFrameField;
-type Ball = pitchTypes.RenderFrameBall;
-type Control = pitchTypes.RenderFrameControl;
-type Players = pitchTypes.RenderFramePlayers;
-type RGB = readonly [number, number, number];
+export type RenderFrameRoster = frameBufferTypes.DecodedRenderFrameRoster;
 
 // ---------------------------------------------------------------------------
 // The `SimHostPort` contract (see this wave's task brief -- W2-C's match
@@ -97,8 +74,25 @@ type RGB = readonly [number, number, number];
 // ---------------------------------------------------------------------------
 
 export interface SimHostPort {
+  /**
+   * Plan how many fixed ticks this render update should simulate, given
+   * `dt` seconds elapsed since the last call -- delegates to
+   * `gc_sim::fixed_clock`'s accumulator/catch-up/drop policy
+   * (v2/README.md §2.1) via the wasm session's `FixedClock`, so this
+   * decision has exactly one implementation, in Rust. Call once per render
+   * update, then call `step` up to that many times, in order.
+   */
+  planTicks(dt: number): number;
   /** Advance the simulation by exactly one fixed tick with the given sample. */
   step(sample: InputSample): void;
+  /**
+   * The caller stopped running `step` before using every tick `planTicks`
+   * authorized (e.g. the match finished mid-batch) -- must be called in
+   * that case so the clock's carried-over accumulator resets, matching
+   * what stopping early means to `gc_sim::fixed_clock::advance`'s own
+   * step callback.
+   */
+  cancelPlannedTicks(): void;
   /** The current frame, decoded. Cheap to call; may return a reused object. */
   frame(): RenderFrame;
   /** Match-constant roster, decoded once. */
@@ -107,415 +101,6 @@ export interface SimHostPort {
   tick(): number;
   /** Release the wasm handle. Safe to call twice. */
   dispose(): void;
-}
-
-// ---------------------------------------------------------------------------
-// DUPLICATED DECODER -- see this file's header. Verbatim port of the layout
-// constants, offsets and enum tables in `packages/render/src/frame_buffer
-// .ts`, trimmed to the fields `RenderFrame` declares.
-// ---------------------------------------------------------------------------
-
-const LAYOUT_VERSION = 1;
-const RENDER_FRAME_VERSION = 1;
-const MAGIC = 0x474f_4c46;
-const ROSTER_MAGIC = 0x474f_4c52;
-const HEADER_WORDS = 12;
-const SCALAR_FIELD_COUNT = 44;
-const PLAYER_FIELD_COUNT = 21;
-const EVENT_FIELD_COUNT = 15;
-const ROSTER_HEADER_WORDS = 7;
-const ROSTER_FIELD_COUNT = 7;
-
-function frameWords(count: number, eventCount: number): number {
-  return HEADER_WORDS + SCALAR_FIELD_COUNT + PLAYER_FIELD_COUNT * count + EVENT_FIELD_COUNT * eventCount;
-}
-
-function at(words: Float64Array, index: number): number {
-  const value = words[index];
-  if (value === undefined) {
-    throw new Error(`sim_host: word ${index} out of range (block has ${words.length} words)`);
-  }
-  return value;
-}
-
-function decodeBool(word: number): boolean {
-  if (word === 1) {
-    return true;
-  }
-  if (word === 0) {
-    return false;
-  }
-  throw new Error(`sim_host: not a boolean word: ${word}`);
-}
-
-function optDecode<T>(code: number, fromCode: (code: number) => T | undefined, what: string): T | undefined {
-  if (code === 0) {
-    return undefined;
-  }
-  const value = fromCode(code);
-  if (value === undefined) {
-    throw new Error(`sim_host: unknown ${what} code ${code}`);
-  }
-  return value;
-}
-
-function soaIndex(fieldIndex: number, slotIndex: number, count: number): number {
-  return fieldIndex * count + slotIndex;
-}
-
-function column(words: Float64Array, at0: number, fieldIndex: number, count: number): number[] {
-  const start = at0 + soaIndex(fieldIndex, 0, count);
-  const out: number[] = [];
-  for (let i = 0; i < count; i += 1) {
-    out.push(at(words, start + i));
-  }
-  return out;
-}
-
-function teamFromCode(code: number): "home" | "away" | undefined {
-  switch (code) {
-    case 1:
-      return "home";
-    case 2:
-      return "away";
-    default:
-      return undefined;
-  }
-}
-
-function speciesShapeFromCode(code: number): "round" | "broad" | "angular" | "cluster" | undefined {
-  switch (code) {
-    case 1:
-      return "round";
-    case 2:
-      return "broad";
-    case 3:
-      return "angular";
-    case 4:
-      return "cluster";
-    default:
-      return undefined;
-  }
-}
-
-function chargeKindFromCode(code: number): "shot" | "pass" | undefined {
-  switch (code) {
-    case 1:
-      return "shot";
-    case 2:
-      return "pass";
-    default:
-      return undefined;
-  }
-}
-
-function poseSourceFromCode(code: number): string | undefined {
-  switch (code) {
-    case 1:
-      return "soccer";
-    case 2:
-      return "combat";
-    case 3:
-      return "locomotion";
-    default:
-      return undefined;
-  }
-}
-
-function aerialStyleFromCode(
-  code: number,
-): "leg_control" | "chest_control" | "volley" | "header" | "bicycle" | undefined {
-  switch (code) {
-    case 1:
-      return "leg_control";
-    case 2:
-      return "chest_control";
-    case 3:
-      return "volley";
-    case 4:
-      return "header";
-    case 5:
-      return "bicycle";
-    default:
-      return undefined;
-  }
-}
-
-function aerialOutcomeFromCode(code: number): "clean" | "heavy" | "miss" | undefined {
-  switch (code) {
-    case 1:
-      return "clean";
-    case 2:
-      return "heavy";
-    case 3:
-      return "miss";
-    default:
-      return undefined;
-  }
-}
-
-function poseIdFromCode(code: number): string | undefined {
-  switch (code) {
-    case 1:
-      return "keeper_grab";
-    case 2:
-      return "keeper_throw";
-    case 3:
-      return "keeper_punt";
-    case 4:
-      return "keeper_tip";
-    case 5:
-      return "keeper_spread";
-    case 6:
-      return "keeper_central";
-    case 7:
-      return "keeper_stretch";
-    case 8:
-      return "keeper_dive";
-    case 9:
-      return "keeper_get_up";
-    case 10:
-      return "keeper_set";
-    case 11:
-      return "keeper_ready_low";
-    case 12:
-      return "keeper_shuffle";
-    case 13:
-      return "keeper_ready_tall";
-    case 14:
-      return "aerial_bicycle";
-    case 15:
-      return "aerial_action";
-    case 16:
-      return "combat_knockback";
-    case 17:
-      return "combat_stagger";
-    case 18:
-      return "combat_guard";
-    case 19:
-      return "combat_active";
-    case 20:
-      return "combat_windup";
-    case 21:
-      return "combat_aim";
-    case 22:
-      return "combat_recovery";
-    case 23:
-      return "soccer_windup";
-    case 24:
-      return "slide";
-    case 25:
-      return "tackle";
-    case 26:
-      return "stumble";
-    case 27:
-      return "kick_follow";
-    case 28:
-      return "settle";
-    case 29:
-      return "run_telegraph";
-    case 30:
-      return "contain";
-    case 31:
-      return "fatigue";
-    case 32:
-      return "locomotion";
-    default:
-      return undefined;
-  }
-}
-
-interface DecodedFrame {
-  readonly field: Field;
-  readonly ball: Ball;
-  readonly control: Control;
-  readonly players: Players;
-}
-
-/**
- * Trimmed port of `frame_buffer.ts`'s `decode` -- see this file's header.
- * Reads field/ball/control/players; validates but does not construct
- * possession/hud/events (`RenderFrame` does not carry them).
- */
-function decodeFrameWords(words: Float64Array): DecodedFrame {
-  if (at(words, 0) !== MAGIC) {
-    throw new Error(`sim_host: not a render frame block: magic ${at(words, 0)}`);
-  }
-  if (at(words, 1) !== LAYOUT_VERSION) {
-    throw new Error(`sim_host: frame layout version ${at(words, 1)}; expected ${LAYOUT_VERSION}`);
-  }
-  if (at(words, 2) !== RENDER_FRAME_VERSION) {
-    throw new Error(`sim_host: render frame version ${at(words, 2)}; expected ${RENDER_FRAME_VERSION}`);
-  }
-  if (at(words, 4) !== HEADER_WORDS) {
-    throw new Error(`sim_host: header words ${at(words, 4)}; expected ${HEADER_WORDS}`);
-  }
-  if (at(words, 5) !== SCALAR_FIELD_COUNT) {
-    throw new Error(`sim_host: scalar words ${at(words, 5)}; expected ${SCALAR_FIELD_COUNT}`);
-  }
-  if (at(words, 7) !== PLAYER_FIELD_COUNT) {
-    throw new Error(`sim_host: player field count ${at(words, 7)}; expected ${PLAYER_FIELD_COUNT}`);
-  }
-  if (at(words, 9) !== EVENT_FIELD_COUNT) {
-    throw new Error(`sim_host: event field count ${at(words, 9)}; expected ${EVENT_FIELD_COUNT}`);
-  }
-
-  const count = at(words, 6);
-  const eventCount = at(words, 8);
-  const total = frameWords(count, eventCount);
-  if (at(words, 3) !== total) {
-    throw new Error(`sim_host: total words ${at(words, 3)}; expected ${total}`);
-  }
-
-  const scalarsAt = HEADER_WORDS;
-  const s = (index: number): number => at(words, scalarsAt + index);
-
-  const field: Field = {
-    w: s(0),
-    h: s(1),
-    crossbar_h: s(2),
-    penalty_box_depth: s(3),
-    penalty_box_h: s(4),
-    goal_home: { x: s(5), y: s(6), w: s(7), h: s(8) },
-    goal_away: { x: s(9), y: s(10), w: s(11), h: s(12) },
-  };
-
-  const landingValid = decodeBool(s(20));
-  const ball: Ball = {
-    x: s(13),
-    y: s(14),
-    z: s(15),
-    visible: decodeBool(s(19)),
-    ...(landingValid ? { landing_x: s(21), landing_y: s(22) } : {}),
-  };
-
-  const passTarget = s(27);
-  const chargeKind = optDecode(s(28), chargeKindFromCode, "charge kind");
-  const control: Control = {
-    controlled: s(26),
-    ...(passTarget !== 0 ? { pass_target: passTarget } : {}),
-    ...(chargeKind !== undefined ? { charge_kind: chargeKind } : {}),
-    charge: s(29),
-  };
-
-  const playersAt = scalarsAt + SCALAR_FIELD_COUNT;
-  const rawControlled = column(words, playersAt, 8, count);
-  const rawDashing = column(words, playersAt, 9, count);
-  const rawHolding = column(words, playersAt, 10, count);
-  const players: Players = {
-    count,
-    x: column(words, playersAt, 0, count),
-    y: column(words, playersAt, 1, count),
-    facing_x: column(words, playersAt, 2, count),
-    facing_y: column(words, playersAt, 3, count),
-    pose_id: column(words, playersAt, 5, count).map((code) => optDecode(code, poseIdFromCode, "pose id")),
-    pose_priority: column(words, playersAt, 6, count),
-    pose_source: column(words, playersAt, 7, count).map((code) => optDecode(code, poseSourceFromCode, "pose source")),
-    controlled: rawControlled.map(decodeBool),
-    dashing: rawDashing.map(decodeBool),
-    holding: rawHolding.map(decodeBool),
-    dive: column(words, playersAt, 11, count),
-    dive_dir_x: column(words, playersAt, 12, count),
-    dive_dir_y: column(words, playersAt, 13, count),
-    grab: column(words, playersAt, 14, count),
-    throw: column(words, playersAt, 15, count),
-    windup: column(words, playersAt, 16, count),
-    aerial: column(words, playersAt, 17, count),
-    aerial_jump: column(words, playersAt, 18, count),
-    aerial_style: column(words, playersAt, 19, count).map((code) => optDecode(code, aerialStyleFromCode, "aerial style")),
-    aerial_outcome: column(words, playersAt, 20, count).map((code) =>
-      optDecode(code, aerialOutcomeFromCode, "aerial outcome"),
-    ),
-  };
-
-  return { field, ball, control, players };
-}
-
-function at2(parts: readonly string[], index: number): string {
-  const value = parts[index];
-  if (value === undefined) {
-    throw new Error(`sim_host: roster string ${index} out of range`);
-  }
-  return value;
-}
-
-function atNum(values: readonly number[], index: number): number {
-  const value = values[index];
-  if (value === undefined) {
-    throw new Error(`sim_host: value ${index} out of range`);
-  }
-  return value;
-}
-
-/** Verbatim-trimmed port of `frame_buffer.ts`'s `decodeRoster`. */
-function decodeRosterWords(words: Float64Array, strings: string): RenderFrameRoster {
-  if (at(words, 0) !== ROSTER_MAGIC) {
-    throw new Error(`sim_host: not a render roster block: magic ${at(words, 0)}`);
-  }
-  if (at(words, 1) !== LAYOUT_VERSION) {
-    throw new Error(`sim_host: roster layout version ${at(words, 1)}; expected ${LAYOUT_VERSION}`);
-  }
-  if (at(words, 2) !== RENDER_FRAME_VERSION) {
-    throw new Error(`sim_host: render frame version ${at(words, 2)}; expected ${RENDER_FRAME_VERSION}`);
-  }
-  if (at(words, 6) !== ROSTER_FIELD_COUNT) {
-    throw new Error(`sim_host: roster field count ${at(words, 6)}; expected ${ROSTER_FIELD_COUNT}`);
-  }
-
-  const count = at(words, 5);
-
-  const blob = `${strings}\n`;
-  const parts = blob.split("\n");
-  parts.pop();
-  if (parts.length !== count * 2) {
-    throw new Error(`sim_host: roster blob holds ${parts.length} strings; expected ${count * 2}`);
-  }
-
-  const ids: string[] = [];
-  for (let index = 0; index < count; index += 1) {
-    ids.push(at2(parts, index * 2));
-  }
-
-  const at0 = ROSTER_HEADER_WORDS;
-  const rawIsKeeper = column(words, at0, 1, count);
-  const r = column(words, at0, 4, count);
-  const g = column(words, at0, 5, count);
-  const b = column(words, at0, 6, count);
-  const speciesColor: RGB[] = [];
-  for (let index = 0; index < count; index += 1) {
-    speciesColor.push([atNum(r, index), atNum(g, index), atNum(b, index)]);
-  }
-
-  return {
-    ids,
-    teams: column(words, at0, 0, count).map((code) => {
-      const team = optDecode(code, teamFromCode, "team");
-      if (team === undefined) {
-        throw new Error("sim_host: missing required team (code 0)");
-      }
-      return team;
-    }),
-    is_keeper: rawIsKeeper.map(decodeBool),
-    radius: column(words, at0, 2, count),
-    species_shape: column(words, at0, 3, count).map((code) => {
-      const shape = optDecode(code, speciesShapeFromCode, "species shape");
-      if (shape === undefined) {
-        throw new Error("sim_host: missing required species shape (code 0)");
-      }
-      return shape;
-    }),
-    species_color: speciesColor,
-  };
-}
-
-function toRenderFrame(frame: DecodedFrame, roster: RenderFrameRoster): RenderFrame {
-  return {
-    field: frame.field,
-    roster,
-    players: frame.players,
-    ball: frame.ball,
-    control: frame.control,
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -569,6 +154,7 @@ export interface SimHostOptions {
 class WasmSimHost implements SimHostPort {
   private readonly host: SimHost;
   private readonly session: SimSession;
+  private readonly clock: FixedClock;
   private readonly localSlot: number;
   private disposed = false;
   private rosterCache: RenderFrameRoster | undefined;
@@ -589,6 +175,7 @@ class WasmSimHost implements SimHostPort {
     this.localSlot = localSlot;
     this.host = loadSimHost();
     this.session = new this.host.Session(homeTeamId, awayTeamId, seed, durationSeconds, maxGoals);
+    this.clock = new this.host.FixedClock();
   }
 
   private assertLive(): void {
@@ -597,12 +184,22 @@ class WasmSimHost implements SimHostPort {
     }
   }
 
+  planTicks(dt: number): number {
+    this.assertLive();
+    return this.clock.advance(dt);
+  }
+
   step(sample: InputSample): void {
     this.assertLive();
     inputSample.validateSample(sample);
     const wire = encodeInputFrameWire(this.session.inputTick, this.localSlot, sample);
     this.session.step(wire);
     this.frameCache = undefined;
+  }
+
+  cancelPlannedTicks(): void {
+    this.assertLive();
+    this.clock.stopEarly();
   }
 
   frame(): RenderFrame {
@@ -618,8 +215,11 @@ class WasmSimHost implements SimHostPort {
     if (words === null) {
       throw new Error("sim_host: no live session for this handle (already disposed?)");
     }
-    const decoded = decodeFrameWords(words);
-    const frame = toRenderFrame(decoded, this.roster());
+    // `words` is a `Float64Array` VIEW; `frameBuffer.decode` takes
+    // `ArrayLike<number>` specifically so it can be passed straight through
+    // with no copy -- see this file's header.
+    const decoded = frameBuffer.decode(words);
+    const frame = frameBuffer.toRenderFrame(decoded, this.roster());
     this.frameCache = { tick, frame };
     return frame;
   }
@@ -629,7 +229,7 @@ class WasmSimHost implements SimHostPort {
     if (this.rosterCache === undefined) {
       const numeric = this.session.rosterNumeric();
       const strings = this.session.rosterIdsAndNames();
-      this.rosterCache = decodeRosterWords(numeric, strings);
+      this.rosterCache = frameBuffer.decodeRoster(numeric, strings);
     }
     return this.rosterCache;
   }

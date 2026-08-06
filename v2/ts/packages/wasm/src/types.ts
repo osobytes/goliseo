@@ -237,11 +237,43 @@ export interface MatchDriverBridgeConstructor {
   ): MatchDriverBridge;
 }
 
+/**
+ * Mirrors `gc_wasm::session::FixedClock` (`crates/gc-wasm/src/session.rs`)
+ * -- the render-driven tick-count decision (`gc_sim::fixed_clock::advance`'s
+ * accumulator/catch-up/drop policy, v2/README.md §2.1), planned once per
+ * render update from a `dt`. This exists specifically so no TypeScript
+ * package has to re-derive that policy itself: call {@link FixedClock.advance}
+ * with a render `dt` and run `step` that many times, in order.
+ */
+export interface FixedClock {
+  /** Ticks this clock has authorized so far. */
+  readonly tick: number;
+  /**
+   * Accumulate `renderDt` seconds and return how many ticks the caller
+   * should run this render update. Throws (a string) if `renderDt` is not
+   * finite and non-negative.
+   */
+  advance(renderDt: number): number;
+  /**
+   * The caller ran fewer ticks than the last `advance` call authorized
+   * (e.g. a match finished mid-batch) -- zeroes the carried-over
+   * accumulator, matching what stopping early means to
+   * `gc_sim::fixed_clock::advance`'s own step callback.
+   */
+  stopEarly(): void;
+}
+
+/** Constructs a {@link FixedClock}. */
+export interface FixedClockConstructor {
+  new (): FixedClock;
+}
+
 /** The shape of `dist/pkg/gc_wasm.cjs`'s module exports. */
 export interface GcWasmModule {
   readonly Session: SimSessionConstructor;
   readonly Coordinator: CoordinatorConstructor;
   readonly MatchDriverBridge: MatchDriverBridgeConstructor;
+  readonly FixedClock: FixedClockConstructor;
   runDeterminismEvidence(): DeterminismEvidence;
   decodeControlMessageHeader(wire: string): ControlMessageHeader;
   protocolVocabularyId(): string;

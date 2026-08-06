@@ -191,6 +191,7 @@ export {
   newMatchControlLatches,
   newMatchRollbackConsumerState,
   MatchScreen,
+  MatchScreenAsRealMatchScreen,
   stepMatchControlLatches,
 } from "./match.ts";
 export type {
