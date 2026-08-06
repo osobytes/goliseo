@@ -2,4 +2,5 @@ rust/target/
 ts/node_modules/
 ts/packages/*/node_modules/
 ts/packages/*/dist/
+ts/dist-app/
 ts/**/*.tsbuildinfo

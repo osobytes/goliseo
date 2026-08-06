@@ -1,15 +1,22 @@
 // Ported from spec/game/compatibility_flow_spec.lua.
 //
 // The second case ("drives the production bootstrap into and out of the
-// real match") needs `game.screens.real_match` (via `bootstrap.new`), not
-// yet ported to `@gc/screens` -- see this package's porting report and
-// bootstrap.spec.ts, which covers what bootstrap.ts itself can prove
-// without it.
+// real match") needs `game.screens.real_match` (via `bootstrap.new`) -- now
+// ported (`@gc/screens`'s `real_match.ts`/`match.ts`) and wired by this
+// batch's `real_match_factory.ts`. It reads `screen.match.state.finished =
+// true` directly in the Lua original; this port instead flips the
+// underlying fake `SimHostPort`'s `hud.finished` (the same seam
+// `bootstrap.spec.ts`'s "is the adapter selected by the default bootstrap"
+// test uses, for the identical reason -- `RealMatchScreenPort.state` has no
+// settable `finished` field, only a `time_left`/`score` getter derived from
+// the host's HUD).
 
 import { describe, expect, it } from "vitest";
 import { App } from "./app.ts";
+import { bootstrap } from "./bootstrap.ts";
 import { CompatibilityFlow } from "./compatibility_flow.ts";
-import { APP_CONTENT } from "./test_support/fixtures.ts";
+import { createRealMatchFactory } from "./real_match_factory.ts";
+import { APP_CONTENT, fakeHostFactory, fakeKeyboard, MATCH_CONTRACT_CONTENT, noopRenderPort } from "./test_support/fixtures.ts";
 
 describe("compatibility flow", () => {
   it("drives the complete fake product flow through the normal input seam", () => {
@@ -36,7 +43,44 @@ describe("compatibility flow", () => {
     expect(inputs).toEqual(expected);
   });
 
-  // Needs `game.screens.real_match` via `bootstrap.new` -- see this file's
-  // header and bootstrap.spec.ts.
-  it.skip("drives the production bootstrap into and out of the real match", () => {});
+  it("drives the production bootstrap into and out of the real match", () => {
+    const flow = new CompatibilityFlow();
+    flow.actionDelay = 0;
+    const { createHost, hosts } = fakeHostFactory();
+    const factory = createRealMatchFactory({
+      content: MATCH_CONTRACT_CONTENT,
+      createHost,
+      renderer: noopRenderPort,
+      keyboard: fakeKeyboard(),
+    });
+    const app = bootstrap.new(APP_CONTENT, factory, 960, 540, {
+      settingsStorage: { read: () => undefined, write: () => ({ ok: true, value: true }) },
+    });
+
+    for (let step = 1; step <= 4; step += 1) {
+      flow.update(app, step);
+    }
+
+    expect(app.adapter.kind).toBe("real");
+    expect(app.currentRoute()).toBe("match");
+
+    app.focus(false);
+    expect(app.currentRoute()).toBe("pause");
+
+    flow.update(app, 4.5);
+    expect(app.currentRoute()).toBe("pause");
+    flow.update(app, 5.0);
+    expect(app.currentRoute()).toBe("match");
+
+    const host = hosts[hosts.length - 1];
+    if (!host) {
+      throw new Error("expected a fake sim host to have been constructed");
+    }
+    host.hud.finished = true;
+    app.update(0.9); // >= real_match.ts's FULL_TIME_HOLD (0.9s)
+
+    flow.update(app, 5);
+    expect(app.currentRoute()).toBe("result");
+    expect(flow.finished).toBe(true);
+  });
 });

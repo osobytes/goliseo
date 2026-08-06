@@ -4,9 +4,16 @@
   "private": true,
   "type": "module",
   "description": "Typed loader for gc-wasm: the Rust simulation compiled to WebAssembly.",
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts",
+    "./web": {
+      "types": "./dist/pkg-web/gc_wasm.d.ts",
+      "default": "./dist/pkg-web/gc_wasm.js"
+    }
+  },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "build:web": "node scripts/build_web.mjs",
     "typecheck": "tsgo --noEmit -p tsconfig.json"
   },
   "dependencies": {},

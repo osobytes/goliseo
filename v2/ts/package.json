@@ -7,11 +7,15 @@
   "scripts": {
     "typecheck": "tsc --build",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
     "typescript": "^7.0.2",
+    "vite": "^8.2.0",
     "vitest": "^4.1.0"
   },
   "pnpm": {

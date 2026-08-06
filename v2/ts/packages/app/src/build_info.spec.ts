@@ -1,10 +1,12 @@
 // Ported from spec/game/branding_spec.lua.
 //
 // "uses the corrected technical save identity" (`love.filesystem.getIdentity()
-// == "goliseo"`) has no browser equivalent this milestone -- `love.filesystem`
-// is a LÖVE save-directory API, and no persistence backend is wired up yet
-// (v2/README.md §1; settings.ts's header covers the same gap). Ported as
-// `it.skip` below.
+// == "goliseo"`) originally had no browser equivalent to assert on -- no
+// persistence backend existed yet (v2/README.md §1). This batch's
+// `browser_main.ts` adds one (`localStorage`, namespaced by
+// `buildInfo.identity` -- see build_info.ts's header for why that field
+// exists), so the analogous check is now expressible: was the persisted-data
+// namespace actually corrected from a prototype-era name.
 
 import { describe, expect, it } from "vitest";
 import { credits, title } from "@gc/screens";
@@ -27,9 +29,9 @@ describe("GOLISEO branding", () => {
     ).toBe(true);
   });
 
-  // No browser filesystem/save-identity backend is wired up this milestone
-  // -- see this file's header.
-  it.skip("uses the corrected technical save identity", () => {});
+  it("uses the corrected technical save identity", () => {
+    expect(buildInfo.identity).toBe("goliseo");
+  });
 
   it("retains no prototype product name in the player-facing shell", () => {
     const titleWidget = hit.find(title.layout(title.newState(VIEWPORT)), "title");

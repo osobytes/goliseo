@@ -2,13 +2,20 @@
 //
 // The Lua spec's final assertions ("top should be the match screen",
 // `#top.state.players == 10`, `top.state.press.home == 2`) read
-// `game.screens.match`'s state directly -- not yet ported to `@gc/screens`
-// (this package's porting report; `flow.ts`'s header). The walk itself
-// (Squad -> Formation -> Tactic, carrying the formation/tactic choice) is
-// ported faithfully below and verified against the injected
-// `MatchScreenFactory` receiving the exact `{formation: "1-1-2", tactic:
-// "press_high"}` choice the Lua spec's final `top.state.press.home == 2`
-// (a `press_high`-derived value) is indirectly checking for.
+// `game.screens.match`'s state directly. `@gc/screens`'s `match.ts` exists
+// now, but its `RealMatchScreenPort.state` (`real_match.ts`, what a
+// constructed real match screen would actually expose through this port's
+// `MatchScreenFactory`) is deliberately narrowed to `{time_left, score}` --
+// no `players`/`press` fields at all (see `bootstrap.spec.ts`'s identically
+// blocked "applies request roster, formation, tactic, and seed" for the same
+// reason, spelled out there). So this is not a stale "not yet ported"
+// blocker -- the module exists, its published contract just does not carry
+// what these two assertions need. The walk itself (Squad -> Formation ->
+// Tactic, carrying the formation/tactic choice) is ported faithfully below
+// and verified against the injected `MatchScreenFactory` receiving the
+// exact `{formation: "1-1-2", tactic: "press_high"}` choice the Lua spec's
+// final `top.state.press.home == 2` (a `press_high`-derived value) is
+// indirectly checking for.
 
 import { describe, expect, it } from "vitest";
 import { ScreenStack } from "./screen_stack.ts";

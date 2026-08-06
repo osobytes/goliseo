@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GOLISEO</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: #030509;
+        overflow: hidden;
+      }
+      #app-root {
+        position: relative;
+        width: 100vw;
+        height: 100vh;
+      }
+      #app-root canvas {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      #boot-status {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #e8f5ff;
+        font-family: system-ui, sans-serif;
+        font-size: 14px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app-root">
+      <canvas id="gl-canvas"></canvas>
+      <canvas id="menu-canvas"></canvas>
+      <div id="boot-status">Loading GOLISEO…</div>
+    </div>
+    <script type="module" src="./packages/app/src/browser_main.ts"></script>
+  </body>
+</html>

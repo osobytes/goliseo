@@ -12,13 +12,20 @@
 
 import type {
   FormationData,
+  InputSample,
   PlayerData as ScreensPlayerData,
   PlayerPresentationIdentity,
+  RenderFrame,
+  RenderFrameRoster,
+  RenderPort,
+  SimHostFactory,
+  SimHostPort,
   SquadContentData,
   FormationContentData,
   TacticContentData,
   TacticData,
 } from "@gc/screens";
+import type { KeyboardState } from "@gc/input";
 import type { MatchContractContent, PlayerData, TeamData } from "../content.ts";
 import type { AppContent } from "../app.ts";
 
@@ -258,3 +265,86 @@ export const APP_CONTENT: AppContent = {
   tactic: TACTIC_CONTENT,
   buildInfo: { name: "GOLISEO", version: "0.1.0-dev", channel: "development" },
 };
+
+// --- real-match test doubles (bootstrap.spec.ts's "real match adapter") ---
+//
+// A hand-written `SimHostPort` fake, mirroring `@gc/screens`'s own
+// `match_screen.spec.ts`'s `FakeSimHost` (not importable across a `.spec.ts`
+// file, and not part of that package's public surface either way) --
+// `real_match_factory.ts`'s `createRealMatchFactory` is written against the
+// exact same injected-`createHost`/`renderer` seam that file's `MatchScreen`
+// tests use, specifically so a real `RealMatchScreen` can be driven end to
+// end here without a real wasm build or a live GL context. `hud.finished`
+// defaults to `false`, matching kickoff.
+
+export function fakeKeyboard(down: Readonly<Record<string, boolean>> = {}): KeyboardState {
+  return {
+    isDown: (...keys: readonly string[]): boolean => keys.some((key) => down[key] === true),
+  };
+}
+
+export const noopRenderPort: RenderPort = {
+  draw: (): void => {},
+};
+
+export class FakeSimHost implements SimHostPort {
+  readonly stepCalls: InputSample[] = [];
+  disposeCalls = 0;
+  readonly hud: {
+    finished: boolean;
+    controlled_owns_ball: boolean;
+    home_score: number;
+    away_score: number;
+    time_left: number;
+  } = {
+    finished: false,
+    controlled_owns_ball: true,
+    home_score: 0,
+    away_score: 0,
+    time_left: 120,
+  };
+  private tickCount = 0;
+
+  planTicks(_dt: number): number {
+    // One tick per render call is enough to drive `RealMatchScreen`'s own
+    // full-time-hold timing (it reads wall-clock `dt` directly, not tick
+    // count) -- see this fixture's callers.
+    return 1;
+  }
+
+  step(sample: InputSample): void {
+    this.stepCalls.push(sample);
+    this.tickCount += 1;
+  }
+
+  cancelPlannedTicks(): void {}
+
+  frame(): RenderFrame {
+    return { hud: this.hud, possession: {} };
+  }
+
+  roster(): RenderFrameRoster {
+    return {};
+  }
+
+  tick(): number {
+    return this.tickCount;
+  }
+
+  dispose(): void {
+    this.disposeCalls += 1;
+  }
+}
+
+/** One {@link FakeSimHost} per constructed match, so a test can reach into whichever one is currently live. */
+export function fakeHostFactory(): { readonly createHost: () => SimHostFactory; readonly hosts: FakeSimHost[] } {
+  const hosts: FakeSimHost[] = [];
+  return {
+    createHost: () => (): SimHostPort => {
+      const host = new FakeSimHost();
+      hosts.push(host);
+      return host;
+    },
+    hosts,
+  };
+}

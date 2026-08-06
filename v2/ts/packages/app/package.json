@@ -18,6 +18,10 @@
     "@gc/input": "workspace:*",
     "@gc/ui": "workspace:*",
     "@gc/presentation": "workspace:*",
-    "@gc/wasm": "workspace:*"
+    "@gc/wasm": "workspace:*",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.180.0"
   }
 }

@@ -2,13 +2,19 @@
 //
 // The one exception is "applies live screen-shake changes to a paused match
 // before resume": it constructs a custom `real`-kind adapter that returns
-// `game.screens.match.new(...)` directly and reads
-// `combat_feedback.diagnostics(match_screen._combat_feedback)`. Neither
-// `game.screens.match` nor `@gc/presentation`'s `combat_feedback` (not a
-// declared dependency here) is available to this port -- see this
-// package's porting report. Ported as `it.skip` below with that unblocker
-// named; every other case in this file drives the *fake* match adapter
-// (`App`'s default), which needs neither.
+// `game.screens.match.new({combat_enabled = true})` directly and reads
+// `combat_feedback.diagnostics(match_screen._combat_feedback)`. As of this
+// batch, `@gc/screens`'s `match.ts` (`MatchScreen`) and `@gc/presentation`
+// (a declared dependency here, per package.json) both exist -- the stated
+// blocker as originally written is stale. What is still genuinely missing:
+// `MatchScreenOptions` has no `combat_enabled`/combat construction path at
+// all, and `MatchScreen` never builds or exposes a `_combat_feedback`-shaped
+// state (`match.ts`'s own header: combat is explicitly out of this
+// milestone's scope). There is nothing this test's assertions could read
+// even with a real `MatchScreen` wired in (`real_match_factory.ts`, this
+// batch). Ported as `it.skip` below with the CURRENT blocker named; every
+// other case in this file drives the *fake* match adapter (`App`'s
+// default), which needs neither.
 
 import { describe, expect, it } from "vitest";
 import { actions } from "@gc/input";
