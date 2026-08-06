@@ -42,10 +42,18 @@ import type { Result } from "@gc/core";
 // state to decide what to *show*, which is presentation, but it calls four
 // functions belonging to those modules (`rollback_events.new/apply/confirm
 // /diagnostics` and `match_driver.snapshot/diagnostics`) that this port has
-// no Rust bridge to reach (no wasm bridge exists yet; v2/README.md §1).
-// Rather than duplicate rollback scheduling here -- which the README is
-// explicit is the one thing that must never happen on this side of the
-// determinism line -- those four functions are threaded through as
+// no Rust bridge to reach. As of commit 87d53b3, `@gc/wasm`'s
+// `MatchDriverBridge` (`crates/gc-wasm/src/match_driver_bridge.rs`) bridges
+// `match_driver` and drives `rollback_events` internally, but it does not
+// expose these four as separate callable primitives -- `advance()` performs
+// all of `new`/`apply`/`confirm`/`snapshot` opaquely, inside Rust, once per
+// tick, and only for the non-correction case (see that module's own doc on
+// why a correction batch is reported and skipped rather than guessed at).
+// See `match_presentation.spec.ts`'s header comment for the full breakdown
+// of why that still leaves this module's ports unfillable by the real
+// bridge today. Rather than duplicate rollback scheduling here -- which the
+// README is explicit is the one thing that must never happen on this side
+// of the determinism line -- those four functions are threaded through as
 // `RollbackEventsPort`/`MatchDriverPort`, injected the same way
 // `@gc/ui/src/tuning_panel.ts` injects `TuningSource`. `MatchSnapshot`,
 // `RollbackEventTimeline`, and every wrapped-event payload stay fully

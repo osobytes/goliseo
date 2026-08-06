@@ -3,8 +3,7 @@
 // The Lua spec's "diagnostics schema" describe block is pure and ports
 // one-to-one. Everything else drives `net_diagnostics_fixture.lua`'s
 // `fixture.harness`, which -- on this side of the port -- needs a real
-// `game.online.match_driver` (Rust-owned, `crates/gc-netcode`, no wasm
-// bridge yet; see `net_diagnostics_fixture.ts`'s boundary note).
+// `game.online.match_driver` (Rust-owned, `crates/gc-netcode`).
 //
 // Two different adaptations follow, kept apart deliberately:
 //
@@ -19,8 +18,42 @@
 //     ported as `it.skip`, because faking that behaviour in TypeScript
 //     would mean re-implementing rollback scheduling here -- exactly what
 //     v2/README.md §2.1 says must never happen on this side of the
-//     determinism line. Re-port these once a `NetDiagnosticsFixtureEnv`
-//     backed by the real wasm-compiled `gc-netcode` exists.
+//     determinism line.
+//
+// # Status as of the `gc-wasm` `MatchDriverBridge`/`Coordinator` landing
+//   (commit 87d53b3)
+//
+// A wasm bridge over `game.online.match_driver` now exists (`@gc/wasm`'s
+// `MatchDriverBridge`), but `net_diagnostics_fixture.ts`'s
+// `NetDiagnosticsFixtureEnv` needs five separate ports to build
+// `fixture.harness`'s equivalent (`matchDriver`, `matchDriverFixture`,
+// `protocol`, `inputProtocol`, `inputFrame`), and the new bridge fills at
+// most one of them, incompletely:
+//
+//   * `@gc/online` does not declare `@gc/wasm` as a dependency, so it
+//     cannot be imported from this package at all right now (confirmed
+//     directly: `import("@gc/wasm")` throws "Cannot find package '@gc/wasm'"
+//     under pnpm's strict workspace linking, even though
+//     `packages/wasm/dist/pkg/gc_wasm.cjs` is built and present). This port
+//     does not own package manifests; see this port's final report for the
+//     request to whoever does.
+//   * There is no wasm bridge at all, in `gc-wasm`'s current source, for
+//     `game.online.match_driver_fixture` (session/initial-snapshot
+//     construction), `game.online.input_protocol` (the forged bundles the
+//     ownership-violation/authority-conflict cases need), or
+//     `sim.input_frame` (sample construction/encoding). `MatchDriverBridge`
+//     itself only exposes the aggregate `advance()` step plus read-only
+//     diagnostics/JSON dumps -- not the `create`/`advance`/`diagnostics`
+//     shape `MatchDriverPort` here expects, and building samples/wires by
+//     hand in TypeScript to work around the gap would mean re-implementing
+//     `sim.input_frame` encoding on this side of the determinism line,
+//     which v2/README.md §2.1 forbids outright ("input encoding is Rust").
+//
+// So every live-driver case below is still `it.skip`. Re-port once (a)
+// `@gc/wasm` is a declared dependency of `@gc/online` and (b) bridges for
+// `match_driver_fixture`, `input_protocol`, and `input_frame` exist
+// alongside `MatchDriverBridge`, closing all five `NetDiagnosticsFixtureEnv`
+// ports for real.
 
 import { describe, expect, it } from "vitest";
 import { newMessage, fakeStar, type TransportChannelDiagnostics, type TransportPeerMessage, type TransportStarDiagnostics } from "@gc/transport";
@@ -446,7 +479,7 @@ describe("net diagnostics collection", () => {
   // real multi-tick run -- rollback counts, checkpoint hashes, packet
   // lifecycle timing. See this file's header comment: re-port these once a
   // `NetDiagnosticsFixtureEnv` backed by the real `gc-netcode` exists.
-  describe.skip("live-driver runs (need game.online.match_driver, Rust-owned)", () => {
+  describe.skip("live-driver runs (blocked: @gc/wasm not a declared dependency of @gc/online, and no wasm bridge exists for match_driver_fixture/input_protocol/input_frame -- see the file header comment)", () => {
     it.skip("summarises a clean 2v2 run with both clocks kept apart", () => {});
     it.skip("folds star and per-channel transport counters into the runtime section", () => {});
     it.skip("records the sample, send, arrival, and apply lifecycle of a packet", () => {});
@@ -704,7 +737,7 @@ describe("net diagnostics failure fixtures", () => {
   // Lua originals forge input bundles and hand them to a live driver's
   // transport, or call `match_driver.observe_checkpoint` directly). See
   // this file's header comment.
-  describe.skip("live-driver fault detection (need game.online.match_driver, Rust-owned)", () => {
+  describe.skip("live-driver fault detection (blocked: @gc/wasm not a declared dependency of @gc/online, and no wasm bridge exists for input_protocol's forged bundles -- see the file header comment)", () => {
     it.skip("types an ownership violation", () => {});
     it.skip("types an authority conflict", () => {});
     it.skip("types over-window input and names the tick it was attributed to", () => {});
