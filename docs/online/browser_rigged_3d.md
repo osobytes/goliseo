@@ -382,12 +382,58 @@ check and which has to be subtracted by hand, using the published matrix rows:
 So the honest browser reading is: rigged 3D **renders in both browsers** and
 costs the same 33.2 draw calls it costs natively — but its added draw cost over
 the procedural renderer is 1.5× (Chrome) to 2× (Firefox) #100's feature budget,
-against 0.7× natively. The browser's per-draw overhead is 2–3× native for the
-same 19.2 extra draw calls, which is what crossing Lua → JS → WebGL per call
-costs. That is a number to decide against, not a blocker to hide, and the thing
-it is measured against is a procedural renderer the project is retiring — so
-whether the delta gate is still the right gate is #100's question, not this
-document's.
+against 0.7× natively. That is a number to decide against, not a blocker to
+hide, and the thing it is measured against is a procedural renderer the project
+is retiring — so whether the delta gate is still the right gate is #100's
+question, not this document's.
+
+### Where that browser cost actually is, and where it is not
+
+**Corrected.** An earlier revision of this section attributed the browser's
+per-draw overhead to "crossing Lua → JS → WebGL per call". **That is measured
+false.** It matters more than a stray sentence normally would, because this
+document feeds #330's migrate-or-optimise decision, and a reader who believes
+the boundary is the problem reaches for VAOs, instancing, uniform batching or
+WebGL 2 — every one of which is a dead end.
+
+The entire WebGL-internal cost of a rigged browser frame is **~0.28 ms of
+5.25 ms, about 5%**, established three independent ways:
+
+1. **No-op subtraction** — a shim swallowing WebGL calls *after* the emscripten
+   glue, active only inside the measured window. Vertex-stream churn is ~90% of
+   that 0.28 ms, uniforms ~0.08 ms, and the draw calls themselves were
+   unmeasurably small.
+2. **A raw-JS per-call microbench** in the same browser on hardware Vulkan:
+   `drawElements` 0.19 µs, VAO bind 0.18 µs, instanced draw 0.10 µs, and the
+   *entire* 78-vec4 bone upload 1.87 µs — so all ten characters' bone traffic is
+   **19 µs/frame**. Census × unit costs lands at 0.2–0.4 ms/frame, agreeing with
+   the subtraction.
+3. **A batched rig3d prototype** cutting GL calls **756 → 429 per frame (−43%)**
+   and LÖVE draw calls 33 → 24 moved browser draw by **−0.10 to −0.13 ms, about
+   2%** — a 43% cut in submission buying 2% of the time.
+
+The cost is the **wasm-hosted Lua interpreter executing draw-side code**. love.js
+ships a plain Lua 5.1 interpreter, because LuaJIT cannot JIT under wasm. The tell
+is in the phase timers: `pitch.draw` is 4.5–5.3× slower in the browser while
+**bloom is *cheaper* in the browser** (0.065 vs 0.100 ms), precisely because
+bloom is enqueue-only and barely touches the interpreter.
+
+This is the same finding `docs/design/render_migration_decision.md` §3 already
+records for the `update` path — PUC Lua under wasm rather than LuaJIT, **not**
+the boundary — arriving a second time through the draw path.
+
+**Bounded by that 0.28 ms, and therefore not worth doing:** VAOs, instancing,
+bone textures, uniform batching, WebGL 2 for performance, emscripten GL flags.
+**The levers that are real are Lua-side:**
+
+| | lever | expected |
+| --- | --- | --- |
+| **#393** | bake the static scene — pitch markings, goals, arena — into a canvas or persistent mesh instead of re-deriving it in Lua every frame | 1–2 ms |
+| **#394** | the per-character path: pose evaluation, bone-row assembly, and the table churn around them | 0.5–1 ms |
+
+**The floor is honest too.** With both landed, browser draw plausibly reaches
+**~2.5–3 ms — still about 2.5× native**. That residual is the
+interpreter-in-wasm multiplier, and no graphics-side change addresses it.
 
 ### The cross-runtime hash difference is #325, not a new mystery
 

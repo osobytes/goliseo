@@ -476,6 +476,34 @@ retired, with Firefox's absolute headroom as the tighter of the two constraints.
 `stop` is contradicted by the native numbers and now by both browsers.
 **Writing that record is #100's, and the owner's.**
 
+**The browser draw gap has the same cause as the `update` gap in §3, and is not
+a graphics-API cost.** That is load-bearing for the choice this document exists
+to frame, so it is stated rather than left implied. A #360 follow-up measured the
+entire WebGL-internal cost of a rigged browser frame at **~0.28 ms of 5.25 ms,
+about 5%**, three independent ways: a shim subtracting WebGL calls after the
+emscripten glue; a raw-JS per-call microbench in the same browser (the *whole*
+78-vec4 bone upload is 1.87 µs, so ten characters cost 19 µs/frame); and a
+batched prototype that cut GL calls 756 → 429 per frame (−43%) and moved browser
+draw by **2%**. The cost is the wasm-hosted Lua interpreter executing draw-side
+code — love.js ships plain Lua 5.1 because LuaJIT cannot JIT under wasm. The tell
+is that `pitch.draw` is 4.5–5.3× slower in the browser while **bloom is *cheaper*
+there** (0.065 vs 0.100 ms), because bloom is enqueue-only and barely touches the
+interpreter.
+
+Two consequences for this decision:
+
+- **"Optimise" does not mean graphics work here.** VAOs, instancing, bone
+  textures, uniform batching, WebGL 2 for performance and emscripten GL flags are
+  all bounded by that 0.28 ms and measured as not worth doing. The real levers
+  are Lua-side: **#393** (bake the static pitch scene instead of re-deriving it
+  in Lua every frame, 1–2 ms) and **#394** (the per-character pose and bone-row
+  path, 0.5–1 ms).
+- **The floor is ~2.5–3 ms with both landed — still about 2.5× native.** That
+  residual is the interpreter-in-wasm multiplier, the same one §3 attributes the
+  `update` gap to, and exactly as §3 says of that gap it is paid by *any* browser
+  renderer hosting this code in wasm. What it is **not** is evidence for a
+  different graphics library.
+
 ---
 
 ## 7. Multiplayer re-sequencing, both ways
