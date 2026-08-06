@@ -168,7 +168,28 @@ Work an agent correctly declined because it belongs to a layer someone else owns
 | widen `SessionPreferenceStatus` to include `"pending"` in `@gc/screens/lobby_model.ts` | a follow-up | `coordinator.lua:1703` sets `status = "pending"`, so the closed union genuinely narrows what the coordinator produces. The lobby-flow spec works around it with a documented cast; the Lua types this field as a bare `string`, so the port is stricter than the original either way |
 | add `@gc/online` to `@gc/screens`'s dependencies | orchestrator, at a consolidation point | `lobby_flow.spec.ts` cannot import the real `lobby_link.ts` and uses a hand-written `FakeTransport`. Real framing correctness is still covered for real in `@gc/online`'s own `lobby_link.spec.ts` |
 | `spec/game/online_lobby_flow_spec.lua`'s "is reachable from the title and returns to it" | `@gc/app` | needs menu routing, and `@gc/app` depends on `@gc/screens`, not the reverse |
-| delete `crates/gc-netcode/tests/lobby_flow.rs`'s 35 Rust stubs | orchestrator | superseded: 33 of 35 now run for real in TypeScript |
+
+## Orchestration notes for anyone running this again
+
+- **Give each concurrent Rust agent its own `CARGO_TARGET_DIR`, and delete it the
+  moment that agent finishes.** Each is ~1–2.6 GB. Reclaiming only when disk got
+  tight took this machine to 554 MB free with four agents live, which would have
+  started failing them. Sharing one target dir is also fine — cargo takes a lock,
+  so builds serialise rather than corrupt.
+- **A stub inherits the blocker that was true when it was written.** Nobody
+  re-reads the reason once the blocker clears: 92 tests still said "needs
+  sim::match" hours after `sim::match` was ported, and 7 said "blocked on
+  fixture.session" after `session` landed. Auditing reasons periodically is worth
+  more than it sounds — and it only works because stubs are named and countable
+  rather than left out of the file.
+- **Route a spec by what it tests, not by which language owns the subject.**
+  `online_lobby_flow_spec.lua` went to `gc-netcode` because the coordinator is
+  Rust; every one of its 35 cases actually drives `lobby_model` and `lobby_link`,
+  both TypeScript. Re-homing it found a real defect.
+- **Estimate coverage from the spec text, not from test names.** The coordinator
+  gap was sized at 35 by counting existing test names; it was 50, because most of
+  the "already ported" tests were general smoke tests with no counterpart in that
+  spec.
 
 ## Findings in the Lua worth revisiting later
 
