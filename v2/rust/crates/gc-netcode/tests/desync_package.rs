@@ -4,22 +4,26 @@
 //!
 //! The Lua spec's `capture()` helper spins up a real 2v2 fixture match
 //! through `game.online.match_driver`, `game.online.net_diagnostics_fixture`,
-//! and `sim.rollback_session`, and its "offline reproduction" tests use
-//! `sim.match_snapshot.hash`. None of those are available: `match_driver`
-//! is explicitly out of scope for this agent ("later agents own those"),
-//! `net_diagnostics`/`net_diagnostics_fixture` are TypeScript-owned per
-//! `v2/README.md` §2 with no Rust port planned, and `sim.match_snapshot` /
-//! `sim.rollback_session` are still unported placeholders in `gc-sim`
-//! (owned by sibling agents) as of this writing.
+//! and `sim.rollback_session`. `match_driver` and `sim.match_snapshot`/
+//! `sim.rollback_session` have since landed in this workspace (`gc-netcode`'s
+//! `match_driver`/`match_driver_fixture`, `gc-sim`'s `match_snapshot`/
+//! `rollback_session`) and are used directly below — see
+//! `hash_at_boundary`/`rebuilds_the_agreed_boundary_hash_from_the_package_alone`.
+//! `game.online.net_diagnostics`/`net_diagnostics_fixture` remain
+//! TypeScript-owned per `v2/README.md` §2 with no Rust port planned, so
+//! `capture()`'s live-harness half — and the one test that needs
+//! `net_diagnostics.export` specifically — stay out of reach.
 //!
 //! What *is* ported below exercises exactly the same `desync_package` logic
 //! the Lua spec does — reproducibility classification, wire truncation,
 //! digest determinism, the opt-in requirement, boundary ordering, `rows`
-//! de-duplication and ordering, redaction-free summaries — using hand-built
+//! de-duplication and ordering, redaction-free summaries, and (now) offline
+//! boundary-hash reproduction through a real `rollback_session` — using
+//! hand-built
 //! [`gc_netcode::desync_package::Diagnostics`]/[`gc_netcode::desync_package::BuildOptions`]
-//! fixtures in place of a live match harness. Assertions that only a live
-//! harness/rollback session could produce are marked `#[ignore]`, naming the
-//! missing module.
+//! fixtures in place of a live match harness. The one assertion that only a
+//! live `net_diagnostics` export could produce is marked `#[ignore]`, naming
+//! that module.
 
 use gc_netcode::desync_package::{
     self, BuildOptions, CheckpointRecord, ControlRecord, Diagnostics, DifferenceValue,
@@ -305,20 +309,125 @@ fn rows_deduplicates_and_orders_canonically() {
     }
 }
 
+/// Feeds `rows` into a fresh [`gc_sim::rollback_session`], steps it to
+/// `boundary`, and returns [`gc_sim::match_snapshot::hash`] of the boundary
+/// it reaches. Mirrors the Lua original's offline-reproduction steps: a
+/// reproducer holds no local slots, so every row arrives as remote
+/// authority, exactly as it would on a machine that never played.
+fn hash_at_boundary(rows: &[AuthorityRow], boundary: i64) -> String {
+    let initial = gc_netcode::match_driver_fixture::initial_snapshot(None, false, None);
+    let sources = [gc_sim::rollback_input_history::RollbackInputSource::Remote; 8];
+    let mut session = gc_sim::rollback_session::new(&initial, sources, None, None);
+    let arrivals: Vec<gc_sim::rollback_input_history::RollbackAuthoritativeInput> = rows
+        .iter()
+        .map(
+            |row| gc_sim::rollback_input_history::RollbackAuthoritativeInput {
+                tick: row.tick,
+                slot_index: row.slot_index,
+                sample: row.sample,
+            },
+        )
+        .collect();
+    let accepted = gc_sim::rollback_session::add_authoritative_batch(&mut session, &arrivals)
+        .expect("a well-formed authoritative batch is accepted");
+    assert!(accepted.inserted > 0);
+    loop {
+        let diagnostics = gc_sim::rollback_session::diagnostics(&session);
+        if diagnostics.present_boundary > boundary {
+            break;
+        }
+        if gc_sim::rollback_session::step(&mut session).is_err() {
+            break;
+        }
+    }
+    let lookup = gc_sim::rollback_session::snapshot(&session, boundary);
+    assert!(
+        matches!(
+            lookup.status,
+            gc_sim::rollback_snapshot_history::RollbackSnapshotLookupStatus::Present
+                | gc_sim::rollback_snapshot_history::RollbackSnapshotLookupStatus::Retained
+        ),
+        "the reproduction could not reach the boundary the package named"
+    );
+    gc_sim::match_snapshot::hash(
+        lookup
+            .snapshot
+            .as_ref()
+            .expect("Present/Retained always carries a snapshot"),
+    )
+}
+
+/// `gc_sim::match_snapshot`/`gc_sim::rollback_session` — this test's
+/// original blocker — have since landed, so the offline-reproduction proof
+/// itself is ported for real below. What is still substituted, same as
+/// every other test in this file: the Lua original's `capture()` runs a real
+/// 2v2 match through `net_diagnostics_fixture` (`fixture.harness`/
+/// `fixture.run`) to get a *captured* boundary hash to reproduce; that
+/// fixture is TypeScript-owned with no Rust port planned (see the module doc
+/// comment), so this builds the "captured" side the same way the rest of
+/// this file substitutes a live harness — hand-built wires, real
+/// `rollback_session` math — and computes the hash it claims via the exact
+/// same reproduction recipe rather than importing one from a live capture.
+/// The property under test is unchanged: a package's own rows, replayed
+/// through a *fresh* session that never saw the original, reach the
+/// boundary hash the package names.
 #[test]
-#[ignore = "blocked on gc_sim::match_snapshot and gc_sim::rollback_session \
-(still unported placeholders; this agent does not own gc-sim). The Lua test \
-feeds desync_package.rows into a fresh sim.rollback_session, steps it to the \
-agreed boundary, and compares sim.match_snapshot.hash against the package's \
-pinned boundary hash -- an offline-reproduction proof that needs both."]
-fn rebuilds_the_agreed_boundary_hash_from_the_package_alone() {}
+fn rebuilds_the_agreed_boundary_hash_from_the_package_alone() {
+    let boundary = 8i64;
+    let wires: Vec<Vec<u8>> = (0..=boundary).map(wire_for_tick).collect();
+
+    // What a live capture's boundary hash would have been — computed by the
+    // same reproduction recipe the package's own claim is checked against
+    // below, since there is no `net_diagnostics_fixture` session to capture
+    // it from directly (see this test's doc comment).
+    let captured_rows: Vec<AuthorityRow> = (0..=boundary)
+        .map(|tick| AuthorityRow {
+            tick,
+            slot_index: 1,
+            sample: input_frame::neutral_sample(),
+        })
+        .collect();
+    let captured_hash = hash_at_boundary(&captured_rows, boundary);
+
+    let mut options = base_options(wires);
+    options.agreed_boundary_tick = boundary;
+    options.agreed_boundary_hash = captured_hash.clone();
+    options.divergence_tick = boundary + 1;
+    options.local_hash = "0000000000000003".to_string();
+    let package = desync_package::build(options).unwrap();
+    assert_eq!(
+        package.reproduction.reproducible_from,
+        desync_package::ReproducibleFrom::FixtureBoundaryZero
+    );
+
+    let rows = desync_package::rows(&package, SESSION_ID, "host").unwrap();
+    assert!(!rows.is_empty());
+    // Canonical order is a contract of `rows`, not an accident of arrival.
+    for window in rows.windows(2) {
+        let (previous, current) = (&window[0], &window[1]);
+        assert!(
+            current.tick > previous.tick
+                || (current.tick == previous.tick && current.slot_index > previous.slot_index),
+            "package rows are not in canonical (tick, slot) order"
+        );
+    }
+
+    let reproduced_hash = hash_at_boundary(&rows, boundary);
+    assert_eq!(
+        reproduced_hash, package.divergence.agreed_boundary_hash,
+        "an offline reproduction disagreed with the captured boundary hash"
+    );
+}
 
 #[test]
 #[ignore = "blocked on game.online.net_diagnostics (TypeScript-owned per \
-v2/README.md \u{a7}2; no Rust port exists or is planned) and on \
-game.online.match_driver_fixture (out of scope for this agent). The Lua test \
-asserts net_diagnostics.export(...)'s output agrees field-for-field with the \
-built package's session -- this port's desync_package::build takes an \
-already-exported Diagnostics directly (see the module doc comment), so there \
-is no separate export call left to cross-check against."]
+v2/README.md \u{a7}2; no Rust port exists or is planned): the Lua test asserts \
+net_diagnostics.export(...)'s output agrees field-for-field with the built \
+package's session, and net_diagnostics has no Rust type to call export() on \
+at all. (game.online.match_driver_fixture, this reason's other blocker as \
+originally written, has since landed and was never really load-bearing here \
+in the first place -- this port's desync_package::build takes an \
+already-exported Diagnostics directly, see the module doc comment, so there \
+is no separate export call to cross-check against regardless of \
+match_driver_fixture's status.)"]
 fn keeps_the_export_and_the_package_agreeing_on_identity() {}

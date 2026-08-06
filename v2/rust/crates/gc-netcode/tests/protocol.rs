@@ -10,7 +10,16 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use gc_netcode::protocol::{self, ErrorCode, LifecyclePhase, MessageKind, Value};
+use gc_netcode::coordinator::{self, Event};
+use gc_netcode::coordinator_fixture;
+use gc_netcode::fault_transport::{TransportMessage, TransportMessageType};
+use gc_netcode::input_protocol;
+use gc_netcode::match_driver::{
+    HostBatchErrorCode, HostBatchRequest, InputPacketArrival, MatchDriverRules, ProducerKind,
+    SessionManifest as DriverSessionManifest, SlotAssignment,
+};
+use gc_netcode::match_driver_fixture::DriverRules;
+use gc_netcode::protocol::{self, ErrorCode, LifecyclePhase, MatchMode, MessageKind, Value};
 use gc_netcode::protocol_conformance as conformance;
 use gc_netcode::protocol_fixture as fixture;
 use gc_sim::input_frame;
@@ -1597,26 +1606,296 @@ fn differential_non_canonical_mutations_of_the_real_lua_wire_are_rejected() {
 }
 
 // ---------------------------------------------------------------------------
-// spec/game/transport_relay_spec.lua — second `describe` block, deferred to
-// this crate from the TypeScript port (per this agent's brief).
+// spec/game/transport_relay_spec.lua — second `describe` block ("relay
+// topology probe: no peer is the sequencer"), deferred to this crate from
+// the TypeScript port (per this agent's brief). `coordinator.rs` and
+// `match_driver.rs` have since landed, so the two findings below that do not
+// touch `game.transport.fake_relay` are ported for real; the remaining four
+// still need a Rust relay transport that does not exist (see each test's own
+// doc comment for the current, non-stale blocker).
 // ---------------------------------------------------------------------------
 
-/// "relay topology probe: no peer is the sequencer" — the Lua spec's second
-/// `describe` block in `spec/game/transport_relay_spec.lua` drives
-/// `game.online.coordinator` and `game.online.match_driver` directly (a
-/// scripted multi-peer relay session asserting no single peer's clock or
-/// send order is treated as authoritative). Both `crate::coordinator` and
-/// `crate::match_driver` are explicitly out of this agent's scope ("Do not
-/// port coordinator*, match_driver*, ... — other agents own those right
-/// now"), and as of this writing both are still the 4-line "NOT YET PORTED"
-/// placeholder, so there is no API to drive. Stubbed `#[ignore]`d rather
-/// than silently dropped (README §4: "never delete a case because it is
-/// awkward").
+/// The 8 peer ids an 8-human `4v4` fixture manifest seats: the host plus
+/// seven guests, admission order.
+fn eight_peer_ids() -> Vec<String> {
+    let mut peer_ids = vec!["host".to_string()];
+    for index in 1..=7 {
+        peer_ids.push(format!("guest_{index}"));
+    }
+    peer_ids
+}
+
+/// `coordinator::plan_assignments`'s wire-shaped `Value`, converted into
+/// `match_driver::SlotAssignment`, one per canonical slot. Reads the
+/// assignment `Value` through its public field accessors rather than
+/// `coordinator`'s own (`pub(crate)`) `assignment_at`/`producer_kind`/
+/// `producer_id` helpers, which this integration-test crate cannot reach.
+fn slot_assignments(assignments_value: &Value) -> [SlotAssignment; 8] {
+    std::array::from_fn(|i| {
+        let producer = assignments_value
+            .get_index(i as i64 + 1)
+            .expect("eight canonical slots are always assigned");
+        let kind = producer
+            .get("producer_kind")
+            .and_then(Value::as_str)
+            .expect("every assignment names a producer kind");
+        SlotAssignment {
+            producer_kind: if kind == "peer" {
+                ProducerKind::Peer
+            } else {
+                ProducerKind::Bot
+            },
+            producer_id: producer
+                .get("producer_id")
+                .and_then(Value::as_str)
+                .expect("every assignment names a producer id")
+                .to_string(),
+            bot_seed: producer.get("bot_seed").and_then(Value::as_int),
+        }
+    })
+}
+
+/// Finding 2. `input_protocol.canonical_host_batch`'s ownership check is
+/// bound to the *transport's* attributed origin, not merely to the packet's
+/// self-declared `sender_id` — the property a relay's per-line origin
+/// tagging depends on staying true (see the Lua spec's own comment: "a relay
+/// that concatenated blobs without keeping origin ... takes this check with
+/// it"). `input_protocol.canonical_host_batch` itself was never ported as a
+/// free function (needs `protocol.lua`'s `SessionManifest`/
+/// `SessionSlotProducer`, see `input_protocol.rs`'s module doc), but the real
+/// port lives on `match_driver_fixture::DriverRules` — driven directly here,
+/// exactly as the Lua original drives `input_protocol.canonical_host_batch`
+/// directly rather than through a live driver.
 #[test]
-#[ignore = "needs gc_netcode::coordinator and gc_netcode::match_driver, both unported placeholders owned by other agents (see v2/README.md §2.1)"]
-fn transport_relay_topology_probe_no_peer_is_the_sequencer() {
-    unimplemented!(
-        "port spec/game/online/transport_relay_spec.lua's second describe block \
-         once coordinator.rs and match_driver.rs land"
+fn transport_relay_topology_probe_keeps_ownership_validation_bound_to_the_transport_origin() {
+    let manifest = fixture::manifest(Some(MatchMode::FourVFour));
+    let peer_ids = eight_peer_ids();
+    let assignments_value = coordinator::plan_assignments(&manifest, &peer_ids)
+        .expect("an 8-human 4v4 manifest plans without bot fills");
+    let assignments = slot_assignments(&assignments_value);
+    let slot_index = 2i64;
+    let producer = assignments[(slot_index - 1) as usize].producer_id.clone();
+
+    let mut rows = Vec::new();
+    for tick in 0..=input_protocol::HISTORY_ROWS {
+        rows.push(input_protocol::AuthorityRow {
+            tick,
+            slot_index,
+            sample: input_frame::neutral_sample(),
+        });
+    }
+    let session_id = manifest
+        .get("session_id")
+        .and_then(Value::as_str)
+        .expect("fixture manifest has a session id")
+        .to_string();
+    let manifest_id = protocol::manifest_id(&manifest);
+    let packet = input_protocol::new_guest(input_protocol::PacketOptions {
+        session_id: session_id.clone(),
+        manifest_id: manifest_id.clone(),
+        sender_id: producer.clone(),
+        sequence: 1,
+        transport_tick: 0,
+        first_input_tick: 0,
+        confirmed_span: None,
+        rows,
+    })
+    .expect("a well-formed guest packet");
+    let wire = input_protocol::encode(&packet).expect("a well-formed packet encodes");
+    let envelope = TransportMessage {
+        version: 1,
+        kind: TransportMessageType::Input,
+        seq: packet.sequence,
+        tick: Some(packet.transport_tick),
+        payload: wire,
+    };
+
+    let driver_manifest = DriverSessionManifest {
+        session_id: session_id.clone(),
+    };
+    let freeze = coordinator::Freeze {
+        manifest_id: manifest_id.clone(),
+        assignment_id: "assignment.probe".to_string(),
+        countdown_id: "countdown.1".to_string(),
+        first_input_tick: 0,
+        seed: manifest.get("seed").and_then(Value::as_int).unwrap(),
+        tick_rate: manifest.get("tick_rate").and_then(Value::as_int).unwrap(),
+        duration_ticks: manifest
+            .get("duration_ticks")
+            .and_then(Value::as_int)
+            .unwrap(),
+        max_goals: manifest.get("max_goals").and_then(Value::as_int).unwrap(),
+        content_id: manifest
+            .get("content_id")
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_string(),
+        tuning_id: manifest
+            .get("tuning_id")
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_string(),
+        combat_rules_id: manifest
+            .get("combat_rules_id")
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_string(),
+        gameplay_ai_policy_id: manifest
+            .get("gameplay_ai_policy_id")
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_string(),
+        combat_status: manifest
+            .get("combat_status")
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_string(),
+        match_mode: MatchMode::FourVFour,
+        assignments: assignments_value.clone(),
+        owned: indexmap::IndexMap::new(),
+        live: indexmap::IndexMap::new(),
+    };
+    let rules = DriverRules::new(manifest.clone(), freeze);
+
+    let batch_with_origin = |transport_peer_id: &str| -> Option<HostBatchErrorCode> {
+        let arrival = InputPacketArrival {
+            packet: packet.clone(),
+            envelope: envelope.clone(),
+            arrival_tick: 0,
+            transport_peer_id: transport_peer_id.to_string(),
+        };
+        let request = HostBatchRequest {
+            manifest: &driver_manifest,
+            assignments: &assignments,
+            host_peer_id: "host",
+            sequence: 1,
+            transport_tick: 0,
+            first_input_tick: 0,
+            confirmed_span: 0,
+            repair_rows: None,
+            arrivals: std::slice::from_ref(&arrival),
+        };
+        rules
+            .canonical_host_batch(request)
+            .err()
+            .map(|err| err.code)
+    };
+
+    assert_eq!(
+        batch_with_origin(&producer),
+        None,
+        "the true origin canonicalises"
     );
+    assert_eq!(
+        batch_with_origin("guest_7"),
+        Some(HostBatchErrorCode::OwnershipMismatch),
+        "a lost origin is an ownership violation, not a silent accept"
+    );
+}
+
+/// Finding 4. The session lifecycle is host-authoritative in `coordinator`,
+/// independently of the wire — moving input distribution to a relay does not
+/// touch any of these role checks, so this exercises `coordinator::step`
+/// directly exactly as the Lua original does, with no transport at all.
+#[test]
+fn transport_relay_topology_probe_keeps_the_session_lifecycle_host_authoritative() {
+    let manifest = coordinator_fixture::manifest(Some(MatchMode::TwoVTwo));
+    let state = coordinator_fixture::guest(1, None, None);
+
+    let (_, proposed) = coordinator::step(
+        &state,
+        Event::ProposeManifest {
+            manifest: manifest.clone(),
+        },
+    );
+    assert!(!proposed.accepted);
+    assert_eq!(
+        proposed.reason.as_deref(),
+        Some("only the host proposes the session manifest")
+    );
+
+    let (_, assigned) = coordinator::step(
+        &state,
+        Event::AssignSlots {
+            assignments: Value::array(Vec::new()),
+            preserve_claims: false,
+        },
+    );
+    assert_eq!(
+        assigned.reason.as_deref(),
+        Some("only the host publishes slot assignments")
+    );
+
+    let (_, counted) = coordinator::step(
+        &state,
+        Event::BeginCountdown {
+            countdown_id: "countdown.1".to_string(),
+            remaining_ticks: 2,
+            first_input_tick: 0,
+        },
+    );
+    assert_eq!(
+        counted.reason.as_deref(),
+        Some("only the host starts the countdown")
+    );
+}
+
+/// Finding 1. `match_driver`'s guest authority path accepts host batches and
+/// nothing else, so a client that receives another client's own bundle —
+/// which is all a framing relay can ever deliver — kills the match. The Lua
+/// case drives this through `fault_harness.new({ topology = "relay", ... })`;
+/// `gc_netcode::fault_harness::FaultHarnessOptions` offers only the `star`
+/// topology, because `game/transport/fake_relay.lua` has no Rust port
+/// (TypeScript-owned, `v2/README.md` §2 — no Rust `FakeRelayTransport` type
+/// exists or is planned; see `fault_harness.rs`'s own module doc table and
+/// `FaultHarnessOptions`'s doc comment). That is a real, current blocker,
+/// not the stale "coordinator/match_driver are placeholders" this test used
+/// to name.
+#[test]
+#[ignore = "blocked on game.transport.fake_relay (TypeScript-owned per v2/README.md §2; \
+            no Rust FakeRelayTransport type exists or is planned); gc_netcode::fault_harness's \
+            FaultHarnessOptions offers only the star topology, so there is no relay session to drive"]
+fn transport_relay_topology_probe_terminates_a_guest_that_receives_a_peers_own_bundle() {
+    unimplemented!(
+        "needs a Rust game.transport.fake_relay and relay-topology fault_harness support"
+    );
+}
+
+/// Finding 3. Declared bot fills are authored by the host and by nobody else.
+/// Same blocker as Finding 1: the Lua case needs
+/// `fault_harness.new({ topology = "relay", ... })`, which has no Rust
+/// counterpart.
+#[test]
+#[ignore = "blocked on game.transport.fake_relay (TypeScript-owned per v2/README.md §2; \
+            no Rust FakeRelayTransport type exists or is planned); gc_netcode::fault_harness's \
+            FaultHarnessOptions offers only the star topology, so there is no relay session to drive"]
+fn transport_relay_topology_probe_gives_declared_bot_fills_no_author_but_the_host() {
+    unimplemented!(
+        "needs a Rust game.transport.fake_relay and relay-topology fault_harness support"
+    );
+}
+
+/// Finding 5. The settle phase's host relay wait is host-only by
+/// construction. Same blocker as Finding 1: needs a relay-topology
+/// `fault_harness` session to drive to completion.
+#[test]
+#[ignore = "blocked on game.transport.fake_relay (TypeScript-owned per v2/README.md §2; \
+            no Rust FakeRelayTransport type exists or is planned); gc_netcode::fault_harness's \
+            FaultHarnessOptions offers only the star topology, so there is no relay session to drive"]
+fn transport_relay_topology_probe_scopes_the_settle_relay_wait_to_the_host_alone() {
+    unimplemented!(
+        "needs a Rust game.transport.fake_relay and relay-topology fault_harness support"
+    );
+}
+
+/// Finding 6. Per-node wire cost of the sequencer-less shape, measured over
+/// `game.transport.fake_relay`'s `build_room`/`broadcast`/`wire_counters`.
+/// Same blocker as Finding 1, at the adapter level rather than the harness
+/// level: there is no Rust relay transport to build a room from at all.
+#[test]
+#[ignore = "blocked on game.transport.fake_relay (TypeScript-owned per v2/README.md §2; \
+            no Rust FakeRelayTransport type exists or is planned, so there is no relay room \
+            to measure wire_counters() on)"]
+fn transport_relay_topology_probe_measures_sequencer_less_per_node_wire_cost() {
+    unimplemented!("needs a Rust game.transport.fake_relay");
 }

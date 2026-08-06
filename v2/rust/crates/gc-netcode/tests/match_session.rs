@@ -1,43 +1,45 @@
 //! Port of `spec/game/online_match_session_spec.lua`.
 //!
-//! ## Content is fabricated, not real `data/`-authored content
+//! ## Content-derived manifest tests use a fabricated fixture team
 //!
 //! The Lua spec's fixture (`spec/fixtures/online_match_session.lua`) builds
 //! everything from `game.online.match_manifest.template`, which reads real
-//! `data.teams`/`data.players`/`data.loadouts`/`data.arenas`. Per
-//! `gc_netcode::match_manifest`'s module doc comment, this crate has no
-//! `gc-data` dependency, so this file cannot reproduce that fixture's real
-//! content (`"nebula"`/`"orion"`) — it builds an equally-shaped, entirely
-//! fabricated two-team fixture instead (`fixture_team`), and exercises
-//! `match_manifest`'s and `match_session`'s actual *logic* against it. Every
-//! assertion that only depends on structure (roster shape, digest
-//! determinism, ownership/identity agreement, error branches) survives that
-//! substitution unchanged; assertions that specifically need the string
-//! `"nebula"` etc. are adapted to check the fabricated content's own id
-//! instead (still asserting the real property: "resolve returns the content
-//! the manifest names").
+//! `data.teams`/`data.players`/`data.loadouts`/`data.arenas`. `gc-netcode`
+//! itself has no `gc-data` dependency (see `gc_netcode::match_manifest`'s
+//! module doc comment: content is a parameter, not an import), so the
+//! "content-derived online manifest" tests below build an equally-shaped,
+//! entirely fabricated two-team fixture instead (`fixture_team`) and
+//! exercise `match_manifest`'s actual *logic* against it. Every assertion
+//! that only depends on structure (roster shape, digest determinism,
+//! ownership/identity agreement, error branches) survives that substitution
+//! unchanged; assertions that specifically need the string `"nebula"` etc.
+//! are adapted to check the fabricated content's own id instead (still
+//! asserting the real property: "resolve returns the content the manifest
+//! names").
 //!
-//! ## What could not be ported at all
+//! ## The "online match request" tests use real `data/`-authored content
 //!
-//! `gc_sim::match_snapshot::MatchState`/`MatchPlayer` have 100+ fields, no
-//! `Default` impl, and no lightweight constructor anywhere in this
-//! workspace — every existing match-builder (including `gc-sim`'s own
-//! tests, e.g. `crates/gc-sim/tests/match.rs`) goes through
-//! `gc_data::teams::get("nebula")` and `gc_sim::r#match::new`. Without
-//! `gc-data`, this file cannot build a `gc_sim::match_snapshot::MatchSnapshot`
-//! at all, so nothing that needs one — `match_session::finish`,
-//! `match_session::request`'s snapshot-touching half,
-//! `match_session::player_index`/`carrying`, and every spec assertion that
-//! reads `request.initial_snapshot` — is ported as `#[ignore]`, naming the
-//! blocker. `gc_netcode::match_session::resolve_identity` exists specifically
-//! so the *other* half of `request` (every fallible check) stays fully
-//! tested despite this — see that function's doc comment.
+//! `match_session::finish`/`request` need an already-built
+//! `gc_sim::match_snapshot::MatchSnapshot`, and this test binary — unlike
+//! `gc_netcode`'s own `src/` — is free to depend on `gc-data` directly (it
+//! is already an ordinary, non-dev dependency of this crate's `Cargo.toml`,
+//! so any integration test can reach it). `real_team_content` converts the
+//! shipped `nebula`/`orion` teams into `match_manifest::TeamContent`, and
+//! `real_initial_snapshot` builds boundary zero via
+//! `gc_netcode::match_driver_fixture::initial_snapshot` — the same
+//! `gc_data::teams::get`/`gc_sim::r#match::new`/`match_snapshot::capture`
+//! recipe the Lua original's own `initial_snapshot` runs, for the same two
+//! fixture teams. That unblocks the three "online match request" tests that
+//! read `request.initial_snapshot`. `gc_netcode::match_session::resolve_identity`
+//! still exists as a separate entry point so the fallible-check half of
+//! `request` can be tested with the fabricated fixture, without needing a
+//! real snapshot at all — see that function's doc comment.
 
 use gc_netcode::coordinator::{self, Freeze, Role, SlotDriver};
 use gc_netcode::match_manifest::{
-    self, BuildIdentity, PlayerPosition, RosterPlayerContent, TeamContent,
+    self, BuildIdentity, OnlineMatchContent, PlayerPosition, RosterPlayerContent, TeamContent,
 };
-use gc_netcode::match_session::{self, RequestOptions};
+use gc_netcode::match_session::{self, OnlineMatchRequest, RequestOptions};
 use gc_netcode::protocol::{self, MatchMode, Value};
 use gc_sim::input_frame::SlotId;
 use indexmap::IndexMap;
@@ -172,6 +174,118 @@ fn request_options_for(mode: MatchMode, peer_index: usize) -> RequestOptions {
         manifest,
         freeze,
     }
+}
+
+fn gc_data_position(position: gc_data::players::Position) -> PlayerPosition {
+    match position {
+        gc_data::players::Position::Keeper => PlayerPosition::Keeper,
+        gc_data::players::Position::Defender => PlayerPosition::Defender,
+        gc_data::players::Position::Midfielder => PlayerPosition::Midfielder,
+        gc_data::players::Position::Forward => PlayerPosition::Forward,
+    }
+}
+
+/// The shipped `data.teams[team_id]` roster, converted into
+/// `match_manifest::TeamContent` — the same content
+/// `game.online.match_manifest` reads directly from `data/` in Lua, mirrored
+/// here through `gc_data` since `gc_netcode::match_manifest` takes content as
+/// a parameter rather than importing it (see that module's doc comment).
+fn real_team_content(team_id: &str) -> TeamContent {
+    let team = gc_data::teams::get(team_id).expect("known fixture team");
+    let roster = team
+        .roster
+        .iter()
+        .map(|player_id| {
+            let player = gc_data::players::get(player_id).expect("known fixture player");
+            let (loadout_id, loadout_family_id) = match player.loadout_id {
+                Some(loadout_id) => {
+                    let loadout =
+                        gc_data::loadouts::get(loadout_id).expect("known fixture loadout");
+                    (
+                        Some(loadout_id.to_string()),
+                        Some(
+                            gc_sim::combat_snapshot::action_family_wire_id(loadout.family_id)
+                                .to_string(),
+                        ),
+                    )
+                }
+                None => (None, None),
+            };
+            RosterPlayerContent {
+                player_id: player.id.to_string(),
+                position: gc_data_position(player.position),
+                number: player.number,
+                presentation_id: player.presentation_id.to_string(),
+                loadout_id,
+                loadout_family_id,
+            }
+        })
+        .collect();
+    TeamContent {
+        id: team.id.to_string(),
+        name: team.name.to_string(),
+        formation: team.formation.to_string(),
+        roster,
+    }
+}
+
+/// A manifest built from the *real* shipped `nebula`/`orion` teams and
+/// `helios_crown` arena — exactly what `spec/fixtures/online_match_session.lua`'s
+/// `fixture.manifest` builds via `match_manifest.template`, unlike
+/// `fixture_manifest` above which uses fabricated content.
+fn real_manifest(mode: MatchMode) -> Value {
+    let home = real_team_content(match_manifest::HOME_TEAM_ID);
+    let away = real_team_content(match_manifest::AWAY_TEAM_ID);
+    match_manifest::template(
+        &home,
+        &away,
+        match_manifest::ARENA_ID,
+        Some(mode),
+        &fixture_identity(),
+    )
+}
+
+fn real_content(manifest: &Value) -> OnlineMatchContent {
+    let home = real_team_content(match_manifest::HOME_TEAM_ID);
+    let away = real_team_content(match_manifest::AWAY_TEAM_ID);
+    match_manifest::resolve(manifest, &home, &away, match_manifest::ARENA_ID).unwrap()
+}
+
+/// Boundary zero for `freeze`'s frozen seed/duration, built the same recipe
+/// the Lua original's own (module-private) `initial_snapshot` runs —
+/// `sim.match.new` then `match_snapshot.capture` — for the real `nebula`/
+/// `orion` teams, via the fixture that already ports that exact recipe.
+fn real_initial_snapshot(freeze: &Freeze) -> gc_sim::match_snapshot::MatchSnapshot {
+    let duration = freeze.duration_ticks as f64 / freeze.tick_rate as f64;
+    gc_netcode::match_driver_fixture::initial_snapshot(
+        Some(duration),
+        true,
+        Some(freeze.seed as f64),
+    )
+}
+
+/// A complete `OnlineMatchRequest` for `peer_index` into `mode`'s real-content
+/// session — mirrors this file's `request_for` helper in the ported Lua spec,
+/// built from real content since [`match_session::finish`] needs a real
+/// `MatchSnapshot`.
+fn real_request_for(mode: MatchMode, peer_index: usize) -> OnlineMatchRequest {
+    let manifest = real_manifest(mode);
+    let peer_ids = fixture_peer_ids(mode);
+    let freeze = fixture_freeze(&manifest, &peer_ids);
+    let options = RequestOptions {
+        role: if peer_index == 0 {
+            Role::Host
+        } else {
+            Role::Guest
+        },
+        peer_id: peer_ids[peer_index].clone(),
+        manifest: manifest.clone(),
+        freeze: freeze.clone(),
+    };
+    let identity = match_session::resolve_identity(options).unwrap();
+    let initial_snapshot = real_initial_snapshot(&freeze);
+    let content = real_content(&manifest);
+    match_session::finish(identity, initial_snapshot, content)
 }
 
 // ---------------------------------------------------------------------------
@@ -472,15 +586,45 @@ fn content_derived_online_manifest_refuses_a_slot_table_that_disagrees_with_loca
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "needs a gc_sim::match_snapshot::MatchSnapshot, which needs gc-data (see module doc comment)"]
 fn online_match_request_selects_the_combat_bearing_snapshot_and_tape_contracts_explicitly() {
-    unimplemented!("needs match_session::finish with a real initial_snapshot");
+    let request = real_request_for(MatchMode::FourVFour, 0);
+    assert!(request.combat_enabled);
+    assert_eq!(
+        request.snapshot_version,
+        gc_sim::match_snapshot::COMBAT_VERSION
+    );
+    assert_eq!(request.tape_version, gc_sim::input_tape::COMBAT_VERSION);
+    let (state, combat) = gc_sim::match_snapshot::restore(&request.initial_snapshot);
+    assert!(state.slot_mode, "an online match is always slot mode");
+    assert_eq!(state.input_tick, 0);
+    assert!(
+        combat.is_some(),
+        "the online request carries a combat companion"
+    );
 }
 
 #[test]
-#[ignore = "needs a gc_sim::match_snapshot::MatchSnapshot, which needs gc-data (see module doc comment)"]
 fn online_match_request_gives_every_peer_a_byte_identical_boundary_zero() {
-    unimplemented!("needs match_session::finish with a real initial_snapshot");
+    let manifest = real_manifest(MatchMode::TwoVTwo);
+    let peer_ids = fixture_peer_ids(MatchMode::TwoVTwo);
+    let freeze = fixture_freeze(&manifest, &peer_ids);
+    let mut hashes = Vec::with_capacity(peer_ids.len());
+    for (index, peer_id) in peer_ids.iter().enumerate() {
+        let options = RequestOptions {
+            role: if index == 0 { Role::Host } else { Role::Guest },
+            peer_id: peer_id.clone(),
+            manifest: manifest.clone(),
+            freeze: freeze.clone(),
+        };
+        let identity = match_session::resolve_identity(options).unwrap();
+        let initial_snapshot = real_initial_snapshot(&freeze);
+        let content = real_content(&manifest);
+        let request = match_session::finish(identity, initial_snapshot, content);
+        hashes.push(gc_sim::match_snapshot::hash(&request.initial_snapshot));
+    }
+    for hash in &hashes[1..] {
+        assert_eq!(hash, &hashes[0], "peers disagree about boundary zero");
+    }
 }
 
 #[test]
@@ -507,9 +651,25 @@ fn online_match_request_sizes_the_owned_set_from_the_frozen_mode_alone() {
 }
 
 #[test]
-#[ignore = "needs a gc_sim::match_snapshot::MatchSnapshot to read state.players[..].is_keeper, which needs gc-data (see module doc comment); structurally guaranteed instead by protocol::owned_slots only ever naming outfield slots"]
+// Clippy objects that this asserts on a constant, which is precisely the
+// point — see `keeper_control_is_off_in_every_online_mode`'s own comment.
+#[allow(clippy::assertions_on_constants)]
 fn online_match_request_never_seats_a_keeper_in_any_owned_set_in_any_mode() {
-    unimplemented!("needs a real MatchState");
+    for mode in [MatchMode::OneVOne, MatchMode::TwoVTwo, MatchMode::FourVFour] {
+        let request = real_request_for(mode, 0);
+        let (state, _combat) = gc_sim::match_snapshot::restore(&request.initial_snapshot);
+        for &slot in &request.owned {
+            let player_index = match_session::player_index(&state, slot);
+            assert!(
+                !state.players[(player_index - 1) as usize].is_keeper,
+                "{} owned a keeper, which no mode may do",
+                mode.wire_str()
+            );
+        }
+        // Keeper control is a documented, deliberate divergence from solo
+        // play. Pin the decision so it is not "fixed" as a bug later.
+        assert!(!match_session::KEEPER_CONTROL);
+    }
 }
 
 #[test]

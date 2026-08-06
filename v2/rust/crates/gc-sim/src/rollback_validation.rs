@@ -565,7 +565,15 @@ fn combat_load_frames(fixture: &Omp2RollbackCombatLoadFixture) -> Vec<input_fram
     frames
 }
 
-fn combat_load_tape(fixture: &Omp2RollbackCombatLoadFixture, tune: &Tuning) -> InputTape {
+/// Build the pinned combat-load input tape for a frozen OMP-2 fixture.
+///
+/// `pub` per README §5 rule 8: `spec/sim/combat_load_fixtures_spec.lua` drives
+/// this directly, and the alternative was reconstructing ~150 lines of fixture
+/// setup inside the test. These fixtures exist to guard bit-exact hashes, so a
+/// second independent construction path could silently diverge and pin the
+/// wrong thing — which is worse than widening visibility inside an internal
+/// crate.
+pub fn combat_load_tape(fixture: &Omp2RollbackCombatLoadFixture, tune: &Tuning) -> InputTape {
     let layout = layout_positions(fixture.layout);
     let repeated_roster = fixture.repeated_loadout_id.map(repeated_family_roster);
     let home = teams::get("nebula").expect("nebula is authored");

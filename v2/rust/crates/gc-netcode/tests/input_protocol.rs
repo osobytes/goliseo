@@ -3,21 +3,32 @@
 //! ## What could not be ported as-is
 //!
 //! The Lua spec also exercises `game.online.protocol`, `game.online.protocol_fixture`,
-//! `game.transport.contract`, `sim.match_snapshot`, and `sim.rollback_input_history`.
-//! Per this agent's brief, `protocol.lua` is out of scope ("later agents own
-//! those"), `game/transport/contract.lua` is TypeScript-owned with no Rust
-//! port planned (`v2/README.md` §2), and `sim/match_snapshot.lua` /
-//! `sim/rollback_input_history.lua` are still unported placeholders in
-//! `gc-sim` as of this writing (owned by sibling agents). Assertions that
-//! genuinely need one of those are marked `#[ignore]` below, naming the
-//! missing module. Assertions that only needed *a* valid session/manifest id
-//! string (not `protocol.lua`'s specific hashing logic) were ported using the
-//! same literal identity `input_protocol_fixture` uses — see that module's
-//! doc comment.
+//! and `game.transport.contract`. `protocol.lua`/`coordinator.lua`/`match_driver.lua`
+//! have since landed in `gc-netcode` (they were out of scope when this file
+//! was first written, but are not any more — see `host_fixture`/
+//! `packet_arrival` below, which drive the real
+//! `match_driver_fixture::DriverRules::canonical_host_batch` port for the
+//! three cases that need `input_protocol.canonical_host_batch`).
+//! `game/transport/contract.lua` is still TypeScript-owned with no Rust port
+//! planned (`v2/README.md` §2), so `input_protocol::validate_envelope`
+//! (which needs its `TransportMessage` type) stays unreachable — one
+//! `#[ignore]` below still names that. Assertions that only needed *a* valid
+//! session/manifest id string (not `protocol.lua`'s specific hashing logic)
+//! were ported using the same literal identity `input_protocol_fixture`
+//! uses — see that module's doc comment.
 
+use gc_netcode::coordinator;
+use gc_netcode::fault_transport::{TransportMessage, TransportMessageType};
 use gc_netcode::input_protocol::{self, AuthorityRow, DecodeContext, ErrorCode, PacketOptions};
 use gc_netcode::input_protocol_conformance as conformance;
 use gc_netcode::input_protocol_fixture as fixture;
+use gc_netcode::match_driver::{
+    HostBatchErrorCode, HostBatchRequest, InputPacketArrival, MatchDriverRules, ProducerKind,
+    SessionManifest as DriverSessionManifest, SlotAssignment,
+};
+use gc_netcode::match_driver_fixture::DriverRules;
+use gc_netcode::protocol::{self, Value};
+use gc_netcode::protocol_fixture;
 use gc_sim::input_frame::{self, InputSampleOptions};
 
 /// Session identity shared with `input_protocol_fixture` — see that module's
@@ -136,13 +147,30 @@ fn omp3_pins_literal_native_and_lovejs_conformance_vectors() {
     );
 }
 
+// `gc_sim::match_snapshot` has since landed (it was the blocker this test
+// used to name), so the golden-version identity the Lua original checks
+// first is asserted for real below. The Lua test's second half — bump
+// `GOLDEN.snapshot_version` by one, call `verify`, and expect it to panic
+// naming "input packet goldens are stale for snapshot" — stays unported:
+// `input_protocol_conformance::GOLDEN` is a Rust `const`, and `verify` reads
+// it directly rather than taking one as a parameter (see that module's own
+// doc comment: the live staleness cross-check was never implemented in
+// `verify`, deliberately, because `match_snapshot` was unported when that
+// file was written). There is still no seam to force a mutated golden
+// through `verify` without changing its signature — a `src/` change, out of
+// this pass's scope; worth reopening now that the equalities below hold and
+// the module doc's premise for skipping the check no longer does.
 #[test]
-#[ignore = "blocked on gc_sim::match_snapshot (still an unported placeholder; \
-this agent does not own gc-sim). The Lua test asserts input_conformance's \
-staleness check against match_snapshot.VERSION/COMBAT_VERSION, which \
-input_protocol_conformance::verify deliberately does not perform yet — see \
-that module's doc comment."]
-fn names_the_snapshot_version_its_literals_were_generated_against() {}
+fn names_the_snapshot_version_its_literals_were_generated_against() {
+    assert_eq!(
+        conformance::GOLDEN.snapshot_version,
+        gc_sim::match_snapshot::VERSION
+    );
+    assert_eq!(
+        conformance::GOLDEN.combat_version,
+        gc_sim::match_snapshot::COMBAT_VERSION
+    );
+}
 
 #[test]
 fn round_trips_current_plus_exactly_six_prior_guest_rows_with_distinct_clocks() {
@@ -158,10 +186,11 @@ fn round_trips_current_plus_exactly_six_prior_guest_rows_with_distinct_clocks() 
     assert_eq!(decoded.input_delay_ticks, 3);
     // The Lua test also asserts
     // `input_protocol.validate_envelope(decoded, envelope(decoded))` here.
-    // `validate_envelope` is not ported (needs `game.transport.contract`,
-    // TypeScript-owned with no Rust port planned) — see
-    // `omp3_validate_envelope_rejects_a_transport_tick_mismatch` below and
-    // this file's module doc comment.
+    // `input_protocol::validate_envelope` has no `pub` free-function port —
+    // see `validate_envelope_rejects_a_transport_tick_mismatch` below, which
+    // exercises the same check indirectly through
+    // `DriverRules::canonical_host_batch`, and that test's own comment for
+    // the current (non-stale) reason there is no direct standalone call.
 
     let early = guest_packet(2, "guest_2", 8, 13, 2, Some(2), None);
     assert_eq!(
@@ -265,10 +294,46 @@ fn covers_every_slot_soccer_combat_bit_axis_boundary_and_generated_valid_sample(
     }
 }
 
+/// Every canonical slot owned remotely — mirrors the Lua spec's local
+/// `remote_sources()` helper.
+fn remote_sources() -> [gc_sim::rollback_input_history::RollbackInputSource; 8] {
+    [gc_sim::rollback_input_history::RollbackInputSource::Remote; 8]
+}
+
 #[test]
-#[ignore = "blocked on gc_sim::rollback_input_history (still an unported \
-placeholder; this agent does not own gc-sim)."]
-fn recovers_six_lost_emissions_without_creating_unsent_authority() {}
+fn recovers_six_lost_emissions_without_creating_unsent_authority() {
+    let recovered = guest_packet(2, "guest_2", 6, 6, 6, None, None);
+    let mut history = gc_sim::rollback_input_history::new(remote_sources());
+    let arrivals: Vec<gc_sim::rollback_input_history::RollbackAuthoritativeInput> =
+        input_protocol::rows(&recovered)
+            .into_iter()
+            .map(
+                |row| gc_sim::rollback_input_history::RollbackAuthoritativeInput {
+                    tick: row.tick,
+                    slot_index: row.slot_index,
+                    sample: row.sample,
+                },
+            )
+            .collect();
+    let accepted = gc_sim::rollback_input_history::add_authoritative_batch(&mut history, &arrivals)
+        .expect("a well-formed authoritative batch is accepted");
+    assert_eq!(accepted.inserted, 7);
+    assert!(gc_sim::rollback_input_history::authoritative_record(&history, 0, 2).is_some());
+    assert!(gc_sim::rollback_input_history::authoritative_record(&history, 6, 2).is_some());
+    assert_eq!(
+        gc_sim::rollback_input_history::authoritative_record(&history, 7, 2),
+        None
+    );
+
+    let after_seven_losses = guest_packet(2, "guest_2", 7, 7, 7, None, None);
+    assert_eq!(after_seven_losses.rows[0].tick, 1);
+    let fresh_history = gc_sim::rollback_input_history::new(remote_sources());
+    assert_eq!(
+        gc_sim::rollback_input_history::authoritative_record(&fresh_history, 0, 2),
+        None,
+        "a later packet cannot invent the fallen-out tick"
+    );
+}
 
 #[test]
 fn rejects_malformed_noncanonical_unsupported_mismatched_and_oversized_data() {
@@ -379,11 +444,191 @@ check is structurally redundant here — the same class of drop already \
 documented in crates/gc-sim/src/input_frame.rs's module doc comment."]
 fn rejects_a_packet_with_an_undeclared_extra_field() {}
 
+// `game/transport/contract.lua`'s `TransportMessage` shape now exists in
+// Rust as `fault_transport::TransportMessage` (the old blocker this test
+// used to name), and the envelope check itself is even implemented in this
+// crate — but as a private `fn validate_envelope` inside
+// `match_driver_fixture.rs`, not as the `pub` free function
+// `input_protocol::validate_envelope` the Lua original calls directly. There
+// is still no way to call it standalone from a test; the current blocker is
+// that gap, not the absent-type one this used to name. The check is real and
+// reachable indirectly, though: every `DriverRules::canonical_host_batch`
+// arrival runs through it first, before ownership is even considered, so the
+// same rejection is exercised below through that entry point instead.
 #[test]
-#[ignore = "blocked on game.transport.contract (TypeScript-owned per \
-v2/README.md §2; no Rust port exists or is planned) and therefore on \
-input_protocol::validate_envelope, which needs its TransportMessage type."]
-fn validate_envelope_rejects_a_transport_tick_mismatch() {}
+fn validate_envelope_rejects_a_transport_tick_mismatch() {
+    let host = host_fixture();
+    let packet = guest_packet(2, "guest_2", 9, 14, 8, None, None);
+    let mut mismatched = packet_arrival(&packet, 20, "guest_2");
+    mismatched.envelope.tick = Some(packet.transport_tick + 1);
+    let err = host
+        .rules
+        .canonical_host_batch(HostBatchRequest {
+            manifest: &host.driver_manifest,
+            assignments: &host.driver_assignments,
+            host_peer_id: "host",
+            sequence: 70,
+            transport_tick: 20,
+            first_input_tick: 0,
+            confirmed_span: 0,
+            repair_rows: None,
+            arrivals: &[mismatched],
+        })
+        .unwrap_err();
+    assert_eq!(err.code, HostBatchErrorCode::Other);
+    assert!(
+        err.message
+            .contains("sequence or transport tick mismatches envelope")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `input_protocol.canonical_host_batch` was out of scope when this file was
+// first ported (needed `protocol.lua`'s `SessionManifest`/
+// `SessionSlotProducer`, "out of scope for this agent" per its brief). It
+// was never ported as a free function even after `protocol.lua` landed —
+// see `input_protocol.rs`'s own module doc — but a real port exists on
+// `match_driver_fixture::DriverRules`, driven directly below exactly as the
+// Lua original drives `input_protocol.canonical_host_batch` directly rather
+// than through a live driver.
+// ---------------------------------------------------------------------------
+
+/// `coordinator::plan_assignments`'s wire-shaped `Value`, converted into
+/// `match_driver::SlotAssignment`, one per canonical slot. Reads the
+/// assignment `Value` through its public field accessors rather than
+/// `coordinator`'s own (`pub(crate)`) assignment helpers, which this
+/// integration-test crate cannot reach.
+fn slot_assignments(assignments_value: &Value) -> [SlotAssignment; 8] {
+    std::array::from_fn(|i| {
+        let producer = assignments_value
+            .get_index(i as i64 + 1)
+            .expect("eight canonical slots are always assigned");
+        let kind = producer
+            .get("producer_kind")
+            .and_then(Value::as_str)
+            .expect("every assignment names a producer kind");
+        SlotAssignment {
+            producer_kind: if kind == "peer" {
+                ProducerKind::Peer
+            } else {
+                ProducerKind::Bot
+            },
+            producer_id: producer
+                .get("producer_id")
+                .and_then(Value::as_str)
+                .expect("every assignment names a producer id")
+                .to_string(),
+            bot_seed: producer.get("bot_seed").and_then(Value::as_int),
+        }
+    })
+}
+
+/// The fixed session this file's `canonical_host_batch` cases run under: the
+/// `protocol_fixture` manifest/assignments (host, five more peers, two
+/// declared bot fills), and the [`DriverRules`] built from them. Mirrors the
+/// Lua spec's local `host_options` helper, minus the per-call
+/// `sequence`/`transport_tick` it also carries — those stay per-test.
+struct HostFixture {
+    driver_manifest: DriverSessionManifest,
+    driver_assignments: [SlotAssignment; 8],
+    rules: DriverRules,
+}
+
+fn host_fixture() -> HostFixture {
+    let manifest_value = protocol_fixture::manifest(None);
+    let assignments_value = protocol_fixture::assignments();
+    let driver_assignments = slot_assignments(&assignments_value);
+    let session_id = manifest_value
+        .get("session_id")
+        .and_then(Value::as_str)
+        .expect("fixture manifest has a session id")
+        .to_string();
+    let driver_manifest = DriverSessionManifest {
+        session_id: session_id.clone(),
+    };
+    let get_str = |field: &str| {
+        manifest_value
+            .get(field)
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("fixture manifest has {field}"))
+            .to_string()
+    };
+    let get_int = |field: &str| {
+        manifest_value
+            .get(field)
+            .and_then(Value::as_int)
+            .unwrap_or_else(|| panic!("fixture manifest has {field}"))
+    };
+    let freeze = coordinator::Freeze {
+        manifest_id: protocol::manifest_id(&manifest_value),
+        assignment_id: protocol::assignment_id(&assignments_value, 1),
+        countdown_id: "countdown.1".to_string(),
+        first_input_tick: 0,
+        seed: get_int("seed"),
+        tick_rate: get_int("tick_rate"),
+        duration_ticks: get_int("duration_ticks"),
+        max_goals: get_int("max_goals"),
+        content_id: get_str("content_id"),
+        tuning_id: get_str("tuning_id"),
+        combat_rules_id: get_str("combat_rules_id"),
+        gameplay_ai_policy_id: get_str("gameplay_ai_policy_id"),
+        combat_status: get_str("combat_status"),
+        match_mode: protocol::MatchMode::from_wire_str(&get_str("match_mode"))
+            .expect("fixture manifest names a known match mode"),
+        assignments: assignments_value,
+        owned: indexmap::IndexMap::new(),
+        live: indexmap::IndexMap::new(),
+    };
+    let rules = DriverRules::new(manifest_value, freeze);
+    HostFixture {
+        driver_manifest,
+        driver_assignments,
+        rules,
+    }
+}
+
+/// One arrived packet, wrapped in its wire envelope — mirrors the Lua spec's
+/// local `arrival`/`envelope` helpers.
+fn packet_arrival(
+    packet: &input_protocol::Packet,
+    arrival_tick: i64,
+    transport_peer_id: &str,
+) -> InputPacketArrival {
+    InputPacketArrival {
+        packet: packet.clone(),
+        envelope: TransportMessage {
+            version: 1,
+            kind: TransportMessageType::Input,
+            seq: packet.sequence,
+            tick: Some(packet.transport_tick),
+            payload: input_protocol::encode(packet).expect("a well-formed packet encodes"),
+        },
+        arrival_tick,
+        transport_peer_id: transport_peer_id.to_string(),
+    }
+}
+
+/// The `sequence: 60, transport_tick: 20` host batch request used by the
+/// polling-order test, for `arrivals` alone — a named function rather than a
+/// closure because a closure that both captures `host` and is generic over
+/// its `arrivals` parameter's lifetime cannot express the single shared
+/// lifetime `HostBatchRequest<'a>` needs.
+fn polling_order_request<'a>(
+    host: &'a HostFixture,
+    arrivals: &'a [InputPacketArrival],
+) -> HostBatchRequest<'a> {
+    HostBatchRequest {
+        manifest: &host.driver_manifest,
+        assignments: &host.driver_assignments,
+        host_peer_id: "host",
+        sequence: 60,
+        transport_tick: 20,
+        first_input_tick: 0,
+        confirmed_span: 0,
+        repair_rows: None,
+        arrivals,
+    }
+}
 
 #[test]
 fn classifies_packet_and_authority_duplicates_without_first_arrival_wins() {
@@ -413,23 +658,201 @@ fn classifies_packet_and_authority_duplicates_without_first_arrival_wins() {
     let err = input_protocol::classify_duplicate(&original, &other).unwrap_err();
     assert_eq!(err.code, ErrorCode::Duplicate);
 
-    // The Lua test continues into `input_protocol.canonical_host_batch`,
-    // which is not ported (needs `game.online.protocol`'s `SessionManifest` —
-    // out of scope for this agent, see this file's module doc comment).
+    // `original`/`duplicate`/`other` are all idempotent-or-duplicate restates
+    // of the same authority, so a host batch built from all three arrivals
+    // (first-arrival-wins, never doubled) is exactly `original`'s own rows.
+    let host = host_fixture();
+    let repeated = host
+        .rules
+        .canonical_host_batch(HostBatchRequest {
+            manifest: &host.driver_manifest,
+            assignments: &host.driver_assignments,
+            host_peer_id: "host",
+            sequence: 40,
+            transport_tick: 20,
+            first_input_tick: 0,
+            confirmed_span: 0,
+            repair_rows: None,
+            arrivals: &[
+                packet_arrival(&original, 20, "guest_2"),
+                packet_arrival(&duplicate, 20, "guest_2"),
+                packet_arrival(&other, 20, "guest_2"),
+            ],
+        })
+        .expect("idempotent-or-duplicate restates of the same authority canonicalise");
+    assert_eq!(repeated.rows.len(), 7);
+
+    let changed = guest_packet(
+        2,
+        "guest_2",
+        original.sequence + 2,
+        14,
+        6,
+        Some(0),
+        Some(100),
+    );
+    let err = host
+        .rules
+        .canonical_host_batch(HostBatchRequest {
+            manifest: &host.driver_manifest,
+            assignments: &host.driver_assignments,
+            host_peer_id: "host",
+            sequence: 41,
+            transport_tick: 20,
+            first_input_tick: 0,
+            confirmed_span: 0,
+            repair_rows: None,
+            arrivals: &[
+                packet_arrival(&original, 20, "guest_2"),
+                packet_arrival(&changed, 20, "guest_2"),
+            ],
+        })
+        .unwrap_err();
+    assert_eq!(err.code, HostBatchErrorCode::AuthorityConflict);
+}
+
+/// Finding: ownership is enforced against the *frozen* slot assignment, not
+/// against whichever sender named itself, and the host's own local input is
+/// held to the same fixed fairness delay a network arrival gets for free —
+/// `input_protocol.canonical_host_batch`'s "fairness_delay" outcome
+/// coarsens to [`HostBatchErrorCode::Other`] in this port (the enum has no
+/// dedicated variant; see [`DriverRules::canonical_host_batch`]'s body).
+#[test]
+fn enforces_frozen_ownership_and_the_hosts_three_tick_local_fairness_path() {
+    let host = host_fixture();
+    let host_local = guest_packet(1, "host", 1, 7, 6, None, None);
+
+    let too_soon = host
+        .rules
+        .canonical_host_batch(HostBatchRequest {
+            manifest: &host.driver_manifest,
+            assignments: &host.driver_assignments,
+            host_peer_id: "host",
+            sequence: 50,
+            transport_tick: 9,
+            first_input_tick: 0,
+            confirmed_span: 0,
+            repair_rows: None,
+            arrivals: &[packet_arrival(&host_local, 9, "host")],
+        })
+        .unwrap_err();
+    assert_eq!(too_soon.code, HostBatchErrorCode::Other);
+    assert!(too_soon.message.contains("fixed fairness delay"));
+
+    let batch = host
+        .rules
+        .canonical_host_batch(HostBatchRequest {
+            manifest: &host.driver_manifest,
+            assignments: &host.driver_assignments,
+            host_peer_id: "host",
+            sequence: 50,
+            transport_tick: 10,
+            first_input_tick: 0,
+            confirmed_span: 0,
+            repair_rows: None,
+            arrivals: &[packet_arrival(&host_local, 10, "host")],
+        })
+        .expect("three ticks of local delay clears the fairness path");
+    assert_eq!(
+        batch.rows[0].sample.move_x,
+        host_local.rows[0].sample.move_x
+    );
+    assert_eq!(
+        batch.rows[batch.rows.len() - 1].sample.edges,
+        host_local.rows[host_local.rows.len() - 1].sample.edges
+    );
+
+    let false_claim = guest_packet(1, "guest_2", 2, 8, 6, None, None);
+    let ownership_err = host
+        .rules
+        .canonical_host_batch(HostBatchRequest {
+            manifest: &host.driver_manifest,
+            assignments: &host.driver_assignments,
+            host_peer_id: "host",
+            sequence: 51,
+            transport_tick: 10,
+            first_input_tick: 0,
+            confirmed_span: 0,
+            repair_rows: None,
+            arrivals: &[packet_arrival(&false_claim, 10, "guest_2")],
+        })
+        .unwrap_err();
+    assert_eq!(ownership_err.code, HostBatchErrorCode::OwnershipMismatch);
+
+    let bot = guest_packet(7, "bot_away_3", 3, 7, 6, None, None);
+    let bot_batch = host
+        .rules
+        .canonical_host_batch(HostBatchRequest {
+            manifest: &host.driver_manifest,
+            assignments: &host.driver_assignments,
+            host_peer_id: "host",
+            sequence: 52,
+            transport_tick: 10,
+            first_input_tick: 0,
+            confirmed_span: 0,
+            repair_rows: None,
+            arrivals: &[packet_arrival(&bot, 10, "host")],
+        })
+        .expect("the host authors its own declared bot fills");
+    assert_eq!(bot_batch.rows[0].slot_index, 7);
 }
 
 #[test]
-#[ignore = "blocked on game.online.protocol (out of scope for this agent per \
-its brief: \"later agents own those\") and therefore on \
-input_protocol::canonical_host_batch, which needs protocol.lua's \
-SessionManifest/SessionSlotProducer types and validate_manifest/manifest_id/ \
-validate_assignment_manifest."]
-fn enforces_frozen_ownership_and_the_hosts_three_tick_local_fairness_path() {}
+fn emits_one_byte_identical_canonical_host_batch_for_every_peer_polling_order() {
+    let host = host_fixture();
+    let mut arrivals = Vec::with_capacity(8);
+    for slot_index in 1..=8i64 {
+        let assignment = &host.driver_assignments[(slot_index - 1) as usize];
+        let local_producer =
+            assignment.producer_id == "host" || assignment.producer_kind == ProducerKind::Bot;
+        let packet = guest_packet(
+            slot_index,
+            &assignment.producer_id,
+            slot_index,
+            if local_producer { 17 } else { 19 },
+            6,
+            None,
+            None,
+        );
+        let transport_peer_id = if assignment.producer_kind == ProducerKind::Bot {
+            "host".to_string()
+        } else {
+            assignment.producer_id.clone()
+        };
+        arrivals.push(packet_arrival(&packet, 20, &transport_peer_id));
+    }
+    let mut reversed = arrivals.clone();
+    reversed.reverse();
 
-#[test]
-#[ignore = "blocked on game.online.protocol; see \
-enforces_frozen_ownership_and_the_hosts_three_tick_local_fairness_path."]
-fn emits_one_byte_identical_canonical_host_batch_for_every_peer_polling_order() {}
+    let first = host
+        .rules
+        .canonical_host_batch(polling_order_request(&host, &arrivals))
+        .expect("a full 8-slot batch canonicalises");
+    let second = host
+        .rules
+        .canonical_host_batch(polling_order_request(&host, &reversed))
+        .expect("polling order cannot change the canonical batch");
+
+    // Eight single-slot bundles at a full window each: the steady-state
+    // batch, which is 56 rows and no longer the row bound itself.
+    assert_eq!(
+        first.rows.len() as i64,
+        input_frame::SLOT_COUNT * input_protocol::RETAINED_ROWS
+    );
+    assert!(first.rows.len() as i64 <= input_protocol::MAX_HOST_ROWS);
+    assert_eq!(
+        input_protocol::encode(&first).unwrap(),
+        input_protocol::encode(&second).unwrap()
+    );
+    for index in 1..first.rows.len() {
+        let previous = &first.rows[index - 1];
+        let current = &first.rows[index];
+        assert!(
+            previous.tick < current.tick
+                || (previous.tick == current.tick && previous.slot_index < current.slot_index)
+        );
+    }
+}
 
 #[test]
 fn fits_the_measured_72_row_maximum_with_its_declared_margin() {
@@ -495,9 +918,87 @@ fn carries_a_senders_confirmation_as_a_span_and_round_trips_it() {
 }
 
 #[test]
-#[ignore = "blocked on game.online.protocol; see \
-enforces_frozen_ownership_and_the_hosts_three_tick_local_fairness_path."]
-fn merges_host_repair_rows_and_conflict_checks_them_like_any_other() {}
+fn merges_host_repair_rows_and_conflict_checks_them_like_any_other() {
+    let host = host_fixture();
+    let packet = guest_packet(2, "guest_2", 9, 14, 8, Some(0), None);
+    let arrival = packet_arrival(&packet, 20, "guest_2");
+
+    // Sorted into the one canonical (tick, slot) order, with the repaired
+    // ticks ahead of the arrival's window rather than appended after it.
+    let repair_rows = vec![
+        AuthorityRow {
+            tick: 0,
+            slot_index: 5,
+            sample: fuzz_sample(41),
+        },
+        AuthorityRow {
+            tick: 1,
+            slot_index: 5,
+            sample: fuzz_sample(42),
+        },
+    ];
+    let batch = host
+        .rules
+        .canonical_host_batch(HostBatchRequest {
+            manifest: &host.driver_manifest,
+            assignments: &host.driver_assignments,
+            host_peer_id: "host",
+            sequence: 60,
+            transport_tick: 20,
+            first_input_tick: 0,
+            confirmed_span: 0,
+            repair_rows: Some(&repair_rows),
+            arrivals: std::slice::from_ref(&arrival),
+        })
+        .expect("repair rows outside the arrival window merge cleanly");
+    assert_eq!(batch.rows.len(), packet.rows.len() + 2);
+    assert_eq!(batch.rows[0].tick, 0);
+    assert_eq!(batch.rows[0].slot_index, 5);
+    assert_eq!(batch.rows[1].tick, 1);
+    assert_eq!(batch.rows[1].slot_index, 5);
+    assert_eq!(batch.rows[2].tick, 2);
+    assert_eq!(batch.rows[2].slot_index, 2);
+
+    // A repair that repeats a row the arrivals already carry is idempotent,
+    // which is what makes re-sending one every tick safe.
+    let repeated_repair = vec![input_protocol::rows(&packet)[0].clone()];
+    let same = host
+        .rules
+        .canonical_host_batch(HostBatchRequest {
+            manifest: &host.driver_manifest,
+            assignments: &host.driver_assignments,
+            host_peer_id: "host",
+            sequence: 61,
+            transport_tick: 20,
+            first_input_tick: 0,
+            confirmed_span: 0,
+            repair_rows: Some(&repeated_repair),
+            arrivals: std::slice::from_ref(&arrival),
+        })
+        .expect("a repair that repeats an arrival row is idempotent");
+    assert_eq!(same.rows.len(), packet.rows.len());
+
+    let conflicting_repair = vec![AuthorityRow {
+        tick: 8,
+        slot_index: 2,
+        sample: fuzz_sample(999),
+    }];
+    let err = host
+        .rules
+        .canonical_host_batch(HostBatchRequest {
+            manifest: &host.driver_manifest,
+            assignments: &host.driver_assignments,
+            host_peer_id: "host",
+            sequence: 62,
+            transport_tick: 20,
+            first_input_tick: 0,
+            confirmed_span: 0,
+            repair_rows: Some(&conflicting_repair),
+            arrivals: &[arrival],
+        })
+        .unwrap_err();
+    assert_eq!(err.code, HostBatchErrorCode::AuthorityConflict);
+}
 
 #[test]
 fn leaves_five_rows_of_headroom_under_the_hard_byte_ceiling() {

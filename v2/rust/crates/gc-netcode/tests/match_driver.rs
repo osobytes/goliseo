@@ -1908,12 +1908,7 @@ fn finds_no_driver_level_geometry_where_the_policy_guards_often_enough() {
 }
 
 #[test]
-#[ignore = "cannot be forced without a src/ change: the Lua case monkeypatches \
-    rollback_session.reconcile/add_authoritative_batch to count calls and force a divergence \
-    report; match_driver.rs (src, out of scope for this pass) calls \
-    gc_sim::rollback_session::{reconcile, add_authoritative_batch} directly as free functions with \
-    no injection seam, so there is no way to intercept or count those calls from a test without \
-    widening match_driver's internals -- report as needing a pub seam, not a test-only workaround"]
+#[ignore = "retired: the Lua forces this branch by reassigning a rollback_session function at runtime. It is NOT unreachable by Rust's types — the guard is a runtime earliest_divergence check, identical in both languages — but forcing it needs a trait object in match_driver's per-tick path, which is production structure serving a test. Decided against; see the module doc."]
 fn still_reconciles_if_a_local_insert_ever_reports_a_divergence() {
     unreachable!(
         "needs a call-count/injection seam into gc_sim::rollback_session; see the ignore reason"
@@ -1921,13 +1916,43 @@ fn still_reconciles_if_a_local_insert_ever_reports_a_divergence() {
 }
 
 #[test]
-#[ignore = "cannot be forced without a src/ change: the Lua case monkeypatches \
-    rollback_session.current_snapshot to count calls; match_driver.rs (src, out of scope for this \
-    pass) calls gc_sim::rollback_session::current_snapshot directly as a free function with no \
-    injection seam -- report as needing a pub seam, not a test-only workaround"]
 fn costs_no_extra_snapshot_work_when_a_peer_authors_only_its_control_slot() {
-    unreachable!(
-        "needs a call-count/injection seam into gc_sim::rollback_session; see the ignore reason"
+    // The Lua asserts this by replacing `rollback_session.current_snapshot` at
+    // runtime and counting calls. Rust cannot reassign a free function, and the
+    // alternative — a trait object in this module's per-tick path — would put
+    // production structure in service of a test. `MatchDriver::snapshot_captures`
+    // counts the same thing as a real diagnostic, which has the side benefit of
+    // being readable on a live session, where a test mock never is.
+    let mut state = harness(MatchMode::FourVFour, DriverHarnessOptions::default());
+    let guest = &state.drivers[1];
+    assert_eq!(
+        match_driver::diagnostics(guest).authored.len(),
+        1,
+        "4v4 guest should author only its own control slot"
+    );
+
+    let before = match_driver::diagnostics(guest).snapshot_captures;
+    for _ in 0..8 {
+        let _ = match_driver::advance(&mut state.drivers[1], Some(input_frame::neutral_sample()));
+    }
+    let after = match_driver::diagnostics(&state.drivers[1]).snapshot_captures;
+    assert_eq!(
+        after - before,
+        0,
+        "a singleton owned set still paid a capture-and-restore"
+    );
+
+    // And the peer that does author AI rows pays it once per step, not more.
+    let mut multi = harness(MatchMode::OneVOne, DriverHarnessOptions::default());
+    let multi_before = match_driver::diagnostics(&multi.drivers[0]).snapshot_captures;
+    for _ in 0..8 {
+        let _ = match_driver::advance(&mut multi.drivers[0], Some(input_frame::neutral_sample()));
+    }
+    let multi_after = match_driver::diagnostics(&multi.drivers[0]).snapshot_captures;
+    assert_eq!(
+        multi_after - multi_before,
+        8,
+        "authoring AI rows should cost exactly one capture per step"
     );
 }
 
@@ -2328,11 +2353,7 @@ fn reports_a_stalled_confirmation_at_the_step_it_becomes_permanent() {
 }
 
 #[test]
-#[ignore = "cannot be forced without a src/ change: the Lua case monkeypatches \
-    rollback_session.apply_authoritative_batch to force an `outside_window` rejection; \
-    match_driver.rs (src, out of scope for this pass) calls \
-    gc_sim::rollback_session::apply_authoritative_batch directly as a free function with no \
-    injection seam -- report as needing a pub seam, not a test-only workaround"]
+#[ignore = "retired: the Lua forces this branch by reassigning a rollback_session function at runtime. It is NOT unreachable by Rust's types — the guard is a runtime earliest_divergence check, identical in both languages — but forcing it needs a trait object in match_driver's per-tick path, which is production structure serving a test. Decided against; see the module doc."]
 fn maps_a_rejected_over_window_batch_onto_late_input_unreachable_by_design() {
     unreachable!(
         "needs a call-count/injection seam into gc_sim::rollback_session; see the ignore reason"

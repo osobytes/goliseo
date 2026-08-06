@@ -5,6 +5,7 @@
 //! with a reason. See the porting agent's final report for the breakdown.
 
 use gc_core::vec2::Vec2;
+use gc_data::tactics::MarkingScheme;
 use gc_sim::keeper::{self, KeeperBehaviorState, KeeperShotType};
 use gc_sim::r#match::{self as sim_match, NewMatchOptions, StepInput};
 use gc_sim::match_snapshot::{MatchEventKind, MatchInput, MatchState, PitchSize, Team};
@@ -926,95 +927,253 @@ fn distributes_to_a_teammate_instead_of_hoofing_it() {
 // ---------------------------------------------------------------------
 // match.step off-ball AI
 //
-// Every case below drives `match._offball_targets` directly (a pure
+// Every case below drives `match::offball_targets` directly (a pure
 // function of the top-of-tick snapshot) to inspect steering targets without
-// running a full step. `match.rs`'s equivalent, `offball_targets`, is a
-// module-private `fn` (see `crates/gc-sim/src/match.rs:2722`) — not `pub`,
-// not `pub(crate)` — so it is unreachable from an integration test in
-// `tests/`. README §5, rule 8 ("everything a test touches is `pub`") is not
-// satisfied for this function yet. Making it `pub` is a change to
-// `src/match.rs`, which this task explicitly does not own (another agent is
-// mid-fix there). Stubbed with the real name; see the final report.
+// running a full step. It is now `pub` (README §5 rule 8), so these port
+// directly against it, matching the Lua spec's own local helpers.
 // ---------------------------------------------------------------------
 
+/// Positions of every player, in canonical order — mirrors the Lua spec's
+/// own `pos_of(s)`.
+fn pos_of(s: &MatchState) -> Vec<Vec2> {
+    s.players.iter().map(|p| p.pos).collect()
+}
+
+// indices: home 1..5 (keeper 1), away 6..10 (keeper 6)
+const AWAY_CARRIER: i64 = 7;
+
+/// Home defenders (non-keeper, non-controlled) that received a target.
+fn home_targets(s: &MatchState, targets: &indexmap::IndexMap<i64, Vec2>) -> Vec<i64> {
+    let mut list = Vec::new();
+    for (index, player) in s.players.iter().enumerate() {
+        let player_index = index as i64 + 1;
+        if player.team == Team::Home && !player.is_keeper && targets.contains_key(&player_index) {
+            list.push(player_index);
+        }
+    }
+    list
+}
+
+/// Replicate the internal closest-to-carrier ordering for role identification.
+fn defender_order(s: &MatchState, p: &[Vec2]) -> Vec<i64> {
+    let mut order = Vec::new();
+    for (index, player) in s.players.iter().enumerate() {
+        let player_index = index as i64 + 1;
+        if player.team == Team::Home && !player.is_keeper && player_index != s.controlled {
+            order.push(player_index);
+        }
+    }
+    order.sort_by(|&a, &b| {
+        let da = p[(a - 1) as usize].dist(p[(AWAY_CARRIER - 1) as usize]);
+        let db = p[(b - 1) as usize].dist(p[(AWAY_CARRIER - 1) as usize]);
+        da.partial_cmp(&db)
+            .expect("distances are comparable")
+            .then(a.cmp(&b))
+    });
+    order
+}
+
+fn defending_state(scheme: Option<MarkingScheme>) -> MatchState {
+    let mut s = new_match();
+    if let Some(scheme) = scheme {
+        s.marking.home.scheme = scheme;
+    }
+    s.owner = Some(AWAY_CARRIER);
+    s.players[(AWAY_CARRIER - 1) as usize].pos = Vec2::new(480.0, 270.0);
+    s.ball = Vec2::new(480.0, 270.0);
+    // Spread the away side to its open-play anchors: kickoff clamps them
+    // to their own half, which would bunch every marker's man (and so the
+    // marker targets) right next to the carrier at the halfway line.
+    for (index, player) in s.players.iter_mut().enumerate() {
+        let player_index = index as i64 + 1;
+        if player.team == Team::Away && player_index != AWAY_CARRIER {
+            player.pos = player.anchor;
+        }
+    }
+    // This models settled open-play defending, not a restart: clear the
+    // kickoff hold that `new_match()` sets so pressing behaves normally.
+    s.kickoff_hold = 0.0;
+    s
+}
+
 #[test]
-#[ignore = "stub: named from spec/sim/match_spec.lua but the body is not written yet. \
-Visibility is no longer the blocker — offball_targets, resolve_collisions and \
-select_pass_target are pub as of the README §5 rule 8 fix."]
 fn sends_exactly_one_presser_to_the_carrier() {
-    unimplemented!("blocked on match::offball_targets visibility — see module comment above")
+    let tune = Tuning::new();
+    let mut s = defending_state(None);
+    let p = pos_of(&s);
+    let (targets, _urgent, _closing) = sim_match::offball_targets(&mut s, &p, None, &tune);
+    let carrier = s.players[(AWAY_CARRIER - 1) as usize].pos;
+    let mut near = 0;
+    for idx in home_targets(&s, &targets) {
+        let target = *targets.get(&idx).expect("home target is present");
+        if target.dist(carrier) <= 24.0 + 25.0 {
+            near += 1;
+        }
+    }
+    assert_eq!(near, 1, "exactly one defender presses; the rest hold shape");
 }
 
 #[test]
-#[ignore = "stub: named from spec/sim/match_spec.lua but the body is not written yet. \
-Visibility is no longer the blocker — offball_targets, resolve_collisions and \
-select_pass_target are pub as of the README §5 rule 8 fix."]
 fn holds_shape_instead_of_pressing_during_the_post_kickoff_hold() {
-    unimplemented!("blocked on match::offball_targets visibility — see module comment above")
+    let tune = Tuning::new();
+    let mut s = defending_state(None);
+    s.kickoff_hold = 2.5; // as set by place_kickoff on a restart
+    let p = pos_of(&s);
+    let (targets, _urgent, _closing) = sim_match::offball_targets(&mut s, &p, None, &tune);
+    let carrier = s.players[(AWAY_CARRIER - 1) as usize].pos;
+    let mut near = 0;
+    for idx in home_targets(&s, &targets) {
+        let target = *targets.get(&idx).expect("home target is present");
+        if target.dist(carrier) <= 24.0 + 25.0 {
+            near += 1;
+        }
+    }
+    assert_eq!(
+        near, 0,
+        "no defender presses the carrier while the kickoff hold is active"
+    );
 }
 
 #[test]
-#[ignore = "stub: named from spec/sim/match_spec.lua but the body is not written yet. \
-Visibility is no longer the blocker — offball_targets, resolve_collisions and \
-select_pass_target are pub as of the README §5 rule 8 fix."]
 fn positions_the_cover_goal_side_between_carrier_and_own_goal() {
-    unimplemented!("blocked on match::offball_targets visibility — see module comment above")
+    let tune = Tuning::new();
+    let mut s = defending_state(None);
+    let p = pos_of(&s);
+    let cover = defender_order(&s, &p).get(1).copied();
+    let (targets, _urgent, _closing) = sim_match::offball_targets(&mut s, &p, None, &tune);
+    let cover = cover.expect("a cover defender exists");
+    let target = *targets.get(&cover).expect("cover has a target");
+    assert!(
+        target.x > 5.0 && target.x < 480.0,
+        "cover sits between own goal and the carrier"
+    );
 }
 
 #[test]
-#[ignore = "stub: named from spec/sim/match_spec.lua but the body is not written yet. \
-Visibility is no longer the blocker — offball_targets, resolve_collisions and \
-select_pass_target are pub as of the README §5 rule 8 fix."]
 fn shifts_the_defensive_block_toward_the_ball_zonal() {
-    unimplemented!("blocked on match::offball_targets visibility — see module comment above")
+    let tune = Tuning::new();
+    let mut s = defending_state(Some(MarkingScheme::Zonal));
+    s.players[(AWAY_CARRIER - 1) as usize].pos = Vec2::new(480.0, 30.0); // ball high near the top
+    s.ball = Vec2::new(480.0, 30.0);
+    let p = pos_of(&s);
+    let rest = defender_order(&s, &p).get(2).copied(); // a zone-holding defender
+    let rest = rest.expect("a zonal defender exists");
+    let anchor_y = s.players[(rest - 1) as usize].anchor.y;
+    let (targets, _urgent, _closing) = sim_match::offball_targets(&mut s, &p, None, &tune);
+    let target = *targets.get(&rest).expect("rest has a target");
+    assert!(
+        target.y < anchor_y,
+        "the block slides up toward the high ball"
+    );
 }
 
 #[test]
-#[ignore = "stub: named from spec/sim/match_spec.lua but the body is not written yet. \
-Visibility is no longer the blocker — offball_targets, resolve_collisions and \
-select_pass_target are pub as of the README §5 rule 8 fix."]
 fn man_marks_an_opponent_on_the_goal_side() {
-    unimplemented!("blocked on match::offball_targets visibility — see module comment above")
+    let tune = Tuning::new();
+    let mut s = defending_state(Some(MarkingScheme::Man));
+    let p = pos_of(&s);
+    let (targets, _urgent, _closing) = sim_match::offball_targets(&mut s, &p, None, &tune);
+    let mut found = false;
+    for (index, mark) in s.marks.home.iter().enumerate() {
+        if let Some(opp) = mark {
+            found = true;
+            let def = index as i64 + 1;
+            let target = *targets.get(&def).expect("marker has a target");
+            assert!(
+                target.x <= s.players[(*opp - 1) as usize].pos.x + 1.0,
+                "marker stands goal-side (lower x) of its man"
+            );
+        }
+    }
+    assert!(found, "man scheme produced at least one mark");
 }
 
 #[test]
-#[ignore = "stub: named from spec/sim/match_spec.lua but the body is not written yet. \
-Visibility is no longer the blocker — offball_targets, resolve_collisions and \
-select_pass_target are pub as of the README §5 rule 8 fix."]
 fn only_man_hybrid_schemes_create_marking_assignments() {
-    unimplemented!("blocked on match::offball_targets visibility — see module comment above")
+    let tune = Tuning::new();
+    let marks_count = |scheme: MarkingScheme| -> usize {
+        let mut s = defending_state(Some(scheme));
+        let p = pos_of(&s);
+        sim_match::offball_targets(&mut s, &p, None, &tune);
+        s.marks.home.iter().filter(|m| m.is_some()).count()
+    };
+    assert_eq!(marks_count(MarkingScheme::Zonal), 0);
+    assert!(
+        marks_count(MarkingScheme::Man) >= 1,
+        "man scheme assigns marks"
+    );
+    assert!(
+        marks_count(MarkingScheme::Hybrid) >= 1,
+        "hybrid scheme assigns marks"
+    );
 }
 
 #[test]
-#[ignore = "stub: named from spec/sim/match_spec.lua but the body is not written yet. \
-Visibility is no longer the blocker — offball_targets, resolve_collisions and \
-select_pass_target are pub as of the README §5 rule 8 fix."]
 fn off_ball_attackers_leave_their_anchor_to_support_the_carrier() {
-    unimplemented!("blocked on match::offball_targets visibility — see module comment above")
+    let tune = Tuning::new();
+    let mut s = new_match();
+    let mut owner_idx: Option<i64> = None;
+    for (index, player) in s.players.iter().enumerate() {
+        let player_index = index as i64 + 1;
+        if player.team == Team::Home && !player.is_keeper && player_index != s.controlled {
+            owner_idx = Some(player_index);
+            break;
+        }
+    }
+    let owner_idx = owner_idx.expect("home has a non-keeper, non-controlled outfielder");
+    s.owner = Some(owner_idx);
+    s.players[(owner_idx - 1) as usize].pos = Vec2::new(500.0, 270.0);
+    s.ball = Vec2::new(500.0, 270.0);
+    let p = pos_of(&s);
+    let (targets, _urgent, _closing) = sim_match::offball_targets(&mut s, &p, None, &tune);
+    let mut moved = false;
+    for (index, player) in s.players.iter().enumerate() {
+        let player_index = index as i64 + 1;
+        if player.team == Team::Home
+            && !player.is_keeper
+            && let Some(target) = targets.get(&player_index)
+            && target.dist(player.anchor) > 1.0
+        {
+            moved = true;
+        }
+    }
+    assert!(
+        moved,
+        "an off-ball attacker repositioned off its anchor to support"
+    );
 }
 
 // ---------------------------------------------------------------------
 // match player collisions
 //
-// Both cases call `match._resolve_collisions` directly. `match.rs`'s
-// `resolve_collisions` (src/match.rs:3228) is module-private, same
-// unreachable-from-integration-test situation as `offball_targets` above.
+// Both cases call `match::resolve_collisions` directly, now `pub` (README
+// §5 rule 8).
 // ---------------------------------------------------------------------
 
 #[test]
-#[ignore = "stub: named from spec/sim/match_spec.lua but the body is not written yet. \
-Visibility is no longer the blocker — offball_targets, resolve_collisions and \
-select_pass_target are pub as of the README §5 rule 8 fix."]
 fn pushes_overlapping_players_apart_to_at_least_their_combined_radius() {
-    unimplemented!("blocked on match::resolve_collisions visibility — see module comment above")
+    let mut s = new_match();
+    s.players[1].pos = Vec2::new(200.0, 500.0); // empty corner, away from other players
+    s.players[2].pos = Vec2::new(210.0, 500.0); // 10px apart, radii 12+12=24 -> overlapping
+    sim_match::resolve_collisions(&mut s);
+    let a = s.players[1].pos;
+    let b = s.players[2].pos;
+    assert!(a.dist(b) >= 23.9, "bodies separated to ~combined radius");
 }
 
 #[test]
-#[ignore = "stub: named from spec/sim/match_spec.lua but the body is not written yet. \
-Visibility is no longer the blocker — offball_targets, resolve_collisions and \
-select_pass_target are pub as of the README §5 rule 8 fix."]
 fn a_sliding_player_barges_through_and_stuns_the_one_it_hits() {
-    unimplemented!("blocked on match::resolve_collisions visibility — see module comment above")
+    let mut s = new_match();
+    // home vs away
+    s.players[1].pos = Vec2::new(200.0, 500.0);
+    s.players[1].slide_timer = 0.3;
+    s.players[7].pos = Vec2::new(210.0, 500.0);
+    s.players[7].stun_timer = 0.0;
+    sim_match::resolve_collisions(&mut s);
+    assert!(
+        s.players[7].stun_timer > 0.0,
+        "the player hit by the slide is knocked off balance"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -1713,13 +1872,22 @@ fn the_keeper_lobs_over_a_defender_on_its_throwing_lane_and_lands_near_a_mate() 
 // ---------------------------------------------------------------------
 
 #[test]
-#[ignore = "stub: named from spec/sim/match_spec.lua but the body is not written yet. \
-Visibility is no longer the blocker — offball_targets, resolve_collisions and \
-select_pass_target are pub as of the README §5 rule 8 fix."]
 fn opponents_keep_clear_of_a_keeper_holding_the_ball() {
-    unimplemented!(
-        "blocked on match::offball_targets visibility — see the off-ball-AI module comment"
-    )
+    let tune = Tuning::new();
+    let mut s = new_match();
+    let ki = keeper_index(&s, Team::Home);
+    s.owner = Some(ki);
+    s.players[(ki - 1) as usize].pos = Vec2::new(40.0, 270.0);
+    // an away outfielder camped right on the keeper
+    let att: i64 = 7;
+    s.players[(att - 1) as usize].pos = Vec2::new(55.0, 270.0);
+    let p = pos_of(&s);
+    let (targets, _urgent, _closing) = sim_match::offball_targets(&mut s, &p, None, &tune);
+    let target = *targets.get(&att).expect("the opponent has a target");
+    assert!(
+        target.dist(s.players[(ki - 1) as usize].pos) >= 69.9,
+        "its target is pushed outside the keeper's respect ring"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -2268,13 +2436,37 @@ fn the_keeper_floats_its_distribution_over_a_chaser_who_could_cut_it() {
 // ---------------------------------------------------------------------
 
 #[test]
-#[ignore = "stub: named from spec/sim/match_spec.lua but the body is not written yet. \
-Visibility is no longer the blocker — offball_targets, resolve_collisions and \
-select_pass_target are pub as of the README §5 rule 8 fix."]
 fn chasers_lead_a_rolling_ball_instead_of_trailing_it() {
-    unimplemented!(
-        "blocked on match::offball_targets visibility — see the off-ball-AI module comment"
-    )
+    let tune = Tuning::new();
+    let mut s = new_match();
+    s.owner = None;
+    s.pickup_cd = 1.0;
+    s.ball = Vec2::new(700.0, 400.0); // open space: no player is standing on it
+    s.ball_vel = Vec2::new(200.0, 0.0); // rolling toward the away goal
+    let pos = pos_of(&s);
+    let (targets, _urgent, _closing) = sim_match::offball_targets(&mut s, &pos, None, &tune);
+    // The away press-set chaser (nearest away outfielder to the ball).
+    let mut chaser: Option<i64> = None;
+    let mut best_d: Option<f64> = None;
+    for (index, player) in s.players.iter().enumerate() {
+        if player.team == Team::Away && !player.is_keeper {
+            let d = player.pos.dist(s.ball);
+            if best_d.is_none_or(|b| d < b) {
+                best_d = Some(d);
+                chaser = Some(index as i64 + 1);
+            }
+        }
+    }
+    let chaser = chaser.expect("away has a chaser");
+    let target = *targets.get(&chaser).expect("the chaser has a target");
+    assert!(
+        target.x > s.ball.x,
+        "it aims ahead of the ball along its path"
+    );
+    assert!(
+        (target.y - s.ball.y).abs() <= 1e-6,
+        "the lead stays on the ball's line"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -3232,38 +3424,137 @@ fn a_human_lofted_pass_from_wide_targets_the_box_runner() {
 // ---------------------------------------------------------------------
 // match teammate awareness
 //
-// All three cases call `match._offball_targets` directly — see the
-// off-ball-AI module comment above for why that is unreachable here.
+// All three cases call `match::offball_targets` directly, now `pub`.
 // ---------------------------------------------------------------------
 
 #[test]
-#[ignore = "stub: named from spec/sim/match_spec.lua but the body is not written yet. \
-Visibility is no longer the blocker — offball_targets, resolve_collisions and \
-select_pass_target are pub as of the README §5 rule 8 fix."]
 fn an_ai_teammate_claims_a_loose_ball_that_lands_near_it() {
-    unimplemented!(
-        "blocked on match::offball_targets visibility — see the off-ball-AI module comment"
-    )
+    let tune = Tuning::new();
+    let mut s = new_match();
+    s.owner = None;
+    s.pickup_cd = 1.0;
+    // The HUMAN is nearest the ball (would previously eat the whole chase
+    // allocation); an AI teammate 70px away must still go claim it.
+    s.ball = Vec2::new(480.0, 300.0);
+    s.ball_vel = Vec2::new(0.0, 0.0);
+    let controlled = s.controlled;
+    s.players[(controlled - 1) as usize].pos = Vec2::new(480.0, 320.0); // human nearest
+    let mut mate: Option<i64> = None;
+    for (index, player) in s.players.iter_mut().enumerate() {
+        let player_index = index as i64 + 1;
+        if player.team == Team::Home && !player.is_keeper && player_index != controlled {
+            mate = Some(player_index);
+            player.pos = Vec2::new(480.0, 230.0); // 70px off: inside the magnet
+            break;
+        }
+    }
+    let mate = mate.expect("home has an AI teammate");
+    let pos = pos_of(&s);
+    let (targets, _urgent, _closing) = sim_match::offball_targets(&mut s, &pos, None, &tune);
+    let target = *targets.get(&mate).expect("the teammate has a target");
+    assert!(
+        target.dist(s.ball) < 40.0,
+        "and it is the ball, not a shape point"
+    );
 }
 
 #[test]
-#[ignore = "stub: named from spec/sim/match_spec.lua but the body is not written yet. \
-Visibility is no longer the blocker — offball_targets, resolve_collisions and \
-select_pass_target are pub as of the README §5 rule 8 fix."]
 fn a_nearby_supporter_triangulates_offers_a_short_angled_option() {
-    unimplemented!(
-        "blocked on match::offball_targets visibility — see the off-ball-AI module comment"
-    )
+    let tune = Tuning::new();
+    let mut s = new_match();
+    let controlled = s.controlled;
+    let mut carrier: Option<i64> = None;
+    for (index, player) in s.players.iter().enumerate() {
+        let player_index = index as i64 + 1;
+        if player.team == Team::Home && !player.is_keeper && player_index != controlled {
+            carrier = Some(player_index);
+            break;
+        }
+    }
+    let carrier = carrier.expect("home has a carrier candidate");
+    s.owner = Some(carrier);
+    s.players[(carrier - 1) as usize].pos = Vec2::new(500.0, 270.0);
+    s.players[(carrier - 1) as usize].facing = Vec2::new(1.0, 0.0);
+    s.ball = Vec2::new(518.0, 270.0);
+    let mut supporter: Option<i64> = None;
+    for (index, player) in s.players.iter_mut().enumerate() {
+        let player_index = index as i64 + 1;
+        if player.team == Team::Home
+            && !player.is_keeper
+            && player_index != controlled
+            && player_index != carrier
+        {
+            supporter = Some(player_index);
+            player.pos = Vec2::new(420.0, 300.0); // near the play
+            // Park its anchor-region under opponents so base spots score badly.
+            player.anchor = Vec2::new(300.0, 300.0);
+            break;
+        }
+    }
+    let supporter = supporter.expect("home has a supporter candidate");
+    for (index, player) in s.players.iter_mut().enumerate() {
+        let player_index = index as i64 + 1;
+        if player.team == Team::Away && !player.is_keeper {
+            // crowd the base area
+            player.pos = Vec2::new(
+                300.0 + (player_index % 3) as f64 * 60.0,
+                240.0 + (player_index % 2) as f64 * 90.0,
+            );
+        }
+    }
+    let carrier_pos = s.players[(carrier - 1) as usize].pos;
+    let pos = pos_of(&s);
+    let (targets, _urgent, _closing) = sim_match::offball_targets(&mut s, &pos, None, &tune);
+    let target = *targets.get(&supporter).expect("supporter has a target");
+    assert!(
+        target.dist(carrier_pos) < 170.0 + 80.0,
+        "the supporter comes short to a triangle spot near the carrier"
+    );
 }
 
 #[test]
-#[ignore = "stub: named from spec/sim/match_spec.lua but the body is not written yet. \
-Visibility is no longer the blocker — offball_targets, resolve_collisions and \
-select_pass_target are pub as of the README §5 rule 8 fix."]
 fn supporters_do_not_clog_the_carriers_dribbling_path() {
-    unimplemented!(
-        "blocked on match::offball_targets visibility — see the off-ball-AI module comment"
-    )
+    let tune = Tuning::new();
+    let mut s = new_match();
+    let controlled = s.controlled;
+    let mut carrier: Option<i64> = None;
+    for (index, player) in s.players.iter().enumerate() {
+        let player_index = index as i64 + 1;
+        if player.team == Team::Home && !player.is_keeper && player_index != controlled {
+            carrier = Some(player_index);
+            break;
+        }
+    }
+    let carrier = carrier.expect("home has a carrier candidate");
+    s.owner = Some(carrier);
+    s.players[(carrier - 1) as usize].pos = Vec2::new(400.0, 270.0);
+    s.players[(carrier - 1) as usize].facing = Vec2::new(1.0, 0.0);
+    s.ball = Vec2::new(418.0, 270.0);
+    let mut supporter: Option<i64> = None;
+    for (index, player) in s.players.iter_mut().enumerate() {
+        let player_index = index as i64 + 1;
+        if player.team == Team::Home
+            && !player.is_keeper
+            && player_index != controlled
+            && player_index != carrier
+        {
+            supporter = Some(player_index);
+            player.pos = Vec2::new(500.0, 270.0);
+            player.anchor = Vec2::new(430.0, 270.0); // base spot lands right on the path
+            break;
+        }
+    }
+    let supporter = supporter.expect("home has a supporter candidate");
+    let carrier_pos = s.players[(carrier - 1) as usize].pos;
+    let carrier_facing = s.players[(carrier - 1) as usize].facing;
+    let ahead = carrier_pos.add(carrier_facing.scale(120.0));
+    let pos = pos_of(&s);
+    let (targets, _urgent, _closing) = sim_match::offball_targets(&mut s, &pos, None, &tune);
+    let target = *targets.get(&supporter).expect("supporter has a target");
+    assert!(
+        target.dist(ahead) > 65.0,
+        "the spot right ahead of the carrier is vacated"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -3403,24 +3694,69 @@ fn a_directed_header_goes_where_you_aim() {
 // match positional calm
 // ---------------------------------------------------------------------
 
-#[test]
-#[ignore = "stub: named from spec/sim/match_spec.lua but the body is not written yet. \
-Visibility is no longer the blocker — offball_targets, resolve_collisions and \
-select_pass_target are pub as of the README §5 rule 8 fix."]
-fn a_player_at_their_role_spot_stands_still_instead_of_shuffling() {
-    unimplemented!(
-        "blocked on match::offball_targets visibility — see the off-ball-AI module comment"
-    )
+// A home defender in a positional (non-urgent) role, parked exactly on its
+// zone spot with a static loose ball (nobody may collect it): the target
+// geometry stays put, so any movement is shuffle, not repositioning.
+fn calm_setup(tune: &Tuning) -> (MatchState, i64) {
+    let mut s = new_match();
+    s.owner = None;
+    s.pickup_cd = 60.0;
+    s.ball = Vec2::new(480.0, 300.0);
+    s.ball_vel = Vec2::new(0.0, 0.0);
+    let controlled = s.controlled;
+    s.players[(controlled - 1) as usize].pos = Vec2::new(100.0, 60.0); // human out of the way
+    let pos = pos_of(&s);
+    let (targets, urgent, _closing) = sim_match::offball_targets(&mut s, &pos, None, tune);
+    let mut calm_idx: Option<i64> = None;
+    for (index, player) in s.players.iter().enumerate() {
+        let player_index = index as i64 + 1;
+        if player.team == Team::Home
+            && !player.is_keeper
+            && player_index != controlled
+            && targets.contains_key(&player_index)
+            && !urgent.get(&player_index).copied().unwrap_or(false)
+            && player.pos.dist(s.ball) > 150.0
+        // well outside the ball magnet
+        {
+            calm_idx = Some(player_index);
+            break;
+        }
+    }
+    let calm_idx = calm_idx.expect("a calm defender exists");
+    let target = *targets.get(&calm_idx).expect("calm player has a target");
+    s.players[(calm_idx - 1) as usize].pos = target; // already at the spot
+    s.players[(calm_idx - 1) as usize].run_vel = Vec2::new(0.0, 0.0);
+    (s, calm_idx)
 }
 
 #[test]
-#[ignore = "stub: named from spec/sim/match_spec.lua but the body is not written yet. \
-Visibility is no longer the blocker — offball_targets, resolve_collisions and \
-select_pass_target are pub as of the README §5 rule 8 fix."]
+fn a_player_at_their_role_spot_stands_still_instead_of_shuffling() {
+    let tune = Tuning::new();
+    let (mut s, idx) = calm_setup(&tune);
+    let start = s.players[(idx - 1) as usize].pos;
+    for _ in 0..45 {
+        step(&mut s, 1.0 / 60.0, &no_input(), &tune);
+    }
+    assert!(
+        s.players[(idx - 1) as usize].pos.dist(start) < 10.0,
+        "no back-and-forth: they plant at the spot"
+    );
+}
+
+#[test]
 fn they_walk_again_once_the_spot_drifts_meaningfully_away() {
-    unimplemented!(
-        "blocked on match::offball_targets visibility — see the off-ball-AI module comment"
-    )
+    let tune = Tuning::new();
+    let (mut s, idx) = calm_setup(&tune);
+    // Displace the player well beyond the wake radius from their spot.
+    s.players[(idx - 1) as usize].pos = s.players[(idx - 1) as usize].pos.add(Vec2::new(80.0, 0.0));
+    let start = s.players[(idx - 1) as usize].pos;
+    for _ in 0..45 {
+        step(&mut s, 1.0 / 60.0, &no_input(), &tune);
+    }
+    assert!(
+        s.players[(idx - 1) as usize].pos.dist(start) > 25.0,
+        "far from the spot: they move to it"
+    );
 }
 
 #[test]
@@ -4529,13 +4865,37 @@ fn a_blind_pass_under_no_aim_never_dumps_the_ball_at_the_keeper() {
 }
 
 #[test]
-#[ignore = "stub: named from spec/sim/match_spec.lua but the body is not written yet. \
-Visibility is no longer the blocker — offball_targets, resolve_collisions and \
-select_pass_target are pub as of the README §5 rule 8 fix."]
 fn aim_square_at_the_keeper_beats_a_nearer_mid_lane_teammate() {
-    unimplemented!(
-        "blocked: match::select_pass_target (src/match.rs:1423) is module-private, not reachable from integration tests"
-    )
+    let mut s = new_match();
+    setup_backpass(&mut s);
+    // A defender hovers near the back-pass lane, better aligned under the
+    // generic scoring (closer, nearly on-axis) — dead-on aim at the keeper
+    // must still pick the keeper.
+    let controlled = s.controlled;
+    let mut defender: Option<i64> = None;
+    for (index, player) in s.players.iter().enumerate() {
+        let player_index = index as i64 + 1;
+        if player.team == Team::Home && player_index != controlled && !player.is_keeper {
+            defender = Some(player_index);
+            break;
+        }
+    }
+    let defender = defender.expect("home fixture has a defender");
+    s.players[(defender - 1) as usize].pos = Vec2::new(150.0, 255.0);
+    let at_keeper =
+        sim_match::select_pass_target(&s, controlled, false, Some(Vec2::new(-1.0, 0.0)), None);
+    assert_eq!(at_keeper, Some(1), "square aim is a deliberate back-pass");
+    // Aim at the defender instead: the keeper must not hijack the pass.
+    let aim = s.players[(defender - 1) as usize]
+        .pos
+        .sub(s.players[(controlled - 1) as usize].pos)
+        .normalized();
+    let at_defender = sim_match::select_pass_target(&s, controlled, false, Some(aim), None);
+    assert_eq!(
+        at_defender,
+        Some(defender),
+        "aiming at the defender still reaches the defender"
+    );
 }
 
 #[test]
@@ -4641,28 +5001,62 @@ fn a_keeper_with_the_ball_at_its_feet_can_be_tackled() {
 // ---------------------------------------------------------------------
 // match tap-pass proximity (closest along the aim)
 //
-// Both cases call `match._select_pass_target` directly — same
-// module-private situation as the back-pass "aim square" case above.
+// Both cases call `match::select_pass_target` directly, now `pub`.
 // ---------------------------------------------------------------------
 
-#[test]
-#[ignore = "stub: named from spec/sim/match_spec.lua but the body is not written yet. \
-Visibility is no longer the blocker — offball_targets, resolve_collisions and \
-select_pass_target are pub as of the README §5 rule 8 fix."]
-fn a_tap_picks_the_near_man_even_with_a_far_one_better_aligned() {
-    unimplemented!(
-        "blocked: match::select_pass_target (src/match.rs:1423) is module-private, not reachable from integration tests"
-    )
+// Passer facing +x with a near teammate 45 degrees off the aim and a far
+// one dead ahead; everyone else parked, opponents away.
+fn tap_pass_setup(s: &mut MatchState) -> (Option<i64>, Option<i64>) {
+    let passer = s.controlled;
+    s.players[(passer - 1) as usize].pos = Vec2::new(300.0, 270.0);
+    s.players[(passer - 1) as usize].facing = Vec2::new(1.0, 0.0);
+    s.owner = Some(passer);
+    s.ball = Vec2::new(318.0, 270.0);
+    let mut near: Option<i64> = None;
+    let mut far: Option<i64> = None;
+    for (index, player) in s.players.iter_mut().enumerate() {
+        let player_index = index as i64 + 1;
+        if player.team == Team::Home && !player.is_keeper && player_index != passer {
+            if near.is_none() {
+                near = Some(player_index);
+                player.pos = Vec2::new(390.0, 360.0); // 127px away, ~45 deg off the aim
+            } else if far.is_none() {
+                far = Some(player_index);
+                player.pos = Vec2::new(700.0, 270.0); // 400px away, dead on the aim
+            } else {
+                player.pos = Vec2::new(60.0, 60.0 + player_index as f64 * 30.0);
+            }
+        } else if player.team == Team::Away {
+            player.pos = Vec2::new(900.0, 40.0 + player_index as f64 * 40.0);
+        }
+    }
+    (near, far)
 }
 
 #[test]
-#[ignore = "stub: named from spec/sim/match_spec.lua but the body is not written yet. \
-Visibility is no longer the blocker — offball_targets, resolve_collisions and \
-select_pass_target are pub as of the README §5 rule 8 fix."]
+fn a_tap_picks_the_near_man_even_with_a_far_one_better_aligned() {
+    let mut s = new_match();
+    let (near, _far) = tap_pass_setup(&mut s);
+    let target =
+        sim_match::select_pass_target(&s, s.controlled, false, Some(Vec2::new(1.0, 0.0)), None);
+    assert_eq!(
+        target, near,
+        "quick passes go short to the man you point at"
+    );
+}
+
+#[test]
 fn a_charged_pass_still_picks_out_the_far_man_by_range() {
-    unimplemented!(
-        "blocked: match::select_pass_target (src/match.rs:1423) is module-private, not reachable from integration tests"
-    )
+    let mut s = new_match();
+    let (_near, far) = tap_pass_setup(&mut s);
+    let target = sim_match::select_pass_target(
+        &s,
+        s.controlled,
+        false,
+        Some(Vec2::new(1.0, 0.0)),
+        Some(400.0),
+    );
+    assert_eq!(target, far, "the charge is how you reach the long option");
 }
 
 // ---------------------------------------------------------------------

@@ -540,6 +540,8 @@ pub struct InputPacketArrival {
 /// A full read of [`MatchDriver`]'s observable state. Mirrors
 /// `MatchDriverDiagnostics`.
 pub struct MatchDriverDiagnostics {
+    /// Present-boundary captures so far. See [`MatchDriver::snapshot_captures`].
+    pub snapshot_captures: i64,
     /// Which side of the session this driver runs.
     pub role: DriverRole,
     /// This peer's own id.
@@ -598,6 +600,19 @@ pub struct MatchDriverDiagnostics {
 
 /// One peer's OMP-3 online match driver. See the module doc.
 pub struct MatchDriver {
+    /// How many times this driver has captured the present boundary.
+    ///
+    /// A diagnostic, not simulation state — it never affects a hash. It exists
+    /// because "authoring only your own control slot costs no extra snapshot
+    /// work" is a real invariant with no other observable: the Lua spec asserts
+    /// it by replacing `rollback_session.current_snapshot` at runtime, which
+    /// Rust cannot do without putting a trait object in this module's per-tick
+    /// path. A counter is the smaller change, and unlike a test mock it is also
+    /// readable on a live session.
+    ///
+    /// `Cell` because the capture happens behind `&MatchDriver`; making it `&mut`
+    /// would cascade through call sites that have no other reason to need one.
+    pub snapshot_captures: std::cell::Cell<i64>,
     /// Which side of the session this driver runs.
     pub role: DriverRole,
     /// This peer's own id.
@@ -825,6 +840,9 @@ fn boundary_state(driver: &MatchDriver, boundary: i64) -> MatchState {
 }
 
 fn present_state(driver: &MatchDriver) -> (MatchState, Option<CombatMatchState>) {
+    driver
+        .snapshot_captures
+        .set(driver.snapshot_captures.get() + 1);
     match_snapshot::restore(&rollback_session::current_snapshot(&driver.session))
 }
 
@@ -2154,6 +2172,7 @@ pub fn new(options: MatchDriverOptions) -> MatchDriver {
     let first_input_tick = freeze.first_input_tick;
 
     let mut driver = MatchDriver {
+        snapshot_captures: std::cell::Cell::new(0),
         role,
         peer_id,
         manifest,
@@ -2474,6 +2493,7 @@ pub fn diagnostics(driver: &MatchDriver) -> MatchDriverDiagnostics {
         .cloned()
         .unwrap_or_default();
     MatchDriverDiagnostics {
+        snapshot_captures: driver.snapshot_captures.get(),
         role: driver.role,
         peer_id: driver.peer_id.clone(),
         status: driver.status,
