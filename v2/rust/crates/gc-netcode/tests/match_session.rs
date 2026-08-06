@@ -577,6 +577,10 @@ fn online_match_request_refuses_a_non_combat_snapshot_contract() {
 }
 
 #[test]
+// Clippy objects that this asserts on a constant, which is precisely the point:
+// the value IS the contract. Pinning it here means a later edit to the constant
+// fails a named test instead of silently changing online behaviour.
+#[allow(clippy::assertions_on_constants)]
 fn keeper_control_is_off_in_every_online_mode() {
     // Pinned in one place so the deliberate divergence from solo play is not
     // "fixed" as a bug later — see the module doc comment.
