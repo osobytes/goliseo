@@ -531,6 +531,17 @@ pub struct MeasureOpts<'a> {
     pub baseline_version: Option<i64>,
     /// Probe override; the identity records what actually ran.
     pub seeds: Option<&'a [i64]>,
+    /// Knob overrides applied on top of the defaults, in `sweep::parse_blob`'s
+    /// `KEY=value` form. `None` means the empty blob — every knob at its
+    /// default, which is what a freeze measures.
+    ///
+    /// Exposed so a caller can measure a *candidate* tuning against the frozen
+    /// one, which is the tool's natural job and is also how
+    /// `spec/sim/outfield_ai_baseline_spec.lua`'s "detects a real policy change"
+    /// case ports: the Lua assigns to a live knob's `default`, which a `static`
+    /// cannot do, but setting the same knob through the blob changes how the
+    /// match is actually played in exactly the same way.
+    pub tuning_blob: Option<&'a str>,
 }
 
 fn baseline_stat(
@@ -609,7 +620,7 @@ pub fn measure(opts: &MeasureOpts<'_>) -> OutfieldAiBaselineRecord {
         bot: Some(HeadlessBot::None),
         // Empty blob = every knob at its default, applied and restored per
         // match, so a stray in-process nudge cannot leak into the freeze.
-        tuning_blob: Some(""),
+        tuning_blob: Some(opts.tuning_blob.unwrap_or("")),
         ..Default::default()
     });
     let stats = build_stats(&batch.agg);

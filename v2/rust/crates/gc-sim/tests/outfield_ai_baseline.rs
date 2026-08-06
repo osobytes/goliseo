@@ -515,10 +515,12 @@ fn outfield_ai_baseline_reproduces_a_fresh_run_of_the_fixture_exactly() {
     let first = sut::measure(&sut::MeasureOpts {
         baseline_version: None,
         seeds: Some(&seeds),
+        tuning_blob: None,
     });
     let second = sut::measure(&sut::MeasureOpts {
         baseline_version: None,
         seeds: Some(&seeds),
+        tuning_blob: None,
     });
     let comparison = sut::compare(&first, &second);
     assert!(
@@ -528,28 +530,46 @@ fn outfield_ai_baseline_reproduces_a_fresh_run_of_the_fixture_exactly() {
     assert_eq!(first.signature, second.signature);
 }
 
+// The Lua sets `AI_SHOOT_RANGE`'s knob default to its max, replays the SAME
+// seeds, and requires the recording to move — "doubling AI shoot range must move
+// the recording, not be absorbed". A `static` KNOBS table cannot be assigned to,
+// so this was retired.
+//
+// It does not need to be. `measure` already plays every match through a tuning
+// blob; the Lua's mutation and a blob that sets the same knob change how the
+// match is played identically. `MeasureOpts::tuning_blob` makes that reachable.
+//
+// The Lua case asserts two halves. This covers the end-to-end half — a real
+// policy change moves the recording. The identity half ("and it is visible as a
+// policy change") is covered by `outfield_ai_policy`'s
+// `detects_a_changed_ai_knob_default`, which perturbs the declared surface and
+// asserts the id moves. A blob cannot cover it, because the id hashes the
+// declared *defaults*, not the live values — which is itself the right design:
+// an in-session nudge is not a new shipped policy.
 #[test]
-#[ignore = "retired: Lua mutates the global tuning knob registry's default value at runtime \
-            (`tuning.by_key[\"AI_SHOOT_RANGE\"].default = knob.max`) to prove a policy \
-            change moves the recording. crate::tuning::KNOBS is a `pub static &'static \
-            [Knob]` -- compile-time-immutable by design (see tuning.rs's module doc: the \
-            Lua global singleton was deliberately replaced with an explicit owned Tuning \
-            value, AGENTS.md §3 forbids stray mutable globals). There is no equivalent \
-            mutation point in this port: a knob DEFAULT is baked into the static registry, \
-            not a runtime Tuning value, so actually re-running the fixture under a changed \
-            policy has no Rust-shaped equivalent short of adding mutable global state the \
-            rest of the port deliberately removed. The half of the invariant that does not \
-            need a live mutation -- that a policy change which moves a metric is flagged as \
-            a hard failure rather than absorbed or downgraded to a staleness warning -- is \
-            covered by outfield_ai_baseline_still_fails_when_a_changed_policy_actually_moves_a_metric \
-            above, which drives sut::compare() directly against a hand-built record carrying \
-            both a changed policy_id and a moved stat. What that test cannot cover, and \
-            nothing in this port can, is measure() itself reacting to a real knob-default \
-            mutation, because no such mutation is representable at runtime."]
 fn outfield_ai_baseline_detects_a_real_policy_change_by_re_running_the_fixture() {
-    unimplemented!(
-        "needs a way to mutate crate::tuning::KNOBS's default at runtime, which \
-         this port's architecture does not provide (see #[ignore] reason)"
+    let seeds = [sut::SEED_FIRST, sut::SEED_FIRST + 1];
+    let before = sut::measure(&sut::MeasureOpts {
+        baseline_version: None,
+        seeds: Some(&seeds),
+        tuning_blob: None,
+    });
+
+    let widened = gc_sim::tuning::KNOBS
+        .iter()
+        .find(|k| k.key == "AI_SHOOT_RANGE")
+        .expect("AI_SHOOT_RANGE is a declared knob");
+    let blob = format!("{}={}", widened.key, widened.max);
+    let after = sut::measure(&sut::MeasureOpts {
+        baseline_version: None,
+        seeds: Some(&seeds),
+        tuning_blob: Some(&blob),
+    });
+
+    let comparison = sut::compare(&before, &after);
+    assert!(
+        !comparison.ok,
+        "widening AI shoot range to its max must move the recording, not be absorbed"
     );
 }
 
@@ -559,6 +579,7 @@ fn outfield_ai_baseline_cannot_mistake_a_probe_run_for_the_frozen_freeze() {
     let probe = sut::measure(&sut::MeasureOpts {
         baseline_version: None,
         seeds: Some(&seeds),
+        tuning_blob: None,
     });
     assert_eq!(probe.identity.seed_count, 1);
     assert_ne!(
