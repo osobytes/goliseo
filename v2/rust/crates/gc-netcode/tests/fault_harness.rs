@@ -362,13 +362,18 @@ fn moves_the_live_slot_by_putting_a_real_switch_edge_on_the_stream() {
 // "online fault harness" — blocked (see module doc)
 // ---------------------------------------------------------------------------
 
-const BLOCKED: &str = "blocked on building a live FaultHarness: needs crate::coordinator, \
-    crate::match_manifest, crate::match_session, crate::protocol, crate::protocol_fixture \
-    (NOT YET PORTED placeholders in this crate, owned by concurrent agents) and \
+const BLOCKED: &str = "blocked on a live crate::fault_harness::FaultHarness, which this crate does \
+    not build yet: crate::coordinator, crate::protocol, crate::protocol_fixture, \
+    crate::match_manifest, crate::match_session, and crate::fake_star are all ported and proven \
+    (see crates/gc-netcode/tests/match_driver.rs's real-Lua differential test), so the hard \
+    blocker is gone -- what remains is real, bounded construction/lifecycle work \
+    (crate::fault_harness's module doc names the exact design) that this pass did not reach. \
     game/online/lobby_link.lua, game/online/net_diagnostics.lua, \
-    game/online/match_presentation.lua, game/screens/online_match_model.lua, \
-    game/transport/fake_relay.lua, game/transport/fake_star.lua (permanently \
-    TypeScript-owned, v2/README.md §2). See crate::fault_harness's module doc.";
+    game/online/match_presentation.lua, game/screens/online_match_model.lua, and \
+    game/transport/fake_relay.lua stay permanently TypeScript-owned (v2/README.md §2), so a \
+    live harness would still skip the presentation/diagnostics-derived findings those own, \
+    declared the way crate::fault_harness::declare_contingent already declares the combat-phase \
+    and browser-multi-context rows.";
 
 #[test]
 #[ignore = "blocked on a live FaultHarness; see BLOCKED"]

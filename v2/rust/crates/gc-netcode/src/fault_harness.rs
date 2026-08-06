@@ -10,30 +10,49 @@
 //! written with that incident in mind (see "Making a failure impossible to
 //! miss").
 //!
-//! # Why most of the lifecycle is not ported here
+//! # Why the live harness is still not built here
 //!
 //! `fault_harness.lua` wires together nine other modules
 //! (`game/online/fault_harness.lua:50-67`):
 //!
 //! | Module | Status in this crate |
 //! | --- | --- |
-//! | `coordinator` | `NOT YET PORTED` placeholder, owned by a concurrent agent |
-//! | `DiagnosticTransport`, `lobby_link`, `match_presentation`, `net_diagnostics`, `online_match_model` | TypeScript-owned (`v2/README.md` §2); no Rust type exists or is planned |
-//! | `match_manifest`, `match_session`, `protocol`, `protocol_fixture` | `NOT YET PORTED` placeholders, owned by concurrent agents |
-//! | `FakeRelayTransport`, `FakeStarTransport`, `transport_contract` | TypeScript-owned; see `crate::fault_transport`'s module doc |
-//! | `fault_transport`, `match_driver`, `input_frame`, `match_snapshot`, `rollback_input_history` | **available**, used below |
+//! | `coordinator`, `protocol`, `protocol_fixture`, `match_manifest`, `match_session` | **ported** (`crate::coordinator`, `crate::protocol`, `crate::protocol_fixture`, `crate::match_manifest`, `crate::match_session`) |
+//! | `FakeStarTransport` | **ported** (`crate::fake_star`) — a real in-process Rust star, written for this same effort |
+//! | `DiagnosticTransport`, `lobby_link`, `match_presentation`, `net_diagnostics`, `online_match_model`, `FakeRelayTransport` | TypeScript-owned (`v2/README.md` §2); no Rust type exists or is planned |
+//! | `fault_transport`, `match_driver`, `match_driver_fixture`, `input_frame`, `match_snapshot`, `rollback_input_history` | **available**, used below |
 //!
-//! Every function that builds or drives a live `FaultHarness` —
-//! construction, the pre-match control lifecycle, `start_match`, `advance`,
-//! `teardown`, and the parts of `report` that read a client's presentation
-//! timeline, session model, or exported diagnostics artifact — needs at
-//! least one of the blocked modules and is **not ported**. What *is* ported
-//! is everything that does not: the deterministic scripted-input generator
-//! ([`scripted_sample`]), every constant, the resource gates ([`Gates`]),
-//! and the comparison logic that only needs data this crate can already
-//! produce — [`compare_checkpoints`] and [`compare_status`] are ported as
-//! pure functions over a minimal per-client view
-//! ([`ClientCheckpoints`]/[`ClientStatus`]) instead of a live
+//! So the hard blocker — no coordinator, no protocol, no star — is gone.
+//! What is left is real but bounded implementation work this pass did not
+//! reach: `fault_harness.new` drives N independent
+//! [`coordinator::CoordinatorState`]s through handshake/manifest/assignment/
+//! ready/countdown over real [`crate::fake_star::FakeStarTransport`]/
+//! [`crate::fault_transport::FaultTransport`] links (the sequence is fully
+//! worked out — see `crate::coordinator_driver::Driver::reach_start` for the
+//! identical event order over a fake link, and this module doc's git history
+//! for the concrete design this file's author arrived at: a
+//! `Rc<RefCell<FaultTransport>>` per client, shared between the harness's
+//! own control-channel pump and the `Box<dyn StarTransportAdapter>` handed to
+//! `match_driver::new` once the freeze lands), then `start_match` builds one
+//! [`crate::match_driver::MatchDriver`] per client via
+//! [`crate::match_driver_fixture::to_driver_freeze`]/
+//! [`crate::match_driver_fixture::to_driver_manifest`]/
+//! [`crate::match_driver_fixture::DriverRules`] (all now proven correct —
+//! see `crates/gc-netcode/tests/match_driver.rs`'s differential test), and
+//! `advance`/`report`/`teardown` follow the same shape `fault_scenarios.rs`
+//! already has for the pieces that do not need a live harness.
+//! `DiagnosticTransport`/`net_diagnostics`/`match_presentation`/
+//! `online_match_model` stay permanently out of reach (TypeScript-owned), so
+//! `report`'s presentation/wire-diagnostics findings would need to be
+//! declared skipped there, the same pattern [`declare_contingent`] already
+//! uses for the combat-phase and browser-multi-context rows.
+//!
+//! What *is* ported today is everything that does not need a live harness:
+//! the deterministic scripted-input generator ([`scripted_sample`]), every
+//! constant, the resource gates ([`Gates`]), and the comparison logic that
+//! only needs data this crate can already produce — [`compare_checkpoints`]
+//! and [`compare_status`] are ported as pure functions over a minimal
+//! per-client view ([`ClientCheckpoints`]/[`ClientStatus`]) instead of a live
 //! `FaultHarnessClient`, so they are real, tested code today and only need
 //! rewiring — not rewriting — once the harness itself exists.
 //!

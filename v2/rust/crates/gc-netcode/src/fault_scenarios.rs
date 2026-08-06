@@ -3,16 +3,20 @@
 //! `SCENARIOS` is the data: one row per `(mode x profile x fault)`
 //! combination the campaign claims to cover. The Lua `run` is the
 //! interpreter that turns a row into a driven `FaultHarness` and a report —
-//! it needs `game.online.fault_harness` (mostly blocked in this crate; see
-//! `crate::fault_harness`'s module doc) and `game.online.live_slot`
-//! (`NOT YET PORTED` in this crate). [`run`]/[`inject`]/[`first_guest`] are
-//! therefore **not ported**: there is no [`crate::fault_harness::FaultHarness`]
-//! to drive yet. This file ports everything that does not need one:
-//! the full declared matrix ([`SCENARIOS`]), [`find`]/[`select`], every
-//! constant, and [`forged_bundle`]/[`foreign_slot_index`] — the two pure
-//! helpers that build a forged wire envelope, which only need
-//! [`crate::input_protocol`] and this crate's local transport/`CoordinatorFreeze`
-//! shapes, not the harness itself.
+//! it needs `game.online.fault_harness`, and [`crate::fault_harness`] does
+//! not build a live `FaultHarness` yet (see that module's doc comment for
+//! exactly what remains — the hard blockers, `coordinator`/`protocol`/
+//! `fake_star`, are gone; what is left is bounded construction/lifecycle
+//! work). `crate::live_slot` itself is ported and has been since before this
+//! pass. [`run`]/[`inject`]/[`first_guest`] are therefore **not ported**:
+//! there is no [`crate::fault_harness::FaultHarness`] to drive yet, and
+//! porting them first would mean guessing at that harness's eventual shape.
+//! This file ports everything that does not need one: the full declared
+//! matrix ([`SCENARIOS`]), [`find`]/[`select`], every constant, and
+//! [`forged_bundle`]/[`foreign_slot_index`] — the two pure helpers that
+//! build a forged wire envelope, which only need [`crate::input_protocol`]
+//! and this crate's local transport/`CoordinatorFreeze` shapes, not the
+//! harness itself.
 
 use crate::fault_transport::{TransportMessage, TransportMessageType};
 use crate::input_protocol;

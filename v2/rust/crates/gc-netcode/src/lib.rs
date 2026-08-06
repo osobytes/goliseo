@@ -10,6 +10,7 @@ pub mod coordinator_driver;
 pub mod coordinator_fixture;
 pub mod desync_package;
 pub mod diagnostics_schema;
+pub mod fake_star;
 pub mod fault_harness;
 pub mod fault_scenarios;
 pub mod fault_transport;
