@@ -92,7 +92,11 @@ fn with_runtime(manifest: &Value, f: impl FnOnce(&mut Vec<(String, Value)>)) -> 
     })
 }
 
-fn with_producer(manifest: &Value, index: usize, f: impl FnOnce(&mut Vec<(String, Value)>)) -> Value {
+fn with_producer(
+    manifest: &Value,
+    index: usize,
+    f: impl FnOnce(&mut Vec<(String, Value)>),
+) -> Value {
     with_simulation(manifest, |simulation| {
         let mut producers: Vec<Value> = get(simulation, "producers")
             .as_array()
@@ -212,7 +216,11 @@ fn research_metadata_cannot_move_a_simulation_boundary_hash_rejects_participant_
     assert!(err.contains("unknown field"), "unexpected error: {err}");
 
     let simulation_injected = with_simulation(&manifest, |simulation| {
-        set(simulation, "participant_id", Value::str("p-7f3a9c21b8e45d06"));
+        set(
+            simulation,
+            "participant_id",
+            Value::str("p-7f3a9c21b8e45d06"),
+        );
     });
     assert!(research_trace::validate(&simulation_injected).is_err());
 
@@ -341,13 +349,15 @@ fn gameplay_trace_manifest_invariants_requires_canonical_slot_order_and_honest_p
     });
     assert!(research_trace::validate(&human_with_policy).is_err());
 
-    let bot_without_policy =
-        with_producer(&manifest, 1, |entries| remove(entries, "producer_policy_id"));
+    let bot_without_policy = with_producer(&manifest, 1, |entries| {
+        remove(entries, "producer_policy_id")
+    });
     assert!(research_trace::validate(&bot_without_policy).is_err());
 }
 
 #[test]
-fn gameplay_trace_manifest_invariants_rejects_an_inconsistent_tick_range_completion_or_divergence() {
+fn gameplay_trace_manifest_invariants_rejects_an_inconsistent_tick_range_completion_or_divergence()
+{
     let (manifest, _tape) = manifest_and_tape();
     let simulation = record_entries(get(&record_entries(&manifest), "simulation"));
     let last_boundary_tick = get(&simulation, "last_boundary_tick")

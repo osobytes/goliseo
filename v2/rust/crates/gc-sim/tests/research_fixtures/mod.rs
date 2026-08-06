@@ -219,7 +219,9 @@ fn step_input(snapshot: &MatchSnapshot) -> rollback_events::RollbackEventStepInp
     }
 }
 
-fn convert_event(event: &rollback_events::RollbackWrappedEvent) -> research_timeline::RollbackEvent {
+fn convert_event(
+    event: &rollback_events::RollbackWrappedEvent,
+) -> research_timeline::RollbackEvent {
     research_timeline::RollbackEvent {
         id: event.id.clone(),
         domain: event.domain.clone(),
@@ -284,17 +286,24 @@ pub fn rollback_sequence() -> RollbackSequence {
     let initial = tape.initial.clone();
     let mut timeline = rollback_events::new(&initial, None);
 
-    let first = next_snapshot(&initial, vec![minimal_event(MatchEventKind::Touch, 100.0, 100.0)]);
-    let first_diff = rollback_events::apply(&mut timeline, 0, 0, &[step_input(&first)])
-        .expect("tick 0 applies");
+    let first = next_snapshot(
+        &initial,
+        vec![minimal_event(MatchEventKind::Touch, 100.0, 100.0)],
+    );
+    let first_diff =
+        rollback_events::apply(&mut timeline, 0, 0, &[step_input(&first)]).expect("tick 0 applies");
 
-    let speculative =
-        next_snapshot(&first, vec![minimal_event(MatchEventKind::Tackle, 120.0, 110.0)]);
-    let speculative_diff =
-        rollback_events::apply(&mut timeline, 1, 1, &[step_input(&speculative)])
-            .expect("speculative tick 1 applies");
+    let speculative = next_snapshot(
+        &first,
+        vec![minimal_event(MatchEventKind::Tackle, 120.0, 110.0)],
+    );
+    let speculative_diff = rollback_events::apply(&mut timeline, 1, 1, &[step_input(&speculative)])
+        .expect("speculative tick 1 applies");
 
-    let corrected = next_snapshot(&first, vec![minimal_event(MatchEventKind::Pass, 130.0, 115.0)]);
+    let corrected = next_snapshot(
+        &first,
+        vec![minimal_event(MatchEventKind::Pass, 130.0, 115.0)],
+    );
     let correction_diff = rollback_events::apply(&mut timeline, 1, 1, &[step_input(&corrected)])
         .expect("corrected tick 1 applies");
     assert_eq!(
@@ -349,7 +358,10 @@ pub fn trace_manifest(
         ("goal_replay_count", Value::Number(0.0)),
         ("rollback_count", Value::Number(1.0)),
         ("max_rollback_ticks", Value::Number(2.0)),
-        ("raw_device_event_policy", Value::str("minimized_diagnostic")),
+        (
+            "raw_device_event_policy",
+            Value::str("minimized_diagnostic"),
+        ),
         ("raw_device_event_clock", Value::str("wall_clock_monotonic")),
     ]);
     let options = ResearchTraceOptions {
@@ -393,10 +405,16 @@ pub fn gameplay(completion: Option<&str>) -> Gameplay {
         research_trace::tape_content_hash(&sequence.tape).expect("tape content hash");
     let mut stream_builder = research_timeline::new(run_scope_id, GAME_INSTANCE_ID)
         .expect("research timeline constructs");
-    research_timeline::observe_diff(&mut stream_builder, &convert_diff(&sequence.speculative_diff))
-        .expect("observe speculative diff");
-    research_timeline::observe_diff(&mut stream_builder, &convert_diff(&sequence.correction_diff))
-        .expect("observe correction diff");
+    research_timeline::observe_diff(
+        &mut stream_builder,
+        &convert_diff(&sequence.speculative_diff),
+    )
+    .expect("observe speculative diff");
+    research_timeline::observe_diff(
+        &mut stream_builder,
+        &convert_diff(&sequence.correction_diff),
+    )
+    .expect("observe correction diff");
     let confirmed_steps: Vec<research_timeline::RollbackEventStep> =
         sequence.confirmed.iter().map(convert_step).collect();
     research_timeline::confirm(&mut stream_builder, &confirmed_steps).expect("confirm steps");
@@ -407,8 +425,8 @@ pub fn gameplay(completion: Option<&str>) -> Gameplay {
         .expect("stream carries a stream_hash")
         .to_string();
 
-    let manifest = trace_manifest(&sequence.tape, &stream_hash, completion)
-        .expect("trace manifest builds");
+    let manifest =
+        trace_manifest(&sequence.tape, &stream_hash, completion).expect("trace manifest builds");
     research_trace::validate_against_stream(&manifest, &stream)
         .expect("manifest validates against its stream");
 
@@ -755,10 +773,7 @@ pub fn withdrawal_tombstone(revoked_payload_hashes: Option<Vec<String>>) -> Valu
     let hashes = revoked_payload_hashes.unwrap_or_else(|| vec!["1111111111111111".to_string()]);
     record(vec![
         ("schema_version", Value::Number(1.0)),
-        (
-            "manifest_kind",
-            Value::str("research_withdrawal_tombstone"),
-        ),
+        ("manifest_kind", Value::str("research_withdrawal_tombstone")),
         ("digest", Value::str(research_schema::DIGEST)),
         ("tombstone_id", Value::str("tombstone-4d7c1a9e")),
         ("session_id", Value::str(WITHDRAWN_SESSION_ID)),
@@ -906,7 +921,10 @@ pub fn participant_annotations(run_scope_id: &str, event_id: Option<&str>) -> Va
         ("author_role", Value::str("participant")),
         ("agreement_version", Value::str("playtest-agreement-v3")),
         ("coding_scheme_version", Value::str("debrief-codes-v2")),
-        ("annotations", Value::Array(vec![record(annotation_entries)])),
+        (
+            "annotations",
+            Value::Array(vec![record(annotation_entries)]),
+        ),
     ])
 }
 
@@ -1077,7 +1095,9 @@ pub fn dataset(
     let feature_versions = overrides
         .and_then(|o| o.feature_versions.clone())
         .unwrap_or_else(default_feature_versions);
-    let transformations = overrides.and_then(|o| o.transformations.clone()).unwrap_or_default();
+    let transformations = overrides
+        .and_then(|o| o.transformations.clone())
+        .unwrap_or_default();
     let dataset_id = overrides
         .and_then(|o| o.dataset_id.clone())
         .unwrap_or_else(|| "ds-m11-enjoyment-v1".to_string());
@@ -1119,10 +1139,7 @@ pub fn dataset(
         (
             "extraction".to_string(),
             record(vec![
-                (
-                    "extraction_commit",
-                    Value::str("0".repeat(40)),
-                ),
+                ("extraction_commit", Value::str("0".repeat(40))),
                 ("extraction_config_id", Value::str("extraction-config-v1")),
                 (
                     "feature_registry_hash",
@@ -1135,10 +1152,7 @@ pub fn dataset(
             Value::Array(feature_versions),
         ),
         ("sources".to_string(), Value::Array(sources)),
-        (
-            "transformations".to_string(),
-            Value::Array(transformations),
-        ),
+        ("transformations".to_string(), Value::Array(transformations)),
         ("splits".to_string(), Value::Array(splits)),
         ("dataset_hash".to_string(), Value::str("0000000000000000")),
     ]);

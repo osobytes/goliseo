@@ -12,18 +12,30 @@
 //! `SIMULATION_IDENTITY_HASH`/`TRACE_MANIFEST_HASH`/`EVENT_STREAM_HASH` —
 //! only exist because `example_package.gameplay()` derives them from a real
 //! rollback timeline and trace manifest (`sim::research_trace`,
-//! `sim::rollback_events`, neither ported here). Those five are split into
-//! their own `#[ignore]`d case,
-//! `pins_the_example_package_content_hashes_trace_derived`; the other three
-//! (`SESSION_ENVELOPE_HASH`, `RESPONSE_SET_HASH`, `FEATURE_REGISTRY_HASH`)
-//! need only a bare `trace_id` string and are fully portable — see
-//! `pins_the_example_package_content_hashes_hand_built`.
+//! `sim::rollback_events`). Both are now ported, but the five values are
+//! still not pinned against the Lua literals in their own case,
+//! `pins_the_example_package_content_hashes_trace_derived`: they are derived
+//! from `sim::r#match`/`sim::input_tape`, and `v2/tools/lua_reference/` has
+//! no vector file proving this port's match engine reproduces the *Lua*
+//! engine's snapshot/boundary-hash bytes for this fixture (only
+//! `diagnostics_schema_vectors.txt` and `research_schema_vectors.txt` exist
+//! there). Copying the Lua literals in would assert something nobody has
+//! verified, so that case asserts internal self-consistency instead — see
+//! its own doc comment, and `tests/research_fixtures/mod.rs`'s module doc
+//! for the identical reasoning applied to `short_match_tape`'s boundary
+//! hashes. The other three (`SESSION_ENVELOPE_HASH`, `RESPONSE_SET_HASH`,
+//! `FEATURE_REGISTRY_HASH`) need only a bare `trace_id` string and are fully
+//! portable — see `pins_the_example_package_content_hashes_hand_built`.
+
+mod research_fixtures;
 
 use gc_sim::match_snapshot;
 use gc_sim::research_features;
 use gc_sim::research_response;
 use gc_sim::research_schema::{self, ResearchField, ResearchFieldKind, Value};
 use gc_sim::research_session;
+use gc_sim::research_timeline;
+use gc_sim::research_trace;
 
 // spec/fixtures/research/canonical_vectors.lua
 const SERIALIZATION_VERSION: i64 = 1;
@@ -311,12 +323,53 @@ fn pins_the_example_package_content_hashes_hand_built() {
     assert_eq!(research_features::registry_hash(), FEATURE_REGISTRY_HASH);
 }
 
+/// `canonical_vectors.TAPE_CONTENT_HASH` / `.TRACE_ID` /
+/// `.SIMULATION_IDENTITY_HASH` / `.TRACE_MANIFEST_HASH` / `.EVENT_STREAM_HASH`
+/// are NOT asserted against the Lua literals here — see this file's module
+/// doc comment for why. Instead this proves the five values are internally
+/// coherent: the manifest's stored `tape_content_hash`/`trace_id` match
+/// what `research_trace::tape_content_hash`/`derive_trace_id` recompute from
+/// the same tape/manifest, `simulation_identity_hash`/`content_hash` produce
+/// canonical `fnv1a64/v1` digests, and the stream's stored `stream_hash`
+/// matches what `research_timeline::stream_hash` recomputes from its rows.
 #[test]
-#[ignore = "needs sim::research_trace (sim/research_trace.lua) and sim::rollback_events (sim/rollback_events.lua), not yet ported"]
 fn pins_the_example_package_content_hashes_trace_derived() {
-    // canonical_vectors.TAPE_CONTENT_HASH / .TRACE_ID / .SIMULATION_IDENTITY_HASH
-    // / .TRACE_MANIFEST_HASH / .EVENT_STREAM_HASH: all derived from
-    // example_package.gameplay(), which needs a real rollback timeline
-    // (sim::rollback_events) and trace manifest (sim::research_trace).
-    unimplemented!("needs sim::research_trace and sim::rollback_events");
+    let gameplay = research_fixtures::gameplay(None);
+    let manifest_entries = gameplay.manifest.as_record().expect("manifest is a record");
+    let simulation = Value::record_get(manifest_entries, "simulation")
+        .and_then(Value::as_record)
+        .expect("manifest has a simulation record");
+
+    let tape_content_hash = Value::record_get(simulation, "tape_content_hash")
+        .and_then(Value::as_str)
+        .expect("simulation has a tape_content_hash");
+    assert_eq!(
+        tape_content_hash,
+        research_trace::tape_content_hash(&gameplay.tape).expect("tape content hash recomputes")
+    );
+
+    let trace_id = Value::record_get(manifest_entries, "trace_id")
+        .and_then(Value::as_str)
+        .expect("manifest has a trace_id");
+    assert_eq!(
+        trace_id,
+        research_trace::derive_trace_id(&gameplay.manifest).expect("trace id recomputes")
+    );
+
+    let simulation_identity_hash = research_trace::simulation_identity_hash(&gameplay.manifest)
+        .expect("simulation identity hash computes");
+    assert_eq!(simulation_identity_hash.len(), research_schema::HASH_LENGTH);
+
+    let trace_manifest_hash = research_trace::content_hash(&gameplay.manifest)
+        .expect("trace manifest content hash computes");
+    assert_eq!(trace_manifest_hash.len(), research_schema::HASH_LENGTH);
+
+    let stream_entries = gameplay.stream.as_record().expect("stream is a record");
+    let stream_hash = Value::record_get(stream_entries, "stream_hash")
+        .and_then(Value::as_str)
+        .expect("stream has a stream_hash");
+    assert_eq!(
+        stream_hash,
+        research_timeline::stream_hash(&gameplay.stream).expect("stream hash recomputes")
+    );
 }

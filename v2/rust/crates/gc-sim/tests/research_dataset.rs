@@ -166,7 +166,11 @@ fn research_dataset_manifest_seals_validates_and_round_trips() {
 fn research_dataset_manifest_detects_any_hand_edit_through_the_dataset_hash() {
     let manifest = dataset();
     let edited = with_source(&manifest, 0, |entries| {
-        set(entries, "condition_id", Value::str("condition-a-combat-off"));
+        set(
+            entries,
+            "condition_id",
+            Value::str("condition-a-combat-off"),
+        );
     });
     let err = research_dataset::validate(&edited).expect_err("edited dataset must fail");
     assert!(err.contains("dataset_hash"), "unexpected error: {err}");
@@ -262,7 +266,11 @@ fn research_dataset_splits_fails_closed_when_participants_overlap_across_folds()
 #[test]
 fn research_dataset_splits_fails_closed_when_builds_overlap_across_folds() {
     let overlapping = with_fold(&build_split(), 1, |fold| {
-        set(fold, "build_ids", Value::Array(vec![Value::str("spec-build")]));
+        set(
+            fold,
+            "build_ids",
+            Value::Array(vec![Value::str("spec-build")]),
+        );
     });
     let err = dataset_with_splits(vec![overlapping]).expect_err("overlap must fail");
     assert!(err.contains("appears in both"), "unexpected error: {err}");
@@ -361,7 +369,11 @@ fn research_dataset_splits_rejects_a_split_with_no_train_or_no_held_out_fold() {
 #[test]
 fn research_dataset_splits_keeps_participant_and_build_groupings_from_bleeding_into_each_other() {
     let participant_with_builds = with_fold(&participant_split(), 0, |fold| {
-        set(fold, "build_ids", Value::Array(vec![Value::str("spec-build")]));
+        set(
+            fold,
+            "build_ids",
+            Value::Array(vec![Value::str("spec-build")]),
+        );
     });
     assert!(dataset_with_splits(vec![participant_with_builds]).is_err());
 
@@ -480,7 +492,9 @@ fn research_dataset_lineage_ties_model_use_permission_to_every_sources_accepted_
         set(entries, "model_use_covered", Value::Bool(false));
     });
     let hash = research_dataset::derive_hash(&retroactive).expect("hash derives");
-    let retroactive = with_top(&retroactive, |top| set(top, "dataset_hash", Value::str(hash)));
+    let retroactive = with_top(&retroactive, |top| {
+        set(top, "dataset_hash", Value::str(hash))
+    });
     let err = research_dataset::validate(&retroactive).expect_err("must fail");
     assert!(err.contains("model_use_covered"), "unexpected error: {err}");
 
@@ -492,8 +506,9 @@ fn research_dataset_lineage_ties_model_use_permission_to_every_sources_accepted_
         );
     });
     let hash = research_dataset::derive_hash(&undeclared_version).expect("hash derives");
-    let undeclared_version =
-        with_top(&undeclared_version, |top| set(top, "dataset_hash", Value::str(hash)));
+    let undeclared_version = with_top(&undeclared_version, |top| {
+        set(top, "dataset_hash", Value::str(hash))
+    });
     let err = research_dataset::validate(&undeclared_version).expect_err("must fail");
     assert!(err.contains("does not declare"), "unexpected error: {err}");
 }
@@ -501,8 +516,7 @@ fn research_dataset_lineage_ties_model_use_permission_to_every_sources_accepted_
 #[test]
 fn research_dataset_lineage_verifies_every_source_row_against_the_session_envelope_it_came_from() {
     let gameplay = research_fixtures::gameplay(None);
-    let manifest =
-        research_fixtures::dataset(&gameplay.manifest, None).expect("dataset seals");
+    let manifest = research_fixtures::dataset(&gameplay.manifest, None).expect("dataset seals");
     let envelopes = research_fixtures::dataset_sessions(&gameplay.manifest, None);
     research_dataset::validate_against_sessions(&manifest, &envelopes).expect("sessions validate");
 
@@ -517,7 +531,10 @@ fn research_dataset_lineage_verifies_every_source_row_against_the_session_envelo
     let err =
         research_dataset::validate_against_sessions(&manifest, &uncovered).expect_err("must fail");
     assert!(err.contains("model_use_covered"), "unexpected error: {err}");
-    assert!(err.contains("accepted agreement"), "unexpected error: {err}");
+    assert!(
+        err.contains("accepted agreement"),
+        "unexpected error: {err}"
+    );
 
     let mut drifted_version = research_fixtures::dataset_sessions(&gameplay.manifest, None);
     drifted_version[1] = with_top(&drifted_version[1], |top| {
@@ -550,8 +567,7 @@ fn research_dataset_lineage_verifies_every_source_row_against_the_session_envelo
 #[test]
 fn research_dataset_lineage_refuses_a_dataset_whose_source_session_was_withdrawn() {
     let gameplay = research_fixtures::gameplay(None);
-    let manifest =
-        research_fixtures::dataset(&gameplay.manifest, None).expect("dataset seals");
+    let manifest = research_fixtures::dataset(&gameplay.manifest, None).expect("dataset seals");
     let mut envelopes = research_fixtures::dataset_sessions(&gameplay.manifest, None);
     let second_entries = record_entries(&envelopes[1]);
     let second_session_id = get(&second_entries, "session_id")
@@ -567,27 +583,30 @@ fn research_dataset_lineage_refuses_a_dataset_whose_source_session_was_withdrawn
         set(top, "participant_id", Value::str(second_participant_id));
     });
     envelopes[1] = withdrawn;
-    let err = research_dataset::validate_against_sessions(&manifest, &envelopes)
-        .expect_err("must fail");
+    let err =
+        research_dataset::validate_against_sessions(&manifest, &envelopes).expect_err("must fail");
     assert!(err.contains("withdrawn session"), "unexpected error: {err}");
 }
 
 #[test]
 fn research_dataset_lineage_refuses_a_source_row_that_pins_a_trace_its_session_never_referenced() {
     let gameplay = research_fixtures::gameplay(None);
-    let manifest =
-        research_fixtures::dataset(&gameplay.manifest, None).expect("dataset seals");
+    let manifest = research_fixtures::dataset(&gameplay.manifest, None).expect("dataset seals");
     let mut envelopes = research_fixtures::dataset_sessions(&gameplay.manifest, None);
     envelopes[0] = with_top(&envelopes[0], |top| {
-        let mut trace_links: Vec<Value> = get(top, "trace_links").as_array().expect("array").to_vec();
+        let mut trace_links: Vec<Value> =
+            get(top, "trace_links").as_array().expect("array").to_vec();
         let mut link0 = record_entries(&trace_links[0]);
         set(&mut link0, "trace_id", Value::str("abcdefabcdefabcd"));
         trace_links[0] = Value::Record(link0);
         set(top, "trace_links", Value::Array(trace_links));
     });
-    let err = research_dataset::validate_against_sessions(&manifest, &envelopes)
-        .expect_err("must fail");
-    assert!(err.contains("does not reference"), "unexpected error: {err}");
+    let err =
+        research_dataset::validate_against_sessions(&manifest, &envelopes).expect_err("must fail");
+    assert!(
+        err.contains("does not reference"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -606,7 +625,9 @@ fn research_dataset_lineage_requires_excluded_sources_to_record_a_reason_and_sta
         set(entries, "excluded", Value::Bool(true));
     });
     let hash = research_dataset::derive_hash(&unexplained).expect("hash derives");
-    let unexplained = with_top(&unexplained, |top| set(top, "dataset_hash", Value::str(hash)));
+    let unexplained = with_top(&unexplained, |top| {
+        set(top, "dataset_hash", Value::str(hash))
+    });
     assert!(research_dataset::validate(&unexplained).is_err());
 
     let excluded_in_fold = with_source(&manifest, 2, |entries| {
@@ -614,8 +635,9 @@ fn research_dataset_lineage_requires_excluded_sources_to_record_a_reason_and_sta
         set(entries, "exclusion_reason", Value::str("technical_failure"));
     });
     let hash = research_dataset::derive_hash(&excluded_in_fold).expect("hash derives");
-    let excluded_in_fold =
-        with_top(&excluded_in_fold, |top| set(top, "dataset_hash", Value::str(hash)));
+    let excluded_in_fold = with_top(&excluded_in_fold, |top| {
+        set(top, "dataset_hash", Value::str(hash))
+    });
     let err = research_dataset::validate(&excluded_in_fold).expect_err("must fail");
     assert!(
         err.contains("excluded participant"),
