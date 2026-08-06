@@ -436,7 +436,6 @@ fn rejects_malformed_noncanonical_unsupported_mismatched_and_oversized_data() {
     assert_eq!(constructed.unwrap_err().code, ErrorCode::Malformed);
 }
 
-#[test]
 // The Lua case builds a packet table carrying a field nobody declared and
 // asserts `input_protocol.validate_envelope` rejects it. A Rust `Packet` is a
 // typed struct, so that exact injection is unconstructible — but the assertion
