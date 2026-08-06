@@ -129,11 +129,29 @@ SPOOFED_RENDERER_VALUES = (
 )
 
 
+# The same class of problem in a second dialect, found while measuring #360.
+# Firefox on Linux answers `WEBGL_debug_renderer_info` with a string like
+# "NVIDIA GeForce GTX 980, or similar" on a machine whose GPU is an RTX 2070
+# SUPER: a plausible, specific, WRONG GPU name. `classify_renderer` reads it as
+# a positive identification and would have put a card the machine does not own
+# into a published table.
+#
+# A suffix rather than a value list, and that is not the heuristic the comment
+# above warns against: it is Firefox's own disclaimer that the name is
+# approximate. A string that says it is not exact cannot be evidence of what
+# drew the frame, so it is demoted and the process map decides instead.
+SPOOFED_RENDERER_SUFFIXES = (", or similar",)
+
+
 def classify_renderer_strict(*candidates: str) -> tuple[str, str]:
-    """`babylon_bench.classify_renderer`, plus the WebKit spoof demoted."""
+    """`babylon_bench.classify_renderer`, plus the renderer-string spoofs demoted."""
     for candidate in candidates:
-        if (candidate or "").strip().lower() in SPOOFED_RENDERER_VALUES:
-            return "spoofed", candidate.strip()
+        text = (candidate or "").strip()
+        lowered = text.lower()
+        if lowered in SPOOFED_RENDERER_VALUES:
+            return "spoofed", text
+        if any(lowered.endswith(suffix) for suffix in SPOOFED_RENDERER_SUFFIXES):
+            return "spoofed", text
     return classify_renderer(*candidates)
 
 
@@ -907,6 +925,26 @@ def self_test() -> None:
         raise RuntimeError("a spoofed string must not rescue a software-only process map")
     if gpu_verdict(spoofed, "")["verdict"] != "unknown":
         raise RuntimeError("a spoofed string with no driver evidence must stay unproven")
+
+    # Firefox's "<some GPU>, or similar" spoof (#360). Same shape as the one
+    # above: specific enough that the inherited classifier calls it hardware,
+    # and wrong. This box reports a GTX 980 and has an RTX 2070 SUPER.
+    firefox = "NVIDIA GeForce GTX 980, or similar"
+    if classify_renderer(firefox)[0] != "hardware":
+        raise RuntimeError(
+            "the inherited classifier no longer accepts Firefox's approximate GPU "
+            "string; the suffix rule below may have become dead code"
+        )
+    if classify_renderer_strict(firefox)[0] != "spoofed":
+        raise RuntimeError("Firefox's ', or similar' GPU string was not demoted")
+    approximate = {"gpu_renderer": firefox, "gpu_unmasked_renderer": firefox}
+    if firefox in gpu_verdict(approximate, hardware_maps)["evidence"]:
+        raise RuntimeError("an approximate GPU name reached the evidence column")
+    if gpu_verdict(approximate, "")["verdict"] != "unknown":
+        raise RuntimeError("an approximate GPU string with no driver evidence must stay unproven")
+    # An exact NVIDIA string must NOT be caught by the suffix rule.
+    if classify_renderer_strict("NVIDIA GeForce RTX 2070 SUPER/PCIe/SSE2")[0] != "hardware":
+        raise RuntimeError("the suffix rule rejected an exact GPU name")
 
     # A real GPU string must still be preferred and reported verbatim.
     real = {

@@ -43,6 +43,21 @@ The generated host keeps the 960×540 logical canvas at 16:9. Non-16:9
 windowed viewports center the largest fitting canvas rectangle over black
 bars; the runtime maps pointer input through the resulting scale and offset.
 
+## Rendering capability
+
+What the love.js runtime actually gives LÖVE -- WebGL version, canvas formats,
+whether a depth attachment and the rigged 3D renderer are available, and whether
+LÖVE's shaders compile -- is measured by `scripts/lovejs_depth_probe.py` and
+recorded in [`browser_rigged_3d.md`](browser_rigged_3d.md). Short version: both
+Chrome and Firefox render rigged 3D players, on a `depth16` attachment.
+
+Firefox needed a workaround to get there, and this section said it could not host
+the 3D pass at all until that workaround existed. Its WebGL translator emits
+invalid GLSL for any LÖVE shader declaring a `varying`, so
+`scripts/browser_shader_hoist.js` moves those declarations above `main()` before
+WebGL sees them, and `web_build.py` refuses to write a loader without it. That is
+#391, fixed in #395.
+
 ## Packaging smoke check
 
 The non-interactive smoke check exercises save, populate/reload, and

@@ -128,15 +128,19 @@ browser evidence. The browser evidence is the headed run below.
 
 ### Measured
 
-**Reproducing this needs two branches, and neither one alone.** `--gl-probe` and
-`game/render/gl_probe.lua` are not on `main` and are not in the change that
-carries this section: they arrive with
+**Reproducing this needed two branches when it was written. It no longer does.**
+`--gl-probe` and `game/render/gl_probe.lua` were not on `main` and were not in
+the change that carries this section: they arrive with
 [#390](https://github.com/osobytes/goliseo/pull/390)
 (`agent/2026-08-05-issue-360-lovejs-depth`), whose merge base with the #391 fix
-branch is plain `main`. A checkout of either branch on its own cannot run what
-is below.
+branch was plain `main`, so a checkout of either branch alone could not run what
+is below. That constraint is now historical: the fix is on `main`, #390 is
+merged up to it, and one ordinary checkout of #390 runs the whole matrix — which
+is how #360 re-measured it, at `b11b0e4`, `source_dirty: false`, finding every
+ladder rung and the rig3d shader `ok=true` in **both** browsers. See
+[`browser_rigged_3d.md`](browser_rigged_3d.md).
 
-The exact tree that produced every number here is tagged
+The tree that produced the numbers *in this section* is tagged
 [`issue-391-verification-81c0904`](https://github.com/osobytes/goliseo/tree/issue-391-verification-81c0904)
 -- an evidence-only merge, not a branch to build on:
 
