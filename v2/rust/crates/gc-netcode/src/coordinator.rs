@@ -472,7 +472,13 @@ pub const STALE_GENERATION_REASON: &str = "readiness names a superseded ownershi
 /// Reason text for a pair preference result answering no pending request.
 pub const STALE_PREFERENCE_REASON: &str = "pair preference result answers no pending request";
 
-fn terminal_code(reason: TerminalReason) -> Option<&'static str> {
+/// The closed protocol code a terminal reason is announced as.
+///
+/// `game/online/coordinator.lua:254` exposes this as the public
+/// `coordinator.TERMINAL_CODES` table, and its spec walks it exhaustively, so
+/// it is `pub` here for the same reason (README §5 rule 8). `Completed` maps to
+/// `None`: a finished match is not a failure and announces no code.
+pub fn terminal_code(reason: TerminalReason) -> Option<&'static str> {
     use TerminalReason::*;
     Some(match reason {
         Completed => return None,
