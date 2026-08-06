@@ -89,6 +89,9 @@ importers:
       '@gc/core':
         specifier: workspace:*
         version: link:../core
+      '@gc/input':
+        specifier: workspace:*
+        version: link:../input
       '@gc/presentation':
         specifier: workspace:*
         version: link:../presentation

@@ -26,23 +26,21 @@
 
 import { describe, expect, it } from "vitest";
 import { hit } from "@gc/ui";
+import { bindings } from "@gc/input";
 import { help } from "./help.ts";
 import type { ControlReferenceRow } from "./content.ts";
 
 const VP = { w: 960, h: 540 };
 
-// Transcribed verbatim from @gc/input's bindings.ts (`REFERENCE`, section
-// "match"), which is itself ported 1:1 from game/input/bindings.lua.
-const MATCH_REFERENCE: readonly ControlReferenceRow[] = [
-  { label: "Move", keyboard: "WASD or Arrows", gamepad: "Left Stick or D-pad", footnote: false },
-  { label: "ACTION", note: "shoot / tackle", keyboard: "Space", gamepad: "A", footnote: false },
-  { label: "PLAY", note: "pass / switch", keyboard: "K", gamepad: "X", footnote: false },
-  { label: "Sprint", note: "hold", keyboard: "Shift", gamepad: "LB", footnote: false },
-  { label: "Modifier", note: "loft / chip, hold", keyboard: "J", gamepad: "RT", footnote: false },
-  { label: "Juke", keyboard: "L", gamepad: "Y", footnote: false },
-  { label: "Equipment", note: "hold / tap", keyboard: "U", gamepad: "RB", footnote: true },
-  { label: "Pause", keyboard: "P / Esc", gamepad: "Start / B", footnote: false },
-];
+// The REAL match reference, read straight from @gc/input's bindings — not a
+// transcription. This is the whole point of the Lua case this ports: "renders
+// the help card from the bindings rather than a literal". A copied table proves
+// the screen renders what it is handed; it does not prove the screen renders the
+// bindings that actually exist, and it goes stale silently the first time
+// someone rebinds a key.
+const MATCH_REFERENCE: readonly ControlReferenceRow[] = bindings.reference(
+  "match",
+) as readonly ControlReferenceRow[];
 
 function keyboardCardText(reference: readonly ControlReferenceRow[]): string {
   const layout = help.layout(help.newState(VP, reference));

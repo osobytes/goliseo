@@ -108,17 +108,12 @@ describe("input bindings", () => {
     expect(bindings.gamepadDown("modifier", joystick)).toBe(true);
   });
 
-  // Skipped: the Lua spec renders game/screens/help.lua's card and asserts
-  // the printed text embeds bindings.key_label(...) output, proving the
-  // help screen never hand-writes a key name. game/screens/** maps to
-  // @gc/screens (v2/README.md's file-mapping table), a package this task
-  // does not touch and that does not exist yet (only an empty index.ts
-  // skeleton). Re-port this case as part of @gc/screens's help.ts, once it
-  // exists, using bindings.keyLabel from this package.
-  it.skip("renders the help card from the bindings rather than a literal", () => {
-    // Needs @gc/screens's (not yet ported) help.ts.
-  });
-
+  // The help-card case from spec/game/input_bindings_spec.lua lives in
+  // @gc/screens/src/help.spec.ts now, where the help screen actually is, and it
+  // drives THIS module's `bindings.reference("match")` directly rather than a
+  // transcription — so a rebind here flows through and can fail it. Retired
+  // from this file rather than duplicated, because two copies of the same
+  // assertion is how one of them goes stale unnoticed.
   it("labels every reference row for both devices", () => {
     const rows = bindings.reference();
     expect(rows.length).toBeGreaterThan(0);
