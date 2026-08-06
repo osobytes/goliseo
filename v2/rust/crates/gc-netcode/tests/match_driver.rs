@@ -33,10 +33,16 @@
 //! combat-phase loop; see this crate's report for what is and is not covered
 //! here yet.
 
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use std::sync::OnceLock;
+
 use gc_netcode::coordinator;
 use gc_netcode::fake_star;
 use gc_netcode::fault_transport::{
     StarTransportAdapter, TransportChannel, TransportMessage, TransportMessageType,
+    TransportPeerEvent, TransportPeerMessage, TransportPeerState, TransportResult, TransportRole,
+    TransportStarDiagnostics, TransportState,
 };
 use gc_netcode::input_protocol;
 use gc_netcode::match_driver::{
@@ -44,6 +50,7 @@ use gc_netcode::match_driver::{
 };
 use gc_netcode::match_driver_fixture::{self, DriverRules, MatchDriverFixtureSession};
 use gc_netcode::protocol::{self, MatchMode, Value};
+use gc_netcode::protocol_fixture;
 use gc_sim::input_frame::{self, InputSample};
 use gc_sim::match_snapshot::MatchSnapshot;
 
@@ -61,6 +68,16 @@ struct DriverHarness {
     step: i64,
 }
 
+/// A caller-supplied decorator around the host's own transport endpoint.
+/// Mirrors `DriverHarnessOptions.wrap_host_transport`.
+type WrapHostTransport =
+    Box<dyn Fn(Box<dyn StarTransportAdapter>) -> Box<dyn StarTransportAdapter>>;
+/// A caller-supplied decorator around one guest's transport endpoint,
+/// keyed by that driver's 1-based position in `DriverHarness.drivers`
+/// (host is always `1`). Mirrors `DriverHarnessOptions.wrap_guest_transport`.
+type WrapGuestTransport =
+    Box<dyn Fn(i64, Box<dyn StarTransportAdapter>) -> Box<dyn StarTransportAdapter>>;
+
 /// Mirrors `DriverHarnessOptions` (the subset this file's ported cases use).
 #[derive(Default)]
 struct DriverHarnessOptions {
@@ -69,6 +86,30 @@ struct DriverHarnessOptions {
     combat: bool,
     hash_interval_ticks: Option<i64>,
     max_rollback_ticks: Option<i64>,
+    settle_timeout_ticks: Option<i64>,
+    settle_timeout_seconds: Option<f64>,
+    /// A shared monotonic-seconds counter. Every driver built from this
+    /// harness gets its own closure over the *same* cell, mirroring the Lua
+    /// spec's single shared `clock` upvalue (`spec/game/online_match_driver_spec.lua`'s
+    /// `bounds the settle phase in wall clock...` case): every driver's
+    /// clock read ticks the one counter forward.
+    clock: Option<Rc<RefCell<f64>>>,
+    /// 1-based driver index (host is `1`) whose boundary zero is seeded
+    /// differently. Mirrors `DriverHarnessOptions.divergent_peer`.
+    divergent_peer: Option<i64>,
+    wrap_host_transport: Option<WrapHostTransport>,
+    wrap_guest_transport: Option<WrapGuestTransport>,
+}
+
+/// Builds a [`Box<dyn FnMut() -> f64>`] that increments and reads a shared
+/// counter, so every driver sharing one `Rc<RefCell<f64>>` observes the same
+/// monotonically advancing clock — see [`DriverHarnessOptions::clock`].
+fn shared_clock(counter: Rc<RefCell<f64>>) -> Box<dyn FnMut() -> f64> {
+    Box::new(move || {
+        let mut value = counter.borrow_mut();
+        *value += 1.0;
+        *value
+    })
 }
 
 fn build_driver(
@@ -88,9 +129,9 @@ fn build_driver(
         initial_snapshot: snapshot.clone(),
         max_rollback_ticks: options.max_rollback_ticks,
         hash_interval_ticks: options.hash_interval_ticks,
-        settle_timeout_ticks: None,
-        settle_timeout_seconds: None,
-        clock: None,
+        settle_timeout_ticks: options.settle_timeout_ticks,
+        settle_timeout_seconds: options.settle_timeout_seconds,
+        clock: options.clock.clone().map(shared_clock),
         rules: Box::new(DriverRules::new(
             session.manifest.clone(),
             session.freeze.clone(),
@@ -102,28 +143,62 @@ fn build_driver(
 fn harness(mode: MatchMode, options: DriverHarnessOptions) -> DriverHarness {
     let session = match_driver_fixture::session(mode, None, options.humans);
     let snapshot = match_driver_fixture::initial_snapshot(options.duration, options.combat, None);
+    // Every peer shares one boundary zero in a real session; a differing
+    // seed for `divergent_peer` is the cheapest honest way to give one peer
+    // a genuinely divergent simulation while every input row still agrees.
+    let divergent_snapshot = options.divergent_peer.map(|_| {
+        match_driver_fixture::initial_snapshot(
+            options.duration,
+            options.combat,
+            Some(match_driver_fixture::DEFAULT_SEED + 1.0),
+        )
+    });
+    let snapshot_for = |index: i64| -> MatchSnapshot {
+        if Some(index) == options.divergent_peer {
+            divergent_snapshot
+                .clone()
+                .expect("divergent snapshot built for the divergent peer")
+        } else {
+            snapshot.clone()
+        }
+    };
 
     let mut drivers = Vec::new();
+    let host_transport: Box<dyn StarTransportAdapter> = {
+        let inner: Box<dyn StarTransportAdapter> = Box::new(session.host_transport.clone());
+        match &options.wrap_host_transport {
+            Some(wrap) => wrap(inner),
+            None => inner,
+        }
+    };
     drivers.push(build_driver(
         &session,
         DriverRole::Host,
         &session.host_peer_id,
-        Box::new(session.host_transport.clone()),
-        &snapshot,
+        host_transport,
+        &snapshot_for(1),
         &options,
     ));
-    for peer_id in &session.guest_peer_ids {
+    for (offset, peer_id) in session.guest_peer_ids.iter().enumerate() {
+        let index = offset as i64 + 2;
         let transport = session
             .guest_transports
             .get(peer_id)
             .expect("session built a transport for every seated guest")
             .clone();
+        let transport: Box<dyn StarTransportAdapter> = {
+            let inner: Box<dyn StarTransportAdapter> = Box::new(transport);
+            match &options.wrap_guest_transport {
+                Some(wrap) => wrap(index, inner),
+                None => inner,
+            }
+        };
         drivers.push(build_driver(
             &session,
             DriverRole::Guest,
             peer_id,
-            Box::new(transport),
-            &snapshot,
+            transport,
+            &snapshot_for(index),
             &options,
         ));
     }
@@ -233,6 +308,276 @@ fn switch_sample() -> InputSample {
         ..Default::default()
     })
     .expect("a switch-only sample is always valid")
+}
+
+/// Mirrors the spec's local `sample(sample_options)`.
+fn sample(options: input_frame::InputSampleOptions) -> InputSample {
+    input_frame::new_sample(options).expect("a valid quantized sample")
+}
+
+/// Impaired delivery: the star only drains every `period` steps, so every
+/// peer predicts the rows it has not received and corrects them in one
+/// burst. Mirrors the spec's `run_bursty(harness_state, steps, period, samples)`.
+fn run_bursty(h: &mut DriverHarness, steps: i64, period: i64, samples: &[Option<InputSample>]) {
+    for step in 1..=steps {
+        for (index, driver) in h.drivers.iter_mut().enumerate() {
+            let sample = samples.get(index).copied().flatten();
+            let _ = match_driver::advance(driver, sample);
+        }
+        if step % period == 0 {
+            h.session.host_transport.pump();
+        }
+        h.step += 1;
+    }
+}
+
+/// Input that changes every step, so a burst opens a real divergence
+/// instead of one prediction repeats for free. Mirrors the spec's
+/// `moving_sample(step, index)`.
+fn moving_sample(step: i64, index: i64) -> InputSample {
+    let phase = (step * 7 + index * 13) % 8;
+    sample(input_frame::InputSampleOptions {
+        move_x: Some(90 - phase * 24),
+        move_y: Some(phase * 17 - 60),
+        edges: Some(if phase == 3 {
+            input_frame::EDGE_SWITCH
+        } else {
+            0
+        }),
+        ..Default::default()
+    })
+}
+
+/// Advances every driver once per step, delivering only on the steps
+/// `deliver` allows, and stopping once no driver is still active. Mirrors
+/// the spec's `drive(harness_state, steps, deliver, sample_for)`.
+fn drive(
+    h: &mut DriverHarness,
+    steps: i64,
+    mut deliver: impl FnMut(i64) -> bool,
+    sample_for: Option<fn(i64, i64) -> InputSample>,
+) {
+    for _ in 0..steps {
+        let step = h.step;
+        let mut active = false;
+        for (index, driver) in h.drivers.iter_mut().enumerate() {
+            let sample = Some(
+                sample_for.map_or_else(input_frame::neutral_sample, |f| f(step, index as i64 + 1)),
+            );
+            let _ = match_driver::advance(driver, sample);
+            active = active || match_driver::status(driver) == MatchDriverStatus::Active;
+        }
+        if deliver(step) {
+            h.session.host_transport.pump();
+        }
+        h.step = step + 1;
+        if !active {
+            return;
+        }
+    }
+}
+
+/// A short match, so a burst can straddle full time without the hold itself
+/// outrunning the 30-tick retained window and turning the run into
+/// `late_input`. Mirrors the spec's `SETTLE_DURATION`.
+const SETTLE_DURATION: f64 = 24.0 / 60.0;
+
+/// Which tick full time lands on is `sim.match`'s countdown to decide, not
+/// arithmetic on the duration. Probed once, lazily, exactly like the spec's
+/// module-load-time `FULL_TIME_BOUNDARY` IIFE.
+fn full_time_boundary_probe() -> i64 {
+    static BOUNDARY: OnceLock<i64> = OnceLock::new();
+    *BOUNDARY.get_or_init(|| {
+        let mut probe = harness(
+            MatchMode::OneVOne,
+            DriverHarnessOptions {
+                duration: Some(SETTLE_DURATION),
+                ..Default::default()
+            },
+        );
+        drive(&mut probe, 200, |_| true, None);
+        match_driver::full_time_boundary(&probe.drivers[0]).expect("probe reaches full time")
+    })
+}
+
+/// Driver step `T` simulates input tick `T`, so this is the step that
+/// reaches [`full_time_boundary_probe`]. Mirrors the spec's `FULL_TIME_STEP`.
+fn full_time_step() -> i64 {
+    full_time_boundary_probe() - 1
+}
+
+/// Every peer completed through the settle phase, on the same final
+/// boundary, with every tick of the match authoritative and the same hash
+/// captured there. Mirrors the spec's `assert_settled(harness_state, label)`.
+fn assert_settled(h: &DriverHarness, label: &str) -> i64 {
+    let mut boundary: Option<i64> = None;
+    for (index, driver) in h.drivers.iter().enumerate() {
+        let diagnostics = match_driver::diagnostics(driver);
+        assert_eq!(
+            match_driver::status(driver),
+            MatchDriverStatus::Completed,
+            "peer {} did not complete in {label}",
+            index + 1
+        );
+        assert_eq!(
+            match_driver::terminal(driver)
+                .expect("a non-active driver has a terminal")
+                .failure,
+            None
+        );
+        assert!(
+            match_driver::settled(driver),
+            "peer {} completed without settling in {label}",
+            index + 1
+        );
+        assert!(!diagnostics.settling);
+        let mine =
+            match_driver::full_time_boundary(driver).expect("a completed driver reached full time");
+        let boundary_value = *boundary.get_or_insert(mine);
+        assert_eq!(
+            mine,
+            boundary_value,
+            "final boundary on peer {} in {label}",
+            index + 1
+        );
+        // The settle phase's whole contract: nothing in the match is left
+        // unconfirmed when it reports the result.
+        assert_eq!(
+            diagnostics.confirmed_output_tick,
+            boundary_value - 1,
+            "peer {} completed with an unconfirmed tail in {label}",
+            index + 1
+        );
+    }
+    let boundary = boundary.expect("at least one driver");
+    let mut reference: Option<String> = None;
+    for (index, driver) in h.drivers.iter().enumerate() {
+        use gc_sim::rollback_snapshot_history::RollbackSnapshotLookupStatus as Status;
+        let lookup = match_driver::snapshot(driver, boundary);
+        assert!(matches!(lookup.status, Status::Present | Status::Retained));
+        let hash = gc_sim::match_snapshot::hash(
+            lookup
+                .snapshot
+                .as_ref()
+                .expect("present/retained lookup carries a snapshot"),
+        );
+        if let Some(reference) = &reference {
+            assert_eq!(
+                &hash,
+                reference,
+                "final hash on peer {} in {label}",
+                index + 1
+            );
+        } else {
+            reference = Some(hash);
+        }
+    }
+    boundary
+}
+
+// ---------------------------------------------------------------------------
+// Transport decorators used by the wrapped-transport cases below. A single
+// hookable wrapper covers every shape the spec's ad hoc `recorder`/`filter`
+// tables need: forward everything, but let a test observe a broadcast or
+// override what `poll_batch`/`send` return.
+// ---------------------------------------------------------------------------
+
+type BroadcastHook = Box<dyn FnMut(TransportChannel, &TransportMessage)>;
+type PollBatchFilter = Box<dyn FnMut(Vec<TransportPeerMessage>) -> Vec<TransportPeerMessage>>;
+type SendOverride =
+    Box<dyn FnMut(&str, TransportChannel, &TransportMessage) -> Option<TransportResult<bool>>>;
+
+#[derive(Default)]
+struct TransportHooks {
+    on_broadcast: Option<BroadcastHook>,
+    poll_batch_filter: Option<PollBatchFilter>,
+    send_override: Option<SendOverride>,
+}
+
+struct HookedTransport {
+    inner: Box<dyn StarTransportAdapter>,
+    hooks: TransportHooks,
+}
+
+impl StarTransportAdapter for HookedTransport {
+    fn initialize(&mut self) -> TransportResult<bool> {
+        self.inner.initialize()
+    }
+    fn shutdown(&mut self) -> TransportResult<bool> {
+        self.inner.shutdown()
+    }
+    fn role(&self) -> TransportRole {
+        self.inner.role()
+    }
+    fn capacity(&self) -> i64 {
+        self.inner.capacity()
+    }
+    fn open_peer(&mut self, peer_id: &str) -> TransportResult<i64> {
+        self.inner.open_peer(peer_id)
+    }
+    fn close_peer(&mut self, peer_id: &str, reason: Option<&str>) -> TransportResult<bool> {
+        self.inner.close_peer(peer_id, reason)
+    }
+    fn peer_ids(&self) -> Vec<String> {
+        self.inner.peer_ids()
+    }
+    fn peer_state(&self, peer_id: &str) -> Option<TransportPeerState> {
+        self.inner.peer_state(peer_id)
+    }
+    fn request_offer(&mut self, peer_id: &str) -> TransportResult<bool> {
+        self.inner.request_offer(peer_id)
+    }
+    fn accept_offer(&mut self, signal: &str) -> TransportResult<bool> {
+        self.inner.accept_offer(signal)
+    }
+    fn accept_answer(&mut self, peer_id: &str, signal: &str) -> TransportResult<bool> {
+        self.inner.accept_answer(peer_id, signal)
+    }
+    fn take_signal(&mut self, peer_id: &str) -> TransportResult<Option<String>> {
+        self.inner.take_signal(peer_id)
+    }
+    fn send(
+        &mut self,
+        peer_id: &str,
+        channel: TransportChannel,
+        message: TransportMessage,
+    ) -> TransportResult<bool> {
+        if let Some(hook) = &mut self.hooks.send_override {
+            if let Some(result) = hook(peer_id, channel, &message) {
+                return result;
+            }
+        }
+        self.inner.send(peer_id, channel, message)
+    }
+    fn broadcast(
+        &mut self,
+        channel: TransportChannel,
+        message: TransportMessage,
+    ) -> TransportResult<i64> {
+        if let Some(hook) = &mut self.hooks.on_broadcast {
+            hook(channel, &message);
+        }
+        self.inner.broadcast(channel, message)
+    }
+    fn poll(&mut self) -> Option<TransportPeerMessage> {
+        self.inner.poll()
+    }
+    fn poll_batch(&mut self, limit: Option<i64>) -> Vec<TransportPeerMessage> {
+        let messages = self.inner.poll_batch(limit);
+        match &mut self.hooks.poll_batch_filter {
+            Some(filter) => filter(messages),
+            None => messages,
+        }
+    }
+    fn poll_event(&mut self) -> Option<TransportPeerEvent> {
+        self.inner.poll_event()
+    }
+    fn state(&self) -> TransportState {
+        self.inner.state()
+    }
+    fn diagnostics(&self) -> TransportStarDiagnostics {
+        self.inner.diagnostics()
+    }
 }
 
 mod online_match_driver {
@@ -911,87 +1256,330 @@ fn match_driver_differential_matches_the_lua_reference() {
 /// individual porting from the spec file; `fixture.session` itself is no
 /// longer the blocker (see this file's module doc and `online_match_driver`'s
 /// growing coverage).
-const BLOCKED: &str = "not yet ported from spec/game/online_match_driver_spec.lua in this pass; \
-    crate::match_driver_fixture::session/DriverRules and this file's own harness()/run()/\
-    assert_agreement() helpers are ready to build it on -- see mod online_match_driver for the \
-    cases already ported this way.";
-
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn tolerates_one_boundary_disagreement_and_clears_it_on_the_next_agreement() {
-    unreachable!("{BLOCKED}");
+    let mut state = harness(MatchMode::FourVFour, DriverHarnessOptions::default());
+    run(&mut state, 34, &[]);
+    let driver = &mut state.drivers[0];
+    let checkpoints = match_driver::checkpoints(driver);
+    assert!(checkpoints.len() >= 2);
+    assert!(!match_driver::observe_checkpoint(
+        driver,
+        checkpoints[0].tick,
+        "dead0000dead0000"
+    ));
+    assert!(match_driver::observe_checkpoint(
+        driver,
+        checkpoints[0].tick,
+        &checkpoints[0].hash
+    ));
+    assert_eq!(match_driver::status(driver), MatchDriverStatus::Active);
+    assert_eq!(match_driver::diagnostics(driver).hash_mismatches, 0);
 }
 
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn publishes_confirmed_boundary_hashes_on_the_documented_interval() {
-    unreachable!("{BLOCKED}");
+    let mut state = harness(MatchMode::FourVFour, DriverHarnessOptions::default());
+    run(&mut state, 40, &[]);
+    let checkpoints = match_driver::checkpoints(&state.drivers[0]);
+    assert!(checkpoints.len() >= 2);
+    assert_eq!(checkpoints[0].tick, 0);
+    assert_eq!(
+        checkpoints[1].tick,
+        match_driver::DEFAULT_HASH_INTERVAL_TICKS
+    );
+    for checkpoint in &checkpoints {
+        assert_eq!(checkpoint.hash.len(), 16);
+    }
 }
 
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn ends_with_a_typed_completed_status_at_full_time() {
-    unreachable!("{BLOCKED}");
+    let mut state = harness(
+        MatchMode::FourVFour,
+        DriverHarnessOptions {
+            duration: Some(0.2),
+            ..Default::default()
+        },
+    );
+    for _ in 0..40 {
+        advance(&mut state, &[]);
+        if match_driver::status(&state.drivers[0]) != MatchDriverStatus::Active {
+            break;
+        }
+    }
+    assert_eq!(
+        match_driver::status(&state.drivers[0]),
+        MatchDriverStatus::Completed
+    );
+    let terminal = match_driver::terminal(&state.drivers[0]).expect("driver reached a terminal");
+    assert_eq!(terminal.failure, None);
 }
 
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn converges_under_impaired_delivery_after_real_corrections() {
-    unreachable!("{BLOCKED}");
+    let mut state = harness(MatchMode::TwoVTwo, DriverHarnessOptions::default());
+    run_bursty(
+        &mut state,
+        60,
+        6,
+        &[
+            Some(sample(input_frame::InputSampleOptions {
+                move_x: Some(90),
+                ..Default::default()
+            })),
+            Some(sample(input_frame::InputSampleOptions {
+                move_y: Some(-70),
+                ..Default::default()
+            })),
+        ],
+    );
+    for driver in &state.drivers {
+        assert_eq!(match_driver::status(driver), MatchDriverStatus::Active);
+    }
+    let mut rollbacks = 0;
+    for driver in &state.drivers {
+        rollbacks += match_driver::diagnostics(driver).rollback_count;
+    }
+    assert!(rollbacks > 0, "bursty delivery never produced a correction");
+    assert!(assert_agreement(&state) > 0);
+    assert_confirmed_state(&state);
 }
 
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn converges_in_1v1_under_impaired_delivery_with_live_slot_switching() {
-    unreachable!("{BLOCKED}");
+    let mut state = harness(MatchMode::OneVOne, DriverHarnessOptions::default());
+    run_bursty(
+        &mut state,
+        60,
+        5,
+        &[Some(switch_sample()), Some(switch_sample())],
+    );
+    assert!(match_driver::diagnostics(&state.drivers[0]).rollback_count > 0);
+    assert!(assert_agreement(&state) > 0);
+    assert_confirmed_state(&state);
 }
 
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn terminates_explicitly_when_authority_falls_outside_the_retained_window() {
-    unreachable!("{BLOCKED}");
+    let mut state = harness(MatchMode::FourVFour, DriverHarnessOptions::default());
+    // Nothing is delivered for well over the 30-tick floor, so confirmation
+    // stops dead and the floor slides past the ticks it was waiting on.
+    run_bursty(&mut state, 60, 50, &[]);
+    let mut terminal_count = 0;
+    for driver in &state.drivers {
+        // Caught on confirmation liveness rather than on the arrival that
+        // used to reveal it: the peer says so at the step the tick becomes
+        // unconfirmable, not whenever the backlog lands.
+        if match_driver::status(driver) == MatchDriverStatus::ConfirmationStalled {
+            terminal_count += 1;
+            let record = match_driver::terminal(driver).expect("driver reached a terminal");
+            assert_eq!(record.failure, Some(CoordinatorNetcodeFailure::LateInput));
+            assert!(record.tick.is_some());
+        }
+    }
+    assert!(
+        terminal_count > 0,
+        "an over-window burst never terminated a peer"
+    );
 }
 
+// FINDING 1 regression: `confirmed_tick` runs ahead of the simulated present
+// by up to DELAY_TICKS even with zero loss and zero jitter, because a sample
+// is authority before it is consumed. Keying a checkpoint's snapshot lookup
+// off it aborted healthy matches whenever the interval landed on that race.
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn publishes_checkpoints_on_the_simulated_ceiling_not_raw_confirmation() {
-    unreachable!("{BLOCKED}");
+    for interval in [1, 2, 3, 4] {
+        let mut state = harness(
+            MatchMode::OneVOne,
+            DriverHarnessOptions {
+                hash_interval_ticks: Some(interval),
+                ..Default::default()
+            },
+        );
+        run(&mut state, 24, &[]);
+        for driver in &state.drivers {
+            assert_eq!(
+                match_driver::status(driver),
+                MatchDriverStatus::Active,
+                "hash_interval_ticks={interval}"
+            );
+        }
+        let checkpoints = match_driver::checkpoints(&state.drivers[0]);
+        assert!(
+            checkpoints.len() > 1,
+            "interval {interval} published nothing"
+        );
+        for checkpoint in &checkpoints {
+            // Never ahead of a boundary that was actually simulated.
+            assert!(
+                checkpoint.tick <= match_driver::diagnostics(&state.drivers[0]).present_input_tick
+            );
+        }
+        assert!(assert_agreement(&state) > 0);
+    }
 }
 
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn never_publishes_a_checkpoint_boundary_that_was_not_simulated() {
-    unreachable!("{BLOCKED}");
+    // The invariant the fix rests on: the output-capped confirmation is
+    // always at most one boundary behind the present, so `confirmed + 1`
+    // always names a boundary the session actually captured.
+    let mut state = harness(MatchMode::OneVOne, DriverHarnessOptions::default());
+    for _ in 0..24 {
+        advance(&mut state, &[]);
+        for driver in &state.drivers {
+            use gc_sim::rollback_snapshot_history::RollbackSnapshotLookupStatus as Status;
+            let diagnostics = match_driver::diagnostics(driver);
+            assert!(diagnostics.confirmed_output_tick <= diagnostics.confirmed_input_tick);
+            assert!(diagnostics.confirmed_output_tick < diagnostics.present_input_tick);
+            for checkpoint in match_driver::checkpoints(driver) {
+                let lookup = match_driver::snapshot(driver, checkpoint.tick);
+                assert!(matches!(lookup.status, Status::Present | Status::Retained));
+            }
+        }
+    }
 }
 
+// FINDING 3 / retained-floor edge, revisited by #241. The driver still keeps
+// no floor pre-check of its own -- `rollback_input_history` owns the floor.
+// What changed is that the driver can no longer *reach* a below-floor
+// arrival: a row is only offered to the history when it is above this peer's
+// confirmation, so confirmation liveness terminates on `confirmed + 1 <
+// floor` before any arrival is applied.
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn terminates_on_confirmation_liveness_before_a_below_floor_row_can_arrive() {
-    unreachable!("{BLOCKED}");
+    let mut state = harness(
+        MatchMode::TwoVTwo,
+        DriverHarnessOptions {
+            max_rollback_ticks: Some(6),
+            ..Default::default()
+        },
+    );
+    let guest = &mut state.drivers[1];
+    // Only the guest runs. The host is never advanced, so no canonical batch
+    // is ever produced and the guest's seven remote slots never become
+    // authoritative: its confirmation is pinned while its floor keeps
+    // sliding, which is the only regime where the floor rule bites at all.
+    for _ in 0..20 {
+        let _ = match_driver::advance(guest, None);
+    }
+    assert_eq!(
+        match_driver::status(guest),
+        MatchDriverStatus::ConfirmationStalled
+    );
+    let diagnostics = match_driver::diagnostics(guest);
+    let record = match_driver::terminal(guest).expect("driver reached a terminal");
+    assert_eq!(record.failure, Some(CoordinatorNetcodeFailure::LateInput));
+    assert_eq!(record.tick, Some(diagnostics.confirmed_input_tick + 1));
+    assert_eq!(diagnostics.late_input_tick, record.tick);
+    // The boundary itself, and the reason it is not off by one: the driver
+    // terminates and makes no further progress, so the floor it froze at is
+    // the first one that ever outran confirmation.
+    assert_eq!(
+        diagnostics.retained_floor_tick,
+        diagnostics.confirmed_input_tick + 2,
+        "confirmation liveness did not fire on the first step it could"
+    );
 }
 
+// FINDING 4: the combination the 1v1 case covers, in the other mode that can
+// exhibit live-slot divergence at all.
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn agrees_on_the_live_slot_in_2v2_under_impaired_delivery_with_switching() {
-    unreachable!("{BLOCKED}");
+    let mut state = harness(MatchMode::TwoVTwo, DriverHarnessOptions::default());
+    run_bursty(
+        &mut state,
+        60,
+        5,
+        &[
+            Some(switch_sample()),
+            Some(switch_sample()),
+            Some(sample(input_frame::InputSampleOptions {
+                move_x: Some(80),
+                edges: Some(input_frame::EDGE_SWITCH),
+                ..Default::default()
+            })),
+        ],
+    );
+    let mut rollbacks = 0;
+    for driver in &state.drivers {
+        rollbacks += match_driver::diagnostics(driver).rollback_count;
+    }
+    assert!(
+        rollbacks > 0,
+        "bursty 2v2 switching never produced a correction"
+    );
+    assert!(assert_agreement(&state) > 0);
+    assert_confirmed_state(&state);
 }
 
+// FINDING 5: full time under impaired delivery, not only clean delivery.
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn reaches_full_time_under_impaired_delivery() {
-    unreachable!("{BLOCKED}");
+    let mut state = harness(
+        MatchMode::TwoVTwo,
+        DriverHarnessOptions {
+            duration: Some(0.2),
+            ..Default::default()
+        },
+    );
+    run_bursty(&mut state, 60, 5, &[Some(switch_sample())]);
+    for driver in &state.drivers {
+        assert_eq!(match_driver::status(driver), MatchDriverStatus::Completed);
+        assert_eq!(
+            match_driver::terminal(driver)
+                .expect("driver reached a terminal")
+                .failure,
+            None
+        );
+    }
+    assert!(match_driver::diagnostics(&state.drivers[0]).rollback_count > 0);
 }
 
+// The mechanism: the companion is restored and resimulated at all. It says
+// nothing about *what* the companion was doing.
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn carries_the_combat_companion_through_correction_and_resimulation() {
-    unreachable!("{BLOCKED}");
+    let mut state = harness(
+        MatchMode::TwoVTwo,
+        DriverHarnessOptions {
+            combat: true,
+            ..Default::default()
+        },
+    );
+    let initial = match_driver::current_snapshot(&state.drivers[0]);
+    assert_eq!(initial.version, gc_sim::match_snapshot::COMBAT_VERSION);
+    assert!(initial.combat.is_some());
+    run_bursty(
+        &mut state,
+        48,
+        5,
+        &[
+            Some(switch_sample()),
+            None,
+            Some(sample(input_frame::InputSampleOptions {
+                move_y: Some(60),
+                ..Default::default()
+            })),
+        ],
+    );
+    assert!(match_driver::diagnostics(&state.drivers[0]).rollback_count > 0);
+    for driver in &state.drivers {
+        assert_eq!(match_driver::status(driver), MatchDriverStatus::Active);
+        assert!(match_driver::current_snapshot(driver).combat.is_some());
+    }
+    assert!(assert_agreement(&state) > 0);
+    assert_confirmed_state(&state);
 }
 
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
+#[ignore = "needs a combat_phases fixture (spec/support/online_combat_phases.lua, 579 lines) that \
+    has no Rust port yet -- fixture.session is not the blocker here; PHASES/scenario/boundary_zero \
+    are"]
 fn opens_every_combat_phase_scenario_from_a_ready_combat_state() {
-    unreachable!("{BLOCKED}");
+    unreachable!("needs a combat_phases fixture port; see the ignore reason");
 }
 
 /// The spec's `for _, phase_id in ipairs(combat_phases.PHASES) do t.it(...) end`
@@ -1001,156 +1589,932 @@ fn opens_every_combat_phase_scenario_from_a_ready_combat_state() {
 /// one generic loop, so each is independently countable and independently
 /// re-enableable.
 mod converges_a_correction_taken_during_each_combat_phase {
-    const REASON: &str = "blocked on fixture.session and spec/support/online_combat_phases.lua's \
-        fixtures; see the parent module doc";
+    const REASON: &str = "needs a combat_phases fixture (spec/support/online_combat_phases.lua, \
+        579 lines: PHASES/scenario/boundary_zero/live_sample/observed) that has no Rust port yet; \
+        fixture.session is not the blocker -- see the parent module doc";
 
     #[test]
-    #[ignore = "blocked on fixture.session; see REASON"]
+    #[ignore = "needs a combat_phases fixture port; see REASON"]
     fn wind_up() {
         unreachable!("{REASON}");
     }
 
     #[test]
-    #[ignore = "blocked on fixture.session; see REASON"]
+    #[ignore = "needs a combat_phases fixture port; see REASON"]
     fn guard() {
         unreachable!("{REASON}");
     }
 
     #[test]
-    #[ignore = "blocked on fixture.session; see REASON"]
+    #[ignore = "needs a combat_phases fixture port; see REASON"]
     fn contact() {
         unreachable!("{REASON}");
     }
 
     #[test]
-    #[ignore = "blocked on fixture.session; see REASON"]
+    #[ignore = "needs a combat_phases fixture port; see REASON"]
     fn projectile_flight() {
         unreachable!("{REASON}");
     }
 
     #[test]
-    #[ignore = "blocked on fixture.session; see REASON"]
+    #[ignore = "needs a combat_phases fixture port; see REASON"]
     fn stagger() {
         unreachable!("{REASON}");
     }
 
     #[test]
-    #[ignore = "blocked on fixture.session; see REASON"]
+    #[ignore = "needs a combat_phases fixture port; see REASON"]
     fn ball_spill() {
         unreachable!("{REASON}");
     }
 
     #[test]
-    #[ignore = "blocked on fixture.session; see REASON"]
+    #[ignore = "needs a combat_phases fixture port; see REASON"]
     fn immunity_expiry() {
         unreachable!("{REASON}");
     }
 }
 
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
+#[ignore = "needs a combat_phases fixture (spec/support/online_combat_phases.lua, 579 lines: \
+    GUARD_PROBE/guard_probe_boundary_zero) that has no Rust port yet"]
 fn finds_no_driver_level_geometry_where_the_policy_guards_often_enough() {
-    unreachable!("{BLOCKED}");
+    unreachable!("needs a combat_phases fixture port; see the ignore reason");
 }
 
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
+#[ignore = "cannot be forced without a src/ change: the Lua case monkeypatches \
+    rollback_session.reconcile/add_authoritative_batch to count calls and force a divergence \
+    report; match_driver.rs (src, out of scope for this pass) calls \
+    gc_sim::rollback_session::{reconcile, add_authoritative_batch} directly as free functions with \
+    no injection seam, so there is no way to intercept or count those calls from a test without \
+    widening match_driver's internals -- report as needing a pub seam, not a test-only workaround"]
 fn still_reconciles_if_a_local_insert_ever_reports_a_divergence() {
-    unreachable!("{BLOCKED}");
+    unreachable!(
+        "needs a call-count/injection seam into gc_sim::rollback_session; see the ignore reason"
+    );
 }
 
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
+#[ignore = "cannot be forced without a src/ change: the Lua case monkeypatches \
+    rollback_session.current_snapshot to count calls; match_driver.rs (src, out of scope for this \
+    pass) calls gc_sim::rollback_session::current_snapshot directly as a free function with no \
+    injection seam -- report as needing a pub seam, not a test-only workaround"]
 fn costs_no_extra_snapshot_work_when_a_peer_authors_only_its_control_slot() {
-    unreachable!("{BLOCKED}");
+    unreachable!(
+        "needs a call-count/injection seam into gc_sim::rollback_session; see the ignore reason"
+    );
 }
 
+// #237. The driver used to terminate at *present* full time, leaving up to
+// DELAY_TICKS of the match unconfirmed at the moment it reported the result.
+// These pin the settle phase that closes it.
+
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn settles_the_final_boundary_before_completing_under_clean_delivery() {
-    unreachable!("{BLOCKED}");
+    for mode in [MatchMode::OneVOne, MatchMode::TwoVTwo, MatchMode::FourVFour] {
+        let mut state = harness(
+            mode,
+            DriverHarnessOptions {
+                duration: Some(SETTLE_DURATION),
+                ..Default::default()
+            },
+        );
+        drive(
+            &mut state,
+            full_time_boundary_probe() + 20,
+            |_| true,
+            Some(moving_sample),
+        );
+        assert_eq!(
+            assert_settled(&state, mode.wire_str()),
+            full_time_boundary_probe()
+        );
+        for (index, driver) in state.drivers.iter().enumerate() {
+            // Clean delivery confirms ahead of the present, so settling is
+            // all but free for a guest: one step behind the fan-out that
+            // carries the final row to it, plus one more for the host batch
+            // that reports the host's own confirmation back.
+            let allowed = 2;
+            let steps = match_driver::diagnostics(driver).settle_steps;
+            assert!(
+                steps <= allowed,
+                "peer {} settled slowly under clean delivery in {}: {} steps",
+                index + 1,
+                mode.wire_str(),
+                steps
+            );
+        }
+    }
 }
 
+// The regression test. The pre-existing full-time coverage runs bursty
+// delivery *up to* full time, which is why this was missed: the burst has to
+// straddle the final whistle for peers to stop at different confirmation
+// depths.
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn completes_with_an_agreed_final_hash_under_a_burst_across_full_time() {
-    unreachable!("{BLOCKED}");
+    for mode in [MatchMode::OneVOne, MatchMode::TwoVTwo, MatchMode::FourVFour] {
+        let mut state = harness(
+            mode,
+            DriverHarnessOptions {
+                duration: Some(SETTLE_DURATION),
+                ..Default::default()
+            },
+        );
+        drive(
+            &mut state,
+            full_time_boundary_probe() + 90,
+            |step| step < full_time_step() - 6 || step > full_time_step() + 4,
+            Some(moving_sample),
+        );
+        assert_settled(&state, mode.wire_str());
+        let mut rollbacks = 0;
+        let mut settle_steps = 0;
+        for driver in &state.drivers {
+            let diagnostics = match_driver::diagnostics(driver);
+            rollbacks += diagnostics.rollback_count;
+            settle_steps += diagnostics.settle_steps;
+        }
+        assert!(
+            rollbacks > 0,
+            "the burst never corrected anything in {}",
+            mode.wire_str()
+        );
+        // And the burst really did leave a tail to drain, so this is the
+        // path under test rather than the clean one in disguise.
+        assert!(
+            settle_steps > 0,
+            "nothing was left to settle in {}",
+            mode.wire_str()
+        );
+    }
 }
 
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn does_not_swallow_a_boundary_disagreement_reported_while_settling() {
-    unreachable!("{BLOCKED}");
+    let mut state = harness(
+        MatchMode::TwoVTwo,
+        DriverHarnessOptions {
+            duration: Some(SETTLE_DURATION),
+            settle_timeout_ticks: Some(40),
+            ..Default::default()
+        },
+    );
+    drive(
+        &mut state,
+        full_time_step() + 1,
+        |step| step < full_time_step() - 5,
+        Some(moving_sample),
+    );
+    {
+        let driver = &state.drivers[0];
+        assert!(
+            match_driver::diagnostics(driver).settling,
+            "the peer was not settling"
+        );
+    }
+
+    // A peer disagreeing about a boundary this driver hashed is exactly the
+    // report the coordinator forwards. Settling must not make it wait it out.
+    let checkpoint = match_driver::checkpoints(&state.drivers[0])
+        .into_iter()
+        .next()
+        .expect("at least one checkpoint");
+    {
+        let driver = &mut state.drivers[0];
+        for _ in 0..match_driver::MAX_HASH_MISMATCHES {
+            assert!(!match_driver::observe_checkpoint(
+                driver,
+                checkpoint.tick,
+                "dead0000dead0000"
+            ));
+        }
+        assert_eq!(
+            match_driver::status(driver),
+            MatchDriverStatus::HashMismatch
+        );
+        assert_eq!(
+            match_driver::terminal(driver)
+                .expect("driver reached a terminal")
+                .failure,
+            Some(CoordinatorNetcodeFailure::Desync)
+        );
+        assert!(!match_driver::settled(driver));
+    }
+
+    // Delivery resumes and the tail would now confirm. A settle phase that
+    // completed anyway would have converted a real divergence into a result.
+    drive(&mut state, 40, |_| true, Some(moving_sample));
+    let driver = &state.drivers[0];
+    assert_eq!(
+        match_driver::status(driver),
+        MatchDriverStatus::HashMismatch
+    );
+    assert!(!match_driver::settled(driver));
 }
 
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn settles_a_genuinely_divergent_peer_without_hiding_the_divergence() {
-    unreachable!("{BLOCKED}");
+    // Peer two simulates from a differently seeded boundary zero: every
+    // input row still agrees, so every peer confirms every tick and settles,
+    // but the states never do. Settling waits for *authority*, never for
+    // agreement, so the disagreement survives into the final hash the
+    // session acknowledges.
+    let mut state = harness(
+        MatchMode::TwoVTwo,
+        DriverHarnessOptions {
+            duration: Some(SETTLE_DURATION),
+            divergent_peer: Some(2),
+            ..Default::default()
+        },
+    );
+    drive(
+        &mut state,
+        full_time_boundary_probe() + 20,
+        |_| true,
+        Some(moving_sample),
+    );
+    let mut boundary: Option<i64> = None;
+    for driver in &state.drivers {
+        assert_eq!(match_driver::status(driver), MatchDriverStatus::Completed);
+        assert!(match_driver::settled(driver));
+        boundary = match_driver::full_time_boundary(driver);
+    }
+    let boundary = boundary.expect("some driver reached full time");
+    let mut hashes = Vec::new();
+    for driver in &state.drivers {
+        let snapshot = match_driver::snapshot(driver, boundary)
+            .snapshot
+            .expect("boundary is retained");
+        hashes.push(gc_sim::match_snapshot::hash(&snapshot));
+    }
+    assert_ne!(
+        hashes[0], hashes[1],
+        "a divergent peer settled onto an agreed final hash"
+    );
+    // The driver's own comparison would fire on the same evidence: the
+    // boundaries it published during play already disagree.
+    let divergent_checkpoint = match_driver::checkpoints(&state.drivers[1])
+        .into_iter()
+        .next()
+        .expect("the divergent peer published at least one checkpoint");
+    assert!(!match_driver::observe_checkpoint(
+        &mut state.drivers[2],
+        divergent_checkpoint.tick,
+        &divergent_checkpoint.hash,
+    ));
 }
 
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn ends_a_settle_nobody_can_finish_with_a_bounded_typed_reason() {
-    unreachable!("{BLOCKED}");
+    let mut state = harness(
+        MatchMode::TwoVTwo,
+        DriverHarnessOptions {
+            duration: Some(SETTLE_DURATION),
+            settle_timeout_ticks: Some(10),
+            ..Default::default()
+        },
+    );
+    // Delivery stops before full time and never resumes: every peer reaches
+    // the final tick on predicted rows and none of them can ever confirm it.
+    drive(
+        &mut state,
+        full_time_boundary_probe() + 60,
+        |step| step < full_time_step() - 5,
+        Some(moving_sample),
+    );
+    for (index, driver) in state.drivers.iter().enumerate() {
+        let status = match_driver::status(driver);
+        assert_eq!(
+            status,
+            MatchDriverStatus::SettleTimeout,
+            "peer {} did not time out",
+            index + 1
+        );
+        // Typed, and emphatically not the desync a healthy match used to get.
+        assert_ne!(status, MatchDriverStatus::HashMismatch);
+        let terminal = match_driver::terminal(driver).expect("driver reached a terminal");
+        assert_eq!(
+            terminal.failure,
+            Some(CoordinatorNetcodeFailure::InputChannel)
+        );
+        assert_eq!(terminal.tick, match_driver::full_time_boundary(driver));
+        assert!(!match_driver::settled(driver));
+        assert_eq!(match_driver::diagnostics(driver).settle_steps, 10);
+    }
+
+    // No hidden progress after the settle phase ends, same as every other
+    // terminal status.
+    let driver = &mut state.drivers[0];
+    let before = match_driver::diagnostics(driver);
+    let batch = match_driver::advance(driver, None);
+    assert_eq!(batch.outputs.len(), 0);
+    assert_eq!(batch.sent_packets, 0);
+    assert_eq!(batch.status, MatchDriverStatus::SettleTimeout);
+    let after = match_driver::diagnostics(driver);
+    assert_eq!(after.present_input_tick, before.present_input_tick);
+    assert_eq!(after.confirmed_input_tick, before.confirmed_input_tick);
+    assert_eq!(after.settle_steps, before.settle_steps);
 }
 
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn bounds_the_settle_phase_in_wall_clock_as_well_as_in_ticks() {
-    unreachable!("{BLOCKED}");
+    // One second of monotonic time per reading, so a caller whose frames
+    // have stopped arriving at 60 Hz cannot stretch a bounded number of
+    // steps into an unbounded wait.
+    let now = Rc::new(RefCell::new(0.0));
+    let mut state = harness(
+        MatchMode::TwoVTwo,
+        DriverHarnessOptions {
+            duration: Some(SETTLE_DURATION),
+            settle_timeout_ticks: Some(10000),
+            settle_timeout_seconds: Some(2.0),
+            clock: Some(now),
+            ..Default::default()
+        },
+    );
+    drive(
+        &mut state,
+        full_time_boundary_probe() + 60,
+        |step| step < full_time_step() - 5,
+        Some(moving_sample),
+    );
+    for (index, driver) in state.drivers.iter().enumerate() {
+        assert_eq!(
+            match_driver::status(driver),
+            MatchDriverStatus::SettleTimeout,
+            "peer {}",
+            index + 1
+        );
+        let detail = match_driver::terminal(driver)
+            .expect("driver reached a terminal")
+            .detail;
+        assert!(
+            detail.contains("seconds"),
+            "the wall-clock bound was not the one that fired: {detail}"
+        );
+        // Far short of the tick bound, which is the point.
+        assert!(match_driver::diagnostics(driver).settle_steps < 10);
+    }
 }
 
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn re_publishes_the_tail_while_settling_and_simulates_nothing() {
-    unreachable!("{BLOCKED}");
+    let mut state = harness(
+        MatchMode::TwoVTwo,
+        DriverHarnessOptions {
+            duration: Some(SETTLE_DURATION),
+            settle_timeout_ticks: Some(40),
+            ..Default::default()
+        },
+    );
+    drive(
+        &mut state,
+        full_time_step() + 1,
+        |step| step < full_time_step() - 5,
+        Some(moving_sample),
+    );
+    for (index, driver) in state.drivers.iter_mut().enumerate() {
+        let before = match_driver::diagnostics(driver);
+        assert!(before.settling, "peer {} was not settling", index + 1);
+        assert_eq!(before.status, MatchDriverStatus::Active);
+        let batch = match_driver::advance(driver, None);
+        // Nothing is simulated after full time, ever.
+        assert_eq!(
+            batch.outputs.len(),
+            0,
+            "peer {} simulated after full time",
+            index + 1
+        );
+        let after = match_driver::diagnostics(driver);
+        assert_eq!(after.present_input_tick, before.present_input_tick);
+        assert_eq!(
+            after.present_input_tick,
+            before
+                .full_time_boundary
+                .expect("settling peer has a full time boundary")
+        );
+        // But the last authored window keeps going out, which is how a peer
+        // that lost the tail can still receive it.
+        assert!(
+            batch.sent_packets > 0 || index == 0,
+            "settling peer {} stopped re-publishing its tail",
+            index + 1
+        );
+    }
+    // The host publishes through its own collector, so its re-sends leave on
+    // the canonical batch a step later rather than immediately.
+    let host_batch = match_driver::advance(&mut state.drivers[0], None);
+    assert!(
+        host_batch.sent_packets > 0,
+        "a settling host stopped fanning out authority"
+    );
 }
 
+// #241, the mid-match half. Confirmation could stop advancing permanently
+// with nothing raised at the time: the retained floor slid past a tick that
+// never got its eighth row, that tick's authority was deleted, and because
+// confirmation only advances from `confirmed_tick + 1` it could never cross
+// the hole again. The reactive `late_input` check cannot see it, because it
+// fires on a row that *arrives* below the floor and this is a row that never
+// arrives at all.
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn reports_a_stalled_confirmation_at_the_step_it_becomes_permanent() {
-    unreachable!("{BLOCKED}");
+    // Long enough that the retained floor can outrun a hole without full
+    // time arriving first and turning this into a settle question.
+    let mut state = harness(
+        MatchMode::TwoVTwo,
+        DriverHarnessOptions {
+            duration: Some(2.0),
+            ..Default::default()
+        },
+    );
+    // Delivery stops for good well before full time. Every peer keeps
+    // simulating on predicted rows, and thirty steps later the floor passes
+    // the first tick that never became authoritative.
+    drive(&mut state, 90, |step| step < 12, Some(moving_sample));
+    for (index, driver) in state.drivers.iter().enumerate() {
+        let status = match_driver::status(driver);
+        assert_eq!(
+            status,
+            MatchDriverStatus::ConfirmationStalled,
+            "peer {} did not report its stall",
+            index + 1
+        );
+        // Distinct from both statuses that used to absorb this.
+        assert_ne!(status, MatchDriverStatus::SettleTimeout);
+        assert_ne!(status, MatchDriverStatus::HashMismatch);
+        let terminal = match_driver::terminal(driver).expect("driver reached a terminal");
+        assert_eq!(terminal.failure, Some(CoordinatorNetcodeFailure::LateInput));
+        let diagnostics = match_driver::diagnostics(driver);
+        // At the stall, not at the whistle: full time was never reached, so
+        // the settle phase never even opened.
+        assert_eq!(diagnostics.full_time_boundary, None);
+        assert_eq!(diagnostics.settle_steps, 0);
+        // And it names the tick that never became authoritative.
+        assert_eq!(terminal.tick, Some(diagnostics.confirmed_input_tick + 1));
+        assert!(
+            diagnostics.retained_floor_tick > diagnostics.confirmed_input_tick + 1,
+            "peer {} reported a stall it was not in",
+            index + 1
+        );
+    }
 }
 
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
+#[ignore = "cannot be forced without a src/ change: the Lua case monkeypatches \
+    rollback_session.apply_authoritative_batch to force an `outside_window` rejection; \
+    match_driver.rs (src, out of scope for this pass) calls \
+    gc_sim::rollback_session::apply_authoritative_batch directly as a free function with no \
+    injection seam -- report as needing a pub seam, not a test-only workaround"]
 fn maps_a_rejected_over_window_batch_onto_late_input_unreachable_by_design() {
-    unreachable!("{BLOCKED}");
+    unreachable!(
+        "needs a call-count/injection seam into gc_sim::rollback_session; see the ignore reason"
+    );
 }
 
+// #241, the fan-out half. One host batch is meant to carry the full seven-row
+// redundancy window for every slot. Relaying only what arrived on this
+// transport tick spent far less of it: a slot whose author's bundle was lost
+// or delayed contributed nothing at all, so the guest-to-host leg's losses
+// multiplied into the host-to-guest leg, which has no retransmission.
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn fans_out_a_full_redundancy_window_for_a_slot_that_sent_nothing() {
-    unreachable!("{BLOCKED}");
+    let sent: Rc<RefCell<Vec<TransportMessage>>> = Rc::new(RefCell::new(Vec::new()));
+    let recorded = sent.clone();
+    let wrap_host: WrapHostTransport = Box::new(move |inner| {
+        let recorded = recorded.clone();
+        Box::new(HookedTransport {
+            inner,
+            hooks: TransportHooks {
+                on_broadcast: Some(Box::new(move |channel, message| {
+                    if channel == TransportChannel::Input {
+                        recorded.borrow_mut().push(message.clone());
+                    }
+                })),
+                ..Default::default()
+            },
+        })
+    });
+    let mut state = harness(
+        MatchMode::FourVFour,
+        DriverHarnessOptions {
+            wrap_host_transport: Some(wrap_host),
+            ..Default::default()
+        },
+    );
+    // Warm every slot: each guest has published a full window and the host
+    // has accepted it.
+    run(&mut state, 12, &[]);
+    assert!(
+        !sent.borrow().is_empty(),
+        "the host never fanned anything out"
+    );
+
+    // Now only the host advances. The first step drains what the last pump
+    // delivered; the second has no guest traffic at all, which is exactly
+    // the shape a lost or delayed bundle produces -- here for seven slots at
+    // once rather than one.
+    let _ = match_driver::advance(&mut state.drivers[0], None);
+    state.session.host_transport.pump();
+    let before = sent.borrow().len();
+    let _ = match_driver::advance(&mut state.drivers[0], None);
+    assert_eq!(
+        sent.borrow().len(),
+        before + 1,
+        "the host did not fan out a batch"
+    );
+
+    let fixture_manifest = protocol_fixture::manifest(Some(MatchMode::FourVFour));
+    let context = input_protocol::DecodeContext {
+        session_id: fixture_manifest
+            .get("session_id")
+            .and_then(Value::as_str)
+            .expect("fixture manifest has a session id")
+            .to_string(),
+        manifest_id: protocol::manifest_id(&fixture_manifest),
+        sender_id: match_driver_fixture::HOST_PEER_ID.to_string(),
+    };
+    let last = sent.borrow().last().expect("a batch was recorded").clone();
+    let packet =
+        input_protocol::decode(&last.payload, &context).expect("a canonical host batch decodes");
+    let mut per_slot: std::collections::BTreeMap<i64, i64> = std::collections::BTreeMap::new();
+    for row in &packet.rows {
+        *per_slot.entry(row.slot_index).or_insert(0) += 1;
+    }
+    for slot_index in 1..=input_frame::SLOT_COUNT {
+        assert_eq!(
+            per_slot.get(&slot_index).copied().unwrap_or(0),
+            input_protocol::RETAINED_ROWS,
+            "slot {slot_index} was not fanned out with a full window"
+        );
+    }
+    // A full window for every slot, with the repair headroom left unspent:
+    // no guest is behind here, so nothing has asked for a repair.
+    assert_eq!(
+        packet.rows.len() as i64,
+        input_frame::SLOT_COUNT * input_protocol::RETAINED_ROWS
+    );
+    assert!((packet.rows.len() as i64) < input_protocol::MAX_HOST_ROWS);
 }
 
+// #241, the tail half. The host is the star's only relay and, as sequencer,
+// structurally the first peer to confirm the final boundary -- so
+// "confirmed, therefore done" made it leave first every time, and a guest
+// still missing a tail row could never obtain it afterwards.
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn keeps_the_host_relaying_until_its_guests_have_stopped_asking() {
-    unreachable!("{BLOCKED}");
+    for mode in [MatchMode::TwoVTwo, MatchMode::FourVFour] {
+        let mut state = harness(
+            mode,
+            DriverHarnessOptions {
+                duration: Some(SETTLE_DURATION),
+                ..Default::default()
+            },
+        );
+        let mut left: Vec<Option<i64>> = vec![None; state.drivers.len()];
+        for step in 1..=(full_time_boundary_probe() + 90) {
+            let current = state.step;
+            for (index, driver) in state.drivers.iter_mut().enumerate() {
+                let sample = moving_sample(current, index as i64 + 1);
+                let _ = match_driver::advance(driver, Some(sample));
+                if left[index].is_none()
+                    && match_driver::status(driver) != MatchDriverStatus::Active
+                {
+                    left[index] = Some(step);
+                }
+            }
+            // A burst straddling full time, so there is a tail to drain and
+            // the guests really are still asking when the host confirms.
+            if current < full_time_step() - 6 || current > full_time_step() + 4 {
+                state.session.host_transport.pump();
+            }
+            state.step = current + 1;
+        }
+        let host_left =
+            left[0].unwrap_or_else(|| panic!("the host never left in {}", mode.wire_str()));
+        for index in 1..state.drivers.len() {
+            assert_eq!(
+                match_driver::status(&state.drivers[index]),
+                MatchDriverStatus::Completed,
+                "guest {} did not complete in {}",
+                index + 1,
+                mode.wire_str()
+            );
+            let guest_left = left[index]
+                .unwrap_or_else(|| panic!("guest {} never left in {}", index + 1, mode.wire_str()));
+            assert!(
+                host_left >= guest_left,
+                "the host left the star before guest {} in {}",
+                index + 1,
+                mode.wire_str()
+            );
+        }
+        assert_eq!(
+            match_driver::status(&state.drivers[0]),
+            MatchDriverStatus::Completed
+        );
+        assert!(match_driver::settled(&state.drivers[0]));
+    }
 }
 
+// #255. The exact case the retired quiet count used to decide: a peer that
+// reported itself behind and *then* fell silent. The host now keeps relaying
+// for that peer until the settle deadline: this pins that the host waits
+// *all* of it and then leaves with a typed terminal rather than hanging, and
+// that a silent straggler still gets its own typed terminal too.
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn keeps_relaying_for_a_peer_that_reported_behind_and_then_went_silent() {
-    unreachable!("{BLOCKED}");
+    let settle_ticks = 20i64;
+    // Blocked inbound authority a few steps before full time, so the guest
+    // cannot confirm the tail and every bundle it sends says so.
+    let blackout_from = full_time_step() - 8;
+    // Silent from the first settle step onward, so the host's only evidence
+    // about this peer is the stale report it already holds.
+    let silent_from = full_time_step() + 1;
+    let step = Rc::new(Cell::new(0i64));
+
+    let filter_step = step.clone();
+    let wrap_guest: WrapGuestTransport = Box::new(move |index, inner| {
+        if index != 2 {
+            return inner;
+        }
+        let poll_step = filter_step.clone();
+        let send_step = filter_step.clone();
+        Box::new(HookedTransport {
+            inner,
+            hooks: TransportHooks {
+                poll_batch_filter: Some(Box::new(move |messages| {
+                    if poll_step.get() < blackout_from {
+                        return messages;
+                    }
+                    messages
+                        .into_iter()
+                        .filter(|entry| entry.message.kind != TransportMessageType::Input)
+                        .collect()
+                })),
+                send_override: Some(Box::new(move |_, channel, _| {
+                    if channel == TransportChannel::Input && send_step.get() >= silent_from {
+                        // The wire accepted it and the network ate it: the
+                        // host hears nothing further from this peer.
+                        Some(Ok(true))
+                    } else {
+                        None
+                    }
+                })),
+                ..Default::default()
+            },
+        })
+    });
+
+    let mut state = harness(
+        MatchMode::OneVOne,
+        DriverHarnessOptions {
+            duration: Some(SETTLE_DURATION),
+            settle_timeout_ticks: Some(settle_ticks),
+            wrap_guest_transport: Some(wrap_guest),
+            ..Default::default()
+        },
+    );
+
+    let mut reported_at_silence: Option<i64> = None;
+    let total_steps = full_time_boundary_probe() + settle_ticks + 40;
+    for _ in 0..total_steps {
+        let current = state.step;
+        step.set(current);
+        if current == silent_from {
+            reported_at_silence =
+                Some(match_driver::diagnostics(&state.drivers[1]).confirmed_input_tick);
+        }
+        for (index, driver) in state.drivers.iter_mut().enumerate() {
+            let sample = moving_sample(current, index as i64 + 1);
+            let _ = match_driver::advance(driver, Some(sample));
+        }
+        state.session.host_transport.pump();
+        state.step = current + 1;
+    }
+
+    // The premise: the guest really was behind the final boundary at the
+    // moment it stopped speaking, so the host is holding a report that says
+    // so. Without that this test would pass for the wrong reason.
+    let boundary =
+        match_driver::full_time_boundary(&state.drivers[0]).expect("the host reached full time");
+    let reported = reported_at_silence.expect("captured a report at the silence step");
+    assert!(
+        reported + 1 < boundary,
+        "the guest was not behind when it went silent: {reported} vs {boundary}"
+    );
+
+    // The host waited the whole phase out rather than four silent steps, and
+    // still left -- completed, because its own final boundary is confirmed.
+    let host = match_driver::diagnostics(&state.drivers[0]);
+    assert_eq!(host.status, MatchDriverStatus::Completed);
+    assert!(match_driver::settled(&state.drivers[0]));
+    assert_eq!(
+        host.settle_steps, settle_ticks,
+        "the host stopped relaying before the deadline"
+    );
+
+    // And the straggler is bounded by the same deadline, with the typed
+    // terminal it would have had either way.
+    let guest = match_driver::diagnostics(&state.drivers[1]);
+    assert_eq!(guest.status, MatchDriverStatus::SettleTimeout);
+    assert_eq!(
+        guest.terminal.expect("guest reached a terminal").failure,
+        Some(CoordinatorNetcodeFailure::InputChannel)
+    );
+    assert_eq!(guest.settle_steps, settle_ticks);
 }
 
+// #243, the repair half. Blind redundancy re-sends a row for seven transport
+// ticks and then stops, so a guest that loses every one of those seven can
+// never obtain that row from the ordinary fan-out again. The bundle it
+// already sends every tick now reports where its confirmation actually is,
+// so the host can aim a re-send at the gap instead of guessing.
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn repairs_a_guest_whose_hole_has_aged_out_of_the_redundancy_window() {
-    unreachable!("{BLOCKED}");
+    let blackout_from = 14i64;
+    let blackout_through = 26i64;
+    let step = Rc::new(Cell::new(0i64));
+    let repaired_ticks: Rc<RefCell<Vec<i64>>> = Rc::new(RefCell::new(Vec::new()));
+
+    let fixture_manifest = protocol_fixture::manifest(Some(MatchMode::FourVFour));
+    let manifest_id = protocol::manifest_id(&fixture_manifest);
+    let session_id = fixture_manifest
+        .get("session_id")
+        .and_then(Value::as_str)
+        .expect("fixture manifest has a session id")
+        .to_string();
+    let host_peer_id = match_driver_fixture::HOST_PEER_ID.to_string();
+
+    let guest_step = step.clone();
+    let wrap_guest: WrapGuestTransport = Box::new(move |index, inner| {
+        if index != 8 {
+            return inner;
+        }
+        let guest_step = guest_step.clone();
+        Box::new(HookedTransport {
+            inner,
+            hooks: TransportHooks {
+                poll_batch_filter: Some(Box::new(move |messages| {
+                    let current = guest_step.get();
+                    if current < blackout_from || current > blackout_through {
+                        return messages;
+                    }
+                    messages
+                        .into_iter()
+                        .filter(|entry| entry.message.kind != TransportMessageType::Input)
+                        .collect()
+                })),
+                ..Default::default()
+            },
+        })
+    });
+
+    let repaired_for_wrap = repaired_ticks.clone();
+    let wrap_host: WrapHostTransport = Box::new(move |inner| {
+        let repaired = repaired_for_wrap.clone();
+        let manifest_id = manifest_id.clone();
+        let session_id = session_id.clone();
+        let host_peer_id = host_peer_id.clone();
+        Box::new(HookedTransport {
+            inner,
+            hooks: TransportHooks {
+                on_broadcast: Some(Box::new(move |channel, message| {
+                    if channel != TransportChannel::Input {
+                        return;
+                    }
+                    let context = input_protocol::DecodeContext {
+                        session_id: session_id.clone(),
+                        manifest_id: manifest_id.clone(),
+                        sender_id: host_peer_id.clone(),
+                    };
+                    if let Ok(packet) = input_protocol::decode(&message.payload, &context) {
+                        let newest = packet
+                            .rows
+                            .last()
+                            .expect("a canonical host batch is never empty")
+                            .tick;
+                        let oldest = packet.rows[0].tick;
+                        if newest - oldest > input_protocol::HISTORY_ROWS {
+                            repaired.borrow_mut().push(oldest);
+                        }
+                    }
+                })),
+                ..Default::default()
+            },
+        })
+    });
+
+    let mut state = harness(
+        MatchMode::FourVFour,
+        DriverHarnessOptions {
+            wrap_guest_transport: Some(wrap_guest),
+            wrap_host_transport: Some(wrap_host),
+            ..Default::default()
+        },
+    );
+
+    let mut stalled_during: Option<i64> = None;
+    for _ in 0..110 {
+        advance(&mut state, &[]);
+        step.set(state.step);
+        if state.step == blackout_through + 2 {
+            stalled_during =
+                Some(match_driver::diagnostics(&state.drivers[7]).confirmed_input_tick);
+        }
+    }
+
+    // The blackout was wider than the window, so the guest is genuinely
+    // behind the peers that kept receiving. Without that this test would
+    // pass on a repair that never had anything to repair.
+    let reference = match_driver::diagnostics(&state.drivers[1]).confirmed_input_tick;
+    let stalled = stalled_during.expect("captured a reading during the blackout");
+    assert!(
+        stalled < reference,
+        "the blackout did not put the guest behind its peers"
+    );
+    // The host spent rows on a tick older than blind redundancy would ever
+    // re-send: that only happens when a guest reported where it was stuck.
+    assert!(
+        !repaired_ticks.borrow().is_empty(),
+        "the host never fanned out a repaired tick"
+    );
+    // And the point of all of it: the guest confirms past the hole instead
+    // of freezing at it, so no peer reaches `confirmation_stalled`.
+    for (index, driver) in state.drivers.iter().enumerate() {
+        assert_ne!(
+            match_driver::status(driver),
+            MatchDriverStatus::ConfirmationStalled,
+            "peer {} stalled its confirmation",
+            index + 1
+        );
+    }
+    assert!(
+        match_driver::diagnostics(&state.drivers[7]).confirmed_input_tick > stalled,
+        "the repaired guest never confirmed past its hole"
+    );
 }
 
+// #243, the settle half, and #241's tail stall in the other direction. A
+// guest's authored tail exists nowhere else until the host has it, so a
+// guest that leaves on "my own boundary is confirmed" can take rows with it
+// that every other peer -- the host included -- is still missing.
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn keeps_a_guest_re_publishing_until_the_host_has_confirmed_its_tail() {
-    unreachable!("{BLOCKED}");
+    let mut state = harness(
+        MatchMode::FourVFour,
+        DriverHarnessOptions {
+            duration: Some(SETTLE_DURATION),
+            ..Default::default()
+        },
+    );
+    let host_blind_until = full_time_step() + 12;
+    for _ in 0..(full_time_boundary_probe() + 90) {
+        let current = state.step;
+        for (index, driver) in state.drivers.iter_mut().enumerate() {
+            let sample = moving_sample(current, index as i64 + 1);
+            let _ = match_driver::advance(driver, Some(sample));
+        }
+        // A burst on the guest-to-host leg straddling full time: the host
+        // stops hearing one author exactly when its last rows are authored.
+        if current < full_time_step() - 8 || current > host_blind_until {
+            state.session.host_transport.pump();
+        }
+        state.step = current + 1;
+    }
+    for (index, driver) in state.drivers.iter().enumerate() {
+        assert_eq!(
+            match_driver::status(driver),
+            MatchDriverStatus::Completed,
+            "peer {} did not complete",
+            index + 1
+        );
+        assert!(
+            match_driver::settled(driver),
+            "peer {} never settled",
+            index + 1
+        );
+    }
 }
 
 #[test]
-#[ignore = "not yet ported from the spec; see BLOCKED"]
 fn reports_a_lost_transport_as_a_typed_terminal_status() {
-    unreachable!("{BLOCKED}");
+    let mut state = harness(MatchMode::TwoVTwo, DriverHarnessOptions::default());
+    run(&mut state, 4, &[]);
+    let guest_id = state.session.guest_peer_ids[0].clone();
+    state
+        .session
+        .host_transport
+        .close_peer(&guest_id, Some("link failed"))
+        .expect("closing a connected peer always succeeds");
+    state.session.host_transport.pump();
+    advance(&mut state, &[]);
+    advance(&mut state, &[]);
+    assert_ne!(
+        match_driver::status(&state.drivers[1]),
+        MatchDriverStatus::Active
+    );
 }
