@@ -301,6 +301,105 @@ function playerOptions(frame: RenderFrame, index: number): PlayerRenderOptions {
 }
 
 /**
+ * The part of the pitch that cannot change while a match runs: the arena
+ * backdrop, the floor trapezoid, its glow and hex tiling, the markings, the
+ * neon outline and the goals.
+ *
+ * This split is carried over from the Lua (#398/#393), where re-deriving these
+ * every frame cost roughly 2,000 interpreter-side projection calls and ~350
+ * draw calls — about 2.3 ms of browser frame time, because love.js ships a plain
+ * Lua 5.1 interpreter.
+ *
+ * The Lua's *mechanism* — rendering into two LÖVE canvases and blitting them —
+ * did not carry over, and should not: caching a projected 3D scene into a 2D
+ * bitmap cannot respond to camera movement, which is why that cache had to
+ * bypass itself entirely whenever a follow view was active. Under three.js the
+ * static scene is persistent geometry and the GPU redraws it, so the scene graph
+ * *is* the cache. What carries over is the invariant — build it once — and the
+ * membership of the static set, which is not obvious: the arena frame chevrons
+ * pulse with the kickoff banner and are therefore dynamic, drawn over this.
+ *
+ * Memoised on one entry, like the Lua's single-key cache. The camera offset is
+ * part of the key because it is baked into projected coordinates here; combat
+ * shake therefore misses, which is the same trade the Lua made when it bypassed
+ * on a follow view, and the common no-shake case still hits.
+ */
+let staticSceneCache: { key: string; commands: readonly DrawCommand[] } | undefined;
+let staticSceneBuilds = 0;
+
+function staticSceneCommands(
+  field: RenderFrameField,
+  vp: PitchViewport,
+  opts: PitchDrawOptions,
+  arena: ArenaColors,
+  theme: ArenaThemeColors,
+  project: Project,
+): readonly DrawCommand[] {
+  const key = JSON.stringify([
+    field.w,
+    field.h,
+    field.goal_home,
+    field.goal_away,
+    vp.w,
+    vp.h,
+    arena,
+    theme,
+    opts.home_color,
+    opts.away_color,
+    opts.camera_offset ?? null,
+    pitch.follow_camera,
+  ]);
+  const cached = staticSceneCache;
+  if (cached !== undefined && cached.key === key) {
+    return cached.commands;
+  }
+
+  const dl = new DrawList();
+  dl.extend(arenaRender.backdropCommands(arena, vp, theme));
+
+  // Pitch surface (projected trapezoid).
+  const [ax, ay] = project(0, 0);
+  const [bx, by] = project(field.w, 0);
+  const [cx, cy] = project(field.w, field.h);
+  const [dx, dy] = project(0, field.h);
+  dl.polygon("fill", [ax, ay, bx, by, cx, cy, dx, dy], arena.floor_color);
+
+  drawFloorGlow(dl, project, field);
+  drawHexFloor(dl, project, field);
+  drawMarkings(dl, project, field);
+
+  // Pitch outline (bright neon border).
+  dl.polygon("line", [ax, ay, bx, by, cx, cy, dx, dy], arena.rail_color, { alpha: 0.9, lineWidth: 2 });
+
+  // Real goals standing behind the goal line, outside the field.
+  const goalHome = field.goal_home;
+  const goalAway = field.goal_away;
+  drawGoal(dl, project, field, goalHome, opts.home_color, goalHome.x + goalHome.w, goalHome.x);
+  drawGoal(dl, project, field, goalAway, opts.away_color, goalAway.x, goalAway.x + goalAway.w);
+
+  const commands = dl.commands;
+  staticSceneBuilds += 1;
+  staticSceneCache = { key, commands };
+  return commands;
+}
+
+/** Drop the memoised static scene and its build counter. Tests use this. */
+export function resetStaticSceneCache(): void {
+  staticSceneCache = undefined;
+  staticSceneBuilds = 0;
+}
+
+/**
+ * How many times the static scene has actually been rebuilt since the last
+ * reset. Exported so a test can assert the memo works — a deep-equality check
+ * would pass even if the scene were rebuilt on every frame, which is precisely
+ * the cost this split exists to remove.
+ */
+export function staticSceneBuildCount(): number {
+  return staticSceneBuilds;
+}
+
+/**
  * Render the whole pitch + entities for one frame, using the procedural 2.5D
  * player renderer throughout. Pure, tested reference -- see file header for
  * why the rigged-3D path is not folded in here.
@@ -323,28 +422,22 @@ export function pitchDrawCommands(frame: RenderFrame, vp: PitchViewport, opts: P
     return [sx + (offset?.x ?? 0), sy + (offset?.y ?? 0), scale];
   };
 
-  dl.extend(arenaRender.backdropCommands(arena, vp, theme));
-
-  // Pitch surface (projected trapezoid).
   const [ax, ay] = project(0, 0);
   const [bx, by] = project(field.w, 0);
   const [cx, cy] = project(field.w, field.h);
   const [dx, dy] = project(0, field.h);
-  dl.polygon("fill", [ax, ay, bx, by, cx, cy, dx, dy], arena.floor_color);
 
-  drawFloorGlow(dl, project, field);
-  drawHexFloor(dl, project, field);
-  drawMarkings(dl, project, field);
+  // The static scene: backdrop, floor trapezoid, glow, hex tiling, markings,
+  // neon outline and goals. Built once per distinct projection and reused.
+  dl.extend(staticSceneCommands(field, vp, opts, arena, theme, project));
 
-  // Pitch outline (bright neon border).
-  dl.polygon("line", [ax, ay, bx, by, cx, cy, dx, dy], arena.rail_color, { alpha: 0.9, lineWidth: 2 });
+  // The arena frame chevrons pulse with the kickoff banner, so they are NOT
+  // part of the static scene and are issued live over it. They sit at the
+  // trapezoid corners, clear of the goals, so emitting them after the goals
+  // instead of before the outline is visually identical. This ordering comes
+  // from the Lua's own static/dynamic split (#398) — getting it wrong freezes
+  // the kickoff pulse.
   dl.extend(arenaRender.frameCommands(arena, { ax, ay, bx, by, cx, cy, dx, dy }, opts.arena_pulse));
-
-  // Real goals standing behind the goal line, outside the field.
-  const goalHome = field.goal_home;
-  const goalAway = field.goal_away;
-  drawGoal(dl, project, field, goalHome, opts.home_color, goalHome.x + goalHome.w, goalHome.x);
-  drawGoal(dl, project, field, goalAway, opts.away_color, goalAway.x, goalAway.x + goalAway.w);
 
   // Ball trail sits on the ground, under the entities.
   dl.extend(effectsModule.effects.drawTrailCommands(project));
