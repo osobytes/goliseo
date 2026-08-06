@@ -11,8 +11,7 @@
 //! `hash_at_boundary`/`rebuilds_the_agreed_boundary_hash_from_the_package_alone`.
 //! `game.online.net_diagnostics`/`net_diagnostics_fixture` remain
 //! TypeScript-owned per `v2/README.md` §2 with no Rust port planned, so
-//! `capture()`'s live-harness half — and the one test that needs
-//! `net_diagnostics.export` specifically — stay out of reach.
+//! `capture()`'s live-harness half stays out of reach.
 //!
 //! What *is* ported below exercises exactly the same `desync_package` logic
 //! the Lua spec does — reproducibility classification, wire truncation,
@@ -21,16 +20,34 @@
 //! boundary-hash reproduction through a real `rollback_session` — using
 //! hand-built
 //! [`gc_netcode::desync_package::Diagnostics`]/[`gc_netcode::desync_package::BuildOptions`]
-//! fixtures in place of a live match harness. The one assertion that only a
-//! live `net_diagnostics` export could produce is marked `#[ignore]`, naming
-//! that module.
+//! fixtures in place of a live match harness.
+//!
+//! The Lua spec's "keeps the export and the package agreeing on identity"
+//! case is ported too now, as
+//! `keeps_the_export_and_the_package_agreeing_on_identity` below, but not by
+//! calling a Rust `net_diagnostics.export` (there is none, and this port's
+//! `desync_package::build` takes an already-exported [`Diagnostics`]
+//! directly rather than a recorder, so there is no second in-process export
+//! call for the package's session to disagree with — see
+//! `crates/gc-netcode/src/desync_package.rs`'s own module doc comment). What
+//! is actually load-bearing about that Lua case — that the session-identity
+//! fields a real `manifest`+`freeze` produce come out right — is checked
+//! instead against a committed vector captured from the real Lua's
+//! `net_diagnostics.export(recorder).session`
+//! (`tests/fixtures/desync_package_identity_vector.txt`, generated per
+//! `v2/tools/lua_reference/README.md`), the same shape as
+//! `diagnostics_schema_vectors.txt` pins for `diagnostics_schema` per
+//! `v2/README.md` §2.2.
 
 use gc_netcode::desync_package::{
     self, BuildOptions, CheckpointRecord, ControlRecord, Diagnostics, DifferenceValue,
     FirstDifference, RuntimeEventRecord, SessionIdentity,
 };
 use gc_netcode::input_protocol::{self, AuthorityRow, PacketOptions};
+use gc_netcode::protocol::{MatchMode, Value};
+use gc_netcode::{match_driver_fixture, protocol_fixture};
 use gc_sim::input_frame;
+use std::path::Path;
 
 const SESSION_ID: &str = "session_alpha";
 const MANIFEST_ID: &str = "eb59f113614c35b2";
@@ -419,15 +436,176 @@ fn rebuilds_the_agreed_boundary_hash_from_the_package_alone() {
     );
 }
 
+/// Reads `tests/fixtures/desync_package_identity_vector.txt` (tab-separated
+/// `field_name<TAB>value`, `nil` for an absent field, `#`-prefixed comment
+/// lines and blank lines skipped) into an ordered field map.
+fn load_identity_vector() -> Vec<(String, String)> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/desync_package_identity_vector.txt");
+    let contents = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+    let mut fields = Vec::new();
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut parts = line.splitn(2, '\t');
+        let key = parts.next().unwrap_or_default().to_string();
+        let value = parts.next().unwrap_or_default().to_string();
+        fields.push((key, value));
+    }
+    assert!(
+        !fields.is_empty(),
+        "no fields were found in {}",
+        path.display()
+    );
+    fields
+}
+
+fn manifest_str(manifest: &Value, field: &str) -> String {
+    manifest
+        .get(field)
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("fixture manifest is missing string field {field:?}"))
+        .to_string()
+}
+
+fn manifest_int(manifest: &Value, field: &str) -> i64 {
+    manifest
+        .get(field)
+        .and_then(Value::as_int)
+        .unwrap_or_else(|| panic!("fixture manifest is missing integer field {field:?}"))
+}
+
+/// The `SessionIdentity` a Rust caller building the same "2v2" fixture the
+/// vector was captured from would produce, using the already-ported
+/// `gc_netcode::protocol_fixture::manifest`/`gc_netcode::match_driver_fixture::freeze`
+/// exactly as `net_diagnostics.new` reads its own `manifest`/`freeze`
+/// options in the Lua (`game/online/net_diagnostics.lua:769-804`): most
+/// fields already sit on `coordinator::Freeze` field-for-field, and the rest
+/// (`session_id`, `build_id`, `source_id`, `match_config_id`, `fixture_id`,
+/// `arena_id`, and the four schema-version integers) are read off the
+/// manifest the same way `freeze` itself does internally.
+fn fixture_session_identity() -> SessionIdentity {
+    let manifest = protocol_fixture::manifest(Some(MatchMode::TwoVTwo));
+    let freeze = match_driver_fixture::freeze(MatchMode::TwoVTwo, None, None);
+    SessionIdentity {
+        session_id: manifest_str(&manifest, "session_id"),
+        peer_id: "host".to_string(),
+        role: "host".to_string(),
+        match_mode: freeze.match_mode.wire_str().to_string(),
+        combat_status: freeze.combat_status.clone(),
+        manifest_id: freeze.manifest_id.clone(),
+        assignment_id: freeze.assignment_id.clone(),
+        countdown_id: freeze.countdown_id.clone(),
+        build_id: manifest_str(&manifest, "build_id"),
+        source_id: manifest_str(&manifest, "source_id"),
+        content_id: freeze.content_id.clone(),
+        tuning_id: freeze.tuning_id.clone(),
+        match_config_id: manifest_str(&manifest, "match_config_id"),
+        fixture_id: manifest_str(&manifest, "fixture_id"),
+        arena_id: manifest_str(&manifest, "arena_id"),
+        combat_rules_id: freeze.combat_rules_id.clone(),
+        gameplay_ai_policy_id: freeze.gameplay_ai_policy_id.clone(),
+        network_profile_digest: None,
+        protocol_version: manifest_int(&manifest, "protocol_version"),
+        input_version: manifest_int(&manifest, "input_version"),
+        snapshot_version: manifest_int(&manifest, "snapshot_version"),
+        tape_version: manifest_int(&manifest, "tape_version"),
+        combat_schema_version: manifest_int(&manifest, "combat_schema_version"),
+        seed: freeze.seed,
+        tick_rate: freeze.tick_rate,
+        duration_ticks: freeze.duration_ticks,
+        max_goals: freeze.max_goals,
+    }
+}
+
+/// Reads one field of a [`SessionIdentity`] back out as the same string
+/// shape the vector file stores (`nil` for `None`, an unadorned decimal for
+/// integers, the string itself otherwise) so it can be compared directly
+/// against a vector line without needing a per-field match arm at the call
+/// site.
+fn identity_field(identity: &SessionIdentity, field: &str) -> String {
+    match field {
+        "session_id" => identity.session_id.clone(),
+        "peer_id" => identity.peer_id.clone(),
+        "role" => identity.role.clone(),
+        "match_mode" => identity.match_mode.clone(),
+        "combat_status" => identity.combat_status.clone(),
+        "manifest_id" => identity.manifest_id.clone(),
+        "assignment_id" => identity.assignment_id.clone(),
+        "countdown_id" => identity.countdown_id.clone(),
+        "build_id" => identity.build_id.clone(),
+        "source_id" => identity.source_id.clone(),
+        "content_id" => identity.content_id.clone(),
+        "tuning_id" => identity.tuning_id.clone(),
+        "match_config_id" => identity.match_config_id.clone(),
+        "fixture_id" => identity.fixture_id.clone(),
+        "arena_id" => identity.arena_id.clone(),
+        "combat_rules_id" => identity.combat_rules_id.clone(),
+        "gameplay_ai_policy_id" => identity.gameplay_ai_policy_id.clone(),
+        "network_profile_digest" => identity
+            .network_profile_digest
+            .clone()
+            .unwrap_or_else(|| "nil".to_string()),
+        "protocol_version" => identity.protocol_version.to_string(),
+        "input_version" => identity.input_version.to_string(),
+        "snapshot_version" => identity.snapshot_version.to_string(),
+        "tape_version" => identity.tape_version.to_string(),
+        "combat_schema_version" => identity.combat_schema_version.to_string(),
+        "seed" => identity.seed.to_string(),
+        "tick_rate" => identity.tick_rate.to_string(),
+        "duration_ticks" => identity.duration_ticks.to_string(),
+        "max_goals" => identity.max_goals.to_string(),
+        other => panic!("unrecognized SessionIdentity field {other:?} in the vector file"),
+    }
+}
+
+/// Cross-language identity agreement (`v2/README.md` §2.2's shared-vector
+/// contract, ported from the Lua spec's "keeps the export and the package
+/// agreeing on identity" — see the module doc comment for how the
+/// assertion was adapted for this crate's `build` signature). Checks two
+/// things against `tests/fixtures/desync_package_identity_vector.txt`:
+///
+/// 1. That `gc_netcode::protocol_fixture`/`gc_netcode::match_driver_fixture`
+///    -- ported independently of `net_diagnostics.lua` -- derive the exact
+///    same session-identity fields from the "2v2" fixture manifest/freeze
+///    that the real Lua's `net_diagnostics.new`/`export` do.
+/// 2. That `desync_package::build` carries that identity into
+///    `package.session` unchanged, which is the property the Lua's own case
+///    was actually protecting.
 #[test]
-#[ignore = "blocked on game.online.net_diagnostics (TypeScript-owned per \
-v2/README.md \u{a7}2; no Rust port exists or is planned): the Lua test asserts \
-net_diagnostics.export(...)'s output agrees field-for-field with the built \
-package's session, and net_diagnostics has no Rust type to call export() on \
-at all. (game.online.match_driver_fixture, this reason's other blocker as \
-originally written, has since landed and was never really load-bearing here \
-in the first place -- this port's desync_package::build takes an \
-already-exported Diagnostics directly, see the module doc comment, so there \
-is no separate export call to cross-check against regardless of \
-match_driver_fixture's status.)"]
-fn keeps_the_export_and_the_package_agreeing_on_identity() {}
+fn keeps_the_export_and_the_package_agreeing_on_identity() {
+    let vector = load_identity_vector();
+    let identity = fixture_session_identity();
+
+    for (field, expected) in &vector {
+        let actual = identity_field(&identity, field);
+        assert_eq!(
+            &actual, expected,
+            "SessionIdentity field {field:?} drifted from the real Lua's \
+             net_diagnostics.export(...).session (see \
+             tests/fixtures/desync_package_identity_vector.txt)"
+        );
+    }
+    assert_eq!(
+        vector.len(),
+        27,
+        "expected every SessionIdentity field to have a vector line"
+    );
+
+    let mut options = base_options(wires_reaching_boundary_zero());
+    options.diagnostics = Some(Diagnostics {
+        session: identity.clone(),
+        checkpoints: Vec::new(),
+        control: Vec::new(),
+        runtime_events: Vec::new(),
+    });
+    let package = desync_package::build(options).unwrap();
+    assert_eq!(
+        package.session, identity,
+        "desync_package::build must carry the diagnostics session through \
+         to package.session unchanged"
+    );
+}
