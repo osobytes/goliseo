@@ -43,6 +43,7 @@ local arenas = require("data.arenas")
 local teams = require("data.teams")
 local bloom = require("game.render.bloom")
 local pitch = require("game.render.pitch")
+local pitch_static = require("game.render.pitch_static")
 local render_frame = require("render.frame")
 local player_renderer_3d = require("game.render.player_renderer_3d")
 local view_state = require("game.render.view_state")
@@ -143,8 +144,14 @@ function benchmark.new(opts)
     self.frames = opts.frames or 3600 -- 60 s at 60 Hz
     self.warmup_frames = opts.warmup_frames or 300 -- 5 s at 60 Hz
     self.viewport = { w = opts.width or 960, h = opts.height or 540 }
+    -- #393: the static-scene cache under test. Default on (the shipped path);
+    -- `nocache` runs measure the uncached path from the same build, which is
+    -- what makes interleaved before/after passes comparable.
+    self.static_cache = opts.static_cache ~= false
 
     pitch.rigged_players = self.rigged
+    pitch_static.enabled = self.static_cache
+    pitch_static.reset()
     view_state.reset()
 
     self.state = match.new({
@@ -267,11 +274,19 @@ function Benchmark:draw()
             arena = arenas.helios_crown,
         })
     end)
+    -- Outside the bloom pass, exactly as game/screens/match.lua does: a
+    -- pending static-scene cache build must never bind canvases while bloom's
+    -- depth-attached scene pass is active. Inside the timed window on purpose;
+    -- the one-off build is part of what a shipped frame pays.
+    pitch_static.flush()
     local draw_seconds = love.timer.getTime() - started
 
     -- Which renderer actually ran, sampled rather than assumed. The gate fails
     -- on a mismatch, so a silent fallback can never be reported as a pass.
     self.rigged_active = pitch.rigged_players and player_renderer_3d.available()
+    -- Same discipline for the #393 cache: report whether a cached blit is
+    -- actually in service, not just whether it was requested.
+    self.static_cache_active = pitch_static.status().cached
 
     if self.warmed then
         self.draw_samples[#self.draw_samples + 1] = draw_seconds
@@ -337,6 +352,8 @@ function Benchmark:result()
         frame = summarise(self.frame_samples),
         scene_static = summarise(self.scene_static_samples),
         scene_dynamic = summarise(self.scene_dynamic_samples),
+        static_cache = self.static_cache,
+        static_cache_active = self.static_cache_active and true or false,
         draw_calls_mean = #self.draw_calls > 0 and (draw_call_total / #self.draw_calls) or 0,
         draw_calls_max = draw_call_max,
         texture_memory_bytes = self.texture_memory,
@@ -396,6 +413,13 @@ function benchmark.evaluate(result)
     check(
         not result.rigged_requested or result.rigged_active,
         "rigged renderer was requested but fell back to procedural (no depth buffer?)"
+    )
+    -- Same rule for the #393 cache: a "cached" run whose cache never engaged
+    -- (canvas creation failed, build latched off) measured the uncached path
+    -- and must say so rather than pass as a cache result.
+    check(
+        not result.static_cache or result.static_cache_active,
+        "static-scene cache was requested but never engaged (canvas build failed?)"
     )
     return #failures == 0, failures
 end
@@ -480,6 +504,11 @@ function benchmark.emit(result)
             summary_fields(result.scene_static, "scene_static"),
             summary_fields(result.scene_dynamic, "scene_dynamic")
         )
+            .. string.format(
+                "|static_cache=%s|static_cache_active=%s",
+                tostring(result.static_cache),
+                tostring(result.static_cache_active)
+            )
     )
     -- Raw samples so a reviewer can recompute every percentile rather than
     -- trusting this file's arithmetic, which is what #100 means by reviewable.
