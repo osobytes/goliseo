@@ -227,17 +227,22 @@ end
 -- real match render path, so unlike every other harness above it needs a GL
 -- context and cannot run through the headless path in conf.lua.
 --
---   love . --benchmark [frames] [warmup] [rigged|procedural]
+--   love . --benchmark [frames] [warmup] [rigged|procedural] [nocache]
+--
+-- `nocache` disables the #393 static-scene cache so before/after passes can be
+-- interleaved from one build; anything else (or nothing) measures the shipped
+-- cached path.
 --
 -- Vsync is turned off for the run. Left on, frame time is pinned to the refresh
 -- rate and reports 16.67 ms whether the renderer has huge headroom or none.
 if has_flag("--benchmark") then
     local fixture ---@type table
     local benchmark ---@type table
-    local frames_arg, warmup, mode
+    local frames_arg, warmup, mode, cache_mode
     for index, value in ipairs(arg or {}) do
         if value == "--benchmark" then
-            frames_arg, warmup, mode = arg[index + 1], arg[index + 2], arg[index + 3]
+            frames_arg, warmup, mode, cache_mode =
+                arg[index + 1], arg[index + 2], arg[index + 3], arg[index + 4]
             break
         end
     end
@@ -255,6 +260,7 @@ if has_flag("--benchmark") then
             frames = tonumber(frames_arg) or 3600,
             warmup_frames = tonumber(warmup) or 300,
             rigged = mode ~= "procedural",
+            static_cache = cache_mode ~= "nocache",
         })
     end
     function love.update(dt)
