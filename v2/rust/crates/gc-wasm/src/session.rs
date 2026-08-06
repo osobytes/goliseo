@@ -48,7 +48,13 @@ const FIELD_H: f64 = 540.0;
 /// the convention `gc_data::teams::TeamData::roster` and the OMP-1 fixture
 /// both use: the roster's first id is the keeper and sits outside the
 /// four controlled slots per side.
-fn ownership(home_roster: &[&str; 5], away_roster: &[&str; 5]) -> InputOwnership {
+/// `pub(crate)`, not private: [`crate::rollback_events_bridge`]'s own tests
+/// need a slot-mode boundary-zero `MatchState` (input_tick advances only in
+/// slot mode — see `gc_sim::r#match::step`'s doc) with direct access to
+/// `MatchState.events`, which [`Session`]'s own narrow getter surface does
+/// not expose. Reusing this rather than a second copy keeps exactly one
+/// canonical slot assignment for the fixture teams.
+pub(crate) fn ownership(home_roster: &[&str; 5], away_roster: &[&str; 5]) -> InputOwnership {
     let mut slots = Vec::with_capacity(8);
     for index in 0..input_frame::SLOT_COUNT {
         let canonical = input_frame::slot(index + 1).expect("canonical slot index in range");
@@ -243,6 +249,19 @@ impl Session {
     #[wasm_bindgen(js_name = rosterIdsAndNames)]
     pub fn roster_ids_and_names(&self) -> String {
         self.with_entry(|entry| frame_buffer::encode_roster(&entry.roster).1)
+    }
+
+    /// This session's current boundary snapshot
+    /// (`gc_sim::match_snapshot::capture`), as an opaque handle — for
+    /// building a `crate::rollback_events_bridge::RollbackEventsTimeline`
+    /// via its `create` (satisfying
+    /// `packages/online/src/match_presentation.ts`'s
+    /// `newOnlineMatchPresentation`) without a `MatchDriverBridge`. See
+    /// [`crate::rollback_events_bridge::WasmMatchSnapshot`]'s doc for why
+    /// this crosses as an opaque handle rather than JSON.
+    #[wasm_bindgen(js_name = snapshotHandle)]
+    pub fn snapshot_handle(&self) -> crate::rollback_events_bridge::WasmMatchSnapshot {
+        crate::rollback_events_bridge::WasmMatchSnapshot::new(self.capture_snapshot())
     }
 }
 

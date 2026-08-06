@@ -31,7 +31,10 @@ import type {
   GcWasmModule,
   MatchDriverBridge,
   MatchDriverBridgeConstructor,
+  RollbackEventsTimelineConstructor,
   SimSessionConstructor,
+  TuningRegistryConstructor,
+  WasmTuningPreset,
 } from "./types.ts";
 
 export type {
@@ -44,8 +47,16 @@ export type {
   MatchDriverBridge,
   MatchDriverBridgeConstructor,
   RawExports,
+  RollbackEventsTimeline,
+  RollbackEventsTimelineConstructor,
   SimSession,
   SimSessionConstructor,
+  SnapshotLookup,
+  TuningRegistry,
+  TuningRegistryConstructor,
+  WasmKnob,
+  WasmMatchSnapshot,
+  WasmTuningPreset,
 } from "./types.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -65,12 +76,25 @@ export interface SimHost {
    * doc — `crates/gc-wasm/src/match_driver_bridge.rs`'s wave-2 bridge over
    * `gc_netcode::match_driver` and its `gc_sim::rollback_events` feed. */
   readonly MatchDriverBridge: MatchDriverBridgeConstructor;
+  /** Builds a standalone `RollbackEventsTimeline` — `create`/`apply`/
+   * `confirm`/`diagnosticsJson` as separate callables over
+   * `gc_sim::rollback_events`, satisfying `@gc/online`'s
+   * `RollbackEventsPort`. See `crates/gc-wasm/src/rollback_events_bridge.rs`'s
+   * doc. */
+  readonly RollbackEventsTimeline: RollbackEventsTimelineConstructor;
   /** Constructs a render-driven tick-count planner over
    * `gc_sim::fixed_clock`. See `FixedClock`'s doc — this is the single
    * source of truth for turning a render `dt` into a tick count
    * (v2/README.md §2.1), so a caller like `@gc/app`'s `sim_host.ts` never
    * has to re-derive that policy in TypeScript. */
   readonly FixedClock: FixedClockConstructor;
+  /** Constructs a live `gc_sim::tuning` knob registry, at every knob's
+   * default value — satisfies `@gc/ui`'s `TuningSource`. See
+   * `crates/gc-wasm/src/tuning_bridge.rs`'s doc. */
+  readonly TuningRegistry: TuningRegistryConstructor;
+  /** `gc_data::tuning_presets::ALL`, as `@gc/ui`'s `TuningPreset[]`, in
+   * panel cycle order. */
+  tuningPresets(): WasmTuningPreset[];
   /** This build's protocol vocabulary id, for lobby version negotiation. */
   protocolVocabularyId(): string;
   /** Decodes a control message's routing header (kind/session/peer/
@@ -131,7 +155,10 @@ export function loadSimHost(): SimHost {
     Session: native.Session,
     Coordinator: native.Coordinator,
     MatchDriverBridge: native.MatchDriverBridge,
+    RollbackEventsTimeline: native.RollbackEventsTimeline,
     FixedClock: native.FixedClock,
+    TuningRegistry: native.TuningRegistry,
+    tuningPresets: native.tuningPresets,
     protocolVocabularyId: native.protocolVocabularyId,
     decodeControlMessageHeader: native.decodeControlMessageHeader,
     runDeterminismEvidence: native.runDeterminismEvidence,

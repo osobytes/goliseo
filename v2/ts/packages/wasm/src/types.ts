@@ -23,6 +23,11 @@ export interface SimSession {
   rosterNumeric(): Float64Array;
   /** Match-constant roster ids and display names, newline-joined. */
   rosterIdsAndNames(): string;
+  /** This session's current boundary snapshot, as an opaque handle — see
+   * {@link WasmMatchSnapshot}'s doc. For building a
+   * {@link RollbackEventsTimeline} via {@link RollbackEventsTimelineConstructor.create}
+   * without a {@link MatchDriverBridge}. */
+  snapshotHandle(): WasmMatchSnapshot;
   /** Releases the underlying wasm-side registry slot. Call when done with
    * a session — the wasm module does not garbage-collect on its own. */
   free(): void;
@@ -157,6 +162,83 @@ export interface CoordinatorConstructor {
 }
 
 /**
+ * Mirrors `gc_wasm::rollback_events_bridge::WasmMatchSnapshot`
+ * (`crates/gc-wasm/src/rollback_events_bridge.rs`) — an opaque
+ * `gc_sim::match_snapshot::MatchSnapshot` handle. Never serialized to JSON
+ * and never inspected on the JS side (see that Rust module's doc); a JS
+ * caller only ever holds a reference obtained from {@link SimSession.snapshotHandle}
+ * or {@link MatchDriverBridge.snapshotLookup}, and passes it back into
+ * {@link RollbackEventsTimelineConstructor.create}/{@link RollbackEventsTimeline.apply}.
+ * This is the `TSnapshot` type parameter
+ * `packages/online/src/match_presentation.ts`'s `RollbackEventsPort`/
+ * `MatchDriverPort` declare.
+ */
+export interface WasmMatchSnapshot {
+  free(): void;
+}
+
+/**
+ * Mirrors `gc_wasm::match_driver_bridge::SnapshotLookup`
+ * (`crates/gc-wasm/src/match_driver_bridge.rs`) — one
+ * `gc_netcode::match_driver::snapshot` lookup result:
+ * `packages/online/src/match_presentation.ts`'s `SnapshotLookup<TSnapshot>`
+ * (`TSnapshot` = {@link WasmMatchSnapshot}).
+ */
+export interface SnapshotLookup {
+  /** This boundary's retention status: `"present"`, `"retained"`,
+   * `"missing"`, or `"outside_window"` — only the first two carry a
+   * {@link SnapshotLookup.snapshot}. */
+  readonly status: string;
+  /** The queried boundary tick. */
+  readonly tick: number;
+  /** The retained snapshot, present exactly when {@link SnapshotLookup.status}
+   * is `"present"` or `"retained"`. */
+  readonly snapshot?: WasmMatchSnapshot;
+  free(): void;
+}
+
+/**
+ * Mirrors `gc_wasm::rollback_events_bridge::RollbackEventsTimeline`
+ * (`crates/gc-wasm/src/rollback_events_bridge.rs`) — `create`/`apply`/
+ * `confirm`/`diagnosticsJson` as separate callables over
+ * `gc_sim::rollback_events`, satisfying
+ * `packages/online/src/match_presentation.ts`'s
+ * `RollbackEventsPort<TTimeline, TSnapshot>` (`TTimeline` =
+ * {@link RollbackEventsTimeline}, `TSnapshot` = {@link WasmMatchSnapshot}).
+ * There is no public constructor — build one via
+ * {@link RollbackEventsTimelineConstructor.create}, not `new`.
+ */
+export interface RollbackEventsTimeline {
+  /**
+   * Mirrors `gc_sim::rollback_events::apply`. `outputsJson` is a JSON array
+   * of `gc_wasm::rollback_events_bridge::tick_output_to_json`'s shape —
+   * exactly what {@link MatchDriverBridge.advance}'s batch embeds per
+   * output under `"outputs"` — and `snapshots` is the parallel array of
+   * boundary snapshots (same length and order). Returns
+   * `RollbackApplyResult` as JSON: `{"ok": true, "value": <RollbackEventDiff>}`
+   * or `{"ok": false, "error": {"message", "code"}}` — the
+   * `unconfirmed_window_exceeded` failure is reported this way, never
+   * thrown. Throws (a string) if `outputsJson`/`snapshots` are malformed or
+   * mismatched in length.
+   */
+  apply(replacedFromTick: number, replacedThroughTick: number, outputsJson: string, snapshots: WasmMatchSnapshot[]): string;
+  /** Mirrors `gc_sim::rollback_events::confirm`. Returns the confirmed
+   * steps as a JSON array, in causal order. */
+  confirm(confirmedOutputTick: number): string;
+  /** Mirrors `gc_sim::rollback_events::diagnostics`, as JSON. */
+  diagnosticsJson(): string;
+  free(): void;
+}
+
+/** Builds a {@link RollbackEventsTimeline}. Named `create`, not `new`, to
+ * mirror `RollbackEventsPort.create`'s own doc comment (`new` is a reserved
+ * word). `maxUnconfirmedTicks` defaults the same way
+ * `gc_sim::rollback_events::new` does when omitted. */
+export interface RollbackEventsTimelineConstructor {
+  create(initialSnapshot: WasmMatchSnapshot, maxUnconfirmedTicks?: number): RollbackEventsTimeline;
+}
+
+/**
  * Mirrors `gc_wasm::match_driver_bridge::MatchDriverBridge`
  * (`crates/gc-wasm/src/match_driver_bridge.rs`) — the bridge over
  * `gc_netcode::match_driver` (the OMP-3 online match driver) and its
@@ -216,6 +298,15 @@ export interface MatchDriverBridge {
   rollbackDiagnosticsJson(): string;
   rollbackAccountingJson(): string;
   retainedRollbackStepsJson(): string;
+  /** This driver's own boundary-zero snapshot, as an opaque handle — for
+   * building a standalone {@link RollbackEventsTimeline} against this same
+   * driver's snapshot history (`newOnlineMatchPresentation`'s
+   * `initialSnapshot`). */
+  initialSnapshotHandle(): WasmMatchSnapshot;
+  /** `gc_netcode::match_driver::snapshot`: looks up this driver's own
+   * retained boundary-snapshot history at `boundaryTick` —
+   * `MatchDriverPort.snapshot`. */
+  snapshotLookup(boundaryTick: number): SnapshotLookup;
 }
 
 /** Constructs a {@link MatchDriverBridge}. `session` must be a freshly
@@ -268,14 +359,80 @@ export interface FixedClockConstructor {
   new (): FixedClock;
 }
 
+/**
+ * Mirrors `gc_wasm::tuning_bridge::WasmKnob`
+ * (`crates/gc-wasm/src/tuning_bridge.rs`) — `packages/ui/src/tuning_panel.ts`'s
+ * `Knob`. Field names are verbatim Rust field names, plain value fields
+ * (not camelCase-renamed methods).
+ */
+export interface WasmKnob {
+  readonly key: string;
+  readonly label: string;
+  readonly cat: string;
+  readonly default: number;
+  readonly min: number;
+  readonly max: number;
+  readonly step: number;
+  free(): void;
+}
+
+/**
+ * Mirrors `gc_wasm::tuning_bridge::WasmTuningPreset` —
+ * `packages/ui/src/tuning_panel.ts`'s `TuningPreset`.
+ */
+export interface WasmTuningPreset {
+  readonly id: string;
+  readonly name: string;
+  readonly blob: string;
+  free(): void;
+}
+
+/**
+ * Mirrors `gc_wasm::tuning_bridge::TuningRegistry` — a live registry of
+ * `gc_sim::tuning` knob values, satisfying
+ * `packages/ui/src/tuning_panel.ts`'s `TuningSource` method for method.
+ */
+export interface TuningRegistry {
+  /** Distinct categories, in registry order. */
+  categories(): string[];
+  /** Every knob in one category, in registry order. */
+  inCategory(cat: string): WasmKnob[];
+  /** The current value of a knob. Panics (a Rust panic, not a `throw`) on
+   * an unknown key — every caller reads a key it authored. */
+  valueOf(key: string): number;
+  /** Nudge a knob by `steps` (negative = down). Unknown keys are ignored. */
+  nudge(key: string, steps: number): void;
+  /** Reset one knob, or everything when `key` is omitted. Unknown keys are
+   * ignored. */
+  reset(key?: string): void;
+  /** Whether a knob currently sits at its default value. */
+  isDefault(key: string): boolean;
+  /** One `KEY=value` line per non-default knob. */
+  serialize(): string;
+  /** Apply a serialized blob on top of defaults. Malformed lines are
+   * skipped. */
+  deserialize(blob: string): void;
+  free(): void;
+}
+
+/** Constructs a {@link TuningRegistry}, at every knob's default value. */
+export interface TuningRegistryConstructor {
+  new (): TuningRegistry;
+}
+
 /** The shape of `dist/pkg/gc_wasm.cjs`'s module exports. */
 export interface GcWasmModule {
   readonly Session: SimSessionConstructor;
   readonly Coordinator: CoordinatorConstructor;
   readonly MatchDriverBridge: MatchDriverBridgeConstructor;
+  readonly RollbackEventsTimeline: RollbackEventsTimelineConstructor;
   readonly FixedClock: FixedClockConstructor;
+  readonly TuningRegistry: TuningRegistryConstructor;
   runDeterminismEvidence(): DeterminismEvidence;
   decodeControlMessageHeader(wire: string): ControlMessageHeader;
   protocolVocabularyId(): string;
+  /** `gc_data::tuning_presets::ALL`, as {@link WasmTuningPreset}s, in panel
+   * cycle order. */
+  tuningPresets(): WasmTuningPreset[];
   readonly __wbg_raw: RawExports;
 }

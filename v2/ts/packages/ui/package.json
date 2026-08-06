@@ -6,5 +6,5 @@
   "description": "Pure layout and hit-testing helpers.",
   "exports": { ".": "./src/index.ts" },
   "scripts": { "typecheck": "tsgo --noEmit -p tsconfig.json" },
-  "dependencies": {"@gc/core":"workspace:*"}
+  "dependencies": {"@gc/core":"workspace:*","@gc/wasm":"workspace:*"}
 }

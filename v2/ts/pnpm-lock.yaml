@@ -14,6 +14,9 @@ importers:
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
+      vite:
+        specifier: ^8.2.0
+        version: 8.2.0(@types/node@26.1.2)
       vitest:
         specifier: ^4.1.0
         version: 4.1.10(@types/node@26.1.2)(vite@8.2.0(@types/node@26.1.2))
@@ -44,6 +47,13 @@ importers:
       '@gc/wasm':
         specifier: workspace:*
         version: link:../wasm
+      three:
+        specifier: ^0.180.0
+        version: 0.180.0
+    devDependencies:
+      '@types/three':
+        specifier: ^0.180.0
+        version: 0.180.0
 
   packages/core: {}
 
@@ -64,6 +74,9 @@ importers:
       '@gc/transport':
         specifier: workspace:*
         version: link:../transport
+      '@gc/wasm':
+        specifier: workspace:*
+        version: link:../wasm
 
   packages/presentation:
     dependencies:
@@ -113,6 +126,9 @@ importers:
       '@gc/core':
         specifier: workspace:*
         version: link:../core
+      '@gc/wasm':
+        specifier: workspace:*
+        version: link:../wasm
 
   packages/wasm:
     devDependencies:

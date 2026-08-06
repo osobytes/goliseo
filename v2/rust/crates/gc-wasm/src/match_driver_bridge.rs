@@ -42,27 +42,36 @@
 //! `MatchState`), built the same way the existing offline path already
 //! builds and tests it.
 //!
-//! ## `rollback_events`: fed automatically, but only for the safe case
+//! ## `rollback_events`: fed automatically, including corrections
 //!
-//! [`MatchDriverBridge::advance`] feeds each driver step's output into an
-//! internally-owned `gc_sim::rollback_events::RollbackEventTimeline`
-//! *only* when that step produced exactly one new, in-order tick (no
-//! rollback, no correction) — see [`MatchDriverBridge::feed_rollback_timeline`].
-//! `rollback_events::apply`'s contract requires a caller to know precisely
-//! which interval a correction replaces (`replaced_from_tick`/
-//! `replaced_through_tick`, matching the *complete* stale speculative tail)
-//! — that bookkeeping lives one layer above `match_driver.rs` in the Lua
-//! original (`match_presentation.lua`, TypeScript-owned per `v2/README.md`
-//! §2, not ported into any crate this wave owns), so guessing at it here
-//! risks feeding `apply` an interval it was never designed to validate.
-//! Getting it wrong is an assertion panic, not a silent bug — so this
-//! bridge simply does not attempt the general case: a rollback/correction
-//! batch is reported in `advance`'s JSON (`"rollback_events_fed": false`)
-//! and skipped, and once skipped the feed cannot resynchronize (documented
-//! in [`MatchDriverBridge::feed_rollback_timeline`]). This is a real,
-//! working feed for the common (no-desync) path, not a stub, and its limit
-//! is reported honestly rather than papered over — see this crate's report
-//! for the follow-up this leaves.
+//! [`MatchDriverBridge::advance`] feeds every driver step's output into an
+//! internally-owned `gc_sim::rollback_events::RollbackEventTimeline` — see
+//! [`MatchDriverBridge::feed_rollback_timeline`]. A previous version of this
+//! bridge fed only the single-output, no-rollback case and skipped a
+//! rollback/correction batch entirely, reasoning that
+//! `rollback_events::apply`'s replaced-interval contract
+//! (`replaced_from_tick`/`replaced_through_tick`, matching the *complete*
+//! stale speculative tail) belonged one layer up, in
+//! `match_presentation.lua`'s TypeScript successor. That successor
+//! (`packages/online/src/match_presentation.ts`) turned out to already
+//! encode the general rule, independent of any Lua source: a driver batch's
+//! `outputs` are in session-tick order, and any output at or below the
+//! highest tick this timeline has already applied is the head of a
+//! correction run that replaces the complete speculative tail from that
+//! tick through the highest applied tick; anything above it is an ordinary
+//! single-tick append. [`MatchDriverBridge::feed_rollback_timeline`] mirrors
+//! that same split (see its own doc), so this bridge now feeds a batch of
+//! any shape: one append, a correction run, or a correction run followed by
+//! fresh appends in the same call.
+//!
+//! `advance`'s JSON reports `"rollback_events_fed": true` whenever at least
+//! one output was applied this call, and `"rollback_diffs"` carries one
+//! [`gc_sim::rollback_events::RollbackEventDiff`] per `apply` call made
+//! (ordinarily one; two if a correction run is immediately followed by a
+//! fresh append in the same batch). A batch this timeline cannot safely
+//! apply — a tick gap, or an out-of-order output `rollback_events::apply`
+//! was never designed to validate — stops the feed at that point rather
+//! than guess; whatever was fed before the stop is still reported.
 
 use gc_netcode::coordinator::Freeze;
 use gc_netcode::fault_transport::{
@@ -76,14 +85,16 @@ use gc_netcode::match_driver::{
 use gc_netcode::match_driver_fixture::{DriverRules, to_driver_freeze, to_driver_manifest};
 use gc_netcode::protocol::{self, Value};
 use gc_sim::input_frame::{self, SlotId};
+use gc_sim::match_snapshot::MatchSnapshot;
 use gc_sim::rollback_events::{self, RollbackEventTimeline};
 use gc_sim::rollback_session::RollbackTickOutput;
+use gc_sim::rollback_snapshot_history::RollbackSnapshotLookupStatus;
 use indexmap::IndexMap;
 use wasm_bindgen::prelude::*;
 
 use crate::coordinator_bridge::{freeze_from_json, value_from_json};
 use crate::json::{Json, debug_tag};
-use crate::rollback_events_bridge;
+use crate::rollback_events_bridge::{self, WasmMatchSnapshot};
 use crate::session::Session;
 use crate::wasm_transport::{OutboundEnvelope, WasmStarTransport};
 
@@ -187,31 +198,36 @@ fn checkpoint_to_json(checkpoint: &MatchDriverCheckpoint) -> Json {
     ])
 }
 
+/// Converts a `gc_sim::rollback_session::RollbackTickOutput` (this driver's
+/// own output shape) into `gc_sim::rollback_events::RollbackEventTickOutput`
+/// (the narrow adapter that module's `apply` actually reads) — see that
+/// module's doc for why the adapter carries only a subset of fields. Shared
+/// by [`output_summary_to_json`] and [`MatchDriverBridge::feed_rollback_timeline`]
+/// so there is exactly one place this conversion happens.
+fn to_event_tick_output(output: &RollbackTickOutput) -> rollback_events::RollbackEventTickOutput {
+    rollback_events::RollbackEventTickOutput {
+        tick: output.tick,
+        start_boundary: output.start_boundary,
+        end_boundary: output.end_boundary,
+        events: output.events.clone(),
+        combat_events: output.combat_events.clone(),
+        state: rollback_events::RollbackOutputStateView {
+            score: output.state.score,
+            time_left: output.state.time_left,
+            finished: output.state.finished,
+        },
+        finished: output.finished,
+    }
+}
+
+/// This output, as JSON — [`rollback_events_bridge::tick_output_to_json`]'s
+/// shape, which is *also* exactly what
+/// [`crate::rollback_events_bridge::RollbackEventsTimeline::apply`] accepts
+/// per step (see that type's doc): one encoding serves reading `advance`'s
+/// batch in JS and handing an entry straight back into a standalone
+/// timeline's `apply` call, with no re-shaping in between.
 fn output_summary_to_json(output: &RollbackTickOutput) -> Json {
-    Json::obj(vec![
-        ("tick", Json::int(output.tick)),
-        ("start_boundary", Json::int(output.start_boundary)),
-        ("end_boundary", Json::int(output.end_boundary)),
-        ("finished", Json::bool(output.finished)),
-        (
-            "score",
-            Json::obj(vec![
-                ("home", Json::int(output.state.score.home)),
-                ("away", Json::int(output.state.score.away)),
-            ]),
-        ),
-        ("time_left", Json::Number(output.state.time_left)),
-        ("event_count", Json::int(output.events.len() as i64)),
-        (
-            "combat_event_count",
-            Json::opt_int(
-                output
-                    .combat_events
-                    .as_ref()
-                    .map(|events| events.len() as i64),
-            ),
-        ),
-    ])
+    rollback_events_bridge::tick_output_to_json(&to_event_tick_output(output))
 }
 
 fn driver_terminal_to_json(terminal: &MatchDriverTerminal) -> Json {
@@ -344,6 +360,53 @@ fn safe_confirm(timeline: &mut RollbackEventTimeline, confirmed_output_tick: i64
     rollback_events::confirm(timeline, confirmed_output_tick);
 }
 
+fn snapshot_lookup_status_str(status: RollbackSnapshotLookupStatus) -> &'static str {
+    match status {
+        RollbackSnapshotLookupStatus::Present => "present",
+        RollbackSnapshotLookupStatus::Retained => "retained",
+        RollbackSnapshotLookupStatus::Missing => "missing",
+        RollbackSnapshotLookupStatus::OutsideWindow => "outside_window",
+    }
+}
+
+/// One `match_driver::snapshot` lookup result, as a `wasm-bindgen` value
+/// type — `packages/online/src/match_presentation.ts`'s
+/// `SnapshotLookup<TSnapshot>` (`TSnapshot` = [`WasmMatchSnapshot`]):
+/// `status` (`"present"`/`"retained"`/`"missing"`/`"outside_window"`),
+/// `tick`, and `snapshot` (present exactly when `status` is `"present"` or
+/// `"retained"`).
+#[wasm_bindgen]
+pub struct SnapshotLookup {
+    status: &'static str,
+    tick: i64,
+    snapshot: Option<MatchSnapshot>,
+}
+
+#[wasm_bindgen]
+impl SnapshotLookup {
+    /// This boundary's retention status.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn status(&self) -> String {
+        self.status.to_string()
+    }
+
+    /// The queried boundary tick.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn tick(&self) -> f64 {
+        self.tick as f64
+    }
+
+    /// The retained snapshot, present exactly when [`Self::status`] is
+    /// `"present"` or `"retained"`.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn snapshot(&self) -> Option<WasmMatchSnapshot> {
+        self.snapshot.clone().map(WasmMatchSnapshot::new)
+    }
+}
+
 /// One peer's online match driver, plus its transport and rollback-event
 /// timeline. See the module doc.
 #[wasm_bindgen]
@@ -352,6 +415,13 @@ pub struct MatchDriverBridge {
     transport: WasmStarTransport,
     timeline: RollbackEventTimeline,
     next_event_tick: i64,
+    /// This driver's boundary-zero snapshot — see [`MatchDriverBridge::new`]'s
+    /// doc. Kept for [`MatchDriverBridge::initial_snapshot_handle`]: a
+    /// caller building a standalone
+    /// [`crate::rollback_events_bridge::RollbackEventsTimeline`] (rather
+    /// than relying on this bridge's own internal auto-feed) needs the same
+    /// boundary-zero snapshot this driver itself started from.
+    initial_snapshot: MatchSnapshot,
 }
 
 #[wasm_bindgen]
@@ -390,6 +460,7 @@ impl MatchDriverBridge {
         let manifest: Value = value_from_json(&parse_json(manifest_json)?).map_err(js_err)?;
         let initial_snapshot = session.capture_snapshot();
         let timeline = rollback_events::new(&initial_snapshot, None);
+        let initial_snapshot_for_export = initial_snapshot.clone();
 
         let transport = WasmStarTransport::new(transport_role, max_guests.map(|n| n as i64), None);
         let transport_for_driver = transport.clone();
@@ -415,6 +486,7 @@ impl MatchDriverBridge {
             transport,
             timeline,
             next_event_tick: 0,
+            initial_snapshot: initial_snapshot_for_export,
         })
     }
 
@@ -532,8 +604,37 @@ impl MatchDriverBridge {
             None => None,
         };
         let batch = match_driver::advance(&mut self.driver, sample);
-        let (fed, diff_json) = self.feed_rollback_timeline(&batch);
-        Ok(self.batch_json(&batch, fed, diff_json))
+        let (fed, diffs) = self.feed_rollback_timeline(&batch);
+        Ok(self.batch_json(&batch, fed, diffs))
+    }
+
+    /// This driver's own boundary-zero snapshot (the same one
+    /// [`MatchDriverBridge::new`] captured its internal timeline from), as
+    /// an opaque handle — for building a standalone
+    /// [`crate::rollback_events_bridge::RollbackEventsTimeline`] via
+    /// [`crate::rollback_events_bridge::RollbackEventsTimeline::create`]
+    /// against this same driver's snapshot history, satisfying
+    /// `packages/online/src/match_presentation.ts`'s
+    /// `newOnlineMatchPresentation`.
+    #[wasm_bindgen(js_name = initialSnapshotHandle)]
+    #[must_use]
+    pub fn initial_snapshot_handle(&self) -> WasmMatchSnapshot {
+        WasmMatchSnapshot::new(self.initial_snapshot.clone())
+    }
+
+    /// `gc_netcode::match_driver::snapshot`: looks up this driver's own
+    /// retained boundary-snapshot history at `boundary_tick`, as an opaque
+    /// [`SnapshotLookup`] — `packages/online/src/match_presentation.ts`'s
+    /// `MatchDriverPort.snapshot`.
+    #[wasm_bindgen(js_name = snapshotLookup)]
+    #[must_use]
+    pub fn snapshot_lookup(&self, boundary_tick: f64) -> SnapshotLookup {
+        let lookup = match_driver::snapshot(&self.driver, boundary_tick as i64);
+        SnapshotLookup {
+            status: snapshot_lookup_status_str(lookup.status),
+            tick: lookup.tick,
+            snapshot: lookup.snapshot,
+        }
     }
 
     /// Current lifecycle status (`"active"`, `"completed"`, ...).
@@ -579,7 +680,7 @@ impl MatchDriverBridge {
 
     /// Every currently retained (unconfirmed) speculative step, as JSON, in
     /// causal order. A debug/spectator view — the ordinary per-step
-    /// presentation feed is `advance`'s own `rollback_diff`.
+    /// presentation feed is `advance`'s own `rollback_diffs`.
     #[wasm_bindgen(js_name = retainedRollbackStepsJson)]
     #[must_use]
     pub fn retained_rollback_steps_json(&self) -> String {
@@ -595,54 +696,120 @@ impl MatchDriverBridge {
 }
 
 impl MatchDriverBridge {
-    /// See the module doc's `rollback_events` section. Returns whether the
-    /// timeline was fed this step, and its diff as JSON if so.
-    fn feed_rollback_timeline(&mut self, batch: &MatchDriverBatch) -> (bool, Option<Json>) {
-        if self.timeline.status != rollback_events::RollbackEventsStatus::Active {
-            return (false, None);
-        }
-        let [output] = batch.outputs.as_slice() else {
-            return (false, None);
-        };
-        if output.tick != self.next_event_tick {
-            return (false, None);
-        }
+    /// Builds one `rollback_events::apply` step input for `output`, by
+    /// looking up this driver's own retained boundary snapshot at
+    /// `output.end_boundary`. `None` if that boundary is not
+    /// present/retained (a gap [`MatchDriverBridge::feed_rollback_timeline`]
+    /// cannot safely apply through).
+    fn step_input_for(
+        &self,
+        output: &RollbackTickOutput,
+    ) -> Option<rollback_events::RollbackEventStepInput> {
         let lookup = match_driver::snapshot(&self.driver, output.end_boundary);
-        let Some(snapshot) = lookup.snapshot else {
-            return (false, None);
-        };
-        let event_output = rollback_events::RollbackEventTickOutput {
-            tick: output.tick,
-            start_boundary: output.start_boundary,
-            end_boundary: output.end_boundary,
-            events: output.events.clone(),
-            combat_events: output.combat_events.clone(),
-            state: rollback_events::RollbackOutputStateView {
-                score: output.state.score,
-                time_left: output.state.time_left,
-                finished: output.state.finished,
-            },
-            finished: output.finished,
-        };
-        let step_input = rollback_events::RollbackEventStepInput {
-            output: event_output,
+        let snapshot = lookup.snapshot?;
+        Some(rollback_events::RollbackEventStepInput {
+            output: to_event_tick_output(output),
             snapshot,
-        };
-        let Ok(diff) = rollback_events::apply(
-            &mut self.timeline,
-            output.tick,
-            output.tick,
-            std::slice::from_ref(&step_input),
-        ) else {
-            return (false, None);
-        };
-        self.next_event_tick += 1;
-        let confirmed_output_tick = match_driver::diagnostics(&self.driver).confirmed_output_tick;
-        safe_confirm(&mut self.timeline, confirmed_output_tick);
-        (true, Some(rollback_events_bridge::diff_to_json(&diff)))
+        })
     }
 
-    fn batch_json(&self, batch: &MatchDriverBatch, fed: bool, diff_json: Option<Json>) -> String {
+    /// Feeds `batch`'s outputs into this bridge's own internally-owned
+    /// timeline, in as many `rollback_events::apply` calls as the batch's
+    /// shape requires — see the module doc's `rollback_events` section for
+    /// the append/correction split this mirrors from
+    /// `match_presentation.ts`'s `consume`. Returns whether at least one
+    /// output was applied, and one diff (as JSON) per `apply` call made, in
+    /// order.
+    ///
+    /// `batch.outputs` is in session-tick order. An output at or above
+    /// `self.next_event_tick` (the next tick this timeline expects to
+    /// append) is an ordinary single-tick append; an output below it is the
+    /// head of a correction run that replaces the complete speculative tail
+    /// from that tick through `self.next_event_tick - 1` (the highest tick
+    /// already applied) — `rollback_events::apply`'s own contract for a
+    /// correcting call (see `gc_sim::rollback_events::apply`'s doc). A
+    /// batch this timeline cannot safely apply through (an unexpected gap,
+    /// a missing retained snapshot, or `apply` itself reporting the
+    /// unconfirmed window exceeded) stops the feed at that point rather
+    /// than guess; whatever was fed before the stop is still returned.
+    fn feed_rollback_timeline(&mut self, batch: &MatchDriverBatch) -> (bool, Vec<Json>) {
+        let mut diffs = Vec::new();
+        if self.timeline.status != rollback_events::RollbackEventsStatus::Active {
+            return (false, diffs);
+        }
+        let outputs = batch.outputs.as_slice();
+        let mut index = 0;
+        while index < outputs.len() {
+            let output = &outputs[index];
+            if output.tick >= self.next_event_tick {
+                // An ordinary append: `apply`'s normal-call contract
+                // requires exactly the next contiguous tick.
+                if output.tick != self.next_event_tick {
+                    break;
+                }
+                let Some(step_input) = self.step_input_for(output) else {
+                    break;
+                };
+                let Ok(diff) = rollback_events::apply(
+                    &mut self.timeline,
+                    output.tick,
+                    output.tick,
+                    std::slice::from_ref(&step_input),
+                ) else {
+                    break;
+                };
+                diffs.push(rollback_events_bridge::diff_to_json(&diff));
+                self.next_event_tick += 1;
+                index += 1;
+            } else {
+                // A correction run: gather every contiguous corrected
+                // output from here through the highest tick already
+                // applied, then replace that whole interval in one `apply`
+                // call — `rollback_events::apply`'s correcting-call
+                // contract requires the complete stale speculative tail,
+                // not a partial prefix of it.
+                let from = output.tick;
+                let through = self.next_event_tick - 1;
+                let mut steps = Vec::new();
+                let mut expected = from;
+                while index < outputs.len() && expected <= through {
+                    let candidate = &outputs[index];
+                    if candidate.tick != expected {
+                        break;
+                    }
+                    let Some(step_input) = self.step_input_for(candidate) else {
+                        break;
+                    };
+                    steps.push(step_input);
+                    expected += 1;
+                    index += 1;
+                }
+                if steps.is_empty() {
+                    break;
+                }
+                let corrected_count = steps.len() as i64;
+                let Ok(diff) = rollback_events::apply(&mut self.timeline, from, through, &steps)
+                else {
+                    break;
+                };
+                diffs.push(rollback_events_bridge::diff_to_json(&diff));
+                // A correction may legally shorten the stale tail only at
+                // full time (`rollback_events::apply`'s own assertion), so
+                // the next expected append follows the corrected run's
+                // actual length, not the replaced interval's.
+                self.next_event_tick = from + corrected_count;
+            }
+        }
+        let fed = !diffs.is_empty();
+        if fed {
+            let confirmed_output_tick =
+                match_driver::diagnostics(&self.driver).confirmed_output_tick;
+            safe_confirm(&mut self.timeline, confirmed_output_tick);
+        }
+        (fed, diffs)
+    }
+
+    fn batch_json(&self, batch: &MatchDriverBatch, fed: bool, diffs: Vec<Json>) -> String {
         Json::obj(vec![
             ("step", Json::int(batch.step)),
             ("input_tick", Json::int(batch.input_tick)),
@@ -666,7 +833,7 @@ impl MatchDriverBridge {
             ("live", slot_map_to_json(&batch.live)),
             ("status", Json::str(debug_tag(&batch.status))),
             ("rollback_events_fed", Json::bool(fed)),
-            ("rollback_diff", diff_json.unwrap_or(Json::Null)),
+            ("rollback_diffs", Json::Array(diffs)),
         ])
         .to_json_string()
     }

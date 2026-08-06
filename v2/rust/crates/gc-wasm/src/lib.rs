@@ -79,12 +79,32 @@
 //! `_fixture`. Reimplementing it here would be exactly the duplication
 //! README rule 5.1 warns against.
 //!
-//! [`rollback_events_bridge`] feeds a match driver's own tick outputs
-//! (already real Rust values, same process, same call stack) into
-//! `gc_sim::rollback_events` directly — nothing about a `MatchSnapshot`
-//! ever needs to serialize to JSON, since the timeline lives entirely on
-//! this side of the wasm boundary and only its *diff* (added/revoked/
-//! replaced presentation events) crosses to JS.
+//! [`match_driver_bridge`] feeds a match driver's own tick outputs into an
+//! internally-owned `gc_sim::rollback_events::RollbackEventTimeline`
+//! automatically — see that module's doc for the append/correction split
+//! this mirrors from `packages/online/src/match_presentation.ts`'s
+//! `consume`.
+//!
+//! ## Wave W3-G: the granular `RollbackEventsTimeline`/`MatchSnapshot` surface
+//!
+//! `match_presentation.ts`'s `RollbackEventsPort`/`MatchDriverPort` need
+//! `create`/`apply`/`confirm`/`diagnostics`/`snapshot` as separate
+//! callables against a caller-owned timeline, not the aggregate `advance`
+//! step [`match_driver_bridge`] already had. [`rollback_events_bridge`] now
+//! also exports [`rollback_events_bridge::RollbackEventsTimeline`] (those
+//! four callables) and [`rollback_events_bridge::WasmMatchSnapshot`] (an
+//! opaque `MatchSnapshot` handle — never serialized to JSON, exactly the
+//! `TSnapshot` type parameter those TypeScript interfaces declare);
+//! [`match_driver_bridge::MatchDriverBridge::snapshot_lookup`] is the
+//! matching `MatchDriverPort.snapshot`. See
+//! [`rollback_events_bridge`]'s own doc for the full design, including why
+//! `apply` needs a step's real events (not a count) and how that JSON is
+//! shared with `advance`'s own batch.
+//!
+//! [`tuning_bridge`] binds `gc_sim::tuning` (the live knob registry) and
+//! `gc_data::tuning_presets` (the authored preset list) —
+//! `packages/ui/src/tuning_panel.ts`'s own header comment names this
+//! specific gap in `SimHost`. See that module's doc.
 #![deny(missing_docs)]
 
 pub mod coordinator_bridge;
@@ -97,4 +117,5 @@ pub mod registry;
 pub mod render_export;
 pub mod rollback_events_bridge;
 pub mod session;
+pub mod tuning_bridge;
 pub mod wasm_transport;
