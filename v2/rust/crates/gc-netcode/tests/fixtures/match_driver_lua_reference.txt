@@ -1,0 +1,234 @@
+# Reference trace captured from the real Lua `game/online/match_driver.lua`,
+# per v2/tools/lua_reference/README.md, driving a scripted sequence that
+# forces a rollback: the star (a real `game/transport/fake_star.lua` pair
+# from `game/online/match_driver_fixture.lua`'s `fixture.session("1v1")`)
+# only pumps every 5 steps, so both peers predict the rows they have not
+# received and correct them in one burst once the pump runs — the same
+# `run_bursty` shape `spec/game/online_match_driver_spec.lua` uses to exercise
+# rollback. Regenerate from a scratch copy of core/, sim/, data/, game/ with a
+# headless conf.lua:
+#
+#   local match_driver = require("game.online.match_driver")
+#   local fixture = require("game.online.match_driver_fixture")
+#   local session = fixture.session("1v1")
+#   -- build host/guest drivers via match_driver.new, advance() each step,
+#   -- pump() the star every 5th step, print match_driver.diagnostics(driver)
+#   -- and, every 10th step, match_driver.checkpoints(driver)'s newest hash.
+#
+# `rollback`/`correction` are `RollbackSessionDiagnostics.rollback_count`/
+# `.correction_count` and only move at a pump step, confirming the burst
+# shape actually predicted and then corrected. `hash <step> <peer> <tick>
+# <digest>` lines are `match_snapshot.hash` at each 10-tick checkpoint; host
+# and guest agree at every one (10, 20, ..., 90) — this is the real Lua
+# proving out the exact claim the port needs to reproduce bit for bit.
+#
+# The Rust-side half of this comparison — building the same scenario through
+# `gc_netcode::match_driver` and asserting its `diagnostics()`/`checkpoints()`
+# match this trace tick for tick — is blocked: constructing a `MatchDriver`
+# end to end needs `gc_netcode::coordinator` and `gc_netcode::protocol`
+# (`NOT YET PORTED` placeholders as of this port, owned by concurrent
+# agents). `tests/match_driver.rs`'s
+# `match_driver_differential_matches_the_lua_reference` is `#[ignore]`d
+# naming this exact blocker; re-enable it once those modules land, with this
+# fixture already committed and ready to compare against.
+#
+# mode=1v1 host=host guest=guest_1
+# columns: step peer status present confirmed_in confirmed_out rollback correction
+1 host active 1 -1 -1 0 0
+1 guest active 1 -1 -1 0 0
+2 host active 2 -1 -1 0 0
+2 guest active 2 -1 -1 0 0
+3 host active 3 -1 -1 0 0
+3 guest active 3 -1 -1 0 0
+4 host active 4 -1 -1 0 0
+4 guest active 4 -1 -1 0 0
+5 host active 5 -1 -1 0 0
+5 guest active 5 -1 -1 0 0
+6 host active 6 5 5 1 17
+6 guest active 6 4 4 1 12
+7 host active 7 6 6 1 17
+7 guest active 7 4 4 1 12
+8 host active 8 7 7 1 17
+8 guest active 8 4 4 1 12
+9 host active 9 7 7 1 17
+9 guest active 9 4 4 1 12
+10 host active 10 7 7 1 17
+10 guest active 10 4 4 1 12
+hash 10 host 0 4bec679c4f6b7769
+hash 10 guest 0 4bec679c4f6b7769
+11 host active 11 10 10 2 23
+11 guest active 11 9 9 2 17
+12 host active 12 11 11 2 23
+12 guest active 12 9 9 2 17
+13 host active 13 12 12 2 23
+13 guest active 13 9 9 2 17
+14 host active 14 12 12 2 23
+14 guest active 14 9 9 2 17
+15 host active 15 12 12 2 23
+15 guest active 15 9 9 2 17
+16 host active 16 15 15 3 30
+16 guest active 16 14 14 3 22
+17 host active 17 16 16 3 30
+17 guest active 17 14 14 3 22
+18 host active 18 17 17 3 30
+18 guest active 18 14 14 3 22
+19 host active 19 17 17 3 30
+19 guest active 19 14 14 3 22
+20 host active 20 17 17 3 30
+20 guest active 20 14 14 3 22
+hash 20 host 10 13561ae71b871d2a
+hash 20 guest 10 13561ae71b871d2a
+21 host active 21 20 20 4 38
+21 guest active 21 19 19 4 27
+22 host active 22 21 21 4 38
+22 guest active 22 19 19 4 27
+23 host active 23 22 22 4 38
+23 guest active 23 19 19 4 27
+24 host active 24 22 22 4 38
+24 guest active 24 19 19 4 27
+25 host active 25 22 22 4 38
+25 guest active 25 19 19 4 27
+26 host active 26 25 25 5 46
+26 guest active 26 24 24 5 32
+27 host active 27 26 26 5 46
+27 guest active 27 24 24 5 32
+28 host active 28 27 27 5 46
+28 guest active 28 24 24 5 32
+29 host active 29 27 27 5 46
+29 guest active 29 24 24 5 32
+30 host active 30 27 27 5 46
+30 guest active 30 24 24 5 32
+hash 30 host 20 f54138b2ae4d9e60
+hash 30 guest 20 f54138b2ae4d9e60
+31 host active 31 30 30 6 53
+31 guest active 31 29 29 6 42
+32 host active 32 31 31 6 53
+32 guest active 32 29 29 6 42
+33 host active 33 32 32 6 53
+33 guest active 33 29 29 6 42
+34 host active 34 32 32 6 53
+34 guest active 34 29 29 6 42
+35 host active 35 32 32 6 53
+35 guest active 35 29 29 6 42
+36 host active 36 35 35 7 61
+36 guest active 36 34 34 7 62
+37 host active 37 36 36 7 61
+37 guest active 37 34 34 7 62
+38 host active 38 37 37 7 61
+38 guest active 38 34 34 7 62
+39 host active 39 37 37 7 61
+39 guest active 39 34 34 7 62
+40 host active 40 37 37 7 61
+40 guest active 40 34 34 7 62
+hash 40 host 30 440fe57e2529bb96
+hash 40 guest 30 440fe57e2529bb96
+41 host active 41 40 40 8 69
+41 guest active 41 39 39 8 81
+42 host active 42 41 41 8 69
+42 guest active 42 39 39 8 81
+43 host active 43 42 42 8 69
+43 guest active 43 39 39 8 81
+44 host active 44 42 42 8 69
+44 guest active 44 39 39 8 81
+45 host active 45 42 42 8 69
+45 guest active 45 39 39 8 81
+46 host active 46 45 45 9 77
+46 guest active 46 44 44 9 100
+47 host active 47 46 46 9 77
+47 guest active 47 44 44 9 100
+48 host active 48 47 47 9 77
+48 guest active 48 44 44 9 100
+49 host active 49 47 47 9 77
+49 guest active 49 44 44 9 100
+50 host active 50 47 47 9 77
+50 guest active 50 44 44 9 100
+hash 50 host 40 9ca110b9f9681ef5
+hash 50 guest 40 9ca110b9f9681ef5
+51 host active 51 50 50 10 85
+51 guest active 51 49 49 10 118
+52 host active 52 51 51 10 85
+52 guest active 52 49 49 10 118
+53 host active 53 52 52 10 85
+53 guest active 53 49 49 10 118
+54 host active 54 52 52 10 85
+54 guest active 54 49 49 10 118
+55 host active 55 52 52 10 85
+55 guest active 55 49 49 10 118
+56 host active 56 55 55 11 93
+56 guest active 56 54 54 11 138
+57 host active 57 56 56 11 93
+57 guest active 57 54 54 11 138
+58 host active 58 57 57 11 93
+58 guest active 58 54 54 11 138
+59 host active 59 57 57 11 93
+59 guest active 59 54 54 11 138
+60 host active 60 57 57 11 93
+60 guest active 60 54 54 11 138
+hash 60 host 50 0e45acaa22fcf3b5
+hash 60 guest 50 0e45acaa22fcf3b5
+61 host active 61 60 60 12 101
+61 guest active 61 59 59 12 158
+62 host active 62 61 61 12 101
+62 guest active 62 59 59 12 158
+63 host active 63 62 62 12 101
+63 guest active 63 59 59 12 158
+64 host active 64 62 62 12 101
+64 guest active 64 59 59 12 158
+65 host active 65 62 62 12 101
+65 guest active 65 59 59 12 158
+66 host active 66 65 65 13 109
+66 guest active 66 64 64 13 176
+67 host active 67 66 66 13 109
+67 guest active 67 64 64 13 176
+68 host active 68 67 67 13 109
+68 guest active 68 64 64 13 176
+69 host active 69 67 67 13 109
+69 guest active 69 64 64 13 176
+70 host active 70 67 67 13 109
+70 guest active 70 64 64 13 176
+hash 70 host 60 07ff7057e5a06859
+hash 70 guest 60 07ff7057e5a06859
+71 host active 71 70 70 14 116
+71 guest active 71 69 69 14 195
+72 host active 72 71 71 14 116
+72 guest active 72 69 69 14 195
+73 host active 73 72 72 14 116
+73 guest active 73 69 69 14 195
+74 host active 74 72 72 14 116
+74 guest active 74 69 69 14 195
+75 host active 75 72 72 14 116
+75 guest active 75 69 69 14 195
+76 host active 76 75 75 15 121
+76 guest active 76 74 74 15 210
+77 host active 77 76 76 15 121
+77 guest active 77 74 74 15 210
+78 host active 78 77 77 15 121
+78 guest active 78 74 74 15 210
+79 host active 79 77 77 15 121
+79 guest active 79 74 74 15 210
+80 host active 80 77 77 15 121
+80 guest active 80 74 74 15 210
+hash 80 host 70 790aad6598460046
+hash 80 guest 70 790aad6598460046
+81 host active 81 80 80 16 123
+81 guest active 81 79 79 16 230
+82 host active 82 81 81 16 123
+82 guest active 82 79 79 16 230
+83 host active 83 82 82 16 123
+83 guest active 83 79 79 16 230
+84 host active 84 82 82 16 123
+84 guest active 84 79 79 16 230
+85 host active 85 82 82 16 123
+85 guest active 85 79 79 16 230
+86 host active 86 85 85 17 127
+86 guest active 86 84 84 17 246
+87 host active 87 86 86 17 127
+87 guest active 87 84 84 17 246
+88 host active 88 87 87 17 127
+88 guest active 88 84 84 17 246
+89 host active 89 87 87 17 127
+89 guest active 89 84 84 17 246
+90 host active 90 87 87 17 127
+90 guest active 90 84 84 17 246
+hash 90 host 80 d60808411bea6c1c
+hash 90 guest 80 d60808411bea6c1c
