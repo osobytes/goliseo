@@ -1,12 +1,11 @@
 //! Port of `spec/game/online_coordinator_driver_spec.lua`.
 //!
-//! Covers the `"online coordinator driver"` and
-//! `"online coordinator retransmission and stale readiness"` `describe`
-//! blocks in full. The `"online coordinator adversarial peers"` block
-//! (constructing malformed peer messages via `driver:inject`) is not yet
-//! ported — see this crate's port report.
+//! Covers all four `describe` blocks: `"online coordinator driver"`,
+//! `"online coordinator retransmission and stale readiness"`,
+//! `"online coordinator adversarial peers"` (constructing malformed peer
+//! messages via `driver:inject`), and `"online coordinator conformance"`.
 
-use gc_netcode::coordinator::{self, Event, Origin, TerminalReason};
+use gc_netcode::coordinator::{self, Event, Origin, Terminal, TerminalReason};
 use gc_netcode::coordinator_driver::{self as driver, Driver};
 use gc_netcode::coordinator_fixture as fixture;
 use gc_netcode::protocol::{self, Value};
@@ -807,5 +806,411 @@ fn mints_a_distinct_generation_even_for_byte_identical_ownership() {
     assert_eq!(
         session.node(&guest).unwrap().state.assignment_id,
         Some(third)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// "online coordinator adversarial peers"
+// ---------------------------------------------------------------------------
+
+/// Build a driven session paused at `stage`: `"handshake"`, `"manifest"`,
+/// `"assigned"`, `"ready"`, `"countdown"`, or anything else for the running
+/// phase — mirrors the Lua spec's local `staged` helper.
+fn staged(stage: &str) -> Driver {
+    let mut session = Driver::new(driver::Options {
+        guest_count: Some(1),
+        ..Default::default()
+    });
+    session.connect_all();
+    if stage == "handshake" {
+        return session;
+    }
+    session.send(
+        HOST,
+        Event::ProposeManifest {
+            manifest: fixture::manifest(None),
+        },
+    );
+    session.pump();
+    if stage == "manifest" {
+        return session;
+    }
+    session.send(
+        HOST,
+        Event::AssignSlots {
+            assignments: fixture::assignments(1, None),
+            preserve_claims: false,
+        },
+    );
+    session.pump();
+    if stage == "assigned" {
+        return session;
+    }
+    let peer_ids: Vec<String> = session.nodes.iter().map(|n| n.peer_id.clone()).collect();
+    for peer_id in &peer_ids {
+        session.send(peer_id, Event::SetReady { ready: true });
+    }
+    session.pump();
+    if stage == "ready" {
+        return session;
+    }
+    session.send(
+        HOST,
+        Event::BeginCountdown {
+            countdown_id: fixture::COUNTDOWN_ID.to_string(),
+            remaining_ticks: 2,
+            first_input_tick: 0,
+        },
+    );
+    session.pump();
+    if stage == "countdown" {
+        return session;
+    }
+    session.tick(Some(3));
+    session
+}
+
+/// The terminal of `peer_id`, panicking (with `peer_id` in the message) if
+/// the node is unknown or never ended — mirrors the Lua spec's
+/// `terminal_of` helper's assertion messages.
+fn terminal_of(session: &Driver, peer_id: &str) -> Terminal {
+    session
+        .node(peer_id)
+        .unwrap_or_else(|| panic!("{peer_id} is not an admitted driver node"))
+        .terminal
+        .clone()
+        .unwrap_or_else(|| panic!("{peer_id} never ended"))
+}
+
+#[test]
+fn drops_a_guest_that_aborts_before_the_countdown() {
+    let mut session = staged("ready");
+    let guest = fixture::guest_peer_id(1);
+    session.inject(
+        &guest,
+        HOST,
+        protocol::MessageKind::Abort,
+        Value::record(vec![("code", Value::str("host_abort"))]),
+        None,
+    );
+    let host = session.host();
+    assert_eq!(
+        host.terminal, None,
+        "a pre-freeze guest abort is a departure, not a failure"
+    );
+    assert_eq!(host.state.peers.len(), 1);
+    assert_eq!(host.state.assignments, None);
+    assert!(!host.state.peers[0].ready);
+    assert_eq!(
+        terminal_of(&session, &guest).reason,
+        TerminalReason::Removed
+    );
+}
+
+#[test]
+fn refuses_a_second_handshake_from_an_admitted_link() {
+    let mut session = staged("handshake");
+    let guest = fixture::guest_peer_id(1);
+    session.inject(
+        &guest,
+        HOST,
+        protocol::MessageKind::Handshake,
+        Value::record(vec![
+            ("role", Value::str("guest")),
+            ("runtime", fixture::runtime()),
+        ]),
+        None,
+    );
+    assert_eq!(
+        terminal_of(&session, HOST).detail.as_deref(),
+        Some("an admitted link cannot handshake again")
+    );
+    assert_eq!(
+        terminal_of(&session, HOST).reason,
+        TerminalReason::ProtocolViolation
+    );
+}
+
+#[test]
+fn refuses_control_traffic_that_names_another_session() {
+    let mut session = staged("assigned");
+    let guest = fixture::guest_peer_id(1);
+    let manifest_id = session.host().state.manifest_id.clone().unwrap();
+    session.inject(
+        &guest,
+        HOST,
+        protocol::MessageKind::ManifestAccept,
+        Value::record(vec![("manifest_id", Value::str(manifest_id))]),
+        Some("other_session"),
+    );
+    assert_eq!(
+        terminal_of(&session, HOST).detail.as_deref(),
+        Some("control message names a different session")
+    );
+}
+
+#[test]
+fn refuses_a_guest_that_disconnects_another_peer() {
+    let mut session = staged("assigned");
+    let guest = fixture::guest_peer_id(1);
+    session.inject(
+        &guest,
+        HOST,
+        protocol::MessageKind::Disconnect,
+        Value::record(vec![
+            ("target_peer_id", Value::str("guest.9")),
+            ("code", Value::str("peer_left")),
+        ]),
+        None,
+    );
+    assert_eq!(
+        terminal_of(&session, HOST).detail.as_deref(),
+        Some("a guest cannot disconnect another peer")
+    );
+}
+
+#[test]
+fn refuses_readiness_for_a_manifest_the_session_never_proposed() {
+    let mut session = staged("assigned");
+    let guest = fixture::guest_peer_id(1);
+    let assignment_id = session.host().state.assignment_id.clone().unwrap();
+    session.inject(
+        &guest,
+        HOST,
+        protocol::MessageKind::Ready,
+        Value::record(vec![
+            ("manifest_id", Value::str("0123456789abcdef")),
+            ("assignment_id", Value::str(assignment_id)),
+            ("ready", Value::bool(true)),
+        ]),
+        None,
+    );
+    assert_eq!(
+        terminal_of(&session, HOST).reason,
+        TerminalReason::ManifestMismatch
+    );
+    assert_eq!(
+        terminal_of(&session, HOST).detail.as_deref(),
+        Some("readiness names a different manifest")
+    );
+}
+
+#[test]
+fn refuses_a_guest_sent_message_that_only_the_host_may_send() {
+    let mut session = staged("assigned");
+    let guest = fixture::guest_peer_id(1);
+    let manifest_id = session.host().state.manifest_id.clone().unwrap();
+    session.inject(
+        &guest,
+        HOST,
+        protocol::MessageKind::Countdown,
+        Value::record(vec![
+            ("manifest_id", Value::str(manifest_id)),
+            ("countdown_id", Value::str(fixture::COUNTDOWN_ID)),
+            ("remaining_ticks", Value::int(1)),
+            ("first_input_tick", Value::int(0)),
+        ]),
+        None,
+    );
+    assert_eq!(
+        terminal_of(&session, HOST).detail.as_deref(),
+        Some("countdown may only be sent by the host")
+    );
+}
+
+#[test]
+fn gives_a_guest_a_stable_reason_for_every_misbehaving_host_message() {
+    let guest = fixture::guest_peer_id(1);
+    let manifest_id = protocol::manifest_id(&fixture::manifest(None));
+    let mut other = fixture::manifest(None);
+    let seed = other.get("seed").and_then(Value::as_int).unwrap();
+    other.set("seed", Value::int(seed + 1));
+
+    struct Case {
+        stage: &'static str,
+        kind: protocol::MessageKind,
+        body: Value,
+        detail: &'static str,
+    }
+
+    let cases = vec![
+        Case {
+            stage: "manifest",
+            kind: protocol::MessageKind::ManifestProposal,
+            body: Value::record(vec![
+                ("manifest_id", Value::str(protocol::manifest_id(&other))),
+                ("manifest", other),
+            ]),
+            detail: "the manifest is immutable after proposal",
+        },
+        Case {
+            stage: "assigned",
+            kind: protocol::MessageKind::PeerAssignment,
+            body: Value::record(vec![
+                ("assigned_peer_id", Value::str("guest.9")),
+                ("role", Value::str("guest")),
+            ]),
+            detail: "the host named a different peer identity",
+        },
+        Case {
+            stage: "assigned",
+            kind: protocol::MessageKind::SlotAssignment,
+            body: Value::record(vec![
+                ("manifest_id", Value::str("0123456789abcdef")),
+                (
+                    "assignment_id",
+                    Value::str(protocol::assignment_id(&fixture::assignments(1, None), 9)),
+                ),
+                ("assignments", fixture::assignments(1, None)),
+            ]),
+            detail: "slot assignment names a different manifest",
+        },
+        Case {
+            stage: "ready",
+            kind: protocol::MessageKind::Countdown,
+            body: Value::record(vec![
+                ("manifest_id", Value::str("0123456789abcdef")),
+                ("countdown_id", Value::str("countdown.2")),
+                ("remaining_ticks", Value::int(1)),
+                ("first_input_tick", Value::int(0)),
+            ]),
+            detail: "countdown names a different manifest",
+        },
+        Case {
+            stage: "countdown",
+            kind: protocol::MessageKind::Countdown,
+            body: Value::record(vec![
+                ("manifest_id", Value::str(manifest_id.clone())),
+                ("countdown_id", Value::str("countdown.2")),
+                ("remaining_ticks", Value::int(1)),
+                ("first_input_tick", Value::int(0)),
+            ]),
+            detail: "a frozen countdown cannot be restarted",
+        },
+        Case {
+            stage: "countdown",
+            kind: protocol::MessageKind::Start,
+            body: Value::record(vec![
+                ("manifest_id", Value::str(manifest_id)),
+                ("countdown_id", Value::str(fixture::COUNTDOWN_ID)),
+                ("first_input_tick", Value::int(99)),
+            ]),
+            detail: "start does not name the frozen countdown boundary",
+        },
+        Case {
+            stage: "running",
+            kind: protocol::MessageKind::MatchPhase,
+            body: Value::record(vec![
+                ("phase", Value::str("goal_stoppage")),
+                ("tick", Value::int(5)),
+                ("home_score", Value::int(1)),
+                ("away_score", Value::int(0)),
+            ]),
+            detail: "a running match opens with kickoff",
+        },
+    ];
+
+    for case in cases {
+        let mut session = staged(case.stage);
+        session.inject(HOST, &guest, case.kind, case.body, None);
+        let terminal = terminal_of(&session, &guest);
+        assert_eq!(
+            terminal.detail.as_deref(),
+            Some(case.detail),
+            "{}/{:?}",
+            case.stage,
+            case.kind
+        );
+        assert_eq!(terminal.origin, Origin::Remote);
+    }
+}
+
+#[test]
+fn refuses_out_of_order_running_phases_from_the_host() {
+    let mut session = staged("running");
+    let guest = fixture::guest_peer_id(1);
+    session.send(
+        HOST,
+        Event::MatchPhase {
+            phase: "kickoff".to_string(),
+            tick: 0,
+            home_score: 0,
+            away_score: 0,
+        },
+    );
+    session.pump();
+    assert_eq!(session.node(&guest).unwrap().terminal, None);
+    session.inject(
+        HOST,
+        &guest,
+        protocol::MessageKind::MatchPhase,
+        Value::record(vec![
+            ("phase", Value::str("goal_stoppage")),
+            ("tick", Value::int(30)),
+            ("home_score", Value::int(1)),
+            ("away_score", Value::int(0)),
+        ]),
+        None,
+    );
+    assert_eq!(
+        terminal_of(&session, &guest).detail.as_deref(),
+        Some("match phase ordering regressed")
+    );
+}
+
+#[test]
+fn accepts_a_repeated_peer_assignment_and_proposal_as_no_ops() {
+    let mut session = staged("manifest");
+    let guest = fixture::guest_peer_id(1);
+    session.inject(
+        HOST,
+        &guest,
+        protocol::MessageKind::PeerAssignment,
+        Value::record(vec![
+            ("assigned_peer_id", Value::str(guest.clone())),
+            ("role", Value::str("guest")),
+        ]),
+        None,
+    );
+    assert_eq!(session.node(&guest).unwrap().terminal, None);
+    assert_eq!(
+        session.node(&guest).unwrap().state.phase,
+        protocol::LifecyclePhase::Manifest
+    );
+    session.inject(
+        HOST,
+        &guest,
+        protocol::MessageKind::ManifestProposal,
+        Value::record(vec![
+            (
+                "manifest_id",
+                Value::str(protocol::manifest_id(&fixture::manifest(None))),
+            ),
+            ("manifest", fixture::manifest(None)),
+        ]),
+        None,
+    );
+    assert_eq!(
+        session.node(&guest).unwrap().terminal,
+        None,
+        "a repeated proposal is idempotent"
+    );
+    assert_eq!(
+        session.node(&guest).unwrap().state.phase,
+        protocol::LifecyclePhase::Manifest
+    );
+}
+
+// ---------------------------------------------------------------------------
+// "online coordinator conformance"
+// ---------------------------------------------------------------------------
+
+#[test]
+fn matches_the_pinned_canonical_session_goldens() {
+    let report = gc_netcode::coordinator_conformance::verify();
+    assert_eq!(report.full_transcript_id.len(), 16);
+    assert!(report.message_count > 0);
+    assert!(
+        gc_netcode::coordinator_conformance::marker(&report).starts_with("GC_COORDINATOR|golden|")
     );
 }
