@@ -56,9 +56,11 @@ end
 -- procedural renderer reachable -- which #100's before/after evidence needs, and
 -- which anyone comparing the two by playing needs.
 --
--- It is also the workaround for #391: under love.js in Firefox the rigged
--- default crashes the match on entry, and this is what gets you a running game
--- there until that defect is fixed.
+-- It used to be the workaround for #391 as well, because the rigged default
+-- crashed the match on entry under love.js in Firefox. That is fixed (#395) and
+-- re-measured in headed Firefox 153 by #360, so this flag is back to being the
+-- comparison switch and nothing more. It is still the escape hatch if a rig3d
+-- shader change ever brings that crash back -- see `pitch.rigged_players`.
 if has_flag("--procedural-players") then
     require("game.render.pitch").rigged_players = false
 end

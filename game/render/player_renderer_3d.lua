@@ -14,21 +14,33 @@
 -- keeps the procedural 2.5D renderer, which is the parity/fallback rule the
 -- rigged-player contract requires.
 --
--- "Always" is what this said until #360 measured it false. Under love.js in
--- Firefox the rig3d shader fails to compile and the failure escapes the `pcall`
--- in `build()` below, through a secondary fault inside LÖVE's own boot.lua error
--- path; love.js then alerts and stops. A `pcall` cannot make a runtime that
--- aborts underneath it recoverable -- the same lesson bloom.lua learned about
--- `newCanvas`, arriving a second time through the shader path.
+-- "Always" is what this said until #360 measured it false. Under love.js a
+-- shader the runtime will not take does NOT come back as a catchable Lua error:
+-- the failure escapes the `pcall` in `build()` below through a secondary fault
+-- inside LÖVE's own boot.lua error path, and love.js alerts and stops. A `pcall`
+-- cannot make a runtime that aborts underneath it recoverable -- the same lesson
+-- bloom.lua learned about `newCanvas`, arriving a second time through the shader
+-- path.
 --
 -- So the contract holds wherever a compile failure is a Lua error, and does not
--- hold on the one runtime where it is not. That is #391.
+-- hold under love.js. That is the standing limitation, and it is UNCHANGED.
 --
--- `pitch.rigged_players` is nevertheless true by default, which is a deliberate
--- decision recorded there: the direction is rigged-everywhere, and the crash is
--- held off players by not shipping a browser build until #391 resolves. Read
--- that note before changing anything here -- and do not "fix" this by probing
--- what compiles, because the probe is the thing that crashes.
+-- What HAS changed is that nothing triggers it today. The trigger #360 found was
+-- Firefox, where no LÖVE shader declaring a `varying` compiled at all; that is
+-- #391, fixed in #395 by hoisting those declarations above `main()` at the WebGL
+-- boundary and by moving rig3d's vertex-only uniforms inside `#ifdef VERTEX`.
+-- Re-measured on this branch in headed Chrome 151 and Firefox 153 on an RTX 2070
+-- SUPER: the rig3d shader compiles and LINKS in both, and rigged players render
+-- in both. The browser-build release hold that used to sit here is lifted.
+--
+-- Read that as "the known trigger is gone", not "the fallback works now". It
+-- still does not, on that runtime, and the guard that would make it safe still
+-- cannot be written from in here -- do not "fix" this by probing what compiles,
+-- because the probe is the thing that crashes. `love . --gl-probe shader rig3d`
+-- is the out-of-band form: a separate process whose death is the answer.
+--
+-- `pitch.rigged_players` is true by default; read that note before changing
+-- anything here.
 
 local action_pose = require("game.render.rig3d.action_pose")
 local bloom = require("game.render.bloom")

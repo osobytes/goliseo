@@ -256,6 +256,16 @@ end
 --
 -- The uniform array sizes match `renderer.lua` exactly: 12 palette slots, and
 -- 26 bones x 3 rows = 78 bone rows.
+--
+-- Each rung also matches `renderer.lua` in WHERE it declares things, and that is
+-- load-bearing rather than cosmetic. A uniform declared outside `#ifdef VERTEX`
+-- compiles into both stages, which LÖVE's generated GLSL ES headers give
+-- different default float precision; GLSL ES 1.00 requires a cross-stage uniform
+-- to match, and Firefox refuses to link when it does not. Desktop GL and Chrome
+-- do not enforce it, so a misplaced declaration here would read as a Firefox
+-- capability defect rather than as a defect in the ladder. Varyings stay outside
+-- the stage blocks: both stages must see them, and they are exempt from that
+-- rule. `spec/render/gl_probe_spec.lua` gates both placements.
 local LADDER_PIXEL = [[
 #ifdef PIXEL
     vec4 effect(vec4 color, Image tex, vec2 tc, vec2 sc) {
@@ -344,8 +354,8 @@ gl_probe.SHADER_LADDER = {
         name = "uniform_array_constant_index",
         source = [[
             varying vec3 v_probe;
-            uniform vec4 u_palette[12];
         #ifdef VERTEX
+            uniform vec4 u_palette[12];
             vec4 position(mat4 transform_projection, vec4 vertex_position) {
                 v_probe = u_palette[3].rgb;
                 return transform_projection * vertex_position;
@@ -360,8 +370,8 @@ gl_probe.SHADER_LADDER = {
         name = "uniform_array_dynamic_index",
         source = [[
             varying vec3 v_probe;
-            uniform vec4 u_palette[12];
         #ifdef VERTEX
+            uniform vec4 u_palette[12];
             attribute float VertexPaletteSlot;
             vec4 position(mat4 transform_projection, vec4 vertex_position) {
                 v_probe = u_palette[int(VertexPaletteSlot + 0.5)].rgb;
@@ -376,8 +386,8 @@ gl_probe.SHADER_LADDER = {
         name = "bone_array_dynamic_index",
         source = [[
             varying vec3 v_probe;
-            uniform vec4 u_bones[78];
         #ifdef VERTEX
+            uniform vec4 u_bones[78];
             attribute float VertexBoneIndex;
             vec4 position(mat4 transform_projection, vec4 vertex_position) {
                 int b = int(VertexBoneIndex + 0.5) * 3;

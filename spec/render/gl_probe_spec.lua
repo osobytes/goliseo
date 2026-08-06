@@ -119,4 +119,59 @@ t.describe("gl_probe ladders", function()
         t.eq(gl_probe.DEPTH_ATTEMPTS[1].format, "depth24stencil8")
         t.eq(gl_probe.DEPTH_ATTEMPTS[1].readable, false)
     end)
+
+    -- #391, carried over from #395's review: three rungs used to declare their
+    -- uniform array outside the stage blocks, and every one of them failed in
+    -- Firefox at LINK -- `Uniform 'u_palette' is not linkable between attached
+    -- shaders` -- for a reason that has nothing to do with the construct the rung
+    -- exists to isolate. A ladder that fails for its own reasons measures itself.
+    --
+    -- The same rule `spec/render/rig3d_spec.lua` enforces on the real shader,
+    -- enforced here on the rungs that imitate it, because the ladder is only
+    -- evidence while the two agree.
+    t.it("declares every rung's uniforms inside a stage block, and its varyings outside", function()
+        local checked_uniforms = 0
+        local checked_varyings = 0
+        for _, rung in ipairs(gl_probe.SHADER_LADDER) do
+            local stack = {}
+            for line in (rung.source .. "\n"):gmatch("(.-)\n") do
+                local opened = line:match("^%s*#ifdef%s+([%u_]+)")
+                if opened then
+                    stack[#stack + 1] = opened
+                elseif line:match("^%s*#endif") then
+                    t.is_true(#stack > 0, "unbalanced #endif in ladder rung " .. rung.name)
+                    stack[#stack] = nil
+                else
+                    local stage = stack[#stack]
+                    local uniform = line:match("^%s*uniform%s+[%w_]+%s+([%w_]+)")
+                    if uniform then
+                        checked_uniforms = checked_uniforms + 1
+                        t.is_true(
+                            stage == "VERTEX" or stage == "PIXEL",
+                            rung.name
+                                .. " declares "
+                                .. uniform
+                                .. " outside every stage block, so it compiles into both"
+                        )
+                    end
+                    local varying = line:match("^%s*varying%s+[%w_]+%s+([%w_]+)")
+                    if varying then
+                        checked_varyings = checked_varyings + 1
+                        t.is_true(
+                            stage == nil,
+                            rung.name
+                                .. " declares "
+                                .. varying
+                                .. " inside a stage block, so the other stage cannot see it"
+                        )
+                    end
+                end
+            end
+            t.eq(#stack, 0, "unbalanced #ifdef in ladder rung " .. rung.name)
+        end
+        -- The rungs that carry the constructs, so a ladder that stopped
+        -- declaring anything cannot pass this by having nothing to check.
+        t.is_true(checked_uniforms >= 3, "expected the rungs' uniforms, got " .. checked_uniforms)
+        t.is_true(checked_varyings >= 6, "expected the rungs' varyings, got " .. checked_varyings)
+    end)
 end)
