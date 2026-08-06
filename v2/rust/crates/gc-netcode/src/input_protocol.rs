@@ -950,3 +950,58 @@ pub fn supersede_for_backpressure(older: &Packet, newer: &Packet) -> Result<Pack
     }
     copy(newer)
 }
+
+/// Validate a packet against the transport envelope that carried it.
+///
+/// Ported from `game/online/input_protocol.lua:840`. `pub` because the Lua spec
+/// calls it directly and README §5 rule 8 says everything a test touches is
+/// `pub`; the only prior implementation was a private helper in
+/// `match_driver_fixture`, which no test could reach.
+///
+/// That helper also diverged from the Lua in a way worth naming: it skipped the
+/// packet and envelope validation the original does first, and reported every
+/// failure under one generic code. The Lua distinguishes `malformed`,
+/// `tick_mismatch` and `identity_mismatch`, and a peer branches on the code
+/// rather than the message — so collapsing them changes observable behaviour.
+/// This port restores all three, in the Lua's order.
+pub fn validate_envelope(
+    packet: &Packet,
+    envelope: &crate::fault_transport::TransportMessage,
+) -> Result<()> {
+    // 1. The packet must be valid on its own terms, before anything is compared.
+    validate(packet)?;
+
+    // 2. The envelope must be a well-formed transport message.
+    if envelope.seq < 0 {
+        return failure(
+            ErrorCode::Malformed,
+            "input transport envelope is malformed",
+        );
+    }
+
+    // 3. It must be an input envelope.
+    if envelope.kind != crate::fault_transport::TransportMessageType::Input {
+        return failure(
+            ErrorCode::Malformed,
+            "input packet requires an input transport envelope",
+        );
+    }
+
+    // 4. Sequence and transport tick must agree.
+    if envelope.seq != packet.sequence || envelope.tick != Some(packet.transport_tick) {
+        return failure(
+            ErrorCode::TickMismatch,
+            "input packet sequence or transport tick mismatches envelope",
+        );
+    }
+
+    // 5. The carried bytes must be exactly this packet's encoding.
+    let expected = encode(packet)?;
+    if envelope.payload != expected {
+        return failure(
+            ErrorCode::IdentityMismatch,
+            "input packet bytes mismatch the transport envelope",
+        );
+    }
+    Ok(())
+}

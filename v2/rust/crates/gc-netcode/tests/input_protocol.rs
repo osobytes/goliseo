@@ -437,12 +437,67 @@ fn rejects_malformed_noncanonical_unsupported_mismatched_and_oversized_data() {
 }
 
 #[test]
-#[ignore = "the Lua case constructs a packet table with an undeclared extra \
-field and asserts input_protocol.validate rejects it. gc_netcode::input_protocol::Packet \
-is a Rust struct: it cannot have an undeclared field by construction, so this \
-check is structurally redundant here — the same class of drop already \
-documented in crates/gc-sim/src/input_frame.rs's module doc comment."]
-fn rejects_a_packet_with_an_undeclared_extra_field() {}
+// The Lua case builds a packet table carrying a field nobody declared and
+// asserts `input_protocol.validate_envelope` rejects it. A Rust `Packet` is a
+// typed struct, so that exact injection is unconstructible — but the assertion
+// protects the envelope check itself, and that IS reachable. This drives every
+// rejection branch `validate_envelope` has, each with the error code the Lua
+// distinguishes, because a peer branches on the code and not the message.
+#[test]
+fn rejects_a_packet_with_an_undeclared_extra_field() {
+    let packet = gc_netcode::input_protocol_fixture::guest();
+    let payload = input_protocol::encode(&packet).expect("fixture encodes");
+
+    let sound = TransportMessage {
+        version: 1,
+        kind: TransportMessageType::Input,
+        seq: packet.sequence,
+        tick: Some(packet.transport_tick),
+        payload: payload.clone(),
+    };
+    assert!(
+        input_protocol::validate_envelope(&packet, &sound).is_ok(),
+        "a faithful envelope must validate"
+    );
+
+    let wrong_kind = TransportMessage {
+        kind: TransportMessageType::Event,
+        ..sound.clone()
+    };
+    assert_eq!(
+        input_protocol::validate_envelope(&packet, &wrong_kind)
+            .expect_err("a non-input envelope must be refused")
+            .code,
+        ErrorCode::Malformed
+    );
+
+    let wrong_tick = TransportMessage {
+        tick: Some(packet.transport_tick + 1),
+        ..sound.clone()
+    };
+    assert_eq!(
+        input_protocol::validate_envelope(&packet, &wrong_tick)
+            .expect_err("a mismatched transport tick must be refused")
+            .code,
+        ErrorCode::TickMismatch
+    );
+
+    // The undeclared-field case's real teeth: bytes that are not this packet's
+    // encoding. Whatever produced them — an extra field, a truncation, a
+    // different packet — the envelope must not vouch for them.
+    let mut tampered = payload;
+    tampered.push(b'!');
+    let wrong_bytes = TransportMessage {
+        payload: tampered,
+        ..sound
+    };
+    assert_eq!(
+        input_protocol::validate_envelope(&packet, &wrong_bytes)
+            .expect_err("payload that is not this packet's encoding must be refused")
+            .code,
+        ErrorCode::IdentityMismatch
+    );
+}
 
 // `game/transport/contract.lua`'s `TransportMessage` shape now exists in
 // Rust as `fault_transport::TransportMessage` (the old blocker this test
