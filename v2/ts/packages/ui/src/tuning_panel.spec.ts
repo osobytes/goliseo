@@ -165,15 +165,27 @@ describe("tuning panel row/category navigation", () => {
 // preset blobs (data/tuning_presets.lua) against the REAL knob registry
 // (sim/tuning.lua) — every preset line names a real knob within its
 // min/max, and the first preset is pure defaults. Both source modules are
-// Rust now (crates/gc-data/src/tuning_presets.rs, crates/gc-sim), per
-// v2/README.md's determinism-line rule, and this milestone explicitly
-// excludes the JS<->wasm bridge that would let this package read them (see
-// TuningSource's doc comment in tuning_panel.ts). Re-port this coverage as
-// a Rust test once crates/gc-sim/src/tuning.rs exists.
+// Rust now (crates/gc-data/src/tuning_presets.rs, crates/gc-sim/src/tuning.rs
+// — both exist and have their own Rust tests, crates/gc-sim/tests/tuning.rs)
+// per v2/README.md's determinism-line rule.
+//
+// The blocker named here used to be "the JS<->wasm bridge does not exist" —
+// that is stale: @gc/wasm is real and working (packages/wasm/src/index.ts's
+// SimHost). The accurate current blocker is narrower: SimHost's surface
+// (session lifecycle, determinism evidence, the raw RenderFrame path) does
+// not include the knob registry or preset list — grepping
+// crates/gc-wasm/src turns up no bound export for either. Re-port this
+// coverage once a gc-wasm export surfaces sim::tuning's registry and
+// data::tuning_presets's blobs to JS (a Rust-crate change, out of this
+// package's scope) — not once crates/gc-sim/src/tuning.rs exists, since it
+// already does.
 describe.skip("tuning presets data", () => {
   it.skip("every preset line names a real knob with an in-range value", () => {
-    // Not expressible from @gc/ui: needs the real sim/tuning.lua knob
-    // registry and data/tuning_presets.lua blobs, both Rust-owned.
+    // Not expressible from @gc/ui: needs a gc-wasm export for the real
+    // sim/tuning.lua knob registry and data/tuning_presets.lua blobs. Both
+    // exist in Rust (crates/gc-sim/src/tuning.rs,
+    // crates/gc-data/src/tuning_presets.rs); neither is exposed through
+    // @gc/wasm's SimHost yet.
   });
 
   it.skip("the first preset is pure defaults", () => {

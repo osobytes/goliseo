@@ -13,10 +13,27 @@
 //
 // One test is intentionally not ported as written: "carries every pose
 // input through capture, celebration, and playback" exercises
-// `render/player_pose.lua`'s `select`/`PRIORITY`, which v2/README.md's file
-// mapping assigns to Rust (`crates/gc-render`), not `@gc/render` -- there is
-// no TypeScript home for it in this milestone (see combat.spec.ts's header
-// for the same call on the sibling test in that file). It is kept below as
+// `render/player_pose.lua`'s `select`/`PRIORITY`. That module has since
+// landed as `crates/gc-render/src/player_pose.rs` (confirmed: pose selection
+// -- `PlayerPoseId`, its priority table -- is real Rust there, and its
+// output already crosses the wasm boundary baked into the RenderFrame wire,
+// see `frame_buffer.rs`'s `pose_id`/`pose_priority`/`pose_source` fields and
+// `pose_id_code`). So this is not a pending port -- it is finished, and it
+// finished exactly where v2/README.md's file mapping said it would (Rust),
+// permanently outside `@gc/render`.
+//
+// That does not unblock this test, though, and the reason is specific to
+// what `replay` buffers: a goal replay captures pre-render `MatchState`/
+// `MatchPlayer` snapshots (see this module's own header), not decoded
+// RenderFrame wire data -- so a buffered, replayed frame was never run
+// through Rust's pose selection in the first place, and there is no
+// `@gc/wasm` binding that takes an arbitrary buffered player snapshot and
+// returns a selected pose id the way `buildRenderFrame` does for a live
+// `SimSession` (see `packages/wasm/src/index.ts`'s `SimHost` -- its only
+// pose-shaped surface is the live per-session render frame). Unblocked by
+// either a new wasm export exposing `player_pose::select` standalone, or by
+// changing what `replay` captures so pose ids are baked in at record time --
+// neither of which is this package's call to make alone. It is kept below as
 // `it.skip` per v2/README.md §4 ("port it as #[ignore]/it.skip... and report
 // it -- never delete it silently"), plus a replacement test that asserts
 // directly on the field the selector would have read
@@ -297,12 +314,18 @@ describe("goal replay buffer", () => {
   // pitch.draw hands buffered replay players straight to player_pose.select
   // in the Lua original -- see the file header for why this is skipped
   // rather than ported as written.
-  it.skip("carries every pose input through capture, celebration, and playback (needs render/player_pose.lua's TS port)", () => {
-    // Unblocks once whoever ports render/player_pose.lua exposes an
-    // equivalent selector for @gc/render to call (or the RenderFrame
-    // producer resolves the pose id Rust-side and hands this package an
-    // already-selected pose).
-  });
+  it.skip(
+    "carries every pose input through capture, celebration, and playback " +
+      "-- player_pose::select now lives permanently in crates/gc-render " +
+      "(Rust), not @gc/render, and @gc/wasm exposes pose selection only as " +
+      "part of a live SimSession's buildRenderFrame, not standalone over an " +
+      "arbitrary buffered snapshot. Unblocks on a new wasm export for " +
+      "standalone pose selection, or on replay capturing already-resolved " +
+      "pose ids instead of raw MatchPlayer state.",
+    () => {
+      // Intentionally not ported; see skip reason above and the file header.
+    },
+  );
 
   it("preserves a held pose-input field (keeper_get_up_timer) through capture, celebration, and playback", () => {
     replay.reset();

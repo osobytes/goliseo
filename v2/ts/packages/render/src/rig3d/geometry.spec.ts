@@ -42,33 +42,54 @@ describe("rig3d part builder palette-slot vertices (#337)", () => {
 });
 
 // #337 slice 2's vertex format (position/texcoord/normal/slot/bone/material
-// as 11 LÖVE-attribute floats) is NOT ported: it existed to satisfy
+// as 11 LÖVE-attribute floats, declared as a single static `VERTEX_FORMAT`
+// table) is NOT ported as a table: it existed to satisfy
 // `love.graphics.newMesh`'s vertex-format API and GLSL ES 1.00's lack of
 // integer vertex attributes, neither of which apply once geometry becomes a
-// `THREE.BufferGeometry` with typed attributes. What survives, because it is
-// content-relevant rather than LÖVE-specific, is the MATERIAL ordering.
+// `THREE.BufferGeometry` with typed attributes -- there is no single
+// static format table to iterate any more, so the original two tests below
+// (which did exactly that) cannot be ported as written. What DOES carry
+// over -- bone index and material alongside the palette slot, as named
+// per-vertex data -- is real again now that `PartBuilder.build()` exists
+// (see geometry.ts): it is three.js's own named-attribute mechanism
+// (`BufferGeometry.setAttribute`) instead of a hand-declared format table,
+// so the two tests below assert the equivalent on `build()`'s output rather
+// than on a format table that no longer exists. What survives verbatim,
+// because it is content-relevant rather than LÖVE-specific, is the
+// MATERIAL ordering.
 describe("rig3d material ids (#337 slice 2)", () => {
-  it.skip(
-    "carries a bone index and a material alongside the palette slot, as named " +
-      "float vertex attributes -- dropped: `VERTEX_FORMAT` was LÖVE's " +
-      "`love.graphics.newMesh` attribute declaration (attribute names, and " +
-      "every index as a float because GLSL ES 1.00 has no integer vertex " +
-      "attributes). A `THREE.BufferGeometry` attribute (skinIndex/skinWeight, " +
-      "a custom palette-slot attribute) has no equivalent named-format API to " +
-      "test, and building it is deferred pending @types/three (see this " +
-      "package's port report).",
-    () => {
-      // Intentionally not ported; see skip reason above.
-    },
-  );
+  it("carries a bone index and a material alongside the palette slot, as named attributes on the built geometry", () => {
+    const a = new PartBuilder();
+    a.triangle(null, [0, 0, 0], [1, 0, 0], [0, 1, 0], themes.SLOT_INDEX.plate);
+    const merged = geometry.merge([{ builder: a, bone: 3, material: "metal" }]);
+    const geom = merged.build();
+    expect(geom.attributes["position"]?.itemSize).toBe(3);
+    expect(geom.attributes["paletteSlot"]?.itemSize).toBe(1);
+    expect(geom.attributes["boneIndex"]?.itemSize).toBe(1);
+    expect(geom.attributes["material"]?.itemSize).toBe(1);
+  });
 
-  it.skip(
-    "emits one value per format component, in format order -- dropped for the " +
-      "same reason as the attribute-declaration test above.",
-    () => {
-      // Intentionally not ported; see skip reason above.
-    },
-  );
+  it("emits one value per vertex per attribute, in vertex order", () => {
+    const a = new PartBuilder();
+    a.triangle(null, [0, 0, 0], [1, 0, 0], [0, 1, 0], themes.SLOT_INDEX.skin);
+    const b = new PartBuilder();
+    b.triangle(null, [0, 0, 0], [1, 0, 0], [0, 1, 0], themes.SLOT_INDEX.plate);
+    const merged = geometry.merge([
+      { builder: a, bone: 2, material: "emissive" },
+      { builder: b, bone: 5 },
+    ]);
+    const geom = merged.build();
+    const boneIndex = geom.attributes["boneIndex"];
+    expect(boneIndex).toBeDefined();
+    if (!boneIndex) return;
+    expect(boneIndex.count).toBe(6);
+    for (let i = 0; i < 3; i++) {
+      expect(boneIndex.getX(i)).toBe(2);
+    }
+    for (let i = 3; i < 6; i++) {
+      expect(boneIndex.getX(i)).toBe(5);
+    }
+  });
 
   it("maps material names to the ids a shader (or a THREE.Material[] group index) would branch on", () => {
     expect(geometry.materialIndex(undefined)).toBe(geometry.MATERIAL.plain);
@@ -186,14 +207,13 @@ describe("rig3d part merge (#337 slice 2)", () => {
     expect(() => geometry.merge([malformed])).toThrowError();
   });
 
-  it.skip(
-    "refuses to build a mesh from an unmerged part builder -- dropped: there " +
-      "is no `.build()` on `PartBuilder` in this milestone. The Lua original " +
-      "gated `love.graphics.newMesh`; constructing a `THREE.BufferGeometry` / " +
-      "`THREE.SkinnedMesh` is a live-renderer-adjacent step out of scope here " +
-      "(v2/README.md #1) and blocked on `@types/three` (see the port report).",
-    () => {
-      // Intentionally not ported; see skip reason above.
-    },
-  );
+  it("refuses to build a mesh from an unmerged part builder", () => {
+    // A part is not a draw call any more. Enforced rather than documented,
+    // because a part builder's bone and material columns are zeros until
+    // merge stamps them -- building one directly would render every part on
+    // the root bone.
+    const part = new PartBuilder();
+    tri(part, themes.SLOT_INDEX.skin, 0);
+    expect(() => part.build()).toThrowError(/merge/);
+  });
 });

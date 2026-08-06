@@ -8,12 +8,21 @@
 // read live by the simulation, and v2/README.md's determinism-line rule is
 // "can this code change what the simulation computes? If yes it is Rust,
 // even when it feels like presentation." This package cannot import
-// `crates/gc-sim`/`crates/gc-data` — the wasm bridge that would let it does
-// not exist yet and is explicitly a later milestone (v2/README.md §1). So,
-// same pattern as `GraphicsBackend`: the knob registry and preset list are
+// `crates/gc-sim`/`crates/gc-data` directly (TS never imports a Rust
+// crate's source, v2/README.md §9) and, unlike when this note was first
+// written, the wasm bridge itself is no longer missing — `@gc/wasm` is real
+// and working (`packages/wasm/src/index.ts`'s `SimHost`: session lifecycle,
+// determinism evidence, the raw per-frame RenderFrame path). What `SimHost`
+// does NOT expose is the tuning knob registry or the preset list — no
+// method surfaces `gc_sim::tuning` or `gc_data::tuning_presets` (confirmed
+// by grepping `crates/gc-wasm/src` — `tuning` only appears as an internal
+// `Tuning` type threaded through session construction, never as a bound
+// export). So the same pattern as `GraphicsBackend` still applies, for a
+// narrower reason than before: the knob registry and preset list are
 // injected through `TuningSource`/`TuningPreset[]`, and this file ports the
-// panel's own state machine only. Wiring a real `TuningSource` backed by
-// the wasm module is a later milestone's job.
+// panel's own state machine only. Wiring a real `TuningSource` needs a new
+// `gc-wasm` export for the knob registry/presets specifically, not "the
+// bridge" in general — that part already shipped.
 
 import { invariant } from "./assert.ts";
 import type { GraphicsBackend } from "./graphics_backend.ts";

@@ -28,16 +28,23 @@
 // budget can afford" mechanics. The merged output of `merge()` below is plain
 // typed vertex data (position, normal, a palette slot index, a bone index, a
 // material id) -- everything body.ts/equipment.ts/headgear.ts/face.ts need to
-// describe a character. Turning that into an actual `THREE.BufferGeometry` /
-// `THREE.SkinnedMesh` (skinIndex/skinWeight attributes, material groups, a
-// bone `Skeleton`) is one more mechanical step, deferred because `three` ships
-// no type declarations in this workspace and `@types/three` is not installed
-// (confirmed: `tsc --noEmit` on a one-line `import * as THREE from "three"`
-// fails with TS7016) -- see this package's port report for the dependency to
-// add before that step is taken. Building geometry that would need a live
-// renderer to verify is explicitly out of scope for this milestone (v2/README
-// #1), so this module is typed and usable headless without one.
+// describe a character.
+//
+// `build()` (below, the port of meshbuilder.lua's `Builder:build()`) takes
+// that data the one more mechanical step into a `THREE.BufferGeometry`.
+// `@types/three` is installed in this workspace as of this port (it was not
+// when this file's header previously said otherwise -- see PartBuilder.build's
+// own note), and constructing a `BufferGeometry`/`BufferAttribute` needs no
+// live WebGL context: it is a plain typed-array data container, same as any
+// other object three.js exposes, so it stays testable headless. What stays
+// genuinely out of scope for this milestone (v2/README #1, no live GL
+// context) is a `THREE.SkinnedMesh` bound to a posed `THREE.Skeleton` and
+// actually rendered -- that is `player_renderer_3d.ts`'s job, not this
+// module's, and it builds its own attributes directly from `PartBuilder.verts`
+// today rather than calling `build()` (both are valid consumers of the same
+// vertex data; nothing here requires unifying them in this milestone).
 
+import * as THREE from "three";
 import { mat4, type Mat4 } from "@gc/core";
 
 /** A point or direction in the part's local space. */
@@ -102,6 +109,12 @@ function normalizeVec(x: number, y: number, z: number): Point3 {
 export class PartBuilder {
   readonly verts: Vertex[] = [];
 
+  // True once this builder is `merge()`'s output. A part builder starts
+  // false: it is not a draw call on its own (see `merge`'s doc), and
+  // `build()` below refuses to run against one. Mirrors meshbuilder.lua's
+  // `self.merged`.
+  merged = false;
+
   // Adds one triangle. `tf` may be null (identity). Vertices are expected
   // counter-clockwise as seen from outside the solid.
   //
@@ -153,6 +166,51 @@ export class PartBuilder {
   triangleCount(): number {
     return this.verts.length / 3;
   }
+
+  // Bakes the accumulated triangles into a `THREE.BufferGeometry`. Port of
+  // meshbuilder.lua's `Builder:build()`, which gated `love.graphics.newMesh`
+  // the same way: only a merged builder is a draw call, so building a bare
+  // part directly would render every part on the root bone (#337 slice 2).
+  //
+  // Attribute names are this module's own (`paletteSlot`/`boneIndex`/
+  // `material`), not a three.js-reserved name like `skinIndex`/`skinWeight`
+  // -- resolving those, and binding a `Skeleton`, is the rendering
+  // integration's job (`player_renderer_3d.ts`), not this content-only
+  // module's. See this file's header for why that split is fine.
+  build(): THREE.BufferGeometry {
+    if (!this.merged) {
+      throw new Error(
+        "only a merged builder is a mesh (#337 slice 2): a part is not a draw call, pass it through geometry.merge",
+      );
+    }
+    if (this.verts.length === 0) {
+      throw new Error("cannot build an empty mesh");
+    }
+    const count = this.verts.length;
+    const positions = new Float32Array(count * 3);
+    const normals = new Float32Array(count * 3);
+    const paletteSlots = new Float32Array(count);
+    const bones = new Float32Array(count);
+    const materials = new Float32Array(count);
+    this.verts.forEach((v, i) => {
+      positions[i * 3] = v.position[0];
+      positions[i * 3 + 1] = v.position[1];
+      positions[i * 3 + 2] = v.position[2];
+      normals[i * 3] = v.normal[0];
+      normals[i * 3 + 1] = v.normal[1];
+      normals[i * 3 + 2] = v.normal[2];
+      paletteSlots[i] = v.paletteSlot;
+      bones[i] = v.bone;
+      materials[i] = v.material;
+    });
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geom.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
+    geom.setAttribute("paletteSlot", new THREE.BufferAttribute(paletteSlots, 1));
+    geom.setAttribute("boneIndex", new THREE.BufferAttribute(bones, 1));
+    geom.setAttribute("material", new THREE.BufferAttribute(materials, 1));
+    return geom;
+  }
 }
 
 /** One part waiting to be folded into a character by `merge`. */
@@ -181,6 +239,7 @@ export interface Part {
 // separate parts were authored.
 export function merge(parts: readonly Part[]): PartBuilder {
   const out = new PartBuilder();
+  out.merged = true;
   for (const part of parts) {
     if (!Number.isInteger(part.bone) || part.bone < 0) {
       throw new Error(`merge needs a 0-based bone index per part, got ${String(part.bone)}`);
