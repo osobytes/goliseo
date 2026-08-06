@@ -14,18 +14,25 @@
 // Three cases genuinely need the coordinator's real slot-assignment and
 // pair-preference protocol logic to produce meaningful output (exactly
 // which slots read "LIVE" vs "AI (OWNED)" vs "AI FILL", and exactly which
-// slots offer a pair control) -- reproducing that with real fidelity would
-// mean re-implementing `coordinator.lua`'s assignment/preference rules,
-// which is exactly the boundary v2/README.md §2.1 draws around this
-// module. Those are ported as `it.skip`. A fourth (`renders every state
-// without touching a real display`) exercised `game.ui.draw` against a
-// stubbed `love.graphics`; `@gc/ui`'s draw module targets `GraphicsBackend`
-// rather than `love.graphics`, and this package does not own that seam, so
-// it is also skipped.
+// slots offer a pair control). That logic now exists for real --
+// `@gc/wasm`'s `Coordinator` (`crates/gc-wasm/src/coordinator_bridge.rs`)
+// is the full reducer, not a fake -- but `@gc/screens` has no dependency
+// edge onto `@gc/wasm` (absent from `package.json`, unlinked in
+// `node_modules`; this package's `CoordinatorPort` is deliberately an
+// injected seam that `@gc/app` wires in production, mirroring
+// `sim_host.ts`'s role for `MatchDriverPort`). Reproducing the assignment
+// algorithm with a hand-written fake instead -- rather than waiting for
+// that dependency edge -- would mean re-implementing `coordinator.lua`'s
+// rules a second time, exactly what v2/README.md §2.1 exists to prevent.
+// Those three are ported as `it.skip`. A fourth (`renders every state
+// without touching a real display`) is unblocked below: `@gc/ui` (with its
+// `draw` module and `GraphicsBackend`) *is* a declared dependency of this
+// package (`online_lobby.ts` already draws through it), so the stated
+// blocker -- "this package does not own that seam" -- was stale.
 
 import { describe, expect, it } from "vitest";
-import { hit } from "@gc/ui";
-import type { Layout } from "@gc/ui";
+import { draw, hit } from "@gc/ui";
+import type { GraphicsBackend, Layout } from "@gc/ui";
 import {
   newState,
   layout as lobbyLayout,
@@ -308,6 +315,31 @@ function hosting(): LobbyScreenState {
   return click(newState(VP, ports()), "role_host");
 }
 
+// Every method a no-op, matching the Lua original's `with_stub_graphics`:
+// real draw code executes against this, so a nil field or a bad projection
+// fails here rather than on a device. `getDimensions` answers the same
+// 1280x720 the Lua stub did.
+function fakeGraphicsBackend(): GraphicsBackend {
+  const noop = () => {};
+  return {
+    getDimensions: () => ({ width: 1280, height: 720 }),
+    setColor: noop,
+    setLineWidth: noop,
+    rectangle: noop,
+    circle: noop,
+    ellipse: noop,
+    polygon: noop,
+    line: noop,
+    print: noop,
+    printf: noop,
+    push: noop,
+    pop: noop,
+    translate: noop,
+    scale: noop,
+    setFont: noop,
+  };
+}
+
 describe("online lobby screen", () => {
   it("opens on an explicit host or guest choice", () => {
     const state = newState(VP, ports());
@@ -439,9 +471,25 @@ describe("online lobby screen", () => {
     }
   });
 
-  // Ported as `it.skip`: needs `@gc/ui`'s draw module wired against a
-  // `GraphicsBackend` stub, which is not this package's seam to build.
-  it.skip("renders every state without touching a real display", () => {});
+  // Unblocked: `online_lobby.ts` already drives `draw.layout` against a
+  // `GraphicsBackend` (this package's own seam -- `@gc/ui` is a declared
+  // dependency), so the stated blocker ("this package does not own that
+  // seam") was stale. No implementation of `GraphicsBackend` exists yet
+  // (`graphics_backend.ts`'s header), but the Lua original didn't need one
+  // either -- it stubbed `love.graphics` -- so a hand-written no-op
+  // `GraphicsBackend` plays the same role here.
+  it("renders every state without touching a real display", () => {
+    const roleState = newState(VP, ports());
+    const hostState = hosting();
+    const locked = dispatch(
+      dispatch(hosting(), { kind: "lobby", command: { kind: "bot_fill" } }),
+      { kind: "lobby", command: { kind: "lock" } },
+    );
+    const backend = fakeGraphicsBackend();
+    for (const state of [roleState, hostState, locked]) {
+      expect(() => draw.layout(backend, lobbyLayout(state), VP)).not.toThrow();
+    }
+  });
 
   it("surfaces a terminal reason in the layout", () => {
     let state = hosting();
@@ -497,10 +545,13 @@ describe("online lobby screen", () => {
     expect(text.includes("DIFFERENT BUILD")).toBe(false);
   });
 
-  // Ported as `it.skip`: reproducing which slots read LIVE / AI (OWNED) / AI
-  // FILL needs the real coordinator's slot-assignment algorithm (team_humans
-  // / slots_per_human distribution) -- the fixture `planAssignments` above
-  // is deliberately not a faithful port of it (see this file's header).
+  // Ported as `it.skip`: which slots read LIVE / AI (OWNED) / AI FILL needs
+  // the real coordinator's slot-assignment algorithm (team_humans /
+  // slots_per_human distribution) -- the fixture `planAssignments` above is
+  // deliberately not a faithful port of it (see this file's header). The
+  // real algorithm exists now, in `@gc/wasm`'s `Coordinator`; the blocker is
+  // that `@gc/screens` has no dependency edge onto `@gc/wasm` this batch
+  // (this file's header).
   it.skip("names the AI-driven slots inside a human's owned set", () => {});
 
   // Ported as `it.skip`: same unblocker -- which slots offer a pair control

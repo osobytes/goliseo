@@ -9,9 +9,14 @@
 // answered.
 //
 // `game.online.coordinator` and `game.online.protocol` are both Rust-owned
-// (`crates/gc-netcode`; v2/README.md §2.1) with no wasm bridge this
-// milestone, so both are injected ports -- `CoordinatorPort`/`ProtocolPort`
-// -- following `@gc/online`'s `match_presentation.ts` precedent
+// (`crates/gc-netcode`; v2/README.md §2.1). `@gc/wasm` now binds a real
+// `Coordinator` (`crates/gc-wasm/src/coordinator_bridge.rs`), but
+// `@gc/screens` has no dependency edge onto `@gc/wasm` (absent from
+// `package.json`) -- and wouldn't take one even if it did, since wiring
+// Rust-owned session state to this screen's pure model is `@gc/app`'s job,
+// not this package's (v2/README.md's directory table). So both stay
+// injected ports -- `CoordinatorPort`/`ProtocolPort` -- following
+// `@gc/online`'s `match_presentation.ts` precedent
 // (`RollbackEventsPort`/`MatchDriverPort`). `CoordinatorState` stays a
 // generic `TState` bounded by only the fields this module actually reads
 // (`phase`, `role`, `host_link_id`); everything else about session state is
