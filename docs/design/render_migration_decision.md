@@ -1,7 +1,7 @@
 # Migrate the presentation layer to Babylon, or optimise LÖVE (#330)
 
-Status: **evidence assembled — the decision line below is deliberately unfilled and
-awaits the repo owner.** Assembled 2026-08-04 against `c181c55`.
+Status: **decided 2026-08-06 — stay on LÖVE and optimise it.** Evidence assembled
+2026-08-04 against `c181c55`; decision recorded against `874d63c`.
 
 Synthesises [`babylon_wasm_spike.md`](babylon_wasm_spike.md) (#328),
 [`babylon_skinned_benchmark.md`](babylon_skinned_benchmark.md) (#341) and
@@ -15,28 +15,68 @@ renderer), [PR #346](https://github.com/osobytes/goliseo/pull/346) (#332) and
 
 ## The decision
 
-> **Decision:** _(unfilled — migrate / stay / defer)_
-> **Decided by:** _(repo owner)_
-> **Date:** _____
-> **Reasoning:** _____
-> **What would reverse it:** _____
+> **Decision:** **STAY.** Keep LÖVE as the presentation layer on both web and
+> native, and optimise it. Do not migrate the pitch to Babylon.
+> **Decided by:** repo owner
+> **Date:** 2026-08-06
+> **Reasoning:** the migration case rested on frame cost, and frame cost did not
+> hold up. At equal mesh floors it is a draw-call tie — optimised LÖVE 1.94
+> calls/character against Babylon `merged_all`'s 2.00 (§1, rows 3 and 4) — and
+> Babylon's is the more expensive tie, because its second pass is a real
+> shadow-map render where LÖVE's is a 2D contact ellipse. Babylon's
+> skinned-character curve does not flatten either: it buys a lower constant, not
+> better skeleton handling (#341). Babylon Native is not shippable, so a
+> migration would have put native on Electron (#329). And the reason the browser
+> looked blocked turned out to be false — love.js *can* supply a depth
+> attachment, and Firefox's shader failure was a translator bug plus a
+> portability bug of ours, both now fixed (#360, #391). With browser LÖVE
+> working, migrating would have bought an animation pipeline at the price of a
+> second renderer and a second IK implementation maintained in visual lockstep,
+> for roughly a millisecond of web draw time.
+> **What would reverse it:** hand-writing the animation pipeline (#318 IK,
+> #101/#102 clip authoring, #115 skinning) proving far more expensive than
+> estimated — that is the one thing the migration genuinely bought, and it is
+> now a build rather than a buy; #393 and #394 failing to bring browser draw
+> inside #100's gates; character counts or pitch effects growing past what the
+> wasm-hosted interpreter can carry (§6.3); or the WebAssembly `jit-interface`
+> proposal shipping in browsers, which would remove the interpreter floor
+> entirely and is worth re-checking rather than assuming static.
 
-**This is blank on purpose, and it is the one thing in this document that no
-agent should fill in.**
+### What this decision consciously accepts
 
-A decision *was* recorded on this issue on 2026-08-04, on behalf of the repo
+- **Browser draw stays roughly 2.5x native.** #393 and #394 are expected to take
+  it from ~5.25 ms to ~2.5–3 ms; the residual is the wasm-hosted Lua interpreter
+  (LuaJIT cannot JIT under wasm) and **no graphics-side change addresses it**.
+  A dedicated analysis measured the entire WebGL-internal cost of a browser
+  frame at ~0.28 ms of 5.25 (~5%), and a prototype cutting GL calls 756 -> 429
+  moved draw time by 2%. Research confirmed no faster Lua for wasm exists —
+  LuaJIT Remake is x86-64 only, Ravi's author judged an LLVM-to-wasm path
+  impractical, and the one AOT Lua-to-wasm compiler covers a subset without
+  metatables, coroutines, varargs or `pcall`.
+- **Firefox's rigged row currently misses #100's absolute 8 ms draw gate** under
+  load (8.64 ms; three quiet-box repeats pass at 7.14/7.00/6.96), and the
+  browser feature-delta is 149% (Chrome) / 200% (Firefox) of the ≤2 ms budget
+  against 0.7x natively. #393 and #394 are what close that, and #100's record
+  needs to reflect the outcome (§6.2).
+- **The animation pipeline is a build, not a buy.** #318, #101, #102 and #115
+  stay hand-written. #329 confirmed Babylon's `BoneIKController` works, so this
+  is a real cost being accepted rather than a capability being written off.
+
+### The decision this supersedes
+
+A decision was recorded on this issue on 2026-08-04, on behalf of the repo
 owner: drop LÖVE as the 3D renderer entirely, native as well as web, and move
 the pitch to Babylon. That comment named two assumptions it rested on and said
-both were unproven. **Both have since been measured, and neither survived**
+both were unproven. **Both were subsequently measured, and neither survived**
 (§2). It also stated that the optimised-LÖVE column "will not be produced" —
 and #337 produced it (§1, row 3).
 
-So the ground the recorded decision stood on has moved in three places at once.
-Reaffirming it or reversing it are both calls for the owner, not for the agent
-that assembled the evidence. What follows is the three-way comparison the issue
-asked for, the current state of every reversal condition the recorded decision
-named, and **both** contingency branches written out in full, so that whichever
-way the line above is filled in, the next step is already sequenced.
+That earlier call is superseded rather than wrong: it was taken on the evidence
+available, it named its own assumptions honestly, and it named the column whose
+absence would undermine it. The measurements it asked for are what changed the
+answer. What follows is the three-way comparison the issue asked for, the state
+of every reversal condition, and both contingency branches — §6 (stay) is now
+the live one.
 
 ---
 
