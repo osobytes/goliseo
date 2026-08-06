@@ -1322,13 +1322,30 @@ pub fn slot_sources(manifest: &Value, assignments: &Value) -> Result<Value> {
     for producer in assignments_producers(assignments) {
         if keepers.contains(&producer_player_id(producer)) {
             return failure(
-                RejectCode::InvalidOwnership,
+                // `game/online/coordinator.lua:614` returns "invalid_assignment"
+                // here, not an ownership code. The distinction is visible to a
+                // peer, which rejects on the code rather than the message.
+                RejectCode::InvalidAssignment,
                 "combat-protected keepers cannot own a canonical outfield slot",
             );
         }
     }
     protocol::validate_assignment_manifest(manifest, assignments)?;
-    Ok(assignments.clone())
+    // Re-shape into a slot-id-keyed table, as `coordinator.lua:625-630` does.
+    // `validate_assignment_manifest` has already proven the array holds exactly
+    // the eight canonical slots in OMP-1 order, so indexing by slot id cannot
+    // collide — this only makes `sources["home_1"]` work for callers. Returning
+    // the 1-based integer-keyed array unchanged left every string lookup empty.
+    let mut fields: Vec<(&str, Value)> = Vec::new();
+    for index in 1..=input_frame::SLOT_COUNT {
+        let slot = input_frame::slot(index).expect("canonical slot index");
+        let producer = assignments
+            .get_index(index)
+            .cloned()
+            .unwrap_or_else(|| panic!("assignment missing for canonical slot {index}"));
+        fields.push((crate::protocol::slot_wire_id(slot.id), producer));
+    }
+    Ok(Value::record(fields))
 }
 
 /// Seat every human in `peer_ids` in contiguous canonical blocks of
