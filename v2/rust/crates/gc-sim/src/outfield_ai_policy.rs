@@ -307,11 +307,29 @@ pub fn descriptor() -> Vec<OutfieldAiPolicyRow> {
 /// Canonical bytes behind the id. Exposed so a mismatch can be diffed.
 #[must_use]
 pub fn canonical() -> String {
+    canonical_of(&descriptor())
+}
+
+/// Canonical bytes for an arbitrary declared surface.
+///
+/// `canonical()` is this applied to [`descriptor()`]. It is separate because the
+/// Lua spec proves the identity reacts to a changed constant by assigning to a
+/// live module field — `ai.LANE_WIDTH = ...` — and watching `id()` move. Rust
+/// constants are not assignable, and the reflex is to retire those cases as
+/// inexpressible. They are not: the property under test is "a different declared
+/// surface hashes differently", and that is testable directly by perturbing a
+/// row here rather than by mutating the module the row was read from.
+///
+/// This is a stronger test than the Lua's, not a weaker substitute: it also
+/// covers a row being *added* or *removed*, which runtime assignment cannot
+/// express at all.
+#[must_use]
+pub fn canonical_of(rows: &[OutfieldAiPolicyRow]) -> String {
     let mut parts = String::new();
     parts.push_str("GCOAP;");
     parts.push_str(&SCHEMA_VERSION.to_string());
     parts.push(';');
-    for r in descriptor() {
+    for r in rows {
         append_str(&mut parts, &r.key);
         append_value(&mut parts, &r.value);
     }
@@ -322,9 +340,15 @@ pub fn canonical() -> String {
 /// `outfield_ai_policy/v1/combat_disabled/0123456789abcdef`.
 #[must_use]
 pub fn id() -> String {
+    id_of(&descriptor())
+}
+
+/// The citable identity for an arbitrary declared surface. See [`canonical_of`].
+#[must_use]
+pub fn id_of(rows: &[OutfieldAiPolicyRow]) -> String {
     format!(
         "{SCHEMA}/v{SCHEMA_VERSION}/combat_{COMBAT_MODE}/{}",
-        fnv1a64::hash(canonical().as_bytes())
+        fnv1a64::hash(canonical_of(rows).as_bytes())
     )
 }
 
