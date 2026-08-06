@@ -434,7 +434,7 @@ function draw_player(sx, sy, r, color, view, opts)
     renderer.draw(character.mesh, world, rows)
     renderer.endPass()
 
-    if sink then
+    if sink and clock then
         local t_done = clock()
         sink.pose_s = (sink.pose_s or 0) + (t_apply - t_pose)
         sink.apply_s = (sink.apply_s or 0) + (t_rows - t_apply)
