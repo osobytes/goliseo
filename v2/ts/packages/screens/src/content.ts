@@ -143,6 +143,22 @@ export interface BuildInfo {
   readonly source_url?: string;
 }
 
+// --- data/teams.lua ----------------------------------------------------------
+
+/** The slice of `data/teams.lua`'s `TeamData` `real_match.ts`/`match.ts` read. */
+export interface TeamData {
+  readonly id: string;
+  readonly name: string;
+  /** `{r, g, b}` in 0..1. */
+  readonly color: readonly [number, number, number];
+  /** Key into `data/formations.lua`. */
+  readonly formation: string;
+  /** 5 player ids from `data/players.lua`. */
+  readonly roster: readonly string[];
+  /** Eligible player ids; defaults to `roster` when absent. */
+  readonly squad?: readonly string[];
+}
+
 // --- game/input/bindings.lua (-> @gc/input) -----------------------------------
 
 /**

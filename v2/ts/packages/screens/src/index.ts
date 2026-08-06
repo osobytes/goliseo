@@ -16,6 +16,7 @@ export type {
   SettingsSource,
   StatBlock,
   TacticData,
+  TeamData,
   TeamResultStats,
 } from "./content.ts";
 
@@ -56,3 +57,148 @@ export type { CreditsAction, CreditsScreenState } from "./credits.ts";
 
 export { Menu } from "./menu.ts";
 export type { ScreenDef, Viewport } from "./menu.ts";
+
+// --- lobby / online ----------------------------------------------------
+
+export {
+  command as lobbyModelCommand,
+  newLobbyModel,
+  view as lobbyModelView,
+  DEFAULT_MODE as LOBBY_DEFAULT_MODE,
+  COUNTDOWN_ID,
+  COUNTDOWN_TICKS,
+  FIRST_INPUT_TICK,
+  MAX_SIGNAL_BYTES,
+  GUEST_LINK_PREFIX,
+  MODES as LOBBY_MODES,
+  TERMINAL_TEXT as LOBBY_TERMINAL_TEXT,
+  DEPARTURE_TEXT as LOBBY_DEPARTURE_TEXT,
+  PREFERENCE_TEXT as LOBBY_PREFERENCE_TEXT,
+} from "./lobby_model.ts";
+export type {
+  CoordinatorAction,
+  CoordinatorDeparture,
+  CoordinatorManifestExpectation,
+  CoordinatorNewGuestOptions,
+  CoordinatorNewHostOptions,
+  CoordinatorOutcome,
+  CoordinatorPeer,
+  CoordinatorPort,
+  CoordinatorSlotDriver,
+  CoordinatorState,
+  CoordinatorTerminal,
+  CoordinatorTerminalReason,
+  Fnv1a64Port,
+  InputFramePort,
+  InputSlotId,
+  InputTeam,
+  LobbyCommand,
+  LobbyEffect,
+  LobbyIdentityRow,
+  LobbyKeeperView,
+  LobbyModel,
+  LobbyModelOptions,
+  LobbyModelPorts,
+  LobbyPreferenceView,
+  LobbyRole,
+  LobbySeatView,
+  LobbySignalDirection,
+  LobbySignalRecord,
+  LobbySlotView,
+  LobbyView,
+  ProtocolFixturePort,
+  ProtocolMessage,
+  ProtocolPort as LobbyProtocolPort,
+  SessionLifecyclePhase,
+  SessionManifest,
+  SessionManifestTeam,
+  SessionMatchMode,
+  SessionMatchModeShape,
+  SessionPreference,
+  SessionPreferenceRejection,
+  SessionPreferenceStatus,
+  SessionRosterEntry,
+  SessionSlotProducer,
+  TransportContractPort,
+} from "./lobby_model.ts";
+
+export { lobby, newState as newLobbyScreenState, layout as lobbyScreenLayout, update as lobbyScreenUpdate } from "./lobby.ts";
+export type { LobbyAction, LobbyScreenContext, LobbyScreenEvent, LobbyScreenState } from "./lobby.ts";
+
+export { OnlineLobby } from "./online_lobby.ts";
+export type { LobbyClipboard, LobbyLinkInstance, OnlineLobbyAction, OnlineLobbyOptions } from "./online_lobby.ts";
+
+export {
+  command as onlineMatchModelCommand,
+  ended as onlineMatchModelEnded,
+  exitRoute as onlineMatchModelExitRoute,
+  newOnlineMatchModel,
+  ABORT_PROMPT as ONLINE_MATCH_ABORT_PROMPT,
+  CONTROLLER_NOTICE as ONLINE_MATCH_CONTROLLER_NOTICE,
+  FOCUS_NOTICE as ONLINE_MATCH_FOCUS_NOTICE,
+  NOTICE_SECONDS as ONLINE_MATCH_NOTICE_SECONDS,
+  PAUSE_NOTICE as ONLINE_MATCH_PAUSE_NOTICE,
+} from "./online_match_model.ts";
+export type {
+  CoordinatorEvent as OnlineMatchCoordinatorEvent,
+  CoordinatorPort as OnlineMatchCoordinatorPort,
+  CoordinatorStateCore,
+  CoordinatorTerminal as OnlineMatchCoordinatorTerminal,
+  LifecyclePayload,
+  OnlineMatchCommand,
+  OnlineMatchEffect,
+  OnlineMatchModel,
+  OnlineMatchModelPorts,
+  OnlineMatchNotice,
+  OnlineMatchPhase,
+  OnlineMatchRequestCore,
+  ProtocolMessage as OnlineMatchProtocolMessage,
+  ProtocolPort as OnlineMatchProtocolPort,
+  RollbackEventStepCore,
+  RollbackWrappedEvent as OnlineMatchRollbackWrappedEvent,
+} from "./online_match_model.ts";
+
+export { OnlineMatch } from "./online_match.ts";
+export type {
+  LobbyFramingPort,
+  LobbyFrameBuffer,
+  MatchDriverPort,
+  MatchLobbyLinkPort,
+  MatchPresentationPort,
+  MatchSessionPort,
+  OnlineMatchDispatchEvent,
+  OnlineMatchOptions,
+  OnlineMatchRequest,
+} from "./online_match.ts";
+
+export { RealMatchScreen } from "./real_match.ts";
+export type {
+  MatchContractPort,
+  MatchContractResultOptions,
+  MatchObserverPort,
+  ObservedMatchSummary,
+  RealMatchCallbacks,
+  RealMatchInputEvent,
+  RealMatchScreenPort,
+  RealMatchState,
+} from "./real_match.ts";
+
+export {
+  consumeConfirmedLifecycle,
+  consumeConfirmedStep,
+  consumeRollbackEventDiff,
+  consumeRollbackPresentation,
+  newMatchRollbackConsumerState,
+} from "./match.ts";
+export type {
+  AudioPort,
+  EffectsPort,
+  MatchRollbackConsumerPorts,
+  MatchRollbackConsumerState,
+  ReplayPort,
+  RollbackConfirmedStateView,
+  RollbackEventStep,
+  RollbackWrappedCombatEvent,
+  RollbackWrappedLifecycleEvent,
+  RollbackWrappedMatchEvent,
+} from "./match.ts";
