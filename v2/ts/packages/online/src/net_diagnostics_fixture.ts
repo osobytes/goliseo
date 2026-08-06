@@ -33,17 +33,20 @@
 // mismatches, or confirmation stalls would itself be a rollback
 // implementation, which is exactly what the boundary rule forbids here.
 //
-// As of the `gc-wasm` `MatchDriverBridge` landing (commit 87d53b3), one of
-// this env's five ports (`matchDriver`) has a *partial* real counterpart in
-// `@gc/wasm` -- but `MatchDriverBridge` exposes an opaque `advance()`
-// aggregate plus JSON dumps, not this port's `create`/`advance`/
-// `diagnostics` object shape, so it does not satisfy `MatchDriverPort` as
-// declared here without an adapter layer. The other four
-// (`matchDriverFixture`, `protocol`, `inputProtocol`, `inputFrame`) have no
-// wasm bridge at all yet. `@gc/online` also does not currently declare
-// `@gc/wasm` as a dependency. See `net_diagnostics.spec.ts`'s header
-// comment and this port's final report for the full breakdown and which
-// spec cases that leaves unrun.
+// As of the `gc-wasm` `MatchDriverBridge` landing, one of this env's five
+// ports (`matchDriver`) has a *partial* real counterpart in `@gc/wasm` --
+// but `MatchDriverBridge` exposes an opaque `advance()` aggregate plus JSON
+// dumps, not this port's `create`/`advance`/`diagnostics` object shape, so
+// it does not satisfy `MatchDriverPort` as declared here without an adapter
+// layer. The other four (`matchDriverFixture`, `protocol`, `inputProtocol`,
+// `inputFrame`) have no wasm bridge at all yet -- `matchDriverFixture` is
+// the one this port most needs first: `MatchDriverBridge`'s own constructor
+// needs a `freezeJson`/`manifestJson` pair that nothing in `@gc/wasm` can
+// produce today (confirmed empirically; see `match_presentation.spec.ts`'s
+// header for the probe). `@gc/online` now declares `@gc/wasm` as a
+// dependency (fixed since this was last written). See
+// `net_diagnostics.spec.ts`'s header comment and this port's final report
+// for the full breakdown and which spec cases that leaves unrun.
 
 import type { Result } from "@gc/core";
 import { newMessage, type StarTransportAdapter, type TransportMessage, type TransportPeerMessage } from "@gc/transport";

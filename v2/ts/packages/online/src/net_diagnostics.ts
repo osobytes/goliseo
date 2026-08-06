@@ -1244,7 +1244,10 @@ function pushEventFields(parts: string[], event: DiagnosticEvent, fields: readon
     if (value === undefined) {
       parts.push("-");
     } else if (typeof value === "number") {
-      parts.push(value.toPrecision(17));
+      // `%.17g`, not `toPrecision(17)` -- see `diagnostics_schema.ts`'s
+      // `formatG17` doc: `toPrecision` pads trailing zeros where `%g`
+      // strips them, which would silently change this digest.
+      parts.push(schema.formatG17(value));
     } else {
       parts.push(String(value));
     }

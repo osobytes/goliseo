@@ -18,54 +18,72 @@
 // `packages/ui/src/tuning_panel.spec.ts`'s `describe.skip("tuning presets
 // data", ...)`.
 //
-// # Status as of the `gc-wasm` `MatchDriverBridge` landing (commit 87d53b3)
+// # Status as of `RollbackEventsTimeline`/the correction-batch fix
 //
-// A wasm bridge over `game.online.match_driver` now exists
-// (`crates/gc-wasm/src/match_driver_bridge.rs`, `@gc/wasm`'s
-// `MatchDriverBridge`), but it does not close this file's gap, for three
-// independent reasons -- any one of them alone would still block every
-// case below:
+// Re-checked against the current `@gc/wasm` (`crates/gc-wasm/src/
+// rollback_events_bridge.rs`, `crates/gc-wasm/src/match_driver_bridge.rs`).
+// The three blockers this file used to name are resolved:
 //
-//   1. `@gc/online`'s `package.json` does not declare `@gc/wasm` as a
-//      dependency, so `import("@gc/wasm")` does not resolve here under
-//      pnpm's strict workspace linking (confirmed directly: a probe import
-//      in this package throws "Cannot find package '@gc/wasm'" even though
-//      `packages/wasm/dist/pkg/gc_wasm.cjs` is built and present on disk).
-//      This port does not own package manifests and was told not to edit
-//      them; see this port's final report for the request to whoever does.
-//   2. Even wired up, `MatchDriverBridge` exposes only the opaque,
-//      aggregate `advance()` step plus read-only diagnostics/JSON dumps.
-//      It has no wasm-bindgen surface matching the granular primitives
-//      `RollbackEventsPort`/`MatchDriverPort` need to drive `consume()`
-//      honestly: no `create(initialSnapshot, maxUnconfirmedTicks)`, no
-//      `apply(from, through, steps)`, no `confirm(tick)`, no
-//      `snapshot(boundaryTick)`. `match_driver_bridge.rs` does all of that
-//      *inside* `advance()`, on the Rust side, and never hands the pieces
-//      out -- by its own module doc's design (`MatchSnapshot` is
-//      deliberately never serialized to JS).
-//   3. Even a hypothetical raw `apply` would not save the 11 of these 13
-//      cases whose claim is specifically about a *correction*: all seven
-//      "keeps feedback honest through a correction during <phase>" cases,
-//      "replaces the speculative tail on a correction...", "never
-//      publishes a combat cue a correction took away", "agrees between
-//      peers on every confirmed boundary" (bursty delivery, period 4), and
-//      "publishes the lifecycle exactly once through full time" (bursty,
-//      period 6) all require a real rollback/correction batch.
-//      `match_driver_bridge.rs`'s own doc states plainly that its
-//      rollback-event feed "simply does not attempt" that case: a
-//      correction is reported as `rollback_events_fed: false` and skipped,
-//      "and once skipped the feed cannot resynchronize", rather than
-//      guess at `rollback_events::apply`'s replaced-interval contract. Only
-//      the first two cases below ("publishes each confirmed event exactly
-//      once under clean delivery", "tracks the driver's own confirmation
-//      ceiling") use clean, non-bursty delivery and would not hit this
-//      specific limit -- but both are still blocked by gaps 1 and 2 above.
+//   1. `@gc/online`'s `package.json` now declares `@gc/wasm` as a
+//      dependency (`"@gc/wasm": "workspace:*"`).
+//   2. `@gc/wasm` exports `RollbackEventsTimeline` (`create`/`apply`/
+//      `confirm`/`diagnosticsJson`, as separate callables, not bundled
+//      inside `advance()`) plus `WasmMatchSnapshot` opaque handles and
+//      `MatchDriverBridge.snapshotLookup`/`initialSnapshotHandle` --
+//      exactly the granular primitives `RollbackEventsPort`/
+//      `MatchDriverPort` need. Structurally they fit: `create`/`apply`/
+//      `confirm`/`diagnostics` line up one to one with this file's ports.
+//   3. `match_driver_bridge.rs`'s rollback-event feed now handles a
+//      correction batch (feeds a replaced interval through
+//      `rollback_events::apply` like any other) instead of reporting
+//      `rollback_events_fed: false` and skipping it.
 //
-// Re-port once (a) `@gc/wasm` is a declared dependency of `@gc/online` and
-// (b) a `RollbackEventsPort`/`MatchDriverPort` backed by real, granular
-// wasm-bindgen primitives exists -- and, for the 11 correction-dependent
-// cases, once the bridge's rollback-event feed handles the correction case
-// rather than skipping it.
+// What still blocks every case below, discovered while trying to build a
+// real harness from these pieces:
+//
+//   4. There is still no TS-reachable way to construct a *valid*
+//      `MatchDriverBridge` at all. Its constructor takes `freezeJson`/
+//      `manifestJson` (`gc_netcode::coordinator::Freeze`/
+//      `gc_netcode::protocol::Value`), and nothing in `@gc/wasm`'s current
+//      surface produces either: `Coordinator.proposeManifest` *validates*
+//      a manifest a caller already has, it does not generate one, and the
+//      Rust-side fixture that does (`gc_netcode::match_driver_fixture::
+//      freeze`/`session`, already ported, used by
+//      `spec/fixtures/online_match_session.lua`'s TS-less equivalent) has
+//      no `wasm-bindgen` binding yet. Confirmed empirically, not just by
+//      reading: constructing `MatchDriverBridge` with `"{}"` for both
+//      arguments throws a clean `"freeze json is missing string field
+//      'match_mode'"`, but filling in every `Freeze` field by hand and
+//      guessing at `assignments`/`manifest` shape doesn't fail cleanly --
+//      it throws `RuntimeError: unreachable`, a Rust panic reached through
+//      `DriverRules`/`live_slot` internals that assume well-formed,
+//      internally-consistent slot data. Hand-rolling this from the TS side
+//      is not a safe workaround; it is exactly the "reproduces behaviour,
+//      not intent" trap, on top of duplicating Rust-owned protocol/
+//      manifest logic v2/README.md §2.1 forbids. This blocks all 13 cases
+//      below, including the two non-correction ones ("publishes each
+//      confirmed event exactly once under clean delivery", "tracks the
+//      driver's own confirmation ceiling") that gap 3 alone would not have
+//      stopped -- constructing any driver at all needs this first.
+//   5. A narrower, second-order gap for whenever (4) closes: this file's
+//      own `RollbackTickOutput` (below) is deliberately narrow -- `tick`/
+//      `end_boundary` only, "the fields this module reads". But
+//      `RollbackEventsTimeline.apply`'s `outputsJson` needs the *full*
+//      `gc_wasm::rollback_events_bridge::tick_output_to_json` shape per
+//      step (`tick`/`start_boundary`/`end_boundary`/`finished`/`score`/
+//      `time_left`/`events`/`combat_events`) to build real event diffs. A
+//      real `RollbackEventsPort` adapter over `RollbackEventsTimeline`
+//      cannot marshal `apply`'s JSON payload from what `consume()`
+//      currently threads through `RollbackEventStepInput.output` --
+//      `match_presentation.ts`'s own types need widening alongside a real
+//      fixture, not just a fixture.
+//
+// Re-port once (a) a wasm bridge for `match_driver_fixture` (or an
+// equivalent way to obtain a valid `freezeJson`/`manifestJson` pair) lands
+// -- the same gap `net_diagnostics.spec.ts`'s header names for its
+// `matchDriverFixture` port -- and (b) `RollbackTickOutput`/
+// `RollbackEventStepInput` carry enough of the driver's raw per-tick output
+// for a real `RollbackEventsPort.apply` adapter to build `outputsJson`.
 //
 // What *is* ported below, in the second describe block, is coverage of
 // `match_presentation.ts`'s own control flow -- the append/correction
@@ -95,7 +113,7 @@ import {
   type SnapshotLookup,
 } from "./match_presentation.ts";
 
-describe.skip("online match presentation (blocked: @gc/wasm not a declared dependency of @gc/online, and MatchDriverBridge exposes no raw snapshot/apply/confirm primitives or a correction-batch feed -- see the file header comment)", () => {
+describe.skip("online match presentation (blocked: no wasm bridge exists yet to construct a valid MatchDriverBridge -- match_driver_fixture's freeze/manifest construction is unbound; see the file header comment)", () => {
   it.skip("publishes each confirmed event exactly once under clean delivery", () => {});
   it.skip("tracks the driver's own confirmation ceiling", () => {});
   it.skip("replaces the speculative tail on a correction and never re-publishes it", () => {});
