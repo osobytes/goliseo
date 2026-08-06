@@ -1,0 +1,10 @@
+{
+  "name": "@gc/screens",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Screens: pure layout/update, no drawing.",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "typecheck": "tsgo --noEmit -p tsconfig.json" },
+  "dependencies": {"@gc/core":"workspace:*","@gc/ui":"workspace:*","@gc/presentation":"workspace:*"}
+}

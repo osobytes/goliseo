@@ -1,0 +1,10 @@
+{
+  "name": "@gc/render",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "three.js renderer: rigs, pitch, effects, HUD, camera.",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "typecheck": "tsgo --noEmit -p tsconfig.json" },
+  "dependencies": {"@gc/core":"workspace:*","@gc/presentation":"workspace:*","three":"^0.180.0"}
+}
