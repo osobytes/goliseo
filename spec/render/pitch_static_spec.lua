@@ -20,7 +20,27 @@ local function make_field()
     }
 end
 
-local ARENA = { name = "spec", floor_color = { 0.1, 0.2, 0.3 }, rail_color = { 0.2, 0.9, 1.0 } }
+---@type ArenaData
+local ARENA = {
+    id = "spec_arena",
+    name = "spec",
+    location = "spec orbit",
+    floor_color = { 0.1, 0.2, 0.3 },
+    rail_color = { 0.2, 0.9, 1.0 },
+    marking_color = { 0.3, 0.7, 1.0 },
+    highlight_color = { 0.9, 0.6, 0.2 },
+}
+
+---@type ArenaData
+local OTHER_ARENA = {
+    id = "spec_other",
+    name = "other",
+    location = "spec orbit b",
+    floor_color = { 0, 0, 0 },
+    rail_color = { 1, 1, 1 },
+    marking_color = { 1, 1, 1 },
+    highlight_color = { 1, 1, 1 },
+}
 
 ---@return PitchStaticOptions
 local function make_opts()
@@ -105,7 +125,7 @@ t.describe("pitch_static cache", function()
         t.is_true(pitch_static.key(make_field(), VP, opts) ~= base, "goal colour must invalidate")
 
         opts = make_opts()
-        opts.arena = { name = "other", floor_color = { 0, 0, 0 }, rail_color = { 1, 1, 1 } }
+        opts.arena = OTHER_ARENA
         t.is_true(pitch_static.key(make_field(), VP, opts) ~= base, "arena must invalidate")
     end)
 
