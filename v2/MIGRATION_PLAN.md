@@ -172,3 +172,62 @@ Not port defects — things the port surfaced about the original.
   Lua boolean `true` for the "commit" case, because of an `or`/`and` precedence
   quirk — it reads like a ternary but is not one. No assertion depends on it, so
   the behaviour is latent rather than broken, but the field is typed as a number.
+
+---
+
+## Carrying PR #398 and #400 forward
+
+Both merged to `main` **after** this port's base (`f4ffb11`), so v2 does not contain
+them. Both are browser draw-time optimisations for the LÖVE renderer, and both
+were justified by measurements against **love.js's plain Lua 5.1 interpreter** —
+the exact cost the Rust + three.js architecture removes. So neither transfers
+wholesale, and copying either one blind would be carrying a fix for a problem v2
+does not have.
+
+Taken separately, because they differ.
+
+### #398 — static pitch cache: port the **invariant**, not the code
+
+*What it did:* rendered the static scene — arena backdrop, floor trapezoid, glow,
+hex tiling, markings, neon outline, goals — once into LÖVE canvases and blitted it
+per frame, replacing ~2,000 interpreter-side projection calls and ~350
+`love.graphics` calls every frame. ~2.3 ms at p50 in Chrome.
+
+**Not portable:** `pitch_static.lua`'s 485 lines are LÖVE canvas lifecycle,
+invalidation keys and a net shader. Caching a 3D scene to a 2D texture is a
+workaround for immediate-mode redraw cost; in three.js it would be a *downgrade*,
+since the cached bitmap cannot respond to camera movement or depth.
+
+**Portable and required:** the invariant. In three.js the static scene is built
+once as persistent `Mesh` objects and the GPU redraws it — the scene graph *is*
+the cache. v2's `pitchDrawCommands` currently rebuilds every static element on
+every call, which is the same structural mistake, merely ~10–40× cheaper in JIT'd
+TypeScript than in an interpreter. **Action:** split `pitch.ts` so static geometry
+is constructed once and only the dynamic pass runs per frame.
+
+**Also portable:** the content assertions in `spec/render/pitch_static_spec.lua`
+(312 lines) — they describe *what the pitch contains*, which is game content — and
+the `scene_static` / `scene_dynamic` phase split added to the benchmark.
+
+### #400 — pose LOD: port the **policy**, do not wire it yet
+
+*What it did:* a character below a screen-height threshold re-evaluates its limb
+pose every other frame and resubmits cached bone rows in between; placement (screen
+position, yaw, depth scale, palette) is never held. ~0.8 ms at p50 in Chrome.
+
+**Portable:** `pose_lod.lua` (155 lines) is a pure, engine-agnostic policy — screen
+height in, update cadence out — and its 179 lines of new `rig3d_spec` assertions
+port directly. Cheap to keep and it preserves a real design decision.
+
+**Not portable — the justification.** The profile that motivated it put 60% of
+per-character cost in `skeleton.apply`: 28 bone world transforms run through the
+wasm-hosted Lua interpreter. In v2 that work is three.js's `Skeleton` and
+`AnimationMixer`, in optimised JS over typed arrays. The bottleneck this targets
+may simply not exist.
+
+**Action:** port `pose_lod` as a standalone tested module, but **do not wire it
+into the render path** until the per-character cost is re-measured on the new
+stack. Holding a pose introduces cached state and invalidation; paying that
+complexity for an unmeasured win is exactly the premature optimisation the
+original PR was careful *not* to commit (it profiled first, per its own Scope
+step 1).
