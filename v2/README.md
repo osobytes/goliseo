@@ -194,7 +194,12 @@ comment saying why, and report it — never delete it silently.
 8. **Everything a test touches is `pub`.** Crates are internal; do not fight
    visibility.
 
-9. **`#![deny(missing_docs)]` is on.** Every public item needs a doc comment.
+9. **Differential-test anything on the determinism path.** Porting the spec
+   proves the port satisfies the assertions someone wrote down; it does not prove
+   two clients produce identical bits. Capture reference values from the running
+   Lua and compare bit patterns — see `v2/tools/lua_reference/README.md`.
+
+10. **`#![deny(missing_docs)]` is on.** Every public item needs a doc comment.
    Port the Lua comment where one exists rather than inventing prose.
 
 ---
