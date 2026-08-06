@@ -161,6 +161,10 @@ Work an agent correctly declined because it belongs to a layer someone else owns
 | **deduplicate the match-shaped view structs in `gc-sim`** | whoever ports `sim/match.lua` | three `MatchStateView`, three `MatchPlayerView`, two `MatchInput` — same names, different fields, one crate. See README §5.1 for the two acceptable end states |
 | **deduplicate `EnvObservationProfile`** | whoever ports `sim/env.lua` | declared in both `env_action.rs` and `env_config.rs`. In Lua it was a LuaCATS alias needing no `require`, so the duplication was free; in Rust it is two distinct types that will not unify |
 | 11 `gc-sim` tests deferred on `sim::match` | whoever ports `sim/match.lua` | in `aerial` (3), `bot` (2), `species` (2), `content_construction` (2), `tuning` (1), `fixed_clock` (1). All carry the identical reason string `needs sim::match (sim/match.lua), not yet ported` — grep for it |
+| **`research_response::validate_against_trace` is not implemented** | whoever ports `sim/research_trace.lua` | it needs a `ResearchTraceManifest`. Unlike a stubbed test this is a *missing function*, so nothing fails to remind anyone — hence this row |
+| `research_dataset.lua`, `research_trace.lua` | a follow-up agent | `research_trace` needs `input_tape` (which needs `sim/match.lua`); `research_dataset` needs both |
+| 2 `research_schema_spec` array-shape cases | **retired** | `Value::Array` is always dense in Rust, so Lua's sparse-array and keyed-table checks have no constructible counterpart |
+| `offball_runs::VERSION` was dropped in the first port | **fixed** | restored at source; it is part of the hashed policy identity, so its absence would have kept an outdated `outfield_ai_baseline` fixture looking valid |
 
 ## Findings in the Lua worth revisiting later
 
