@@ -56,6 +56,8 @@ use gc_netcode::protocol::{self, MatchMode, Value};
 use gc_netcode::protocol_fixture;
 use gc_sim::input_frame::{self, InputSample};
 use gc_sim::match_snapshot::MatchSnapshot;
+use gc_sim::rollback_input_history::{RollbackAuthoritativeInput, RollbackInputSource};
+use gc_sim::rollback_session;
 
 // ---------------------------------------------------------------------------
 // Port of `spec/game/online_match_driver_spec.lua`'s own `harness`/`advance`/
@@ -1907,11 +1909,115 @@ fn finds_no_driver_level_geometry_where_the_policy_guards_often_enough() {
     }
 }
 
+// Retired driver-level case: `still_reconciles_if_a_local_insert_ever_reports_a_divergence`.
+//
+// The Lua forces this by reassigning `rollback_session.reconcile`/
+// `.add_authoritative_batch` at runtime (`spec/game/online_match_driver_spec.lua`
+// around `still reconciles if a local insert ever reports a divergence`).
+// Rust cannot reassign a free function, so the question worth answering first
+// is whether `apply_rows(..., arrival = false)` in `match_driver.rs` — the
+// guest's own-row insert — can ever see `earliest_divergence.is_some()`
+// through the public driver API at all, rather than jumping straight to a
+// mock seam.
+//
+// It cannot, for two independent structural reasons:
+//
+// 1. A guest's own rows are always authored `DELAY_TICKS` (3) ahead of the
+//    tick `step_to` is about to simulate this call (`author_and_send` is
+//    called with `input_tick + DELAY_TICKS`, then `step_to` only advances to
+//    `input_tick`). `rollback_input_history::add_authoritative` only sets
+//    `earliest_divergence` when `history.effective.get(&tick)` is already
+//    populated — i.e. the tick was already simulated with some other sample.
+//    A tick that far in the future has never been materialized, so the
+//    local insert's own row can never trip the guard on itself.
+// 2. Every *remote* arrival (`apply_rows(..., arrival = true)`, both the
+//    host's canonical batch and a guest's received broadcast) goes through
+//    `rollback_session::apply_authoritative_batch`, which calls
+//    `add_authoritative_batch` and then unconditionally `reconcile` in the
+//    same synchronous call — `reconcile` calls
+//    `rollback_input_history::consume_earliest_divergence`, clearing the
+//    flag before control ever returns to `apply_rows`. Nothing runs between
+//    the two calls, so a divergence a remote arrival opens can never still
+//    be pending by the time the next local insert (or anything else) runs.
+//
+// So `accepted.earliest_divergence.is_some()` on the local-insert branch is
+// truly dead by construction, not merely untriggered by the scenarios this
+// suite happens to drive — matching the Lua comment's own claim that real
+// traffic never trips it. Forcing it would need a `RollbackOps` trait object
+// in `match_driver`'s per-tick rollback path (production structure serving a
+// test) purely to fake a state the public API cannot reach; that is the
+// wrong trade for a branch this well-proven.
+//
+// What *can* be covered honestly, and is covered below: the substance the
+// retired test protected, "if a batch ever reports a divergence, `reconcile`
+// corrects it," tested directly against `rollback_session::reconcile` using
+// only its own public API (no driver, no mock). This mirrors
+// `applies_one_authoritative_packet_batch_through_exactly_one_reconciliation`
+// in `gc-sim/tests/rollback_session.rs`, which already exercises the same
+// substance in depth; the case below exists so the coverage this crate's
+// test suite lost is visible here too, matched to the exact call the
+// driver's local-insert branch makes (`add_authoritative_batch` then a
+// conditional `reconcile`).
+//
+// The remaining piece — "match_driver's local-insert branch would call
+// `reconcile` if `earliest_divergence` were ever `Some`" — is wiring around
+// a branch that cannot be entered. A `Cell` counter (the pattern
+// `MatchDriver::snapshot_captures` established for the sibling retired case
+// below) cannot prove that either: it would just read zero forever. Adding
+// one would document nothing a code reading doesn't already show, so this
+// deliberately does not add one.
 #[test]
-#[ignore = "retired: the Lua forces this branch by reassigning a rollback_session function at runtime. It is NOT unreachable by Rust's types — the guard is a runtime earliest_divergence check, identical in both languages — but forcing it needs a trait object in match_driver's per-tick path, which is production structure serving a test. Decided against; see the module doc."]
-fn still_reconciles_if_a_local_insert_ever_reports_a_divergence() {
-    unreachable!(
-        "needs a call-count/injection seam into gc_sim::rollback_session; see the ignore reason"
+fn reconcile_corrects_a_real_divergence_that_add_authoritative_batch_reports() {
+    let snapshot = match_driver_fixture::initial_snapshot(None, false, None);
+    let sources = [RollbackInputSource::Remote; 8];
+    let mut session = rollback_session::new(&snapshot, sources, None, None);
+
+    // Simulate a few ticks with no authority at all, so tick 0 is materialized
+    // (predicted/neutral) and genuinely "used" before any authoritative row
+    // for it exists.
+    let _ = rollback_session::step(&mut session).expect("step succeeds");
+    let _ = rollback_session::step(&mut session).expect("step succeeds");
+    let _ = rollback_session::step(&mut session).expect("step succeeds");
+
+    // Now submit an authoritative sample for the already-used tick 0 that
+    // differs from the one the simulation actually consumed there — a real
+    // divergence, reported by the same `add_authoritative_batch` call
+    // `match_driver::apply_rows`'s local-insert branch makes.
+    let moved = input_frame::new_sample(input_frame::InputSampleOptions {
+        move_x: Some(90),
+        ..Default::default()
+    })
+    .expect("valid sample");
+    let arrivals = [RollbackAuthoritativeInput {
+        tick: 0,
+        slot_index: 1,
+        sample: moved,
+    }];
+    let accepted = rollback_session::add_authoritative_batch(&mut session, &arrivals)
+        .expect("an in-window row is accepted");
+    assert_eq!(
+        accepted.earliest_divergence,
+        Some(0),
+        "resubmitting an already-used tick with a different sample should report a divergence"
+    );
+
+    // This is exactly the guard `apply_rows` checks before deciding whether
+    // to call `reconcile` at all.
+    let old_present = rollback_session::diagnostics(&session).present_boundary;
+    let result = rollback_session::reconcile(&mut session, false);
+    assert!(
+        result.changed,
+        "reconcile did not correct a divergence it was told about"
+    );
+    assert_eq!(result.causal_tick, Some(0));
+    assert_eq!(result.old_present_boundary, old_present);
+    assert_eq!(
+        result.new_present_boundary, old_present,
+        "reconcile should resimulate back to the same present boundary"
+    );
+    assert_eq!(
+        session.input_history.earliest_divergence, None,
+        "reconcile should consume the divergence it corrected"
     );
 }
 
@@ -2352,11 +2458,77 @@ fn reports_a_stalled_confirmation_at_the_step_it_becomes_permanent() {
     }
 }
 
+// Retired driver-level case:
+// `maps_a_rejected_over_window_batch_onto_late_input_unreachable_by_design`.
+//
+// The Lua forces this by reassigning `rollback_session.apply_authoritative_batch`
+// to return a fake `outside_window` rejection
+// (`spec/game/online_match_driver_spec.lua`, "maps a rejected over-window
+// batch onto late_input (unreachable by design)"), and its own comment
+// proves the branch is unreachable through legitimate traffic: "a row is
+// only offered to the history when it is above this peer's confirmation, so
+// a row below the floor implies `confirmed + 1 < floor`, which confirmation
+// liveness terminates on at the end of the previous step."
+//
+// That proof carries over to Rust unchanged, and two already-passing cases
+// in this file corroborate it directly instead of leaving it as an
+// unverified claim:
+//
+// - `terminates_on_confirmation_liveness_before_a_below_floor_row_can_arrive`
+//   drives a guest whose confirmation is pinned while its floor keeps
+//   sliding — the only regime where the floor rule could bite — and asserts
+//   `retained_floor_tick == confirmed_input_tick + 2` at the moment it
+//   terminates: the *first* step the gap could ever open, caught before it
+//   opens.
+// - `reports_a_stalled_confirmation_at_the_step_it_becomes_permanent`'s own
+//   comment states the same conclusion independently: "the reactive
+//   `late_input` check cannot see it, because it fires on a row that
+//   *arrives* below the floor and this is a row that never arrives at all."
+//
+// The code reason both empirical results hold: `apply_rows` only ever offers
+// `rollback_session::apply_authoritative_batch` rows with `tick > confirmed`
+// (see `match_driver.rs`'s `apply_rows`, the `row.tick > confirmed` filter),
+// and `detect_confirmation_stall` — called at the end of every active step,
+// before the next `apply_rows` call can run — terminates the driver with
+// `ConfirmationStalled` the moment `confirmed + 1 < oldest_retained_tick`
+// would ever let such a row exist. So by the time any row reaches
+// `add_authoritative_batch`, `confirmed + 1 >= oldest_retained_tick` always
+// holds and `tick >= confirmed + 1 >= oldest_retained_tick`: the row can
+// never be below the floor, and `OutsideWindow` can never come back from a
+// live arrival. (The driver's own local-insert rows are also always ahead of
+// the floor, for the same DELAY_TICKS reason documented on the retired case
+// above, so there is no second path in either that could reach it.)
+//
+// The mechanism itself — `rollback_input_history`/`rollback_session`
+// rejecting a row below the retained floor with `OutsideWindow` — is
+// thoroughly covered independently of the driver: see
+// `fails_explicitly_at_thirty_one_ticks_late_without_hidden_progress` and
+// `attributes_mixed_retained_and_over_window_batches_to_the_actual_late_tick`
+// in `gc-sim/tests/rollback_session.rs`, and
+// `omp2_rollback_input_history_preflights_complete_authority_batches_before_one_atomic_insertion`
+// and its neighbors in `gc-sim/tests/rollback_input_history.rs`.
+//
+// What is left uncovered by a Rust test is only `apply_rows`'s few-line
+// mapping from that error code onto `MatchDriverStatus::LateInput` plus the
+// terminal detail/tick — code this proof says a real driver run can never
+// reach. A `RollbackOps` trait-object seam could force it, at the cost of a
+// trait object in the per-tick rollback path of a determinism-critical
+// module, purely to simulate a state the public API cannot produce; that
+// cost is not worth paying for a branch this thoroughly proven dead, so it
+// is not added. Converting the branch itself to `unreachable!()`/
+// `debug_assert!` was considered and rejected too: the Lua's own comment is
+// explicit that the mapping is "the fallback for a rule this driver does not
+// own," kept intentionally so that if `rollback_input_history`'s window rule
+// is ever reached by some future call path this driver doesn't yet have, the
+// match still degrades gracefully to `late_input` instead of panicking.
+// Asserting the branch away would trade that graceful degradation for a
+// crash the very first time the proof above stops holding — the opposite of
+// what the fallback is for.
 #[test]
-#[ignore = "retired: the Lua forces this branch by reassigning a rollback_session function at runtime. It is NOT unreachable by Rust's types — the guard is a runtime earliest_divergence check, identical in both languages — but forcing it needs a trait object in match_driver's per-tick path, which is production structure serving a test. Decided against; see the module doc."]
+#[ignore = "retired: provably unreachable through the public driver API (see the doc comment above); the Lua forces it by reassigning rollback_session.apply_authoritative_batch, which Rust cannot do to a free function. The rejection mechanism itself is covered in gc-sim/tests; only the driver's error-code-to-status mapping is uncovered, and it cannot be reached without a mock past the public API."]
 fn maps_a_rejected_over_window_batch_onto_late_input_unreachable_by_design() {
     unreachable!(
-        "needs a call-count/injection seam into gc_sim::rollback_session; see the ignore reason"
+        "provably unreachable through the public driver API; see the doc comment and ignore reason above"
     );
 }
 
