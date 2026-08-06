@@ -156,6 +156,8 @@ Work an agent correctly declined because it belongs to a layer someone else owns
 | **shared cross-language vectors for `diagnostics_schema` / `fnv1a64`** | `gc-netcode` (N3), when it ports `desync_package` | the TS side reimplemented FNV-1a-64 locally. That digest is versioned and travels between peers, so the two implementations must be pinned by a shared vector file — see README §2.2 |
 | 25 skipped tests in `@gc/online` (12 in `net_diagnostics.spec.ts`, all 13 original cases in `match_presentation.spec.ts`) | a wasm-bridge milestone | every one is a cross-boundary integration claim needing a live Rust `match_driver` / rollback session. 6 supplementary unit tests were added against the ported module's own control flow so the port is not wholly unexercised |
 | `fault_campaign.lua`'s `hash_order_probe` | **retired** | it exists because LuaJIT randomizes `pairs()` order per process. JS objects and Maps iterate in insertion order with no equivalent randomization, so the probe has no analog |
+| `replay.spec.ts` "carries every pose input through capture, celebration, and playback" | `gc-render` (R3) | exercises `render/player_pose.lua`'s `select`/`PRIORITY`, which is Rust. A non-skipped replacement asserts on the field the selector reads, preserving the intent |
+| `benchmark.ts`'s injected `BenchmarkRenderer` / `BenchmarkFixedTimestepDriver` | a wasm-bridge milestone | the Lua harness drives `sim.bot`/`sim.match`/`sim.metrics` and `pitch.draw`/`bloom.draw`; both collapsed to injected ports. `viewState` is wired for real, not stubbed |
 
 ## Findings in the Lua worth revisiting later
 
