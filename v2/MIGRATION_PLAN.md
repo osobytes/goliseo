@@ -136,6 +136,9 @@ Work an agent correctly declined because it belongs to a layer someone else owns
 | `spec/game/combat_feedback_rollback_spec.lua` | `@gc/screens` (T8) | its subject is the Match screen's rollback consumption, plus `render/effects` and `render/replay` — not presentation |
 | pose-priority block of `spec/game/combat_presentation_spec.lua` | `gc-render` (R3) | exercises `render/player_pose.lua`, which is Rust |
 | `game/presentation/combat_feedback_fixture.lua` | `@gc/screens` (T8), after `gc-sim` | builds its baseline from `sim.match.new` / `sim.combat.new_state` / `data.teams`; porting it before the sim exists would mean inventing sim output rather than translating it |
+| `spec/ui/tuning_panel_spec.lua` "tuning presets data" block (2 assertions) | `@gc/screens` (T9) or a wasm-bridge milestone | validates real preset blobs against the real knob registry, which is `sim/tuning.lua` and `data/tuning_presets.lua` — both Rust. The F4 cycling *mechanism* is still tested against a synthetic registry |
+| `spec/game/input_bindings_spec.lua` help-card assertion | `@gc/screens` (T9) | depends on `game/screens/help.lua` |
+| add `"@gc/ui": "workspace:*"` to `packages/input/package.json` | orchestrator, at a consolidation point | `controller.lua` calls `game.ui.viewport.to_virtual`; injected as a `ViewportMapper` interface for now because agents must not touch the lockfile concurrently |
 
 ## Findings in the Lua worth revisiting later
 
