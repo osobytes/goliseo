@@ -139,6 +139,9 @@ Work an agent correctly declined because it belongs to a layer someone else owns
 | `spec/ui/tuning_panel_spec.lua` "tuning presets data" block (2 assertions) | `@gc/screens` (T9) or a wasm-bridge milestone | validates real preset blobs against the real knob registry, which is `sim/tuning.lua` and `data/tuning_presets.lua` — both Rust. The F4 cycling *mechanism* is still tested against a synthetic registry |
 | `spec/game/input_bindings_spec.lua` help-card assertion | `@gc/screens` (T9) | depends on `game/screens/help.lua` |
 | add `"@gc/ui": "workspace:*"` to `packages/input/package.json` | orchestrator, at a consolidation point | `controller.lua` calls `game.ui.viewport.to_virtual`; injected as a `ViewportMapper` interface for now because agents must not touch the lockfile concurrently |
+| `spec/game/transport_relay_spec.lua` second block, "relay topology probe: no peer is the sequencer" | `gc-netcode` (N3) | drives `coordinator`, `match_driver`, `fault_harness`, `input_protocol`, `live_slot`, `match_manifest` — all Rust |
+| `game/transport.lua` (root facade, 62 lines) | **already done** — folded into `@gc/transport`'s `index.ts` | it is a `game/` root file, so `@gc/app` (T11) must NOT port it again |
+| `transport_star_spec.lua`'s "keeps browser and WebRTC APIs out of core, data, and sim" | **retired, not deferred** | it scanned the Lua source tree with `love.filesystem`. In v2 the property is enforced by construction: `gc-sim` is a Rust crate and cannot import a TypeScript package at all |
 
 ## Findings in the Lua worth revisiting later
 
