@@ -586,34 +586,29 @@ fn outfield_ai_baseline_cannot_mistake_a_probe_run_for_the_frozen_freeze() {
 /// above) and never asserts the full 60-seed run equals the frozen record;
 /// that comparison is a separate build-time check
 /// (`love . --ai-baseline`/`scripts/check.sh`), not a `busted` spec case.
-/// This test was added specifically to answer the porting task's explicit
-/// question, run once with `--ignored` to capture the finding, then marked
-/// `#[ignore]` so the crate's `cargo test` gate stays green over a fact
-/// about upstream simulation modules this file does not own, rather than
-/// treating a real evidence artifact's own honest "MOVED" result as this
-/// module's bug.
 ///
-/// FINDING (see the porting report for the full comparison table): identity
-/// matches EXACTLY — `policy_id`, `config`, `content_hash` (every authored
-/// roster/formation/tactic), and `tuning_hash` (all 40 knob defaults) are
-/// bit-identical to the frozen fixture, so the static content and policy
-/// identity are correctly ported. But every one of the 23 tracked PLAY
-/// metrics moved by a modest, consistent amount (e.g. mean `fun` 0.2918 ->
-/// 0.3303, mean `goals_total` 1.917 -> 1.883, mean `shots` 31.77 -> 32.40).
-/// That means the actual match simulation this measurement runs on top of
-/// (`sim::r#match`, `sim::ai`, `sim::bot`, `sim::keeper`, etc. — none of
-/// which are this module's files) is not yet bit-identical to the Lua
-/// original across a full 120s AI-vs-AI match, even though the individual
-/// modules have their own passing differential tests. This module's own
-/// determinism is intact (measuring the SAME seeds twice reproduces
-/// exactly, proven above), so the divergence is upstream, not here.
+/// This test used to be `#[ignore]`d: a full 60-seed run of the already-
+/// ported simulation did not reproduce the frozen fixture bit-for-bit, even
+/// though this module's own identity/content/tuning hashes and
+/// self-reproducibility were exact (proof the divergence was upstream, in
+/// `sim::r#match`/`sim::ai`/`sim::bot`/`sim::keeper` — none of which are
+/// this module's files). Root cause, found via `match_differential`
+/// extended from 600 to the full 7200-tick match length: `sim/match.lua`
+/// has an `and`/`or` operator-precedence bug in three places (`toward_goal`
+/// in the off-ball keeper positioning, `inbound` in the queued-dive resolve,
+/// and `toward` in `attempt_save`) — `(team == "home") and X < 0 or X > 0`
+/// parses as `((team == "home") and (X < 0)) or (X > 0)`, not the intended
+/// per-team ternary, so for the home team it is true for ANY nonzero
+/// `ball_vel.x`. The Rust port had translated each occurrence into the
+/// obviously-intended `if team == home { X < 0 } else { X > 0 }`, which
+/// reads correctly but does not match the reference's actual (buggy)
+/// runtime behavior — divergent home-keeper save/positioning decisions that
+/// first showed up as a position mismatch at tick 831 on one seed and tick
+/// 4527 on another. Fixed in `crates/gc-sim/src/match.rs` by reproducing
+/// Lua's actual parse verbatim. All 60 baseline seeds now reproduce the
+/// frozen fixture exactly over the full 7200-tick match, so this test is
+/// back in the gate.
 #[test]
-#[ignore = "not a spec.lua assertion (see doc comment); this is real evidence \
-            that the already-ported simulation does not yet reproduce the \
-            frozen fixture bit-for-bit across a full 60-seed AI-vs-AI batch, \
-            even though this module's own identity/content/tuning hashes and \
-            self-reproducibility are exact. Investigating the upstream cause \
-            is out of scope for sim::outfield_ai_baseline's port."]
 fn outfield_ai_baseline_reproduces_the_frozen_fixture_exactly() {
     let current = sut::measure(&sut::MeasureOpts::default());
     assert_eq!(

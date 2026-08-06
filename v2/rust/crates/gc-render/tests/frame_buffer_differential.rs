@@ -97,7 +97,7 @@ fn frame_buffer_encodes_the_same_wire_as_lua() {
     let (roster_words, _digest) = frame_buffer::encode_roster(&roster);
     assert_words_identical("roster", &roster_words, &reference_row("roster"));
 
-    let mut encode_now = |state: &_| -> Vec<f64> {
+    let encode_now = |state: &_| -> Vec<f64> {
         let opts = frame::RenderFrameOptions {
             roster: Some(roster.clone()),
             ..Default::default()

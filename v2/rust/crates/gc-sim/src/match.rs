@@ -3912,11 +3912,18 @@ fn move_offball_keeper(
         carrier.is_some() && attacker_in_front && keeper::should_contain(&position_context);
     let advance_eligible = contain_eligible && keeper::should_advance(&position_context);
 
-    let toward_goal = if p.team == Team::Home {
-        s.ball_vel.x < 0.0
-    } else {
-        s.ball_vel.x > 0.0
-    };
+    // Lua: `(p.team == "home") and s.ball_vel.x < 0 or s.ball_vel.x > 0`.
+    // `and` binds tighter than `or` in Lua, so this parses as
+    // `((p.team == "home") and (s.ball_vel.x < 0)) or (s.ball_vel.x > 0)`,
+    // NOT as a team-conditional ternary. For the away team the first clause
+    // is always false, so this reduces to the intended `ball_vel.x > 0`. But
+    // for the HOME team it reduces to `(ball_vel.x < 0) or (ball_vel.x > 0)`
+    // — true for ANY nonzero ball velocity, not just "moving toward the home
+    // goal". That is the reference's actual behavior (confirmed against a
+    // real Lua run: a home keeper's parry rebound with ball_vel.x > 0 still
+    // reads as `toward_goal = true`), so the port preserves it verbatim
+    // rather than "fixing" it to the seemingly-intended per-team check.
+    let toward_goal = (p.team == Team::Home && s.ball_vel.x < 0.0) || s.ball_vel.x > 0.0;
     if s.owner.is_some() || !toward_goal {
         let pm = &mut s.players[i];
         pm.keeper_release_state = None;
@@ -4441,11 +4448,18 @@ fn attempt_save(s: &mut MatchState, tune: &Tuning) {
         } else {
             s.goal_away
         };
-        let toward = if keeper.team == Team::Home {
-            s.ball_vel.x < 0.0
-        } else {
-            s.ball_vel.x > 0.0
-        };
+        // Lua: `(keeper.team == "home") and (s.ball_vel.x < 0) or
+        // (s.ball_vel.x > 0)`. Same `and`/`or` precedence quirk as
+        // `toward_goal`/`inbound` above — for the home team this reduces to
+        // `(ball_vel.x < 0) or (ball_vel.x > 0)`, true for ANY nonzero ball
+        // velocity, not a per-team ternary. Preserved verbatim: see the
+        // `toward_goal` comment in `move_offball_keeper` for the full
+        // derivation. This one matters in practice — a shot that has
+        // already bounced (ball_vel.x flipped positive) by the time
+        // `attempt_save` runs still reads as "toward" the home goal under
+        // Lua's actual semantics, which is what commits the keeper to the
+        // save this function exists to resolve.
+        let toward = (keeper.team == Team::Home && s.ball_vel.x < 0.0) || s.ball_vel.x > 0.0;
         // Time for the ball to reach the keeper's line. Must be ahead of
         // the ball (keeper between ball and goal) and close enough that the
         // keeper commits.
@@ -6084,11 +6098,15 @@ pub fn step(
                 // The queued dive fires — unless the shot is no longer
                 // inbound (deflected away mid-flight): then the keeper
                 // stays home.
-                let inbound = if p.team == Team::Home {
-                    s.ball_vel.x < 0.0
-                } else {
-                    s.ball_vel.x > 0.0
-                };
+                //
+                // Lua: `(p.team == "home") and (s.ball_vel.x < 0) or
+                // (s.ball_vel.x > 0)`. Same precedence quirk as
+                // `toward_goal` above (`and` binds tighter than `or`): for
+                // the home team this is `(ball_vel.x < 0) or (ball_vel.x >
+                // 0)`, true for any nonzero velocity, not a per-team
+                // ternary. Preserved verbatim — see the `toward_goal`
+                // comment for the full derivation.
+                let inbound = (p.team == Team::Home && s.ball_vel.x < 0.0) || s.ball_vel.x > 0.0;
                 if inbound {
                     launch_dive_now = true;
                 } else {

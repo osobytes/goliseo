@@ -7,12 +7,22 @@
 //! disabled) for a fully AI-driven match (`human_controlled = false`, so
 //! this is deterministic without any human input stream), seed 11,
 //! `nebula` vs `orion`, a 960x540 field, stepping `match.step(s, 1/60,
-//! NO_INPUT)` 600 times (10 real-time seconds) and printing, every tick
+//! NO_INPUT)` 7200 times (120 real-time seconds — a full match, matching
+//! `sim::outfield_ai_baseline::DURATION_SECONDS` and the tick count of
+//! `determinism_evidence`'s frozen replay) and printing, every tick
 //! (including tick 0, before any step): `ball.x`, `ball.y`, `ball_vel.x`,
 //! `ball_vel.y`, `ball_z`, `ball_vz`, `owner` (-1 for a loose ball),
 //! `score.home`, `score.away`, `rng`, then `players[i].pos.{x,y}` for
 //! `i` = 1 through 10 (every outfielder and both keepers) — floats via
 //! `%.17g`, which round-trips binary64 exactly.
+//!
+//! The fixture originally covered only 600 ticks. It was extended to the
+//! full 7200-tick match length to chase a correctness defect where AI-driven
+//! matches diverge from Lua over long play (see
+//! `outfield_ai_baseline_reproduces_the_frozen_fixture_exactly`'s frozen-fixture
+//! evidence): 600 ticks is not enough to exercise every AI decision branch,
+//! and this test's job is to find the earliest tick, player, and quantity
+//! where the port disagrees with the reference.
 //!
 //! Every field is compared at every tick (not just the last), and floats
 //! are compared by bit pattern (`f64::to_bits`) after parsing, not by
@@ -84,7 +94,7 @@ fn assert_bits_eq(actual: f64, expected: f64, tick: i64, field: &str) {
 }
 
 #[test]
-fn match_step_matches_lua_tick_by_tick_for_a_600_tick_ai_vs_ai_match() {
+fn match_step_matches_lua_tick_by_tick_for_a_7200_tick_ai_vs_ai_match() {
     let tune = Tuning::new();
     let home = gc_data::teams::get("nebula").expect("nebula team is authored");
     let away = gc_data::teams::get("orion").expect("orion team is authored");
@@ -108,8 +118,8 @@ fn match_step_matches_lua_tick_by_tick_for_a_600_tick_ai_vs_ai_match() {
     let rows: Vec<Row> = FIXTURE.lines().map(parse_row).collect();
     assert_eq!(
         rows.len(),
-        601,
-        "fixture must cover tick 0 through tick 600"
+        7201,
+        "fixture must cover tick 0 through tick 7200"
     );
 
     let mut compared = 0;
@@ -149,5 +159,5 @@ fn match_step_matches_lua_tick_by_tick_for_a_600_tick_ai_vs_ai_match() {
         }
         compared += 1;
     }
-    assert_eq!(compared, 601);
+    assert_eq!(compared, 7201);
 }
