@@ -1502,11 +1502,18 @@ pub fn validate(state: &MatchState) {
         state.players.len(),
         "state.slot_for_player has the wrong length"
     );
+    // `marks` is a *sparse* man-marking table in the Lua: `sim/match.lua` sets
+    // `s.marks[team] = {}` whenever a team has no active assignment, which is
+    // the common case (attacking, loose-ball and build-up all clear it). The
+    // Lua's `copy_sparse_indices` never asserts a length — it only requires
+    // every present key to fall in `1..=#players` — and `append_sparse_indices`
+    // pads the wire to `#players` at encode time. So requiring density here
+    // rejected legitimate states: `match::new` followed immediately by
+    // `capture` panicked. Assert the invariant the Lua actually has.
     for team_marks in [&state.marks.home, &state.marks.away] {
-        assert_eq!(
-            team_marks.len(),
-            state.players.len(),
-            "state.marks has the wrong length"
+        assert!(
+            team_marks.len() <= state.players.len(),
+            "state.marks has more entries than players"
         );
     }
     let _ = possession_transition::copy_state(&state.transition);
@@ -1516,13 +1523,27 @@ pub fn validate(state: &MatchState) {
     validate_transition_liveness(state);
 }
 
+/// Pad a sparse `marks` table out to one entry per player.
+///
+/// The Lua keeps `marks` sparse in `MatchState` and densifies at encode time
+/// (`append_sparse_indices` always writes `count` scalars, `nil` for absent).
+/// The Rust representation is a dense `Vec<Option<i64>>`, so the padding happens
+/// here instead — on the way into the snapshot, which is the only place the
+/// density is observable.
+fn densify_marks(state: &mut MatchState) {
+    let count = state.players.len();
+    state.marks.home.resize(count, None);
+    state.marks.away.resize(count, None);
+}
+
 /// Capture a validated, defensively-copied [`MatchSnapshot`] of `state`
 /// (and `combat_state`, when present).
 #[must_use]
 pub fn capture(state: &MatchState, combat_state: Option<&CombatMatchState>) -> MatchSnapshot {
     assert_snapshot_supported(state, combat_state);
     validate(state);
-    let copied_state = state.clone();
+    let mut copied_state = state.clone();
+    densify_marks(&mut copied_state);
     if let Some(combat_state) = combat_state {
         let copied_combat = combat_snapshot::copy(combat_state, &copied_state);
         MatchSnapshot {
@@ -1546,7 +1567,8 @@ pub fn capture(state: &MatchState, combat_state: Option<&CombatMatchState>) -> M
 #[must_use]
 pub fn capture_owned(state: &MatchState, combat_state: Option<&CombatMatchState>) -> MatchSnapshot {
     assert_snapshot_supported(state, combat_state);
-    let copied_state = state.clone();
+    let mut copied_state = state.clone();
+    densify_marks(&mut copied_state);
     if let Some(combat_state) = combat_state {
         if copied_state.slot_mode {
             assert_eq!(
