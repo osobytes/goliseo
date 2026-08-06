@@ -529,17 +529,23 @@ fn outfield_ai_baseline_reproduces_a_fresh_run_of_the_fixture_exactly() {
 }
 
 #[test]
-#[ignore = "Lua mutates the global tuning knob registry's default value at \
-            runtime (`tuning.by_key[\"AI_SHOOT_RANGE\"].default = knob.max`) to \
-            prove a policy change moves the recording. crate::tuning::KNOBS is a \
-            `pub static &'static [Knob]` — compile-time-immutable by design (see \
-            tuning.rs's module doc: the Lua global singleton was deliberately \
-            replaced with an explicit owned Tuning value, AGENTS.md §3 forbids \
-            stray mutable globals). There is no equivalent mutation point in this \
-            port: a knob DEFAULT is baked into the static registry, not a \
-            runtime Tuning value, so this specific test has no Rust-shaped \
-            equivalent short of adding mutable global state the rest of the port \
-            deliberately removed."]
+#[ignore = "retired: Lua mutates the global tuning knob registry's default value at runtime \
+            (`tuning.by_key[\"AI_SHOOT_RANGE\"].default = knob.max`) to prove a policy \
+            change moves the recording. crate::tuning::KNOBS is a `pub static &'static \
+            [Knob]` -- compile-time-immutable by design (see tuning.rs's module doc: the \
+            Lua global singleton was deliberately replaced with an explicit owned Tuning \
+            value, AGENTS.md §3 forbids stray mutable globals). There is no equivalent \
+            mutation point in this port: a knob DEFAULT is baked into the static registry, \
+            not a runtime Tuning value, so actually re-running the fixture under a changed \
+            policy has no Rust-shaped equivalent short of adding mutable global state the \
+            rest of the port deliberately removed. The half of the invariant that does not \
+            need a live mutation -- that a policy change which moves a metric is flagged as \
+            a hard failure rather than absorbed or downgraded to a staleness warning -- is \
+            covered by outfield_ai_baseline_still_fails_when_a_changed_policy_actually_moves_a_metric \
+            above, which drives sut::compare() directly against a hand-built record carrying \
+            both a changed policy_id and a moved stat. What that test cannot cover, and \
+            nothing in this port can, is measure() itself reacting to a real knob-default \
+            mutation, because no such mutation is representable at runtime."]
 fn outfield_ai_baseline_detects_a_real_policy_change_by_re_running_the_fixture() {
     unimplemented!(
         "needs a way to mutate crate::tuning::KNOBS's default at runtime, which \

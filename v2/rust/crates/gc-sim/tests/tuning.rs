@@ -12,6 +12,9 @@
 //! `tuning.reset()` calls that re-synchronize the shared singleton between
 //! cases.
 
+use gc_core::vec2::Vec2;
+use gc_sim::r#match::{self as sim_match, NewMatchOptions, StepInput};
+use gc_sim::match_snapshot::{MatchInput, PitchSize};
 use gc_sim::tuning::Tuning;
 
 #[test]
@@ -55,10 +58,50 @@ fn tuning_serializes_only_non_default_knobs_and_round_trips() {
     assert!(tuning.is_default("PUNT_MAX"), "malformed lines are ignored");
 }
 
-/// Blocked on `sim::match` (`sim/match.lua`), an unported placeholder owned
-/// by another agent.
 #[test]
-#[ignore = "needs sim::match (sim/match.lua), not yet ported"]
 fn tuning_the_sim_reads_live_values_a_tuned_knob_changes_behavior() {
-    unimplemented!("requires sim::match::new/step");
+    // Zero the shot wind-up: a human shot must now release the same frame.
+    let mut tune = Tuning::new();
+    tune.set("SHOT_WINDUP", 0.0);
+
+    let home = gc_data::teams::get("nebula").expect("nebula team is authored");
+    let away = gc_data::teams::get("orion").expect("orion team is authored");
+    let mut s = sim_match::new(NewMatchOptions {
+        home,
+        away,
+        field: PitchSize { w: 960.0, h: 540.0 },
+        home_formation: None,
+        tactic: None,
+        away_tactic: None,
+        duration: None,
+        max_goals: None,
+        seed: None,
+        players_by_id: None,
+        species_by_id: None,
+        showcase_players_by_id: None,
+        human_controlled: None,
+        input_ownership: None,
+    });
+    s.players[(s.controlled - 1) as usize].facing = Vec2::new(1.0, 0.0);
+    sim_match::step(
+        &mut s,
+        0.016,
+        StepInput::Legacy(MatchInput {
+            shoot: true,
+            ..MatchInput::default()
+        }),
+        None,
+        &tune,
+    );
+    sim_match::step(
+        &mut s,
+        0.016,
+        StepInput::Legacy(MatchInput::default()),
+        None,
+        &tune,
+    ); // windup_timer==0 resolution frame
+    assert!(
+        s.owner.is_none(),
+        "with SHOT_WINDUP=0 the shot releases immediately"
+    );
 }

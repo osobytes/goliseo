@@ -2,12 +2,13 @@
 //!
 //! The Lua spec's "keeps gameplay state equivalent across 30/60/120 Hz and
 //! irregular render cadences" case drives a real `MatchState` via
-//! `sim.match.new`/`match.step`. `sim/match.lua` is another agent's module
-//! and is still an unported placeholder (`gc_sim::r#match`), so that case is
-//! ported as `#[ignore]` below with a note; every other case only needs
-//! `fixed_clock` itself and is ported and passing.
+//! `sim.match.new`/`match.step`. `sim::match` (`gc_sim::r#match`) is now
+//! fully ported, so that case builds a real fixture too.
 
 use gc_sim::fixed_clock;
+use gc_sim::r#match::{self as sim_match, NewMatchOptions, StepInput};
+use gc_sim::match_snapshot::{MatchInput, MatchState, PitchSize};
+use gc_sim::tuning::Tuning;
 
 /// Drive the clock with a render-cadence pattern, recording every consumed
 /// tick's provided input (which the Lua fixture arranges to equal the tick
@@ -47,12 +48,101 @@ fn fixed_simulation_clock_numbers_inputs_from_zero_and_advances_exact_ticks_at_c
     assert_eq!(input_30[input_30.len() - 1], 59);
 }
 
-/// Blocked on `sim::match` (`sim/match.lua`), an unported placeholder owned
-/// by another agent.
+fn play_script(pattern: &[f64], tune: &Tuning) -> (MatchState, fixed_clock::FixedClockState) {
+    let home = gc_data::teams::get("nebula").expect("nebula team is authored");
+    let away = gc_data::teams::get("orion").expect("orion team is authored");
+    let mut state = sim_match::new(NewMatchOptions {
+        home,
+        away,
+        field: PitchSize { w: 960.0, h: 540.0 },
+        home_formation: None,
+        tactic: None,
+        away_tactic: None,
+        duration: None,
+        max_goals: None,
+        seed: Some(41.0),
+        players_by_id: None,
+        species_by_id: None,
+        showcase_players_by_id: None,
+        human_controlled: None,
+        input_ownership: None,
+    });
+    let mut clock = fixed_clock::new();
+    for &dt in pattern {
+        fixed_clock::advance(
+            &mut clock,
+            dt,
+            |_tick| MatchInput::default(),
+            |_tick, input: &MatchInput| {
+                sim_match::step(
+                    &mut state,
+                    fixed_clock::TICK_SECONDS,
+                    StepInput::Legacy(*input),
+                    None,
+                    tune,
+                );
+                !state.finished
+            },
+        );
+    }
+    (state, clock)
+}
+
+fn assert_same_state(a: &MatchState, b: &MatchState) {
+    assert_eq!(a.time_left, b.time_left, "time left");
+    assert_eq!(a.score.home, b.score.home, "home score");
+    assert_eq!(a.score.away, b.score.away, "away score");
+    assert_eq!(a.owner, b.owner, "ball owner");
+    assert!((a.ball.x - b.ball.x).abs() < 1e-9, "ball x");
+    assert!((a.ball.y - b.ball.y).abs() < 1e-9, "ball y");
+    assert!((a.ball_z - b.ball_z).abs() < 1e-9, "ball z");
+    assert!(
+        (a.ball_vel.x - b.ball_vel.x).abs() < 1e-9,
+        "ball velocity x"
+    );
+    assert!(
+        (a.ball_vel.y - b.ball_vel.y).abs() < 1e-9,
+        "ball velocity y"
+    );
+    for (i, (player, other)) in a.players.iter().zip(b.players.iter()).enumerate() {
+        assert!((player.pos.x - other.pos.x).abs() < 1e-9, "player x {i}");
+        assert!((player.pos.y - other.pos.y).abs() < 1e-9, "player y {i}");
+        assert!(
+            (player.vel.x - other.vel.x).abs() < 1e-9,
+            "player velocity x {i}"
+        );
+        assert!(
+            (player.vel.y - other.vel.y).abs() < 1e-9,
+            "player velocity y {i}"
+        );
+    }
+}
+
 #[test]
-#[ignore = "needs sim::match (sim/match.lua), not yet ported"]
 fn fixed_simulation_clock_keeps_gameplay_state_equivalent_across_cadences() {
-    unimplemented!("requires sim::match::new/step");
+    let tune = Tuning::new();
+    let at_30: Vec<f64> = vec![1.0 / 30.0; 30];
+    let regular: Vec<f64> = vec![1.0 / 60.0; 60];
+    let at_120: Vec<f64> = vec![1.0 / 120.0; 120];
+    let mut irregular: Vec<f64> = Vec::with_capacity(60);
+    for _ in 0..15 {
+        irregular.push(1.0 / 120.0);
+        irregular.push(1.0 / 40.0);
+        irregular.push(1.0 / 120.0);
+        irregular.push(1.0 / 40.0);
+    }
+
+    let (at_30_state, at_30_clock) = play_script(&at_30, &tune);
+    let (regular_state, regular_clock) = play_script(&regular, &tune);
+    let (at_120_state, at_120_clock) = play_script(&at_120, &tune);
+    let (irregular_state, irregular_clock) = play_script(&irregular, &tune);
+    assert_eq!(at_30_clock.tick, 60);
+    assert_eq!(regular_clock.tick, 60);
+    assert_eq!(at_120_clock.tick, 60);
+    assert_eq!(irregular_clock.tick, 60);
+    assert_same_state(&regular_state, &at_30_state);
+    assert_same_state(&regular_state, &at_120_state);
+    assert_same_state(&regular_state, &irregular_state);
 }
 
 #[test]

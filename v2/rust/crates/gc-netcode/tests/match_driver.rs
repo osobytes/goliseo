@@ -37,6 +37,9 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::OnceLock;
 
+mod support;
+use support::online_combat_phases;
+
 use gc_netcode::coordinator;
 use gc_netcode::fake_star;
 use gc_netcode::fault_transport::{
@@ -84,6 +87,9 @@ struct DriverHarnessOptions {
     duration: Option<f64>,
     humans: Option<i64>,
     combat: bool,
+    /// Boundary zero for every peer; overrides `combat` when set. Mirrors
+    /// `DriverHarnessOptions.initial_snapshot`.
+    initial_snapshot: Option<MatchSnapshot>,
     hash_interval_ticks: Option<i64>,
     max_rollback_ticks: Option<i64>,
     settle_timeout_ticks: Option<i64>,
@@ -142,7 +148,9 @@ fn build_driver(
 /// Mirrors the spec's `harness(mode, options)`.
 fn harness(mode: MatchMode, options: DriverHarnessOptions) -> DriverHarness {
     let session = match_driver_fixture::session(mode, None, options.humans);
-    let snapshot = match_driver_fixture::initial_snapshot(options.duration, options.combat, None);
+    let snapshot = options.initial_snapshot.clone().unwrap_or_else(|| {
+        match_driver_fixture::initial_snapshot(options.duration, options.combat, None)
+    });
     // Every peer shares one boundary zero in a real session; a differing
     // seed for `divergent_peer` is the cheapest honest way to give one peer
     // a genuinely divergent simulation while every input row still agrees.
@@ -542,10 +550,10 @@ impl StarTransportAdapter for HookedTransport {
         channel: TransportChannel,
         message: TransportMessage,
     ) -> TransportResult<bool> {
-        if let Some(hook) = &mut self.hooks.send_override {
-            if let Some(result) = hook(peer_id, channel, &message) {
-                return result;
-            }
+        if let Some(hook) = &mut self.hooks.send_override
+            && let Some(result) = hook(peer_id, channel, &message)
+        {
+            return result;
         }
         self.inner.send(peer_id, channel, message)
     }
@@ -1574,12 +1582,52 @@ fn carries_the_combat_companion_through_correction_and_resimulation() {
     assert_confirmed_state(&state);
 }
 
+// The claim the seven scenarios in `converges_a_correction_taken_during_each_combat_phase`
+// rest on: none of them starts already in the phase it is named for. A
+// fixture that force-set `phase = "windup"` at boundary zero would pin the
+// driver's restore path and nothing about the simulation reaching wind-up,
+// and the difference is invisible from the scenario's own assertions.
 #[test]
-#[ignore = "needs a combat_phases fixture (spec/support/online_combat_phases.lua, 579 lines) that \
-    has no Rust port yet -- fixture.session is not the blocker here; PHASES/scenario/boundary_zero \
-    are"]
 fn opens_every_combat_phase_scenario_from_a_ready_combat_state() {
-    unreachable!("needs a combat_phases fixture port; see the ignore reason");
+    assert_eq!(online_combat_phases::PHASES.len(), 7);
+    for &phase_id in &online_combat_phases::PHASES {
+        let scenario = online_combat_phases::scenario(phase_id);
+        assert!(matches!(
+            scenario.route,
+            online_combat_phases::OnlineCombatPhaseRoute::Policy
+                | online_combat_phases::OnlineCombatPhaseRoute::CanonicalInput
+        ));
+        let snapshot = online_combat_phases::boundary_zero(phase_id, None);
+        let companion = snapshot.combat.as_ref().expect(phase_id);
+        assert_eq!(companion.projectiles.len(), 0, "{phase_id}");
+        assert_eq!(companion.events.len(), 0, "{phase_id}");
+        let mut equipped = 0;
+        for runtime in &companion.players {
+            assert_eq!(
+                runtime.phase,
+                gc_sim::combat_feasibility::CombatActionPhase::Ready,
+                "{phase_id}"
+            );
+            assert_eq!(runtime.forced_state, None, "{phase_id}");
+            assert_eq!(runtime.immunity_ticks, 0, "{phase_id}");
+            assert_eq!(
+                runtime.intent.stage,
+                gc_sim::combat_intent::CombatIntentStage::Idle,
+                "{phase_id}"
+            );
+            if let Some(family_id) = runtime.family_id {
+                equipped += 1;
+                assert!(
+                    family_id == scenario.shape.home_family
+                        || family_id == scenario.shape.away_family,
+                    "{phase_id} equipped an unexpected family: {family_id:?}"
+                );
+            }
+        }
+        // Both keepers are protected and slotless, so every other body is
+        // armed with the family the scenario declares.
+        assert_eq!(equipped, input_frame::SLOT_COUNT, "{phase_id}");
+    }
 }
 
 /// The spec's `for _, phase_id in ipairs(combat_phases.PHASES) do t.it(...) end`
@@ -1588,59 +1636,275 @@ fn opens_every_combat_phase_scenario_from_a_ready_combat_state() {
 /// names the same 7 phases. Ported as 7 distinctly named cases rather than
 /// one generic loop, so each is independently countable and independently
 /// re-enableable.
+///
+/// Every one shares the body ported from `spec/game/online_match_driver_spec.lua`'s
+/// combat-phase loop (lines ~865-1013): open on the phase's own boundary zero,
+/// drive it 1v1 under impaired delivery, and require that at least one
+/// correction on every peer resimulated a tick that genuinely ran through the
+/// named phase -- and that at least one such tick was resimulated (and
+/// agreed) by more than one peer.
+///
+/// `batch.outputs` carries two kinds of tick and does not label them:
+/// `apply_rows` appends the reconciliation's corrected outputs first, then
+/// `step_to` appends the ordinary forward tick of the same call. Only the
+/// first kind answers the question, so a phase seen on a forward tick must
+/// not count -- a corrected tick is always strictly below the present
+/// boundary as it stood before the call, because reconciliation restores to
+/// the divergence and resimulates back to the *same* present, while a
+/// forward tick is the present itself.
 mod converges_a_correction_taken_during_each_combat_phase {
-    const REASON: &str = "needs a combat_phases fixture (spec/support/online_combat_phases.lua, \
-        579 lines: PHASES/scenario/boundary_zero/live_sample/observed) that has no Rust port yet; \
-        fixture.session is not the blocker -- see the parent module doc";
+    use super::*;
+
+    fn converges_during(phase_id: &str) {
+        let scenario = online_combat_phases::scenario(phase_id);
+        let snapshot = online_combat_phases::boundary_zero(phase_id, None);
+        assert_eq!(snapshot.version, gc_sim::match_snapshot::COMBAT_VERSION);
+        // 1v1 is where the AI carries the most of the pitch: three of every
+        // human's four owned slots are AI-driven at any instant, so six of
+        // the eight slots fight without a human behind them.
+        let mut state = harness(
+            MatchMode::OneVOne,
+            DriverHarnessOptions {
+                initial_snapshot: Some(snapshot),
+                ..Default::default()
+            },
+        );
+        let first = state.session.freeze.first_input_tick;
+
+        let mut observed = vec![0i64; state.drivers.len()];
+        // Input tick -> the first peer to resimulate it in this phase and the
+        // hash it landed on, recorded only once that tick is fully
+        // authoritative. Below confirmation a tick still holds predicted
+        // rows, so peers may legitimately differ there.
+        let mut phase_hashes: Vec<(i64, usize, String)> = Vec::new();
+        let mut shared = 0i64;
+
+        for step in 0..scenario.steps {
+            for (index, driver) in state.drivers.iter_mut().enumerate() {
+                // Read before the call: this is the boundary a corrected tick
+                // is strictly below and a forward tick starts at.
+                let present_before = match_driver::diagnostics(driver).present_input_tick;
+                let sample = online_combat_phases::live_sample(phase_id, step, index as i64 + 1);
+                let batch = match_driver::advance(driver, Some(sample));
+                if batch.rollbacks > 0 {
+                    let confirmed = match_driver::diagnostics(driver).confirmed_input_tick;
+                    let mut corrected = 0i64;
+                    for output in &batch.outputs {
+                        // `RollbackTickOutput.tick` is session space.
+                        let tick = output.tick + first;
+                        if tick >= present_before {
+                            // `step_to`'s forward tick, not the correction's.
+                            // It proves nothing here.
+                            continue;
+                        }
+                        corrected += 1;
+                        let before = match_driver::snapshot(driver, tick).snapshot;
+                        let after = match_driver::snapshot(driver, tick + 1).snapshot;
+                        if let (Some(before), Some(after)) = (&before, &after) {
+                            let events = output.combat_events.as_deref().unwrap_or(&[]);
+                            if online_combat_phases::observed(phase_id, before, after, events) {
+                                observed[index] += 1;
+                                if tick <= confirmed {
+                                    let hash = gc_sim::match_snapshot::hash(before);
+                                    if let Some(recorded) =
+                                        phase_hashes.iter().find(|(t, _, _)| *t == tick)
+                                    {
+                                        assert_eq!(
+                                            hash, recorded.2,
+                                            "peers disagreed on the resimulated {phase_id} at tick {tick}"
+                                        );
+                                        // Only a genuinely cross-peer
+                                        // comparison counts: one peer
+                                        // resimulating the same tick twice
+                                        // agrees with itself for free.
+                                        if recorded.1 != index {
+                                            shared += 1;
+                                        }
+                                    } else {
+                                        phase_hashes.push((tick, index, hash));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // The discriminator cannot quietly stop finding anything:
+                    // a reconciliation that changed state re-derived at least
+                    // one tick, by definition.
+                    assert!(
+                        corrected > 0,
+                        "peer {} reported a rollback with no corrected tick below the present",
+                        index + 1
+                    );
+                }
+            }
+            if (step + 1) % scenario.deliver_period == 0 {
+                state.session.host_transport.pump();
+            }
+        }
+
+        for (index, driver) in state.drivers.iter().enumerate() {
+            // No terminal at all: a duplicate bundle that differed, or
+            // authority from outside a frozen owned set, would have ended
+            // this peer as `authority_conflict` / `ownership_violation`
+            // rather than left it playing.
+            assert_eq!(
+                match_driver::status(driver),
+                MatchDriverStatus::Active,
+                "peer {} did not survive the {phase_id} run",
+                index + 1
+            );
+            assert_eq!(match_driver::terminal(driver), None);
+            let diagnostics = match_driver::diagnostics(driver);
+            assert!(
+                diagnostics.rollback_count > 0,
+                "the {phase_id} burst never corrected peer {}",
+                index + 1
+            );
+            assert_eq!(diagnostics.hash_mismatches, 0);
+            assert!(
+                observed[index] > 0,
+                "no correction on peer {} ever resimulated a {phase_id} tick",
+                index + 1
+            );
+            // One boundary is published once. A checkpoint republished under
+            // a second hash is the duplicate-authority shape the coordinator
+            // would have to arbitrate.
+            let mut published: Vec<i64> = Vec::new();
+            for checkpoint in match_driver::checkpoints(driver) {
+                assert!(
+                    !published.contains(&checkpoint.tick),
+                    "peer {} published boundary {} twice",
+                    index + 1,
+                    checkpoint.tick
+                );
+                published.push(checkpoint.tick);
+                assert_eq!(checkpoint.hash.len(), 16);
+            }
+        }
+        assert!(
+            shared > 0,
+            "no confirmed {phase_id} tick was resimulated by more than one peer"
+        );
+        assert!(assert_agreement(&state) > 0);
+        assert_confirmed_state(&state);
+    }
 
     #[test]
-    #[ignore = "needs a combat_phases fixture port; see REASON"]
     fn wind_up() {
-        unreachable!("{REASON}");
+        converges_during("windup");
     }
 
     #[test]
-    #[ignore = "needs a combat_phases fixture port; see REASON"]
     fn guard() {
-        unreachable!("{REASON}");
+        converges_during("guard");
     }
 
     #[test]
-    #[ignore = "needs a combat_phases fixture port; see REASON"]
     fn contact() {
-        unreachable!("{REASON}");
+        converges_during("contact");
     }
 
     #[test]
-    #[ignore = "needs a combat_phases fixture port; see REASON"]
     fn projectile_flight() {
-        unreachable!("{REASON}");
+        converges_during("projectile_flight");
     }
 
     #[test]
-    #[ignore = "needs a combat_phases fixture port; see REASON"]
     fn stagger() {
-        unreachable!("{REASON}");
+        converges_during("stagger");
     }
 
     #[test]
-    #[ignore = "needs a combat_phases fixture port; see REASON"]
     fn ball_spill() {
-        unreachable!("{REASON}");
+        converges_during("ball_spill");
     }
 
     #[test]
-    #[ignore = "needs a combat_phases fixture port; see REASON"]
     fn immunity_expiry() {
-        unreachable!("{REASON}");
+        converges_during("immunity_expiry");
     }
 }
 
+// The evidence behind the `guard` scenario's `CanonicalInput` route, and the
+// tripwire that will tell us when it can be promoted to `Policy`.
+//
+// Every geometry arms the whole home side with `guard` and the whole away
+// side with a family that publishes a readable threat, then lets
+// `gameplay_ai/combat/v1` play with no human input at all -- and counts the
+// same thing a phase scenario counts: corrected ticks a peer resimulated in
+// the `guard` phase.
+//
+// The claim under test is about *rate*, not possibility. When a geometry does
+// clear the bar this fails, and the fix is to move `guard` onto the `Policy`
+// route in `tests/support/online_combat_phases.rs` -- not to raise the bar.
 #[test]
-#[ignore = "needs a combat_phases fixture (spec/support/online_combat_phases.lua, 579 lines: \
-    GUARD_PROBE/guard_probe_boundary_zero) that has no Rust port yet"]
 fn finds_no_driver_level_geometry_where_the_policy_guards_often_enough() {
-    unreachable!("needs a combat_phases fixture port; see the ignore reason");
+    for geometry in &online_combat_phases::GUARD_PROBE {
+        let mut state = harness(
+            MatchMode::OneVOne,
+            DriverHarnessOptions {
+                initial_snapshot: Some(online_combat_phases::guard_probe_boundary_zero(
+                    geometry, None,
+                )),
+                ..Default::default()
+            },
+        );
+        let first = state.session.freeze.first_input_tick;
+        let mut observed = vec![0i64; state.drivers.len()];
+        let mut threat_ticks = 0i64;
+        for step in 1..=geometry.steps {
+            for (index, driver) in state.drivers.iter_mut().enumerate() {
+                let present_before = match_driver::diagnostics(driver).present_input_tick;
+                let batch = match_driver::advance(driver, Some(input_frame::neutral_sample()));
+                if batch.rollbacks > 0 {
+                    for output in &batch.outputs {
+                        let tick = output.tick + first;
+                        if tick < present_before {
+                            let before = match_driver::snapshot(driver, tick).snapshot;
+                            let after = match_driver::snapshot(driver, tick + 1).snapshot;
+                            if let (Some(before), Some(after)) = (&before, &after) {
+                                let events = output.combat_events.as_deref().unwrap_or(&[]);
+                                if online_combat_phases::observed("guard", before, after, events) {
+                                    observed[index] += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if step % geometry.deliver_period == 0 {
+                state.session.host_transport.pump();
+            }
+            // Away runtimes are indexes 7..10 (1-based); 6 is the protected
+            // keeper, so this is `companion.players[6..]` zero-based.
+            let snapshot = match_driver::current_snapshot(&state.drivers[0]);
+            let companion = snapshot.combat.as_ref().expect("geometry needs combat");
+            for runtime in &companion.players[6..] {
+                if matches!(
+                    runtime.phase,
+                    gc_sim::combat_feasibility::CombatActionPhase::Windup
+                        | gc_sim::combat_feasibility::CombatActionPhase::Active
+                ) {
+                    threat_ticks += 1;
+                }
+            }
+            threat_ticks += companion.projectiles.len() as i64;
+        }
+        // Without a readable threat the policy could not guard even in
+        // principle, and a low count here would mean nothing at all.
+        assert!(
+            threat_ticks > 0,
+            "{} never telegraphed a threat, so it probes nothing",
+            geometry.id
+        );
+        let weakest = observed.iter().copied().min().expect("at least one peer");
+        assert!(
+            weakest < online_combat_phases::GUARD_POLICY_ROUTE_MINIMUM,
+            "{} now reaches {weakest} corrected guard ticks on every peer -- promote the guard \
+             scenario to the policy route",
+            geometry.id
+        );
+    }
 }
 
 #[test]
@@ -2195,9 +2459,9 @@ fn keeps_the_host_relaying_until_its_guests_have_stopped_asking() {
         }
         let host_left =
             left[0].unwrap_or_else(|| panic!("the host never left in {}", mode.wire_str()));
-        for index in 1..state.drivers.len() {
+        for (index, driver) in state.drivers.iter().enumerate().skip(1) {
             assert_eq!(
-                match_driver::status(&state.drivers[index]),
+                match_driver::status(driver),
                 MatchDriverStatus::Completed,
                 "guest {} did not complete in {}",
                 index + 1,

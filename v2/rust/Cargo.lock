@@ -25,6 +25,7 @@ name = "gc-netcode"
 version = "0.1.0"
 dependencies = [
  "gc-core",
+ "gc-data",
  "gc-sim",
  "indexmap",
 ]

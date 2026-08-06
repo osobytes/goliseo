@@ -697,7 +697,6 @@ fn canonical_match_snapshots_persists_active_ai_runs_through_a_v11_combat_bounda
 }
 
 #[test]
-#[ignore = "suspected defect: match_snapshot.rs never calls the equivalent of sim/match_snapshot.lua's assert_combat_run_relations (capture/restore never cross-check outfield_decision run intents against combat_state's per-player phase/forced_ticks) -- see this file's module doc, defect #3. capture() does not reject a forced player retaining a run, and restore() does not reject a mutated snapshot with the same problem, so three of this test's `fails(...)` assertions do not hold. The fourth part (exercising the private `sanitize_run_states` via a full `step()` call, since the Lua original's `match._sanitize_run_states` has no `pub` Rust equivalent -- see the report) is expected to still work once the missing cross-check is added."]
 fn canonical_match_snapshots_rejects_a_combat_blocked_active_run_as_a_malformed_v11_boundary() {
     let mut state = new_attacking_ai_state();
     let owner = state.owner.expect("owner assigned");
@@ -1445,7 +1444,6 @@ fn canonical_match_snapshots_restores_and_hashes_team_press_state_across_soccer_
 }
 
 #[test]
-#[ignore = "suspected defect: match_snapshot.rs never calls the equivalent of sim/match_snapshot.lua's outfield_press.copy_state(source.outfield_press[team]) (sim/match_snapshot.lua:648, 868-869) -- see this file's module doc, defect #2. Two of the five still-constructible mutations below (a stale `version`, and a `Contain`-mode press left with no presser) are therefore accepted by restore() instead of rejected; the other three (out-of-bounds/keeper/wrong-team presser) are caught by the relational eligibility check that does exist and pass as expected."]
 fn canonical_match_snapshots_diffs_and_strictly_validates_nested_press_state_relations() {
     let mut state = new_ai_state();
     state.outfield_press.home = outfield_press::contain(2);
@@ -1512,7 +1510,6 @@ fn canonical_match_snapshots_diffs_and_strictly_validates_nested_press_state_rel
 }
 
 #[test]
-#[ignore = "suspected defect: match_snapshot.rs never calls the equivalent of sim/match_snapshot.lua's outfield_decision.copy_state(source.outfield_decision) for every player (sim/match_snapshot.lua:384, 765) -- see this file's module doc, defect #1. Several of the mutations below touch fields validate_run_relations doesn't look at (version, target_player, context/intent consistency), so restore() accepts them instead of rejecting them."]
 fn canonical_match_snapshots_rejects_malformed_v10_and_v11_decision_contracts_during_restore() {
     let mut state = new_state();
     let mut soccer = match_snapshot::capture(&state, None);

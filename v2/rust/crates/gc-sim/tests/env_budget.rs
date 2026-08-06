@@ -33,43 +33,59 @@
 //! `#[ignore]`... and report it").
 
 #[test]
-#[ignore = "measures LuaJIT collectgarbage() byte deltas with the JIT pinned \
-            off; Rust has no GC and no comparable per-call allocation counter \
-            without new counting-allocator infrastructure this port does not \
-            own (see module doc)"]
+#[ignore = "retired: measures a per-call allocation budget via LuaJIT collectgarbage() \
+            with the JIT pinned off, which Rust has no equivalent for (see module doc); \
+            the invariant the budget was a regression proxy for -- action masking never \
+            reads full-observation data -- is covered structurally rather than by a \
+            byte count: env_action::EnvActionView (src/env_action.rs) is a strict \
+            own+ball subset with no teammates/opponents/match fields to read, \
+            env::action_masks (src/env.rs) calls env_observation::action_view rather \
+            than env_observation::build, and \
+            env_action_mask_derives_legality_from_the_view_alone (tests/env_action.rs) \
+            proves mask() derives every legality bit from that narrow view alone. No \
+            test covers the numeric byte budget itself; none can without new \
+            counting-allocator infrastructure this port does not own."]
 fn env_allocation_budgets_masks_a_slot_without_building_an_observation() {}
 
 #[test]
-#[ignore = "measures LuaJIT collectgarbage() byte deltas with the JIT pinned \
-            off; Rust has no GC and no comparable per-call allocation counter \
-            without new counting-allocator infrastructure this port does not \
-            own (see module doc)"]
+#[ignore = "retired: measures a per-call allocation budget via LuaJIT collectgarbage() \
+            with the JIT pinned off, which Rust has no equivalent for (no GC, no \
+            per-call allocation counter without new counting-allocator infrastructure \
+            this port does not own; see module doc). This is a pure performance \
+            ceiling, not a correctness invariant, so no other test covers it."]
 fn env_allocation_budgets_keeps_a_single_slot_observation_within_budget() {}
 
 #[test]
-#[ignore = "measures LuaJIT collectgarbage() byte deltas with the JIT pinned \
-            off; Rust has no GC and no comparable per-call allocation counter \
-            without new counting-allocator infrastructure this port does not \
-            own (see module doc)"]
+#[ignore = "retired: measures a per-call allocation budget via LuaJIT collectgarbage() \
+            with the JIT pinned off, which Rust has no equivalent for (see module doc). \
+            This is a pure performance ceiling, not a correctness invariant, so no \
+            other test covers it."]
 fn env_allocation_budgets_keeps_a_step_within_budget() {}
 
 #[test]
-#[ignore = "monkey-patches env_observation.build/action_view at runtime to \
-            count calls; Rust functions are not runtime-replaceable and \
-            gc_sim::env::step has no injectable counting seam for this \
-            test-only concern (see module doc)"]
+#[ignore = "retired: monkey-patches env_observation.build/action_view at runtime to \
+            count calls, which Rust functions cannot be (not runtime-replaceable) \
+            without a new injectable counting seam gc_sim::env::step does not have and \
+            this port does not own (see module doc). The call-count invariant -- \
+            exactly one observation build and one action view per controlled slot, per \
+            step -- has no test double: env::step's (src/env.rs) single call site for \
+            each of env_observation::build and env_observation::action_view is visible \
+            in source, but no test asserts the call count itself."]
 fn env_allocation_budgets_builds_exactly_one_observation_and_one_action_view_per_slot_per_step() {}
 
 #[test]
-#[ignore = "measures LuaJIT collectgarbage() byte deltas with the JIT pinned \
-            off; Rust has no GC and no comparable per-call allocation counter \
-            without new counting-allocator infrastructure this port does not \
-            own (see module doc)"]
+#[ignore = "retired: measures a per-call allocation budget via LuaJIT collectgarbage() \
+            with the JIT pinned off, which Rust has no equivalent for (see module doc). \
+            The invariant this budget was a regression proxy for -- the privileged \
+            profile reuses env::step's single per-tick match_snapshot::capture call \
+            (src/env.rs) rather than capturing the boundary a second time -- has no \
+            test double: that call site is visibly singular in source, but no test \
+            asserts capture is called exactly once per tick regardless of profile."]
 fn env_allocation_budgets_does_not_re_capture_the_boundary_for_the_privileged_profile() {}
 
 #[test]
-#[ignore = "measures LuaJIT collectgarbage() byte deltas with the JIT pinned \
-            off; Rust has no GC and no comparable per-call allocation counter \
-            without new counting-allocator infrastructure this port does not \
-            own (see module doc)"]
+#[ignore = "retired: measures a per-call allocation budget via LuaJIT collectgarbage() \
+            with the JIT pinned off, which Rust has no equivalent for (see module doc). \
+            This is a pure performance-scaling ceiling, not a correctness invariant, so \
+            no other test covers it."]
 fn env_allocation_budgets_scales_with_controlled_slots_rather_than_exploding() {}

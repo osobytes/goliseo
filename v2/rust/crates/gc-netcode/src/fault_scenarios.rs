@@ -2,42 +2,28 @@
 //!
 //! `SCENARIOS` is the data: one row per `(mode x profile x fault)`
 //! combination the campaign claims to cover. The Lua `run` is the
-//! interpreter that turns a row into a driven `FaultHarness` and a report —
-//! it needs `game.online.fault_harness`, and [`crate::fault_harness`] does
-//! not build a live `FaultHarness` yet (see that module's doc comment for
-//! exactly what remains — the hard blockers, `coordinator`/`protocol`/
-//! `fake_star`, are gone; what is left is bounded construction/lifecycle
-//! work). `crate::live_slot` itself is ported and has been since before this
-//! pass. [`run`]/[`inject`]/[`first_guest`] are therefore **not ported**:
-//! there is no [`crate::fault_harness::FaultHarness`] to drive yet, and
-//! porting them first would mean guessing at that harness's eventual shape.
-//! This file ports everything that does not need one: the full declared
-//! matrix ([`SCENARIOS`]), [`find`]/[`select`], every constant, and
-//! [`forged_bundle`]/[`foreign_slot_index`] — the two pure helpers that
-//! build a forged wire envelope, which only need [`crate::input_protocol`]
-//! and this crate's local transport/`CoordinatorFreeze` shapes, not the
-//! harness itself.
+//! interpreter that turns a row into a driven `FaultHarness` and a report.
+//! [`crate::fault_harness::FaultHarness`] is now real (construction, the
+//! pre-match lifecycle over a real star, the match itself, and teardown —
+//! see that module's doc comment), so [`run`]/[`inject`]/[`first_guest`] are
+//! ported for real below, following the Lua interpreter's own shape.
+//! `SessionMatchMode` — this file's former local placeholder for
+//! `protocol.lua`'s match-mode alias — is now [`crate::protocol::MatchMode`]
+//! directly: that module's own doc comment named this file's placeholder as
+//! the one to retire "once `protocol.rs` is stable", and building a live
+//! harness needs `protocol::MatchMode` anyway (every
+//! [`crate::fault_harness::FaultHarness`] entry point takes one).
 
-use crate::fault_transport::{TransportMessage, TransportMessageType};
+use crate::fault_harness::{self, FaultHarness, FaultHarnessOptions};
+use crate::fault_transport::{
+    FaultTransportPollOrder, StarTransportAdapter, TransportChannel, TransportMessage,
+    TransportMessageType,
+};
 use crate::input_protocol;
-use crate::match_driver::{CoordinatorFreeze, slot_id_of};
+use crate::match_driver::{self, CoordinatorFreeze, slot_id_of};
+use crate::protocol;
 use gc_data::network_profiles::NetworkProfileName;
 use gc_sim::input_frame;
-
-/// `SessionMatchMode`: how the eight canonical outfield slots are shared.
-/// A narrow local placeholder for `protocol.lua`'s real alias — see
-/// `crate::match_driver`'s module doc for why (that file's `CoordinatorFreeze`
-/// placeholder is the identical situation). Replace with
-/// `crate::protocol::MatchMode` once `protocol.rs` is stable.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SessionMatchMode {
-    /// One human per side.
-    OneVOne,
-    /// Two humans per side.
-    TwoVTwo,
-    /// Four humans per side (a full lobby).
-    FourVFour,
-}
 
 /// Which shape of fault one [`FaultScenario`] injects. Mirrors
 /// `FaultInjectionKind`.
@@ -77,7 +63,7 @@ pub struct FaultScenario {
     /// Stable row identity.
     pub id: &'static str,
     /// Which match mode this row seats.
-    pub mode: SessionMatchMode,
+    pub mode: protocol::MatchMode,
     /// Which network profile this row runs under.
     pub profile: NetworkProfileName,
     /// Which fault (if any) this row injects.
@@ -122,7 +108,7 @@ use FaultInjectionKind::{
     HostDeparture, MalformedInput, ManifestMismatch, None as NoFault, OverWindowInput,
     OwnershipViolation, PeerDisconnect, PollReversed,
 };
-use SessionMatchMode::{FourVFour, OneVOne, TwoVTwo};
+use protocol::MatchMode::{FourVFour, OneVOne, TwoVTwo};
 
 /// The declared OMP-3 fault matrix. Mirrors `fault_scenarios.SCENARIOS`.
 pub static SCENARIOS: &[FaultScenario] = &[
@@ -612,9 +598,306 @@ pub fn foreign_slot_index(freeze: &CoordinatorFreeze, guest_peer_id: &str) -> i6
     panic!("every slot belongs to one guest, which the frozen partition forbids");
 }
 
+// ---------------------------------------------------------------------------
+// The interpreter: turns one declared row into a driven `FaultHarness` and a
+// report.
+// ---------------------------------------------------------------------------
+
+/// A guest-side fault needs at least one guest. Mirrors `first_guest`.
+///
+/// # Panics
+///
+/// Panics if `harness` seats no guests.
+fn first_guest(harness: &FaultHarness) -> &fault_harness::FaultHarnessClient {
+    assert!(
+        harness.clients.len() > 1,
+        "a guest-side fault needs at least one guest"
+    );
+    &harness.clients[1]
+}
+
+/// Fires one scenario's declared fault. Mirrors `inject`. Every fault below
+/// is reached the same way the Lua does: over the real wire (a forged
+/// bundle, a declared hold, a transport-level close/shutdown), never by
+/// reaching into a driver's internals.
+///
+/// # Panics
+///
+/// Panics if the scenario names a guest-side fault and `harness` seats no
+/// guest, or (for `hash_divergence`) if the injection fires before enough
+/// boundaries were hashed — both scenario-authoring errors, never expected
+/// from a declared [`SCENARIOS`] row.
+fn inject(harness: &mut FaultHarness, scenario: &FaultScenario) {
+    match scenario.injection {
+        FaultInjectionKind::PeerDisconnect => {
+            let guest_peer_id = first_guest(harness).peer_id.clone();
+            let mut star = harness.host_star();
+            let _ = star.close_peer(&guest_peer_id, Some("peer_left"));
+            return;
+        }
+        FaultInjectionKind::HostDeparture => {
+            let mut star = harness.host_star();
+            let _ = star.shutdown();
+            return;
+        }
+        FaultInjectionKind::HashDivergence => {
+            // The driver's own detection path: report a foreign hash for a
+            // boundary this peer did hash, repeatedly, until the documented
+            // streak is reached.
+            let checkpoints = first_guest(harness).checkpoints.clone();
+            assert!(
+                checkpoints.len() as i64 >= match_driver::MAX_HASH_MISMATCHES,
+                "the divergence row fires before enough boundaries were hashed"
+            );
+            let start = (checkpoints.len() as i64 - match_driver::MAX_HASH_MISMATCHES) as usize;
+            let driver = harness.clients[1]
+                .driver
+                .as_mut()
+                .expect("the first guest has a driver once the match has started");
+            for checkpoint in &checkpoints[start..] {
+                match_driver::observe_checkpoint(driver, checkpoint.tick, "deadbeefdeadbeef");
+            }
+            return;
+        }
+        FaultInjectionKind::OverWindowInput => {
+            // Nothing is delivered for well over the 30-tick retained floor.
+            // The backlog is still released (a `hold`, not a `withhold`),
+            // because the row must prove the peer says so *before* it
+            // arrives rather than only that something eventually
+            // terminates.
+            let from = harness.transport_tick + 1;
+            for client in &harness.clients {
+                client.hold(from, from + OVER_WINDOW_HOLD_TICKS);
+            }
+            return;
+        }
+        _ => {}
+    }
+
+    let guest = &harness.clients[1];
+    let freeze = guest
+        .coordinator
+        .freeze
+        .clone()
+        .expect("the first guest froze a session");
+    let session_id = guest.coordinator.session_id.clone();
+    let sender_id = guest.peer_id.clone();
+    let transport_tick = harness.step + match_driver::DELAY_TICKS;
+
+    match scenario.injection {
+        FaultInjectionKind::OwnershipViolation => {
+            let driver_freeze = crate::match_driver_fixture::to_driver_freeze(&freeze);
+            let slot_index = foreign_slot_index(&driver_freeze, &sender_id);
+            let message = forged_bundle(ForgedBundleRequest {
+                session_id: &session_id,
+                manifest_id: &freeze.manifest_id,
+                sender_id: &sender_id,
+                slot_index,
+                first_input_tick: freeze.first_input_tick,
+                sequence: FORGED_SEQUENCE,
+                transport_tick,
+                edges: 0,
+            });
+            let _ = harness.clients[1].send_raw(
+                fault_harness::HOST_PEER_ID,
+                TransportChannel::Input,
+                message,
+            );
+        }
+        FaultInjectionKind::ManifestMismatch => {
+            let forged_manifest_id = "0".repeat(freeze.manifest_id.len());
+            let message = forged_bundle(ForgedBundleRequest {
+                session_id: &session_id,
+                manifest_id: &forged_manifest_id,
+                sender_id: &sender_id,
+                slot_index: 1,
+                first_input_tick: freeze.first_input_tick,
+                sequence: FORGED_SEQUENCE,
+                transport_tick,
+                edges: 0,
+            });
+            let _ = harness.clients[1].send_raw(
+                fault_harness::HOST_PEER_ID,
+                TransportChannel::Input,
+                message,
+            );
+        }
+        FaultInjectionKind::AuthorityConflict => {
+            let owned_first = freeze
+                .owned
+                .get(&sender_id)
+                .expect("the first guest owns at least one slot")[0];
+            let slot_index = match_driver::slot_index_of(owned_first);
+            for edges in [0, input_frame::EDGE_DASH] {
+                let message = forged_bundle(ForgedBundleRequest {
+                    session_id: &session_id,
+                    manifest_id: &freeze.manifest_id,
+                    sender_id: &sender_id,
+                    slot_index,
+                    first_input_tick: freeze.first_input_tick,
+                    sequence: FORGED_SEQUENCE,
+                    transport_tick,
+                    edges,
+                });
+                let _ = harness.clients[1].send_raw(
+                    fault_harness::HOST_PEER_ID,
+                    TransportChannel::Input,
+                    message,
+                );
+            }
+        }
+        FaultInjectionKind::MalformedInput => {
+            let _ = harness.clients[1].send_raw(
+                fault_harness::HOST_PEER_ID,
+                TransportChannel::Input,
+                TransportMessage {
+                    version: 1,
+                    kind: TransportMessageType::Input,
+                    seq: FORGED_SEQUENCE,
+                    tick: Some(transport_tick),
+                    payload: b"not-an-input-packet".to_vec(),
+                },
+            );
+        }
+        _ => {}
+    }
+}
+
+/// Inputs to [`run`], beyond what the scenario itself declares. Mirrors the
+/// Lua `run`'s second parameter, minus `topology`: only the star topology is
+/// offered (see [`fault_harness::FaultHarnessOptions`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RunOptions {
+    /// Overrides the scenario's own duration; itself overridden by a
+    /// duration the scenario declares.
+    pub duration_ticks: Option<i64>,
+    /// Impairment seed override; never the match seed.
+    pub network_seed: Option<f64>,
+}
+
+/// Run one declared row end to end and report on it. Mirrors
+/// `fault_scenarios.run`.
+///
+/// # Panics
+///
+/// Panics if the session never reaches its frozen start boundary — a
+/// harness-construction defect, never expected for a declared [`SCENARIOS`]
+/// row.
+pub fn run(scenario: &FaultScenario, options: RunOptions) -> fault_harness::FaultHarnessReport {
+    let duration = scenario
+        .duration_ticks
+        .or(options.duration_ticks)
+        .unwrap_or(SMOKE_DURATION_TICKS);
+    let mut harness = FaultHarness::new(FaultHarnessOptions {
+        mode: Some(scenario.mode),
+        humans: scenario.humans,
+        profile: Some(scenario.profile),
+        seed: None,
+        network_seed: options.network_seed,
+        duration_ticks: Some(duration),
+        hash_interval_ticks: scenario.hash_interval_ticks,
+        poll_order: matches!(scenario.injection, FaultInjectionKind::PollReversed)
+            .then_some(FaultTransportPollOrder::Reverse),
+        duplicate_control_every: matches!(
+            scenario.injection,
+            FaultInjectionKind::ControlDuplication
+        )
+        .then_some(3),
+        buffered_amount_limit: matches!(scenario.injection, FaultInjectionKind::Backpressure)
+            .then_some(BACKPRESSURE_LIMIT_BYTES),
+    });
+    assert!(
+        harness.reach_start(None, None),
+        "the session never reached its start boundary"
+    );
+    harness.start_match();
+
+    if matches!(scenario.injection, FaultInjectionKind::BurstAcrossFullTime) {
+        // Full time lands at driver step `duration`; the transport clock
+        // already advanced through the pre-match control rounds, so the
+        // window is expressed against the harness clock. The hold is the
+        // profile's own burst length (three ticks), placed on purpose
+        // across the boundary -- a probabilistic roll cannot be aimed at a
+        // named tick.
+        let full_time = harness.transport_tick + duration;
+        for client in &harness.clients {
+            client.hold(full_time - 1, full_time + 1);
+        }
+    }
+
+    let at = scenario.at_step;
+    for _ in 0..MAX_STEPS {
+        if at == Some(harness.step) {
+            inject(&mut harness, scenario);
+        }
+        harness.advance();
+        if harness.finished() {
+            break;
+        }
+    }
+    harness.teardown();
+    let mut report = harness.report(scenario.expect_status.is_none());
+    report.notes.push(format!(
+        "scenario {} injection={:?} duration_ticks={duration}",
+        scenario.id, scenario.injection
+    ));
+    if let Some(expected) = scenario.expect_status {
+        let reached = harness
+            .clients
+            .iter()
+            .any(|client| client.driver.as_ref().map(match_driver::status) == Some(expected));
+        report.findings.push(fault_harness::FaultHarnessFinding {
+            id: format!("terminal.{}", fault_harness::status_label(Some(expected))),
+            ok: reached,
+            skipped: false,
+            detail: format!(
+                "at least one peer reached the declared terminal {}",
+                fault_harness::status_label(Some(expected))
+            ),
+        });
+        report.ok = report.ok && reached;
+    }
+    report
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run_short(id: &str) -> fault_harness::FaultHarnessReport {
+        let scenario = find(id).unwrap_or_else(|| panic!("unknown scenario {id}"));
+        run(
+            scenario,
+            RunOptions {
+                duration_ticks: Some(60),
+                network_seed: None,
+            },
+        )
+    }
+
+    /// The whole declared matrix, at a short duration, run for real: every
+    /// row reaches its declared outcome (a clean convergence, or its
+    /// declared terminal — [`run`] appends the `terminal.*` finding itself).
+    /// This is deliberately broader than the bounded CI subset
+    /// `crates/gc-netcode/tests/fault_harness.rs` exercises — a regression
+    /// anywhere in the matrix, not just the `smoke` rows, fails here.
+    #[test]
+    fn every_declared_row_reaches_its_declared_outcome() {
+        for scenario in SCENARIOS {
+            let report = run_short(scenario.id);
+            let failed: Vec<&str> = report
+                .findings
+                .iter()
+                .filter(|finding| !finding.ok)
+                .map(|finding| finding.id.as_str())
+                .collect();
+            assert!(
+                report.ok,
+                "{} did not converge on its declared outcome; failing findings: {failed:?}",
+                scenario.id
+            );
+        }
+    }
 
     #[test]
     fn every_scenario_id_is_unique() {

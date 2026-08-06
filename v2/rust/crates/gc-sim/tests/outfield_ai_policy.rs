@@ -146,27 +146,73 @@ fn gives_every_surface_module_a_version_to_bump() {
 }
 
 #[test]
-#[ignore = "Lua case mutates a live module global at runtime (ai.LANE_WIDTH) to prove the id reacts; ai::LANE_WIDTH is a pub const in this port and cannot be mutated. descriptor() reads it directly, so any change to the constant necessarily changes canonical()/id() by construction — there is no separate runtime path to exercise."]
+#[ignore = "retired: Lua case mutates a live module global at runtime (ai.LANE_WIDTH = ...) \
+            to prove outfield_ai_policy.id() reacts; ai::LANE_WIDTH is a pub const in this \
+            port and cannot be mutated, so the mutation itself is inexpressible. The \
+            invariant it was probing -- that this field is live in the hashed id -- is \
+            covered by covers_every_declared_surface_field_with_a_scalar (proves \
+            ai.LANE_WIDTH is a descriptor() row) and \
+            matches_the_canonical_bytes_captured_from_the_real_lua_build (proves \
+            canonical()'s current LANE_WIDTH value round-trips byte-exact against the real \
+            Lua build), both above in this file: descriptor() reads the constant directly, \
+            so any change to it necessarily changes canonical()/id() by construction -- \
+            there is no separate runtime reactivity path left to exercise."]
 fn covers_the_off_ball_support_weights_sim_ai_supplies() {}
 
 #[test]
-#[ignore = "Lua case mutates offball_runs.VERSION at runtime; offball_runs::VERSION does not exist in this port at all (see src/outfield_ai_policy.rs's OFFBALL_RUNS_VERSION note) and, if it did, would be a pub const, immutable at runtime like the others in this file."]
+#[ignore = "retired: Lua case mutates offball_runs.VERSION at runtime to prove \
+            outfield_ai_policy.id() reacts. offball_runs::VERSION now exists in this port \
+            (src/outfield_ai_policy.rs's OFFBALL_RUNS_VERSION comment: it was a dropped \
+            constant when this file was first written, not a design choice, and has since \
+            been added) as a pub const, so -- like every other constant in this file -- it \
+            cannot be mutated at runtime. Covered the same way as LANE_WIDTH above: \
+            covers_every_declared_surface_field_with_a_scalar and \
+            matches_the_canonical_bytes_captured_from_the_real_lua_build together prove \
+            offball_runs.VERSION is a live descriptor() row baked into canonical()/id()."]
 fn detects_a_bumped_module_version() {}
 
 #[test]
-#[ignore = "Lua case sets outfield_decision.BASE_TEMPERATURE = previous + 1 at runtime; outfield_decision::BASE_TEMPERATURE is a pub const in this port and cannot be mutated."]
+#[ignore = "retired: Lua case sets outfield_decision.BASE_TEMPERATURE = previous + 1 at \
+            runtime to prove outfield_ai_policy.id() reacts; \
+            outfield_decision::BASE_TEMPERATURE is a pub const in this port and cannot be \
+            mutated. Covered the same way as LANE_WIDTH above: \
+            covers_every_declared_surface_field_with_a_scalar and \
+            matches_the_canonical_bytes_captured_from_the_real_lua_build together prove \
+            outfield_decision.BASE_TEMPERATURE is a live descriptor() row baked into \
+            canonical()/id()."]
 fn detects_a_changed_decision_constant() {}
 
 #[test]
-#[ignore = "Lua case mutates offball_runs.MAX_ACTIVE_PER_TEAM at runtime; offball_runs::MAX_ACTIVE_PER_TEAM is a pub const in this port and cannot be mutated."]
+#[ignore = "retired: Lua case mutates offball_runs.MAX_ACTIVE_PER_TEAM at runtime to prove \
+            outfield_ai_policy.id() reacts; offball_runs::MAX_ACTIVE_PER_TEAM is a pub const \
+            in this port and cannot be mutated. Covered the same way as LANE_WIDTH above: \
+            covers_every_declared_surface_field_with_a_scalar and \
+            matches_the_canonical_bytes_captured_from_the_real_lua_build together prove \
+            offball_runs.MAX_ACTIVE_PER_TEAM is a live descriptor() row baked into \
+            canonical()/id()."]
 fn detects_a_changed_run_constant() {}
 
 #[test]
-#[ignore = "Lua case mutates a Knob's .default field on the live tuning registry at runtime; tuning::KNOBS is a static &[Knob] of value structs, immutable at runtime, so there is no live default to nudge."]
+#[ignore = "retired: Lua case mutates a Knob's .default field on the live tuning registry \
+            at runtime to prove outfield_ai_policy.id() reacts; tuning::KNOBS is a static \
+            &[Knob] of value structs in this port, immutable at runtime, so there is no live \
+            default to nudge. Covered by matches_the_canonical_bytes_captured_from_the_real_lua_build \
+            (descriptor()'s tuning.* rows, built by walking tuning::KNOBS' AI-category \
+            defaults, are part of the byte-exact canonical() that test pins) together with \
+            does_not_move_when_a_live_tuning_value_is_nudged_off_its_default below (proves \
+            the complementary half: descriptor() never takes a live Tuning, so only the \
+            static default -- never an in-session nudge -- can move the id)."]
 fn detects_a_changed_ai_knob_default() {}
 
 #[test]
-#[ignore = "Lua case injects a new field onto a live module table (outfield_decision.SPEC_ONLY_SCRATCH_FIELD = 42) to prove undeclared fields do not move the id; Rust structs/modules have a fixed, compile-time field set, so there is no dynamic field-injection path to exercise. descriptor() only ever reads the fields it is hand-written to read, which is the structural form of the same guarantee."]
+#[ignore = "retired: Lua case injects a new field onto a live module table \
+            (outfield_decision.SPEC_ONLY_SCRATCH_FIELD = 42) to prove undeclared fields do \
+            not move the id; Rust structs/modules have a fixed, compile-time field set, so \
+            there is no dynamic field-injection path to exercise. Covered structurally by \
+            covers_every_declared_surface_field_with_a_scalar above: descriptor() only ever \
+            reads the fields it is hand-written to read, which is the structural form of the \
+            same guarantee (there is nowhere for an undeclared field to be read from even in \
+            principle)."]
 fn does_not_move_when_an_undeclared_module_field_is_added() {}
 
 #[test]
@@ -188,7 +234,12 @@ fn does_not_move_when_a_live_tuning_value_is_nudged_off_its_default() {
 }
 
 #[test]
-#[ignore = "Lua case sets outfield_decision.BASE_TEMPERATURE = nil at runtime and expects outfield_ai_policy.id() to error naming the missing field; a pub const cannot be nil'd, and Rust's type system makes a declared-but-missing scalar unrepresentable at this layer (a compile error, not a runtime one) — the failure mode this test pins does not exist in the port."]
+#[ignore = "retired: Lua case sets outfield_decision.BASE_TEMPERATURE = nil at runtime and \
+            expects outfield_ai_policy.id() to error naming the missing field; a pub const \
+            cannot be nil'd, and Rust's type system makes a declared-but-missing scalar \
+            unrepresentable at this layer (a compile error, not a runtime one) -- the failure \
+            mode this test pins does not exist in the port, and no runtime test can cover a \
+            case that cannot occur at runtime."]
 fn fails_loudly_when_a_declared_field_disappears() {}
 
 #[test]

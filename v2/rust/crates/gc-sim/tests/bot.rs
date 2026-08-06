@@ -14,10 +14,12 @@
 //!
 //! The remaining two cases ("same seed produces the identical match", "keeps
 //! the controlled player active") call `match.step` in a loop to run real
-//! physics for up to 600 ticks. That genuinely needs `sim/match.lua` — an
-//! unported placeholder (`gc_sim::r#match`) owned by another agent — so
-//! those two are ported as `#[ignore]` below, matching the precedent in
-//! `tests/species.rs`.
+//! physics for up to 600 ticks. `sim::match` (`gc_sim::r#match`) is now
+//! fully ported, so both cases build a real fixture via `sim_match::new`
+//! and drive `sim_match::step`. Neither `bot.rs` nor its test file own
+//! `crates/gc-sim/src/headless.rs`'s private `to_bot_view`/`to_bot_player`
+//! adapters, so [`to_bot_view`] below is a test-local copy of that same
+//! conversion (`MatchState`/`MatchPlayer` -> `BotMatchView`/`BotPlayerView`).
 //!
 //! `bot::input` additionally takes an explicit `&Tuning` where the Lua
 //! closes over the `sim.tuning` global (AGENTS.md §3; see
@@ -26,7 +28,61 @@
 
 use gc_core::vec2::Vec2;
 use gc_sim::bot::{self, BotMatchView, BotOptions, BotPlayerView, Field, Team};
+use gc_sim::r#match::{self as sim_match, NewMatchOptions, StepInput};
+use gc_sim::match_snapshot::{self as snap, MatchState, PitchSize};
 use gc_sim::tuning::Tuning;
+
+fn to_bot_player(p: &snap::MatchPlayer) -> BotPlayerView {
+    BotPlayerView {
+        team: match p.team {
+            snap::Team::Home => Team::Home,
+            snap::Team::Away => Team::Away,
+        },
+        is_keeper: p.is_keeper,
+        pos: p.pos,
+        tackle_timer: p.tackle_timer,
+        slide_timer: p.slide_timer,
+        dodge_cd: p.dodge_cd,
+        sprint_meter: p.sprint_meter,
+    }
+}
+
+fn to_bot_view(s: &MatchState) -> BotMatchView {
+    BotMatchView {
+        players: s.players.iter().map(to_bot_player).collect(),
+        field: Field {
+            w: s.field.w,
+            h: s.field.h,
+        },
+        controlled: (s.controlled - 1) as usize,
+        owner: s.owner.map(|i| (i - 1) as usize),
+        ball: s.ball,
+        ball_vel: s.ball_vel,
+        ball_z: s.ball_z,
+        ball_vz: s.ball_vz,
+    }
+}
+
+fn new_match(seed: f64) -> MatchState {
+    let home = gc_data::teams::get("nebula").expect("nebula team is authored");
+    let away = gc_data::teams::get("orion").expect("orion team is authored");
+    sim_match::new(NewMatchOptions {
+        home,
+        away,
+        field: PitchSize { w: 960.0, h: 540.0 },
+        home_formation: None,
+        tactic: None,
+        away_tactic: None,
+        duration: None,
+        max_goals: None,
+        seed: Some(seed),
+        players_by_id: None,
+        species_by_id: None,
+        showcase_players_by_id: None,
+        human_controlled: None,
+        input_ownership: None,
+    })
+}
 
 fn player(team: Team, is_keeper: bool, pos: Vec2) -> BotPlayerView {
     BotPlayerView {
@@ -216,17 +272,51 @@ fn requests_an_aerial_strike_under_a_dropping_ball() {
     );
 }
 
-/// Blocked on `sim::match` (`sim/match.lua`), an unported placeholder owned
-/// by another agent. Unblocks when `gc_sim::r#match::new`/`::step` land.
 #[test]
-#[ignore = "needs sim::match (sim/match.lua), not yet ported"]
 fn same_seed_produces_the_identical_match() {
-    unimplemented!("requires sim::match::new/step, run for 600 ticks");
+    let tune = Tuning::new();
+    fn play(seed: f64, tune: &Tuning) -> MatchState {
+        let mut s = new_match(seed);
+        let mut b = bot::new(BotOptions {
+            seed: Some(seed),
+            ..Default::default()
+        });
+        for _ in 0..600 {
+            // 10 seconds
+            let view = to_bot_view(&s);
+            let input = bot::input(&mut b, &view, DT, tune);
+            sim_match::step(&mut s, DT, StepInput::Legacy(input), None, tune);
+        }
+        s
+    }
+    let a = play(7.0, &tune);
+    let c = play(7.0, &tune);
+    assert!((a.ball.x - c.ball.x).abs() <= 1e-9);
+    assert!((a.ball.y - c.ball.y).abs() <= 1e-9);
+    assert_eq!(a.score.home, c.score.home);
+    assert_eq!(a.score.away, c.score.away);
+    for (pa, pc) in a.players.iter().zip(c.players.iter()) {
+        assert!((pa.pos.x - pc.pos.x).abs() <= 1e-9);
+        assert!((pa.pos.y - pc.pos.y).abs() <= 1e-9);
+    }
 }
 
-/// Blocked on `sim::match`, same as above.
 #[test]
-#[ignore = "needs sim::match (sim/match.lua), not yet ported"]
 fn keeps_the_controlled_player_active_not_a_statue() {
-    unimplemented!("requires sim::match::new/step, run for 600 ticks");
+    let tune = Tuning::new();
+    let mut s = new_match(3.0);
+    let mut b = bot::new(BotOptions {
+        seed: Some(3.0),
+        ..Default::default()
+    });
+    let mut moved_frames = 0;
+    for _ in 0..600 {
+        let view = to_bot_view(&s);
+        let input = bot::input(&mut b, &view, DT, &tune);
+        if input.r#move.x != 0.0 || input.r#move.y != 0.0 {
+            moved_frames += 1;
+        }
+        sim_match::step(&mut s, DT, StepInput::Legacy(input), None, &tune);
+    }
+    assert!(moved_frames > 300, "the bot steers most frames");
 }
