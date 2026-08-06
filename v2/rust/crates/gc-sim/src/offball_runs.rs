@@ -11,6 +11,15 @@ use crate::outfield_decision;
 use gc_core::vec2::Vec2;
 use gc_data::formations::{self, FormationRole};
 
+/// Schema version of this module's declared surface, from
+/// `sim/offball_runs.lua:44` (`offball_runs.VERSION = 1`).
+///
+/// It is part of the hashed policy identity assembled by
+/// [`crate::outfield_ai_policy`], so bumping it deliberately invalidates the
+/// frozen `outfield_ai_baseline` fixture. That is the point: a change to this
+/// module's declared surface should not silently keep an old baseline valid.
+pub const VERSION: u32 = 1;
+
 /// Which side a team plays, and therefore which way it attacks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Team {
