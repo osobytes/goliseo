@@ -4,9 +4,14 @@
 // verbatim below (content.ts's header explains why this package receives
 // rather than imports `data/**`). The Lua spec's final case,
 // "only offers formations accepted by the match simulation", drives
-// `sim.match.new` directly — `sim/**` is Rust-owned (`crates/gc-sim`,
-// v2/README.md §2) with no TypeScript bridge in this milestone, so it is
-// ported as `it.skip`; see that test for what would unblock it.
+// `sim.match.new` directly — `sim/**` is Rust-owned (`crates/gc-sim`).
+// `@gc/wasm` now bridges `gc-sim` into TypeScript (v2/README.md §1), but
+// `@gc/screens` (this package, "pure layout/update, no drawing" per its own
+// description) does not declare `@gc/wasm` as a dependency and should not
+// gain one just to reach a sim constructor — that dependency direction
+// belongs to a screen's host/assembly layer (`@gc/app`), not to a layout
+// module. Still ported as `it.skip`; see that test for what would unblock
+// it.
 
 import { describe, expect, it } from "vitest";
 import { hit } from "@gc/ui";

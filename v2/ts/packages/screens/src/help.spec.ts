@@ -1,28 +1,18 @@
 // Ported from the "renders the help card from the bindings rather than a
 // literal" case in spec/game/input_bindings_spec.lua.
 //
-// That Lua case drives the real `game/input/bindings.lua` end to end
-// through `help.lua`. This package cannot do the same: `@gc/input`
-// (bindings.ts's TypeScript home) is not a declared dependency of
-// `@gc/screens` (help.ts's header explains why), so `@gc/input`'s own port
-// of this same case is `it.skip` in `packages/input/src/bindings.spec.ts`,
-// with a comment pointing here.
+// `@gc/input` (bindings.ts's TypeScript home) IS a declared dependency of
+// `@gc/screens` (see package.json), so the real cross-package assertion is
+// not blocked and is not skipped: `MATCH_REFERENCE` below is read straight
+// from `@gc/input`'s `bindings.reference("match")`, not a transcription,
+// and is driven through this file's real `help.layout`. `@gc/input`'s own
+// `bindings.spec.ts` retired its copy of this case in favor of this one
+// (see the comment there) rather than duplicating the assertion.
 //
-// What *is* fully testable headless, without that dependency, is the
-// property the assertion is actually protecting: that the card is built
-// from whatever `ControlReferenceRow[]` it is handed, never a hand-written
-// string. The first case below transcribes `@gc/input`'s real "match"
-// section rows (bindings.ts's `REFERENCE`, `modifier`/`juke` bindings)
-// verbatim and reproduces the exact Lua assertions (MODIFIER heading, the
-// bound modifier/juke key labels). The second case proves the data-driven
-// property directly: swapping in a different row set changes the rendered
-// card, which a hard-coded string could never do.
-//
-// Reviving the real cross-package assertion (driving the actual
-// `bindings.reference("match")` through this file's `help.layout`) needs
-// `@gc/screens` added as a dependency of `@gc/input` (or vice versa) in
-// package.json — out of scope for this task (see this package's porting
-// report).
+// The second case below is additional coverage this port adds on top of
+// the ported Lua case: it proves the data-driven property directly by
+// swapping in a different row set and checking the rendered card changes
+// with it, which a hard-coded string could never do.
 
 import { describe, expect, it } from "vitest";
 import { hit } from "@gc/ui";
