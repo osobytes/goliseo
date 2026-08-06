@@ -153,6 +153,9 @@ Work an agent correctly declined because it belongs to a layer someone else owns
 | `rig3d/renderer.lua` and its GLSL stage-placement spec block | retired with `renderer.lua` | the spec asserts on hand-written shader text that has no three.js analog |
 | `spec/support/rig3d_palette_snapshots.lua` | Tier 4 visual, opt-in per AGENTS.md §9 | genuinely GPU-bound: needs `love.graphics` canvas rendering, PNG decode and `renderer.lua`. No target spec imports it |
 | 7 skipped assertions in `skeleton.spec.ts` and `geometry.spec.ts` | retired, not deferred | all concern `boneRows`/`ROWS_PER_BONE` and the 11-float `VERTEX_FORMAT` — mechanism that existed only to fit a hand-written GLSL ES 1.00 uniform budget, which three.js's `DataTexture` bone upload removes |
+| **shared cross-language vectors for `diagnostics_schema` / `fnv1a64`** | `gc-netcode` (N3), when it ports `desync_package` | the TS side reimplemented FNV-1a-64 locally. That digest is versioned and travels between peers, so the two implementations must be pinned by a shared vector file — see README §2.2 |
+| 25 skipped tests in `@gc/online` (12 in `net_diagnostics.spec.ts`, all 13 original cases in `match_presentation.spec.ts`) | a wasm-bridge milestone | every one is a cross-boundary integration claim needing a live Rust `match_driver` / rollback session. 6 supplementary unit tests were added against the ported module's own control flow so the port is not wholly unexercised |
+| `fault_campaign.lua`'s `hash_order_probe` | **retired** | it exists because LuaJIT randomizes `pairs()` order per process. JS objects and Maps iterate in insertion order with no equivalent randomization, so the probe has no analog |
 
 ## Findings in the Lua worth revisiting later
 

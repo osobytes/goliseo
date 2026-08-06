@@ -117,6 +117,27 @@ Two boundaries worth restating because they are easy to get backwards:
   rollback correction is presentation. The moment it feeds back into sim state you
   have put non-determinism in the loop.
 
+### 2.2 Modules that must exist in both languages
+
+Three so far, for two different reasons.
+
+**`vec2`** — a 54-line immutable value type. Cheaper to keep twice than to marshal
+across the wasm boundary. Divergence is implausible and harmless.
+
+**`fnv1a64` / `diagnostics_schema`** — these are *not* in that category, and the
+distinction matters. `diagnostics_schema` is a canonical serializer with a
+versioned content digest (`DIGEST = "fnv1a64/v1"`), whose own header states that
+"delimiter-joined or table-order hashing is ambiguous and is forbidden". It is
+consumed by `net_diagnostics` (TypeScript) *and* by `desync_package` (Rust), and a
+desync package is evidence peers exchange. So a digest computed in Rust on one
+client and in TypeScript on another **must agree**.
+
+Duplicating a hash function across two languages is exactly how that stops being
+true. Therefore: whichever side is ported second, **both implementations must be
+pinned by a shared vector file** — a list of inputs and their expected hex digests,
+checked into `v2/tools/lua_reference/` and asserted by a test in each language. A
+duplicate without shared vectors is not acceptable here.
+
 ---
 
 ## 3. Directory layout
