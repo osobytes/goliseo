@@ -142,6 +142,12 @@ Work an agent correctly declined because it belongs to a layer someone else owns
 | `spec/game/transport_relay_spec.lua` second block, "relay topology probe: no peer is the sequencer" | `gc-netcode` (N3) | drives `coordinator`, `match_driver`, `fault_harness`, `input_protocol`, `live_slot`, `match_manifest` — all Rust |
 | `game/transport.lua` (root facade, 62 lines) | **already done** — folded into `@gc/transport`'s `index.ts` | it is a `game/` root file, so `@gc/app` (T11) must NOT port it again |
 | `transport_star_spec.lua`'s "keeps browser and WebRTC APIs out of core, data, and sim" | **retired, not deferred** | it scanned the Lua source tree with `love.filesystem`. In v2 the property is enforced by construction: `gc-sim` is a Rust crate and cannot import a TypeScript package at all |
+| `spec/screens/{lobby,match_screen,match_gamepad,match_rollback_lab,online_match_flow,online_match_model}_spec.lua` | `@gc/screens` (T8) | the six specs for the sim- and netcode-driven screens |
+| `spec/screens/flow_spec.lua` | `@gc/app` (T11) | its subject is `game/flow.lua`, a root file |
+| `game/fake_result.lua` result computation | `@gc/app` (T11) | `fake_match.ts` now takes an already-computed result; the hash logic is app mechanism, not screen data |
+| `menu.ts` `ScreenDef` no longer requires `newState` | whoever wires screens to real content | every screen's `newState` now takes injected content, so one uniform signature no longer fits; `Menu` takes an already-constructed initial state |
+| `formation.spec.ts` "only offers formations accepted by the match simulation" | a wasm-bridge milestone | drives `sim.match.new`, which is Rust |
+| cross-package help-card assertion (driving real `bindings.ts` through `help.ts`) | orchestrator, at a consolidation point | needs a `package.json` dependency edge; the data-driven property itself *is* now tested in `help.spec.ts` |
 
 ## Findings in the Lua worth revisiting later
 
