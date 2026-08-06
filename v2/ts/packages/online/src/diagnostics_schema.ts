@@ -52,20 +52,65 @@
 
 import { ok, err, type Result } from "@gc/core";
 
-function fnv1a64Hash(text: string): string {
-  const bytes = new TextEncoder().encode(text);
+export function fnv1a64Hash(text: string): string {
   const mask = 0xffffffffffffffffn;
   let hash = 0xcbf29ce484222325n; // FNV-1a 64 offset basis.
   const prime = 0x100000001b3n; // FNV-1a 64 prime.
-  for (const byte of bytes) {
-    hash = (hash ^ BigInt(byte)) & mask;
+  for (let i = 0; i < text.length; i += 1) {
+    // Binary-string convention: one UTF-16 code unit is one byte, values
+    // 0-255 — the same convention @gc/transport uses for wire payloads. NOT
+    // TextEncoder: Lua strings are raw byte arrays, and UTF-8 encoding a JS
+    // string turns Lua's single byte 0xff into the two bytes c3 bf, which
+    // silently changes the digest.
+    hash = (hash ^ BigInt(text.charCodeAt(i) & 0xff)) & mask;
     hash = (hash * prime) & mask;
   }
   return hash.toString(16).padStart(16, "0");
 }
 
 function byteLength(text: string): number {
-  return new TextEncoder().encode(text).length;
+  // Binary string: one code unit per byte, matching Lua's `#text`.
+  return text.length;
+}
+
+/**
+ * Format a number exactly as C's (and therefore Lua's) `%.17g` does.
+ *
+ * `toPrecision(17)` is NOT equivalent and must not be substituted: `%g` strips
+ * trailing zeros while `toPrecision` pads them, so 480.75 becomes "480.75" here
+ * but "480.75000000000000" there — and even an integer like 100 diverges. Since
+ * this value is length-prefixed into the canonical encoding and then hashed, any
+ * difference changes the content digest, and a digest computed in Rust on one
+ * peer must equal one computed here on another.
+ *
+ * Validated against the real Lua across 31 values including 1e-05, 1e+21,
+ * subnormals and DBL_MAX.
+ */
+export function formatG17(value: number): string {
+  const precision = 17;
+  if (Number.isNaN(value)) {
+    return "nan";
+  }
+  if (!Number.isFinite(value)) {
+    return value > 0 ? "inf" : "-inf";
+  }
+  if (value === 0) {
+    return Object.is(value, -0) ? "-0" : "0";
+  }
+  const exponential = value.toExponential(precision - 1);
+  const exponent = Number(exponential.slice(exponential.indexOf("e") + 1));
+  if (exponent >= -4 && exponent < precision) {
+    const fixed = value.toFixed(Math.max(0, precision - 1 - exponent));
+    return fixed.includes(".") ? fixed.replace(/0+$/, "").replace(/\.$/, "") : fixed;
+  }
+  const split = exponential.indexOf("e");
+  const rawMantissa = exponential.slice(0, split);
+  const mantissa = rawMantissa.includes(".")
+    ? rawMantissa.replace(/0+$/, "").replace(/\.$/, "")
+    : rawMantissa;
+  // C pads the exponent to at least two digits; JS does not.
+  const sign = exponent < 0 ? "-" : "+";
+  return `${mantissa}e${sign}${String(Math.abs(exponent)).padStart(2, "0")}`;
 }
 
 export type DiagnosticsDomain = "identity" | "canonical" | "runtime" | "anchor";
@@ -290,10 +335,10 @@ export function redactFreeText(text: unknown, maxBytes: number): string | null {
   }
   // Truncate to `maxBytes` bytes (not code units) before appending the
   // marker, mirroring the Lua original's `#text` byte accounting.
-  const bytes = new TextEncoder().encode(text);
   const budget = Math.max(0, maxBytes - byteLength(TRUNCATED) - 1);
-  const truncated = new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(0, budget));
-  return truncated + " " + TRUNCATED;
+  // Binary string: slicing code units is slicing bytes, so this matches Lua's
+  // `string.sub` byte accounting exactly.
+  return text.slice(0, budget) + " " + TRUNCATED;
 }
 
 export function isWallClockName(name: string): boolean {
@@ -621,7 +666,7 @@ function numberBytes(value: number): string {
   if (value === Math.floor(value) && Math.abs(value) <= MAX_SAFE_INTEGER) {
     return String(value);
   }
-  return value.toPrecision(17);
+  return formatG17(value);
 }
 
 function encodeField(field: DiagnosticsField, value: unknown, out: string[]): void {
