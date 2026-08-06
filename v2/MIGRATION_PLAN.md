@@ -148,6 +148,11 @@ Work an agent correctly declined because it belongs to a layer someone else owns
 | `menu.ts` `ScreenDef` no longer requires `newState` | whoever wires screens to real content | every screen's `newState` now takes injected content, so one uniform signature no longer fits; `Menu` takes an already-constructed initial state |
 | `formation.spec.ts` "only offers formations accepted by the match simulation" | a wasm-bridge milestone | drives `sim.match.new`, which is Rust |
 | cross-package help-card assertion (driving real `bindings.ts` through `help.ts`) | orchestrator, at a consolidation point | needs a `package.json` dependency edge; the data-driven property itself *is* now tested in `help.spec.ts` |
+| **add `@types/three` to `packages/render`** — BLOCKER for T6 | orchestrator, at the next consolidation point | three 0.180 ships no type declarations (`"types"` absent, no `.d.ts` in `build/`), so `import * as THREE` fails `TS7016`. Until this lands, no agent can write actual three.js code — rig3d had to emit plain typed vertex data instead of `BufferGeometry`/`SkinnedMesh` |
+| turning rig3d's vertex data into real `THREE.BufferGeometry` / `SkinnedMesh` / `MeshStandardMaterial` | rendering-integration milestone | mechanical once `@types/three` exists; deliberately not faked here |
+| `rig3d/renderer.lua` and its GLSL stage-placement spec block | retired with `renderer.lua` | the spec asserts on hand-written shader text that has no three.js analog |
+| `spec/support/rig3d_palette_snapshots.lua` | Tier 4 visual, opt-in per AGENTS.md §9 | genuinely GPU-bound: needs `love.graphics` canvas rendering, PNG decode and `renderer.lua`. No target spec imports it |
+| 7 skipped assertions in `skeleton.spec.ts` and `geometry.spec.ts` | retired, not deferred | all concern `boneRows`/`ROWS_PER_BONE` and the 11-float `VERTEX_FORMAT` — mechanism that existed only to fit a hand-written GLSL ES 1.00 uniform budget, which three.js's `DataTexture` bone upload removes |
 
 ## Findings in the Lua worth revisiting later
 
