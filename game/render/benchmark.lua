@@ -161,10 +161,17 @@ function benchmark.new(opts)
     -- overhead under the wasm interpreter -- a profiling run accepts it, a
     -- before/after comparison run should not carry it.
     self.char_phases = opts.char_phases and true or false
+    -- #394: the pose LOD under test. Default on (the shipped path); `nolod`
+    -- runs measure full-rate pose evaluation from the same build, exactly as
+    -- `nocache` serves the #393 cache.
+    self.pose_lod = opts.pose_lod ~= false
 
     pitch.rigged_players = self.rigged
     pitch_static.enabled = self.static_cache
     pitch_static.reset()
+    player_renderer_3d.pose_lod = self.pose_lod
+    -- Also drops the #394 pose cache: its entries are weak-keyed on the
+    -- PlayerViews this discards.
     view_state.reset()
 
     self.state = match.new({
@@ -405,6 +412,7 @@ function Benchmark:result()
         char_phases = self.char_phases,
         char = char,
         chars_per_frame_mean = #self.char_counts > 0 and (chars_total / #self.char_counts) or 0,
+        pose_lod = self.pose_lod,
         draw_calls_mean = #self.draw_calls > 0 and (draw_call_total / #self.draw_calls) or 0,
         draw_calls_max = draw_call_max,
         texture_memory_bytes = self.texture_memory,
@@ -556,9 +564,10 @@ function benchmark.emit(result)
             summary_fields(result.scene_dynamic, "scene_dynamic")
         )
             .. string.format(
-                "|static_cache=%s|static_cache_active=%s",
+                "|static_cache=%s|static_cache_active=%s|pose_lod=%s",
                 tostring(result.static_cache),
-                tostring(result.static_cache_active)
+                tostring(result.static_cache_active),
+                tostring(result.pose_lod)
             )
     )
     -- #394: the per-character split, on its own line rather than appended to

@@ -50,12 +50,21 @@ local renderer = require("game.render.rig3d.renderer")
 local skeleton = require("game.render.rig3d.skeleton")
 local clips = require("game.render.rig3d.clips")
 local masks = require("game.render.rig3d.masks")
+local pose_lod = require("game.render.rig3d.pose_lod")
 local proportions = require("game.render.rig3d.proportions")
 local themes = require("game.render.rig3d.themes")
 local body = require("game.render.rig3d.body")
 local view_state = require("game.render.view_state")
 
 local player_renderer_3d = {}
+
+-- Pose level-of-detail (#394), ON by default -- it is the shipped path. When
+-- enabled, a small on-screen character in the plain gait family re-evaluates
+-- its limb pose every other frame and reuses its cached bone rows in between;
+-- the policy (and why it is conservative) lives in rig3d/pose_lod.lua. The
+-- toggle exists so a benchmark pass can measure both paths from one build
+-- (`nolod`), exactly as pitch_static.enabled serves #393.
+player_renderer_3d.pose_lod = true
 
 -- Character height maps to roughly this many player-radii on screen. Tuned so a
 -- rigged player reads at the same visual weight as the billboard it replaces.
@@ -74,6 +83,17 @@ local state = {
     -- players, and Shader:send copies immediately so one buffer is safe.
     bone_rows = {},
 }
+
+-- #394 pose-LOD cache, one entry per live character: the character's own bone
+-- rows (its held pose), a draw counter and a stagger index for the refresh
+-- schedule. Keyed by the character's PlayerView -- the one per-player table
+-- the renderer already receives that survives across frames -- and weak-keyed,
+-- so entries die with their views on view_state.reset() instead of leaking
+-- across matches. Ten entries of 78 four-number rows is a fixed ~3k numbers,
+-- traded for NOT re-deriving them every frame.
+---@type table<table, { rows: number[][], tick: integer, stagger: integer, fresh: boolean }>
+local pose_cache = setmetatable({}, { __mode = "k" })
+local next_stagger = 0
 
 -- Opt-in per-character sub-phase instrumentation (#394), the same pattern as
 -- pitch.phase_sink (#393) one level down: when a sink table is attached, every
@@ -361,12 +381,43 @@ function draw_player(sx, sy, r, color, view, opts)
     local ppm = (r * HEIGHT_IN_RADII * 2) / state.height
     local cam = renderer.characterCamera(sx, sy, ppm, vw, vh, ELEVATION)
 
+    -- #394 pose LOD. The policy decides per draw whether this character's pose
+    -- must be re-evaluated; in between, its own cached bone rows are submitted
+    -- unchanged. Placement is NOT held -- sx/sy, yaw and palette are applied
+    -- fresh below either way, so a held character still moves, turns and
+    -- shrinks smoothly; only its limbs update at the reduced rate. Without a
+    -- view there is nothing stable to key a cache on, so that (rare, e.g. a
+    -- roster id the view tracker has not seen) draws the full path.
+    local rows = state.bone_rows
+    local entry
+    if player_renderer_3d.pose_lod and view then
+        entry = pose_cache[view]
+        if not entry then
+            entry = { rows = {}, tick = -1, stagger = next_stagger, fresh = false }
+            next_stagger = (next_stagger + 1) % 1024
+            pose_cache[view] = entry
+        end
+        entry.tick = entry.tick + 1
+        rows = entry.rows
+    end
+    local refresh = not entry
+        or not entry.fresh
+        or pose_lod.due(entry.tick, entry.stagger, pose_lod.interval(opts, r * HEIGHT_IN_RADII * 2))
+
     local t_pose = clock and clock() or 0
-    local pose = poseFor(view, opts)
-    local t_apply = clock and clock() or 0
-    skeleton.apply(state.rig, pose)
-    local t_rows = clock and clock() or 0
-    skeleton.boneRows(state.rig, state.bone_rows)
+    local t_apply, t_rows
+    if refresh then
+        local pose = poseFor(view, opts)
+        t_apply = clock and clock() or 0
+        skeleton.apply(state.rig, pose)
+        t_rows = clock and clock() or 0
+        skeleton.boneRows(state.rig, rows)
+        if entry then
+            entry.fresh = true
+        end
+    else
+        t_apply, t_rows = t_pose, t_pose
+    end
     local t_submit = clock and clock() or 0
 
     -- Facing: the pitch's +y runs toward the near edge (toward the viewer), and
@@ -380,7 +431,7 @@ function draw_player(sx, sy, r, color, view, opts)
     -- and the material each vertex shades with are both baked into the vertex,
     -- so there is nothing left to iterate here.
     renderer.beginPass(cam, palette)
-    renderer.draw(character.mesh, world, state.bone_rows)
+    renderer.draw(character.mesh, world, rows)
     renderer.endPass()
 
     if sink then

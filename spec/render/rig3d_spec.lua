@@ -734,3 +734,79 @@ t.describe("rig3d shader source", function()
         end
     end)
 end)
+
+t.describe("rig3d pose LOD policy (#394)", function()
+    local pose_lod = require("game.render.rig3d.pose_lod")
+
+    -- A ten-player whole-pitch frame: nobody controlled, plain gaits, small on
+    -- screen. This is the case the LOD exists for.
+    local SMALL = pose_lod.FULL_RATE_HEIGHT_PX - 1
+    ---@param extra table|nil
+    ---@return table
+    local function opts_with(extra)
+        local opts = { pose = { id = "locomotion" } }
+        for key, value in pairs(extra or {}) do
+            opts[key] = value
+        end
+        return opts
+    end
+
+    t.it("holds a small character in the plain gait family", function()
+        t.eq(pose_lod.interval(opts_with(), SMALL), pose_lod.REDUCED_INTERVAL)
+        for _, id in ipairs({ "contain", "run_telegraph", "fatigue", "keeper_shuffle" }) do
+            t.eq(
+                pose_lod.interval({ pose = { id = id } }, SMALL),
+                pose_lod.REDUCED_INTERVAL,
+                id .. " is a plain gait and may be held"
+            )
+        end
+        -- No pose id at all is the plain gait fallback, not an unknown.
+        t.eq(pose_lod.interval({}, SMALL), pose_lod.REDUCED_INTERVAL)
+    end)
+
+    t.it("keeps a close-up character at full rate whatever it is doing", function()
+        t.eq(pose_lod.interval(opts_with(), pose_lod.FULL_RATE_HEIGHT_PX + 1), 1)
+    end)
+
+    t.it("keeps the controlled player at full rate", function()
+        t.eq(pose_lod.interval(opts_with({ controlled = true }), SMALL), 1)
+    end)
+
+    t.it("keeps every simulation-timer-driven action at full rate", function()
+        for _, active in ipairs({
+            { dive = 0.4 },
+            { aerial = 0.2 },
+            { throw = 0.9 },
+            { windup = 0.5 },
+            { holding = true },
+        }) do
+            local opts = opts_with(active)
+            t.eq(pose_lod.interval(opts, SMALL), 1, "active option must force full rate")
+        end
+    end)
+
+    t.it("treats any pose id outside the gait family as full rate", function()
+        -- Includes ids that do not exist yet: an unlisted id must never be
+        -- degraded by accident, so the whitelist fails toward full rate.
+        for _, id in ipairs({ "keeper_stretch", "aerial_bicycle", "combat_windup", "no_such" }) do
+            t.eq(pose_lod.interval({ pose = { id = id } }, SMALL), 1, id)
+        end
+    end)
+
+    t.it("schedules refreshes deterministically from tick and stagger alone", function()
+        -- Interval 1 is always due; interval 2 alternates per character and
+        -- adjacent staggers land on opposite frames, so ten held characters
+        -- split five/five instead of ten/zero.
+        for tick = 0, 5 do
+            t.is_true(pose_lod.due(tick, 0, 1), "full rate is always due")
+            t.eq(pose_lod.due(tick, 0, 2), tick % 2 == 0)
+            t.eq(
+                pose_lod.due(tick, 0, 2),
+                not pose_lod.due(tick, 1, 2),
+                "adjacent staggers must refresh on opposite frames"
+            )
+            -- Pure: the same inputs answer the same way twice.
+            t.eq(pose_lod.due(tick, 3, 2), pose_lod.due(tick, 3, 2))
+        end
+    end)
+end)

@@ -235,6 +235,8 @@ end
 --   `phases` turns on the #394 per-character sub-phase profile (pose, skeleton,
 --   bone rows, submission). Off by default: it costs clock reads per character
 --   per frame, which a comparison run should not carry.
+--   `nolod` disables the #394 pose LOD, so before/after passes for it can be
+--   interleaved from one build; absent, the shipped LOD path is measured.
 --
 -- Vsync is turned off for the run. Left on, frame time is pinned to the refresh
 -- rate and reports 16.67 ms whether the renderer has huge headroom or none.
@@ -268,6 +270,7 @@ if has_flag("--benchmark") then
             rigged = mode ~= "procedural",
             static_cache = not flags["nocache"],
             char_phases = flags["phases"] or false,
+            pose_lod = not flags["nolod"],
         })
     end
     function love.update(dt)
