@@ -10,9 +10,11 @@
 -- invisible at that size while halving the dominant cost. Placement (screen
 -- position, yaw, palette) stays per-frame -- only the LIMB POSE is held.
 --
--- This module is the pure policy: interval selection and the refresh schedule.
--- player_renderer_3d owns the cache itself. Keeping the policy pure keeps it
--- testable headless (AGENTS.md section 9) and keeps the contract visible:
+-- This module is the pure policy AND the cache-entry lifecycle: interval
+-- selection, the refresh schedule, and the per-entry bookkeeping (`step`).
+-- player_renderer_3d owns only the cache table itself and the GPU-facing rows.
+-- Keeping all decisions here, with zero love.* calls, keeps them testable
+-- headless (AGENTS.md section 9) and keeps the contract visible:
 --
 --   * DETERMINISTIC IN ITS INPUTS. The schedule is a function of a
 --     per-character draw counter and a stagger index, never the wall clock, so
@@ -42,9 +44,10 @@ pose_lod.REDUCED_INTERVAL = 2
 -- ids player_renderer_3d resolves to the looping gait clips. Everything else
 -- -- action_pose's whole-body ids (dives, aerials, knockback, stumble), the
 -- combat stances, anything new and unknown -- refreshes at full rate, so an
--- unlisted id can never be degraded by accident.
+-- unlisted id can never be degraded by accident. Public so the spec can pin
+-- the set exhaustively: a dropped or mistyped entry must fail the suite.
 ---@type table<string, boolean>
-local RELAXED_POSE = {
+pose_lod.RELAXED_POSE = {
     locomotion = true,
     contain = true,
     run_telegraph = true,
@@ -56,7 +59,7 @@ local RELAXED_POSE = {
 
 -- How often one character's pose must be re-evaluated, in frames. 1 means
 -- every frame (no hold). Pure: same options and size, same answer.
----@param opts table  -- PlayerRenderOptions (see pitch.lua)
+---@param opts PlayerRenderOptions
 ---@param height_px number  -- the character's on-screen height in pixels
 ---@return integer
 function pose_lod.interval(opts, height_px)
@@ -80,7 +83,7 @@ function pose_lod.interval(opts, height_px)
         return 1
     end
     local id = opts.pose and opts.pose.id
-    if id ~= nil and not RELAXED_POSE[id] then
+    if id ~= nil and not pose_lod.RELAXED_POSE[id] then
         return 1
     end
     return pose_lod.REDUCED_INTERVAL
@@ -102,6 +105,51 @@ function pose_lod.due(tick, stagger, interval)
         return true
     end
     return (tick + stagger) % interval == 0
+end
+
+-- One cached character: its held bone rows, its draw counter, its schedule
+-- offset, and whether the rows have ever been filled.
+---@class PoseLodEntry
+---@field rows number[][]  -- the character's held bone rows (renderer-owned content)
+---@field tick integer     -- this character's own draw counter
+---@field stagger integer  -- schedule offset, assigned round-robin at creation
+---@field fresh boolean    -- false until the rows have been written once
+
+-- Round-robin stagger for the next entry created. Consecutive characters get
+-- consecutive offsets, which at interval 2 lands them on opposite frames.
+local next_stagger = 0
+
+-- The whole cache-entry lifecycle for one character's draw: look up (or
+-- create) its entry in `cache`, advance its draw counter, and decide whether
+-- this draw must re-evaluate the pose.
+--
+-- Returns `refresh = true` when the caller must evaluate and write
+-- `entry.rows` before submitting them; the entry is marked fresh here because
+-- that write is the caller's unconditional next step on a refresh. A brand-new
+-- (or never-filled) entry always refreshes regardless of schedule -- cached
+-- rows that were never written must never reach the GPU.
+--
+-- Pure apart from the entry bookkeeping itself: no love.*, no clock, no
+-- knowledge of what a "view" is beyond being a stable table key. The caller
+-- chooses the cache table (weak-keyed in the renderer, plain in tests).
+---@param cache table<table, PoseLodEntry>
+---@param key table  -- stable per-character identity (the renderer's PlayerView)
+---@param interval integer  -- from pose_lod.interval
+---@return PoseLodEntry entry
+---@return boolean refresh
+function pose_lod.step(cache, key, interval)
+    local entry = cache[key]
+    if not entry then
+        entry = { rows = {}, tick = -1, stagger = next_stagger, fresh = false }
+        next_stagger = (next_stagger + 1) % 1024
+        cache[key] = entry
+    end
+    entry.tick = entry.tick + 1
+    local refresh = not entry.fresh or pose_lod.due(entry.tick, entry.stagger, interval)
+    if refresh then
+        entry.fresh = true
+    end
+    return entry, refresh
 end
 
 return pose_lod

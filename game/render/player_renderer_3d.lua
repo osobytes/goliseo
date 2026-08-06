@@ -84,16 +84,27 @@ local state = {
     bone_rows = {},
 }
 
--- #394 pose-LOD cache, one entry per live character: the character's own bone
--- rows (its held pose), a draw counter and a stagger index for the refresh
--- schedule. Keyed by the character's PlayerView -- the one per-player table
--- the renderer already receives that survives across frames -- and weak-keyed,
--- so entries die with their views on view_state.reset() instead of leaking
--- across matches. Ten entries of 78 four-number rows is a fixed ~3k numbers,
--- traded for NOT re-deriving them every frame.
----@type table<table, { rows: number[][], tick: integer, stagger: integer, fresh: boolean }>
+-- #394 pose-LOD cache, one PoseLodEntry per live character; the whole
+-- lifecycle (create, tick, refresh decision) lives in pose_lod.step so it is
+-- testable headless. Keyed by the character's PlayerView -- the one per-player
+-- table the renderer already receives that survives across frames -- and
+-- weak-keyed, so entries die with their views on view_state.reset() instead of
+-- leaking across matches. Ten entries of 78 four-number rows is a fixed ~3k
+-- numbers, traded for NOT re-deriving them every frame.
+---@type table<table, PoseLodEntry>
 local pose_cache = setmetatable({}, { __mode = "k" })
-local next_stagger = 0
+
+-- #394 engagement evidence: character draws that HELD a cached pose vs
+-- RE-EVALUATED one, counted whenever the LOD path runs. The benchmark zeroes
+-- and reports these, and its gate fails a "lod" run that never held anything
+-- -- the static_cache_active rule again: a feature that silently never engaged
+-- must not be reported as a measurement of that feature.
+---@class PoseLodStats
+---@field held integer
+---@field refreshed integer
+
+---@type PoseLodStats
+player_renderer_3d.lod_stats = { held = 0, refreshed = 0 }
 
 -- Opt-in per-character sub-phase instrumentation (#394), the same pattern as
 -- pitch.phase_sink (#393) one level down: when a sink table is attached, every
@@ -128,7 +139,7 @@ local function metresPerWorldUnit()
     return state.height / (match.PLAYER_RADIUS * HEIGHT_IN_RADII * 2)
 end
 
----@type fun(sx: number, sy: number, r: number, color: number[], view: PlayerView|nil, opts: table)
+---@type fun(sx: number, sy: number, r: number, color: number[], view: PlayerView|nil, opts: PlayerRenderOptions)
 local draw_player
 
 -- Builds the shared rig, the ONE shared character mesh (colour-free), and one
@@ -227,7 +238,7 @@ end
 
 -- Resolves the pose for one player.
 ---@param view PlayerView|nil
----@param opts table
+---@param opts PlayerRenderOptions
 ---@return table
 local function poseFor(view, opts)
     local speed = view and view.speed or 0
@@ -322,7 +333,7 @@ end
 ---@param r number
 ---@param color number[]
 ---@param view PlayerView|nil
----@param opts table
+---@param opts PlayerRenderOptions
 function player_renderer_3d.draw(sx, sy, r, color, view, opts)
     if not build() then
         return
@@ -344,7 +355,7 @@ end
 ---@param r number
 ---@param color number[]
 ---@param view PlayerView|nil
----@param opts table
+---@param opts PlayerRenderOptions
 function draw_player(sx, sy, r, color, view, opts)
     local team = themes.TEAMS[(opts.team == "away") and 2 or 1]
     local character = state.character
@@ -381,28 +392,27 @@ function draw_player(sx, sy, r, color, view, opts)
     local ppm = (r * HEIGHT_IN_RADII * 2) / state.height
     local cam = renderer.characterCamera(sx, sy, ppm, vw, vh, ELEVATION)
 
-    -- #394 pose LOD. The policy decides per draw whether this character's pose
-    -- must be re-evaluated; in between, its own cached bone rows are submitted
-    -- unchanged. Placement is NOT held -- sx/sy, yaw and palette are applied
-    -- fresh below either way, so a held character still moves, turns and
-    -- shrinks smoothly; only its limbs update at the reduced rate. Without a
-    -- view there is nothing stable to key a cache on, so that (rare, e.g. a
+    -- #394 pose LOD. pose_lod.step decides per draw whether this character's
+    -- pose must be re-evaluated; in between, its own cached bone rows are
+    -- submitted unchanged. Placement is NOT held -- sx/sy, yaw and palette are
+    -- applied fresh below either way, so a held character still moves, turns
+    -- and shrinks smoothly; only its limbs update at the reduced rate. Without
+    -- a view there is nothing stable to key a cache on, so that (rare, e.g. a
     -- roster id the view tracker has not seen) draws the full path.
     local rows = state.bone_rows
-    local entry
+    local refresh = true
     if player_renderer_3d.pose_lod and view then
-        entry = pose_cache[view]
-        if not entry then
-            entry = { rows = {}, tick = -1, stagger = next_stagger, fresh = false }
-            next_stagger = (next_stagger + 1) % 1024
-            pose_cache[view] = entry
-        end
-        entry.tick = entry.tick + 1
+        local entry
+        entry, refresh =
+            pose_lod.step(pose_cache, view, pose_lod.interval(opts, r * HEIGHT_IN_RADII * 2))
         rows = entry.rows
+        local stats = player_renderer_3d.lod_stats
+        if refresh then
+            stats.refreshed = stats.refreshed + 1
+        else
+            stats.held = stats.held + 1
+        end
     end
-    local refresh = not entry
-        or not entry.fresh
-        or pose_lod.due(entry.tick, entry.stagger, pose_lod.interval(opts, r * HEIGHT_IN_RADII * 2))
 
     local t_pose = clock and clock() or 0
     local t_apply, t_rows
@@ -412,9 +422,6 @@ function draw_player(sx, sy, r, color, view, opts)
         skeleton.apply(state.rig, pose)
         t_rows = clock and clock() or 0
         skeleton.boneRows(state.rig, rows)
-        if entry then
-            entry.fresh = true
-        end
     else
         t_apply, t_rows = t_pose, t_pose
     end

@@ -170,6 +170,10 @@ function benchmark.new(opts)
     pitch_static.enabled = self.static_cache
     pitch_static.reset()
     player_renderer_3d.pose_lod = self.pose_lod
+    -- #394 engagement counters, zeroed here and again at the warm boundary so
+    -- the reported held/refreshed totals cover exactly the measured window.
+    player_renderer_3d.lod_stats.held = 0
+    player_renderer_3d.lod_stats.refreshed = 0
     -- Also drops the #394 pose cache: its entries are weak-keyed on the
     -- PlayerViews this discards.
     view_state.reset()
@@ -264,6 +268,10 @@ function Benchmark:update()
             -- measured frames are not dominated by warm-up garbage.
             collectgarbage("collect")
             self.warm_memory_kb = collectgarbage("count")
+            -- Engagement counters restart with steady state, so warm-up draws
+            -- cannot pad the reported hold rate.
+            player_renderer_3d.lod_stats.held = 0
+            player_renderer_3d.lod_stats.refreshed = 0
         end
         return
     end
@@ -413,6 +421,10 @@ function Benchmark:result()
         char = char,
         chars_per_frame_mean = #self.char_counts > 0 and (chars_total / #self.char_counts) or 0,
         pose_lod = self.pose_lod,
+        -- #394 engagement evidence: draws that held a cached pose vs draws
+        -- that re-evaluated, over the measured window.
+        pose_lod_held = player_renderer_3d.lod_stats.held,
+        pose_lod_refreshed = player_renderer_3d.lod_stats.refreshed,
         draw_calls_mean = #self.draw_calls > 0 and (draw_call_total / #self.draw_calls) or 0,
         draw_calls_max = draw_call_max,
         texture_memory_bytes = self.texture_memory,
@@ -479,6 +491,13 @@ function benchmark.evaluate(result)
     check(
         not result.static_cache or result.static_cache_active,
         "static-scene cache was requested but never engaged (canvas build failed?)"
+    )
+    -- Same rule again for the #394 pose LOD: a "lod" rigged run in which no
+    -- draw ever held a cached pose measured the full-rate path -- pose_lod=true
+    -- with a zero hold count must fail rather than read as an LOD result.
+    check(
+        not (result.pose_lod and result.rigged_active) or (result.pose_lod_held or 0) > 0,
+        "pose LOD was requested but never held a pose (cache never engaged?)"
     )
     return #failures == 0, failures
 end
@@ -564,10 +583,12 @@ function benchmark.emit(result)
             summary_fields(result.scene_dynamic, "scene_dynamic")
         )
             .. string.format(
-                "|static_cache=%s|static_cache_active=%s|pose_lod=%s",
+                "|static_cache=%s|static_cache_active=%s|pose_lod=%s|pose_lod_held=%d|pose_lod_refreshed=%d",
                 tostring(result.static_cache),
                 tostring(result.static_cache_active),
-                tostring(result.pose_lod)
+                tostring(result.pose_lod),
+                result.pose_lod_held or 0,
+                result.pose_lod_refreshed or 0
             )
     )
     -- #394: the per-character split, on its own line rather than appended to
