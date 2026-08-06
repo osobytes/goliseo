@@ -582,6 +582,36 @@ pub struct EnvInstance {
     /// to `""`), matching what `sim/env.lua`'s `tuning.serialize()` call
     /// reads absent an active F1-panel override.
     pub tune: Tuning,
+    /// Diagnostic: how many times [`env_observation::build`] has been
+    /// called for this instance, across [`observe`] and [`step`]. Never
+    /// affects a hash — modeled on `MatchDriver::snapshot_captures` in
+    /// `gc-netcode`. `spec/sim/env_budget_spec.lua`'s "builds exactly one
+    /// observation ... per slot per step" case proved this by
+    /// monkey-patching `env_observation.build` at runtime, which a Rust
+    /// function cannot be; this counter recovers the same call-count
+    /// invariant directly instead.
+    ///
+    /// `Cell` because [`observe`] only takes `&EnvInstance`; making it
+    /// `&mut` would cascade through call sites that have no other reason to
+    /// need one.
+    pub observation_builds: std::cell::Cell<i64>,
+    /// Diagnostic: how many times [`env_observation::action_view`] has been
+    /// called for this instance, i.e. how many per-slot masks
+    /// [`action_masks`] has built. Never affects a hash; same precedent and
+    /// `Cell` rationale as [`Self::observation_builds`].
+    pub action_views: std::cell::Cell<i64>,
+    /// Diagnostic: how many times this instance's boundary has been
+    /// captured via `match_snapshot::capture` — once at [`reset`], once per
+    /// simulated tick inside [`step`], once per call to the standalone
+    /// [`snapshot`] function, plus any fallback capture
+    /// [`env_observation::EnvObservationContext::redundant_captures`]
+    /// records when the privileged profile could not reuse a donated
+    /// snapshot. Never affects a hash. `spec/sim/env_budget_spec.lua`'s
+    /// "does not re-capture the boundary for the privileged profile" case
+    /// measured this indirectly as an allocation-budget ceiling; this
+    /// counter recovers it as an exact call count: a step's delta on this
+    /// field is `ticks_simulated` regardless of observation profile.
+    pub snapshot_captures: std::cell::Cell<i64>,
 }
 
 /// Construct a fresh episode. Everything the episode depends on is named in
@@ -688,6 +718,10 @@ pub fn reset(
         tune,
         config: normalized,
         state,
+        observation_builds: std::cell::Cell::new(0),
+        action_views: std::cell::Cell::new(0),
+        // One capture already happened just above, for `initial`.
+        snapshot_captures: std::cell::Cell::new(1),
     })
 }
 
@@ -704,6 +738,9 @@ pub fn reset(
 /// invariant [`reset`] already guarantees.
 #[must_use]
 pub fn observe(instance: &EnvInstance) -> env_observation::EnvObservation {
+    instance
+        .observation_builds
+        .set(instance.observation_builds.get() + 1);
     env_observation::build(
         &instance.state,
         instance.combat.as_ref(),
@@ -727,6 +764,7 @@ pub fn observe(instance: &EnvInstance) -> env_observation::EnvObservation {
 pub fn action_masks(instance: &EnvInstance) -> IndexMap<i64, env_action::EnvActionMask> {
     let mut masks = IndexMap::new();
     for &slot in &instance.controlled_slots {
+        instance.action_views.set(instance.action_views.get() + 1);
         let view = env_observation::action_view(
             &instance.state,
             instance.combat.as_ref(),
@@ -742,6 +780,9 @@ pub fn action_masks(instance: &EnvInstance) -> IndexMap<i64, env_action::EnvActi
 /// The current boundary's canonical snapshot.
 #[must_use]
 pub fn snapshot(instance: &EnvInstance) -> MatchSnapshot {
+    instance
+        .snapshot_captures
+        .set(instance.snapshot_captures.get() + 1);
     match_snapshot::capture(&instance.state, instance.combat.as_ref())
 }
 
@@ -1145,6 +1186,9 @@ pub fn step(
         instance.episode_ticks += 1;
         instance.tick = instance.state.input_tick;
         instance.frames.push(effective);
+        instance
+            .snapshot_captures
+            .set(instance.snapshot_captures.get() + 1);
         let captured = match_snapshot::capture(&instance.state, instance.combat.as_ref());
         let hash = match_snapshot::hash(&captured);
         snapshot = Some(captured);
@@ -1210,7 +1254,11 @@ pub fn step(
         .map(|snap| env_observation::EnvObservationContext {
             snapshot: Some(snap.clone()),
             boundary_hash: instance.boundary_hashes.last().cloned(),
+            redundant_captures: std::cell::Cell::new(0),
         });
+    instance
+        .observation_builds
+        .set(instance.observation_builds.get() + 1);
     let observation = env_observation::build(
         &instance.state,
         instance.combat.as_ref(),
@@ -1219,6 +1267,17 @@ pub fn step(
         context.as_ref(),
     )
     .expect("reset guarantees controlled_slots are routable");
+    // Fold in any fallback capture `privileged_view` recorded because the
+    // donated `context` above lacked a snapshot (see
+    // `EnvObservationContext::redundant_captures`'s doc). For a
+    // representative/team profile this is always zero; for privileged it
+    // should also be zero here, since `context.snapshot` is always `Some`
+    // whenever at least one tick was simulated.
+    if let Some(context) = &context {
+        instance
+            .snapshot_captures
+            .set(instance.snapshot_captures.get() + context.redundant_captures.get());
+    }
 
     Ok(EnvStepResult {
         version: STEP_VERSION,

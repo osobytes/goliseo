@@ -563,6 +563,23 @@ pub struct EnvObservationContext {
     pub snapshot: Option<MatchSnapshot>,
     /// An already-computed boundary hash to reuse, if any.
     pub boundary_hash: Option<String>,
+    /// Diagnostic: incremented by [`privileged_view`] when it could not
+    /// reuse a donated snapshot and captured the boundary itself instead.
+    /// Never affects a hash — it exists so "a caller that donates a
+    /// snapshot never pays for a second capture" is a real, checkable
+    /// invariant rather than only a comment. A well-behaved caller that
+    /// always donates a snapshot when one exists (as [`crate::env::step`]
+    /// does) should see this stay at zero; `spec/sim/env_budget_spec.lua`'s
+    /// "does not re-capture the boundary for the privileged profile" case
+    /// measured this indirectly, as an allocation-budget ceiling. This is
+    /// the same property recovered as an exact call count instead — see
+    /// `crate::env::EnvInstance::snapshot_captures`'s doc, which folds this
+    /// counter in after every [`crate::env::step`] call.
+    ///
+    /// `Cell` because [`privileged_view`] only ever holds a shared
+    /// `&EnvObservationContext` — the same reason
+    /// `MatchDriver::snapshot_captures` in `gc-netcode` is a `Cell`.
+    pub redundant_captures: std::cell::Cell<i64>,
 }
 
 /// One controlled slot's complete observation.
@@ -878,9 +895,20 @@ fn privileged_view(
     combat_state: Option<&CombatMatchState>,
     context: Option<&EnvObservationContext>,
 ) -> EnvPrivilegedView {
-    let snapshot = context
-        .and_then(|c| c.snapshot.clone())
-        .unwrap_or_else(|| match_snapshot::capture(state, combat_state));
+    let snapshot = match context.and_then(|c| c.snapshot.clone()) {
+        Some(snapshot) => snapshot,
+        None => {
+            // No donated snapshot was available to reuse: record it (see
+            // `EnvObservationContext::redundant_captures`'s doc) and capture
+            // the boundary ourselves.
+            if let Some(context) = context {
+                context
+                    .redundant_captures
+                    .set(context.redundant_captures.get() + 1);
+            }
+            match_snapshot::capture(state, combat_state)
+        }
+    };
     let boundary_hash = context
         .and_then(|c| c.boundary_hash.clone())
         .unwrap_or_else(|| match_snapshot::hash(&snapshot));
