@@ -158,6 +158,9 @@ Work an agent correctly declined because it belongs to a layer someone else owns
 | `fault_campaign.lua`'s `hash_order_probe` | **retired** | it exists because LuaJIT randomizes `pairs()` order per process. JS objects and Maps iterate in insertion order with no equivalent randomization, so the probe has no analog |
 | `replay.spec.ts` "carries every pose input through capture, celebration, and playback" | `gc-render` (R3) | exercises `render/player_pose.lua`'s `select`/`PRIORITY`, which is Rust. A non-skipped replacement asserts on the field the selector reads, preserving the intent |
 | `benchmark.ts`'s injected `BenchmarkRenderer` / `BenchmarkFixedTimestepDriver` | a wasm-bridge milestone | the Lua harness drives `sim.bot`/`sim.match`/`sim.metrics` and `pitch.draw`/`bloom.draw`; both collapsed to injected ports. `viewState` is wired for real, not stubbed |
+| **deduplicate the match-shaped view structs in `gc-sim`** | whoever ports `sim/match.lua` | three `MatchStateView`, three `MatchPlayerView`, two `MatchInput` — same names, different fields, one crate. See README §5.1 for the two acceptable end states |
+| **deduplicate `EnvObservationProfile`** | whoever ports `sim/env.lua` | declared in both `env_action.rs` and `env_config.rs`. In Lua it was a LuaCATS alias needing no `require`, so the duplication was free; in Rust it is two distinct types that will not unify |
+| 11 `gc-sim` tests deferred on `sim::match` | whoever ports `sim/match.lua` | in `aerial` (3), `bot` (2), `species` (2), `content_construction` (2), `tuning` (1), `fixed_clock` (1). All carry the identical reason string `needs sim::match (sim/match.lua), not yet ported` — grep for it |
 
 ## Findings in the Lua worth revisiting later
 
