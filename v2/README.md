@@ -245,7 +245,29 @@ comment saying why, and report it — never delete it silently.
 6. **`---@class` → `interface`** for data shapes; a `class` only where the Lua used
    metatable OOP with `.new` plus `:` methods. `---@alias` → a union type.
 
-7. **Prefer `readonly` and immutable updates** in pure code. Mirror Lua's
+7. **TypeScript never imports content tables — it receives them.** `data/` is
+   Rust-owned, because most of it feeds the sim. But presentation code legitimately
+   needs the cosmetic half (`loadouts`, `equipment_presentations`,
+   `character_presentations`, `cosmetic_variants`, `arenas`, themes).
+
+   Do **not** solve that by duplicating the tables into TypeScript — that creates
+   two sources of truth for content, and AGENTS.md §8 exists to stop exactly that.
+   Instead, take the tables as an explicit parameter:
+
+   ```ts
+   export function model(state: CombatState, data: CombatPresentationData) { ... }
+   ```
+
+   This keeps the package free of any dependency on Rust sources, makes the eventual
+   wasm data boundary explicit rather than hidden in imports, and is more testable —
+   a spec can pass two different content tables instead of mutating a shared global
+   and restoring it.
+
+   The single shared content schema, generating types for both languages, is a
+   later milestone. Parameter injection is what makes this milestone finishable
+   without pre-empting that design.
+
+8. **Prefer `readonly` and immutable updates** in pure code. Mirror Lua's
    in-place mutation only where the Lua deliberately mutates.
 
 ---
