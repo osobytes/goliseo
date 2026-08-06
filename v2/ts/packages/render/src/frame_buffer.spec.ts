@@ -339,6 +339,161 @@ describe("decode against the Lua reference vector: t200 (after 200 stepped ticks
   });
 });
 
+// `t0`, `t37` and `t200` above are all `event_count = 0` -- a kickoff and two
+// early ticks of a seed-17 match that never produces a discrete `MatchEvent`
+// in that window. So none of `RenderFrameEvents`' fields beyond the empty
+// array itself (`kind`, `save_style`, `style`, `outcome`, `difficulty`,
+// `shot_type`, `keeper_state`, `keeper_depth`, `jumping`, `on_target`) had
+// differential coverage: a defect anywhere in this module's event decoding
+// would have passed every test in this file.
+//
+// The `s1_t*` rows are a SEPARATE match -- same teams, same field, same
+// `slot_input.neutral_match_input()` stepping, but seed 1 instead of 17,
+// chosen because it produces a livelier match (seed 17 stalls after tick
+// ~1083 and never generates another event). See
+// `crates/gc-render/tests/frame_buffer_differential.rs`'s module doc and
+// `v2/tools/lua_reference/capture_frame_buffer_events.lua` for the full
+// account of how these eight ticks were chosen and what they cover.
+describe("decode against the Lua reference vector: the event section (seed-1 match, s1_t*)", () => {
+  it("s1_t226: two events on one tick, both kind-only (press_commit_cover, tackle), same actor", () => {
+    const decoded = decode(row("s1_t226"));
+    expect(decoded.events).toEqual({
+      count: 2,
+      kind: ["press_commit_cover", "tackle"],
+      x: [468.10109073622164, 430.59774200334988],
+      y: [261.25582630265188, 270.08696473417865],
+      slot: [8, 8],
+      save_style: [undefined, undefined],
+      style: [undefined, undefined],
+      outcome: [undefined, undefined],
+      difficulty: [undefined, undefined],
+      shot_type: [undefined, undefined],
+      keeper_state: [undefined, undefined],
+      keeper_depth: [undefined, undefined],
+      jumping: [undefined, undefined],
+      on_target: [undefined, undefined],
+    });
+  });
+
+  it("s1_t294: a reception carries the aerial field group (style, outcome, jumping = false, difficulty)", () => {
+    const decoded = decode(row("s1_t294"));
+    expect(decoded.events).toEqual({
+      count: 1,
+      kind: ["reception"],
+      x: [317.25689487567922],
+      y: [320.25990219214299],
+      slot: [10],
+      save_style: [undefined],
+      style: ["leg_control"],
+      outcome: ["clean"],
+      difficulty: [0.34362326583817743],
+      shot_type: [undefined],
+      keeper_state: [undefined],
+      keeper_depth: [undefined],
+      jumping: [false],
+      on_target: [undefined],
+    });
+  });
+
+  it("s1_t374: a shot carries the keeper field group (shot_type, keeper_state, keeper_depth, on_target = false) and no aerial fields", () => {
+    const decoded = decode(row("s1_t374"));
+    expect(decoded.events).toEqual({
+      count: 1,
+      kind: ["shot"],
+      x: [150.43886345831467],
+      y: [290.45850091974103],
+      slot: [10],
+      save_style: [undefined],
+      style: [undefined],
+      outcome: [undefined],
+      difficulty: [undefined],
+      shot_type: ["ground"],
+      keeper_state: ["set"],
+      keeper_depth: [17.453016776202638],
+      jumping: [undefined],
+      on_target: [false],
+    });
+  });
+
+  it("s1_t393: a claim is kind-only, like a tackle or touch", () => {
+    const decoded = decode(row("s1_t393"));
+    expect(decoded.events.kind).toEqual(["claim"]);
+    expect(decoded.events.slot).toEqual([1]);
+    expect(decoded.events.save_style).toEqual([undefined]);
+    expect(decoded.events.keeper_state).toEqual([undefined]);
+  });
+
+  it("s1_t1236: a juke and a touch on one tick, both kind-only, same actor", () => {
+    const decoded = decode(row("s1_t1236"));
+    expect(decoded.events.kind).toEqual(["juke", "touch"]);
+    expect(decoded.events.slot).toEqual([8, 8]);
+    expect(decoded.events.style).toEqual([undefined, undefined]);
+  });
+
+  it("s1_t1466: a parry carries save_style, keeper_state and keeper_depth, but not on_target", () => {
+    const decoded = decode(row("s1_t1466"));
+    expect(decoded.events).toEqual({
+      count: 1,
+      kind: ["parry"],
+      x: [46.41309480175785],
+      y: [282.17909788915597],
+      slot: [1],
+      save_style: ["central"],
+      style: [undefined],
+      outcome: [undefined],
+      difficulty: [undefined],
+      shot_type: [undefined],
+      keeper_state: ["set"],
+      keeper_depth: [16.515295827250299],
+      jumping: [undefined],
+      on_target: [undefined],
+    });
+  });
+
+  it("s1_t2012: a catch where keeper_depth is exactly 0 -- present, not absent -- while keeper_state is genuinely absent on the same event", () => {
+    const decoded = decode(row("s1_t2012"));
+    expect(decoded.events).toEqual({
+      count: 1,
+      kind: ["catch"],
+      x: [44.81287651599969],
+      y: [286.89927505483251],
+      slot: [1],
+      save_style: ["stretch"],
+      style: [undefined],
+      outcome: [undefined],
+      difficulty: [undefined],
+      shot_type: [undefined],
+      keeper_state: [undefined],
+      keeper_depth: [0],
+      jumping: [undefined],
+      on_target: [undefined],
+    });
+    // The presence flag, not the value, is what distinguishes this from
+    // "keeper_depth absent": both would otherwise decode as falsy.
+    expect(decoded.events.keeper_depth[0]).not.toBeUndefined();
+  });
+
+  it("s1_t2356: a header carries the aerial field group with jumping = true", () => {
+    const decoded = decode(row("s1_t2356"));
+    expect(decoded.events).toEqual({
+      count: 1,
+      kind: ["header"],
+      x: [191.24980382674741],
+      y: [341.00801028559846],
+      slot: [10],
+      save_style: [undefined],
+      style: ["header"],
+      outcome: ["clean"],
+      difficulty: [0.48673093838590087],
+      shot_type: [undefined],
+      keeper_state: [undefined],
+      keeper_depth: [undefined],
+      jumping: [true],
+      on_target: [undefined],
+    });
+  });
+});
+
 describe("decode: header validation (not exercised by the reference vector, which is always well-formed)", () => {
   const words = row("t0").slice();
 
