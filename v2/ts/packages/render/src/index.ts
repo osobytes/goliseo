@@ -9,6 +9,15 @@
 
 export * as rig3d from "./rig3d/index.ts";
 
+// The consumer half of the RenderFrame wire format -- the words the Rust
+// producer writes into wasm linear memory arrive here. Namespaced rather than
+// flattened: `decode`, `LAYOUT_VERSION` and `MAGIC` are far too generic to sit
+// at a package root. Anything driving the sim needs these to read a frame at
+// all, so leaving them off the surface makes the package unusable from
+// outside; that was an oversight, not a deliberate exclusion.
+export * as frameBuffer from "./frame_buffer.ts";
+export type * as frameBufferTypes from "./frame_buffer.ts";
+
 export { camera } from "./camera.ts";
 export { cameraFollow } from "./camera_follow.ts";
 export { viewState } from "./view_state.ts";

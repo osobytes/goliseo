@@ -41,6 +41,9 @@ importers:
       '@gc/ui':
         specifier: workspace:*
         version: link:../ui
+      '@gc/wasm':
+        specifier: workspace:*
+        version: link:../wasm
 
   packages/core: {}
 

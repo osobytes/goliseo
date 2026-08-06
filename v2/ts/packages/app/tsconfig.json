@@ -28,6 +28,9 @@
     },
     {
       "path": "../presentation"
+    },
+    {
+      "path": "../wasm"
     }
   ]
 }

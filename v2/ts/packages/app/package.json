@@ -17,6 +17,7 @@
     "@gc/online": "workspace:*",
     "@gc/input": "workspace:*",
     "@gc/ui": "workspace:*",
-    "@gc/presentation": "workspace:*"
+    "@gc/presentation": "workspace:*",
+    "@gc/wasm": "workspace:*"
   }
 }
