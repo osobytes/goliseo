@@ -2560,12 +2560,13 @@ fn sanitize_run_states(s: &mut MatchState, combat_state: Option<&CombatMatchStat
 
 fn passing_lane_candidates(
     s: &MatchState,
+    team: Team,
     carrier_index: i64,
     pos: &[Vec2],
 ) -> Vec<outfield_press::OutfieldLaneCandidate> {
     let carrier = &s.players[(carrier_index - 1) as usize];
     let carrier_team = carrier.team;
-    let goal = own_goal_center(s, carrier_team);
+    let goal = own_goal_center(s, team);
     let mut candidates = Vec::new();
     let diagonal = (s.field.w * s.field.w + s.field.h * s.field.h).sqrt();
     let mut opponents: Vec<Vec2> = Vec::new();
@@ -2600,12 +2601,13 @@ fn passing_lane_candidates(
 
 fn lane_shadow_target(
     s: &MatchState,
+    team: Team,
     carrier_index: i64,
     base: Vec2,
     pos: &[Vec2],
     hold: bool,
 ) -> Vec2 {
-    let candidates = passing_lane_candidates(s, carrier_index, pos);
+    let candidates = passing_lane_candidates(s, team, carrier_index, pos);
     if hold {
         outfield_press::lane_hold_target(base, pos[(carrier_index - 1) as usize], &candidates)
     } else {
@@ -2847,7 +2849,7 @@ fn offball_targets(
                     let base = ai::interpose(cpos, goal, COVER_FRAC);
                     targets.insert(
                         cover,
-                        lane_shadow_target(s, carrier_index, base, pos, false),
+                        lane_shadow_target(s, team, carrier_index, base, pos, false),
                     );
                 }
             }
@@ -2874,6 +2876,7 @@ fn offball_targets(
                             idx,
                             lane_shadow_target(
                                 s,
+                                team,
                                 carrier_index,
                                 pos[(idx - 1) as usize],
                                 pos,

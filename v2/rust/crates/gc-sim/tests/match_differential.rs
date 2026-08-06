@@ -10,21 +10,25 @@
 //! NO_INPUT)` 600 times (10 real-time seconds) and printing, every tick
 //! (including tick 0, before any step): `ball.x`, `ball.y`, `ball_vel.x`,
 //! `ball_vel.y`, `ball_z`, `ball_vz`, `owner` (-1 for a loose ball),
-//! `score.home`, `score.away`, `rng`, `players[1].pos.{x,y}` (home
-//! keeper), `players[6].pos.{x,y}` (away keeper) — floats via `%.17g`,
-//! which round-trips binary64 exactly.
+//! `score.home`, `score.away`, `rng`, then `players[i].pos.{x,y}` for
+//! `i` = 1 through 10 (every outfielder and both keepers) — floats via
+//! `%.17g`, which round-trips binary64 exactly.
 //!
 //! Every field is compared at every tick (not just the last), and floats
 //! are compared by bit pattern (`f64::to_bits`) after parsing, not by
 //! printed text — see the porting README's warning that a divergence which
 //! self-corrects a tick later is still a desync.
 
-use gc_core::vec2::Vec2;
 use gc_sim::r#match::{self as sim_match, NewMatchOptions, StepInput};
 use gc_sim::match_snapshot::PitchSize;
 use gc_sim::tuning::Tuning;
 
 const FIXTURE: &str = include_str!("fixtures/match_step_ai_ai_lua_reference.txt");
+
+const PLAYER_COUNT: usize = 10;
+/// Field count: 11 scalar fields (tick, 6 ball fields, owner, 2 scores, rng)
+/// plus 2 (x, y) per player.
+const FIELD_COUNT: usize = 11 + PLAYER_COUNT * 2;
 
 struct Row {
     tick: i64,
@@ -38,15 +42,21 @@ struct Row {
     score_home: i64,
     score_away: i64,
     rng: u32,
-    p1_x: f64,
-    p1_y: f64,
-    p6_x: f64,
-    p6_y: f64,
+    players: [(f64, f64); PLAYER_COUNT],
 }
 
 fn parse_row(line: &str) -> Row {
     let f: Vec<&str> = line.split('\t').collect();
-    assert_eq!(f.len(), 15, "fixture row must have 15 tab-separated fields");
+    assert_eq!(
+        f.len(),
+        FIELD_COUNT,
+        "fixture row must have {FIELD_COUNT} tab-separated fields"
+    );
+    let mut players = [(0.0_f64, 0.0_f64); PLAYER_COUNT];
+    for (i, slot) in players.iter_mut().enumerate() {
+        let base = 11 + i * 2;
+        *slot = (f[base].parse().unwrap(), f[base + 1].parse().unwrap());
+    }
     Row {
         tick: f[0].parse().unwrap(),
         ball_x: f[1].parse().unwrap(),
@@ -59,10 +69,7 @@ fn parse_row(line: &str) -> Row {
         score_home: f[8].parse().unwrap(),
         score_away: f[9].parse().unwrap(),
         rng: f[10].parse().unwrap(),
-        p1_x: f[11].parse().unwrap(),
-        p1_y: f[12].parse().unwrap(),
-        p6_x: f[13].parse().unwrap(),
-        p6_y: f[14].parse().unwrap(),
+        players,
     }
 }
 
@@ -77,14 +84,6 @@ fn assert_bits_eq(actual: f64, expected: f64, tick: i64, field: &str) {
 }
 
 #[test]
-#[ignore = "known divergence at tick 260 (root cause: away outfielder index 8's x position \
-            first splits from the Lua reference at tick 134, magnitude ~0.03px, before any \
-            collection/RNG/aerial branch differs — see the porting agent's final report for the \
-            debugging trail and the list of suspected call sites (off-ball AI movement for \
-            outfielders: support_target/marker_target/offball_targets). Ball physics, RNG draw \
-            order, and both keepers' positions are bit-exact through the full 600 ticks; the gap \
-            is isolated to one outfield movement formula. Left failing (not deleted) so the next \
-            agent has the fixture and a precise repro."]
 fn match_step_matches_lua_tick_by_tick_for_a_600_tick_ai_vs_ai_match() {
     let tune = Tuning::new();
     let home = gc_data::teams::get("nebula").expect("nebula team is authored");
@@ -142,12 +141,13 @@ fn match_step_matches_lua_tick_by_tick_for_a_600_tick_ai_vs_ai_match() {
             "tick {tick}: score.away mismatch"
         );
         assert_eq!(s.rng, row.rng, "tick {tick}: rng state mismatch");
-        assert_bits_eq(s.players[0].pos.x, row.p1_x, tick, "players[1].pos.x");
-        assert_bits_eq(s.players[0].pos.y, row.p1_y, tick, "players[1].pos.y");
-        assert_bits_eq(s.players[5].pos.x, row.p6_x, tick, "players[6].pos.x");
-        assert_bits_eq(s.players[5].pos.y, row.p6_y, tick, "players[6].pos.y");
+        for (i, &(px, py)) in row.players.iter().enumerate() {
+            let field_x = format!("players[{}].pos.x", i + 1);
+            let field_y = format!("players[{}].pos.y", i + 1);
+            assert_bits_eq(s.players[i].pos.x, px, tick, &field_x);
+            assert_bits_eq(s.players[i].pos.y, py, tick, &field_y);
+        }
         compared += 1;
     }
     assert_eq!(compared, 601);
-    let _ = Vec2::new(0.0, 0.0); // keep gc_core::vec2 import meaningful if unused elsewhere
 }
