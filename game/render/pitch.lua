@@ -31,6 +31,18 @@ pitch.follow_camera = false
 local HEX_RADIUS = 26 -- world units, centre to corner
 local NET_BACK_FRAC = 0.55 -- back frame height as a fraction of the crossbar
 
+-- Opt-in per-phase instrumentation (#393). When a sink table is attached,
+-- pitch.draw splits its cost into the static scene (backdrop, floor, markings,
+-- goals -- everything that cannot change while a match runs) and the dynamic
+-- rest (players, ball, effects, overlays), writing seconds into the sink every
+-- call. nil (the default) costs two branches per frame and nothing else.
+---@class PitchPhaseSink
+---@field scene_static_s number?
+---@field scene_dynamic_s number?
+
+---@type PitchPhaseSink?
+pitch.phase_sink = nil
+
 -- Per-match theming and screen-space presentation. Deliberately NOT part of the
 -- render frame: colours, arena art and the combat-feedback camera shake are
 -- renderer concerns the simulation knows nothing about.
@@ -192,6 +204,13 @@ function pitch.draw(frame, vp, opts)
         return sx + (offset and offset.x or 0), sy + (offset and offset.y or 0), scale
     end
 
+    -- Phase timer (#393): sink attached and a real clock available.
+    local sink = pitch.phase_sink
+    if sink and not (love.timer and love.timer.getTime) then
+        sink = nil
+    end
+    local static_started = sink and love.timer.getTime() or 0
+
     arena_render.draw_backdrop(arena, vp)
 
     -- Pitch surface (projected trapezoid).
@@ -316,6 +335,9 @@ function pitch.draw(frame, vp, opts)
     local goal_home, goal_away = field.goal_home, field.goal_away
     draw_goal(goal_home, opts.home_color, goal_home.x + goal_home.w, goal_home.x)
     draw_goal(goal_away, opts.away_color, goal_away.x, goal_away.x + goal_away.w)
+
+    -- Everything above this line is the static scene; everything below moves.
+    local static_done = sink and love.timer.getTime() or 0
 
     -- Ball trail sits on the ground, under the entities.
     effects.draw_trail(project)
@@ -449,6 +471,11 @@ function pitch.draw(frame, vp, opts)
 
     -- Flashes/sparks ride on top of everything.
     effects.draw_over(project)
+
+    if sink then
+        sink.scene_static_s = static_done - static_started
+        sink.scene_dynamic_s = love.timer.getTime() - static_done
+    end
 end
 
 return pitch

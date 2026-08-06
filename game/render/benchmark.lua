@@ -167,6 +167,12 @@ function benchmark.new(opts)
     self.update_samples = {}
     self.draw_samples = {}
     self.frame_samples = {}
+    -- #393: pitch.draw's own static/dynamic split, so "the scene is the cost"
+    -- can be confirmed (or refuted) per runtime instead of estimated.
+    self.scene_static_samples = {}
+    self.scene_dynamic_samples = {}
+    self.phase_sink = {}
+    pitch.phase_sink = self.phase_sink
     self.draw_calls = {}
     -- Which pose ids the fixture actually exercised. Reported rather than
     -- asserted: a benchmark that silently covered only locomotion would look
@@ -269,6 +275,12 @@ function Benchmark:draw()
 
     if self.warmed then
         self.draw_samples[#self.draw_samples + 1] = draw_seconds
+        if self.phase_sink.scene_static_s then
+            self.scene_static_samples[#self.scene_static_samples + 1] =
+                self.phase_sink.scene_static_s
+            self.scene_dynamic_samples[#self.scene_dynamic_samples + 1] =
+                self.phase_sink.scene_dynamic_s
+        end
         local stats = love.graphics.getStats and love.graphics.getStats() or nil
         if stats then
             self.draw_calls[#self.draw_calls + 1] = stats.drawcalls or 0
@@ -323,6 +335,8 @@ function Benchmark:result()
         update = summarise(self.update_samples),
         draw = summarise(self.draw_samples),
         frame = summarise(self.frame_samples),
+        scene_static = summarise(self.scene_static_samples),
+        scene_dynamic = summarise(self.scene_dynamic_samples),
         draw_calls_mean = #self.draw_calls > 0 and (draw_call_total / #self.draw_calls) or 0,
         draw_calls_max = draw_call_max,
         texture_memory_bytes = self.texture_memory,
@@ -337,6 +351,8 @@ function Benchmark:result()
         raw_update_us = self.update_samples,
         raw_draw_us = self.draw_samples,
         raw_frame_us = self.frame_samples,
+        raw_scene_static_us = self.scene_static_samples,
+        raw_scene_dynamic_us = self.scene_dynamic_samples,
     }
 end
 
@@ -441,9 +457,12 @@ function benchmark.emit(result)
             result.players
         )
     )
+    -- The #393 phase fields ride at the END of the existing RESULT line: the
+    -- browser harness's decoder reads pipe-delimited key=value pairs by name,
+    -- so appended keys are backward-compatible where a reshaped line is not.
     print(
         string.format(
-            "GC_BENCH_RESULT|renderer=%s|rigged_active=%s|seed=%d|warmup_frames=%d|measured_frames=%d|%s|%s|%s|draw_calls_mean=%.1f|draw_calls_max=%d|texture_memory=%d|lua_kb_warm=%.0f|lua_kb_end=%.0f|state_hash=%s",
+            "GC_BENCH_RESULT|renderer=%s|rigged_active=%s|seed=%d|warmup_frames=%d|measured_frames=%d|%s|%s|%s|draw_calls_mean=%.1f|draw_calls_max=%d|texture_memory=%d|lua_kb_warm=%.0f|lua_kb_end=%.0f|state_hash=%s|%s|%s",
             result.renderer,
             tostring(result.rigged_active),
             result.seed,
@@ -457,7 +476,9 @@ function benchmark.emit(result)
             result.texture_memory_bytes or 0,
             result.lua_memory_warm_kb or 0,
             result.lua_memory_end_kb or 0,
-            result.final_state_hash or "?"
+            result.final_state_hash or "?",
+            summary_fields(result.scene_static, "scene_static"),
+            summary_fields(result.scene_dynamic, "scene_dynamic")
         )
     )
     -- Raw samples so a reviewer can recompute every percentile rather than
@@ -466,6 +487,8 @@ function benchmark.emit(result)
         update = result.raw_update_us,
         draw = result.raw_draw_us,
         frame = result.raw_frame_us,
+        scene_static = result.raw_scene_static_us,
+        scene_dynamic = result.raw_scene_dynamic_us,
     }) do
         print(
             string.format(
