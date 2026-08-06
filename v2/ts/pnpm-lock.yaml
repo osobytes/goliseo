@@ -111,6 +111,12 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/wasm:
+    devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.2
+
 packages:
 
   '@dimforge/rapier3d-compat@0.12.0':
