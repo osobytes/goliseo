@@ -235,6 +235,29 @@ comment saying why, and report it — never delete it silently.
 10. **`#![deny(missing_docs)]` is on.** Every public item needs a doc comment.
    Port the Lua comment where one exists rather than inventing prose.
 
+### 5.1 Match-shaped "view" structs, and the debt they create
+
+Porting `sim/` bottom-up means modules that *read* match state are ported before
+`sim/match.lua` exists. In Lua that was invisible: duck typing let each module
+read whatever fields it needed off one shared table. Rust has no such escape, so
+each module declares a local struct — `metrics`, `bot` and `aerial` have each
+grown their own `MatchStateView` / `MatchPlayerView` / `MatchInput`.
+
+That is the correct short-term move and it is what unblocked three agents in
+parallel. It is also duplication: three structs with the same name and different
+fields inside one crate.
+
+**Whoever ports `sim/match.lua` owns resolving this.** Two acceptable end states:
+
+1. The views are replaced by the real `r#match` types.
+2. The views survive as *deliberately* narrow read interfaces — `bot` genuinely
+   should not see all of `MatchState` — but then they live in **one** shared
+   module and are declared once, not three times under the same name.
+
+What is not acceptable is leaving three same-named structs in place and calling
+it done. Each currently carries an adapter note in its module doc comment; those
+notes are the checklist.
+
 ---
 
 ## 6. Porting rules — Lua → TypeScript
