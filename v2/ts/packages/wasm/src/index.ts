@@ -23,15 +23,23 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type {
+  Coordinator,
+  CoordinatorConstructor,
   ControlMessageHeader,
   DeterminismEvidence,
   GcWasmModule,
+  MatchDriverBridge,
+  MatchDriverBridgeConstructor,
   SimSessionConstructor,
 } from "./types.ts";
 
 export type {
+  Coordinator,
+  CoordinatorConstructor,
   ControlMessageHeader,
   DeterminismEvidence,
+  MatchDriverBridge,
+  MatchDriverBridgeConstructor,
   RawExports,
   SimSession,
   SimSessionConstructor,
@@ -46,6 +54,14 @@ const artifactPath = join(here, "..", "dist", "pkg", "gc_wasm.cjs");
 export interface SimHost {
   /** Constructs a live match session. See `SimSession`'s doc. */
   readonly Session: SimSessionConstructor;
+  /** Constructs a session coordinator (host or guest). See `Coordinator`'s
+   * doc — `crates/gc-wasm/src/coordinator_bridge.rs`'s wave-2 bridge over
+   * `gc_netcode::coordinator`'s reducer. */
+  readonly Coordinator: CoordinatorConstructor;
+  /** Constructs one peer's online match driver. See `MatchDriverBridge`'s
+   * doc — `crates/gc-wasm/src/match_driver_bridge.rs`'s wave-2 bridge over
+   * `gc_netcode::match_driver` and its `gc_sim::rollback_events` feed. */
+  readonly MatchDriverBridge: MatchDriverBridgeConstructor;
   /** This build's protocol vocabulary id, for lobby version negotiation. */
   protocolVocabularyId(): string;
   /** Decodes a control message's routing header (kind/session/peer/
@@ -104,6 +120,8 @@ export function loadSimHost(): SimHost {
   const raw = native.__wbg_raw;
   const host: SimHost = {
     Session: native.Session,
+    Coordinator: native.Coordinator,
+    MatchDriverBridge: native.MatchDriverBridge,
     protocolVocabularyId: native.protocolVocabularyId,
     decodeControlMessageHeader: native.decodeControlMessageHeader,
     runDeterminismEvidence: native.runDeterminismEvidence,

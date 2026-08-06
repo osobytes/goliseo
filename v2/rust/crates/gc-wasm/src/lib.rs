@@ -40,10 +40,61 @@
 //! (wire encode/decode, the vocabulary digest) and therefore bind cleanly
 //! with no new serialization code. Wrapping the full coordinator reducer is
 //! flagged as follow-up in this crate's own report, not silently skipped.
+//!
+//! ## Wave 2: the netcode surface (coordinator, match driver, rollback events)
+//!
+//! Wave 1 (above) deliberately left `gc_netcode::coordinator`'s reducer
+//! unbound: its types carry no `serde` impls, and bridging them was flagged
+//! as follow-up. This wave does that follow-up, plus `gc_netcode::match_driver`
+//! and `gc_sim::rollback_events`, and it settles the question wave 1 raised:
+//! **hand-written, not `serde`.**
+//!
+//! [`json`] is this wave's whole answer: a small, dependency-free JSON
+//! reader/writer, scoped to exactly the shapes these three reducers need.
+//! `protocol::Value`'s public constructors (`record`/`array`/`str`/`int`/
+//! `bool`/`get`/`set`) and `CoordinatorState`/`Event`/every coordinator
+//! struct's already-`pub` fields (README rule: "enum variant fields are
+//! always as visible as the enum itself" — nothing needed a visibility
+//! change) turned out to be sufficient to build every value this wave binds,
+//! entirely from *this* crate, without touching `gc-netcode/src/**` at all.
+//! Adding `serde` derives to `CoordinatorState`/`Event` would have meant
+//! either deriving on a type deliberately kept `HashMap`-free/wire-shaped
+//! for reasons `protocol.rs`'s own doc explains at length, or hand-rolling
+//! the same field mapping this crate's `json.rs` already does — with the
+//! added risk of a `Deserialize` impl being reachable from *inside*
+//! `gc-netcode`, where the determinism-path discipline lives, rather than
+//! confined to this crate's glue. See [`json`]'s doc for the full argument.
+//!
+//! [`net_inbox`] is the queue/drain seam every network-facing module here is
+//! built on — read that module's doc first; [`coordinator_bridge`] and
+//! [`wasm_transport`] (used by [`match_driver_bridge`]) are both instances
+//! of the same discipline, not two independent designs.
+//!
+//! [`match_driver_bridge`] reuses `gc_netcode::match_driver_fixture::DriverRules`
+//! as its [`gc_netcode::match_driver::MatchDriverRules`] implementation
+//! rather than writing a new one — that module's own doc says plainly it is
+//! "the real `MatchDriverRules` implementation," delegating to
+//! `live_slot`/`coordinator` and carrying a genuine port of
+//! `input_protocol.canonical_host_batch`, despite living in a file named
+//! `_fixture`. Reimplementing it here would be exactly the duplication
+//! README rule 5.1 warns against.
+//!
+//! [`rollback_events_bridge`] feeds a match driver's own tick outputs
+//! (already real Rust values, same process, same call stack) into
+//! `gc_sim::rollback_events` directly — nothing about a `MatchSnapshot`
+//! ever needs to serialize to JSON, since the timeline lives entirely on
+//! this side of the wasm boundary and only its *diff* (added/revoked/
+//! replaced presentation events) crosses to JS.
 #![deny(missing_docs)]
 
+pub mod coordinator_bridge;
 pub mod determinism;
+pub mod json;
+pub mod match_driver_bridge;
+pub mod net_inbox;
 pub mod protocol_bridge;
 pub mod registry;
 pub mod render_export;
+pub mod rollback_events_bridge;
 pub mod session;
+pub mod wasm_transport;

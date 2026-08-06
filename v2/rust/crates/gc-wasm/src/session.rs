@@ -245,6 +245,22 @@ impl Session {
     }
 }
 
+impl Session {
+    /// Captures this session's current boundary snapshot
+    /// (`gc_sim::match_snapshot::capture`), for
+    /// `crate::match_driver_bridge`'s online match construction: a
+    /// [`gc_netcode::match_driver::MatchDriver`] is built from a boundary-zero
+    /// snapshot the same way `sim_match::new` builds one here, and reusing
+    /// this crate's own already-tested team/ownership resolution (rather
+    /// than re-deriving it from a manifest's content id — see that module's
+    /// doc for why online content resolution beyond team roster selection is
+    /// out of this wave's scope) is cheaper and no less correct than
+    /// building a second path to the same state.
+    pub(crate) fn capture_snapshot(&self) -> match_snapshot::MatchSnapshot {
+        self.with_entry(|entry| match_snapshot::capture(&entry.state, None))
+    }
+}
+
 /// Build a [`RenderFrameOptions`] that reuses `entry`'s cached roster
 /// instead of rebuilding it every frame. Shared with
 /// [`crate::render_export`].

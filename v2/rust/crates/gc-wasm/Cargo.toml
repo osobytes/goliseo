@@ -19,6 +19,7 @@ gc-data.workspace = true
 gc-sim.workspace = true
 gc-render.workspace = true
 gc-netcode.workspace = true
+indexmap.workspace = true
 # Pinned to the exact `wasm-bindgen-cli` binary installed in this
 # environment (`wasm-bindgen --version` => 0.2.118). The CLI refuses to
 # process a module built against any other 0.2.x: it checks the schema

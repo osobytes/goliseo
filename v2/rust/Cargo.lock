@@ -74,6 +74,7 @@ dependencies = [
  "gc-netcode",
  "gc-render",
  "gc-sim",
+ "indexmap",
  "wasm-bindgen",
 ]
 
