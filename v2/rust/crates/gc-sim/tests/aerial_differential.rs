@@ -42,7 +42,7 @@ fn reference() -> IndexMap<&'static str, &'static str> {
 }
 
 fn expect<'a>(reference: &IndexMap<&'a str, &'a str>, key: &str) -> &'a str {
-    *reference
+    reference
         .get(key)
         .unwrap_or_else(|| panic!("missing reference value for {key}"))
 }

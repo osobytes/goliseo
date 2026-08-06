@@ -183,7 +183,9 @@ fn omp1_input_frame_quantizes_movement_with_fixed_saturation_rounding_and_decode
     assert!((decoded_x - -64.0 / 127.0).abs() < 1e-6);
     assert!((decoded_y - 64.0 / 127.0).abs() < 1e-6);
 
-    let err = input_frame::quantize_axis(0.0 / 0.0).unwrap_err();
+    // The Lua spec writes this as 0/0; f64::NAN is the same value, and clippy
+    // rejects the literal division as an always-NaN constant expression.
+    let err = input_frame::quantize_axis(f64::NAN).unwrap_err();
     assert_eq!(err.code, InputFrameErrorCode::Malformed);
 }
 

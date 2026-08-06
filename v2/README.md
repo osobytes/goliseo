@@ -352,6 +352,12 @@ specific thing that makes three.js viable in this configuration.
 
 ## 8. Commands
 
+**Run the workspace gate, not just your own targets.** `cargo clippy -p gc-sim
+--test my_test` passing is not the same as `cargo clippy --workspace
+--all-targets` passing, and two committed lints got through exactly that way.
+This is the same trap AGENTS.md §9 names for harnesses: a scoped check is not the
+check. Before declaring done, run the full commands below.
+
 ```bash
 cd v2/rust && cargo test          # Rust unit + integration tests
 cd v2/rust && cargo clippy --all-targets -- -D warnings
