@@ -43,7 +43,8 @@ If yes it is Rust, even when it feels like presentation.
 | Lua source | → | v2 home |
 | --- | --- | --- |
 | `core/rng.lua`, `core/deterministic_math.lua`, `core/fnv1a64.lua` | Rust | `crates/gc-core` |
-| `core/vec2.lua`, `core/mat4.lua`, `core/quat.lua` | TS | `packages/core` |
+| `core/vec2.lua` | **both** | `crates/gc-core` *and* `packages/core` |
+| `core/mat4.lua`, `core/quat.lua` | TS | `packages/core` |
 | `data/**` | Rust | `crates/gc-data` |
 | `sim/**` | Rust | `crates/gc-sim` |
 | `render/**` (the RenderFrame *producer*) | Rust | `crates/gc-render` |
@@ -57,9 +58,20 @@ If yes it is Rust, even when it feels like presentation.
 | `game/transport/**` | TS | `packages/transport` |
 | `game/` root files | TS | `packages/app` |
 
-`sim/` requires exactly two `core/` modules — `core.rng` (8 call sites) and
-`core.deterministic_math` (1). `core/mat4` is presentation-only: neither `sim/`
-nor `render/` ever requires it. That is why `core/` splits rather than moving.
+`core/` splits rather than moving wholesale, but not evenly. The `require` graph
+says `sim/` pulls in **four** core modules: `rng`, `deterministic_math`,
+`fnv1a64`, and — the one that is easy to miss — `vec2`, used by fifteen sim
+modules including `match`, `match_snapshot`, `keeper`, `combat` and `slot_input`.
+All four are therefore in `gc-core`.
+
+`vec2` consequently exists on **both** sides: Rust for the sim, TypeScript for the
+renderer. That duplication is deliberate. A 54-line immutable value type is
+cheaper to maintain twice than to marshal across the wasm boundary, and its
+`length()` uses `sqrt`, which IEEE 754 specifies as correctly rounded and is
+therefore safe on the determinism path where the transcendentals are not.
+
+`mat4` and `quat` really are presentation-only — neither `sim/` nor `render/`
+requires them — so they stay TypeScript alone.
 
 ### 2.1 Where the line falls inside `game/online/`
 
