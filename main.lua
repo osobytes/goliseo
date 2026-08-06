@@ -7,6 +7,10 @@
 --   love . --snapshot-measure [n] -> measure canonical snapshot operations n times
 --   love . --benchmark [frames] [warmup] [rigged|procedural] -> #100 ten-player
 --                                render benchmark; windowed, needs a GL context
+--   love . --gl-probe [canvas FORMAT READABLE | shader STEP] -> #360 GL capability
+--                                readout; bare it surveys the runtime and creates
+--                                nothing, otherwise it makes exactly one canvas or
+--                                compiles exactly one shader rung and stops
 --   love . --combat-feedback-fixture -> visually review the crowded #147 feedback fixture
 --   love . --keeper-pose-snapshots [write] -> check or refresh #46 visual baselines
 --   love . --outfield-pose-snapshots [write] -> check or refresh the #58 visual baseline
@@ -44,11 +48,21 @@ local function has_flag(a)
     return false
 end
 
--- Opt into the rigged 3D player renderer for a manual look. Off by default and
--- deliberately a flag rather than a setting: the procedural renderer is still
--- the shipping path until the ten-player benchmark says otherwise.
-if has_flag("--rigged-players") then
-    require("game.render.pitch").rigged_players = true
+-- Opt OUT of the rigged 3D player renderer, back to the procedural 2.5D one.
+--
+-- It used to be the other way round, because rigged players were waiting on the
+-- ten-player benchmark. That has reported (see the note on
+-- `pitch.rigged_players`), so rigged is the default and this flag keeps the
+-- procedural renderer reachable -- which #100's before/after evidence needs, and
+-- which anyone comparing the two by playing needs.
+--
+-- It used to be the workaround for #391 as well, because the rigged default
+-- crashed the match on entry under love.js in Firefox. That is fixed (#395) and
+-- re-measured in headed Firefox 153 by #360, so this flag is back to being the
+-- comparison switch and nothing more. It is still the escape hatch if a rig3d
+-- shader change ever brings that crash back -- see `pitch.rigged_players`.
+if has_flag("--procedural-players") then
+    require("game.render.pitch").rigged_players = false
 end
 
 -- Opt into the broadcast-style following camera for a manual look. An optional
@@ -163,6 +177,48 @@ if has_flag("--combat-feedback-fixture") then
         if key == "escape" then
             love.event.quit()
         end
+    end
+    return
+end
+
+-- The #360 GL capability probe. Windowed for the same reason as the benchmark
+-- below: it reads what the live GL context supports, which needs one.
+--
+--   love . --gl-probe                        -> survey; creates no canvas
+--   love . --gl-probe canvas FORMAT READABLE -> create exactly that canvas, then stop
+--   love . --gl-probe shader STEP            -> compile exactly that shader rung, then stop
+--
+-- Runs from love.draw rather than love.load on purpose: love.js initialises the
+-- window later than the native runtime, and a probe that read the context before
+-- it existed would report a capable runtime as incapable -- which is the exact
+-- class of false negative this issue exists to correct.
+if has_flag("--gl-probe") then
+    local mode, first, second
+    for index, value in ipairs(arg or {}) do
+        if value == "--gl-probe" then
+            mode, first, second = arg[index + 1], arg[index + 2], arg[index + 3]
+            break
+        end
+    end
+    function love.draw()
+        local gl_probe = require("game.render.gl_probe")
+        if mode == "canvas" then
+            gl_probe.attemptOnce(first or "", second == "true")
+        elseif mode == "shader" then
+            gl_probe.shaderStep(first or "")
+        else
+            gl_probe.survey()
+        end
+        -- Exiting is right natively. Under love.js it is not: `os.exit` unwinds
+        -- through emscripten and surfaces as `RuntimeError: unreachable` plus a
+        -- page-level error event AFTER the terminator marker, so a probe that
+        -- succeeded would leave a failed-looking page behind it. There the probe
+        -- simply stops drawing and lets the controller close the browser.
+        if love.system.getOS() == "Web" then
+            function love.draw() end
+            return
+        end
+        os.exit(0)
     end
     return
 end

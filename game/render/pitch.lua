@@ -21,9 +21,33 @@ local arenas = require("data.arenas")
 
 local pitch = {}
 
--- Opt-in rigged 3D players. Off by default: the procedural 2.5D renderer stays
--- the shipping path until the benchmark gate says otherwise.
-pitch.rigged_players = false
+-- Rigged 3D players, ON by default. That is the project's direction -- retiring
+-- the procedural 2.5D look is the point of the current work -- and the gate this
+-- waited on has reported: #337 slice 2 draws ten rigged players in 33.2 draw
+-- calls, inside #100's budget natively and rendering under love.js in Chrome AND
+-- Firefox.
+--
+-- SUPERSEDED HAZARD, KEPT NARROWED. This note used to say that under love.js in
+-- Firefox this default crashed the match on entry, and that a browser build must
+-- not ship with it on. That was true and it was measured. It is no longer true:
+-- #391 -- Firefox's WebGL translator emitting invalid GLSL for any LÖVE shader
+-- that declares a `varying`, plus rig3d declaring its vertex-only uniforms
+-- outside the stage blocks -- is fixed in #395, and #360 re-measured afterwards
+-- in headed Firefox 153 on an RTX 2070 SUPER: the whole shader ladder compiles
+-- AND links, and ten rigged players render. The release hold is lifted.
+--
+-- What did NOT get fixed, and is why this paragraph survives: the SHAPE of that
+-- crash. Under love.js a shader the runtime will not take is still not a
+-- catchable Lua error -- it escapes the `pcall` in `player_renderer_3d.build()`
+-- through a secondary fault inside LÖVE's own boot.lua error path and takes the
+-- page down. #391 removed the shader that triggered it, not the class, and
+-- `pitch.draw` below still calls `available()` unconditionally. So a future edit
+-- that makes any browser reject the rig3d shader is a crash on entering a match
+-- again, not a fallback to the procedural renderer -- and there is still no
+-- out-of-band guard, because learning whether a shader compiles requires
+-- compiling it. Treat rig3d GLSL as code that has to be measured in a browser,
+-- not only run natively; `love . --gl-probe shader rig3d` is that measurement.
+pitch.rigged_players = true
 
 -- Opt-in broadcast-style following camera. Off by default: it reframes the whole
 -- match, so it stays behind a flag until it has been played.

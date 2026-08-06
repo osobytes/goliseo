@@ -1,7 +1,7 @@
 # Migrate the presentation layer to Babylon, or optimise LÖVE (#330)
 
-Status: **evidence assembled — the decision line below is deliberately unfilled and
-awaits the repo owner.** Assembled 2026-08-04 against `c181c55`.
+Status: **decided 2026-08-06 — stay on LÖVE and optimise it.** Evidence assembled
+2026-08-04 against `c181c55`; decision recorded against `874d63c`.
 
 Synthesises [`babylon_wasm_spike.md`](babylon_wasm_spike.md) (#328),
 [`babylon_skinned_benchmark.md`](babylon_skinned_benchmark.md) (#341) and
@@ -15,28 +15,68 @@ renderer), [PR #346](https://github.com/osobytes/goliseo/pull/346) (#332) and
 
 ## The decision
 
-> **Decision:** _(unfilled — migrate / stay / defer)_
-> **Decided by:** _(repo owner)_
-> **Date:** _____
-> **Reasoning:** _____
-> **What would reverse it:** _____
+> **Decision:** **STAY.** Keep LÖVE as the presentation layer on both web and
+> native, and optimise it. Do not migrate the pitch to Babylon.
+> **Decided by:** repo owner
+> **Date:** 2026-08-06
+> **Reasoning:** the migration case rested on frame cost, and frame cost did not
+> hold up. At equal mesh floors it is a draw-call tie — optimised LÖVE 1.94
+> calls/character against Babylon `merged_all`'s 2.00 (§1, rows 3 and 4) — and
+> Babylon's is the more expensive tie, because its second pass is a real
+> shadow-map render where LÖVE's is a 2D contact ellipse. Babylon's
+> skinned-character curve does not flatten either: it buys a lower constant, not
+> better skeleton handling (#341). Babylon Native is not shippable, so a
+> migration would have put native on Electron (#329). And the reason the browser
+> looked blocked turned out to be false — love.js *can* supply a depth
+> attachment, and Firefox's shader failure was a translator bug plus a
+> portability bug of ours, both now fixed (#360, #391). With browser LÖVE
+> working, migrating would have bought an animation pipeline at the price of a
+> second renderer and a second IK implementation maintained in visual lockstep,
+> for roughly a millisecond of web draw time.
+> **What would reverse it:** hand-writing the animation pipeline (#318 IK,
+> #101/#102 clip authoring, #115 skinning) proving far more expensive than
+> estimated — that is the one thing the migration genuinely bought, and it is
+> now a build rather than a buy; #393 and #394 failing to bring browser draw
+> inside #100's gates; character counts or pitch effects growing past what the
+> wasm-hosted interpreter can carry (§6.3); or the WebAssembly `jit-interface`
+> proposal shipping in browsers, which would remove the interpreter floor
+> entirely and is worth re-checking rather than assuming static.
 
-**This is blank on purpose, and it is the one thing in this document that no
-agent should fill in.**
+### What this decision consciously accepts
 
-A decision *was* recorded on this issue on 2026-08-04, on behalf of the repo
+- **Browser draw stays roughly 2.5x native.** #393 and #394 are expected to take
+  it from ~5.25 ms to ~2.5–3 ms; the residual is the wasm-hosted Lua interpreter
+  (LuaJIT cannot JIT under wasm) and **no graphics-side change addresses it**.
+  A dedicated analysis measured the entire WebGL-internal cost of a browser
+  frame at ~0.28 ms of 5.25 (~5%), and a prototype cutting GL calls 756 -> 429
+  moved draw time by 2%. Research confirmed no faster Lua for wasm exists —
+  LuaJIT Remake is x86-64 only, Ravi's author judged an LLVM-to-wasm path
+  impractical, and the one AOT Lua-to-wasm compiler covers a subset without
+  metatables, coroutines, varargs or `pcall`.
+- **Firefox's rigged row currently misses #100's absolute 8 ms draw gate** under
+  load (8.64 ms; three quiet-box repeats pass at 7.14/7.00/6.96), and the
+  browser feature-delta is 149% (Chrome) / 200% (Firefox) of the ≤2 ms budget
+  against 0.7x natively. #393 and #394 are what close that, and #100's record
+  needs to reflect the outcome (§6.2).
+- **The animation pipeline is a build, not a buy.** #318, #101, #102 and #115
+  stay hand-written. #329 confirmed Babylon's `BoneIKController` works, so this
+  is a real cost being accepted rather than a capability being written off.
+
+### The decision this supersedes
+
+A decision was recorded on this issue on 2026-08-04, on behalf of the repo
 owner: drop LÖVE as the 3D renderer entirely, native as well as web, and move
 the pitch to Babylon. That comment named two assumptions it rested on and said
-both were unproven. **Both have since been measured, and neither survived**
+both were unproven. **Both were subsequently measured, and neither survived**
 (§2). It also stated that the optimised-LÖVE column "will not be produced" —
 and #337 produced it (§1, row 3).
 
-So the ground the recorded decision stood on has moved in three places at once.
-Reaffirming it or reversing it are both calls for the owner, not for the agent
-that assembled the evidence. What follows is the three-way comparison the issue
-asked for, the current state of every reversal condition the recorded decision
-named, and **both** contingency branches written out in full, so that whichever
-way the line above is filled in, the next step is already sequenced.
+That earlier call is superseded rather than wrong: it was taken on the evidence
+available, it named its own assumptions honestly, and it named the column whose
+absence would undermine it. The measurements it asked for are what changed the
+answer. What follows is the three-way comparison the issue asked for, the state
+of every reversal condition, and both contingency branches — §6 (stay) is now
+the live one.
 
 ---
 
@@ -438,23 +478,71 @@ now available, stated without choosing for it:
   (57–62%) against a ≤2 ms target, and added update p95 is **0.033–0.040 ms**
   (0.345 − 0.305 and 0.338 − 0.305) against a ≤1 ms target — both inside, on an
   RTX 2070 SUPER.
-- **The browser leg cannot be delivered as #100 specifies it.** #100's required
-  runtime matrix is LÖVE 11.5 native Linux *plus the supported Chrome and Firefox
-  love.js builds*. #328 and #338 both record that love.js is WebGL 1 and cannot
-  supply a `DEPTH24_STENCIL8` depth attachment, which is what blocked #100's
-  browser leg in the first place. That constraint is carried from #328's and
-  #338's issue text and from `rig3d/renderer.lua`'s comments — **it has not been
-  re-measured for this document**.
+- **The browser leg is deliverable, and the recorded reason it was not is
+  wrong.** #100's required runtime matrix is LÖVE 11.5 native Linux *plus the
+  supported Chrome and Firefox love.js builds*. #328 and #338 both record that
+  love.js is WebGL 1 and cannot supply a `DEPTH24_STENCIL8` depth attachment.
+  #360 measured it (`docs/online/browser_rigged_3d.md`) and the blanket claim is
+  **false**: love.js supplies a depth attachment, LÖVE's rig3d shader links, and
+  ten rigged players render. What is true is much narrower — love.js refuses the
+  *packed 24-bit* format `bloom` used to hardcode and offers `depth16`, which is
+  all the 3D pass ever needed, so the fix was one list in `bloom.lua` rather than
+  a renderer.
+
+  **Firefox was excluded in an earlier revision of this bullet, and no longer
+  is.** That text said Firefox was out for an unrelated defect — a LÖVE shader
+  declaring a `varying` did not compile there, and asking for one aborted the
+  runtime instead of falling back — which made #391 a release blocker for the
+  browser build. It was measured and it is now fixed (#395: hoist those
+  declarations above `main()` at the WebGL boundary, and stop declaring
+  vertex-only uniforms in both stages at mismatched precision). #360 re-measured
+  afterwards on a single tree carrying both halves: the browser leg passes in
+  **both** browsers. The rigged default is on, and there is no release blocker
+  under it.
 - #100 forbids silently loosening a gate: "any revised threshold requires the
   original failure evidence, measured bottleneck, bounded optimization,
   tradeoff, and before/after rerun". PR #350 supplies exactly that shape of
   evidence for the *draw-call* bottleneck.
 
-The reading those three points support is **`revise` with a narrowed runtime
-matrix** — native Linux inside the measured envelope, browser rigged rendering
-out of scope for LÖVE — rather than `proceed` (which would claim a browser leg
-that cannot run) or `stop` (which the native numbers contradict). **Writing that
-record is #100's, and the owner's.**
+The reading those three points support is still **`revise`**, but no longer with
+a narrowed runtime *matrix* — that narrowing was Firefox, and Firefox is back.
+#100's full matrix runs: native Linux inside the measured envelope, and both
+browsers rendering rigged players over #100's added-draw budget — Chrome at 149%
+of it, Firefox at 200%. Firefox is also the one row that crosses an *absolute*
+omp0 gate, at `draw p95 8.64 ms > 8 ms` under contention, though it comes in
+around 7.0 ms on an idle box. What is left to revise is therefore the added-draw
+budget, measured on a browser runtime against a procedural renderer being
+retired, with Firefox's absolute headroom as the tighter of the two constraints.
+`stop` is contradicted by the native numbers and now by both browsers.
+**Writing that record is #100's, and the owner's.**
+
+**The browser draw gap has the same cause as the `update` gap in §3, and is not
+a graphics-API cost.** That is load-bearing for the choice this document exists
+to frame, so it is stated rather than left implied. A #360 follow-up measured the
+entire WebGL-internal cost of a rigged browser frame at **~0.28 ms of 5.25 ms,
+about 5%**, three independent ways: a shim subtracting WebGL calls after the
+emscripten glue; a raw-JS per-call microbench in the same browser (the *whole*
+78-vec4 bone upload is 1.87 µs, so ten characters cost 19 µs/frame); and a
+batched prototype that cut GL calls 756 → 429 per frame (−43%) and moved browser
+draw by **2%**. The cost is the wasm-hosted Lua interpreter executing draw-side
+code — love.js ships plain Lua 5.1 because LuaJIT cannot JIT under wasm. The tell
+is that `pitch.draw` is 4.5–5.3× slower in the browser while **bloom is *cheaper*
+there** (0.065 vs 0.100 ms), because bloom is enqueue-only and barely touches the
+interpreter.
+
+Two consequences for this decision:
+
+- **"Optimise" does not mean graphics work here.** VAOs, instancing, bone
+  textures, uniform batching, WebGL 2 for performance and emscripten GL flags are
+  all bounded by that 0.28 ms and measured as not worth doing. The real levers
+  are Lua-side: **#393** (bake the static pitch scene instead of re-deriving it
+  in Lua every frame, 1–2 ms) and **#394** (the per-character pose and bone-row
+  path, 0.5–1 ms).
+- **The floor is ~2.5–3 ms with both landed — still about 2.5× native.** That
+  residual is the interpreter-in-wasm multiplier, the same one §3 attributes the
+  `update` gap to, and exactly as §3 says of that gap it is paid by *any* browser
+  renderer hosting this code in wasm. What it is **not** is evidence for a
+  different graphics library.
 
 ---
 
@@ -654,9 +742,13 @@ table. Nothing is carried from another document's prose.
 - **The 89% figure in row 2** comes from #328's issue text describing a
   2026-08-03 run; no committed report for that run exists in `docs/`. Row 2b is
   the reproducible one.
-- **love.js being WebGL 1 and unable to supply `DEPTH24_STENCIL8`.** Recorded in
-  #328's and #338's issue text and in `game/render/rig3d/renderer.lua`'s
-  comments. Not re-measured here, and it is load-bearing for §6.2.
+- **love.js being WebGL 1 and unable to supply `DEPTH24_STENCIL8`.** Was
+  recorded in #328's and #338's issue text and in
+  `game/render/rig3d/renderer.lua`'s comments, and was not re-measured for this
+  document. **It has since been measured and corrected** — #360,
+  `docs/online/browser_rigged_3d.md`. love.js is WebGL 1 and does supply a depth
+  attachment; it refuses `depth24stencil8` and accepts `depth16`. §6.2 above is
+  updated; treat the original sentence as withdrawn wherever else it appears.
 - **Babylon Native's segfault is not root-caused**, and upstream CI is green on
   the same commit. #329 names `xvfb-run` as the untried experiment that would
   discriminate.

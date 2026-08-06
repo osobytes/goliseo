@@ -240,6 +240,20 @@ jobs:
             - name: Check the native shell bench refusal logic (starts no shell)
               run: python3 -B scripts/native_shell_bench.py --self-test
 
+            # #360, and the same standing again. Measuring what love.js actually
+            # gives LÖVE needs a GPU, a display and two real browsers, so it runs
+            # by hand on the measuring machine and is recorded in
+            # docs/online/browser_rigged_3d.md. Gated here: the marker
+            # percent-decoding that stops a LÖVE error string splitting a marker,
+            # the terminator rule that stops an aborted runtime reading as a
+            # clean negative, every clause of the per-browser verdict (sabotage
+            # any one and the answer must flip), the cross-browser rollup, the
+            # refusal to publish an unproven GPU or a partial matrix, and the
+            # agreement between the ladder this drives and the ladder
+            # game/render/gl_probe.lua defines. It starts no browser.
+            - name: Check the love.js depth probe verdict logic (starts no browser)
+              run: python3 -B scripts/lovejs_depth_probe.py --self-test
+
             # #343: `render/` was added to the repository and never added to the
             # wasm host's embed manifest, so the module built clean and then died
             # at run time before reaching the determinism section it exists to

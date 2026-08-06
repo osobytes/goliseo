@@ -15,9 +15,17 @@
 -- That inverts the expected bottleneck. Skinned characters cost 1-2 draw calls
 -- each; this costs one per part, so ten players is several hundred draw calls
 -- and several hundred uniform sends per frame. Draw-call count is therefore a
--- first-class metric here rather than a footnote, and it is the number most
--- likely to behave differently in love.js, where every call crosses
--- Lua -> JS -> WebGL.
+-- first-class metric here rather than a footnote.
+--
+-- What it is NOT is the browser's cost. This comment used to add "and it is the
+-- number most likely to behave differently in love.js, where every call crosses
+-- Lua -> JS -> WebGL", which was a reasonable guess and has been measured false:
+-- the entire WebGL-internal cost of a rigged browser frame is ~0.28 ms of
+-- 5.25 ms (~5%), and a prototype cutting GL calls 756 -> 429 per frame moved
+-- browser draw by 2%. The browser gap is the wasm-hosted Lua interpreter running
+-- draw-side code, not submission -- see docs/online/browser_rigged_3d.md. Keep
+-- measuring draw calls, because the RENDERER's design makes them a real cost
+-- natively; just do not read a browser number as a boundary cost.
 --
 -- FAIRNESS RULES, all of which exist so the two renderers are comparable:
 --   * One fixture: same seed, same bot, same fixed timestep, same duration,
