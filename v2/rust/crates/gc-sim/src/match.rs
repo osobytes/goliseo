@@ -1420,7 +1420,10 @@ fn release_pass(
 ///
 /// Does NOT draw from `s.rng` — deterministic, safe to call every frame for
 /// preview.
-fn select_pass_target(
+/// Exposed for the integration tests in `tests/match.rs`, per README §5 rule 8
+/// ("everything a test touches is `pub`"): crates here are internal, so
+/// visibility is not worth fighting to keep a spec case unportable.
+pub fn select_pass_target(
     s: &MatchState,
     owner_idx: i64,
     lofted: bool,
@@ -2721,7 +2724,10 @@ fn sanitize_press_states(s: &mut MatchState, combat_state: Option<&CombatMatchSt
 /// (roles needing full-speed precision, exempt from positional calm), and
 /// refreshes `s.marks` for man-marking hysteresis.
 #[allow(clippy::too_many_lines)]
-fn offball_targets(
+/// Exposed for the integration tests in `tests/match.rs`, per README §5 rule 8
+/// ("everything a test touches is `pub`"): crates here are internal, so
+/// visibility is not worth fighting to keep a spec case unportable.
+pub fn offball_targets(
     s: &mut MatchState,
     pos: &[Vec2],
     combat_state: Option<&CombatMatchState>,
@@ -3228,7 +3234,10 @@ fn retain_offball_targets(
 /// through. Each pair pushed apart by its penetration; a sliding player
 /// barges through (takes less of the push) and knocks the other off
 /// balance (stun). O(n^2)=45 pairs, deterministic.
-fn resolve_collisions(s: &mut MatchState) {
+/// Exposed for the integration tests in `tests/match.rs`, per README §5 rule 8
+/// ("everything a test touches is `pub`"): crates here are internal, so
+/// visibility is not worth fighting to keep a spec case unportable.
+pub fn resolve_collisions(s: &mut MatchState) {
     let field = s.field;
     let n = s.players.len();
     for a in 0..n {
