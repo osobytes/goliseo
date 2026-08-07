@@ -370,6 +370,57 @@ cd v2/ts && pnpm typecheck        # tsc --build (TypeScript 7)
 
 Use **pnpm**, never npm.
 
+### 8.1 The CI gate
+
+The commands above are useful for running one thing by hand, but the actual
+enforced gate — the one wired into `scripts/check.sh` and
+`.github/workflows/ci.yml`'s `v2_gate` job, so the two cannot drift — is:
+
+```bash
+./scripts/check_v2.sh              # run every v2 gate
+./scripts/check_v2.sh --self-test  # prove the gate can go red
+```
+
+It is stricter than the commands above in ways that matter:
+
+- `cargo clippy -p gc-wasm --target wasm32-unknown-unknown -- -D warnings` runs
+  as an **explicit, separate** step from the workspace clippy run. The native
+  workspace run never compiles `gc-wasm`'s wasm-only code paths at all, so a
+  lint that only exists under `#[cfg(target_arch = "wasm32")]`, or inside
+  wasm-bindgen's own codegen for that target, is invisible to it.
+- `pnpm exec tsc --build --force`, never plain `--build`. An incremental build
+  reuses `.tsbuildinfo` and can report clean over source that changed but
+  whose mtime was not newer than the recorded build (the normal outcome of a
+  `git checkout` or a container layer copy) — that shape passed for several
+  waves of this migration before a forced build caught what an incremental
+  one had been silently missing.
+- it **builds the wasm artifact itself**
+  (`node v2/ts/packages/wasm/scripts/build.mjs`) before testing, rather than
+  trusting whatever happens to already be on disk. `dist/pkg/` is gitignored,
+  so a Rust fix that was never folded into a rebuilt artifact is a fix
+  nothing downstream can see.
+- it asserts, twice and independently, that the freshly built module's
+  `runDeterminismEvidence()` returns exactly
+  `final_hash=bfbb106aea5480f8` / `sequence_digest=a190b60058a64e63` — once
+  through `packages/wasm/src/determinism.spec.ts`'s own vitest assertions,
+  and again by loading the same module directly (bypassing vitest) and
+  comparing in plain bash. This is the single most important assertion in
+  the repository: it is what proves the wasm build did not perturb float
+  behaviour.
+
+**Interim, by design.** `v2` is going to replace the Lua tree entirely; until
+that cutover, `scripts/check_v2.sh` runs *alongside* the Lua gates, not
+instead of them. When the cutover lands, promoting it to be *the* gate should
+be a small diff — delete the Lua-specific steps elsewhere and keep this
+script and its two call sites.
+
+Toolchain pins this gate enforces: the Rust channel and components in
+`v2/rust/rust-toolchain.toml`; `wasm-bindgen-cli` exactly `0.2.118` (matching
+`crates/gc-wasm/Cargo.toml`'s `wasm-bindgen = "=0.2.118"`, because the CLI
+checks its generated glue against the crate's schema version exactly, not
+semver); Node >= 22; pnpm exactly `11.1.2`
+(`v2/ts/package.json`'s `"packageManager"`).
+
 ---
 
 ## 9. Rules inherited from AGENTS.md that still bind

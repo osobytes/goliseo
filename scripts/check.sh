@@ -207,6 +207,16 @@ else
     echo "   ! rustc not installed — skipping"
 fi
 
+# v2 (Rust + TypeScript port, see v2/README.md) is an interim gate that runs
+# ALONGSIDE the Lua gates above, not instead of them, until the port replaces
+# the Lua tree. scripts/check_v2.sh carries every step; both this file and
+# .github/workflows/ci.yml call that one script so the two cannot drift
+# (AGENTS.md §9). It skips itself, with a warning, if cargo/node/pnpm are not
+# installed -- the same bootstrap-friendly shape as every gate above.
+echo "==> v2 (Rust + TypeScript port)"
+./scripts/check_v2.sh --self-test || fail=1
+./scripts/check_v2.sh || fail=1
+
 if [ "$fail" -ne 0 ]; then
     echo "CHECK FAILED"
     exit 1
