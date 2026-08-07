@@ -105,6 +105,24 @@ pub struct OutboundEnvelope {
     pub message: TransportMessage,
 }
 
+/// One channel's traffic counters on one peer link — `sent`/`received`/
+/// `dropped_outbound`/`dropped_inbound`, tracked separately for `control`
+/// and `input` because they are legitimately independent channels with
+/// independent traffic. Mirrors the fields
+/// `gc_netcode::fake_star::FakeStarChannel` tracks per channel; unlike that
+/// in-process fake, this transport does not model a channel's own queue
+/// depth or `bufferedAmount` — those live in the real browser data channel
+/// (`packages/transport`), not in anything reachable from here, so
+/// `diagnostics()` reports them as `0` for *both* channels rather than
+/// inventing a value this adapter has no way to observe.
+#[derive(Clone, Copy, Debug, Default)]
+struct ChannelCounters {
+    sent: i64,
+    received: i64,
+    dropped_outbound: i64,
+    dropped_inbound: i64,
+}
+
 struct PeerLink {
     peer_id: String,
     slot: i64,
@@ -123,10 +141,8 @@ struct PeerLink {
     /// `set_peer_connected` is ever called, so `"checking"` never applies
     /// here and is not reproduced.
     ice_state: String,
-    sent: i64,
-    received: i64,
-    dropped_outbound: i64,
-    dropped_inbound: i64,
+    control: ChannelCounters,
+    input: ChannelCounters,
     last_error: Option<String>,
 }
 
@@ -138,11 +154,18 @@ impl PeerLink {
             state: TransportPeerState::New,
             // Mirrors `fake_star::PeerLink::new`'s own `ice_state: "new"`.
             ice_state: "new".to_string(),
-            sent: 0,
-            received: 0,
-            dropped_outbound: 0,
-            dropped_inbound: 0,
+            control: ChannelCounters::default(),
+            input: ChannelCounters::default(),
             last_error: None,
+        }
+    }
+
+    /// The counters for `channel`, mirroring
+    /// `gc_netcode::fake_star::Peer::channel_mut`.
+    fn channel_mut(&mut self, channel: TransportChannel) -> &mut ChannelCounters {
+        match channel {
+            TransportChannel::Control => &mut self.control,
+            TransportChannel::Input => &mut self.input,
         }
     }
 }
@@ -277,7 +300,7 @@ impl WasmStarTransport {
         if inner.inbound.len() as i64 >= queue_limit {
             inner.dropped_inbound += 1;
             if let Some(peer) = inner.peers.get_mut(peer_id) {
-                peer.dropped_inbound += 1;
+                peer.channel_mut(channel).dropped_inbound += 1;
             }
             let detail = "wasm transport inbound queue is full".to_string();
             inner.last_error = Some(detail.clone());
@@ -287,7 +310,7 @@ impl WasmStarTransport {
         inner.arrival_seq.insert(peer_id.to_string(), next_seq);
         inner.received += 1;
         if let Some(peer) = inner.peers.get_mut(peer_id) {
-            peer.received += 1;
+            peer.channel_mut(channel).received += 1;
         }
         inner.inbound.enqueue(TransportPeerMessage {
             peer_id: peer_id.to_string(),
@@ -548,7 +571,7 @@ impl StarTransportAdapter for WasmStarTransport {
         });
         inner.sent += 1;
         if let Some(peer) = inner.peers.get_mut(peer_id) {
-            peer.sent += 1;
+            peer.channel_mut(channel).sent += 1;
         }
         Ok(true)
     }
@@ -581,7 +604,7 @@ impl StarTransportAdapter for WasmStarTransport {
             });
             inner.sent += 1;
             if let Some(peer) = inner.peers.get_mut(peer_id) {
-                peer.sent += 1;
+                peer.channel_mut(channel).sent += 1;
             }
         }
         Ok(targets.len() as i64)
@@ -621,15 +644,36 @@ impl StarTransportAdapter for WasmStarTransport {
             .iter()
             .map(|peer_id| {
                 let peer = &inner.peers[peer_id];
+                // `state` mirrors `peer.state` on both channels, the same
+                // way `fake_star::set_peer_state` stamps every one of
+                // `peer.channels`' entries with the peer's own state — this
+                // transport has one real connection per peer, not an
+                // independently-negotiated channel per direction, so both
+                // channels always agree with the link as a whole.
+                // `outbound_depth`/`inbound_depth`/`buffered_amount` stay
+                // `0` for both channels: that queue/buffer state lives in
+                // the real browser data channel (`packages/transport`),
+                // which this adapter never reads, so `0` is "not observed
+                // here", not a fabricated measurement.
                 let control = TransportChannelDiagnostics {
                     state: Some(peer.state),
                     outbound_depth: 0,
                     inbound_depth: 0,
                     buffered_amount: 0,
-                    sent: peer.sent,
-                    received: peer.received,
-                    dropped_outbound: peer.dropped_outbound,
-                    dropped_inbound: peer.dropped_inbound,
+                    sent: peer.control.sent,
+                    received: peer.control.received,
+                    dropped_outbound: peer.control.dropped_outbound,
+                    dropped_inbound: peer.control.dropped_inbound,
+                };
+                let input = TransportChannelDiagnostics {
+                    state: Some(peer.state),
+                    outbound_depth: 0,
+                    inbound_depth: 0,
+                    buffered_amount: 0,
+                    sent: peer.input.sent,
+                    received: peer.input.received,
+                    dropped_outbound: peer.input.dropped_outbound,
+                    dropped_inbound: peer.input.dropped_inbound,
                 };
                 TransportPeerDiagnostics {
                     peer_id: peer.peer_id.clone(),
@@ -637,7 +681,7 @@ impl StarTransportAdapter for WasmStarTransport {
                     state: Some(peer.state),
                     ice_state: peer.ice_state.clone(),
                     control,
-                    input: TransportChannelDiagnostics::default(),
+                    input,
                     sequence_gaps: 0,
                     backpressure: 0,
                     malformed: 0,
@@ -903,6 +947,64 @@ mod tests {
         host.close_peer("guest_1", None).unwrap();
         let closed_ice_state = host.diagnostics().peers[0].ice_state.clone();
         assert_eq!(closed_ice_state, "closed");
+    }
+
+    #[test]
+    fn control_and_input_channel_diagnostics_are_tracked_independently() {
+        // Before this fix, `diagnostics()` handed back
+        // `input: TransportChannelDiagnostics::default()` verbatim --
+        // `state: None`, every counter zero -- no matter how much input
+        // traffic actually crossed the link. This proves the real fix:
+        // `control` and `input` each carry their own `sent`/`received`
+        // counters, driven only by traffic that actually used that
+        // channel, and neither is the struct's `Default`.
+        let (mut host, _guest) = connected_pair();
+
+        // Traffic on the input channel only: one outbound send.
+        host.send(
+            "guest_1",
+            TransportChannel::Input,
+            input_message(0, b"input_payload"),
+        )
+        .unwrap();
+
+        // Traffic on the control channel only: one inbound arrival.
+        host.enqueue_inbound(
+            "guest_1",
+            TransportChannel::Control,
+            TransportMessage {
+                version: 1,
+                kind: TransportMessageType::Event,
+                seq: 0,
+                tick: None,
+                payload: b"control_payload".to_vec(),
+            },
+        )
+        .unwrap();
+
+        let diagnostics = host.diagnostics();
+        let peer = &diagnostics.peers[0];
+
+        assert_eq!(peer.input.sent, 1, "the input send must count on input");
+        assert_eq!(
+            peer.input.received, 0,
+            "no inbound traffic crossed the input channel"
+        );
+        assert_eq!(
+            peer.control.sent, 0,
+            "no outbound traffic crossed the control channel"
+        );
+        assert_eq!(
+            peer.control.received, 1,
+            "the control arrival must count on control"
+        );
+
+        // Neither channel is left at the struct `Default` the old code
+        // returned unconditionally for `input`.
+        assert_ne!(peer.input, TransportChannelDiagnostics::default());
+        assert_ne!(peer.control, TransportChannelDiagnostics::default());
+        assert!(peer.input.state.is_some());
+        assert!(peer.control.state.is_some());
     }
 
     #[test]
