@@ -65,6 +65,61 @@
 //   readiness/telegraph timing, which has no wasm bridge at all.
 //
 // See each remaining `it.skip`'s own comment for the detail.
+//
+// Wave 4 (W9-C) re-examined all four again, file ownership unchanged
+// (`match.ts`/`real_match.ts`/index.ts still belong to a different agent in
+// this milestone; `packages/wasm` and every Rust crate are out of scope
+// too). None reopened -- this wave's job was to pin down the EXACT shape
+// still missing, not to guess at it, so a later wave (or whoever owns
+// `match.ts`) does not have to re-derive it from scratch:
+//
+// - The two control-ownership cases need `match.ts` to grow a third
+//   construction mode, parallel to `rollback_lab` (`MatchScreenOptions`,
+//   `match.ts`): an `online` option carrying a host/source object that is
+//   the UNION of two shapes `match.ts` already has separately --
+//   `online_match.ts`'s private `driverSource()` return shape
+//   (`needsLocalSample`/`advance`/`currentSnapshot`/`snapshot`/`terminal`/
+//   `failed`/`fullTime`/`debugModel`/`controlledPlayer`, already exactly
+//   what `OnlineMatchOptions.newMatch`'s `rollbackSource` parameter carries)
+//   AND `RollbackHostPort`'s render-facing surface (`frame()`/`roster()`/
+//   `tick()`/`dispose()`, the same `Pick<SimHostPort, ...>` shape
+//   `MatchScreen.activeHost()` already normalizes `host`/`rollbackHost`
+//   into). Unlike `rollback_lab`'s `createRollbackHost` factory, `match.ts`
+//   would not construct this object itself -- `OnlineMatch` already
+//   constructs and owns it via its own `driverSource()` closure, so
+//   `newMatch`'s existing `rollbackSource: () => unknown` parameter is the
+//   injection point, just widened to that merged shape instead of staying
+//   opaque.
+// - `state.controlled` for that mode must NOT be `RenderFrame.hud`'s own
+//   `controlled` field (the real wire object's local-switch-driven value,
+//   confirmed present at `@gc/render`'s `frame_buffer.ts` even though
+//   `match.ts`'s own narrower `RenderFrameHud` doesn't type it) -- it must
+//   be `onlineSource.controlledPlayer(state) ?? hud.controlled`, and the
+//   `RenderFrame` handed to `RenderPort.draw` needs its `hud.controlled`/
+//   `control` overridden to match, or the renderer highlights whichever
+//   player local switching would have picked, not the driver's real
+//   assignment -- silently passing the case by drawing the wrong thing
+//   correctly.
+// - The renderer-smoke case has a second blocker underneath the one
+//   already named, confirmed by reading (not editing) `crates/gc-wasm/src/
+//   match_driver_bridge.rs` and `session.rs`: `MatchDriverBridge` is not
+//   registry-backed the way `Session` is (`session.rs`'s `handle()` /
+//   `crate::registry`) and exposes no `render_frame`-shaped export at all.
+//   Even once `match.ts` grows the `online` construction mode above, there
+//   is currently no `@gc/wasm` call that turns a live `MatchDriverBridge`
+//   into a `RenderFrame` -- that is a `crates/gc-wasm`/`@gc/wasm` gap, not
+//   only a `match.ts` one, and neither package is this wave's (or
+//   apparently the current `match.ts` wave's) file ownership.
+// - The combat-families case's blocker is confirmed still real, not
+//   assumed: `v2/rust/crates/gc-wasm/src/session.rs` states outright that
+//   `Session::step` always runs with `combat_state: None`, and no new
+//   combat symbol exists on `Session` or elsewhere in `@gc/wasm`'s TS
+//   surface as of this wave. Separately, `gc-netcode::match_driver`'s
+//   `default_clock()` (`match_driver.rs`) still calls bare
+//   `std::time::SystemTime::now()` with `gc-wasm/src/match_driver_bridge.rs`
+//   passing `clock: None` and no wasm32 guard -- driving a real
+//   `MatchDriverBridge` to full time still traps (`RuntimeError:
+//   unreachable`) on wasm32, unfixed as of this wave.
 
 import { describe, expect, it } from "vitest";
 import { Vec2 } from "@gc/core";
