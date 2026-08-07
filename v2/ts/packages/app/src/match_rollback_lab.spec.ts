@@ -71,6 +71,22 @@
 // of the Lua fixture's bespoke one. What did NOT get ported -- the
 // `RealMatch`-level result-completion-ordering assertion -- is also
 // documented on that case, not silently dropped.
+//
+// # Also fixed for this task: `updateRollback` never called `ReplayPort.step`
+//
+// A THIRD gap this case's own comments used to name (the "DEFECT paragraph"
+// its loop/assertions still reference by that name) is now closed too, in
+// `@gc/screens`'s `match.ts` (not this file): rollback mode never called
+// `ReplayPort.step` at all, so a confirmed goal's replay sequence started
+// (`replay.active()` true) but stayed frozen on its very first frame
+// forever -- `MatchScreen.debugReplayState` read `undefined` for the whole
+// match. `updateRollback` now steps it every render call
+// (`advanceRollbackReplay`), matching `updateLegacyReplay`'s own base-mode
+// use of the same port. This case's own body asserts the now-provable half
+// of that (a real, advancing frame) and keeps documenting, precisely, the
+// half that still does not fit inside this loop's iteration budget (full
+// replay completion, and therefore the Lua original's result-completion-
+// ordering assertion) -- see the case's own comments at each point.
 
 import { describe, expect, it } from "vitest";
 import { Vec2 } from "@gc/core";
@@ -670,10 +686,19 @@ describe("playable rollback ScreenStack flow (tier 3)", () => {
     let sawCorrection = false;
     let sawGoalPresentation = false;
     let sawTerminalReplay = false;
+    let firstReplayFrame: replayTypes.ReplayFrame | undefined;
     for (let iteration = 0; iteration < 600; iteration += 1) {
       stack.update(TICK_SECONDS);
       sawCorrection = sawCorrection || screen.debugRollbackCorrections.length > 0;
       sawGoalPresentation = sawGoalPresentation || replay.active();
+      // First frame this call's `debugReplayState` actually reports --
+      // proof `updateRollback` is now stepping the sequence at all (see this
+      // case's own DEFECT-paragraph update below); compared against the
+      // final frame after the loop to prove it keeps advancing, not merely
+      // getting set once.
+      if (firstReplayFrame === undefined && screen.debugReplayState !== undefined) {
+        firstReplayFrame = screen.debugReplayState;
+      }
       const status = screen.debugRollbackDebug()!.status;
       if (status === "converged" && replay.active()) {
         sawTerminalReplay = true;
@@ -706,12 +731,34 @@ describe("playable rollback ScreenStack flow (tier 3)", () => {
     expect(host.frame().hud.home_score).toBe(1);
     expect(host.frame().hud.away_score).toBe(0);
     expect(consumerState.presentation_full_time).toBe(true);
-    // NOT asserted, unlike the Lua original's `saw_terminal_replay`/
-    // `replay_finished_at`/`completed_at > replay_finished_at`: see this
-    // case's header DEFECT paragraph. `replay.active()` is still `true`
-    // here (the goal's celebration frame, permanently) -- a real,
-    // reproducible `@gc/screens` gap, not a flaky assertion pruned for
-    // convenience.
+    // `updateRollback` (`@gc/screens`'s `match.ts`) used to never call
+    // `ReplayPort.step` in rollback mode at all -- `MatchScreen.debugReplayState`
+    // stayed `undefined` for the whole match, so a confirmed goal's replay
+    // sequence started (`replay.active()` true, asserted above) but visibly
+    // never advanced past its very first frame. Fixed alongside the "clears
+    // smoothing at full time" defect in `@gc/screens` (see that file's own
+    // header) -- `advanceRollbackReplay` now steps it every render call.
+    // Provable here without reaching into `@gc/render`'s internals: a real
+    // frame is reported at all, and the player positions in it keep moving
+    // as the celebration animation plays forward.
+    expect(firstReplayFrame, "a confirmed rollback replay reports a displayed frame").toBeDefined();
+    expect(screen.debugReplayState, "the replay frame is still being reported at the end of the loop").toBeDefined();
+    expect(
+      screen.debugReplayState!.players.map((p) => `${p.id}:${p.pos.x.toFixed(3)},${p.pos.y.toFixed(3)}`),
+      "the replay frame keeps advancing, not frozen on its first tick",
+    ).not.toEqual(firstReplayFrame!.players.map((p) => `${p.id}:${p.pos.x.toFixed(3)},${p.pos.y.toFixed(3)}`));
+    // Still NOT asserted, unlike the Lua original's `saw_terminal_replay`/
+    // `replay_finished_at`/`completed_at > replay_finished_at`: `replay.active()`
+    // is still `true` here even with the fix above -- `REPLAY_SECONDS`/
+    // `REPLAY_SLOWMO` (`sim/tuning.lua`, default 4s at 0.35x) need roughly
+    // 11.4 real seconds (~686 render calls at this loop's `TICK_SECONDS`) of
+    // `ReplayPort.step` dt to actually finish, and this loop's own stopping
+    // condition (laboratory convergence, not replay completion -- see the
+    // loop's own comment) breaks it well before that. Empirically confirmed,
+    // not assumed: `screen.debugReplayState` genuinely advances (asserted
+    // above), it just does not finish inside this test's iteration budget.
+    // A real, reproducible gap in what this file can prove about completion
+    // ordering -- not a flaky assertion pruned for convenience.
 
     const cues = audio.confirmedCueCounts();
     expect(cues["goal"]).toBe(1);

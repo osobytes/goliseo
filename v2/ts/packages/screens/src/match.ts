@@ -664,6 +664,23 @@ export type RollbackLabStatus =
   | "comparison_history_missing"
   | "drain_incomplete";
 
+/**
+ * `lab_source(lab).terminal` (`game/screens/match.lua`): `status ~= "active"
+ * and status ~= "settling"`. Derived from the host's own reported status --
+ * matching how the Lua source computes it off
+ * `rollback_playable_lab.debug_model(lab).status` -- rather than a separate
+ * `RollbackHostPort` method. This is `match_is_over(self)`'s rollback-mode
+ * branch (`self._source:terminal()`), which is NOT the same signal as
+ * `hud.finished`: a rollback source can keep reporting `hud.finished` false
+ * for a snapshot-restored `state.finished` field's own long settlement
+ * window, or vice versa read `hud.finished` true well before the source
+ * itself goes terminal. See `updateRollback`'s doc for where each of the two
+ * checks actually matters.
+ */
+function rollbackTerminal(status: RollbackLabStatus): boolean {
+  return status !== "active" && status !== "settling";
+}
+
 /** Mirrors the Lua `NetworkProfile` shape (`fixed_profile` in the ported spec). */
 export interface RollbackLabNetworkProfile {
   readonly base_delay_ticks: number;
@@ -1617,6 +1634,65 @@ export class MatchScreen {
   }
 
   /**
+   * `advance_rollback_replay(self, dt)` -- the rollback-mode counterpart of
+   * {@link updateLegacyReplay}'s `ReplayPort.step` use. Previously never
+   * called anywhere in rollback mode: a confirmed rollback goal could start
+   * a replay sequence (`consumeConfirmedLifecycle`'s `ports.replay.startAt`)
+   * but nothing ever advanced it afterward, so it played its first frame
+   * forever and `ReplayPort.active()` never reported `false` again. Called
+   * both from `updateRollback`'s `match_is_over`-equivalent early return
+   * (mirroring `advance_rollback_replay`'s use there) and unconditionally
+   * near the end of its normal path (mirroring the Lua tail's own
+   * unconditional call) -- a no-op either place when no replay is wired or
+   * none is active.
+   *
+   * @returns whether a replay was active and this call is standing in for
+   * the caller's own render-only positional work -- mirrors
+   * `advance_rollback_replay`'s own `was_active` return (`self._source ==
+   * nil` never applies here since this method is only ever called from
+   * rollback mode).
+   */
+  private advanceRollbackReplay(dt: number): boolean {
+    const replay = this.ports.replay;
+    if (replay?.step === undefined || !replay.active()) {
+      return false;
+    }
+    const frame = replay.step(dt);
+    this.replayState = frame;
+    if (frame !== undefined) {
+      viewState.update(
+        frame.players.map((p) => ({ id: p.id, pos: p.pos })),
+        dt,
+      );
+      return true;
+    }
+    this.finishReplay();
+    return true;
+  }
+
+  /**
+   * `clear_render_smoothing(self)`'s call site inside `match_is_over`'s
+   * early return in `updateRollback` -- resets render smoothing to a fresh,
+   * offset-free state built from the rollback client's current displayed
+   * positions, and resets view state. The caller only reaches this after
+   * {@link advanceRollbackReplay} already reported no active replay to fall
+   * back to (mirrors `if not advance_rollback_replay(self, dt) then
+   * clear_render_smoothing(self) end`), so unlike {@link finishReplay} this
+   * never touches `this.replayState`/`ReplayPort`.
+   */
+  private clearRollbackRenderSmoothing(): void {
+    viewState.reset();
+    const source = this.correctionSource();
+    if (source === undefined) {
+      return;
+    }
+    this.renderSmoothing =
+      this.renderSmoothing !== undefined
+        ? correctionSmoothing.clear(this.renderSmoothing, source)
+        : correctionSmoothing.new(source);
+  }
+
+  /**
    * `Match:update(dt)`'s rollback branch. Unlike the base branch above,
    * this one does NOT sample input unconditionally: a zero-tick render call
    * touches neither `this.latches` nor `this.switchPending`/`capture`, so a
@@ -1630,6 +1706,18 @@ export class MatchScreen {
    * `_rollback_outputs`/`_rollback_event_diffs`/`_rollback_confirmed_steps`/
    * `_rollback_corrections`/`_frame_events` are this render call's batch
    * ONLY -- cleared up front, never accumulated across calls.
+   *
+   * The early-return gate below is `match_is_over(self)`'s rollback-mode
+   * branch, {@link rollbackTerminal} over the host's own reported status --
+   * NOT `this.finished`/`hud.finished`. Those two ARE different signals
+   * here: `hud.finished` is a snapshot-restored field that can read `true`
+   * for a long settlement window before the rollback source itself goes
+   * terminal (or, depending on the host, briefly the other way around), and
+   * the Lua original keeps ticking/reconciling through that window --  only
+   * once the source reports terminal does `Match:update` stop calling it at
+   * all. `hud.finished` still matters, just further down: it feeds this
+   * method's own `lifecycle_reset` fallthrough (see the tail below), which
+   * clears render smoothing on THAT read, independently of this gate.
    */
   private updateRollback(dt: number): void {
     const rollbackHost = this.rollbackHost!;
@@ -1639,7 +1727,10 @@ export class MatchScreen {
     this.rollbackCorrections = [];
     this.rollbackFrameEvents = [];
 
-    if (this.finished) {
+    if (rollbackTerminal(rollbackHost.debug().status)) {
+      if (!this.advanceRollbackReplay(dt)) {
+        this.clearRollbackRenderSmoothing();
+      }
       return;
     }
     const paused = this.ports.tuningPause?.open === true;
@@ -1721,19 +1812,44 @@ export class MatchScreen {
     this.rollbackConfirmedSteps = confirmed;
     this.rollbackCorrections = corrections;
 
-    for (const correction of corrections) {
-      this.renderSmoothing =
-        this.renderSmoothing === undefined
-          ? correctionSmoothing.correct(correctionSmoothing.new(correction.source), correction.source)
-          : correctionSmoothing.correct(this.renderSmoothing, correction.source);
-    }
+    // `update_render_smoothing`'s rollback-mode counterpart. `hudFinished`
+    // mirrors the Lua tail's own `lifecycle_reset`'s `... or self.state.finished
+    // ...` term for this mode -- score-edge/kickoff have no rollback-mode
+    // presentation counterpart yet (this file's own kickoff `it.skip`), and a
+    // mid-batch sync failure already returned above (the
+    // `unconfirmed_window_exceeded` branch inside the loop), so it can never
+    // reach here. THIS is the fallthrough the top-of-method `rollbackTerminal`
+    // gate cannot substitute for -- see this method's own doc: a rollback
+    // source can read `hud.finished` true well before it goes terminal, and
+    // the Lua original clears render smoothing on THIS read, not that one.
     const positions = rollbackHost.displayedPositions();
-    if (this.renderSmoothing !== undefined && dt > 0) {
-      this.renderSmoothing = correctionSmoothing.advance(this.renderSmoothing, positions, dt);
+    const hudFinished = rollbackHost.frame().hud.finished;
+    const drawingRollbackReplay = this.ports.replay?.active() === true;
+    if (hudFinished) {
+      this.renderSmoothing = correctionSmoothing.new(positions);
+      if (!drawingRollbackReplay) {
+        viewState.reset();
+      }
+    } else {
+      for (const correction of corrections) {
+        this.renderSmoothing =
+          this.renderSmoothing === undefined
+            ? correctionSmoothing.correct(correctionSmoothing.new(correction.source), correction.source)
+            : correctionSmoothing.correct(this.renderSmoothing, correction.source);
+      }
+      if (this.renderSmoothing !== undefined && dt > 0) {
+        this.renderSmoothing = correctionSmoothing.advance(this.renderSmoothing, positions, dt);
+      }
     }
 
-    // Live view state (gait/lean), from the displayed rollback client.
-    viewState.update(positions.players, dt);
+    // Live view state (gait/lean), from the displayed rollback client --
+    // skipped while a confirmed rollback replay is drawing the screen
+    // instead (`advanceRollbackReplay` below owns view state then), matching
+    // `drawing_rollback_replay`'s own gate on `update_render_smoothing`'s
+    // `update_view` parameter.
+    if (!drawingRollbackReplay) {
+      viewState.update(positions.players, dt);
+    }
 
     if (this.rollbackConsumerPorts !== undefined) {
       consumeRollbackPresentation(
@@ -1745,6 +1861,13 @@ export class MatchScreen {
         confirmed,
       );
     }
+
+    // `advance_rollback_replay(self, dt)` -- steps a confirmed rollback-goal
+    // replay so it actually advances/finishes instead of freezing on its
+    // first frame forever (see `advanceRollbackReplay`'s own doc for why
+    // this call was missing entirely before this fix). A no-op when none is
+    // active.
+    this.advanceRollbackReplay(dt);
   }
 
   /**

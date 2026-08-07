@@ -45,20 +45,26 @@
 //     absent end to end: not on `MatchScreen`, not on `RenderFrameHud`, not
 //     produced by `crates/gc-render`'s frame builder -- a genuinely unported
 //     piece of `game/screens/match.lua`. Still `it.skip`.
-//   - full time looked portable at the start of this task (the base
-//     goal-replay gap that used to block it, `MatchScreenPorts.matchState`,
-//     is cleared -- see "keeps actual goal replay gait coherent..." below,
-//     which exercises it for real), but empirical re-verification says
-//     otherwise: seeding a real correction on a rollback-mode `MatchScreen`,
-//     marking the host finished, and calling `update(0)` -- the literal
-//     translation of the Lua original -- leaves `active_smoothing_count`
-//     unchanged, not 0. `updateRollback` (match.ts) no-ops unconditionally
-//     the moment `hud.finished` already reads true going in, before any
-//     smoothing bookkeeping runs; see the sub-case's own comment for the
-//     full root-cause trace. `match.ts` is outside this task's file
-//     ownership (only `match_rollback_lab.spec.ts` is), so this stays
-//     `it.skip` too, with this freshly-verified reason -- reported, not
-//     silently patched around.
+//   - full time WAS blocked: seeding a real correction on a rollback-mode
+//     `MatchScreen`, marking the host finished, and calling `update(0)` --
+//     the literal translation of the Lua original -- used to leave
+//     `active_smoothing_count` unchanged, not 0. Root cause, fixed in
+//     `match.ts`: `updateRollback` opened with `if (this.finished) { return;
+//     }` -- an unconditional no-op the moment `hud.finished` already read
+//     true going in, before any smoothing bookkeeping ran. The Lua original
+//     never hits an equivalent guard here: `match_is_over(self)`, for a
+//     rollback-mode `Match`, tests `self._source:terminal()` (`lab_source
+//     (lab).terminal`, derived from `rollback_playable_lab.debug_model(lab)
+//     .status`) -- NOT `self.state.finished`. So a clean-profile lab never
+//     reads as `match_is_over`, and execution falls through to the bottom of
+//     `Match:update`, where `lifecycle_reset = ... or self.state.finished or
+//     ...` is still true and drives `update_render_smoothing`'s
+//     `clear_render_smoothing` unconditionally. `updateRollback` now gates
+//     its early return on `rollbackTerminal(rollbackHost.debug().status)`
+//     instead (mirroring `lab_source.terminal` exactly) and separately reads
+//     `hud.finished` at the tail to drive the same smoothing clear the Lua
+//     fallthrough does -- see `match.ts`'s own doc on both. Below, no longer
+//     `it.skip`.
 //   - teardown needs `game.screen_stack`'s TS analog, which lives in
 //     `@gc/app` -- `@gc/screens` cannot depend on `@gc/app` (the dependency
 //     runs the other way, v2/README.md §2/§9). Still `it.skip`.
@@ -854,41 +860,39 @@ describe("match screen rollback laboratory (tier 2)", () => {
       () => {},
     );
 
-    // Re-verified, not assumed: seeded a real, nonzero smoothing correction
-    // on a rollback-mode `MatchScreen` (`screen.debugSeedRenderCorrection`,
-    // confirmed `active_smoothing_count > 0` immediately after), then set
-    // `host.hud.finished = true` and called `screen.update(0)` -- the exact
-    // translation of the Lua original's `full_time.state.finished = true;
-    // full_time:update(0)`. Result: `active_smoothing_count` stayed at its
-    // seeded value, never reached 0.
+    // Literal translation of the Lua original's `full_time.state.finished =
+    // true; full_time:update(0)`: seed a real, nonzero smoothing correction
+    // on a rollback-mode `MatchScreen` (`screen.debugSeedRenderCorrection`),
+    // confirm `active_smoothing_count > 0`, then set `host.hud.finished =
+    // true` and call `screen.update(0)`.
     //
-    // Root cause, read end to end in `match.ts`: `MatchScreen.update`'s
-    // rollback branch (`updateRollback`) opens with `if (this.finished) {
-    // return; }` -- an UNCONDITIONAL no-op the moment `hud.finished` already
-    // reads true going in, before any smoothing bookkeeping runs. The Lua
-    // original never hits an equivalent guard here: `match_is_over(self)`,
-    // for a rollback-mode `Match`, tests `self._source:terminal()` --
-    // `lab_source(lab).terminal`, which derives from
-    // `rollback_playable_lab.debug_model(lab).status` (`"active"` for a
-    // clean run) -- NOT `self.state.finished`. So a clean-profile lab never
-    // reads as `match_is_over`, and execution falls through to the bottom of
-    // `Match:update`, where `lifecycle_reset = ... or self.state.finished or
-    // ...` (a separate, freely-mutable snapshot field, never resynced this
-    // call because zero ticks ran) is still true, and drives
-    // `update_render_smoothing`'s `clear_render_smoothing` unconditionally.
-    // `MatchScreen` collapses those two checks into ONE live read
-    // (`this.finished`, always `this.activeHost().frame().hud.finished`)
-    // with no free-floating counterpart, so there is no code path in
-    // `updateRollback` (or `updateBaseRenderSmoothing`, which only clears
-    // smoothing for a finish that happens DURING the call it's checked in,
-    // not one already true going in) that clears render smoothing for an
-    // already-finished match. This is `match.ts`, outside this task's file
-    // ownership (`match_rollback_lab.spec.ts` only) -- flagged, not
-    // silently patched around; see this task's own final report.
-    it.skip(
-      "full time [MatchScreen.update's rollback branch no-ops unconditionally once hud.finished already reads true going in, before any smoothing clear -- verified empirically, not stale; needs a match.ts fix outside this package's ownership for this task]",
-      () => {},
-    );
+    // This used to fail: `updateRollback` opened with `if (this.finished) {
+    // return; }`, an unconditional no-op the moment `hud.finished` already
+    // read true going in, before any smoothing bookkeeping ran. Fixed in
+    // `match.ts` -- see this file's header for the root-cause trace and how
+    // the fix maps onto the Lua original's two separate checks
+    // (`rollbackTerminal`'s early-return gate vs. `updateRollback`'s own
+    // `hudFinished` tail branch).
+    it("clears smoothing at full time", () => {
+      const { factory, hosts } = makeRollbackHostFactory({ localSlot: 1, profileName: "clean" });
+      const screen = new MatchScreen(rollbackPorts(factory), {
+        rollback_lab: labOptions({ local_slot: 1, profile_name: "clean" }),
+      });
+      const host = hosts[0]!;
+      const current = host.displayedPositions();
+      const player = current.players[0]!;
+      screen.debugSeedRenderCorrection({
+        players: [{ id: player.id, pos: { x: player.pos.x - 40, y: player.pos.y } }],
+        ball: { x: current.ball.x - 20, y: current.ball.y },
+      });
+      expect(screen.debugRenderSmoothingDiagnostics?.active_count ?? 0).toBeGreaterThan(0);
+
+      host.hud.finished = true;
+      screen.update(0);
+
+      expect(screen.debugRollbackDebug()?.active_smoothing_count).toBe(0);
+      expect(screen.debugRollbackDebug()?.correction_magnitude).toBeCloseTo(0);
+    });
 
     // Needs `@gc/app`'s `screen_stack.ts` -- `@gc/screens` cannot depend on
     // `@gc/app` (v2/README.md §2/§9; confirmed `packages/screens/package.json`
