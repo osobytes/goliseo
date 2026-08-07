@@ -14,25 +14,55 @@
 // Three cases genuinely need the coordinator's real slot-assignment and
 // pair-preference protocol logic to produce meaningful output (exactly
 // which slots read "LIVE" vs "AI (OWNED)" vs "AI FILL", and exactly which
-// slots offer a pair control). That logic now exists for real --
-// `@gc/wasm`'s `Coordinator` (`crates/gc-wasm/src/coordinator_bridge.rs`)
-// is the full reducer, not a fake -- but `@gc/screens` has no dependency
-// edge onto `@gc/wasm` (absent from `package.json`, unlinked in
-// `node_modules`; this package's `CoordinatorPort` is deliberately an
-// injected seam that `@gc/app` wires in production, mirroring
-// `sim_host.ts`'s role for `MatchDriverPort`). Reproducing the assignment
-// algorithm with a hand-written fake instead -- rather than waiting for
-// that dependency edge -- would mean re-implementing `coordinator.lua`'s
-// rules a second time, exactly what v2/README.md §2.1 exists to prevent.
-// Those three are ported as `it.skip`. A fourth (`renders every state
-// without touching a real display`) is unblocked below: `@gc/ui` (with its
-// `draw` module and `GraphicsBackend`) *is* a declared dependency of this
-// package (`online_lobby.ts` already draws through it), so the stated
-// blocker -- "this package does not own that seam" -- was stale.
+// slots offer a pair control). `@gc/wasm` now declares `@gc/screens` as a
+// dependent (this package carries it as a devDependency, resolvable from a
+// spec file -- production code in this package still only ever receives a
+// coordinator through the injected `CoordinatorPort`, never imports
+// `@gc/wasm` directly), so the stated "no dependency edge" blocker is gone.
+//
+// That unblocks all three, driven for real below via `realCoordinatorPort()`,
+// a thin adapter over `@gc/wasm`'s `Coordinator` -- the actual
+// `gc_netcode::coordinator` reducer (`crates/gc-wasm/src/coordinator_bridge.rs`),
+// not a reproduction of it. One genuine gap remains, and it is why "all
+// three unblocked" needed rechecking rather than being assumed:
+// `gc_netcode::coordinator::plan_assignments` (the team_humans/
+// slots_per_human seat-distribution algorithm a host runs before publishing
+// ownership) is a `pub fn` on the Rust side but is *not* part of
+// `coordinator_bridge.rs`'s bound surface -- that file binds `assignSlots`,
+// which validates an already-computed assignment, never the function that
+// computes one from a manifest and a seating order. So `realPlanAssignments`
+// below does not attempt a faithful, general port of it (that would be
+// exactly the "re-implementing coordinator.lua's rules a second time"
+// v2/README.md §2.1 exists to prevent) -- it only covers the single
+// degenerate case every case below actually needs: a lone connected host,
+// bot-filling the rest. For that case the answer is not really an
+// "algorithm" to reimplement, it falls straight out of `matchModes` shape
+// data already injected via `ProtocolPort`: the one connected peer owns the
+// first `slots_per_human` canonical slots, in canonical order, full stop.
+// `realPlanAssignments` refuses (throws) for more than one seated peer
+// rather than silently guessing at a multi-peer contiguous-block layout,
+// and its output is independently validated by the real `assignSlots` call
+// every case below makes -- a wrong block boundary fails loudly as a
+// rejected assignment, not as a silently-wrong assertion. A case that
+// needed two or more *simultaneously connected* humans (contiguous-block
+// seating across peers, not just within one) would still have to stay
+// `it.skip` on this same gap; none of the three below do.
+//
+// A fourth (`renders every state without touching a real display`) is
+// unblocked below too, for an unrelated reason: `@gc/ui` (with its `draw`
+// module and `GraphicsBackend`) *is* a declared dependency of this package
+// (`online_lobby.ts` already draws through it), so the stated blocker --
+// "this package does not own that seam" -- was stale.
 
 import { describe, expect, it } from "vitest";
 import { draw, hit } from "@gc/ui";
 import type { GraphicsBackend, Layout } from "@gc/ui";
+// `@gc/wasm` is a devDependency of this package (package.json), reachable
+// from a spec file only -- see this file's header. Production code in this
+// package (`lobby.ts`/`lobby_model.ts`) must keep receiving a coordinator
+// through the injected `CoordinatorPort` instead.
+import { loadSimHost } from "@gc/wasm";
+import type { Coordinator } from "@gc/wasm";
 import {
   newState,
   layout as lobbyLayout,
@@ -340,6 +370,327 @@ function fakeGraphicsBackend(): GraphicsBackend {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Real-coordinator fixtures -- see this file's header for what these do and
+// do not prove, and for the two remaining gaps (`plan_assignments` not
+// wasm-bound; the wire manifest/runtime shape).
+// ---------------------------------------------------------------------------
+
+// `gc_netcode::protocol::validate_runtime` requires exactly this shape
+// (`RUNTIME_FIELDS`, version pinned to `RUNTIME_IDENTITY_VERSION`).
+// Transcribed verbatim from `crates/gc-netcode/src/protocol_fixture.rs`'s
+// own `runtime()` -- the same literal the Rust suite itself pins against.
+// Content, not logic (AGENTS.md §8).
+const REAL_RUNTIME_WIRE = {
+  version: 1,
+  runtime_id: "lovejs",
+  runtime_revision: "lovejs.11.5.omp0",
+  presentation_id: "presentation.2026-07-25",
+  capabilities: ["combat_feedback.v1", "control_channel.v1", "input_channel.v1"],
+};
+
+// `gc_netcode::protocol::validate_manifest` requires every one of these
+// fields, several pinned to exact version constants
+// (`protocol::{VERSION,MANIFEST_VERSION}`, `gc_sim::input_frame::VERSION`,
+// `gc_sim::match_snapshot::COMBAT_VERSION`, `gc_sim::input_tape::COMBAT_VERSION`,
+// `gc_sim::combat_snapshot::VERSION`), `combat_status` restricted to
+// `COMBAT_STATUSES`, `tick_rate` pinned to `gc_sim::fixed_clock::TICK_RATE`.
+// `lobby_model.ts`'s own `SessionManifest` (used by the fake `CoordinatorPort`
+// above) has none of this -- it only carries what this package's own view
+// logic reads. Transcribed verbatim from
+// `crates/gc-netcode/src/protocol_fixture.rs`'s own `manifest()` (values)
+// plus the version constants it composes from `gc-sim`/`gc-netcode`
+// (gathered by reading those crates' `pub const`s), not derived or guessed.
+// Built untyped and cast at the end (mirroring `lobby_flow.spec.ts`'s
+// `toPublic`) so the extra fields survive TypeScript's excess-property
+// check on `SessionManifest`'s narrower nested shapes.
+function realManifest(mode: SessionMatchMode): SessionManifest {
+  const player = (playerId: string, position: string, loadoutId?: string, familyId?: string) => ({
+    player_id: playerId,
+    position,
+    ...(loadoutId !== undefined ? { loadout_id: loadoutId } : {}),
+    ...(familyId !== undefined ? { family_id: familyId } : {}),
+  });
+  const home = [
+    player("ozzo", "keeper"),
+    player("zyro_vex", "forward", "loadout_spring_gloves", "unarmed"),
+    player("mika_olu", "defender", "loadout_emberguard_shield", "guard"),
+    player("rok_tann", "midfielder", "loadout_vector_blade", "light_melee"),
+    player("sela_dwin", "forward", "loadout_prism_launcher", "ranged"),
+  ];
+  const away = [
+    player("gax_oru", "keeper"),
+    player("drell", "defender", "loadout_spring_gloves", "unarmed"),
+    player("morv", "defender", "loadout_emberguard_shield", "guard"),
+    player("krag", "midfielder", "loadout_vector_blade", "light_melee"),
+    player("tox_vren", "forward", "loadout_prism_launcher", "ranged"),
+  ];
+  const outfieldIds = ["zyro_vex", "mika_olu", "rok_tann", "sela_dwin", "drell", "morv", "krag", "tox_vren"];
+  const slots = outfieldIds.map((playerId, index) => {
+    const entry = SLOT_ORDER[index];
+    if (entry === undefined) {
+      throw new Error("fixture slot order is missing a canonical slot");
+    }
+    return { slot: entry.id, team: entry.team, player_id: playerId };
+  });
+  const raw = {
+    version: 1,
+    session_id: "session_alpha",
+    protocol_version: 1,
+    input_version: 2,
+    snapshot_version: 13,
+    tape_version: 2,
+    combat_schema_version: 3,
+    build_id: "build.97b60ea",
+    source_id: "source.97b60ea",
+    content_id: "content.omp3.v1",
+    tuning_id: "tuning.omp3.v1",
+    match_config_id: "match_config.direct_host.v1",
+    fixture_id: "fixture.default_mixed.v1",
+    arena_id: "arena.goliseo",
+    combat_rules_id: "combat_interaction.accepted_2026_07_23",
+    gameplay_ai_policy_id: "gameplay_ai.combat.v1",
+    combat_status: "provisional_114",
+    seed: 20001,
+    tick_rate: 60,
+    duration_ticks: 7200,
+    max_goals: 99,
+    match_mode: mode,
+    teams: [
+      { team: "home", team_id: "team_nova", roster: home },
+      { team: "away", team_id: "team_void", roster: away },
+    ],
+    slots,
+  };
+  return raw as unknown as SessionManifest;
+}
+
+function realProtocolFixture(): ProtocolFixturePort {
+  return { manifest: realManifest, runtime: () => REAL_RUNTIME_WIRE };
+}
+
+// The Rust-side seat-distribution algorithm's degenerate, single-peer case
+// -- see this file's header for why this is not a port of the general
+// algorithm. `SLOT_PRODUCER_FIELDS`'s wire shape (`gc_netcode::protocol`)
+// needs `player_id` and, for a bot, an integer `bot_seed`; neither is part
+// of `SessionSlotProducer`'s own (narrower) shape, so the raw records are
+// built untyped and cast, same reasoning as `realManifest`.
+function realPlanAssignments(
+  protocol: ProtocolPort,
+  manifest: SessionManifest,
+  seating: readonly string[]
+): readonly SessionSlotProducer[] {
+  if (seating.length > 1) {
+    throw new Error("realPlanAssignments only covers a single connected peer -- see this file's header");
+  }
+  const shape = protocol.matchModes[manifest.match_mode];
+  const humanPeer = seating[0];
+  return SLOT_ORDER.map((entry, index) => {
+    const manifestSlot = manifest.slots[index];
+    if (manifestSlot === undefined) {
+      throw new Error("fixture manifest is missing a canonical slot");
+    }
+    const owned = humanPeer !== undefined && index < shape.slots_per_human;
+    const raw = owned
+      ? { producer_kind: "peer", producer_id: humanPeer, team: entry.team, slot: entry.id, player_id: manifestSlot.player_id }
+      : {
+          producer_kind: "bot",
+          producer_id: `bot_${entry.id}`,
+          team: entry.team,
+          slot: entry.id,
+          player_id: manifestSlot.player_id,
+          bot_seed: index + 1,
+        };
+    return raw as unknown as SessionSlotProducer;
+  });
+}
+
+// `gc_wasm::coordinator_bridge`'s JSON encoder writes an explicit JSON
+// `null` for every unset optional field (`state_to_json`'s
+// `Json::opt_str`/`.map_or(Json::Null, ...)` calls) -- `CoordinatorState`'s
+// own optional fields are TypeScript `undefined`, and `lobby_model.ts`
+// checks several of them with `!== undefined` (`state.manifest_id`,
+// `peer.accepted_manifest_id`, ...). Left as JSON `null`, those checks
+// would see "already set" on a session that never proposed anything.
+function denull(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(denull);
+  }
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = entry === null ? undefined : denull(entry);
+    }
+    return out;
+  }
+  return value;
+}
+
+// The one crossing between the real wasm `Coordinator` (a stateful class:
+// every call mutates one instance and returns an outcome) and
+// `CoordinatorPort`'s pure `step(state, event) -> [state, outcome]` shape
+// `lobby_model.ts` threads immutably. `__handle` carries the live instance
+// through every `CoordinatorState` snapshot this adapter hands back; a
+// `step` call ignores the *content* of the state it's given and always
+// mutates the one instance reachable through it, then re-derives a fresh
+// snapshot from `stateJson()`. Mirrors `lobby_flow.spec.ts`'s `toPublic`
+// boundary cast, not a structural one.
+interface RealCoordState extends CoordinatorState {
+  readonly __handle: Coordinator;
+}
+
+function stateFromHandle(handle: Coordinator): CoordinatorState {
+  const parsed = denull(JSON.parse(handle.stateJson())) as Record<string, unknown>;
+  return { ...parsed, __handle: handle } as unknown as CoordinatorState;
+}
+
+function handleOf(state: CoordinatorState): Coordinator {
+  return (state as unknown as RealCoordState).__handle;
+}
+
+function mapAction(raw: Record<string, unknown>): CoordinatorAction {
+  const kind = raw["kind"];
+  if (kind === "send") {
+    return { kind: "send", message: raw["wire"], targets: raw["targets"] } as unknown as CoordinatorAction;
+  }
+  if (kind === "close") {
+    return { kind: "close", link_id: raw["link_id"] } as unknown as CoordinatorAction;
+  }
+  if (kind === "start_match") {
+    return { kind: "start_match", freeze: raw["freeze"] } as unknown as CoordinatorAction;
+  }
+  // "terminate" -- `lobby_model.ts`'s `absorb` only recognizes
+  // send/close/start_match and silently ignores anything else; the
+  // terminal reason itself is read off `state.terminal`
+  // (`stateFromHandle`, sourced from the coordinator's own state), so
+  // nothing observable is lost by passing it through unrecognized.
+  return raw as unknown as CoordinatorAction;
+}
+
+// Every `Coordinator` method used below returns `{"outcomes": [...],
+// "summary": {...}}` -- one outcome per applied event, always ending with
+// the outcome of whichever event this call itself applied (`Coordinator`'s
+// own doc). A single-shot call (everything except `tick`) always has
+// exactly one.
+function batchOutcome(json: string): CoordinatorOutcome {
+  const parsed = JSON.parse(json) as { readonly outcomes: readonly Record<string, unknown>[] };
+  const outcome = parsed.outcomes[parsed.outcomes.length - 1];
+  if (outcome === undefined) {
+    throw new Error("a coordinator call returned no outcome");
+  }
+  return {
+    accepted: outcome["accepted"] as boolean,
+    ...(typeof outcome["reason"] === "string" ? { reason: outcome["reason"] } : {}),
+    actions: (outcome["actions"] as readonly Record<string, unknown>[]).map(mapAction),
+  };
+}
+
+// Drives the real `@gc/wasm` `Coordinator` through `CoordinatorPort`'s
+// interface. Only wires the event kinds the three real-coordinator cases
+// below actually dispatch (host-only sessions: create, propose_manifest,
+// assign_slots, prefer_pair) -- an event kind outside that set throws
+// rather than silently no-op-ing, since this fixture makes no claim to be a
+// general `CoordinatorPort` implementation.
+function realCoordinatorPort(): CoordinatorPort {
+  return {
+    create(options) {
+      const host = loadSimHost();
+      const handle =
+        options.role === "guest"
+          ? new host.Coordinator(
+              "guest",
+              options.session_id,
+              options.peer_id,
+              options.host_peer_id,
+              options.host_link_id,
+              JSON.stringify(options.runtime),
+              options.build_id,
+              JSON.stringify(options.expectation)
+            )
+          : new host.Coordinator(
+              "host",
+              options.session_id,
+              options.peer_id,
+              undefined,
+              undefined,
+              JSON.stringify(options.runtime),
+              options.build_id,
+              undefined
+            );
+      return stateFromHandle(handle);
+    },
+    step(state, event) {
+      const handle = handleOf(state);
+      let json: string;
+      switch (event["kind"]) {
+        case "propose_manifest":
+          json = handle.proposeManifest(JSON.stringify(event["manifest"]));
+          break;
+        case "assign_slots":
+          json = handle.assignSlots(JSON.stringify(event["assignments"]), Boolean(event["preserve_claims"]));
+          break;
+        case "prefer_pair":
+          json = handle.preferPair(event["slots"] as string[]);
+          break;
+        case "set_ready":
+          json = handle.setReady(Boolean(event["ready"]));
+          break;
+        default:
+          throw new Error(
+            `realCoordinatorPort: unhandled event kind '${String(event["kind"])}' -- this fixture only wires what the real-coordinator lobby cases exercise`
+          );
+      }
+      return [stateFromHandle(handle), batchOutcome(json)];
+    },
+    planAssignments(manifest, seating) {
+      return realPlanAssignments(fakeProtocol(), manifest, seating);
+    },
+    ownedSlots(state, peerId) {
+      return (state.assignments ?? [])
+        .filter((producer) => producer.producer_kind === "peer" && producer.producer_id === peerId)
+        .map((producer) => producer.slot);
+    },
+    // Matches `gc_netcode::coordinator::preview_live` exactly ("the first
+    // owned slot in canonical order, derived from the assignments alone" --
+    // that function's own doc comment): a one-line fold with no design
+    // choice left in it, unlike seat planning. Not wasm-bound either, but
+    // safe to state directly for that reason.
+    previewLive(assignments) {
+      const live: Record<string, InputSlotId> = {};
+      for (const producer of assignments ?? []) {
+        if (producer.producer_kind === "peer" && live[producer.producer_id] === undefined) {
+          live[producer.producer_id] = producer.slot;
+        }
+      }
+      return live;
+    },
+    ownershipSeatsRoster() {
+      return false;
+    },
+  };
+}
+
+function realPorts(): LobbyModelPorts {
+  return {
+    coordinator: realCoordinatorPort(),
+    protocol: fakeProtocol(),
+    protocolFixture: realProtocolFixture(),
+    transportContract: fakeTransportContract(),
+    fnv1a64: fakeFnv1a64(),
+    inputFrame: fakeInputFrame(),
+  };
+}
+
+// Locks a real-coordinator, single-human, bot-filled session in `mode` --
+// the setup every case below shares.
+function lockedRealHost(mode: SessionMatchMode): LobbyScreenState {
+  let state = click(newState(VP, realPorts()), "role_host");
+  state = click(state, `mode_${mode}`);
+  state = dispatch(state, { kind: "lobby", command: { kind: "bot_fill" } });
+  state = dispatch(state, { kind: "lobby", command: { kind: "lock" } });
+  return state;
+}
+
 describe("online lobby screen", () => {
   it("opens on an explicit host or guest choice", () => {
     const state = newState(VP, ports());
@@ -545,19 +896,56 @@ describe("online lobby screen", () => {
     expect(text.includes("DIFFERENT BUILD")).toBe(false);
   });
 
-  // Ported as `it.skip`: which slots read LIVE / AI (OWNED) / AI FILL needs
-  // the real coordinator's slot-assignment algorithm (team_humans /
-  // slots_per_human distribution) -- the fixture `planAssignments` above is
-  // deliberately not a faithful port of it (see this file's header). The
-  // real algorithm exists now, in `@gc/wasm`'s `Coordinator`; the blocker is
-  // that `@gc/screens` has no dependency edge onto `@gc/wasm` this batch
-  // (this file's header).
-  it.skip("names the AI-driven slots inside a human's owned set", () => {});
+  // Unblocked: driven against the real `@gc/wasm` `Coordinator` -- see this
+  // file's header. 1v1 seats a lone connected human on all four home
+  // slots; only the first (canonical order) is that human's opening LIVE
+  // slot, the rest are AI while still owned by them, and every away slot
+  // is a declared bot fill.
+  it("names the AI-driven slots inside a human's owned set", () => {
+    const state = lockedRealHost("1v1");
+    expect(view(state).error).toBeUndefined();
+    const currentLayout = lobbyLayout(state);
+    const home1 = hit.find(currentLayout, "slot_home_1");
+    expect(home1?.text?.includes("LIVE")).toBe(true);
+    for (const slot of ["home_2", "home_3", "home_4"]) {
+      const widget = hit.find(currentLayout, `slot_${slot}`);
+      expect(widget?.text?.includes("AI (OWNED)")).toBe(true);
+    }
+    for (const slot of ["away_1", "away_2", "away_3", "away_4"]) {
+      const widget = hit.find(currentLayout, `slot_${slot}`);
+      expect(widget?.text?.includes("AI FILL")).toBe(true);
+    }
+  });
 
-  // Ported as `it.skip`: same unblocker -- which slots offer a pair control
-  // depends on the real assignment/ownership algorithm.
-  it.skip("offers a pair control only where there is a pair to choose", () => {});
+  // Unblocked: same real coordinator. 2v2 seats the lone connected human on
+  // home_1/home_2 (`slots_per_human` = 2); a pair control is offered on
+  // every *other* same-team slot -- trading the human's non-live slot
+  // (home_2) for it -- and nowhere else: not on the two slots already
+  // owned (nothing to trade for), not on the away team (wrong team).
+  it("offers a pair control only where there is a pair to choose", () => {
+    const state = lockedRealHost("2v2");
+    expect(view(state).error).toBeUndefined();
+    const currentLayout = lobbyLayout(state);
+    expect(hit.find(currentLayout, "prefer_home_3")).not.toBeNull();
+    expect(hit.find(currentLayout, "prefer_home_4")).not.toBeNull();
+    for (const slot of ["home_1", "home_2", "away_1", "away_2", "away_3", "away_4"]) {
+      expect(hit.find(currentLayout, `prefer_${slot}`)).toBeNull();
+    }
+  });
 
-  // Ported as `it.skip`: same unblocker.
-  it.skip("offers no pair control at all in 1v1 or 4v4", () => {});
+  // Unblocked: same real coordinator. In 1v1 the lone human already owns
+  // every home slot (nothing on its own team left to trade for); in 4v4 it
+  // owns exactly one slot (nothing to trade away). Both are properties of
+  // the real ownership the coordinator published, not of this screen's own
+  // logic.
+  it("offers no pair control at all in 1v1 or 4v4", () => {
+    for (const mode of ["1v1", "4v4"] as const) {
+      const state = lockedRealHost(mode);
+      expect(view(state).error).toBeUndefined();
+      const currentLayout = lobbyLayout(state);
+      for (const slot of ["home_1", "home_2", "home_3", "home_4", "away_1", "away_2", "away_3", "away_4"]) {
+        expect(hit.find(currentLayout, `prefer_${slot}`)).toBeNull();
+      }
+    }
+  });
 });

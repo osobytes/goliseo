@@ -294,15 +294,12 @@ const PREFERENCE_TIMEOUT_TICKS = 300;
 interface FakePreference {
   readonly slots: readonly InputSlotId[];
   readonly assignment_id?: string;
-  // Widened by one member versus `lobby_model.ts`'s own
-  // `SessionPreferenceStatus` ("granted" | "unchanged" | "rejected"): the
-  // real coordinator's `preference` field genuinely holds "pending" between
-  // a request and its verdict (`handle_prefer_pair`'s guest branch), and
-  // `lobby_model.ts`'s own `LobbyPreferenceView.status` and
-  // `PREFERENCE_TEXT` both already account for it. `SessionPreference`
-  // itself just never had "pending" added to its status unions -- see this
-  // file's final report.
-  readonly status: "pending" | SessionPreferenceStatus;
+  // `lobby_model.ts`'s `SessionPreferenceStatus` now includes "pending"
+  // (it used to be "granted" | "unchanged" | "rejected" only, and this
+  // field had to be locally widened to represent the real coordinator's
+  // between-request-and-verdict state -- see that type's own doc comment
+  // for the fix).
+  readonly status: SessionPreferenceStatus;
   readonly reason?: SessionPreferenceRejection;
   readonly deadline?: number;
 }

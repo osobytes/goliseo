@@ -134,7 +134,15 @@ export interface SessionSlotProducer {
   readonly slot: InputSlotId;
 }
 
-export type SessionPreferenceStatus = "granted" | "unchanged" | "rejected";
+// The real coordinator's `preference` field genuinely holds "pending"
+// between a request and its verdict (`coordinator.lua:1703`,
+// `handle_prefer_pair`'s guest branch) -- this union used to omit it and
+// callers worked around the gap with a local cast/widening (see
+// `lobby_flow.spec.ts`'s former `FakePreference.status` comment). "pending"
+// never appears in a `pair_preference_result` wire message (only the host's
+// verdict does), so this addition is purely about representing the
+// coordinator's own local, not-yet-answered state correctly.
+export type SessionPreferenceStatus = "pending" | "granted" | "unchanged" | "rejected";
 export type SessionPreferenceRejection =
   | "already_taken"
   | "wrong_team"
@@ -1067,7 +1075,7 @@ export interface LobbySeatView {
 export interface LobbyPreferenceView {
   /** The pair the local peer asked for. */
   readonly slots: readonly InputSlotId[];
-  readonly status: "pending" | SessionPreferenceStatus;
+  readonly status: SessionPreferenceStatus;
   readonly reason?: SessionPreferenceRejection;
   /** Plain language for the status, or for the typed reason. */
   readonly text: string;

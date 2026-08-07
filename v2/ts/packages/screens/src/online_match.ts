@@ -189,6 +189,17 @@ export class OnlineMatch<TDriver, TBatch, TSnapshot, TCheckpoint, TPresentation,
   private buffers = new Map<string, LobbyFrameBuffer>();
   private control: { readonly channel: string; readonly peer_id: string; readonly message: { readonly payload: string } }[] = [];
   private checkpoints: TCheckpoint[] = [];
+  // The most recent boundary hash this peer's own driver has observed, if
+  // any -- `TCheckpoint` is opaque to this class (see `MatchDriverPort`'s
+  // own doc), but every real implementation carries a `hash` field
+  // (`online_match_model.ts`'s "checkpoints" command case already reads
+  // `checkpoint.hash` structurally). Used by `reportDriver` as the final
+  // hash a completed match reports -- the coordinator's own `matchFinish`
+  // requires a real, canonical 16-character hash
+  // (`gc_netcode::protocol::validate_hash`), so reporting an empty string
+  // here was never going to reach an agreed result against the real
+  // coordinator.
+  private lastCheckpointHash: string | undefined;
   private confirmed: unknown[] = [];
   private accumulator = 0;
   private reportedTerminal = false;
@@ -240,6 +251,10 @@ export class OnlineMatch<TDriver, TBatch, TSnapshot, TCheckpoint, TPresentation,
         }
         for (const checkpoint of self.ports.matchDriver.batchCheckpoints(batch)) {
           self.checkpoints.push(checkpoint);
+          const hash = (checkpoint as unknown as { readonly hash?: string }).hash;
+          if (typeof hash === "string") {
+            self.lastCheckpointHash = hash;
+          }
         }
         self.live = { ...self.ports.matchDriver.batchLive(batch) };
         const presented = self.ports.matchPresentation.consume(self.presentation, self.driver, batch);
@@ -351,7 +366,11 @@ export class OnlineMatch<TDriver, TBatch, TSnapshot, TCheckpoint, TPresentation,
         final_tick: state.time_left, // placeholder tick source -- see class header
         home_score: state.score.home,
         away_score: state.score.away,
-        final_hash: "",
+        // The last boundary hash this peer's own driver observed -- see
+        // `lastCheckpointHash`'s own doc. Empty only if the driver never
+        // reported one, which the real coordinator refuses as malformed
+        // (matching that it never had anything to agree on).
+        final_hash: this.lastCheckpointHash ?? "",
       });
       return;
     }

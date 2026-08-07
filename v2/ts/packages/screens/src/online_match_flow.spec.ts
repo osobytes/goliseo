@@ -8,32 +8,62 @@
 // `game.render.pitch`/`match_hud_render`/`render.frame` (`@gc/render`) and
 // `game.input.bindings` (`@gc/input`).
 //
-// Two things changed since this file was first ported as a wall of
-// `it.skip`, and one did not:
+// Several things changed since this file was first ported as a wall of
+// `it.skip`:
 //
 // - `@gc/input` IS now a declared dependency of this package
 //   (`package.json`) -- that half of the original blocker note was stale.
-// - `@gc/wasm` now exports a real `Coordinator`/`MatchDriverBridge`
-//   (`crates/gc-wasm/src/coordinator_bridge.rs`), so "no wasm bridge this
-//   milestone" is stale too, as a general claim.
-// - `@gc/render` is still not a declared dependency of `@gc/screens`, and
-//   this port may not edit `package.json` (another agent owns manifests
-//   this batch). That is a real, current blocker for anything that needs
-//   the real pitch/HUD renderer.
+// - `@gc/render` IS now a declared dependency too (`package.json`) --
+//   also previously stale, and specifically relevant to the two cases
+//   whose blocker named it explicitly.
+// - `@gc/wasm` is a devDependency, reachable from this spec file (not from
+//   `online_match.ts`/`online_match_model.ts`, which keep receiving a
+//   coordinator only through their existing injected
+//   `CoordinatorPort`/`MatchDriverPort` -- see those files' own headers).
+//   It exports a real `Coordinator` (`crates/gc-wasm/src/coordinator_bridge.rs`)
+//   over `gc_netcode::coordinator`'s actual reducer, not a fake of it.
 //
 // `online_match.ts` is entirely port-injected (`MatchDriverPort`,
 // `MatchPresentationPort`, `MatchSessionPort`, `MatchLobbyLinkPort`,
 // `LobbyFramingPort`, `MatchContractPort`, an observer port, and a
 // `newMatch` factory returning `real_match.ts`'s `RealMatchScreenPort`) --
 // following the pattern `match_screen.spec.ts` already established for
-// `match.ts`/`SimHostPort`, hand-written fakes standing in for those ports
-// let two of the six "online match screen flow" cases run for real against
-// `online_match.ts`'s and `online_match_model.ts`'s own logic, with no
-// `@gc/wasm` or `@gc/render` dependency at all. Session/slot-assignment
-// protocol logic (which slot is LIVE, which coordinator reason a peer's
-// abort produces on the *other* peer) is Rust-owned and not reimplemented
-// here -- see each remaining `it.skip`'s own comment for why that specific
-// case still can't run.
+// `match.ts`/`SimHostPort`. Two cases below already ran against
+// hand-written fakes for all of that with no `@gc/wasm` dependency at all.
+// Two more now run against a real `Coordinator`, driven through
+// `realCoordinatorPort()`/`realOnlineModelPorts()` below (a solo host
+// reaching an agreed "completed" result; a real host+guest pair, relayed
+// through `pump()`, proving the *other* peer's `"peer_abort"` reason is the
+// coordinator's own protocol decision, not this file's invention). Five
+// stay `it.skip`, each re-examined against the now-reachable `Coordinator`
+// and `@gc/render` rather than assumed still blocked for their original
+// reason:
+//
+// - Two ("keeps control inside the frozen owned set...",
+//   "makes switching inert in 4v4...") were filed as needing both the real
+//   assignment algorithm *and* `match.ts`'s real switch consumption.
+//   `gc_netcode::coordinator::plan_assignments` is still not part of
+//   `coordinator_bridge.rs`'s bound surface (same gap `lobby.spec.ts`'s
+//   header documents), and separately `match_driver_bridge.rs`'s `advance`
+//   batch *does* now carry a real `live` map from the real
+//   `gc_netcode::match_driver` -- but `match.ts` (owned elsewhere this
+//   batch, and by its own header still only porting its
+//   rollback-consumption seam) has no code yet that turns that map into
+//   `state.controlled`. A spec-local fake that did so would be exactly the
+//   "asserting against your own fake" this port must not do.
+// - One ("draws a live online frame with its combat model and HUD") named
+//   `@gc/render` as its blocker; that dependency edge now exists, but
+//   nothing in this batch turns `OnlineMatch`'s real state into a
+//   `RenderFrame` for it to draw -- that translation is `match.ts`'s
+//   `draw()`, same gap as above from a different angle.
+// - One ("drives and shows every accepted family...") named `@gc/render`
+//   too, but its second, still-real blocker is `sim.combat`'s
+//   readiness/telegraph timing, which has no wasm bridge at all.
+// - One ("routes the lobby's synchronized start...") is a permanent
+//   architectural fact, not a milestone gap: `@gc/app` depends on
+//   `@gc/screens`, never the reverse.
+//
+// See each remaining `it.skip`'s own comment for the detail.
 
 import { describe, expect, it } from "vitest";
 import { Vec2 } from "@gc/core";
@@ -59,6 +89,7 @@ import {
   ended,
   exitRoute,
   newOnlineMatchModel,
+  type CoordinatorAction,
   type CoordinatorEvent,
   type CoordinatorOutcome,
   type CoordinatorPort,
@@ -71,6 +102,12 @@ import {
 } from "./online_match_model.ts";
 import type { MatchContractPort, RealMatchScreenPort } from "./real_match.ts";
 import type { ProductMatchResult, TeamData } from "./content.ts";
+// `@gc/wasm` is a devDependency of this package (package.json), reachable
+// from a spec file only -- see this file's header. `online_match.ts`/
+// `online_match_model.ts` must keep receiving a coordinator through their
+// existing injected `CoordinatorPort`s instead.
+import { loadSimHost } from "@gc/wasm";
+import type { Coordinator } from "@gc/wasm";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -430,35 +467,583 @@ function run(match: HostOnlineMatch, frames: number): void {
   }
 }
 
-describe("online match screen flow", () => {
-  // Ported as `it.skip`: reaching an *agreed* full-time result needs the
-  // real coordinator to flip to a `"completed"` terminal once every peer's
-  // boundary hash has been acknowledged -- deliberately not modeled by the
-  // fake `CoordinatorPort` above (see this file's header and
-  // `online_match_model.spec.ts`'s own header: "the coordinator itself is
-  // only ever asked to relay a message or flip to terminal, never to
-  // arbitrate admission"). Faking that admission would mean
-  // re-implementing `coordinator.lua`'s acknowledgement protocol, exactly
-  // what v2/README.md §2.1 exists to prevent. `@gc/wasm`'s `Coordinator`
-  // does this for real now, but `@gc/screens` has no dependency edge onto
-  // `@gc/wasm` this batch (absent from `package.json`).
-  it.skip("carries a 1v1 session from the lobby to an agreed result", () => {});
+// ---------------------------------------------------------------------------
+// Real-coordinator fixtures -- see this file's header for what these do and
+// do not prove. Adapts `@gc/wasm`'s stateful `Coordinator` class to
+// `online_match_model.ts`'s pure `CoordinatorPort<TState>.step` shape, the
+// same `__handle`-carrying boundary cast `lobby.spec.ts` uses for its own
+// (structurally different) `CoordinatorPort` adapter -- not shared between
+// the two files because each package's own `CoordinatorPort` shape and
+// event vocabulary differs, and duplicating a small adapter twice is
+// cheaper than a cross-file dependency neither file's ownership allows.
+// ---------------------------------------------------------------------------
 
-  // Ported as `it.skip`: which slot is LIVE is the real coordinator's
-  // slot-assignment/switch-rule output (`match_driver.materialize_authored`
-  // in the Lua original), and `match.state.controlled` is derived from it
-  // by the real `match.ts` (owned by another agent this batch; `match.ts`
-  // itself still only ports its rollback-consumption seam, per its own
-  // header). A fake `MatchDriverPort.batchLive` and a fake match screen
-  // could return whatever this test wants them to, which would make the
-  // assertion ("control never left the frozen owned set") true of the
-  // fixture rather than of the real switch algorithm -- exactly the
-  // "reproduces behaviour, not intent" line this port must not cross.
+const REAL_BUILD_ID = "build.97b60ea";
+
+// Same fixture data as `lobby.spec.ts`'s `REAL_RUNTIME_WIRE`/`realManifest`
+// -- transcribed verbatim from `crates/gc-netcode/src/protocol_fixture.rs`
+// (values) plus the version constants it composes from `gc-sim`/
+// `gc-netcode` (see that file's header for the full accounting). Kept as a
+// plain object (not `lobby_model.ts`'s `SessionManifest`) because this
+// file's coordinator only ever receives it as JSON text, never through
+// `lobby_model.ts`'s typed surface.
+const REAL_RUNTIME_WIRE = {
+  version: 1,
+  runtime_id: "lovejs",
+  runtime_revision: "lovejs.11.5.omp0",
+  presentation_id: "presentation.2026-07-25",
+  capabilities: ["combat_feedback.v1", "control_channel.v1", "input_channel.v1"],
+};
+
+function realManifest1v1(sessionId: string) {
+  const player = (playerId: string, position: string, loadoutId?: string, familyId?: string) => ({
+    player_id: playerId,
+    position,
+    ...(loadoutId !== undefined ? { loadout_id: loadoutId } : {}),
+    ...(familyId !== undefined ? { family_id: familyId } : {}),
+  });
+  const home = [
+    player("ozzo", "keeper"),
+    player("zyro_vex", "forward", "loadout_spring_gloves", "unarmed"),
+    player("mika_olu", "defender", "loadout_emberguard_shield", "guard"),
+    player("rok_tann", "midfielder", "loadout_vector_blade", "light_melee"),
+    player("sela_dwin", "forward", "loadout_prism_launcher", "ranged"),
+  ];
+  const away = [
+    player("gax_oru", "keeper"),
+    player("drell", "defender", "loadout_spring_gloves", "unarmed"),
+    player("morv", "defender", "loadout_emberguard_shield", "guard"),
+    player("krag", "midfielder", "loadout_vector_blade", "light_melee"),
+    player("tox_vren", "forward", "loadout_prism_launcher", "ranged"),
+  ];
+  return {
+    version: 1,
+    session_id: sessionId,
+    protocol_version: 1,
+    input_version: 2,
+    snapshot_version: 13,
+    tape_version: 2,
+    combat_schema_version: 3,
+    build_id: REAL_BUILD_ID,
+    source_id: "source.97b60ea",
+    content_id: "content.omp3.v1",
+    tuning_id: "tuning.omp3.v1",
+    match_config_id: "match_config.direct_host.v1",
+    fixture_id: "fixture.default_mixed.v1",
+    arena_id: "arena.goliseo",
+    combat_rules_id: "combat_interaction.accepted_2026_07_23",
+    gameplay_ai_policy_id: "gameplay_ai.combat.v1",
+    combat_status: "provisional_114",
+    seed: 20001,
+    tick_rate: 60,
+    duration_ticks: 7200,
+    max_goals: 99,
+    match_mode: "1v1",
+    teams: [
+      { team: "home", team_id: "team_nova", roster: home },
+      { team: "away", team_id: "team_void", roster: away },
+    ],
+    slots: [
+      { slot: "home_1", team: "home", player_id: "zyro_vex" },
+      { slot: "home_2", team: "home", player_id: "mika_olu" },
+      { slot: "home_3", team: "home", player_id: "rok_tann" },
+      { slot: "home_4", team: "home", player_id: "sela_dwin" },
+      { slot: "away_1", team: "away", player_id: "drell" },
+      { slot: "away_2", team: "away", player_id: "morv" },
+      { slot: "away_3", team: "away", player_id: "krag" },
+      { slot: "away_4", team: "away", player_id: "tox_vren" },
+    ],
+  };
+}
+
+function realExpectation1v1(sessionId: string) {
+  const manifest = realManifest1v1(sessionId);
+  return {
+    build_id: manifest.build_id,
+    source_id: manifest.source_id,
+    content_id: manifest.content_id,
+    tuning_id: manifest.tuning_id,
+    match_config_id: manifest.match_config_id,
+    fixture_id: manifest.fixture_id,
+    arena_id: manifest.arena_id,
+    combat_rules_id: manifest.combat_rules_id,
+    gameplay_ai_policy_id: manifest.gameplay_ai_policy_id,
+    combat_status: manifest.combat_status,
+  };
+}
+
+// 1v1's degenerate seat plan for exactly one or two connected humans -- see
+// this file's header and `lobby.spec.ts`'s own `realPlanAssignments` for
+// why this is not a port of `gc_netcode::coordinator::plan_assignments`
+// (not wasm-bound): with `slots_per_human` = 4 for 1v1, one connected human
+// owns the whole home block and, if a second is connected, it owns the
+// whole away block -- there is no contiguous-block boundary decision left
+// to make for this specific mode. `assignSlots` independently validates the
+// result.
+function realAssignments1v1(manifest: ReturnType<typeof realManifest1v1>, hostPeerId: string, guestPeerId?: string) {
+  return manifest.slots.map((slot, index) => {
+    const isHome = index < 4;
+    if (isHome) {
+      return { producer_kind: "peer", producer_id: hostPeerId, team: slot.team, slot: slot.slot, player_id: slot.player_id };
+    }
+    if (guestPeerId !== undefined) {
+      return { producer_kind: "peer", producer_id: guestPeerId, team: slot.team, slot: slot.slot, player_id: slot.player_id };
+    }
+    return {
+      producer_kind: "bot",
+      producer_id: `bot_${slot.slot}`,
+      team: slot.team,
+      slot: slot.slot,
+      player_id: slot.player_id,
+      bot_seed: index + 1,
+    };
+  });
+}
+
+// See `gc_wasm::coordinator_bridge::state_to_json`: every unset optional
+// field is an explicit JSON `null`, not an omitted key. `CoordinatorStateCore`'s
+// `host_link_id` (and this file's own reads of `.phase`/`.terminal`/
+// `.result`) are TypeScript `undefined` -- left as `null`, `!== undefined`
+// checks would see "already set" on a session that never set it.
+function denull(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(denull);
+  }
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = entry === null ? undefined : denull(entry);
+    }
+    return out;
+  }
+  return value;
+}
+
+interface RealOnlineCoordState extends CoordinatorStateCore {
+  readonly __handle: Coordinator;
+}
+
+function stateFromHandle(handle: Coordinator): RealOnlineCoordState {
+  const parsed = denull(JSON.parse(handle.stateJson())) as Record<string, unknown>;
+  return { ...parsed, __handle: handle } as unknown as RealOnlineCoordState;
+}
+
+function handleOf(state: CoordinatorStateCore): Coordinator {
+  return (state as unknown as RealOnlineCoordState).__handle;
+}
+
+function mapAction(raw: Record<string, unknown>): CoordinatorAction {
+  const kind = raw["kind"];
+  if (kind === "send") {
+    return { kind: "send", message: raw["wire"], targets: raw["targets"] } as unknown as CoordinatorAction;
+  }
+  if (kind === "close") {
+    return { kind: "close", link_id: raw["link_id"] } as unknown as CoordinatorAction;
+  }
+  if (kind === "terminate") {
+    const terminal = raw["terminal"] as Record<string, unknown>;
+    return { kind: "terminate", terminal: { reason: terminal["reason"], detail: terminal["detail"] } } as unknown as CoordinatorAction;
+  }
+  // "start_match" never occurs past the lobby handoff this file's real
+  // coordinators are already constructed beyond, but pass it through
+  // unrecognized rather than throwing -- `absorb` in `online_match_model.ts`
+  // silently ignores an action kind it does not recognize.
+  return raw as unknown as CoordinatorAction;
+}
+
+// Every applied event in the batch, not just the last: `tick()`/`control`/
+// `link_lost` drain the whole queue in one call (one outcome per applied
+// event, "control" and "link_lost" event before the trailing `Tick`'s own
+// -- `Coordinator.tick`'s own doc), and a "terminate" action from an
+// *earlier* outcome (a queued abort/hash-mismatch/etc, applied before the
+// trailing tick) is exactly the shape a real inbound abort takes here. This
+// file's own `CoordinatorOutcome` is only ever consumed for its `actions`
+// list (`absorb` in `online_match_model.ts`), so keeping only the last
+// outcome silently dropped that action -- a real bug this adapter had until
+// the "aborts deliberately..." case below caught it.
+function batchOutcome(json: string): CoordinatorOutcome {
+  const parsed = JSON.parse(json) as { readonly outcomes: readonly Record<string, unknown>[] };
+  if (parsed.outcomes.length === 0) {
+    throw new Error("a coordinator call returned no outcome");
+  }
+  const actions: CoordinatorAction[] = [];
+  let accepted = true;
+  let reason: string | undefined;
+  for (const outcome of parsed.outcomes) {
+    for (const raw of outcome["actions"] as readonly Record<string, unknown>[]) {
+      actions.push(mapAction(raw));
+    }
+    if (outcome["accepted"] !== true) {
+      accepted = false;
+      if (typeof outcome["reason"] === "string") {
+        reason = outcome["reason"];
+      }
+    }
+  }
+  return { accepted, ...(reason !== undefined ? { reason } : {}), actions };
+}
+
+function wiresFrom(json: string): readonly string[] {
+  const parsed = JSON.parse(json) as { readonly outcomes: readonly { readonly actions: readonly Record<string, unknown>[] }[] };
+  const wires: string[] = [];
+  for (const outcome of parsed.outcomes) {
+    for (const action of outcome.actions) {
+      if (action["kind"] === "send" && typeof action["wire"] === "string") {
+        wires.push(action["wire"]);
+      }
+    }
+  }
+  return wires;
+}
+
+// Delivers every wire in `wires` to `to` (queued via `enqueueControlWire`,
+// applied by the one `tick()` call that drains the queue -- the queue/drain
+// seam `crates/gc-wasm/src/net_inbox.rs` documents), and returns whatever
+// new wires that produced.
+function deliver(wires: readonly string[], to: Coordinator, linkId: string): readonly string[] {
+  if (wires.length === 0) {
+    return [];
+  }
+  for (const wire of wires) {
+    to.enqueueControlWire(linkId, wire);
+  }
+  return wiresFrom(to.tick());
+}
+
+// Pumps a host/guest pair to a fixed point, mirroring
+// `gc_netcode::coordinator_driver::Driver::pump` -- round-based, bounded
+// (a protocol bug fails loudly here rather than looping forever), not a
+// port of the reducer itself: every state change still happens inside the
+// real `Coordinator` calls this drives.
+function pump(
+  host: Coordinator,
+  guest: Coordinator,
+  // The link id *the guest* records an arrival under -- what the guest
+  // constructor called `host_link_id` (`HOST_LINK_ON_GUEST` at every call
+  // site below). Named for which coordinator reads it, not which
+  // coordinator it "belongs to" on the wire -- the opposite naming bit
+  // everyone here once.
+  linkOnGuestForHost: string,
+  // The link id *the host* records an arrival on for this guest
+  // (`GUEST_LINK_ON_HOST` at every call site below).
+  linkOnHostForGuest: string,
+  fromHost: readonly string[],
+  fromGuest: readonly string[]
+): void {
+  let toGuest = fromHost;
+  let toHost = fromGuest;
+  for (let round = 0; round < 16; round += 1) {
+    if (toGuest.length === 0 && toHost.length === 0) {
+      return;
+    }
+    const nextToHost = deliver(toGuest, guest, linkOnGuestForHost);
+    const nextToGuest = deliver(toHost, host, linkOnHostForGuest);
+    toGuest = nextToGuest;
+    toHost = nextToHost;
+  }
+  throw new Error("real-coordinator relay did not settle within the round bound");
+}
+
+const GUEST_LINK_ON_HOST = "guest_1";
+const HOST_LINK_ON_GUEST = "host";
+const GUEST_PEER_ID = "guest_1";
+
+// Reaches "running" for a solo, bot-filled 1v1 host -- no relay needed
+// (`handle_finish` completes a session with no other admitted peer
+// immediately; see this file's report for the trace).
+function soloHostRunning(sessionId: string): RealOnlineCoordState {
+  const host = loadSimHost();
+  const handle = new host.Coordinator("host", sessionId, "host", undefined, undefined, JSON.stringify(REAL_RUNTIME_WIRE), REAL_BUILD_ID, undefined);
+  const manifest = realManifest1v1(sessionId);
+  handle.proposeManifest(JSON.stringify(manifest));
+  handle.assignSlots(JSON.stringify(realAssignments1v1(manifest, "host")), false);
+  handle.setReady(true);
+  handle.beginCountdown("countdown.1", 0, 0);
+  return stateFromHandle(handle);
+}
+
+// Reaches "running" for a real host+guest 1v1 pair, relayed through
+// `pump()` -- the manual-connect handshake, manifest proposal, ownership,
+// readiness, and the countdown/start barrier, exactly the sequence
+// `gc_netcode::coordinator_driver::Driver::reach_start` drives natively.
+function pairedRunning(sessionId: string): { readonly host: RealOnlineCoordState; readonly guest: RealOnlineCoordState } {
+  const wasm = loadSimHost();
+  const manifest = realManifest1v1(sessionId);
+  const hostHandle = new wasm.Coordinator("host", sessionId, "host", undefined, undefined, JSON.stringify(REAL_RUNTIME_WIRE), REAL_BUILD_ID, undefined);
+  const guestHandle = new wasm.Coordinator(
+    "guest",
+    sessionId,
+    GUEST_PEER_ID,
+    "host",
+    HOST_LINK_ON_GUEST,
+    JSON.stringify(REAL_RUNTIME_WIRE),
+    REAL_BUILD_ID,
+    JSON.stringify(realExpectation1v1(sessionId))
+  );
+  pump(hostHandle, guestHandle, HOST_LINK_ON_GUEST, GUEST_LINK_ON_HOST, [], wiresFrom(guestHandle.connect()));
+  pump(hostHandle, guestHandle, HOST_LINK_ON_GUEST, GUEST_LINK_ON_HOST, wiresFrom(hostHandle.proposeManifest(JSON.stringify(manifest))), []);
+  pump(
+    hostHandle,
+    guestHandle,
+    HOST_LINK_ON_GUEST,
+    GUEST_LINK_ON_HOST,
+    wiresFrom(hostHandle.assignSlots(JSON.stringify(realAssignments1v1(manifest, "host", GUEST_PEER_ID)), false)),
+    []
+  );
+  pump(hostHandle, guestHandle, HOST_LINK_ON_GUEST, GUEST_LINK_ON_HOST, wiresFrom(hostHandle.setReady(true)), []);
+  pump(hostHandle, guestHandle, HOST_LINK_ON_GUEST, GUEST_LINK_ON_HOST, [], wiresFrom(guestHandle.setReady(true)));
+  pump(hostHandle, guestHandle, HOST_LINK_ON_GUEST, GUEST_LINK_ON_HOST, wiresFrom(hostHandle.beginCountdown("countdown.1", 0, 0)), []);
+  return { host: stateFromHandle(hostHandle), guest: stateFromHandle(guestHandle) };
+}
+
+function realCoordinatorPort(): CoordinatorPort<RealOnlineCoordState> {
+  return {
+    step(state, event) {
+      const handle = handleOf(state);
+      let json: string;
+      switch (event["kind"]) {
+        case "match_phase":
+          json = handle.matchPhase(
+            event["phase"] as string,
+            event["tick"] as number,
+            event["home_score"] as number,
+            event["away_score"] as number
+          );
+          break;
+        case "hash_report":
+          json = handle.hashReport(event["tick"] as number, event["boundary_hash"] as string);
+          break;
+        case "finish":
+          json = handle.matchFinish(
+            event["final_tick"] as number,
+            event["home_score"] as number,
+            event["away_score"] as number,
+            event["final_hash"] as string
+          );
+          break;
+        case "netcode_failure":
+          json = handle.netcodeFailure(event["failure"] as string, undefined, event["detail"] as string | undefined);
+          break;
+        case "link_lost":
+          // A transport-reported loss is network-originated -- queued, not
+          // applied immediately (the same queue/drain seam as "control";
+          // see `net_inbox.rs`'s doc).
+          handle.enqueueLinkLost(event["link_id"] as string, event["code"] as string | undefined);
+          json = handle.tick();
+          break;
+        case "abort":
+          json = handle.abort(event["code"] as string | undefined, event["detail"] as string | undefined);
+          break;
+        case "leave":
+          json = handle.leave();
+          break;
+        case "control":
+          handle.enqueueControlWire(event["link_id"] as string, event["wire"] as string);
+          json = handle.tick();
+          break;
+        case "tick":
+          json = handle.tick();
+          break;
+        default:
+          throw new Error(
+            `realCoordinatorPort: unhandled event kind '${String(event["kind"])}' -- this fixture only wires what the real-coordinator flow cases exercise`
+          );
+      }
+      return [stateFromHandle(handle), batchOutcome(json)];
+    },
+  };
+}
+
+function realProtocolPort(): ProtocolPort {
+  return {
+    // The real `Coordinator` already encodes a "send" action's `message`
+    // (see `mapAction`) into its final wire text -- unlike the fake
+    // `ProtocolPort` above, this one's `message` argument already *is* the
+    // wire, so `encode` is the identity.
+    encode: (message) => message as string,
+    // `crates/gc-wasm/src/protocol_bridge.rs` binds decoding a wire's
+    // routing header only, never its kind-specific body -- see this file's
+    // sibling `lobby.spec.ts`'s header for the same gap. `absorbControl`
+    // only uses a decoded body to emit an optional `observe_hash`
+    // diagnostic effect; returning `undefined` here drops that one
+    // side-observation, never coordinator correctness (the real
+    // coordinator sees every wire regardless, via `enqueueControlWire`).
+    decode: () => undefined,
+  };
+}
+
+function realOnlineModelPorts(): OnlineMatchModelPorts<RealOnlineCoordState> {
+  return {
+    coordinator: realCoordinatorPort(),
+    protocol: realProtocolPort(),
+    localResult: (state) => (state as unknown as { readonly result?: unknown }).result,
+    isCompleted: (terminal) => terminal.reason === "completed",
+  };
+}
+
+function realOnlineModelPort(): OnlineMatchModelPort<OnlineMatchModel<RealOnlineCoordState, OnlineMatchRequest>> {
+  return {
+    command: (model, event: OnlineMatchDispatchEvent) => command(model, realOnlineModelPorts(), event),
+    ended,
+    exitRoute,
+    ABORT_PROMPT,
+  };
+}
+
+type RealHostOnlineMatch = OnlineMatch<
+  FakeDriverState,
+  FakeBatch,
+  unknown,
+  FakeCheckpoint,
+  Record<string, never>,
+  FakeBatch,
+  RealOnlineCoordState,
+  OnlineMatchModel<RealOnlineCoordState, OnlineMatchRequest>
+>;
+
+function buildRealHost(
+  coordinator: RealOnlineCoordState,
+  request: OnlineMatchRequest = HOST_REQUEST,
+  link: MatchLobbyLinkPort = fakeLink(),
+  matchDriverFor?: (driver: FakeDriverState, live: Readonly<Record<string, string>>) => MatchDriverPort<FakeDriverState, FakeBatch, unknown, FakeCheckpoint>
+): { readonly match: RealHostOnlineMatch; readonly driver: FakeDriverState; readonly actions: { readonly go: string }[] } {
+  const driver: FakeDriverState = { status: "active", tick: 0 };
+  const actions: { readonly go: string }[] = [];
+  const initialState: OnlineMatchState = {
+    time_left: 600,
+    score: { home: 0, away: 0 },
+    controlled: 0,
+    players: [{ id: "zyro_vex", team: "home", pos: new Vec2(0, 0), facing: new Vec2(0, 1) }],
+  };
+  const options: OnlineMatchOptions<
+    FakeDriverState,
+    FakeBatch,
+    unknown,
+    FakeCheckpoint,
+    Record<string, never>,
+    FakeBatch,
+    RealOnlineCoordState
+  > = {
+    request,
+    coordinator,
+    link,
+    matchDriver: (matchDriverFor ?? fakeMatchDriver)(driver, { [request.peer_id]: request.live ?? "" }),
+    matchPresentation: fakeMatchPresentation(),
+    matchSession: fakeMatchSession(),
+    lobbyFraming: fakeLobbyFraming(),
+    contract: fakeContract(),
+    observer: fakeObserver(),
+    newMatch: (opts) => fakeMatchScreen(initialState, opts.rollbackSource),
+    onAction: (action) => {
+      actions.push(action);
+    },
+  };
+  const match = new OnlineMatch(options, realOnlineModelPort(), (req, coord) => newOnlineMatchModel(req, coord));
+  return { match, driver, actions };
+}
+
+// `fakeMatchDriver` above never reports a checkpoint (the two already-passing
+// cases don't need one) -- the real coordinator's `matchFinish` refuses an
+// empty final hash (`online_match.ts`'s `lastCheckpointHash` doc), so a case
+// that reaches a real agreed result needs its driver to report one, exactly
+// once, the way a real driver reports its boundary hash as it runs.
+function fakeMatchDriverWithHash(
+  driver: FakeDriverState,
+  live: Readonly<Record<string, string>>
+): MatchDriverPort<FakeDriverState, FakeBatch, unknown, FakeCheckpoint> {
+  const base = fakeMatchDriver(driver, live);
+  let reported = false;
+  return {
+    ...base,
+    advance: (d, sample) => {
+      const batch = base.advance(d, sample);
+      if (reported) {
+        return batch;
+      }
+      reported = true;
+      return { ...batch, checkpoints: [{ tick: d.tick, hash: "0123456789abcdef" }] };
+    },
+  };
+}
+
+function runReal(match: RealHostOnlineMatch, frames: number): void {
+  for (let i = 0; i < frames; i += 1) {
+    match.update(TICK_SECONDS);
+  }
+}
+
+// Bypasses the star transport entirely (this file's `fakeLink`, whose
+// `send` is a no-op, has no relay of its own) and delivers straight into
+// the *other* peer's real coordinator via `enqueueControlWire` -- queued,
+// not applied, until that peer's own next coordinator tick (drained inside
+// `realCoordinatorPort`'s "tick" case). This is what "arrival is a tick
+// event, never a callback reaching sim state between ticks" means in
+// practice: `send` below only ever enqueues.
+function relayLink(targetHandle: Coordinator, targetLinkId: string): MatchLobbyLinkPort {
+  return {
+    star: { pollBatch: () => [], pollEvent: () => undefined },
+    send: (_linkId, wire) => {
+      targetHandle.enqueueControlWire(targetLinkId, wire);
+    },
+    apply: () => {},
+  };
+}
+
+describe("online match screen flow", () => {
+  // Unblocked: driven against a real, solo, bot-filled 1v1 `Coordinator`
+  // (`soloHostRunning` -- see this file's header). `handle_finish` in
+  // `crates/gc-netcode/src/coordinator.rs` completes a session with an
+  // empty target list (no other admitted peer to disagree with)
+  // immediately on `Finish`, no acknowledgement round-trip needed -- so
+  // this reaches a genuinely agreed (`TerminalReason::Completed`) result
+  // for real, through the real reducer, without needing a second peer.
+  it("carries a 1v1 session from the lobby to an agreed result", () => {
+    const coordinator = soloHostRunning("session.case1");
+    const { match, driver } = buildRealHost(coordinator, HOST_REQUEST, fakeLink(), fakeMatchDriverWithHash);
+    runReal(match, 10);
+    expect(ended(match.model)).toBe(false);
+
+    // The fake match driver stands in for the real OMP-3 driver reaching
+    // full time -- `reportDriver` is what turns that into the coordinator's
+    // own match-phase/finish protocol, which is the real thing under test
+    // here (see this file's header for what `fakeMatchDriver` does and does
+    // not fake).
+    driver.status = "completed";
+    match.update(TICK_SECONDS);
+    runReal(match, 5);
+
+    expect(ended(match.model)).toBe(true);
+    const model = match.model as {
+      readonly terminal?: { readonly reason: string };
+      readonly result?: { readonly home_score: number; readonly away_score: number };
+    };
+    expect(model.terminal?.reason).toBe("completed");
+    expect(exitRoute(match.model)).toBe("result");
+    expect(model.result?.home_score).toBe(0);
+    expect(model.result?.away_score).toBe(0);
+  });
+
+  // Ported as `it.skip`, re-examined: which slot is LIVE is
+  // `gc_netcode::match_driver`'s real switch-rule output, and
+  // `crates/gc-wasm/src/match_driver_bridge.rs`'s `advance` batch now
+  // genuinely carries it (a real `live` map, not a fake). What is still
+  // missing is `match.ts` consuming it: `match.state.controlled` is
+  // supposed to come from `OnlineMatch`'s own `driverSource().controlledPlayer`
+  // callback (already correct in `online_match.ts`, this file's own
+  // package), but `match.ts` (owned by another agent this batch, and by its
+  // own header still only porting its rollback-consumption seam) has no
+  // code yet that calls it. A fake match screen that read `batch.live`
+  // itself and set `state.controlled` accordingly would be reimplementing
+  // that missing piece as a spec-local fake -- exactly the "asserting
+  // against your own fake" this port must not do, just one layer further
+  // in than originally filed.
   it.skip("keeps control inside the frozen owned set and off both keepers", () => {});
 
-  // Ported as `it.skip`: same unblocker as above -- a singleton owned set
-  // making every switch branch return the live slot is a property of the
-  // real switch rule, not of this screen's own logic.
+  // Ported as `it.skip`, re-examined: same real gap as above -- a singleton
+  // owned set making every switch branch return the live slot is a real
+  // property of `gc_netcode::match_driver`'s switch rule, reachable through
+  // `MatchDriverBridge` now, but still unobservable through `state.controlled`
+  // until `match.ts` consumes `driverSource().controlledPlayer`.
   it.skip("makes switching inert in 4v4 without branching on the mode", () => {});
 
   // Unblocked: nothing in this path (focus loss, a lost controller, one
@@ -490,17 +1075,58 @@ describe("online match screen flow", () => {
     expect((match.model as { readonly abort_prompt: boolean }).abort_prompt).toBe(false);
   });
 
-  // Ported as `it.skip`: a deliberate abort is provably local
-  // (`local_abort`, exercised by `online_match_model.spec.ts`'s "aborts on
-  // a second pause request" case for real). What only this flow spec can
-  // prove is the *other* peer's side -- that receiving the relayed abort
-  // produces `terminal.reason === "peer_abort"` on the guest -- and that
-  // mapping is the real coordinator's own protocol decision on an inbound
-  // wire message, not something `online_match_model.ts` computes locally
-  // (`"peer_abort"` does not appear anywhere in that module). A fake that
-  // invented that mapping would be asserting the fake's own design, not
-  // `coordinator.lua`'s.
-  it.skip("aborts deliberately and ends the session for every peer", () => {});
+  // Unblocked: a deliberate abort is provably local (`local_abort`,
+  // exercised by `online_match_model.spec.ts`'s "aborts on a second pause
+  // request" case for real). What only this flow spec can prove is the
+  // *other* peer's side -- that receiving the relayed abort produces
+  // `terminal.reason === "peer_abort"` -- and that mapping is the real
+  // coordinator's own protocol decision on an inbound wire message
+  // (`apply_abort` in `crates/gc-netcode/src/coordinator.rs`), not
+  // something `online_match_model.ts` computes locally (`"peer_abort"`
+  // does not appear anywhere in that module). Driven here against a real
+  // host+guest pair (`pairedRunning`), relayed through real
+  // `Coordinator.enqueueControlWire`/`.tick()` calls via `relayLink`, not a
+  // fake that invents the mapping.
+  it("aborts deliberately and ends the session for every peer", () => {
+    const { host: hostCoordinator, guest: guestCoordinator } = pairedRunning("session.case4");
+    const hostHandle = handleOf(hostCoordinator);
+    const guestHandle = handleOf(guestCoordinator);
+    const guestRequest: OnlineMatchRequest = {
+      ...HOST_REQUEST,
+      role: "guest",
+      peer_id: GUEST_PEER_ID,
+      live: "away_1",
+      owned: ["away_1", "away_2", "away_3", "away_4"],
+    };
+    const { match: hostMatch } = buildRealHost(hostCoordinator, HOST_REQUEST, relayLink(guestHandle, HOST_LINK_ON_GUEST));
+    const { match: guestMatch } = buildRealHost(guestCoordinator, guestRequest, relayLink(hostHandle, GUEST_LINK_ON_HOST));
+    runReal(hostMatch, 5);
+    runReal(guestMatch, 5);
+
+    // First press only arms the prompt (see the "keeps simulating..." case
+    // above); the second confirms a deliberate abort.
+    hostMatch.event({ kind: "action", action: "pause" });
+    expect((hostMatch.model as { readonly abort_prompt: boolean }).abort_prompt).toBe(true);
+    hostMatch.event({ kind: "action", action: "pause" });
+
+    expect(ended(hostMatch.model)).toBe(true);
+    const hostModel = hostMatch.model as { readonly terminal?: { readonly reason: string } };
+    expect(hostModel.terminal?.reason).toBe("local_abort");
+
+    // The abort wire is already queued on the guest's real coordinator
+    // (`relayLink`'s `send` only enqueues) but not yet applied -- arrival is
+    // a tick event, never a callback reaching sim state between ticks (this
+    // file's header; `crates/gc-wasm/src/net_inbox.rs`'s doc). The guest's
+    // model has not observed anything yet.
+    expect(ended(guestMatch.model)).toBe(false);
+
+    runReal(guestMatch, 3);
+
+    expect(ended(guestMatch.model)).toBe(true);
+    const guestModel = guestMatch.model as { readonly terminal?: { readonly reason: string } };
+    expect(guestModel.terminal?.reason).toBe("peer_abort");
+    expect(exitRoute(guestMatch.model)).toBe("terminal");
+  });
 
   // Unblocked: `overlayLines` reads `this.match.state` and diagnostics off
   // the injected ports directly and formats them into plain lines -- no
@@ -522,35 +1148,51 @@ describe("online match screen flow", () => {
   });
 });
 
-// `@gc/render` (pitch/HUD drawing) is not a declared dependency of
-// `@gc/screens`, and telegraph/readiness/kickoff-hold timing is `sim`'s
-// real physics (Rust-owned) -- reproducing "every quiet frame past kickoff
-// read ready, and committing zero times there proves nothing" with a fake
-// would mean re-implementing `sim.combat`'s request-rejection gates, not
-// just relaying messages. `@gc/input` being a declared dependency now (the
-// earlier blocker note was stale on that point) doesn't change either of
-// those two, so this stays skipped.
-describe.skip("online combat families [needs @gc/render (not a declared dependency) and sim.combat's real readiness/telegraph timing (Rust-owned, crates/gc-sim)]", () => {
+// Re-examined: `@gc/render` (pitch/HUD drawing) *is* now a declared
+// dependency of `@gc/screens` (`package.json`) -- that half of the
+// original blocker is gone. The other half is not: telegraph/readiness/
+// kickoff-hold timing is `sim.combat`'s real physics (Rust-owned,
+// `crates/gc-sim`), and no wasm crate binds it -- `@gc/wasm`'s bound
+// surface this batch is `Coordinator`/`MatchDriverBridge`/
+// `RollbackEventsTimeline`/`FixedClock`/`TuningRegistry`, none of which
+// expose a per-tick combat readiness/telegraph query. Reproducing "every
+// quiet frame past kickoff read ready, and committing zero times there
+// proves nothing" with a fake would mean re-implementing `sim.combat`'s
+// request-rejection gates, not just relaying messages. `@gc/input` being a
+// declared dependency now (the earlier blocker note was stale on that
+// point too) doesn't change this, so it stays skipped.
+describe.skip("online combat families [needs sim.combat's real readiness/telegraph timing (Rust-owned, crates/gc-sim, no wasm bridge)]", () => {
   it.skip("drives and shows every accepted family from local keyboard and gamepad", () => {});
 });
 
-// `@gc/app` depends on `@gc/screens`, never the other way around (its own
+// Not re-examined because there is nothing to re-examine: `@gc/app`
+// depends on `@gc/screens`, never the other way around (its own
 // `package.json`; v2/README.md's directory table: `@gc/app` is the layer
-// meant to wire screens together). This package's `package.json` (which
-// this port may not edit) does not, and architecturally should not, depend
-// on `@gc/app` -- the same reasoning `lobby_flow.spec.ts`'s "is reachable
-// from the title and returns to it" is skipped under.
+// meant to wire screens together). This package's `package.json` does not,
+// and architecturally should not, depend on `@gc/app` -- the same
+// reasoning `lobby_flow.spec.ts`'s "is reachable from the title and
+// returns to it" is skipped under. This is a permanent fact about the
+// layering, not a milestone-scoped gap that a newly-reachable dependency
+// could close.
 describe.skip("online match app routing [@gc/app depends on @gc/screens, not the reverse -- see this file's header]", () => {
   it.skip("routes the lobby's synchronized start into the online match", () => {});
 });
 
-// `@gc/render`'s `pitch.draw`/`match_hud_render.draw` are not a declared
-// dependency of `@gc/screens` (this file's header) -- unlike
-// `overlayLines` above, this case's whole point is that the *real* pixel
-// renderer runs over a live online frame without throwing, which a fake
-// `GraphicsBackend` stub (`lobby.spec.ts`'s pattern) cannot stand in for:
-// there is no real implementation of that renderer reachable from this
-// package to run.
-describe.skip("online match renderer smoke [needs @gc/render, not a declared dependency of @gc/screens]", () => {
+// Re-examined: `@gc/render`'s `pitch`/`matchHud` drawing *is* now reachable
+// (a declared dependency, and its pure `pitchDrawCommands`/`matchHudCommands`
+// path needs no WebGL context -- see `packages/render/src/pitch.spec.ts`'s
+// own pattern). What is still missing is the translation this case's whole
+// point rests on: a `RenderFrame` built from a *live online frame*, not a
+// hand-built fixture (a fixture would only reprove `@gc/render`'s own pure
+// path, which `pitch.spec.ts`/`match_hud.spec.ts` already cover in that
+// package). That translation is `gc_render::frame_buffer::encode` read back
+// via `@gc/wasm`'s `buildRenderFrame` off a real `SimSession`, wired into a
+// drawable frame by `match.ts`'s `draw()` -- unbuilt this milestone (same
+// gap the two "genuinely hard" control-ownership cases above hit from a
+// different angle: `match.ts` only ports its rollback-consumption seam so
+// far). Nothing in this file can stand in for that without either touching
+// `match.ts` (owned by another agent this batch) or asserting against a
+// frame this test invented itself.
+describe.skip("online match renderer smoke [needs match.ts's real online RenderFrame wiring, not yet built this milestone]", () => {
   it.skip("draws a live online frame with its combat model and HUD", () => {});
 });
