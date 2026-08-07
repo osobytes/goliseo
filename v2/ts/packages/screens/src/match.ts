@@ -36,7 +36,14 @@ import { correctionSmoothing, viewState } from "@gc/render";
 import type { correctionSmoothingTypes, replayTypes } from "@gc/render";
 import type { LifecyclePayload } from "./online_match_model.ts";
 import type { GameSettings } from "./content.ts";
-import type { RealMatchInputEvent, RealMatchScreenPort, RealMatchState } from "./real_match.ts";
+import type {
+  RealMatchEvent,
+  RealMatchEventKind,
+  RealMatchInputEvent,
+  RealMatchRosterEntry,
+  RealMatchScreenPort,
+  RealMatchState,
+} from "./real_match.ts";
 import type { OnlineMatchState } from "./online_match.ts";
 import { bindings, captureFrame, controller, inputSample } from "@gc/input";
 import type {
@@ -346,10 +353,36 @@ export interface RenderFrameHud {
   readonly controlled?: number;
 }
 
-/** `crates/gc-render/src/frame.rs`'s `RenderFramePossession` -- declared for parity with the real wire shape; this module does not currently read a field off it (carrying comes off `hud.controlled_owns_ball` instead, matching the Lua original's own comparison), except in ONLINE mode -- see [`MatchScreen.onlineState`]. */
+/**
+ * `crates/gc-render/src/frame.rs`'s `RenderFramePossession`. `owner` is now
+ * read in BASE/ROLLBACK mode too -- see [`MatchScreen.matchObservationState`]
+ * -- to populate [`real_match.ts`'s `RealMatchState.owner`] for
+ * `game.match_observer`'s possession stat; carrying (`self.state.owner ==
+ * self.state.controlled`) still comes off `hud.controlled_owns_ball`, a
+ * separate concern from this getter.
+ */
 export interface RenderFramePossession {
   readonly owner?: number;
   readonly owner_team?: "home" | "away";
+}
+
+/**
+ * The minimal slice of `crates/gc-render/src/frame.rs`'s `RenderFrameEvents`
+ * this module's BASE/ROLLBACK game loop reads, to populate
+ * [`MatchScreenAsRealMatchScreen.frameEvents`] for `game.match_observer`'s
+ * shot/save/pass attribution. Structure-of-arrays, one entry per event this
+ * tick, mirroring the real wire shape's own SoA layout (`@gc/render`'s
+ * `frame_buffer.ts`'s `RenderFrameEvents`) narrowed to the two fields that
+ * matter here. `slot` is the actor's one-based roster slot, absent if
+ * unattributed -- `player` (a roster id) is dropped from the wire, same as
+ * the real `RenderFrameEvents.slot` doc; recovered to an id via
+ * [`SimHostPort.roster`]'s `ids`, the same pattern [`MatchScreen.onlineState`]
+ * already uses for `players[]`.
+ */
+export interface RealMatchRenderFrameEvents {
+  readonly count: number;
+  readonly kind: readonly RealMatchEventKind[];
+  readonly slot: readonly (number | undefined)[];
 }
 
 /**
@@ -388,23 +421,25 @@ export interface OnlineRenderFrameControl {
 
 /**
  * `crates/gc-render/src/frame.rs`'s `RenderFrame` -- the whole interface
- * between the simulation and a renderer. Only `hud`/`possession` are typed
- * here for the BASE/ROLLBACK modes (this module's own reads); `field`/
- * `ball`/`events`/`roster` are real fields on the wire object this module
- * receives and forwards to [`RenderPort.draw`], but this module never
- * inspects them, so they are not declared -- see this section's header.
- * `players`/`control` ARE now declared, narrowly (see
- * [`OnlineRenderFramePlayers`]/[`OnlineRenderFrameControl`]) -- ONLINE mode
- * reads and overrides them ([`MatchScreen.onlineState`]/`drawOnline`).
- * Optional so every existing BASE/ROLLBACK fake (`FakeSimHost`,
- * `FakeRollbackHost`, which never populate them) remains a valid
- * `RenderFrame`.
+ * between the simulation and a renderer. `hud`/`possession` are typed here
+ * for the BASE/ROLLBACK modes (this module's own reads); `field`/`ball`/
+ * `roster` are real fields on the wire object this module receives and
+ * forwards to [`RenderPort.draw`], but this module never inspects them, so
+ * they are not declared -- see this section's header. `players`/`control`
+ * are declared narrowly (see [`OnlineRenderFramePlayers`]/
+ * [`OnlineRenderFrameControl`]) -- ONLINE mode reads and overrides them
+ * ([`MatchScreen.onlineState`]/`drawOnline`). `events` is declared narrowly
+ * too (see [`RealMatchRenderFrameEvents`]) -- BASE/ROLLBACK mode reads it to
+ * populate [`MatchScreenAsRealMatchScreen.frameEvents`]. All four are
+ * optional so every existing fake (`FakeSimHost`, `FakeRollbackHost`, which
+ * never populate them) remains a valid `RenderFrame`.
  */
 export interface RenderFrame {
   readonly hud: RenderFrameHud;
   readonly possession: RenderFramePossession;
   readonly players?: OnlineRenderFramePlayers;
   readonly control?: OnlineRenderFrameControl;
+  readonly events?: RealMatchRenderFrameEvents;
 }
 
 /**
@@ -412,14 +447,19 @@ export interface RenderFrame {
  * per-player identity. Mostly opaque here: this module only threads it from
  * [`SimHostPort.roster`] to [`RenderPort.draw`] for BASE/ROLLBACK modes, the
  * same way `OpaqueSnapshot` stays opaque in `@gc/online`'s
- * `match_presentation.ts`. `ids`/`teams` ARE now read, narrowly, by ONLINE
- * mode ([`MatchScreen.onlineState`]) to build {@link OnlineMatchState.players}
- * -- optional so a `Readonly<Record<string, unknown>>` roster (every
- * existing BASE/ROLLBACK fake) remains a valid `RenderFrameRoster`.
+ * `match_presentation.ts`. `ids`/`teams` are read, narrowly, by ONLINE mode
+ * ([`MatchScreen.onlineState`]) to build {@link OnlineMatchState.players};
+ * `ids`/`teams`/`is_keeper` are now ALSO read, narrowly, by BASE/ROLLBACK
+ * mode ([`MatchScreen.matchObservationState`]) to build
+ * [`real_match.ts`'s `RealMatchState.roster`] for `game.match_observer`'s
+ * attribution. Every field stays optional so a `Readonly<Record<string,
+ * unknown>>` roster (every existing fake) remains a valid
+ * `RenderFrameRoster`.
  */
 export type RenderFrameRoster = Readonly<Record<string, unknown>> & {
   readonly ids?: readonly string[];
   readonly teams?: readonly ("home" | "away")[];
+  readonly is_keeper?: readonly boolean[];
 };
 
 /**
@@ -1015,6 +1055,17 @@ export class MatchScreen {
   private rollbackConfirmedSteps: readonly RollbackEventStep[] = [];
   private rollbackCorrections: readonly RollbackLabCorrectionSample[] = [];
   private rollbackFrameEvents: MatchEvent[] = [];
+  /**
+   * This render call's BASE-mode discrete match events, translated from
+   * `RenderFrame.events` and accumulated across every tick `update`
+   * actually stepped -- source data for [`MatchScreenAsRealMatchScreen.
+   * frameEvents`]. Cleared at the top of every BASE-mode `update()` call
+   * (mirrors how `rollbackFrameEvents` is cleared per `updateRollback`
+   * call); distinct from `rollbackFrameEvents` (a `@gc/presentation`
+   * `MatchEvent[]`, fed by the rollback-consumption seam, unrelated to
+   * observation stats). Not read outside BASE mode.
+   */
+  private observedFrameEvents: RealMatchEvent[] = [];
   private renderSmoothing: correctionSmoothingTypes.CorrectionSmoothingState | undefined;
   /** `_replay_state` -- the currently displayed goal-replay frame (base mode's legacy replay only; see `debugReplayState`'s doc). */
   private replayState: replayTypes.ReplayFrame | undefined;
@@ -1111,6 +1162,51 @@ export class MatchScreen {
   /** The current frame's HUD slice, read live off the host -- used by [`MatchScreenAsRealMatchScreen`]'s `state` (score/clock) and by this class's own `finished`/`carrying`. */
   get hud(): RenderFrameHud {
     return this.activeHost().frame().hud;
+  }
+
+  /**
+   * `real_match.ts`'s `RealMatchState.roster`/`.owner`, read live off the
+   * active host -- used by [`MatchScreenAsRealMatchScreen`]'s `state` for
+   * `game.match_observer`'s shot/save/possession/pass-completion
+   * attribution. Built from [`SimHostPort.roster`] (`ids`/`teams`/
+   * `is_keeper`, match-constant) and `frame().possession.owner` (this
+   * frame's one-based carrier slot), the same "roster + possession" pair
+   * [`onlineState`] already reads for its own `players[]`/`owner`. `roster`
+   * is `undefined` when the active host's `roster()` does not carry
+   * `ids`/`teams`/`is_keeper` together (every field or none -- a partial
+   * roster is not attributable) -- e.g. `match_screen.spec.ts`'s
+   * `FakeSimHost.roster()`, which returns `{}`.
+   */
+  get matchObservationState(): { readonly roster?: readonly RealMatchRosterEntry[]; readonly owner?: number } {
+    const host = this.activeHost();
+    const roster = host.roster();
+    const ids = roster.ids;
+    const teams = roster.teams;
+    const isKeeper = roster.is_keeper;
+    const builtRoster =
+      ids !== undefined && teams !== undefined && isKeeper !== undefined
+        ? ids.map((id, index) => ({
+            id,
+            team: teams[index] ?? "home",
+            is_keeper: isKeeper[index] ?? false,
+          }))
+        : undefined;
+    const ownerSlot = host.frame().possession.owner;
+    return {
+      ...(builtRoster !== undefined ? { roster: builtRoster } : {}),
+      ...(ownerSlot !== undefined ? { owner: ownerSlot - 1 } : {}),
+    };
+  }
+
+  /**
+   * This render call's BASE-mode discrete match events -- see
+   * `observedFrameEvents`'s own doc. Used by
+   * [`MatchScreenAsRealMatchScreen.frameEvents`]; always empty outside BASE
+   * mode (rollback/online drive `game.match_observer` through a different
+   * seam -- see this getter's callers).
+   */
+  get matchObservationEvents(): readonly RealMatchEvent[] {
+    return this.observedFrameEvents;
   }
 
   /** `self._clock.tick` -- delegated straight to the host, which is this screen's only tick authority. */
@@ -1538,12 +1634,24 @@ export class MatchScreen {
     this.lastStepSample = sample;
 
     const scoreBefore = host.frame().hud.home_score + host.frame().hud.away_score;
+    // Cleared here, not at the top of `update()`, so a `finished`/legacy-
+    // replay early return above leaves the previous batch's events intact
+    // for a caller that has not yet read them -- matches how `scoreBefore`
+    // itself is only computed once this render call is known to actually
+    // simulate.
+    this.observedFrameEvents = [];
+    const rosterIds = host.roster().ids;
     const ticks = host.planTicks(dt);
     for (let step = 0; step < ticks; step += 1) {
       // KNOWN SIMPLIFICATION: every tick this render call produces is fed
       // the SAME sample -- see this class's doc comment.
       this.recordReplayFrame(); // pre-step, so a goal's flight remains in the buffer.
       host.step(sample);
+      // One tick's worth of discrete match events is transient -- `frame()`
+      // only ever reports the LAST stepped tick's events, so a catch-up
+      // batch (`ticks > 1`) must accumulate per tick, immediately after
+      // each `step`, or every tick but the last would be silently dropped.
+      this.appendObservedFrameEvents(host.frame().events, rosterIds);
       // `fixed_clock.advance`'s `step` callback returns `not
       // self.state.finished and not scored` to stop a catch-up batch as
       // soon as the match ends or a goal starts a replay. Telling the host
@@ -1559,6 +1667,32 @@ export class MatchScreen {
       }
     }
     this.finishBaseUpdate(dt, scoreBefore);
+  }
+
+  // Translate one tick's `RenderFrame.events` into `observedFrameEvents`
+  // entries, recovering each event's actor id from its one-based roster
+  // slot -- see `RealMatchRenderFrameEvents`'s doc. Every wire event kind is
+  // forwarded, not just the twelve `game.match_observer` reacts to: the Lua
+  // original's `MatchObserver.observe` iterates `state.events` (ALL kinds
+  // emitted that tick) and switches on `event.kind` itself, so filtering
+  // here would diverge from what that function actually receives, not
+  // merely from what it acts on.
+  private appendObservedFrameEvents(
+    events: RealMatchRenderFrameEvents | undefined,
+    rosterIds: readonly string[] | undefined,
+  ): void {
+    if (events === undefined) {
+      return;
+    }
+    for (let index = 0; index < events.count; index += 1) {
+      const kind = events.kind[index];
+      if (kind === undefined) {
+        continue;
+      }
+      const slot = events.slot[index];
+      const player = slot !== undefined ? rosterIds?.[slot - 1] : undefined;
+      this.observedFrameEvents.push(player !== undefined ? { kind, player } : { kind });
+    }
   }
 
   // Base-mode goal-replay recording: one pre-step capture per simulated
@@ -2055,10 +2189,20 @@ export class MatchScreenAsRealMatchScreen implements RealMatchScreenPort<RealMat
     this.screen = screen;
   }
 
-  /** `real_match.ts`'s `RealMatchState` -- read live off the screen's current frame, mirroring `MatchScreen.finished`'s own "never cached" rule. */
+  /**
+   * `real_match.ts`'s `RealMatchState` -- read live off the screen's
+   * current frame, mirroring `MatchScreen.finished`'s own "never cached"
+   * rule. `roster`/`owner` come from `MatchScreen.matchObservationState`
+   * (`SimHostPort.roster()` plus `frame().possession.owner`) -- see that
+   * getter's doc for when `roster` is `undefined`.
+   */
   get state(): RealMatchState {
     const hud = this.screen.hud;
-    return { time_left: hud.time_left, score: { home: hud.home_score, away: hud.away_score } };
+    return {
+      time_left: hud.time_left,
+      score: { home: hud.home_score, away: hud.away_score },
+      ...this.screen.matchObservationState,
+    };
   }
 
   /** This milestone's `MatchScreen` has no rollback lab -- see this class's doc. */
@@ -2073,13 +2217,18 @@ export class MatchScreenAsRealMatchScreen implements RealMatchScreenPort<RealMat
   }
 
   /**
-   * Not yet wired: this milestone's `MatchScreen` does not itself call
-   * `consumeRollbackPresentation` (the rollback-consumption seam this
-   * file's header describes) to populate a per-frame match-event batch, so
-   * there is nothing to report here yet. Honestly empty, not a lie -- see
-   * this file's own scope note on what is/is not wired this milestone.
+   * `MatchScreen.matchObservationEvents` -- this render call's discrete
+   * match events, translated from `RenderFrame.events` and accumulated
+   * across every tick `MatchScreen.update` actually stepped. Untyped
+   * `unknown[]` here (this module's own `RealMatchScreenPort.frameEvents`
+   * contract), but each entry is really a `RealMatchEvent`
+   * (`{kind, player?}`) -- a `MatchObserverPort` implementation reads it as
+   * such, the same way `game.match_observer`'s Lua original reads
+   * `state.events`.
    */
-  readonly frameEvents: readonly unknown[] = [];
+  get frameEvents(): readonly unknown[] {
+    return this.screen.matchObservationEvents;
+  }
 
   fullTimeConfirmed(): boolean {
     return this.screen.finished;

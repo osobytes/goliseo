@@ -178,9 +178,14 @@ export type {
   MatchObserverPort,
   ObservedMatchSummary,
   RealMatchCallbacks,
+  RealMatchEvent,
+  RealMatchEventKind,
   RealMatchInputEvent,
+  RealMatchRequest,
+  RealMatchRosterEntry,
   RealMatchScreenPort,
   RealMatchState,
+  RealMatchTeam,
 } from "./real_match.ts";
 
 export {
@@ -210,6 +215,7 @@ export type {
   OnlineHostPort,
   OnlineRenderFrameControl,
   OnlineRenderFramePlayers,
+  RealMatchRenderFrameEvents,
   RenderFrame,
   RenderFrameHud,
   RenderFramePossession,

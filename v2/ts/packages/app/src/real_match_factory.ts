@@ -15,23 +15,26 @@
 // `@gc/screens`'s `match_screen.spec.ts` tests `MatchScreen` itself.
 // `browser_main.ts` supplies the real, wasm/three.js-backed versions.
 //
-// KNOWN, DOCUMENTED GAP -- match observation. `real_match.ts`'s
-// `RealMatchScreenPort<TState, TStep>` (which `MatchScreenAsRealMatchScreen`
-// implements) deliberately narrows `state` to `RealMatchState`
-// (`{time_left, score}`) and this milestone's `frameEvents` is always `[]`
-// (`match.ts`'s own doc: "Not yet wired"). `match_observer.ts`'s real
-// `ObservedMatchState`, by contrast, needs the full player roster, live
-// `owner`, and a real per-tick event stream to produce meaningful
-// shots/possession/pass-completion stats. None of that is reachable through
-// `RealMatchScreenPort`'s narrow contract as it stands today -- extending it
-// is `@gc/screens`'s call, not this batch's (that package is out of this
-// batch's file ownership). So `observerPort` below adapts `matchObserver`
-// faithfully to the seam that DOES exist: it tracks score transitions (goals)
-// correctly, every possession/shot/save/pass stat resolves to zero because
-// nothing here can observe them yet. `ProductMatchResult` still comes out
-// correct and complete -- `home_stats`/`away_stats` are optional fields
-// (`match_contract.ts`'s `TeamResultStats`) precisely for cases like this.
-// Not silently patched over -- flagged here and in this port's report.
+// MATCH OBSERVATION -- previously a documented gap, now closed. This header
+// used to record that `RealMatchScreenPort` narrowed `state` to
+// `{time_left, score}` with `frameEvents` always `[]`, so every shot, save,
+// possession and pass-completion figure resolved to zero while
+// `ProductMatchResult` still came out looking complete. Goals were tracked;
+// nothing else was.
+//
+// `RealMatchScreenPort.state` now also carries `roster` (id, team, is_keeper
+// per player) and `owner` (the ball carrier), and `frameEvents` carries the
+// ticks observed since the last call -- all of it already present on the real
+// `RenderFrame`, so no Rust change was needed. `observerPort` below consumes
+// them.
+//
+// Worth knowing why this survived so long: nothing tested it. The stats were
+// optional fields on `TeamResultStats`, so zeros were indistinguishable from
+// a match where nothing happened, and no test asserted otherwise. The
+// coverage now lives in `match_observer.spec.ts`'s "real match screen port,
+// widened" block, which drives a scripted match through the real screen, the
+// real adapter and the real observer, and asserts non-zero stats on both
+// sides plus an evidence-backed MVP.
 
 import {
   MatchScreen,
@@ -45,24 +48,60 @@ import {
 } from "@gc/screens";
 import type { GamepadState, KeyboardState } from "@gc/input";
 import { matchContract } from "./match_contract.ts";
-import { matchObserver, type MatchObserver } from "./match_observer.ts";
+import {
+  matchObserver,
+  type MatchObserver,
+  type ObservedMatchEvent,
+} from "./match_observer.ts";
 import type { RealMatchFactory } from "./match_adapter.ts";
 import type { ProductMatchRequest } from "./match_contract.ts";
 import type { MatchContractContent } from "./content.ts";
 import type { Screen } from "./screen_stack.ts";
 
-/** See this file's header -- score-only observation, honestly scoped. */
+/**
+ * Feeds `matchObserver` the real roster, carrier and per-tick events that
+ * `RealMatchScreenPort` now carries.
+ *
+ * This used to pass `{ players: [], events: [], score }`, which meant every
+ * shot, save, possession and pass-completion figure resolved to zero while
+ * looking like a complete result -- goals were tracked, nothing else was. The
+ * port was widened for exactly this, and wiring it here is the last link:
+ * `state.roster`/`state.owner` come off `SimHostPort.roster()` and the frame's
+ * possession, and `frameEvents` accumulates inside the tick loop rather than
+ * after it, because a catch-up render call steps several ticks and the frame
+ * only ever reports the last one's events.
+ */
 const observerPort: MatchObserverPort<MatchObserver, RealMatchState, never> = {
   create: () => matchObserver.new({ players: [], events: [], score: { home: 0, away: 0 } }),
   observe(observer, state, dt, events) {
     matchObserver.observe(
       observer,
-      { players: [], events: [], score: { home: state.score.home, away: state.score.away } },
+      {
+        players: (state.roster ?? []).map((entry) => ({
+          id: entry.id,
+          team: entry.team,
+          is_keeper: entry.is_keeper,
+        })),
+        ...(state.owner !== undefined ? { owner: state.owner } : {}),
+        events: [],
+        score: { home: state.score.home, away: state.score.away },
+      },
       dt,
-      // `events` is `RealMatchScreenPort.frameEvents`, always `[]` this
-      // milestone (see this file's header) -- an empty array satisfies any
-      // element type, so no unsafe read happens here.
-      (events ?? []) as never[],
+      // `RealMatchScreenPort.frameEvents` is `readonly unknown[]` by design:
+      // `@gc/screens` cannot depend on `@gc/app`, so it cannot name
+      // `ObservedMatchEvent` and restates the shape as `RealMatchEvent`
+      // instead. The dependency runs the other way here, so this is the layer
+      // that can narrow it.
+      //
+      // Forwarded unfiltered, and the cast is why: the wire carries about
+      // twenty-five event kinds while `ObservedEventKind` names only the
+      // subset the observer acts on. `match_observer.lua`'s own `observe`
+      // iterates the whole raw list and switches on `kind`, ignoring the
+      // rest, so handing it everything is what the Lua actually receives.
+      // Filtering first would be behaviourally identical today and would
+      // quietly diverge the moment the observer starts counting what it was
+      // given rather than only what it recognises.
+      (events ?? []) as readonly ObservedMatchEvent[],
     );
   },
   // `TStep` is `never`: `MatchScreenAsRealMatchScreen.rollbackLab` is always

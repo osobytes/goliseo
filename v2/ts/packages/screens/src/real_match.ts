@@ -76,10 +76,77 @@ export interface MatchObserverPort<TObserver, TState, TStep> {
   finish(observer: TObserver): ObservedMatchSummary;
 }
 
+export type RealMatchTeam = "home" | "away";
+
+/**
+ * Match-constant per-player identity `game.match_observer`'s `observe`
+ * needs for shot/save/pass attribution (`MatchObserver.team_of`/`.keeper`
+ * in the Lua original) -- id, fixture side, keeper status. Named `roster`,
+ * not `players`, on {@link RealMatchState}: `online_match.ts`'s
+ * `OnlineMatchState` (which `extends RealMatchState`) already declares its
+ * own `players` field for a DIFFERENT shape (live `pos`/`facing`, no
+ * `is_keeper`), so reusing that name here would either collide or force
+ * every match's roster to carry positions it does not need.
+ */
+export interface RealMatchRosterEntry {
+  readonly id: string;
+  readonly team: RealMatchTeam;
+  readonly is_keeper: boolean;
+}
+
+/**
+ * `game.match_observer`'s event-kind vocabulary (`ObservedEventKind` in
+ * `@gc/app`'s `match_observer.ts`), restated here rather than imported --
+ * this module deliberately does not depend on `@gc/app` (see this file's
+ * header: `@gc/screens` cannot depend on `@gc/app`, the dependency runs the
+ * other way). {@link RealMatchScreenPort.frameEvents}'s element type stays
+ * `unknown` (this module also does not depend on `@gc/render`'s wider
+ * `MatchEventKind`), but a real implementation should populate entries
+ * shaped like {@link RealMatchEvent}.
+ */
+export type RealMatchEventKind =
+  | "pass"
+  | "shot"
+  | "header"
+  | "volley"
+  | "bicycle"
+  | "catch"
+  | "parry"
+  | "tackle"
+  | "block"
+  | "claim"
+  | "juke"
+  | "reception";
+
+/** One frame event entry -- see {@link RealMatchEventKind}'s doc. */
+export interface RealMatchEvent {
+  readonly kind: RealMatchEventKind;
+  readonly player?: string;
+}
+
 /** The slice of `MatchState` this screen reads directly. */
 export interface RealMatchState {
   readonly time_left: number;
   readonly score: { readonly home: number; readonly away: number };
+  /**
+   * The match-constant roster (id/team/is_keeper per player), sourced from
+   * `SimHostPort.roster()` -- present whenever the underlying host can
+   * supply one. Optional so every existing `RealMatchScreenPort`
+   * implementation/fake (`match_screen.spec.ts`'s `FakeSimHost`-backed
+   * screens, `online_match.ts`'s `OnlineMatchState`, this milestone's own
+   * `MatchScreenAsRealMatchScreen` before this field existed) remains a
+   * valid `RealMatchState` without change.
+   */
+  readonly roster?: readonly RealMatchRosterEntry[];
+  /**
+   * 0-based index into `roster` of whoever currently carries the ball --
+   * `RenderFramePossession.owner` (the wire's one-based roster slot) minus
+   * one, mirroring `game.match_observer`'s own `state.players[state.owner]`
+   * lookup. Absent when the ball is loose. Optional for the same reason as
+   * `roster`; already declared, identically, on `online_match.ts`'s
+   * `OnlineMatchState`, so redeclaring it here is a no-op for that type.
+   */
+  readonly owner?: number;
 }
 
 /** The slice of `MatchScreen` (`match.ts`) `real_match.lua` drives -- see this module's header. */
