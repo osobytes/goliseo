@@ -66,6 +66,18 @@
 #      vitest's test runner and reporter entirely) and comparing the result
 #      against the two hard-coded constants below in plain bash. A weakened or
 #      deleted assertion in determinism.spec.ts would not silence this step.
+#  10. pnpm exec vite build, then a BYTE comparison between the wasm asset in
+#      dist-app/assets and the freshly built dist/pkg-web/gc_wasm_bg.wasm.
+#      -- Steps 7-9 all exercise the `--target nodejs` artifact. The browser
+#      resolves @gc/wasm's `exports` to the `--target web` one, a separate
+#      wasm-bindgen output from the same cargo build. On 2026-08-07 this gate
+#      passed while dist/pkg-web was thirteen hours stale, so every browser
+#      match ran the simulation from BEFORE the `Session` legacy-mode fix --
+#      a real defect, in the shipped path, invisible to all nine steps above
+#      because each of them looked at the other artifact. Steps 7 and 10
+#      together are what make "the gate is green" mean "the thing that ships
+#      is the thing that was tested". See self_test()'s
+#      stale_web_artifact_scenario.
 #
 # `./scripts/check_v2.sh`              -- run every gate above
 # `./scripts/check_v2.sh --self-test`  -- prove this script can go red
@@ -274,13 +286,84 @@ gate_ts_typecheck() {
 }
 
 gate_wasm_build() {
-    step "v2/ts/packages/wasm: node scripts/build.mjs (rebuilds the gitignored wasm artifact)"
+    step "v2/ts/packages/wasm: node scripts/build.mjs (rebuilds the gitignored NODE wasm artifact)"
     run_in "$wasm_pkg_dir" node scripts/build.mjs || return 1
     if [ ! -f "$wasm_pkg_dir/dist/pkg/gc_wasm.cjs" ]; then
         fail_msg "wasm build reported success but dist/pkg/gc_wasm.cjs is missing"
         return 1
     fi
+
+    # THE SECOND TARGET. There are two wasm-bindgen outputs from the same
+    # cargo artifact -- `--target nodejs` (dist/pkg, what vitest and the
+    # determinism assertion below load) and `--target web` (dist/pkg-web,
+    # which @gc/wasm's package `exports` actually resolves to, and therefore
+    # the ONLY one that reaches a browser). Building just the first is how
+    # this gate ran green all day on 2026-08-07 while every browser match
+    # executed a wasm module built thirteen hours earlier -- from before the
+    # `Session` legacy-mode fix. Every symptom that produced (outfielders
+    # collapsing into a knot, "the AI moves differently", "the ball physics
+    # are wrong") was real, and none of it was reproducible from the node
+    # target, because the node target was correct. A gate that rebuilds the
+    # artifact ADJACENT to the one that ships is worse than no gate: it reads
+    # as covered. See self_test()'s stale_web_artifact_scenario.
+    step "v2/ts/packages/wasm: node scripts/build_web.mjs (rebuilds the gitignored BROWSER wasm artifact)"
+    run_in "$wasm_pkg_dir" node scripts/build_web.mjs || return 1
+    if [ ! -f "$wasm_pkg_dir/dist/pkg-web/gc_wasm.js" ]; then
+        fail_msg "web wasm build reported success but dist/pkg-web/gc_wasm.js is missing"
+        return 1
+    fi
     return 0
+}
+
+# The shipped bundle's wasm must BE the freshly built browser artifact, not
+# merely coexist with one. `vite build` copies `dist/pkg-web/gc_wasm_bg.wasm`
+# into `dist-app/assets/` under a content-hashed name; nothing else checks
+# that what landed there is current, and a stale copy is invisible to every
+# other gate here -- it type-checks, it passes vitest (vitest loads the NODE
+# target), and it satisfies the determinism assertion, for the same reason.
+# Comparing BYTES is the point: an mtime comparison passes on any checkout
+# that touched files in the wrong order.
+gate_app_bundle() {
+    step "v2/ts: pnpm exec vite build, and the bundled wasm must match the fresh browser artifact"
+    run_in "$ts_dir" pnpm exec vite build || return 1
+
+    local fresh="$wasm_pkg_dir/dist/pkg-web/gc_wasm_bg.wasm"
+    if [ ! -f "$fresh" ]; then
+        fail_msg "dist/pkg-web/gc_wasm_bg.wasm is missing -- gate_wasm_build should have produced it"
+        return 1
+    fi
+
+    local bundled
+    bundled="$(find "$ts_dir/dist-app/assets" -maxdepth 1 -name '*.wasm' -print 2>/dev/null | head -n 1)"
+    if [ -z "$bundled" ]; then
+        fail_msg "vite build produced no .wasm asset under dist-app/assets -- the browser build no longer embeds the module this gate checks"
+        return 1
+    fi
+
+    if ! wasm_bundle_matches "$fresh" "$bundled"; then
+        fail_msg "the wasm in the shipped bundle is NOT the freshly built browser artifact"
+        echo "    fresh:   $fresh ($(wc -c < "$fresh") bytes)"
+        echo "    bundled: $bundled ($(wc -c < "$bundled") bytes)"
+        echo "    The browser would run stale simulation code. Rebuild with:"
+        echo "      node v2/ts/packages/wasm/scripts/build_web.mjs && (cd v2/ts && pnpm exec vite build)"
+        return 1
+    fi
+    return 0
+}
+
+# Pure logic, no wasm and no vite involved -- shared by gate_app_bundle() and
+# self_test()'s stale_web_artifact_scenario, so the check the gate performs and
+# the check the self-test proves can go red are the same code, not two
+# hand-mirrored copies that could drift (AGENTS.md §9).
+#
+# Byte equality, deliberately. The real defect this guards was a browser
+# artifact thirteen hours older than the node one; every weaker comparison
+# available -- both files exist, both are non-empty, mtimes look plausible --
+# was TRUE throughout, which is precisely why nothing caught it.
+wasm_bundle_matches() {
+    local fresh="$1"
+    local bundled="$2"
+    [ -f "$fresh" ] && [ -f "$bundled" ] && cmp -s "$fresh" "$bundled"
 }
 
 gate_ts_test() {
@@ -649,6 +732,51 @@ digest_drift_scenario() {
     return "$failures"
 }
 
+# Reproduces the 2026-08-07 defect hermetically: the browser artifact and the
+# artifact embedded in the shipped bundle drift apart, and every other signal
+# stays green. The stale file here is deliberately a plausible one -- same
+# leading bytes, same broad size, only its tail differs -- because the real one
+# was a valid, working, self-consistent wasm module. It was simply not the one
+# the source tree had been fixed into.
+stale_web_artifact_scenario() {
+    local dir="$1"
+    local failures=0
+
+    local fresh="$dir/fresh.wasm"
+    local shipped="$dir/shipped.wasm"
+
+    printf '\0asm\1\0\0\0FRESH-BUILD-AFTER-THE-SESSION-FIX' > "$fresh"
+
+    cp "$fresh" "$shipped"
+    if wasm_bundle_matches "$fresh" "$shipped"; then
+        echo "    ok: an up-to-date bundle is accepted"
+    else
+        echo "SELF-TEST FAIL: a byte-identical bundled artifact was REJECTED"
+        failures=1
+    fi
+
+    # The stale artifact: a real module, just built before the fix landed.
+    printf '\0asm\1\0\0\0STALE-BUILD-FROM-BEFORE-THE-FIX' > "$shipped"
+    if wasm_bundle_matches "$fresh" "$shipped"; then
+        echo "SELF-TEST FAIL: a STALE bundled wasm was ACCEPTED -- this is exactly the 2026-08-07 defect, and the gate would not catch it"
+        failures=1
+    else
+        echo "    ok: a stale bundled artifact is rejected"
+    fi
+
+    # An absent bundle must fail too, not silently pass: `find` returning
+    # nothing is the shape a renamed/removed asset would take.
+    rm -f "$shipped"
+    if wasm_bundle_matches "$fresh" "$shipped"; then
+        echo "SELF-TEST FAIL: a MISSING bundled wasm was ACCEPTED"
+        failures=1
+    else
+        echo "    ok: a missing bundled artifact is rejected"
+    fi
+
+    return "$failures"
+}
+
 self_test() {
     if ! v2_toolchain_present; then
         echo "   ! cargo/node/pnpm not fully installed -- skipping v2 gate self-test"
@@ -677,6 +805,10 @@ self_test() {
     echo "==> v2 gate self-test: tsc --build --force (gate 6)"
     mkdir -p "$work/tsc_force"
     tsc_force_scenario "$work/tsc_force" || failures=1
+
+    echo "==> v2 gate self-test: stale browser wasm in the shipped bundle (gate 10)"
+    mkdir -p "$work/stale_web"
+    stale_web_artifact_scenario "$work/stale_web" || failures=1
 
     if [ "$failures" -ne 0 ]; then
         echo "v2 gate self-test: FAILED"
@@ -710,6 +842,7 @@ main() {
     gate_wasm_build || fail=1
     gate_ts_test || fail=1
     gate_determinism || fail=1
+    gate_app_bundle || fail=1
 
     if [ "$fail" -ne 0 ]; then
         echo "v2 GATE FAILED"
