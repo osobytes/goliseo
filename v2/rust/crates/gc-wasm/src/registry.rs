@@ -14,26 +14,22 @@ use std::cell::RefCell;
 
 use gc_render::frame::RenderFrameRoster;
 use gc_sim::combat_snapshot::CombatMatchState;
-use gc_sim::match_snapshot::MatchState;
-use gc_sim::slot_input::SlotInputProducerState;
+use gc_sim::match_snapshot::{MatchSnapshot, MatchState};
 use gc_sim::tuning::Tuning;
 
 /// One live match's owned state, keyed by its registry handle.
 pub struct Entry {
-    /// The match's current simulation state.
+    /// The match's current simulation state. Since `crate::session::Session`
+    /// changed to build an ORDINARY match the same way
+    /// `game/screens/match.lua`'s `Match:restart` does (see that module's
+    /// doc), this runs in LEGACY mode (`state.slot_mode == false`, built
+    /// with `input_ownership: None`) — not slot mode, unlike before.
     pub state: MatchState,
     /// The tuning this session was constructed and must be stepped with.
     pub tune: Tuning,
     /// Match-constant roster identity, built once and reused every frame
     /// (see `gc_render::frame::RenderFrameOptions::roster`'s doc).
     pub roster: RenderFrameRoster,
-    /// This session's fixed-slot input producer (`gc_sim::slot_input`) —
-    /// retains the declared bot fills' RNG/combat-intent state across
-    /// ticks so `crate::session::Session::step` can materialize a complete
-    /// effective `InputFrame` from the single-slot wire it receives. See
-    /// `crate::session`'s module doc for why every session runs in slot
-    /// mode and therefore always needs one.
-    pub producer: SlotInputProducerState,
     /// This session's combat companion, present only when constructed with
     /// `combat_enabled = true` (`crate::session::Session::new`). Mirrors
     /// `game/screens/match.lua`'s own `self._combat_state`: built once, at
@@ -42,6 +38,38 @@ pub struct Entry {
     /// in shape — `None` when the option is off, exactly like an ordinary
     /// (non-combat) Lua match never builds one either.
     pub combat: Option<CombatMatchState>,
+    /// `Session`'s own local input-tick counter, incremented once per
+    /// `crate::session::Session::step` call.
+    ///
+    /// `state.input_tick` is *not* used for this: `sim::match::step` only
+    /// ever advances `input_tick` inside its slot-mode branch (see
+    /// `gc_sim::r#match::step`'s doc), and `state` now runs in legacy mode,
+    /// so `state.input_tick` stays `0` for the session's whole life.
+    /// `packages/app/src/sim_host.ts` (and `browser_sim_host.ts`) read
+    /// `Session::input_tick` once per `step` call — to build the next wire's
+    /// tick field, to key its per-tick frame cache, and to report match
+    /// progress — and all three assume it advances by exactly one per
+    /// `step`, a contract predating this change (see
+    /// `packages/wasm/src/session.spec.ts`'s
+    /// `"stepping advances inputTick"` case). This field is what keeps that
+    /// contract true without touching `state.input_tick` at all.
+    pub tick: i64,
+    /// This session's slot-mode boundary-zero snapshot, for
+    /// `crate::session::Session::capture_snapshot`/`snapshot_handle` —
+    /// online/rollback callers (`MatchDriverBridge`,
+    /// `RollbackPlayableLab`, the coordinator bridge) need a snapshot whose
+    /// `state.slot_mode` is `true`: `gc_sim::rollback_session::new` asserts
+    /// exactly that. Built once, at construction, from the SAME match
+    /// parameters as `state` (same teams/seed/duration/tactics/formation)
+    /// but with `input_ownership: Some(...)` instead of `None` — see
+    /// `crate::session::Session::new`'s doc for why this is a second,
+    /// independent construction rather than a re-derivation of `state`.
+    /// Every documented caller of `capture_snapshot`/`snapshot_handle`
+    /// already takes it "before any `step`" (boundary zero), so a snapshot
+    /// fixed at construction time, rather than recomputed from `state` on
+    /// every call, is not a staleness risk — it was never meant to reflect
+    /// `state`'s post-step position anyway.
+    pub rollback_boundary: MatchSnapshot,
 }
 
 thread_local! {
