@@ -270,14 +270,23 @@ describe("player_renderer_3d.renderToSprite", () => {
   // `MeshStandardMaterial`s with tuned `roughness`/`metalness` numbers and a
   // fixed emissive accent colour, which is generic PBR, not this game's look.
   // This suite cannot rasterise a pixel (see file header), so it checks the
-  // one thing it CAN from here: that every one of the three per-material-group
-  // materials `renderToSprite` puts into the scene actually has
-  // `rig3d/cel_shader.ts`'s `applyCelShading` wired onto it (a real, non-default
+  // one thing it CAN from here: that the ONE material `renderToSprite` puts
+  // into the scene actually has `rig3d/cel_shader.ts`'s
+  // `applyCombinedCelShading` wired onto it (a real, non-default
   // `onBeforeCompile` and `side === THREE.DoubleSide`, matching
   // rig3d/renderer.lua's `setMeshCullMode("none")`) rather than being plain,
-  // untouched `MeshStandardMaterial`s relying on PBR defaults. See
+  // untouched `MeshStandardMaterial` relying on PBR defaults. See
   // rig3d/cel_shader.spec.ts for what the injected shading itself contains.
-  it("wires rig3d/cel_shader.ts's toon shading onto every material group, not stock MeshStandardMaterial defaults", () => {
+  //
+  // Also pins the DRAW-CALL FIX itself (#save-batch): `mesh.material` is a
+  // single `THREE.Material`, never an array. Three.js's `WebGLRenderer` only
+  // iterates `geometry.groups` -- and therefore only issues more than one
+  // draw call for one mesh -- when `.material` is an ARRAY
+  // (`Array.isArray(material)` in `WebGLRenderer.js`'s `projectObject`), so
+  // this one assertion is what actually guarantees one draw call per
+  // character; nothing else in this headless suite can observe a real GPU
+  // draw-call count (v2/README.md #1, no WebGL context here).
+  it("wires rig3d/cel_shader.ts's combined toon shading onto a SINGLE material, not stock MeshStandardMaterial defaults or a per-family array", () => {
     const renderer = stubRenderer();
     renderToSprite(renderer, 640, 360, 12, 1280, 720, idleView, baseOptions(), 0);
     const call = renderer.renderCalls[0];
@@ -288,24 +297,16 @@ describe("player_renderer_3d.renderToSprite", () => {
     if (mesh === undefined) {
       throw new Error("expected a SkinnedMesh in the rendered scene");
     }
-    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-    expect(materials.length).toBe(3);
-    const cacheKeys = new Set<string>();
-    for (const material of materials) {
-      if (!(material instanceof THREE.MeshStandardMaterial)) {
-        throw new Error("expected a MeshStandardMaterial");
-      }
-      // Every stock `THREE.Material` has a no-op `onBeforeCompile` by
-      // default; a real hook was assigned only if this one differs from a
-      // freshly-constructed material's own default.
-      expect(material.onBeforeCompile).not.toBe(new THREE.MeshStandardMaterial().onBeforeCompile);
-      expect(material.side).toBe(THREE.DoubleSide);
-      cacheKeys.add(material.customProgramCacheKey());
+    expect(Array.isArray(mesh.material)).toBe(false);
+    const material = mesh.material;
+    if (!(material instanceof THREE.MeshStandardMaterial)) {
+      throw new Error("expected a MeshStandardMaterial");
     }
-    // plain/metal/emissive must each compile to their own GPU program (see
-    // cel_shader.ts's `applyCelShading` doc comment on why -- three.js's
-    // program cache cannot otherwise tell them apart).
-    expect(cacheKeys.size).toBe(3);
+    // Every stock `THREE.Material` has a no-op `onBeforeCompile` by default;
+    // a real hook was assigned only if this one differs from a freshly-
+    // constructed material's own default.
+    expect(material.onBeforeCompile).not.toBe(new THREE.MeshStandardMaterial().onBeforeCompile);
+    expect(material.side).toBe(THREE.DoubleSide);
   });
 
   // REGRESSION: the offscreen composite's camera frustum alignment was fine
@@ -431,5 +432,66 @@ describe("player_renderer_3d.characterMesh / ppmForRadius", () => {
       throw new Error("expected both to be defined");
     }
     expect(large).toBeCloseTo(small * 2);
+  });
+
+  // DRAW-CALL FIX #1 (this port): `build()` used to write vertices in
+  // `geometry.merge`'s own order -- one contiguous run per PART, not per
+  // shading family. `body.ts`'s buildBody/buildKit/buildLoadout interleave
+  // plain/metal/emissive parts (a plain visor next to a metal band next to
+  // an emissive seam), so the geometry-group boundary fired on every
+  // material TRANSITION rather than once per family: dozens of groups for a
+  // ~28-part character. This is invisible without a live GPU (v2/README.md
+  // #1) -- `THREE.WebGLRenderer.info.render.calls` needs an actual context
+  // -- so this test pins the one structural fact a headless suite CAN see:
+  // `geometry.groups`, three.js's own record of what would have been drawn
+  // per material if this material were ever an array (see the next test for
+  // why it now is not). At most 3 groups -- one per `geometry.MATERIAL` id
+  // actually used by the rig content -- is the fix; any regression back to
+  // "one run per part" would push this well past 3 for a real character.
+  it("pins the fix: geometry.groups collapses to at most 3 (one per shading family), not one per part", () => {
+    const mesh = characterMesh("group-count-check", idleView, baseOptions(), 0) as THREE.SkinnedMesh;
+    expect(mesh.geometry.groups.length).toBeGreaterThan(0);
+    expect(mesh.geometry.groups.length).toBeLessThanOrEqual(3);
+  });
+
+  // Same fix, checked a second, implementation-independent way: read the
+  // actual per-vertex `materialFamily` attribute `applyCombinedCelShading`'s
+  // injected shader branches on (draw-call fix #2, below) and count how many
+  // times the family value CHANGES across the vertex stream. Contiguous
+  // grouping means at most 2 transitions (plain -> metal -> emissive); the
+  // pre-fix interleaved-parts order produced dozens. This does not depend on
+  // `geometry.groups` bookkeeping staying in sync with the vertex data at
+  // all, so it would still catch a regression that silently stopped updating
+  // the groups while leaving the vertex order broken.
+  it("pins the fix a second way: the materialFamily attribute itself has at most 2 value transitions", () => {
+    const mesh = characterMesh("family-contiguity-check", idleView, baseOptions(), 0) as THREE.SkinnedMesh;
+    const materialFamily = mesh.geometry.getAttribute("materialFamily");
+    expect(materialFamily).toBeDefined();
+    let transitions = 0;
+    let previous: number | undefined;
+    for (let i = 0; i < materialFamily.count; i += 1) {
+      const value = materialFamily.getX(i);
+      if (previous !== undefined && value !== previous) {
+        transitions += 1;
+      }
+      previous = value;
+    }
+    expect(transitions).toBeLessThanOrEqual(2);
+  });
+
+  // DRAW-CALL FIX #2 (this port): even 3 contiguous groups is still up to 3
+  // draw calls per character, because three.js only iterates
+  // `geometry.groups` -- and therefore only issues more than one draw call
+  // for one mesh -- when `.material` is an ARRAY (`Array.isArray(material)`
+  // in `WebGLRenderer.js`'s `projectObject`). `characterMesh` is the actual
+  // hot path `pitch.ts` calls every frame for every rigged player (unlike
+  // `renderToSprite`/`draw`, kept for parity only), so this is the assertion
+  // that matters for the real defect: a single `THREE.Material`, guaranteeing
+  // ONE draw call regardless of how many groups (fix #1, above) still sit on
+  // the geometry.
+  it("pins the fix: characterMesh's material is a single Material, never an array, guaranteeing one draw call", () => {
+    const mesh = characterMesh("single-material-check", idleView, baseOptions(), 0) as THREE.SkinnedMesh;
+    expect(Array.isArray(mesh.material)).toBe(false);
+    expect(mesh.material).toBeInstanceOf(THREE.MeshStandardMaterial);
   });
 });

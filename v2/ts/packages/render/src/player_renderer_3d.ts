@@ -89,14 +89,33 @@ export const ELEVATION = (17 * Math.PI) / 180;
 // not go dead", three flat quantised bands, a view-dependent rim, and a
 // metal-only hard specular.
 //
-// That shading is now ported: `rig3d/cel_shader.ts`'s `applyCelShading`
-// splices it into each of `materialsForTeam`'s three `MeshStandardMaterial`s
-// via `onBeforeCompile`, reading `LIGHT_DIR` as a hardcoded uniform rather
-// than any `THREE.Light` in the scene -- exactly like the Lua original, which
-// had no scene-graph lights at all, only `renderer.beginPass`'s two hand-sent
-// uniforms. `LIGHT_DIR` itself now lives in `cel_shader.ts` (re-exported here)
-// so the toon shading and this file's decorative light share one constant
+// That shading is now ported: `rig3d/cel_shader.ts`'s `applyCombinedCelShading`
+// splices it into `materialsForTeam`'s ONE `MeshStandardMaterial` via
+// `onBeforeCompile`, reading `LIGHT_DIR` as a hardcoded uniform rather than
+// any `THREE.Light` in the scene -- exactly like the Lua original, which had
+// no scene-graph lights at all, only `renderer.beginPass`'s two hand-sent
+// uniforms. `LIGHT_DIR` itself lives in `cel_shader.ts` (re-exported here) so
+// the toon shading and this file's decorative light share one constant
 // instead of two copies that could drift.
+//
+// ONE material, not three (draw-call fix, see `materialsForTeam` and
+// `build()`'s own comments below): `rig3d/renderer.lua`'s shader always read
+// the shading family off a per-vertex `VertexMaterial` attribute and branched
+// on it inside ONE fragment shader -- "branching on a varying in the
+// fragment stage is fine here; only dynamic *array indexing* is forbidden"
+// (that file's own SHADER_SOURCE comment). This port used to reproduce the
+// FAMILIES (plain/metal/emissive) but not that mechanism: three separate
+// `MeshStandardMaterial`s, one `onBeforeCompile` variant each, selected at
+// mesh-build time via `THREE.BufferGeometry` material groups -- which
+// resurrected the "one draw per material" cost the Lua shader was written
+// specifically to avoid, and worse, `body.ts`'s parts interleave families
+// (a plain visor next to a metal band next to an emissive seam), so groups
+// fired on every material *transition*, not once per family -- tens of
+// draws per character instead of three. `build()` below now bakes the same
+// per-vertex family float `rig3d/renderer.lua` used (`materialFamily`), and
+// `applyCombinedCelShading` branches on it at runtime in one compiled
+// program, matching the Lua mechanism exactly and collapsing the whole
+// character back to ONE draw call.
 //
 // The two `THREE.Light` instances below therefore no longer drive the
 // character's own shading -- `cel_shading`'s replaced fragment chunk never
@@ -241,7 +260,9 @@ interface BuiltCharacter {
 }
 
 interface TeamMaterials {
-  readonly materials: readonly [THREE.MeshStandardMaterial, THREE.MeshStandardMaterial, THREE.MeshStandardMaterial];
+  // ONE material for the whole character -- see `materialsForTeam`'s doc
+  // comment and this file's LIGHTING header for why that used to be three.
+  readonly material: THREE.MeshStandardMaterial;
   readonly color: THREE.BufferAttribute;
 }
 
@@ -281,7 +302,59 @@ function build(): BuiltCharacter | undefined {
     const skinIndices = new Float32Array(vertCount * 4);
     const skinWeights = new Float32Array(vertCount * 4);
     const paletteSlots = new Float32Array(vertCount);
-    partBuilder.verts.forEach((v, i) => {
+    // Draw-call fix #1: reorder so vertices sharing a material family are
+    // CONTIGUOUS, instead of `geometry.merge`'s own order (one run per PART
+    // -- see that function's header, "Part order is preserved verbatim").
+    // `body.ts`'s buildBody/buildKit/buildLoadout interleave plain/metal/
+    // emissive PARTS (an armour piece's plain visor next to its metal band
+    // next to an emissive seam), so the OLD per-contiguous-run grouping
+    // fired a new group on every material TRANSITION, not once per family --
+    // dozens of groups for a ~28-part character instead of three.
+    //
+    // Reordering here (rather than in `geometry.merge` itself) is
+    // deliberate: `merge`'s own contract and tests pin "triangles rasterise
+    // in submission order" for its own callers, and nothing about that
+    // invariant is wrong -- it is simply not what a DEPTH-TESTED, opaque,
+    // non-blended mesh needs. Triangle submission order never affects the
+    // final image once depth testing decides visibility per pixel (there is
+    // no painter's-algorithm blending across these three opaque materials),
+    // so grouping by family here is a free lunch: identical picture, at most
+    // 3 groups instead of ~50. A STABLE partition (plain, then metal, then
+    // emissive, each preserving its own original relative order) rather than
+    // a comparator sort, so this is deterministic regardless of engine sort
+    // stability.
+    const MATERIAL_ORDER = [geometry.MATERIAL.plain, geometry.MATERIAL.metal, geometry.MATERIAL.emissive] as const;
+    const order: number[] = [];
+    const groupCounts: [number, number, number] = [0, 0, 0];
+    for (const wanted of MATERIAL_ORDER) {
+      for (let i = 0; i < vertCount; i += 1) {
+        const material = partBuilder.verts[i]?.material ?? geometry.MATERIAL.plain;
+        if (material === wanted) {
+          order.push(i);
+          groupCounts[wanted] += 1;
+        }
+      }
+    }
+
+    // Draw-call fix #2: bake the same per-vertex shading-family float
+    // `rig3d/renderer.lua`'s `VertexMaterial` attribute carried
+    // (`geometry.MATERIAL`'s numbering: 0 plain, 1 metal, 2 emissive), so
+    // `cel_shader.ts`'s `applyCombinedCelShading` can branch on it at
+    // RUNTIME in one compiled program instead of needing a separate
+    // material (and therefore a separate group/draw) per family -- see this
+    // file's LIGHTING header. The geometry groups built below still exist
+    // (Fix #1, kept for diagnostics -- `player_renderer_3d.spec.ts` pins
+    // them at exactly 3), but three.js's `WebGLRenderer` only iterates
+    // `geometry.groups` when a mesh's `.material` is an ARRAY
+    // (`Array.isArray(material)` in `WebGLRenderer.js`'s `projectObject`);
+    // `materialsForTeam` never assigns one, so they are inert for the draw
+    // count, not load-bearing for it.
+    const materialFamilies = new Float32Array(vertCount);
+    order.forEach((srcIndex, i) => {
+      const v = partBuilder.verts[srcIndex];
+      if (v === undefined) {
+        throw new Error("player_renderer_3d.ts: build() reorder produced an invalid vertex index");
+      }
       positions[i * 3] = v.position[0];
       positions[i * 3 + 1] = v.position[1];
       positions[i * 3 + 2] = v.position[2];
@@ -291,6 +364,7 @@ function build(): BuiltCharacter | undefined {
       skinIndices[i * 4] = v.bone;
       skinWeights[i * 4] = 1;
       paletteSlots[i] = v.paletteSlot;
+      materialFamilies[i] = v.material;
     });
 
     const geom = new THREE.BufferGeometry();
@@ -298,19 +372,14 @@ function build(): BuiltCharacter | undefined {
     geom.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
     geom.setAttribute("skinIndex", new THREE.BufferAttribute(skinIndices, 4));
     geom.setAttribute("skinWeight", new THREE.BufferAttribute(skinWeights, 4));
+    geom.setAttribute("materialFamily", new THREE.BufferAttribute(materialFamilies, 1));
 
-    // Material groups: one contiguous run per `geometry.MATERIAL` id, since
-    // `geometry.merge` writes vertices part-by-part (each part has one
-    // material) rather than interleaving them.
     let groupStart = 0;
-    let groupMaterial: number = partBuilder.verts[0]?.material ?? geometry.MATERIAL.plain;
-    for (let i = 1; i <= vertCount; i += 1) {
-      const v = partBuilder.verts[i];
-      const material: number = v?.material ?? -1;
-      if (material !== groupMaterial) {
-        geom.addGroup(groupStart, i - groupStart, groupMaterial);
-        groupStart = i;
-        groupMaterial = material;
+    for (const material of MATERIAL_ORDER) {
+      const count = groupCounts[material];
+      if (count > 0) {
+        geom.addGroup(groupStart, count, material);
+        groupStart += count;
       }
     }
 
@@ -401,27 +470,32 @@ function materialsForTeam(character: BuiltCharacter, team: "home" | "away"): Tea
   }
   const color = new THREE.BufferAttribute(colors, 3);
 
-  // Base `.color` stays white on all three so `vertexColors` passes the
-  // baked-per-vertex palette colour through unmodified (three.js multiplies
-  // material colour x vertex colour) -- `rig3d/cel_shader.ts`'s injected
-  // shading reads that same `diffuseColor.rgb` for every family, metal and
-  // emissive included, matching rig3d/renderer.lua's PIXEL stage, which
-  // shaded ALL three families from the one `v_slot_color` varying (there was
-  // never a fixed accent colour for emissive -- it multiplies the resolved
-  // palette colour by a facing-dependent brightness boost instead; see
-  // `cel_shader.ts`'s `celShadingChunk`). `roughness`/`metalness` are not set
-  // here: the injected shading never reads three.js's `PhysicalMaterial`
-  // struct at all (see `applyCelShading`'s doc comment), so they would be
-  // dead uniforms -- the metal/plain distinction is entirely which
-  // `CelFamily` `applyCelShading` was called with for this material, a
-  // compile-time choice, not a material property.
-  const plain = new THREE.MeshStandardMaterial({ vertexColors: true });
-  celShader.applyCelShading(plain, "plain");
-  const metal = new THREE.MeshStandardMaterial({ vertexColors: true });
-  celShader.applyCelShading(metal, "metal");
-  const emissive = new THREE.MeshStandardMaterial({ vertexColors: true });
-  celShader.applyCelShading(emissive, "emissive");
-  const materials: TeamMaterials = { materials: [plain, metal, emissive], color };
+  // Base `.color` stays white so `vertexColors` passes the baked-per-vertex
+  // palette colour through unmodified (three.js multiplies material colour x
+  // vertex colour) -- `rig3d/cel_shader.ts`'s injected shading reads that
+  // same `diffuseColor.rgb` for every family, metal and emissive included,
+  // matching rig3d/renderer.lua's PIXEL stage, which shaded ALL three
+  // families from the one `v_slot_color` varying (there was never a fixed
+  // accent colour for emissive -- it multiplies the resolved palette colour
+  // by a facing-dependent brightness boost instead; see `cel_shader.ts`'s
+  // `celShadingChunk`). `roughness`/`metalness` are not set here: the
+  // injected shading never reads three.js's `PhysicalMaterial` struct at all
+  // (see `applyCombinedCelShading`'s doc comment), so they would be dead
+  // uniforms -- the metal/plain/emissive distinction is entirely which
+  // branch `vMaterialFamily` takes at runtime, a per-vertex value baked by
+  // `build()` above, not a material property.
+  //
+  // ONE `MeshStandardMaterial`, not three (draw-call fix #2 -- see this
+  // file's LIGHTING header and `build()`'s own comment on the
+  // `materialFamily` attribute this material's shading reads).
+  // `applyCombinedCelShading` is `cel_shader.ts`'s per-vertex-branching
+  // sibling of the per-family `applyCelShading` used elsewhere in that
+  // module's own test suite: same ported GLSL, selected at runtime off
+  // `materialFamily` instead of at TypeScript-build time off which
+  // `MeshStandardMaterial` instance this is.
+  const material = new THREE.MeshStandardMaterial({ vertexColors: true });
+  celShader.applyCombinedCelShading(material);
+  const materials: TeamMaterials = { material, color };
   materialsByTeam.set(key, materials);
   return materials;
 }
@@ -466,7 +540,8 @@ function geometryForTeam(character: BuiltCharacter, team: "home" | "away"): THRE
   const normal = base.getAttribute("normal");
   const skinIndex = base.getAttribute("skinIndex");
   const skinWeight = base.getAttribute("skinWeight");
-  if (position === undefined || normal === undefined || skinIndex === undefined || skinWeight === undefined) {
+  const materialFamily = base.getAttribute("materialFamily");
+  if (position === undefined || normal === undefined || skinIndex === undefined || skinWeight === undefined || materialFamily === undefined) {
     throw new Error("player_renderer_3d.ts: shared character geometry is missing a required attribute");
   }
   const geom = new THREE.BufferGeometry();
@@ -474,6 +549,15 @@ function geometryForTeam(character: BuiltCharacter, team: "home" | "away"): THRE
   geom.setAttribute("normal", normal);
   geom.setAttribute("skinIndex", skinIndex);
   geom.setAttribute("skinWeight", skinWeight);
+  // `materialFamily`: read by `applyCombinedCelShading`'s injected shading
+  // (draw-call fix #2, see `materialsForTeam`). The groups below are draw-
+  // call fix #1's own artifact -- copied along for diagnostic parity with
+  // `base` (and so `player_renderer_3d.spec.ts` can pin the group count via
+  // this function's own output, the geometry `characterMesh` actually
+  // returns) even though `materialsForTeam` never assigns an ARRAY of
+  // materials any more, so three.js's `WebGLRenderer` never iterates them
+  // (see `build()`'s comment on `Array.isArray(material)`).
+  geom.setAttribute("materialFamily", materialFamily);
   for (const g of base.groups) {
     geom.addGroup(g.start, g.count, g.materialIndex ?? 0);
   }
@@ -637,8 +721,10 @@ export function characterMesh(
   if (pooled.mesh.geometry !== geometry) {
     pooled.mesh.geometry = geometry;
   }
+  // A single Material (not an array) -- see `materialsForTeam`'s doc comment
+  // on why that is what makes this one draw call instead of up to three.
   const teamMaterials = materialsForTeam(character, team);
-  pooled.mesh.material = [...teamMaterials.materials];
+  pooled.mesh.material = teamMaterials.material;
 
   return pooled.mesh;
 }
@@ -725,7 +811,7 @@ function prepareCharacter(
   character.mesh.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
 
   const teamMaterials = materialsForTeam(character, opts.team ?? "home");
-  character.mesh.material = [...teamMaterials.materials];
+  character.mesh.material = teamMaterials.material;
   // The `color` attribute is swapped per draw call, same shared geometry
   // (see `TeamMaterials`'s doc comment) -- there is exactly one character
   // mesh in flight at a time (`scene.clear()` above), so this cannot race

@@ -37,15 +37,26 @@
 //     resolved palette straight into a per-vertex `color` `BufferAttribute`
 //     ahead of time, so there is no uniform array left to index into at all,
 //     in either stage.
-//   * Vertex-carried material family as a float. The Lua's `VertexMaterial`
-//     attribute existed only because GLSL ES 1.00 has no integer vertex
-//     attributes. Three.js's geometry *groups* already assign one
-//     `THREE.Material` per contiguous vertex run (`player_renderer_3d.ts`'s
-//     `build()` adds one group per `geometry.MATERIAL` id), so "which
-//     shading family a triangle belongs to" is which `CelFamily` this module
-//     was applied to for that group's material -- a compile-time constant
-//     per material instance (see `applyCelShading`'s per-family GLSL below),
-//     not a per-vertex value read at all.
+// Vertex-carried material family as a float DID eventually port, in the end
+// exactly as the Lua wrote it, though not on the first pass through this
+// file. The Lua's `VertexMaterial` attribute existed only because GLSL ES
+// 1.00 has no integer vertex attributes; this module's first cut instead let
+// three.js's geometry *groups* assign one `THREE.Material` per contiguous
+// vertex run, so "which shading family a triangle belongs to" was which
+// `CelFamily` `applyCelShading` (below) was called with for that group's
+// material -- a compile-time, per-material-instance constant, not a
+// per-vertex value read at all. That reproduced the LOOK but not the DRAW-CALL
+// COUNT: `player_renderer_3d.ts`'s parts interleave families, so groups fired
+// on every material transition, not once per family, and even a clean
+// three-groups-per-character outcome would still be three draws where the
+// Lua's one shader was one. `applyCombinedCelShading` (below, alongside the
+// original per-family `applyCelShading`) is the fix: it reads a real
+// `materialFamily` vertex attribute (`player_renderer_3d.ts`'s `build()`
+// bakes it, `geometry.MATERIAL`'s own numbering) and branches on it at
+// RUNTIME in the fragment stage -- precisely rig3d/renderer.lua's own
+// mechanism, and precisely why that file's header states "branching on a
+// varying in the fragment stage is fine here; only dynamic *array indexing*
+// is forbidden." One compiled program, one draw call, matching the Lua.
 //
 // Only the LOOK is reproduced; the WebGL1 plumbing that produced it is not.
 
@@ -244,4 +255,107 @@ export function applyCelShading(material: THREE.MeshStandardMaterial, family: Ce
 // `onBeforeCompile` function was assigned.
 export function shaderChunkFor(family: CelFamily): string {
   return celShadingChunk(family);
+}
+
+// ---------------------------------------------------------------------------
+// COMBINED (draw-call fix #2, see player_renderer_3d.ts's `materialsForTeam`
+// and this file's header). `applyCelShading`/`celShadingChunk` above compile
+// one GLSL program PER shading family, selected at TypeScript-build time by
+// which `MeshStandardMaterial` instance a caller applies them to --
+// `customProgramCacheKey` deliberately keeps the three apart so three.js
+// never hands one family's compiled program to another's draw call. That
+// reproduces rig3d/renderer.lua's LOOK but not its DRAW-CALL COUNT: three
+// materials still need up to three geometry groups, hence up to three draws
+// per character, where the Lua shader -- one program, branching on a
+// per-vertex `VertexMaterial` varying -- was always exactly one.
+//
+// `applyCombinedCelShading` below is that one-program mechanism, ported
+// directly rather than reinvented: `combinedCelShadingChunk` wraps
+// `celShadingChunk("emissive"|"metal"|"plain")` -- the SAME generated text
+// `applyCelShading` uses, not a hand-duplicated second copy of the ported
+// bands/bounce/rim/specular math -- in a runtime `if / else if / else` on a
+// `vMaterialFamily` GLSL float, exactly mirroring rig3d/renderer.lua's own
+// `effect()`: `if (v_material > 1.5) { ... } ... float u_metal = v_material
+// > 0.5 ? 1.0 : 0.0;`. Each wrapped chunk keeps its own `{ }` block scope, so
+// the three branches' identically-named locals (`gcNormal`, `ndl`, ...) do
+// not collide -- ordinary C-style block scoping, valid in GLSL ES 1.00 same
+// as GLSL ES 3.00.
+// ---------------------------------------------------------------------------
+
+function combinedCelShadingChunk(): string {
+  return `
+    // Runtime branch on the per-vertex shading family (plain low, metal
+    // mid, emissive high -- rig3d/geometry.ts's MATERIAL numbering), read
+    // off the \`materialFamily\` vertex attribute player_renderer_3d.ts's build()
+    // bakes -- exactly rig3d/renderer.lua's effect(): "branching on a
+    // varying in the fragment stage is fine here; only dynamic *array
+    // indexing* is forbidden." One compiled program covers every family, so
+    // this material never needs a geometry group to pick a shader -- see
+    // applyCombinedCelShading's doc comment.
+    if ( vMaterialFamily > 1.5 ) {
+      ${celShadingChunk("emissive")}
+    } else if ( vMaterialFamily > 0.5 ) {
+      ${celShadingChunk("metal")}
+    } else {
+      ${celShadingChunk("plain")}
+    }
+    `;
+}
+
+/**
+ * Wires rig3d/renderer.lua's toon shading into a `THREE.MeshStandardMaterial`
+ * as ONE compiled program that branches on a per-vertex shading-family
+ * attribute at runtime, instead of `applyCelShading`'s one-program-per-family
+ * split. Call once per material instance -- see `player_renderer_3d.ts`'s
+ * `materialsForTeam`, which now builds and caches exactly ONE material per
+ * team (not one per family per team), so this runs once per material, not
+ * per frame or per draw call.
+ *
+ * The geometry this material is used with MUST carry a `materialFamily`
+ * `THREE.BufferAttribute` -- one float per vertex, `rig3d/geometry.ts`'s
+ * `MATERIAL` numbering (0 plain, 1 metal, 2 emissive) -- see
+ * `player_renderer_3d.ts`'s `build()`. Three.js auto-binds a vertex attribute
+ * to a shader `attribute` of the same name and type
+ * (`WebGLProgram`/`WebGLBindingStates`), so declaring `attribute float
+ * materialFamily;` below is enough; nothing here reads or validates the
+ * geometry directly.
+ *
+ * `material.side` is forced to `THREE.DoubleSide`, matching
+ * rig3d/renderer.lua's `love.graphics.setMeshCullMode("none")`, same as
+ * `applyCelShading` above.
+ *
+ * `material.customProgramCacheKey` is set to a fixed string rather than a
+ * per-family one: unlike `applyCelShading`, every material this function
+ * touches compiles to the SAME program (the branch is a runtime value, not a
+ * `defines`/uniform-shape difference three.js's cache would otherwise
+ * conflate with a genuinely different family) -- see `applyCelShading`'s own
+ * doc comment for why THAT function needs a per-family key and this one
+ * does not.
+ */
+export function applyCombinedCelShading(material: THREE.MeshStandardMaterial): void {
+  material.side = THREE.DoubleSide;
+  material.customProgramCacheKey = () => "combined";
+  material.onBeforeCompile = (shader) => {
+    let vertexShader = `attribute float materialFamily;\nvarying float vMaterialFamily;\n${shader.vertexShader}`;
+    // `void main() {` appears exactly once in three.js's vertex template
+    // (there is only one entry point) -- inserting the varying assignment
+    // as the first statement means every later chunk (skinning, project,
+    // ...) runs after it, though nothing downstream in the VERTEX stage
+    // actually depends on it; only the fragment stage below reads
+    // `vMaterialFamily`.
+    vertexShader = vertexShader.replace("void main() {", "void main() {\n\n\tvMaterialFamily = materialFamily;\n");
+    shader.vertexShader = vertexShader;
+
+    let fragmentShader = `varying float vMaterialFamily;\n${shader.fragmentShader}`;
+    fragmentShader = fragmentShader.replace("#include <lights_physical_fragment>", combinedCelShadingChunk());
+    for (const include of CEL_SHADING_TARGET_INCLUDES.slice(1)) {
+      fragmentShader = fragmentShader.replace(include, "");
+    }
+    shader.fragmentShader = fragmentShader;
+  };
+}
+
+// Exposed for this file's own spec, same reason as `shaderChunkFor` above.
+export function shaderChunkForCombined(): string {
+  return combinedCelShadingChunk();
 }

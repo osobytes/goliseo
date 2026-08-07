@@ -705,11 +705,19 @@ function drawPitchAfterItems(dl: DrawList, frame: RenderFrame, opts: PitchDrawOp
   // receiver's feet while the pass button is held.
   const target = frame.control.pass_target;
   if (target !== undefined) {
-    const tx = players.x[target] ?? 0;
-    const ty = players.y[target] ?? 0;
+    // ONE-BASED. frame_buffer.ts's own doc on this field says so outright --
+    // "Roster slot, one-based ... recover it as roster.ids[hud.controlled - 1]"
+    // -- and match.ts converts the identical field with `slot - 1`. Indexing
+    // the zero-based SoA arrays directly drew this ring under the NEXT player,
+    // or at the world origin for the last slot, and read that player's team
+    // colour too. README rule 5.3: convert one-based to zero-based EXCEPT for
+    // wire values, and this is a wire value being used as an index.
+    const targetIndex = target - 1;
+    const tx = players.x[targetIndex] ?? 0;
+    const ty = players.y[targetIndex] ?? 0;
     const [tsx, tsy, tscale] = project(tx, ty);
     const pulse = 0.65 + 0.35 * Math.abs(Math.sin(now * 5));
-    const teamColor = roster.teams[target] === "home" ? opts.home_color : opts.away_color;
+    const teamColor = roster.teams[targetIndex] === "home" ? opts.home_color : opts.away_color;
     dl.circle("line", tsx, tsy, 10 * tscale * pulse, teamColor, { alpha: 0.85 * pulse, lineWidth: Math.max(1, 1.5 * tscale) });
     dl.circle("line", tsx, tsy, 16 * tscale * pulse, teamColor, { alpha: 0.45 * pulse, lineWidth: Math.max(1, 1.5 * tscale) });
   }
@@ -721,9 +729,12 @@ function drawPitchAfterItems(dl: DrawList, frame: RenderFrame, opts: PitchDrawOp
     const amt = frame.control.charge;
     const ccol: RGB = chargeKind === "shot" ? [1, 0.72, 0.3] : [0.45, 0.85, 1];
     const label = chargeKind === "shot" ? "SHOT" : "PASS";
-    const controlled = frame.control.controlled;
-    const px = players.x[controlled] ?? 0;
-    const py = players.y[controlled] ?? 0;
+    // One-based, same as `pass_target` above -- see that comment. Without the
+    // conversion the charge meter drew under the wrong player entirely, which
+    // is what "the charging kick isn't there" looks like from the outside.
+    const controlledIndex = frame.control.controlled - 1;
+    const px = players.x[controlledIndex] ?? 0;
+    const py = players.y[controlledIndex] ?? 0;
     const [sx, sy, scale] = project(px, py);
     const w = 34 * scale;
     const h = Math.max(3, 4 * scale);

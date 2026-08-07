@@ -20,7 +20,7 @@
 
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
-import { applyCelShading, BAND_HIGH, BAND_HIGH_THRESHOLD, BAND_LOW, BAND_MID, BAND_MID_THRESHOLD, BOUNCE_SCALE, CEL_SHADING_TARGET_INCLUDES, EMISSIVE_BASE, EMISSIVE_FACING_SCALE, LIGHT_DIR, RIM_METAL_MIX_HIGH, RIM_METAL_MIX_LOW, RIM_POWER, RIM_SMOOTH_HIGH, RIM_SMOOTH_LOW, shaderChunkFor, SPEC_POWER, SPEC_SCALE, SPEC_SMOOTH_HIGH, SPEC_SMOOTH_LOW } from "./cel_shader.ts";
+import { applyCelShading, applyCombinedCelShading, BAND_HIGH, BAND_HIGH_THRESHOLD, BAND_LOW, BAND_MID, BAND_MID_THRESHOLD, BOUNCE_SCALE, CEL_SHADING_TARGET_INCLUDES, EMISSIVE_BASE, EMISSIVE_FACING_SCALE, LIGHT_DIR, RIM_METAL_MIX_HIGH, RIM_METAL_MIX_LOW, RIM_POWER, RIM_SMOOTH_HIGH, RIM_SMOOTH_LOW, shaderChunkFor, shaderChunkForCombined, SPEC_POWER, SPEC_SCALE, SPEC_SMOOTH_HIGH, SPEC_SMOOTH_LOW } from "./cel_shader.ts";
 
 // rig3d/renderer.lua's SHADER_SOURCE, PIXEL stage -- the numbers this file
 // ports. Kept here as a second, independent statement of the same nine
@@ -173,5 +173,82 @@ describe("cel_shader.applyCelShading", () => {
     applyCelShading(emissive, "emissive");
     const keys = new Set([plain.customProgramCacheKey(), metal.customProgramCacheKey(), emissive.customProgramCacheKey()]);
     expect(keys.size).toBe(3);
+  });
+});
+
+// COMBINED (draw-call fix #2, see player_renderer_3d.ts's `materialsForTeam`
+// and this file's header). `applyCombinedCelShading` is the one-program,
+// runtime-branching sibling of `applyCelShading` above: same ported numbers,
+// selected off a `materialFamily` vertex attribute instead of which
+// `MeshStandardMaterial` instance a caller applied the shading to.
+describe("cel_shader.shaderChunkForCombined", () => {
+  it("wraps all three per-family chunks (celShadingChunk's own generated text) in a runtime branch on vMaterialFamily", () => {
+    const combined = shaderChunkForCombined();
+    expect(combined).toContain("if ( vMaterialFamily > 1.5 )");
+    expect(combined).toContain("else if ( vMaterialFamily > 0.5 )");
+    // Every family's own distinguishing content must be present verbatim --
+    // this is NOT a hand-duplicated second copy of the ported math, so a
+    // future change to celShadingChunk's numbers propagates here for free
+    // and this assertion keeps proving that propagation actually happens.
+    expect(combined).toContain("reflectedLight.directDiffuse = diffuseColor.rgb * ( 1.25 + 0.55 * gcFacing )"); // emissive
+    expect(combined).toContain("pow( max( dot( gcNormal, gcHalfDir ), 0.0 ), 24.0 )"); // metal specular
+    expect(combined).toContain("mix( 0.55, 1.05, 0.0 )"); // plain's rim metal-mix factor
+  });
+
+  it("emits every ported number as a valid GLSL float literal, same as the per-family chunks", () => {
+    const combined = shaderChunkForCombined();
+    const bareIntLiterals = combined.match(/[^.\w](\d+)(?![.\d\w])/g) ?? [];
+    expect(bareIntLiterals, combined).toEqual([]);
+  });
+});
+
+describe("cel_shader.applyCombinedCelShading", () => {
+  function compileCombinedAgainstRealTemplate() {
+    const material = new THREE.MeshStandardMaterial({ vertexColors: true });
+    applyCombinedCelShading(material);
+    const shader = {
+      fragmentShader: THREE.ShaderLib["standard"]?.fragmentShader,
+      vertexShader: THREE.ShaderLib["standard"]?.vertexShader,
+      uniforms: {},
+      defines: {},
+    };
+    if (shader.fragmentShader === undefined || shader.vertexShader === undefined) {
+      throw new Error("cel_shader.spec.ts: THREE.ShaderLib.standard is missing -- three.js version mismatch?");
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    material.onBeforeCompile(shader as any, undefined as any);
+    return { material, fragmentShader: shader.fragmentShader, vertexShader: shader.vertexShader };
+  }
+
+  it("removes all four target includes from the real MeshStandardMaterial fragment template", () => {
+    const { fragmentShader } = compileCombinedAgainstRealTemplate();
+    for (const include of CEL_SHADING_TARGET_INCLUDES) {
+      expect(fragmentShader).not.toContain(include);
+    }
+  });
+
+  it("declares the materialFamily attribute and vMaterialFamily varying in both stages, and assigns the varying in main()", () => {
+    const { vertexShader, fragmentShader } = compileCombinedAgainstRealTemplate();
+    expect(vertexShader).toContain("attribute float materialFamily;");
+    expect(vertexShader).toContain("varying float vMaterialFamily;");
+    expect(vertexShader).toContain("vMaterialFamily = materialFamily;");
+    expect(fragmentShader).toContain("varying float vMaterialFamily;");
+  });
+
+  it("splices the combined runtime-branching shading in where lights_physical_fragment was", () => {
+    const { fragmentShader } = compileCombinedAgainstRealTemplate();
+    expect(fragmentShader).toContain("if ( vMaterialFamily > 1.5 )");
+    expect(fragmentShader).toContain("reflectedLight.directDiffuse = gcLit");
+  });
+
+  it("sets material.side to DoubleSide, matching rig3d/renderer.lua's setMeshCullMode(\"none\")", () => {
+    const { material } = compileCombinedAgainstRealTemplate();
+    expect(material.side).toBe(THREE.DoubleSide);
+  });
+
+  it("wires a real, non-default onBeforeCompile rather than leaving PBR defaults", () => {
+    const material = new THREE.MeshStandardMaterial({ vertexColors: true });
+    applyCombinedCelShading(material);
+    expect(material.onBeforeCompile).not.toBe(new THREE.MeshStandardMaterial().onBeforeCompile);
   });
 });

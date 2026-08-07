@@ -133,3 +133,113 @@ describe("camera perspective mode", () => {
     });
   });
 });
+
+// ============================================================================
+// LUA DIFFERENTIAL -- see v2/tools/render_reference/README.md (the pitch
+// differential's own tool directory; this capture used the same headless
+// `love .` pattern but needs no love.graphics stub at all, since
+// `camera.project` is pure -- no love.* calls anywhere in camera.lua). This
+// is the leading hypothesis check named in this task's brief: if v2's camera
+// or pixels-per-metre differs from the Lua original, everything on screen
+// moves at the wrong apparent speed/distance even with identical sim state.
+//
+// Captured with a small standalone script (field 960x540, viewport 1280x720
+// -- the product's own dimensions, unlike pitch.spec.ts's shrunk fixture,
+// since camera.project draws nothing and has no hex-floor-style blowup):
+//
+//   local camera = require("game.render.camera")
+//   local sx, sy, scale = camera.project(wx, wy, field, vp, cfg, view)
+//   print(string.format("%.17g\t%.17g\t%.17g", sx, sy, scale))
+//
+// run for the fixed (default) projection, a fixed projection under a 2x
+// zoomed follow view, and the perspective-mode projection under a 1x follow
+// view -- the three distinct code paths `camera.project` can take.
+// ============================================================================
+
+interface CameraReferenceRow {
+  readonly wx: number;
+  readonly wy: number;
+  readonly sx: number;
+  readonly sy: number;
+  readonly scale: number;
+}
+
+// prettier-ignore
+const FIXED_REFERENCE: readonly CameraReferenceRow[] = [
+  { wx: 0, wy: 0, sx: 313.60000000000002, sy: 172.79999999999998, scale: 0.51000000000000001 },
+  { wx: 960, wy: 0, sx: 966.39999999999998, sy: 172.79999999999998, scale: 0.51000000000000001 },
+  { wx: 0, wy: 540, sx: 102.40000000000009, sy: 633.60000000000002, scale: 0.83999999999999997 },
+  { wx: 960, wy: 540, sx: 1177.5999999999999, sy: 633.60000000000002, scale: 0.83999999999999997 },
+  { wx: 480, wy: 270, sx: 640, sy: 403.20000000000005, scale: 0.67500000000000004 },
+  { wx: 123.456, wy: 78.9, sx: 374.62826240000004, sy: 240.12799999999999, scale: 0.55821666666666669 },
+  { wx: -50, wy: 600, sx: 20.488888888888937, sy: 684.80000000000007, scale: 0.87666666666666671 },
+];
+
+// prettier-ignore
+const FIXED_ZOOM_REFERENCE: readonly CameraReferenceRow[] = [
+  { wx: 0, wy: 0, sx: 290.66666666666674, sy: 18.666666666666572, scale: 1.02 },
+  { wx: 960, wy: 0, sx: 1596.2666666666667, sy: 18.666666666666572, scale: 1.02 },
+  { wx: 0, wy: 540, sx: -131.73333333333312, sy: 940.26666666666665, scale: 1.6799999999999999 },
+  { wx: 960, wy: 540, sx: 2018.6666666666665, sy: 940.26666666666665, scale: 1.6799999999999999 },
+  { wx: 480, wy: 270, sx: 943.4666666666667, sy: 479.4666666666667, scale: 1.3500000000000001 },
+  { wx: 123.456, wy: 78.9, sx: 412.72319146666678, sy: 153.32266666666658, scale: 1.1164333333333334 },
+  { wx: -50, wy: 600, sx: -295.55555555555543, sy: 1042.6666666666667, scale: 1.7533333333333334 },
+];
+
+// prettier-ignore
+const PERSPECTIVE_REFERENCE: readonly CameraReferenceRow[] = [
+  { wx: 0, wy: 0, sx: -213.83897478161117, sy: 52.529404792105957, scale: 0.61401333930083757 },
+  { wx: 960, wy: 0, sx: 1493.8389747816111, sy: 52.529404792105957, scale: 0.61401333930083757 },
+  { wx: 0, wy: 540, sx: -5016.6832079281721, sy: 2396.9926932522976, scale: 4.0678383728680467 },
+  { wx: 960, wy: 540, sx: 6296.6832079281721, sy: 2396.9926932522976, scale: 4.0678383728680467 },
+  { wx: 480, wy: 270, sx: 640, sy: 360.00000000000006, scale: 1.0669739994407994 },
+  { wx: 123.456, wy: 78.9, sx: -84.055450614806375, sy: 111.55831353284962, scale: 0.70097376376832288 },
+  { wx: -50, wy: 600, sx: -16015.789445566254, sy: 6999.087296525996, scale: 10.847568994314772 },
+];
+
+describe("camera.project differential against the real Lua game.render.camera", () => {
+  const bigField: CameraField = { w: 960, h: 540 };
+  const bigVp: CameraViewport = { w: 1280, h: 720 };
+
+  it("matches the Lua reference for the fixed (default) projection -- the product's actual field/viewport, not a shrunk test fixture", () => {
+    for (const row of FIXED_REFERENCE) {
+      const [sx, sy, scale] = camera.project(row.wx, row.wy, bigField, bigVp);
+      near(sx, row.sx, 1e-6);
+      near(sy, row.sy, 1e-6);
+      near(scale, row.scale, 1e-9);
+    }
+  });
+
+  it("matches the Lua reference for the fixed projection under a 2x zoomed follow view", () => {
+    const view = camera.view(300, 200, bigField, 2);
+    for (const row of FIXED_ZOOM_REFERENCE) {
+      const [sx, sy, scale] = camera.project(row.wx, row.wy, bigField, bigVp, undefined, view);
+      near(sx, row.sx, 1e-6);
+      near(sy, row.sy, 1e-6);
+      near(scale, row.scale, 1e-9);
+    }
+  });
+
+  it("matches the Lua reference for perspective mode under a 1x follow view", () => {
+    const saved = camera.perspective_mode;
+    camera.perspective_mode = true;
+    try {
+      const view = camera.view(480, 270, bigField, 1);
+      for (const row of PERSPECTIVE_REFERENCE) {
+        const [sx, sy, scale] = camera.project(row.wx, row.wy, bigField, bigVp, undefined, view);
+        // A wider epsilon than the fixed-mode tests: mat4.lookAt/perspective
+        // route through trigonometric functions, which v2/README.md's
+        // determinism rules explicitly call out as implementation-
+        // approximated across runtimes (ECMAScript spec) -- irrelevant to
+        // the sim (this is presentation-only, per that same README section),
+        // but real enough to need a looser tolerance than a pure arithmetic
+        // path here.
+        near(sx, row.sx, 1e-3);
+        near(sy, row.sy, 1e-3);
+        near(scale, row.scale, 1e-6);
+      }
+    } finally {
+      camera.perspective_mode = saved;
+    }
+  });
+});
