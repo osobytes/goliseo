@@ -263,6 +263,50 @@ describe("player_renderer_3d.renderToSprite", () => {
     }
   });
 
+  // REGRESSION target of THIS port: the toon shading itself (rig3d/renderer.lua's
+  // hand-written GLSL -- bands, bounce, rim, metal specular, emissive-past-white)
+  // had NO port at all before this change; `materialsForTeam` built plain
+  // `MeshStandardMaterial`s with tuned `roughness`/`metalness` numbers and a
+  // fixed emissive accent colour, which is generic PBR, not this game's look.
+  // This suite cannot rasterise a pixel (see file header), so it checks the
+  // one thing it CAN from here: that every one of the three per-material-group
+  // materials `renderToSprite` puts into the scene actually has
+  // `rig3d/cel_shader.ts`'s `applyCelShading` wired onto it (a real, non-default
+  // `onBeforeCompile` and `side === THREE.DoubleSide`, matching
+  // rig3d/renderer.lua's `setMeshCullMode("none")`) rather than being plain,
+  // untouched `MeshStandardMaterial`s relying on PBR defaults. See
+  // rig3d/cel_shader.spec.ts for what the injected shading itself contains.
+  it("wires rig3d/cel_shader.ts's toon shading onto every material group, not stock MeshStandardMaterial defaults", () => {
+    const renderer = stubRenderer();
+    renderToSprite(renderer, 640, 360, 12, 1280, 720, idleView, baseOptions(), 0);
+    const call = renderer.renderCalls[0];
+    if (call === undefined) {
+      throw new Error("expected one render call");
+    }
+    const mesh = call.scene.children.find((child): child is THREE.SkinnedMesh => child instanceof THREE.SkinnedMesh);
+    if (mesh === undefined) {
+      throw new Error("expected a SkinnedMesh in the rendered scene");
+    }
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    expect(materials.length).toBe(3);
+    const cacheKeys = new Set<string>();
+    for (const material of materials) {
+      if (!(material instanceof THREE.MeshStandardMaterial)) {
+        throw new Error("expected a MeshStandardMaterial");
+      }
+      // Every stock `THREE.Material` has a no-op `onBeforeCompile` by
+      // default; a real hook was assigned only if this one differs from a
+      // freshly-constructed material's own default.
+      expect(material.onBeforeCompile).not.toBe(new THREE.MeshStandardMaterial().onBeforeCompile);
+      expect(material.side).toBe(THREE.DoubleSide);
+      cacheKeys.add(material.customProgramCacheKey());
+    }
+    // plain/metal/emissive must each compile to their own GPU program (see
+    // cel_shader.ts's `applyCelShading` doc comment on why -- three.js's
+    // program cache cannot otherwise tell them apart).
+    expect(cacheKeys.size).toBe(3);
+  });
+
   // REGRESSION: the offscreen composite's camera frustum alignment was fine
   // (verified live-GL, see this port's report), but the returned sprite
   // rendered upside down under `SceneRoot`'s Y-inverted 2D camera --

@@ -52,6 +52,7 @@ import * as actionPose from "./rig3d/action_pose.ts";
 import * as themes from "./rig3d/themes.ts";
 import * as body from "./rig3d/body.ts";
 import * as geometry from "./rig3d/geometry.ts";
+import * as celShader from "./rig3d/cel_shader.ts";
 import type { PlayerRenderOptions } from "./player_renderer.ts";
 
 // Character height maps to roughly this many player-radii on screen. Tuned
@@ -61,27 +62,37 @@ const HEIGHT_IN_RADII = 3.0;
 // Match camera looks down at the pitch; this is the apparent elevation.
 const ELEVATION = (17 * Math.PI) / 180;
 
-// LIGHTING. `rig3d/renderer.lua`'s hand-written GLSL (v2/README.md #7:
-// "replace -- WebGLRenderer, MeshStandardMaterial") drove its toon shading
-// off one directional key light, `light_dir = { -0.42, -0.78, -0.46 }`
-// ("direction the light travels"), plus a soft "cool bounce light from
-// below so shadowed sides do not go dead". `MeshStandardMaterial` is a PBR
-// material: with no `THREE.Light` in the scene it lights every surface pure
-// black regardless of `color`, which is the defect this port's report
-// tracks down (`scene.ts` never added a light either, but that scene never
-// held a `MeshStandardMaterial` object directly -- see this file's own
-// `scene` below, which does, and is therefore the one that actually needed
-// it). `LIGHT_DIR` is ported content (the Lua constant); the two `THREE
-// .Light` instances below are new code standing in for the custom shader,
-// per the README's "replace" verdict -- not an attempt to reproduce the
-// toon bands, rim light or per-material specular, which three.js's stock
-// pipeline does not offer a drop-in equivalent for.
-const LIGHT_DIR = new THREE.Vector3(-0.42, -0.78, -0.46).normalize();
+// LIGHTING. `rig3d/renderer.lua`'s hand-written GLSL (v2/README.md #7 marks
+// the file "replace -- WebGLRenderer, MeshStandardMaterial", but that verdict
+// covers the mechanism -- the depth pass, the draw call, the WebGL1 bone/
+// palette packing -- not the shading itself; see `rig3d/cel_shader.ts`'s file
+// header for the full argument) drove its toon shading off one directional
+// key light, `light_dir = { -0.42, -0.78, -0.46 }` ("direction the light
+// travels"), plus a soft "cool bounce light from below so shadowed sides do
+// not go dead", three flat quantised bands, a view-dependent rim, and a
+// metal-only hard specular.
+//
+// That shading is now ported: `rig3d/cel_shader.ts`'s `applyCelShading`
+// splices it into each of `materialsForTeam`'s three `MeshStandardMaterial`s
+// via `onBeforeCompile`, reading `LIGHT_DIR` as a hardcoded uniform rather
+// than any `THREE.Light` in the scene -- exactly like the Lua original, which
+// had no scene-graph lights at all, only `renderer.beginPass`'s two hand-sent
+// uniforms. `LIGHT_DIR` itself now lives in `cel_shader.ts` (re-exported here)
+// so the toon shading and this file's decorative light share one constant
+// instead of two copies that could drift.
+//
+// The two `THREE.Light` instances below therefore no longer drive the
+// character's own shading -- `cel_shading`'s replaced fragment chunk never
+// calls `RE_Direct` / `RE_IndirectDiffuse`, so every scene light is a no-op
+// for a `SkinnedMesh` using one of `materialsForTeam`'s materials. They stay
+// in place regardless: an earlier fix here was "the private module-level
+// scene had no lights" (a real defect against the *previous*, un-toon-shaded
+// `MeshStandardMaterial` state), and removing them is not part of this
+// port -- see this file's own header note on not undoing that fix. They are
+// harmless dead weight for the character mesh today, not a hazard.
+const { LIGHT_DIR } = celShader;
 const KEY_LIGHT_INTENSITY = 3.2;
-// Stands in for the GLSL's "cool bounce light from below" and general
-// ambient fill -- a `HemisphereLight` (sky/ground blend) reads closer to
-// that bounce than a flat `AmbientLight` would, since it still varies by
-// surface-normal-up-vs-down.
+// Vestigial alongside `keyLight` above -- see this comment block.
 const SKY_COLOR = 0xaebfe0;
 const GROUND_COLOR = 0x30251c;
 const FILL_LIGHT_INTENSITY = 0.9;
@@ -367,18 +378,26 @@ function materialsForTeam(character: BuiltCharacter, team: "home" | "away"): Tea
   }
   const color = new THREE.BufferAttribute(colors, 3);
 
-  // Base `.color` stays white so `vertexColors` passes the baked colour
-  // through unmodified (three.js multiplies material colour x vertex
-  // colour). Metal/emissive keep the same shading-family treatment the Lua
-  // shader gave them (a specular/metallic response, an emissive boost)
-  // layered ON TOP of the palette colour rather than replacing it with one
-  // fixed accent -- `emissive` still overrides its own vertex colour with a
-  // fixed glow, since three.js's vertex-colour path modulates the diffuse
-  // term only, not `emissive`, and this family (visor/energy accents) is
-  // meant to read as a light source rather than a team-owned surface.
-  const plain = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8 });
-  const metal = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.6, roughness: 0.35 });
-  const emissive = new THREE.MeshStandardMaterial({ color: new THREE.Color(0, 0, 0), emissive: new THREE.Color(0.4, 0.9, 1), emissiveIntensity: 1.2 });
+  // Base `.color` stays white on all three so `vertexColors` passes the
+  // baked-per-vertex palette colour through unmodified (three.js multiplies
+  // material colour x vertex colour) -- `rig3d/cel_shader.ts`'s injected
+  // shading reads that same `diffuseColor.rgb` for every family, metal and
+  // emissive included, matching rig3d/renderer.lua's PIXEL stage, which
+  // shaded ALL three families from the one `v_slot_color` varying (there was
+  // never a fixed accent colour for emissive -- it multiplies the resolved
+  // palette colour by a facing-dependent brightness boost instead; see
+  // `cel_shader.ts`'s `celShadingChunk`). `roughness`/`metalness` are not set
+  // here: the injected shading never reads three.js's `PhysicalMaterial`
+  // struct at all (see `applyCelShading`'s doc comment), so they would be
+  // dead uniforms -- the metal/plain distinction is entirely which
+  // `CelFamily` `applyCelShading` was called with for this material, a
+  // compile-time choice, not a material property.
+  const plain = new THREE.MeshStandardMaterial({ vertexColors: true });
+  celShader.applyCelShading(plain, "plain");
+  const metal = new THREE.MeshStandardMaterial({ vertexColors: true });
+  celShader.applyCelShading(metal, "metal");
+  const emissive = new THREE.MeshStandardMaterial({ vertexColors: true });
+  celShader.applyCelShading(emissive, "emissive");
   const materials: TeamMaterials = { materials: [plain, metal, emissive], color };
   materialsByTeam.set(key, materials);
   return materials;

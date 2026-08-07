@@ -21,3 +21,4 @@ export * as headgear from "./headgear.ts";
 export * as equipment from "./equipment.ts";
 export * as body from "./body.ts";
 export * as poseLod from "./pose_lod.ts";
+export * as celShader from "./cel_shader.ts";
