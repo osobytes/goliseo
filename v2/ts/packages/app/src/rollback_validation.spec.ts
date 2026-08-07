@@ -25,7 +25,7 @@
 // `sim.rollback_events.new/apply/confirm` -- a real Rust timeline
 // (create/apply/confirm), not just the wire shapes it produces.
 //
-// # Re-audited against the current `@gc/wasm`
+// # Re-audited against the current `@gc/wasm` -- cleared
 //
 // The claim this comment used to make -- "`@gc/wasm` does not expose that
 // surface directly, only the bundled `MatchDriverBridge`" -- is **stale**:
@@ -35,26 +35,37 @@
 // adapter over it, driven by a real two-peer `MatchDriverBridge` harness,
 // for four of *its* thirteen cases).
 //
-// What is real and narrower: this specific case needs a `WasmMatchSnapshot`
-// for a *hand-specified* game state (`final.owner = 2`, a `"shot"` event at
-// the ball's exact position, `time_left` nudged by one tick) -- the Lua
-// original builds it with `match_snapshot.capture(final)` on a hand-mutated
-// `MatchState` table. `@gc/wasm` has no snapshot-construction entry point at
-// all: the only ways to obtain a `WasmMatchSnapshot` are `SimSession
-// .snapshotHandle()` (whatever state a real, actually-stepped session
-// reached) and `MatchDriverBridge.initialSnapshotHandle`/`.snapshotLookup`
-// (ditto, for a real driver) -- confirmed by reading `session.rs` and
-// `match_driver_bridge.rs` end to end, neither exposes anything resembling
-// "build a snapshot from these fields." Reaching this exact scenario for
-// real would mean scripting genuine gameplay input precisely enough to
-// force a real shot at a real, known position and tick -- deep
-// gameplay-mechanics engineering this port has no other reason to carry,
-// and guessing at it risks a flaky, non-representative test even if it
-// happens to pass once. Left `it.skip`, for this narrower and different
-// reason than the one this comment used to give.
+// What was real and narrower -- and is now also stale: this specific case
+// needed a `WasmMatchSnapshot` for a *hand-specified* game state
+// (`final.owner = 2`, a `"shot"` event at the ball's exact position,
+// `time_left` nudged by one tick) -- the Lua original builds it with
+// `match_snapshot.capture(final)` on a hand-mutated `MatchState` table. A
+// prior pass here found `@gc/wasm` had no snapshot-construction entry point
+// at all (`SimSession.snapshotHandle()`/`MatchDriverBridge
+// .initialSnapshotHandle` only ever capture whatever state a real,
+// already-stepped session/driver reached). That gap is now closed:
+// `crates/gc-wasm/src/match_snapshot_bridge.rs`'s `matchSnapshotBuild`
+// builds a fresh, slot-mode `MatchState` exactly like `Session::new` does
+// and applies a small set of JSON overrides on top -- `owner` (nullable),
+// `time_left`, `input_tick`, `ball`, and a wholesale `events` replacement
+// are exactly the fields that Rust module's own doc cross-checks against
+// this file's fixture. `matchSnapshotStateJson` is the read-back half, used
+// below to read the fixture's real ball position/second player id/
+// `time_left` before nudging it -- the same
+// `match_snapshot.restore(match_snapshot.capture(initial))` round trip the
+// Lua original performs on a plain table. Below builds a REAL
+// `WasmMatchSnapshot` through that entry point (never a fabricated one: the
+// overrides describe a legitimate state -- a fresh kickoff position with
+// one nudged tick and a plausible shot event -- not an invented shortcut
+// around what the simulation could reach), and drives a real
+// `RollbackEventsTimeline` exactly as `match_presentation.spec.ts` already
+// does, mirroring the Lua original's own two-timeline structure (one
+// standalone `timeline` to derive `added`/`derived` before the real
+// `rollback_validation.run` call, matching this file's own `rollbackEvents`
+// port through `newAudit`'s internal one).
 
 import { describe, expect, it } from "vitest";
-import { Vec2 } from "@gc/core";
+import { Vec2, type Result } from "@gc/core";
 import { combatFeedback as realCombatFeedback, type CombatEvent } from "@gc/presentation";
 import {
   consumeConfirmedLifecycle,
@@ -64,6 +75,8 @@ import {
   type ReplayPort as ScreenReplayPort,
   type RollbackWrappedLifecycleEvent,
 } from "@gc/screens";
+import { loadSimHost } from "@gc/wasm";
+import type { RollbackEventsTimeline as WasmRollbackEventsTimeline, SimHost, WasmMatchSnapshot } from "@gc/wasm";
 import { Audio, type CombatFeedbackPort } from "./audio.ts";
 import type { ObservedMatchState } from "./match_observer.ts";
 import {
@@ -78,10 +91,12 @@ import {
   type MatchTeam,
   type ReplayPort,
   type ReplaySampleState,
+  type RollbackApplyFailure,
   type RollbackConfirmedStateView,
   type RollbackEventDiff,
   type RollbackEventReplacement,
   type RollbackEventStep,
+  type RollbackEventStepInput,
   type RollbackEventsPort,
   type MatchSnapshotPort,
   type RollbackValidationPorts,
@@ -90,11 +105,206 @@ import {
   type RollbackWrappedEvent,
 } from "./rollback_validation.ts";
 
+// --- real `@gc/wasm` fixture for "derives reference identities..." --------
+// See this file's header for why this is now real rather than skipped.
+
+const WASM_FIXTURE = { home: "nebula", away: "orion", seed: 77, duration: 120, maxGoals: 99 } as const;
+
+/** `crate::match_state_bridge::match_state_to_json`'s shape -- only the fields this fixture reads. */
+interface WasmMatchStateJson {
+  readonly score: { readonly home: number; readonly away: number };
+  readonly time_left: number;
+  readonly owner?: number;
+  readonly ball: { readonly x: number; readonly y: number };
+  readonly players: readonly { readonly id: string; readonly team: MatchTeam; readonly is_keeper: boolean }[];
+}
+
+/** `crate::rollback_events_bridge::raw_match_event_to_json`'s shape -- only the fields this fixture writes. */
+interface RawMatchEventJson {
+  readonly kind: string;
+  readonly x: number;
+  readonly y: number;
+  readonly player?: string;
+}
+
+/** `crate::rollback_events_bridge::tick_output_to_json`'s shape -- what `RollbackEventsTimeline.apply` actually decodes (`tick_output_from_json`): score/time_left/finished sit at the TOP level, not nested under a `state` key the way the Lua original's own `output.state` table does. */
+interface RawTickOutputJson {
+  readonly tick: number;
+  readonly start_boundary: number;
+  readonly end_boundary: number;
+  readonly finished: boolean;
+  readonly score: { readonly home: number; readonly away: number };
+  readonly time_left: number;
+  readonly events: readonly RawMatchEventJson[];
+}
+
+/** `sim.match_snapshot`, real -- `TState` for the one case below that drives real `@gc/wasm`. `overridesJson` (see `match_snapshot_bridge.rs`'s doc) is carried on the state itself so `capture` can rebuild a byte-identical `WasmMatchSnapshot` on demand -- `matchSnapshotBuild` is deterministic for identical arguments, so this is a real reconstruction, not a cache. */
+interface WasmObservedState extends ObservedMatchState, ReplaySampleState {
+  readonly overridesJson?: string;
+}
+
+function toObservedState(json: WasmMatchStateJson, overridesJson?: string): WasmObservedState {
+  return {
+    players: json.players.map((p) => ({ id: p.id, team: p.team, is_keeper: p.is_keeper })),
+    events: [],
+    ...(json.owner !== undefined ? { owner: json.owner - 1 } : {}),
+    score: { home: json.score.home, away: json.score.away },
+    // Not part of `matchSnapshotStateJson`'s wire shape (see
+    // `match_state_bridge.rs`) -- unused by this file's one case, which
+    // supplies no `replay_boundary` trace rows, so `restore`'s result
+    // (`audit.replayState`) is built but never read.
+    input_tick: 0,
+    ball: new Vec2(json.ball.x, json.ball.y),
+    ...(overridesJson !== undefined ? { overridesJson } : {}),
+  };
+}
+
+function wasmMatchSnapshotPort(host: SimHost): MatchSnapshotPort<WasmObservedState, undefined, WasmMatchSnapshot> {
+  return {
+    capture: (state) =>
+      host.matchSnapshotBuild(
+        WASM_FIXTURE.home,
+        WASM_FIXTURE.away,
+        WASM_FIXTURE.seed,
+        WASM_FIXTURE.duration,
+        WASM_FIXTURE.maxGoals,
+        undefined,
+        state.overridesJson,
+      ),
+    restore: (snapshot) => toObservedState(JSON.parse(host.matchSnapshotStateJson(snapshot)) as WasmMatchStateJson),
+    numberBytes: (value) => value.toFixed(6),
+  };
+}
+
+/** `sim.rollback_events`, real -- mirrors `match_presentation.spec.ts`'s own `wasmRollbackEventsPort` adapter, narrowed to `rollback_validation.ts`'s `RollbackEventsPort` shape (`create` takes no `maxUnconfirmedTicks`; `apply` returns the decoded `Result` directly rather than a JSON string). */
+function wasmRollbackEventsPort(host: SimHost): RollbackEventsPort<WasmRollbackEventsTimeline, WasmMatchSnapshot> {
+  return {
+    create: (initialSnapshot) => host.RollbackEventsTimeline.create(initialSnapshot),
+    apply: (timeline, from, through, steps) => {
+      const outputsJson = JSON.stringify(steps.map((entry) => entry.output));
+      const snapshots = steps.map((entry) => entry.snapshot);
+      return JSON.parse(timeline.apply(from, through, outputsJson, snapshots)) as Result<
+        RollbackEventDiff,
+        RollbackApplyFailure
+      >;
+    },
+    confirm: (timeline, tick) => JSON.parse(timeline.confirm(tick)) as readonly RollbackEventStep[],
+  };
+}
+
+function buildWasmFixtureSnapshot(host: SimHost, overridesJson?: string): WasmMatchSnapshot {
+  return host.matchSnapshotBuild(
+    WASM_FIXTURE.home,
+    WASM_FIXTURE.away,
+    WASM_FIXTURE.seed,
+    WASM_FIXTURE.duration,
+    WASM_FIXTURE.maxGoals,
+    undefined,
+    overridesJson,
+  );
+}
+
 describe("rollback validation (cross-boundary integration)", () => {
-  // `RollbackEventsTimeline` (create/apply/confirm) is real now -- the
-  // remaining blocker is narrower: no way to build a `WasmMatchSnapshot` for
-  // this case's hand-specified game state. See this file's header.
-  it.skip("derives reference identities from raw campaign step inputs", () => {});
+  it("derives reference identities from raw campaign step inputs", () => {
+    const host = loadSimHost();
+
+    // `initial`: a fresh kickoff state with possession explicitly cleared --
+    // `new_state()` + `initial.owner = nil` in the Lua original.
+    const initialOverrides = JSON.stringify({ owner: null });
+    const initialSnapshotForInspection = buildWasmFixtureSnapshot(host, initialOverrides);
+    const initialJson = JSON.parse(
+      host.matchSnapshotStateJson(initialSnapshotForInspection),
+    ) as WasmMatchStateJson;
+    initialSnapshotForInspection.free();
+    const initial = toObservedState(initialJson, initialOverrides);
+
+    // `final`: `initial` with `owner = 2`, `input_tick` nudged, `time_left`
+    // nudged by one tick, and events replaced with a single shot by the
+    // second player at the ball's own (unmoved) position -- a legitimate
+    // state the simulation could reach (a shot taken from a stationary
+    // kickoff position), reproducing the Lua original's `final` table
+    // field-for-field.
+    const secondPlayer = initialJson.players[1];
+    if (secondPlayer === undefined) {
+      throw new Error("fixture roster must carry at least two players");
+    }
+    const finalTimeLeft = initialJson.time_left - 1 / 60;
+    const shotEvent: RawMatchEventJson = { kind: "shot", x: initialJson.ball.x, y: initialJson.ball.y, player: secondPlayer.id };
+    const finalOverrides = JSON.stringify({
+      owner: 2,
+      input_tick: 1,
+      time_left: finalTimeLeft,
+      events: [shotEvent],
+    });
+    const outputJson: RawTickOutputJson = {
+      tick: 0,
+      start_boundary: 0,
+      end_boundary: 1,
+      finished: false,
+      score: { home: 0, away: 0 },
+      time_left: finalTimeLeft,
+      events: [shotEvent],
+    };
+
+    // Precompute `derived`/`added` through a standalone timeline -- mirrors
+    // the Lua original's own separate `timeline`, built purely to derive the
+    // confirmed step before the real `rollback_validation.run` call below.
+    // A fresh `WasmMatchSnapshot` per use throughout this test: `apply`
+    // consumes its `snapshots` by value (`Vec<WasmMatchSnapshot>` on the
+    // Rust side), so the same handle can never back two separate `apply`
+    // calls, unlike the Lua original's plain (non-owned) table.
+    const precomputeInitialSnapshot = buildWasmFixtureSnapshot(host, initialOverrides);
+    const precomputeTimeline = host.RollbackEventsTimeline.create(precomputeInitialSnapshot);
+    precomputeInitialSnapshot.free();
+    const precomputeFinalSnapshot = buildWasmFixtureSnapshot(host, finalOverrides);
+    const precomputeApplied = JSON.parse(
+      precomputeTimeline.apply(0, 0, JSON.stringify([outputJson]), [precomputeFinalSnapshot]),
+    ) as Result<RollbackEventDiff, RollbackApplyFailure>;
+    if (!precomputeApplied.ok) {
+      throw new Error(precomputeApplied.error.message);
+    }
+    const precomputeConfirmed = JSON.parse(precomputeTimeline.confirm(0)) as readonly RollbackEventStep[];
+    const derived = precomputeConfirmed[0];
+    if (derived === undefined) {
+      throw new Error("precompute timeline did not confirm the supplied step");
+    }
+    const added: readonly RollbackWrappedEvent[] = [...derived.match_events, ...derived.lifecycle_events];
+
+    const supplied: RollbackEventStepInput<WasmMatchSnapshot> = {
+      output: outputJson,
+      snapshot: buildWasmFixtureSnapshot(host, finalOverrides),
+    };
+
+    const ports: RollbackValidationPorts<WasmObservedState, undefined, WasmMatchSnapshot, WasmRollbackEventsTimeline> = {
+      matchSnapshot: wasmMatchSnapshotPort(host),
+      rollbackEvents: wasmRollbackEventsPort(host),
+      effects: trackingEffectsPort(),
+      replay: recordingReplayPort(8),
+      audio: new Audio(REAL_COMBAT_FEEDBACK),
+      combatFeedback: REAL_COMBAT_FEEDBACK,
+    };
+
+    const report = run(
+      ports,
+      initial,
+      [
+        { kind: "reference_step", step: supplied },
+        { kind: "impaired_diff", diff: diff(added) },
+        { kind: "confirmed", step: derived },
+      ],
+      {
+        home_team_id: WASM_FIXTURE.home,
+        away_team_id: WASM_FIXTURE.away,
+        seed: 77,
+        required_scenarios: ["possession", "shot"],
+      },
+    );
+
+    expect(report.passed, report.errors.join("; ")).toBe(true);
+    expect(report.events.reference_unique).toBe(1);
+    expect(report.events.impaired_unique).toBe(1);
+    expect(report.consumers.audio_cue_count).toBe(1);
+  });
 });
 
 type FakeState = ObservedMatchState & ReplaySampleState;

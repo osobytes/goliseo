@@ -48,8 +48,39 @@
 // `transition`, `transition_windows`, `controlled?`, `owner?`, `ball`,
 // `ball_vel`, `ball_z`, `ball_vz`, `players`, `events`) -- this module's own
 // `MatchState`/`MatchPlayer` interfaces, verbatim, per `@gc/wasm`'s own doc
-// on those methods. No pose id anywhere in that shape; the blocker above is
-// unchanged.
+// on those methods.
+//
+// # Re-audited again: the standalone export landed, but this package cannot
+// reach it
+//
+// The paragraph above is now stale on its own terms: `@gc/wasm` DOES expose
+// standalone pose selection now -- `crates/gc-wasm/src/player_pose_bridge.rs`'s
+// `playerPoseSelect` takes exactly this module's own `MatchPlayer` JSON shape
+// (its doc cross-checks `match_state_bridge.rs`'s encoder field-for-field,
+// the same shape this file's own `makePlayers`/`snapshotState` fixture
+// already builds) plus the same optional combat/keeper/outfield context
+// `player_pose::select` itself takes, and returns `{id, priority, source}` --
+// exactly what the Lua original's `player_pose.select(p, nil, ...)` call
+// needs. Confirmed reachable and correct in isolation: `node -e` against
+// `packages/wasm/dist/pkg/gc_wasm.cjs` resolves `playerPoseSelect` as a
+// function.
+//
+// What is NOT true, checked directly rather than assumed: `@gc/render`'s own
+// `package.json` declares no dependency on `@gc/wasm` at all (unlike
+// `@gc/screens`, which lists it under `devDependencies` for exactly this
+// "specs may import it directly" reason -- v2/README.md's package layout).
+// `packages/render/node_modules/@gc/` only symlinks `core`/`presentation`;
+// `require.resolve("@gc/wasm", { paths: [...] })` from inside this package
+// fails outright (confirmed by running it, not inferred). Reaching
+// `playerPoseSelect` from this file therefore needs a `package.json` edit
+// (adding `@gc/wasm` to `devDependencies`, mirroring `@gc/screens`) followed
+// by a workspace install to materialize the symlink -- both outside a single
+// task batch scoped to `replay.ts`/`replay.spec.ts` alone, and the install
+// step outside what an automated pass here may run at all. So the blocker
+// this test now names is a one-line, low-risk DEPENDENCY-GRAPH gap for
+// whoever owns this package's `package.json` and can run the install step --
+// not a missing Rust/wasm surface, which is what every prior pass here
+// assumed. Left `it.skip`, for this third, narrower, and different reason.
 
 import { describe, expect, it } from "vitest";
 import { Vec2 } from "@gc/core";
@@ -322,16 +353,21 @@ describe("goal replay buffer", () => {
   });
 
   // pitch.draw hands buffered replay players straight to player_pose.select
-  // in the Lua original -- see the file header for why this is skipped
-  // rather than ported as written.
+  // in the Lua original -- see the file header (the "Re-audited again"
+  // section) for why this is still skipped rather than ported as written.
   it.skip(
     "carries every pose input through capture, celebration, and playback " +
-      "-- player_pose::select now lives permanently in crates/gc-render " +
-      "(Rust), not @gc/render, and @gc/wasm exposes pose selection only as " +
-      "part of a live SimSession's buildRenderFrame, not standalone over an " +
-      "arbitrary buffered snapshot. Unblocks on a new wasm export for " +
-      "standalone pose selection, or on replay capturing already-resolved " +
-      "pose ids instead of raw MatchPlayer state.",
+      "-- @gc/wasm's playerPoseSelect (crates/gc-wasm/src/player_pose_bridge.rs) " +
+      "is now exactly the standalone entry point this case needs, confirmed " +
+      "reachable and correct in isolation. The remaining blocker is narrower " +
+      "and different: @gc/render's own package.json declares no dependency " +
+      "on @gc/wasm at all (unlike @gc/screens, which does, for exactly this " +
+      "'specs may import it directly' reason) -- packages/render/node_modules/@gc/ " +
+      "has no wasm symlink, and require.resolve('@gc/wasm', ...) fails from " +
+      "inside this package (confirmed by running it). Unblocks on adding " +
+      "@gc/wasm to this package's devDependencies plus a workspace install " +
+      "to materialize the symlink -- a package.json edit and an install step, " +
+      "neither of which this file's own port can make.",
     () => {
       // Intentionally not ported; see skip reason above and the file header.
     },
