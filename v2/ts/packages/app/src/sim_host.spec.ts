@@ -139,9 +139,112 @@ describe("createSimHost", () => {
     }
   });
 
+  // `crates/gc-wasm/src/session.rs`'s `Session::new` grew `home_formation`/
+  // `tactic`/`away_tactic`/`home_starter_ids` as its sixth/eighth/ninth/
+  // tenth optional parameters this wave, and `SimHostOptions` (this file)
+  // now threads all four through -- `packages/wasm/src/types.ts`'s
+  // `SimSessionConstructor` declares them directly (confirmed by reading
+  // `types.ts` and the regenerated `dist/pkg/gc_wasm.d.cts` after
+  // rebuilding), so no local widening cast is needed here either.
+  // `matchStateJson()` (also new this wave) is what makes this provable at
+  // all: `press` is set at construction, from the tactic, with no stepping
+  // required -- `crates/gc-sim/src/match.rs`'s `new` sets
+  // `press: {home: home_tactic.press, away: away_tactic.press}` directly.
+  it("threads tactic/awayTactic/homeFormation/homeStarterIds to the real wasm session, observable via matchStateJson", () => {
+    const STARTERS = ["ozzo", "veil_nyx", "rok_tann", "mika_olu", "sela_dwin"];
+
+    const balanced = createSimHost(HOME, AWAY, 7, 20, 3);
+    try {
+      const raw = balanced.matchStateJson?.();
+      if (raw === undefined) {
+        throw new Error("expected matchStateJson() on a WasmSimHost");
+      }
+      const state = JSON.parse(raw) as { readonly press: { readonly home: number; readonly away: number } };
+      // Omitted tactic/awayTactic reproduce the exact prior behavior:
+      // "balanced" on both sides.
+      expect(state.press.home).toBe(1);
+      expect(state.press.away).toBe(1);
+    } finally {
+      balanced.dispose();
+    }
+
+    const pressHigh = createSimHost(HOME, AWAY, 7, 20, 3, {
+      homeFormation: "1-2-1",
+      tactic: "press_high",
+      awayTactic: "press_high",
+      homeStarterIds: STARTERS,
+    });
+    try {
+      const raw = pressHigh.matchStateJson?.();
+      if (raw === undefined) {
+        throw new Error("expected matchStateJson() on a WasmSimHost");
+      }
+      const state = JSON.parse(raw) as {
+        readonly players: readonly { readonly id: string }[];
+        readonly press: { readonly home: number; readonly away: number };
+      };
+      expect(state.press.home).toBe(2);
+      expect(state.press.away).toBe(2);
+      expect(state.players[0]?.id).toBe("ozzo");
+      expect(state.players[1]?.id).toBe("veil_nyx");
+    } finally {
+      pressHigh.dispose();
+    }
+  });
+
+  it("rejects an unknown tactic id and a malformed starting XI, without disturbing later construction", () => {
+    expect(() => createSimHost(HOME, AWAY, 7, 20, 3, { tactic: "no-such-tactic" })).toThrow();
+    expect(() => createSimHost(HOME, AWAY, 7, 20, 3, { homeStarterIds: ["not-a-keeper", "veil_nyx", "rok_tann", "mika_olu", "sela_dwin"] })).toThrow();
+    expect(() =>
+      createSimHost(HOME, AWAY, 7, 20, 3, {
+        // A duplicate id.
+        homeStarterIds: ["ozzo", "veil_nyx", "veil_nyx", "mika_olu", "sela_dwin"],
+      }),
+    ).toThrow();
+
+    // A well-formed construction afterward still succeeds.
+    const host = createSimHost(HOME, AWAY, 7, 20, 3, { tactic: "press_high" });
+    host.dispose();
+  });
+
   it("rejects an out-of-range localSlot", () => {
     expect(() => createSimHost(HOME, AWAY, 7, 20, 3, { localSlot: 0 })).toThrow();
     expect(() => createSimHost(HOME, AWAY, 7, 20, 3, { localSlot: 9 })).toThrow();
+  });
+
+  // `SimSession.combatEventsJson()` (new this wave, `crates/gc-wasm/src/
+  // session.rs`) is the BASE (non-rollback) counterpart of what
+  // `MatchDriverBridge`/`OnlineCombatPhasesBridge` already exposed --
+  // "[]" with no combat companion or before the first `step`, replaced (not
+  // accumulated) by every step after. This is a threading/shape smoke test,
+  // the same narrower claim `sim_host.spec.ts`'s own `combatEnabled` test
+  // above settles for: neither `SimSession` nor `SimHostPort` has any
+  // getter proving a specific combat event actually fired on a given tick,
+  // so this only proves the surface reaches this port and returns valid
+  // JSON, not a specific event's content.
+  it("exposes combatEventsJson(), replaced not accumulated, empty with no combat companion", () => {
+    const withoutCombat = createSimHost(HOME, AWAY, 7, 20, 3);
+    try {
+      expect(withoutCombat.combatEventsJson?.()).toBe("[]");
+      withoutCombat.step(neutralSample());
+      // No combat companion at all -- stays "[]" regardless of stepping.
+      expect(withoutCombat.combatEventsJson?.()).toBe("[]");
+    } finally {
+      withoutCombat.dispose();
+    }
+
+    const withCombat = createSimHost(HOME, AWAY, 7, 20, 3, { combatEnabled: true });
+    try {
+      // Before the first step, still "[]" -- see this method's doc.
+      expect(withCombat.combatEventsJson?.()).toBe("[]");
+      withCombat.step(neutralSample());
+      const raw = withCombat.combatEventsJson?.();
+      expect(raw).toBeDefined();
+      expect(() => JSON.parse(raw as string)).not.toThrow();
+      expect(Array.isArray(JSON.parse(raw as string))).toBe(true);
+    } finally {
+      withCombat.dispose();
+    }
   });
 
   it("dispose() is safe to call twice, and use-after-dispose fails loudly", () => {

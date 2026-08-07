@@ -148,12 +148,23 @@ async function main(): Promise<void> {
         request.seed ?? Math.floor(Date.now() % 1_000_000),
         MATCH_DURATION_SECONDS,
         MATCH_MAX_GOALS,
-        // Without this the combat opt-in stops here: `browser_sim_host.ts`
-        // accepts `combatEnabled` and forwards it to the wasm `Session`, but
-        // this is the only real call site, and it used to pass five
-        // positional arguments and no options at all -- so a request asking
-        // for combat reached a session built without it.
-        { combatEnabled: request.combat_enabled },
+        // `browser_sim_host.ts` now also accepts `homeFormation`/`tactic`/
+        // `homeStarterIds` (`crates/gc-wasm/src/session.rs`'s `Session::new`
+        // grew all three this wave), and this is the only real call site --
+        // before this, `combatEnabled` was the only field of a request that
+        // reached a real session at all. `request.formation_id`/`tactic_id`/
+        // `home_starter_ids` were being silently dropped here: a player's
+        // squad-select/formation/tactic choices never reached the actual
+        // simulated match, which always ran the home team's fixed authored
+        // roster at "balanced". `awayTactic` is intentionally omitted --
+        // `ProductMatchRequest` carries no away-side tactic field, matching
+        // the Lua original (`game.match_contract`'s own request shape).
+        {
+          combatEnabled: request.combat_enabled,
+          homeFormation: request.formation_id,
+          tactic: request.tactic_id,
+          homeStarterIds: request.home_starter_ids,
+        },
       ),
     renderer,
     keyboard,

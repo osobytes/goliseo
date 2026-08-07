@@ -9,19 +9,20 @@
 // `RealMatchScreen` can be driven end to end here, against a hand-written
 // `FakeSimHost` (`test_support/fixtures.ts`, mirroring `@gc/screens`'s own
 // `match_screen.spec.ts` `FakeSimHost`), with no real wasm build or live GL
-// context needed. Three of the four originally-skipped cases below are
-// therefore no longer blocked (the combat case joined the other two this
-// wave, once `crates/gc-wasm/src/session.rs`'s `Session::new`/`step` grew a
-// real combat surface -- see that `it`'s own comment); see each `it`'s own
-// comment. The remaining one stays genuinely blocked -- not because
-// `real_match.ts`/`match.ts` don't exist, but because the SHAPE they expose
-// does not carry what that assertion needs (see its `it.skip` comment for
-// exactly what and why).
+// context needed. All four originally-skipped cases below are now unblocked
+// (the combat case joined two others in an earlier wave once
+// `crates/gc-wasm/src/session.rs`'s `Session::new`/`step` grew a real combat
+// surface; the roster/formation/tactic/seed case is unblocked this wave, now
+// that the same constructor also grew `tactic`/`away_tactic`/
+// `home_starter_ids` -- see that `it`'s own comment for what it proves and
+// at which layer, since `RealMatchScreenPort.state` itself still cannot
+// carry `players`/`press`); see each `it`'s own comment.
 
 import { describe, expect, it } from "vitest";
 import { bootstrap } from "./bootstrap.ts";
 import { createRealMatchFactory } from "./real_match_factory.ts";
 import { matchContract } from "./match_contract.ts";
+import { createSimHost } from "./sim_host.ts";
 import { APP_CONTENT, MATCH_CONTRACT_CONTENT, NEBULA, fakeHostFactory, fakeKeyboard, noopRenderPort } from "./test_support/fixtures.ts";
 
 describe("bootstrap", () => {
@@ -62,36 +63,98 @@ describe("real match adapter", () => {
   // ported in match_adapter.spec.ts, not duplicated here -- see that file's
   // header.
 
-  // Needs `screen.match.state.players[1].id`/`.press.home` -- a live
-  // `sim.match` state table the Lua original reaches into directly.
+  // Re-audited a third time this wave, against current code rather than the
+  // prior pass's comment. `Session::new`'s wasm binding
+  // (`crates/gc-wasm/src/session.rs`) now takes `home_formation`/`tactic`/
+  // `away_tactic`/`home_starter_ids` as its sixth/eighth/ninth/tenth
+  // optional parameters (confirmed by reading the regenerated
+  // `dist/pkg/gc_wasm.d.cts` after rebuilding, not assumed from a stale
+  // artifact -- `types.ts`'s `SimSessionConstructor` matches it field for
+  // field), and `sim_host.ts`'s `SimHostOptions` (this package's own file)
+  // now threads all four through to the real constructor. That closes the
+  // stated blocker: a request's `tactic_id`/`home_starter_ids` DO now reach
+  // a real simulated match's `press`/roster.
   //
-  // Re-audited this wave, now that `press` is on the wire: `@gc/wasm`'s
-  // `SimSession` grew `matchStateJson()` (`crates/gc-wasm/src/session.rs`'s
-  // `Session::match_state_json`, mirrored in `packages/wasm/src/types.ts`),
-  // which DOES carry `press` -- confirmed by reading the current generated
-  // `dist/pkg/gc_wasm.d.cts` and `types.ts` directly, not assumed stale.
-  // That closes the half of the previous blocker this note named.
-  //
-  // It does not unblock this case, for a new, confirmed-by-reading-the-
-  // Rust reason: `Session::new`'s wasm binding (`crates/gc-wasm/src/
-  // session.rs`, lines ~226-268) has no parameter for either "tactic" or a
-  // custom starting roster at all. It always calls `sim_match::new` with
-  // `tactic: None, away_tactic: None` (defaults to `tactics::get("balanced")`,
-  // `crates/gc-sim/src/match.rs`'s `NewMatchOptions` doc) and always uses
-  // `home.roster`/`away.roster` -- the team's fixed authored five, never a
-  // caller-supplied starting XI. So a request's `tactic_id` (e.g.
-  // `"press_high"`) and `home_starter_ids` never reach a real simulated
-  // match's `press`/roster at all, regardless of how this package wires
-  // `matchStateJson()` in -- every real `Session` always simulates
-  // "balanced" with the team's default roster. Proving "the request's
-  // tactic reaches `press.home == 2`" is therefore not possible from this
-  // package today; it needs `Session::new` to grow `tactic`/`away_tactic`/
-  // roster-override parameters, which is `crates/gc-wasm` (out of this
-  // batch's file ownership, and a Rust-crate edit besides). `formation`
-  // (`home_formation`) and `seed` DO already reach a real session --
-  // this is not "nothing is wired," just narrower than the Lua original's
-  // four-field assertion. Still genuinely blocked, now for this reason.
-  it.skip("applies request roster, formation, tactic, and seed", () => {});
+  // What is STILL true, and still shapes how this case is written:
+  // `RealMatchScreenPort.state` (`real_match.ts`, `@gc/screens`, out of
+  // this batch's file ownership) stays deliberately narrowed to
+  // `{time_left, score}` -- there is no route from an actual constructed
+  // `RealMatchScreen` to `players`/`press` the way the Lua original's
+  // `screen.match.state.players[1].id` reached in. So this proves the
+  // claim at the layer this package DOES own and control end to end: the
+  // exact parameters `real_match_factory.ts`'s injected `deps.createHost`
+  // closure receives from a `ProductMatchRequest` -- the same shape
+  // `browser_main.ts`'s real call site now forwards (see that file's
+  // `createHost` closure; it used to silently drop `formation_id`/
+  // `tactic_id`/`home_starter_ids` entirely, forwarding only
+  // `combat_enabled`) -- reach a real `createSimHost`-built session's
+  // `matchStateJson()`/`snapshotHash()` correctly. `players[0]`/`players[1]`
+  // and `press.home` mirror the Lua original's `players[1]`/`players[2]`/
+  // `press.home` one-based-to-zero-based; `snapshotHash` stands in for the
+  // Lua original's `result.seed` check (that one is downstream of
+  // `@gc/screens`'s own result-building, out of scope here) by proving
+  // `seed` reaches the session deterministically.
+  it("applies request roster, formation, tactic, and seed", () => {
+    const STARTERS = ["ozzo", "veil_nyx", "rok_tann", "mika_olu", "sela_dwin"];
+    const requested = matchContract.newRequest(MATCH_CONTRACT_CONTENT, {
+      home_team_id: "nebula",
+      away_team_id: "orion",
+      home_starter_ids: STARTERS,
+      formation_id: "1-2-1",
+      tactic_id: "press_high",
+      seed: 77,
+    });
+    if (!requested.ok) {
+      throw new Error(requested.error);
+    }
+    const request = requested.value;
+
+    // The exact parameters `real_match_factory.ts`'s injected `createHost`
+    // closure receives from `request`, threaded the same way
+    // `browser_main.ts`'s real call site now does.
+    const host = createSimHost(request.home_team_id, request.away_team_id, request.seed ?? 0, 20, 3, {
+      homeFormation: request.formation_id,
+      tactic: request.tactic_id,
+      homeStarterIds: request.home_starter_ids,
+    });
+    try {
+      const raw = host.matchStateJson?.();
+      if (raw === undefined) {
+        throw new Error("expected matchStateJson() on a WasmSimHost");
+      }
+      const state = JSON.parse(raw) as {
+        readonly players: readonly { readonly id: string }[];
+        readonly press: { readonly home: number; readonly away: number };
+      };
+      expect(state.players[0]?.id).toBe("ozzo");
+      expect(state.players[1]?.id).toBe("veil_nyx");
+      expect(state.press.home).toBe(2); // press_high
+
+      const sameSeed = createSimHost(request.home_team_id, request.away_team_id, request.seed ?? 0, 20, 3, {
+        homeFormation: request.formation_id,
+        tactic: request.tactic_id,
+        homeStarterIds: request.home_starter_ids,
+      });
+      try {
+        expect(sameSeed.snapshotHash?.()).toBe(host.snapshotHash?.());
+      } finally {
+        sameSeed.dispose();
+      }
+
+      const differentSeed = createSimHost(request.home_team_id, request.away_team_id, (request.seed ?? 0) + 1, 20, 3, {
+        homeFormation: request.formation_id,
+        tactic: request.tactic_id,
+        homeStarterIds: request.home_starter_ids,
+      });
+      try {
+        expect(differentSeed.snapshotHash?.()).not.toBe(host.snapshotHash?.());
+      } finally {
+        differentSeed.dispose();
+      }
+    } finally {
+      host.dispose();
+    }
+  });
 
   it("is the adapter selected by the default bootstrap, and routes a completed match to result", () => {
     const { createHost, hosts } = fakeHostFactory();

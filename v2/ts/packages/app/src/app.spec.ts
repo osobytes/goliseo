@@ -8,31 +8,46 @@
 // (a declared dependency here, per package.json) both exist -- the stated
 // blocker as originally written is stale.
 //
-// Re-audited a third time this batch, against current code rather than the
-// prior pass's comment: `@gc/wasm`'s `Session::step`
-// (`crates/gc-wasm/src/session.rs`) no longer hard-codes `combat_state:
-// None` -- `Session::new` gained a `combat_enabled` parameter and `step`
-// now threads the resulting companion through every tick (this wave; see
-// `bootstrap.spec.ts`'s now-ported "constructs combat only for the explicit
-// post-showcase request", which exercises exactly that flag reaching
-// `MatchScreenOptions.combat_enabled` via `real_match_factory.ts`). So the
-// PREVIOUS blocker named here is stale.
+// Re-audited a fourth time this wave, against the Lua original's actual test
+// body (`spec/game/app_flow_spec.lua`'s "applies live screen-shake changes
+// to a paused match before resume") rather than trusting the previous
+// passes' framing of it. That framing was wrong in a way worth naming
+// plainly: it assumed `combat_feedback.diagnostics(...).reduced_motion`
+// summarizes per-tick combat EVENTS, and therefore that a per-tick combat
+// event surface (`SimSession.combatEventsJson`, which landed this very wave
+// -- `crates/gc-wasm/src/session.rs`, mirrored in
+// `packages/wasm/src/types.ts`, and now threaded through this package's own
+// `sim_host.ts`) was the missing piece.
 //
-// This case needs strictly more than that, though: `combat_feedback.diagnostics`
-// summarizes per-tick combat EVENTS (`_combat_feedback`'s ported
-// `combatFeedback.confirm`/`link` calls, `match.ts`'s own rollback-only
-// `consumeConfirmedStep`), not merely combat's construction-time presence.
-// Two gaps remain, both still genuinely out of reach this wave:
-// (1) neither `@gc/wasm`'s `SimSession` nor `gc_render::frame::RenderFrame`
-// exposes ANY per-tick combat event/state getter for the BASE (non-rollback)
-// session this test's custom adapter would drive -- confirmed by reading
-// `session.rs` and `frame.rs` directly, not inferred; and (2) `match.ts`'s
-// own BASE-mode `update()` has no code path that consumes combat events at
-// all (unlike its rollback branch's `consumeConfirmedStep`, which only ever
-// receives ROLLBACK-confirmed steps). Both would need to land before this
-// case's `_combat_feedback.diagnostics` assertion could mean anything here.
-// Ported as `it.skip` below with the CURRENT, narrower blocker named; every
-// other case in this file drives the *fake* match adapter (`App`'s
+// Reading `combat_feedback.lua`/`@gc/presentation`'s ported `combatFeedback`
+// module directly shows that is not what `reduced_motion` is.
+// `reduced_motion` is set by `feedback.configure(state, reduced_motion,
+// ...)`, driven by the `screen_shake` SETTING (`default_reduced_motion =
+// not settings.screen_shake`) -- not by anything event-derived at all. The
+// Lua test never steps the match or feeds it a single combat event; it
+// pauses immediately after kickoff, flips the `screen_shake` settings
+// toggle, and checks that `_combat_feedback.reduced_motion` flipped with
+// it. So `combatEventsJson` is orthogonal to this test's real requirement --
+// consuming it here would not move this case an inch closer to passing.
+//
+// The actual, current blocker, confirmed by reading `@gc/screens`'s
+// `match.ts` directly: `MatchScreenAsRealMatchScreen.applySettings`/
+// `MatchScreenAsOnlineMatchScreen.applySettings` are both explicit no-ops
+// ("Settings ... are not wired into `MatchScreen` this milestone -- no
+// ported module owns them yet"), and the BASE (non-rollback, non-online)
+// `MatchScreen` never constructs or stores a `combat_feedback` state at all
+// outside rollback mode (`combat_feedback`/`combatFeedback.new()` only
+// exist on `MatchRollbackConsumerState`, built by
+// `newMatchRollbackConsumerState`, which a `"playtest"`/`"product"`-profile
+// screen never touches). So there is no route from a settings change to any
+// combat-feedback diagnostic on the screen this test's custom adapter would
+// construct, full stop -- not a narrower "per-tick event" gap, a
+// "the settings-to-presentation wire does not exist yet" one. That is
+// `@gc/screens`'s `match.ts` to build (out of this batch's file ownership;
+// `app.ts`, which would call `applySettings`, is also out of this batch's
+// file ownership). Still genuinely blocked, now for the reason the Lua test
+// actually exercises rather than the one a prior pass's comment guessed at.
+// Every other case in this file drives the *fake* match adapter (`App`'s
 // default), which needs neither.
 
 import { describe, expect, it } from "vitest";

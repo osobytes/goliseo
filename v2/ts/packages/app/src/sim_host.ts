@@ -99,6 +99,42 @@ export interface SimHostPort {
   roster(): RenderFrameRoster;
   /** Ticks simulated so far. */
   tick(): number;
+  /**
+   * This session's raw simulation state, as JSON -- `SimSession.matchStateJson`'s
+   * shape (`crates/gc-wasm/src/session.rs`'s `Session::match_state_json`),
+   * including `press` (`{home, away}`, tactic-derived chaser count). NOT
+   * part of `@gc/screens`'s own `SimHostPort` (that package's `match.ts`
+   * reads `MatchScreenPorts.matchState` for this instead, a separately
+   * injected port -- see that file's doc) -- declared here because this
+   * package's own tests (`bootstrap.spec.ts`, `flow.spec.ts`) need to prove
+   * a request's `tactic`/`home_starter_ids` reached a REAL simulated
+   * match's `press`/roster, and `RealMatchScreenPort.state`'s deliberately
+   * narrow `{time_left, score}` shape has no route there. Optional so any
+   * existing `SimHostPort` implementation that predates this method (there
+   * are none besides {@link WasmSimHost} today, but the port is a public
+   * contract) stays valid without it.
+   */
+  matchStateJson?(): string;
+  /**
+   * This session's most recently stepped tick's combat events, as a JSON
+   * array -- `SimSession.combatEventsJson`'s shape. `"[]"` with no combat
+   * companion ({@link SimHostOptions.combatEnabled} unset/`false`) or
+   * before the first {@link SimHostPort.step} call; replaced, not
+   * accumulated, by every step. See {@link SimHostPort.matchStateJson}'s
+   * doc for why this is declared here rather than on `@gc/screens`'s own
+   * `SimHostPort`.
+   */
+  combatEventsJson?(): string;
+  /**
+   * This session's current canonical snapshot hash -- `SimSession.snapshotHash`.
+   * Not newly landed this wave (unlike {@link SimHostPort.matchStateJson}/
+   * {@link SimHostPort.combatEventsJson}), but not previously exposed
+   * through this port either; declared here so a caller can prove a `seed`
+   * option actually reached the underlying session deterministically (two
+   * sessions built with identical parameters, including `seed`, hash
+   * identically; a differing `seed` hashes differently).
+   */
+  snapshotHash?(): string;
   /** Release the wasm handle. Safe to call twice. */
   dispose(): void;
 }
@@ -159,6 +195,41 @@ export interface SimHostOptions {
    * crosses to the real wasm constructor with no local type widening.
    */
   readonly combatEnabled?: boolean;
+  /**
+   * Mirrors `Session::new`'s `home_formation` parameter (sixth,
+   * `packages/wasm/src/types.ts`'s `SimSessionConstructor`): overrides the
+   * home team's authored default formation. Omit to keep the team's own
+   * default -- unchanged from this constructor's behavior before this
+   * option existed (it always passed `undefined` here).
+   */
+  readonly homeFormation?: string;
+  /**
+   * Mirrors `Session::new`'s `tactic` parameter (eighth): an authored
+   * `gc_data::tactics::ALL` id for the HOME side (e.g. `"press_high"`).
+   * Omit to keep `"balanced"`, the authored default -- exactly this
+   * constructor's only behavior before this option existed. Reaches
+   * `sim_match::NewMatchOptions.tactic` directly, which is what
+   * `MatchState.press.home` is derived from at construction (no stepping
+   * required to observe it).
+   */
+  readonly tactic?: string;
+  /**
+   * Mirrors `Session::new`'s `away_tactic` parameter (ninth): the AWAY
+   * side's counterpart of {@link SimHostOptions.tactic}. Omit to keep
+   * `"balanced"`.
+   */
+  readonly awayTactic?: string;
+  /**
+   * Mirrors `Session::new`'s `home_starter_ids` parameter (tenth): five
+   * player ids overriding the home team's starting XI, keeper first, the
+   * same shape `gc_data::teams::TeamData::roster` itself uses. Omit to keep
+   * `home.roster`, the authored default -- exactly this constructor's only
+   * behavior before this option existed. Validated wasm-side (length,
+   * duplicates, exactly one keeper at index 0, no overlap with the away
+   * roster); a violation throws (a string), same as an unknown `tactic`/
+   * `awayTactic` id.
+   */
+  readonly homeStarterIds?: readonly string[];
 }
 
 class WasmSimHost implements SimHostPort {
@@ -190,8 +261,11 @@ class WasmSimHost implements SimHostPort {
       seed,
       durationSeconds,
       maxGoals,
-      undefined,
+      options.homeFormation,
       options.combatEnabled,
+      options.tactic,
+      options.awayTactic,
+      options.homeStarterIds !== undefined ? [...options.homeStarterIds] : undefined,
     );
     this.clock = new this.host.FixedClock();
   }
@@ -255,6 +329,21 @@ class WasmSimHost implements SimHostPort {
   tick(): number {
     this.assertLive();
     return this.session.inputTick;
+  }
+
+  matchStateJson(): string {
+    this.assertLive();
+    return this.session.matchStateJson();
+  }
+
+  combatEventsJson(): string {
+    this.assertLive();
+    return this.session.combatEventsJson();
+  }
+
+  snapshotHash(): string {
+    this.assertLive();
+    return this.session.snapshotHash();
   }
 
   dispose(): void {

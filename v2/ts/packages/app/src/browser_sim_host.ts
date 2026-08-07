@@ -74,6 +74,24 @@ export interface BrowserSimHostOptions {
    * session.rs`'s `Session::new`; confirmed present in the regenerated
    * `dist/pkg-web/gc_wasm.d.ts` by reading it directly after rebuilding). */
   readonly combatEnabled?: boolean;
+  /** See `sim_host.ts`'s `SimHostOptions.homeFormation` -- same default, same
+   * meaning, forwarded to the browser-target `gcWasmWeb.Session` constructor's
+   * sixth, optional `home_formation` parameter (confirmed present in the
+   * regenerated `dist/pkg-web/gc_wasm.d.ts`). */
+  readonly homeFormation?: string;
+  /** See `sim_host.ts`'s `SimHostOptions.tactic` -- same default, same
+   * meaning, forwarded to the browser-target `gcWasmWeb.Session` constructor's
+   * eighth, optional `tactic` parameter (confirmed present in the
+   * regenerated `dist/pkg-web/gc_wasm.d.ts`). */
+  readonly tactic?: string;
+  /** See `sim_host.ts`'s `SimHostOptions.awayTactic` -- same default, same
+   * meaning, forwarded to the browser-target `gcWasmWeb.Session` constructor's
+   * ninth, optional `away_tactic` parameter. */
+  readonly awayTactic?: string;
+  /** See `sim_host.ts`'s `SimHostOptions.homeStarterIds` -- same default,
+   * same meaning, forwarded to the browser-target `gcWasmWeb.Session`
+   * constructor's tenth, optional `home_starter_ids` parameter. */
+  readonly homeStarterIds?: readonly string[];
 }
 
 /**
@@ -119,8 +137,11 @@ class BrowserWasmSimHost implements SimHostPort {
       seed,
       durationSeconds,
       maxGoals,
-      undefined,
+      options.homeFormation,
       options.combatEnabled,
+      options.tactic,
+      options.awayTactic,
+      options.homeStarterIds !== undefined ? [...options.homeStarterIds] : undefined,
     );
     this.clock = new gcWasmWeb.FixedClock();
   }

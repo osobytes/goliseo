@@ -7,41 +7,43 @@
 // constructed real match screen would actually expose through this port's
 // `MatchScreenFactory`) is deliberately narrowed to `{time_left, score}` --
 // no `players`/`press` fields at all (see `bootstrap.spec.ts`'s identically
-// blocked "applies request roster, formation, tactic, and seed" for the same
+// shaped "applies request roster, formation, tactic, and seed" for the same
 // reason, spelled out there). So this is not a stale "not yet ported"
 // blocker -- the module exists, its published contract just does not carry
-// what these two assertions need.
+// what these two assertions need, and that stays true (`@gc/screens` is out
+// of this batch's file ownership).
 //
-// Re-audited this wave, now that `press` is on the wire: `@gc/wasm`'s
-// `SimSession` grew `matchStateJson()` (`crates/gc-wasm/src/session.rs`,
-// mirrored in `packages/wasm/src/types.ts`), which does carry `press` --
-// so "not exposed by `SimSession` at all" (the previous version of this
-// note) is stale. What is NOT stale, confirmed by reading
-// `crates/gc-wasm/src/session.rs`'s `Session::new` directly (~line 226):
-// it has no `tactic`/`away_tactic` parameter and always builds the match
-// with `tactic: None` (defaults to `tactics::get("balanced")`, per
-// `crates/gc-sim/src/match.rs`'s `NewMatchOptions` doc), and always uses
-// each team's fixed authored roster, never a caller-supplied starting XI.
-// So a real session driven by this package's own `real_match_factory.ts`
-// can never simulate "press_high" -- it always simulates "balanced",
-// regardless of what `Flow` (or `real_match_factory.ts`) passes along as
-// `tactic_id`. `press.home == 2` (a `press_high`-derived value) and a
-// ten-player roster reflecting `home_starter_ids` are therefore still
-// unreachable from this package, now because `Session::new`'s wasm binding
-// (`crates/gc-wasm`, a Rust crate, out of this batch's file ownership) has
-// no parameter to carry either one through -- not because `press` itself
-// is unexposed. Still genuinely blocked, now for that reason. The walk
-// itself (Squad -> Formation -> Tactic, carrying the formation/tactic
-// choice) is ported faithfully below and verified against the injected
-// `MatchScreenFactory` receiving the exact `{formation: "1-1-2", tactic:
-// "press_high"}` choice the Lua spec's final `top.state.press.home == 2` (a
-// `press_high`-derived value) is indirectly checking for.
+// Re-audited a third time this wave, against current code: `Session::new`'s
+// wasm binding (`crates/gc-wasm/src/session.rs`) now takes `tactic`/
+// `home_starter_ids` as its eighth/tenth optional parameters (confirmed by
+// reading the regenerated `dist/pkg/gc_wasm.d.cts` after rebuilding), and
+// `sim_host.ts`'s `SimHostOptions` (this package's own file) threads both
+// through. So "a real session can never simulate press_high" (the previous
+// version of this note) is stale: a real, wasm-backed session, given
+// `tactic: "press_high"`, now genuinely produces `press.home == 2`, and
+// given `homeStarterIds`, a ten-player roster reflecting them.
+//
+// What this test proves is therefore shifted one layer down from the Lua
+// original, for the same reason `bootstrap.spec.ts` explains: `Flow.start`'s
+// injected `MatchScreenFactory` is `(choice: FlowChoice) => Screen` -- an
+// opaque `Screen`, by this file's own contract, not a `RealMatchScreenPort`
+// with a `state` this test could read fields off even if that port carried
+// `players`/`press` (which it doesn't -- see above). So the factory
+// constructs a REAL `createSimHost` session directly, closed over the exact
+// `{formation, tactic}` choice `Flow` hands it (the same choice the working
+// "walks Squad -> Formation -> Tactic -> Match" case above already proves
+// `Flow` computes correctly from the same clicks), and this test reads the
+// session's own `matchStateJson()` -- proving the walk's captured choice
+// really does reach a live simulated match's roster/press, which is what
+// the Lua original's `top.state.players`/`top.state.press` checked, one
+// layer lower than `Screen` itself can express in this port.
 
 import { describe, expect, it } from "vitest";
 import { ScreenStack } from "./screen_stack.ts";
 import { Flow, type FlowChoice } from "./flow.ts";
 import { hit, menuLayout } from "./ui_bridge.ts";
-import { FORMATION_CONTENT, SQUAD_CONTENT, TACTIC_CONTENT } from "./test_support/fixtures.ts";
+import { createSimHost } from "./sim_host.ts";
+import { FORMATION_CONTENT, NEBULA, ORION, SQUAD_CONTENT, TACTIC_CONTENT } from "./test_support/fixtures.ts";
 
 const VP = { w: 960, h: 540 };
 
@@ -75,7 +77,44 @@ describe("pre-match flow (tier 3)", () => {
     expect(received).toEqual({ formation: "1-1-2", tactic: "press_high" });
   });
 
-  // Needs `RealMatchScreenPort.state.press`, and a wasm `Session::new` that
-  // accepts a tactic -- see this file's header.
-  it.skip("the pushed screen is the real match screen with a ten-player press-high state", () => {});
+  // See this file's header for what changed and what this proves.
+  it("the pushed screen is the real match screen with a ten-player press-high state", () => {
+    const stack = new ScreenStack<unknown, unknown>();
+    let capturedHost: ReturnType<typeof createSimHost> | undefined;
+
+    Flow.start(stack, VP, { squad: SQUAD_CONTENT, formation: FORMATION_CONTENT, tactic: TACTIC_CONTENT }, (choice: FlowChoice) => {
+      // The real production seam: a wasm-backed `createSimHost`, closed
+      // over exactly the `{formation, tactic}` `Flow` computed from the
+      // clicks below -- the same shape `real_match_factory.ts`'s injected
+      // `createHost` closure builds one from a `ProductMatchRequest`.
+      capturedHost = createSimHost(NEBULA.id, ORION.id, 13, 20, 3, {
+        homeFormation: choice.formation,
+        tactic: choice.tactic,
+        homeStarterIds: NEBULA.roster,
+      });
+      return { update: () => {}, event: () => {}, draw: () => {} };
+    });
+
+    click(stack, "next"); // squad -> formation
+    click(stack, "formation_1-1-2"); // choose formation
+    click(stack, "next"); // formation -> tactic
+    click(stack, "tactic_press_high"); // choose tactic
+    click(stack, "kickoff"); // tactic -> match
+
+    const host = capturedHost;
+    if (host === undefined) {
+      throw new Error("expected Flow to have pushed the match screen, constructing a host");
+    }
+    try {
+      const raw = host.matchStateJson?.();
+      if (raw === undefined) {
+        throw new Error("expected matchStateJson() on a WasmSimHost");
+      }
+      const state = JSON.parse(raw) as { readonly players: readonly unknown[]; readonly press: { readonly home: number } };
+      expect(state.players.length).toBe(10);
+      expect(state.press.home).toBe(2); // press_high
+    } finally {
+      host.dispose();
+    }
+  });
 });
