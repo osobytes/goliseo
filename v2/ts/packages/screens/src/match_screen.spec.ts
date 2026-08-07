@@ -240,16 +240,26 @@ describe("match screen fixed simulation clock (tier 2)", () => {
 });
 
 describe("match screen contextual controls (tier 2)", () => {
-  // SimHostPort's fixed contract (step/planTicks/cancelPlannedTicks/frame/
-  // roster/tick/dispose) has no combat toggle and no way to read per-player
-  // combat state (`self._combat_state.players[...].phase` in the Lua
-  // original).
-  // `sim.combat`'s wasm binding is a separate, out-of-scope surface this
-  // milestone -- v2/README.md §1 scopes "the glue that makes a playable
-  // browser build" (which this task IS building) as still not including
-  // every sim subsystem's bridge, only the one this task's brief named.
+  // Re-checked, not just trusted: this case is about the BASE (non-rollback)
+  // game loop's `combat_enabled` option, driving real per-tick combat state
+  // through the same host every other tick goes through. `SimHostPort`'s
+  // fixed contract (step/planTicks/cancelPlannedTicks/frame/roster/tick/
+  // dispose -- shared with `@gc/app`'s `sim_host.ts`, see match.ts's own
+  // doc) still has no combat toggle and no way to read per-player combat
+  // state (`self._combat_state.players[...].phase` in the Lua original);
+  // that is still true after this task. `sim.combat`'s wasm binding is a
+  // separate, out-of-scope surface -- v2/README.md §1 scopes "the glue that
+  // makes a playable browser build" as still not including every sim
+  // subsystem's bridge, only the ones a task's brief names.
+  //
+  // This is a DIFFERENT surface from `match_rollback_lab.spec.ts`'s now-
+  // ported "constructs the combat companion for an explicit rollback
+  // playtest" -- that one only validates a rollback snapshot's
+  // combat-companion PRESENCE at construction time (`rollback_lab`'s own
+  // `RollbackHostPort`, this package's own design), never steps real
+  // per-tick combat. Solving one does not solve the other.
   it.skip(
-    "constructs and drives combat only behind the explicit option [SimHostPort exposes no combat toggle or combat state]",
+    "constructs and drives combat only behind the explicit option [SimHostPort exposes no combat toggle or per-tick combat state; see this describe block's header]",
     () => {},
   );
 
@@ -434,15 +444,36 @@ describe("MatchScreenAsRealMatchScreen (tier 2)", () => {
 });
 
 describe("match screen goal replay (tier 2)", () => {
-  // `SimHostPort` has no replay/snapshot-recording capability (no analog of
-  // `game/render/replay.lua`'s recorded-footage buffer -- `step`/
-  // `planTicks`/`cancelPlannedTicks`/`frame`/`roster`/`tick`/`dispose` is
-  // the whole contract), and `@gc/render` (which owns the real `replay.ts`)
-  // is still not a declared dependency of `@gc/screens` -- both blockers
-  // the original skip already named, and both still accurate after this
-  // task.
+  // Re-checked, not just trusted: `@gc/render` (which owns the real
+  // `replay.ts`) IS now a declared dependency of `@gc/screens` -- that half
+  // of the original blocker is cleared, and `match_rollback_lab.spec.ts`'s
+  // "aggregates multi-tick edges, holds, and corrections" now wires
+  // `@gc/render`'s real `correctionSmoothing`/`viewState` into `MatchScreen`
+  // directly (see match.ts's "THE ROLLBACK LABORATORY" section).
+  //
+  // What is NOT cleared, and is a more precise restatement of the same
+  // underlying gap: `replay.recordBoundary`/`captureFrame` need a raw
+  // `MatchState` -- `outfield_press`/`transition`/per-player
+  // `outfield_decision` and every timer (`tackle_timer`, `keeper_get_up_timer`,
+  // ...), see `replay.ts`'s own `MatchState`/`MatchPlayer` interfaces.
+  // `SimHostPort.frame()` returns `crates/gc-render/src/frame.rs`'s
+  // `RenderFrame` instead -- a PRESENTATION-DERIVED, structure-of-arrays wire
+  // shape (already-eased dive/grab/windup timers, a selected pose id, no
+  // `outfield_decision`/`outfield_press`/`transition` at all) built
+  // specifically so the sim/renderer boundary crosses once per frame, not so
+  // a consumer can reconstruct raw sim state from it. There is no way to
+  // build a `replay.ts`-shaped `MatchState` from what `SimHostPort` exposes.
+  //
+  // Widening `SimHostPort` to also carry raw `MatchState` is not this file's
+  // call to make unilaterally: it is a FIXED contract shared with `@gc/app`'s
+  // `sim_host.ts` (this file's own header), so diverging it here would just
+  // make the two silently disagree. A real fix needs either a new
+  // `@gc/wasm`/`crates/gc-render` export carrying (or reconstructing) raw
+  // match state, or accepting a second wasm boundary crossing for replay
+  // capture specifically -- both Rust/wasm-side decisions outside this
+  // package's ownership this task.
   it.skip(
-    "a goal freezes the sim into a slow-mo replay; skipping resumes [SimHostPort has no replay/snapshot capability; @gc/render not a declared dependency]",
+    "a goal freezes the sim into a slow-mo replay; skipping resumes [SimHostPort's RenderFrame is presentation-derived and carries no raw MatchState for replay.ts's captureFrame; see this describe block's header]",
     () => {},
   );
 });

@@ -31,6 +31,8 @@
 
 import { combatFeedback, matchEventBatch } from "@gc/presentation";
 import type { CombatEvent, CombatFeedbackState, MatchEvent, RollbackEventDiff, RollbackWrappedEvent } from "@gc/presentation";
+import { correctionSmoothing, viewState } from "@gc/render";
+import type { correctionSmoothingTypes } from "@gc/render";
 import type { LifecyclePayload } from "./online_match_model.ts";
 import type { GameSettings } from "./content.ts";
 import type { RealMatchInputEvent, RealMatchScreenPort, RealMatchState } from "./real_match.ts";
@@ -97,6 +99,8 @@ export interface ReplayPort {
   active(): boolean;
   startAt(team: "home" | "away", tick: number): boolean;
   resetVisuals?(): void;
+  /** `replay.reset()` -- discards any buffered footage/active sequence. Optional so existing fakes (e.g. `combat_feedback_rollback.spec.ts`'s) need not grow it; only the rollback laboratory's restart path calls it. */
+  reset?(): void;
 }
 
 export interface MatchRollbackConsumerPorts {
@@ -536,9 +540,173 @@ const NOOP_VIEWPORT_MAPPER: ViewportMapper = { toVirtual: () => null };
 
 export type MatchScreenProfile = "product" | "playtest" | "online";
 
+// =============================================================================
+// THE ROLLBACK LABORATORY -- `Match.new({rollback_lab = {...}})`'s
+// development-only slot-mode option, `sim.rollback_playable_lab`
+// (`crates/gc-sim/src/rollback_playable_lab.rs`) ported to `game/screens/
+// match.lua`'s companion state machine. See `match_rollback_lab.spec.ts`'s
+// header for the two blockers this section clears (no construction option,
+// no rollback surface on the host contract) and the one it does NOT (no
+// `@gc/wasm` binding for `rollback_playable_lab` itself -- `MatchDriverBridge`
+// is an OMP-3 two-peer online driver, not this single-process dev harness,
+// and wiring a real one is a Rust/wasm change outside this file's ownership).
+//
+// `RollbackHostPort` is therefore this file's OWN design, unlike
+// `SimHostPort` (a fixed contract shared with `@gc/app`) -- there is no
+// existing production implementation to satisfy; `match_rollback_lab.spec.ts`
+// drives it with a hand-written fake, the same "TS-glue-observable analog"
+// pattern `match_screen.spec.ts`'s own header already establishes for
+// `SimHostPort`/`FakeSimHost`. A real implementation (over two loopback
+// `@gc/wasm` `MatchDriverBridge`s, or a new direct `rollback_playable_lab`
+// binding) is future work this port does not attempt.
+// =============================================================================
+
+/** `sim.rollback_playable_lab`'s convergence/sync status, surfaced on `_rollback_debug.status`. */
+export type RollbackLabStatus =
+  | "active"
+  | "settling"
+  | "converged"
+  | "paused"
+  | "unconfirmed_window_exceeded";
+
+/** Mirrors the Lua `NetworkProfile` shape (`fixed_profile` in the ported spec). */
+export interface RollbackLabNetworkProfile {
+  readonly base_delay_ticks: number;
+  readonly jitter_min_ticks?: number;
+  readonly jitter_max_ticks?: number;
+  readonly independent_loss_rate?: number;
+  readonly duplication_rate?: number;
+  readonly burst_start_rate?: number;
+  readonly burst_length_ticks?: number;
+}
+
+/** `Match.new`'s `opts.rollback_lab` table. */
+export interface RollbackLabOptions {
+  /** One-based canonical input slot this screen's local player drives. */
+  readonly local_slot: number;
+  readonly profile_name: string;
+  readonly network_profile?: RollbackLabNetworkProfile;
+  readonly network_seed?: number;
+  readonly bot_seed?: number;
+  readonly duration?: number;
+  readonly settlement_ticks?: number;
+  readonly max_rollback_ticks?: number;
+  /** An opaque, host-specific seed snapshot (e.g. a prior `MatchSnapshot`). Never inspected here -- forwarded to {@link RollbackHostFactory} untouched. */
+  readonly initial_snapshot?: unknown;
+}
+
+/** `rollback_playable_lab.current_snapshot(...)`/`reference_snapshot(...)`'s combat-companion presence -- only what construction-time validation and the "combat companion" seam need. Never the raw `MatchSnapshot` itself (opaque, host-owned). */
+export interface RollbackLabSnapshotSummary {
+  readonly combat?: { readonly player_ids: readonly string[] };
+}
+
+/** `_rollback_debug`'s host-reported half. `active_smoothing_count`/`correction_magnitude` are NOT here -- those are computed screen-side from `correctionSmoothing.diagnostics` over this screen's own `_render_smoothing`, matching the Lua original's own split (the panel reads both a driver-reported status and a render-owned smoothing diagnostic). See {@link RollbackLabDebug}. */
+export interface RollbackLabHostDebug {
+  readonly profile: string;
+  readonly local_slot: number;
+  readonly transport_tick: number;
+  readonly reference_tick: number;
+  readonly current_tick: number;
+  readonly rollback_count: number;
+  readonly network_pending: number;
+  readonly status: RollbackLabStatus;
+  readonly event_status: string;
+}
+
+/** `_rollback_debug`, as read by a caller of {@link MatchScreen.debugRollbackDebug} -- the host's own status plus this screen's render-owned smoothing diagnostics. */
+export interface RollbackLabDebug extends RollbackLabHostDebug {
+  readonly active_smoothing_count: number;
+  readonly correction_magnitude: number;
+}
+
+/** `_clock`'s rollback-mode counterpart -- the same fixed-clock accumulator fields the base game loop's `SimHostPort.planTicks` hides behind a single tick count, exposed here because the ported spec asserts on `dropped_ticks`/`overloads`/`accumulator` directly. */
+export interface RollbackLabClockDebug {
+  readonly tick: number;
+  readonly dropped_ticks: number;
+  readonly overloads: number;
+  readonly accumulator: number;
+}
+
+/** One roster id's displayed (rollback-client) position -- the minimal slice `correctionSmoothing`/`viewState` read. */
+export interface RollbackLabPlayerPosition {
+  readonly id: string;
+  readonly pos: { readonly x: number; readonly y: number };
+}
+
+/** The displayed rollback client's positions this render call -- source data for {@link correctionSmoothing} and {@link viewState}, never the raw `MatchState`. */
+export interface RollbackLabDisplayedPositions {
+  readonly players: readonly RollbackLabPlayerPosition[];
+  readonly ball: { readonly x: number; readonly y: number };
+}
+
+/** One canonical input slot's wire sample, as recorded on a `_rollback_outputs` entry. */
+export interface RollbackLabInputSlot {
+  readonly sample: InputSample;
+}
+
+/** One simulated tick's raw output record -- `_rollback_outputs[i]`. Unconditional: one per tick actually stepped this render call, whether or not that tick's input has been confirmed yet (confirmation is `eventDiffs`/`confirmedSteps`' job, not this record's). */
+export interface RollbackLabOutput {
+  readonly tick: number;
+  readonly input: { readonly slots: readonly RollbackLabInputSlot[] };
+}
+
+/** One confirmation's correction source -- fed to `correctionSmoothing.correct` when a resimulated tick lands. */
+export interface RollbackLabCorrectionSample {
+  readonly tick: number;
+  readonly source: correctionSmoothingTypes.CorrectionSmoothingSource;
+}
+
+/** One `step` call's full result: this tick's raw output plus whatever `gc_sim::rollback_events`-shaped confirmation work resolved this tick (usually nothing, or one confirmation once the network delay window has passed). */
+export interface RollbackLabStepResult {
+  readonly output: RollbackLabOutput;
+  readonly eventDiffs: readonly RollbackEventDiff[];
+  readonly confirmedSteps: readonly RollbackEventStep[];
+  readonly correction?: RollbackLabCorrectionSample;
+  readonly debug: RollbackLabHostDebug;
+}
+
+/**
+ * The rollback laboratory's host seam -- `SimHostPort`'s rollback-mode
+ * counterpart. See this section's header for why this is this file's own
+ * design rather than a fixed contract, and `match_rollback_lab.spec.ts` for
+ * the hand-written fake that drives it in tests.
+ */
+export interface RollbackHostPort {
+  /** Same accumulator/catch-up/drop decision as `SimHostPort.planTicks`, over this host's own fixed clock. */
+  planTicks(dt: number): number;
+  /** Advance exactly one tick with this render call's locally authored sample. */
+  step(sample: InputSample): RollbackLabStepResult;
+  /** Mirrors `SimHostPort.cancelPlannedTicks` -- called when this render call stops short of every tick `planTicks` authorized (paused, terminal, or the match finished mid-batch). */
+  cancelPlannedTicks(): void;
+  /** Cheap; callable before the first `step` (construction-time validation reads it immediately). */
+  debug(): RollbackLabHostDebug;
+  clockDebug(): RollbackLabClockDebug;
+  frame(): RenderFrame;
+  roster(): RenderFrameRoster;
+  tick(): number;
+  displayedPositions(): RollbackLabDisplayedPositions;
+  currentSnapshot(): RollbackLabSnapshotSummary;
+  referenceSnapshot(): RollbackLabSnapshotSummary;
+  dispose(): void;
+}
+
+/** Constructs a fresh {@link RollbackHostPort} with a `RollbackLabOptions` already baked in by the caller's closure -- the rollback-mode counterpart of {@link SimHostFactory}. `MatchScreen.restart`'s rollback branch calls this again for "R" to rebuild a fresh laboratory with the same options. */
+export type RollbackHostFactory = () => RollbackHostPort;
+
 export interface MatchScreenOptions {
   /** Mirrors `Match.new`'s `opts.profile`; defaults to `"playtest"`, matching the Lua original's `self._opts.profile or "playtest"`. */
   readonly profile?: MatchScreenProfile;
+  /**
+   * Mirrors `Match.new`'s `opts.combat_enabled`. This milestone, meaningful
+   * only for rollback-lab construction-time validation (does the supplied
+   * `initial_snapshot` carry a `CombatMatchState` companion, per
+   * `rollback_playable_lab`'s own invariant) -- the BASE, non-rollback game
+   * loop has no per-tick combat surface on `SimHostPort` yet (see
+   * `match_screen.spec.ts`'s own skipped combat case).
+   */
+  readonly combat_enabled?: boolean;
+  /** Mirrors `Match.new`'s `opts.rollback_lab`. See this section's header. */
+  readonly rollback_lab?: RollbackLabOptions;
 }
 
 export interface MatchScreenPorts {
@@ -546,6 +714,14 @@ export interface MatchScreenPorts {
   readonly renderer: RenderPort;
   readonly keyboard: KeyboardState;
   readonly gamepad?: GamepadState;
+  /** Required when {@link MatchScreenOptions.rollback_lab} is set; unused otherwise. */
+  readonly createRollbackHost?: RollbackHostFactory;
+  /** The rollback-consumption seam's ports (see this file's header) -- required alongside {@link createRollbackHost}, since the rollback laboratory is the first caller that actually wires `consumeRollbackPresentation` into the game loop. */
+  readonly effects?: EffectsPort;
+  readonly audio?: AudioPort;
+  readonly replay?: ReplayPort;
+  /** `game.ui.tuning_panel`'s `.open` flag, injected -- pausing the panel pauses the rollback laboratory's clock. Omit to never pause. */
+  readonly tuningPause?: { readonly open: boolean };
 }
 
 /**
@@ -579,7 +755,18 @@ export interface MatchScreenPorts {
 export class MatchScreen {
   private readonly ports: MatchScreenPorts;
   private readonly profile: MatchScreenProfile;
-  private host: SimHostPort;
+  private readonly combatEnabled: boolean;
+  /** Set exactly when {@link MatchScreenOptions.rollback_lab} was supplied; mutually exclusive with `host`. */
+  private host: SimHostPort | undefined;
+  private rollbackHost: RollbackHostPort | undefined;
+  private rollbackConsumerPorts: MatchRollbackConsumerPorts | undefined;
+  private rollbackConsumer: MatchRollbackConsumerState = newMatchRollbackConsumerState();
+  private rollbackOutputs: readonly RollbackLabOutput[] = [];
+  private rollbackEventDiffs: readonly RollbackEventDiff[] = [];
+  private rollbackConfirmedSteps: readonly RollbackEventStep[] = [];
+  private rollbackCorrections: readonly RollbackLabCorrectionSample[] = [];
+  private rollbackFrameEvents: MatchEvent[] = [];
+  private renderSmoothing: correctionSmoothingTypes.CorrectionSmoothingState | undefined;
   private readonly latches: MatchControlLatches = newMatchControlLatches();
   private switchPending = false;
   private capture: captureFrame.InputSampleCapture;
@@ -590,8 +777,43 @@ export class MatchScreen {
   constructor(ports: MatchScreenPorts, options: MatchScreenOptions = {}) {
     this.ports = ports;
     this.profile = options.profile ?? "playtest";
-    this.host = ports.createHost();
+    this.combatEnabled = options.combat_enabled ?? false;
+    if (options.rollback_lab !== undefined) {
+      if (this.profile === "product") {
+        throw new Error(
+          "rollback_lab is an explicit development-only option; product-profile matches must not construct one",
+        );
+      }
+      if (ports.createRollbackHost === undefined) {
+        throw new Error("rollback_lab option requires MatchScreenPorts.createRollbackHost");
+      }
+      if (ports.effects === undefined || ports.audio === undefined || ports.replay === undefined) {
+        throw new Error(
+          "rollback_lab option requires effects/audio/replay ports for its rollback-consumption seam",
+        );
+      }
+      this.rollbackHost = ports.createRollbackHost();
+      this.rollbackConsumerPorts = { effects: ports.effects, audio: ports.audio, replay: ports.replay };
+      this.validateRollbackCombatCompanion();
+    } else {
+      this.host = ports.createHost();
+    }
     this.capture = this.newCapture();
+  }
+
+  // `rollback_playable_lab`'s own combat-companion invariant, enforced at
+  // construction: a combat-bearing snapshot requires the explicit opt-in,
+  // and the opt-in requires a combat-bearing snapshot -- see
+  // `match_rollback_lab.spec.ts`'s "requires rollback snapshot combat
+  // presence to match the explicit opt-in".
+  private validateRollbackCombatCompanion(): void {
+    const hasCombat = this.rollbackHost?.currentSnapshot().combat !== undefined;
+    if (hasCombat && !this.combatEnabled) {
+      throw new Error("combat-bearing rollback snapshots require combat_enabled = true");
+    }
+    if (this.combatEnabled && !hasCombat) {
+      throw new Error("combat-enabled matches require a CombatMatchState companion");
+    }
   }
 
   private newCapture(): captureFrame.InputSampleCapture {
@@ -611,19 +833,28 @@ export class MatchScreen {
     );
   }
 
+  /** Either active host, whichever this screen was constructed with -- mutually exclusive, see `host`/`rollbackHost`'s own docs. */
+  private activeHost(): Pick<SimHostPort, "frame" | "roster" | "tick" | "dispose"> {
+    const host = this.rollbackHost ?? this.host;
+    if (host === undefined) {
+      throw new Error("match screen: no active host (unreachable -- constructor always builds one)");
+    }
+    return host;
+  }
+
   /** `self.state.finished`, read live off the host every call (never cached) -- matches the Lua original always reading current state, not a stale snapshot. */
   get finished(): boolean {
-    return this.host.frame().hud.finished;
+    return this.activeHost().frame().hud.finished;
   }
 
   /** The current frame's HUD slice, read live off the host -- used by [`MatchScreenAsRealMatchScreen`]'s `state` (score/clock) and by this class's own `finished`/`carrying`. */
   get hud(): RenderFrameHud {
-    return this.host.frame().hud;
+    return this.activeHost().frame().hud;
   }
 
   /** `self._clock.tick` -- delegated straight to the host, which is this screen's only tick authority. */
   get tick(): number {
-    return this.host.tick();
+    return this.activeHost().tick();
   }
 
   /** The `InputSample` this screen last sent to `SimHostPort.step`, if any. Exposed for tests, mirroring how the ported spec reads `Match`'s own `self._switch`/`self._pass` fields directly. */
@@ -636,14 +867,96 @@ export class MatchScreen {
     return this.switchPending;
   }
 
-  private carrying(): boolean {
-    return this.host.frame().hud.controlled_owns_ball;
+  /** Whether this screen was constructed with a `rollback_lab` option -- `self._rollback_lab ~= nil` / `self.state.slot_mode`. */
+  get debugRollbackActive(): boolean {
+    return this.rollbackHost !== undefined;
   }
 
-  /** `self:restart()` -- dispose the current host and build a fresh one from the same factory, resetting every frame-to-frame latch. */
+  /** `_rollback_debug` -- `undefined` outside rollback mode. See {@link RollbackLabDebug}'s doc for the host/screen split. */
+  debugRollbackDebug(): RollbackLabDebug | undefined {
+    if (this.rollbackHost === undefined) {
+      return undefined;
+    }
+    const raw = this.rollbackHost.debug();
+    const diagnostics =
+      this.renderSmoothing !== undefined
+        ? correctionSmoothing.diagnostics(this.renderSmoothing)
+        : { active_count: 0, maximum_magnitude: 0 };
+    return {
+      ...raw,
+      active_smoothing_count: diagnostics.active_count,
+      correction_magnitude: diagnostics.maximum_magnitude,
+    };
+  }
+
+  /** `_clock` -- `undefined` outside rollback mode. */
+  debugRollbackClock(): RollbackLabClockDebug | undefined {
+    return this.rollbackHost?.clockDebug();
+  }
+
+  /** `_rollback_outputs` -- this render call's raw per-tick output records, one per tick actually stepped. Cleared at the top of every `update()` call in rollback mode. */
+  get debugRollbackOutputs(): readonly RollbackLabOutput[] {
+    return this.rollbackOutputs;
+  }
+
+  /** `_rollback_event_diffs`. */
+  get debugRollbackEventDiffs(): readonly RollbackEventDiff[] {
+    return this.rollbackEventDiffs;
+  }
+
+  /** `_rollback_confirmed_steps`. */
+  get debugRollbackConfirmedSteps(): readonly RollbackEventStep[] {
+    return this.rollbackConfirmedSteps;
+  }
+
+  /** `_rollback_corrections` -- this render call's correction sources, retained across every simulated tick (not just the last). */
+  get debugRollbackCorrections(): readonly RollbackLabCorrectionSample[] {
+    return this.rollbackCorrections;
+  }
+
+  /** `_frame_events` -- always empty in rollback mode (the legacy speculative frame-event consumer has nothing to read; see `updateRollback`'s doc). */
+  get debugRollbackFrameEvents(): readonly MatchEvent[] {
+    return this.rollbackFrameEvents;
+  }
+
+  /** `rollback_playable_lab.current_snapshot(self._rollback_lab)`'s combat-companion presence -- `undefined` outside rollback mode. */
+  debugRollbackCurrentSnapshot(): RollbackLabSnapshotSummary | undefined {
+    return this.rollbackHost?.currentSnapshot();
+  }
+
+  /** `rollback_playable_lab.reference_snapshot(self._rollback_lab)`'s combat-companion presence -- `undefined` outside rollback mode. */
+  debugRollbackReferenceSnapshot(): RollbackLabSnapshotSummary | undefined {
+    return this.rollbackHost?.referenceSnapshot();
+  }
+
+  /** The screen-owned rollback-consumption ledger (`_last_scoring_team`/`_kickoff_banner`/...) -- `undefined` outside rollback mode. Exposed for tests; mirrors how the ported spec pokes `Match`'s own `_last_*` fields directly. */
+  debugRollbackConsumerState(): MatchRollbackConsumerState | undefined {
+    return this.rollbackHost !== undefined ? this.rollbackConsumer : undefined;
+  }
+
+  private carrying(): boolean {
+    return this.activeHost().frame().hud.controlled_owns_ball;
+  }
+
+  /** `self:restart()` -- dispose the current host and build a fresh one from the same factory, resetting every frame-to-frame latch and (in rollback mode) every rollback/presentation-owned field. */
   private restart(): void {
-    this.host.dispose();
-    this.host = this.ports.createHost();
+    if (this.rollbackHost !== undefined) {
+      this.rollbackHost.dispose();
+      this.rollbackHost = this.ports.createRollbackHost!();
+      this.rollbackOutputs = [];
+      this.rollbackEventDiffs = [];
+      this.rollbackConfirmedSteps = [];
+      this.rollbackCorrections = [];
+      this.rollbackFrameEvents = [];
+      this.renderSmoothing = undefined;
+      this.rollbackConsumer = newMatchRollbackConsumerState();
+      viewState.reset();
+      this.ports.replay?.reset?.();
+      this.validateRollbackCombatCompanion();
+    } else {
+      this.host!.dispose();
+      this.host = this.ports.createHost();
+    }
     this.latches.shootHeldPrev = false;
     this.latches.passHeldPrev = false;
     this.latches.actionHeldPrev = false;
@@ -734,9 +1047,14 @@ export class MatchScreen {
    * render loop.
    */
   update(dt: number): void {
+    if (this.rollbackHost !== undefined) {
+      this.updateRollback(dt);
+      return;
+    }
     if (this.finished) {
       return;
     }
+    const host = this.host!;
     const carrying = this.carrying();
     const poll: MatchControlPoll = {
       actionDown: bindings.isDown("action", this.ports.keyboard, this.ports.gamepad),
@@ -753,11 +1071,11 @@ export class MatchScreen {
     }
     this.lastStepSample = sample;
 
-    const ticks = this.host.planTicks(dt);
+    const ticks = host.planTicks(dt);
     for (let step = 0; step < ticks; step += 1) {
       // KNOWN SIMPLIFICATION: every tick this render call produces is fed
       // the SAME sample -- see this class's doc comment.
-      this.host.step(sample);
+      host.step(sample);
       // `fixed_clock.advance`'s `step` callback returns `not
       // self.state.finished and not scored` to stop a catch-up batch as
       // soon as the match ends or a goal starts a replay. This milestone
@@ -765,10 +1083,132 @@ export class MatchScreen {
       // the host to cancel the remaining planned ticks is what makes that
       // match what a `false` step_fn return does to the accumulator on the
       // Rust side (see `SimHostPort.cancelPlannedTicks`'s doc).
-      if (this.host.frame().hud.finished) {
-        this.host.cancelPlannedTicks();
+      if (host.frame().hud.finished) {
+        host.cancelPlannedTicks();
         return;
       }
+    }
+  }
+
+  /**
+   * `Match:update(dt)`'s rollback branch. Unlike the base branch above,
+   * this one does NOT sample input unconditionally: a zero-tick render call
+   * touches neither `this.latches` nor `this.switchPending`/`capture`, so a
+   * one-shot edge queued just before a zero-tick call survives to the next
+   * render call that actually steps -- see `match_rollback_lab.spec.ts`'s
+   * "retains a zero-tick edge and consumes it exactly once" (the base
+   * branch's own KNOWN SIMPLIFICATION deliberately does the opposite; the
+   * rollback branch is held to the Lua original's real `_input_adapter`
+   * behavior instead).
+   *
+   * `_rollback_outputs`/`_rollback_event_diffs`/`_rollback_confirmed_steps`/
+   * `_rollback_corrections`/`_frame_events` are this render call's batch
+   * ONLY -- cleared up front, never accumulated across calls.
+   */
+  private updateRollback(dt: number): void {
+    const rollbackHost = this.rollbackHost!;
+    this.rollbackOutputs = [];
+    this.rollbackEventDiffs = [];
+    this.rollbackConfirmedSteps = [];
+    this.rollbackCorrections = [];
+    this.rollbackFrameEvents = [];
+
+    if (this.finished) {
+      return;
+    }
+    const paused = this.ports.tuningPause?.open === true;
+    if (paused || rollbackHost.debug().status === "unconfirmed_window_exceeded") {
+      rollbackHost.cancelPlannedTicks();
+      return;
+    }
+
+    const ticks = rollbackHost.planTicks(dt);
+    if (ticks === 0) {
+      return;
+    }
+
+    const carrying = this.carrying();
+    const poll: MatchControlPoll = {
+      actionDown: bindings.isDown("action", this.ports.keyboard, this.ports.gamepad),
+      playDown: bindings.isDown("play", this.ports.keyboard, this.ports.gamepad),
+      modifierDown: bindings.isDown("modifier", this.ports.keyboard, this.ports.gamepad),
+    };
+    const { contextual, dashEdge } = stepMatchControlLatches(this.latches, carrying, poll);
+    const switchPlayer = this.switchPending;
+    this.switchPending = false;
+    let sample = this.capture.sample({ ...contextual, switchPlayer });
+    if (dashEdge) {
+      sample = { ...sample, edges: sample.edges | inputSample.packEdges(["dash"]) };
+    }
+    this.lastStepSample = sample;
+
+    const outputs: RollbackLabOutput[] = [];
+    const diffs: RollbackEventDiff[] = [];
+    const confirmed: RollbackEventStep[] = [];
+    const corrections: RollbackLabCorrectionSample[] = [];
+    for (let step = 0; step < ticks; step += 1) {
+      // Unlike the base branch's KNOWN SIMPLIFICATION (which reuses one
+      // sample verbatim for a whole catch-up batch), the rollback branch
+      // delivers this render call's one-shot edges (switch, dash, ...) to
+      // only the FIRST tick of a multi-tick batch; a HELD state (sprint,
+      // jockey, lob, equipment) still applies to every tick. Matches
+      // `match_rollback_lab.spec.ts`'s "aggregates multi-tick edges,
+      // holds, and corrections", which checks the edge fires on tick index
+      // 1 of the batch only, while the held mask is constant across all of
+      // them.
+      const tickSample: InputSample = step === 0 ? sample : { ...sample, edges: 0 };
+      const result = rollbackHost.step(tickSample);
+      outputs.push(result.output);
+      diffs.push(...result.eventDiffs);
+      confirmed.push(...result.confirmedSteps);
+      if (result.correction !== undefined) {
+        corrections.push(result.correction);
+      }
+      if (result.debug.status === "unconfirmed_window_exceeded") {
+        // Synchronization failure mid-batch: stop consuming further ticks
+        // this call and discard any smoothing already applied -- the
+        // "clears rollback handoff batches before ... terminal early
+        // returns" behavior. What was already gathered THIS call still
+        // committed (`outputs` stays non-empty); diffs/confirmed/
+        // corrections stay at their cleared initial value.
+        this.renderSmoothing = undefined;
+        rollbackHost.cancelPlannedTicks();
+        this.rollbackOutputs = outputs;
+        return;
+      }
+      if (rollbackHost.frame().hud.finished) {
+        rollbackHost.cancelPlannedTicks();
+        break;
+      }
+    }
+    this.rollbackOutputs = outputs;
+    this.rollbackEventDiffs = diffs;
+    this.rollbackConfirmedSteps = confirmed;
+    this.rollbackCorrections = corrections;
+
+    for (const correction of corrections) {
+      this.renderSmoothing =
+        this.renderSmoothing === undefined
+          ? correctionSmoothing.correct(correctionSmoothing.new(correction.source), correction.source)
+          : correctionSmoothing.correct(this.renderSmoothing, correction.source);
+    }
+    const positions = rollbackHost.displayedPositions();
+    if (this.renderSmoothing !== undefined && dt > 0) {
+      this.renderSmoothing = correctionSmoothing.advance(this.renderSmoothing, positions, dt);
+    }
+
+    // Live view state (gait/lean), from the displayed rollback client.
+    viewState.update(positions.players, dt);
+
+    if (this.rollbackConsumerPorts !== undefined) {
+      consumeRollbackPresentation(
+        this.rollbackConsumer,
+        this.rollbackConsumerPorts,
+        true,
+        this.rollbackFrameEvents,
+        diffs,
+        confirmed,
+      );
     }
   }
 
@@ -777,17 +1217,22 @@ export class MatchScreen {
    * doc) so callers control the render cadence independently of the
    * simulation cadence, and so this class satisfies
    * [`RealMatchScreenPort.draw`] (`real_match.ts`) via
-   * [`MatchScreenAsRealMatchScreen`].
+   * [`MatchScreenAsRealMatchScreen`]. Reads only `frame()`/`roster()` off
+   * the active host -- never `debug()`/`currentSnapshot()`/
+   * `referenceSnapshot()` -- so drawing cannot mutate either rollback-lab
+   * match (`match_rollback_lab.spec.ts`'s "draws only from the cached debug
+   * model without mutating either match").
    */
   draw(): void {
-    const frame = this.host.frame();
-    const roster = this.host.roster();
+    const host = this.activeHost();
+    const frame = host.frame();
+    const roster = host.roster();
     this.ports.renderer.draw(frame, roster);
   }
 
   /** Release the underlying host's resources. Safe to call once; does not itself call `SimHostPort.dispose` twice, matching that contract's own "safe to call twice" note being unnecessary to rely on here. */
   dispose(): void {
-    this.host.dispose();
+    this.activeHost().dispose();
   }
 }
 
