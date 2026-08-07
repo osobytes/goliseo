@@ -23,16 +23,35 @@
 // The one case that remains skipped, "derives reference identities from raw
 // campaign step inputs", is the one case that genuinely calls
 // `sim.rollback_events.new/apply/confirm` -- a real Rust timeline
-// (create/apply/confirm), not just the wire shapes it produces. `@gc/wasm`
-// does not expose that surface directly: it only exposes the much higher-
-// level `MatchDriverBridge` (`gc_netcode::match_driver`, JSON batches over
-// the online driver), which internally feeds `gc_sim::rollback_events` but
-// does not expose `create`/`apply`/`confirm` as a directly callable
-// `RollbackEventsPort`. Faking `rollbackEvents.apply`/`confirm` well enough
-// to reach "derived reference identities" would mean reimplementing
-// `sim.rollback_events`' own tick-boundary/event-derivation logic here --
-// exactly what v2/README.md §2.1 says must never happen on this side of the
-// determinism line. Left `it.skip`.
+// (create/apply/confirm), not just the wire shapes it produces.
+//
+// # Re-audited against the current `@gc/wasm`
+//
+// The claim this comment used to make -- "`@gc/wasm` does not expose that
+// surface directly, only the bundled `MatchDriverBridge`" -- is **stale**:
+// `crates/gc-wasm/src/rollback_events_bridge.rs`'s `RollbackEventsTimeline`
+// is exactly a standalone, directly-callable `create`/`apply`/`confirm`
+// port (`match_presentation.spec.ts` builds a real `RollbackEventsPort`
+// adapter over it, driven by a real two-peer `MatchDriverBridge` harness,
+// for four of *its* thirteen cases).
+//
+// What is real and narrower: this specific case needs a `WasmMatchSnapshot`
+// for a *hand-specified* game state (`final.owner = 2`, a `"shot"` event at
+// the ball's exact position, `time_left` nudged by one tick) -- the Lua
+// original builds it with `match_snapshot.capture(final)` on a hand-mutated
+// `MatchState` table. `@gc/wasm` has no snapshot-construction entry point at
+// all: the only ways to obtain a `WasmMatchSnapshot` are `SimSession
+// .snapshotHandle()` (whatever state a real, actually-stepped session
+// reached) and `MatchDriverBridge.initialSnapshotHandle`/`.snapshotLookup`
+// (ditto, for a real driver) -- confirmed by reading `session.rs` and
+// `match_driver_bridge.rs` end to end, neither exposes anything resembling
+// "build a snapshot from these fields." Reaching this exact scenario for
+// real would mean scripting genuine gameplay input precisely enough to
+// force a real shot at a real, known position and tick -- deep
+// gameplay-mechanics engineering this port has no other reason to carry,
+// and guessing at it risks a flaky, non-representative test even if it
+// happens to pass once. Left `it.skip`, for this narrower and different
+// reason than the one this comment used to give.
 
 import { describe, expect, it } from "vitest";
 import { Vec2 } from "@gc/core";
@@ -72,10 +91,9 @@ import {
 } from "./rollback_validation.ts";
 
 describe("rollback validation (cross-boundary integration)", () => {
-  // Needs `sim.rollback_events.new/apply/confirm` as a directly callable
-  // create/apply/confirm timeline -- `@gc/wasm` only exposes the bundled,
-  // higher-level `MatchDriverBridge` (JSON batches over
-  // `gc_netcode::match_driver`), not this raw port. See this file's header.
+  // `RollbackEventsTimeline` (create/apply/confirm) is real now -- the
+  // remaining blocker is narrower: no way to build a `WasmMatchSnapshot` for
+  // this case's hand-specified game state. See this file's header.
   it.skip("derives reference identities from raw campaign step inputs", () => {});
 });
 

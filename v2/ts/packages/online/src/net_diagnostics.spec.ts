@@ -20,41 +20,66 @@
 //     v2/README.md §2.1 says must never happen on this side of the
 //     determinism line.
 //
-// # Status as of the `gc-wasm` `MatchDriverBridge`/`Coordinator` landing
+// # Re-audited against the current `@gc/wasm`
 //
-// `@gc/online`'s `package.json` now declares `@gc/wasm` as a dependency
-// (fixed -- `import("@gc/wasm")` resolves here now), and a wasm bridge over
-// `game.online.match_driver` exists (`@gc/wasm`'s `MatchDriverBridge`,
-// `RollbackEventsTimeline`). But `net_diagnostics_fixture.ts`'s
-// `NetDiagnosticsFixtureEnv` needs five separate ports to build
-// `fixture.harness`'s equivalent (`matchDriver`, `matchDriverFixture`,
-// `protocol`, `inputProtocol`, `inputFrame`), and the bridge fills at most
-// one of them, incompletely:
+// The claim this header used to make -- "no wasm bridge exists for
+// match_driver_fixture/input_protocol/input_frame" -- is now **stale** for
+// all three: `match_driver_fixture_bridge.rs`, `input_protocol_bridge.rs`,
+// and `input_frame_bridge.rs` all landed and are exercised by real specs
+// (`packages/wasm/src/match_driver_fixture.spec.ts`,
+// `input_protocol.spec.ts`, `input_frame.spec.ts`). A real, two-peer
+// `MatchDriverBridge` harness is built directly below (not through
+// `net_diagnostics_fixture.ts`'s `NetDiagnosticsFixtureEnv` -- see why in
+// the next paragraph), and it unblocks seven of this file's eleven
+// live-driver cases for real.
 //
-//   * There is still no wasm bridge at all, in `gc-wasm`'s current source,
-//     for `game.online.match_driver_fixture` (session/initial-snapshot
-//     construction -- confirmed empirically: `MatchDriverBridge`'s
-//     constructor needs a `freezeJson`/`manifestJson` pair, nothing in
-//     `@gc/wasm` can produce one, and hand-rolling one from the wire shape
-//     alone reaches a Rust panic deep in `DriverRules`/`live_slot`, not a
-//     clean validation error -- see `match_presentation.spec.ts`'s header
-//     for the exact probe), `game.online.input_protocol` (the forged
-//     bundles the ownership-violation/authority-conflict cases need), or
-//     `sim.input_frame` (sample construction/encoding). `MatchDriverBridge`
-//     itself only exposes the aggregate `advance()` step plus read-only
-//     diagnostics/JSON dumps -- not the `create`/`advance`/`diagnostics`
-//     shape `MatchDriverPort` here expects, and building samples/wires by
-//     hand in TypeScript to work around the gap would mean re-implementing
-//     `sim.input_frame` encoding on this side of the determinism line,
-//     which v2/README.md §2.1 forbids outright ("input encoding is Rust").
+// `net_diagnostics_fixture.ts`'s own `MatchDriverPort` (`create`/`advance`/
+// `diagnostics`, taking an *injected* `transport: StarTransportAdapter` the
+// driver calls into) mirrors the Lua original's dependency-injection shape,
+// where `match_driver.new({transport = tap})` has the driver call
+// `tap:send`/`tap:poll` itself, and `DiagnosticTransport`'s wrapped methods
+// record star/channel/packet diagnostics as a side effect of being called
+// *by the driver*. `MatchDriverBridge` does not support that shape at all:
+// it owns its own internal transport (`crate::wasm_transport::WasmStarTransport`,
+// which has no `#[wasm_bindgen]` surface and is never injectable) and
+// expects the *caller* to relay bytes via `drainOutboundJson`/
+// `enqueueInbound` -- the "queue/drain seam" `match_driver_bridge.rs`'s
+// module doc describes. So a `DiagnosticTransport` tap can never observe a
+// `MatchDriverBridge`'s traffic, and `TransportStarDiagnostics`/
+// `TransportChannelDiagnostics`-shaped data (`sent`/`received`/
+// `sequence_gaps`/`backpressure`/...) for its internal transport is not
+// exposed by `@gc/wasm` at all -- confirmed by reading
+// `crates/gc-wasm/src/wasm_transport.rs` end to end: no `#[wasm_bindgen]`
+// attribute, no diagnostics method. That is a *narrower and different* gap
+// than the stale "no bridge" claim, and it is why the real harness below is
+// built directly (relaying `drainOutboundJson`/`enqueueInbound` between two
+// peers, exactly like `match_presentation.spec.ts`'s real harness) instead
+// of through `net_diagnostics_fixture.ts`.
 //
-// So every live-driver case below is still `it.skip`. Re-port once bridges
-// for `match_driver_fixture`, `input_protocol`, and `input_frame` exist
-// alongside `MatchDriverBridge`, closing all five `NetDiagnosticsFixtureEnv`
-// ports for real.
+// What that leaves genuinely blocked, precisely:
+//
+//   * The three cases that assert on `artifact.runtime.star`/
+//     `artifact.runtime.peers`/packet-lifecycle fields ("summarises a clean
+//     2v2 run...", "folds star and per-channel transport counters...",
+//     "records the sample, send, arrival, and apply lifecycle of a
+//     packet") need exactly the transport-level diagnostics the paragraph
+//     above shows are unreachable. Still `it.skip`.
+//   * "types hash divergence and keeps the first divergent boundary" needs
+//     `gc_netcode::match_driver::observe_checkpoint` to force a mismatch --
+//     confirmed absent from `@gc/wasm`'s surface (no `observeCheckpoint`
+//     anywhere in `match_driver_bridge.rs` or `types.ts`). Still `it.skip`.
+//
+// The other seven -- three "live-driver runs" cases whose claims are purely
+// about `canonical`/simulation-derived data (`MatchDriverBridge.advance()`'s
+// batch and `diagnosticsJson()`, nothing transport-shaped) and four
+// "live-driver fault detection" cases reachable via `enqueueInbound`
+// (forged bundles) or `setPeerDisconnected` directly -- are ported for real
+// below.
 
 import { describe, expect, it } from "vitest";
 import { newMessage, fakeStar, type TransportChannelDiagnostics, type TransportPeerMessage, type TransportStarDiagnostics } from "@gc/transport";
+import { loadSimHost } from "@gc/wasm";
+import type { MatchDriverBridge as WasmMatchDriverBridge, SimHost, SimSession } from "@gc/wasm";
 import * as schema from "./diagnostics_schema.ts";
 import {
   newNetDiagnostics,
@@ -71,17 +96,23 @@ import {
   recordTransport,
   optInExport,
   exportArtifact,
+  canonicalBytes,
+  canonicalDigest,
+  digest as recorderDigest,
   summary,
   EXPORT,
   type CoordinatorFreeze,
   type MatchDriverBatch,
   type MatchDriverDiagnostics,
+  type MatchMode,
   type NetDiagnostics,
   type NetDiagnosticsLimits,
   type NetDiagnosticsOptions,
   type ProtocolControlMessage,
   type ProtocolDecoder,
   type SessionManifest,
+  type SessionMessageKind,
+  type SessionRole,
 } from "./net_diagnostics.ts";
 import { DiagnosticTransport } from "./diagnostic_transport.ts";
 
@@ -235,11 +266,36 @@ interface TestArtifact {
     readonly dropped: Record<string, number>;
   };
   readonly canonical: {
-    readonly simulation: { readonly status: string; readonly checkpoint_count: number };
-    readonly checkpoints: readonly { readonly tick: number; readonly hash: string }[];
+    readonly simulation: {
+      readonly status: string;
+      readonly checkpoint_count: number;
+      readonly rollback_count: number;
+      readonly resimulated_ticks: number;
+      readonly max_rollback_depth: number;
+      readonly terminal_status?: string;
+      readonly terminal_failure?: string;
+      readonly terminal_detail?: string;
+      readonly terminal_tick?: number;
+      readonly retained_floor_tick: number;
+      readonly late_input_tick?: number;
+    };
+    readonly checkpoints: readonly { readonly tick: number; readonly hash: string; readonly live: Readonly<Record<string, string>> }[];
     readonly mismatches: readonly { readonly tick: number }[];
     readonly control: readonly { readonly ordinal: number; readonly kind: string }[];
     readonly delivery: { readonly packets: readonly unknown[] };
+    readonly worst_correction?: {
+      readonly causal_tick: number;
+      readonly through_tick: number;
+      readonly depth: number;
+      readonly resimulated_ticks: number;
+    };
+    readonly events: {
+      readonly added: number;
+      readonly resimulated_tick_count: number;
+      readonly unchanged: number;
+      readonly replaced: number;
+      readonly revoked: number;
+    };
   };
   readonly runtime: {
     readonly star: { readonly last_error: string | null } | undefined;
@@ -247,6 +303,14 @@ interface TestArtifact {
     readonly events: readonly { readonly detail?: string; readonly code?: string }[];
     readonly signals: readonly { readonly content: string; readonly byte_length: number; readonly direction: string }[];
     readonly teardown: { readonly requested: boolean; readonly complete: boolean; readonly orphaned_peers: readonly string[] } | undefined;
+    readonly latency: readonly {
+      readonly peer_id: string;
+      readonly sample_count: number;
+      readonly rtt_ms_min?: number;
+      readonly rtt_ms_max?: number;
+      readonly monotonic_ms_first?: number;
+      readonly monotonic_ms_last?: number;
+    }[];
   };
   readonly anchors: readonly { readonly mapping_error_ms: number }[];
 }
@@ -292,6 +356,264 @@ function assertAbsent(artifact: unknown, poison: string): void {
       expect(text.includes(token), `fragment ${token} survived into the export`).toBe(false);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Real harness: two `MatchDriverBridge` peers relaying `drainOutboundJson`/
+// `enqueueInbound` directly (see the file header for why not through
+// `net_diagnostics_fixture.ts`), driving real `NetDiagnostics` recorders.
+// ---------------------------------------------------------------------------
+
+function newSession(host: SimHost): SimSession {
+  return new host.Session("nebula", "orion", 7, 20, 3);
+}
+
+function decodeControlMessageReal(host: SimHost): ProtocolDecoder {
+  return (payload) => {
+    try {
+      const header = host.decodeControlMessageHeader(payload);
+      return { kind: header.kind as SessionMessageKind, sequence: header.sequence, message_id: header.message_id };
+    } catch {
+      return null;
+    }
+  };
+}
+
+interface RealNetPeer {
+  readonly peerId: string;
+  readonly role: SessionRole;
+  readonly driver: WasmMatchDriverBridge;
+  readonly session: SimSession;
+  readonly recorder: NetDiagnostics;
+}
+
+interface RealNetHarness {
+  readonly peers: readonly RealNetPeer[];
+  readonly freeze: CoordinatorFreeze;
+  readonly manifest: SessionManifest;
+  step: number;
+  clock_ms: number;
+}
+
+function buildRealHarness(host: SimHost, mode: MatchMode, hashIntervalTicks: number): RealNetHarness {
+  const freezeJson = host.matchDriverFixtureFreezeJson(mode);
+  const manifestJson = host.matchDriverFixtureManifestJson(mode);
+  const freeze = JSON.parse(freezeJson) as CoordinatorFreeze;
+  const manifest = JSON.parse(manifestJson) as SessionManifest;
+  const peerIds = host.matchDriverFixturePeerIds(mode);
+  const decode = decodeControlMessageReal(host);
+
+  const peers: RealNetPeer[] = peerIds.map((peerId, index) => {
+    const role: SessionRole = index === 0 ? "host" : "guest";
+    const session = newSession(host);
+    const driver = new host.MatchDriverBridge(session, role, peerId, freezeJson, manifestJson, undefined);
+    driver.initializeTransport();
+    // Star topology: the host driver opens a slot for every guest; each
+    // guest driver opens only the host (a guest's own transport capacity is
+    // 1 -- `wasm_transport.rs`'s `WasmStarTransport::new` fixes it there for
+    // any non-host role, so opening a sibling guest by mistake throws "wasm
+    // transport is at peer capacity").
+    const others = role === "host" ? peerIds.filter((candidate) => candidate !== peerId) : [peerIds[0] as string];
+    for (const other of others) {
+      driver.openPeer(other);
+      driver.setPeerConnected(other);
+    }
+    const recorder = newNetDiagnostics({
+      role,
+      peer_id: peerId,
+      manifest,
+      freeze,
+      hash_interval_ticks: hashIntervalTicks,
+      export_opt_in: true,
+      decodeControlMessage: decode,
+    });
+    return { peerId, role, driver, session, recorder };
+  });
+
+  return { peers, freeze, manifest, step: 0, clock_ms: 0 };
+}
+
+interface WasmOutboundEnvelope {
+  readonly peer_id: string;
+  readonly channel: "control" | "input";
+  readonly message: {
+    readonly kind: "input" | "event" | "state";
+    readonly seq: number;
+    readonly tick?: number | null;
+    readonly payload_bytes: readonly number[];
+  };
+}
+
+// Shuttles every peer's `drainOutboundJson()` output straight into the
+// addressed peer's `enqueueInbound` -- see the file header.
+function deliverAllReal(peers: readonly RealNetPeer[]): void {
+  const drained = peers.map((peer) => JSON.parse(peer.driver.drainOutboundJson()) as WasmOutboundEnvelope[]);
+  peers.forEach((sender, senderIndex) => {
+    for (const envelope of drained[senderIndex] ?? []) {
+      const receiver = peers.find((candidate) => candidate.peerId === envelope.peer_id);
+      if (receiver === undefined) {
+        continue;
+      }
+      receiver.driver.enqueueInbound(
+        sender.peerId,
+        envelope.channel,
+        envelope.message.kind,
+        envelope.message.seq,
+        envelope.message.tick ?? undefined,
+        new Uint8Array(envelope.message.payload_bytes)
+      );
+    }
+  });
+}
+
+// Mirrors `net_diagnostics_fixture.ts`'s own `quality`: synthetic and a
+// function of the step, not a real transport measurement -- see that
+// module's doc for why that is still a legitimate runtime sample.
+function realQuality(step: number, rttBiasMs: number): { readonly rtt_ms: number; readonly jitter_ms: number } {
+  const phase = step % 5;
+  return { rtt_ms: 18 + phase * 2 + rttBiasMs, jitter_ms: phase * 0.5 };
+}
+
+const REAL_CLOCK_STEP_MS = 1000 / 60;
+const REAL_ANCHOR_INTERVAL = 15;
+const REAL_MAPPING_ERROR_MS = REAL_CLOCK_STEP_MS / 2;
+
+interface RunRealOptions {
+  /** Deliver every `period` steps; omit to deliver every step. */
+  readonly period?: number;
+  readonly rttBiasMs?: number;
+  readonly clockStepMs?: number;
+  readonly anchorInterval?: number;
+  /** Per-peer-index sample wire override (0 = host); neutral otherwise. */
+  readonly samples?: Readonly<Record<number, string>>;
+  /**
+   * Once `step` reaches this, every peer's outbound queue is still drained
+   * every step (so it cannot grow unbounded on its own) but never
+   * delivered to anyone -- a permanent transport stall, rather than
+   * `period`'s periodic burst. `MatchDriverBridge`'s internal transport has
+   * a fixed 64-message inbound queue with no way to raise it from this
+   * bridge's public surface (`WasmStarTransport::new`'s `queue_limit` is
+   * always `None` from `MatchDriverBridge::new`) -- a `period` large enough
+   * to exceed the ~30-tick rollback window reliably overflows that queue
+   * first ("wasm transport is at peer capacity" / "wasm transport inbound
+   * queue is full", confirmed empirically), so a genuine window-exceeded
+   * case needs a permanent stall instead of a burst.
+   */
+  readonly stopDeliveryAfterStep?: number;
+}
+
+// `diagnosticsJson()`'s optional fields (`terminal`/`late_input_tick`/
+// `control_slot`) round-trip through JSON as an explicit `null`
+// (`match_driver_bridge.rs`'s `diagnostics_to_json` uses `.map_or(Json::Null,
+// ...)`), never an absent key -- `JSON.parse` turns that into JS `null`, not
+// `undefined`. `MatchDriverDiagnostics` declares them `readonly field?: T`
+// (absent-or-present, i.e. `undefined`), and `recordStep` checks
+// `!== undefined`, so a raw parse crashes on `terminal.status` for any tick
+// with no terminal (`Cannot read properties of null`) -- confirmed
+// empirically driving the real bridge. Filed as a finding (see this file's
+// final report); worked around here rather than in `net_diagnostics.ts`
+// itself, since this exact JSON-boundary normalization is what any real
+// caller of `MatchDriverBridge.diagnosticsJson()` will need regardless.
+function normalizeDriverDiagnostics(raw: unknown): MatchDriverDiagnostics {
+  const record = { ...(raw as Record<string, unknown>) };
+  for (const key of ["terminal", "late_input_tick", "control_slot"]) {
+    if (record[key] === null) {
+      delete record[key];
+    }
+  }
+  // `driver_terminal_to_json` has the same null-vs-absent gap one level
+  // down (`failure`/`tick` are `Option<T>` encoded via `Json::opt_*`, which
+  // is `Json::Null` when absent, not an omitted key).
+  if (record.terminal !== undefined && record.terminal !== null) {
+    const terminal = { ...(record.terminal as Record<string, unknown>) };
+    for (const key of ["failure", "tick"]) {
+      if (terminal[key] === null) {
+        delete terminal[key];
+      }
+    }
+    record.terminal = terminal;
+  }
+  return record as unknown as MatchDriverDiagnostics;
+}
+
+function runReal(host: SimHost, harness: RealNetHarness, steps: number, options: RunRealOptions = {}): void {
+  const neutral = host.inputFrameNeutralSample();
+  const clockStepMs = options.clockStepMs ?? REAL_CLOCK_STEP_MS;
+  const anchorInterval = options.anchorInterval ?? REAL_ANCHOR_INTERVAL;
+  for (let step = 0; step < steps; step += 1) {
+    harness.peers.forEach((peer, index) => {
+      const sampleWire = options.samples?.[index] ?? neutral;
+      const batch = JSON.parse(peer.driver.advance(sampleWire)) as MatchDriverBatch;
+      const diagnostics = normalizeDriverDiagnostics(JSON.parse(peer.driver.diagnosticsJson()));
+      recordStep(peer.recorder, diagnostics, batch);
+      const { rtt_ms, jitter_ms } = realQuality(harness.step, options.rttBiasMs ?? 0);
+      for (const other of harness.peers) {
+        if (other.peerId !== peer.peerId) {
+          recordRuntimeSample(peer.recorder, { peer_id: other.peerId, monotonic_ms: harness.clock_ms, rtt_ms, jitter_ms });
+        }
+      }
+      if (anchorInterval > 0 && harness.step % anchorInterval === 0) {
+        recordAnchor(peer.recorder, {
+          input_tick: batch.input_tick,
+          monotonic_ms: harness.clock_ms,
+          mapping_error_ms: REAL_MAPPING_ERROR_MS,
+        });
+      }
+    });
+    if (options.stopDeliveryAfterStep !== undefined && step >= options.stopDeliveryAfterStep) {
+      // Drain-only: prevents each peer's own outbound buffer from growing
+      // unbounded, but never reaches another peer -- see this option's doc.
+      for (const peer of harness.peers) {
+        peer.driver.drainOutboundJson();
+      }
+    } else if (options.period === undefined || (step + 1) % options.period === 0) {
+      deliverAllReal(harness.peers);
+    }
+    harness.step += 1;
+    harness.clock_ms += clockStepMs;
+  }
+}
+
+function realPeer(harness: RealNetHarness, peerId: string): RealNetPeer {
+  const found = harness.peers.find((candidate) => candidate.peerId === peerId);
+  if (found === undefined) {
+    throw new Error(`no real peer named ${peerId}`);
+  }
+  return found;
+}
+
+// A real forged input bundle -- `net_diagnostics_fixture.ts`'s
+// `forgedBundle`, driven by real `@gc/wasm` calls instead of injected ports.
+// Ownership is a frozen partition, so a slot outside the sender's owned set
+// is an `ownership_violation` and a second bundle on the same sequence with
+// different bytes is an `authority_conflict`.
+function forgeBundleReal(
+  host: SimHost,
+  harness: RealNetHarness,
+  senderId: string,
+  slotIndex: number,
+  sequence: number,
+  transportTick: number,
+  edges: number
+): { readonly seq: number; readonly tick: number; readonly bytes: Uint8Array } {
+  const constants = JSON.parse(host.inputProtocolConstantsJson()) as { readonly history_rows: number };
+  const rows: { readonly tick: number; readonly slot_index: number; readonly sample: string }[] = [];
+  for (let tick = 0; tick <= constants.history_rows; tick += 1) {
+    const sample = host.inputFrameNewSample(0, 0, 0, tick === constants.history_rows ? edges : 0);
+    rows.push({ tick, slot_index: slotIndex, sample });
+  }
+  const packet = host.inputProtocolNewGuest(
+    harness.manifest.session_id,
+    harness.freeze.manifest_id,
+    senderId,
+    sequence,
+    transportTick,
+    harness.freeze.first_input_tick,
+    undefined,
+    JSON.stringify(rows)
+  );
+  const bytes = host.inputProtocolEncode(packet);
+  return { seq: packet.sequence, tick: packet.transport_tick, bytes };
 }
 
 describe("diagnostics schema", () => {
@@ -477,13 +799,120 @@ describe("net diagnostics collection", () => {
   // real multi-tick run -- rollback counts, checkpoint hashes, packet
   // lifecycle timing. See this file's header comment: re-port these once a
   // `NetDiagnosticsFixtureEnv` backed by the real `gc-netcode` exists.
-  describe.skip("live-driver runs (blocked: no wasm bridge exists for match_driver_fixture/input_protocol/input_frame -- see the file header comment)", () => {
+  // Still blocked -- transport-level diagnostics (`runtime.star`/
+  // `runtime.peers`/packet lifecycle) are unreachable through
+  // `MatchDriverBridge`. See the file header for the precise, current
+  // reason (replaces the earlier "no wasm bridge" claim, which is stale).
+  describe.skip("live-driver runs, transport-shaped claims (blocked: MatchDriverBridge's internal transport exposes no TransportStarDiagnostics-shaped data -- see the file header comment)", () => {
     it.skip("summarises a clean 2v2 run with both clocks kept apart", () => {});
     it.skip("folds star and per-channel transport counters into the runtime section", () => {});
     it.skip("records the sample, send, arrival, and apply lifecycle of a packet", () => {});
-    it.skip("counts rollback, resimulation, and event reconciliation under impairment", () => {});
-    it.skip("keeps canonical evidence byte-stable while runtime observation moves", () => {});
-    it.skip("reproduces the canonical projection across two identical runs", () => {});
+  });
+
+  describe("live-driver runs, canonical/simulation claims (real wasm bridges)", () => {
+    it("counts rollback, resimulation, and event reconciliation under impairment", () => {
+      const host = loadSimHost();
+      const harness = buildRealHarness(host, "2v2", 6);
+      const samples = {
+        0: host.inputFrameNewSample(90, 0),
+        1: host.inputFrameNewSample(0, -70),
+      };
+      // Bursty, under-delivered: every 6th step, like the Lua original's
+      // `fixture.run_bursty(harness, 60, 6, samples)`.
+      runReal(host, harness, 60, { period: 6, samples });
+
+      const artifact = exportOf(realPeer(harness, "host").recorder);
+      const simulation = artifact.canonical.simulation;
+      expect(simulation.status).toBe("active");
+      expect(simulation.rollback_count > 0, "bursty delivery produced no rollback").toBe(true);
+      expect(simulation.resimulated_ticks > 0, "a rollback resimulated nothing").toBe(true);
+      expect(simulation.max_rollback_depth > 0).toBe(true);
+
+      const worst = artifact.canonical.worst_correction;
+      expect(worst, "no worst correction recorded").toBeDefined();
+      expect(worst !== undefined && worst.depth >= 1).toBe(true);
+      expect(worst !== undefined && worst.through_tick >= worst.causal_tick).toBe(true);
+      expect(worst !== undefined && worst.resimulated_ticks > 0).toBe(true);
+
+      const events = artifact.canonical.events;
+      expect(events.added > 0, "no tick was ever emitted for the first time").toBe(true);
+      expect(events.resimulated_tick_count).toBe(events.unchanged + events.replaced + events.revoked);
+
+      // Two peers' exports must agree on every confirmed boundary both
+      // hashed, and on the live slot each human held there.
+      const other = exportOf(realPeer(harness, "guest_1").recorder);
+      const byTick = new Map(other.canonical.checkpoints.map((checkpoint) => [checkpoint.tick, checkpoint] as const));
+      let compared = 0;
+      for (const checkpoint of artifact.canonical.checkpoints) {
+        const mine = byTick.get(checkpoint.tick);
+        if (mine !== undefined) {
+          compared += 1;
+          expect(mine.hash, `boundary ${checkpoint.tick}`).toBe(checkpoint.hash);
+          for (const [producerId, slot] of Object.entries(checkpoint.live)) {
+            expect(mine.live[producerId], `live slot for ${producerId}`).toBe(slot);
+          }
+        }
+      }
+      expect(compared > 0, "two peers shared no confirmed boundary to compare").toBe(true);
+    });
+
+    it("keeps canonical evidence byte-stable while runtime observation moves", () => {
+      const host = loadSimHost();
+      function build(rttBiasMs: number, clockStepMs: number): RealNetHarness {
+        const harness = buildRealHarness(host, "2v2", 6);
+        runReal(host, harness, 45, { period: 5, rttBiasMs, clockStepMs, samples: { 0: host.inputFrameNewSample(45, 0) } });
+        return harness;
+      }
+
+      const reference = build(0, REAL_CLOCK_STEP_MS);
+      const sameScheduleOtherClock = build(37, REAL_CLOCK_STEP_MS * 2);
+
+      const referenceRecorder = realPeer(reference, "host").recorder;
+      const otherRecorder = realPeer(sameScheduleOtherClock, "host").recorder;
+
+      const referenceBytes = canonicalBytes(referenceRecorder);
+      const otherBytes = canonicalBytes(otherRecorder);
+      expect(referenceBytes.ok && otherBytes.ok).toBe(true);
+      expect(
+        referenceBytes.ok && otherBytes.ok && otherBytes.value,
+        "canonical evidence changed when only the clock changed"
+      ).toBe(referenceBytes.ok && referenceBytes.value);
+
+      const referenceDigest = recorderDigest(referenceRecorder);
+      const otherDigest = recorderDigest(otherRecorder);
+      expect(referenceDigest.ok && otherDigest.ok).toBe(true);
+      expect(
+        referenceDigest.ok && otherDigest.ok && referenceDigest.value !== otherDigest.value,
+        "the full export claimed byte-identity across two different clocks"
+      ).toBe(true);
+
+      const a = exportOf(referenceRecorder);
+      const b = exportOf(otherRecorder);
+      expect(a.runtime.latency.length).toBe(b.runtime.latency.length);
+      a.runtime.latency.forEach((mine, index) => {
+        const other = b.runtime.latency[index];
+        expect(other?.peer_id).toBe(mine.peer_id);
+        expect(other?.sample_count, "sample counts are a schedule, not a clock").toBe(mine.sample_count);
+        expect(
+          other?.rtt_ms_min !== undefined && mine.rtt_ms_min !== undefined && other.rtt_ms_min > mine.rtt_ms_min,
+          "the bias did not move rtt"
+        ).toBe(true);
+      });
+    });
+
+    it("reproduces the canonical projection across two identical runs", () => {
+      const host = loadSimHost();
+      function runDigest(): string {
+        const harness = buildRealHarness(host, "1v1", 5);
+        runReal(host, harness, 40, { period: 4, samples: { 0: host.inputFrameNewSample(30, 0) } });
+        const result = canonicalDigest(realPeer(harness, "host").recorder);
+        if (!result.ok) {
+          throw new Error(result.error);
+        }
+        return result.value;
+      }
+      expect(runDigest()).toBe(runDigest());
+    });
   });
 
   it("holds the export behind an explicit opt-in", () => {
@@ -735,12 +1164,123 @@ describe("net diagnostics failure fixtures", () => {
   // Lua originals forge input bundles and hand them to a live driver's
   // transport, or call `match_driver.observe_checkpoint` directly). See
   // this file's header comment.
-  describe.skip("live-driver fault detection (blocked: no wasm bridge exists for match_driver_fixture/input_protocol's forged bundles -- see the file header comment)", () => {
-    it.skip("types an ownership violation", () => {});
-    it.skip("types an authority conflict", () => {});
-    it.skip("types over-window input and names the tick it was attributed to", () => {});
+  // Still blocked -- `gc_netcode::match_driver::observe_checkpoint` (needed
+  // to force a hash mismatch deterministically) has no wasm-bindgen binding
+  // at all: confirmed absent from `match_driver_bridge.rs` and `types.ts`.
+  // See the file header for why this is narrower than the stale "no wasm
+  // bridge" claim the other four cases in this group used to share.
+  describe.skip("live-driver fault detection, hash divergence (blocked: gc_netcode::match_driver::observe_checkpoint has no wasm-bindgen binding -- see the file header comment)", () => {
     it.skip("types hash divergence and keeps the first divergent boundary", () => {});
-    it.skip("types a guest disconnect and a host loss", () => {});
+  });
+
+  describe("live-driver fault detection (real wasm bridges)", () => {
+    it("types an ownership violation", () => {
+      const host = loadSimHost();
+      const harness = buildRealHarness(host, "2v2", 6);
+      runReal(host, harness, 4);
+      // guest_1 owns home_3/home_4 in this fixture's "2v2" ownership
+      // (confirmed by reading `matchDriverFixtureFreezeJson("2v2")`'s
+      // `owned` map); away_1 belongs to another human entirely. `slot_index`
+      // is 1-based on the wire (`match_driver.rs`'s `fill_relay_window`
+      // indexes `covered[slot_index - 1]`) -- confirmed empirically after
+      // an 0-based first attempt landed on guest_1's own `home_4` instead
+      // and produced no violation at all.
+      const guestId = (harness.peers[1] as RealNetPeer).peerId;
+      const hostDriver = realPeer(harness, "host").driver;
+      const transportTick = (JSON.parse(hostDriver.diagnosticsJson()) as { readonly transport_tick: number }).transport_tick;
+      const forged = forgeBundleReal(host, harness, guestId, 5 /* away_1 */, 9000, transportTick, 0);
+      hostDriver.enqueueInbound(guestId, "input", "input", forged.seq, forged.tick, forged.bytes);
+      runReal(host, harness, 1);
+
+      const simulation = exportOf(realPeer(harness, "host").recorder).canonical.simulation;
+      expect(simulation.status).toBe("ownership_violation");
+      expect(simulation.terminal_status).toBe("ownership_violation");
+      expect(simulation.terminal_failure).toBe("input_channel");
+      expect(simulation.terminal_detail).toBeDefined();
+    });
+
+    it("types an authority conflict", () => {
+      const host = loadSimHost();
+      const harness = buildRealHarness(host, "2v2", 6);
+      runReal(host, harness, 6);
+      const guestId = (harness.peers[1] as RealNetPeer).peerId;
+      const hostDriver = realPeer(harness, "host").driver;
+      const slotIndex = 3; // home_3 (1-based wire slot index), one of guest_1's own owned slots.
+      const dashBits = (JSON.parse(host.inputFrameEdgeBitsJson()) as Record<string, number>).dash as number;
+      const send = (edges: number): void => {
+        const transportTick = (JSON.parse(hostDriver.diagnosticsJson()) as { readonly transport_tick: number }).transport_tick;
+        const forged = forgeBundleReal(host, harness, guestId, slotIndex, 4242, transportTick, edges);
+        hostDriver.enqueueInbound(guestId, "input", "input", forged.seq, forged.tick, forged.bytes);
+      };
+
+      // One sender sequence with byte-identical authority is idempotent, so
+      // this establishes the rows rather than failing on them.
+      send(0);
+      send(0);
+      runReal(host, harness, 1);
+      expect(exportOf(realPeer(harness, "host").recorder).canonical.simulation.status).toBe("active");
+
+      // The same identity with different bytes conflicts with what history
+      // already holds.
+      send(0);
+      send(dashBits);
+      runReal(host, harness, 1);
+      const simulation = exportOf(realPeer(harness, "host").recorder).canonical.simulation;
+      expect(simulation.status).toBe("authority_conflict");
+      expect(simulation.terminal_failure).toBe("input_channel");
+    });
+
+    it("types over-window input and names the tick it was attributed to", () => {
+      const host = loadSimHost();
+      const harness = buildRealHarness(host, "2v2", 10);
+      // A permanent stall past step 5, not a `period` burst -- see
+      // `stopDeliveryAfterStep`'s doc for why a burst wide enough to exceed
+      // the rollback window overflows the transport's fixed inbound queue
+      // first.
+      runReal(host, harness, 45, { stopDeliveryAfterStep: 5 });
+      let terminal = 0;
+      for (const peer of harness.peers) {
+        const simulation = exportOf(peer.recorder).canonical.simulation;
+        // Since #241 the driver catches this on confirmation liveness at the
+        // step the tick becomes unconfirmable, rather than on the arrival
+        // that used to reveal it (see the Lua original's own comment).
+        if (simulation.status === "confirmation_stalled") {
+          terminal += 1;
+          expect(simulation.terminal_failure).toBe("late_input");
+          expect(simulation.terminal_tick).toBeDefined();
+          expect(simulation.late_input_tick).toBeDefined();
+          expect((simulation.late_input_tick as number) < simulation.retained_floor_tick + 1, "a late input was attributed above the retained floor").toBe(
+            true
+          );
+        }
+      }
+      expect(terminal > 0, "an over-window burst terminated nobody").toBe(true);
+    });
+
+    it("types a guest disconnect and a host loss", () => {
+      const host = loadSimHost();
+      const harness = buildRealHarness(host, "2v2", 6);
+      runReal(host, harness, 8);
+      const guestId = (harness.peers[1] as RealNetPeer).peerId;
+      realPeer(harness, "host").driver.setPeerDisconnected(guestId, "peer_left");
+      runReal(host, harness, 1);
+      expect(exportOf(realPeer(harness, "host").recorder).canonical.simulation.status).toBe("transport_lost");
+
+      const other = buildRealHarness(host, "2v2", 6);
+      runReal(host, other, 8);
+      const hostId = (other.peers[0] as RealNetPeer).peerId;
+      for (const peer of other.peers) {
+        if (peer.role !== "host") {
+          peer.driver.setPeerDisconnected(hostId, "host_left");
+        }
+      }
+      runReal(host, other, 1);
+      for (const peer of other.peers) {
+        if (peer.role !== "host") {
+          expect(exportOf(peer.recorder).canonical.simulation.status).toBe("transport_lost");
+        }
+      }
+    });
   });
 
   it("reports orphaned links and residual queues at teardown", () => {

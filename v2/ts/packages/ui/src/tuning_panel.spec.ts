@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { loadSimHost } from "@gc/wasm";
 import { TuningPanel } from "./tuning_panel.ts";
 import type { Knob, TuningPreset, TuningSource } from "./tuning_panel.ts";
 
@@ -161,34 +162,52 @@ describe("tuning panel row/category navigation", () => {
   });
 });
 
-// Skipped: the Lua spec's "tuning presets data" block validates the REAL
-// preset blobs (data/tuning_presets.lua) against the REAL knob registry
+// The Lua spec's "tuning presets data" block validates the REAL preset
+// blobs (data/tuning_presets.lua) against the REAL knob registry
 // (sim/tuning.lua) — every preset line names a real knob within its
 // min/max, and the first preset is pure defaults. Both source modules are
-// Rust now (crates/gc-data/src/tuning_presets.rs, crates/gc-sim/src/tuning.rs
-// — both exist and have their own Rust tests, crates/gc-sim/tests/tuning.rs)
-// per v2/README.md's determinism-line rule.
+// Rust now (crates/gc-data/src/tuning_presets.rs, crates/gc-sim/src/tuning.rs).
 //
-// The blocker named here used to be "the JS<->wasm bridge does not exist" —
-// that is stale: @gc/wasm is real and working (packages/wasm/src/index.ts's
-// SimHost). The accurate current blocker is narrower: SimHost's surface
-// (session lifecycle, determinism evidence, the raw RenderFrame path) does
-// not include the knob registry or preset list — grepping
-// crates/gc-wasm/src turns up no bound export for either. Re-port this
-// coverage once a gc-wasm export surfaces sim::tuning's registry and
-// data::tuning_presets's blobs to JS (a Rust-crate change, out of this
-// package's scope) — not once crates/gc-sim/src/tuning.rs exists, since it
-// already does.
-describe.skip("tuning presets data", () => {
-  it.skip("every preset line names a real knob with an in-range value", () => {
-    // Not expressible from @gc/ui: needs a gc-wasm export for the real
-    // sim/tuning.lua knob registry and data/tuning_presets.lua blobs. Both
-    // exist in Rust (crates/gc-sim/src/tuning.rs,
-    // crates/gc-data/src/tuning_presets.rs); neither is exposed through
-    // @gc/wasm's SimHost yet.
+// This used to be `it.skip`, twice over: first because "the JS<->wasm
+// bridge does not exist" (stale by the time the second pass landed), then
+// because "SimHost's surface does not include the knob registry or preset
+// list" (also now stale). `crates/gc-wasm/src/tuning_bridge.rs` landed
+// since: `@gc/wasm`'s `SimHost` now exposes `TuningRegistry` (a live
+// `gc_sim::tuning` knob registry) and `tuningPresets()`
+// (`gc_data::tuning_presets::ALL`), and `TuningRegistry`'s own method set
+// (`categories`/`inCategory`/`valueOf`/`nudge`/`reset`/`isDefault`/
+// `serialize`/`deserialize`) already satisfies this file's own
+// `TuningSource` interface structurally. Re-ported for real below.
+describe("tuning presets data", () => {
+  it("every preset line names a real knob with an in-range value", () => {
+    const host = loadSimHost();
+    const registry = new host.TuningRegistry();
+    const presets = host.tuningPresets();
+    const knobsByKey = new Map<string, Knob>();
+    for (const category of registry.categories()) {
+      for (const knob of registry.inCategory(category)) {
+        knobsByKey.set(knob.key, knob);
+      }
+    }
+    for (const preset of presets) {
+      for (const line of preset.blob.split(/\r?\n/)) {
+        if (line === "") {
+          continue;
+        }
+        const match = /^([A-Za-z0-9_]+)=(-?[\d.eE-]+)$/.exec(line);
+        expect(match, `${preset.id}: malformed line ${line}`).not.toBeNull();
+        const key = match?.[1] as string;
+        const value = Number(match?.[2]);
+        const knob = knobsByKey.get(key);
+        expect(knob, `${preset.id}: unknown knob ${key}`).toBeDefined();
+        expect(knob !== undefined && value >= knob.min && value <= knob.max, `${preset.id}: ${key} out of range`).toBe(true);
+      }
+    }
   });
 
-  it.skip("the first preset is pure defaults", () => {
-    // Same as above.
+  it("the first preset is pure defaults", () => {
+    const host = loadSimHost();
+    const presets = host.tuningPresets();
+    expect(presets[0]?.blob).toBe("");
   });
 });

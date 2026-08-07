@@ -33,20 +33,47 @@
 // mismatches, or confirmation stalls would itself be a rollback
 // implementation, which is exactly what the boundary rule forbids here.
 //
-// As of the `gc-wasm` `MatchDriverBridge` landing, one of this env's five
-// ports (`matchDriver`) has a *partial* real counterpart in `@gc/wasm` --
-// but `MatchDriverBridge` exposes an opaque `advance()` aggregate plus JSON
-// dumps, not this port's `create`/`advance`/`diagnostics` object shape, so
-// it does not satisfy `MatchDriverPort` as declared here without an adapter
-// layer. The other four (`matchDriverFixture`, `protocol`, `inputProtocol`,
-// `inputFrame`) have no wasm bridge at all yet -- `matchDriverFixture` is
-// the one this port most needs first: `MatchDriverBridge`'s own constructor
-// needs a `freezeJson`/`manifestJson` pair that nothing in `@gc/wasm` can
-// produce today (confirmed empirically; see `match_presentation.spec.ts`'s
-// header for the probe). `@gc/online` now declares `@gc/wasm` as a
-// dependency (fixed since this was last written). See
-// `net_diagnostics.spec.ts`'s header comment and this port's final report
-// for the full breakdown and which spec cases that leaves unrun.
+// # Re-audited against the current `@gc/wasm`
+//
+// This comment used to say four of this env's five ports (`matchDriverFixture`,
+// `protocol`, `inputProtocol`, `inputFrame`) had no wasm bridge at all. That
+// is stale: `match_driver_fixture_bridge.rs`, `input_protocol_bridge.rs`, and
+// `input_frame_bridge.rs` all landed since, each with its own passing
+// `packages/wasm/src/*.spec.ts`.
+//
+// What is real, and turned out to matter more than the missing bridges did:
+// this env's `MatchDriverPort` shape -- `create(options)` taking an
+// *injected* `options.transport: StarTransportAdapter` the driver calls
+// into, mirroring `game.online.match_driver.new({transport = tap})` -- does
+// not fit `MatchDriverBridge`'s architecture at all. `MatchDriverBridge`
+// owns its own internal transport (`crate::wasm_transport::WasmStarTransport`,
+// no `#[wasm_bindgen]` surface, never injectable) and expects the *caller*
+// to relay bytes via `drainOutboundJson`/`enqueueInbound` (the "queue/drain
+// seam" `match_driver_bridge.rs`'s module doc describes) -- the inverse of
+// dependency injection. `DiagnosticTransport`'s wrapped `send`/`poll`
+// methods (which record star/channel/packet diagnostics as a side effect
+// of being called *by the driver*) can therefore never observe a
+// `MatchDriverBridge`'s traffic, and `TransportStarDiagnostics`-shaped data
+// for its internal transport is not exposed by `@gc/wasm` at all (confirmed
+// by reading `crates/gc-wasm/src/wasm_transport.rs` end to end).
+//
+// `net_diagnostics.spec.ts` does not route through this module's
+// `NetDiagnosticsFixtureEnv`/`MatchDriverPort` for that reason: it builds a
+// real two-peer `MatchDriverBridge` harness directly (relaying
+// `drainOutboundJson`/`enqueueInbound` itself, and calling `recordStep`/
+// `recordAnchor`/`recordRuntimeSample` straight from the harness rather than
+// through a `DiagnosticTransport` tap), unblocking seven of that file's
+// eleven live-driver cases -- the ones whose claims are canonical/simulation
+// data or reachable via `enqueueInbound`/`setPeerDisconnected` directly, not
+// transport-level counters. See that file's header for the full breakdown
+// of what is and is not reachable this way, and for why that leaves this
+// module's own port shapes unused rather than rewritten: a caller who does
+// want the Lua original's dependency-injection shape (e.g. wiring a *real*
+// `@gc/transport` adapter, not a test fixture) still needs the thin
+// `StarTransportAdapter` wrapper over `MatchDriverBridge`'s queue/drain seam
+// that `match_driver_bridge.rs`'s own doc names as `@gc/online`'s job --
+// that is a production concern, not a test-harness one, and is out of this
+// audit's scope.
 
 import type { Result } from "@gc/core";
 import { newMessage, type StarTransportAdapter, type TransportMessage, type TransportPeerMessage } from "@gc/transport";

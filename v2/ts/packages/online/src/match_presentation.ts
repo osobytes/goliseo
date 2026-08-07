@@ -42,36 +42,53 @@ import type { Result } from "@gc/core";
 // state to decide what to *show*, which is presentation, but it calls four
 // functions belonging to those modules (`rollback_events.new/apply/confirm
 // /diagnostics` and `match_driver.snapshot/diagnostics`) that this port has
-// no Rust bridge to reach. `@gc/wasm` now exposes those four as separate
+// no Rust bridge to reach. `@gc/wasm` exposes those four as separate
 // callable primitives -- `RollbackEventsTimeline`'s `create`/`apply`/
 // `confirm`/`diagnosticsJson` (`crates/gc-wasm/src/
 // rollback_events_bridge.rs`) and `MatchDriverBridge.snapshotLookup`/
 // `diagnosticsJson` (`crates/gc-wasm/src/match_driver_bridge.rs`) -- built
 // specifically to satisfy `RollbackEventsPort`/`MatchDriverPort` below, and
-// the correction-batch case is no longer skipped on the Rust side either.
-// What still blocks a real adapter is that nothing in `@gc/wasm` can build
-// the `freezeJson`/`manifestJson` `MatchDriverBridge`'s constructor needs
-// in the first place (`match_driver_fixture` is ported in
-// `crates/gc-netcode` but has no `wasm-bindgen` binding yet), and that a
-// real `RollbackEventsPort.apply` adapter needs more of the driver's raw
-// per-tick output than `RollbackTickOutput` below currently carries. See
-// `match_presentation.spec.ts`'s header comment for the full, empirically
-// checked breakdown. Rather than duplicate rollback scheduling here --
-// which the README is explicit is the one thing that must never happen on
-// this side of the determinism line -- those four functions are threaded
-// through as `RollbackEventsPort`/`MatchDriverPort`, injected the same way
-// `@gc/ui/src/tuning_panel.ts` injects `TuningSource`. `MatchSnapshot`,
-// `RollbackEventTimeline`, and every wrapped-event payload stay fully
-// opaque type parameters: this module never inspects their contents, only
-// passes them through.
+// the correction-batch case is not skipped on the Rust side either. A real
+// adapter over both is built and exercised in `match_presentation.spec.ts`
+// (`match_driver_fixture_bridge.rs` closed the remaining
+// `freezeJson`/`manifestJson` construction gap; see that file's header for
+// which cases it does and does not reach). Rather than duplicate rollback
+// scheduling here -- which the README is explicit is the one thing that
+// must never happen on this side of the determinism line -- those four
+// functions are threaded through as `RollbackEventsPort`/`MatchDriverPort`,
+// injected the same way `@gc/ui/src/tuning_panel.ts` injects `TuningSource`.
+// `MatchSnapshot`, `RollbackEventTimeline`, and every wrapped-event payload
+// stay fully opaque type parameters: this module never inspects their
+// contents, only passes them through.
+//
+// `RollbackTickOutput` below is now the *full*
+// `gc_wasm::rollback_events_bridge::tick_output_to_json` shape, not just
+// `tick`/`end_boundary` -- widened so a real `RollbackEventsPort.apply`
+// adapter can build `outputsJson` directly from `structuredClone`d driver
+// output (`MatchDriverBridge.advance`'s batch already embeds exactly this
+// shape per entry under `"outputs"`; see `match_driver_bridge.rs`'s
+// `output_summary_to_json`). Every field past `tick`/`end_boundary` is
+// still opaque to this module -- `consume` never reads them, only forwards
+// them into `RollbackEventStepInput.output` for the port to serialize.
 
 /** `sim.match_driver`'s (or `sim.rollback_session`'s) `MatchSnapshot` -- opaque here; never inspected. */
 export type OpaqueSnapshot = unknown;
 
-/** `game.online.match_driver`'s `RollbackTickOutput` (Rust-owned; only the fields this module reads). */
+/** `game.online.match_driver`'s `RollbackTickOutput` (Rust-owned) -- the
+ * full `gc_wasm::rollback_events_bridge::tick_output_to_json` shape (see the
+ * module doc). `tick`/`end_boundary` are the only fields this module itself
+ * reads; the rest are opaque and exist so a `RollbackEventsPort.apply`
+ * adapter can serialize a real driver output straight into
+ * `RollbackEventsTimeline.apply`'s `outputsJson` without a second shape. */
 export interface RollbackTickOutput {
   readonly tick: number;
+  readonly start_boundary: number;
   readonly end_boundary: number;
+  readonly finished: boolean;
+  readonly score: { readonly home: number; readonly away: number };
+  readonly time_left: number;
+  readonly events: readonly unknown[];
+  readonly combat_events: readonly unknown[];
 }
 
 /** `game.online.match_driver`'s `MatchDriverBatch` (Rust-owned; only the field this module reads). */

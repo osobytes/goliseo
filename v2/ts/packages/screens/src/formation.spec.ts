@@ -4,14 +4,29 @@
 // verbatim below (content.ts's header explains why this package receives
 // rather than imports `data/**`). The Lua spec's final case,
 // "only offers formations accepted by the match simulation", drives
-// `sim.match.new` directly — `sim/**` is Rust-owned (`crates/gc-sim`).
-// `@gc/wasm` now bridges `gc-sim` into TypeScript (v2/README.md §1), but
-// `@gc/screens` (this package, "pure layout/update, no drawing" per its own
-// description) does not declare `@gc/wasm` as a dependency and should not
-// gain one just to reach a sim constructor — that dependency direction
-// belongs to a screen's host/assembly layer (`@gc/app`), not to a layout
-// module. Still ported as `it.skip`; see that test for what would unblock
-// it.
+// `sim.match.new({home_formation = id, ...})` directly — `sim/**` is
+// Rust-owned (`crates/gc-sim`).
+//
+// # Re-audited against the current `@gc/wasm`
+//
+// This comment used to say `@gc/screens` "does not declare `@gc/wasm` as a
+// dependency and should not gain one." That is stale in a way worth
+// correcting even though the case stays skipped: `packages/screens
+// /package.json` now lists `@gc/wasm` as a **devDependency** (test-only,
+// exactly the shape this file would need — production `formation.ts` still
+// never imports it, so the dependency-direction rule the old comment cared
+// about is intact).
+//
+// What actually still blocks this case is narrower and different:
+// `@gc/wasm`'s `SimSession` constructor (`crates/gc-wasm/src/session.rs`)
+// hard-codes `home_formation: None` when it calls `sim_match::new` — there
+// is no parameter, anywhere in `Session::new`'s five arguments, to choose
+// which formation a match starts with. Confirmed by reading `session.rs`
+// end to end: nothing in `@gc/wasm`'s surface can select a formation at
+// all, so "every formation this screen offers round-trips through
+// `sim.match.new`" cannot be exercised regardless of the dependency being
+// available now. Re-port once `SimSession` (or a purpose-built bridge)
+// exposes a formation choice.
 
 import { describe, expect, it } from "vitest";
 import { hit } from "@gc/ui";
@@ -171,10 +186,10 @@ describe("formation screen", () => {
     expect(action?.formation).toBe("1-2-1");
   });
 
-  // Needs `sim.match.new` (Rust-owned, `crates/gc-sim`; no TypeScript bridge
-  // exists in this milestone — v2/README.md §1). Re-port once the sim is
-  // reachable from TypeScript, e.g. via a wasm binding or a differential
-  // fixture generated from the Rust port.
+  // `@gc/wasm`'s `SimSession` exists and is reachable here now (a
+  // devDependency), but its constructor has no formation parameter at all
+  // (`session.rs` hard-codes `home_formation: None`) -- see this file's
+  // header for the precise, current reason.
   it.skip("only offers formations accepted by the match simulation", () => {
     // Needs a TypeScript- or wasm-reachable sim.match.new.
   });
