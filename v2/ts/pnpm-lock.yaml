@@ -96,6 +96,9 @@ importers:
         specifier: ^0.180.0
         version: 0.180.0
     devDependencies:
+      '@gc/wasm':
+        specifier: workspace:*
+        version: link:../wasm
       '@types/three':
         specifier: ^0.180.0
         version: 0.180.0
