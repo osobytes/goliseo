@@ -115,6 +115,7 @@ import {
   type SessionRole,
 } from "./net_diagnostics.ts";
 import { DiagnosticTransport } from "./diagnostic_transport.ts";
+import { build as desyncPackageBuild, encode as desyncPackageEncode } from "./desync_package.ts";
 
 // ---------------------------------------------------------------------------
 // Test fixtures (direct construction -- see the module doc comment)
@@ -1277,13 +1278,49 @@ describe("net diagnostics privacy", () => {
     expect(last?.code).toBe("overflow");
   });
 
-  // Not expressible from @gc/online: `desync_package.build` belongs to
-  // `game.online.desync_package`, which is Rust-owned (`crates/gc-netcode`)
-  // and out of this package's scope entirely -- no TS port of it exists to
-  // call. Re-port once a `desync_package` equivalent exists on the Rust
-  // side and this package is handed an injected port for it, mirroring
-  // `match_presentation.ts`.
-  it.skip("stops poisoned free text reaching a desync package", () => {});
+  // `desync_package.ts` is a narrow port -- see that file's header for what
+  // it covers and what it deliberately leaves for the Rust-owned
+  // `crates/gc-netcode/src/desync_package.rs` (wire identity, schema-checked
+  // round trip, cross-language digest). What it does have is enough for
+  // this case: build a package from a recorder that already redacted
+  // poisoned free text at `recordEvent` time, and confirm the package (and
+  // its encoded form) never carries it. The package embeds runtime events
+  // verbatim, so redaction has to have happened on the way in rather than
+  // on the way out.
+  it("stops poisoned free text reaching a desync package", () => {
+    const recorder = newTestRecorder();
+    for (const [index, poison] of POISON.entries()) {
+      expect(
+        recordEvent(recorder, {
+          kind: "peer_error",
+          monotonic_ms: index * 10,
+          peer_id: "guest_1",
+          detail: poison,
+        }).ok
+      ).toBe(true);
+    }
+    const built = desyncPackageBuild({
+      recorder,
+      peer_id: "host_1",
+      remote_peer_id: "guest_1",
+      agreed_boundary_tick: 0,
+      agreed_boundary_hash: "0123456789abcdef",
+      divergence_tick: 30,
+      local_hash: "fedcba9876543210",
+      remote_hash: "deadbeefdeadbeef",
+      input_wires: [],
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    for (const poison of POISON) {
+      assertAbsent(built.value, poison);
+    }
+    const encoded = desyncPackageEncode(built.value);
+    expect(encoded.ok).toBe(true);
+    if (encoded.ok) {
+      expect(encoded.value.includes("192.168.1.14")).toBe(false);
+    }
+  });
 
   it("refuses to store a direct identifier as a peer id", () => {
     const recorder = newTestRecorder();

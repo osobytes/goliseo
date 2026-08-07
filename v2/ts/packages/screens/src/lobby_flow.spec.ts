@@ -2281,14 +2281,10 @@ describe("online lobby screen shell", () => {
     guest.teardown();
   });
 
-  // `@gc/app`'s screen stack and `@gc/screens`' menu routing are what this
-  // case would drive, but `@gc/app` depends on `@gc/screens` -- not the
-  // other way around (see `packages/app/package.json`) -- and per
-  // `v2/README.md`'s directory table, `@gc/app` is the layer meant to wire
-  // screens together, not `@gc/screens` itself. This package's own
-  // `package.json` (which this port may not edit) does not, and
-  // architecturally should not, depend on `@gc/app`.
-  it.skip("is reachable from the title and returns to it", () => {});
+  // "is reachable from the title and returns to it" moved to
+  // `packages/app/src/lobby_flow.spec.ts`: the case is about `game.app`'s
+  // routing, and `@gc/screens` cannot depend on `@gc/app` (the dependency
+  // runs the other way).
 });
 
 // ---------------------------------------------------------------------------
