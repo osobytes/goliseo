@@ -244,7 +244,7 @@ before.
 - `v2/ts/packages/render/src/camera.spec.ts` — the `camera.project` numeric
   differential, appended after the existing tests.
 
-## Open: the washed-out characters — root cause identified, not yet fixed
+## Fixed: the washed-out characters
 
 Characters render pale and near-white; team colours are present but heavily
 desaturated. Two independent scratch experiments on a real RTX 2070 SUPER
@@ -294,3 +294,55 @@ therefore the erroneous dot product, rather than being a second cause.
 **Likely fix.** Use a constant view direction under an orthographic camera
 rather than `normalize(vViewPosition)`. Do NOT retune the cel constants — they
 are correct, and changing them would hide this rather than fix it.
+
+### What the fix turned out to be
+
+The rim diagnosis above was right and incomplete. Fixing the view direction
+alone would not have helped much, because two more things were wrong in the
+same place, and each on its own is enough to flatten a character. All three are
+the same root cause seen from three angles: **the shading was being evaluated
+in a space that is not a space** — pixels on X/Y, a 0.05 bookkeeping axis on Z.
+
+1. **The normals were destroyed, not merely mis-dotted.** A normal matrix is
+   the inverse transpose, so pitch.ts's `wrapper.scale.set(ppm, -ppm, 0.05)`
+   arrives in the shader as `diag(1/ppm, -1/ppm, 20)` — the Z component
+   amplified ~500x at a typical `ppm` of 25. Measured against that exact
+   transform chain: **32 of 32** sample normals spread around a character
+   collapse onto ±Z. `ndl` is then two values, both between
+   `BAND_MID_THRESHOLD` and `BAND_HIGH_THRESHOLD`, so the whole figure renders
+   in two flat tones and the bright band is never reached at all. The "toon"
+   quantisation had no form left to quantise. This is what the "supporting
+   data point" above was actually showing.
+2. **`vViewPosition` was wrong**, as diagnosed — and worse than "orthographic
+   vs perspective": the shared camera sits at `z = 1` in a scene where a
+   character is tens of pixels wide, so the vector points mostly *sideways*.
+   `dot(n, viewDir) ≈ 0`, `rim` saturates to 1 across the silhouette, and every
+   fragment gains a flat `RIM_TINT * 0.55` wash.
+3. **`if (!gl_FrontFacing) n = -n;` does not port.** It was carried over
+   verbatim from the Lua. `gl_FrontFacing` is raster state, not geometry, and
+   the two hosts disagree: three.js flips the front-face convention per object
+   when `matrixWorld.determinant() < 0` (which pitch.ts's Y mirror makes true),
+   LÖVE — whose Y flip lives in the projection matrix — does not. Writing the
+   sign of N·V straight to the framebuffer on an RTX 2070 SUPER showed it
+   **negative across the entire silhouette**: every visible fragment was
+   holding an inward normal, which pins `rim` at 1 by itself.
+
+The fix rebuilds rig3d/renderer.lua's own shading frame in the vertex stage
+instead of consuming three.js's camera-dependent one. `modelMatrix`'s upper 3×3
+is `S * R` (the wrapper carries only scale and translation, the mesh only
+rotation) and `R` is orthonormal, so each row's length recovers that row's
+scale factor exactly; the Y mirror's sign comes back from the determinant
+rather than being hardcoded. Removing pitch.ts's elevation tilt — which the Lua
+keeps in its camera, not its model — lands in the Lua's frame, where
+`light_dir` and the `SHADING_EYE_DISTANCE = 24` eye are used verbatim with no
+camera state at all. The two-sided rule becomes `N·V < 0 → flip`, which is what
+the Lua's line *means* independent of raster convention.
+
+**The cel constants were not touched**, as this section instructed.
+
+The six tests in `cel_shader.spec.ts`'s "shading frame" block were confirmed to
+fail against the pre-fix shader and pass after — including one that
+reimplements the vertex-stage recovery in TypeScript and checks it against a
+directly-composed ground truth, so it fails on wrong *math* rather than on
+changed spelling. The 23 tests that existed before passed in both states, which
+is why this reached a browser.

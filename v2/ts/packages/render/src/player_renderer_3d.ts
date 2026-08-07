@@ -77,7 +77,12 @@ const HEIGHT_IN_RADII = 3.0;
 // ONE DEPTH BUFFER" header section) needs this to compose the same tilt onto
 // a character's own transform, now that there is no longer a separate
 // per-character camera to hold it.
-export const ELEVATION = (17 * Math.PI) / 180;
+//
+// Declared in `cel_shader.ts` and re-exported here, same as `LIGHT_DIR` below
+// and for a sharper reason: the cel shader has to REMOVE exactly the tilt
+// pitch.ts composes on, so the two must be the same number by construction
+// rather than by coincidence (see that file's THE SHADING FRAME section).
+export const ELEVATION = celShader.ELEVATION;
 
 // LIGHTING. `rig3d/renderer.lua`'s hand-written GLSL (v2/README.md #7 marks
 // the file "replace -- WebGLRenderer, MeshStandardMaterial", but that verdict

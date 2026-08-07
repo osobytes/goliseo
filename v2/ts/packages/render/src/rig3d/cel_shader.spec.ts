@@ -20,7 +20,7 @@
 
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
-import { applyCelShading, applyCombinedCelShading, BAND_HIGH, BAND_HIGH_THRESHOLD, BAND_LOW, BAND_MID, BAND_MID_THRESHOLD, BOUNCE_SCALE, CEL_SHADING_TARGET_INCLUDES, EMISSIVE_BASE, EMISSIVE_FACING_SCALE, LIGHT_DIR, RIM_METAL_MIX_HIGH, RIM_METAL_MIX_LOW, RIM_POWER, RIM_SMOOTH_HIGH, RIM_SMOOTH_LOW, shaderChunkFor, shaderChunkForCombined, SPEC_POWER, SPEC_SCALE, SPEC_SMOOTH_HIGH, SPEC_SMOOTH_LOW } from "./cel_shader.ts";
+import { applyCelShading, applyCombinedCelShading, ELEVATION, SHADING_EYE, SHADING_EYE_DISTANCE, SHADING_NORMAL_VARYING, SHADING_WORLD_VARYING, shadingFrameVertexChunk, BAND_HIGH, BAND_HIGH_THRESHOLD, BAND_LOW, BAND_MID, BAND_MID_THRESHOLD, BOUNCE_SCALE, CEL_SHADING_TARGET_INCLUDES, EMISSIVE_BASE, EMISSIVE_FACING_SCALE, LIGHT_DIR, RIM_METAL_MIX_HIGH, RIM_METAL_MIX_LOW, RIM_POWER, RIM_SMOOTH_HIGH, RIM_SMOOTH_LOW, shaderChunkFor, shaderChunkForCombined, SPEC_POWER, SPEC_SCALE, SPEC_SMOOTH_HIGH, SPEC_SMOOTH_LOW } from "./cel_shader.ts";
 
 // rig3d/renderer.lua's SHADER_SOURCE, PIXEL stage -- the numbers this file
 // ports. Kept here as a second, independent statement of the same nine
@@ -250,5 +250,142 @@ describe("cel_shader.applyCombinedCelShading", () => {
     const material = new THREE.MeshStandardMaterial({ vertexColors: true });
     applyCombinedCelShading(material);
     expect(material.onBeforeCompile).not.toBe(new THREE.MeshStandardMaterial().onBeforeCompile);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE SHADING FRAME. Everything above this line passed both before and after
+// the defect docs/render_differential.md recorded (characters rendering pale
+// and near-white) was fixed -- it pins the ported NUMBERS, and the defect was
+// in which SPACE those numbers were evaluated in. These tests pin the space.
+//
+// Two of them are string assertions, which is the weaker kind: they say the
+// generated GLSL still reads the varyings this module builds rather than
+// three.js's camera-dependent `normal`/`vViewPosition`. The last one is not a
+// string assertion at all -- it reimplements the vertex-stage recovery in TS
+// and checks it against a directly-composed ground truth, so it fails on a
+// wrong sign or a dropped term rather than on a changed spelling.
+// ---------------------------------------------------------------------------
+
+describe("cel_shader shading frame", () => {
+  it("reads the rebuilt varyings, never three.js's camera-dependent normal/vViewPosition", () => {
+    for (const chunk of [shaderChunkFor("plain"), shaderChunkFor("metal"), shaderChunkFor("emissive"), shaderChunkForCombined()]) {
+      expect(chunk).toContain(SHADING_NORMAL_VARYING);
+      expect(chunk).toContain(SHADING_WORLD_VARYING);
+      // `vViewPosition` is the fragment-to-eye vector for a PERSPECTIVE
+      // camera; pitch.ts draws through an orthographic one sitting at z = 1 in
+      // a pixel-space scene, where it points mostly sideways and floods `rim`.
+      expect(chunk).not.toContain("vViewPosition");
+      // three.js's `normal` carries the inverse-transpose of pitch.ts's
+      // `(ppm, -ppm, 0.05)` wrapper scale, which collapses every normal onto
+      // +/-Z. See THE SHADING FRAME in cel_shader.ts.
+      expect(chunk).not.toMatch(/normalize\(\s*normal\s*\)/);
+      expect(chunk).not.toContain("viewMatrix");
+    }
+  });
+
+  it("flips two-sided normals by N.V, not by gl_FrontFacing (which the two hosts disagree about)", () => {
+    const chunk = shaderChunkFor("plain");
+    expect(chunk).toContain("if ( dot( gcNormal, gcViewDir ) < 0.0 )");
+    // The Lua's own spelling. It does not port: three.js flips the raster
+    // front-face convention for pitch.ts's mirrored wrapper and LÖVE does not,
+    // so copying this line leaves every visible fragment inward-facing.
+    expect(chunk).not.toContain("gl_FrontFacing");
+  });
+
+  it("places the shading eye where rig3d/renderer.lua does: dir * 24, dir = (0, sin elevation, cos elevation)", () => {
+    expect(SHADING_EYE_DISTANCE).toBe(24);
+    expect(SHADING_EYE.x).toBeCloseTo(0, 12);
+    expect(SHADING_EYE.y).toBeCloseTo(Math.sin(ELEVATION) * 24, 12);
+    expect(SHADING_EYE.z).toBeCloseTo(Math.cos(ELEVATION) * 24, 12);
+    // Distant on purpose, per the Lua: a unit-length eye next to a ~1.8 unit
+    // figure swings the view direction between the feet and the head.
+    expect(SHADING_EYE.length()).toBeGreaterThan(10);
+  });
+
+  it("injects the frame after project_vertex, where BOTH objectNormal and transformed are final", () => {
+    for (const apply of [
+      (m: THREE.MeshStandardMaterial) => applyCombinedCelShading(m),
+      (m: THREE.MeshStandardMaterial) => applyCelShading(m, "plain"),
+    ]) {
+      const material = new THREE.MeshStandardMaterial({ vertexColors: true });
+      apply(material);
+      const shader = {
+        fragmentShader: THREE.ShaderLib["standard"]?.fragmentShader ?? "",
+        vertexShader: THREE.ShaderLib["standard"]?.vertexShader ?? "",
+        uniforms: {},
+        defines: {},
+      };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      material.onBeforeCompile(shader as any, undefined as any);
+      expect(shader.vertexShader).toContain(`varying vec3 ${SHADING_NORMAL_VARYING};`);
+      expect(shader.vertexShader).toContain(`varying vec3 ${SHADING_WORLD_VARYING};`);
+      expect(shader.fragmentShader).toContain(`varying vec3 ${SHADING_NORMAL_VARYING};`);
+      // Reading `objectNormal`/`transformed` rather than `normal`/`position`
+      // is what makes this correct on a SkinnedMesh: the rig moves both, and
+      // shading the bind pose would be silently wrong rather than obviously so.
+      const at = shader.vertexShader.indexOf("#include <project_vertex>");
+      const assigned = shader.vertexShader.indexOf(`${SHADING_NORMAL_VARYING} = `);
+      expect(at).toBeGreaterThan(0);
+      expect(assigned).toBeGreaterThan(at);
+      expect(shader.vertexShader).toContain("objectNormal");
+      expect(shader.vertexShader).toContain("gcModel * transformed");
+    }
+  });
+
+  it("recovers R from modelMatrix = S * R for pitch.ts's own (ppm, -ppm, 0.05) wrapper", () => {
+    // The GLSL in `shadingFrameVertexChunk` reimplemented in TS. Kept as a
+    // reimplementation rather than a parse of the generated string so this
+    // fails on the MATH being wrong, which a string assertion cannot see.
+    function recover(modelMatrix: THREE.Matrix4, objectNormal: THREE.Vector3): THREE.Vector3 {
+      const m = new THREE.Matrix3().setFromMatrix4(modelMatrix);
+      const e = m.elements; // column-major: e[c * 3 + r]
+      const row = (r: number) => new THREE.Vector3(e[r] ?? 0, e[3 + r] ?? 0, e[6 + r] ?? 0);
+      const scale = new THREE.Vector3(row(0).length(), row(1).length(), row(2).length());
+      scale.y *= Math.sign(modelMatrix.determinant());
+      const v = objectNormal.clone().applyMatrix3(m);
+      v.set(v.x / scale.x, v.y / scale.y, v.z / scale.z);
+      const untilt = new THREE.Matrix4().makeRotationX(-ELEVATION);
+      return v.applyMatrix4(untilt);
+    }
+
+    const ppm = 25;
+    const yaw = 0.9;
+    // Exactly pitch.ts's composition: wrapper carries scale + position, the
+    // mesh carries ELEVATION_TILT premultiplied onto its own yaw.
+    const rotation = new THREE.Quaternion()
+      .setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw)
+      .premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), ELEVATION));
+    const modelMatrix = new THREE.Matrix4()
+      .compose(new THREE.Vector3(640, 400, 0.5), new THREE.Quaternion(), new THREE.Vector3(ppm, -ppm, 0.05))
+      .multiply(new THREE.Matrix4().makeRotationFromQuaternion(rotation));
+
+    // Ground truth: the yaw alone, which is rig3d/renderer.lua's `u_model`.
+    const yawOnly = new THREE.Matrix4().makeRotationY(yaw);
+
+    let crushed = 0;
+    for (let i = 0; i < 24; i += 1) {
+      const a = (i / 24) * Math.PI * 2;
+      const n = new THREE.Vector3(Math.cos(a), 0.35, Math.sin(a)).normalize();
+      const got = recover(modelMatrix, n).normalize();
+      const want = n.clone().applyMatrix4(yawOnly).normalize();
+      expect(got.x).toBeCloseTo(want.x, 6);
+      expect(got.y).toBeCloseTo(want.y, 6);
+      expect(got.z).toBeCloseTo(want.z, 6);
+      if (Math.abs(got.z) > 0.999) {
+        crushed += 1;
+      }
+    }
+    // The defect this replaces: three.js's own normal matrix -- the inverse
+    // transpose of that same wrapper scale -- turns all 24 of these into
+    // +/-Z, leaving `ndl` two values and the character two flat tones.
+    expect(crushed).toBe(0);
+  });
+
+  it("emits the untilt as valid GLSL floats, and reduces to identity at zero elevation", () => {
+    const chunk = shadingFrameVertexChunk(0);
+    expect(chunk).toContain("mat3 gcUntilt = mat3( 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0 )");
+    expect(shadingFrameVertexChunk()).toContain(`${Math.cos(ELEVATION)}`);
+    expect(shadingFrameVertexChunk()).toContain("sign( determinant( gcModel ) )");
   });
 });

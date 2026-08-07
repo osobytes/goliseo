@@ -72,6 +72,29 @@ export type CelFamily = "plain" | "metal" | "emissive";
 // is the one place the constant is declared.
 export const LIGHT_DIR = new THREE.Vector3(-0.42, -0.78, -0.46).normalize();
 
+// The broadcast camera's apparent elevation. Declared here, and re-exported by
+// player_renderer_3d.ts, for the same reason as `LIGHT_DIR` above: the shading
+// frame this module rebuilds (see `shadingFrameVertexChunk`) has to remove
+// exactly the tilt pitch.ts composes onto a character, and two copies of that
+// angle could drift apart silently -- the symptom would be shading that is
+// subtly lit from the wrong height, which nothing else would catch.
+export const ELEVATION = (17 * Math.PI) / 180;
+
+// Ported from rig3d/renderer.lua's `SHADING_EYE_DISTANCE = 24`, and its
+// comment: "How far away the shader is told the camera is. Only affects rim/
+// specular direction, never the projection." The Lua deliberately decouples
+// the shading eye from the (orthographic) projection, because -- its words --
+// "`dir` is a unit vector, which next to a ~1.8 unit tall figure is close
+// enough that the view direction swings wildly between the feet and the head
+// and the shading reads inconsistently across one character."
+export const SHADING_EYE_DISTANCE = 24;
+
+// rig3d/renderer.lua's `characterCamera`: `dir = { 0, sin(elevation),
+// cos(elevation) }`, `eye = dir * SHADING_EYE_DISTANCE`. In the character's own
+// Y-up frame (which is what `shadingFrameVertexChunk` rebuilds), so it needs no
+// camera state at all -- exactly like the Lua uniform it replaces.
+export const SHADING_EYE = new THREE.Vector3(0, Math.sin(ELEVATION), Math.cos(ELEVATION)).multiplyScalar(SHADING_EYE_DISTANCE);
+
 // Ported constants, one per named quantity in rig3d/renderer.lua's PIXEL
 // stage (`effect()`). Exported (not inlined as bare numbers in the template
 // string below) so a headless spec can assert the actual numbers this port
@@ -143,6 +166,116 @@ function glslVec3(v: THREE.Vector3): string {
   return `vec3(${glslFloat(v.x)}, ${glslFloat(v.y)}, ${glslFloat(v.z)})`;
 }
 
+// ---------------------------------------------------------------------------
+// THE SHADING FRAME, and why this shader may not use three.js's own `normal` /
+// `vViewPosition` the way an ordinary material would.
+//
+// rig3d/renderer.lua shades in ONE specific space: the character's own
+// Y-up world, where `u_model` is the character's YAW ONLY (`v_normal =
+// mat3(u_model) * bone_normal`, `v_world = (u_model * posed).xyz`), the light
+// is the world constant `light_dir`, and the camera elevation lives entirely
+// in `u_view` / the shading eye. Every ported number below -- the band
+// thresholds, the rim's smoothstep window, the specular exponent -- is
+// calibrated against normals and view directions expressed in THAT frame.
+//
+// pitch.ts's single-pass compositing does not hand us that frame. It draws
+// every character through one shared `OrthographicCamera(0, w, 0, h)` whose
+// units are SCREEN PIXELS, and places each character with
+// `wrapper.scale.set(ppm, -ppm, CHARACTER_DEPTH_SCALE)`. That transform is
+// correct for geometry and catastrophic for shading, in two independent ways:
+//
+//  1. IT DESTROYS THE NORMALS. A normal matrix is the inverse transpose, so
+//     `diag(ppm, -ppm, 0.05)` becomes `diag(1/ppm, -1/ppm, 20)` -- the Z
+//     component is amplified by ~500x relative to X/Y at a typical ppm of 25.
+//     Measured against this exact transform chain: 32 of 32 sample normals
+//     spread around a character collapse onto +/-Z, leaving `ndl` with two
+//     values instead of a range. Both sit between BAND_MID_THRESHOLD and
+//     BAND_HIGH_THRESHOLD, so the whole character renders in two flat tones
+//     and the bright band is never reached at all. The "toon" shading had no
+//     form left to quantise.
+//  2. IT INVALIDATES `vViewPosition`. three.js sets it to `-mvPosition.xyz`,
+//     the fragment-to-eye vector -- right for a perspective camera, wrong for
+//     an orthographic one, and doubly wrong here because the camera sits at
+//     z = 1 in a space where the character is tens of pixels wide. The vector
+//     points mostly SIDEWAYS, so `dot(n, viewDir) ~ 0`, `rim` saturates to 1
+//     across the entire silhouette, and every fragment gains a flat
+//     `RIM_TINT * RIM_METAL_MIX_LOW` wash. That is the near-white,
+//     desaturated look docs/render_differential.md recorded.
+//
+// So this module rebuilds the Lua's frame in the vertex stage instead of
+// consuming three.js's. `modelMatrix`'s upper 3x3 is `S * R` (the wrapper
+// carries only scale and translation; the mesh carries only rotation), and `R`
+// is orthonormal -- so each ROW's length recovers that row's scale factor
+// exactly, and dividing it out leaves `R * v`. The Y-mirror's sign comes back
+// from the determinant rather than being hardcoded, so a caller that composes
+// its transform differently (or not at all -- `modelMatrix` is a plain
+// rotation on the per-character-camera path) still gets the right frame. What
+// remains is pitch.ts's elevation tilt, which the Lua keeps in its camera and
+// not its model; removing it lands us in the Lua's own frame, where
+// `LIGHT_DIR` and `SHADING_EYE` can be used verbatim with no camera state.
+// ---------------------------------------------------------------------------
+
+/** Varying carrying the character-frame normal; see the section comment above. */
+export const SHADING_NORMAL_VARYING = "vGcNormal";
+/** Varying carrying the character-frame position, in metres. */
+export const SHADING_WORLD_VARYING = "vGcWorld";
+
+// Inserted after `#include <project_vertex>`, which is the first point where
+// BOTH of three.js's own working values exist: `objectNormal` (declared by
+// `beginnormal_vertex`, final after `skinnormal_vertex`) and `transformed`
+// (declared by `begin_vertex`, final after `skinning_vertex`). Reading them
+// rather than `position`/`normal` is what makes this work on a SkinnedMesh at
+// all -- the rig's bones move both, and shading the bind pose would be a
+// silent, subtle wrongness rather than an obvious one.
+function shadingFrameVertexBody(elevation: number): string {
+  const ce = glslFloat(Math.cos(elevation));
+  const se = glslFloat(Math.sin(elevation));
+  const negSe = glslFloat(-Math.sin(elevation));
+  return `
+    // Recover R from modelMatrix = S * R by dividing each row by its own
+    // length (R is orthonormal, so every row of S * R has length |S_i|).
+    mat3 gcModel = mat3( modelMatrix );
+    vec3 gcScale = vec3(
+      length( vec3( gcModel[0][0], gcModel[1][0], gcModel[2][0] ) ),
+      length( vec3( gcModel[0][1], gcModel[1][1], gcModel[2][1] ) ),
+      length( vec3( gcModel[0][2], gcModel[1][2], gcModel[2][2] ) )
+    );
+    gcScale = max( gcScale, vec3( 1e-6 ) );
+    // Row lengths are unsigned, so a mirrored transform would come back
+    // unmirrored. pitch.ts mirrors Y (SceneRoot's Y-down screen convention);
+    // a negative determinant is that mirror, and restoring its sign here is
+    // what keeps the key light coming from above rather than below.
+    gcScale.y *= sign( determinant( gcModel ) );
+
+    // Undo the elevation tilt pitch.ts composes onto the MESH, landing in
+    // rig3d/renderer.lua's own frame (yaw only, elevation in the camera).
+    mat3 gcUntilt = mat3( 1.0, 0.0, 0.0, 0.0, ${ce}, ${negSe}, 0.0, ${se}, ${ce} );
+
+    ${SHADING_NORMAL_VARYING} = gcUntilt * ( ( gcModel * objectNormal ) / gcScale );
+    ${SHADING_WORLD_VARYING} = gcUntilt * ( ( gcModel * transformed ) / gcScale );
+`;
+}
+
+/**
+ * The vertex-stage half of this shading: declares the two shading-frame
+ * varyings and fills them. Both `applyCelShading` and
+ * `applyCombinedCelShading` inject this -- the fragment chunks below read
+ * those varyings and nothing else camera-dependent, so the two entry points
+ * cannot drift on which space they shade in.
+ */
+export function shadingFrameVertexChunk(elevation: number = ELEVATION): string {
+  return shadingFrameVertexBody(elevation);
+}
+
+function withShadingFrameVertex(vertexShader: string, elevation: number): string {
+  const declared = `varying vec3 ${SHADING_NORMAL_VARYING};\nvarying vec3 ${SHADING_WORLD_VARYING};\n${vertexShader}`;
+  return declared.replace("#include <project_vertex>", `#include <project_vertex>\n${shadingFrameVertexBody(elevation)}`);
+}
+
+function shadingFrameFragmentDeclarations(): string {
+  return `varying vec3 ${SHADING_NORMAL_VARYING};\nvarying vec3 ${SHADING_WORLD_VARYING};\n`;
+}
+
 // The replacement GLSL for one shading family, spliced in where
 // `#include <lights_physical_fragment>` was (see `applyCelShading`). Reads
 // `diffuseColor.rgb` -- already carrying the per-vertex baked team palette
@@ -155,13 +288,43 @@ function glslVec3(v: THREE.Vector3): string {
 // fragment shader unconditionally (see `WebGLProgram.js`), so moving the
 // world-space `LIGHT_DIR` into the same view space `normal` already uses
 // needs no extra uniform plumbing.
+// rig3d/renderer.lua keeps back faces ("cull mode 'none' so a generator that
+// winds a face the wrong way still shades correctly instead of vanishing") and
+// spells the correction as `if (!gl_FrontFacing) n = -n;`.
+//
+// That exact line does NOT port, and copying it verbatim was wrong when this
+// port first tried. `gl_FrontFacing` is a RASTER-STATE fact, not a geometric
+// one, and the two hosts disagree about it here: pitch.ts's wrapper mirrors Y,
+// which reverses triangle winding, and three.js compensates per object
+// (`matrixWorld.determinant() < 0 -> frontFaceCW`, see `WebGLRenderer`) where
+// LÖVE -- whose Y flip lives in the PROJECTION matrix, not the model -- does
+// not. The same visible surface therefore reports `gl_FrontFacing == true`
+// under three.js and `false` under LÖVE, so the ported line left every visible
+// fragment holding an INWARD normal. Measured on an RTX 2070 SUPER by writing
+// the sign of N.V straight to the framebuffer: negative across the entire
+// silhouette, which pins `rim` at 1 and reproduces the exact flooding this
+// shading-frame work set out to remove.
+//
+// What the Lua's rule MEANS, independent of raster convention, is: shade the
+// side of the surface the viewer can actually see. For closed geometry that is
+// exactly `N.V >= 0`, and for a wrongly-wound face it applies the same
+// correction the Lua's own version does -- so this is the host-independent
+// statement of that rule rather than a different rule. Bands are unaffected in
+// character: `band` is driven by N.L, not N.V, so it still varies over a
+// figure exactly as before.
+const TWO_SIDED_NORMAL = `
+    vec3 gcNormal = normalize( ${SHADING_NORMAL_VARYING} );
+    if ( dot( gcNormal, gcViewDir ) < 0.0 ) {
+      gcNormal = -gcNormal;
+    }`;
+
 function celShadingChunk(family: CelFamily): string {
   if (family === "emissive") {
     // rig3d/renderer.lua: `if (v_material > 1.5) { ... return
     // vec4(v_slot_color.rgb * (1.25 + 0.55 * facing), v_slot_color.a); }`.
     return `
-    vec3 gcNormal = normalize( normal );
-    vec3 gcViewDir = normalize( vViewPosition );
+    vec3 gcNormal = normalize( ${SHADING_NORMAL_VARYING} );
+    vec3 gcViewDir = normalize( ${glslVec3(SHADING_EYE)} - ${SHADING_WORLD_VARYING} );
     float gcFacing = abs( dot( gcNormal, gcViewDir ) );
     reflectedLight.directDiffuse = diffuseColor.rgb * ( ${glslFloat(EMISSIVE_BASE)} + ${glslFloat(EMISSIVE_FACING_SCALE)} * gcFacing );
     `;
@@ -174,22 +337,19 @@ function celShadingChunk(family: CelFamily): string {
     // Lua: "Metal gets one hard specular band. Skin and cloth get none, and
     // that difference is most of what separates 'kit' from 'body' at a
     // glance."
-    vec3 gcHalfDir = normalize( normalize( -gcLightDirView ) + gcViewDir );
+    vec3 gcHalfDir = normalize( normalize( -${glslVec3(LIGHT_DIR)} ) + gcViewDir );
     float gcSpec = pow( max( dot( gcNormal, gcHalfDir ), 0.0 ), ${glslFloat(SPEC_POWER)} );
     gcLit += ${glslVec3(SPEC_TINT)} * smoothstep( ${glslFloat(SPEC_SMOOTH_LOW)}, ${glslFloat(SPEC_SMOOTH_HIGH)}, gcSpec ) * ${glslFloat(SPEC_SCALE)};
     `
       : "";
 
   return `
-    // three.js's own \`normal_fragment_begin\` chunk already flips \`normal\`
-    // by \`gl_FrontFacing\` when \`DOUBLE_SIDED\` is defined (i.e. when
-    // \`material.side === THREE.DoubleSide\`, which \`applyCelShading\` below
-    // sets) -- that is this shader's equivalent of rig3d/renderer.lua's
-    // manual "if (!gl_FrontFacing) n = -n;", so it is not repeated here.
-    vec3 gcNormal = normalize( normal );
-    vec3 gcViewDir = normalize( vViewPosition );
-    vec3 gcLightDirView = normalize( ( viewMatrix * vec4( ${glslVec3(LIGHT_DIR)}, 0.0 ) ).xyz );
-    float ndl = dot( gcNormal, normalize( -gcLightDirView ) );
+    // The Lua's \`normalize(u_cam_pos - v_world)\`, with \`u_cam_pos\` the
+    // deliberately-distant shading eye. No camera state: SHADING_EYE is fixed
+    // in the same character frame the varyings are expressed in.
+    vec3 gcViewDir = normalize( ${glslVec3(SHADING_EYE)} - ${SHADING_WORLD_VARYING} );
+    ${TWO_SIDED_NORMAL}
+    float ndl = dot( gcNormal, normalize( -${glslVec3(LIGHT_DIR)} ) );
 
     float band = ${glslFloat(BAND_LOW)};
     if ( ndl > ${glslFloat(BAND_HIGH_THRESHOLD)} ) {
@@ -234,11 +394,13 @@ function celShadingChunk(family: CelFamily): string {
  * not a material property or a per-vertex value). Without this, three.js
  * could hand one family's compiled program to another's draw call.
  */
-export function applyCelShading(material: THREE.MeshStandardMaterial, family: CelFamily): void {
+export function applyCelShading(material: THREE.MeshStandardMaterial, family: CelFamily, elevation: number = ELEVATION): void {
   material.side = THREE.DoubleSide;
   material.customProgramCacheKey = () => family;
   material.onBeforeCompile = (shader) => {
-    let fragmentShader = shader.fragmentShader.replace("#include <lights_physical_fragment>", celShadingChunk(family));
+    shader.vertexShader = withShadingFrameVertex(shader.vertexShader, elevation);
+    let fragmentShader = shadingFrameFragmentDeclarations() + shader.fragmentShader;
+    fragmentShader = fragmentShader.replace("#include <lights_physical_fragment>", celShadingChunk(family));
     for (const include of CEL_SHADING_TARGET_INCLUDES.slice(1)) {
       fragmentShader = fragmentShader.replace(include, "");
     }
@@ -332,11 +494,11 @@ function combinedCelShadingChunk(): string {
  * doc comment for why THAT function needs a per-family key and this one
  * does not.
  */
-export function applyCombinedCelShading(material: THREE.MeshStandardMaterial): void {
+export function applyCombinedCelShading(material: THREE.MeshStandardMaterial, elevation: number = ELEVATION): void {
   material.side = THREE.DoubleSide;
   material.customProgramCacheKey = () => "combined";
   material.onBeforeCompile = (shader) => {
-    let vertexShader = `attribute float materialFamily;\nvarying float vMaterialFamily;\n${shader.vertexShader}`;
+    let vertexShader = `attribute float materialFamily;\nvarying float vMaterialFamily;\n${withShadingFrameVertex(shader.vertexShader, elevation)}`;
     // `void main() {` appears exactly once in three.js's vertex template
     // (there is only one entry point) -- inserting the varying assignment
     // as the first statement means every later chunk (skinning, project,
@@ -346,7 +508,7 @@ export function applyCombinedCelShading(material: THREE.MeshStandardMaterial): v
     vertexShader = vertexShader.replace("void main() {", "void main() {\n\n\tvMaterialFamily = materialFamily;\n");
     shader.vertexShader = vertexShader;
 
-    let fragmentShader = `varying float vMaterialFamily;\n${shader.fragmentShader}`;
+    let fragmentShader = `varying float vMaterialFamily;\n${shadingFrameFragmentDeclarations()}${shader.fragmentShader}`;
     fragmentShader = fragmentShader.replace("#include <lights_physical_fragment>", combinedCelShadingChunk());
     for (const include of CEL_SHADING_TARGET_INCLUDES.slice(1)) {
       fragmentShader = fragmentShader.replace(include, "");
