@@ -61,6 +61,31 @@ const HEIGHT_IN_RADII = 3.0;
 // Match camera looks down at the pitch; this is the apparent elevation.
 const ELEVATION = (17 * Math.PI) / 180;
 
+// LIGHTING. `rig3d/renderer.lua`'s hand-written GLSL (v2/README.md #7:
+// "replace -- WebGLRenderer, MeshStandardMaterial") drove its toon shading
+// off one directional key light, `light_dir = { -0.42, -0.78, -0.46 }`
+// ("direction the light travels"), plus a soft "cool bounce light from
+// below so shadowed sides do not go dead". `MeshStandardMaterial` is a PBR
+// material: with no `THREE.Light` in the scene it lights every surface pure
+// black regardless of `color`, which is the defect this port's report
+// tracks down (`scene.ts` never added a light either, but that scene never
+// held a `MeshStandardMaterial` object directly -- see this file's own
+// `scene` below, which does, and is therefore the one that actually needed
+// it). `LIGHT_DIR` is ported content (the Lua constant); the two `THREE
+// .Light` instances below are new code standing in for the custom shader,
+// per the README's "replace" verdict -- not an attempt to reproduce the
+// toon bands, rim light or per-material specular, which three.js's stock
+// pipeline does not offer a drop-in equivalent for.
+const LIGHT_DIR = new THREE.Vector3(-0.42, -0.78, -0.46).normalize();
+const KEY_LIGHT_INTENSITY = 3.2;
+// Stands in for the GLSL's "cool bounce light from below" and general
+// ambient fill -- a `HemisphereLight` (sky/ground blend) reads closer to
+// that bounce than a flat `AmbientLight` would, since it still varies by
+// surface-normal-up-vs-down.
+const SKY_COLOR = 0xaebfe0;
+const GROUND_COLOR = 0x30251c;
+const FILL_LIGHT_INTENSITY = 0.9;
+
 // Mirrors `sim/match.lua`'s `PLAYER_RADIUS`. See file header.
 export const DEFAULT_PLAYER_RADIUS = 12;
 
@@ -175,9 +200,18 @@ interface BuiltCharacter {
   readonly bones: readonly THREE.Bone[];
   readonly mesh: THREE.SkinnedMesh;
   readonly height: number;
+  // One `themes.SLOTS` index per vertex, kept alongside the mesh so
+  // `materialsForTeam` can bake a per-team vertex `color` attribute against
+  // the SAME shared geometry (see that function).
+  readonly paletteSlots: Float32Array;
 }
 
-const materialsByTeam = new Map<string, [THREE.MeshStandardMaterial, THREE.MeshStandardMaterial, THREE.MeshStandardMaterial]>();
+interface TeamMaterials {
+  readonly materials: readonly [THREE.MeshStandardMaterial, THREE.MeshStandardMaterial, THREE.MeshStandardMaterial];
+  readonly color: THREE.BufferAttribute;
+}
+
+const materialsByTeam = new Map<string, TeamMaterials>();
 let built: BuiltCharacter | undefined;
 let failed = false;
 
@@ -212,6 +246,7 @@ function build(): BuiltCharacter | undefined {
     const normals = new Float32Array(vertCount * 3);
     const skinIndices = new Float32Array(vertCount * 4);
     const skinWeights = new Float32Array(vertCount * 4);
+    const paletteSlots = new Float32Array(vertCount);
     partBuilder.verts.forEach((v, i) => {
       positions[i * 3] = v.position[0];
       positions[i * 3 + 1] = v.position[1];
@@ -221,6 +256,7 @@ function build(): BuiltCharacter | undefined {
       normals[i * 3 + 2] = v.normal[2];
       skinIndices[i * 4] = v.bone;
       skinWeights[i * 4] = 1;
+      paletteSlots[i] = v.paletteSlot;
     });
 
     const geom = new THREE.BufferGeometry();
@@ -248,7 +284,27 @@ function build(): BuiltCharacter | undefined {
     const bones = boneDefs.map((def) => {
       const bone = new THREE.Bone();
       bone.name = def.name;
+      // BOTH flags, not just `matrixAutoUpdate`. `matrixAutoUpdate = false`
+      // only stops three.js recomputing `bone.matrix` from position/
+      // quaternion/scale (irrelevant here -- those are never set; this file
+      // writes `bone.matrixWorld` directly from the posed rig every frame,
+      // see `prepareCharacter` below). But `character.mesh` DOES change its
+      // own quaternion every frame (`prepareCharacter`'s facing yaw), which
+      // marks the mesh's `matrixWorldNeedsUpdate` and makes
+      // `Object3D.updateMatrixWorld` cascade `force = true` into every
+      // child, bones included. A bone's `matrixWorldAutoUpdate` defaults to
+      // `true`, so that forced cascade was recomputing every bone's
+      // `matrixWorld` as `mesh.matrixWorld * bone.matrix` (`bone.matrix`
+      // always identity, since it too is never set) -- silently discarding
+      // the per-vertex pose this file just wrote and replacing it with the
+      // rig's unposed rest transform on every `renderer.render()` call. This
+      // was the actual cause of the "characters render mis-shapen/rotated"
+      // symptom this port's report tracked down live -- not the render
+      // target's `flipY` (see `renderToSprite`'s doc comment, which
+      // toggling had zero visible effect on, confirming the bug was here,
+      // upstream of compositing entirely).
       bone.matrixAutoUpdate = false;
+      bone.matrixWorldAutoUpdate = false;
       return bone;
     });
     const skeletonObj = new THREE.Skeleton(bones);
@@ -261,7 +317,7 @@ function build(): BuiltCharacter | undefined {
     mesh.add(bones[0] ?? new THREE.Bone());
     mesh.bind(skeletonObj);
 
-    built = { rig, bones, mesh, height };
+    built = { rig, bones, mesh, height, paletteSlots };
     return built;
   } catch (error) {
     failed = true;
@@ -271,7 +327,23 @@ function build(): BuiltCharacter | undefined {
   }
 }
 
-function materialsForTeam(team: "home" | "away"): readonly THREE.MeshStandardMaterial[] {
+// Bakes the Lua shader's per-vertex `u_palette[VertexPaletteSlot]` lookup
+// (rig3d/renderer.lua's GLSL, quoted in this file's LIGHTING comment above)
+// into a `THREE.BufferAttribute("color")` instead: three.js's stock
+// `MeshStandardMaterial` has no dynamic per-vertex uniform-array indexing to
+// port to (only a hand-written shader would, and the README marks that
+// mechanism "replace"), but `vertexColors: true` reproduces the visible
+// result -- every vertex shaded by its OWN resolved palette colour rather
+// than one flat colour for the whole material group. This is what makes
+// "skin" read differently from "cloth" (the team's `main` colour) on the
+// SAME `plain`-material surface, and what makes the two teams distinguishable
+// at all: the previous single `palette[0]` ("skin", never team-linked) used
+// the same swatch for both sides regardless of `team`.
+//
+// `character` is passed in (not read from module state) because
+// `paletteSlots` -- needed to bake the attribute -- lives on `BuiltCharacter`,
+// produced by `build()`.
+function materialsForTeam(character: BuiltCharacter, team: "home" | "away"): TeamMaterials {
   const key = team;
   const cached = materialsByTeam.get(key);
   if (cached !== undefined) {
@@ -283,15 +355,31 @@ function materialsForTeam(team: "home" | "away"): readonly THREE.MeshStandardMat
     throw new Error("player_renderer_3d.ts: no rig3d theme/team content available");
   }
   const palette = themes.resolvedPalette(theme, teamData);
-  // A single representative colour per material id (metal/emissive read a
-  // fixed accent rather than the per-vertex palette slot -- see this
-  // function's header note in the report on why per-vertex colour baking
-  // was not implemented in this milestone).
-  const plainColor = palette[0] ?? [1, 1, 1, 1];
-  const plain = new THREE.MeshStandardMaterial({ color: new THREE.Color(plainColor[0], plainColor[1], plainColor[2]), roughness: 0.8 });
-  const metal = new THREE.MeshStandardMaterial({ color: new THREE.Color(0.8, 0.8, 0.85), metalness: 0.6, roughness: 0.35 });
+
+  const vertCount = character.paletteSlots.length;
+  const colors = new Float32Array(vertCount * 3);
+  for (let i = 0; i < vertCount; i += 1) {
+    const slotIndex = character.paletteSlots[i] ?? 0;
+    const rgba = palette[slotIndex] ?? [1, 1, 1, 1];
+    colors[i * 3] = rgba[0];
+    colors[i * 3 + 1] = rgba[1];
+    colors[i * 3 + 2] = rgba[2];
+  }
+  const color = new THREE.BufferAttribute(colors, 3);
+
+  // Base `.color` stays white so `vertexColors` passes the baked colour
+  // through unmodified (three.js multiplies material colour x vertex
+  // colour). Metal/emissive keep the same shading-family treatment the Lua
+  // shader gave them (a specular/metallic response, an emissive boost)
+  // layered ON TOP of the palette colour rather than replacing it with one
+  // fixed accent -- `emissive` still overrides its own vertex colour with a
+  // fixed glow, since three.js's vertex-colour path modulates the diffuse
+  // term only, not `emissive`, and this family (visor/energy accents) is
+  // meant to read as a light source rather than a team-owned surface.
+  const plain = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8 });
+  const metal = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.6, roughness: 0.35 });
   const emissive = new THREE.MeshStandardMaterial({ color: new THREE.Color(0, 0, 0), emissive: new THREE.Color(0.4, 0.9, 1), emissiveIntensity: 1.2 });
-  const materials: [THREE.MeshStandardMaterial, THREE.MeshStandardMaterial, THREE.MeshStandardMaterial] = [plain, metal, emissive];
+  const materials: TeamMaterials = { materials: [plain, metal, emissive], color };
   materialsByTeam.set(key, materials);
   return materials;
 }
@@ -324,9 +412,17 @@ export function characterCameraParams(sx: number, sy: number, ppm: number, vw: n
   };
 }
 
-// A throwaway scene holding just the shared character mesh, reused every
-// draw call (matching the Lua original's one-draw-call-per-character shape).
+// A throwaway scene holding just the shared character mesh (plus the two
+// lights below), reused every draw call (matching the Lua original's
+// one-draw-call-per-character shape). `scene.clear()` in `prepareCharacter`
+// removes ALL children each frame, lights included, so the lights are
+// re-added there alongside the mesh rather than added once here -- see that
+// function.
 const scene = new THREE.Scene();
+const keyLight = new THREE.DirectionalLight(0xffffff, KEY_LIGHT_INTENSITY);
+keyLight.position.copy(LIGHT_DIR).multiplyScalar(-10);
+keyLight.target.position.set(0, 0, 0);
+const fillLight = new THREE.HemisphereLight(SKY_COLOR, GROUND_COLOR, FILL_LIGHT_INTENSITY);
 
 interface PreparedCharacter {
   readonly character: BuiltCharacter;
@@ -368,8 +464,13 @@ function prepareCharacter(
   const yaw = facing !== undefined ? Math.atan2(facing.x, facing.y) : 0;
   character.mesh.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
 
-  const materials = materialsForTeam(opts.team ?? "home");
-  character.mesh.material = [...materials];
+  const teamMaterials = materialsForTeam(character, opts.team ?? "home");
+  character.mesh.material = [...teamMaterials.materials];
+  // The `color` attribute is swapped per draw call, same shared geometry
+  // (see `TeamMaterials`'s doc comment) -- there is exactly one character
+  // mesh in flight at a time (`scene.clear()` above), so this cannot race
+  // between two teams' colours within a frame.
+  character.mesh.geometry.setAttribute("color", teamMaterials.color);
 
   const ppm = (r * HEIGHT_IN_RADII * 2) / character.height;
   const far = character.height * 4 + 10;
@@ -380,7 +481,7 @@ function prepareCharacter(
   cam.updateProjectionMatrix();
 
   scene.clear();
-  scene.add(character.mesh);
+  scene.add(character.mesh, keyLight, keyLight.target, fillLight);
   return { character, cam };
 }
 
@@ -453,14 +554,16 @@ export function draw(
  * rebuild and `SceneRoot.dispose`'s teardown) releases it -- an offscreen
  * target this heavy must not outlive the frame it was built for.
  *
- * UNVERIFIED WITHOUT A LIVE GL CONTEXT: whether `target.texture`'s
- * orientation lands right-side-up once sampled by a plain, unrotated
- * `PlaneGeometry` under `SceneRoot`'s shared 2D orthographic camera.
- * `THREE.WebGLRenderTarget` textures default to `flipY = false` (unlike an
- * image-loaded `Texture`, which defaults to `true`) -- set explicitly below
- * so the choice is visible rather than relying on the default silently being
- * correct. If a live-GL check later shows the character upside down, this is
- * the line to flip. See file header and this port's report.
+ * VERIFIED WITH A LIVE GL CONTEXT (this port's report): the returned mesh's
+ * `scale.y = -1` (set just before `return`, below) is required for the
+ * character to land right-side-up under `SceneRoot`'s shared 2D orthographic
+ * camera, which is Y-inverted relative to three.js's own default to match
+ * draw2d.ts's screen-space convention. `target.texture.flipY` does NOT
+ * affect this -- it is a no-op for `WebGLRenderTarget` textures (the flag
+ * only matters for the CPU-upload path a normal image-backed `Texture`
+ * goes through) -- see the comment at the `scale.y = -1` assignment for the
+ * full explanation and how this was confirmed (reading the render target's
+ * own pixels back independently of the plane/composite).
  */
 export function renderToSprite(
   renderer: THREE.WebGLRenderer,
@@ -480,7 +583,6 @@ export function renderToSprite(
     }
 
     const target = new THREE.WebGLRenderTarget(vw, vh, { format: THREE.RGBAFormat });
-    target.texture.flipY = false;
 
     const previousTarget = renderer.getRenderTarget();
     const previousClearColor = renderer.getClearColor(new THREE.Color());
@@ -508,6 +610,31 @@ export function renderToSprite(
     const geometry = new THREE.PlaneGeometry(vw, vh);
     const mesh = new THREE.Mesh(geometry, material);
     mesh.position.set(vw / 2, vh / 2, 0);
+    // VERIFIED WITH A LIVE GL CONTEXT (see this port's report): the character
+    // itself rendered upright and correctly posed into `target` -- confirmed
+    // by reading `target`'s pixels back directly with
+    // `renderer.readRenderTargetPixels` and inspecting them independently of
+    // this plane/composite. What was NOT correct was this plane's own
+    // mapping of that texture: `target.texture.flipY` (previously set here)
+    // turned out to be a NO-OP -- three.js's `flipY` only affects the
+    // CPU-upload path (`texImage2D`) a normal image-backed `Texture` goes
+    // through, and a `WebGLRenderTarget`'s texture is written by the GPU
+    // directly (`framebufferTexture2D`), which never goes through that path,
+    // so setting it either way rendered identically. The actual mismatch is
+    // between this plane's default UV orientation and `SceneRoot`'s shared
+    // 2D camera, which is deliberately Y-INVERTED to match draw2d.ts's
+    // "y increasing downward" convention (`top = 0`, `bottom = viewport.h`,
+    // see scene.ts's `SceneRoot` doc comment) -- one axis flip relative to
+    // three.js's own default. A plain, unrotated `PlaneGeometry` samples its
+    // texture with v=0 at local -Y and v=1 at local +Y; under this
+    // viewport's inverted camera, local +Y renders toward the BOTTOM of the
+    // screen, so the texture's v=1 row (the top of what the character camera
+    // rendered, i.e. the character's head) was landing at the screen's
+    // bottom -- upside down. `scale.y = -1` mirrors the plane's geometry
+    // (not the texture) around its own centre, which is exactly enough to
+    // cancel that one inversion; `side: THREE.DoubleSide` above already
+    // makes the resulting inverted winding a non-issue.
+    mesh.scale.y = -1;
     mesh.userData["ownedRenderTarget"] = target;
     return mesh;
   } catch (error) {

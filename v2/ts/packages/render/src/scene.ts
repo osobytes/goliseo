@@ -121,10 +121,17 @@ const CAMERA_FAR = 10;
  * occupied -- interleaved with the ball and the other players, not appended
  * after them). The one, single render that touches the visible
  * canvas/composite chain is still this class's own `render` below, and it is
- * now genuinely the only one that does, which is what closes the gap. The
- * pixel-level correctness of that offscreen composite (camera frustum
- * alignment, texture orientation) still needs a live GL context to verify --
- * see this port's report.
+ * now genuinely the only one that does, which is what closes the gap.
+ *
+ * VERIFIED WITH A LIVE GL CONTEXT (this port's report): the offscreen
+ * composite's camera frustum alignment is correct -- the character camera's
+ * asymmetric frustum (`player_renderer_3d.ts`'s `characterCameraParams`)
+ * lands the character at the right `(sx, sy)` on screen. Texture orientation
+ * was NOT correct as first written: see `player_renderer_3d.ts`'s
+ * `renderToSprite`, whose returned mesh now carries `scale.y = -1` to
+ * correct for `SceneRoot`'s Y-inverted camera (below) -- `target.texture
+ * .flipY` turned out to be a no-op for render-target textures, not the
+ * fix.
  *
  * The camera is one shared `THREE.OrthographicCamera` sized to the
  * viewport, `top = 0` / `bottom = viewport.h` -- matching draw2d.ts's

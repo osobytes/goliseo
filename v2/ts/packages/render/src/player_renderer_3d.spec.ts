@@ -122,24 +122,32 @@ describe("player_renderer_3d.characterCameraParams", () => {
 // verified here (or anywhere in this package) is the actual pixel content
 // the off-screen render produces; see this port's report.
 describe("player_renderer_3d.renderToSprite", () => {
+  interface RenderCall {
+    readonly scene: THREE.Scene;
+    readonly camera: THREE.Camera;
+  }
+
   interface StubRenderer {
     autoClear: boolean;
     readonly setRenderTargetCalls: (THREE.WebGLRenderTarget | null)[];
+    readonly renderCalls: RenderCall[];
     getRenderTarget(): THREE.WebGLRenderTarget | null;
     setRenderTarget(t: THREE.WebGLRenderTarget | null): void;
     getClearColor(target: THREE.Color): THREE.Color;
     getClearAlpha(): number;
     setClearColor(color: THREE.ColorRepresentation, alpha?: number): void;
     clear(): void;
-    render(): void;
+    render(scene: THREE.Scene, camera: THREE.Camera): void;
   }
 
   function stubRenderer(): THREE.WebGLRenderer & StubRenderer {
     let current: THREE.WebGLRenderTarget | null = null;
     const setRenderTargetCalls: (THREE.WebGLRenderTarget | null)[] = [];
+    const renderCalls: RenderCall[] = [];
     const stub: StubRenderer = {
       autoClear: true,
       setRenderTargetCalls,
+      renderCalls,
       getRenderTarget: () => current,
       setRenderTarget: (t) => {
         current = t;
@@ -149,7 +157,14 @@ describe("player_renderer_3d.renderToSprite", () => {
       getClearAlpha: () => 1,
       setClearColor: () => {},
       clear: () => {},
-      render: () => {},
+      // NOT a WebGL mock (see this file's own header and scene.spec.ts's):
+      // this never rasterises anything. It only lets tests below inspect the
+      // EXACT `THREE.Scene`/`THREE.Camera` `renderToSprite` was about to hand
+      // a real renderer -- the same interception-point pattern
+      // scene.spec.ts's `stubRenderer()` uses for `setSize`/`setPixelRatio`.
+      render: (scene, camera) => {
+        renderCalls.push({ scene, camera });
+      },
     };
     return stub as unknown as THREE.WebGLRenderer & StubRenderer;
   }
@@ -194,5 +209,105 @@ describe("player_renderer_3d.renderToSprite", () => {
     renderer.autoClear = false;
     renderToSprite(renderer, 640, 360, 12, 1280, 720, idleView, baseOptions(), 0);
     expect(renderer.autoClear).toBe(false);
+  });
+
+  // REGRESSION (this port's report): players rendered as solid black
+  // silhouettes with no team-colour distinction in a real browser --
+  // invisible to every test above, which never inspects WHAT is inside the
+  // scene `renderToSprite` hands a renderer, only how the renderer is
+  // called. `stubRenderer().render` above now captures its `scene` argument
+  // (a plain object-graph read, no GL touched), which is enough to assert
+  // the two structural facts that were actually broken: a `THREE.Light` was
+  // missing from the scene a `THREE.MeshStandardMaterial` character was
+  // rendered into (PBR materials shade pure black with none), and the two
+  // teams' materials carried only ONE flat colour each instead of a
+  // per-vertex palette (see `materialsForTeam`'s doc comment). This does NOT
+  // prove the rendered pixels are non-black or team-distinguishable --
+  // three.js's actual lighting math is a live-GL question this suite
+  // structurally cannot answer (see file header) -- but a scene with no
+  // light and a material needing one is a defect this test WOULD have
+  // caught before it ever reached a browser.
+  it("renders the character into a scene containing at least one THREE.Light", () => {
+    const renderer = stubRenderer();
+    renderToSprite(renderer, 640, 360, 12, 1280, 720, idleView, baseOptions(), 0);
+    expect(renderer.renderCalls).toHaveLength(1);
+    const call = renderer.renderCalls[0];
+    if (call === undefined) {
+      throw new Error("expected one render call");
+    }
+    const lights = call.scene.children.filter((child): child is THREE.Light => (child as { isLight?: boolean }).isLight === true);
+    expect(lights.length).toBeGreaterThan(0);
+  });
+
+  // The materials stay `MeshStandardMaterial` (a lit, PBR material) rather
+  // than switching to an unlit material as a workaround for the missing
+  // light above -- see player_renderer_3d.ts's LIGHTING comment for why that
+  // is the correct call given rig3d/renderer.lua's original toon-shaded,
+  // lit-by-a-directional-key-light intent (v2/README.md #7: "replace --
+  // WebGLRenderer, MeshStandardMaterial").
+  it("shades the character with MeshStandardMaterial, not an unlit material standing in for the missing light", () => {
+    const renderer = stubRenderer();
+    renderToSprite(renderer, 640, 360, 12, 1280, 720, idleView, baseOptions(), 0);
+    const call = renderer.renderCalls[0];
+    if (call === undefined) {
+      throw new Error("expected one render call");
+    }
+    const mesh = call.scene.children.find((child): child is THREE.SkinnedMesh => child instanceof THREE.SkinnedMesh);
+    if (mesh === undefined) {
+      throw new Error("expected a SkinnedMesh in the rendered scene");
+    }
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    expect(materials.length).toBeGreaterThan(0);
+    for (const material of materials) {
+      expect(material).toBeInstanceOf(THREE.MeshStandardMaterial);
+    }
+  });
+
+  // REGRESSION: the offscreen composite's camera frustum alignment was fine
+  // (verified live-GL, see this port's report), but the returned sprite
+  // rendered upside down under `SceneRoot`'s Y-inverted 2D camera --
+  // `target.texture.flipY` (the line the code previously pointed at) turned
+  // out to be a no-op for render-target textures. The actual fix is
+  // `scale.y = -1` on the returned mesh; this pins that regression
+  // structurally without needing a live GL context to see the pixels.
+  it("flips the returned sprite vertically to counter SceneRoot's Y-inverted camera", () => {
+    const renderer = stubRenderer();
+    const mesh = renderToSprite(renderer, 640, 360, 12, 1280, 720, idleView, baseOptions(), 0);
+    if (mesh === undefined) {
+      throw new Error("expected a mesh");
+    }
+    expect(mesh.scale.y).toBe(-1);
+  });
+
+  // REGRESSION: both teams' rigged characters rendered with the exact same
+  // flat colour (`materialsForTeam` used to read only `palette[0]`, the
+  // "skin" slot, which no theme ever maps to "team" -- see themes.ts's
+  // `SLOTS`/`ColorSlot`). Baking a per-vertex colour attribute from each
+  // team's resolved palette (this port's fix) means the two teams' baked
+  // colour buffers must differ once real team-owned surfaces (cloth, in the
+  // medieval theme fixture content) are included.
+  it("bakes different per-vertex colours for the home and away team", () => {
+    // Both draws share the SAME geometry object (one shared character mesh,
+    // see player_renderer_3d.ts's `build()` doc comment) -- its `color`
+    // attribute is swapped in per draw call by `materialsForTeam`, so it
+    // must be read back immediately after each respective call, in the same
+    // order production code depends on, rather than read at the end.
+    const homeRenderer = stubRenderer();
+    renderToSprite(homeRenderer, 640, 360, 12, 1280, 720, idleView, baseOptions({ team: "home" }), 0);
+    const homeMesh = homeRenderer.renderCalls[0]?.scene.children.find((c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh);
+    if (homeMesh === undefined) {
+      throw new Error("expected a SkinnedMesh in the rendered scene");
+    }
+    const homeColor = Array.from(homeMesh.geometry.getAttribute("color").array);
+
+    const awayRenderer = stubRenderer();
+    renderToSprite(awayRenderer, 640, 360, 12, 1280, 720, idleView, baseOptions({ team: "away" }), 0);
+    const awayMesh = awayRenderer.renderCalls[0]?.scene.children.find((c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh);
+    if (awayMesh === undefined) {
+      throw new Error("expected a SkinnedMesh in the rendered scene");
+    }
+    const awayColor = Array.from(awayMesh.geometry.getAttribute("color").array);
+
+    expect(awayColor).not.toEqual(homeColor);
   });
 });
