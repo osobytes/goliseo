@@ -34,7 +34,9 @@ import type {
   MatchDriverBridge,
   MatchDriverBridgeConstructor,
   MatchDriverFixtureBridge,
+  MatchSnapshotBridge,
   OnlineCombatPhasesBridge,
+  PlayerPoseBridge,
   RollbackEventsTimelineConstructor,
   RollbackPlayableLabConstructor,
   SimSessionConstructor,
@@ -54,8 +56,10 @@ export type {
   MatchDriverBridge,
   MatchDriverBridgeConstructor,
   MatchDriverFixtureBridge,
+  MatchSnapshotBridge,
   OnlineCombatPhasesBridge,
   OnlineCombatPhaseScenario,
+  PlayerPoseBridge,
   RawExports,
   RollbackEventsTimeline,
   RollbackEventsTimelineConstructor,
@@ -85,7 +89,9 @@ export interface SimHost
   extends InputFrameBridge,
     InputProtocolBridge,
     MatchDriverFixtureBridge,
-    OnlineCombatPhasesBridge {
+    MatchSnapshotBridge,
+    OnlineCombatPhasesBridge,
+    PlayerPoseBridge {
   /** Constructs a live match session. See `SimSession`'s doc. */
   readonly Session: SimSessionConstructor;
   /** Constructs a session coordinator (host or guest). See `Coordinator`'s
@@ -147,6 +153,25 @@ export interface SimHost
    * copy out anything that needs to outlive that call.
    */
   buildRenderFrame(handle: number): Float64Array | null;
+  /**
+   * Builds `bridge`'s CURRENT render frame (the live boundary
+   * {@link MatchDriverBridge.advance} most recently produced) and returns a
+   * zero-copy `Float64Array` view over it — the `MatchDriverBridge`
+   * counterpart of {@link SimHost.buildRenderFrame}, same wire layout
+   * (`gc_render::frame_buffer::encode`'s), same decode contract. Unlike
+   * `buildRenderFrame` this never returns `null`: a live `MatchDriverBridge`
+   * reference can always build its own frame (see
+   * {@link MatchDriverBridge.renderFrameBuild}'s doc for why — it is not a
+   * `crate::registry` handle lookup that can miss).
+   *
+   * The returned view is only valid until the next
+   * `buildMatchDriverRenderFrame` call (this reused buffer is separate from
+   * `buildRenderFrame`'s own — see `RawExports`'s doc — so calling
+   * `buildRenderFrame` in between does not itself invalidate this view; any
+   * wasm memory growth from either call would, same as `buildRenderFrame`'s
+   * own caveat) — copy out anything that needs to outlive that call.
+   */
+  buildMatchDriverRenderFrame(bridge: MatchDriverBridge): Float64Array;
 }
 
 let cached: SimHost | undefined;
@@ -224,6 +249,11 @@ export function loadSimHost(): SimHost {
     onlineCombatPhaseBoundaryZero: native.onlineCombatPhaseBoundaryZero,
     onlineCombatPhaseLiveSample: native.onlineCombatPhaseLiveSample,
     onlineCombatPhaseObserved: native.onlineCombatPhaseObserved,
+    // `match_snapshot_bridge.rs`.
+    matchSnapshotBuild: native.matchSnapshotBuild,
+    matchSnapshotStateJson: native.matchSnapshotStateJson,
+    // `player_pose_bridge.rs`.
+    playerPoseSelect: native.playerPoseSelect,
     memory: raw.memory,
     buildRenderFrame(handle: number): Float64Array | null {
       const ok = raw.render_frame_build(handle);
@@ -236,6 +266,15 @@ export function loadSimHost(): SimHost {
       // `len` is an element count. A fresh view every call, never cached:
       // `raw.memory.buffer` is replaced whenever wasm linear memory grows,
       // and a stale view would point at a detached ArrayBuffer.
+      return new Float64Array(raw.memory.buffer, ptr, len);
+    },
+    buildMatchDriverRenderFrame(bridge: MatchDriverBridge): Float64Array {
+      // Always `1` -- see `MatchDriverBridge.renderFrameBuild`'s own doc for
+      // why this call can never report "no live bridge" the way
+      // `render_frame_build(handle)` can.
+      bridge.renderFrameBuild();
+      const ptr = raw.driver_render_frame_ptr();
+      const len = raw.driver_render_frame_len();
       return new Float64Array(raw.memory.buffer, ptr, len);
     },
   };

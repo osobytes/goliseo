@@ -339,7 +339,9 @@ pub(crate) fn save_style_wire(v: SaveStyle) -> &'static str {
     }
 }
 
-fn save_style_from_wire(text: &str) -> Result<SaveStyle, String> {
+/// `pub(crate)`: [`crate::player_pose_bridge`] reuses this one too, decoding
+/// a caller-supplied `MatchPlayer.save_style` for standalone pose selection.
+pub(crate) fn save_style_from_wire(text: &str) -> Result<SaveStyle, String> {
     match text {
         "spread" => Ok(SaveStyle::Spread),
         "central" => Ok(SaveStyle::Central),
@@ -360,7 +362,9 @@ pub(crate) fn aerial_style_wire(v: AerialStyle) -> &'static str {
     }
 }
 
-fn aerial_style_from_wire(text: &str) -> Result<AerialStyle, String> {
+/// `pub(crate)`: see [`save_style_from_wire`]'s doc — [`crate::player_pose_bridge`]
+/// reuses this one too.
+pub(crate) fn aerial_style_from_wire(text: &str) -> Result<AerialStyle, String> {
     match text {
         "leg_control" => Ok(AerialStyle::LegControl),
         "chest_control" => Ok(AerialStyle::ChestControl),
@@ -381,7 +385,10 @@ pub(crate) fn aerial_outcome_wire(v: AerialOutcome) -> &'static str {
     }
 }
 
-fn aerial_outcome_from_wire(text: &str) -> Result<AerialOutcome, String> {
+/// `pub(crate)`: see [`save_style_from_wire`]'s doc — [`crate::player_pose_bridge`]
+/// reuses this one too (for round-trip fidelity; `player_pose::select` itself
+/// never reads `aerial_outcome`).
+pub(crate) fn aerial_outcome_from_wire(text: &str) -> Result<AerialOutcome, String> {
     match text {
         "clean" => Ok(AerialOutcome::Clean),
         "heavy" => Ok(AerialOutcome::Heavy),
@@ -418,7 +425,9 @@ pub(crate) fn keeper_behavior_state_wire(v: KeeperBehaviorState) -> &'static str
     }
 }
 
-fn keeper_behavior_state_from_wire(text: &str) -> Result<KeeperBehaviorState, String> {
+/// `pub(crate)`: see [`save_style_from_wire`]'s doc — [`crate::player_pose_bridge`]
+/// reuses this one too.
+pub(crate) fn keeper_behavior_state_from_wire(text: &str) -> Result<KeeperBehaviorState, String> {
     match text {
         "base" => Ok(KeeperBehaviorState::Base),
         "advance" => Ok(KeeperBehaviorState::Advance),
@@ -641,7 +650,11 @@ pub(crate) fn raw_match_event_to_json(event: &MatchEvent) -> Json {
     ])
 }
 
-fn raw_match_event_from_json(json: &Json) -> Result<MatchEvent, String> {
+/// `pub(crate)`, not private: [`crate::match_snapshot_bridge`]'s `events`
+/// override needs this exact decode too — the round-trippable counterpart of
+/// [`raw_match_event_to_json`], which [`crate::match_state_bridge`] already
+/// reuses on the encode side.
+pub(crate) fn raw_match_event_from_json(json: &Json) -> Result<MatchEvent, String> {
     let kind =
         match_event_kind_from_wire(json.field_str("kind").ok_or("match event missing 'kind'")?)?;
     let save_style = json

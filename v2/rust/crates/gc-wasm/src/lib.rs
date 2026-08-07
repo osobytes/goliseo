@@ -183,6 +183,46 @@
 //! [`rollback_playable_lab_bridge::RollbackPlayableLab::current_match_state_json`]/
 //! `reference_match_state_json`/`match_state_json_at` expose the same thing
 //! for a rollback-mode goal replay.
+//!
+//! ## v2 glue, wave W10-B: the last four skipped-test surfaces
+//!
+//! Four gaps traced precisely enough that each blocked `it.skip` names the
+//! exact wasm entry point missing, rather than a whole feature:
+//!
+//! [`match_driver_bridge::MatchDriverBridge::render_frame_build`] is the
+//! `MatchDriverBridge` half of [`render_export`]'s raw per-frame path.
+//! Unlike [`session::Session`], a `MatchDriverBridge` is not
+//! `crate::registry`-backed — see that method's own doc and
+//! [`render_export`]'s module doc ("The `MatchDriverBridge` half") for why
+//! it is therefore an ordinary bound method rather than a
+//! `crate::registry`-handle-keyed free function, while the actual per-frame
+//! block still crosses raw memory exactly like `Session`'s path.
+//!
+//! [`match_snapshot_bridge`] is new: [`match_snapshot_bridge::match_snapshot_build`]
+//! is the general-purpose "build a `WasmMatchSnapshot` from caller-specified
+//! fields" entry point `packages/app/src/rollback_validation.spec.ts`'s and
+//! `packages/app/src/match_rollback_lab.spec.ts`'s remaining skips both name
+//! — `online_combat_phases_bridge::online_combat_phase_boundary_zero` was
+//! the first step in that direction but only ever built one of seven pinned
+//! fixtures; see that module's own doc for the full design (a fresh
+//! `gc_sim::r#match::new` construction plus a small, explicit JSON override
+//! set, never a `MatchSnapshot`-as-JSON round trip).
+//!
+//! [`player_pose_bridge`] is new: [`player_pose_bridge::player_pose_select`]
+//! is a standalone `gc_render::player_pose::select` binding over any
+//! caller-supplied `MatchPlayer`-shaped JSON, not only a live session's
+//! current tick — `packages/render/src/replay.spec.ts`'s remaining skip
+//! names this exact gap (a goal-replay buffer records raw `MatchState`/
+//! `MatchPlayer` snapshots, never a decoded `RenderFrame`, so nothing had
+//! run a buffered frame through pose selection at all). See that module's
+//! doc for how a full `MatchPlayer` is reconstructed from the same narrow
+//! slice [`match_state_bridge::match_state_to_json`] already emits.
+//!
+//! [`match_state_bridge::match_state_to_json`] gained one field, `press`
+//! (`ByTeam<i64>`, tactic-derived chaser count) — `packages/app/src/bootstrap.spec.ts`'s
+//! and `packages/app/src/flow.spec.ts`'s remaining skips both name it as the
+//! one field reachable from neither `SimSession` nor
+//! `gc_render::frame::RenderFrame` anywhere in `@gc/wasm`.
 #![deny(missing_docs)]
 
 pub mod coordinator_bridge;
@@ -192,9 +232,11 @@ pub mod input_protocol_bridge;
 pub mod json;
 pub mod match_driver_bridge;
 pub mod match_driver_fixture_bridge;
+pub mod match_snapshot_bridge;
 pub mod match_state_bridge;
 pub mod net_inbox;
 pub mod online_combat_phases_bridge;
+pub mod player_pose_bridge;
 pub mod protocol_bridge;
 pub mod registry;
 pub mod render_export;

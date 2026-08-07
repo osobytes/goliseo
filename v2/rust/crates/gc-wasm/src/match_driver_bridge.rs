@@ -91,6 +91,7 @@ use gc_netcode::match_driver::{
 };
 use gc_netcode::match_driver_fixture::{DriverRules, to_driver_freeze, to_driver_manifest};
 use gc_netcode::protocol::{self, Value};
+use gc_render::frame::{self as render_frame, RenderFrameOptions, RenderFrameRoster};
 use gc_sim::input_frame::{self, SlotId};
 use gc_sim::match_snapshot::MatchSnapshot;
 use gc_sim::rollback_events::{self, RollbackEventTimeline};
@@ -546,6 +547,11 @@ pub struct MatchDriverBridge {
     /// than relying on this bridge's own internal auto-feed) needs the same
     /// boundary-zero snapshot this driver itself started from.
     initial_snapshot: MatchSnapshot,
+    /// Match-constant per-player roster fields, built once here (mirroring
+    /// [`crate::session::Session::new`]'s own `entry.roster`) and reused by
+    /// every [`MatchDriverBridge::render_frame_build`] call instead of
+    /// rebuilding it every frame — see that method's doc.
+    roster: RenderFrameRoster,
 }
 
 #[wasm_bindgen]
@@ -692,12 +698,19 @@ impl MatchDriverBridge {
             rules: Box::new(rules),
         });
 
+        // Built from the driver's own live state right after construction,
+        // exactly like `Session::new`'s `render_frame::roster(&state)` call
+        // — the roster is match-constant, so this is the one place it needs
+        // building, not once per `render_frame_build` call.
+        let roster = render_frame::roster(&driver.session.state);
+
         Ok(MatchDriverBridge {
             driver,
             transport,
             timeline,
             next_event_tick: 0,
             initial_snapshot: initial_snapshot_for_export,
+            roster,
         })
     }
 
@@ -817,6 +830,47 @@ impl MatchDriverBridge {
         let batch = match_driver::advance(&mut self.driver, sample);
         let (fed, diffs) = self.feed_rollback_timeline(&batch);
         Ok(self.batch_json(&batch, fed, diffs))
+    }
+
+    /// Builds this driver's CURRENT render frame (`self.driver.session.state`
+    /// — the live boundary [`MatchDriverBridge::advance`] most recently
+    /// produced, post-reconciliation) into a reused, thread-local buffer —
+    /// read via [`crate::render_export::driver_render_frame_ptr`]/
+    /// [`crate::render_export::driver_render_frame_len`], the exact
+    /// three-call raw ptr/len contract
+    /// [`crate::render_export::render_frame_build`] already uses for a
+    /// [`crate::session::Session`]. Call again before every read; the
+    /// pointer is only valid for the block most recently built.
+    ///
+    /// ## Why this is a bound method, not a `crate::registry`-handle free
+    /// function
+    ///
+    /// See `crate::render_export`'s module doc, "The `MatchDriverBridge`
+    /// half": this bridge owns its live `MatchState` directly (a struct
+    /// field), not via a `crate::registry`-issued `u32` handle the way
+    /// [`crate::session::Session`] does, so there is no FFI-safe scalar a raw
+    /// `extern "C"` export could take to name "which bridge". An ordinary
+    /// `wasm-bindgen` bound method taking `&mut self` and returning a bare
+    /// `u32` costs nothing extra here — `wasm-bindgen` already passes an
+    /// exported class's own pointer to a method call as cheaply as this
+    /// crate's raw exports take a `u32` handle; the per-frame data this
+    /// whole design exists to keep off the `wasm-bindgen` marshalling path is
+    /// the ENCODED FRAME BLOCK itself, and that still crosses as a raw
+    /// `Float64Array` view, exactly like `Session`'s own path.
+    ///
+    /// Always returns `1` (kept for interface symmetry with
+    /// [`crate::render_export::render_frame_build`]'s `u32` success/failure
+    /// convention): unlike a registry handle, a live `&mut self` can never
+    /// name a freed or nonexistent bridge.
+    #[wasm_bindgen(js_name = renderFrameBuild)]
+    pub fn render_frame_build(&mut self) -> u32 {
+        let options = RenderFrameOptions {
+            roster: Some(self.roster.clone()),
+            ..Default::default()
+        };
+        let built = render_frame::build(&self.driver.session.state, &options);
+        crate::render_export::build_driver_frame(&built);
+        1
     }
 
     /// Mirrors `gc_netcode::match_driver::observe_checkpoint`: compares
@@ -1315,5 +1369,37 @@ mod tests {
         bridge.advance(None).unwrap();
         let drained = Json::parse(&bridge.drain_outbound_json()).unwrap();
         assert!(drained.as_array().is_some());
+    }
+
+    /// Regression test for this milestone's gap: before
+    /// `render_frame_build` existed, nothing could turn a live
+    /// `MatchDriverBridge` into a `RenderFrame` at all -- this proves the
+    /// full three-call contract works end to end (build, then read
+    /// ptr/len), producing a non-empty block that changes shape between
+    /// calls exactly the way `render_export`'s own `Session` path already
+    /// does, and that it does not disturb the buffer
+    /// `render_frame_build`/`render_frame_ptr`/`render_frame_len` (the
+    /// `Session` path) uses.
+    #[test]
+    fn render_frame_build_produces_a_readable_block_independent_of_the_session_buffer() {
+        let mut bridge = new_host_bridge();
+        bridge.advance(None).unwrap();
+
+        let ok = bridge.render_frame_build();
+        assert_eq!(ok, 1);
+        let ptr = crate::render_export::driver_render_frame_ptr();
+        let len = crate::render_export::driver_render_frame_len();
+        assert!(len > 0, "a built driver render frame must be non-empty");
+        assert_ne!(ptr, 0);
+
+        // Building a `Session`'s own frame afterward must not disturb the
+        // driver's already-built block -- the two live in separate
+        // thread-local buffers (see `render_export`'s module doc).
+        let session = Session::new("nebula", "orion", 7.0, 20.0, 3, None, None)
+            .expect("the fixture team ids always construct a valid session");
+        let session_ok = crate::render_export::render_frame_build(session.handle());
+        assert_eq!(session_ok, 1);
+        assert_eq!(crate::render_export::driver_render_frame_ptr(), ptr);
+        assert_eq!(crate::render_export::driver_render_frame_len(), len);
     }
 }

@@ -31,9 +31,14 @@ export interface SimSession {
   /** This session's raw simulation state, as JSON —
    * `gc_wasm::match_state_bridge::match_state_to_json`'s shape, matching
    * `packages/render/src/replay.ts`'s `MatchState` interface field-for-field
-   * (`field`, `goal_home`, `goal_away`, `score`, `time_left`,
+   * (`field`, `goal_home`, `goal_away`, `score`, `time_left`, `press`,
    * `outfield_press`, `transition`, `transition_windows`, `controlled?`,
    * `owner?`, `ball`, `ball_vel`, `ball_z`, `ball_vz`, `players`, `events`).
+   * `press` (`{home, away}`, tactic-derived chaser count,
+   * `gc_sim::match::MatchState.press`) is not part of `replay.ts`'s own
+   * `MatchState` interface (that file is free to widen its own type to read
+   * it) — it was added for a caller that only needs a live session's current
+   * `press.home`/`press.away`, e.g. `packages/app`'s real-match adapter.
    * Unlike {@link SimSession.snapshotHandle} (an opaque handle) this crosses
    * fully decoded — `replay.ts`'s `captureFrame` needs to actually read
    * `outfield_press`/`transition`/per-player timers, which
@@ -50,7 +55,16 @@ export interface SimSession {
  * `"2-1-1"`); omit to keep the team's own default. Not validated against
  * the authored formation table by this constructor itself -- see
  * `crates/gc-wasm/src/session.rs`'s `Session::new` doc for why that check
- * stays the caller's (e.g. a formation-select screen's) job. */
+ * stays the caller's (e.g. a formation-select screen's) job.
+ *
+ * `combatEnabled` (omitted defaults to `false`) mirrors
+ * `game/screens/match.lua`'s own `_opts.combat_enabled` -- `true` builds a
+ * combat companion once, at construction, and every {@link SimSession.step}
+ * call afterward threads it through; `false`/omitted never builds one, byte
+ * for byte the behavior before this parameter existed. This was previously
+ * missing from this interface even though the compiled artifact's
+ * constructor already accepted it as a seventh, trailing optional argument
+ * (`crates/gc-wasm/src/session.rs`'s `Session::new`). */
 export interface SimSessionConstructor {
   new (
     homeTeamId: string,
@@ -59,6 +73,7 @@ export interface SimSessionConstructor {
     durationSeconds: number,
     maxGoals: number,
     homeFormation?: string,
+    combatEnabled?: boolean,
   ): SimSession;
 }
 
@@ -94,12 +109,25 @@ export interface ControlMessageHeader {
  * numeric `extern "C"` functions plus the module's linear memory. See
  * `crates/gc-wasm/src/render_export.rs`'s doc for the three-call contract
  * (`render_frame_build` then read `render_frame_ptr`/`render_frame_len`).
+ *
+ * `driver_render_frame_ptr`/`driver_render_frame_len` are the read half of
+ * {@link MatchDriverBridge.renderFrameBuild}'s own three-call contract — a
+ * SEPARATE reused buffer from `render_frame_ptr`/`render_frame_len`'s own
+ * (see `render_export.rs`'s module doc), so building a `SimSession`'s frame
+ * and a `MatchDriverBridge`'s frame in the same tick cannot clobber one
+ * another. There is no `driver_render_frame_build` free function here:
+ * unlike `SimSession`, a `MatchDriverBridge` is not `crate::registry`-backed
+ * (no `u32` handle a raw `extern "C"` function could take), so the trigger
+ * is {@link MatchDriverBridge.renderFrameBuild} itself, an ordinary bound
+ * method — see that method's doc.
  */
 export interface RawExports {
   readonly memory: WebAssembly.Memory;
   render_frame_build(handle: number): number;
   render_frame_ptr(): number;
   render_frame_len(): number;
+  driver_render_frame_ptr(): number;
+  driver_render_frame_len(): number;
 }
 
 /**
@@ -477,6 +505,21 @@ export interface MatchDriverBridge {
    * retained boundary-snapshot history at `boundaryTick` —
    * `MatchDriverPort.snapshot`. */
   snapshotLookup(boundaryTick: number): SnapshotLookup;
+  /**
+   * Builds this driver's CURRENT render frame (the live boundary
+   * {@link MatchDriverBridge.advance} most recently produced) into a reused
+   * thread-local buffer — read back via
+   * {@link SimHost.buildMatchDriverRenderFrame}, the `MatchDriverBridge`
+   * counterpart of {@link SimHost.buildRenderFrame}. Always returns `1`
+   * (kept for interface symmetry with `buildRenderFrame`'s success/failure
+   * convention -- a live `MatchDriverBridge` instance can never name a freed
+   * or nonexistent driver the way a stale `SimSession.handle` could).
+   *
+   * Call {@link SimHost.buildMatchDriverRenderFrame} rather than this method
+   * directly -- it wraps this call together with the raw ptr/len read into
+   * one `Float64Array` view, mirroring `buildRenderFrame`'s own shape.
+   */
+  renderFrameBuild(): number;
 }
 
 /** Constructs a {@link MatchDriverBridge}. `session` must be a freshly
@@ -982,12 +1025,123 @@ export interface OnlineCombatPhasesBridge {
   ): boolean;
 }
 
+// ---------------------------------------------------------------------------
+// `match_snapshot_bridge.rs` — general-purpose construction of a
+// `WasmMatchSnapshot` from caller-specified fields. Unlike
+// `OnlineCombatPhasesBridge.onlineCombatPhaseBoundaryZero` (one of seven
+// pinned fixtures), this builds an arbitrary hand-specified state: a fresh
+// `gc_sim::r#match::new` construction (the same one `new Session(...)` uses)
+// plus a small, explicit JSON override set.
+// ---------------------------------------------------------------------------
+
+/** Mirrors `gc_wasm::match_snapshot_bridge` (`crates/gc-wasm/src/match_snapshot_bridge.rs`). */
+export interface MatchSnapshotBridge {
+  /**
+   * Builds a fresh, slot-mode `MatchState` exactly like `new Session(...)`
+   * does (`homeTeamId`/`awayTeamId` from `gc_data::teams::ALL`, a
+   * five-player roster required), applies `overridesJson` on top of it, and
+   * captures the result as an opaque {@link WasmMatchSnapshot} handle.
+   *
+   * `overridesJson` (omitted captures the freshly-built state unchanged) is
+   * a JSON object, every key optional and independently applied on top of
+   * the fresh construction:
+   *
+   * - `owner`: integer (one-based player index) or `null` to clear.
+   * - `time_left`, `input_tick`, `ball_z`, `ball_vz`, `pickup_cd`,
+   *   `block_grace`: plain numbers.
+   * - `ball`, `ball_vel`: `{x: number, y: number}`.
+   * - `events`: replaces `MatchState.events` wholesale (never merged) —
+   *   `SimSession.matchStateJson()`'s own `"events"` array shape, one entry
+   *   per `{kind, x, y, player?, ...}`.
+   * - `players`: an array of `{index, pos?, run_vel?, facing?, vel?}` —
+   *   one-based `index` into `MatchState.players` (matching
+   *   `MatchState.owner`'s own one-based convention); only the listed
+   *   fields on that player are overridden, and an unlisted player is
+   *   untouched.
+   *
+   * Two calls with identical arguments (including `overridesJson`) produce
+   * a byte-identical snapshot — the same guarantee
+   * {@link OnlineCombatPhasesBridge.onlineCombatPhaseBoundaryZero} gives,
+   * relied on when seeding more than one peer from a hand-built snapshot.
+   *
+   * No combat companion: always captures with `combat_state: None`.
+   *
+   * Throws (a string) if either team id is not authored content, either
+   * roster is not five players, `overridesJson` fails to parse, or an
+   * override is malformed (wrong type, an out-of-range player `index`, or
+   * an `events` entry that fails to decode).
+   */
+  matchSnapshotBuild(
+    homeTeamId: string,
+    awayTeamId: string,
+    seed: number,
+    durationSeconds: number,
+    maxGoals: number,
+    homeFormation?: string,
+    overridesJson?: string,
+  ): WasmMatchSnapshot;
+  /**
+   * `snapshot`'s underlying `MatchState`, as JSON — the exact same shape
+   * {@link SimSession.matchStateJson} returns. The read-back half of
+   * {@link MatchSnapshotBridge.matchSnapshotBuild}: for a caller that needs
+   * to inspect a built snapshot's fields (e.g. a freshly-built player's
+   * `id`, or `time_left` before nudging it by one tick) rather than only
+   * ever writing to one.
+   */
+  matchSnapshotStateJson(snapshot: WasmMatchSnapshot): string;
+}
+
+// ---------------------------------------------------------------------------
+// `player_pose_bridge.rs` — standalone `gc_render::player_pose::select`,
+// over any caller-supplied `MatchPlayer`-shaped JSON, not only a live
+// `SimSession`'s current tick (that path only ever reaches JS baked into a
+// `RenderFrame`'s `pose_id`/`pose_priority`/`pose_source` fields, via
+// `SimHost.buildRenderFrame`).
+// ---------------------------------------------------------------------------
+
+/** Mirrors `gc_wasm::player_pose_bridge` (`crates/gc-wasm/src/player_pose_bridge.rs`). */
+export interface PlayerPoseBridge {
+  /**
+   * Selects the pose to display for an arbitrary buffered player — e.g. a
+   * `packages/render/src/replay.ts` goal-replay frame, which records raw
+   * `MatchState`/`MatchPlayer` snapshots rather than a decoded
+   * `RenderFrame`. `inputJson`:
+   *
+   * ```jsonc
+   * {
+   *   // Required: the same per-player shape `SimSession.matchStateJson()`'s
+   *   // "players" array embeds -- `packages/render/src/replay.ts`'s
+   *   // `MatchPlayer` interface, verbatim.
+   *   "player": { "id": "nebula_02", "is_keeper": false, /* ... *\/ },
+   *   // All three optional/omittable, mirroring `player_pose::select`'s
+   *   // own optional parameters -- omit exactly when the caller has none.
+   *   "combat": { "phase": "guard", "forced_state": "stagger", "forced_ticks": 4 },
+   *   "keeper_context": { "near_ball": true, "shuffling": false, "tip": false },
+   *   "outfield_context": { "now": 12.5, "containing": false, "kick_follow": true }
+   * }
+   * ```
+   *
+   * Returns the selection as JSON: `{"id": "run_telegraph", "priority": 35,
+   * "source": "soccer"}` — `id` is `gc_render::player_pose::PlayerPoseId`'s
+   * wire name, `source` is `"soccer"` | `"combat"` | `"locomotion"`.
+   *
+   * Throws (a string) if `inputJson` fails to parse, is missing
+   * `"player"`, or any field fails to decode against its closed wire
+   * vocabulary (an unrecognized team/keeper-state/save-style/aerial-style/
+   * aerial-outcome/outfield-intent/outfield-decision-context/combat-phase/
+   * combat-forced-state).
+   */
+  playerPoseSelect(inputJson: string): string;
+}
+
 /** The shape of `dist/pkg/gc_wasm.cjs`'s module exports. */
 export interface GcWasmModule
   extends InputFrameBridge,
     InputProtocolBridge,
     MatchDriverFixtureBridge,
-    OnlineCombatPhasesBridge {
+    MatchSnapshotBridge,
+    OnlineCombatPhasesBridge,
+    PlayerPoseBridge {
   readonly Session: SimSessionConstructor;
   readonly Coordinator: CoordinatorConstructor;
   readonly MatchDriverBridge: MatchDriverBridgeConstructor;

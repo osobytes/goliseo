@@ -99,6 +99,43 @@ fn outfield_intent_wire(v: OutfieldIntent) -> &'static str {
     }
 }
 
+/// `pub(crate)`, not private: [`crate::player_pose_bridge`] needs this exact
+/// wire mapping to decode a caller-supplied `MatchPlayer.outfield_decision`
+/// for standalone pose selection (`player_pose::select`'s `run_telegraphing`
+/// helper reads `outfield_decision.intent`) — reusing it here keeps exactly
+/// one `OutfieldIntent` wire mapping in this crate rather than a second copy.
+pub(crate) fn outfield_intent_from_wire(text: &str) -> Result<OutfieldIntent, String> {
+    match text {
+        "none" => Ok(OutfieldIntent::None),
+        "move" => Ok(OutfieldIntent::Move),
+        "in_behind" => Ok(OutfieldIntent::InBehind),
+        "come_short" => Ok(OutfieldIntent::ComeShort),
+        "hold_width" => Ok(OutfieldIntent::HoldWidth),
+        "shoot" => Ok(OutfieldIntent::Shoot),
+        "cross" => Ok(OutfieldIntent::Cross),
+        "pass" => Ok(OutfieldIntent::Pass),
+        "dribble" => Ok(OutfieldIntent::Dribble),
+        other => Err(format!("'{other}' is not a canonical outfield intent")),
+    }
+}
+
+/// `pub(crate)`: see [`outfield_intent_from_wire`]'s doc —
+/// [`crate::player_pose_bridge`] reuses this one too (for round-trip
+/// fidelity; `player_pose::select` itself never reads
+/// `outfield_decision.context`).
+pub(crate) fn outfield_decision_context_from_wire(
+    text: &str,
+) -> Result<OutfieldDecisionContext, String> {
+    match text {
+        "ineligible" => Ok(OutfieldDecisionContext::Ineligible),
+        "offball" => Ok(OutfieldDecisionContext::Offball),
+        "carrier" => Ok(OutfieldDecisionContext::Carrier),
+        other => Err(format!(
+            "'{other}' is not a canonical outfield decision context"
+        )),
+    }
+}
+
 fn stable_press_mode_wire(v: StablePressMode) -> &'static str {
     match v {
         StablePressMode::Inactive => "inactive",
@@ -279,11 +316,23 @@ fn match_player_json(p: &MatchPlayer) -> Json {
 
 /// Encodes the raw-`MatchState`-for-replay slice, matching
 /// `packages/render/src/replay.ts`'s `MatchState` interface field-for-field
-/// (`field`, `goal_home`, `goal_away`, `score`, `time_left`,
+/// (`field`, `goal_home`, `goal_away`, `score`, `time_left`, `press`,
 /// `outfield_press`, `transition`, `transition_windows`, `controlled?`,
 /// `owner?`, `ball`, `ball_vel`, `ball_z`, `ball_vz`, `players`, `events`).
 /// See the module doc for why this is a narrow, hand-picked slice rather
 /// than the full `MatchState`/`MatchPlayer` structs.
+///
+/// `press` (`ByTeam<i64>` — chasers per team, copied from each side's
+/// authored `TacticData.press` at kickoff, `crates/gc-sim/src/match.rs`) was
+/// added for `packages/app/src/bootstrap.spec.ts`'s/`flow.spec.ts`'s
+/// `state.press.home` cases: before this addition it was exposed nowhere
+/// reachable from `@gc/app` — not `SimSession` (confirmed reading
+/// `session.rs`: score/timeLeft/finished/inputTick/snapshotHash/roster/
+/// matchStateJson only, and this narrow encoder did not carry it either),
+/// not `gc_render::frame::RenderFrame` (`gc-render` is a reference crate this
+/// task does not own, and it has no `press` field either), and not
+/// `@gc/app`'s own `content.ts`. `Session.matchStateJson()` was the only file
+/// in this task's ownership that could close the gap.
 #[must_use]
 pub(crate) fn match_state_to_json(state: &MatchState) -> Json {
     Json::obj_omit_null(vec![
@@ -298,6 +347,13 @@ pub(crate) fn match_state_to_json(state: &MatchState) -> Json {
             ]),
         ),
         ("time_left", Json::Number(state.time_left)),
+        (
+            "press",
+            Json::obj(vec![
+                ("home", Json::int(state.press.home)),
+                ("away", Json::int(state.press.away)),
+            ]),
+        ),
         (
             "outfield_press",
             Json::obj(vec![
@@ -372,9 +428,12 @@ mod tests {
         assert_eq!(score.field_i64("home"), Some(0));
         assert_eq!(score.field_i64("away"), Some(0));
         assert!(json.get("time_left").is_some());
-        let press = json.get("outfield_press").expect("outfield_press present");
-        assert!(press.get("home").is_some());
-        assert!(press.get("away").is_some());
+        let press = json.get("press").expect("press present");
+        assert!(press.field_i64("home").is_some());
+        assert!(press.field_i64("away").is_some());
+        let outfield_press = json.get("outfield_press").expect("outfield_press present");
+        assert!(outfield_press.get("home").is_some());
+        assert!(outfield_press.get("away").is_some());
         assert!(json.get("transition").is_some());
         let windows = json
             .get("transition_windows")
@@ -397,6 +456,32 @@ mod tests {
         assert!(first.get("outfield_decision").is_some());
         assert!(first.get("keeper_get_up_timer").is_some());
         assert!(json.get("events").and_then(Json::as_array).is_some());
+    }
+
+    #[test]
+    fn press_carries_the_authored_tactic_chaser_count() {
+        let home = teams::get("nebula").expect("fixture team");
+        let away = teams::get("orion").expect("fixture team");
+        let press_high = gc_data::tactics::get("press_high").expect("authored tactic");
+        let state = sim_match::new(sim_match::NewMatchOptions {
+            home,
+            away,
+            field: SimPitchSize { w: 960.0, h: 540.0 },
+            home_formation: None,
+            tactic: Some(press_high),
+            away_tactic: None,
+            duration: Some(300.0),
+            max_goals: Some(3),
+            seed: Some(11.0),
+            players_by_id: None,
+            species_by_id: None,
+            showcase_players_by_id: None,
+            human_controlled: None,
+            input_ownership: None,
+        });
+        let json = match_state_to_json(&state);
+        let press = json.get("press").expect("press present");
+        assert_eq!(press.field_i64("home"), Some(press_high.press));
     }
 
     #[test]
