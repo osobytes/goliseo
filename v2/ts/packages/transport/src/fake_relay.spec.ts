@@ -10,8 +10,8 @@
 // The second half ("relay topology probe: no peer is the sequencer") drives
 // `game.online.coordinator`, `game.online.fault_harness`, `game.online.
 // match_driver`, `game.online.input_protocol`, and friends -- the
-// rollback/session layer, not the transport layer. Per v2/MIGRATION_PLAN.md
-// / v2/README.md section 2.1, that layer is `crates/gc-netcode` in Rust, not
+// rollback/session layer, not the transport layer. Per v2/README.md section
+// 2.1, that layer is `crates/gc-netcode` in Rust, not
 // this TS package, and those Lua modules do not exist in `@gc/transport`'s
 // dependency graph. That half is left for whichever agent ports
 // `crates/gc-netcode` -- it belongs beside `coordinator.rs` /
