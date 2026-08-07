@@ -7,29 +7,48 @@
 // `game.online.match_driver` and `sim.rollback_events`, both Rust-owned
 // (`crates/gc-sim` / `crates/gc-netcode`; v2/README.md §2.1).
 //
-// # Re-audited against the current `@gc/wasm`
+// # Re-audited against the current `@gc/wasm` (12 of 13 cases now real)
 //
 // A prior pass here recorded five numbered blockers and left all 13 cases
-// `it.skip`. Re-verified against the code as it exists now (`crates/gc-wasm/
-// src/match_driver_fixture_bridge.rs`, `crates/gc-wasm/src/
-// match_driver_bridge.rs`, `crates/gc-wasm/src/rollback_events_bridge.rs`):
+// `it.skip`. A later pass re-verified against `crates/gc-wasm/src/
+// match_driver_fixture_bridge.rs`/`match_driver_bridge.rs`/
+// `rollback_events_bridge.rs`, found blockers 1-4 already stale or fixed,
+// blocker 5 (`RollbackTickOutput` too narrow) real and fixed it, and built a
+// real two-peer `MatchDriverBridge` harness (below) that unblocked four of
+// the 13 cases -- the four that only need
+// `spec/fixtures/online_match_session.lua`'s plain session construction, not
+// `spec/support/online_combat_phases.lua`'s pinned combat geometry. That pass
+// left the remaining nine (`describe("online match presentation combat
+// phases...")` below) skipped: reaching a specific combat phase
+// deterministically needed either a `gc-wasm` export of
+// `online_combat_phases.lua`'s pinned boundary zeroes, or scripting real
+// gameplay input precisely enough to reach each phase from scratch, and
+// neither existed yet on `@gc/wasm`'s surface.
 //
-//   * Blockers 1-3 (no `@gc/wasm` dependency, no standalone
-//     `RollbackEventsTimeline`, the correction-batch feed skipped) were
-//     already fixed by the time that pass was written and are unchanged.
-//   * Blocker 4 ("no TS-reachable way to construct a valid
-//     `MatchDriverBridge`") is now **stale**. `match_driver_fixture_bridge.rs`
-//     landed after that pass: `matchDriverFixtureFreezeJson`/
-//     `matchDriverFixtureManifestJson` together are exactly the
-//     `freezeJson`/`manifestJson` pair `MatchDriverBridge`'s constructor
-//     needs, proven by both a Rust test
-//     (`match_driver_fixture_bridge.rs`'s own module tests) and a TS one
-//     (`packages/wasm/src/match_driver_fixture.spec.ts`'s "closes the
-//     freezeJson/manifestJson gap" block).
-//   * Blocker 5 (`RollbackTickOutput` too narrow for
-//     `RollbackEventsTimeline.apply`'s `outputsJson`) was real and is fixed
-//     here: `RollbackTickOutput` below now carries the full
-//     `tick_output_to_json` shape.
+// That gap is now closed: `crates/gc-wasm/src/online_combat_phases_bridge.rs`
+// (`onlineCombatPhaseIds`/`ScenarioJson`/`BoundaryZero`/`LiveSample`/
+// `Observed`) is exactly the export the previous pass asked for -- a
+// wasm-bindgen port of `online_combat_phases.lua`, cross-checked
+// field-for-field against the existing Rust port
+// (`crates/gc-netcode/tests/support/online_combat_phases.rs`) rather than
+// re-derived from the Lua original by hand, and proven end-to-end by that
+// module's own Rust test seeding a real `MatchDriverBridge` from
+// `onlineCombatPhaseBoundaryZero`'s output and stepping it forward. Eight of
+// the nine combat-phase cases run for real below, using
+// `MatchDriverBridge`'s `initialSnapshotOverride` constructor parameter
+// (`crates/gc-wasm/src/match_driver_bridge.rs`) to seed each peer from the
+// same pinned, combat-active boundary zero -- exactly the "drive a real
+// `MatchDriverBridge` from it" workflow that bridge's own module doc
+// promises this file.
+//
+// The ninth ("publishes the lifecycle exactly once through full time") is
+// still `it.skip`, but for a new, unrelated reason found *by* driving the
+// real bridge to full time: `gc_netcode::match_driver`'s settle phase calls
+// `std::time::SystemTime::now()` for its wall-clock bound
+// (`crates/gc-netcode/src/match_driver.rs`'s `default_clock`), which traps
+// under `wasm32-unknown-unknown` -- a real defect in `crates/gc-netcode`/
+// `crates/gc-wasm` (out of this package's ownership), not a gap in this
+// port. See that case's own comment and this file's final report.
 //
 // A real harness is built and driven below (`describe("online match
 // presentation (real wasm bridges...")`), using
@@ -39,39 +58,20 @@
 // a controlled two-peer test -- see `net_diagnostics.spec.ts`'s header for
 // why a *real* transport adapter is a separate, harder problem), and a real
 // standalone `RollbackEventsTimeline` per peer as `newOnlineMatchPresentation`'s
-// `events`. Four of the Lua original's 13 cases run for real this way: the
-// four that only need `spec/fixtures/online_match_session.lua`'s plain
-// session construction, not `spec/support/online_combat_phases.lua`'s
-// pinned combat geometry.
+// `events`. The combat-phase `describe` block reuses the same harness
+// builder with an `initialSnapshotOverride` factory, and reuses `run` with
+// its `sample`/`onBatch` hooks (mirroring the Lua original's own `run`
+// options) to script phase-specific input and check, tick by tick before the
+// driver evicts it, whether a correction actually resimulated a tick that
+// ran through the named phase.
 //
-// The remaining nine ("keeps feedback honest through a correction during
-// <phase>" x7, "never publishes a combat cue a correction took away",
-// "publishes the lifecycle exactly once through full time") all call
-// `combat_phases.boundary_zero(phase_id)` in the Lua original -- a specific,
-// pinned `MatchSnapshot` (exact player positions/combat state) for each of
-// seven combat phases, and `combat_phases.live_sample` to script real input
-// into that phase. This is the real, current blocker for those nine, and it
-// is a *different* gap than the one blockers 1-5 described: `@gc/wasm`'s
-// `Session` only ever starts from `sim_match::new`'s default boundary zero
-// (`crates/gc-wasm/src/session.rs`'s `Session::new` hard-codes
-// `home_formation: None` and there is no snapshot-restore/constructor entry
-// point at all -- confirmed by reading `session.rs` end to end). There is no
-// way to hand a `Session` or a `MatchDriverBridge` an arbitrary starting
-// state from TypeScript; the only snapshots reachable from this side are
-// ones a real, freshly-stepped session actually produced. Reaching a
-// specific combat phase (windup/guard/contact/...) deterministically would
-// need either a `gc-wasm` export of `spec/support/online_combat_phases.lua`'s
-// pinned boundary zeroes, or scripting real gameplay input precisely enough
-// to reach each phase from scratch inside a headless run -- both are
-// significant new engineering (a Rust-side data export, or a TS-side input
-// script derived from gameplay mechanics this port does not otherwise need)
-// and are left for a follow-up rather than folded into this audit.
-//
-// What is *not* ported for the remaining nine, and does not need to be
-// re-litigated: faking `combat_phases.boundary_zero`/`live_sample` well
-// enough to reach a real combat phase would mean reimplementing combat
-// geometry here, exactly what v2/README.md §2.1 forbids on this side of the
-// determinism line.
+// What is *not* ported here, and does not need to be re-litigated: faking
+// `combat_phases.boundary_zero`/`live_sample` well enough to reach a real
+// combat phase would mean reimplementing combat geometry in this package,
+// exactly what v2/README.md §2.1 forbids on this side of the determinism
+// line. `onlineCombatPhaseObserved` is called with opaque snapshot handles
+// and raw JSON, exactly like every other port in this file -- this module
+// never inspects what "windup" or "guard" actually mean.
 
 import { describe, expect, it } from "vitest";
 import { loadSimHost } from "@gc/wasm";
@@ -165,6 +165,13 @@ interface RealPeer {
   stale: number;
   corrections: number;
   confirmedTicks: number[];
+  /** Combat-domain (`domain` starting `"combat/"`) counterparts of `revoked`/
+   * `event_diffs.replaced`/`event_diffs.added`/`confirmed` above -- see
+   * `isCombat`'s doc for why these are tracked separately. */
+  revokedCombat: number;
+  replacedCombat: number;
+  addedCombat: number;
+  confirmedCombat: number;
 }
 
 interface RealHarness {
@@ -173,7 +180,18 @@ interface RealHarness {
   readonly firstInputTick: number;
 }
 
-function buildHarness(host: SimHost, mode: "1v1" | "2v2" = "1v1", maxUnconfirmedTicks = 30): RealHarness {
+function buildHarness(
+  host: SimHost,
+  mode: "1v1" | "2v2" = "1v1",
+  maxUnconfirmedTicks = 30,
+  // Builds this peer's boundary-zero override, called once per peer so each
+  // gets its own freshly-built (byte-identical) handle -- `WasmMatchSnapshot`
+  // is consumed by value, so one handle can never seed two peers (see
+  // `MatchDriverBridgeConstructor`'s doc in `packages/wasm/src/types.ts`).
+  // Omitted for the plain (non-combat-phase) harness below, which relies on
+  // each peer's own `Session.capture_snapshot()` default instead.
+  buildInitialSnapshotOverride?: () => WasmMatchSnapshot
+): RealHarness {
   const freezeJson = host.matchDriverFixtureFreezeJson(mode);
   const manifestJson = host.matchDriverFixtureManifestJson(mode);
   const firstInputTick = (JSON.parse(freezeJson) as { readonly first_input_tick: number }).first_input_tick;
@@ -188,7 +206,16 @@ function buildHarness(host: SimHost, mode: "1v1" | "2v2" = "1v1", maxUnconfirmed
   const peers: RealPeer[] = peerIds.map((peerId, index) => {
     const role = index === 0 ? "host" : "guest";
     const session = newSession(host);
-    const driver = new host.MatchDriverBridge(session, role, peerId, freezeJson, manifestJson, undefined);
+    const driver = new host.MatchDriverBridge(
+      session,
+      role,
+      peerId,
+      freezeJson,
+      manifestJson,
+      undefined,
+      undefined,
+      buildInitialSnapshotOverride?.()
+    );
     driver.initializeTransport();
     // Star topology: the host opens a slot per guest; each guest opens only
     // the host (a guest's transport capacity is fixed at 1 -- see
@@ -213,6 +240,10 @@ function buildHarness(host: SimHost, mode: "1v1" | "2v2" = "1v1", maxUnconfirmed
       stale: 0,
       corrections: 0,
       confirmedTicks: [],
+      revokedCombat: 0,
+      replacedCombat: 0,
+      addedCombat: 0,
+      confirmedCombat: 0,
     };
   });
 
@@ -265,21 +296,41 @@ function payloadsEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+// Mirrors the Lua spec's own `is_combat`: `sim.rollback_events`' wrapped
+// combat events carry a `domain` starting `combat/` (`combat/<kind>/<n>`,
+// `crates/gc-sim/src/rollback_events.rs`) -- everything else (match,
+// lifecycle) does not.
+function isCombat(domain: string): boolean {
+  return domain.startsWith("combat/");
+}
+
 // Mirrors the Lua spec's own `record` helper: tracks what each peer's
 // presentation timeline has published, so the assertions below can check
-// "exactly once" and "never a revoked id" for real.
+// "exactly once" and "never a revoked id" for real. The `*Combat` counters
+// are the combat-phase cases' own claim -- a correction that merely landed
+// near a phase is not enough; it must have rewritten or introduced combat
+// feedback (see the combat-phase `describe` block below).
 function record(peer: RealPeer, batch: RollbackPlayableLabBatch): void {
   peer.corrections += batch.corrections.length;
   for (const diffEntry of batch.event_diffs) {
     for (const event of diffEntry.added) {
       peer.latest.set(event.id, event.payload);
+      if (isCombat(event.domain)) {
+        peer.addedCombat += 1;
+      }
     }
     for (const event of diffEntry.revoked) {
       peer.revoked.add(event.id);
       peer.latest.delete(event.id);
+      if (isCombat(event.domain)) {
+        peer.revokedCombat += 1;
+      }
     }
     for (const replacement of diffEntry.replaced) {
       peer.latest.set(replacement.after.id, replacement.after.payload);
+      if (isCombat(replacement.after.domain)) {
+        peer.replacedCombat += 1;
+      }
     }
   }
   for (const step of batch.confirmed_steps) {
@@ -292,6 +343,9 @@ function record(peer: RealPeer, batch: RollbackPlayableLabBatch): void {
     for (const list of lists) {
       for (const event of list) {
         peer.confirmed.set(event.id, (peer.confirmed.get(event.id) ?? 0) + 1);
+        if (isCombat(event.domain)) {
+          peer.confirmedCombat += 1;
+        }
         const latest = peer.latest.get(event.id);
         if (latest !== undefined && !payloadsEqual(latest, event.payload)) {
           peer.stale += 1;
@@ -304,19 +358,32 @@ function record(peer: RealPeer, batch: RollbackPlayableLabBatch): void {
 interface RunOptions {
   /** Deliver every `period` steps; omit to deliver every step. */
   readonly period?: number;
+  /** Overrides the neutral sample wire per (0-based step, 0-based peer
+   * index). Mirrors the Lua spec's own `run`'s `sample` option -- e.g.
+   * `combat_phases.live_sample`'s TypeScript counterpart,
+   * `onlineCombatPhaseLiveSample`. */
+  readonly sample?: (step: number, peerIndex: number) => string;
+  /** Called once per peer per step, with that step's presentation batch,
+   * before the next step evicts the driver's retained boundaries -- mirrors
+   * the Lua spec's own `run`'s `on_batch` option, which the combat-phase
+   * cases below use to check a correction actually resimulated a tick that
+   * ran through the named phase. */
+  readonly onBatch?: (peer: RealPeer, peerIndex: number, batch: RollbackPlayableLabBatch) => void;
 }
 
 function run(host: SimHost, harness: RealHarness, steps: number, options: RunOptions = {}): void {
-  const sampleWire = host.inputFrameNeutralSample();
+  const neutralWire = host.inputFrameNeutralSample();
   for (let step = 0; step < steps; step += 1) {
-    for (const peer of harness.peers) {
-      const batch = JSON.parse(peer.driver.advance(sampleWire)) as WasmDriverBatch;
+    harness.peers.forEach((peer, peerIndex) => {
+      const wire = options.sample ? options.sample(step, peerIndex) : neutralWire;
+      const batch = JSON.parse(peer.driver.advance(wire)) as WasmDriverBatch;
       for (const checkpoint of batch.checkpoints) {
         peer.checkpoints.set(checkpoint.tick, checkpoint.hash);
       }
       const presentationBatch = consume(peer.presentation, harness.ports, peer.driver, batch);
       record(peer, presentationBatch);
-    }
+      options.onBatch?.(peer, peerIndex, presentationBatch);
+    });
     if (options.period === undefined || (step + 1) % options.period === 0) {
       deliverAll(harness.peers);
     }
@@ -405,19 +472,172 @@ describe("online match presentation (real wasm bridges, no combat-phase fixture 
 });
 
 // The seven combat correction phases, plus the two cases built on top of
-// them -- still blocked. See the file header for the current, precise
-// reason (no way to reach a pinned combat-phase boundary zero from
-// TypeScript), which replaces the earlier "no MatchDriverBridge" claim.
-describe.skip("online match presentation combat phases (blocked: no wasm-reachable way to build spec/support/online_combat_phases.lua's pinned boundary zeroes -- see the file header comment)", () => {
-  it.skip("keeps feedback honest through a correction during windup", () => {});
-  it.skip("keeps feedback honest through a correction during guard", () => {});
-  it.skip("keeps feedback honest through a correction during contact", () => {});
-  it.skip("keeps feedback honest through a correction during projectile_flight", () => {});
-  it.skip("keeps feedback honest through a correction during stagger", () => {});
-  it.skip("keeps feedback honest through a correction during ball_spill", () => {});
-  it.skip("keeps feedback honest through a correction during immunity_expiry", () => {});
-  it.skip("never publishes a combat cue a correction took away", () => {});
-  it.skip("publishes the lifecycle exactly once through full time", () => {});
+// them. Unblocked by `crates/gc-wasm/src/online_combat_phases_bridge.rs`
+// (see the file header): `onlineCombatPhaseBoundaryZero` builds exactly the
+// pinned, combat-active `MatchSnapshot` `spec/support/online_combat_phases.lua`
+// pins per phase, as `MatchDriverBridge`'s own `initialSnapshotOverride`
+// constructor parameter; `onlineCombatPhaseLiveSample` scripts the same
+// per-phase input `combat_phases.live_sample` does; `onlineCombatPhaseObserved`
+// is the same `combat_phases.observed` predicate. None of the three need this
+// package to know a single fact about combat mechanics -- they are called
+// with opaque ids/snapshots/JSON, exactly like every other port in this file.
+//
+// `PHASE_DELIVER_PERIOD` mirrors the Lua spec's own constant verbatim -- see
+// that file's comment for why 12 (long enough to force a real correction,
+// short enough to stay inside the ~30-tick unconfirmed window).
+//
+// `PHASE_STEPS` does not: the Lua original uses 240 for every phase and its
+// own reference table (that file's comment block) claims that reliably
+// produces at least one corrected `ball_spill` tick. Empirically, against
+// this port's real `MatchDriverBridge`/`WasmStarTransport` rollback timing,
+// it does not -- confirmed deterministically (not flaky; the sim is fully
+// seeded) across repeated runs, and by scanning every combat event this
+// fixture produces over 240 steps directly: exactly one real
+// `CombatEventKind::BallSpill` event occurs in the whole run, and it lands
+// outside any tick range a correction actually resimulates. This is a
+// legitimate consequence of the wasm rollback scheduler's real queue/poll
+// timing differing from the Lua fixture's in-process `pump()` timing (both
+// are faithful ports of the same reducer, but a port's *correction
+// schedule* is a function of transport/queue timing infrastructure, not of
+// the deterministic sim tick stream alone, so it need not land on the same
+// wall-clock-independent schedule as the original to be correct) -- not a
+// bug in `consume`, `RollbackEventsTimeline`, or the combat-phase bridge.
+// 480 (double) was the smallest budget tried that reliably (deterministically)
+// produces a corrected `ball_spill` hit; every other phase already succeeds
+// at 240 and continues to at 480. This is a run-length/test-infrastructure
+// adjustment, not a weakened assertion -- every case's own claim
+// (`phaseTicks > 0`) is exactly as strict as the Lua original's.
+const PHASE_IDS = [
+  "windup",
+  "guard",
+  "contact",
+  "projectile_flight",
+  "stagger",
+  "ball_spill",
+  "immunity_expiry",
+] as const;
+type PhaseId = (typeof PHASE_IDS)[number];
+
+const PHASE_DELIVER_PERIOD = 12;
+const PHASE_STEPS = 480;
+
+// Mirrors the Lua spec's own `run_phase`: bursts delivery while scripting
+// the phase's live input, and -- inside each step, before the driver evicts
+// its retained boundaries -- checks whether a correction actually
+// resimulated a tick that ran through the named phase. Returns, per peer,
+// how many corrected ticks did.
+function runPhase(host: SimHost, harness: RealHarness, phaseId: PhaseId): number[] {
+  const observed = harness.peers.map(() => 0);
+  const first = harness.firstInputTick;
+  run(host, harness, PHASE_STEPS, {
+    period: PHASE_DELIVER_PERIOD,
+    sample: (step, peerIndex) => host.onlineCombatPhaseLiveSample(phaseId, step, peerIndex + 1),
+    onBatch: (peer, peerIndex, batch) => {
+      // `batch.outputs` mixes a correction's re-derived ticks with the
+      // ordinary forward tick appended on nearly every call; this map lets
+      // a correction's tick range be paired back up with its own combat
+      // events. A repeated tick would silently overwrite the earlier entry,
+      // so this asserts uniqueness the same way the Lua original does,
+      // rather than let that happen quietly.
+      const byTick = new Map<number, RollbackTickOutput>();
+      for (const output of batch.outputs) {
+        if (byTick.has(output.tick)) {
+          throw new Error("one presentation batch reported a tick twice");
+        }
+        byTick.set(output.tick, output);
+      }
+      for (const correction of batch.corrections) {
+        for (let tick = correction.corrected_from_tick; tick <= correction.corrected_through_tick; tick += 1) {
+          const before = harness.ports.matchDriver.snapshot(peer.driver, tick + first);
+          const after = harness.ports.matchDriver.snapshot(peer.driver, tick + 1 + first);
+          const beforeRetained = before.status === "present" || before.status === "retained";
+          const afterRetained = after.status === "present" || after.status === "retained";
+          if (beforeRetained && before.snapshot !== undefined && afterRetained && after.snapshot !== undefined) {
+            const combatEventsJson = JSON.stringify(byTick.get(tick)?.combat_events ?? []);
+            if (host.onlineCombatPhaseObserved(phaseId, before.snapshot, after.snapshot, combatEventsJson)) {
+              observed[peerIndex] = (observed[peerIndex] ?? 0) + 1;
+            }
+          }
+        }
+      }
+    },
+  });
+  return observed;
+}
+
+describe("online match presentation combat phases (real wasm bridges + online_combat_phases_bridge)", () => {
+  for (const phaseId of PHASE_IDS) {
+    it(`keeps feedback honest through a correction during ${phaseId}`, () => {
+      const host = loadSimHost();
+      const harness = buildHarness(host, "1v1", 30, () => host.onlineCombatPhaseBoundaryZero(phaseId));
+      const observed = runPhase(host, harness, phaseId);
+
+      let phaseTicks = 0;
+      let corrections = 0;
+      let replaced = 0;
+      let added = 0;
+      harness.peers.forEach((peer, index) => {
+        expect(status(peer.presentation), `peer ${index}'s timeline gave up during ${phaseId}`).toBe("active");
+        phaseTicks += observed[index] ?? 0;
+        corrections += peer.corrections;
+        replaced += peer.replacedCombat;
+        added += peer.addedCombat;
+      });
+      expect(corrections > 0, `the ${phaseId} burst never corrected anyone`).toBe(true);
+      expect(phaseTicks > 0, `no correction ever resimulated a ${phaseId} tick`).toBe(true);
+      // The correction did not merely happen near the phase: it rewrote or
+      // introduced combat cues that presentation then had to reconcile. A
+      // run where the corrected tail produced byte-identical feedback would
+      // satisfy every assertion above for free.
+      expect(replaced + added > 0, `no combat cue was rewritten or introduced during ${phaseId}`).toBe(true);
+      assertPublishedOnce(harness.peers);
+      assertConfirmedAgreement(harness.peers);
+    });
+  }
+
+  // Revoking a *combat* cue is the rare half of the contract, and it has to
+  // be sought out rather than waited for -- see the Lua original's own
+  // comment for why the unarmed scrum (`contact`'s fixture) is where it
+  // happens: eight bodies inside one 30px reach of each other, so a
+  // corrected pixel is the difference between a contact and a miss.
+  it("never publishes a combat cue a correction took away", () => {
+    const host = loadSimHost();
+    const harness = buildHarness(host, "1v1", 30, () => host.onlineCombatPhaseBoundaryZero("contact"));
+    runPhase(host, harness, "contact");
+    const revoked = harness.peers.reduce((sum, peer) => sum + peer.revokedCombat, 0);
+    expect(revoked > 0, "the scrum never revoked a speculative combat cue").toBe(true);
+    assertPublishedOnce(harness.peers);
+    assertConfirmedAgreement(harness.peers);
+  });
+
+  // The exactly-once contract has to survive the end of the match, not only
+  // hold mid-run -- this takes a combat-active boundary zero (a 4-second
+  // match, so the run below reaches full time) all the way through under
+  // bursty delivery. Mirrors the Lua original's own duration/step budget.
+  //
+  // Blocked -- not by anything missing from `@gc/wasm`'s surface, but by a
+  // real defect found driving it: `gc_netcode::match_driver`'s settle phase
+  // (entered once full time is reached) calls `default_clock`
+  // (`crates/gc-netcode/src/match_driver.rs`), which uses
+  // `std::time::SystemTime::now()` for its wall-clock bound whenever
+  // `MatchDriverOptions.clock` is `None` -- and `MatchDriverBridge::new`
+  // (`crates/gc-wasm/src/match_driver_bridge.rs`) always passes `clock:
+  // None`. `SystemTime::now()` is not implemented on `wasm32-unknown-unknown`
+  // and traps ("RuntimeError: unreachable", confirmed reproducing this
+  // exact test body against the real compiled artifact, and again via a
+  // standalone script driving `MatchDriverBridge` directly to the same
+  // full-time/settle boundary with no test harness involved). This is not
+  // specific to this test's own construction: *any* real match reaching
+  // full time through this bridge hits it, which makes it a live-play
+  // defect, not merely a test gap. `crates/gc-wasm`/`crates/gc-netcode` are
+  // out of this package's ownership for this wave -- reported in this
+  // file's final report rather than worked around here (there is no
+  // TypeScript-side workaround: nothing on `MatchDriverBridge`'s public
+  // surface lets a caller inject its own clock).
+  it.skip(
+    "publishes the lifecycle exactly once through full time (blocked: MatchDriverBridge's settle phase panics under wasm32 -- default_clock calls std::time::SystemTime::now(), unimplemented off-native; see this describe block's comment and the file's final report)",
+    () => {}
+  );
 });
 
 // ---------------------------------------------------------------------------

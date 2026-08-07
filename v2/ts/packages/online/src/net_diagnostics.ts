@@ -456,7 +456,19 @@ interface NetDiagnosticsStarSnapshot {
   readonly unsupported_version: number;
   readonly overflow: number;
   readonly backpressure: number;
-  readonly last_error: string | null;
+  /** Absent (never a present `null`) when this snapshot carries no error --
+   * mirrors the omit-vs-null convention `exportArtifact` already uses for
+   * `star`/`worst`/`pressure`/`teardown` themselves (each `undefined`, never
+   * a present `null`, when absent). `last_error` used to be the one
+   * exception: always present, `null` when clean. The schema's own
+   * `{ optional: true }` declaration for this field only ever treated an
+   * *absent* key as satisfying "optional" (`validateField`'s record
+   * dispatch checks `childValue === undefined`, never `=== null`), so a
+   * clean run's literal `null` failed export validation with
+   * "last_error must be a string" -- confirmed empirically driving a real
+   * `MatchDriverBridge.transportDiagnosticsJson()` snapshot through
+   * `recordTransport` on a clean run. */
+  readonly last_error?: string;
 }
 
 interface NetDiagnosticsPeerSnapshot {
@@ -469,7 +481,8 @@ interface NetDiagnosticsPeerSnapshot {
   readonly sequence_gaps: number;
   readonly backpressure: number;
   readonly malformed: number;
-  readonly last_error: string | null;
+  /** See {@link NetDiagnosticsStarSnapshot.last_error}'s doc. */
+  readonly last_error?: string;
 }
 
 interface NetDiagnosticsPressure {
@@ -1559,6 +1572,17 @@ function copyChannel(channel: TransportChannelDiagnostics): TransportChannelDiag
 // backpressure and overflow latches that a depth sample can miss entirely: a
 // channel that hit its `bufferedAmount` ceiling and drained again between
 // two observations leaves no depth behind, only a latch.
+// `boundedDetail` is `string | null` (redaction/absence collapse to the same
+// `null`), but the exported shape's `last_error` is optional -- present or
+// absent, never a present `null` (see `NetDiagnosticsStarSnapshot.last_error`'s
+// doc for the export-validation failure this fixes). This is the seam that
+// converts between the two, the same way `exportArtifact` already does for
+// `star`/`worst`/`pressure`/`teardown` themselves.
+function optionalDetail(text: unknown): { readonly last_error?: string } {
+  const value = boundedDetail(text);
+  return value !== null ? { last_error: value } : {};
+}
+
 export function recordTransport(
   recorder: NetDiagnostics,
   star: TransportStarDiagnostics
@@ -1579,7 +1603,7 @@ export function recordTransport(
     unsupported_version: star.unsupported_version,
     overflow: star.overflow,
     backpressure: star.backpressure,
-    last_error: boundedDetail(star.last_error),
+    ...optionalDetail(star.last_error),
   };
   const peers: NetDiagnosticsPeerSnapshot[] = star.peers.map((peer) => ({
     peer_id: peer.peer_id,
@@ -1591,7 +1615,7 @@ export function recordTransport(
     sequence_gaps: peer.sequence_gaps,
     backpressure: peer.backpressure,
     malformed: peer.malformed,
-    last_error: boundedDetail(peer.last_error),
+    ...optionalDetail(peer.last_error),
   }));
   recorder.peers = peers;
 

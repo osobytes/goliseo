@@ -268,6 +268,9 @@ interface TestArtifact {
   readonly canonical: {
     readonly simulation: {
       readonly status: string;
+      readonly step_count: number;
+      readonly confirmed_output_tick: number;
+      readonly input_delay_ticks: number;
       readonly checkpoint_count: number;
       readonly rollback_count: number;
       readonly resimulated_ticks: number;
@@ -280,9 +283,29 @@ interface TestArtifact {
       readonly late_input_tick?: number;
     };
     readonly checkpoints: readonly { readonly tick: number; readonly hash: string; readonly live: Readonly<Record<string, string>> }[];
-    readonly mismatches: readonly { readonly tick: number }[];
+    readonly mismatches: readonly {
+      readonly tick: number;
+      readonly peer_id: string;
+      readonly local_hash: string;
+      readonly remote_hash: string;
+      readonly first_difference_path?: string;
+    }[];
     readonly control: readonly { readonly ordinal: number; readonly kind: string }[];
-    readonly delivery: { readonly packets: readonly unknown[] };
+    readonly delivery: {
+      readonly sent: number;
+      readonly arrived: number;
+      readonly packets: readonly {
+        readonly sender_id: string;
+        readonly disposition: string;
+        readonly sequence: number;
+        readonly payload_bytes: number;
+        readonly sample_step: number;
+        readonly send_transport_tick: number;
+        readonly authority_input_tick: number;
+        readonly arrival_transport_tick?: number;
+        readonly apply_input_tick?: number;
+      }[];
+    };
     readonly worst_correction?: {
       readonly causal_tick: number;
       readonly through_tick: number;
@@ -298,9 +321,46 @@ interface TestArtifact {
     };
   };
   readonly runtime: {
-    readonly star: { readonly last_error: string | null } | undefined;
-    readonly peers: readonly { readonly last_error: string | null }[];
-    readonly events: readonly { readonly detail?: string; readonly code?: string }[];
+    readonly star:
+      | {
+          readonly role: string;
+          readonly state: string;
+          readonly capacity: number;
+          readonly peer_count: number;
+          readonly sent: number;
+          readonly received: number;
+          readonly dropped_outbound: number;
+          readonly dropped_inbound: number;
+          readonly malformed: number;
+          readonly overflow: number;
+          readonly last_error?: string;
+        }
+      | undefined;
+    readonly peers: readonly {
+      readonly peer_id: string;
+      readonly state: string;
+      readonly sequence_gaps: number;
+      readonly backpressure: number;
+      readonly malformed: number;
+      readonly control: {
+        readonly buffered_amount: number;
+        readonly outbound_depth: number;
+        readonly inbound_depth: number;
+        readonly dropped_outbound: number;
+        readonly dropped_inbound: number;
+        readonly sent: number;
+      };
+      readonly input: {
+        readonly buffered_amount: number;
+        readonly outbound_depth: number;
+        readonly inbound_depth: number;
+        readonly dropped_outbound: number;
+        readonly dropped_inbound: number;
+        readonly sent: number;
+      };
+      readonly last_error?: string;
+    }[];
+    readonly events: readonly { readonly ordinal: number; readonly detail?: string; readonly code?: string }[];
     readonly signals: readonly { readonly content: string; readonly byte_length: number; readonly direction: string }[];
     readonly teardown: { readonly requested: boolean; readonly complete: boolean; readonly orphaned_peers: readonly string[] } | undefined;
     readonly latency: readonly {
@@ -379,12 +439,24 @@ function decodeControlMessageReal(host: SimHost): ProtocolDecoder {
   };
 }
 
+interface PendingArrival {
+  readonly senderId: string;
+  readonly message: WasmOutboundEnvelope["message"];
+}
+
 interface RealNetPeer {
   readonly peerId: string;
   readonly role: SessionRole;
   readonly driver: WasmMatchDriverBridge;
   readonly session: SimSession;
   readonly recorder: NetDiagnostics;
+  /** Envelopes delivered (`enqueueInbound`ed) since this peer's own last
+   * `advance()` call -- drained and recorded as "arrived" right before this
+   * peer's *next* `advance()`, mirroring `DiagnosticTransport.pollInbound`'s
+   * real timing (recorded synchronously inside the receiving peer's own
+   * poll, not at relay/pump time) -- see `runReal`'s doc for why this
+   * matters for `apply_input_tick`. */
+  pendingArrivals: PendingArrival[];
 }
 
 interface RealNetHarness {
@@ -423,11 +495,18 @@ function buildRealHarness(host: SimHost, mode: MatchMode, hashIntervalTicks: num
       peer_id: peerId,
       manifest,
       freeze,
+      // Mirrors `net_diagnostics_fixture.ts`'s own `env.inputProtocol.
+      // FAIRNESS_DELAY_TICKS` default: purely descriptive metadata the
+      // recorder carries alongside the driver's own data, not something
+      // read back off `MatchDriverBridge`.
+      input_delay_ticks: (
+        JSON.parse(host.inputProtocolConstantsJson()) as { readonly fairness_delay_ticks: number }
+      ).fairness_delay_ticks,
       hash_interval_ticks: hashIntervalTicks,
       export_opt_in: true,
       decodeControlMessage: decode,
     });
-    return { peerId, role, driver, session, recorder };
+    return { peerId, role, driver, session, recorder, pendingArrivals: [] };
   });
 
   return { peers, freeze, manifest, step: 0, clock_ms: 0 };
@@ -444,16 +523,82 @@ interface WasmOutboundEnvelope {
   };
 }
 
+// `diagnostic_transport.ts`'s own `recordEnvelope`, applied at this
+// harness's queue/drain seam instead of a `StarTransportAdapter` -- see the
+// file header for why a `DiagnosticTransport` tap can never wrap a
+// `MatchDriverBridge` directly. This is the exact same policy-math-only
+// projection that module's doc describes (`authority_input_tick =
+// first_input_tick + transport_tick`, `sample_step = transport_tick -
+// FAIRNESS_DELAY_TICKS`) -- every field comes from the envelope itself or a
+// public constant, never a re-decode of the payload, so this duplicates
+// arithmetic, not rollback/netcode logic.
+function recordEnvelopeReal(
+  recorder: NetDiagnostics,
+  senderId: string,
+  message: WasmOutboundEnvelope["message"],
+  disposition: "sent" | "arrived",
+  firstInputTick: number,
+  fairnessDelayTicks: number,
+  arrivalTransportTick?: number
+): void {
+  const tick = message.tick;
+  if (typeof tick !== "number") {
+    // Mirrors `recordEnvelope`'s own guard: control messages carry no tick
+    // and are never routed through the packet-lifecycle record.
+    return;
+  }
+  recordPacket(recorder, {
+    sender_id: senderId,
+    disposition,
+    sequence: message.seq,
+    payload_bytes: message.payload_bytes.length,
+    sample_step: tick - fairnessDelayTicks,
+    send_transport_tick: tick,
+    authority_input_tick: firstInputTick + tick,
+    ...(arrivalTransportTick !== undefined ? { arrival_transport_tick: arrivalTransportTick } : {}),
+  });
+}
+
 // Shuttles every peer's `drainOutboundJson()` output straight into the
-// addressed peer's `enqueueInbound` -- see the file header.
-function deliverAllReal(peers: readonly RealNetPeer[]): void {
+// addressed peer's `enqueueInbound` -- see the file header. Also records
+// each envelope's "sent" packet-lifecycle event onto the sender's own
+// recorder immediately (see `recordEnvelopeReal`'s doc), but only *queues*
+// the "arrived" half onto the receiver's own `pendingArrivals` rather than
+// recording it here.
+//
+// This matters for timing, not just bookkeeping: `DiagnosticTransport`
+// records "arrived" from inside `pollInbound`, which the real match driver
+// calls *from inside the receiving peer's own `advance()`* -- so in
+// production, "arrived" and the `recordStep` that immediately drains
+// `pending_apply` and stamps `apply_input_tick` happen in the very same
+// step, for the very same peer. Recording "arrived" here instead (at
+// delivery/relay time, from the *sender's* step) would attribute it to the
+// wrong step and -- for whatever was delivered on the run's very last
+// step -- leave it permanently unstamped, since no later `advance()` would
+// ever come along to drain it. `runReal`'s own loop drains
+// `pendingArrivals` (and records "arrived") immediately before that peer's
+// own next `advance()` call, which reproduces the real timing.
+function deliverAllReal(host: SimHost, harness: RealNetHarness): void {
+  const fairnessDelayTicks = (
+    JSON.parse(host.inputProtocolConstantsJson()) as { readonly fairness_delay_ticks: number }
+  ).fairness_delay_ticks;
+  const peers = harness.peers;
   const drained = peers.map((peer) => JSON.parse(peer.driver.drainOutboundJson()) as WasmOutboundEnvelope[]);
   peers.forEach((sender, senderIndex) => {
     for (const envelope of drained[senderIndex] ?? []) {
+      recordEnvelopeReal(
+        sender.recorder,
+        sender.peerId,
+        envelope.message,
+        "sent",
+        harness.freeze.first_input_tick,
+        fairnessDelayTicks
+      );
       const receiver = peers.find((candidate) => candidate.peerId === envelope.peer_id);
       if (receiver === undefined) {
         continue;
       }
+      receiver.pendingArrivals.push({ senderId: sender.peerId, message: envelope.message });
       receiver.driver.enqueueInbound(
         sender.peerId,
         envelope.channel,
@@ -487,6 +632,29 @@ interface RunRealOptions {
   /** Per-peer-index sample wire override (0 = host); neutral otherwise. */
   readonly samples?: Readonly<Record<number, string>>;
   /**
+   * Feeds `MatchDriverBridge.transportDiagnosticsJson()` into
+   * `recordTransport` every step -- opt-in, default off, because doing so
+   * populates `recorder.peers` with a real `WasmStarTransport` peer
+   * diagnostic whose `ice_state` is unconditionally the empty string
+   * (`crates/gc-wasm/src/wasm_transport.rs`'s only site that sets it,
+   * confirmed by reading the whole crate: this is the *one* place any
+   * `ice_state` value is ever produced). `net_diagnostics`'s own export
+   * schema requires `ice_state` to be at least 1 byte -- a real invariant,
+   * not an arbitrary one: it matches `game/transport/fake_star.lua`'s own
+   * `"new"`/`"checking"`/`"connected"`/`"closed"` state machine, which is
+   * what the Lua original's fixture star (and every real `@gc/transport`
+   * WebRTC star) actually produces. `WasmStarTransport` is a from-scratch,
+   * ICE-free queue/drain relay for netcode testing, not a WebRTC stand-in,
+   * so it structurally cannot satisfy that invariant -- any harness that
+   * turns this on and then calls `exportArtifact`/`exportOf` fails with
+   * "ice_state must be at least 1 bytes" the moment a peer is present.
+   * Left off by default so every other `runReal` caller (most of this
+   * file) is unaffected; the two cases that actually need `runtime.star`/
+   * `runtime.peers` are still blocked by this, and stay `it.skip` with this
+   * exact reason -- see the file header.
+   */
+  readonly recordTransportDiagnostics?: boolean;
+  /**
    * Once `step` reaches this, every peer's outbound queue is still drained
    * every step (so it cannot grow unbounded on its own) but never
    * delivered to anyone -- a permanent transport stall, rather than
@@ -502,50 +670,54 @@ interface RunRealOptions {
   readonly stopDeliveryAfterStep?: number;
 }
 
-// `diagnosticsJson()`'s optional fields (`terminal`/`late_input_tick`/
-// `control_slot`) round-trip through JSON as an explicit `null`
-// (`match_driver_bridge.rs`'s `diagnostics_to_json` uses `.map_or(Json::Null,
-// ...)`), never an absent key -- `JSON.parse` turns that into JS `null`, not
-// `undefined`. `MatchDriverDiagnostics` declares them `readonly field?: T`
-// (absent-or-present, i.e. `undefined`), and `recordStep` checks
-// `!== undefined`, so a raw parse crashes on `terminal.status` for any tick
-// with no terminal (`Cannot read properties of null`) -- confirmed
-// empirically driving the real bridge. Filed as a finding (see this file's
-// final report); worked around here rather than in `net_diagnostics.ts`
-// itself, since this exact JSON-boundary normalization is what any real
-// caller of `MatchDriverBridge.diagnosticsJson()` will need regardless.
-function normalizeDriverDiagnostics(raw: unknown): MatchDriverDiagnostics {
-  const record = { ...(raw as Record<string, unknown>) };
-  for (const key of ["terminal", "late_input_tick", "control_slot"]) {
-    if (record[key] === null) {
-      delete record[key];
-    }
-  }
-  // `driver_terminal_to_json` has the same null-vs-absent gap one level
-  // down (`failure`/`tick` are `Option<T>` encoded via `Json::opt_*`, which
-  // is `Json::Null` when absent, not an omitted key).
-  if (record.terminal !== undefined && record.terminal !== null) {
-    const terminal = { ...(record.terminal as Record<string, unknown>) };
-    for (const key of ["failure", "tick"]) {
-      if (terminal[key] === null) {
-        delete terminal[key];
-      }
-    }
-    record.terminal = terminal;
-  }
-  return record as unknown as MatchDriverDiagnostics;
-}
-
 function runReal(host: SimHost, harness: RealNetHarness, steps: number, options: RunRealOptions = {}): void {
   const neutral = host.inputFrameNeutralSample();
   const clockStepMs = options.clockStepMs ?? REAL_CLOCK_STEP_MS;
   const anchorInterval = options.anchorInterval ?? REAL_ANCHOR_INTERVAL;
+  const fairnessDelayTicks = (
+    JSON.parse(host.inputProtocolConstantsJson()) as { readonly fairness_delay_ticks: number }
+  ).fairness_delay_ticks;
   for (let step = 0; step < steps; step += 1) {
     harness.peers.forEach((peer, index) => {
+      // Record "arrived" for whatever `deliverAllReal` queued onto this
+      // peer since its own last `advance()`, immediately before this call
+      // -- see `deliverAllReal`'s doc for why this timing (not delivery
+      // time) is what makes `apply_input_tick` stamp correctly.
+      if (peer.pendingArrivals.length > 0) {
+        const arrivalTransportTick = (
+          JSON.parse(peer.driver.diagnosticsJson()) as { readonly transport_tick: number }
+        ).transport_tick;
+        for (const { senderId, message } of peer.pendingArrivals) {
+          recordEnvelopeReal(
+            peer.recorder,
+            senderId,
+            message,
+            "arrived",
+            harness.freeze.first_input_tick,
+            fairnessDelayTicks,
+            arrivalTransportTick
+          );
+        }
+        peer.pendingArrivals = [];
+      }
       const sampleWire = options.samples?.[index] ?? neutral;
       const batch = JSON.parse(peer.driver.advance(sampleWire)) as MatchDriverBatch;
-      const diagnostics = normalizeDriverDiagnostics(JSON.parse(peer.driver.diagnosticsJson()));
+      // `diagnosticsJson()` now omits an absent `terminal`/`late_input_tick`/
+      // `control_slot` entirely rather than emitting a JSON `null`
+      // (`match_driver_bridge.rs`'s `diagnostics_to_json` uses
+      // `Json::obj_omit_null`, proven by that module's own
+      // `diagnostics_json_omits_absent_optional_fields_rather_than_nulling_them`
+      // test) -- a raw parse now matches `MatchDriverDiagnostics`'s
+      // `field?: T` (absent-or-present) shape directly, so the
+      // null-vs-absent normalization a previous pass needed here is gone.
+      const diagnostics = JSON.parse(peer.driver.diagnosticsJson()) as MatchDriverDiagnostics;
       recordStep(peer.recorder, diagnostics, batch);
+      if (options.recordTransportDiagnostics === true) {
+        recordTransport(
+          peer.recorder,
+          JSON.parse(peer.driver.transportDiagnosticsJson()) as TransportStarDiagnostics
+        );
+      }
       const { rtt_ms, jitter_ms } = realQuality(harness.step, options.rttBiasMs ?? 0);
       for (const other of harness.peers) {
         if (other.peerId !== peer.peerId) {
@@ -567,7 +739,7 @@ function runReal(host: SimHost, harness: RealNetHarness, steps: number, options:
         peer.driver.drainOutboundJson();
       }
     } else if (options.period === undefined || (step + 1) % options.period === 0) {
-      deliverAllReal(harness.peers);
+      deliverAllReal(host, harness);
     }
     harness.step += 1;
     harness.clock_ms += clockStepMs;
@@ -799,14 +971,79 @@ describe("net diagnostics collection", () => {
   // real multi-tick run -- rollback counts, checkpoint hashes, packet
   // lifecycle timing. See this file's header comment: re-port these once a
   // `NetDiagnosticsFixtureEnv` backed by the real `gc-netcode` exists.
-  // Still blocked -- transport-level diagnostics (`runtime.star`/
-  // `runtime.peers`/packet lifecycle) are unreachable through
-  // `MatchDriverBridge`. See the file header for the precise, current
-  // reason (replaces the earlier "no wasm bridge" claim, which is stale).
-  describe.skip("live-driver runs, transport-shaped claims (blocked: MatchDriverBridge's internal transport exposes no TransportStarDiagnostics-shaped data -- see the file header comment)", () => {
-    it.skip("summarises a clean 2v2 run with both clocks kept apart", () => {});
-    it.skip("folds star and per-channel transport counters into the runtime section", () => {});
-    it.skip("records the sample, send, arrival, and apply lifecycle of a packet", () => {});
+  //
+  // Re-audited: `MatchDriverBridge.transportDiagnosticsJson()` genuinely
+  // closes part of this gap -- it supplies real `TransportStarDiagnostics`-
+  // shaped counters, proven by the third case below, which is unblocked for
+  // real. The first two cases stay blocked, but by a narrower, more precise
+  // defect than the stale "no data reachable at all" claim:
+  //
+  //   * `WasmStarTransport`'s `TransportPeerDiagnostics.ice_state` is
+  //     unconditionally the empty string
+  //     (`crates/gc-wasm/src/wasm_transport.rs:609` -- confirmed the *only*
+  //     site in the whole crate that ever sets it). `net_diagnostics`'s own
+  //     export schema requires `ice_state` to be at least 1 byte, and that
+  //     is a real invariant, not an arbitrary one: it mirrors
+  //     `game/transport/fake_star.lua`'s own `"new"`/`"checking"`/
+  //     `"connected"`/`"closed"` state machine -- what the Lua original's
+  //     fixture star, and every real `@gc/transport` WebRTC star, actually
+  //     produces. `WasmStarTransport` is a from-scratch, ICE-free
+  //     queue/drain relay built for netcode testing, not a WebRTC stand-in,
+  //     so it cannot satisfy that invariant. Confirmed empirically: feeding
+  //     `transportDiagnosticsJson()` into `recordTransport` and then calling
+  //     `exportArtifact` fails with "ice_state must be at least 1 bytes" the
+  //     moment a peer is present (see `RunRealOptions.recordTransportDiagnostics`'s
+  //     doc, which is why that flag defaults off).
+  //   * "folds star and per-channel transport counters..." also needs
+  //     "the tap records transport lifecycle events, in order" (a
+  //     peer-connected/peer-disconnected `recordEvent` trail) -- that comes
+  //     from `DiagnosticTransport`'s own forwarded-surface wrapping
+  //     (`sendMessage`/`pollInbound`/`shutdown` calling `this.note(...)`),
+  //     which -- as the file header explains -- cannot wrap a
+  //     `MatchDriverBridge` at all. Nothing in this harness ever calls
+  //     `recordEvent`, so `runtime.events` stays empty regardless of the
+  //     `ice_state` gap above.
+  //
+  // Both are real, Rust-owned or architectural gaps, not test-file
+  // workarounds to weaken -- `crates/gc-wasm` is out of this package's
+  // ownership for this wave (see this file's final report).
+  describe("live-driver runs, transport-shaped claims (real wasm bridges)", () => {
+    it.skip(
+      "summarises a clean 2v2 run with both clocks kept apart (blocked: WasmStarTransport's ice_state is always empty, failing net_diagnostics' own export schema -- see the describe block's comment)",
+      () => {}
+    );
+    it.skip(
+      "folds star and per-channel transport counters into the runtime section (blocked: same ice_state gap, plus no recordEvent trail is reachable through MatchDriverBridge -- see the describe block's comment)",
+      () => {}
+    );
+
+    it("records the sample, send, arrival, and apply lifecycle of a packet", () => {
+      const host = loadSimHost();
+      const harness = buildRealHarness(host, "2v2", 6);
+      const fairnessDelayTicks = (
+        JSON.parse(host.inputProtocolConstantsJson()) as { readonly fairness_delay_ticks: number }
+      ).fairness_delay_ticks;
+      runReal(host, harness, 20);
+      const artifact = exportOf(realPeer(harness, "host").recorder);
+      let arrived = 0;
+      for (const packet of artifact.canonical.delivery.packets) {
+        expect(
+          packet.authority_input_tick,
+          "authority tick did not follow the stated delay policy"
+        ).toBe(harness.freeze.first_input_tick + packet.send_transport_tick);
+        expect(packet.sample_step).toBe(packet.send_transport_tick - fairnessDelayTicks);
+        if (packet.disposition === "arrived") {
+          arrived += 1;
+          expect(packet.arrival_transport_tick).toBeDefined();
+          expect(packet.apply_input_tick, "an arrival was never attributed a step").toBeDefined();
+          expect(
+            packet.authority_input_tick > (packet.apply_input_tick as number),
+            "authority landed at or behind the tick already simulated"
+          ).toBe(true);
+        }
+      }
+      expect(arrived > 0, "a clean run recorded no arrivals at all").toBe(true);
+    });
   });
 
   describe("live-driver runs, canonical/simulation claims (real wasm bridges)", () => {
@@ -1164,13 +1401,56 @@ describe("net diagnostics failure fixtures", () => {
   // Lua originals forge input bundles and hand them to a live driver's
   // transport, or call `match_driver.observe_checkpoint` directly). See
   // this file's header comment.
-  // Still blocked -- `gc_netcode::match_driver::observe_checkpoint` (needed
-  // to force a hash mismatch deterministically) has no wasm-bindgen binding
-  // at all: confirmed absent from `match_driver_bridge.rs` and `types.ts`.
-  // See the file header for why this is narrower than the stale "no wasm
-  // bridge" claim the other four cases in this group used to share.
-  describe.skip("live-driver fault detection, hash divergence (blocked: gc_netcode::match_driver::observe_checkpoint has no wasm-bindgen binding -- see the file header comment)", () => {
-    it.skip("types hash divergence and keeps the first divergent boundary", () => {});
+  // Unblocked: `MatchDriverBridge.observeCheckpoint(tick, hash)` is exactly
+  // `gc_netcode::match_driver::observe_checkpoint`, confirmed present on
+  // both `match_driver_bridge.rs` and `types.ts` -- absent when the earlier
+  // pass wrote this comment, landed since.
+  describe("live-driver fault detection, hash divergence (real wasm bridges)", () => {
+    it("types hash divergence and keeps the first divergent boundary", () => {
+      const host = loadSimHost();
+      const harness = buildRealHarness(host, "2v2", 5);
+      runReal(host, harness, 30);
+      const hostPeer = realPeer(harness, "host");
+      const guestId = (harness.peers[1] as RealNetPeer).peerId;
+      const checkpoints = exportOf(hostPeer.recorder).canonical.checkpoints;
+      expect(checkpoints.length > 0, "no checkpoint was published to disagree about").toBe(true);
+      const target = checkpoints[0] as { readonly tick: number; readonly hash: string };
+      const remoteHash = "deadbeefdeadbeef";
+
+      // `observeCheckpoint` itself terminates the driver after
+      // `gc_netcode::match_driver::MAX_HASH_MISMATCHES` (3) consecutive
+      // disagreements -- looped with a safety cap rather than hardcoding
+      // that constant, since nothing on `@gc/wasm`'s surface exposes it.
+      let status = "active";
+      for (let attempt = 0; attempt < 10 && status !== "hash_mismatch"; attempt += 1) {
+        const matched = hostPeer.driver.observeCheckpoint(target.tick, remoteHash);
+        expect(matched, "a deliberately wrong remote hash must never agree").toBe(false);
+        expect(
+          recordMismatch(hostPeer.recorder, {
+            tick: target.tick,
+            peer_id: guestId,
+            local_hash: target.hash,
+            remote_hash: remoteHash,
+            first_difference_path: "state.ball.pos.x",
+          }).ok
+        ).toBe(true);
+        status = JSON.parse(hostPeer.driver.statusJson()) as string;
+      }
+      expect(status, "observeCheckpoint never terminated the driver").toBe("hash_mismatch");
+
+      // One more step lets `recordStep` observe the now-terminated
+      // diagnostics and stamp the artifact's own terminal fields.
+      runReal(host, harness, 1);
+
+      const artifact = exportOf(hostPeer.recorder);
+      expect(artifact.canonical.simulation.status).toBe("hash_mismatch");
+      expect(artifact.canonical.simulation.terminal_failure).toBe("desync");
+      const mismatch = artifact.canonical.mismatches[0];
+      expect(mismatch?.tick).toBe(target.tick);
+      expect(mismatch?.local_hash).toBe(target.hash);
+      expect(mismatch?.remote_hash).toBe(remoteHash);
+      expect(mismatch?.first_difference_path).toBe("state.ball.pos.x");
+    });
   });
 
   describe("live-driver fault detection (real wasm bridges)", () => {
