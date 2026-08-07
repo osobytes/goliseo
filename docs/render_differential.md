@@ -243,3 +243,54 @@ before.
   appended after the existing tests.
 - `v2/ts/packages/render/src/camera.spec.ts` — the `camera.project` numeric
   differential, appended after the existing tests.
+
+## Open: the washed-out characters — root cause identified, not yet fixed
+
+Characters render pale and near-white; team colours are present but heavily
+desaturated. Two independent scratch experiments on a real RTX 2070 SUPER
+narrowed it, and reading the shader against the camera finishes the job.
+
+**It is not content, and not the cel constants.** The constants are exact
+ports of `game/render/rig3d/renderer.lua`'s (bands 0.55/0.12 → 1.0/0.72/0.42,
+bounce 0.18, rim `pow(1-NdotV,3)` smoothstep 0.35–0.95, metal spec `pow 24`
+smoothstep 0.20–0.42). Zeroing `RIM_TINT` snaps colours back to fully
+saturated (`nearWhiteFraction` 0.0024 → 0), so the rim term is what floods.
+
+**The mechanism: `vViewPosition` is a perspective view vector, and the camera
+that now draws characters is orthographic.**
+
+`cel_shader.ts` computes `gcViewDir = normalize(vViewPosition)`. three.js sets
+`vViewPosition = -mvPosition.xyz` — the vector from the fragment to the *view
+space origin*. That is the correct eye direction for a PERSPECTIVE camera,
+where the eye sits at that origin. It is wrong for an ORTHOGRAPHIC one, where
+all rays are parallel and the view direction is the constant `(0,0,1)`
+regardless of where the fragment sits.
+
+`SceneRoot` draws everything through one shared
+`OrthographicCamera(0, w, 0, h)`. So `gcViewDir` varies steeply with a
+fragment's screen position instead of staying constant, `NdotV` is computed
+against a direction that is not the view direction, and `1 - NdotV` comes out
+large across the whole silhouette rather than only at its edge. The rim stops
+being a rim and becomes a wash.
+
+The Lua never hit this: `renderer.characterCamera` builds a real per-character
+camera with `u_cam_pos` sent as a uniform, and the shader uses
+`normalize(u_cam_pos - v_world)` — an actual eye-to-fragment vector.
+
+**How it arrived.** Characters used to render through
+`characterCameraParams`'s asymmetric per-character frustum, offscreen, one
+pass each. The single-pass draw change moved them into the shared scene and
+its orthographic camera. That change was right — it took character draw calls
+from 6.0 to 1.0 each — and it silently invalidated an assumption the shader
+had been written against. Both changes were verified in isolation; the
+composite was not.
+
+**Supporting data point.** Replacing the wrapper's `CHARACTER_DEPTH_SCALE`
+with a uniform `ppm` Z scale clips characters into fragments (that file's own
+comment already predicted this), but the surviving fragments render fully
+saturated. Consistent with the same story: that edit changes the normals, and
+therefore the erroneous dot product, rather than being a second cause.
+
+**Likely fix.** Use a constant view direction under an orthographic camera
+rather than `normalize(vViewPosition)`. Do NOT retune the cel constants — they
+are correct, and changing them would hide this rather than fix it.
