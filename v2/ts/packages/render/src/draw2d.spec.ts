@@ -167,6 +167,67 @@ describe("appendCommands", () => {
   });
 });
 
+describe("appendCommands depth placement (PaintOptions.z/renderOrder/depthTest)", () => {
+  it("leaves every built object at z=0 with depthTest untouched when no depth options are given, matching every existing caller", () => {
+    const group = new THREE.Group();
+    appendCommands(group, nonTextCommands());
+    for (const child of group.children) {
+      expect(child.position.z).toBe(0);
+      expect(child.renderOrder).toBe(0);
+    }
+  });
+
+  it("offsets every built object's position.z by PaintOptions.z", () => {
+    const group = new THREE.Group();
+    appendCommands(group, nonTextCommands(), { z: 0.35 });
+    expect(group.children.length).toBeGreaterThan(0);
+    for (const child of group.children) {
+      expect(child.position.z).toBeCloseTo(0.35);
+    }
+  });
+
+  it("forwards PaintOptions.renderOrder to every built object", () => {
+    const group = new THREE.Group();
+    appendCommands(group, nonTextCommands(), { renderOrder: 10 });
+    for (const child of group.children) {
+      expect(child.renderOrder).toBe(10);
+    }
+  });
+
+  it("forwards PaintOptions.depthTest to every built object's material(s), including line-mode commands", () => {
+    const group = new THREE.Group();
+    appendCommands(group, nonTextCommands(), { depthTest: false });
+    for (const child of group.children) {
+      if (child instanceof THREE.Mesh || child instanceof THREE.Line) {
+        const materials = Array.isArray(child.material) ? child.material : [child.material];
+        for (const m of materials) {
+          expect(m.depthTest).toBe(false);
+        }
+      }
+    }
+  });
+
+  it("paint() forwards the same depth options as appendCommands (paint is appendCommands preceded by a clear)", () => {
+    const group = new THREE.Group();
+    paint(group, nonTextCommands(), { z: 1.5, renderOrder: 3, depthTest: false });
+    expect(group.children.length).toBeGreaterThan(0);
+    for (const child of group.children) {
+      expect(child.position.z).toBeCloseTo(1.5);
+      expect(child.renderOrder).toBe(3);
+    }
+  });
+
+  it("composes PaintOptions.z with a non-zero base z rather than overwriting it (e.g. a circle-line command's translateX/Y chain)", () => {
+    const group = new THREE.Group();
+    const dl = new DrawList();
+    dl.circle("line", 5, 5, 3, [0, 1, 0]);
+    appendCommands(group, dl.commands, { z: 2 });
+    const child = group.children[0];
+    expect(child).toBeDefined();
+    expect(child?.position.z).toBeCloseTo(2);
+  });
+});
+
 describe("paint", () => {
   it("clears previously painted children before adding the new ones (does not accumulate)", () => {
     const group = new THREE.Group();

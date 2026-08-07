@@ -46,6 +46,88 @@
 // `DEFAULT_ARENA` below mirrors its only current entry (`helios_crown`) as
 // the same "no arena supplied" fallback the Lua original had, without
 // importing Rust-owned content.
+//
+// ONE PASS, ONE DEPTH BUFFER -- reconciling 2D screen space with 3D character
+// space. `pitchGroup`'s flat content (this file, arena.ts, effects.ts,
+// combat.ts) lives entirely in draw2d.ts's screen-pixel convention: an
+// orthographic camera with `top=0`/`bottom=h` (Y increasing DOWNWARD, unlike
+// three.js's own default), everything at z=0, ordering from `group.children`
+// insertion order. `player_renderer_3d.ts`'s rigged characters are real,
+// posed 3D geometry sized in METRES with their own facing yaw already baked
+// in (see that file's `prepareCharacter`). Getting both into the SAME single
+// full-scene render under the SAME shared camera (see scene.ts's
+// `SceneRoot`) means every rigged character's own transform -- not a second
+// camera -- has to carry everything that used to live in
+// `player_renderer_3d.ts`'s per-character `characterCameraParams`:
+//
+//   - SCALE: `ppm` (pixels-per-metre) varies per player -- it comes from
+//     `r = radius * scale`, where `scale` is `camera.ts`'s own fake-
+//     perspective falloff for that player's world position. A shared camera
+//     cannot reproduce a PER-OBJECT scale by zooming itself, so this becomes
+//     the character's own `mesh.scale` (uniform, `ppm`), exactly mirroring
+//     how `characterCameraParams` already derives `ppm` today.
+//   - POSITION: `(sx, sy)` (screen pixels) becomes the character's world
+//     `(x, y)` directly, since the shared camera's frustum already spans
+//     `[0, vw] x [0, vh]` in exactly that space -- no separate placement math
+//     needed, unlike the old per-character asymmetric frustum.
+//   - DEPTH: the world `z` a character/ball is placed at for real depth
+//     testing against everything else in `pitchGroup` -- see `depthToZ` and
+//     the DEPTH ZONES block below. This is genuinely NEW: the old per-
+//     character camera had no notion of a character's depth relative to
+//     ANOTHER character (see DEPTH ZONES' note on the Lua's own
+//     `beginPass`-clears-depth-every-call behaviour).
+//   - THE Y-INVERSION: the shared camera's `top=0`/`bottom=h` convention
+//     means world +Y renders toward the BOTTOM of the screen, but a
+//     character's own local +Y is "up" (toward the head). Left alone, a
+//     character would render feet-up. `player_renderer_3d.ts`'s OLD
+//     `renderToSprite` hit the exact same mismatch one level removed (its
+//     composited PLANE, not the character, needed the flip) and fixed it
+//     with `mesh.scale.y = -1` -- see that function's doc comment. The same
+//     correction is still needed here, just moved: instead of flipping a
+//     plane holding a picture of the character, it is the character's own
+//     Y-scale that must go negative (folded into the same `ppm` scale
+//     above, e.g. `mesh.scale.set(ppm, -ppm, ppm)`). This is NOT something
+//     `WebGLRenderTarget.texture.flipY` could ever fix (confirmed a no-op
+//     for render-target textures -- see `renderToSprite`'s doc comment) and
+//     is NOT eliminated by dropping the offscreen render target: it is a
+//     property of the SHARED CAMERA's convention, which both the old sprite
+//     plane and a real character mesh sit under identically.
+//   - ELEVATION: the old per-character camera looked at the character from
+//     slightly above and behind (`ELEVATION`, see `characterCameraParams`'s
+//     `eye`/`target`) rather than straight on. A shared, un-tilted camera
+//     cannot reproduce that by moving itself per character, but an
+//     orthographic projection commutes with rotating camera-and-subject
+//     together, so the SAME apparent view is reproducible by tilting the
+//     character instead: a rotation of `+ELEVATION` around the shared
+//     camera's local X (screen-horizontal) axis, composed AFTER the
+//     character's own yaw (i.e. `finalQuat = tiltX(ELEVATION).multiply(
+//     yawY(yaw))` in three.js's quaternion convention) -- yaw happens in the
+//     character's own frame (which way it faces on the pitch), the
+//     elevation tilt happens in the CAMERA's frame (how the fixed camera
+//     sees every character alike), so composition order matters and cannot
+//     be collapsed into one axis-angle call.
+//
+// THE EXACT SIGNATURE THIS FILE IS WRITTEN TO EXPECT from `player_renderer_3d
+// .ts` (out of this package's ownership boundary this milestone -- a
+// concurrent rewrite owns that file's character shading, see this port's
+// report): a function returning the POSED, COLOURED, YAWED character mesh in
+// its own local metre space (i.e. exactly `prepareCharacter`'s
+// `character.mesh` as it exists today, MINUS the per-character camera/scene/
+// render-target work `renderToSprite` layers on top) -- something shaped
+// like `characterMesh(playerId: string, view: PlayerView | undefined, opts:
+// PlayerRenderOptions, now: number): THREE.Object3D | undefined`. `playerId`
+// (a stable roster-slot key, matching how `viewState.get(roster.ids[index])`
+// already keys per-player presentation state in this file) is needed because
+// today's shared singleton `built.mesh` is reused SEQUENTIALLY across
+// players within one frame -- correct only because the old design rendered
+// and composited one character at a time. Once every character coexists
+// simultaneously in one scene graph for one shared render, each needs its
+// OWN mesh/skeleton/material instance, pooled and reused frame-to-frame by
+// `playerId` rather than rebuilt every frame. This file would then own
+// EVERYTHING the comment block above describes (scale, position, the Y-flip,
+// `depthToZ`'s z, and the elevation tilt), wrapping the returned mesh in a
+// `THREE.Group` and adding it directly to `pitchGroup` in
+// `depthSortedItems`' loop below, in place of today's `renderToSprite` call.
 
 import * as THREE from "three";
 import { Vec2 } from "@gc/core";
@@ -64,6 +146,91 @@ import { DrawList, appendCommands, paint, type DrawCommand, type Project, type R
 
 const HEX_RADIUS = 26; // world units, centre to corner
 const NET_BACK_FRAC = 0.55; // back frame height as a fraction of the crossbar
+
+// DEPTH ZONES.
+//
+// `pitchGroup` shares ONE `THREE.Scene` (and therefore one real depth buffer)
+// with everything else `SceneRoot` draws -- see scene.ts's class doc comment.
+// That is what lets a rigged `THREE.SkinnedMesh` character depth-test
+// correctly against the ball, against another character, and against a
+// procedural billboard fallback: real per-pixel occlusion, not the quad/
+// array-insertion-order painter's algorithm this file used before. Studying
+// `game/render/rig3d/renderer.lua`'s `characterCamera`/`beginPass`/`endPass`
+// for this port surfaced a nuance worth recording, because it changes what
+// "matching the Lua" means here: the Lua's OWN cross-character ordering was
+// ALSO painter's-algorithm, not a shared depth buffer -- `beginPass` clears
+// ONLY the depth buffer on every call (`love.graphics.clear(false, false,
+// true)`), once per character, so a character's depth never persists to the
+// next one, and `renderer.lua`'s own "WHY THERE IS NO BACK-TO-FRONT PART
+// SORTING" comment is about self-occlusion of ONE character's parts, not
+// occlusion BETWEEN characters. What the Lua's real depth buffer bought was
+// exclusively intra-character correctness (an arm in front of a torso). This
+// port intentionally goes further than the Lua did -- a genuine improvement,
+// not a re-derivation -- by giving depth-sorted entities REAL, PERSISTENT z
+// so cross-character/cross-ball occlusion is correct too, per this task's
+// brief. Three zones, all inside `SceneRoot`'s camera frustum (position z=1,
+// near=0.1/far=10 -> visible world z roughly (0.9, -9), see scene.ts):
+//
+//   BACKDROP_Z (0)     -- arena/floor/markings/goals/chevrons/ball trail/
+//                          combat "under" (`drawPitchBeforeItems`). Always
+//                          farther from the camera than any entity standing
+//                          on it, so it can never win a depth test against
+//                          one -- see `depthToZ`, which only ever returns
+//                          values > 0.
+//   ENTITY_Z_NEAR/FAR  -- depth-sorted players + the ball
+//                          (`depthSortedItems`), mapped from the SAME
+//                          world-y depth key that already drives the
+//                          painter's-algorithm array order, so real depth
+//                          testing reproduces (and, for rigged geometry,
+//                          extends beyond) that order rather than
+//                          contradicting it -- see `depthToZ`.
+//   overlay            -- combat "over"/landing reticle/pass preview/charge
+//                          meter/effects "over" (`drawPitchAfterItems`).
+//                          These must stay visually on top of every entity
+//                          regardless of world depth (a charge meter always
+//                          reads above the player it belongs to), so rather
+//                          than out-z every possible entity they opt OUT of
+//                          depth testing entirely via draw2d.ts's
+//                          `PaintOptions.depthTest`.
+//
+// WHAT THIS DOES NOT YET DO. `ENTITY_Z_NEAR`/`ENTITY_Z_FAR` take effect for
+// the procedural billboard fallback and the ball today -- both are ordinary
+// draw2d.ts content and pick up real depth-testing for free. The RIGGED
+// branch below still composites each character through
+// `player_renderer_3d.ts`'s `renderToSprite`: an offscreen, full-viewport
+// render whose returned quad is built with `depthTest: false, depthWrite:
+// false` (see that file's own `renderToSprite` doc comment) -- a flat
+// picture of a mesh, not depth-tested geometry, so positioning it in this
+// zone (done below, at the sprite's own `position.z`) has NO visible effect
+// yet; it stays there so the invariant already holds once that changes.
+// Closing this gap needs a signature change to `player_renderer_3d.ts` this
+// package's ownership boundary puts out of reach this milestone (a
+// concurrent rewrite owns that file's character shading) -- see this port's
+// report for the exact function this file is written to expect.
+// Exported for tests (pitch.spec.ts) -- same rationale as
+// `resetStaticSceneCache`/`staticSceneBuildCount` below: a deep-equality
+// check on drawn objects would not catch these invariants drifting.
+export const BACKDROP_Z = 0;
+export const ENTITY_Z_NEAR = 0.02;
+export const ENTITY_Z_FAR = 0.6;
+// Applied to `drawPitchAfterItems`' output alongside `depthTest: false` (see
+// above) so it also wins three.js's internal opaque-list ordering, not only
+// the GL depth test -- belt and suspenders for the same "always on top"
+// guarantee.
+export const OVERLAY_RENDER_ORDER = 10;
+
+// Maps a `depthSortedItems()` depth key (world y; larger = nearer the
+// viewer, see that function's doc comment) into a world z the shared camera
+// can depth-test, monotonic in the SAME direction `depthSortedItems` already
+// sorts by: larger y (nearer) -> larger z (nearer the camera, which sits at
+// world z=1 looking toward -Z -- see scene.ts's `SceneRoot`). `fieldH`
+// normalises so the mapping does not depend on one specific arena's pitch
+// height. Always `> BACKDROP_Z` (0), by construction, so an entity never
+// loses a depth test to the ground it stands on.
+export function depthToZ(depth: number, fieldH: number): number {
+  const t = fieldH > 0 ? Math.min(1, Math.max(0, depth / fieldH)) : 0;
+  return ENTITY_Z_NEAR + t * (ENTITY_Z_FAR - ENTITY_Z_NEAR);
+}
 
 // Mirrors `data/arenas.lua`'s only current entry. See file header.
 const DEFAULT_ARENA: ArenaColors = {
@@ -628,12 +795,17 @@ export const pitch = {
     // One `paint()` clears `group` and populates everything before the
     // depth-sorted items; everything from here on uses `appendCommands` (or
     // `group.add` directly for a rigged sprite) so it interleaves into the
-    // SAME child list instead of wiping out what came before it.
+    // SAME child list instead of wiping out what came before it. Left at
+    // draw2d.ts's default z (0 == BACKDROP_Z, see DEPTH ZONES above) --
+    // deliberately no `{ z: BACKDROP_Z }` here since that constant only
+    // documents the invariant, it does not need to be applied.
     const before = new DrawList();
     drawPitchBeforeItems(before, frame, vp, opts, project);
     paint(group, before.commands);
 
     for (const item of depthSortedItems(players, ball)) {
+      // Real depth-testable z for this entity -- see DEPTH ZONES above.
+      const z = depthToZ(item.depth, frame.field.h);
       const index = item.index;
       if (index !== undefined) {
         const px = players.x[index] ?? 0;
@@ -650,19 +822,26 @@ export const pitch = {
         // should fall back gracefully rather than the whole frame failing.
         const sprite = playerRenderer3d.available() ? playerRenderer3d.renderToSprite(renderer, sx, sy, r, vp.w, vp.h, v, options, now) : undefined;
         if (sprite !== undefined) {
+          // Positioned in the entity depth zone for when `renderToSprite` is
+          // replaced by real depth-tested geometry (see DEPTH ZONES above);
+          // inert today because that sprite's own material sets
+          // `depthTest: false`.
+          sprite.position.z += z;
           group.add(sprite);
         } else {
-          appendCommands(group, playerRenderer.playerDrawCommands(sx, sy, r, color, v, options));
+          appendCommands(group, playerRenderer.playerDrawCommands(sx, sy, r, color, v, options), { z });
         }
       } else if (ball.visible) {
         const ballCommands = new DrawList();
         drawLooseBallCommands(ballCommands, project, ball);
-        appendCommands(group, ballCommands.commands);
+        appendCommands(group, ballCommands.commands, { z });
       }
     }
 
+    // Always on top, regardless of any entity's real depth -- see DEPTH
+    // ZONES above.
     const after = new DrawList();
     drawPitchAfterItems(after, frame, opts, project, now);
-    appendCommands(group, after.commands);
+    appendCommands(group, after.commands, { depthTest: false, renderOrder: OVERLAY_RENDER_ORDER });
   },
 };

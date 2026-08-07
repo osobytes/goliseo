@@ -6,9 +6,10 @@
 // `game.match_hud` (other packages) -- see this package's port report for
 // why those specs are not claimed wholesale.
 
-import { describe, expect, it, afterEach } from "vitest";
+import { describe, expect, it, afterEach, vi } from "vitest";
 import * as THREE from "three";
-import { pitchDrawCommands, pitch, type PitchDrawOptions, type RenderFrame } from "./pitch.ts";
+import { pitchDrawCommands, pitch, depthToZ, BACKDROP_Z, ENTITY_Z_NEAR, ENTITY_Z_FAR, OVERLAY_RENDER_ORDER, type PitchDrawOptions, type RenderFrame } from "./pitch.ts";
+import * as playerRenderer3d from "./player_renderer_3d.ts";
 
 function emptyPlayers(count: number) {
   return {
@@ -116,6 +117,32 @@ describe("pitch config defaults", () => {
   it("defaults to rigged players on and the follow camera off, matching the Lua original", () => {
     expect(pitch.rigged_players).toBe(true);
     expect(pitch.follow_camera).toBe(false);
+  });
+});
+
+// DEPTH ZONES (see pitch.ts's file header "ONE PASS, ONE DEPTH BUFFER" and
+// the "DEPTH ZONES" block above `depthToZ`). `depthToZ` is the pure mapping
+// from a depth-sort key to a real, depth-testable world z; tested directly
+// here since it needs no GL context at all.
+describe("depthToZ", () => {
+  it("maps the far edge (depth 0) to ENTITY_Z_NEAR and the near edge (depth === fieldH) to ENTITY_Z_FAR", () => {
+    expect(depthToZ(0, 540)).toBeCloseTo(ENTITY_Z_NEAR);
+    expect(depthToZ(540, 540)).toBeCloseTo(ENTITY_Z_FAR);
+  });
+
+  it("is monotonically increasing in depth, matching depthSortedItems' far-to-near sort direction", () => {
+    expect(depthToZ(50, 540)).toBeLessThan(depthToZ(270, 540));
+    expect(depthToZ(270, 540)).toBeLessThan(depthToZ(500, 540));
+  });
+
+  it("always returns a z strictly greater than BACKDROP_Z, so an entity never loses a depth test to the ground", () => {
+    expect(depthToZ(0, 540)).toBeGreaterThan(BACKDROP_Z);
+    expect(depthToZ(540, 540)).toBeGreaterThan(BACKDROP_Z);
+  });
+
+  it("clamps out-of-range depth instead of extrapolating past the entity zone", () => {
+    expect(depthToZ(-100, 540)).toBeCloseTo(ENTITY_Z_NEAR);
+    expect(depthToZ(10_000, 540)).toBeCloseTo(ENTITY_Z_FAR);
   });
 });
 
@@ -260,5 +287,102 @@ describe("pitch.draw (rigged compositing)", () => {
 
     expect(group.children.length).toBeGreaterThan(0);
     expect(group.children.some((c) => c.userData["ownedRenderTarget"] !== undefined)).toBe(false);
+  });
+
+  // DEPTH ZONES (pitch.ts's file header + the block above `depthToZ`).
+  describe("depth placement", () => {
+    it("leaves the backdrop (drawPitchBeforeItems) at BACKDROP_Z", () => {
+      const f = frame();
+      const group = new THREE.Group();
+      pitch.draw(group, f, viewport, opts, stubRenderer());
+
+      // The pitch surface trapezoid: the first filled ShapeGeometry mesh in
+      // the child list, drawn well before any depth-sorted entity.
+      const floor = group.children.find((c) => c instanceof THREE.Mesh && c.geometry instanceof THREE.ShapeGeometry);
+      expect(floor).toBeDefined();
+      expect(floor?.position.z).toBe(BACKDROP_Z);
+    });
+
+    it("positions a rigged player's sprite within the entity depth zone, mapped from its world y", () => {
+      const f = frame(); // both players and the ball sit at y=270, field.h=540
+      const group = new THREE.Group();
+      pitch.draw(group, f, viewport, opts, stubRenderer());
+
+      const sprites = group.children.filter((c) => c.userData["ownedRenderTarget"] instanceof THREE.WebGLRenderTarget);
+      expect(sprites.length).toBeGreaterThan(0);
+      const expectedZ = depthToZ(270, f.field.h);
+      for (const sprite of sprites) {
+        expect(sprite.position.z).toBeCloseTo(expectedZ);
+        expect(sprite.position.z).toBeGreaterThan(BACKDROP_Z);
+      }
+    });
+
+    it("positions the ball within the entity depth zone too, so it depth-tests against players consistently", () => {
+      const f = frame();
+      const group = new THREE.Group();
+      pitch.draw(group, f, viewport, opts, stubRenderer());
+
+      const ball = group.children.find(
+        (c) =>
+          c instanceof THREE.Mesh &&
+          !Array.isArray(c.material) &&
+          c.material instanceof THREE.MeshBasicMaterial &&
+          Math.abs(c.material.color.r - 1) < 1e-6 &&
+          Math.abs(c.material.color.g - 0.95) < 1e-6 &&
+          Math.abs(c.material.color.b - 0.7) < 1e-6,
+      );
+      expect(ball).toBeDefined();
+      expect(ball?.position.z).toBeCloseTo(depthToZ(f.ball.y, f.field.h));
+    });
+
+    it("gives a mid-frame billboard fallback (renderToSprite declining one player) the same entity-zone z a sprite would have gotten", () => {
+      // available() stays true (so the frame is genuinely riggedActive), but
+      // renderToSprite itself declines for the FAR player only -- the same
+      // "graceful degradation partway through a frame's roster" this file's
+      // header describes (a build/render failure, or -- as stubbed here --
+      // any other reason a specific character comes back undefined).
+      const f = frame({ players: { ...emptyPlayers(2), y: [50, 500] } });
+      const group = new THREE.Group();
+      const spy = vi.spyOn(playerRenderer3d, "renderToSprite").mockImplementationOnce(() => undefined);
+      try {
+        pitch.draw(group, f, viewport, opts, stubRenderer());
+      } finally {
+        spy.mockRestore();
+      }
+
+      // Exactly one sprite made it through (the near player); the far player
+      // fell back to a procedural billboard, which must still carry the SAME
+      // entity-zone z a sprite would have -- draw2d.ts content and rigged
+      // sprites depth-test against the same zone (see pitch.ts's DEPTH
+      // ZONES), not two different conventions.
+      const sprites = group.children.filter((c) => c.userData["ownedRenderTarget"] instanceof THREE.WebGLRenderTarget);
+      expect(sprites).toHaveLength(1);
+      const farZ = depthToZ(50, f.field.h);
+      const matched = group.children.some((c) => !(c.userData["ownedRenderTarget"] instanceof THREE.WebGLRenderTarget) && Math.abs(c.position.z - farZ) < 1e-6);
+      expect(matched).toBe(true);
+    });
+
+    it("makes the post-entity overlay layer (drawPitchAfterItems) ignore depth and win render order, so it always reads on top", () => {
+      // The landing reticle: circle "line" commands only (no dl.text), so
+      // this exercises the overlay layer without needing buildTextSprite's
+      // document.createElement -- unavailable under this workspace's
+      // DOM-less "node" vitest environment (see draw2d.ts's header).
+      const f = frame({ ball: { x: 480, y: 270, z: 40, visible: true, landing_x: 600, landing_y: 300 } });
+      const group = new THREE.Group();
+      pitch.draw(group, f, viewport, opts, stubRenderer());
+
+      const isReticleRing = (c: THREE.Object3D): c is THREE.LineLoop =>
+        c instanceof THREE.LineLoop &&
+        c.material instanceof THREE.LineBasicMaterial &&
+        Math.abs(c.material.color.r - 1) < 1e-6 &&
+        Math.abs(c.material.color.g - 0.85) < 1e-6 &&
+        Math.abs(c.material.color.b - 0.35) < 1e-6;
+      const reticle = group.children.filter(isReticleRing);
+      expect(reticle.length).toBeGreaterThan(0);
+      for (const child of reticle) {
+        expect(child.renderOrder).toBe(OVERLAY_RENDER_ORDER);
+        expect((child.material as THREE.LineBasicMaterial).depthTest).toBe(false);
+      }
+    });
   });
 });

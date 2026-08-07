@@ -522,9 +522,40 @@ function buildOne(c: DrawCommand, opts?: PaintOptions): THREE.Object3D {
  * disposal, non-text object construction -- without a DOM polyfill. See
  * match_hud.spec.ts's population suite for why this was chosen over a
  * jsdom-scoped spec file.
+ *
+ * DEPTH PLACEMENT (`z`/`renderOrder`/`depthTest`). Every object `buildOne`
+ * constructs sits at local z=0 -- draw2d.ts's whole vocabulary is screen-space
+ * 2D, and painter's-algorithm ordering among tied-z siblings falls out of
+ * `group.children` insertion order for free (three.js's default depth
+ * function is `LessEqualDepth`, so a later draw at an EQUAL depth still wins).
+ * That stops being sufficient the moment real 3D geometry with its own depth
+ * extent shares the same `THREE.Scene` -- pitch.ts's rigged characters, see
+ * that file's "DEPTH ZONES" section and scene.ts's `SceneRoot` doc comment.
+ * These three options let a caller opt PART of a `DrawCommand[]` batch into
+ * that shared depth space without `buildOne` itself needing to know why:
+ *
+ *   - `z`: added to every built object's `position.z` (not set outright, so
+ *     it composes with whatever `buildOne` already wrote, which is always 0
+ *     today -- see above).
+ *   - `renderOrder`: forwarded to every built object's own `renderOrder`.
+ *     three.js honors this ahead of its internal opaque-list sort, the same
+ *     mechanism scene.ts already uses to keep `hudGroup` above `pitchGroup`.
+ *   - `depthTest`: forwarded to every built object's material(s). Content
+ *     that must stay visually on top (or behind) regardless of a shared
+ *     depth buffer's contents -- pitch.ts's post-entity overlay layer is the
+ *     one caller today -- sets this `false` instead of trying to out-z
+ *     everything else.
+ *
+ * All three default to leaving `buildOne`'s output exactly as it already was
+ * (z=0, three.js's own default `renderOrder` of 0, `depthTest` untouched), so
+ * every existing caller (match_hud.ts, bloom.ts, the non-rigged half of
+ * pitch.ts) is unaffected.
  */
 export interface PaintOptions {
   readonly buildText?: (c: TextCommand) => THREE.Object3D;
+  readonly z?: number;
+  readonly renderOrder?: number;
+  readonly depthTest?: boolean;
 }
 
 /**
@@ -576,7 +607,34 @@ function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
  */
 export function appendCommands(group: THREE.Group, commands: readonly DrawCommand[], opts?: PaintOptions): void {
   for (const c of commands) {
-    group.add(buildOne(c, opts));
+    const obj = buildOne(c, opts);
+    applyDepthPlacement(obj, opts);
+    group.add(obj);
+  }
+}
+
+// See PaintOptions' doc comment. Applied once per built object, after
+// `buildOne` -- kept out of `buildOne` itself so that function stays a pure
+// command -> object mapping with no knowledge of why a caller might want its
+// output repositioned in depth.
+function applyDepthPlacement(obj: THREE.Object3D, opts?: PaintOptions): void {
+  if (opts === undefined) {
+    return;
+  }
+  if (opts.z !== undefined) {
+    obj.position.z += opts.z;
+  }
+  if (opts.renderOrder !== undefined) {
+    obj.renderOrder = opts.renderOrder;
+  }
+  if (opts.depthTest !== undefined) {
+    const materialOwner = obj instanceof THREE.Mesh || obj instanceof THREE.Line || obj instanceof THREE.Sprite ? obj : undefined;
+    if (materialOwner !== undefined) {
+      const materials = Array.isArray(materialOwner.material) ? materialOwner.material : [materialOwner.material];
+      for (const m of materials) {
+        m.depthTest = opts.depthTest;
+      }
+    }
   }
 }
 

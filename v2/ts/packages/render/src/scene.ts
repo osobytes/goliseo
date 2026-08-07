@@ -133,6 +133,32 @@ const CAMERA_FAR = 10;
  * .flipY` turned out to be a no-op for render-target textures, not the
  * fix.
  *
+ * STILL N PASSES, NOT ONE (the next step, not yet landed). The offscreen-
+ * render-target approach above closed the "characters get cleared" defect,
+ * but it is still one FULL-VIEWPORT `renderer.render()` call per rigged
+ * character per frame (`renderToSprite`), composited as a transparent quad
+ * with `depthTest: false` -- correct painter's order via `pitchGroup`'s
+ * child array position, but not per-pixel occlusion: two overlapping
+ * characters cannot correctly interpenetrate, and neither can a character
+ * and the ball. Closing THAT gap means characters joining this class's
+ * `scene` as actual depth-tested `THREE.SkinnedMesh` objects, drawn in this
+ * class's one existing full-scene `render()` call, rather than as quads
+ * holding a picture of a mesh -- pitch.ts's "DEPTH ZONES" section and its
+ * file-header "ONE PASS, ONE DEPTH BUFFER" note lay out the reconciliation
+ * (screen-space position/scale, the elevation tilt, and this class's own
+ * Y-inverted camera convention -- yes, still needing an equivalent of
+ * `scale.y = -1`, just applied to the character's own transform instead of
+ * a compositing plane) and the exact `player_renderer_3d.ts` signature this
+ * package is written to expect once it exists. That file is owned by a
+ * concurrent rewrite this milestone (its character SHADING), so the actual
+ * mesh-per-character wiring is not implemented here -- `pitch.draw` still
+ * calls `renderToSprite` exactly as before, unchanged in behaviour. What
+ * pitch.ts/draw2d.ts DO add now, ready for that wiring: every depth-sorted
+ * entity (billboard fallback or ball) already carries a real, depth-tested
+ * world z (`pitch.ts`'s `depthToZ`), and `draw2d.ts`'s `appendCommands`
+ * gained the `z`/`renderOrder`/`depthTest` options that make that possible
+ * without touching `buildOne`'s existing screen-space vocabulary.
+ *
  * The camera is one shared `THREE.OrthographicCamera` sized to the
  * viewport, `top = 0` / `bottom = viewport.h` -- matching draw2d.ts's
  * `paint` doc comment: every draw2d.ts command is already in screen space
