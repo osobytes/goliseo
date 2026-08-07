@@ -61,13 +61,25 @@ describe("real match adapter", () => {
 
   // Needs `screen.match.state.players[1].id`/`.press.home` -- a live
   // `sim.match` state table the Lua original reaches into directly.
-  // `RealMatchScreenPort.state` (`real_match.ts`) is deliberately narrowed
-  // to `{time_left, score}` with no `players`/`press` fields at all (this
-  // package's `real_match_factory.ts` header) -- there is no way to observe
-  // a starting XI or a formation's press setting through the contract this
-  // milestone's `MatchScreen`/`RealMatchScreenPort` actually expose.
-  // Extending that contract is `@gc/screens`'s call (out of this batch's
-  // file ownership), not a stale blocker -- still genuinely blocked.
+  //
+  // Re-audited this batch: `@gc/screens` (`real_match.ts`/`match.ts`) is
+  // now IN this batch's file ownership, so "extending that contract is
+  // someone else's call" (the previous version of this note) is stale --
+  // widening `RealMatchScreenPort.state` was genuinely on the table. It
+  // still does not reach this case, for a narrower, confirmed reason:
+  // `players[1].id`/`players[2].id` (a starting XI) is derivable without
+  // any wasm change at all -- `home_starter_ids` is already static, known
+  // content on the request this factory receives -- but `press.home`
+  // (`gc_sim::match::MatchState.press`, a `ByTeam<f64>` copied from the
+  // authored tactic's `TacticData.press` at kickoff,
+  // `crates/gc-sim/src/match.rs`) is exposed NOWHERE reachable from this
+  // package: not `@gc/wasm`'s `SimSession` (score/timeLeft/finished/
+  // inputTick/snapshotHash/roster only, confirmed by reading `session.rs`),
+  // not `gc_render::frame::RenderFrame` (no `press` field, confirmed by
+  // reading `frame.rs`), and not this package's own `content.ts`'s
+  // `TacticExists` (`{id}` only, no `press`) -- and `content.ts` is NOT in
+  // this batch's file ownership, so adding the field is not this task's to
+  // do either. Still genuinely blocked, now for the `press` half only.
   it.skip("applies request roster, formation, tactic, and seed", () => {});
 
   it("is the adapter selected by the default bootstrap, and routes a completed match to result", () => {
@@ -104,11 +116,22 @@ describe("real match adapter", () => {
 
   // Needs `screen.match._combat_state` -- an internal `sim.match` field the
   // Lua original reaches into directly to prove combat is constructed only
-  // for `combat_enabled` requests. This milestone's `MatchScreen` has no
-  // combat state at all (`match.ts`'s own header: "combat... [is] out of
-  // scope this milestone" -- `MatchScreenAsRealMatchScreen.frameEvents` is
-  // unconditionally `[]`), so there is nothing to assert on either branch of
-  // this test yet. Still genuinely blocked, not stale.
+  // for `combat_enabled` requests.
+  //
+  // Re-audited: `MatchScreenOptions.combat_enabled` DOES exist on `match.ts`
+  // now (stale to claim otherwise), but it is meaningful only for
+  // rollback-lab construction-time validation -- `real_match_factory.ts`
+  // never constructs a rollback lab, so passing it through would set a
+  // flag `MatchScreen` never reads again. The real, still-current blocker
+  // is one layer down and Rust-side: `@gc/wasm`'s `Session::step`
+  // (`crates/gc-wasm/src/session.rs`) hard-codes `combat_state: None` on
+  // every call into `gc_sim::match::step` (confirmed against `match.rs`'s
+  // own `combat_state: Option<&mut CombatMatchState>` parameter) -- the
+  // base, non-rollback wasm session this factory drives never runs combat
+  // at all, for any request. There is no genuine per-tick combat state this
+  // milestone's real match screen could construct or expose even if this
+  // file's `MatchScreenOptions`/`MatchScreenAsRealMatchScreen` grew one.
+  // Still genuinely blocked, now for a precise, Rust-side reason.
   it.skip("constructs combat only for the explicit post-showcase request", () => {});
 
   it("allows confirmation to advance the full-time hold after its safety beat", () => {

@@ -10,12 +10,23 @@
 // blocked "applies request roster, formation, tactic, and seed" for the same
 // reason, spelled out there). So this is not a stale "not yet ported"
 // blocker -- the module exists, its published contract just does not carry
-// what these two assertions need. The walk itself (Squad -> Formation ->
-// Tactic, carrying the formation/tactic choice) is ported faithfully below
-// and verified against the injected `MatchScreenFactory` receiving the
-// exact `{formation: "1-1-2", tactic: "press_high"}` choice the Lua spec's
-// final `top.state.press.home == 2` (a `press_high`-derived value) is
-// indirectly checking for.
+// what these two assertions need.
+//
+// Re-audited this batch, same conclusion as `bootstrap.spec.ts`'s twin case
+// (see that file's header for the full trail): `players.length == 10` is
+// derivable without touching `@gc/wasm` at all (a ten-player roster is
+// already static, known content by the time `Flow` reaches `match`), but
+// `press.home` is not exposed by `@gc/wasm`'s `SimSession`
+// (`crates/gc-wasm/src/session.rs`), by `gc_render::frame::RenderFrame`
+// (`frame.rs`), or by this package's `content.ts` (not this batch's file to
+// extend) -- `gc_sim::match::MatchState.press` has no reachable path onto
+// this port anywhere. Still genuinely blocked, now for that one narrow,
+// confirmed reason rather than the contract's entire narrowness. The walk
+// itself (Squad -> Formation -> Tactic, carrying the formation/tactic
+// choice) is ported faithfully below and verified against the injected
+// `MatchScreenFactory` receiving the exact `{formation: "1-1-2", tactic:
+// "press_high"}` choice the Lua spec's final `top.state.press.home == 2` (a
+// `press_high`-derived value) is indirectly checking for.
 
 import { describe, expect, it } from "vitest";
 import { ScreenStack } from "./screen_stack.ts";
@@ -55,6 +66,6 @@ describe("pre-match flow (tier 3)", () => {
     expect(received).toEqual({ formation: "1-1-2", tactic: "press_high" });
   });
 
-  // Needs `game.screens.match` -- see this file's header.
+  // Needs `RealMatchScreenPort.state.press` -- see this file's header.
   it.skip("the pushed screen is the real match screen with a ten-player press-high state", () => {});
 });

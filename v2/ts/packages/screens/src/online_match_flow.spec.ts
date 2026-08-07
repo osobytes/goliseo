@@ -49,11 +49,12 @@
 //   `coordinator_bridge.rs`'s bound surface (same gap `lobby.spec.ts`'s
 //   header documents), and separately `match_driver_bridge.rs`'s `advance`
 //   batch *does* now carry a real `live` map from the real
-//   `gc_netcode::match_driver` -- but `match.ts` (owned elsewhere this
-//   batch, and by its own header still only porting its
-//   rollback-consumption seam) has no code yet that turns that map into
-//   `state.controlled`. A spec-local fake that did so would be exactly the
-//   "asserting against your own fake" this port must not do.
+//   `gc_netcode::match_driver` -- but `match.ts` (in this batch's own file
+//   ownership, and by its own header still only porting its base/
+//   rollback-lab rollback-consumption seam, with no online-driven mode at
+//   all) has no code yet that turns that map into `state.controlled`. A
+//   spec-local fake that did so would be exactly the "asserting against
+//   your own fake" this port must not do.
 // - One ("draws a live online frame with its combat model and HUD") named
 //   `@gc/render` as its blocker; that dependency edge now exists, but
 //   nothing in this batch turns `OnlineMatch`'s real state into a
@@ -349,9 +350,15 @@ interface RollbackSourceLike {
   advance(tick: number, sample: unknown): unknown;
 }
 
-// Stands in for `match.ts`'s real fixed-clock `MatchScreen` (owned by
-// another agent this batch, and itself only ports its rollback-consumption
-// seam -- see `real_match.ts`'s header). One simulated tick per
+// Stands in for `match.ts`'s real fixed-clock `MatchScreen`, which only
+// ports its (base/rollback-lab) rollback-consumption seam -- see
+// `real_match.ts`'s header -- and has no online-driven mode at all yet: it
+// has no construction path that takes a `driverSource()`-shaped port and no
+// code that reads a `controlledPlayer` callback to set `state.controlled`.
+// A fake that did either here would be asserting against this file's own
+// invention rather than real production wiring -- see the two `it.skip`s
+// below this describe block for exactly what that gap still blocks. One
+// simulated tick per
 // `TICK_SECONDS` of accumulated `dt`, calling the injected rollback source
 // exactly the way the real fixed clock would -- the same role
 // `match_screen.spec.ts`'s `FakeSimHost` plays for `SimHostPort`.
@@ -1023,16 +1030,21 @@ describe("online match screen flow", () => {
     expect(model.result?.away_score).toBe(0);
   });
 
-  // Ported as `it.skip`, re-examined: which slot is LIVE is
+  // Ported as `it.skip`, re-examined (`match.ts` IS in this batch's own
+  // file ownership now, unlike when this note was first written -- but the
+  // substance below did not change): which slot is LIVE is
   // `gc_netcode::match_driver`'s real switch-rule output, and
   // `crates/gc-wasm/src/match_driver_bridge.rs`'s `advance` batch now
   // genuinely carries it (a real `live` map, not a fake). What is still
   // missing is `match.ts` consuming it: `match.state.controlled` is
   // supposed to come from `OnlineMatch`'s own `driverSource().controlledPlayer`
   // callback (already correct in `online_match.ts`, this file's own
-  // package), but `match.ts` (owned by another agent this batch, and by its
-  // own header still only porting its rollback-consumption seam) has no
-  // code yet that calls it. A fake match screen that read `batch.live`
+  // package), but `match.ts` has no online-driven mode at all yet (see this
+  // file's own `fakeMatchScreen` header) -- no construction path takes a
+  // `driverSource()`-shaped port, and no code calls `controlledPlayer`.
+  // Building that is a real feature (a third `MatchScreen` mode alongside
+  // the base host and the rollback laboratory), not a small widening, and
+  // is not attempted here. A fake match screen that read `batch.live`
   // itself and set `state.controlled` accordingly would be reimplementing
   // that missing piece as a spec-local fake -- exactly the "asserting
   // against your own fake" this port must not do, just one layer further
@@ -1189,9 +1201,14 @@ describe.skip("online combat families [needs sim.combat's real readiness/telegra
 // drawable frame by `match.ts`'s `draw()` -- unbuilt this milestone (same
 // gap the two "genuinely hard" control-ownership cases above hit from a
 // different angle: `match.ts` only ports its rollback-consumption seam so
-// far). Nothing in this file can stand in for that without either touching
-// `match.ts` (owned by another agent this batch) or asserting against a
-// frame this test invented itself.
+// far). `match.ts` IS in this batch's own file ownership, but building this
+// translation is a real feature (a live `SimSession` -> `buildRenderFrame`
+// -> drawable-`RenderFrame` path for the online driver, on top of an
+// online-driven `MatchScreen` mode that does not exist yet -- see the two
+// control-ownership cases above), not a small widening, and is not
+// attempted here. Nothing in this file can stand in for that without
+// either building that feature or asserting against a frame this test
+// invented itself.
 describe.skip("online match renderer smoke [needs match.ts's real online RenderFrame wiring, not yet built this milestone]", () => {
   it.skip("draws a live online frame with its combat model and HUD", () => {});
 });

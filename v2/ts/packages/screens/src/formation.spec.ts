@@ -7,29 +7,29 @@
 // `sim.match.new({home_formation = id, ...})` directly — `sim/**` is
 // Rust-owned (`crates/gc-sim`).
 //
-// # Re-audited against the current `@gc/wasm`
+// # Unblocked against the current `@gc/wasm`
 //
-// This comment used to say `@gc/screens` "does not declare `@gc/wasm` as a
-// dependency and should not gain one." That is stale in a way worth
-// correcting even though the case stays skipped: `packages/screens
-// /package.json` now lists `@gc/wasm` as a **devDependency** (test-only,
-// exactly the shape this file would need — production `formation.ts` still
-// never imports it, so the dependency-direction rule the old comment cared
-// about is intact).
+// This comment used to say `@gc/wasm`'s `SimSession` constructor
+// (`crates/gc-wasm/src/session.rs`) hard-coded `home_formation: None`, with
+// no parameter anywhere in `Session::new`'s arguments to choose a starting
+// formation. That is now stale: `Session::new` takes an optional sixth
+// argument, `homeFormation` (`types.ts`'s `SimSessionConstructor`), which
+// flows straight into `sim_match::new`'s own `NewMatchOptions.home_formation`
+// unvalidated (`session.rs`'s own doc: membership in `gc_data::formations::ALL`
+// stays this screen's job, not the constructor's). That is exactly the
+// membership check this case ports: construct a real session for every
+// formation id this screen offers and confirm it resolves to a real,
+// fully-rostered match (10 players -- 5 per side) rather than silently
+// falling back to something else.
 //
-// What actually still blocks this case is narrower and different:
-// `@gc/wasm`'s `SimSession` constructor (`crates/gc-wasm/src/session.rs`)
-// hard-codes `home_formation: None` when it calls `sim_match::new` — there
-// is no parameter, anywhere in `Session::new`'s five arguments, to choose
-// which formation a match starts with. Confirmed by reading `session.rs`
-// end to end: nothing in `@gc/wasm`'s surface can select a formation at
-// all, so "every formation this screen offers round-trips through
-// `sim.match.new`" cannot be exercised regardless of the dependency being
-// available now. Re-port once `SimSession` (or a purpose-built bridge)
-// exposes a formation choice.
+// `packages/screens/package.json` lists `@gc/wasm` as a **devDependency**
+// (test-only; production `formation.ts` still never imports it, so the
+// dependency-direction rule this file's header used to worry about stays
+// intact).
 
 import { describe, expect, it } from "vitest";
 import { hit } from "@gc/ui";
+import { loadSimHost } from "@gc/wasm";
 import { formation, type FormationContentData } from "./formation.ts";
 import type { FormationData } from "./content.ts";
 
@@ -186,12 +186,21 @@ describe("formation screen", () => {
     expect(action?.formation).toBe("1-2-1");
   });
 
-  // `@gc/wasm`'s `SimSession` exists and is reachable here now (a
-  // devDependency), but its constructor has no formation parameter at all
-  // (`session.rs` hard-codes `home_formation: None`) -- see this file's
-  // header for the precise, current reason.
-  it.skip("only offers formations accepted by the match simulation", () => {
-    // Needs a TypeScript- or wasm-reachable sim.match.new.
+  it("only offers formations accepted by the match simulation", () => {
+    const { Session } = loadSimHost();
+    const ids = offeredIds(formation.layout(formation.newState(VP, CONTENT)));
+    for (const id of ids) {
+      const session = new Session("nebula", "orion", 1, 60, 99, id);
+      try {
+        // `rosterNumeric()`'s header word 5 is the roster slot count
+        // (`gc_render::frame_buffer::encode_roster`'s layout) -- 5 per side
+        // for the fixture teams, matching the Lua original's `#match.players
+        // == 10`.
+        expect(session.rosterNumeric()[5]).toBe(10);
+      } finally {
+        session.free();
+      }
+    }
   });
 
   it("does nothing when clicking empty space", () => {

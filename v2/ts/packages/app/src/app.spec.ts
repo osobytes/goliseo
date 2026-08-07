@@ -6,15 +6,25 @@
 // `combat_feedback.diagnostics(match_screen._combat_feedback)`. As of this
 // batch, `@gc/screens`'s `match.ts` (`MatchScreen`) and `@gc/presentation`
 // (a declared dependency here, per package.json) both exist -- the stated
-// blocker as originally written is stale. What is still genuinely missing:
-// `MatchScreenOptions` has no `combat_enabled`/combat construction path at
-// all, and `MatchScreen` never builds or exposes a `_combat_feedback`-shaped
-// state (`match.ts`'s own header: combat is explicitly out of this
-// milestone's scope). There is nothing this test's assertions could read
-// even with a real `MatchScreen` wired in (`real_match_factory.ts`, this
-// batch). Ported as `it.skip` below with the CURRENT blocker named; every
-// other case in this file drives the *fake* match adapter (`App`'s
-// default), which needs neither.
+// blocker as originally written is stale.
+//
+// Re-audited again this batch (`@gc/screens` is now in this batch's own
+// file ownership, so a prior "not this batch's call" framing would also be
+// stale): `MatchScreenOptions.combat_enabled` DOES exist on `match.ts`
+// (also stale to claim otherwise) but only gates rollback-lab
+// construction-time validation; it does nothing for the base, non-rollback
+// game loop this test's custom adapter would actually drive. The real,
+// current blocker is one layer down, Rust-side, and the same one
+// `bootstrap.spec.ts`'s "constructs combat only for the explicit
+// post-showcase request" hits: `@gc/wasm`'s `Session::step`
+// (`crates/gc-wasm/src/session.rs`) hard-codes `combat_state: None` on
+// every call into `gc_sim::match::step` -- the wasm session never runs
+// combat at all outside the rollback laboratory, so there is no genuine
+// per-tick combat state a `_combat_feedback`-shaped diagnostic could ever
+// summarize here, even with a real `MatchScreen` wired in
+// (`real_match_factory.ts`, this batch). Ported as `it.skip` below with the
+// CURRENT blocker named; every other case in this file drives the *fake*
+// match adapter (`App`'s default), which needs neither.
 
 import { describe, expect, it } from "vitest";
 import { actions } from "@gc/input";
@@ -183,8 +193,8 @@ describe("product application flow", () => {
     expect(app.currentRoute()).toBe("match");
   });
 
-  // Needs `game.screens.match` and `@gc/presentation`'s `combat_feedback` --
-  // see this file's header.
+  // `@gc/wasm`'s `Session` never runs combat outside the rollback
+  // laboratory -- see this file's header.
   it.skip("applies live screen-shake changes to a paused match before resume", () => {});
 
   it("requires confirmation before restarting a paused fixture", () => {
