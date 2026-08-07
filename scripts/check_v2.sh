@@ -553,9 +553,27 @@ tsc_force_scenario() {
 EOF
     echo 'export const value: number = 1;' >"$dir/index.ts"
 
+    # A self-test has to be self-contained. This scenario needs a real `tsc`,
+    # and the only one pinned for this repository is the workspace's own --
+    # but `--self-test` deliberately runs BEFORE the gate, so on a fresh clone
+    # or a CI runner nothing has installed it yet. Requiring a prior install
+    # made this pass locally, where node_modules already existed, and fail in
+    # CI: the worst shape for a gate, green on the machine that wrote it and
+    # red on the machine that matters.
+    #
+    # So install it here when absent. Frozen lockfile, so this can only
+    # reproduce what the gate itself installs moments later, never resolve
+    # something new.
     local tsc_bin="$ts_dir/node_modules/.bin/tsc"
     if [ ! -x "$tsc_bin" ]; then
-        echo "SELF-TEST FAIL: $tsc_bin not found (has 'pnpm install' run in v2/ts?)"
+        echo "    (self-test: installing v2/ts dependencies, none present yet)"
+        if ! (cd "$ts_dir" && pnpm install --frozen-lockfile) >/dev/null 2>&1; then
+            echo "SELF-TEST FAIL: pnpm install --frozen-lockfile failed in $ts_dir"
+            return 1
+        fi
+    fi
+    if [ ! -x "$tsc_bin" ]; then
+        echo "SELF-TEST FAIL: $tsc_bin still absent after pnpm install"
         return 1
     fi
 

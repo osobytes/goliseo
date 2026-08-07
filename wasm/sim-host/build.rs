@@ -47,11 +47,21 @@ const ROOTS: [&str; 5] = ["core", "data", "render", "scripts", "sim"];
 /// not to embed this" from "nobody has looked at this yet". Both of those are
 /// silent today; only the second is a bug, and they are indistinguishable
 /// unless the first one is written down.
-const EXCLUDED_ROOTS: [&str; 2] = [
+const EXCLUDED_ROOTS: [&str; 3] = [
     // LOVE-dependent by definition: the engine binding.
     "game",
     // Tests. They run under LOVE's headless runner, not here.
     "spec",
+    // The Rust + TypeScript port (v2/README.md). This host embeds Lua for
+    // love.js; v2 carries its own crates, its own wasm artifact built by
+    // v2/ts/packages/wasm/scripts/build.mjs, and its own gate
+    // (scripts/check_v2.sh). Nothing here should ever embed it.
+    //
+    // Listed rather than the check being loosened: #343 exists because
+    // `render/` was added and silently never embedded, and the value of this
+    // build failing is that it still fails on the NEXT new top-level
+    // directory. It caught v2 exactly as designed.
+    "v2",
 ];
 
 /// Lua files sitting at the repository ROOT that are deliberately not embedded.
