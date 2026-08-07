@@ -33,22 +33,35 @@
 // OWN correctness is `crates/gc-sim/tests`' job, already covered by the
 // Rust port those Lua specs became.
 //
-// One tier-2 case remains out of scope in this package, for a REAL,
-// still-standing reason:
+// "clears smoothing at kickoff, full time, and stack teardown" (tier 2) used
+// to be one bundled `it.skip` for three sub-cases with three different
+// blockers. Split below (in its own nested `describe`, right after "draws
+// only from the cached debug model...") so each is its own case with its own
+// individually re-verified status, rather than one skip whose reason ages
+// out from under two-thirds of what it actually covers the moment only one
+// sub-case's blocker clears:
 //
-//   - "clears smoothing at kickoff, full time, and stack teardown" (tier 2)
-//     bundles three sub-cases. The base (non-rollback) goal-replay gap that
-//     used to block ALL of it is cleared -- `MatchScreenPorts.matchState`
-//     (match.ts's "THE GAME LOOP" section) closes the raw-`MatchState` gap
-//     `match_screen.spec.ts`'s own "goal replay" skip used to name, and the
-//     "keeps actual goal replay gait coherent..." case below now exercises
-//     it for real. But this case's THIRD sub-case ("teardown") needs
-//     `game.screen_stack`'s TS analog, which lives in `@gc/app` --
-//     `@gc/screens` cannot depend on `@gc/app` (the dependency runs the
-//     other way, v2/README.md §2/§9), and that is unrelated to goal replay
-//     entirely. Only the middle ("full time") sub-case is independently
-//     portable, and a single `it` cannot be two-thirds skipped, so the whole
-//     case stays `it.skip` -- for this narrower, now-accurate reason.
+//   - kickoff needs a `kickoff_hold`-equivalent presentation timer. Confirmed
+//     absent end to end: not on `MatchScreen`, not on `RenderFrameHud`, not
+//     produced by `crates/gc-render`'s frame builder -- a genuinely unported
+//     piece of `game/screens/match.lua`. Still `it.skip`.
+//   - full time looked portable at the start of this task (the base
+//     goal-replay gap that used to block it, `MatchScreenPorts.matchState`,
+//     is cleared -- see "keeps actual goal replay gait coherent..." below,
+//     which exercises it for real), but empirical re-verification says
+//     otherwise: seeding a real correction on a rollback-mode `MatchScreen`,
+//     marking the host finished, and calling `update(0)` -- the literal
+//     translation of the Lua original -- leaves `active_smoothing_count`
+//     unchanged, not 0. `updateRollback` (match.ts) no-ops unconditionally
+//     the moment `hud.finished` already reads true going in, before any
+//     smoothing bookkeeping runs; see the sub-case's own comment for the
+//     full root-cause trace. `match.ts` is outside this task's file
+//     ownership (only `match_rollback_lab.spec.ts` is), so this stays
+//     `it.skip` too, with this freshly-verified reason -- reported, not
+//     silently patched around.
+//   - teardown needs `game.screen_stack`'s TS analog, which lives in
+//     `@gc/app` -- `@gc/screens` cannot depend on `@gc/app` (the dependency
+//     runs the other way, v2/README.md §2/§9). Still `it.skip`.
 //
 // The two tier-3 cases (`ScreenStack` driving a real `RealMatch`/`MatchScreen`
 // pair) moved to `@gc/app` -- see the comment where they used to sit below.
@@ -818,11 +831,75 @@ describe("match screen rollback laboratory (tier 2)", () => {
     expect(screen.debugRollbackDebug()!.transport_tick).toBe(debugBefore);
   });
 
-  // Both blocked -- see this file's header.
-  it.skip(
-    "clears smoothing at kickoff, full time, and stack teardown [kickoff sub-case needs base goal replay's raw-MatchState capability; teardown sub-case needs @gc/app's screen_stack.ts, a reverse dependency]",
-    () => {},
-  );
+  // Split from the single bundled "clears smoothing at kickoff, full time,
+  // and stack teardown" case -- three sub-cases, three different blockers.
+  // See this file's header for the two that are now cleared elsewhere in
+  // this file ("@gc/render" dependency, `rollback_lab` construction option)
+  // and stay cleared here; what follows is each sub-case's OWN, individually
+  // re-verified status.
+  describe("clears smoothing at kickoff, full time, and stack teardown (split)", () => {
+    // Needs a `kickoff_hold`-equivalent presentation timer. The Lua original
+    // reads `kickoff.state.kickoff_hold > 0` straight off `sim.match`'s own
+    // snapshot field (`crates/gc-sim/src/match_snapshot.rs`'s `kickoff_hold`,
+    // set to `KICKOFF_HOLD` in `match.rs` on a kickoff/restart and ticked
+    // down in `sim_match::step`). Confirmed absent end to end on this side of
+    // the port: no `kickoff_hold` anywhere under `v2/ts/` (grepped the whole
+    // tree), not on `MatchScreen`'s own state, not on `RenderFrameHud`, and
+    // not produced by `crates/gc-render`'s frame builder either -- the value
+    // exists only inside `gc-sim`'s snapshot and is never surfaced across the
+    // wasm boundary. A genuinely unported piece of `game/screens/match.lua`,
+    // not a dependency-graph or fixture gap this package can work around.
+    it.skip(
+      "kickoff [needs a kickoff_hold-equivalent presentation timer, absent from MatchScreen/RenderFrameHud/crates/gc-render's frame -- not this package's call to add]",
+      () => {},
+    );
+
+    // Re-verified, not assumed: seeded a real, nonzero smoothing correction
+    // on a rollback-mode `MatchScreen` (`screen.debugSeedRenderCorrection`,
+    // confirmed `active_smoothing_count > 0` immediately after), then set
+    // `host.hud.finished = true` and called `screen.update(0)` -- the exact
+    // translation of the Lua original's `full_time.state.finished = true;
+    // full_time:update(0)`. Result: `active_smoothing_count` stayed at its
+    // seeded value, never reached 0.
+    //
+    // Root cause, read end to end in `match.ts`: `MatchScreen.update`'s
+    // rollback branch (`updateRollback`) opens with `if (this.finished) {
+    // return; }` -- an UNCONDITIONAL no-op the moment `hud.finished` already
+    // reads true going in, before any smoothing bookkeeping runs. The Lua
+    // original never hits an equivalent guard here: `match_is_over(self)`,
+    // for a rollback-mode `Match`, tests `self._source:terminal()` --
+    // `lab_source(lab).terminal`, which derives from
+    // `rollback_playable_lab.debug_model(lab).status` (`"active"` for a
+    // clean run) -- NOT `self.state.finished`. So a clean-profile lab never
+    // reads as `match_is_over`, and execution falls through to the bottom of
+    // `Match:update`, where `lifecycle_reset = ... or self.state.finished or
+    // ...` (a separate, freely-mutable snapshot field, never resynced this
+    // call because zero ticks ran) is still true, and drives
+    // `update_render_smoothing`'s `clear_render_smoothing` unconditionally.
+    // `MatchScreen` collapses those two checks into ONE live read
+    // (`this.finished`, always `this.activeHost().frame().hud.finished`)
+    // with no free-floating counterpart, so there is no code path in
+    // `updateRollback` (or `updateBaseRenderSmoothing`, which only clears
+    // smoothing for a finish that happens DURING the call it's checked in,
+    // not one already true going in) that clears render smoothing for an
+    // already-finished match. This is `match.ts`, outside this task's file
+    // ownership (`match_rollback_lab.spec.ts` only) -- flagged, not
+    // silently patched around; see this task's own final report.
+    it.skip(
+      "full time [MatchScreen.update's rollback branch no-ops unconditionally once hud.finished already reads true going in, before any smoothing clear -- verified empirically, not stale; needs a match.ts fix outside this package's ownership for this task]",
+      () => {},
+    );
+
+    // Needs `@gc/app`'s `screen_stack.ts` -- `@gc/screens` cannot depend on
+    // `@gc/app` (v2/README.md §2/§9; confirmed `packages/screens/package.json`
+    // declares no such dependency, and the direction is structural, not an
+    // oversight). Unrelated to either blocker above.
+    it.skip(
+      "stack teardown [needs @gc/app's screen_stack.ts, a reverse dependency @gc/screens structurally cannot take]",
+      () => {},
+    );
+  });
+
   it("keeps actual goal replay gait coherent and clears smoothing on both exits", () => {
     replay.reset();
     replay.resetTuning();

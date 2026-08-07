@@ -11,80 +11,51 @@
 // replace/truncate, celebration targeting, slow-motion playback, and the
 // combat-state passenger -- without needing a running simulation.
 //
-// One test is intentionally not ported as written: "carries every pose
-// input through capture, celebration, and playback" exercises
-// `render/player_pose.lua`'s `select`/`PRIORITY`. That module has since
-// landed as `crates/gc-render/src/player_pose.rs` (confirmed: pose selection
-// -- `PlayerPoseId`, its priority table -- is real Rust there, and its
-// output already crosses the wasm boundary baked into the RenderFrame wire,
-// see `frame_buffer.rs`'s `pose_id`/`pose_priority`/`pose_source` fields and
-// `pose_id_code`). So this is not a pending port -- it is finished, and it
-// finished exactly where v2/README.md's file mapping said it would (Rust),
-// permanently outside `@gc/render`.
+// One test used to need a different port shape: "carries every pose input
+// through capture, celebration, and playback" exercises
+// `render/player_pose.lua`'s `select`/`PRIORITY`. That module landed as
+// `crates/gc-render/src/player_pose.rs` (pose selection -- `PlayerPoseId`,
+// its priority table -- is real Rust there), but a goal replay buffers
+// pre-render `MatchState`/`MatchPlayer` snapshots (see this module's own
+// header), not decoded RenderFrame wire data, so a buffered, replayed frame
+// is never run through Rust's pose selection as part of the ordinary
+// per-frame path.
 //
-// That does not unblock this test, though, and the reason is specific to
-// what `replay` buffers: a goal replay captures pre-render `MatchState`/
-// `MatchPlayer` snapshots (see this module's own header), not decoded
-// RenderFrame wire data -- so a buffered, replayed frame was never run
-// through Rust's pose selection in the first place, and there is no
-// `@gc/wasm` binding that takes an arbitrary buffered player snapshot and
-// returns a selected pose id the way `buildRenderFrame` does for a live
-// `SimSession` (see `packages/wasm/src/index.ts`'s `SimHost` -- its only
-// pose-shaped surface is the live per-session render frame). Unblocked by
-// either a new wasm export exposing `player_pose::select` standalone, or by
-// changing what `replay` captures so pose ids are baked in at record time --
-// neither of which is this package's call to make alone. It is kept below as
-// `it.skip` per v2/README.md §4 ("port it as #[ignore]/it.skip... and report
-// it -- never delete it silently"), plus a replacement test that asserts
-// directly on the field the selector would have read
-// (`keeper_get_up_timer`), which is the property that test was actually
-// protecting: "the buffered struct must carry it; the selector must not
-// default it."
+// # Now ported for real
 //
-// Re-checked, not just trusted, against this task's landed surface:
-// `SimSession.matchStateJson()`/`RollbackPlayableLab.currentMatchStateJson`
-// et al. (`@gc/wasm`) add exactly `MatchState`-shaped JSON (`field`,
-// `goal_home`, `goal_away`, `score`, `time_left`, `outfield_press`,
-// `transition`, `transition_windows`, `controlled?`, `owner?`, `ball`,
-// `ball_vel`, `ball_z`, `ball_vz`, `players`, `events`) -- this module's own
-// `MatchState`/`MatchPlayer` interfaces, verbatim, per `@gc/wasm`'s own doc
-// on those methods.
+// `@gc/wasm` closed the gap: `crates/gc-wasm/src/player_pose_bridge.rs`'s
+// `playerPoseSelect` is a standalone entry point over
+// `gc_render::player_pose::select`, taking exactly this module's own
+// `MatchPlayer` JSON shape (its doc cross-checks `match_state_bridge.rs`'s
+// encoder field-for-field, the same shape this file's own
+// `makePlayers`/`snapshotState` fixture already builds) plus the same
+// optional combat/keeper/outfield context `player_pose::select` itself
+// takes, and returns `{id, priority, source}` -- exactly what the Lua
+// original's `player_pose.select(p, nil, ...)` call needs.
 //
-// # Re-audited again: the standalone export landed, but this package cannot
-// reach it
+// The remaining blocker was a dependency-graph gap, not a missing Rust
+// surface: `@gc/render`'s own `package.json` declared no dependency on
+// `@gc/wasm` at all. That is fixed too -- `@gc/wasm` is now a
+// `devDependency` here (mirroring `@gc/screens`), the workspace symlink at
+// `node_modules/@gc/wasm` and this package's `tsconfig.json` project
+// reference are both wired, and `host.playerPoseSelect` resolves and
+// executes correctly from inside this spec file (confirmed by running it,
+// not inferred). `@gc/wasm` stays a devDependency deliberately: this spec
+// may drive the real pose selector, but production `replay.ts` must keep
+// receiving everything it needs through its existing arguments -- see
+// v2/README.md §2 on the determinism line, and do not import `@gc/wasm`
+// from a non-spec file in this package.
 //
-// The paragraph above is now stale on its own terms: `@gc/wasm` DOES expose
-// standalone pose selection now -- `crates/gc-wasm/src/player_pose_bridge.rs`'s
-// `playerPoseSelect` takes exactly this module's own `MatchPlayer` JSON shape
-// (its doc cross-checks `match_state_bridge.rs`'s encoder field-for-field,
-// the same shape this file's own `makePlayers`/`snapshotState` fixture
-// already builds) plus the same optional combat/keeper/outfield context
-// `player_pose::select` itself takes, and returns `{id, priority, source}` --
-// exactly what the Lua original's `player_pose.select(p, nil, ...)` call
-// needs. Confirmed reachable and correct in isolation: `node -e` against
-// `packages/wasm/dist/pkg/gc_wasm.cjs` resolves `playerPoseSelect` as a
-// function.
-//
-// What is NOT true, checked directly rather than assumed: `@gc/render`'s own
-// `package.json` declares no dependency on `@gc/wasm` at all (unlike
-// `@gc/screens`, which lists it under `devDependencies` for exactly this
-// "specs may import it directly" reason -- v2/README.md's package layout).
-// `packages/render/node_modules/@gc/` only symlinks `core`/`presentation`;
-// `require.resolve("@gc/wasm", { paths: [...] })` from inside this package
-// fails outright (confirmed by running it, not inferred). Reaching
-// `playerPoseSelect` from this file therefore needs a `package.json` edit
-// (adding `@gc/wasm` to `devDependencies`, mirroring `@gc/screens`) followed
-// by a workspace install to materialize the symlink -- both outside a single
-// task batch scoped to `replay.ts`/`replay.spec.ts` alone, and the install
-// step outside what an automated pass here may run at all. So the blocker
-// this test now names is a one-line, low-risk DEPENDENCY-GRAPH gap for
-// whoever owns this package's `package.json` and can run the install step --
-// not a missing Rust/wasm surface, which is what every prior pass here
-// assumed. Left `it.skip`, for this third, narrower, and different reason.
+// Ported below, real `@gc/wasm` call and all. The "preserves a held
+// pose-input field (keeper_get_up_timer)" test that stood in for this one
+// stays too: it pins the same underlying property (the buffered struct
+// must carry `keeper_get_up_timer`) without a wasm round trip, so it is
+// cheap regression coverage this test does not make redundant.
 
 import { describe, expect, it } from "vitest";
 import { Vec2 } from "@gc/core";
 import type { CombatMatchState, CombatPlayerState } from "@gc/presentation";
+import { loadSimHost } from "@gc/wasm";
 import {
   replay,
   type MatchEvent,
@@ -353,25 +324,53 @@ describe("goal replay buffer", () => {
   });
 
   // pitch.draw hands buffered replay players straight to player_pose.select
-  // in the Lua original -- see the file header (the "Re-audited again"
-  // section) for why this is still skipped rather than ported as written.
-  it.skip(
-    "carries every pose input through capture, celebration, and playback " +
-      "-- @gc/wasm's playerPoseSelect (crates/gc-wasm/src/player_pose_bridge.rs) " +
-      "is now exactly the standalone entry point this case needs, confirmed " +
-      "reachable and correct in isolation. The remaining blocker is narrower " +
-      "and different: @gc/render's own package.json declares no dependency " +
-      "on @gc/wasm at all (unlike @gc/screens, which does, for exactly this " +
-      "'specs may import it directly' reason) -- packages/render/node_modules/@gc/ " +
-      "has no wasm symlink, and require.resolve('@gc/wasm', ...) fails from " +
-      "inside this package (confirmed by running it). Unblocks on adding " +
-      "@gc/wasm to this package's devDependencies plus a workspace install " +
-      "to materialize the symlink -- a package.json edit and an install step, " +
-      "neither of which this file's own port can make.",
-    () => {
-      // Intentionally not ported; see skip reason above and the file header.
-    },
-  );
+  // in the Lua original -- see the file header for how this reaches the
+  // real Rust selector via @gc/wasm's playerPoseSelect.
+  it("carries every pose input through capture, celebration, and playback", () => {
+    const host = loadSimHost();
+    replay.reset();
+    replay.resetTuning();
+    // Hold the post-dive get-up window open across the whole recording. The
+    // buffered struct must carry it; the selector must not default it.
+    const players = makePlayers(0.18);
+    let ball = new Vec2(480, 270);
+    const ballVel = new Vec2(120, 0);
+    for (let i = 0; i < 90; i += 1) {
+      replay.record(snapshotState(players, ball, ballVel, []));
+      ball = advanceBall(ball, ballVel);
+    }
+
+    expect(replay.start("home")).toBe(true);
+    const neutralKeeperContext = { near_ball: false, shuffling: false, tip: false };
+    let frames = 0;
+    let getUpFrames = 0;
+    for (let i = 0; i < 4000; i += 1) {
+      const st = replay.step(1 / 60);
+      if (st === undefined) {
+        break;
+      }
+      frames += 1;
+      for (const p of st.players) {
+        const input: { readonly player: unknown; readonly keeper_context?: unknown } = {
+          player: p,
+          ...(p.is_keeper ? { keeper_context: neutralKeeperContext } : {}),
+        };
+        const selection = JSON.parse(host.playerPoseSelect(JSON.stringify(input))) as {
+          readonly id: string;
+          readonly priority: number;
+          readonly source: string;
+        };
+        expect(selection.id.length > 0, "unknown replay pose").toBe(true);
+        expect(typeof selection.priority).toBe("number");
+        expect(["soccer", "combat", "locomotion"].includes(selection.source), "unknown pose source").toBe(true);
+        if (p.is_keeper && selection.id === "keeper_get_up") {
+          getUpFrames += 1;
+        }
+      }
+    }
+    expect(frames > 0, "replay produced no frames").toBe(true);
+    expect(getUpFrames > 0, "the get-up window never reached a replay frame").toBe(true);
+  });
 
   it("preserves a held pose-input field (keeper_get_up_timer) through capture, celebration, and playback", () => {
     replay.reset();
