@@ -242,7 +242,14 @@ fn to_event_tick_output(output: &RollbackTickOutput) -> rollback_events::Rollbac
 /// per step (see that type's doc): one encoding serves reading `advance`'s
 /// batch in JS and handing an entry straight back into a standalone
 /// timeline's `apply` call, with no re-shaping in between.
-fn output_summary_to_json(output: &RollbackTickOutput) -> Json {
+///
+/// `pub(crate)`, not private: [`crate::rollback_playable_lab_bridge`] binds
+/// the same `gc_sim::rollback_session::RollbackTickOutput` shape (the
+/// playable lab steps a `RollbackSession` directly, exactly like this
+/// driver does) for its own batch's `outputs`, so this is the one place that
+/// conversion happens rather than a third copy alongside this module's own
+/// [`to_event_tick_output`].
+pub(crate) fn output_summary_to_json(output: &RollbackTickOutput) -> Json {
     rollback_events_bridge::tick_output_to_json(&to_event_tick_output(output))
 }
 

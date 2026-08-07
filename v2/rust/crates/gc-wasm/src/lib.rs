@@ -159,6 +159,30 @@
 //! module's own doc for why this is a second copy rather than a shared one.
 //! [`session::Session::new`] also gained a `home_formation` parameter (it
 //! previously hard-coded `None`, with no way to select a formation at all).
+//!
+//! ## v2 glue: the playable rollback laboratory, and raw `MatchState`
+//!
+//! Two gaps the v2 glue milestone traced precisely (no TypeScript-side
+//! wiring could close either — see each module's own doc for the full
+//! account):
+//!
+//! [`rollback_playable_lab_bridge`] binds `gc_sim::rollback_playable_lab` —
+//! the single-process, deterministic, network-simulated local rollback
+//! harness `packages/screens/src/match_rollback_lab.spec.ts`'s
+//! `RollbackHostPort` needs a real implementation of. Before this module,
+//! nothing in `@gc/wasm` could produce a `"converged"`/`"settling"` status;
+//! [`match_driver_bridge`] binds a structurally different thing (an OMP-3
+//! TWO-PEER ONLINE driver).
+//!
+//! [`match_state_bridge`] encodes the RAW `gc_sim::match_snapshot::MatchState`
+//! slice `packages/render/src/replay.ts`'s `captureFrame` needs
+//! (`outfield_press`/`transition`/per-player timers/`outfield_decision`) —
+//! distinct from, and never producible from, [`render_export`]'s
+//! presentation-derived `RenderFrame`. [`session::Session::match_state_json`]
+//! exposes it for the base (non-rollback) game loop;
+//! [`rollback_playable_lab_bridge::RollbackPlayableLab::current_match_state_json`]/
+//! `reference_match_state_json`/`match_state_json_at` expose the same thing
+//! for a rollback-mode goal replay.
 #![deny(missing_docs)]
 
 pub mod coordinator_bridge;
@@ -168,12 +192,14 @@ pub mod input_protocol_bridge;
 pub mod json;
 pub mod match_driver_bridge;
 pub mod match_driver_fixture_bridge;
+pub mod match_state_bridge;
 pub mod net_inbox;
 pub mod online_combat_phases_bridge;
 pub mod protocol_bridge;
 pub mod registry;
 pub mod render_export;
 pub mod rollback_events_bridge;
+pub mod rollback_playable_lab_bridge;
 pub mod session;
 pub mod tuning_bridge;
 pub mod wasm_transport;

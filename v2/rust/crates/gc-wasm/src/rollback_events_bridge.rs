@@ -325,7 +325,13 @@ pub(crate) fn accounting_to_json(accounting: &RollbackEventsAccounting) -> Json 
 // events" section.
 // ---------------------------------------------------------------------
 
-fn save_style_wire(v: SaveStyle) -> &'static str {
+/// `pub(crate)`, not private: [`crate::match_state_bridge`] needs this exact
+/// wire mapping for a [`crate::match_snapshot::MatchPlayer::save_style`]
+/// field it also serializes (the raw-`MatchState`-for-replay surface) —
+/// reusing it here keeps exactly one `SaveStyle` wire mapping in this crate
+/// rather than a third copy (the module doc already explains why this is a
+/// local mirror rather than a `gc_sim`-side `pub wire_str()`).
+pub(crate) fn save_style_wire(v: SaveStyle) -> &'static str {
     match v {
         SaveStyle::Spread => "spread",
         SaveStyle::Central => "central",
@@ -342,7 +348,9 @@ fn save_style_from_wire(text: &str) -> Result<SaveStyle, String> {
     }
 }
 
-fn aerial_style_wire(v: AerialStyle) -> &'static str {
+/// `pub(crate)`: see [`save_style_wire`]'s doc — [`crate::match_state_bridge`]
+/// reuses this one too.
+pub(crate) fn aerial_style_wire(v: AerialStyle) -> &'static str {
     match v {
         AerialStyle::LegControl => "leg_control",
         AerialStyle::ChestControl => "chest_control",
@@ -363,7 +371,9 @@ fn aerial_style_from_wire(text: &str) -> Result<AerialStyle, String> {
     }
 }
 
-fn aerial_outcome_wire(v: AerialOutcome) -> &'static str {
+/// `pub(crate)`: see [`save_style_wire`]'s doc — [`crate::match_state_bridge`]
+/// reuses this one too.
+pub(crate) fn aerial_outcome_wire(v: AerialOutcome) -> &'static str {
     match v {
         AerialOutcome::Clean => "clean",
         AerialOutcome::Heavy => "heavy",
@@ -395,7 +405,9 @@ fn keeper_shot_type_from_wire(text: &str) -> Result<KeeperShotType, String> {
     }
 }
 
-fn keeper_behavior_state_wire(v: KeeperBehaviorState) -> &'static str {
+/// `pub(crate)`: see [`save_style_wire`]'s doc — [`crate::match_state_bridge`]
+/// reuses this one too.
+pub(crate) fn keeper_behavior_state_wire(v: KeeperBehaviorState) -> &'static str {
     match v {
         KeeperBehaviorState::Base => "base",
         KeeperBehaviorState::Advance => "advance",
@@ -575,8 +587,12 @@ fn action_family_from_wire(text: &str) -> Result<ActionFamilyId, String> {
 }
 
 /// [`MatchEvent`] as plain, round-trippable JSON (field-for-field, no
-/// `"origin"` tag — contrast [`match_event_to_json`]).
-fn raw_match_event_to_json(event: &MatchEvent) -> Json {
+/// `"origin"` tag — contrast [`match_event_to_json`]). `pub(crate)`, not
+/// private: [`crate::match_state_bridge`]'s raw-`MatchState`-for-replay
+/// surface embeds a `MatchState.events` array of exactly this shape (it is
+/// also `replay.ts`'s own `MatchEvent` interface field-for-field), so this
+/// is the one place that encoding happens rather than a second copy.
+pub(crate) fn raw_match_event_to_json(event: &MatchEvent) -> Json {
     Json::obj(vec![
         ("kind", Json::str(event.kind.wire_str())),
         ("x", Json::Number(event.x)),

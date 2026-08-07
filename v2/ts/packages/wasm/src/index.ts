@@ -36,6 +36,7 @@ import type {
   MatchDriverFixtureBridge,
   OnlineCombatPhasesBridge,
   RollbackEventsTimelineConstructor,
+  RollbackPlayableLabConstructor,
   SimSessionConstructor,
   TuningRegistryConstructor,
   WasmTuningPreset,
@@ -58,6 +59,9 @@ export type {
   RawExports,
   RollbackEventsTimeline,
   RollbackEventsTimelineConstructor,
+  RollbackPlayableLab,
+  RollbackPlayableLabConstructor,
+  RollbackPlayableLabSnapshotLookup,
   SimSession,
   SimSessionConstructor,
   SnapshotLookup,
@@ -98,6 +102,11 @@ export interface SimHost
    * `RollbackEventsPort`. See `crates/gc-wasm/src/rollback_events_bridge.rs`'s
    * doc. */
   readonly RollbackEventsTimeline: RollbackEventsTimelineConstructor;
+  /** Builds a `RollbackPlayableLab` — the deterministic, network-simulated,
+   * bot-driven local rollback harness (`gc_sim::rollback_playable_lab`) a
+   * real `packages/screens/src/match.ts` `RollbackHostPort` implementation
+   * wraps. See `crates/gc-wasm/src/rollback_playable_lab_bridge.rs`'s doc. */
+  readonly RollbackPlayableLab: RollbackPlayableLabConstructor;
   /** Constructs a render-driven tick-count planner over
    * `gc_sim::fixed_clock`. See `FixedClock`'s doc — this is the single
    * source of truth for turning a render `dt` into a tick count
@@ -172,6 +181,7 @@ export function loadSimHost(): SimHost {
     Coordinator: native.Coordinator,
     MatchDriverBridge: native.MatchDriverBridge,
     RollbackEventsTimeline: native.RollbackEventsTimeline,
+    RollbackPlayableLab: native.RollbackPlayableLab,
     FixedClock: native.FixedClock,
     TuningRegistry: native.TuningRegistry,
     tuningPresets: native.tuningPresets,

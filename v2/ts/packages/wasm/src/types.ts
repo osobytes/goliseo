@@ -28,6 +28,18 @@ export interface SimSession {
    * {@link RollbackEventsTimeline} via {@link RollbackEventsTimelineConstructor.create}
    * without a {@link MatchDriverBridge}. */
   snapshotHandle(): WasmMatchSnapshot;
+  /** This session's raw simulation state, as JSON —
+   * `gc_wasm::match_state_bridge::match_state_to_json`'s shape, matching
+   * `packages/render/src/replay.ts`'s `MatchState` interface field-for-field
+   * (`field`, `goal_home`, `goal_away`, `score`, `time_left`,
+   * `outfield_press`, `transition`, `transition_windows`, `controlled?`,
+   * `owner?`, `ball`, `ball_vel`, `ball_z`, `ball_vz`, `players`, `events`).
+   * Unlike {@link SimSession.snapshotHandle} (an opaque handle) this crosses
+   * fully decoded — `replay.ts`'s `captureFrame` needs to actually read
+   * `outfield_press`/`transition`/per-player timers, which
+   * {@link SimHost.buildRenderFrame}'s presentation-derived `RenderFrame`
+   * does not carry at all. */
+  matchStateJson(): string;
   /** Releases the underlying wasm-side registry slot. Call when done with
    * a session — the wasm module does not garbage-collect on its own. */
   free(): void;
@@ -242,6 +254,137 @@ export interface RollbackEventsTimeline {
  * `gc_sim::rollback_events::new` does when omitted. */
 export interface RollbackEventsTimelineConstructor {
   create(initialSnapshot: WasmMatchSnapshot, maxUnconfirmedTicks?: number): RollbackEventsTimeline;
+}
+
+// ---------------------------------------------------------------------------
+// `rollback_playable_lab_bridge.rs` — the deterministic, network-simulated,
+// bot-driven local rollback harness for the playable match screen
+// (`gc_sim::rollback_playable_lab`). Distinct from `MatchDriverBridge`: that
+// one binds an OMP-3 two-peer ONLINE driver; this one is the single-process
+// local dev/playtest harness `packages/screens/src/match.ts`'s
+// `RollbackHostPort` needs a real implementation of.
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirrors `gc_wasm::rollback_playable_lab_bridge::RollbackPlayableLabSnapshotLookup`
+ * — one `gc_sim::rollback_playable_lab::snapshot` lookup result. Structurally
+ * identical to {@link SnapshotLookup} (a separate type on the Rust side too —
+ * see that module's doc for why).
+ */
+export interface RollbackPlayableLabSnapshotLookup {
+  /** This boundary's retention status: `"present"`, `"retained"`,
+   * `"missing"`, or `"outside_window"` — only the first two carry a
+   * {@link RollbackPlayableLabSnapshotLookup.snapshot}. */
+  readonly status: string;
+  /** The queried boundary tick. */
+  readonly tick: number;
+  /** The retained snapshot, present exactly when
+   * {@link RollbackPlayableLabSnapshotLookup.status} is `"present"` or
+   * `"retained"`. */
+  readonly snapshot?: WasmMatchSnapshot;
+  free(): void;
+}
+
+/**
+ * Mirrors `gc_wasm::rollback_playable_lab_bridge::RollbackPlayableLab`
+ * (`crates/gc-wasm/src/rollback_playable_lab_bridge.rs`) — a `wasm-bindgen`
+ * control surface over `gc_sim::rollback_playable_lab`. There is no public
+ * constructor — build one via {@link RollbackPlayableLabConstructor.create},
+ * not `new`.
+ *
+ * This is NOT `RollbackHostPort` (`packages/screens/src/match.ts`) itself —
+ * it is the underlying primitive a real `RollbackHostPort` implementation
+ * wraps. Every JSON-string method follows this package's usual rule: read
+ * the exact shape from `rollback_playable_lab_bridge.rs`'s `*_json`
+ * functions rather than a duplicated TypeScript interface.
+ */
+export interface RollbackPlayableLab {
+  /** Whether {@link RollbackPlayableLab.advance} requires a `sampleWire`
+   * this tick. Cheap; safe to call before the first `advance`. */
+  needsLocalSample(): boolean;
+  /** Advances exactly one transport tick. `transportTick` must equal the
+   * tick this laboratory expects next (readable beforehand via
+   * {@link RollbackPlayableLab.debugModelJson}'s `transport_tick`).
+   * `sampleWire` (a canonical `gc_sim::input_frame` sample wire, matching
+   * {@link SimSession.step}/{@link MatchDriverBridge.advance}'s own
+   * `sampleWire`/`wire` convention) must be supplied exactly when
+   * {@link RollbackPlayableLab.needsLocalSample} is `true` this tick, and
+   * omitted otherwise. Returns the tick's batch as JSON: `outputs` (one
+   * `gc_sim::rollback_session::RollbackTickOutput` per entry — the same
+   * shape {@link MatchDriverBridge.advance}'s own `outputs` embeds, plus an
+   * `input` field that one omits — `{tick, start_boundary, end_boundary,
+   * finished, score, time_left, events, combat_events, input: {tick, slots:
+   * [{source, status, sample}, ...]}}`), `event_diffs`
+   * ({@link RollbackEventsTimeline.apply}'s `RollbackEventDiff` shape),
+   * `confirmed_steps` ({@link RollbackEventsTimeline.confirm}'s
+   * `RollbackEventStep` shape), `corrections` (`{causal_tick,
+   * restored_boundary, old_present_boundary, new_present_boundary,
+   * replaced_from_tick, replaced_through_tick, corrected_from_tick,
+   * corrected_through_tick, old_present_hash?, new_present_hash?,
+   * first_difference?}`), and `status` (this laboratory's status after this
+   * call — `"active"`, `"settling"`, `"converged"`, `"diverged"`,
+   * `"late_input_unrecoverable"`, `"unconfirmed_window_exceeded"`,
+   * `"comparison_history_missing"`, or `"drain_incomplete"`). Throws (a
+   * string) if `transportTick` is not the expected next tick, if
+   * `sampleWire` fails to decode, or if `sampleWire`'s presence disagrees
+   * with {@link RollbackPlayableLab.needsLocalSample}. */
+  advance(transportTick: number, sampleWire?: string): string;
+  /** This laboratory's retained-state shape, as JSON: `profile`,
+   * `local_slot`, `status`, `reference_tick`, `current_tick`,
+   * `transport_tick`, `confirmed_input_tick`, `confirmed_output_tick`,
+   * `predicted_slot_samples`, `predicted_ticks`, `correction_count`,
+   * `rollback_count`, `latest_rollback_depth`, `max_rollback_depth`,
+   * `resimulated_ticks`, `retained_snapshot_count`,
+   * `retained_snapshot_bytes`, `network_pending`, `network_counters`,
+   * `network_high_water`, `convergence` (`{status, boundary, expected_hash,
+   * actual_hash, first_difference?}`), `event_status`,
+   * `predicted_early_finish`, `late_input_tick?`, `settlement_ticks`,
+   * `settlement_limit` — mirrors `gc_sim::rollback_playable_lab::debug_model`
+   * (the Lua original's `RollbackPlayableLabDebugModel`). */
+  debugModelJson(): string;
+  /** An independent capture of the predicted client's current live
+   * boundary, as an opaque handle — see {@link WasmMatchSnapshot}'s doc. */
+  currentSnapshot(): WasmMatchSnapshot;
+  /** An independent capture of the reference's current live boundary, as an
+   * opaque handle. */
+  referenceSnapshot(): WasmMatchSnapshot;
+  /** Looks up the predicted client's own retained boundary-snapshot history
+   * at `boundaryTick`. */
+  snapshotLookup(boundaryTick: number): RollbackPlayableLabSnapshotLookup;
+  /** The predicted client's current live boundary's RAW simulation state,
+   * as JSON — {@link SimSession.matchStateJson}'s shape, for a caller
+   * feeding `packages/render/src/replay.ts` (or any other raw-`MatchState`
+   * consumer) during rollback-mode play. */
+  currentMatchStateJson(): string;
+  /** The independent reference's current live boundary's RAW simulation
+   * state, as JSON — see {@link RollbackPlayableLab.currentMatchStateJson}. */
+  referenceMatchStateJson(): string;
+  /** A retained boundary's RAW simulation state, as JSON — see
+   * {@link RollbackPlayableLab.currentMatchStateJson}. Use
+   * {@link RollbackPlayableLab.snapshotLookup} first to confirm
+   * `boundaryTick` is `"present"`/`"retained"`. Throws (a string) if
+   * `boundaryTick` is not currently retained. */
+  matchStateJsonAt(boundaryTick: number): string;
+  free(): void;
+}
+
+/** Builds a {@link RollbackPlayableLab}. Named `create`, not `new` — mirrors
+ * {@link RollbackEventsTimelineConstructor.create}'s own naming rationale
+ * (`new` is JS's own reserved constructor call). `initialSnapshot` must be
+ * the canonical slot-mode boundary-zero snapshot (e.g.
+ * {@link SimSession.snapshotHandle}, taken before the session's first
+ * {@link SimSession.step}). `optionsJson` is a JSON object: `local_slot`
+ * (1..=8, default 1), `profile_name` (default `"playable"`; recognized
+ * names: `"clean"`, `"omp0_parity"`, `"playable"`, `"stress"`),
+ * `network_seed`, `bot_seed`, `max_rollback_ticks` (1..=30),
+ * `settlement_ticks` (>=1) — every field optional, defaulting exactly the
+ * way `gc_sim::rollback_playable_lab::new` does. Throws (a string) if
+ * `optionsJson` fails to parse, or a field violates its bound. Still panics
+ * (not a throw) on a structurally invalid `initialSnapshot` (not slot mode,
+ * not boundary zero, already finished, or an unmapped local slot) — that
+ * handle is trusted, Rust-originated data; see the Rust module's doc. */
+export interface RollbackPlayableLabConstructor {
+  create(initialSnapshot: WasmMatchSnapshot, optionsJson: string): RollbackPlayableLab;
 }
 
 /**
@@ -849,6 +992,7 @@ export interface GcWasmModule
   readonly Coordinator: CoordinatorConstructor;
   readonly MatchDriverBridge: MatchDriverBridgeConstructor;
   readonly RollbackEventsTimeline: RollbackEventsTimelineConstructor;
+  readonly RollbackPlayableLab: RollbackPlayableLabConstructor;
   readonly FixedClock: FixedClockConstructor;
   readonly TuningRegistry: TuningRegistryConstructor;
   runDeterminismEvidence(): DeterminismEvidence;

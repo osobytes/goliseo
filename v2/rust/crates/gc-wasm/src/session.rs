@@ -366,6 +366,25 @@ impl Session {
     pub fn snapshot_handle(&self) -> crate::rollback_events_bridge::WasmMatchSnapshot {
         crate::rollback_events_bridge::WasmMatchSnapshot::new(self.capture_snapshot())
     }
+
+    /// This session's raw simulation state, as JSON —
+    /// `crate::match_state_bridge::match_state_to_json`'s shape, matching
+    /// `packages/render/src/replay.ts`'s `MatchState` interface
+    /// field-for-field. Unlike [`Session::snapshot_handle`] (an opaque
+    /// handle, never inspected on the JS side) this crosses fully decoded:
+    /// `replay.ts`'s `captureFrame` needs to actually read
+    /// `outfield_press`/`transition`/per-player timers, not merely retain
+    /// them for a later hash comparison. See `crate::match_state_bridge`'s
+    /// module doc for why this is a narrow, hand-picked slice of
+    /// `MatchState` rather than the whole (70+ field) struct, and why it
+    /// crosses as JSON rather than a raw block like
+    /// [`crate::render_export`]'s per-frame `RenderFrame`.
+    #[wasm_bindgen(js_name = matchStateJson)]
+    #[must_use]
+    pub fn match_state_json(&self) -> String {
+        self.with_entry(|entry| crate::match_state_bridge::match_state_to_json(&entry.state))
+            .to_json_string()
+    }
 }
 
 impl Session {
