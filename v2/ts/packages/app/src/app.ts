@@ -1,13 +1,28 @@
 // Ported from game/app.lua.
 //
 // The Lua original requires `game.online.match_manifest`/`match_session`
-// (Rust-owned `gc-netcode`; v2/README.md §2.1) and
-// `game.screens.online_lobby`/`online_match` (not yet ported to `@gc/screens`
-// -- this package's porting report). Both are threaded through as injected
-// `OnlinePorts` instead of imported; `show_lobby`/`start_online_match` are
-// otherwise a straight structural port, but nothing in app_flow_spec.ts
-// exercises them (the Lua spec doesn't either), so there is no live coverage
-// to lose by injecting rather than wiring a real implementation.
+// (Rust-owned `gc-netcode`; v2/README.md §2.1) -- still true and still
+// injected below, since neither has a wasm bridge this milestone (no
+// `@gc/wasm` export builds a `SessionManifest` or a match-session request;
+// see online_match_flow.spec.ts, this package's own spec, for the same
+// gap from the test side). `game.screens.online_lobby`/`online_match`,
+// though, ARE now real, ported screens (`@gc/screens`'s `OnlineLobby`/
+// `OnlineMatch`) -- that half of this note was stale. They stay behind
+// `OnlinePorts` regardless: this file is decoupled from how a lobby/match
+// screen gets built (a test can supply lighter fakes than the real
+// classes), matching `match_adapter.ts`'s injection pattern for the
+// offline match screen.
+//
+// `start_online_match` used to be an unconditional stub -- it never even
+// read the mounted lobby's coordinator state, on the theory that
+// `OnlinePorts` had no way to expose it. That was the actual bug, not a
+// structural blocker: `OnlinePorts.requestMatchSession`/`newOnlineMatchScreen`
+// were already the right shape (mirroring `match_session.request`/
+// `OnlineMatch.new`), and `OnlineLobbyScreen` below (added by this port)
+// gives the one missing piece -- a read on `state.model.coordinator`/
+// `link`, exactly what the Lua original's `---@cast lobby OnlineLobby`
+// exposes. See online_match_flow.spec.ts (this package) for the case this
+// was ported to unblock.
 //
 // `game.ui.viewport`/`game.input.controller` compose the same way
 // `ui_bridge.ts`'s header explains; `controller` itself IS a declared
@@ -43,7 +58,25 @@ export interface Viewport {
   readonly h: number;
 }
 
-/** `game.online.match_manifest`/`match_session` (Rust-owned), and the not-yet-ported online lobby/match screens -- see this file's header. */
+/** `game.online.coordinator`'s state as read by `App:start_online_match` -- `state.role`/`state.peer_id`/`state.manifest`. Kept structural (no `@gc/screens` import) rather than named after `@gc/screens`'s `CoordinatorState` so a test can supply a lighter fake than the real one. */
+export interface OnlineLobbyCoordinatorState {
+  readonly role: unknown;
+  readonly peer_id: unknown;
+  readonly manifest?: unknown;
+}
+
+/**
+ * Minimal read surface `start_online_match` needs off the mounted lobby
+ * screen -- mirrors the Lua original's `---@cast lobby OnlineLobby` before
+ * reading `lobby.state.model.coordinator`/`lobby.link`. See this file's
+ * header for why this exists (it did not, before).
+ */
+export interface OnlineLobbyScreen extends Screen<ControllerInputEvent, GameSettings> {
+  readonly state: { readonly model: { readonly coordinator?: OnlineLobbyCoordinatorState } };
+  readonly link: unknown;
+}
+
+/** `game.online.match_manifest`/`match_session` (Rust-owned, no wasm bridge), and the real (but injected) online lobby/match screens -- see this file's header. */
 export interface OnlinePorts {
   readonly matchManifestTemplate: unknown;
   requestMatchSession(options: {
@@ -52,7 +85,7 @@ export interface OnlinePorts {
     readonly manifest: unknown;
     readonly freeze: unknown;
   }): { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string };
-  newLobbyScreen(onAction: (action: AppAction) => void, options: unknown): Screen<ControllerInputEvent, GameSettings>;
+  newLobbyScreen(onAction: (action: AppAction) => void, options: unknown): OnlineLobbyScreen;
   newOnlineMatchScreen(options: {
     readonly request: unknown;
     readonly coordinator: unknown;
@@ -267,18 +300,42 @@ export class App {
     this.pushRoute("lobby", screen);
   }
 
-  // Route the lobby's synchronized start into the real online match. Not
-  // exercised by this port's test coverage (nor the Lua spec's) -- see this
-  // file's header. `freeze` is accepted to keep the call signature faithful
-  // to the Lua original even though this milestone has no live lobby
-  // coordinator state to read it from.
-  startOnlineMatch(_freeze: unknown): void {
+  // Route the lobby's synchronized start into the real online match. The
+  // lobby keeps its link: the match borrows the same star, because the
+  // session's control channel and the match's input channel are the same
+  // transport (game/app.lua's own comment on this method).
+  startOnlineMatch(freeze: unknown): void {
     if (!this.online) {
       throw new Error("no online ports were injected into this App");
     }
-    throw new Error(
-      "start_online_match needs the lobby's live coordinator state, which this port's OnlinePorts does not expose a way to read -- see app.ts's header",
-    );
+    const lobby = this.stack.current() as OnlineLobbyScreen;
+    const state = lobby.state.model.coordinator;
+    const link = lobby.link;
+    if (!state || state.manifest === undefined || link === undefined) {
+      this.onlineError = "the lobby has no frozen session to play";
+      return;
+    }
+    const requested = this.online.requestMatchSession({
+      role: state.role,
+      peerId: state.peer_id,
+      manifest: state.manifest,
+      freeze,
+    });
+    if (!requested.ok) {
+      this.onlineError = requested.error;
+      return;
+    }
+    this.onlineError = undefined;
+    const screen = this.online.newOnlineMatchScreen({
+      request: requested.value,
+      coordinator: state,
+      link,
+      onAction: this.onAction(),
+    });
+    if (screen.applySettings) {
+      screen.applySettings(this.settings);
+    }
+    this.pushRoute("online_match", screen);
   }
 
   showPause(): void {

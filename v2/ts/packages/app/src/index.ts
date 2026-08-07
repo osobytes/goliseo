@@ -1,7 +1,16 @@
 // App shell: bootstrap, flow, screen stack, settings.
 
 export { App } from "./app.ts";
-export type { AppAction, AppContent, AppOptions, OnlinePorts, OnlineMatchScreen, Viewport } from "./app.ts";
+export type {
+  AppAction,
+  AppContent,
+  AppOptions,
+  OnlinePorts,
+  OnlineLobbyCoordinatorState,
+  OnlineLobbyScreen,
+  OnlineMatchScreen,
+  Viewport,
+} from "./app.ts";
 
 export { bootstrap } from "./bootstrap.ts";
 export type { BootstrapOptions } from "./bootstrap.ts";

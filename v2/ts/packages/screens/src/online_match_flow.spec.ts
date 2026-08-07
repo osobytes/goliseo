@@ -34,10 +34,13 @@
 // `realCoordinatorPort()`/`realOnlineModelPorts()` below (a solo host
 // reaching an agreed "completed" result; a real host+guest pair, relayed
 // through `pump()`, proving the *other* peer's `"peer_abort"` reason is the
-// coordinator's own protocol decision, not this file's invention). Five
+// coordinator's own protocol decision, not this file's invention). Four
 // stay `it.skip`, each re-examined against the now-reachable `Coordinator`
 // and `@gc/render` rather than assumed still blocked for their original
-// reason:
+// reason; one more ("routes the lobby's synchronized start...") was moved
+// out entirely rather than re-examined here, because the module it is
+// actually about (`App`) does not live in this package -- see the comment
+// where it used to sit, below, for where it went:
 //
 // - Two ("keeps control inside the frozen owned set...",
 //   "makes switching inert in 4v4...") were filed as needing both the real
@@ -59,9 +62,6 @@
 // - One ("drives and shows every accepted family...") named `@gc/render`
 //   too, but its second, still-real blocker is `sim.combat`'s
 //   readiness/telegraph timing, which has no wasm bridge at all.
-// - One ("routes the lobby's synchronized start...") is a permanent
-//   architectural fact, not a milestone gap: `@gc/app` depends on
-//   `@gc/screens`, never the reverse.
 //
 // See each remaining `it.skip`'s own comment for the detail.
 
@@ -1165,18 +1165,17 @@ describe.skip("online combat families [needs sim.combat's real readiness/telegra
   it.skip("drives and shows every accepted family from local keyboard and gamepad", () => {});
 });
 
-// Not re-examined because there is nothing to re-examine: `@gc/app`
-// depends on `@gc/screens`, never the other way around (its own
+// "online match app routing" / "routes the lobby's synchronized start into
+// the online match" moved to packages/app/src/online_match_flow.spec.ts:
+// `@gc/app` depends on `@gc/screens`, never the other way around (its own
 // `package.json`; v2/README.md's directory table: `@gc/app` is the layer
-// meant to wire screens together). This package's `package.json` does not,
-// and architecturally should not, depend on `@gc/app` -- the same
-// reasoning `lobby_flow.spec.ts`'s "is reachable from the title and
-// returns to it" is skipped under. This is a permanent fact about the
-// layering, not a milestone-scoped gap that a newly-reachable dependency
-// could close.
-describe.skip("online match app routing [@gc/app depends on @gc/screens, not the reverse -- see this file's header]", () => {
-  it.skip("routes the lobby's synchronized start into the online match", () => {});
-});
+// meant to wire screens together), and the module the case is actually
+// about -- `App.start_online_match` -- lives there. It passes in its new
+// home: moving it also surfaced that `App`'s `start_online_match` was an
+// unconditional stub that never read the mounted lobby's state at all, not
+// merely a case with nothing to exercise it -- see that file's header for
+// the fix and what the ported case can and cannot prove from this side of
+// the boundary. Do not re-add it here.
 
 // Re-examined: `@gc/render`'s `pitch`/`matchHud` drawing *is* now reachable
 // (a declared dependency, and its pure `pitchDrawCommands`/`matchHudCommands`

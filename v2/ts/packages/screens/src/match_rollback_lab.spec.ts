@@ -33,7 +33,8 @@
 // OWN correctness is `crates/gc-sim/tests`' job, already covered by the
 // Rust port those Lua specs became.
 //
-// Three cases remain out of scope, for a REAL, still-standing reason each:
+// Two tier-2 cases remain out of scope in this package, for a REAL,
+// still-standing reason each:
 //
 //   - "keeps actual goal replay gait coherent..." (tier 2) needs the BASE
 //     (non-rollback) goal-replay feature -- `SimHostPort`'s `RenderFrame` is
@@ -51,11 +52,14 @@
 //     other way, v2/README.md §2/§9). Only the middle ("full time") sub-case
 //     is independently portable, and a single `it` cannot be two-thirds
 //     skipped, so the whole case stays `it.skip`.
-//   - Both tier 3 cases need `ScreenStack` (`@gc/app`'s `screen_stack.ts`)
-//     driving a real `RealMatch`/`MatchScreen` pair end to end -- the exact
-//     same reverse-dependency problem. These can only be ported from
-//     `@gc/app`'s own test suite, exercising this package's `MatchScreen`
-//     from the correct side of the boundary.
+//
+// The two tier-3 cases (`ScreenStack` driving a real `RealMatch`/`MatchScreen`
+// pair) moved to `@gc/app` -- see the comment where they used to sit below.
+// They stay skipped there too: `ScreenStack` was necessary but not
+// sufficient, since both also need a `sim.rollback_playable_lab` wasm bridge
+// this codebase doesn't have. Moving them was still correct -- `@gc/screens`
+// structurally cannot host a test that needs `@gc/app` regardless of what
+// else blocks it.
 
 import { describe, expect, it } from "vitest";
 import type { RollbackEventDiff } from "@gc/presentation";
@@ -683,10 +687,11 @@ describe("match screen rollback laboratory (tier 2)", () => {
   );
 });
 
-describe.skip(
-  "playable rollback ScreenStack flow (tier 3) [needs @gc/app's screen_stack.ts driving a real RealMatch/MatchScreen pair; @gc/screens cannot depend on @gc/app -- see this file's header]",
-  () => {
-    it.skip("converges under the checked-in playable profile with pinned seeds", () => {});
-    it.skip("reconciles a rollback goal through confirmed replay and result completion", () => {});
-  },
-);
+// "playable rollback ScreenStack flow (tier 3)" (both cases) moved to
+// packages/app/src/match_rollback_lab.spec.ts: they need `ScreenStack`
+// (`@gc/app`'s screen_stack.ts) driving a real `MatchScreen`/`RealMatch`
+// pair, and `@gc/screens` cannot depend on `@gc/app` (the dependency runs
+// the other way). They stay `it.skip` in their new home too -- moving them
+// was necessary but not sufficient; see that file's header for the
+// still-missing `sim.rollback_playable_lab` wasm bridge underneath. Do not
+// re-add them here.

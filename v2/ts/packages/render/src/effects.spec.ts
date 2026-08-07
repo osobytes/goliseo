@@ -3,21 +3,19 @@
 // `.apply_event_diff`, `.diagnostics`, `.confirm_event`,
 // `.readability_observation`). The Lua spec also calls `game.match_hud`
 // (the HUD *model*, `game/match_hud.lua` -- a different module this package
-// does not own; see match_hud.ts's header) via `match_hud.layout(viewport)`
-// for its "preserves ball and HUD clearance at every supported fixture
-// size" case.
+// does not own) via `match_hud.layout(viewport)` for its "preserves ball
+// and HUD clearance at every supported fixture size" case.
 //
 // That module HAS since been ported -- to `packages/app/src/match_hud.ts`,
-// exported as `hud.layout` -- so the original "porting unblocks this" plan
-// is stale: porting is done and the test is still blocked, on something
-// else. `@gc/app` depends on `@gc/render` (see packages/app/package.json),
-// so `@gc/render` importing `@gc/app`'s `hud.layout` back would be a
-// circular package dependency, not a missing port. The real current
-// blocker is a package-boundary decision -- lifting the shared
-// `MatchHudLayout` model to a package upstream of both `@gc/render` and
-// `@gc/app` (or duplicating just the Rect-producing pieces somewhere
-// neutral) -- which is not this file's call to make alone, so the
-// assertion stays `it.skip`ped below with the corrected reason.
+// exported as `hud.layout` -- but `@gc/app` depends on `@gc/render` (see
+// packages/app/package.json), so `@gc/render` importing `@gc/app`'s
+// `hud.layout` back would be a circular package dependency, not a missing
+// port. That case tests both `effects` (this package) and `hud.layout`
+// (`@gc/app`), so it belongs wherever both are reachable without a cycle --
+// `@gc/app`, not here. It now lives at
+// packages/app/src/effects_hud_clearance.spec.ts and passes for real
+// against both real modules. See that file's header, and the comment where
+// the case used to sit below, for the detail.
 
 import { describe, expect, it } from "vitest";
 import type { CombatEvent, RollbackWrappedEvent } from "@gc/presentation";
@@ -92,20 +90,12 @@ describe("effects (combat feedback)", () => {
     expect(observation.non_color_only).toBe(true);
   });
 
-  // game/match_hud.lua's model is ported (packages/app/src/match_hud.ts,
-  // `hud.layout(viewport)`) but @gc/app depends on @gc/render, so importing
-  // it here would be circular -- see file header. Unblocked by relocating
-  // the shared MatchHudLayout-producing code to a package upstream of both,
-  // not by porting (porting already happened).
-  it.skip(
-    "preserves ball and HUD clearance at every supported fixture size -- " +
-      "hud.layout(viewport) exists (packages/app/src/match_hud.ts) but " +
-      "@gc/app depends on @gc/render, so @gc/render cannot import it back " +
-      "without a circular package dependency.",
-    () => {
-      // Intentionally not ported; see skip reason above and the file header.
-    },
-  );
+  // "preserves ball and HUD clearance at every supported fixture size" moved
+  // to packages/app/src/effects_hud_clearance.spec.ts: it needs both
+  // `effects` (here) and `hud.layout` (packages/app/src/match_hud.ts), and
+  // `@gc/app` -- not `@gc/render` -- is the side of that edge that can
+  // depend on both without a cycle (@gc/app already depends on @gc/render;
+  // see this file's header). Do not re-add it here.
 
   it("reduces flash density and particle travel through existing settings", () => {
     const reduced: EffectsSettings = { screen_shake: false, bloom: false };
