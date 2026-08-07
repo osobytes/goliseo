@@ -182,7 +182,19 @@ fn to_bot_player(p: &MatchPlayer) -> bot::BotPlayerView {
     }
 }
 
-fn to_bot_view(s: &MatchState) -> bot::BotMatchView {
+/// The `MatchState` -> [`bot::BotMatchView`] adapter this module drives its
+/// own bot through.
+///
+/// Public because it is a PORT ARTIFACT with no Lua counterpart, which makes
+/// it load-bearing in a way a private helper would not be: `sim/bot.lua` takes
+/// the raw match state (`bot.input(b, s, DT)`), so nothing on the Lua side
+/// corresponds to this function and nothing can check it except a differential
+/// that drives both languages' bots over a whole match.
+/// `tests/session_ai_driven_differential.rs` is that test. Were this private,
+/// that test would have to build a second copy of the view — and a second copy
+/// is precisely how the thing under test stops being the thing that ships.
+#[must_use]
+pub fn to_bot_view(s: &MatchState) -> bot::BotMatchView {
     bot::BotMatchView {
         players: s.players.iter().map(to_bot_player).collect(),
         field: bot::Field {
