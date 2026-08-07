@@ -35,10 +35,13 @@ export { pitch, pitchDrawCommands, resetStaticSceneCache, staticSceneBuildCount 
 export { backdropCommands, frameCommands, drawBackdrop, drawFrame } from "./arena.ts";
 export {
   DEFAULT_PLAYER_RADIUS,
+  ELEVATION as player3dElevation,
   metresPerWorldUnit,
   clipFor,
   poseFor,
   characterCameraParams,
+  ppmForRadius as player3dPpmForRadius,
+  characterMesh as player3dCharacterMesh,
   available as player3dAvailable,
   draw as player3dDraw,
   renderToSprite as player3dRenderToSprite,

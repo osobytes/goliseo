@@ -3,17 +3,18 @@
 // game/render/player_renderer_3d.lua directly (it has no `spec/render/`
 // counterpart in the Lua tree). Most of the GPU-adjacent mesh/skeleton/camera
 // half is untested -- see this package's port report -- EXCEPT
-// `renderToSprite`'s object-graph shape (below), which needs only a stub
-// renderer, not a live GL context, to verify (the same boundary
-// scene.spec.ts's `stubRenderer()` and pitch.spec.ts's rigged-compositing
-// suite draw); `build()` itself only constructs plain three.js
-// geometry/skeleton objects with no GL calls, so it genuinely succeeds under
-// this workspace's "node" vitest environment.
+// `renderToSprite`'s and `characterMesh`'s object-graph shape (below), which
+// need only a stub renderer (or no renderer at all, for `characterMesh`),
+// not a live GL context, to verify (the same boundary scene.spec.ts's
+// `stubRenderer()` and pitch.spec.ts's rigged-compositing suite draw);
+// `build()` itself only constructs plain three.js geometry/skeleton objects
+// with no GL calls, so it genuinely succeeds under this workspace's "node"
+// vitest environment.
 
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
 import { Vec2 } from "@gc/core";
-import { available, characterCameraParams, clipFor, metresPerWorldUnit, poseFor, renderToSprite, DEFAULT_PLAYER_RADIUS } from "./player_renderer_3d.ts";
+import { available, characterCameraParams, characterMesh, clipFor, metresPerWorldUnit, poseFor, ppmForRadius, renderToSprite, DEFAULT_PLAYER_RADIUS } from "./player_renderer_3d.ts";
 import type { PlayerRenderOptions } from "./player_renderer.ts";
 import type { PlayerView } from "./view_state.ts";
 
@@ -353,5 +354,82 @@ describe("player_renderer_3d.renderToSprite", () => {
     const awayColor = Array.from(awayMesh.geometry.getAttribute("color").array);
 
     expect(awayColor).not.toEqual(homeColor);
+  });
+});
+
+// CHARACTERMESH / PPMFORRADIUS (pitch.ts's single-pass compositing -- see
+// that file's "ONE PASS, ONE DEPTH BUFFER" header section). `characterMesh`
+// replaces `renderToSprite` on pitch.ts's call path: no renderer, no render
+// target, just a posed/coloured/yawed `THREE.SkinnedMesh` in local metre
+// space, pooled per `playerId`. Same GPU-adjacent-but-GL-free testability
+// boundary as the `renderToSprite` suite above.
+describe("player_renderer_3d.characterMesh / ppmForRadius", () => {
+  const idleView: PlayerView = { px: 0, py: 0, speed: 0, phase: 0, gait: 0, lean: 0 };
+
+  it("skips this environment's assertions if the rigged pass genuinely could not build", () => {
+    expect(available()).toBe(true);
+  });
+
+  it("returns a SkinnedMesh, needing no renderer at all", () => {
+    const mesh = characterMesh("p1", idleView, baseOptions(), 0);
+    expect(mesh).toBeInstanceOf(THREE.SkinnedMesh);
+  });
+
+  it("pools the SAME mesh instance for the same playerId across calls, a DIFFERENT instance for a different playerId", () => {
+    const a1 = characterMesh("player-a", idleView, baseOptions(), 0);
+    const a2 = characterMesh("player-a", idleView, baseOptions(), 1);
+    const b1 = characterMesh("player-b", idleView, baseOptions(), 0);
+    expect(a1).toBe(a2);
+    expect(a1).not.toBe(b1);
+  });
+
+  it("poses two different playerIds' meshes independently -- posing one does not clobber the other's skeleton", () => {
+    // A keeper gathering the ball is a strong pose (overrides the upper
+    // body), easy to tell apart from an idle stance by eye in `poseFor`'s own
+    // suite above; here it is enough that the two pooled meshes' bone
+    // matrices end up different when only one player is given that pose.
+    const gathering = characterMesh("keeper", idleView, baseOptions({ holding: true }), 0);
+    const idle = characterMesh("outfield", idleView, baseOptions(), 0);
+    if (gathering === undefined || idle === undefined) {
+      throw new Error("expected two meshes");
+    }
+    const gatheringBones = (gathering as THREE.SkinnedMesh).skeleton.bones.map((b) => b.matrixWorld.elements.slice());
+    const idleBones = (idle as THREE.SkinnedMesh).skeleton.bones.map((b) => b.matrixWorld.elements.slice());
+    expect(gatheringBones).not.toEqual(idleBones);
+
+    // Re-posing "outfield" again afterwards must not have picked up
+    // "keeper"'s gather pose -- each call repositions the SHARED pose-
+    // evaluation rig (`character.rig`) and immediately copies the result
+    // into the CALLER's own pooled bones, so there is no cross-player
+    // leakage even though the rig itself is shared.
+    const idleAgain = characterMesh("outfield", idleView, baseOptions(), 0);
+    const idleAgainBones = (idleAgain as THREE.SkinnedMesh).skeleton.bones.map((b) => b.matrixWorld.elements.slice());
+    expect(idleAgainBones).toEqual(idleBones);
+  });
+
+  it("bakes different per-vertex colours for the home and away team, on separate geometry objects", () => {
+    const home = characterMesh("home-player", idleView, baseOptions({ team: "home" }), 0) as THREE.SkinnedMesh;
+    const away = characterMesh("away-player", idleView, baseOptions({ team: "away" }), 0) as THREE.SkinnedMesh;
+    expect(home.geometry).not.toBe(away.geometry);
+    const homeColor = Array.from(home.geometry.getAttribute("color").array);
+    const awayColor = Array.from(away.geometry.getAttribute("color").array);
+    expect(awayColor).not.toEqual(homeColor);
+  });
+
+  it("bakes the facing yaw onto the mesh's own quaternion", () => {
+    const forward = characterMesh("yaw-a", idleView, baseOptions({ facing: new Vec2(0, 1) }), 0) as THREE.SkinnedMesh;
+    const sideways = characterMesh("yaw-b", idleView, baseOptions({ facing: new Vec2(1, 0) }), 0) as THREE.SkinnedMesh;
+    expect(forward.quaternion.equals(sideways.quaternion)).toBe(false);
+  });
+
+  it("ppmForRadius scales linearly with the requested on-screen radius", () => {
+    const small = ppmForRadius(10);
+    const large = ppmForRadius(20);
+    expect(small).toBeDefined();
+    expect(large).toBeDefined();
+    if (small === undefined || large === undefined) {
+      throw new Error("expected both to be defined");
+    }
+    expect(large).toBeCloseTo(small * 2);
   });
 });

@@ -146,100 +146,100 @@ describe("depthToZ", () => {
   });
 });
 
-// PITCH.DRAW'S RIGGED COMPOSITING (defect #1's fix). `player_renderer_3d.ts`'s
-// `build()` only constructs plain three.js geometry/skeleton/material objects
-// -- no GL calls -- so `available()` genuinely returns true under this
-// workspace's "node" vitest environment (the same fact scene.spec.ts's header
-// notes and works around by forcing `pitch.rigged_players = false`; this
-// suite does the opposite and leans on it, since it is exactly the rigged
-// path being tested here). `renderToSprite` itself only needs a `renderer`
-// object exposing the handful of `THREE.WebGLRenderer` methods it calls
-// directly (`getRenderTarget`/`setRenderTarget`/`getClearColor`/
-// `getClearAlpha`/`setClearColor`/`clear`/`render`/`autoClear`) -- none of
-// which touch a live GL context for the assertions below, matching
-// scene.spec.ts's `stubRenderer()` boundary. What IS verified here: that a
-// rigged player lands in the object graph (not a direct canvas render) and
-// in the correct painter's-algorithm position relative to the ball; what is
-// NOT verified (same as everywhere else GPU-adjacent in this package): the
-// actual pixel content of the offscreen render.
+// PITCH.DRAW'S RIGGED COMPOSITING (single-pass; see pitch.ts's "ONE PASS, ONE
+// DEPTH BUFFER" header section and this port's report for before/after
+// screenshots/draw-call counts against a live GL context).
+// `player_renderer_3d.ts`'s `build()` only constructs plain three.js
+// geometry/skeleton/material objects -- no GL calls -- so `available()`
+// genuinely returns true under this workspace's "node" vitest environment
+// (the same fact scene.spec.ts's header notes and works around by forcing
+// `pitch.rigged_players = false`; this suite does the opposite and leans on
+// it, since it is exactly the rigged path being tested here). `characterMesh`
+// needs no renderer at all -- there is no per-character render pass or
+// render target anymore -- so `renderer` below is a minimal stub whose sole
+// job is to be non-`undefined` (the `riggedActive` gate) while asserting it
+// is never actually called into; that IS the regression this suite pins:
+// `pitch.draw` no longer rasterizes anything, rigged or not, it only builds
+// `group`'s object graph. What IS verified here: a rigged player lands in
+// the object graph as a real `THREE.SkinnedMesh` (not a quad) and in the
+// correct painter's-algorithm position relative to the ball; what is NOT
+// verified (same as everywhere else GPU-adjacent in this package): the
+// actual rendered pixel content.
 describe("pitch.draw (rigged compositing)", () => {
   interface TrackedRenderer {
-    readonly renderTargetHistory: readonly (THREE.WebGLRenderTarget | null)[];
-    readonly renderCallTargets: readonly (THREE.WebGLRenderTarget | null)[];
+    readonly renderCalls: number;
   }
 
   function stubRenderer(): THREE.WebGLRenderer & TrackedRenderer {
-    let currentTarget: THREE.WebGLRenderTarget | null = null;
-    let clearColor = new THREE.Color(0, 0, 0);
-    let clearAlpha = 1;
-    const renderTargetHistory: (THREE.WebGLRenderTarget | null)[] = [];
-    const renderCallTargets: (THREE.WebGLRenderTarget | null)[] = [];
     const stub = {
       autoClear: true,
-      renderTargetHistory,
-      renderCallTargets,
-      getRenderTarget(): THREE.WebGLRenderTarget | null {
-        return currentTarget;
-      },
-      setRenderTarget(target: THREE.WebGLRenderTarget | null): void {
-        currentTarget = target;
-        renderTargetHistory.push(target);
-      },
-      getClearColor(target: THREE.Color): THREE.Color {
-        return target.copy(clearColor);
-      },
-      getClearAlpha(): number {
-        return clearAlpha;
-      },
-      setClearColor(color: THREE.ColorRepresentation, alpha = 1): void {
-        clearColor = new THREE.Color(color);
-        clearAlpha = alpha;
-      },
-      clear(): void {},
+      renderCalls: 0,
       render(): void {
-        renderCallTargets.push(currentTarget);
+        stub.renderCalls += 1;
       },
     };
     return stub as unknown as THREE.WebGLRenderer & TrackedRenderer;
   }
 
+  // A rigged player is now a `THREE.Group` wrapper (see pitch.ts's
+  // `riggedCharacterObject`) marked `userData.riggedCharacter`, holding a
+  // real `THREE.SkinnedMesh` -- not the old sprite quad tagged
+  // `userData.ownedRenderTarget`.
+  function riggedWrappers(children: readonly THREE.Object3D[]): THREE.Object3D[] {
+    return children.filter((c) => c.userData["riggedCharacter"] === true);
+  }
+
+  const ballMesh = (c: THREE.Object3D): c is THREE.Mesh =>
+    c instanceof THREE.Mesh &&
+    !Array.isArray(c.material) &&
+    c.material instanceof THREE.MeshBasicMaterial &&
+    Math.abs(c.material.color.r - 1) < 1e-6 &&
+    Math.abs(c.material.color.g - 0.95) < 1e-6 &&
+    Math.abs(c.material.color.b - 0.7) < 1e-6;
+
   afterEach(() => {
     pitch.rigged_players = true;
   });
 
-  it("adds a rigged player to the object graph instead of rendering to the caller's own canvas target", () => {
+  it("adds a rigged player to the object graph as a real SkinnedMesh, never touching the renderer directly", () => {
     const f = frame();
     const group = new THREE.Group();
     const renderer = stubRenderer();
 
     pitch.draw(group, f, viewport, opts, renderer);
 
-    const sprites = group.children.filter((c) => c.userData["ownedRenderTarget"] instanceof THREE.WebGLRenderTarget);
-    expect(sprites.length).toBeGreaterThan(0);
-    // Every render() call this frame happened while a private off-screen
-    // target was bound -- never `null` (this stub's stand-in for "whatever
-    // the caller's own canvas/composite target is"). That is the specific
-    // invariant defect #1 was about: a rigged player used to render straight
-    // to whatever target the caller had bound, which `SceneRoot`'s later
-    // full-scene render would then clear.
-    expect(renderer.renderCallTargets.length).toBeGreaterThan(0);
-    expect(renderer.renderCallTargets.every((t) => t instanceof THREE.WebGLRenderTarget)).toBe(true);
+    const wrappers = riggedWrappers(group.children);
+    expect(wrappers.length).toBeGreaterThan(0);
+    for (const wrapper of wrappers) {
+      const mesh = wrapper.children.find((c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh);
+      expect(mesh).toBeDefined();
+    }
+    // The whole point of the single-pass redesign: `pitch.draw` only builds
+    // the object graph now, rigged or not -- it never rasterizes, so the one
+    // render pass a real frame needs happens exactly once, later, in
+    // scene.ts's `SceneRoot.render`.
+    expect(renderer.renderCalls).toBe(0);
   });
 
-  it("restores the renderer's own target after each rigged player, leaving it bound to null (the caller's canvas) once done", () => {
+  it("reuses the SAME pooled mesh instance for the same playerId across frames", () => {
     const f = frame();
-    const group = new THREE.Group();
-    const renderer = stubRenderer();
+    const groupA = new THREE.Group();
+    pitch.draw(groupA, f, viewport, opts, stubRenderer());
+    const meshA = riggedWrappers(groupA.children)[0]?.children.find((c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh);
 
-    pitch.draw(group, f, viewport, opts, renderer);
+    const groupB = new THREE.Group();
+    pitch.draw(groupB, f, viewport, opts, stubRenderer());
+    const meshB = riggedWrappers(groupB.children)[0]?.children.find((c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh);
 
-    expect(renderer.getRenderTarget()).toBeNull();
+    expect(meshA).toBeDefined();
+    expect(meshA).toBe(meshB);
   });
 
   it("interleaves a rigged player with the ball in painter's-algorithm order, matching pitchDrawCommands' depth sort", () => {
     // Player 0 is far (small y), player 1 is near (large y); the ball sits
     // between them. depthSortedItems draws far-to-near, so the expected
-    // object order is: player 0's sprite, then the ball, then player 1's sprite.
+    // object order is: player 0's wrapper, then the ball, then player 1's
+    // wrapper.
     const f = frame({ players: { ...emptyPlayers(2), y: [50, 500] } });
     const group = new THREE.Group();
     const renderer = stubRenderer();
@@ -247,35 +247,27 @@ describe("pitch.draw (rigged compositing)", () => {
     pitch.draw(group, f, viewport, opts, renderer);
 
     const children = group.children;
-    const spriteIndices = children.map((c, i) => (c.userData["ownedRenderTarget"] instanceof THREE.WebGLRenderTarget ? i : -1)).filter((i) => i >= 0);
-    expect(spriteIndices).toHaveLength(2);
-    const [farIndex, nearIndex] = spriteIndices;
+    const wrapperIndices = children.map((c, i) => (c.userData["riggedCharacter"] === true ? i : -1)).filter((i) => i >= 0);
+    expect(wrapperIndices).toHaveLength(2);
+    const [farIndex, nearIndex] = wrapperIndices;
     if (farIndex === undefined || nearIndex === undefined) {
-      throw new Error("expected two rigged player sprites");
+      throw new Error("expected two rigged player wrappers");
     }
 
-    const ballIndex = children.findIndex(
-      (c) =>
-        c instanceof THREE.Mesh &&
-        !Array.isArray(c.material) &&
-        c.material instanceof THREE.MeshBasicMaterial &&
-        Math.abs(c.material.color.r - 1) < 1e-6 &&
-        Math.abs(c.material.color.g - 0.95) < 1e-6 &&
-        Math.abs(c.material.color.b - 0.7) < 1e-6,
-    );
+    const ballIndex = children.findIndex(ballMesh);
     expect(ballIndex).toBeGreaterThan(-1);
     expect(farIndex).toBeLessThan(ballIndex);
     expect(ballIndex).toBeLessThan(nearIndex);
   });
 
-  it("falls back to the procedural billboard (no renderer) without adding any owned render target", () => {
+  it("falls back to the procedural billboard (no renderer) without adding any rigged character", () => {
     const f = frame();
     const group = new THREE.Group();
 
     pitch.draw(group, f, viewport, opts, undefined);
 
     expect(group.children.length).toBeGreaterThan(0);
-    expect(group.children.some((c) => c.userData["ownedRenderTarget"] !== undefined)).toBe(false);
+    expect(riggedWrappers(group.children)).toHaveLength(0);
   });
 
   it("falls back to the procedural billboard when rigged_players is turned off, even with a renderer supplied", () => {
@@ -286,7 +278,7 @@ describe("pitch.draw (rigged compositing)", () => {
     pitch.draw(group, f, viewport, opts, stubRenderer());
 
     expect(group.children.length).toBeGreaterThan(0);
-    expect(group.children.some((c) => c.userData["ownedRenderTarget"] !== undefined)).toBe(false);
+    expect(riggedWrappers(group.children)).toHaveLength(0);
   });
 
   // DEPTH ZONES (pitch.ts's file header + the block above `depthToZ`).
@@ -303,17 +295,17 @@ describe("pitch.draw (rigged compositing)", () => {
       expect(floor?.position.z).toBe(BACKDROP_Z);
     });
 
-    it("positions a rigged player's sprite within the entity depth zone, mapped from its world y", () => {
+    it("positions a rigged player's wrapper within the entity depth zone, mapped from its world y", () => {
       const f = frame(); // both players and the ball sit at y=270, field.h=540
       const group = new THREE.Group();
       pitch.draw(group, f, viewport, opts, stubRenderer());
 
-      const sprites = group.children.filter((c) => c.userData["ownedRenderTarget"] instanceof THREE.WebGLRenderTarget);
-      expect(sprites.length).toBeGreaterThan(0);
+      const wrappers = riggedWrappers(group.children);
+      expect(wrappers.length).toBeGreaterThan(0);
       const expectedZ = depthToZ(270, f.field.h);
-      for (const sprite of sprites) {
-        expect(sprite.position.z).toBeCloseTo(expectedZ);
-        expect(sprite.position.z).toBeGreaterThan(BACKDROP_Z);
+      for (const wrapper of wrappers) {
+        expect(wrapper.position.z).toBeCloseTo(expectedZ);
+        expect(wrapper.position.z).toBeGreaterThan(BACKDROP_Z);
       }
     });
 
@@ -322,43 +314,35 @@ describe("pitch.draw (rigged compositing)", () => {
       const group = new THREE.Group();
       pitch.draw(group, f, viewport, opts, stubRenderer());
 
-      const ball = group.children.find(
-        (c) =>
-          c instanceof THREE.Mesh &&
-          !Array.isArray(c.material) &&
-          c.material instanceof THREE.MeshBasicMaterial &&
-          Math.abs(c.material.color.r - 1) < 1e-6 &&
-          Math.abs(c.material.color.g - 0.95) < 1e-6 &&
-          Math.abs(c.material.color.b - 0.7) < 1e-6,
-      );
+      const ball = group.children.find(ballMesh);
       expect(ball).toBeDefined();
       expect(ball?.position.z).toBeCloseTo(depthToZ(f.ball.y, f.field.h));
     });
 
-    it("gives a mid-frame billboard fallback (renderToSprite declining one player) the same entity-zone z a sprite would have gotten", () => {
+    it("gives a mid-frame billboard fallback (characterMesh declining one player) the same entity-zone z a rigged wrapper would have gotten", () => {
       // available() stays true (so the frame is genuinely riggedActive), but
-      // renderToSprite itself declines for the FAR player only -- the same
+      // characterMesh itself declines for the FAR player only -- the same
       // "graceful degradation partway through a frame's roster" this file's
-      // header describes (a build/render failure, or -- as stubbed here --
-      // any other reason a specific character comes back undefined).
+      // header describes (a build failure, or -- as stubbed here -- any
+      // other reason a specific character comes back undefined).
       const f = frame({ players: { ...emptyPlayers(2), y: [50, 500] } });
       const group = new THREE.Group();
-      const spy = vi.spyOn(playerRenderer3d, "renderToSprite").mockImplementationOnce(() => undefined);
+      const spy = vi.spyOn(playerRenderer3d, "characterMesh").mockImplementationOnce(() => undefined);
       try {
         pitch.draw(group, f, viewport, opts, stubRenderer());
       } finally {
         spy.mockRestore();
       }
 
-      // Exactly one sprite made it through (the near player); the far player
-      // fell back to a procedural billboard, which must still carry the SAME
-      // entity-zone z a sprite would have -- draw2d.ts content and rigged
-      // sprites depth-test against the same zone (see pitch.ts's DEPTH
-      // ZONES), not two different conventions.
-      const sprites = group.children.filter((c) => c.userData["ownedRenderTarget"] instanceof THREE.WebGLRenderTarget);
-      expect(sprites).toHaveLength(1);
+      // Exactly one rigged wrapper made it through (the near player); the
+      // far player fell back to a procedural billboard, which must still
+      // carry the SAME entity-zone z a rigged wrapper would have -- draw2d.ts
+      // content and rigged characters depth-test against the same zone (see
+      // pitch.ts's DEPTH ZONES), not two different conventions.
+      const wrappers = riggedWrappers(group.children);
+      expect(wrappers).toHaveLength(1);
       const farZ = depthToZ(50, f.field.h);
-      const matched = group.children.some((c) => !(c.userData["ownedRenderTarget"] instanceof THREE.WebGLRenderTarget) && Math.abs(c.position.z - farZ) < 1e-6);
+      const matched = group.children.some((c) => c.userData["riggedCharacter"] !== true && Math.abs(c.position.z - farZ) < 1e-6);
       expect(matched).toBe(true);
     });
 

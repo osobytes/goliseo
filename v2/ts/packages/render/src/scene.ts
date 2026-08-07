@@ -108,56 +108,40 @@ const CAMERA_FAR = 10;
  *      fills do not visibly glow -- flagged here as a conscious choice
  *      rather than left as a silent side effect.
  *
- * FIXED HERE (was a known gap): `pitch.draw`'s rigged-player pass used to
- * composite each character by calling `renderer.render()` DIRECTLY and
+ * FIXED HERE (was a known gap, #1): `pitch.draw`'s rigged-player pass used
+ * to composite each character by calling `renderer.render()` DIRECTLY and
  * IMMEDIATELY, rather than adding the character to `pitchGroup`'s `Object3D`
  * graph -- `SceneRoot.render`'s own later full-scene render would then clear
- * the canvas and wipe out whatever `pitch.draw` had just painted onto it (see
- * pitch.ts's SCOPE NOTE and player_renderer_3d.ts's `renderToSprite` for the
- * fix: each rigged character now renders to a private OFFSCREEN
- * `THREE.WebGLRenderTarget` during `populate`, and the result is wrapped in a
- * viewport-sized textured object added to `pitchGroup` at the exact point in
- * the painter's-algorithm depth order its procedural billboard would have
- * occupied -- interleaved with the ball and the other players, not appended
- * after them). The one, single render that touches the visible
- * canvas/composite chain is still this class's own `render` below, and it is
- * now genuinely the only one that does, which is what closes the gap.
+ * the canvas and wipe out whatever `pitch.draw` had just painted onto it.
+ * Intermediate fix (superseded, see next paragraph): each rigged character
+ * rendered to a private OFFSCREEN `THREE.WebGLRenderTarget`, composited as a
+ * viewport-sized textured quad added to `pitchGroup` at the right point in
+ * painter's-algorithm order. VERIFIED WITH A LIVE GL CONTEXT at the time: the
+ * character camera's asymmetric frustum (`player_renderer_3d.ts`'s
+ * `characterCameraParams`) landed the character at the right `(sx, sy)`, and
+ * texture orientation needed `scale.y = -1` on the quad (`target.texture
+ * .flipY` is a no-op for render-target textures).
  *
- * VERIFIED WITH A LIVE GL CONTEXT (this port's report): the offscreen
- * composite's camera frustum alignment is correct -- the character camera's
- * asymmetric frustum (`player_renderer_3d.ts`'s `characterCameraParams`)
- * lands the character at the right `(sx, sy)` on screen. Texture orientation
- * was NOT correct as first written: see `player_renderer_3d.ts`'s
- * `renderToSprite`, whose returned mesh now carries `scale.y = -1` to
- * correct for `SceneRoot`'s Y-inverted camera (below) -- `target.texture
- * .flipY` turned out to be a no-op for render-target textures, not the
- * fix.
- *
- * STILL N PASSES, NOT ONE (the next step, not yet landed). The offscreen-
- * render-target approach above closed the "characters get cleared" defect,
- * but it is still one FULL-VIEWPORT `renderer.render()` call per rigged
- * character per frame (`renderToSprite`), composited as a transparent quad
- * with `depthTest: false` -- correct painter's order via `pitchGroup`'s
- * child array position, but not per-pixel occlusion: two overlapping
- * characters cannot correctly interpenetrate, and neither can a character
- * and the ball. Closing THAT gap means characters joining this class's
- * `scene` as actual depth-tested `THREE.SkinnedMesh` objects, drawn in this
- * class's one existing full-scene `render()` call, rather than as quads
- * holding a picture of a mesh -- pitch.ts's "DEPTH ZONES" section and its
- * file-header "ONE PASS, ONE DEPTH BUFFER" note lay out the reconciliation
- * (screen-space position/scale, the elevation tilt, and this class's own
- * Y-inverted camera convention -- yes, still needing an equivalent of
- * `scale.y = -1`, just applied to the character's own transform instead of
- * a compositing plane) and the exact `player_renderer_3d.ts` signature this
- * package is written to expect once it exists. That file is owned by a
- * concurrent rewrite this milestone (its character SHADING), so the actual
- * mesh-per-character wiring is not implemented here -- `pitch.draw` still
- * calls `renderToSprite` exactly as before, unchanged in behaviour. What
- * pitch.ts/draw2d.ts DO add now, ready for that wiring: every depth-sorted
- * entity (billboard fallback or ball) already carries a real, depth-tested
- * world z (`pitch.ts`'s `depthToZ`), and `draw2d.ts`'s `appendCommands`
- * gained the `z`/`renderOrder`/`depthTest` options that make that possible
- * without touching `buildOne`'s existing screen-space vocabulary.
+ * FIXED HERE (#2, superseding #1's offscreen-quad mechanism): that quad was
+ * still one FULL-VIEWPORT `renderer.render()` call per rigged character per
+ * frame, composited with `depthTest: false` -- correct painter's order via
+ * `pitchGroup`'s child array position, but not per-pixel occlusion, and N
+ * render passes where the goal was one. Every rigged character now joins
+ * this class's own `scene` as an actual depth-tested `THREE.SkinnedMesh`
+ * (`player_renderer_3d.ts`'s `characterMesh`, pooled per player, wrapped by
+ * `pitch.ts`'s `riggedCharacterObject`), drawn in this class's ONE existing
+ * full-scene `render()` call alongside everything else -- no per-character
+ * render pass, no render target, at all. `player_renderer_3d.ts`'s old
+ * `renderToSprite` (the #1 mechanism) is kept, unchanged, for parity/
+ * diagnostics, but is no longer on `pitch.draw`'s call path -- see that
+ * file's and pitch.ts's own headers ("ONE PASS, ONE DEPTH BUFFER") for the
+ * exact composition (screen-space position/scale, the elevation tilt, and
+ * this class's own Y-inverted camera convention -- still needing an
+ * equivalent of `scale.y = -1`, now on `riggedCharacterObject`'s wrapper
+ * instead of a compositing plane). The one, single render that touches the
+ * visible canvas/composite chain is still this class's own `render` below,
+ * for a WHOLE frame -- flat content and every rigged character together --
+ * rather than N-plus-one.
  *
  * The camera is one shared `THREE.OrthographicCamera` sized to the
  * viewport, `top = 0` / `bottom = viewport.h` -- matching draw2d.ts's
@@ -242,15 +226,14 @@ export class SceneRoot {
    * once `pitch.draw` returns; it is only forced `false` for the duration of
    * that call. `pitch.draw`'s rigged pass no longer depends on this the way
    * `player_renderer_3d.ts`'s old direct-render `draw` did (see that file's
-   * doc comment and this class's own "FIXED HERE" note) -- `renderToSprite`
-   * renders each character into its own private off-screen target, so
-   * nothing it does can be clobbered by another player's draw sharing the
-   * same target. `autoClear` is still forced off here because `pitch.draw`'s
-   * non-rigged fallback path and the procedural billboards interleaved with
-   * rigged sprites both paint into `pitchGroup` via `paint`/`appendCommands`,
-   * which build an object graph rather than rasterize, so this setting is
-   * defensive rather than load-bearing today; kept to avoid depending on
-   * `SceneRoot` being the only caller that ever sets it.
+   * doc comment and this class's own "FIXED HERE" notes) -- `pitch.draw`
+   * doesn't rasterize anything at all anymore (rigged or not): it only
+   * builds `pitchGroup`'s object graph (`characterMesh`/`riggedCharacterObject`
+   * for rigged players, `paint`/`appendCommands` for everything else), and
+   * this class's own later `render()` is the one place that ever calls
+   * `renderer.render()`. `autoClear` is still forced off here defensively,
+   * to avoid depending on `SceneRoot` being the only caller that ever sets
+   * it, even though nothing in `populate` currently rasterizes.
    */
   populate(frame: RenderFrame, options: SceneRenderOptions): void {
     this.assertNotDisposed();

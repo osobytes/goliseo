@@ -20,24 +20,33 @@
 // depth sort (so a rigged player occludes/is occluded exactly like its
 // procedural billboard would) is real GPU-integration work: it needs a live
 // `WebGLRenderer` to verify pixel-for-pixel, and v2/README.md #1 scopes "a
-// running app" / the wasm-bindings glue out of this milestone.
+// running app" / the wasm-bindings glue out of this milestone. What follows
+// was nonetheless verified against a live GL context outside this milestone's
+// test harness (screenshots, draw-call counts -- see this port's report);
+// the automated suite still only covers what does not need one (below).
 //
 // `pitch.draw`'s rigged pass CONTRIBUTES TO `group`'s `Object3D` GRAPH rather
-// than rasterizing immediately: each rigged character is rendered off-screen
-// (`player_renderer_3d.ts`'s `renderToSprite`, into a private
-// `THREE.WebGLRenderTarget`) and the result is added to `group` at the same
-// point in the depth-sorted iteration a procedural billboard would occupy,
-// interleaved with the ball and every other player via `depthSortedItems`
-// below -- the same ordering `pitchDrawCommands` uses internally, shared
-// through `drawPitchBeforeItems`/`drawPitchAfterItems`/`drawLooseBallCommands`
-// so the two paths cannot silently diverge. This is what lets exactly ONE
-// full-scene render (`SceneRoot.render`, see scene.ts) draw the whole frame,
-// flat content and rigged characters together, in the right order -- see
-// scene.ts's class doc comment for why that matters (it used to be the thing
-// that got cleared). `pitchDrawCommands` stays the fully-tested reference for
-// the pure procedural path; `pitch.draw`'s rigged branch is -- like the rest
-// of the GPU-adjacent surface in this package -- untested beyond what does
-// not need a live GL context (object-graph shape, ordering, disposal).
+// than rasterizing immediately: each rigged character is a real, posed,
+// depth-tested `THREE.SkinnedMesh` (`player_renderer_3d.ts`'s
+// `characterMesh`, pooled per player), wrapped by `riggedCharacterObject`
+// below with its screen position/scale/elevation tilt, and added to `group`
+// at the same point in the depth-sorted iteration a procedural billboard
+// would occupy -- interleaved with the ball and every other player via
+// `depthSortedItems` below, the same ordering `pitchDrawCommands` uses
+// internally, shared through
+// `drawPitchBeforeItems`/`drawPitchAfterItems`/`drawLooseBallCommands` so the
+// two paths cannot silently diverge. This is what lets exactly ONE full-scene
+// render (`SceneRoot.render`, see scene.ts) draw the whole frame -- flat
+// content and every rigged character together, ONE `renderer.render()` call
+// total instead of one per character -- in the right order and with real
+// depth testing between them, rather than N off-screen full-viewport passes
+// each composited as a `depthTest: false` quad (the shape this had before
+// this port; see `player_renderer_3d.ts`'s `renderToSprite`, kept for
+// parity/diagnostics but no longer on this call path). `pitchDrawCommands`
+// stays the fully-tested reference for the pure procedural path; `pitch.draw`'s
+// rigged branch is -- like the rest of the GPU-adjacent surface in this
+// package -- untested beyond what does not need a live GL context
+// (object-graph shape, ordering, disposal).
 //
 // Boundary note (v2/README.md rule 6.7): `RenderFrame` is the (Rust)
 // `render/frame.lua` producer's output (`render/**` -> Rust
@@ -54,27 +63,35 @@
 // three.js's own default), everything at z=0, ordering from `group.children`
 // insertion order. `player_renderer_3d.ts`'s rigged characters are real,
 // posed 3D geometry sized in METRES with their own facing yaw already baked
-// in (see that file's `prepareCharacter`). Getting both into the SAME single
+// in (see that file's `characterMesh`). Getting both into the SAME single
 // full-scene render under the SAME shared camera (see scene.ts's
 // `SceneRoot`) means every rigged character's own transform -- not a second
 // camera -- has to carry everything that used to live in
-// `player_renderer_3d.ts`'s per-character `characterCameraParams`:
+// `player_renderer_3d.ts`'s per-character `characterCameraParams`. This is
+// implemented below as `riggedCharacterObject`, a small wrapper `THREE.Group`
+// built fresh per player per frame around `characterMesh`'s returned mesh:
 //
 //   - SCALE: `ppm` (pixels-per-metre) varies per player -- it comes from
 //     `r = radius * scale`, where `scale` is `camera.ts`'s own fake-
 //     perspective falloff for that player's world position. A shared camera
 //     cannot reproduce a PER-OBJECT scale by zooming itself, so this becomes
-//     the character's own `mesh.scale` (uniform, `ppm`), exactly mirroring
-//     how `characterCameraParams` already derives `ppm` today.
-//   - POSITION: `(sx, sy)` (screen pixels) becomes the character's world
-//     `(x, y)` directly, since the shared camera's frustum already spans
-//     `[0, vw] x [0, vh]` in exactly that space -- no separate placement math
-//     needed, unlike the old per-character asymmetric frustum.
+//     `riggedCharacterObject`'s own `wrapper.scale`'s X/Y (sign note below),
+//     exactly mirroring how `characterCameraParams` already derives `ppm`
+//     today (see `player_renderer_3d.ts`'s `ppmForRadius`). Z is NOT `ppm`
+//     -- see `CHARACTER_DEPTH_SCALE`'s own comment for why applying the
+//     same pixel-scale factor to Z (a defect this port's report found live)
+//     clips characters against the camera's near plane instead of sizing
+//     them.
+//   - POSITION: `(sx, sy)` (screen pixels) becomes `wrapper.position`'s
+//     world `(x, y)` directly, since the shared camera's frustum already
+//     spans `[0, vw] x [0, vh]` in exactly that space -- no separate
+//     placement math needed, unlike the old per-character asymmetric
+//     frustum.
 //   - DEPTH: the world `z` a character/ball is placed at for real depth
 //     testing against everything else in `pitchGroup` -- see `depthToZ` and
-//     the DEPTH ZONES block below. This is genuinely NEW: the old per-
-//     character camera had no notion of a character's depth relative to
-//     ANOTHER character (see DEPTH ZONES' note on the Lua's own
+//     the DEPTH ZONES block below. This is genuinely NEW relative to the
+//     Lua: the old per-character camera had no notion of a character's depth
+//     relative to ANOTHER character (see DEPTH ZONES' note on the Lua's own
 //     `beginPass`-clears-depth-every-call behaviour).
 //   - THE Y-INVERSION: the shared camera's `top=0`/`bottom=h` convention
 //     means world +Y renders toward the BOTTOM of the screen, but a
@@ -83,15 +100,14 @@
 //     `renderToSprite` hit the exact same mismatch one level removed (its
 //     composited PLANE, not the character, needed the flip) and fixed it
 //     with `mesh.scale.y = -1` -- see that function's doc comment. The same
-//     correction is still needed here, just moved: instead of flipping a
-//     plane holding a picture of the character, it is the character's own
-//     Y-scale that must go negative (folded into the same `ppm` scale
-//     above, e.g. `mesh.scale.set(ppm, -ppm, ppm)`). This is NOT something
-//     `WebGLRenderTarget.texture.flipY` could ever fix (confirmed a no-op
-//     for render-target textures -- see `renderToSprite`'s doc comment) and
-//     is NOT eliminated by dropping the offscreen render target: it is a
-//     property of the SHARED CAMERA's convention, which both the old sprite
-//     plane and a real character mesh sit under identically.
+//     correction is still needed here, just moved: `wrapper.scale.set(ppm,
+//     -ppm, CHARACTER_DEPTH_SCALE)` folds the negative Y in alongside the
+//     same `ppm` used for X. This is NOT something `WebGLRenderTarget.texture.flipY` could
+//     ever fix (confirmed a no-op for render-target textures -- see
+//     `renderToSprite`'s doc comment, now moot here anyway: there is no
+//     render target in this path at all) -- it is a property of the SHARED
+//     CAMERA's convention, which both the old sprite plane and a real
+//     character mesh sit under identically.
 //   - ELEVATION: the old per-character camera looked at the character from
 //     slightly above and behind (`ELEVATION`, see `characterCameraParams`'s
 //     `eye`/`target`) rather than straight on. A shared, un-tilted camera
@@ -105,29 +121,34 @@
 //     character's own frame (which way it faces on the pitch), the
 //     elevation tilt happens in the CAMERA's frame (how the fixed camera
 //     sees every character alike), so composition order matters and cannot
-//     be collapsed into one axis-angle call.
+//     be collapsed into one axis-angle call. `riggedCharacterObject`
+//     PREMULTIPLIES the tilt onto `mesh`'s own already-baked yaw quaternion
+//     (not the wrapper's) -- see that function's own doc comment for why
+//     both rotations have to live on the SAME object as each other, and a
+//     DIFFERENT object than the Y-mirroring scale: the mirror commutes with
+//     the yaw (both act on/around the same Y axis) but not with a tilt about
+//     a different axis, so the vertex pipeline has to be rotate (yaw, then
+//     tilt) -> scale (mirror) -> translate, not some other order that would
+//     look identical for yaw=0 and visibly wrong once a character turns.
 //
-// THE EXACT SIGNATURE THIS FILE IS WRITTEN TO EXPECT from `player_renderer_3d
-// .ts` (out of this package's ownership boundary this milestone -- a
-// concurrent rewrite owns that file's character shading, see this port's
-// report): a function returning the POSED, COLOURED, YAWED character mesh in
-// its own local metre space (i.e. exactly `prepareCharacter`'s
-// `character.mesh` as it exists today, MINUS the per-character camera/scene/
-// render-target work `renderToSprite` layers on top) -- something shaped
-// like `characterMesh(playerId: string, view: PlayerView | undefined, opts:
-// PlayerRenderOptions, now: number): THREE.Object3D | undefined`. `playerId`
-// (a stable roster-slot key, matching how `viewState.get(roster.ids[index])`
-// already keys per-player presentation state in this file) is needed because
-// today's shared singleton `built.mesh` is reused SEQUENTIALLY across
-// players within one frame -- correct only because the old design rendered
-// and composited one character at a time. Once every character coexists
-// simultaneously in one scene graph for one shared render, each needs its
-// OWN mesh/skeleton/material instance, pooled and reused frame-to-frame by
-// `playerId` rather than rebuilt every frame. This file would then own
-// EVERYTHING the comment block above describes (scale, position, the Y-flip,
-// `depthToZ`'s z, and the elevation tilt), wrapping the returned mesh in a
-// `THREE.Group` and adding it directly to `pitchGroup` in
-// `depthSortedItems`' loop below, in place of today's `renderToSprite` call.
+// `player_renderer_3d.ts`'s `characterMesh(playerId: string, view:
+// PlayerView | undefined, opts: PlayerRenderOptions, now: number):
+// THREE.Object3D | undefined` returns the POSED, COLOURED, YAWED character
+// mesh in its own local metre space (i.e. exactly the old shared singleton
+// `character.mesh`, MINUS the per-character camera/scene/render-target work
+// `renderToSprite` used to layer on top). `playerId` (a stable roster-slot
+// key, matching how `viewState.get(roster.ids[index])` already keys
+// per-player presentation state in this file) is why it can return a
+// DIFFERENT mesh instance per player rather than the old shared singleton
+// reused sequentially: `characterMesh` pools one skeleton/mesh per
+// `playerId`, reused frame-to-frame (posed afresh each call, not rebuilt),
+// because every character now coexists simultaneously in one scene graph for
+// one shared render rather than being rendered and composited one at a time.
+// `riggedCharacterObject` below owns everything the bullets above describe
+// (scale, position, the Y-flip, `depthToZ`'s z, and the elevation tilt),
+// wrapping the returned mesh in a `THREE.Group` added directly to `group` in
+// `depthSortedItems`' loop in `pitch.draw`, in place of the old
+// `renderToSprite` call.
 
 import * as THREE from "three";
 import { Vec2 } from "@gc/core";
@@ -193,20 +214,23 @@ const NET_BACK_FRAC = 0.55; // back frame height as a fraction of the crossbar
 //                          depth testing entirely via draw2d.ts's
 //                          `PaintOptions.depthTest`.
 //
-// WHAT THIS DOES NOT YET DO. `ENTITY_Z_NEAR`/`ENTITY_Z_FAR` take effect for
-// the procedural billboard fallback and the ball today -- both are ordinary
-// draw2d.ts content and pick up real depth-testing for free. The RIGGED
-// branch below still composites each character through
-// `player_renderer_3d.ts`'s `renderToSprite`: an offscreen, full-viewport
-// render whose returned quad is built with `depthTest: false, depthWrite:
-// false` (see that file's own `renderToSprite` doc comment) -- a flat
-// picture of a mesh, not depth-tested geometry, so positioning it in this
-// zone (done below, at the sprite's own `position.z`) has NO visible effect
-// yet; it stays there so the invariant already holds once that changes.
-// Closing this gap needs a signature change to `player_renderer_3d.ts` this
-// package's ownership boundary puts out of reach this milestone (a
-// concurrent rewrite owns that file's character shading) -- see this port's
-// report for the exact function this file is written to expect.
+// WHAT THIS NOW DOES. `ENTITY_Z_NEAR`/`ENTITY_Z_FAR` take effect for the
+// procedural billboard fallback, the ball, AND the rigged branch alike: a
+// rigged character (`riggedCharacterObject`, below `pitch.draw`) is a real
+// `THREE.SkinnedMesh` positioned at `depthToZ`'s z with ordinary depth
+// testing/writing (no `depthTest: false` anywhere on it), not the old
+// offscreen-rendered, `depthTest: false` quad `player_renderer_3d.ts`'s
+// `renderToSprite` produced (still present, kept for parity/diagnostics, but
+// no longer on this call path -- see that file's header). Two entities'
+// world z, not their `group.children` array position, decides who wins the
+// depth test now -- for player-vs-ball and billboard-vs-rigged this was
+// already the design's goal (a real single-pass render instead of N
+// full-viewport passes; see file header). Rigged-character-vs-rigged-
+// character per-pixel occlusion falls out of the SAME mechanism for free --
+// worth naming as a genuine bonus (the Lua original never had it either, see
+// this section's own note above on the Lua's `beginPass`-clears-depth-every-
+// call behaviour), but it was never the thing this change set out to fix,
+// and nothing here was contorted to guarantee it.
 // Exported for tests (pitch.spec.ts) -- same rationale as
 // `resetStaticSceneCache`/`staticSceneBuildCount` below: a deep-equality
 // check on drawn objects would not catch these invariants drifting.
@@ -752,6 +776,110 @@ export function pitchDrawCommands(frame: RenderFrame, vp: PitchViewport, opts: P
   return dl.commands;
 }
 
+// The elevation tilt (see file header's ELEVATION bullet) as a fixed
+// quaternion, computed once: it is the SAME rotation for every character
+// every frame (a property of the shared camera's fixed viewing angle, not of
+// any one player), so there is nothing to recompute per player. Rotation
+// about the shared camera's local X axis (== world X here, since the camera
+// has no roll/pitch of its own -- see scene.ts's `SceneRoot`), matching
+// `player_renderer_3d.ts`'s exported `ELEVATION` constant.
+const ELEVATION_TILT = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), playerRenderer3d.ELEVATION);
+
+// A rigged character's own local Z (front-to-back thickness) scale, applied
+// by `riggedCharacterObject` -- see that function's SCALE comment for the
+// live-GL-verified defect this constant fixes (uniform `ppm` on Z clips
+// characters against the camera's near plane). Chosen small relative to the
+// entity depth zone's own width (`ENTITY_Z_FAR - ENTITY_Z_NEAR` = 0.58) so a
+// character's full depth extent (~1-2 local metres) stays a thin slice of
+// that zone -- comfortably inside the frustum -- while staying nonzero so
+// intra-character depth testing (an arm in front of a torso) still works.
+const CHARACTER_DEPTH_SCALE = 0.05;
+
+/**
+ * Wraps a rigged character's own local-space mesh (`player_renderer_3d.ts`'s
+ * `characterMesh` -- posed, coloured, yawed, in metres) into the world-space
+ * object `pitch.draw` actually adds to `group`, applying everything that
+ * used to live in `player_renderer_3d.ts`'s per-character camera -- see file
+ * header's "ONE PASS, ONE DEPTH BUFFER" section for the full derivation of
+ * each piece below. `r` is the on-screen radius (pixels) the procedural
+ * billboard would have used at this player's position; `sx`/`sy`/`z` are the
+ * screen position and real depth-tested world z (see `depthToZ`).
+ *
+ * Returns `undefined` when `player_renderer_3d.ts`'s `ppmForRadius` can't
+ * (the rigged pass just became unavailable) -- the caller falls back to the
+ * procedural billboard exactly as when `characterMesh` itself returns
+ * `undefined`.
+ *
+ * COMPOSITION ORDER, and why it is not arbitrary (verified against a live GL
+ * context -- see this port's report for before/after screenshots):
+ * `characterMesh` already baked the character's own YAW onto `mesh`'s local
+ * quaternion. The elevation tilt is PREMULTIPLIED onto that SAME quaternion
+ * -- `mesh.quaternion = ELEVATION_TILT * yaw`, i.e. tilt composed after yaw,
+ * exactly the `finalQuat` formula in the file header -- rather than living on
+ * the wrapper, because the wrapper also carries the Y-inverting mirror
+ * (folded into its negative-Y scale), and a mirror does not commute with a
+ * tilt about a DIFFERENT axis (it commutes fine with the yaw, a rotation
+ * about the mirrored axis itself, which is why yaw can sit on either object
+ * with no visible difference -- but not with a tilt about X, which mixes Y
+ * and Z). Putting BOTH rotations on `mesh` and leaving the wrapper
+ * rotation-free guarantees the vertex pipeline is rotate (yaw, then tilt) ->
+ * scale (the Y-mirror) -> translate, matching how the old two-step render-
+ * then-flip-the-image process actually composed (the tilt was baked into the
+ * rendered pixels before the image-space flip was ever applied).
+ */
+function riggedCharacterObject(mesh: THREE.Object3D, sx: number, sy: number, z: number, r: number): THREE.Group | undefined {
+  const ppm = playerRenderer3d.ppmForRadius(r);
+  if (ppm === undefined) {
+    return undefined;
+  }
+  mesh.quaternion.premultiply(ELEVATION_TILT);
+
+  const wrapper = new THREE.Group();
+  // SCALE: ppm (pixels-per-metre for THIS player, from `r = radius * scale`
+  // in the caller -- see file header's SCALE bullet) for X/Y. Y is negated:
+  // the Y-INVERSION the file header describes, now living on this wrapper
+  // instead of `player_renderer_3d.ts`'s old composited plane -- still
+  // required for the same reason (`SceneRoot`'s Y-inverted 2D camera
+  // convention), just moved. NOT `WebGLRenderTarget.texture.flipY` territory
+  // at all anymore -- there is no render target here.
+  //
+  // Z is DELIBERATELY NOT `ppm`, unlike X/Y -- a real defect this port's
+  // report documents finding live: uniform (ppm, -ppm, ppm) was the file
+  // header's original proposal, and it renders characters INVISIBLE (or as
+  // thin near-plane-clipped fragments). `ppm` is calibrated for SCREEN-PIXEL
+  // sizing (tens to low hundreds of units), but world Z in this scene is a
+  // THIN bookkeeping axis, not a real spatial dimension at that scale -- the
+  // WHOLE entity depth zone spans only `ENTITY_Z_FAR - ENTITY_Z_NEAR` (0.58
+  // units, see DEPTH ZONES above), and the shared camera's own near plane
+  // sits a mere 0.3 units beyond `ENTITY_Z_FAR`. Scaling a character's ~1-2
+  // metre local front-to-back thickness (an outstretched shield, a raised
+  // arm) by a pixel-scale `ppm` (25 for a normal player, over 150 for one
+  // framed close/large) spreads its world Z across tens to hundreds of
+  // units -- annihilated by the near/far clip almost immediately, which is
+  // exactly the failure mode found live (VERIFIED WITH A LIVE GL CONTEXT --
+  // see this port's report): most players rendered as nothing at all, and a
+  // large centred character rendered as nothing rather than "big". Z instead
+  // gets its own small, fixed scale, keeping a character's own depth extent
+  // a tiny slice of the entity zone -- comfortably inside the frustum, with
+  // enough non-zero thickness left for the SAME intra-character depth
+  // testing (an arm in front of a torso) the Lua original had via its own
+  // depth buffer (see this file's DEPTH ZONES section).
+  wrapper.scale.set(ppm, -ppm, CHARACTER_DEPTH_SCALE);
+  // POSITION: (sx, sy) screen pixels become this object's world (x, y)
+  // directly, since the shared camera's frustum already spans [0, vw] x
+  // [0, vh] in exactly that space. DEPTH: `z`, from `depthToZ` -- see DEPTH
+  // ZONES above.
+  wrapper.position.set(sx, sy, z);
+  // Marks this subtree for tests -- same convention as
+  // `renderToSprite`'s old `userData.ownedRenderTarget`, minus the
+  // disposal implication: there is no owned GPU resource on this wrapper to
+  // release (the pooled mesh inside is not this object's to dispose -- see
+  // `pitch.draw`'s note on `paint()`/`disposeObject` above).
+  wrapper.userData["riggedCharacter"] = true;
+  wrapper.add(mesh);
+  return wrapper;
+}
+
 /** Pitch rendering configuration and the impure orchestrator. See file header. */
 export const pitch = {
   // Rigged 3D players default to on, matching the Lua original's direction.
@@ -767,18 +895,23 @@ export const pitch = {
   /**
    * Impure: paints one frame into `group` (all screen-space 2D content, via
    * draw2d.ts), and -- when `renderer` is supplied and the rigged pass is
-   * available -- composites each player's rigged 3D character INTO `group`,
-   * as a pre-rendered sprite (`player_renderer_3d.ts`'s `renderToSprite`),
-   * at the same point in the depth-sorted iteration a procedural billboard
-   * for that player would occupy. This is what lets a single later
-   * full-scene render (see scene.ts's `SceneRoot.render`) draw the flat
-   * content and the rigged characters together, correctly interleaved with
-   * the ball, instead of a direct `renderer.render()` call per character
-   * that a subsequent full-scene render would clear -- see file header.
-   * Without a `renderer` (or when the rigged pass is unavailable/disabled),
-   * every player falls back to the procedural 2.5D renderer via `group`.
-   * Untested beyond object-graph shape/ordering -- see file header's scope
-   * note.
+   * available -- adds each player's rigged 3D character (a real, depth-tested
+   * `THREE.SkinnedMesh`, from `player_renderer_3d.ts`'s `characterMesh`)
+   * directly INTO `group`, wrapped in a small `THREE.Group` (see
+   * `riggedCharacterObject` below) that carries its screen position/scale and
+   * the elevation tilt, at the same point in the depth-sorted iteration a
+   * procedural billboard for that player would occupy. This is what lets a
+   * single later full-scene render (see scene.ts's `SceneRoot.render`) draw
+   * the flat content and the rigged characters together in ONE pass, with
+   * real depth testing between them and the ball -- see this file's "ONE
+   * PASS, ONE DEPTH BUFFER" header section and the "DEPTH ZONES" section
+   * above for the full reconciliation. `renderer` is no longer used to build
+   * a character (`characterMesh` needs no `THREE.WebGLRenderer` at all --
+   * there is no per-character render pass anymore) but is kept as the gate
+   * for whether a live render is coming at all: without one (or when the
+   * rigged pass is unavailable/disabled), every player falls back to the
+   * procedural 2.5D renderer via `group`. Untested beyond object-graph
+   * shape/ordering -- see file header's scope note.
    */
   draw(group: THREE.Group, frame: RenderFrame, vp: PitchViewport, opts: PitchDrawOptions, renderer?: THREE.WebGLRenderer, now = 0): void {
     const riggedActive = pitch.rigged_players && renderer !== undefined && playerRenderer3d.available();
@@ -794,11 +927,21 @@ export const pitch = {
 
     // One `paint()` clears `group` and populates everything before the
     // depth-sorted items; everything from here on uses `appendCommands` (or
-    // `group.add` directly for a rigged sprite) so it interleaves into the
+    // `group.add` directly for a rigged character) so it interleaves into the
     // SAME child list instead of wiping out what came before it. Left at
     // draw2d.ts's default z (0 == BACKDROP_Z, see DEPTH ZONES above) --
     // deliberately no `{ z: BACKDROP_Z }` here since that constant only
     // documents the invariant, it does not need to be applied.
+    //
+    // NOTE ON POOLED CHARACTERS SURVIVING THIS CLEAR: `paint()` disposes
+    // every child it removes (`draw2d.ts`'s `disposeObject`), which would be
+    // fatal for a pooled, frame-to-frame-REUSED character mesh -- except
+    // `disposeObject` only inspects direct `Mesh`/`Line`/`Sprite` children,
+    // never recursing into a plain `THREE.Group`'s own children, and every
+    // rigged character below is added as exactly that: a fresh wrapper
+    // `THREE.Group` holding the pooled mesh. The wrapper is discarded (and
+    // GC'd) every frame; the pooled mesh it held onto is not -- see
+    // `player_renderer_3d.ts`'s `characterPool` doc comment.
     const before = new DrawList();
     drawPitchBeforeItems(before, frame, vp, opts, project);
     paint(group, before.commands);
@@ -813,21 +956,18 @@ export const pitch = {
         const [sx, sy, scale] = project(px, py);
         const r = (roster.radius[index] ?? 0) * scale;
         const color = roster.teams[index] === "home" ? opts.home_color : opts.away_color;
-        const v = viewState.get(roster.ids[index] ?? "");
+        const playerId = roster.ids[index] ?? "";
+        const v = viewState.get(playerId);
         const options = playerOptions(frame, index);
         // Re-checked per player, not just once via `riggedActive`: a build
-        // or render failure partway through a frame's roster flips
+        // failure partway through a frame's roster flips
         // `playerRenderer3d.available()` to false for the rest of it (see
-        // that module's `draw`/`renderToSprite`), and the remaining players
-        // should fall back gracefully rather than the whole frame failing.
-        const sprite = playerRenderer3d.available() ? playerRenderer3d.renderToSprite(renderer, sx, sy, r, vp.w, vp.h, v, options, now) : undefined;
-        if (sprite !== undefined) {
-          // Positioned in the entity depth zone for when `renderToSprite` is
-          // replaced by real depth-tested geometry (see DEPTH ZONES above);
-          // inert today because that sprite's own material sets
-          // `depthTest: false`.
-          sprite.position.z += z;
-          group.add(sprite);
+        // that module's `build`), and the remaining players should fall
+        // back gracefully rather than the whole frame failing.
+        const mesh = playerRenderer3d.available() ? playerRenderer3d.characterMesh(playerId, v, options, now) : undefined;
+        const wrapper = mesh !== undefined ? riggedCharacterObject(mesh, sx, sy, z, r) : undefined;
+        if (wrapper !== undefined) {
+          group.add(wrapper);
         } else {
           appendCommands(group, playerRenderer.playerDrawCommands(sx, sy, r, color, v, options), { z });
         }

@@ -19,6 +19,19 @@
 // posing its `THREE.Bone`s each frame, and the per-character camera. See the
 // scope note below on the character camera specifically.
 //
+// SINGLE-PASS COMPOSITING (`characterMesh`, near `available()` below). What
+// pitch.ts actually calls today is NOT the per-character-camera path the
+// scope note below describes -- that path (`draw`/`renderToSprite`) rendered
+// each character through its OWN small camera into its OWN full-viewport
+// off-screen target, one `renderer.render()` call per character per frame.
+// `characterMesh` instead returns a posed, coloured, yawed `THREE.SkinnedMesh`
+// -- pooled per `playerId`, since every character now coexists in ONE scene
+// graph for ONE shared render instead of being rendered/composited one at a
+// time -- with no camera or render target of its own at all; pitch.ts places
+// it directly under the SAME shared camera/scene `SceneRoot` already renders
+// everything else through (arena, HUD, the lot). `draw`/`renderToSprite` are
+// kept, unchanged, for parity/diagnostics -- see their own doc comments.
+//
 // SCOPE NOTE on the character camera. The Lua original renders each rigged
 // character through its OWN small orthographic camera
 // (`rig3d/renderer.lua`'s `characterCamera`), positioned so the character
@@ -60,7 +73,11 @@ import type { PlayerRenderOptions } from "./player_renderer.ts";
 // replaces.
 const HEIGHT_IN_RADII = 3.0;
 // Match camera looks down at the pitch; this is the apparent elevation.
-const ELEVATION = (17 * Math.PI) / 180;
+// Exported: pitch.ts's single-pass compositing (see that file's "ONE PASS,
+// ONE DEPTH BUFFER" header section) needs this to compose the same tilt onto
+// a character's own transform, now that there is no longer a separate
+// per-character camera to hold it.
+export const ELEVATION = (17 * Math.PI) / 180;
 
 // LIGHTING. `rig3d/renderer.lua`'s hand-written GLSL (v2/README.md #7 marks
 // the file "replace -- WebGLRenderer, MeshStandardMaterial", but that verdict
@@ -99,6 +116,12 @@ const FILL_LIGHT_INTENSITY = 0.9;
 
 // Mirrors `sim/match.lua`'s `PLAYER_RADIUS`. See file header.
 export const DEFAULT_PLAYER_RADIUS = 12;
+
+// The one rig contract every character uses (see rig3d/proportions.ts's own
+// header: "there is one rig here"). Hoisted out of `build()` so `pooledCharacter`
+// below can derive a fresh bone list for each player from the SAME contract
+// `build()` used for the shared geometry, without a second source of truth.
+const RIG_PROPORTIONS = proportions.RIG_MEDIUM;
 
 /**
  * The one conversion between the pitch's world units and the rig's metres.
@@ -242,7 +265,7 @@ function build(): BuiltCharacter | undefined {
     return built;
   }
   try {
-    const rigProportions = proportions.RIG_MEDIUM;
+    const rigProportions = RIG_PROPORTIONS;
     const rig = skeleton.newRig(rigProportions);
     const height = proportions.height(rigProportions);
     const theme = themes.LIST[0];
@@ -408,6 +431,218 @@ export function available(): boolean {
   return build() !== undefined;
 }
 
+// ---------------------------------------------------------------------------
+// SINGLE-PASS COMPOSITING: `characterMesh`, its per-`playerId` pool, and the
+// per-team geometry that pool depends on. See this file's header ("THE EXACT
+// SIGNATURE THIS FILE IS WRITTEN TO EXPECT") and pitch.ts's header ("ONE
+// PASS, ONE DEPTH BUFFER") for the full design this section implements.
+// ---------------------------------------------------------------------------
+
+// `materialsForTeam` bakes a per-team vertex `color` BufferAttribute (see
+// that function's doc comment), but `build()`'s ONE shared `BufferGeometry`
+// can only hold ONE such attribute at a time -- fine for the old design,
+// where exactly one character was ever mid-render, but not once every
+// character (both teams) coexists in the same scene simultaneously: setting
+// the attribute on the shared geometry for team B would silently repaint
+// every already-added team-A mesh too, since a `THREE.BufferAttribute` is
+// GPU buffer state shared by every `SkinnedMesh` that references the same
+// `BufferGeometry` object, not per-mesh.
+//
+// The fix is one geometry PER TEAM rather than one geometry total: position/
+// normal/skinIndex/skinWeight and the material groups are genuinely shared
+// (referenced, not copied -- they never change after `build()`), and only
+// the `color` attribute differs, so this is one small wrapper object per
+// team, not a deep clone of the mesh. Built lazily, cached forever (there are
+// only two teams), mirroring `materialsByTeam`'s own cache lifetime.
+const teamGeometry = new Map<"home" | "away", THREE.BufferGeometry>();
+
+function geometryForTeam(character: BuiltCharacter, team: "home" | "away"): THREE.BufferGeometry {
+  const cached = teamGeometry.get(team);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const base = character.mesh.geometry;
+  const position = base.getAttribute("position");
+  const normal = base.getAttribute("normal");
+  const skinIndex = base.getAttribute("skinIndex");
+  const skinWeight = base.getAttribute("skinWeight");
+  if (position === undefined || normal === undefined || skinIndex === undefined || skinWeight === undefined) {
+    throw new Error("player_renderer_3d.ts: shared character geometry is missing a required attribute");
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", position);
+  geom.setAttribute("normal", normal);
+  geom.setAttribute("skinIndex", skinIndex);
+  geom.setAttribute("skinWeight", skinWeight);
+  for (const g of base.groups) {
+    geom.addGroup(g.start, g.count, g.materialIndex ?? 0);
+  }
+  geom.setAttribute("color", materialsForTeam(character, team).color);
+  teamGeometry.set(team, geom);
+  return geom;
+}
+
+function buildCharacterBones(): THREE.Bone[] {
+  return skeleton.bones(RIG_PROPORTIONS).map((def) => {
+    const bone = new THREE.Bone();
+    bone.name = def.name;
+    // See build()'s own comment on BOTH flags, above: `matrixWorld` is
+    // written directly from the posed rig every frame (`characterMesh`
+    // below), so three.js must never recompute it from position/quaternion/
+    // scale, nor cascade a forced recompute down from a moving parent.
+    bone.matrixAutoUpdate = false;
+    bone.matrixWorldAutoUpdate = false;
+    return bone;
+  });
+}
+
+interface PooledCharacter {
+  readonly bones: readonly THREE.Bone[];
+  readonly mesh: THREE.SkinnedMesh;
+}
+
+// Per-`playerId` rigged character instances, pooled and reused frame-to-frame.
+// `build()`'s singleton `built.mesh`/`built.bones` is reused SEQUENTIALLY
+// across players within one frame -- correct only because the old design
+// rendered and composited one character at a time (see this file's header).
+// Once every character coexists simultaneously in one scene graph for one
+// shared render, each needs its OWN skeleton/mesh instance so posing one
+// player can never clobber another's mid-frame, while still sharing the one
+// expensive-to-build `BufferGeometry` (via `geometryForTeam`) and the shared
+// `rig`/pose-evaluation machinery (`character.rig`, mutated and immediately
+// consumed per player below -- JS is single-threaded, so this is safe the
+// same way `prepareCharacter` already relies on it being safe).
+//
+// Never cleared, matching `built`/`materialsByTeam`'s own lifetime (neither
+// of those is torn down on a match/scene teardown either). This is safe from
+// `SceneRoot.dispose()`/draw2d.ts's per-frame `paint()` cleanup because
+// pitch.ts adds a pooled mesh wrapped in a fresh `THREE.Group` each frame
+// (see pitch.ts's header) and `draw2d.ts`'s `disposeObject` does not recurse
+// into a `THREE.Group`'s children -- only directly-added
+// `Mesh`/`Line`/`Sprite` objects are disposed, so a pooled mesh's geometry/
+// material are never released out from under a still-live `playerId`. A
+// roster whose player ids churn heavily across matches (unlikely in this
+// game -- ids are stable roster slots) would leak pooled entries; not
+// addressed here, no different from the module's existing singletons.
+const characterPool = new Map<string, PooledCharacter>();
+
+function pooledCharacter(playerId: string, character: BuiltCharacter, team: "home" | "away"): PooledCharacter {
+  const cached = characterPool.get(playerId);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const bones = buildCharacterBones();
+  const skeletonObj = new THREE.Skeleton(bones);
+  const mesh = new THREE.SkinnedMesh(geometryForTeam(character, team), new THREE.MeshStandardMaterial());
+  mesh.add(bones[0] ?? new THREE.Bone());
+  mesh.bind(skeletonObj);
+  // DETACHED bind mode -- a real defect this port's report documents finding
+  // live (characters rendered nowhere visible, not merely mis-sized): three.js's
+  // DEFAULT "attached" bind mode makes `SkinnedMesh.updateMatrixWorld`
+  // recompute `bindMatrixInverse = inverse(this.matrixWorld)` on EVERY
+  // update, using whatever the mesh's CURRENT world transform happens to be
+  // -- not the transform at bind time. `build()`'s singleton mesh (used by
+  // `draw`/`renderToSprite`) never noticed: its OWN transform stays identity
+  // forever (the OLD per-character CAMERA moved instead of the mesh), so
+  // `inverse(identity) === identity` and the skinning math was correct by
+  // accident. This pooled mesh is different BY DESIGN -- pitch.ts's
+  // `riggedCharacterObject` gives its PARENT a real screen-placement
+  // transform (`ppm` scale, `(sx, sy)` position) -- and "attached" mode's
+  // dynamic `bindMatrixInverse` EXACTLY CANCELS that transform back out
+  // (`matrixWorld * inverse(matrixWorld) * boneMatrix * position === boneMatrix
+  // * position`), so the character skinned to its own raw rig-local
+  // coordinates (roughly 0-2 units) instead of the screen position -- not
+  // absent, just rendering in entirely the wrong place (effectively pinned
+  // near the world origin) regardless of what the wrapper's transform said.
+  // "detached" mode keeps `bindMatrix`/`bindMatrixInverse` FIXED at whatever
+  // they were when `.bind()` ran above -- identity, since the mesh is not yet
+  // parented to anything at that point -- so the wrapper's real transform is
+  // the only one that ever applies.
+  mesh.bindMode = "detached";
+  const pooled: PooledCharacter = { bones, mesh };
+  characterPool.set(playerId, pooled);
+  return pooled;
+}
+
+/**
+ * Pixels-per-metre uniform scale for a character rendered at on-screen
+ * radius `r` (pixels -- matching the billboard fallback's own `r = radius *
+ * scale`, see pitch.ts's `playerOptions`/`depthSortedItems` callers).
+ * Mirrors `prepareCharacter`'s own `ppm` derivation exactly, so a rigged
+ * player reads at the same visual weight it did as an offscreen-rendered
+ * sprite. `undefined` when the rigged pass is unavailable (`build()` failed),
+ * matching `characterMesh`'s own contract below.
+ */
+export function ppmForRadius(r: number): number | undefined {
+  const character = build();
+  if (character === undefined) {
+    return undefined;
+  }
+  return (r * HEIGHT_IN_RADII * 2) / character.height;
+}
+
+/**
+ * Impure: returns the posed, coloured, YAWED character mesh for `playerId`,
+ * in its own local metre space -- exactly `prepareCharacter`'s
+ * `character.mesh` as it existed before this port, minus the per-character
+ * camera/scene/render-target work `renderToSprite` layers on top (see this
+ * file's header, "THE EXACT SIGNATURE THIS FILE IS WRITTEN TO EXPECT", which
+ * this function fulfils). Pooled per `playerId` (see `pooledCharacter`
+ * above) rather than the shared singleton `draw`/`renderToSprite` still use.
+ *
+ * Deliberately does NOT apply the elevation tilt, screen-space scale/
+ * position, or the Y-inversion -- pitch.ts owns all of that on the object
+ * this function returns (see that file's "ONE PASS, ONE DEPTH BUFFER"
+ * header section for exactly why the composition order there is not
+ * arbitrary), since none of the three.js state involved (a per-entity
+ * `THREE.Group`, `depthToZ`'s world z) is this file's to know about.
+ *
+ * Returns `undefined` when the rigged pass is unavailable (`build()`
+ * failed) -- callers fall back to the procedural billboard, same contract
+ * as `renderToSprite`.
+ */
+export function characterMesh(
+  playerId: string,
+  view: PlayerView | undefined,
+  opts: PlayerRenderOptions,
+  now: number,
+): THREE.Object3D | undefined {
+  const character = build();
+  if (character === undefined) {
+    return undefined;
+  }
+  const team = opts.team ?? "home";
+  const pooled = pooledCharacter(playerId, character, team);
+
+  const pose = poseFor(view, opts, now);
+  skeleton.apply(character.rig, pose);
+  pooled.bones.forEach((bone, i) => {
+    const name = character.rig.order[i];
+    const world = name !== undefined ? character.rig.world[name] : undefined;
+    if (world !== undefined) {
+      bone.matrixWorld.copy(mat4ToThree(world));
+    }
+  });
+  pooled.mesh.skeleton.update();
+
+  const facing = opts.facing;
+  const yaw = facing !== undefined ? Math.atan2(facing.x, facing.y) : 0;
+  pooled.mesh.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+
+  // A player's team is stable in practice (a stable roster slot, not a
+  // per-frame choice), but re-checked every frame rather than cached on the
+  // pooled entry -- both `geometryForTeam` and `materialsForTeam` are
+  // memoised maps, so this costs a lookup, not a rebuild.
+  const geometry = geometryForTeam(character, team);
+  if (pooled.mesh.geometry !== geometry) {
+    pooled.mesh.geometry = geometry;
+  }
+  const teamMaterials = materialsForTeam(character, team);
+  pooled.mesh.material = [...teamMaterials.materials];
+
+  return pooled.mesh;
+}
+
 /**
  * Character camera placement: a small orthographic camera framing the
  * character so it lands at `(sx, sy)` on screen at `ppm` pixels-per-metre.
@@ -448,12 +683,18 @@ interface PreparedCharacter {
   readonly cam: THREE.OrthographicCamera;
 }
 
-// Shared setup for both `draw` (direct render, kept for parity/diagnostics --
-// see its own doc comment) and `renderToSprite` (the path pitch.ts actually
-// calls): pose the shared rig onto the shared mesh, orient/colour it for this
-// player, build this player's camera, and stage the shared `scene` with just
-// that mesh. Split out so the two entry points cannot drift on how a
-// character is posed or framed -- only WHERE the result ends up differs.
+// Shared setup for `draw` and `renderToSprite` -- both kept for parity/
+// diagnostics now that pitch.ts's single-pass compositing calls
+// `characterMesh` instead (see this file's header and pitch.ts's "ONE PASS,
+// ONE DEPTH BUFFER" section): pose the shared singleton rig/mesh, orient/
+// colour it for this player, build this player's OWN small camera, and stage
+// the shared `scene` with just that mesh. Split out so the two entry points
+// cannot drift on how a character is posed or framed -- only WHERE the
+// result ends up differs. `characterMesh` above does NOT go through this --
+// it poses a POOLED per-`playerId` mesh instead of the shared singleton, and
+// has no camera to build at all (pitch.ts's shared camera handles every
+// character), so it duplicates the pose/colour steps rather than reusing
+// this function.
 function prepareCharacter(
   sx: number,
   sy: number,
@@ -515,13 +756,17 @@ function prepareCharacter(
  * resets depth/cull/shader state after its own render pass. Untested -- see
  * file header.
  *
- * NOT CALLED BY `pitch.ts` ANYMORE -- kept for parity/diagnostics (a
- * standalone character preview has no "later full-scene render" to collide
- * with). Do not combine a call to this function with a subsequent whole-scene
- * render into the SAME target: that later render will clear what this one
- * just drew (see scene.ts's class doc comment, "FIXED HERE", for the defect
- * this shape caused once `SceneRoot` started doing both in one frame).
- * `renderToSprite` below is the composable alternative `pitch.draw` uses.
+ * NOT CALLED BY `pitch.ts` -- kept for parity/diagnostics (a standalone
+ * character preview has no "later full-scene render" to collide with). Do
+ * not combine a call to this function with a subsequent whole-scene render
+ * into the SAME target: that later render will clear what this one just drew
+ * (see scene.ts's class doc comment, "FIXED HERE", for the defect this shape
+ * caused once `SceneRoot` started doing both in one frame). `characterMesh`
+ * above is what `pitch.draw` actually uses now (a posed mesh added to the
+ * shared scene graph, not an immediate render); `renderToSprite` below is a
+ * second, also-unused-by-pitch.ts alternative that composited via an
+ * offscreen render target -- see that function's own doc comment for why it,
+ * too, is no longer on pitch.ts's call path.
  */
 export function draw(
   renderer: THREE.WebGLRenderer,
@@ -548,11 +793,24 @@ export function draw(
 }
 
 /**
+ * NOT CALLED BY `pitch.ts` ANYMORE -- kept for parity/diagnostics, same as
+ * `draw` above. This was the fix for defect #1 (a rigged character no longer
+ * getting cleared by `SceneRoot`'s later full-scene render -- see scene.ts's
+ * "FIXED HERE" note) but it was still one full-viewport `renderer.render()`
+ * call per character per frame, composited as a `depthTest: false` quad
+ * (painter's order only, no per-pixel occlusion) -- see this file's header
+ * and pitch.ts's "ONE PASS, ONE DEPTH BUFFER" section for what replaced it:
+ * `characterMesh` above, a real depth-tested `SkinnedMesh` added to the SAME
+ * scene `SceneRoot` already renders, with no separate render pass or render
+ * target at all. Left in place, and left correct, as a smaller/cheaper
+ * fallback shape a future caller could still reach for (e.g. a standalone
+ * character-preview widget with no pitch scene to share).
+ *
  * Impure: renders one rigged player OFF-SCREEN, into a private
  * `THREE.WebGLRenderTarget` sized to the FULL viewport, and returns the
  * result as a `THREE.Mesh` (a `vw`x`vh` plane at `(vw/2, vh/2)`, matching
  * every other draw2d.ts "fill" shape's own placement convention) ready to be
- * added directly to `pitch.ts`'s `pitchGroup`. `characterCameraParams` is
+ * added directly to a `pitchGroup`-shaped `THREE.Group`. `characterCameraParams` is
  * UNCHANGED from `draw`'s: it already frames the character at `(sx, sy)`
  * across an asymmetric frustum spanning the WHOLE viewport (not a tight crop
  * around the character), which is exactly what makes a viewport-sized
