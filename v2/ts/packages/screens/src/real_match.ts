@@ -89,6 +89,15 @@ export interface RealMatchScreenPort<TState extends RealMatchState, TStep> {
   readonly rollbackLab: unknown;
   readonly rollbackConfirmedSteps: readonly TStep[];
   readonly frameEvents: readonly unknown[];
+  /**
+   * The caller's combat opt-in, as this match screen recorded it at
+   * construction (`match.ts`'s `MatchScreen.debugCombatEnabled` /
+   * `MatchScreenAsRealMatchScreen.debugCombatEnabled`). Optional -- not
+   * every `RealMatchScreenPort` implementation carries a notion of combat
+   * (e.g. `online_match.ts`'s `OnlineMatchState`), and this is a debug/test
+   * seam, not something `RealMatchScreen`'s own control flow reads.
+   */
+  readonly debugCombatEnabled?: boolean;
   fullTimeConfirmed(): boolean;
   resultCompletionBlocked(): boolean;
   update(dt: number): void;

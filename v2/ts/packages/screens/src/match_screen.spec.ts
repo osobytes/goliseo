@@ -21,11 +21,16 @@
 // assertions) but its body asserts on the TS-glue-observable analog of the
 // original Lua assertion -- e.g. "K never switches while carrying" now
 // checks `MatchScreen`'s buffered switch state rather than a real
-// `sim.match` never issuing a switch order. One case remains `it.skip`
-// because `SimHostPort` (the fixed contract this milestone's game loop is
-// built against -- `step`/`planTicks`/`cancelPlannedTicks`/`frame`/
-// `roster`/`tick`/`dispose`) genuinely cannot support it yet; see that
-// skip's own comment for the specific blocker.
+// `sim.match` never issuing a switch order. The combat construction case
+// ("constructs and drives combat only behind the explicit option") used to
+// stay `it.skip` here because `SimHostPort` (the fixed contract this
+// milestone's game loop is built against -- `step`/`planTicks`/
+// `cancelPlannedTicks`/`frame`/`roster`/`tick`/`dispose`) had no combat
+// surface at all; `crates/gc-wasm/src/session.rs`'s `Session::new`/`step`
+// gained one this wave (see that module's doc), and `MatchScreenOptions.combat_enabled`
+// now has somewhere real to reach -- see that case's own comment for
+// exactly what is, and is not, provable without a wasm-bound getter for
+// combat presence or per-tick combat state.
 //
 // "match screen goal replay"'s case USED to be skipped for the same
 // reason -- `SimHostPort.frame()` returns a presentation-derived
@@ -331,28 +336,77 @@ describe("match screen fixed simulation clock (tier 2)", () => {
 });
 
 describe("match screen contextual controls (tier 2)", () => {
-  // Re-checked, not just trusted: this case is about the BASE (non-rollback)
-  // game loop's `combat_enabled` option, driving real per-tick combat state
-  // through the same host every other tick goes through. `SimHostPort`'s
-  // fixed contract (step/planTicks/cancelPlannedTicks/frame/roster/tick/
-  // dispose -- shared with `@gc/app`'s `sim_host.ts`, see match.ts's own
-  // doc) still has no combat toggle and no way to read per-player combat
-  // state (`self._combat_state.players[...].phase` in the Lua original);
-  // that is still true after this task. `sim.combat`'s wasm binding is a
-  // separate, out-of-scope surface -- v2/README.md §1 scopes "the glue that
-  // makes a playable browser build" as still not including every sim
-  // subsystem's bridge, only the ones a task's brief names.
+  // Re-checked against current code, not just the stale comment this case
+  // used to carry: `crates/gc-wasm/src/session.rs`'s `Session::new` gained a
+  // `combat_enabled` parameter and `Session::step` now threads it through
+  // every tick (previously hard-coded `None`) -- see that module's doc.
+  // That landed one layer BELOW `SimHostPort`, though: `SimHostFactory` is a
+  // no-arg closure by design (`match.ts`'s own doc -- team ids, seed, and
+  // formation are already "baked in by the caller's closure", not passed
+  // through `SimHostPort` itself), so combat's opt-in belongs there too, not
+  // as a widening of the shared `step`/`planTicks`/`cancelPlannedTicks`/
+  // `frame`/`roster`/`tick`/`dispose` contract. `MatchScreenOptions.combat_enabled`
+  // (already a "separate construction option", not a free addition this
+  // case invents) is therefore the right shape, and is exercised below via
+  // `MatchScreen.debugCombatEnabled`.
   //
-  // This is a DIFFERENT surface from `match_rollback_lab.spec.ts`'s now-
-  // ported "constructs the combat companion for an explicit rollback
-  // playtest" -- that one only validates a rollback snapshot's
-  // combat-companion PRESENCE at construction time (`rollback_lab`'s own
-  // `RollbackHostPort`, this package's own design), never steps real
-  // per-tick combat. Solving one does not solve the other.
-  it.skip(
-    "constructs and drives combat only behind the explicit option [SimHostPort exposes no combat toggle or per-tick combat state; see this describe block's header]",
-    () => {},
-  );
+  // What THIS case does NOT prove, and still cannot: neither `Session` nor
+  // `SimHostPort` exposes any getter for combat presence or per-tick combat
+  // events/state (`self._combat_state.players[...].phase` in the Lua
+  // original) -- `sim.combat`'s observable wasm surface is a separate,
+  // out-of-scope binding (v2/README.md §1: not every sim subsystem's bridge
+  // is this task's to add). So "drives" below is the same, narrower claim
+  // `match_screen.spec.ts`'s own rollback-lab combat case already settles
+  // for: the option is recorded accurately at construction and stays stable
+  // for the life of the screen -- the TS-glue-observable analog of the
+  // Rust regression suite's own "the combat companion must never disappear
+  // mid-match" (`crates/gc-wasm/src/session.rs`'s
+  // `combat_enabled_true_builds_and_drives_a_combat_companion_every_tick`) --
+  // not that real per-tick combat state is readable here, which it still
+  // is not.
+  //
+  // This is a DIFFERENT surface from `match_rollback_lab.spec.ts`'s
+  // "constructs the combat companion for an explicit rollback playtest" --
+  // that one validates a rollback snapshot's combat-companion PRESENCE at
+  // construction time (`rollback_lab`'s own `RollbackHostPort`, this
+  // package's own design); this one is the BASE (non-rollback) game loop,
+  // which has no such host-reported presence to validate against at all.
+  // Solving one does not solve the other.
+  it("constructs and drives combat only behind the explicit option", () => {
+    const { factory: onFactory } = makeHostFactory();
+    const onScreen = new MatchScreen(
+      { createHost: onFactory, renderer: noopRenderer, keyboard: fakeKeyboard({}) },
+      { combat_enabled: true },
+    );
+    expect(onScreen.debugCombatEnabled, "the explicit opt-in is recorded at construction").toBe(true);
+
+    const { factory: offFactory } = makeHostFactory();
+    const offScreenDefault = new MatchScreen({
+      createHost: offFactory,
+      renderer: noopRenderer,
+      keyboard: fakeKeyboard({}),
+    });
+    expect(offScreenDefault.debugCombatEnabled, "omitted defaults to no combat, byte for byte the prior behavior").toBe(
+      false,
+    );
+
+    const { factory: explicitOffFactory } = makeHostFactory();
+    const offScreenExplicit = new MatchScreen(
+      { createHost: explicitOffFactory, renderer: noopRenderer, keyboard: fakeKeyboard({}) },
+      { combat_enabled: false },
+    );
+    expect(offScreenExplicit.debugCombatEnabled).toBe(false);
+
+    // "drives": the flag never flips across ticks this screen actually
+    // runs -- the TS-glue-observable analog of the Rust regression test
+    // named above.
+    for (let i = 0; i < 30; i += 1) {
+      onScreen.update(1 / 60);
+      offScreenDefault.update(1 / 60);
+    }
+    expect(onScreen.debugCombatEnabled, "the combat companion must never disappear mid-match").toBe(true);
+    expect(offScreenDefault.debugCombatEnabled).toBe(false);
+  });
 
   it("K never switches while carrying the ball (it charges a pass)", () => {
     const { factory } = makeHostFactory(); // default host: carrying at kickoff

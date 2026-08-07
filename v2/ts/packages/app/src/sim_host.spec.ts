@@ -93,6 +93,50 @@ describe("createSimHost", () => {
     }
   });
 
+  // `crates/gc-wasm/src/session.rs`'s `Session::new` gained a `combat_enabled`
+  // parameter this wave, and `sim_host.ts`'s `SimHostOptions.combatEnabled`
+  // now threads it through (see that file's `SessionConstructorWithCombat`
+  // doc for the temporary local type widening this needs, pending
+  // `packages/wasm/src/types.ts`'s own `SimSessionConstructor` catching up).
+  // Neither `SimSession` nor `SimHostPort` exposes a getter for combat
+  // presence or per-tick combat state (confirmed by reading `session.rs`
+  // directly), so this is a construction/threading smoke test, not a
+  // behavioral one -- the same narrower claim `@gc/screens`'s
+  // `match_screen.spec.ts` and `@gc/app`'s `bootstrap.spec.ts` settle for.
+  // It mirrors `crates/gc-wasm/src/session.rs`'s own
+  // `combat_opt_in_tests` module: proving the seventh constructor argument
+  // reaches the real wasm session without throwing or otherwise disturbing
+  // stepping, for both `true` and omitted/`false`.
+  it("threads combatEnabled to the real wasm session without disturbing stepping", () => {
+    const withCombat = createSimHost(HOME, AWAY, 7, 20, 3, { combatEnabled: true });
+    try {
+      for (let i = 0; i < 5; i += 1) {
+        withCombat.step(neutralSample());
+      }
+      expect(withCombat.tick()).toBe(5);
+    } finally {
+      withCombat.dispose();
+    }
+
+    const withoutCombat = createSimHost(HOME, AWAY, 7, 20, 3, { combatEnabled: false });
+    try {
+      withoutCombat.step(neutralSample());
+      expect(withoutCombat.tick()).toBe(1);
+    } finally {
+      withoutCombat.dispose();
+    }
+
+    // Omitted must reproduce the exact prior behavior -- no `combatEnabled`
+    // key at all, not merely `combatEnabled: false`.
+    const omitted = createSimHost(HOME, AWAY, 7, 20, 3);
+    try {
+      omitted.step(neutralSample());
+      expect(omitted.tick()).toBe(1);
+    } finally {
+      omitted.dispose();
+    }
+  });
+
   it("rejects an out-of-range localSlot", () => {
     expect(() => createSimHost(HOME, AWAY, 7, 20, 3, { localSlot: 0 })).toThrow();
     expect(() => createSimHost(HOME, AWAY, 7, 20, 3, { localSlot: 9 })).toThrow();

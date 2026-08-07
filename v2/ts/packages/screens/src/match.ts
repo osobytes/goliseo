@@ -748,12 +748,28 @@ export interface MatchScreenOptions {
   /** Mirrors `Match.new`'s `opts.profile`; defaults to `"playtest"`, matching the Lua original's `self._opts.profile or "playtest"`. */
   readonly profile?: MatchScreenProfile;
   /**
-   * Mirrors `Match.new`'s `opts.combat_enabled`. This milestone, meaningful
-   * only for rollback-lab construction-time validation (does the supplied
-   * `initial_snapshot` carry a `CombatMatchState` companion, per
-   * `rollback_playable_lab`'s own invariant) -- the BASE, non-rollback game
-   * loop has no per-tick combat surface on `SimHostPort` yet (see
-   * `match_screen.spec.ts`'s own skipped combat case).
+   * Mirrors `Match.new`'s `opts.combat_enabled`. For a rollback-lab
+   * construction, this still gates the construction-time validation against
+   * the supplied `initial_snapshot`'s `CombatMatchState` companion (per
+   * `rollback_playable_lab`'s own invariant) -- see `validateRollbackCombatCompanion`.
+   *
+   * For the BASE, non-rollback game loop, this is a "separate construction
+   * option" in the sense `v2/README.md`'s porting rules use the phrase
+   * (deliberately NOT part of `SimHostPort` -- see that interface's own doc
+   * on why it is a fixed contract shared with `@gc/app`'s `sim_host.ts`, not
+   * this file's to widen): `crates/gc-wasm/src/session.rs`'s `Session::new`
+   * now accepts a `combat_enabled` parameter and threads it through every
+   * `Session::step` call, mirroring `Match:restart`'s own
+   * `combat_sim.new_state(initial)` -- but that choice is baked into the
+   * `SimHostFactory` closure at construction time (the same way team ids,
+   * seed, and formation already are; see `SimHostFactory`'s own doc), not
+   * passed through this option. This option is therefore purely a record of
+   * the CALLER's intent, exposed for tests/callers via
+   * [`MatchScreen.debugCombatEnabled`] -- there is still no getter on
+   * `Session`/`SimHostPort` a base-mode host could use to confirm the
+   * closure actually honored it, nor any wasm-bound way to read per-tick
+   * combat events/state once it has (see `match_screen.spec.ts`'s combat
+   * describe block for exactly what that leaves provable).
    */
   readonly combat_enabled?: boolean;
   /** Mirrors `Match.new`'s `opts.rollback_lab`. See this section's header. */
@@ -943,6 +959,20 @@ export class MatchScreen {
   /** Whether this screen was constructed with a `rollback_lab` option -- `self._rollback_lab ~= nil` / `self.state.slot_mode`. */
   get debugRollbackActive(): boolean {
     return this.rollbackHost !== undefined;
+  }
+
+  /**
+   * `self._opts.combat_enabled == true` -- this screen's own record of the
+   * caller's combat opt-in, fixed at construction and never recomputed
+   * (mirrors `Match:restart` rebuilding `_combat_state` fresh but always
+   * consistent with `_opts.combat_enabled`; see [`restart`]). Exposed for
+   * tests, and for [`MatchScreenAsRealMatchScreen`]'s own
+   * `debugCombatEnabled`. See {@link MatchScreenOptions.combat_enabled}'s
+   * doc for exactly what this option does and does not prove in the BASE
+   * (non-rollback) game loop this milestone.
+   */
+  get debugCombatEnabled(): boolean {
+    return this.combatEnabled;
   }
 
   /** `_rollback_debug` -- `undefined` outside rollback mode. See {@link RollbackLabDebug}'s doc for the host/screen split. */
@@ -1581,6 +1611,11 @@ export class MatchScreenAsRealMatchScreen implements RealMatchScreenPort<RealMat
 
   /** Never read: `rollbackLab` is always `false` -- see this class's doc. */
   readonly rollbackConfirmedSteps: readonly never[] = [];
+
+  /** `MatchScreen.debugCombatEnabled` -- see that getter's doc. */
+  get debugCombatEnabled(): boolean {
+    return this.screen.debugCombatEnabled;
+  }
 
   /**
    * Not yet wired: this milestone's `MatchScreen` does not itself call

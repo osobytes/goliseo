@@ -101,7 +101,16 @@ export function createRealMatchFactory(deps: RealMatchFactoryDeps): RealMatchFac
         keyboard: deps.keyboard,
         ...(deps.gamepad !== undefined ? { gamepad: deps.gamepad } : {}),
       },
-      { profile: "product" },
+      // `request.combat_enabled` (`match_contract.ts`'s `ProductMatchRequest`,
+      // the "explicit post-showcase request" opt-in) now reaches
+      // `MatchScreenOptions.combat_enabled` -- previously dropped here
+      // silently. See `match.ts`'s own doc on that option for what this
+      // does and does not prove for the BASE (non-rollback) game loop this
+      // factory always builds: `deps.createHost` (the real caller wraps
+      // `browser_sim_host.ts`, out of this batch's file ownership) is the
+      // one that must actually construct its `Session` with a matching
+      // `combat_enabled`; this factory has no way to verify it did.
+      { profile: "product", combat_enabled: request.combat_enabled },
     );
     const realMatchScreenPort = new MatchScreenAsRealMatchScreen(matchScreen);
     const realMatchScreen = new RealMatchScreen(

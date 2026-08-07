@@ -9,11 +9,14 @@
 // `RealMatchScreen` can be driven end to end here, against a hand-written
 // `FakeSimHost` (`test_support/fixtures.ts`, mirroring `@gc/screens`'s own
 // `match_screen.spec.ts` `FakeSimHost`), with no real wasm build or live GL
-// context needed. Two of the four originally-skipped cases below are
-// therefore no longer blocked; see each `it`'s own comment. The other two
-// remain genuinely blocked -- not because `real_match.ts`/`match.ts` don't
-// exist, but because the SHAPE they expose does not carry what those two
-// assertions need (see their `it.skip` comments for exactly what and why).
+// context needed. Three of the four originally-skipped cases below are
+// therefore no longer blocked (the combat case joined the other two this
+// wave, once `crates/gc-wasm/src/session.rs`'s `Session::new`/`step` grew a
+// real combat surface -- see that `it`'s own comment); see each `it`'s own
+// comment. The remaining one stays genuinely blocked -- not because
+// `real_match.ts`/`match.ts` don't exist, but because the SHAPE they expose
+// does not carry what that assertion needs (see its `it.skip` comment for
+// exactly what and why).
 
 import { describe, expect, it } from "vitest";
 import { bootstrap } from "./bootstrap.ts";
@@ -114,25 +117,77 @@ describe("real match adapter", () => {
     expect(app.session.lastResult?.home_score).toBe(3);
   });
 
-  // Needs `screen.match._combat_state` -- an internal `sim.match` field the
-  // Lua original reaches into directly to prove combat is constructed only
-  // for `combat_enabled` requests.
+  // Re-audited against current code: `@gc/wasm`'s `Session::step`
+  // (`crates/gc-wasm/src/session.rs`) no longer hard-codes `combat_state:
+  // None` -- `Session::new` gained a `combat_enabled` parameter and `step`
+  // now threads the resulting companion through every tick, so that stated
+  // blocker is stale. What was ALSO stale, and is now fixed here:
+  // `real_match_factory.ts` never forwarded `ProductMatchRequest.combat_enabled`
+  // (the "explicit post-showcase request" opt-in) into
+  // `MatchScreenOptions.combat_enabled` at all -- it silently dropped the
+  // flag on every request, combat or not. That plumbing gap is now closed,
+  // and `MatchScreen.debugCombatEnabled` (reached here through
+  // `RealMatchScreen.match`, mirroring how `Lua`'s
+  // `screen.match._combat_state` presence check worked) is this port's
+  // observable analog.
   //
-  // Re-audited: `MatchScreenOptions.combat_enabled` DOES exist on `match.ts`
-  // now (stale to claim otherwise), but it is meaningful only for
-  // rollback-lab construction-time validation -- `real_match_factory.ts`
-  // never constructs a rollback lab, so passing it through would set a
-  // flag `MatchScreen` never reads again. The real, still-current blocker
-  // is one layer down and Rust-side: `@gc/wasm`'s `Session::step`
-  // (`crates/gc-wasm/src/session.rs`) hard-codes `combat_state: None` on
-  // every call into `gc_sim::match::step` (confirmed against `match.rs`'s
-  // own `combat_state: Option<&mut CombatMatchState>` parameter) -- the
-  // base, non-rollback wasm session this factory drives never runs combat
-  // at all, for any request. There is no genuine per-tick combat state this
-  // milestone's real match screen could construct or expose even if this
-  // file's `MatchScreenOptions`/`MatchScreenAsRealMatchScreen` grew one.
-  // Still genuinely blocked, now for a precise, Rust-side reason.
-  it.skip("constructs combat only for the explicit post-showcase request", () => {});
+  // What is STILL genuinely blocked, for a real reason rather than a stale
+  // one: neither `@gc/wasm`'s `SimSession` nor `@gc/screens`'s `SimHostPort`
+  // exposes any getter for combat presence or per-tick combat state, so
+  // this case cannot prove the underlying wasm session this factory's
+  // `deps.createHost` closure builds actually carries a matching
+  // `combat_enabled` -- only that the REQUEST's opt-in reaches
+  // `MatchScreen`'s own construction option correctly. See
+  // `match_screen.spec.ts`'s "constructs and drives combat only behind the
+  // explicit option" for the same boundary, spelled out fully.
+  it("constructs combat only for the explicit post-showcase request", () => {
+    const { createHost, hosts } = fakeHostFactory();
+    const factory = createRealMatchFactory({
+      content: MATCH_CONTRACT_CONTENT,
+      createHost,
+      renderer: noopRenderPort,
+      keyboard: fakeKeyboard(),
+    });
+    const callbacks = { on_finished: (): void => {}, on_cancelled: (): void => {} };
+
+    const withCombat = matchContract.newRequest(MATCH_CONTRACT_CONTENT, {
+      home_team_id: "nebula",
+      away_team_id: "orion",
+      home_starter_ids: NEBULA.roster,
+      formation_id: "1-2-1",
+      tactic_id: "press_high",
+      seed: 5,
+      combat_enabled: true,
+    });
+    if (!withCombat.ok) {
+      throw new Error(withCombat.error);
+    }
+    const combatScreen = factory(withCombat.value, callbacks) as unknown as {
+      readonly match: { readonly debugCombatEnabled?: boolean };
+    };
+    expect(
+      combatScreen.match.debugCombatEnabled,
+      "the explicit post-showcase request's combat_enabled reaches MatchScreenOptions",
+    ).toBe(true);
+
+    const withoutCombat = matchContract.newRequest(MATCH_CONTRACT_CONTENT, {
+      home_team_id: "nebula",
+      away_team_id: "orion",
+      home_starter_ids: NEBULA.roster,
+      formation_id: "1-2-1",
+      tactic_id: "press_high",
+      seed: 5,
+    });
+    if (!withoutCombat.ok) {
+      throw new Error(withoutCombat.error);
+    }
+    const plainScreen = factory(withoutCombat.value, callbacks) as unknown as {
+      readonly match: { readonly debugCombatEnabled?: boolean };
+    };
+    expect(plainScreen.match.debugCombatEnabled, "an ordinary request never opts into combat").toBe(false);
+
+    expect(hosts.length, "one host per constructed match").toBe(2);
+  });
 
   it("allows confirmation to advance the full-time hold after its safety beat", () => {
     const { createHost, hosts } = fakeHostFactory();

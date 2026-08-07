@@ -8,23 +8,32 @@
 // (a declared dependency here, per package.json) both exist -- the stated
 // blocker as originally written is stale.
 //
-// Re-audited again this batch (`@gc/screens` is now in this batch's own
-// file ownership, so a prior "not this batch's call" framing would also be
-// stale): `MatchScreenOptions.combat_enabled` DOES exist on `match.ts`
-// (also stale to claim otherwise) but only gates rollback-lab
-// construction-time validation; it does nothing for the base, non-rollback
-// game loop this test's custom adapter would actually drive. The real,
-// current blocker is one layer down, Rust-side, and the same one
-// `bootstrap.spec.ts`'s "constructs combat only for the explicit
-// post-showcase request" hits: `@gc/wasm`'s `Session::step`
-// (`crates/gc-wasm/src/session.rs`) hard-codes `combat_state: None` on
-// every call into `gc_sim::match::step` -- the wasm session never runs
-// combat at all outside the rollback laboratory, so there is no genuine
-// per-tick combat state a `_combat_feedback`-shaped diagnostic could ever
-// summarize here, even with a real `MatchScreen` wired in
-// (`real_match_factory.ts`, this batch). Ported as `it.skip` below with the
-// CURRENT blocker named; every other case in this file drives the *fake*
-// match adapter (`App`'s default), which needs neither.
+// Re-audited a third time this batch, against current code rather than the
+// prior pass's comment: `@gc/wasm`'s `Session::step`
+// (`crates/gc-wasm/src/session.rs`) no longer hard-codes `combat_state:
+// None` -- `Session::new` gained a `combat_enabled` parameter and `step`
+// now threads the resulting companion through every tick (this wave; see
+// `bootstrap.spec.ts`'s now-ported "constructs combat only for the explicit
+// post-showcase request", which exercises exactly that flag reaching
+// `MatchScreenOptions.combat_enabled` via `real_match_factory.ts`). So the
+// PREVIOUS blocker named here is stale.
+//
+// This case needs strictly more than that, though: `combat_feedback.diagnostics`
+// summarizes per-tick combat EVENTS (`_combat_feedback`'s ported
+// `combatFeedback.confirm`/`link` calls, `match.ts`'s own rollback-only
+// `consumeConfirmedStep`), not merely combat's construction-time presence.
+// Two gaps remain, both still genuinely out of reach this wave:
+// (1) neither `@gc/wasm`'s `SimSession` nor `gc_render::frame::RenderFrame`
+// exposes ANY per-tick combat event/state getter for the BASE (non-rollback)
+// session this test's custom adapter would drive -- confirmed by reading
+// `session.rs` and `frame.rs` directly, not inferred; and (2) `match.ts`'s
+// own BASE-mode `update()` has no code path that consumes combat events at
+// all (unlike its rollback branch's `consumeConfirmedStep`, which only ever
+// receives ROLLBACK-confirmed steps). Both would need to land before this
+// case's `_combat_feedback.diagnostics` assertion could mean anything here.
+// Ported as `it.skip` below with the CURRENT, narrower blocker named; every
+// other case in this file drives the *fake* match adapter (`App`'s
+// default), which needs neither.
 
 import { describe, expect, it } from "vitest";
 import { actions } from "@gc/input";
