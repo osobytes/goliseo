@@ -346,3 +346,34 @@ reimplements the vertex-stage recovery in TypeScript and checks it against a
 directly-composed ground truth, so it fails on wrong *math* rather than on
 changed spelling. The 23 tests that existed before passed in both states, which
 is why this reached a browser.
+
+## Not a defect: `dashing` / `grab` / `aerial_outcome` on the rigged path
+
+These three fields are carried all the way from the simulation into the render
+frame and are then read by `player_renderer.ts` — the 2D billboard — and never
+by `player_renderer_3d.ts`. That was reported as a port gap. It is not one:
+`game/render/player_renderer_3d.lua` does not read them either, and neither
+does anything under `game/render/rig3d/`. `pitch.lua` populates them at the one
+call site that feeds BOTH renderers, exactly as `pitch.ts` does. The billboard
+is still a live fallback (`pitch.rigged_players && available()`), so they are
+not dead code on either side.
+
+The mechanics do reach the rig — through `pose_id`, which `player_pose.select`
+derives from the same timers (`slide_timer`, `grab_timer`, `aerial_timer`,
+`tackle_timer`, `stun_timer`, ...). Three separate mechanisms consume it, and
+which one owns an id is not arbitrary; `player_renderer_3d.ts`'s `POSE_CLIP`
+comment sets out the split. Measured over a full 7,200-tick match, the renderer
+receives 13 distinct pose ids, `Locomotion` 69.8%, including `KeeperGrab`,
+`KeeperStretch`, `AerialAction`, `Tackle` and `Stumble`.
+
+`Tackle` and `Stumble` resolve to the `idle` clip: neither appears in
+`POSE_CLIP`, and `action_pose` has no whole-body transform for them. That is
+also true of the Lua, whose `POSE_CLIP` this port matches entry for entry — so
+it is a gap in the GAME, not in the port, and worth a separate issue rather
+than a divergence to fix here. Between them they account for 0.05% of
+player-ticks.
+
+`crates/gc-render/tests/pose_pipeline.rs` now pins this end to end: every link
+in the chain was already unit-tested, which is precisely why nothing would have
+noticed the chain going dead. Confirmed red by making `frame.rs` push a fixed
+pose id ("pose vocabulary collapsed to 1 ids").
