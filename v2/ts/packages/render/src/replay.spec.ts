@@ -40,6 +40,16 @@
 // (`keeper_get_up_timer`), which is the property that test was actually
 // protecting: "the buffered struct must carry it; the selector must not
 // default it."
+//
+// Re-checked, not just trusted, against this task's landed surface:
+// `SimSession.matchStateJson()`/`RollbackPlayableLab.currentMatchStateJson`
+// et al. (`@gc/wasm`) add exactly `MatchState`-shaped JSON (`field`,
+// `goal_home`, `goal_away`, `score`, `time_left`, `outfield_press`,
+// `transition`, `transition_windows`, `controlled?`, `owner?`, `ball`,
+// `ball_vel`, `ball_z`, `ball_vz`, `players`, `events`) -- this module's own
+// `MatchState`/`MatchPlayer` interfaces, verbatim, per `@gc/wasm`'s own doc
+// on those methods. No pose id anywhere in that shape; the blocker above is
+// unchanged.
 
 import { describe, expect, it } from "vitest";
 import { Vec2 } from "@gc/core";

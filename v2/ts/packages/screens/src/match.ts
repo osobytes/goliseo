@@ -32,7 +32,7 @@
 import { combatFeedback, matchEventBatch } from "@gc/presentation";
 import type { CombatEvent, CombatFeedbackState, MatchEvent, RollbackEventDiff, RollbackWrappedEvent } from "@gc/presentation";
 import { correctionSmoothing, viewState } from "@gc/render";
-import type { correctionSmoothingTypes } from "@gc/render";
+import type { correctionSmoothingTypes, replayTypes } from "@gc/render";
 import type { LifecyclePayload } from "./online_match_model.ts";
 import type { GameSettings } from "./content.ts";
 import type { RealMatchInputEvent, RealMatchScreenPort, RealMatchState } from "./real_match.ts";
@@ -94,13 +94,34 @@ export interface AudioPort {
   ): boolean;
 }
 
-/** `game/render/replay.lua`, injected -- see this module's header. */
+/**
+ * `game/render/replay.lua`, injected -- see this module's header.
+ *
+ * `record`/`start`/`step`/`stop` are the BASE (non-rollback) goal-replay
+ * seam -- `@gc/render`'s real `replay` module already implements all four
+ * (`record`, `start`, `step`, `stop`, alongside `active`/`startAt`/`reset`
+ * above), so a caller wiring the real module in satisfies this whole
+ * interface for free; see this file's "THE GAME LOOP" section for how
+ * `MatchScreen.update`/`event` use them. All four are optional so existing
+ * rollback-only fakes (e.g. `combat_feedback_rollback.spec.ts`'s,
+ * `match_rollback_lab.spec.ts`'s `FakeReplay`) need not grow them -- the
+ * base game loop's goal replay simply stays unwired when they are absent,
+ * matching this class's behavior before this capability existed.
+ */
 export interface ReplayPort {
   active(): boolean;
   startAt(team: "home" | "away", tick: number): boolean;
   resetVisuals?(): void;
   /** `replay.reset()` -- discards any buffered footage/active sequence. Optional so existing fakes (e.g. `combat_feedback_rollback.spec.ts`'s) need not grow it; only the rollback laboratory's restart path calls it. */
   reset?(): void;
+  /** Record one live pre-step frame under this port's own private, contiguous boundary sequence -- `replay.record`. Called once per simulated tick, before `SimHostPort.step`, so a goal's flight remains in the buffer (matches `game/screens/match.lua`'s own ordering). */
+  record?(state: replayTypes.MatchState): void;
+  /** Begin a sequence at the newest recorded frame -- `replay.start`. Returns whether enough footage was buffered to start (matches `replay.start`'s own "refuses to start without enough footage" contract). */
+  start?(team: "home" | "away"): boolean;
+  /** Advance the active sequence by `dt` render seconds, returning the frame to display/animate from, or `undefined` once the sequence has finished -- `replay.step`. */
+  step?(dt: number): replayTypes.ReplayFrame | undefined;
+  /** Stop/skip the active sequence immediately -- `replay.stop`. */
+  stop?(): void;
 }
 
 export interface MatchRollbackConsumerPorts {
@@ -561,13 +582,26 @@ export type MatchScreenProfile = "product" | "playtest" | "online";
 // binding) is future work this port does not attempt.
 // =============================================================================
 
-/** `sim.rollback_playable_lab`'s convergence/sync status, surfaced on `_rollback_debug.status`. */
+/**
+ * `sim.rollback_playable_lab`'s convergence/sync status, surfaced on
+ * `_rollback_debug.status`. `"diverged"`/`"late_input_unrecoverable"`/
+ * `"comparison_history_missing"`/`"drain_incomplete"` are real
+ * `gc_sim::rollback_playable_lab::advance` outcomes (see `@gc/wasm`'s
+ * `RollbackPlayableLab.advance` doc) a real `RollbackHostPort`
+ * implementation can report; `"paused"` is this screen's own synthesized
+ * status (`tuning.open`/`MatchScreenPorts.tuningPause`), never produced by
+ * the host itself.
+ */
 export type RollbackLabStatus =
   | "active"
   | "settling"
   | "converged"
   | "paused"
-  | "unconfirmed_window_exceeded";
+  | "diverged"
+  | "late_input_unrecoverable"
+  | "unconfirmed_window_exceeded"
+  | "comparison_history_missing"
+  | "drain_incomplete";
 
 /** Mirrors the Lua `NetworkProfile` shape (`fixed_profile` in the ported spec). */
 export interface RollbackLabNetworkProfile {
@@ -611,6 +645,23 @@ export interface RollbackLabHostDebug {
   readonly network_pending: number;
   readonly status: RollbackLabStatus;
   readonly event_status: string;
+  /**
+   * The remaining fields mirror `gc_sim::rollback_playable_lab::debug_model`
+   * one-for-one (`@gc/wasm`'s `RollbackPlayableLab.debugModelJson` doc) but
+   * are optional here: a real host reports all of them, while a minimal
+   * test double (e.g. `match_rollback_lab.spec.ts`'s `FakeRollbackHost`)
+   * need not fabricate them.
+   */
+  readonly resimulated_ticks?: number;
+  readonly confirmed_input_tick?: number;
+  readonly confirmed_output_tick?: number;
+  readonly convergence?: {
+    readonly status: string;
+    readonly boundary: number;
+    readonly expected_hash?: string;
+    readonly actual_hash?: string;
+    readonly first_difference?: number;
+  };
 }
 
 /** `_rollback_debug`, as read by a caller of {@link MatchScreen.debugRollbackDebug} -- the host's own status plus this screen's render-owned smoothing diagnostics. */
@@ -722,6 +773,23 @@ export interface MatchScreenPorts {
   readonly replay?: ReplayPort;
   /** `game.ui.tuning_panel`'s `.open` flag, injected -- pausing the panel pauses the rollback laboratory's clock. Omit to never pause. */
   readonly tuningPause?: { readonly open: boolean };
+  /**
+   * Raw `MatchState`, read live off whatever is actually simulating this
+   * render call -- `SimSession.matchStateJson()`/
+   * `RollbackPlayableLab.currentMatchStateJson()` in the real build
+   * (`@gc/wasm`), parsed by the caller into `@gc/render`'s `replay.ts`
+   * `MatchState` shape. Enables the BASE (non-rollback) game loop's
+   * goal-replay recording/detection (`ReplayPort.record`/`start`, this
+   * file's "THE GAME LOOP" section) and this screen's own base-mode
+   * render-smoothing/view-state wiring. Optional: omit to leave both
+   * unwired, matching this class's behavior before this capability
+   * existed. Not read in rollback mode -- `RollbackHostPort.displayedPositions`
+   * already covers that mode's correction/view-state needs, and a real
+   * rollback host's own raw-state getters
+   * (`currentMatchStateJson`/`referenceMatchStateJson`) are that mode's
+   * analog of this port, not a reason to also read this one.
+   */
+  readonly matchState?: () => replayTypes.MatchState;
 }
 
 /**
@@ -767,6 +835,11 @@ export class MatchScreen {
   private rollbackCorrections: readonly RollbackLabCorrectionSample[] = [];
   private rollbackFrameEvents: MatchEvent[] = [];
   private renderSmoothing: correctionSmoothingTypes.CorrectionSmoothingState | undefined;
+  /** `_replay_state` -- the currently displayed goal-replay frame (base mode's legacy replay only; see `debugReplayState`'s doc). */
+  private replayState: replayTypes.ReplayFrame | undefined;
+  /** `_last_score`/`_last_home` -- base-mode goal-edge bookkeeping across render calls. Unused in rollback mode (that mode detects a goal off a CONFIRMED lifecycle record instead, see `consumeConfirmedLifecycle`). */
+  private lastScore = 0;
+  private lastHome = 0;
   private readonly latches: MatchControlLatches = newMatchControlLatches();
   private switchPending = false;
   private capture: captureFrame.InputSampleCapture;
@@ -934,6 +1007,57 @@ export class MatchScreen {
     return this.rollbackHost !== undefined ? this.rollbackConsumer : undefined;
   }
 
+  /**
+   * `_replay_state` -- the frame currently displayed by the BASE (non-
+   * rollback) legacy goal replay, or `undefined` outside an active
+   * sequence. Exposed for tests, mirroring the ported spec's own
+   * `screen._replay_state` field peek. Rollback-mode confirmed replay
+   * shares the same {@link MatchScreenPorts.replay} port but this screen
+   * does not itself track a displayed frame for it this milestone -- see
+   * `consumeConfirmedLifecycle`'s doc.
+   */
+  get debugReplayState(): replayTypes.ReplayFrame | undefined {
+    return this.replayState;
+  }
+
+  /** Whether the injected {@link ReplayPort} currently reports an active goal-replay sequence -- `replay.active()` in the ported original. `false` whenever no `ReplayPort` was supplied. */
+  get replayActive(): boolean {
+    return this.ports.replay?.active() === true;
+  }
+
+  /** Render-only correction-smoothing diagnostics for whichever mode this screen is in (base or rollback). `undefined` until this screen has processed at least one correction/authoritative source. Exposed for tests. */
+  get debugRenderSmoothingDiagnostics(): correctionSmoothingTypes.CorrectionSmoothingDiagnostics | undefined {
+    return this.renderSmoothing !== undefined ? correctionSmoothing.diagnostics(this.renderSmoothing) : undefined;
+  }
+
+  /**
+   * Seeds a synthetic previous-frame render correction, for tests only --
+   * mirrors the ported spec's `seed_render_correction` helper, which pokes
+   * `Match`'s own `_render_smoothing` field directly. A no-op if this
+   * screen currently has no correction source (base mode without
+   * {@link MatchScreenPorts.matchState}, or rollback mode before the first
+   * `step`).
+   */
+  debugSeedRenderCorrection(previous: correctionSmoothingTypes.CorrectionSmoothingSource): void {
+    const current = this.correctionSource();
+    if (current === undefined) {
+      return;
+    }
+    this.renderSmoothing = correctionSmoothing.correct(correctionSmoothing.new(previous), current);
+  }
+
+  /** The authoritative positions this screen currently corrects/smooths render state against -- the rollback client's displayed positions in rollback mode, or {@link MatchScreenPorts.matchState} in base mode. `undefined` when neither is available. */
+  private correctionSource(): correctionSmoothingTypes.CorrectionSmoothingSource | undefined {
+    if (this.rollbackHost !== undefined) {
+      return this.rollbackHost.displayedPositions();
+    }
+    const state = this.ports.matchState?.();
+    if (state === undefined) {
+      return undefined;
+    }
+    return { players: state.players.map((p) => ({ id: p.id, pos: p.pos })), ball: state.ball };
+  }
+
   private carrying(): boolean {
     return this.activeHost().frame().hud.controlled_owns_ball;
   }
@@ -948,15 +1072,18 @@ export class MatchScreen {
       this.rollbackConfirmedSteps = [];
       this.rollbackCorrections = [];
       this.rollbackFrameEvents = [];
-      this.renderSmoothing = undefined;
       this.rollbackConsumer = newMatchRollbackConsumerState();
-      viewState.reset();
-      this.ports.replay?.reset?.();
       this.validateRollbackCombatCompanion();
     } else {
       this.host!.dispose();
       this.host = this.ports.createHost();
+      this.lastScore = 0;
+      this.lastHome = 0;
     }
+    this.replayState = undefined;
+    this.renderSmoothing = undefined;
+    viewState.reset();
+    this.ports.replay?.reset?.();
     this.latches.shootHeldPrev = false;
     this.latches.passHeldPrev = false;
     this.latches.actionHeldPrev = false;
@@ -978,6 +1105,16 @@ export class MatchScreen {
    * `dodge` detection.
    */
   event(evt: ControllerInputEvent): void {
+    // A confirmed goal replay (base or rollback) remains skippable
+    // regardless of match/finished state -- mirrors `Match:event`'s own
+    // `replay.active()` check, which runs before both the ACTION-kind and
+    // KEY-kind bodies check anything else, including `match_is_over`.
+    if (this.ports.replay?.active() === true) {
+      if (this.isReplaySkipEvent(evt)) {
+        this.finishReplay();
+      }
+      return;
+    }
     if (this.finished) {
       this.handleRematchEvent(evt);
       return;
@@ -988,6 +1125,40 @@ export class MatchScreen {
       this.pendingKeyEvents.push(evt);
     }
     this.applySwitchEdge(evt);
+  }
+
+  // `Match:event`'s `replay.active()` skip branches: ACTION-kind allows
+  // `confirm`/`pass_switch`; KEY-kind allows `space`/`return`/`k`.
+  private isReplaySkipEvent(evt: ControllerInputEvent): boolean {
+    if (evt.kind === "action") {
+      return evt.action === "confirm" || evt.action === "pass_switch";
+    }
+    if (evt.kind === "key") {
+      return evt.key === "space" || evt.key === "return" || evt.key === "k";
+    }
+    return false;
+  }
+
+  // `finish_replay(self)`: stop the sequence, clear the displayed replay
+  // frame, and settle render-owned smoothing/view state back onto whatever
+  // this screen is currently authoritative for.
+  private finishReplay(): void {
+    this.ports.replay?.stop?.();
+    this.replayState = undefined;
+    const source = this.correctionSource();
+    // `clear_render_smoothing`'s own unconditional `view_state.reset()`
+    // (`reset_view` defaults true) -- discards the replay's motion before
+    // reseeding baselines below, so the render-live players' gait/lean read
+    // back at rest rather than carrying over the replay's last pose.
+    viewState.reset();
+    if (source === undefined) {
+      return;
+    }
+    this.renderSmoothing =
+      this.renderSmoothing !== undefined
+        ? correctionSmoothing.clear(this.renderSmoothing, source)
+        : correctionSmoothing.new(source);
+    viewState.update(source.players, 0);
   }
 
   // `Match:event`'s `match_is_over(self)` branch:
@@ -1051,6 +1222,14 @@ export class MatchScreen {
       this.updateRollback(dt);
       return;
     }
+    // Slow-motion goal replay: the sim freezes while the buffer plays back.
+    // Checked before `finished` -- matches `Match:update`'s own ordering
+    // (`replay.active()` is checked first; a replay may still be finishing
+    // up on the same render call the match itself reads as over).
+    if (this.ports.replay?.step !== undefined && this.ports.replay.active()) {
+      this.updateLegacyReplay(dt);
+      return;
+    }
     if (this.finished) {
       return;
     }
@@ -1071,23 +1250,100 @@ export class MatchScreen {
     }
     this.lastStepSample = sample;
 
+    const scoreBefore = host.frame().hud.home_score + host.frame().hud.away_score;
     const ticks = host.planTicks(dt);
     for (let step = 0; step < ticks; step += 1) {
       // KNOWN SIMPLIFICATION: every tick this render call produces is fed
       // the SAME sample -- see this class's doc comment.
+      this.recordReplayFrame(); // pre-step, so a goal's flight remains in the buffer.
       host.step(sample);
       // `fixed_clock.advance`'s `step` callback returns `not
       // self.state.finished and not scored` to stop a catch-up batch as
-      // soon as the match ends or a goal starts a replay. This milestone
-      // has no replay, so only the "finished" half applies -- and telling
-      // the host to cancel the remaining planned ticks is what makes that
-      // match what a `false` step_fn return does to the accumulator on the
-      // Rust side (see `SimHostPort.cancelPlannedTicks`'s doc).
+      // soon as the match ends or a goal starts a replay. Telling the host
+      // to cancel the remaining planned ticks is what makes that match
+      // what a `false` step_fn return does to the accumulator on the Rust
+      // side (see `SimHostPort.cancelPlannedTicks`'s doc). Falls through to
+      // the shared post-batch bookkeeping below either way -- the Lua
+      // original's own goal/lifecycle detection runs unconditionally after
+      // its `fixed_clock.advance` call, not only on a full batch.
       if (host.frame().hud.finished) {
         host.cancelPlannedTicks();
-        return;
+        break;
       }
     }
+    this.finishBaseUpdate(dt, scoreBefore);
+  }
+
+  // Base-mode goal-replay recording: one pre-step capture per simulated
+  // tick, under `ReplayPort`'s own private boundary sequence. A no-op
+  // unless both `MatchScreenPorts.matchState` and `ReplayPort.record` are
+  // wired -- see `ReplayPort`'s doc.
+  private recordReplayFrame(): void {
+    if (this.ports.matchState !== undefined && this.ports.replay?.record !== undefined) {
+      this.ports.replay.record(this.ports.matchState());
+    }
+  }
+
+  // The tail of `Match:update`'s base branch: render-owned smoothing/view
+  // state, then the live goal edge that starts a fresh replay sequence
+  // (`self._last_score`/`self._last_home` in the Lua original).
+  private finishBaseUpdate(dt: number, scoreBefore: number): void {
+    const host = this.host!;
+    const hud = host.frame().hud;
+    const scoreAfter = hud.home_score + hud.away_score;
+    this.updateBaseRenderSmoothing(dt, scoreAfter !== scoreBefore || hud.finished);
+    if (scoreAfter > this.lastScore && !hud.finished) {
+      const scoringTeam: "home" | "away" = hud.home_score > this.lastHome ? "home" : "away";
+      if (this.ports.replay?.start?.(scoringTeam) === true) {
+        // The scene jumps back in time, but view state must not carry the
+        // post-goal kickoff pose into it.
+        viewState.reset();
+        this.replayState = undefined;
+      }
+    }
+    this.lastHome = hud.home_score;
+    this.lastScore = scoreAfter;
+  }
+
+  // `update_render_smoothing`'s base-mode counterpart: a scene discontinuity
+  // (a score edge or full time) clears smoothing/view state outright;
+  // otherwise smoothing decays toward the current authoritative source and
+  // view state advances from it. A no-op without `MatchScreenPorts.matchState`
+  // -- matches this class's behavior before this capability existed.
+  private updateBaseRenderSmoothing(dt: number, lifecycleReset: boolean): void {
+    const source = this.correctionSource();
+    if (source === undefined) {
+      return;
+    }
+    if (lifecycleReset) {
+      this.renderSmoothing = correctionSmoothing.new(source);
+      viewState.reset();
+    } else {
+      this.renderSmoothing =
+        this.renderSmoothing !== undefined
+          ? correctionSmoothing.advance(this.renderSmoothing, source, dt)
+          : correctionSmoothing.new(source);
+    }
+    // Unconditional relative to the branch above -- matches
+    // `update_render_smoothing`'s own "if update_view then view_state.update(...)
+    // end", which reseeds immediately even on a lifecycle reset rather than
+    // waiting for the next render call.
+    viewState.update(source.players, dt);
+  }
+
+  // `Match:update`'s legacy-replay branch: the sim is frozen (no `host.step`
+  // this call) while the buffered footage plays back through view state.
+  private updateLegacyReplay(dt: number): void {
+    const frame = this.ports.replay!.step!(dt);
+    this.replayState = frame;
+    if (frame !== undefined) {
+      viewState.update(
+        frame.players.map((p) => ({ id: p.id, pos: p.pos })),
+        dt,
+      );
+      return;
+    }
+    this.finishReplay();
   }
 
   /**
@@ -1123,62 +1379,71 @@ export class MatchScreen {
     }
 
     const ticks = rollbackHost.planTicks(dt);
-    if (ticks === 0) {
-      return;
-    }
-
-    const carrying = this.carrying();
-    const poll: MatchControlPoll = {
-      actionDown: bindings.isDown("action", this.ports.keyboard, this.ports.gamepad),
-      playDown: bindings.isDown("play", this.ports.keyboard, this.ports.gamepad),
-      modifierDown: bindings.isDown("modifier", this.ports.keyboard, this.ports.gamepad),
-    };
-    const { contextual, dashEdge } = stepMatchControlLatches(this.latches, carrying, poll);
-    const switchPlayer = this.switchPending;
-    this.switchPending = false;
-    let sample = this.capture.sample({ ...contextual, switchPlayer });
-    if (dashEdge) {
-      sample = { ...sample, edges: sample.edges | inputSample.packEdges(["dash"]) };
-    }
-    this.lastStepSample = sample;
 
     const outputs: RollbackLabOutput[] = [];
     const diffs: RollbackEventDiff[] = [];
     const confirmed: RollbackEventStep[] = [];
     const corrections: RollbackLabCorrectionSample[] = [];
-    for (let step = 0; step < ticks; step += 1) {
-      // Unlike the base branch's KNOWN SIMPLIFICATION (which reuses one
-      // sample verbatim for a whole catch-up batch), the rollback branch
-      // delivers this render call's one-shot edges (switch, dash, ...) to
-      // only the FIRST tick of a multi-tick batch; a HELD state (sprint,
-      // jockey, lob, equipment) still applies to every tick. Matches
-      // `match_rollback_lab.spec.ts`'s "aggregates multi-tick edges,
-      // holds, and corrections", which checks the edge fires on tick index
-      // 1 of the batch only, while the held mask is constant across all of
-      // them.
-      const tickSample: InputSample = step === 0 ? sample : { ...sample, edges: 0 };
-      const result = rollbackHost.step(tickSample);
-      outputs.push(result.output);
-      diffs.push(...result.eventDiffs);
-      confirmed.push(...result.confirmedSteps);
-      if (result.correction !== undefined) {
-        corrections.push(result.correction);
+    // A zero-tick render call touches neither `this.latches` nor
+    // `this.switchPending`/`capture` (see this method's doc), but the
+    // render-only settling below (smoothing decay, view state, presentation
+    // consumption) is NOT gated on ticks having run this call -- matches
+    // `Match:update`'s own `update_render_smoothing`/`consume_rollback_presentation`
+    // calls, which sit OUTSIDE (after) `fixed_clock.advance`'s tick loop and
+    // therefore always run, whether or not that loop produced any ticks
+    // this render call. Skipping them at `ticks === 0` used to mean a
+    // sub-frame render call (e.g. the settling step right after a
+    // correction lands) could never decay `correction_magnitude` at all.
+    if (ticks > 0) {
+      const carrying = this.carrying();
+      const poll: MatchControlPoll = {
+        actionDown: bindings.isDown("action", this.ports.keyboard, this.ports.gamepad),
+        playDown: bindings.isDown("play", this.ports.keyboard, this.ports.gamepad),
+        modifierDown: bindings.isDown("modifier", this.ports.keyboard, this.ports.gamepad),
+      };
+      const { contextual, dashEdge } = stepMatchControlLatches(this.latches, carrying, poll);
+      const switchPlayer = this.switchPending;
+      this.switchPending = false;
+      let sample = this.capture.sample({ ...contextual, switchPlayer });
+      if (dashEdge) {
+        sample = { ...sample, edges: sample.edges | inputSample.packEdges(["dash"]) };
       }
-      if (result.debug.status === "unconfirmed_window_exceeded") {
-        // Synchronization failure mid-batch: stop consuming further ticks
-        // this call and discard any smoothing already applied -- the
-        // "clears rollback handoff batches before ... terminal early
-        // returns" behavior. What was already gathered THIS call still
-        // committed (`outputs` stays non-empty); diffs/confirmed/
-        // corrections stay at their cleared initial value.
-        this.renderSmoothing = undefined;
-        rollbackHost.cancelPlannedTicks();
-        this.rollbackOutputs = outputs;
-        return;
-      }
-      if (rollbackHost.frame().hud.finished) {
-        rollbackHost.cancelPlannedTicks();
-        break;
+      this.lastStepSample = sample;
+
+      for (let step = 0; step < ticks; step += 1) {
+        // Unlike the base branch's KNOWN SIMPLIFICATION (which reuses one
+        // sample verbatim for a whole catch-up batch), the rollback branch
+        // delivers this render call's one-shot edges (switch, dash, ...) to
+        // only the FIRST tick of a multi-tick batch; a HELD state (sprint,
+        // jockey, lob, equipment) still applies to every tick. Matches
+        // `match_rollback_lab.spec.ts`'s "aggregates multi-tick edges,
+        // holds, and corrections", which checks the edge fires on tick index
+        // 1 of the batch only, while the held mask is constant across all of
+        // them.
+        const tickSample: InputSample = step === 0 ? sample : { ...sample, edges: 0 };
+        const result = rollbackHost.step(tickSample);
+        outputs.push(result.output);
+        diffs.push(...result.eventDiffs);
+        confirmed.push(...result.confirmedSteps);
+        if (result.correction !== undefined) {
+          corrections.push(result.correction);
+        }
+        if (result.debug.status === "unconfirmed_window_exceeded") {
+          // Synchronization failure mid-batch: stop consuming further ticks
+          // this call and discard any smoothing already applied -- the
+          // "clears rollback handoff batches before ... terminal early
+          // returns" behavior. What was already gathered THIS call still
+          // committed (`outputs` stays non-empty); diffs/confirmed/
+          // corrections stay at their cleared initial value.
+          this.renderSmoothing = undefined;
+          rollbackHost.cancelPlannedTicks();
+          this.rollbackOutputs = outputs;
+          return;
+        }
+        if (rollbackHost.frame().hud.finished) {
+          rollbackHost.cancelPlannedTicks();
+          break;
+        }
       }
     }
     this.rollbackOutputs = outputs;

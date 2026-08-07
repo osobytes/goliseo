@@ -33,25 +33,22 @@
 // OWN correctness is `crates/gc-sim/tests`' job, already covered by the
 // Rust port those Lua specs became.
 //
-// Two tier-2 cases remain out of scope in this package, for a REAL,
-// still-standing reason each:
+// One tier-2 case remains out of scope in this package, for a REAL,
+// still-standing reason:
 //
-//   - "keeps actual goal replay gait coherent..." (tier 2) needs the BASE
-//     (non-rollback) goal-replay feature -- `SimHostPort`'s `RenderFrame` is
-//     a presentation-derived, structure-of-arrays wire shape
-//     (`crates/gc-render/src/frame.rs`), not the raw `MatchState` (outfield
-//     press/transition/decision state, per-player timers) `@gc/render`'s
-//     real `replay.ts` needs to `recordBoundary`. See `match_screen.spec.ts`'s
-//     own "goal replay" skip, which names the identical blocker.
 //   - "clears smoothing at kickoff, full time, and stack teardown" (tier 2)
-//     bundles three sub-cases; two of its three depend on things outside
-//     this package structurally: the "kickoff" sub-case needs the same
-//     goal-replay capability as above, and the "teardown" sub-case needs
+//     bundles three sub-cases. The base (non-rollback) goal-replay gap that
+//     used to block ALL of it is cleared -- `MatchScreenPorts.matchState`
+//     (match.ts's "THE GAME LOOP" section) closes the raw-`MatchState` gap
+//     `match_screen.spec.ts`'s own "goal replay" skip used to name, and the
+//     "keeps actual goal replay gait coherent..." case below now exercises
+//     it for real. But this case's THIRD sub-case ("teardown") needs
 //     `game.screen_stack`'s TS analog, which lives in `@gc/app` --
 //     `@gc/screens` cannot depend on `@gc/app` (the dependency runs the
-//     other way, v2/README.md §2/§9). Only the middle ("full time") sub-case
-//     is independently portable, and a single `it` cannot be two-thirds
-//     skipped, so the whole case stays `it.skip`.
+//     other way, v2/README.md §2/§9), and that is unrelated to goal replay
+//     entirely. Only the middle ("full time") sub-case is independently
+//     portable, and a single `it` cannot be two-thirds skipped, so the whole
+//     case stays `it.skip` -- for this narrower, now-accurate reason.
 //
 // The two tier-3 cases (`ScreenStack` driving a real `RealMatch`/`MatchScreen`
 // pair) moved to `@gc/app` -- see the comment where they used to sit below.
@@ -62,7 +59,10 @@
 // else blocks it.
 
 import { describe, expect, it } from "vitest";
+import { Vec2 } from "@gc/core";
 import type { RollbackEventDiff } from "@gc/presentation";
+import { replay, viewState } from "@gc/render";
+import type { replayTypes } from "@gc/render";
 import { MatchScreen } from "./match.ts";
 import type {
   AudioPort,
@@ -85,6 +85,8 @@ import type {
   RollbackLabSnapshotSummary,
   RollbackLabStatus,
   RollbackLabStepResult,
+  SimHostFactory,
+  SimHostPort,
 } from "./match.ts";
 
 // --- the fake clock: mirrors gc_sim::fixed_clock::advance -----------------
@@ -357,6 +359,146 @@ function rollbackPorts(factory: RollbackHostFactory, tuningPause?: { open: boole
 
 function labOptions(overrides: Partial<RollbackLabOptions> & Pick<RollbackLabOptions, "local_slot" | "profile_name">): RollbackLabOptions {
   return overrides;
+}
+
+// --- base-mode fixtures, for "keeps actual goal replay gait coherent..." --
+// (below) -- a minimal `SimHostPort` fake distinct from `FakeRollbackHost`
+// above: that one drives `RollbackHostPort`, this one drives the BASE
+// (non-rollback) `SimHostPort` branch this file's own case needs. Duplicates
+// `match_screen.spec.ts`'s own `FakeSimHost`/fixed-clock pattern rather than
+// importing it -- two independent spec files, the same "TS-glue-observable
+// analog" duplication this file's header already accepts for its own fixed
+// clock.
+
+const BASE_TICK_SECONDS = 1 / 60;
+
+class FakeBaseSimHost implements SimHostPort {
+  readonly hud = { finished: false, controlled_owns_ball: true, home_score: 0, away_score: 0, time_left: 300 };
+  private accumulator = 0;
+  private tickCount = 0;
+
+  planTicks(dt: number): number {
+    this.accumulator += dt;
+    let ticks = 0;
+    while (this.accumulator + 1e-9 >= BASE_TICK_SECONDS) {
+      this.accumulator -= BASE_TICK_SECONDS;
+      ticks += 1;
+    }
+    return ticks;
+  }
+
+  step(): void {
+    this.tickCount += 1;
+  }
+
+  cancelPlannedTicks(): void {
+    this.accumulator = 0;
+  }
+
+  frame(): RenderFrame {
+    return { hud: this.hud, possession: {} };
+  }
+
+  roster(): RenderFrameRoster {
+    return {};
+  }
+
+  tick(): number {
+    return this.tickCount;
+  }
+
+  dispose(): void {}
+}
+
+function makeBaseHostFactory(): { readonly factory: SimHostFactory; readonly hosts: FakeBaseSimHost[] } {
+  const hosts: FakeBaseSimHost[] = [];
+  const factory: SimHostFactory = (): SimHostPort => {
+    const host = new FakeBaseSimHost();
+    hosts.push(host);
+    return host;
+  };
+  return { factory, hosts };
+}
+
+function fixtureBasePlayer(id: string, pos: Vec2): replayTypes.MatchPlayer {
+  return {
+    id,
+    team: "home",
+    pos,
+    run_vel: new Vec2(0, 0),
+    facing: new Vec2(1, 0),
+    radius: 10,
+    is_keeper: false,
+    keeper_state: "base",
+    keeper_set: 0,
+    slide_timer: 0,
+    tackle_timer: 0,
+    stun_timer: 0,
+    settle_timer: 0,
+    sprinting: false,
+    outfield_decision: { version: 1, generation: 0, rng_state: 1, remaining: 0, context: "offball", intent: "none" },
+    dive_timer: 0,
+    dive_dir: new Vec2(0, 0),
+    keeper_get_up_timer: 0,
+    grab_timer: 0,
+    throw_timer: 0,
+    windup_timer: 0,
+    aerial_timer: 0,
+    aerial_jump: 0,
+    sprint_meter: 1,
+    jockey_timer: 0,
+  };
+}
+
+/** A `MatchScreenPorts.matchState` fake, for the base-mode goal-replay case below: one drifting player so the replay buffer holds observable motion; see `match_screen.spec.ts`'s identical fixture (`fixtureMatchStateSource`) for why this takes a THUNK, not a `FakeBaseSimHost` directly. */
+function fixtureBaseMatchState(getHost: () => FakeBaseSimHost): () => replayTypes.MatchState {
+  let ballX = 480;
+  return (): replayTypes.MatchState => {
+    const host = getHost();
+    ballX += 3;
+    return {
+      field: { w: 960, h: 540 },
+      goal_home: { x: -12, y: 210, w: 12, h: 120 },
+      goal_away: { x: 960, y: 210, w: 12, h: 120 },
+      score: { home: host.hud.home_score, away: host.hud.away_score },
+      time_left: host.hud.time_left,
+      outfield_press: {
+        home: { version: 1, mode: "inactive", reason: "no_trigger" },
+        away: { version: 1, mode: "inactive", reason: "no_trigger" },
+      },
+      transition: { version: 1, hold: 0, elapsed: 0 },
+      transition_windows: { home: { counterpress: 0, counterattack: 0 }, away: { counterpress: 0, counterattack: 0 } },
+      ball: new Vec2(ballX, 270),
+      ball_vel: new Vec2(180, 0),
+      ball_z: 0,
+      ball_vz: 0,
+      players: [fixtureBasePlayer("home_1", new Vec2(ballX - 20, 270))],
+      events: [],
+    };
+  };
+}
+
+/** Mirrors the ported spec's `start_actual_goal_replay` helper: build up footage, force a home goal edge, and confirm the replay started but has not displayed a frame yet. */
+function startActualGoalReplay(host: FakeBaseSimHost, screen: MatchScreen): void {
+  for (let i = 0; i < 40; i += 1) {
+    screen.update(BASE_TICK_SECONDS);
+  }
+  host.hud.home_score += 1;
+  screen.update(BASE_TICK_SECONDS);
+  expect(host.hud.home_score).toBe(1);
+  expect(replay.active(), "the replay rolls after a goal").toBe(true);
+  expect(screen.debugReplayState).toBeUndefined();
+}
+
+/** Mirrors the ported spec's `seed_render_correction` helper: seed a bounded, decaying correction offset so the smoothing-diagnostics assertions below exercise something real. `matchState` is the SAME source function the screen itself was constructed with -- see `MatchScreen.debugSeedRenderCorrection`'s doc for why a "previous" pose is built from it rather than reaching into screen-private state. */
+function seedBaseRenderCorrection(screen: MatchScreen, matchState: () => replayTypes.MatchState): void {
+  const current = matchState();
+  const player = current.players[0]!;
+  screen.debugSeedRenderCorrection({
+    players: [{ id: player.id, pos: new Vec2(player.pos.x - 40, player.pos.y) }],
+    ball: new Vec2(current.ball.x - 20, current.ball.y),
+  });
+  expect(screen.debugRenderSmoothingDiagnostics?.active_count ?? 0).toBeGreaterThan(0);
 }
 
 describe("match screen rollback laboratory (tier 2)", () => {
@@ -681,10 +823,79 @@ describe("match screen rollback laboratory (tier 2)", () => {
     "clears smoothing at kickoff, full time, and stack teardown [kickoff sub-case needs base goal replay's raw-MatchState capability; teardown sub-case needs @gc/app's screen_stack.ts, a reverse dependency]",
     () => {},
   );
-  it.skip(
-    "keeps actual goal replay gait coherent and clears smoothing on both exits [needs the base (non-rollback) goal-replay feature; see match_screen.spec.ts's goal-replay skip]",
-    () => {},
-  );
+  it("keeps actual goal replay gait coherent and clears smoothing on both exits", () => {
+    replay.reset();
+    replay.resetTuning();
+    viewState.reset();
+
+    const { factory: naturalFactory, hosts: naturalHosts } = makeBaseHostFactory();
+    const naturalMatchState = fixtureBaseMatchState(() => naturalHosts[0]!);
+    const natural = new MatchScreen({
+      createHost: naturalFactory,
+      renderer: noopRenderer,
+      keyboard: { isDown: () => false },
+      replay,
+      matchState: naturalMatchState,
+    });
+    startActualGoalReplay(naturalHosts[0]!, natural);
+
+    natural.update(1 / 60);
+    const replayState = natural.debugReplayState;
+    expect(replayState).toBeDefined();
+    for (const player of replayState!.players) {
+      const view = viewState.get(player.id);
+      expect(view).toBeDefined();
+      expect(view!.speed).toBeCloseTo(0);
+      expect(view!.phase).toBeCloseTo(0);
+      expect(view!.lean).toBeCloseTo(0);
+    }
+    for (let i = 0; i < 12; i += 1) {
+      natural.update(1 / 60);
+    }
+    let sawGait = false;
+    let sawLean = false;
+    for (const player of natural.debugReplayState!.players) {
+      const view = viewState.get(player.id)!;
+      sawGait = sawGait || (view.speed > 0 && view.phase > 0);
+      sawLean = sawLean || Math.abs(view.lean) > 0;
+    }
+    expect(sawGait, "active replay frames must preserve gait progression").toBe(true);
+    expect(sawLean, "active replay frames must preserve lean progression").toBe(true);
+    seedBaseRenderCorrection(natural, naturalMatchState);
+
+    natural.update(2);
+    natural.update(100);
+    expect(replay.active()).toBe(false);
+    expect(natural.debugReplayState).toBeUndefined();
+    const naturalLive = viewState.get("home_1")!;
+    expect(naturalLive.speed).toBeCloseTo(0);
+    expect(naturalLive.phase).toBeCloseTo(0);
+    expect(naturalLive.lean).toBeCloseTo(0);
+    expect(natural.debugRenderSmoothingDiagnostics?.active_count ?? 0).toBe(0);
+
+    replay.reset();
+    viewState.reset();
+    const { factory: skippedFactory, hosts: skippedHosts } = makeBaseHostFactory();
+    const skippedMatchState = fixtureBaseMatchState(() => skippedHosts[0]!);
+    const skipped = new MatchScreen({
+      createHost: skippedFactory,
+      renderer: noopRenderer,
+      keyboard: { isDown: () => false },
+      replay,
+      matchState: skippedMatchState,
+    });
+    startActualGoalReplay(skippedHosts[0]!, skipped);
+    skipped.update(1 / 60);
+    seedBaseRenderCorrection(skipped, skippedMatchState);
+    skipped.event({ kind: "key", key: "space" });
+    expect(replay.active()).toBe(false);
+    expect(skipped.debugReplayState).toBeUndefined();
+    const skippedLive = viewState.get("home_1")!;
+    expect(skippedLive.speed).toBeCloseTo(0);
+    expect(skippedLive.phase).toBeCloseTo(0);
+    expect(skippedLive.lean).toBeCloseTo(0);
+    expect(skipped.debugRenderSmoothingDiagnostics?.active_count ?? 0).toBe(0);
+  });
 });
 
 // "playable rollback ScreenStack flow (tier 3)" (both cases) moved to

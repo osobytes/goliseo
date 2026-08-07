@@ -21,15 +21,30 @@
 // assertions) but its body asserts on the TS-glue-observable analog of the
 // original Lua assertion -- e.g. "K never switches while carrying" now
 // checks `MatchScreen`'s buffered switch state rather than a real
-// `sim.match` never issuing a switch order. Two cases remain `it.skip`
+// `sim.match` never issuing a switch order. One case remains `it.skip`
 // because `SimHostPort` (the fixed contract this milestone's game loop is
 // built against -- `step`/`planTicks`/`cancelPlannedTicks`/`frame`/
-// `roster`/`tick`/`dispose`) genuinely cannot support them yet; see each
+// `roster`/`tick`/`dispose`) genuinely cannot support it yet; see that
 // skip's own comment for the specific blocker.
+//
+// "match screen goal replay"'s case USED to be skipped for the same
+// reason -- `SimHostPort.frame()` returns a presentation-derived
+// `RenderFrame` with no raw `MatchState` -- but `MatchScreenPorts.matchState`
+// (match.ts's "THE GAME LOOP" section) now closes that gap: a caller
+// injects raw state directly, sidestepping `SimHostPort` entirely (a FIXED
+// contract shared with `@gc/app`'s `sim_host.ts`, so it could not be widened
+// here -- see match.ts's own doc). That case now drives `@gc/render`'s REAL
+// `replay` module (already pure/real, no wasm involved -- the same
+// "TS-glue-observable analog" pattern `match_rollback_lab.spec.ts` already
+// uses for `correctionSmoothing`/`viewState`) against a fake `matchState`
+// source, the same role `FakeSimHost` already plays for `SimHostPort`.
 
 import { describe, expect, it } from "vitest";
+import { Vec2 } from "@gc/core";
 import { bindings, inputSample } from "@gc/input";
 import type { KeyboardState } from "@gc/input";
+import { replay } from "@gc/render";
+import type { replayTypes } from "@gc/render";
 import { MatchScreen, MatchScreenAsRealMatchScreen } from "./match.ts";
 import type { InputSample, RenderFrame, RenderFrameRoster, RenderPort, SimHostFactory, SimHostPort } from "./match.ts";
 
@@ -119,6 +134,10 @@ class FakeSimHost implements SimHostPort {
   step(sample: InputSample): void {
     this.stepCalls.push(sample);
     this.tickCount += 1;
+    // A goal replay's "the sim is frozen during the replay" assertion needs
+    // SOMETHING to observably advance only while `step` is actually called
+    // -- `time_left` is the cheapest live field this fake already carries.
+    this.hud.time_left = Math.max(0, this.hud.time_left - FAKE_TICK_SECONDS);
   }
 
   cancelPlannedTicks(): void {
@@ -154,6 +173,78 @@ function makeHostFactory(): { readonly factory: SimHostFactory; readonly hosts: 
 
 const PLAY_KEY = first(bindings.control("play").keys);
 const MODIFIER_KEY = first(bindings.control("modifier").keys);
+
+// --- a minimal raw-MatchState fixture, for MatchScreenPorts.matchState -----
+// (goal-replay tests only; every field this module never reads is a fixed,
+// static placeholder -- unlike replay.spec.ts's own fixture, which needs
+// varied per-player values to prove capture/celebration/playback carry them).
+
+function fixtureMatchPlayer(id: string, team: "home" | "away", pos: Vec2): replayTypes.MatchPlayer {
+  return {
+    id,
+    team,
+    pos,
+    run_vel: new Vec2(0, 0),
+    facing: new Vec2(team === "home" ? 1 : -1, 0),
+    radius: 10,
+    is_keeper: false,
+    keeper_state: "base",
+    keeper_set: 0,
+    slide_timer: 0,
+    tackle_timer: 0,
+    stun_timer: 0,
+    settle_timer: 0,
+    sprinting: false,
+    outfield_decision: { version: 1, generation: 0, rng_state: 1, remaining: 0, context: "offball", intent: "none" },
+    dive_timer: 0,
+    dive_dir: new Vec2(0, 0),
+    keeper_get_up_timer: 0,
+    grab_timer: 0,
+    throw_timer: 0,
+    windup_timer: 0,
+    aerial_timer: 0,
+    aerial_jump: 0,
+    sprint_meter: 1,
+    jockey_timer: 0,
+  };
+}
+
+/**
+ * A `MatchScreenPorts.matchState` fake, for goal-replay tests: one drifting
+ * player so the replay buffer holds observable motion, `time_left`/`score`
+ * mirrored live off `getHost()`'s current `hud`. Takes a THUNK, not a
+ * `FakeSimHost` directly -- `MatchScreenPorts` is built as an object literal
+ * before `new MatchScreen(...)` has run its constructor (which is what
+ * actually populates `makeHostFactory`'s `hosts` array), so a captured host
+ * reference would still be `undefined` at that point; a thunk defers the
+ * lookup to each call, by which time the host exists.
+ */
+function fixtureMatchStateSource(getHost: () => FakeSimHost): () => replayTypes.MatchState {
+  let ballX = 480;
+  return (): replayTypes.MatchState => {
+    const host = getHost();
+    ballX += 2;
+    return {
+      field: { w: 960, h: 540 },
+      goal_home: { x: -12, y: 210, w: 12, h: 120 },
+      goal_away: { x: 960, y: 210, w: 12, h: 120 },
+      score: { home: host.hud.home_score, away: host.hud.away_score },
+      time_left: host.hud.time_left,
+      outfield_press: {
+        home: { version: 1, mode: "inactive", reason: "no_trigger" },
+        away: { version: 1, mode: "inactive", reason: "no_trigger" },
+      },
+      transition: { version: 1, hold: 0, elapsed: 0 },
+      transition_windows: { home: { counterpress: 0, counterattack: 0 }, away: { counterpress: 0, counterattack: 0 } },
+      ball: new Vec2(ballX, 270),
+      ball_vel: new Vec2(120, 0),
+      ball_z: 0,
+      ball_vz: 0,
+      players: [fixtureMatchPlayer("home_1", "home", new Vec2(ballX - 20, 270))],
+      events: [],
+    };
+  };
+}
 
 describe("match screen rematch (tier 2)", () => {
   it("R restarts a finished match with the same pre-match choices", () => {
@@ -444,36 +535,40 @@ describe("MatchScreenAsRealMatchScreen (tier 2)", () => {
 });
 
 describe("match screen goal replay (tier 2)", () => {
-  // Re-checked, not just trusted: `@gc/render` (which owns the real
-  // `replay.ts`) IS now a declared dependency of `@gc/screens` -- that half
-  // of the original blocker is cleared, and `match_rollback_lab.spec.ts`'s
-  // "aggregates multi-tick edges, holds, and corrections" now wires
-  // `@gc/render`'s real `correctionSmoothing`/`viewState` into `MatchScreen`
-  // directly (see match.ts's "THE ROLLBACK LABORATORY" section).
-  //
-  // What is NOT cleared, and is a more precise restatement of the same
-  // underlying gap: `replay.recordBoundary`/`captureFrame` need a raw
-  // `MatchState` -- `outfield_press`/`transition`/per-player
-  // `outfield_decision` and every timer (`tackle_timer`, `keeper_get_up_timer`,
-  // ...), see `replay.ts`'s own `MatchState`/`MatchPlayer` interfaces.
-  // `SimHostPort.frame()` returns `crates/gc-render/src/frame.rs`'s
-  // `RenderFrame` instead -- a PRESENTATION-DERIVED, structure-of-arrays wire
-  // shape (already-eased dive/grab/windup timers, a selected pose id, no
-  // `outfield_decision`/`outfield_press`/`transition` at all) built
-  // specifically so the sim/renderer boundary crosses once per frame, not so
-  // a consumer can reconstruct raw sim state from it. There is no way to
-  // build a `replay.ts`-shaped `MatchState` from what `SimHostPort` exposes.
-  //
-  // Widening `SimHostPort` to also carry raw `MatchState` is not this file's
-  // call to make unilaterally: it is a FIXED contract shared with `@gc/app`'s
-  // `sim_host.ts` (this file's own header), so diverging it here would just
-  // make the two silently disagree. A real fix needs either a new
-  // `@gc/wasm`/`crates/gc-render` export carrying (or reconstructing) raw
-  // match state, or accepting a second wasm boundary crossing for replay
-  // capture specifically -- both Rust/wasm-side decisions outside this
-  // package's ownership this task.
-  it.skip(
-    "a goal freezes the sim into a slow-mo replay; skipping resumes [SimHostPort's RenderFrame is presentation-derived and carries no raw MatchState for replay.ts's captureFrame; see this describe block's header]",
-    () => {},
-  );
+  // Cleared: `MatchScreenPorts.matchState` (match.ts's "THE GAME LOOP"
+  // section) is the new, second wasm-boundary crossing this describe
+  // block's OLD header said would be the real fix -- see this file's own
+  // header for the full re-check. `SimHostPort` itself stays exactly the
+  // fixed contract it was; this is a SEPARATE, optional port, so
+  // `@gc/app`'s `sim_host.ts` is unaffected either way.
+  it("a goal freezes the sim into a slow-mo replay; skipping resumes", () => {
+    replay.reset();
+    replay.resetTuning();
+    const { factory, hosts } = makeHostFactory();
+    const screen = new MatchScreen({
+      createHost: factory,
+      renderer: noopRenderer,
+      keyboard: fakeKeyboard({}),
+      replay,
+      matchState: fixtureMatchStateSource(() => hosts[0]!),
+    });
+
+    for (let i = 0; i < 40; i += 1) {
+      // build up recorded footage
+      screen.update(1 / 60);
+    }
+    hosts[0]!.hud.home_score += 1; // goal edge
+    screen.update(1 / 60);
+    expect(replay.active(), "the replay rolls after a goal").toBe(true);
+
+    const t0 = hosts[0]!.hud.time_left;
+    screen.update(1 / 60);
+    expect(hosts[0]!.hud.time_left, "the sim is frozen during the replay").toBe(t0);
+
+    screen.event({ kind: "key", key: "space" });
+    expect(replay.active(), "Space skips the replay").toBe(false);
+
+    screen.update(1 / 60);
+    expect(hosts[0]!.hud.time_left, "live play resumes").toBeLessThan(t0);
+  });
 });
