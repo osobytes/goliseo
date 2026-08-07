@@ -13,6 +13,7 @@
 use std::cell::RefCell;
 
 use gc_render::frame::RenderFrameRoster;
+use gc_sim::combat_snapshot::CombatMatchState;
 use gc_sim::match_snapshot::MatchState;
 use gc_sim::slot_input::SlotInputProducerState;
 use gc_sim::tuning::Tuning;
@@ -33,6 +34,14 @@ pub struct Entry {
     /// `crate::session`'s module doc for why every session runs in slot
     /// mode and therefore always needs one.
     pub producer: SlotInputProducerState,
+    /// This session's combat companion, present only when constructed with
+    /// `combat_enabled = true` (`crate::session::Session::new`). Mirrors
+    /// `game/screens/match.lua`'s own `self._combat_state`: built once, at
+    /// construction, via `gc_sim::combat::new_state` (`combat_sim.new_state`
+    /// in the Lua), then threaded through every subsequent step unchanged
+    /// in shape — `None` when the option is off, exactly like an ordinary
+    /// (non-combat) Lua match never builds one either.
+    pub combat: Option<CombatMatchState>,
 }
 
 thread_local! {

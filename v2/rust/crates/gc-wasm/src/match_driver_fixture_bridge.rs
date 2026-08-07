@@ -832,7 +832,7 @@ mod tests {
 
         let freeze_json = match_driver_fixture_freeze_json("1v1", None, None).unwrap();
         let manifest_json = match_driver_fixture_manifest_json("1v1").unwrap();
-        let session = Session::new("nebula", "orion", 7.0, 20.0, 3, None)
+        let session = Session::new("nebula", "orion", 7.0, 20.0, 3, None, None)
             .expect("the fixture team ids always construct a valid session");
 
         let bridge = crate::match_driver_bridge::MatchDriverBridge::new(

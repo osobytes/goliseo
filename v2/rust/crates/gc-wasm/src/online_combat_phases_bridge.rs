@@ -591,7 +591,7 @@ mod tests {
         // `session` is required by `MatchDriverBridge::new`'s signature but
         // never actually read once `initial_snapshot_override` is supplied
         // -- see that parameter's own doc.
-        let session = Session::new("nebula", "orion", 7.0, 20.0, 3, None)
+        let session = Session::new("nebula", "orion", 7.0, 20.0, 3, None, None)
             .expect("the fixture team ids always construct a valid session");
 
         let host_handle = online_combat_phase_boundary_zero("contact", None)

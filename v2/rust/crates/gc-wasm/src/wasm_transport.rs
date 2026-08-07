@@ -109,6 +109,20 @@ struct PeerLink {
     peer_id: String,
     slot: i64,
     state: TransportPeerState,
+    /// The underlying ICE connection state, mirroring
+    /// `gc_netcode::fake_star::FakeStarTransport`'s own peer field of the
+    /// same name and the exact same vocabulary
+    /// (`"new"`/`"connected"`/`"closed"`) — see this module's own doc for
+    /// why this transport reproduces that vocabulary instead of inventing
+    /// one. `fake_star.rs` also uses `"checking"` while its in-process
+    /// signaling (`request_offer`/`accept_answer`) is pending, but this
+    /// transport's own signaling methods are unconditionally
+    /// `RoleForbidden` (see the module doc's "Peer lifecycle is JS-driven,
+    /// not signaling-driven" section) — a real connection's ICE negotiation
+    /// already happened, entirely outside this adapter, before
+    /// `set_peer_connected` is ever called, so `"checking"` never applies
+    /// here and is not reproduced.
+    ice_state: String,
     sent: i64,
     received: i64,
     dropped_outbound: i64,
@@ -122,6 +136,8 @@ impl PeerLink {
             peer_id,
             slot,
             state: TransportPeerState::New,
+            // Mirrors `fake_star::PeerLink::new`'s own `ice_state: "new"`.
+            ice_state: "new".to_string(),
             sent: 0,
             received: 0,
             dropped_outbound: 0,
@@ -294,10 +310,14 @@ impl WasmStarTransport {
 
     /// Reports that the real connection to `peer_id` (established elsewhere,
     /// by `packages/transport`) is up. Mirrors the moment
-    /// `fake_star.rs`'s `link` marks both sides `Connected`. A no-op if
-    /// `peer_id` is not an open link.
+    /// `fake_star.rs`'s `link` marks both sides `Connected` *and* sets
+    /// `ice_state = "connected"` on both peer links. A no-op if `peer_id` is
+    /// not an open link.
     pub fn set_peer_connected(&self, peer_id: &str) {
         let mut inner = self.inner.borrow_mut();
+        if let Some(peer) = inner.peers.get_mut(peer_id) {
+            peer.ice_state = "connected".to_string();
+        }
         set_peer_state(&mut inner, peer_id, TransportPeerState::Connected);
     }
 
@@ -308,6 +328,12 @@ impl WasmStarTransport {
         let mut inner = self.inner.borrow_mut();
         if let Some(peer) = inner.peers.get_mut(peer_id) {
             peer.last_error = Some(detail.to_string());
+            // `fake_star.rs`'s `close_peer` sets the *remote* peer's own
+            // `ice_state` to `"closed"` for exactly this case (a link torn
+            // down without that side calling `close_peer` itself) -- it has
+            // no separate "disconnected" ICE string, and neither does this
+            // transport.
+            peer.ice_state = "closed".to_string();
         }
         set_peer_state(&mut inner, peer_id, TransportPeerState::Disconnected);
         push_event(
@@ -441,6 +467,9 @@ impl StarTransportAdapter for WasmStarTransport {
         let detail = reason.unwrap_or("wasm transport peer closed").to_string();
         if let Some(peer) = inner.peers.get_mut(peer_id) {
             peer.last_error = Some(detail.clone());
+            // Mirrors `fake_star::close_peer`'s own `peer.ice_state =
+            // "closed"` on the closing side.
+            peer.ice_state = "closed".to_string();
         }
         set_peer_state(&mut inner, peer_id, TransportPeerState::Closed);
         Ok(true)
@@ -606,7 +635,7 @@ impl StarTransportAdapter for WasmStarTransport {
                     peer_id: peer.peer_id.clone(),
                     slot: peer.slot,
                     state: Some(peer.state),
-                    ice_state: String::new(),
+                    ice_state: peer.ice_state.clone(),
                     control,
                     input: TransportChannelDiagnostics::default(),
                     sequence_gaps: 0,
@@ -847,5 +876,49 @@ mod tests {
             transport.take_signal("guest_1").unwrap_err().code,
             TransportErrorCode::RoleForbidden
         );
+    }
+
+    #[test]
+    fn ice_state_is_never_empty_once_a_peer_exists_and_tracks_its_lifecycle() {
+        // Before this fix, `diagnostics()` always reported `ice_state:
+        // String::new()` -- failing the export schema's "at least 1 byte"
+        // invariant the moment any peer link existed. This proves the real
+        // fix: `ice_state` mirrors `gc_netcode::fake_star`'s own vocabulary
+        // ("new" -> "connected" -> "closed") at each corresponding lifecycle
+        // event, and is never empty.
+        let mut host = WasmStarTransport::new(TransportRole::Host, None, None);
+        host.initialize().unwrap();
+        host.open_peer("guest_1").unwrap();
+
+        let new_ice_state = host.diagnostics().peers[0].ice_state.clone();
+        assert_eq!(
+            new_ice_state, "new",
+            "a freshly opened peer link is 'new', never empty"
+        );
+
+        host.set_peer_connected("guest_1");
+        let connected_ice_state = host.diagnostics().peers[0].ice_state.clone();
+        assert_eq!(connected_ice_state, "connected");
+
+        host.close_peer("guest_1", None).unwrap();
+        let closed_ice_state = host.diagnostics().peers[0].ice_state.clone();
+        assert_eq!(closed_ice_state, "closed");
+    }
+
+    #[test]
+    fn set_peer_disconnected_reports_ice_state_closed_like_fake_star_does() {
+        // `gc_netcode::fake_star::close_peer` sets the *remote* (non-closing)
+        // peer's own `ice_state` to `"closed"` too -- there is no separate
+        // "disconnected" ICE string in that vocabulary. `set_peer_disconnected`
+        // is this transport's equivalent of learning about an unexpected
+        // remote teardown, so it must report the same value.
+        let mut host = WasmStarTransport::new(TransportRole::Host, None, None);
+        host.initialize().unwrap();
+        host.open_peer("guest_1").unwrap();
+        host.set_peer_connected("guest_1");
+
+        host.set_peer_disconnected("guest_1", "ice failure");
+        let ice_state = host.diagnostics().peers[0].ice_state.clone();
+        assert_eq!(ice_state, "closed");
     }
 }

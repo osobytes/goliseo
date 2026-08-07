@@ -410,3 +410,75 @@ describe("matchDriverFixture bridge: MatchDriverBridge's observeCheckpoint", () 
     }
   });
 });
+
+describe("matchDriverFixture bridge: MatchDriverBridge reaching full time (wasm-target regression)", () => {
+  // This is the one case in this file that MUST run against the real
+  // compiled wasm32 artifact to mean anything -- `crates/gc-wasm/src/
+  // match_driver_bridge.rs`'s own native `mod tests` (`cargo test
+  // --workspace`) cannot catch this defect at all: off wasm32,
+  // `gc_netcode::match_driver::default_clock` calls
+  // `std::time::SystemTime::now()`, which works fine natively and only
+  // traps ("RuntimeError: unreachable", uncatchable the way a normal
+  // `Result`/thrown `Error` is) on `wasm32-unknown-unknown`. That gap --
+  // green native tests, a crash the instant a real online match reaches
+  // full time in a browser -- is exactly how this defect survived; see
+  // `crates/gc-wasm/src/match_driver_bridge.rs`'s `driver_settle_clock` for
+  // the fix. This file already only runs against `dist/pkg/gc_wasm.cjs`
+  // (the real compiled artifact, per this file's own header), so it is the
+  // right home for the one case that specifically needs that to be true.
+  it("does not trap the wasm instance when a match runs all the way to full time", () => {
+    const host = loadSimHost();
+    // `humans: 1` seats only the host as a live human ("1v1" mode's other
+    // slot runs entirely bot-controlled) -- deliberately avoiding the need
+    // for a second, real guest driver to confirm input. A lone host with an
+    // opened-but-silent guest peer stalls on `confirmation_stalled` well
+    // before full time (confirmed empirically while building this test:
+    // status flips at driver step 30, `ROLLBACK_WINDOW_TICKS`), which would
+    // never exercise the crash site this test exists to cover.
+    const freezeJson = host.matchDriverFixtureFreezeJson("1v1", undefined, 1);
+    const manifestJson = host.matchDriverFixtureManifestJson("1v1");
+    const session = newSession(host);
+    try {
+      // A one-second match (60 ticks at the fixed 60 Hz driver rate) so
+      // this test reaches full time -- and therefore the crash site,
+      // `reach_full_time`'s call into the injected settle clock -- in a
+      // handful of `advance()` calls rather than the fixture's own
+      // multi-minute default duration.
+      const shortSnapshot = host.matchDriverFixtureInitialSnapshot(1, false, 7);
+      const bridge = new host.MatchDriverBridge(
+        session,
+        "host",
+        "host",
+        freezeJson,
+        manifestJson,
+        undefined,
+        undefined,
+        shortSnapshot,
+      );
+      bridge.initializeTransport();
+
+      let status: string = "active";
+      for (let step = 0; step < 200 && status === "active"; step += 1) {
+        // The exact crash site: `advance` -> `MatchDriver::advance` ->
+        // `reach_full_time` -> the injected settle clock. Before this
+        // fix, every call once the match reached full time trapped the
+        // wasm instance instead of returning or throwing a catchable
+        // error.
+        expect(() => bridge.advance(host.inputFrameNeutralSample())).not.toThrow();
+        status = JSON.parse(bridge.statusJson()) as string;
+      }
+
+      expect(status, "a one-second match must reach a terminal status within 200 driver steps").not.toBe(
+        "active",
+      );
+      // A wasm trap poisons the whole instance -- every subsequent call
+      // into it fails too, not just the one that hit `unreachable`. Calling
+      // back into the bridge after full time proves this was a real,
+      // fully-recovered path, not merely a call that happened not to throw.
+      expect(() => bridge.diagnosticsJson()).not.toThrow();
+      expect(() => bridge.transportDiagnosticsJson()).not.toThrow();
+    } finally {
+      session.free();
+    }
+  });
+});

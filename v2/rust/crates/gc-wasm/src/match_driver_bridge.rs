@@ -109,6 +109,86 @@ fn js_err(message: impl Into<String>) -> JsValue {
     JsValue::from_str(&message.into())
 }
 
+/// The settle-phase wall-clock source [`MatchDriverBridge::new`] injects as
+/// `MatchDriverOptions.clock` (`gc_netcode::match_driver`'s own doc on that
+/// field: "injected so the settle bound is testable. Defaults to
+/// `default_clock`").
+///
+/// ## Why this exists at all
+///
+/// `gc_netcode::match_driver::default_clock` — the fallback a `None` here
+/// would select — calls `std::time::SystemTime::now()`, which is
+/// unimplemented on `wasm32-unknown-unknown` and **traps** the wasm
+/// instance (`RuntimeError: unreachable`) rather than returning an error a
+/// caller could catch. `reach_full_time` (`match_driver.rs`) calls the
+/// injected clock unconditionally the moment a match reaches full time, so
+/// every real online match that runs to completion in a browser hit this —
+/// confirmed independently through `match_presentation.spec.ts`'s "publishes
+/// the lifecycle exactly once through full time" case and a standalone
+/// script driving this bridge to full time under node.
+///
+/// ## Why this is safe to fix off the determinism path
+///
+/// `default_clock`'s own doc states the invariant this fix must preserve:
+/// "Nothing simulated reads this: it can only end a settle phase early,
+/// never change a tick." `reach_full_time`/`settle` (`match_driver.rs`) only
+/// ever use the clock to decide *when* to give up waiting for the final
+/// boundary's confirmation (`settle_deadline`) — never to pick a tick, a
+/// hash, or any simulated value two peers must agree on. So the wall-clock
+/// value this returns can differ, even wildly, between the wasm build and a
+/// native one (or between two peers) with zero effect on the frozen OMP-1
+/// digests (`final_hash`/`sequence_digest`) — [`MatchDriverBridge::advance`]'s
+/// own doc names this same clock-vs-determinism boundary for
+/// `rollback_events`, and this is the same boundary.
+///
+/// ## Why injection here, not a `wasm32` branch inside `default_clock` itself
+///
+/// Three fixes were on the table (see this crate's final report): a
+/// `wasm32` `cfg` branch inside `gc_netcode::match_driver::default_clock`
+/// itself, a monotonic step counter, or injecting the host's real clock
+/// through the `clock` seam that function's own field already exists for.
+/// This picks the third. `gc_netcode` is the portable reducer crate --
+/// nothing else in it depends on `wasm-bindgen`/`js-sys`, and every one of
+/// its own tests already runs natively (`cargo test --workspace`, no wasm
+/// target involved). Patching `default_clock` itself would mean adding a
+/// browser-only dependency to that crate for exactly one caller; injecting
+/// here instead keeps `gc_netcode` dependency-free of the browser and puts
+/// the browser-specific answer where every other browser-specific answer in
+/// this workspace already lives -- `gc-wasm`, the crate whose entire job is
+/// bridging into JS. It also matches the field's own doc: "injected... so
+/// the settle bound is testable" already names injection as the intended
+/// mechanism, not an incidental one.
+///
+/// `js_sys::Date::now()` (milliseconds since the Unix epoch) divided by
+/// `1000.0` reproduces `default_clock`'s own documented semantics exactly
+/// ("wall-clock seconds since the Unix epoch") rather than switching to a
+/// differently-anchored monotonic source like `performance.now()` (seconds
+/// since the page's own navigation start) -- a real behavioral difference
+/// this fix must not introduce silently.
+///
+/// `#[cfg(target_arch = "wasm32")]` only: see `Cargo.toml`'s
+/// `[target.'cfg(target_arch = "wasm32")'.dependencies]` entry for why
+/// `js-sys` is not part of the native build at all, so this function does
+/// not exist on the native (non-wasm32) target this crate's own `mod tests`
+/// runs under -- [`driver_settle_clock`] (the `not(wasm32)` twin, right
+/// below) is what native `cargo test` links instead, preserving every
+/// existing native test's behavior (`default_clock`/`SystemTime`) bit for
+/// bit.
+#[cfg(target_arch = "wasm32")]
+fn driver_settle_clock() -> Option<Box<dyn FnMut() -> f64>> {
+    Some(Box::new(|| js_sys::Date::now() / 1000.0))
+}
+
+/// The native (non-wasm32) twin of the `wasm32` [`driver_settle_clock`]
+/// above: `None` selects `gc_netcode::match_driver::new`'s own fallback,
+/// `default_clock` (`std::time::SystemTime`) -- exactly what every native
+/// test in this crate (`mod tests` below, `match_driver_fixture_bridge.rs`'s
+/// own tests, ...) already ran against before this fix, unchanged.
+#[cfg(not(target_arch = "wasm32"))]
+fn driver_settle_clock() -> Option<Box<dyn FnMut() -> f64>> {
+    None
+}
+
 fn parse_json(text: &str) -> Result<Json, JsValue> {
     Json::parse(text).map_err(js_err)
 }
@@ -602,7 +682,13 @@ impl MatchDriverBridge {
             hash_interval_ticks: None,
             settle_timeout_ticks: None,
             settle_timeout_seconds: None,
-            clock: None,
+            // See `driver_settle_clock`'s own doc: `Some` on `wasm32`
+            // (a real host clock, so `reach_full_time`/`settle` never call
+            // `default_clock`'s `SystemTime::now()`, unimplemented and
+            // trapping on that target), `None` everywhere else (this
+            // crate's own native tests, which already exercised
+            // `default_clock` correctly).
+            clock: driver_settle_clock(),
             rules: Box::new(rules),
         });
 
@@ -1024,7 +1110,7 @@ mod tests {
         let freeze_json = freeze_to_json(&freeze).to_json_string();
         let manifest_json = value_to_json(&manifest).to_json_string();
 
-        let session = Session::new("nebula", "orion", 7.0, 20.0, 3, None)
+        let session = Session::new("nebula", "orion", 7.0, 20.0, 3, None, None)
             .expect("the fixture team ids always construct a valid session");
 
         let mut bridge = MatchDriverBridge::new(

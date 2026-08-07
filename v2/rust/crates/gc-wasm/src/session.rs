@@ -16,10 +16,21 @@
 //! This binds slot-mode play only ([`gc_sim::input_frame::InputOwnership`]),
 //! not the legacy single-player `MatchInput` path — slot mode is what the
 //! rollback netcode and the determinism fixture both use, and is the only
-//! path this wave's acceptance test exercises. A session always runs
-//! without combat (`combat_state: None` at every [`Session::step`]); wiring
-//! `gc-sim`'s combat system through this surface is follow-up work, not
-//! this wave's job.
+//! path this wave's acceptance test exercises.
+//!
+//! ## Combat is opt-in, mirroring the Lua exactly
+//!
+//! [`Session::new`]'s `combat_enabled` parameter is this surface's version
+//! of `game/screens/match.lua`'s own `_opts.combat_enabled`: `false`/absent
+//! (the default) never builds a combat companion, exactly like an ordinary
+//! Lua match; `true` builds one once, at construction, via
+//! `gc_sim::combat::new_state` (`combat_sim.new_state(initial)` in the
+//! Lua — see `Match:restart`), and [`Session::step`] threads it through
+//! every subsequent `gc_sim::r#match::step` call unchanged in shape
+//! (`Some`/`None` never flips after construction) — this reproduces the
+//! Lua's *behavior*, not a new policy: `Match:restart` builds
+//! `self._combat_state` exactly once and never rebuilds or clears it
+//! mid-match either.
 //!
 //! ## Slot mode has no legacy-input fallback — `Session` must fill it
 //!
@@ -66,6 +77,7 @@
 use gc_data::teams;
 use gc_render::frame::{self as render_frame, RenderFrameOptions};
 use gc_render::frame_buffer;
+use gc_sim::combat;
 use gc_sim::fixed_clock;
 use gc_sim::input_frame::{self, InputFixtureRosters, InputOwnership, InputSlotAssignment};
 use gc_sim::r#match as sim_match;
@@ -198,6 +210,14 @@ impl Session {
     /// before ever offering an id here, not something this constructor
     /// silently re-derives.
     ///
+    /// `combat_enabled` (`None`/omitted defaults to `false`) mirrors
+    /// `game/screens/match.lua`'s own `_opts.combat_enabled` — see this
+    /// module's doc's "Combat is opt-in, mirroring the Lua exactly" section.
+    /// `false` (the default) reproduces the pre-existing behavior exactly:
+    /// no combat companion is ever built, and every [`Session::step`] call
+    /// passes `combat_state: None`, byte for byte what this constructor did
+    /// before this parameter existed.
+    ///
     /// # Errors
     ///
     /// Returns a `JsValue` (a `String`) if either team id is not authored
@@ -210,6 +230,7 @@ impl Session {
         duration_seconds: f64,
         max_goals: i32,
         home_formation: Option<String>,
+        combat_enabled: Option<bool>,
     ) -> Result<Session, JsValue> {
         let home =
             teams::get(home_team_id).ok_or_else(|| JsValue::from_str("unknown home team id"))?;
@@ -223,7 +244,7 @@ impl Session {
         let home_roster: [&str; 5] = home.roster.try_into().expect("checked len == 5");
         let away_roster: [&str; 5] = away.roster.try_into().expect("checked len == 5");
         let tune = Tuning::new();
-        let state = sim_match::new(sim_match::NewMatchOptions {
+        let mut state = sim_match::new(sim_match::NewMatchOptions {
             home,
             away,
             field: PitchSize {
@@ -245,6 +266,18 @@ impl Session {
             human_controlled: None,
             input_ownership: Some(ownership(&home_roster, &away_roster)),
         });
+        // Built once, at construction, exactly like `Match:restart`'s own
+        // `initial_combat = combat_sim.new_state(initial)` -- never rebuilt
+        // or cleared for the rest of this session's life. `None` (the same
+        // roster override `match_driver_fixture::initial_snapshot` and
+        // `match_driver_fixture::DriverRules` both pass) matches every
+        // other already-tested `combat::new_state` call site in this
+        // workspace rather than guessing at an untested override.
+        let combat_state = if combat_enabled.unwrap_or(false) {
+            Some(combat::new_state(&mut state, None))
+        } else {
+            None
+        };
         let roster = render_frame::roster(&state);
         let producer = slot_input::new_producer(local_slot_sources(seed));
         let handle = registry::insert(Entry {
@@ -252,6 +285,7 @@ impl Session {
             tune,
             roster,
             producer,
+            combat: combat_state,
         });
         Ok(Session { handle })
     }
@@ -284,7 +318,7 @@ impl Session {
                 &mut entry.state,
                 gc_sim::fixed_clock::TICK_SECONDS,
                 sim_match::StepInput::Frame(&effective),
-                None,
+                entry.combat.as_mut(),
                 &entry.tune,
             );
         });
@@ -323,10 +357,20 @@ impl Session {
 
     /// The current canonical snapshot hash (`gc_sim::match_snapshot::hash`),
     /// for a JS caller that wants to compare against a peer without
-    /// decoding the render block.
+    /// decoding the render block. Includes the combat companion in the
+    /// hashed snapshot when this session was constructed with
+    /// `combat_enabled = true` (`entry.combat`), matching
+    /// `match_snapshot::capture`'s own contract: a combat-bearing session
+    /// whose hash silently dropped combat state would agree with a
+    /// non-combat peer it must not agree with.
     #[wasm_bindgen(js_name = snapshotHash)]
     pub fn snapshot_hash(&self) -> String {
-        self.with_entry(|entry| match_snapshot::hash(&match_snapshot::capture(&entry.state, None)))
+        self.with_entry(|entry| {
+            match_snapshot::hash(&match_snapshot::capture(
+                &entry.state,
+                entry.combat.as_ref(),
+            ))
+        })
     }
 
     /// This match's registry handle, for [`crate::render_export`]'s raw
@@ -398,8 +442,14 @@ impl Session {
     /// doc for why online content resolution beyond team roster selection is
     /// out of this wave's scope) is cheaper and no less correct than
     /// building a second path to the same state.
+    ///
+    /// Carries `entry.combat` into the captured snapshot, same as
+    /// [`Session::snapshot_hash`] — a combat-enabled `Session` handed to
+    /// `crate::match_driver_bridge::MatchDriverBridge::new` seeds an online
+    /// match whose boundary zero silently lacked the combat companion
+    /// otherwise, contradicting the `Session` it was captured from.
     pub(crate) fn capture_snapshot(&self) -> match_snapshot::MatchSnapshot {
-        self.with_entry(|entry| match_snapshot::capture(&entry.state, None))
+        self.with_entry(|entry| match_snapshot::capture(&entry.state, entry.combat.as_ref()))
     }
 }
 
@@ -578,7 +628,7 @@ mod slot_wiring_tests {
             // enough that a two-minute match never hits it, so `finished`
             // is driven by the clock exactly like an ordinary browser
             // match, not by a test-only goal cap.
-            let mut session = Session::new("nebula", "orion", seed, 120.0, 99, None)
+            let mut session = Session::new("nebula", "orion", seed, 120.0, 99, None, None)
                 .expect("authored teams with five-player rosters");
             let mut total_events: usize = 0;
             loop {
@@ -603,5 +653,94 @@ mod slot_wiring_tests {
                  -- every non-local slot is still receiving permanent neutral input"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod combat_opt_in_tests {
+    use super::*;
+
+    fn neutral_wire(tick: i64) -> String {
+        let neutral = input_frame::new(tick, None).expect("an all-neutral frame is always valid");
+        input_frame::encode(&neutral).expect("a valid frame always encodes")
+    }
+
+    /// Regression test for this wave's bug: before this fix,
+    /// `Session::step` hard-coded `combat_state: None` unconditionally --
+    /// there was no way to turn combat on at all, for any caller. `None`/
+    /// omitted must keep reproducing that exact prior behavior (no combat
+    /// companion, ever).
+    #[test]
+    fn combat_enabled_omitted_or_false_never_builds_a_combat_companion() {
+        for combat_enabled in [None, Some(false)] {
+            let mut session = Session::new("nebula", "orion", 7.0, 20.0, 3, None, combat_enabled)
+                .expect("authored teams with five-player rosters");
+            assert!(
+                session.with_entry(|entry| entry.combat.is_none()),
+                "combat_enabled={combat_enabled:?} must not build a combat companion"
+            );
+            // Stepping must still work exactly as before -- no combat state
+            // to pass means `sim_match::step` keeps receiving `None`.
+            let tick = session.input_tick() as i64;
+            session
+                .step(&neutral_wire(tick))
+                .expect("a canonical neutral wire always decodes");
+        }
+    }
+
+    /// The opt-in itself: `combat_enabled = true` builds the combat
+    /// companion once, at construction (mirroring `Match:restart`'s
+    /// `combat_sim.new_state(initial)`), and every `step` call afterward
+    /// keeps driving it without panicking -- proving the wiring reaches
+    /// `sim_match::step`'s `combat_state` parameter for real, not just that
+    /// `Entry.combat` is non-`None` at construction.
+    #[test]
+    fn combat_enabled_true_builds_and_drives_a_combat_companion_every_tick() {
+        let mut session = Session::new("nebula", "orion", 7.0, 20.0, 3, None, Some(true))
+            .expect("authored teams with five-player rosters");
+        assert!(
+            session.with_entry(|entry| entry.combat.is_some()),
+            "combat_enabled=true must build a combat companion at construction"
+        );
+        for _ in 0..30 {
+            let tick = session.input_tick() as i64;
+            session
+                .step(&neutral_wire(tick))
+                .expect("a canonical neutral wire always decodes");
+            assert!(
+                session.with_entry(|entry| entry.combat.is_some()),
+                "the combat companion must never disappear mid-match"
+            );
+        }
+    }
+
+    /// [`Session::snapshot_hash`]/[`Session::capture_snapshot`] must carry
+    /// the combat companion through, not silently drop it the way both did
+    /// before this fix (`match_snapshot::capture(&entry.state, None)`
+    /// unconditionally). Two sessions built from the same seed/duration but
+    /// differing only in `combat_enabled` must disagree on the captured
+    /// snapshot's hash -- if they agreed, the combat companion would not
+    /// actually be part of what gets captured/hashed.
+    #[test]
+    fn snapshot_hash_and_capture_snapshot_carry_the_combat_companion() {
+        let without_combat = Session::new("nebula", "orion", 7.0, 20.0, 3, None, Some(false))
+            .expect("authored teams with five-player rosters");
+        let with_combat = Session::new("nebula", "orion", 7.0, 20.0, 3, None, Some(true))
+            .expect("authored teams with five-player rosters");
+
+        assert_ne!(
+            without_combat.snapshot_hash(),
+            with_combat.snapshot_hash(),
+            "a combat-enabled session's hash must differ from an otherwise-identical \
+             non-combat session -- otherwise the combat companion is not really being hashed"
+        );
+
+        let without_combat_snapshot = without_combat.capture_snapshot();
+        let with_combat_snapshot = with_combat.capture_snapshot();
+        assert_ne!(
+            match_snapshot::hash(&without_combat_snapshot),
+            match_snapshot::hash(&with_combat_snapshot),
+            "capture_snapshot must also carry the combat companion through"
+        );
     }
 }

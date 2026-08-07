@@ -705,7 +705,7 @@ mod tests {
         profile_name: &str,
         duration_seconds: f64,
     ) -> RollbackPlayableLab {
-        let session = Session::new("nebula", "orion", 7.0, duration_seconds, 3, None)
+        let session = Session::new("nebula", "orion", 7.0, duration_seconds, 3, None, None)
             .expect("the fixture team ids always construct a valid session");
         let snapshot = session.snapshot_handle();
         let options = format!(
