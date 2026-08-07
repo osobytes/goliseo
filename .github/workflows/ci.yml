@@ -391,6 +391,40 @@ jobs:
             - name: Run the v2 (Rust + TypeScript) interim gate
               run: ./scripts/check_v2.sh
 
+            # The one property no in-process fake can establish: two INDEPENDENT
+            # wasm instances, connected by a real RTCPeerConnection, deriving
+            # identical boundary hashes from real asynchronously-delivered
+            # traffic. Every other online test in this tree runs through fakes
+            # or a single instance, neither of which can observe it.
+            #
+            # It also exercises net_inbox.rs's discipline -- JS enqueues, Rust
+            # drains per tick, arrival is a tick event and never a callback
+            # reaching sim state between ticks -- under REAL callback timing.
+            #
+            # Same-engine Chrome only. The cross-engine Chrome/Firefox variant
+            # needs both browser assets and is worth running less often; it
+            # belongs on a schedule rather than on every push.
+            - name: Install pinned browser evidence dependencies
+              run: |
+                  python3 -m venv "$RUNNER_TEMP/browser-evidence"
+                  "$RUNNER_TEMP/browser-evidence/bin/pip" install \
+                      --require-hashes \
+                      --requirement scripts/browser_matrix-requirements.txt
+
+            - name: Prove two real browser peers agree bit for bit
+              run: |
+                  "$RUNNER_TEMP/browser-evidence/bin/python" -B \
+                      scripts/browser_online_peers.py \
+                      --output "$RUNNER_TEMP/v2-online-peers.json"
+
+            - name: Publish the agreement evidence
+              if: always()
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+              with:
+                  name: v2-online-peers
+                  path: ${{ runner.temp }}/v2-online-peers.json
+                  if-no-files-found: warn
+
     # Its own job on purpose: the harness is minutes of CPU, it needs nothing but
     # LOVE, and nothing else waits on it, so it costs the critical path nothing.
     # Until #279 no job ran it at all -- the only OMP-3 step in CI was the Python
