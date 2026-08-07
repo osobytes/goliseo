@@ -437,6 +437,105 @@ function buildTextSprite(c: TextCommand): THREE.Sprite {
   return sprite;
 }
 
+// The world-space polyline a stroke command draws, or `undefined` when the
+// command is not a batchable stroke (any `mode: "fill"`, and `text`).
+//
+// Points are ABSOLUTE. `buildOne` is free to emit geometry around the origin
+// and then translate the object, because it owns that object; a batch has no
+// per-object transform to hang that on, so everything must be baked in here.
+//
+// Closed shapes are returned already closed (last point == first) rather than
+// as `LineLoop`s, which is why merging them into a strip loses nothing:
+// `ringPoints` and `EllipseCurve.getPoints` both already repeat the start
+// point at the end for a full revolution.
+function strokePolyline(c: DrawCommand): THREE.Vector3[] | undefined {
+  switch (c.kind) {
+    case "rect":
+      if (c.mode === "fill") {
+        return undefined;
+      }
+      return [
+        new THREE.Vector3(c.x, c.y, 0),
+        new THREE.Vector3(c.x + c.w, c.y, 0),
+        new THREE.Vector3(c.x + c.w, c.y + c.h, 0),
+        new THREE.Vector3(c.x, c.y + c.h, 0),
+        new THREE.Vector3(c.x, c.y, 0),
+      ];
+    case "circle":
+      return c.mode === "fill" ? undefined : ringPoints(c.x, c.y, c.r);
+    case "ellipse": {
+      if (c.mode === "fill") {
+        return undefined;
+      }
+      const curve = new THREE.EllipseCurve(c.x, c.y, c.rx, c.ry, 0, 2 * Math.PI, false, 0);
+      return curve.getPoints(CIRCLE_SEGMENTS).map((p) => new THREE.Vector3(p.x, p.y, 0));
+    }
+    case "polygon": {
+      if (c.mode === "fill") {
+        return undefined;
+      }
+      const points = polylinePoints(c.points);
+      const first = points[0];
+      return first === undefined ? points : [...points, first];
+    }
+    case "line":
+      return polylinePoints(c.points);
+    case "arc": {
+      if (c.mode === "fill") {
+        return undefined;
+      }
+      const curve = new THREE.EllipseCurve(c.x, c.y, c.r, c.r, c.angle1, c.angle2, false, 0);
+      return curve.getPoints(CIRCLE_SEGMENTS).map((p) => new THREE.Vector3(p.x, p.y, 0));
+    }
+    case "text":
+      return undefined;
+  }
+}
+
+// Two stroke commands may share one draw call only if every piece of state a
+// `LineBasicMaterial` carries agrees. Colour is the exception -- it moves to a
+// per-vertex attribute -- which is what makes the hex tiling collapsible at
+// all, since those tiles differ in colour and in nothing else.
+function strokeBatchKey(c: DrawCommand): string {
+  return `${c.blend ?? "normal"}|${c.alpha ?? 1}`;
+}
+
+// One draw call for a run of same-state strokes.
+//
+// Each polyline is expanded into explicit segment pairs rather than kept as a
+// strip: a strip cannot represent two disjoint runs in one buffer without a
+// degenerate connecting segment, and a stray hairline across the pitch is
+// exactly the artifact that would be blamed on something else for an hour.
+// The cost is duplicated interior vertices, which is a vertex-buffer trade
+// against a per-object draw call -- at 353 objects that is not close.
+function batchStrokeRun(run: readonly { readonly command: DrawCommand; readonly points: readonly THREE.Vector3[] }[]): THREE.LineSegments {
+  const positions: number[] = [];
+  const colors: number[] = [];
+  for (const { command, points } of run) {
+    const color = colorOf(command);
+    for (let i = 0; i + 1 < points.length; i += 1) {
+      const a = points[i];
+      const b = points[i + 1];
+      if (a === undefined || b === undefined) {
+        continue;
+      }
+      positions.push(a.x, a.y, a.z, b.x, b.y, b.z);
+      colors.push(color.r, color.g, color.b, color.r, color.g, color.b);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  const head = run[0]?.command;
+  const material = new THREE.LineBasicMaterial({
+    vertexColors: true,
+    transparent: head?.alpha !== undefined,
+    opacity: head?.alpha ?? 1,
+    blending: head?.blend === "add" ? THREE.AdditiveBlending : THREE.NormalBlending,
+  });
+  return new THREE.LineSegments(geometry, material);
+}
+
 function buildOne(c: DrawCommand, opts?: PaintOptions): THREE.Object3D {
   switch (c.kind) {
     case "rect": {
@@ -556,6 +655,20 @@ export interface PaintOptions {
   readonly z?: number;
   readonly renderOrder?: number;
   readonly depthTest?: boolean;
+  /**
+   * Merge consecutive runs of stroke commands that share render state into
+   * one `THREE.LineSegments` each, instead of one `THREE.Line` per command.
+   *
+   * OFF by default, and deliberately so: `pitch.spec.ts`'s differential
+   * against the recorded Lua draw stream inspects `group.children` per
+   * command, and batching is exactly the transformation that would make that
+   * comparison meaningless. Callers that want the draw-call win opt in.
+   *
+   * Measured on the static pitch pass, which is what motivated this: 353
+   * `Line` objects -- one draw call each, most of them hex floor tiles --
+   * collapsed into a handful. See `batchStrokeRun`.
+   */
+  readonly batchStrokes?: boolean;
 }
 
 /**
@@ -606,11 +719,52 @@ function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
  * wiping it out.
  */
 export function appendCommands(group: THREE.Group, commands: readonly DrawCommand[], opts?: PaintOptions): void {
-  for (const c of commands) {
-    const obj = buildOne(c, opts);
+  if (opts?.batchStrokes !== true) {
+    for (const c of commands) {
+      const obj = buildOne(c, opts);
+      applyDepthPlacement(obj, opts);
+      group.add(obj);
+    }
+    return;
+  }
+
+  // Only CONSECUTIVE strokes merge. Painter's-algorithm order is the whole
+  // correctness argument for this group's child list, so a run stops at the
+  // first command that is not a same-state stroke -- reordering to gather
+  // more into a batch would be a rendering change dressed up as an
+  // optimisation.
+  let run: { readonly command: DrawCommand; readonly points: readonly THREE.Vector3[] }[] = [];
+  let key: string | undefined;
+  const flush = (): void => {
+    if (run.length === 0) {
+      return;
+    }
+    // A run of one gains nothing and would needlessly change the object type
+    // a caller sees, so it takes the ordinary path.
+    const obj = run.length === 1 ? buildOne(run[0]!.command, opts) : batchStrokeRun(run);
     applyDepthPlacement(obj, opts);
     group.add(obj);
+    run = [];
+    key = undefined;
+  };
+
+  for (const c of commands) {
+    const points = strokePolyline(c);
+    if (points === undefined) {
+      flush();
+      const obj = buildOne(c, opts);
+      applyDepthPlacement(obj, opts);
+      group.add(obj);
+      continue;
+    }
+    const commandKey = strokeBatchKey(c);
+    if (key !== undefined && commandKey !== key) {
+      flush();
+    }
+    key = commandKey;
+    run.push({ command: c, points });
   }
+  flush();
 }
 
 // See PaintOptions' doc comment. Applied once per built object, after

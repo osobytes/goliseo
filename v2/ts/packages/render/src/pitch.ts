@@ -955,7 +955,14 @@ export const pitch = {
     // `player_renderer_3d.ts`'s `characterPool` doc comment.
     const before = new DrawList();
     drawPitchBeforeItems(before, frame, vp, opts, project);
-    paint(group, before.commands);
+    // `batchStrokes`: this pass is the arena backdrop, the floor trapezoid and
+    // its hex tiling, the markings and the goals -- overwhelmingly strokes,
+    // and measured at 353 separate `THREE.Line` objects, one draw call each,
+    // on a frame totalling ~455. Nothing here interleaves with the depth-
+    // sorted entity pass below (that appends AFTER this paint), so merging
+    // consecutive same-state runs cannot reorder anything visible. See
+    // `PaintOptions.batchStrokes` for why it is opt-in rather than default.
+    paint(group, before.commands, { batchStrokes: true });
 
     for (const item of depthSortedItems(players, ball)) {
       // Real depth-testable z for this entity -- see DEPTH ZONES above.

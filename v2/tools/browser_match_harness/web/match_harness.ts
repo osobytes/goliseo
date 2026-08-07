@@ -61,6 +61,12 @@ interface HarnessStats {
   tps: number;
   /** Draw calls in the most recent frame. */
   drawCalls: number;
+  /** Mean ms per frame spent stepping the simulation. */
+  simMs: number;
+  /** Mean ms per frame spent decoding the render frame. */
+  decodeMs: number;
+  /** Mean ms per frame inside `SceneRoot.render` -- scene rebuild + GL. */
+  renderMs: number;
   /** Ticks the most recent render call consumed. >1 means the renderer is
    * behind the simulation, which is also when the shell's known
    * one-sample-per-render-call input bug would double an edge. */
@@ -96,6 +102,9 @@ async function main(): Promise<void> {
     fps: 0,
     tps: 0,
     drawCalls: 0,
+    simMs: 0,
+    decodeMs: 0,
+    renderMs: 0,
     ticksLastFrame: 0,
     tick: 0,
     timeLeft: 0,
@@ -151,7 +160,15 @@ async function main(): Promise<void> {
   let lastTime = performance.now();
   let framesInWindow = 0;
   let ticksInWindow = 0;
+  let simMsInWindow = 0;
+  let decodeMsInWindow = 0;
+  let renderMsInWindow = 0;
   let windowStart = lastTime;
+
+  // Diagnostics handle. This page exists to be measured, and attributing draw
+  // calls needs the scene graph and the renderer -- see the breakdown driver
+  // in scripts/. Not a product affordance: nothing under v2/ts reads this.
+  (globalThis as unknown as { __gcScene?: unknown }).__gcScene = { sceneRoot, glRenderer, THREE };
 
   stats.status = "running";
 
@@ -160,6 +177,7 @@ async function main(): Promise<void> {
     lastTime = now;
     accumulator += elapsed;
 
+    const tSim = performance.now();
     let ticks = 0;
     while (accumulator >= DT && ticks < MAX_TICKS_PER_FRAME) {
       if (session.finished) {
@@ -169,15 +187,20 @@ async function main(): Promise<void> {
       accumulator -= DT;
       ticks += 1;
     }
+    simMsInWindow += performance.now() - tSim;
     stats.ticksLastFrame = ticks;
     ticksInWindow += ticks;
 
+    const tDecode = performance.now();
     const frame = frameNow();
+    decodeMsInWindow += performance.now() - tDecode;
+    const tRender = performance.now();
     glRenderer.info.reset();
     sceneRoot.render(frame, {
       pitch: { home_color: HOME_COLOR, away_color: AWAY_COLOR },
       now: now / 1000,
     });
+    renderMsInWindow += performance.now() - tRender;
     stats.drawCalls = glRenderer.info.render.calls;
 
     framesInWindow += 1;
@@ -192,12 +215,19 @@ async function main(): Promise<void> {
     if (windowSeconds >= 1) {
       stats.fps = Number((framesInWindow / windowSeconds).toFixed(1));
       stats.tps = Number((ticksInWindow / windowSeconds).toFixed(1));
+      stats.simMs = Number((simMsInWindow / Math.max(framesInWindow, 1)).toFixed(2));
+      stats.decodeMs = Number((decodeMsInWindow / Math.max(framesInWindow, 1)).toFixed(2));
+      stats.renderMs = Number((renderMsInWindow / Math.max(framesInWindow, 1)).toFixed(2));
+      simMsInWindow = 0;
+      decodeMsInWindow = 0;
+      renderMsInWindow = 0;
       framesInWindow = 0;
       ticksInWindow = 0;
       windowStart = now;
       if (readout !== null) {
         readout.textContent =
           `fps ${stats.fps}   sim ${stats.tps}/s   ticks/frame ${stats.ticksLastFrame}\n` +
+          `ms/frame  sim ${stats.simMs}  decode ${stats.decodeMs}  render ${stats.renderMs}\n` +
           `draw calls ${stats.drawCalls}   tick ${stats.tick}   ${stats.score}   ${stats.timeLeft.toFixed(1)}s left`;
       }
     }
