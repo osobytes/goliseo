@@ -290,6 +290,7 @@
 //! — rather than a second encoder.
 #![deny(missing_docs)]
 
+pub mod ai_driven;
 pub mod coordinator_bridge;
 pub mod determinism;
 pub mod input_frame_bridge;

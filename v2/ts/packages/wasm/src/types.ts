@@ -138,6 +138,24 @@ export interface DeterminismEvidence {
   readonly snapshot_bytes: number;
 }
 
+/**
+ * Mirrors `gc_wasm::ai_driven::AiDrivenEvidence`
+ * (`crates/gc-wasm/src/ai_driven.rs`) — the AI-driven counterpart of
+ * `DeterminismEvidence` above. Same convention: field names are verbatim Rust
+ * field names, since plain `#[wasm_bindgen]` struct fields are not
+ * camelCase-renamed the way methods are.
+ */
+export interface AiDrivenEvidence {
+  readonly fixture_id: string;
+  readonly ticks: number;
+  /** `ticks + 1` — tick 0 is digested before the first step. */
+  readonly rows: number;
+  readonly final_hash: string;
+  readonly sequence_digest: string;
+  readonly score_home: number;
+  readonly score_away: number;
+}
+
 /** Mirrors `gc_wasm::protocol_bridge::ControlMessageHeader`. */
 export interface ControlMessageHeader {
   readonly kind: string;
@@ -1205,6 +1223,8 @@ export interface GcWasmModule
   readonly FixedClock: FixedClockConstructor;
   readonly TuningRegistry: TuningRegistryConstructor;
   runDeterminismEvidence(): DeterminismEvidence;
+  runAiDrivenEvidence(): AiDrivenEvidence;
+  runAiDrivenEvidenceTo(ticks: number): AiDrivenEvidence;
   decodeControlMessageHeader(wire: string): ControlMessageHeader;
   protocolVocabularyId(): string;
   /** `gc_data::tuning_presets::ALL`, as {@link WasmTuningPreset}s, in panel

@@ -26,6 +26,7 @@ import type {
   Coordinator,
   CoordinatorConstructor,
   ControlMessageHeader,
+  AiDrivenEvidence,
   DeterminismEvidence,
   FixedClockConstructor,
   GcWasmModule,
@@ -48,6 +49,7 @@ export type {
   Coordinator,
   CoordinatorConstructor,
   ControlMessageHeader,
+  AiDrivenEvidence,
   DeterminismEvidence,
   FixedClock,
   FixedClockConstructor,
@@ -137,6 +139,17 @@ export interface SimHost
    * `final_hash`/`sequence_digest` against the pinned native-build
    * digests. */
   runDeterminismEvidence(): DeterminismEvidence;
+  /** Replays the AI-driven reference match inside this wasm module and
+   * returns its digests. The counterpart of `runDeterminismEvidence` for a
+   * match where every player, including the one on the human-input branch,
+   * is AI-driven — so it covers shooting, charging, passing, dashing and the
+   * lossy input quantisation an idle match never reaches. Compare against the
+   * constants `crates/gc-sim/tests/ai_driven_evidence.rs` derives from the
+   * Lua capture. */
+  runAiDrivenEvidence(): AiDrivenEvidence;
+  /** `runAiDrivenEvidence`, stopped after `ticks` ticks — for bisecting a
+   * sequence-digest divergence to the tick it starts on. */
+  runAiDrivenEvidenceTo(ticks: number): AiDrivenEvidence;
   /** This module's linear memory, for reading the `Float64Array` views
    * `buildRenderFrame` hands back. */
   readonly memory: WebAssembly.Memory;
@@ -213,6 +226,8 @@ export function loadSimHost(): SimHost {
     protocolVocabularyId: native.protocolVocabularyId,
     decodeControlMessageHeader: native.decodeControlMessageHeader,
     runDeterminismEvidence: native.runDeterminismEvidence,
+    runAiDrivenEvidence: native.runAiDrivenEvidence,
+    runAiDrivenEvidenceTo: native.runAiDrivenEvidenceTo,
     // `input_frame_bridge.rs` — plain free functions, bound to nothing, so
     // referencing them directly off `native` is exactly as correct as
     // wrapping them in a closure (same as `tuningPresets`/
