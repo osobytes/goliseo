@@ -29,8 +29,11 @@ import type {
   DeterminismEvidence,
   FixedClockConstructor,
   GcWasmModule,
+  InputFrameBridge,
+  InputProtocolBridge,
   MatchDriverBridge,
   MatchDriverBridgeConstructor,
+  MatchDriverFixtureBridge,
   RollbackEventsTimelineConstructor,
   SimSessionConstructor,
   TuningRegistryConstructor,
@@ -44,8 +47,11 @@ export type {
   DeterminismEvidence,
   FixedClock,
   FixedClockConstructor,
+  InputFrameBridge,
+  InputProtocolBridge,
   MatchDriverBridge,
   MatchDriverBridgeConstructor,
+  MatchDriverFixtureBridge,
   RawExports,
   RollbackEventsTimeline,
   RollbackEventsTimelineConstructor,
@@ -54,7 +60,10 @@ export type {
   SnapshotLookup,
   TuningRegistry,
   TuningRegistryConstructor,
+  WasmFakeStarTransport,
+  WasmInputPacket,
   WasmKnob,
+  WasmMatchDriverFixtureSession,
   WasmMatchSnapshot,
   WasmTuningPreset,
 } from "./types.ts";
@@ -65,7 +74,7 @@ const artifactPath = join(here, "..", "dist", "pkg", "gc_wasm.cjs");
 /** The loaded `gc-wasm` module: session lifecycle, the determinism check,
  * lobby wire helpers, and the raw per-frame render path in one typed
  * surface. */
-export interface SimHost {
+export interface SimHost extends InputFrameBridge, InputProtocolBridge, MatchDriverFixtureBridge {
   /** Constructs a live match session. See `SimSession`'s doc. */
   readonly Session: SimSessionConstructor;
   /** Constructs a session coordinator (host or guest). See `Coordinator`'s
@@ -162,6 +171,36 @@ export function loadSimHost(): SimHost {
     protocolVocabularyId: native.protocolVocabularyId,
     decodeControlMessageHeader: native.decodeControlMessageHeader,
     runDeterminismEvidence: native.runDeterminismEvidence,
+    // `input_frame_bridge.rs` — plain free functions, bound to nothing, so
+    // referencing them directly off `native` is exactly as correct as
+    // wrapping them in a closure (same as `tuningPresets`/
+    // `protocolVocabularyId` above).
+    inputFrameEdgeBitsJson: native.inputFrameEdgeBitsJson,
+    inputFrameHeldBitsJson: native.inputFrameHeldBitsJson,
+    inputFrameConstantsJson: native.inputFrameConstantsJson,
+    inputFrameNeutralSample: native.inputFrameNeutralSample,
+    inputFrameNewSample: native.inputFrameNewSample,
+    inputFrameDecodeSampleJson: native.inputFrameDecodeSampleJson,
+    inputFrameQuantizeAxis: native.inputFrameQuantizeAxis,
+    // `input_protocol_bridge.rs`.
+    inputProtocolConstantsJson: native.inputProtocolConstantsJson,
+    inputProtocolNewGuest: native.inputProtocolNewGuest,
+    inputProtocolNewHost: native.inputProtocolNewHost,
+    inputProtocolEncode: native.inputProtocolEncode,
+    inputProtocolDecode: native.inputProtocolDecode,
+    inputProtocolPacketId: native.inputProtocolPacketId,
+    inputProtocolConfirmedTick: native.inputProtocolConfirmedTick,
+    inputProtocolConfirmedSpan: native.inputProtocolConfirmedSpan,
+    inputProtocolClassifyDuplicate: native.inputProtocolClassifyDuplicate,
+    inputProtocolSupersedeForBackpressure: native.inputProtocolSupersedeForBackpressure,
+    // `match_driver_fixture_bridge.rs`.
+    matchDriverFixtureConstantsJson: native.matchDriverFixtureConstantsJson,
+    matchDriverFixtureGuestPeerId: native.matchDriverFixtureGuestPeerId,
+    matchDriverFixturePeerIds: native.matchDriverFixturePeerIds,
+    matchDriverFixtureFreezeJson: native.matchDriverFixtureFreezeJson,
+    matchDriverFixtureManifestJson: native.matchDriverFixtureManifestJson,
+    matchDriverFixtureInitialSnapshot: native.matchDriverFixtureInitialSnapshot,
+    matchDriverFixtureSession: native.matchDriverFixtureSession,
     memory: raw.memory,
     buildRenderFrame(handle: number): Float64Array | null {
       const ok = raw.render_frame_build(handle);

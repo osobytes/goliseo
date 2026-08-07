@@ -420,8 +420,292 @@ export interface TuningRegistryConstructor {
   new (): TuningRegistry;
 }
 
+// ---------------------------------------------------------------------------
+// `input_frame_bridge.rs` — `gc_sim::input_frame`'s per-slot sample codec.
+// A sample crosses as its own canonical wire string (eight lowercase hex
+// characters), never a handle or a JSON object — see that module's doc for
+// why, and `SimSession.step`/`MatchDriverBridge.advance`'s own `sampleWire`
+// parameter for the existing precedent this follows.
+// ---------------------------------------------------------------------------
+
+/** Every function `gc_wasm::input_frame_bridge` exports. Free functions, not
+ * a class — see `SimHost`'s doc for why this package flattens everything
+ * onto one loaded object rather than nesting per-Rust-module namespaces. */
+export interface InputFrameBridge {
+  /** `InputFramePort.EDGE_BITS`, as JSON: every canonical edge-action wire
+   * name mapped to its bit (`{"shoot": 1, "pass": 2, ...}`). */
+  inputFrameEdgeBitsJson(): string;
+  /** Every canonical held-action wire name mapped to its bit, as JSON. */
+  inputFrameHeldBitsJson(): string;
+  /** `gc_sim::input_frame`'s bounds, as JSON: `version`, `slot_count`,
+   * `home_slot_count`, `away_slot_count`, `move_scale`, `max_tick`,
+   * `max_wire_bytes`. */
+  inputFrameConstantsJson(): string;
+  /** `InputFramePort.neutralSample`: the all-zero sample's canonical wire. */
+  inputFrameNeutralSample(): string;
+  /** `InputFramePort.newSample`: builds a validated sample from optional
+   * overrides (unset fields default to zero) and returns its canonical
+   * wire. Throws (a string) on an out-of-bound axis/mask or an invalid
+   * equipment held/edge combination. */
+  inputFrameNewSample(moveX?: number, moveY?: number, held?: number, edges?: number): string;
+  /** Decodes a canonical sample wire back into its fields, as JSON
+   * (`{"move_x", "move_y", "held", "edges"}`). Throws (a string) if `wire`
+   * is not canonical. */
+  inputFrameDecodeSampleJson(wire: string): string;
+  /** Quantizes a raw `[-1, 1]` axis into a signed 8-bit value. Throws (a
+   * string) if `rawAxis` is not finite. */
+  inputFrameQuantizeAxis(rawAxis: number): number;
+}
+
+// ---------------------------------------------------------------------------
+// `input_protocol_bridge.rs` — `gc_netcode::input_protocol`'s wire packets.
+// Wire bytes cross as `Uint8Array` (never `string`) — see that module's doc
+// and `packages/wasm/src/binary_string.ts` for converting to/from
+// `@gc/transport`'s "binary string" `TransportMessage.payload` convention.
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirrors `gc_wasm::input_protocol_bridge::WasmInputPacket` — a decoded or
+ * freshly-built `gc_netcode::input_protocol::Packet`. `sequence`/
+ * `transport_tick` are `InputProtocolPacket`'s two declared fields
+ * (`packages/online/src/net_diagnostics_fixture.ts`); the rest are exposed
+ * too, at no extra cost, for a caller building diagnostics or a second
+ * packet from the first. Field names are verbatim Rust field names, plain
+ * value fields (not camelCase-renamed methods) — the same convention
+ * {@link ControlMessageHeader}/{@link WasmKnob} already use.
+ */
+export interface WasmInputPacket {
+  readonly sequence: number;
+  readonly transport_tick: number;
+  readonly first_input_tick: number;
+  readonly confirmed_span: number;
+  readonly session_id: string;
+  readonly manifest_id: string;
+  readonly sender_id: string;
+  readonly packet_id: string;
+  /** `"guest"` or `"host"`. */
+  readonly kind: string;
+  /** This packet's authority rows, as JSON (`[{"tick", "slot_index",
+   * "sample"}, ...]`, `"sample"` an `inputFrame` canonical hex wire), in
+   * canonical `(tick, slot_index)` order. */
+  readonly rows_json: string;
+  free(): void;
+}
+
+/** Every function `gc_wasm::input_protocol_bridge` exports. */
+export interface InputProtocolBridge {
+  /** `gc_netcode::input_protocol`'s bounds, as JSON: `version`,
+   * `history_rows`, `retained_rows`, `fairness_delay_ticks`,
+   * `max_guest_rows`, `host_window_rows`, `max_host_rows`, `record_bytes`,
+   * `max_wire_bytes`, `min_wire_margin_bytes` — covers
+   * `InputProtocolPort.FAIRNESS_DELAY_TICKS`/`HISTORY_ROWS`. */
+  inputProtocolConstantsJson(): string;
+  /** `InputProtocolPort.newGuest`: builds and validates a single-slot guest
+   * bundle. `rowsJson` is a JSON array of `{"tick", "slot_index",
+   * "sample"}` (`"sample"` an `inputFrame` canonical hex wire). Throws (a
+   * string) if `rowsJson` fails to parse/decode, or the resulting packet
+   * violates a structural invariant (this is how a forged bundle — the
+   * wrong slot, a non-contiguous history — surfaces to a caller building
+   * `net_diagnostics_fixture.ts`'s `forgedBundle`). */
+  inputProtocolNewGuest(
+    sessionId: string,
+    manifestId: string,
+    senderId: string,
+    sequence: number,
+    transportTick: number,
+    firstInputTick: number,
+    confirmedSpan: number | undefined,
+    rowsJson: string,
+  ): WasmInputPacket;
+  /** The host's canonical, multi-slot authority batch. Not required by
+   * `InputProtocolPort` (only `newGuest`/`encode` are declared there), but
+   * the full module's other producing half. Same error behaviour as
+   * {@link InputProtocolBridge.inputProtocolNewGuest}. */
+  inputProtocolNewHost(
+    sessionId: string,
+    manifestId: string,
+    senderId: string,
+    sequence: number,
+    transportTick: number,
+    firstInputTick: number,
+    confirmedSpan: number | undefined,
+    rowsJson: string,
+  ): WasmInputPacket;
+  /** `InputProtocolPort.encode`: this packet's canonical wire bytes. Never
+   * fails — a {@link WasmInputPacket} is always already valid. */
+  inputProtocolEncode(packet: WasmInputPacket): Uint8Array;
+  /** `gc_netcode::input_protocol::decode`: decodes and fully validates a
+   * wire packet against its decode context. `wire` is the raw packet bytes.
+   * Throws (a string) if `wire` fails to decode or does not match
+   * `sessionId`/`manifestId`/`senderId`. */
+  inputProtocolDecode(
+    sessionId: string,
+    manifestId: string,
+    senderId: string,
+    wire: Uint8Array,
+  ): WasmInputPacket;
+  /** `gc_netcode::input_protocol::packet_id`: the stable `fnv1a64` identity
+   * a packet with this `kind`/`sessionId`/`senderId`/`sequence` must carry.
+   * Throws (a string) if `kind` is not `"guest"`/`"host"`, or the other
+   * fields are out of bounds. */
+  inputProtocolPacketId(
+    kind: "guest" | "host",
+    sessionId: string,
+    senderId: string,
+    sequence: number,
+  ): string;
+  /** `gc_netcode::input_protocol::confirmed_tick`. */
+  inputProtocolConfirmedTick(packet: WasmInputPacket): number;
+  /** `gc_netcode::input_protocol::confirmed_span`. */
+  inputProtocolConfirmedSpan(firstInputTick: number, confirmedTick: number): number;
+  /** `gc_netcode::input_protocol::classify_duplicate`: `"idempotent"` for a
+   * byte-identical resend. Throws (a string, a `packet_conflict`) if
+   * `previous`/`incoming` share a sender/sequence identity with different
+   * bytes, or do not share one at all. */
+  inputProtocolClassifyDuplicate(previous: WasmInputPacket, incoming: WasmInputPacket): string;
+  /** `gc_netcode::input_protocol::supersede_for_backpressure`. Throws (a
+   * string, a `backpressure_gap`) if `newer` does not cover every row of
+   * unsent authority `older` carried. */
+  inputProtocolSupersedeForBackpressure(older: WasmInputPacket, newer: WasmInputPacket): WasmInputPacket;
+}
+
+// ---------------------------------------------------------------------------
+// `match_driver_fixture_bridge.rs` — `gc_netcode::match_driver_fixture`,
+// plus a `wasm-bindgen` wrapper over `gc_netcode::fake_star::FakeStarTransport`
+// for the fixture's own in-process star.
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirrors `gc_wasm::match_driver_fixture_bridge::WasmFakeStarTransport` — a
+ * real in-process star endpoint. See that Rust module's doc for how closely
+ * this mirrors (and does not literally implement) `@gc/transport`'s
+ * `StarTransportAdapter`: every fallible method here throws a `string`
+ * rather than returning a `TransportResult<T>` discriminated union. A
+ * caller wanting a real `StarTransportAdapter` needs a thin adapter over
+ * this class.
+ *
+ * `send`/`broadcast`/`poll*` payloads are `Uint8Array` — see
+ * `packages/wasm/src/binary_string.ts` for converting to/from
+ * `@gc/transport`'s "binary string" convention.
+ */
+export interface WasmFakeStarTransport {
+  initialize(): void;
+  shutdown(): void;
+  role(): "host" | "guest";
+  capacity(): number;
+  openPeer(peerId: string): number;
+  closePeer(peerId: string, reason?: string): void;
+  peerIds(): string[];
+  peerState(peerId: string): string | undefined;
+  /** Test seam: joins this (host) endpoint to `guest`'s already-open slot.
+   * The fixture's own `matchDriverFixtureSession` already calls this
+   * internally for every seated guest. */
+  link(guest: WasmFakeStarTransport): void;
+  /** Test seam: delivers everything currently buffered on this endpoint and
+   * every endpoint linked to it. */
+  pump(): void;
+  requestOffer(peerId: string): void;
+  acceptOffer(signal: string): void;
+  acceptAnswer(peerId: string, signal: string): void;
+  takeSignal(peerId: string): string | undefined;
+  send(
+    peerId: string,
+    channel: "control" | "input",
+    kind: "input" | "event" | "state",
+    seq: number,
+    tick: number | undefined,
+    payload: Uint8Array,
+  ): void;
+  broadcast(
+    channel: "control" | "input",
+    kind: "input" | "event" | "state",
+    seq: number,
+    tick: number | undefined,
+    payload: Uint8Array,
+  ): number;
+  /** Removes and returns up to one queued arrival, as JSON
+   * (`crate::match_driver_bridge`'s `peer_message_to_json` shape), or
+   * `null` if nothing is queued. */
+  pollJson(): string;
+  /** Removes and returns up to `limit` queued arrivals, as a JSON array,
+   * oldest first. */
+  pollBatchJson(limit?: number): string;
+  /** Removes and returns up to one queued peer/star event, as JSON, or
+   * `null` if nothing is queued. */
+  pollEventJson(): string;
+  state(): string;
+  /** A full read of this endpoint's counters and every peer's, as JSON. */
+  diagnosticsJson(): string;
+  free(): void;
+}
+
+/**
+ * Mirrors `gc_wasm::match_driver_fixture_bridge::WasmMatchDriverFixtureSession`
+ * — `MatchDriverFixturePort.session`'s return.
+ */
+export interface WasmMatchDriverFixtureSession {
+  /** This session's match mode wire string (`"1v1"`/`"2v2"`/`"4v4"`). */
+  readonly mode: string;
+  /** The frozen session manifest, as JSON. */
+  manifestJson(): string;
+  /** The frozen session state, as JSON — exactly what
+   * {@link MatchDriverBridgeConstructor}'s `freezeJson` parameter expects. */
+  freezeJson(): string;
+  readonly hostPeerId: string;
+  /** Every seated guest's peer id, in seating order. */
+  guestPeerIds(): string[];
+  /** The host endpoint of this session's in-process star. */
+  hostTransport(): WasmFakeStarTransport;
+  /** `peerId`'s guest endpoint, or `undefined` if `peerId` did not seat as
+   * a guest in this session. */
+  guestTransport(peerId: string): WasmFakeStarTransport | undefined;
+  free(): void;
+}
+
+/** Every function `gc_wasm::match_driver_fixture_bridge` exports besides
+ * `WasmFakeStarTransport`/`WasmMatchDriverFixtureSession` themselves. */
+export interface MatchDriverFixtureBridge {
+  /** This fixture's own constants, as JSON: `host_peer_id`, `countdown_id`,
+   * `default_duration`, `default_seed`. */
+  matchDriverFixtureConstantsJson(): string;
+  matchDriverFixtureGuestPeerId(index: number): string;
+  /** `MatchDriverFixturePort`'s `peer_ids` half: every peer id this session
+   * seats, host first. Throws (a string) if `modeWire` is not a canonical
+   * match mode. */
+  matchDriverFixturePeerIds(modeWire: "1v1" | "2v2" | "4v4", humans?: number): string[];
+  /** The frozen session state for `modeWire`, as JSON — paired with
+   * {@link MatchDriverFixtureBridge.matchDriverFixtureManifestJson}, exactly
+   * the `freezeJson`/`manifestJson` {@link MatchDriverBridgeConstructor}
+   * requires, without constructing a full session. Throws (a string) if
+   * `modeWire` is not a canonical match mode. */
+  matchDriverFixtureFreezeJson(
+    modeWire: "1v1" | "2v2" | "4v4",
+    firstInputTick?: number,
+    humans?: number,
+  ): string;
+  /** The frozen session manifest `matchDriverFixtureFreezeJson` is framed
+   * against, as JSON. Throws (a string) if `modeWire` is not a canonical
+   * match mode. */
+  matchDriverFixtureManifestJson(modeWire: "1v1" | "2v2" | "4v4"): string;
+  /** `MatchDriverFixturePort.initialSnapshot`: the pinned slot-mode
+   * boundary zero, as an opaque handle. */
+  matchDriverFixtureInitialSnapshot(
+    duration?: number,
+    combatActive?: boolean,
+    seed?: number,
+  ): WasmMatchSnapshot;
+  /** `MatchDriverFixturePort.session`: builds the full connected fixture
+   * session for `modeWire`. Throws (a string) if `modeWire` is not a
+   * canonical match mode. */
+  matchDriverFixtureSession(
+    modeWire: "1v1" | "2v2" | "4v4",
+    firstInputTick?: number,
+    humans?: number,
+  ): WasmMatchDriverFixtureSession;
+}
+
 /** The shape of `dist/pkg/gc_wasm.cjs`'s module exports. */
-export interface GcWasmModule {
+export interface GcWasmModule extends InputFrameBridge, InputProtocolBridge, MatchDriverFixtureBridge {
   readonly Session: SimSessionConstructor;
   readonly Coordinator: CoordinatorConstructor;
   readonly MatchDriverBridge: MatchDriverBridgeConstructor;

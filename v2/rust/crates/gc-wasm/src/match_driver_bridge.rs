@@ -106,14 +106,18 @@ fn parse_json(text: &str) -> Result<Json, JsValue> {
     Json::parse(text).map_err(js_err)
 }
 
-fn channel_str(channel: TransportChannel) -> &'static str {
+/// `pub(crate)`, not private: [`crate::match_driver_fixture_bridge`] reuses
+/// this exact wire-string mapping for its own `WasmFakeStarTransport`
+/// surface rather than restating it a second time.
+pub(crate) fn channel_str(channel: TransportChannel) -> &'static str {
     match channel {
         TransportChannel::Control => "control",
         TransportChannel::Input => "input",
     }
 }
 
-fn channel_from_str(text: &str) -> Result<TransportChannel, String> {
+/// See [`channel_str`]'s doc.
+pub(crate) fn channel_from_str(text: &str) -> Result<TransportChannel, String> {
     match text {
         "control" => Ok(TransportChannel::Control),
         "input" => Ok(TransportChannel::Input),
@@ -121,7 +125,8 @@ fn channel_from_str(text: &str) -> Result<TransportChannel, String> {
     }
 }
 
-fn message_kind_str(kind: TransportMessageType) -> &'static str {
+/// See [`channel_str`]'s doc.
+pub(crate) fn message_kind_str(kind: TransportMessageType) -> &'static str {
     match kind {
         TransportMessageType::Input => "input",
         TransportMessageType::Event => "event",
@@ -129,7 +134,8 @@ fn message_kind_str(kind: TransportMessageType) -> &'static str {
     }
 }
 
-fn message_kind_from_str(text: &str) -> Result<TransportMessageType, String> {
+/// See [`channel_str`]'s doc.
+pub(crate) fn message_kind_from_str(text: &str) -> Result<TransportMessageType, String> {
     match text {
         "input" => Ok(TransportMessageType::Input),
         "event" => Ok(TransportMessageType::Event),
@@ -138,7 +144,9 @@ fn message_kind_from_str(text: &str) -> Result<TransportMessageType, String> {
     }
 }
 
-fn transport_message_to_json(message: &TransportMessage) -> Json {
+/// See [`channel_str`]'s doc: [`crate::match_driver_fixture_bridge`] reuses
+/// this JSON shape for its own transport's polled messages.
+pub(crate) fn transport_message_to_json(message: &TransportMessage) -> Json {
     Json::obj(vec![
         ("version", Json::int(message.version)),
         ("kind", Json::str(message_kind_str(message.kind))),
@@ -164,7 +172,8 @@ fn transport_message_to_json(message: &TransportMessage) -> Json {
     ])
 }
 
-fn peer_message_to_json(message: &TransportPeerMessage) -> Json {
+/// See [`channel_str`]'s doc.
+pub(crate) fn peer_message_to_json(message: &TransportPeerMessage) -> Json {
     Json::obj(vec![
         ("peer_id", Json::str(message.peer_id.clone())),
         ("channel", Json::str(channel_str(message.channel))),
@@ -436,8 +445,19 @@ impl MatchDriverBridge {
     ///
     /// # Errors
     ///
-    /// Returns a `JsValue` (a `String`) if `role` is unrecognized or
-    /// `freeze_json`/`manifest_json` fail to parse or decode.
+    /// Returns a `JsValue` (a `String`) if `role` is unrecognized,
+    /// `peer_id` is empty, `freeze_json`/`manifest_json` fail to parse or
+    /// decode, or `freeze_json`'s `assignments` do not validate against
+    /// `manifest_json` (`gc_netcode::protocol::validate_assignment_manifest`
+    /// — a structurally-plausible-but-wrong `assignments` array, built by
+    /// hand rather than by [`crate::match_driver_fixture_bridge`] or a real
+    /// [`crate::coordinator_bridge::Coordinator`], is external JS input and
+    /// must be rejected here rather than reach
+    /// `gc_netcode::match_driver_fixture::to_driver_freeze`'s internal
+    /// `coordinator::assignment_at`/`producer_kind`/`producer_id`, which
+    /// `.expect()` a shape this call already guarantees — AGENTS.md §7: a
+    /// panic crossing the wasm boundary is not a recoverable `Result` a
+    /// caller can catch, and it poisons the instance).
     #[wasm_bindgen(constructor)]
     pub fn new(
         session: &Session,
@@ -452,12 +472,22 @@ impl MatchDriverBridge {
             "guest" => match_driver::DriverRole::Guest,
             _ => return Err(js_err("role must be \"host\" or \"guest\"")),
         };
+        if peer_id.is_empty() {
+            return Err(js_err("peer_id must not be empty"));
+        }
         let transport_role = match driver_role {
             match_driver::DriverRole::Host => gc_netcode::fault_transport::TransportRole::Host,
             match_driver::DriverRole::Guest => gc_netcode::fault_transport::TransportRole::Guest,
         };
         let freeze: Freeze = freeze_from_json(&parse_json(freeze_json)?).map_err(js_err)?;
         let manifest: Value = value_from_json(&parse_json(manifest_json)?).map_err(js_err)?;
+        // Structurally validates `freeze.assignments` against `manifest`
+        // (canonical eight-producer array, valid producer kind/id/bot seed,
+        // correct per-human slot count for the manifest's match mode) —
+        // exactly the invariant `to_driver_freeze` below assumes already
+        // holds. See this method's doc for why this call exists.
+        protocol::validate_assignment_manifest(&manifest, &freeze.assignments)
+            .map_err(|err| js_err(err.message))?;
         let initial_snapshot = session.capture_snapshot();
         let timeline = rollback_events::new(&initial_snapshot, None);
         let initial_snapshot_for_export = initial_snapshot.clone();

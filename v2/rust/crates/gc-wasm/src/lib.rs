@@ -105,12 +105,48 @@
 //! `gc_data::tuning_presets` (the authored preset list) —
 //! `packages/ui/src/tuning_panel.ts`'s own header comment names this
 //! specific gap in `SimHost`. See that module's doc.
+//!
+//! ## Wave W4-E: the last three `NetDiagnosticsFixtureEnv` ports
+//!
+//! `packages/online/src/net_diagnostics_fixture.ts`'s `NetDiagnosticsFixtureEnv`
+//! declares five ports; a previous wave left three unbuilt rather than rush
+//! them (`matchDriverFixture`, `inputProtocol`, `inputFrame` — see that
+//! file's own header comment). This wave is those three:
+//! [`input_frame_bridge`] (`gc_sim::input_frame`'s per-slot sample codec),
+//! [`input_protocol_bridge`] (`gc_netcode::input_protocol`'s wire packets,
+//! including the forged single-slot bundles
+//! `net_diagnostics.spec.ts`'s fault-detection cases need), and
+//! [`match_driver_fixture_bridge`] (`gc_netcode::match_driver_fixture`'s
+//! session/freeze/manifest/boundary-zero construction, plus a
+//! `wasm-bindgen` wrapper over `gc_netcode::fake_star::FakeStarTransport`
+//! for the fixture's own in-process star). See each module's doc for its
+//! own design notes — in particular [`match_driver_fixture_bridge`]'s for
+//! why its `WasmFakeStarTransport` reproduces `StarTransportAdapter`'s
+//! *behaviour* without literally implementing that TypeScript interface,
+//! and for the `freezeJson`/`manifestJson` pair this wave adds that nothing
+//! in `@gc/wasm` could previously produce at all.
+//!
+//! All three follow [`json`]'s established rule (hand-written JSON, no
+//! `serde`) and [`crate::net_inbox`]'s queue/drain discipline wherever they
+//! touch anything network-facing ([`match_driver_fixture_bridge`]'s
+//! `WasmFakeStarTransport::poll`/`poll_batch`). Wire payloads that can
+//! genuinely carry arbitrary bytes (`inputProtocolEncode`/`Decode`,
+//! `WasmFakeStarTransport::send`/`broadcast`/`poll*`) cross as
+//! `Vec<u8>`/`&[u8]` (`Uint8Array` in JS) exactly the way
+//! [`match_driver_bridge`]'s `enqueueInbound` already does — never `String`,
+//! which cannot round-trip an arbitrary byte. `packages/wasm/src/binary_string.ts`
+//! is the one place `@gc/wasm`'s TypeScript side converts that `Uint8Array`
+//! to `@gc/transport`'s established "binary string" `TransportMessage.payload`
+//! convention.
 #![deny(missing_docs)]
 
 pub mod coordinator_bridge;
 pub mod determinism;
+pub mod input_frame_bridge;
+pub mod input_protocol_bridge;
 pub mod json;
 pub mod match_driver_bridge;
+pub mod match_driver_fixture_bridge;
 pub mod net_inbox;
 pub mod protocol_bridge;
 pub mod registry;
