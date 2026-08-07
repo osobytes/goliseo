@@ -1,0 +1,223 @@
+// A match that is already running when the page loads.
+//
+// WHY THIS PAGE EXISTS. Comparing v2 against the Lua build, or profiling
+// either, kept being defeated by the product shell rather than by the thing
+// under test:
+//
+//   * Four menu steps stand between load and kickoff, and the two builds row
+//     their buttons at slightly different heights, so any coordinate-driven
+//     script diverges between them and lands on the wrong control.
+//   * `browser_main.ts` pauses the match when the window loses focus
+//     (`window.addEventListener("blur", ...)`). The Lua build does the same,
+//     so it is CORRECT there -- and fatal here: a window driven over CDP, or
+//     sat beside a second window, is never focused, so the match freezes the
+//     instant you look away. Several "the simulation is frozen" observations
+//     during this port were only ever that.
+//   * A click that misses a menu button by a few pixels lands on the running
+//     match and pauses it, which looks identical to a hang.
+//
+// So this page has no menus, no screen stack, and no focus handling at all.
+// It boots wasm, builds one `SceneRoot`, constructs a `Session` directly, and
+// runs a fixed-timestep loop forever. It renders whether or not the window is
+// focused, which is the whole point.
+//
+// WHAT IT MODELS, AND WHAT IT DOES NOT. The simulation, the render frame
+// crossing, and the draw are the REAL ones -- the same `Session`, the same
+// raw pointer -> `Float64Array` view, the same `SceneRoot.render`, on the
+// same browser wasm artifact the app ships. What it deliberately leaves out
+// is the product shell: no HUD, no input, no screen transitions. The local
+// slot is fed a neutral wire every tick, so this is an AI-vs-AI match with an
+// idle human slot. That is a `capture_session_ai_driven_match.lua`-shaped gap
+// on purpose: bit-exact agreement with Lua under a PLAYED match is already
+// covered natively and inside wasm (`gc_sim::ai_driven_evidence`,
+// `runAiDrivenEvidence`), and neither of those needs a canvas. This page is
+// for the questions that DO need one -- how it looks, and how fast it draws.
+//
+// `window.__gcMatchHarness` carries live stats for a driver script; the
+// on-screen readout shows the same numbers for a human watching.
+
+import init, { Session, __getRawExports } from "../../../ts/packages/wasm/dist/pkg-web/gc_wasm.js";
+import * as THREE from "three";
+import { SceneRoot, frameBuffer } from "@gc/render";
+import type { frameBufferTypes } from "@gc/render";
+
+/** Mirrors `gc_sim::input_frame::SLOT_COUNT`. */
+const INPUT_SLOT_COUNT = 8;
+/** `gc_sim::input_frame::VERSION`. */
+const WIRE_VERSION = 2;
+const NEUTRAL_SLOT_WIRE = "0,0,0,0";
+const DT = 1 / 60;
+
+// The product shell's own match colours (`browser_main.ts`).
+const HOME_COLOR: readonly [number, number, number] = [0.35, 0.75, 1.0];
+const AWAY_COLOR: readonly [number, number, number] = [1.0, 0.55, 0.25];
+
+interface HarnessStats {
+  status: "booting" | "running" | "finished" | "error";
+  error: string | null;
+  /** Rendered frames per second, over the last sampling window. */
+  fps: number;
+  /** Simulation ticks per second. Should hold ~60 regardless of `fps`. */
+  tps: number;
+  /** Draw calls in the most recent frame. */
+  drawCalls: number;
+  /** Ticks the most recent render call consumed. >1 means the renderer is
+   * behind the simulation, which is also when the shell's known
+   * one-sample-per-render-call input bug would double an edge. */
+  ticksLastFrame: number;
+  tick: number;
+  timeLeft: number;
+  score: string;
+}
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __gcMatchHarness: HarnessStats | undefined;
+}
+
+function neutralWire(tick: number): string {
+  const slots = new Array<string>(INPUT_SLOT_COUNT).fill(NEUTRAL_SLOT_WIRE);
+  return [String(WIRE_VERSION), String(tick), ...slots].join("|");
+}
+
+async function main(): Promise<void> {
+  const params = new URLSearchParams(location.search);
+  const seed = Number(params.get("seed") ?? "1");
+  const width = Number(params.get("width") ?? "960");
+  const height = Number(params.get("height") ?? "540");
+  // Long by default: this page is for watching, and a match that ends after
+  // two minutes stops being useful mid-observation. `?duration=120` gives the
+  // product's own length when that is what you want to compare.
+  const durationSeconds = Number(params.get("duration") ?? "3600");
+
+  const stats: HarnessStats = {
+    status: "booting",
+    error: null,
+    fps: 0,
+    tps: 0,
+    drawCalls: 0,
+    ticksLastFrame: 0,
+    tick: 0,
+    timeLeft: 0,
+    score: "0-0",
+  };
+  globalThis.__gcMatchHarness = stats;
+
+  const readout = document.getElementById("stats");
+  const canvas = document.getElementById("gl-canvas") as HTMLCanvasElement | null;
+  if (canvas === null) {
+    throw new Error("match_harness: #gl-canvas is missing");
+  }
+  canvas.width = width;
+  canvas.height = height;
+
+  await init();
+
+  const glRenderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
+  // Same reason as the render bench: `SceneRoot.render` runs several internal
+  // passes (bloom), each of which resets the counter at its own start when
+  // `autoReset` is left on, so the number read afterwards would be the LAST
+  // pass's rather than the frame's total.
+  glRenderer.info.autoReset = false;
+
+  const sceneRoot = new SceneRoot(glRenderer, { viewport: { w: width, h: height } });
+  const session = new Session("nebula", "orion", seed, durationSeconds, 99, undefined, undefined, undefined, undefined, undefined);
+
+  const raw = __getRawExports() as {
+    memory: WebAssembly.Memory;
+    render_frame_build: (handle: number) => number;
+    render_frame_ptr: () => number;
+    render_frame_len: () => number;
+  };
+
+  const roster = frameBuffer.decodeRoster(session.rosterNumeric(), session.rosterIdsAndNames());
+
+  function frameNow(): frameBufferTypes.RenderFrame {
+    if (raw.render_frame_build(session.handle) === 0) {
+      throw new Error("match_harness: no live session for this handle");
+    }
+    // Never cached across ticks: `raw.memory.buffer` is replaced wholesale
+    // whenever wasm memory grows, which would leave a stale view detached.
+    const words = new Float64Array(raw.memory.buffer, raw.render_frame_ptr(), raw.render_frame_len());
+    return frameBuffer.toRenderFrame(frameBuffer.decode(words), roster);
+  }
+
+  // A plain accumulator rather than `FixedClock`: this page is not making a
+  // determinism claim (the evidence surfaces do that, headless), and keeping
+  // the loop obvious matters more here than sharing the catch-up/drop policy.
+  // Capped so a long stall cannot spiral into a spike of catch-up ticks.
+  const MAX_TICKS_PER_FRAME = 8;
+  let accumulator = 0;
+  let lastTime = performance.now();
+  let framesInWindow = 0;
+  let ticksInWindow = 0;
+  let windowStart = lastTime;
+
+  stats.status = "running";
+
+  function loop(now: number): void {
+    const elapsed = Math.min((now - lastTime) / 1000, 0.25);
+    lastTime = now;
+    accumulator += elapsed;
+
+    let ticks = 0;
+    while (accumulator >= DT && ticks < MAX_TICKS_PER_FRAME) {
+      if (session.finished) {
+        break;
+      }
+      session.step(neutralWire(session.inputTick));
+      accumulator -= DT;
+      ticks += 1;
+    }
+    stats.ticksLastFrame = ticks;
+    ticksInWindow += ticks;
+
+    const frame = frameNow();
+    glRenderer.info.reset();
+    sceneRoot.render(frame, {
+      pitch: { home_color: HOME_COLOR, away_color: AWAY_COLOR },
+      now: now / 1000,
+    });
+    stats.drawCalls = glRenderer.info.render.calls;
+
+    framesInWindow += 1;
+    stats.tick = session.inputTick;
+    stats.timeLeft = frame.hud.time_left;
+    stats.score = `${frame.hud.home_score}-${frame.hud.away_score}`;
+    if (session.finished) {
+      stats.status = "finished";
+    }
+
+    const windowSeconds = (now - windowStart) / 1000;
+    if (windowSeconds >= 1) {
+      stats.fps = Number((framesInWindow / windowSeconds).toFixed(1));
+      stats.tps = Number((ticksInWindow / windowSeconds).toFixed(1));
+      framesInWindow = 0;
+      ticksInWindow = 0;
+      windowStart = now;
+      if (readout !== null) {
+        readout.textContent =
+          `fps ${stats.fps}   sim ${stats.tps}/s   ticks/frame ${stats.ticksLastFrame}\n` +
+          `draw calls ${stats.drawCalls}   tick ${stats.tick}   ${stats.score}   ${stats.timeLeft.toFixed(1)}s left`;
+      }
+    }
+
+    requestAnimationFrame(loop);
+  }
+
+  requestAnimationFrame(loop);
+}
+
+main().catch((cause: unknown) => {
+  const stats = globalThis.__gcMatchHarness;
+  const message = cause instanceof Error ? cause.message : String(cause);
+  if (stats !== undefined) {
+    stats.status = "error";
+    stats.error = message;
+  }
+  const readout = document.getElementById("stats");
+  if (readout !== null) {
+    readout.textContent = `error: ${message}`;
+  }
+  console.error("[match_harness]", cause);
+});

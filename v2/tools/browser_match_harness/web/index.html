@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>gc live match harness</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #101018;
+        color: #cfd6e6;
+        font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      #gl-canvas {
+        display: block;
+      }
+      #stats {
+        position: fixed;
+        top: 6px;
+        left: 8px;
+        white-space: pre;
+        text-shadow: 0 1px 2px #000;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      A match that is ALREADY RUNNING when the page loads: no title screen, no
+      squad/formation/tactic steps, and -- the point of this page -- no
+      pause-on-blur. The product shell pauses the match when the window loses
+      focus (`browser_main.ts`: `window.addEventListener("blur", ...)`), which
+      the Lua build does too, so it is correct there and useless here: any
+      comparison driven over CDP, or watched next to a second window, freezes
+      the moment you look at something else.
+
+      See match_harness.ts's header for what this does and does not model.
+    -->
+    <canvas id="gl-canvas" width="960" height="540"></canvas>
+    <div id="stats">booting…</div>
+    <script type="module" src="./match_harness.ts"></script>
+  </body>
+</html>
