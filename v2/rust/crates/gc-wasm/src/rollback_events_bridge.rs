@@ -701,8 +701,12 @@ pub(crate) fn raw_match_event_from_json(json: &Json) -> Result<MatchEvent, Strin
 }
 
 /// [`CombatEvent`] as plain, round-trippable JSON (field-for-field, no
-/// `"origin"` tag — contrast [`combat_event_to_json`]).
-fn raw_combat_event_to_json(event: &CombatEvent) -> Json {
+/// `"origin"` tag — contrast [`combat_event_to_json`]). `pub(crate)`, not
+/// private: [`crate::session::Session::combat_events_json`] reuses this
+/// directly for the BASE (non-rollback) per-tick combat event surface,
+/// rather than inventing a second combat-event wire shape (the same reason
+/// [`raw_combat_event_from_json`] below is already `pub(crate)`).
+pub(crate) fn raw_combat_event_to_json(event: &CombatEvent) -> Json {
     Json::obj(vec![
         ("kind", Json::str(event.kind.wire_str())),
         ("tick", Json::int(event.tick)),

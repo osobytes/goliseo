@@ -45,6 +45,23 @@ export interface SimSession {
    * {@link SimHost.buildRenderFrame}'s presentation-derived `RenderFrame`
    * does not carry at all. */
   matchStateJson(): string;
+  /** This session's most recently stepped tick's combat events, as a JSON
+   * array -- `gc_wasm::rollback_events_bridge::raw_combat_event_to_json`'s
+   * shape (field-for-field, no `"origin"` tag), the exact same shape
+   * {@link MatchDriverBridge.advance}'s own batch already embeds per output
+   * under `combat_events`, so decoding this needs no second parser. `"[]"`
+   * when this session was built without `combatEnabled` ({@link
+   * SimSessionConstructor}) -- no combat companion at all -- and also
+   * before the first {@link SimSession.step} call. Reflects exactly the
+   * tick {@link SimSession.step} most recently ran: like
+   * `gc_sim::combat::step`'s own per-tick `events` field, this is REPLACED,
+   * not accumulated, by every step -- read it before the next `step` call
+   * if the caller needs every tick's events. This is the BASE (non-rollback)
+   * counterpart of what {@link MatchDriverBridge}/
+   * {@link OnlineCombatPhasesBridge} already had -- before this method
+   * existed, a combat-enabled `SimSession` drove its companion every tick
+   * with no way for a caller to observe what it did. */
+  combatEventsJson(): string;
   /** Releases the underlying wasm-side registry slot. Call when done with
    * a session — the wasm module does not garbage-collect on its own. */
   free(): void;
@@ -64,7 +81,30 @@ export interface SimSession {
  * for byte the behavior before this parameter existed. This was previously
  * missing from this interface even though the compiled artifact's
  * constructor already accepted it as a seventh, trailing optional argument
- * (`crates/gc-wasm/src/session.rs`'s `Session::new`). */
+ * (`crates/gc-wasm/src/session.rs`'s `Session::new`).
+ *
+ * `tactic`/`awayTactic` (omit either to keep `"balanced"`, the authored
+ * default) name an authored `gc_data::tactics::ALL` id (e.g.
+ * `"press_high"`) for the home/away side respectively -- reaching
+ * `sim_match::NewMatchOptions.tactic`/`.away_tactic` directly. Before these
+ * parameters existed every session simulated `"balanced"` unconditionally
+ * on both sides, so a request's tactic choice could never reach
+ * `MatchState.press`. An id naming no authored tactic throws (a string).
+ *
+ * `homeStarterIds` (omit to keep `home.roster`, the authored default --
+ * exactly the prior, only behavior) overrides the home team's starting XI:
+ * five player ids, the keeper first and the four outfielders in formation
+ * line order -- the same shape `gc_data::teams::TeamData::roster` itself
+ * uses. Every id must be authored content, distinct, shaped
+ * keeper-then-four-outfield, and not already on the away roster; squad
+ * eligibility for a particular team is NOT checked here (a product policy a
+ * calling screen enforces, matching `homeFormation`'s own "not validated
+ * here" precedent). Throws (a string) on any violation -- never a wasm
+ * panic. There is no `awayStarterIds`: the away side keeps its authored
+ * roster unconditionally, the same scope `homeFormation` already draws (no
+ * `awayFormation` parameter exists either). See
+ * `crates/gc-wasm/src/session.rs`'s `Session::new` doc for the exact
+ * validation. */
 export interface SimSessionConstructor {
   new (
     homeTeamId: string,
@@ -74,6 +114,9 @@ export interface SimSessionConstructor {
     maxGoals: number,
     homeFormation?: string,
     combatEnabled?: boolean,
+    tactic?: string,
+    awayTactic?: string,
+    homeStarterIds?: string[],
   ): SimSession;
 }
 
@@ -520,6 +563,18 @@ export interface MatchDriverBridge {
    * one `Float64Array` view, mirroring `buildRenderFrame`'s own shape.
    */
   renderFrameBuild(): number;
+  /** Match-constant per-player roster fields, as a flat array -- the
+   * `MatchDriverBridge` counterpart of {@link SimSession.rosterNumeric},
+   * over this bridge's own roster (built once in its constructor, the same
+   * match-constant identity {@link MatchDriverBridge.renderFrameBuild}
+   * already reuses every frame). Before this method existed
+   * `MatchDriverBridge` had no roster export of its own at all, so an
+   * online renderer decoding a live driver frame had no honest way to
+   * recover `species_shape`/`radius`/`is_keeper` per slot. */
+  rosterNumeric(): Float64Array;
+  /** Match-constant roster ids and display names, newline-joined -- the
+   * string counterpart of {@link MatchDriverBridge.rosterNumeric}. */
+  rosterIdsAndNames(): string;
 }
 
 /** Constructs a {@link MatchDriverBridge}. `session` must be a freshly

@@ -223,6 +223,71 @@
 //! and `packages/app/src/flow.spec.ts`'s remaining skips both name it as the
 //! one field reachable from neither `SimSession` nor
 //! `gc_render::frame::RenderFrame` anywhere in `@gc/wasm`.
+//!
+//! ## v2 glue, wave W12-B: the last four skipped-test surfaces
+//!
+//! Four more gaps, each traced to a specific missing entry point on this
+//! crate rather than a whole feature:
+//!
+//! [`session::Session::new`] gained three more parameters: `tactic`/
+//! `away_tactic` (an authored `gc_data::tactics::ALL` id per side, resolved
+//! via the new [`session`]-local `resolve_tactic`) and `home_starter_ids` (a
+//! caller-supplied five-player starting XI, resolved and validated via the
+//! new [`session`]-local `resolve_starter_roster`/`leak_roster`). Before
+//! this, every session simulated `tactics::get("balanced")` unconditionally
+//! on both sides and each team's fixed authored roster unconditionally —
+//! `packages/app/src/bootstrap.spec.ts`'s "applies request roster,
+//! formation, tactic, and seed" and `packages/app/src/flow.spec.ts`'s
+//! ten-player press-high case both name this precisely: a request's
+//! `tactic_id`/`home_starter_ids` had no parameter to reach
+//! `MatchState.press` (or the player list) through at all. See
+//! [`session::Session::new`]'s own doc for the exact validation each
+//! parameter gets and — for `home_starter_ids` specifically — why a
+//! synthetic `TeamData` with a leaked, five-pointer `'static` roster slice
+//! is what actually threads a caller-supplied starting XI through
+//! `sim_match::new`, which has no "starter ids" parameter of its own.
+//!
+//! [`gc_render::frame_buffer`]'s `RenderFrame::combat` gap
+//! (`packages/screens/src/online_match_flow.spec.ts`'s "online combat
+//! families" skip) was investigated, not built: reading `render/frame_buffer.lua`
+//! directly confirms the Lua original never carries combat on the wire
+//! either — only its own `combat_present` boolean crosses, exactly what
+//! `crates/gc-render/src/frame_buffer.rs` already does. README rule "a port
+//! reproduces behaviour, not intent" therefore forbids adding it here: doing
+//! so would not be porting anything, it would be inventing a feature the Lua
+//! game never had. No wire format, layout version, or differential fixture
+//! changed. That test's real blocker (confirmed by that spec file's own
+//! header comment, already reasoning independently to the same conclusion)
+//! is `sim.combat`'s real readiness/telegraph timing having no wasm-bound
+//! per-tick surface at all — which [`session::Session::combat_events_json`]
+//! (below) is the BASE-path half of, but the online/rollback half this
+//! specific skipped case needs is a genuinely separate, larger feature, not
+//! attempted here.
+//!
+//! [`session::Session::combat_events_json`] is new: the BASE (non-rollback)
+//! per-tick combat event getter `packages/app/src/app.spec.ts`'s header
+//! names as the first of two remaining gaps ("neither `@gc/wasm`'s
+//! `SimSession` nor `gc_render::frame::RenderFrame` exposes ANY per-tick
+//! combat event/state getter for the BASE... session"). Reuses
+//! [`rollback_events_bridge::raw_combat_event_to_json`] (now `pub(crate)`)
+//! rather than inventing a second combat-event wire shape — the identical
+//! shape `MatchDriverBridge`'s own tick output already crosses under
+//! `combat_events`. The second gap that same header names (`match.ts`'s own
+//! BASE-mode `update()` has no code path consuming combat events) is
+//! `@gc/screens`, out of this crate's file ownership, and is not attempted
+//! here.
+//!
+//! [`match_driver_bridge::MatchDriverBridge::roster_numeric`]/
+//! [`match_driver_bridge::MatchDriverBridge::roster_ids_and_names`] are new:
+//! `MatchDriverBridge` had no roster export of its own at all — unlike
+//! [`session::Session`]'s `rosterNumeric`/`rosterIdsAndNames` — confirmed by
+//! `packages/screens/src/online_match_flow.spec.ts`'s own header comment
+//! ("`MatchDriverBridge` still has no roster export of its own... so this
+//! case does not feed the captured frame into `@gc/render`'s
+//! `pitchDrawCommands`"). Both simply re-encode this bridge's own
+//! already-built `roster` field via `gc_render::frame_buffer::encode_roster`
+//! — the identical function [`session::Session`]'s own getters already call
+//! — rather than a second encoder.
 #![deny(missing_docs)]
 
 pub mod coordinator_bridge;

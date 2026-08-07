@@ -74,7 +74,9 @@
 //! the same entry up by that handle — see the registry module's doc for why
 //! the state cannot simply live inside this struct.
 
-use gc_data::teams;
+use gc_data::players;
+use gc_data::tactics::{self, TacticData};
+use gc_data::teams::{self, TeamData};
 use gc_render::frame::{self as render_frame, RenderFrameOptions};
 use gc_render::frame_buffer;
 use gc_sim::combat;
@@ -179,6 +181,128 @@ fn local_slot_sources(seed: f64) -> [MatchSlotSource; 8] {
     sources
 }
 
+/// Resolves an optional caller-supplied tactic id (`gc_data::tactics::ALL`'s
+/// ids, e.g. `"press_high"`) into the `&'static TacticData`
+/// `sim_match::NewMatchOptions.tactic`/`.away_tactic` want. `None` passes
+/// straight through as `None` — `sim_match::new` already defaults an absent
+/// tactic to `tactics::get("balanced")` itself (that struct's own field
+/// doc), so this never re-derives that default, matching `home_formation`'s
+/// own "not validated/re-derived here" precedent for everything except the
+/// one check that would otherwise become a downstream panic: an id that
+/// names no authored tactic. `gc_data::tactics::get` returning `None` is the
+/// only failure mode here, so unlike [`resolve_starter_roster`] this has no
+/// shape invariant of its own to enforce.
+///
+/// Returns a plain `Result<_, String>`, not `Result<_, JsValue>` — see
+/// [`resolve_starter_roster`]'s doc for why every helper in this module
+/// stays off `JsValue` until [`Session::new`] itself wraps the error at the
+/// `#[wasm_bindgen]` boundary.
+///
+/// # Errors
+///
+/// Returns `Err` (naming `field` and the offending id) if `id` is `Some` and
+/// not authored content.
+fn resolve_tactic(id: Option<&str>, field: &str) -> Result<Option<&'static TacticData>, String> {
+    match id {
+        Some(id) => tactics::get(id)
+            .map(Some)
+            .ok_or_else(|| format!("unknown {field} id: {id}")),
+        None => Ok(None),
+    }
+}
+
+/// Resolves five caller-supplied player ids into the canonical `&'static
+/// str` identity `gc_data::players::ALL` already owns for each — never
+/// leaking JS-owned string data, only reusing content that was already
+/// `'static` (see [`leak_roster`], which this feeds) — and validates the
+/// exact shape this module's own [`ownership`] helper and `sim_match::new`'s
+/// downstream `build_team`/`input_frame::validate_ownership` both assume:
+/// exactly five ids, no duplicate, the keeper at index 0 and nowhere else
+/// (`gc_data::teams::TeamData::roster`'s own doc: "5 player ids... the
+/// remaining 4 listed in formation line order" — the same
+/// keeper-then-outfield convention [`ownership`]'s own doc already
+/// documents for every authored roster), and no id shared with
+/// `away_roster` (`input_frame::validate_ownership`'s own rule, "one roster
+/// player cannot belong to both fixture sides" — violating it would reach
+/// `sim_match::new`'s `.expect("valid input ownership")` and panic).
+/// `sim_match::new` and [`ownership`] panic on a malformed roster rather
+/// than returning a `Result` (README rule 5.5 is specifically about
+/// JavaScript-originated input) — this validates the exact shape they
+/// assume BEFORE either ever runs, so a bad caller-supplied starting XI
+/// surfaces as a typed error here instead of a wasm panic downstream.
+///
+/// Returns a plain `Result<_, String>`, not `Result<_, JsValue>` —
+/// `wasm_bindgen::JsValue::from_str` traps ("function not implemented on
+/// non-wasm32 targets") off the `wasm32` target, aborting the whole native
+/// test process, exactly the constraint `rollback_playable_lab_bridge.rs`'s
+/// own `mod tests` documents and works around the same way: keep every
+/// validation helper on `String` so it is exercisable from an ordinary
+/// native `#[test]`, and let the thin `#[wasm_bindgen]` boundary
+/// ([`Session::new`]) be the only place a `JsValue` gets constructed at all.
+///
+/// # Errors
+///
+/// Returns `Err` if `ids` is not exactly five entries, contains a
+/// duplicate, names an unknown player id, does not have exactly one keeper
+/// at index 0, or shares an id with `away_roster`.
+fn resolve_starter_roster(
+    ids: &[String],
+    away_roster: &[&str; 5],
+) -> Result<[&'static str; 5], String> {
+    if ids.len() != 5 {
+        return Err(
+            "starting XI must be exactly five player ids (one keeper, four outfield)".to_string(),
+        );
+    }
+    let mut resolved: [&'static str; 5] = [""; 5];
+    for (index, id) in ids.iter().enumerate() {
+        let player =
+            players::get(id).ok_or_else(|| format!("unknown starting XI player id: {id}"))?;
+        let is_keeper = player.position == players::Position::Keeper;
+        if index == 0 {
+            if !is_keeper {
+                return Err("starting XI's first id must be the keeper".to_string());
+            }
+        } else if is_keeper {
+            return Err("starting XI may only name one keeper, at index 0".to_string());
+        }
+        if away_roster.contains(&player.id) {
+            return Err(format!(
+                "starting XI id also belongs to the away fixture roster: {}",
+                player.id
+            ));
+        }
+        resolved[index] = player.id;
+    }
+    for i in 0..resolved.len() {
+        for j in (i + 1)..resolved.len() {
+            if resolved[i] == resolved[j] {
+                return Err("starting XI ids must be unique".to_string());
+            }
+        }
+    }
+    Ok(resolved)
+}
+
+/// Leaks a small, fixed five-pointer array so a caller-supplied starting XI
+/// can satisfy `gc_data::teams::TeamData::roster`'s `&'static [&'static
+/// str]` field type — [`Session::new`] copies the authored home team and
+/// overwrites just this field, since `NewMatchOptions` has no separate
+/// "starter ids" parameter of its own (see [`Session::new`]'s doc). Every
+/// element `roster` holds is already one of `gc_data::players::ALL`'s own
+/// `&'static str` ids (built by [`resolve_starter_roster`]), so this never
+/// leaks JS-owned string data, only a fresh container for five pointers into
+/// content that was already `'static`. Bounded: one five-pointer allocation
+/// per [`Session::new`] call that supplies `home_starter_ids`, for the
+/// session's lifetime — the same leak-a-small-`'static`-container pattern
+/// `gc_netcode::coordinator` and `gc_sim::rollback_validation` already use
+/// elsewhere in this workspace, for the identical reason (turning validated,
+/// dynamically-sized input into a `'static` reference a `#[derive(Clone,
+/// Copy)]` content struct can hold).
+fn leak_roster(roster: [&'static str; 5]) -> &'static [&'static str] {
+    Box::leak(roster.to_vec().into_boxed_slice())
+}
+
 /// One live match. Construct with [`Session::new`], advance with
 /// [`Session::step`], read state with the getters below. Dropping the JS
 /// wrapper (or calling the generated `free()`) releases the underlying
@@ -218,10 +342,41 @@ impl Session {
     /// passes `combat_state: None`, byte for byte what this constructor did
     /// before this parameter existed.
     ///
+    /// `tactic`/`away_tactic` (`None`/omitted for either) name an authored
+    /// `gc_data::tactics::ALL` id (e.g. `"press_high"`) for the home/away
+    /// side respectively, reaching `sim_match::NewMatchOptions.tactic`/
+    /// `.away_tactic` directly (resolved via [`resolve_tactic`]) — before
+    /// this parameter existed every session simulated `tactics::get("balanced")`
+    /// unconditionally on both sides, with no way for a caller to select
+    /// anything else, so a request's `press_high` choice could never reach
+    /// `MatchState.press` here. An id naming no authored tactic is a typed
+    /// error, not the silent "not validated here" treatment `home_formation`
+    /// gets — see [`resolve_tactic`]'s own doc for why the two parameters
+    /// differ.
+    ///
+    /// `home_starter_ids` (`None`/omitted keeps `home.roster`, the authored
+    /// default — exactly the prior, only behavior) overrides the home team's
+    /// starting XI: five player ids, the keeper first and the four
+    /// outfielders in formation line order, the same shape
+    /// `gc_data::teams::TeamData::roster` itself uses. Every id must be
+    /// authored content, distinct, shaped keeper-then-four-outfield, and not
+    /// already on the away roster — see [`resolve_starter_roster`]'s own doc
+    /// for exactly what is (and, notably, is NOT — squad eligibility for a
+    /// particular team is a product policy a calling screen enforces, not a
+    /// simulation invariant this constructor re-derives, matching
+    /// `home_formation`'s own precedent) validated and why. There is no
+    /// `away_starter_ids`: the away side keeps its authored `away.roster`
+    /// unconditionally, the same scope `home_formation` already draws (no
+    /// `away_formation` parameter exists here either).
+    ///
     /// # Errors
     ///
     /// Returns a `JsValue` (a `String`) if either team id is not authored
-    /// content, or does not carry a five-player roster.
+    /// content, does not carry a five-player roster, `tactic`/`away_tactic`
+    /// names no authored tactic, or `home_starter_ids` is present and
+    /// malformed (see [`resolve_starter_roster`]'s doc for the exact
+    /// conditions).
+    #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(constructor)]
     pub fn new(
         home_team_id: &str,
@@ -231,6 +386,9 @@ impl Session {
         max_goals: i32,
         home_formation: Option<String>,
         combat_enabled: Option<bool>,
+        tactic: Option<String>,
+        away_tactic: Option<String>,
+        home_starter_ids: Option<Vec<String>>,
     ) -> Result<Session, JsValue> {
         let home =
             teams::get(home_team_id).ok_or_else(|| JsValue::from_str("unknown home team id"))?;
@@ -241,19 +399,41 @@ impl Session {
                 "session play requires a five-player roster (one keeper, four outfield)",
             ));
         }
-        let home_roster: [&str; 5] = home.roster.try_into().expect("checked len == 5");
         let away_roster: [&str; 5] = away.roster.try_into().expect("checked len == 5");
+
+        // A caller-supplied starting XI overrides `home.roster` -- see
+        // `Session::new`'s doc and `resolve_starter_roster`'s/
+        // `leak_roster`'s own docs for why a synthetic `TeamData` (every
+        // field copied from the authored team except `roster`) is what
+        // actually threads it through, since `NewMatchOptions` has no
+        // separate "starter ids" field of its own.
+        let (home_effective, home_roster): (TeamData, [&str; 5]) = match home_starter_ids {
+            Some(ids) => {
+                let resolved = resolve_starter_roster(&ids, &away_roster)
+                    .map_err(|err| JsValue::from_str(&err))?;
+                let mut synthetic = *home;
+                synthetic.roster = leak_roster(resolved);
+                (synthetic, resolved)
+            }
+            None => (*home, home.roster.try_into().expect("checked len == 5")),
+        };
+
+        let home_tactic =
+            resolve_tactic(tactic.as_deref(), "tactic").map_err(|err| JsValue::from_str(&err))?;
+        let away_tactic_data = resolve_tactic(away_tactic.as_deref(), "away tactic")
+            .map_err(|err| JsValue::from_str(&err))?;
+
         let tune = Tuning::new();
         let mut state = sim_match::new(sim_match::NewMatchOptions {
-            home,
+            home: &home_effective,
             away,
             field: PitchSize {
                 w: FIELD_W,
                 h: FIELD_H,
             },
             home_formation: home_formation.as_deref(),
-            tactic: None,
-            away_tactic: None,
+            tactic: home_tactic,
+            away_tactic: away_tactic_data,
             duration: Some(duration_seconds),
             max_goals: Some(i64::from(max_goals)),
             seed: Some(seed),
@@ -428,6 +608,43 @@ impl Session {
     pub fn match_state_json(&self) -> String {
         self.with_entry(|entry| crate::match_state_bridge::match_state_to_json(&entry.state))
             .to_json_string()
+    }
+
+    /// This session's most recently stepped tick's combat events
+    /// (`gc_sim::combat_snapshot::CombatEvent`), as a JSON array in
+    /// `crate::rollback_events_bridge::raw_combat_event_to_json`'s shape —
+    /// the exact wire shape `MatchDriverBridge`'s own `advance()` batch and
+    /// `OnlineCombatPhasesBridge.onlineCombatPhaseObserved`'s
+    /// `combat_events_json` parameter already use for `combat_events`, so a
+    /// caller decoding this needs no second parser. This is the BASE
+    /// (non-rollback) counterpart those two already have: before this
+    /// getter existed, a [`Session`] built with `combat_enabled = true`
+    /// ([`Session::new`]) drove its combat companion every tick with no way
+    /// for a caller to observe what it did — confirmed absent from this
+    /// bridge's surface and `types.ts` before this method.
+    ///
+    /// `"[]"` when this session was built without `combat_enabled` (no
+    /// combat companion at all — see [`Session::new`]'s doc), and also
+    /// before the first [`Session::step`] call. Reflects exactly the tick
+    /// [`Session::step`] most recently ran: like `gc_sim::combat::step`'s
+    /// own per-tick `events` field, this is REPLACED, not accumulated, by
+    /// every step (`combat.rs`'s own `events.clear()` at the top of each
+    /// step) — read it before the next `step` call if the caller needs
+    /// every tick's events.
+    #[wasm_bindgen(js_name = combatEventsJson)]
+    #[must_use]
+    pub fn combat_events_json(&self) -> String {
+        self.with_entry(|entry| {
+            let events: &[gc_sim::combat_snapshot::CombatEvent] =
+                entry.combat.as_ref().map_or(&[], |c| c.events.as_slice());
+            crate::json::Json::Array(
+                events
+                    .iter()
+                    .map(crate::rollback_events_bridge::raw_combat_event_to_json)
+                    .collect(),
+            )
+            .to_json_string()
+        })
     }
 }
 
@@ -628,8 +845,10 @@ mod slot_wiring_tests {
             // enough that a two-minute match never hits it, so `finished`
             // is driven by the clock exactly like an ordinary browser
             // match, not by a test-only goal cap.
-            let mut session = Session::new("nebula", "orion", seed, 120.0, 99, None, None)
-                .expect("authored teams with five-player rosters");
+            let mut session = Session::new(
+                "nebula", "orion", seed, 120.0, 99, None, None, None, None, None,
+            )
+            .expect("authored teams with five-player rosters");
             let mut total_events: usize = 0;
             loop {
                 let finished = session.with_entry(|entry| entry.state.finished);
@@ -673,8 +892,19 @@ mod combat_opt_in_tests {
     #[test]
     fn combat_enabled_omitted_or_false_never_builds_a_combat_companion() {
         for combat_enabled in [None, Some(false)] {
-            let mut session = Session::new("nebula", "orion", 7.0, 20.0, 3, None, combat_enabled)
-                .expect("authored teams with five-player rosters");
+            let mut session = Session::new(
+                "nebula",
+                "orion",
+                7.0,
+                20.0,
+                3,
+                None,
+                combat_enabled,
+                None,
+                None,
+                None,
+            )
+            .expect("authored teams with five-player rosters");
             assert!(
                 session.with_entry(|entry| entry.combat.is_none()),
                 "combat_enabled={combat_enabled:?} must not build a combat companion"
@@ -696,8 +926,19 @@ mod combat_opt_in_tests {
     /// `Entry.combat` is non-`None` at construction.
     #[test]
     fn combat_enabled_true_builds_and_drives_a_combat_companion_every_tick() {
-        let mut session = Session::new("nebula", "orion", 7.0, 20.0, 3, None, Some(true))
-            .expect("authored teams with five-player rosters");
+        let mut session = Session::new(
+            "nebula",
+            "orion",
+            7.0,
+            20.0,
+            3,
+            None,
+            Some(true),
+            None,
+            None,
+            None,
+        )
+        .expect("authored teams with five-player rosters");
         assert!(
             session.with_entry(|entry| entry.combat.is_some()),
             "combat_enabled=true must build a combat companion at construction"
@@ -714,6 +955,90 @@ mod combat_opt_in_tests {
         }
     }
 
+    /// Regression test for this wave's gap: before [`Session::combat_events_json`]
+    /// existed, nothing on this base (non-rollback) path could report what
+    /// combat did on a given tick at all -- a combat-enabled session drove
+    /// its companion every step with no observable output. Without a
+    /// companion (`combat_enabled` omitted/`false`) this must always be an
+    /// empty JSON array, both before the first `step` and after several.
+    #[test]
+    fn combat_events_json_is_always_an_empty_array_without_a_combat_companion() {
+        let mut session = Session::new(
+            "nebula",
+            "orion",
+            7.0,
+            20.0,
+            3,
+            None,
+            Some(false),
+            None,
+            None,
+            None,
+        )
+        .expect("authored teams with five-player rosters");
+        assert_eq!(session.combat_events_json(), "[]");
+        for _ in 0..5 {
+            let tick = session.input_tick() as i64;
+            session
+                .step(&neutral_wire(tick))
+                .expect("a canonical neutral wire always decodes");
+            assert_eq!(session.combat_events_json(), "[]");
+        }
+    }
+
+    /// The wiring itself: [`Session::combat_events_json`] must reflect the
+    /// REAL `gc_sim::combat_snapshot::CombatMatchState.events` this
+    /// session's own combat companion carries after each `step` -- not a
+    /// hard-coded `"[]"`, and not an accumulation across ticks (`combat.rs`'s
+    /// `events.clear()` at the top of every `combat::step` call means each
+    /// tick's count can rise, fall, or repeat). Comparing the decoded JSON
+    /// array's length against `entry.combat.events.len()` directly (rather
+    /// than asserting a specific count, which would depend on
+    /// `sim.combat`'s own request-generation behavior) proves the getter
+    /// reads the live companion every call instead of a stale or default
+    /// value.
+    #[test]
+    fn combat_events_json_mirrors_the_combat_companion_s_own_per_tick_event_count() {
+        let mut session = Session::new(
+            "nebula",
+            "orion",
+            7.0,
+            20.0,
+            3,
+            None,
+            Some(true),
+            None,
+            None,
+            None,
+        )
+        .expect("authored teams with five-player rosters");
+        for _ in 0..30 {
+            let tick = session.input_tick() as i64;
+            session
+                .step(&neutral_wire(tick))
+                .expect("a canonical neutral wire always decodes");
+            let expected = session.with_entry(|entry| {
+                entry
+                    .combat
+                    .as_ref()
+                    .expect("combat_enabled=true always carries a companion")
+                    .events
+                    .len()
+            });
+            let json = session.combat_events_json();
+            let parsed =
+                crate::json::Json::parse(&json).expect("combat_events_json is always valid JSON");
+            let items = parsed
+                .as_array()
+                .expect("combat_events_json is always a JSON array");
+            assert_eq!(
+                items.len(),
+                expected,
+                "combat_events_json must mirror this tick's real combat.events count"
+            );
+        }
+    }
+
     /// [`Session::snapshot_hash`]/[`Session::capture_snapshot`] must carry
     /// the combat companion through, not silently drop it the way both did
     /// before this fix (`match_snapshot::capture(&entry.state, None)`
@@ -723,10 +1048,32 @@ mod combat_opt_in_tests {
     /// actually be part of what gets captured/hashed.
     #[test]
     fn snapshot_hash_and_capture_snapshot_carry_the_combat_companion() {
-        let without_combat = Session::new("nebula", "orion", 7.0, 20.0, 3, None, Some(false))
-            .expect("authored teams with five-player rosters");
-        let with_combat = Session::new("nebula", "orion", 7.0, 20.0, 3, None, Some(true))
-            .expect("authored teams with five-player rosters");
+        let without_combat = Session::new(
+            "nebula",
+            "orion",
+            7.0,
+            20.0,
+            3,
+            None,
+            Some(false),
+            None,
+            None,
+            None,
+        )
+        .expect("authored teams with five-player rosters");
+        let with_combat = Session::new(
+            "nebula",
+            "orion",
+            7.0,
+            20.0,
+            3,
+            None,
+            Some(true),
+            None,
+            None,
+            None,
+        )
+        .expect("authored teams with five-player rosters");
 
         assert_ne!(
             without_combat.snapshot_hash(),
@@ -742,5 +1089,163 @@ mod combat_opt_in_tests {
             match_snapshot::hash(&with_combat_snapshot),
             "capture_snapshot must also carry the combat companion through"
         );
+    }
+}
+
+#[cfg(test)]
+mod tactic_and_starter_xi_tests {
+    use super::*;
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_session(
+        home_formation: Option<String>,
+        tactic: Option<String>,
+        away_tactic: Option<String>,
+        home_starter_ids: Option<Vec<String>>,
+    ) -> Result<Session, JsValue> {
+        Session::new(
+            "nebula",
+            "orion",
+            7.0,
+            20.0,
+            3,
+            home_formation,
+            None,
+            tactic,
+            away_tactic,
+            home_starter_ids,
+        )
+    }
+
+    /// Regression test for this wave's bug: before this fix `Session::new`
+    /// had no `tactic`/`away_tactic` parameter at all and always built
+    /// `tactics::get("balanced")` on both sides -- `press.home` (directly
+    /// `home_tactic.press`, `sim_match::new`'s own construction, no `step`
+    /// needed to observe it) could never be anything but `balanced`'s `1`.
+    /// `"press_high"`'s own authored `press` value is `2`
+    /// (`gc_data::tactics::ALL`) -- this is the same `press.home == 2`
+    /// assertion `packages/app/src/flow.spec.ts`'s blocked "ten-player
+    /// press-high" case needs.
+    #[test]
+    fn a_supplied_home_tactic_id_reaches_the_match_s_press_state() {
+        let balanced =
+            new_session(None, None, None, None).expect("no tactic keeps the balanced default");
+        assert_eq!(balanced.with_entry(|entry| entry.state.press.home), 1);
+
+        let press_high = new_session(None, Some("press_high".to_string()), None, None)
+            .expect("press_high is authored content");
+        assert_eq!(press_high.with_entry(|entry| entry.state.press.home), 2);
+    }
+
+    /// The away side gets the identical treatment, independently of the
+    /// home side -- `NewMatchOptions.away_tactic` was already reachable from
+    /// `gc_sim::r#match::new` itself; only this wasm binding had no
+    /// parameter for it.
+    #[test]
+    fn a_supplied_away_tactic_id_reaches_the_match_s_press_state_independently() {
+        let session = new_session(None, None, Some("press_high".to_string()), None)
+            .expect("press_high is authored content");
+        assert_eq!(session.with_entry(|entry| entry.state.press.away), 2);
+        // The home side is untouched -- still balanced's `1`.
+        assert_eq!(session.with_entry(|entry| entry.state.press.home), 1);
+    }
+
+    /// An id naming no authored tactic is a typed `Err`, never a panic --
+    /// `gc_data::tactics::get` returning `None` must not reach
+    /// `sim_match::new` at all. Exercises [`resolve_tactic`] directly rather
+    /// than `Session::new` itself: `Session::new`'s own error path
+    /// constructs a `wasm_bindgen::JsValue`, which aborts the whole native
+    /// test process off the `wasm32` target (see [`resolve_starter_roster`]'s
+    /// doc) -- `packages/wasm/src/session.spec.ts` is where that `JsValue`
+    /// error path is exercised end to end, against the real compiled
+    /// artifact.
+    #[test]
+    fn an_unknown_tactic_id_is_a_typed_error_not_a_panic() {
+        let err = resolve_tactic(Some("not_a_real_tactic"), "tactic")
+            .expect_err("an unauthored tactic id must be rejected");
+        assert!(err.contains("not_a_real_tactic"));
+    }
+
+    /// The opt-in itself: a caller-supplied starting XI (here, Nebula's
+    /// squad-only forward `mika_olu` swapped in for the authored roster's
+    /// `zyro_vex`) actually reaches the simulated match's own player list --
+    /// not merely accepted and discarded.
+    #[test]
+    fn a_supplied_starting_xi_reaches_the_match_s_player_roster() {
+        let starters = vec![
+            "ozzo".to_string(),
+            "brakka".to_string(),
+            "veil_nyx".to_string(),
+            "rok_tann".to_string(),
+            "mika_olu".to_string(),
+        ];
+        let session = new_session(None, None, None, Some(starters))
+            .expect("a valid five-a-side starting XI with the keeper first");
+        let ids: Vec<String> =
+            session.with_entry(|entry| entry.state.players.iter().map(|p| p.id.clone()).collect());
+        assert!(ids.contains(&"mika_olu".to_string()));
+        assert!(!ids.contains(&"zyro_vex".to_string()));
+        // The keeper is still present -- only the outfield swap happened.
+        assert!(ids.contains(&"ozzo".to_string()));
+    }
+
+    /// `None`/omitted keeps the authored roster exactly -- the prior, only
+    /// behavior, unchanged by this parameter's addition.
+    #[test]
+    fn an_omitted_starting_xi_keeps_the_authored_roster() {
+        let session = new_session(None, None, None, None).expect("authored roster always valid");
+        let ids: Vec<String> =
+            session.with_entry(|entry| entry.state.players.iter().map(|p| p.id.clone()).collect());
+        assert!(ids.contains(&"zyro_vex".to_string()));
+    }
+
+    /// Every one of `resolve_starter_roster`'s shape checks must reject
+    /// before ever reaching `sim_match::new` -- a wasm panic downstream
+    /// (from `sim_match::new`'s or `input_frame::validate_ownership`'s own
+    /// `assert!`/`.expect(...)`) is exactly what this batch of checks
+    /// exists to prevent, per this crate's own "typed error, never panic"
+    /// rule for JS-originated input. Exercises [`resolve_starter_roster`]
+    /// directly rather than `Session::new` itself: `Session::new`'s own
+    /// error path constructs a `wasm_bindgen::JsValue`, which aborts the
+    /// whole native test process off the `wasm32` target (see that
+    /// function's own doc).
+    #[test]
+    fn a_malformed_starting_xi_is_a_typed_error_not_a_panic() {
+        let base = ["ozzo", "brakka", "veil_nyx", "rok_tann", "zyro_vex"];
+        let away_roster: [&str; 5] = ["gax_oru", "drell", "morv", "krag", "tox_vren"];
+
+        // Wrong length.
+        resolve_starter_roster(&["ozzo".to_string(), "brakka".to_string()], &away_roster)
+            .expect_err("four short of a starting XI must be rejected");
+
+        // Unknown player id.
+        let mut unknown = base.map(str::to_string).to_vec();
+        unknown[4] = "not_a_real_player".to_string();
+        resolve_starter_roster(&unknown, &away_roster)
+            .expect_err("an unauthored player id must be rejected");
+
+        // Keeper not at index 0.
+        let mut swapped = base.map(str::to_string).to_vec();
+        swapped.swap(0, 1);
+        resolve_starter_roster(&swapped, &away_roster)
+            .expect_err("a non-keeper first id must be rejected");
+
+        // A second keeper among the outfielders.
+        let mut two_keepers = base.map(str::to_string).to_vec();
+        two_keepers[1] = "ozzo".to_string();
+        resolve_starter_roster(&two_keepers, &away_roster)
+            .expect_err("a duplicate id (and a second keeper) must be rejected");
+
+        // Duplicate, non-keeper id.
+        let mut duplicate = base.map(str::to_string).to_vec();
+        duplicate[4] = duplicate[3].clone();
+        resolve_starter_roster(&duplicate, &away_roster)
+            .expect_err("a duplicate outfield id must be rejected");
+
+        // Shares an id with the (fixed) away roster.
+        let mut clashes_with_away = base.map(str::to_string).to_vec();
+        clashes_with_away[4] = "gax_oru".to_string(); // orion's keeper
+        resolve_starter_roster(&clashes_with_away, &away_roster)
+            .expect_err("an id already on the away roster must be rejected");
     }
 }

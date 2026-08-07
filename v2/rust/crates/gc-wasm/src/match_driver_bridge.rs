@@ -92,6 +92,7 @@ use gc_netcode::match_driver::{
 use gc_netcode::match_driver_fixture::{DriverRules, to_driver_freeze, to_driver_manifest};
 use gc_netcode::protocol::{self, Value};
 use gc_render::frame::{self as render_frame, RenderFrameOptions, RenderFrameRoster};
+use gc_render::frame_buffer;
 use gc_sim::input_frame::{self, SlotId};
 use gc_sim::match_snapshot::MatchSnapshot;
 use gc_sim::rollback_events::{self, RollbackEventTimeline};
@@ -873,6 +874,36 @@ impl MatchDriverBridge {
         1
     }
 
+    /// Match-constant per-player roster fields, as a flat `Float64Array` —
+    /// `gc_render::frame_buffer::encode_roster`'s numeric half, over this
+    /// bridge's own `roster` field (built once in [`MatchDriverBridge::new`],
+    /// the same match-constant identity [`MatchDriverBridge::render_frame_build`]
+    /// already reuses every frame). Mirrors
+    /// [`crate::session::Session::roster_numeric`] exactly — before this
+    /// method existed, `MatchDriverBridge` had no roster export of its own
+    /// at all (unlike [`crate::session::Session`]'s `rosterNumeric`/
+    /// `rosterIdsAndNames`), so an online renderer decoding a live
+    /// `MatchDriverBridge` frame had no honest way to recover
+    /// `species_shape`/`radius`/`is_keeper` per slot — it could only
+    /// fabricate them (`packages/screens/src/online_match_flow.spec.ts`'s
+    /// own "online match renderer smoke" case names this gap directly).
+    #[wasm_bindgen(js_name = rosterNumeric)]
+    #[must_use]
+    pub fn roster_numeric(&self) -> Vec<f64> {
+        frame_buffer::encode_roster(&self.roster).0
+    }
+
+    /// Match-constant roster ids and display names —
+    /// `gc_render::frame_buffer::encode_roster`'s string half, a
+    /// newline-joined blob per that function's documented format. The
+    /// string counterpart of [`MatchDriverBridge::roster_numeric`]; see that
+    /// method's doc for why this gap existed and what it closes.
+    #[wasm_bindgen(js_name = rosterIdsAndNames)]
+    #[must_use]
+    pub fn roster_ids_and_names(&self) -> String {
+        frame_buffer::encode_roster(&self.roster).1
+    }
+
     /// Mirrors `gc_netcode::match_driver::observe_checkpoint`: compares
     /// `hash` against this driver's own published checkpoint hash at
     /// `tick`, if it has one. Returns `true` when they agree (or this
@@ -1164,8 +1195,10 @@ mod tests {
         let freeze_json = freeze_to_json(&freeze).to_json_string();
         let manifest_json = value_to_json(&manifest).to_json_string();
 
-        let session = Session::new("nebula", "orion", 7.0, 20.0, 3, None, None)
-            .expect("the fixture team ids always construct a valid session");
+        let session = Session::new(
+            "nebula", "orion", 7.0, 20.0, 3, None, None, None, None, None,
+        )
+        .expect("the fixture team ids always construct a valid session");
 
         let mut bridge = MatchDriverBridge::new(
             &session,
@@ -1395,11 +1428,39 @@ mod tests {
         // Building a `Session`'s own frame afterward must not disturb the
         // driver's already-built block -- the two live in separate
         // thread-local buffers (see `render_export`'s module doc).
-        let session = Session::new("nebula", "orion", 7.0, 20.0, 3, None, None)
-            .expect("the fixture team ids always construct a valid session");
+        let session = Session::new(
+            "nebula", "orion", 7.0, 20.0, 3, None, None, None, None, None,
+        )
+        .expect("the fixture team ids always construct a valid session");
         let session_ok = crate::render_export::render_frame_build(session.handle());
         assert_eq!(session_ok, 1);
         assert_eq!(crate::render_export::driver_render_frame_ptr(), ptr);
         assert_eq!(crate::render_export::driver_render_frame_len(), len);
+    }
+
+    /// Regression test for this wave's gap: before [`MatchDriverBridge::roster_numeric`]/
+    /// [`MatchDriverBridge::roster_ids_and_names`] existed, this bridge had
+    /// no roster export of its own at all — unlike [`Session`]'s
+    /// `rosterNumeric`/`rosterIdsAndNames` — so an online renderer decoding
+    /// a live `MatchDriverBridge` frame had no honest way to recover
+    /// `species_shape`/`radius`/`is_keeper` per slot.
+    /// `new_host_bridge`'s own internal `Session` is built from the exact
+    /// same `("nebula", "orion", ...)` construction as `session` below, so
+    /// this asserts real equality, not merely "non-empty" — proving the
+    /// bridge's own `roster` field (built once in `MatchDriverBridge::new`,
+    /// the same match-constant identity `render_frame_build` already
+    /// reuses) really is the fixture's roster, not a placeholder.
+    #[test]
+    fn roster_numeric_and_ids_and_names_mirror_a_session_built_the_same_way() {
+        let bridge = new_host_bridge();
+        let session = Session::new(
+            "nebula", "orion", 7.0, 20.0, 3, None, None, None, None, None,
+        )
+        .expect("the fixture team ids always construct a valid session");
+        assert_eq!(bridge.roster_numeric(), session.roster_numeric());
+        assert_eq!(
+            bridge.roster_ids_and_names(),
+            session.roster_ids_and_names()
+        );
     }
 }
