@@ -29,6 +29,12 @@ export {
   type BrowserStarTransportOptions,
   type StarEvalFn,
 } from "./browser_star.ts";
+export {
+  installGoliseoStarTransport,
+  newGoliseoStarTransportBridge,
+  browserStarEval,
+  type GoliseoStarTransportBridge,
+} from "./browser_star_bridge.ts";
 
 import { FakeTransport, type FakeTransportOptions } from "./fake.ts";
 import { BrowserTransport, type BrowserTransportOptions } from "./browser.ts";
