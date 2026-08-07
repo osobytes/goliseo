@@ -481,16 +481,6 @@ function buildRealHarness(host: SimHost, mode: MatchMode, hashIntervalTicks: num
     const session = newSession(host);
     const driver = new host.MatchDriverBridge(session, role, peerId, freezeJson, manifestJson, undefined);
     driver.initializeTransport();
-    // Star topology: the host driver opens a slot for every guest; each
-    // guest driver opens only the host (a guest's own transport capacity is
-    // 1 -- `wasm_transport.rs`'s `WasmStarTransport::new` fixes it there for
-    // any non-host role, so opening a sibling guest by mistake throws "wasm
-    // transport is at peer capacity").
-    const others = role === "host" ? peerIds.filter((candidate) => candidate !== peerId) : [peerIds[0] as string];
-    for (const other of others) {
-      driver.openPeer(other);
-      driver.setPeerConnected(other);
-    }
     const recorder = newNetDiagnostics({
       role,
       peer_id: peerId,
@@ -507,6 +497,38 @@ function buildRealHarness(host: SimHost, mode: MatchMode, hashIntervalTicks: num
       export_opt_in: true,
       decodeControlMessage: decode,
     });
+    // Star topology: the host driver opens a slot for every guest; each
+    // guest driver opens only the host (a guest's own transport capacity is
+    // 1 -- `wasm_transport.rs`'s `WasmStarTransport::new` fixes it there for
+    // any non-host role, so opening a sibling guest by mistake throws "wasm
+    // transport is at peer capacity").
+    //
+    // `MatchDriverBridge` owns its transport internally with no `pollEvent`
+    // surface at all (confirmed by reading `match_driver_bridge.rs` end to
+    // end -- `openPeer`/`setPeerConnected` are fire-and-forget, unlike
+    // `StarTransportAdapter`'s `pollEvent`, which is what
+    // `DiagnosticTransport.pollEvent` -- `diagnostic_transport.ts` -- taps to
+    // produce a `peer_state` `recordEvent` row), so there is no wrapped tap
+    // this harness could install the way `DiagnosticTransport` installs one
+    // over an injected `StarTransportAdapter`. What this harness *does* know,
+    // with certainty rather than by polling, is that each of these two calls
+    // just caused exactly the state transition `DiagnosticTransport.openPeer`
+    // (`state: "opened"`) and a real `TransportPeerState` "connected"
+    // transition (`@gc/transport`'s `contract.ts`; `fake_star.ts`'s own
+    // `_setPeerState` pushes the identical `{ kind: "peer_state", peer_id,
+    // state }` shape for this exact transition) would have recorded, because
+    // this harness is the caller that made it happen -- the same reasoning
+    // `recordEnvelopeReal` below already relies on to record "sent"/"arrived"
+    // packet rows at this harness's own queue/drain seam instead of through a
+    // `DiagnosticTransport` wrapper. `monotonic_ms: 0` matches `clock_ms`'s
+    // own starting value (this runs before `runReal` advances it).
+    const others = role === "host" ? peerIds.filter((candidate) => candidate !== peerId) : [peerIds[0] as string];
+    for (const other of others) {
+      driver.openPeer(other);
+      recordEvent(recorder, { kind: "peer_state", peer_id: other, monotonic_ms: 0, state: "opened" });
+      driver.setPeerConnected(other);
+      recordEvent(recorder, { kind: "peer_state", peer_id: other, monotonic_ms: 0, state: "connected" });
+    }
     return { peerId, role, driver, session, recorder, pendingArrivals: [] };
   });
 
@@ -973,48 +995,83 @@ describe("net diagnostics collection", () => {
   // lifecycle timing. See this file's header comment: re-port these once a
   // `NetDiagnosticsFixtureEnv` backed by the real `gc-netcode` exists.
   //
-  // Re-audited: `MatchDriverBridge.transportDiagnosticsJson()` genuinely
-  // closes part of this gap -- it supplies real `TransportStarDiagnostics`-
-  // shaped counters, proven by the third case below, which is unblocked for
-  // real. The first two cases stay blocked, but by a narrower, more precise
-  // defect than the stale "no data reachable at all" claim:
+  // # Re-audited against the current `@gc/wasm` -- one gap closed, a
+  // different one found underneath it
   //
-  //   * `WasmStarTransport`'s `TransportPeerDiagnostics.ice_state` is
-  //     unconditionally the empty string
-  //     (`crates/gc-wasm/src/wasm_transport.rs:609` -- confirmed the *only*
-  //     site in the whole crate that ever sets it). `net_diagnostics`'s own
-  //     export schema requires `ice_state` to be at least 1 byte, and that
-  //     is a real invariant, not an arbitrary one: it mirrors
-  //     `game/transport/fake_star.lua`'s own `"new"`/`"checking"`/
-  //     `"connected"`/`"closed"` state machine -- what the Lua original's
-  //     fixture star, and every real `@gc/transport` WebRTC star, actually
-  //     produces. `WasmStarTransport` is a from-scratch, ICE-free
-  //     queue/drain relay built for netcode testing, not a WebRTC stand-in,
-  //     so it cannot satisfy that invariant. Confirmed empirically: feeding
-  //     `transportDiagnosticsJson()` into `recordTransport` and then calling
-  //     `exportArtifact` fails with "ice_state must be at least 1 bytes" the
-  //     moment a peer is present (see `RunRealOptions.recordTransportDiagnostics`'s
-  //     doc, which is why that flag defaults off).
-  //   * "folds star and per-channel transport counters..." also needs
-  //     "the tap records transport lifecycle events, in order" (a
-  //     peer-connected/peer-disconnected `recordEvent` trail) -- that comes
-  //     from `DiagnosticTransport`'s own forwarded-surface wrapping
-  //     (`sendMessage`/`pollInbound`/`shutdown` calling `this.note(...)`),
-  //     which -- as the file header explains -- cannot wrap a
-  //     `MatchDriverBridge` at all. Nothing in this harness ever calls
-  //     `recordEvent`, so `runtime.events` stays empty regardless of the
-  //     `ice_state` gap above.
+  // A prior pass here recorded both cases blocked by `WasmStarTransport`'s
+  // `TransportPeerDiagnostics.ice_state` being unconditionally the empty
+  // string, failing `net_diagnostics`'s own export schema (a real
+  // invariant: it mirrors `game/transport/fake_star.lua`'s own
+  // `"new"`/`"checking"`/`"connected"`/`"closed"` vocabulary, what every
+  // real `@gc/transport` WebRTC star actually produces). **That is fixed**,
+  // entirely on the Rust side (out of this package's ownership; nothing
+  // here changed): `crates/gc-wasm/src/wasm_transport.rs`'s `PeerLink` now
+  // carries a real `ice_state`, set at `open_peer` (`"new"`),
+  // `set_peer_connected` (`"connected"`), and `close_peer`/
+  // `set_peer_disconnected` (`"closed"`) -- `fake_star`'s `"checking"` is
+  // deliberately absent, since this transport's signalling methods are
+  // unconditionally `RoleForbidden`. Confirmed directly against
+  // `wasm_transport.rs`'s own `PeerLink`/`open_peer`/`set_peer_connected`/
+  // `close_peer` and its `ice_state_is_never_empty_once_a_peer_exists_and_
+  // tracks_its_lifecycle` test.
   //
-  // Both are real, Rust-owned or architectural gaps, not test-file
-  // workarounds to weaken -- `crates/gc-wasm` is out of this package's
-  // ownership for this wave (see this file's final report).
+  // Turning `recordTransportDiagnostics` on to prove that, though, surfaces
+  // a second, different defect the `ice_state` fix does not touch:
+  // `WasmStarTransport::diagnostics()` (`wasm_transport.rs`, the `diagnostics`
+  // method on the `StarTransportAdapter` impl) builds each peer's `control`
+  // channel diagnostics from real per-peer counters (`state: Some(peer.state)`,
+  // `sent: peer.sent`, `received: peer.received`, ...) but hands back
+  // `input: TransportChannelDiagnostics::default()` verbatim -- `state: None`,
+  // every counter `0` -- regardless of how much real traffic actually moved
+  // on the input channel (which, for a `MatchDriverBridge`, is every sample
+  // wire every peer sends every step; the primary payload, not an idle
+  // channel). Confirmed by reading `wasm_transport.rs`'s `diagnostics()` end
+  // to end (the literal source of both cases' failure below) and empirically:
+  // driving either case here with `recordTransportDiagnostics: true` fails
+  // `exportArtifact` with "net_diagnostics.runtime.peers[0].input.state must
+  // be a string" the moment a peer is present -- `net_diagnostics.ts`'s own
+  // `CHANNEL_FIELDS` (shared by both `control` and `input`) declares `state`
+  // a required enum, not `optional: true`, so a `None` there is a schema
+  // violation, not merely an unpopulated-but-tolerated field. This hits
+  // *both* cases below, not only the one that reads `runtime.peers[].input`
+  // directly: `exportArtifact` validates the whole shape before either
+  // case's own assertions ever run, so "summarises a clean 2v2 run..." fails
+  // identically even though its own assertions never mention `input` at all.
+  //
+  // This is a real, narrower defect than the stale "ice_state always empty"
+  // claim -- not a test-file workaround to weaken. `crates/gc-wasm` is out
+  // of this package's ownership for this wave (see this file's final
+  // report), so both cases stay `it.skip`, with this exact reason, until
+  // `WasmStarTransport::diagnostics()` populates `input` for real the same
+  // way it already does for `control`.
+  //
+  // Separately: the second case ("folds star and per-channel transport
+  // counters...") also needs `artifact.runtime.events` non-empty with
+  // monotonic ordinals -- the Lua original's "the tap records transport
+  // lifecycle events, in order". That half is no longer a blocker:
+  // `DiagnosticTransport`'s own forwarded-surface wrapping
+  // (`sendMessage`/`pollInbound`/`shutdown` calling `this.note(...)`) still
+  // cannot wrap a `MatchDriverBridge` (it owns its transport internally,
+  // with no `pollEvent`-shaped surface -- confirmed by reading
+  // `match_driver_bridge.rs` end to end), but `buildRealHarness` below does
+  // not need that wrapper: it is the caller of `openPeer`/`setPeerConnected`
+  // on that bridge, so it already knows -- with certainty, not by polling --
+  // exactly the state transitions a `DiagnosticTransport` tap would have
+  // recorded for those same two calls, and now calls `recordEvent` there
+  // directly (see that call site's own comment), the same pattern
+  // `recordEnvelopeReal` below already established for packet events at
+  // this harness's own queue/drain seam. Kept in `buildRealHarness`
+  // regardless of the `input`-channel gap above: it is correct on its own
+  // terms, costs nothing for every other case already using this harness,
+  // and means this second case needs nothing further the day the
+  // `input`-channel defect is fixed.
   describe("live-driver runs, transport-shaped claims (real wasm bridges)", () => {
     it.skip(
-      "summarises a clean 2v2 run with both clocks kept apart (blocked: WasmStarTransport's ice_state is always empty, failing net_diagnostics' own export schema -- see the describe block's comment)",
+      "summarises a clean 2v2 run with both clocks kept apart (blocked: WasmStarTransport::diagnostics() always reports the input channel as TransportChannelDiagnostics::default() -- state: None, every counter 0 -- regardless of real traffic, which net_diagnostics' schema rejects the moment a peer is present; see the describe block's comment)",
       () => {}
     );
     it.skip(
-      "folds star and per-channel transport counters into the runtime section (blocked: same ice_state gap, plus no recordEvent trail is reachable through MatchDriverBridge -- see the describe block's comment)",
+      "folds star and per-channel transport counters into the runtime section (blocked: same WasmStarTransport::diagnostics() input-channel gap as the case above -- see the describe block's comment; the runtime.events half of this case is no longer blocked, buildRealHarness now records real peer_state events)",
       () => {}
     );
 

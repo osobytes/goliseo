@@ -613,31 +613,76 @@ describe("online match presentation combat phases (real wasm bridges + online_co
   // The exactly-once contract has to survive the end of the match, not only
   // hold mid-run -- this takes a combat-active boundary zero (a 4-second
   // match, so the run below reaches full time) all the way through under
-  // bursty delivery. Mirrors the Lua original's own duration/step budget.
+  // bursty delivery. Mirrors the Lua original's own duration/step budget
+  // (`4 * 60 + 90` steps, `period = 6`).
   //
-  // Blocked -- not by anything missing from `@gc/wasm`'s surface, but by a
-  // real defect found driving it: `gc_netcode::match_driver`'s settle phase
-  // (entered once full time is reached) calls `default_clock`
-  // (`crates/gc-netcode/src/match_driver.rs`), which uses
-  // `std::time::SystemTime::now()` for its wall-clock bound whenever
-  // `MatchDriverOptions.clock` is `None` -- and `MatchDriverBridge::new`
-  // (`crates/gc-wasm/src/match_driver_bridge.rs`) always passes `clock:
-  // None`. `SystemTime::now()` is not implemented on `wasm32-unknown-unknown`
-  // and traps ("RuntimeError: unreachable", confirmed reproducing this
-  // exact test body against the real compiled artifact, and again via a
-  // standalone script driving `MatchDriverBridge` directly to the same
-  // full-time/settle boundary with no test harness involved). This is not
-  // specific to this test's own construction: *any* real match reaching
-  // full time through this bridge hits it, which makes it a live-play
-  // defect, not merely a test gap. `crates/gc-wasm`/`crates/gc-netcode` are
-  // out of this package's ownership for this wave -- reported in this
-  // file's final report rather than worked around here (there is no
-  // TypeScript-side workaround: nothing on `MatchDriverBridge`'s public
-  // surface lets a caller inject its own clock).
-  it.skip(
-    "publishes the lifecycle exactly once through full time (blocked: MatchDriverBridge's settle phase panics under wasm32 -- default_clock calls std::time::SystemTime::now(), unimplemented off-native; see this describe block's comment and the file's final report)",
-    () => {}
-  );
+  // # Unblocked
+  //
+  // A prior pass here recorded this as blocked by a real defect: driving a
+  // `MatchDriverBridge` to full time trapped the wasm instance
+  // ("RuntimeError: unreachable"), because `gc_netcode::match_driver`'s
+  // settle phase calls `default_clock` (`crates/gc-netcode/src/
+  // match_driver.rs`), which uses `std::time::SystemTime::now()` --
+  // unimplemented on `wasm32-unknown-unknown`. That is now fixed, entirely
+  // on the Rust side (out of this package's ownership; nothing here
+  // changed): `crates/gc-wasm/src/match_driver_bridge.rs`'s
+  // `driver_settle_clock` injects `js_sys::Date::now() / 1000.0` as
+  // `MatchDriverOptions.clock` on `wasm32`, reproducing `default_clock`'s
+  // own documented wall-clock-seconds-since-epoch semantics instead of
+  // leaving the field `None`. `packages/wasm/src/
+  // match_driver_fixture.spec.ts`'s "does not trap the wasm instance when a
+  // match runs all the way to full time" is the wasm-target regression test
+  // proving it end to end.
+  //
+  // That fix is seat-agnostic -- the trap fired for any driver reaching full
+  // time, host or guest, alone or paired -- so this case is ported for real
+  // using the same two-peer, both-real `buildHarness`/`run` machinery every
+  // other case in this describe block already uses, rather than the lone
+  // `humans: 1` host that fixture's regression test uses to sidestep an
+  // unrelated concern (a second, *silent* peer -- opened in the transport
+  // but with no driver of its own ever calling `advance`/delivering --
+  // stalls on `confirmation_stalled` around tick 30, `ROLLBACK_WINDOW_TICKS`,
+  // long before full time). Here both peers are real `MatchDriverBridge`
+  // instances that call `advance` and deliver every `run` step, exactly
+  // like the seven combat-phase cases above that already complete hundreds
+  // of steps without stalling -- so there is no silent peer to seat around.
+  it("publishes the lifecycle exactly once through full time", () => {
+    const host = loadSimHost();
+    const harness = buildHarness(host, "1v1", 30, () => host.onlineCombatPhaseBoundaryZero("contact", 4));
+    run(host, harness, 4 * 60 + 90, { period: 6 });
+
+    let restarts = 0;
+    let combatRows = 0;
+    harness.peers.forEach((peer, index) => {
+      expect(JSON.parse(peer.driver.statusJson()), `peer ${index}'s driver`).toBe("completed");
+      expect(status(peer.presentation), `peer ${index}`).toBe("active");
+      combatRows += peer.confirmedCombat;
+      let fullTime = 0;
+      for (const id of peer.confirmed.keys()) {
+        if (id.includes("lifecycle/full_time")) {
+          fullTime += 1;
+        } else if (id.includes("lifecycle/goal") || id.includes("lifecycle/kickoff")) {
+          restarts += 1;
+        }
+      }
+      // Mirrors the Lua original's own pinned zero: the unarmed scrum this
+      // boundary zero seeds (eight bodies stacked around the pitch's
+      // midline, fighting rather than advancing, under the fixture's own
+      // no-goal-limit duration) confirms `lifecycle/full_time` exactly once
+      // per peer, and nothing else -- a record, not a requirement (see the
+      // Lua original's own comment): `assertPublishedOnce` below already
+      // holds kickoff/goal rows to exactly once each if they ever appear,
+      // so pinning `restarts` at zero means the day this fixture starts
+      // scoring, this assertion fails and someone decides what the case now
+      // covers, instead of a stale comment quietly claiming coverage it
+      // never had.
+      expect(fullTime, `peer ${index} published full time ${fullTime} times`).toBe(1);
+    });
+    expect(restarts, "the scrum fixture scored, so this case now covers more than full time").toBe(0);
+    expect(combatRows > 0, "a combat-active run confirmed no combat feedback at all").toBe(true);
+    assertPublishedOnce(harness.peers);
+    assertConfirmedAgreement(harness.peers);
+  });
 });
 
 // ---------------------------------------------------------------------------
