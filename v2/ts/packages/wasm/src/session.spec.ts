@@ -62,6 +62,26 @@ describe("Session lifecycle", () => {
       session.free();
     }
   });
+
+  it("accepts an explicit home formation override, and still constructs without one", () => {
+    // Before this parameter existed, `Session::new` hard-coded
+    // `home_formation: None` -- nothing on `@gc/wasm`'s surface could
+    // select a formation at all (see `crates/gc-wasm/src/session.rs`'s
+    // `Session::new` doc). This does not validate `"2-1-1"` against
+    // `gc_data::formations::ALL` itself (that stays a caller/screen
+    // responsibility per that same doc), only proves the parameter reaches
+    // construction without erroring either way.
+    const { Session } = loadSimHost();
+    const withFormation = new Session("nebula", "orion", 7, 20, 3, "2-1-1");
+    const withoutFormation = new Session("nebula", "orion", 7, 20, 3);
+    try {
+      expect(withFormation.inputTick).toBe(0);
+      expect(withoutFormation.inputTick).toBe(0);
+    } finally {
+      withFormation.free();
+      withoutFormation.free();
+    }
+  });
 });
 
 describe("the raw per-frame render path", () => {

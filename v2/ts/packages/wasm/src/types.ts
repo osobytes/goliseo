@@ -33,7 +33,12 @@ export interface SimSession {
   free(): void;
 }
 
-/** Constructs a {@link SimSession}. */
+/** Constructs a {@link SimSession}. `homeFormation` overrides the home
+ * team's authored default formation (`gc_data::formations::ALL`'s ids, e.g.
+ * `"2-1-1"`); omit to keep the team's own default. Not validated against
+ * the authored formation table by this constructor itself -- see
+ * `crates/gc-wasm/src/session.rs`'s `Session::new` doc for why that check
+ * stays the caller's (e.g. a formation-select screen's) job. */
 export interface SimSessionConstructor {
   new (
     homeTeamId: string,
@@ -41,6 +46,7 @@ export interface SimSessionConstructor {
     seed: number,
     durationSeconds: number,
     maxGoals: number,
+    homeFormation?: string,
   ): SimSession;
 }
 
@@ -292,9 +298,30 @@ export interface MatchDriverBridge {
    * (`encode_sample`/`decode_sample`'s format). Returns the batch as JSON.
    * Throws (a string) if `sampleWire` fails to decode. */
   advance(sampleWire?: string): string;
+  /** Mirrors `gc_netcode::match_driver::observe_checkpoint`: compares `hash`
+   * against this driver's own published checkpoint hash at `tick`, if it
+   * has one. Returns `true` when they agree (or this driver never
+   * published a checkpoint at `tick`), `false` on a genuine one-off
+   * disagreement. Every consecutive disagreement is counted internally
+   * ({@link MatchDriverBridge.diagnosticsJson}'s `hash_mismatches`); enough
+   * consecutive disagreements terminate the driver from inside this call
+   * (`status` becomes `"hash_mismatch"`) rather than the caller having to
+   * act on the return value separately. */
+  observeCheckpoint(tick: number, hash: string): boolean;
   statusJson(): string;
   terminalJson(): string;
   diagnosticsJson(): string;
+  /** A full read of this bridge's own internal transport -- star and
+   * per-peer channel counters (`sent`/`received`/`dropped_outbound`/
+   * `dropped_inbound`/`queue_limit`/...), as JSON
+   * (`gc_wasm::match_driver_fixture_bridge::star_diagnostics_to_json`'s
+   * shape -- the same `TransportStarDiagnostics` mapping
+   * {@link WasmFakeStarTransport.diagnosticsJson} already exposes for the
+   * fixture's in-process star). Before this method existed nothing on this
+   * bridge's public surface could report this data at all -- a
+   * `DiagnosticTransport`-style tap could never observe a
+   * `MatchDriverBridge`'s own traffic. */
+  transportDiagnosticsJson(): string;
   rollbackDiagnosticsJson(): string;
   rollbackAccountingJson(): string;
   retainedRollbackStepsJson(): string;
@@ -311,10 +338,42 @@ export interface MatchDriverBridge {
 
 /** Constructs a {@link MatchDriverBridge}. `session` must be a freshly
  * constructed {@link SimSession} (boundary-zero, never stepped) — its
- * snapshot becomes the driver's `initial_snapshot`. `freezeJson`/
- * `manifestJson` are JSON encodings of `gc_netcode::coordinator::Freeze`/
- * `gc_netcode::protocol::Value` — typically exactly what a
- * {@link Coordinator}'s `start_match` action / `stateJson()` produced.
+ * snapshot becomes the driver's `initial_snapshot`, *unless*
+ * `initialSnapshotOverride` is given (see below), in which case `session`
+ * is still required by this signature but its own snapshot goes unused; any
+ * freshly-constructed session for an authored team pair satisfies it.
+ * `freezeJson`/`manifestJson` are JSON encodings of
+ * `gc_netcode::coordinator::Freeze`/`gc_netcode::protocol::Value` —
+ * typically exactly what a {@link Coordinator}'s `start_match` action /
+ * `stateJson()` produced. `queueLimit` bounds this bridge's own internal
+ * transport's inbound queue (defaults to 64,
+ * `crates/gc-wasm/src/wasm_transport.rs`'s `DEFAULT_QUEUE_LIMIT`, same as
+ * every other `WasmStarTransport` caller) -- raise it when a test needs to
+ * hold open a delivery gap wider than the default queue can buffer without
+ * the queue itself overflowing first (see
+ * `crates/gc-wasm/src/match_driver_bridge.rs`'s `MatchDriverBridge::new`
+ * doc for the failure this closes: a burst wide enough to exceed the
+ * rollback window used to overflow the fixed 64-message queue before the
+ * window-exceeded condition could ever be reached).
+ *
+ * `initialSnapshotOverride`, when given, replaces `session`'s own captured
+ * snapshot as this driver's boundary zero -- e.g. one of
+ * {@link OnlineCombatPhasesBridge.onlineCombatPhaseBoundaryZero}'s seven
+ * pinned combat-phase snapshots. Consumed by value (the JS-side handle is no
+ * longer usable after this call returns, same as passing it to any other
+ * wasm-bindgen constructor that takes ownership): every peer sharing one
+ * session must be built from the *same* boundary zero (a differing one is a
+ * desync fixture, not a correction fixture), which for a caller with more
+ * than one peer means calling the snapshot's own builder again rather than
+ * reusing one handle --
+ * {@link OnlineCombatPhasesBridge.onlineCombatPhaseBoundaryZero} is a pure,
+ * deterministic function of `(id, duration)`, so two calls with the same
+ * arguments produce byte-identical snapshots. Caution: passing an
+ * already-consumed handle a second time does not throw -- it silently falls
+ * back to `session`'s own snapshot instead (confirmed against the compiled
+ * artifact) -- so reusing a handle across two constructor calls is a silent
+ * bug, not a loud one.
+ *
  * Throws (a string) if `role` is unrecognized or the JSON arguments fail to
  * parse/decode. */
 export interface MatchDriverBridgeConstructor {
@@ -325,6 +384,8 @@ export interface MatchDriverBridgeConstructor {
     freezeJson: string,
     manifestJson: string,
     maxGuests: number | undefined,
+    queueLimit?: number,
+    initialSnapshotOverride?: WasmMatchSnapshot,
   ): MatchDriverBridge;
 }
 
@@ -704,8 +765,86 @@ export interface MatchDriverFixtureBridge {
   ): WasmMatchDriverFixtureSession;
 }
 
+// ---------------------------------------------------------------------------
+// `online_combat_phases_bridge.rs` — the driver-level combat-phase fixture,
+// a `#[wasm_bindgen]` surface over the seven pinned combat-phase boundary
+// zeroes `crates/gc-netcode/tests/support/online_combat_phases.rs` already
+// proves out (itself a port of `spec/support/online_combat_phases.lua`).
+// `packages/online/src/match_presentation.spec.ts`'s nine blocked
+// combat-phase cases need exactly this: pick a phase, build its pinned
+// boundary-zero snapshot, drive a real `MatchDriverBridge` from it, script
+// the live slot's input, and ask whether a resimulated tick passed through
+// the named phase.
+// ---------------------------------------------------------------------------
+
+/** One `onlineCombatPhaseScenarioJson(id)` result, parsed. */
+export interface OnlineCombatPhaseScenario {
+  readonly id: string;
+  /** `"policy"` (the phase is produced by the shipped AI policy from
+   * nothing but the opening pose) or `"canonical_input"` (produced by the
+   * live slot's own equipment input, carried on the canonical input
+   * stream — only `"guard"` uses this route). */
+  readonly route: "policy" | "canonical_input";
+  /** Driver steps the scenario needs to reach the phase. */
+  readonly steps: number;
+  /** Deliver every Nth step; the burst that corrects. */
+  readonly deliver_period: number;
+  /** Whether {@link OnlineCombatPhasesBridge.onlineCombatPhaseLiveSample}
+   * authors anything for this phase (only `"guard"`). */
+  readonly hold_equipment: boolean;
+}
+
+/** Every function `gc_wasm::online_combat_phases_bridge` exports. */
+export interface OnlineCombatPhasesBridge {
+  /** Every canonical online combat phase id, in canonical order —
+   * `"windup"`, `"guard"`, `"contact"`, `"projectile_flight"`, `"stagger"`,
+   * `"ball_spill"`, `"immunity_expiry"`. */
+  onlineCombatPhaseIds(): string[];
+  /** One phase's scenario metadata, as JSON
+   * ({@link OnlineCombatPhaseScenario}'s shape). Throws (a string) if `id`
+   * is not one of {@link OnlineCombatPhasesBridge.onlineCombatPhaseIds}'s
+   * ids. */
+  onlineCombatPhaseScenarioJson(id: string): string;
+  /** The shared, combat-active boundary zero for one phase, as an opaque
+   * handle (never JSON — see {@link WasmMatchSnapshot}'s doc). Every peer in
+   * a session must be built from the *same* snapshot: a differing one is a
+   * desync fixture, not a correction fixture. `duration` is match seconds;
+   * omit for the scenario's own default. Throws (a string) if `id` is not
+   * one of {@link OnlineCombatPhasesBridge.onlineCombatPhaseIds}'s ids. */
+  onlineCombatPhaseBoundaryZero(id: string, duration?: number): WasmMatchSnapshot;
+  /** The live slot's input for one driver step, as a canonical
+   * `gc_sim::input_frame` sample wire. Driver index 1 is the host, whose
+   * opening live slot is `home_1`; every other index gets a neutral sample.
+   * `step` is the zero-based driver step. Only the `"guard"` scenario
+   * authors anything (see {@link OnlineCombatPhaseScenario.hold_equipment}).
+   * Throws (a string) if `id` is not one of
+   * {@link OnlineCombatPhasesBridge.onlineCombatPhaseIds}'s ids. */
+  onlineCombatPhaseLiveSample(id: string, step: number, index: number): string;
+  /** Did a resimulated input tick run through phase `id`? `before`/`after`
+   * are this driver's own retained boundary snapshots (typically
+   * `MatchDriverBridge.snapshotLookup(tick)`/`.snapshotLookup(tick + 1)`'s
+   * `.snapshot`) for the boundary before/after the tick being asked about;
+   * `combatEventsJson` is that same tick's combat events, in the exact
+   * shape `MatchDriverBridge.advance()`'s batch already embeds per output
+   * under `combat_events` — pass it straight through, no re-shaping needed.
+   * Throws (a string) if `id` is not one of
+   * {@link OnlineCombatPhasesBridge.onlineCombatPhaseIds}'s ids,
+   * `combatEventsJson` fails to parse/decode, or `before`/`after` are not
+   * combat-bearing snapshots. */
+  onlineCombatPhaseObserved(
+    id: string,
+    before: WasmMatchSnapshot,
+    after: WasmMatchSnapshot,
+    combatEventsJson: string,
+  ): boolean;
+}
+
 /** The shape of `dist/pkg/gc_wasm.cjs`'s module exports. */
-export interface GcWasmModule extends InputFrameBridge, InputProtocolBridge, MatchDriverFixtureBridge {
+export interface GcWasmModule
+  extends InputFrameBridge,
+    InputProtocolBridge,
+    MatchDriverFixtureBridge,
+    OnlineCombatPhasesBridge {
   readonly Session: SimSessionConstructor;
   readonly Coordinator: CoordinatorConstructor;
   readonly MatchDriverBridge: MatchDriverBridgeConstructor;

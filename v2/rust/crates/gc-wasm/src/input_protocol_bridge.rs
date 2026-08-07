@@ -55,6 +55,41 @@
 //! works, both natively and under node (`session.spec.ts`,
 //! `determinism.spec.ts`). See `input_protocol.spec.ts` for the node-side
 //! proof this module's own rows/bytes marshal correctly.
+//!
+//! ## `slot_index` is 1-based on the wire; `SlotId` is 0-based in Rust — do
+//! ## not convert it here
+//!
+//! Every `slot_index` this module reads or writes ([`row_to_json`]/
+//! [`row_from_json`], and therefore every row inside
+//! [`WasmInputPacket::rows_json`]/[`input_protocol_new_guest`]/
+//! [`input_protocol_new_host`]'s `rows_json` parameter) is
+//! `gc_netcode::input_protocol::AuthorityRow.slot_index`: the canonical
+//! **one-based** position (`1..=gc_sim::input_frame::SLOT_COUNT`, i.e.
+//! `1..=8`) — `gc_netcode::input_protocol::validate` itself bounds-checks it
+//! against exactly that range, and this module's `row_to_json`/
+//! `row_from_json` pass it straight through with **no** conversion. That is
+//! README rule 5.3's documented exception ("any index that appears in a
+//! serialized payload, a hash input, or a wire format keeps its original
+//! value") applied literally: `slot_index` on this wire is the same
+//! one-based value `gc_sim::input_frame::slot(index)` already takes and the
+//! Lua original always used, not the zero-based Rust enum below it.
+//!
+//! [`gc_sim::input_frame::SlotId`] — the *identity* a resolved slot index
+//! ultimately names — is an ordinary Rust enum, so its discriminant is
+//! **zero-based** (`SlotId::Home1 as i64 == 0`, matching `slot(1)`'s `.id`).
+//! A caller that quietly reuses one convention for the other gets no type
+//! error and no panic: it silently forges authority for a *different, but
+//! still legitimately-owned*, slot instead of a genuine ownership violation
+//! — exactly the failure mode `gc_netcode::match_driver.rs`'s
+//! `fill_relay_window` guards against with its own explicit
+//! `covered[slot_index - 1]` conversion on the way *into* the zero-based
+//! side. This was found empirically: an 0-based first attempt at a forged
+//! ownership-violation bundle in `packages/online/src/net_diagnostics.spec.ts`
+//! landed on the forging guest's own slot and produced no violation at all,
+//! until `slot_index` was read as the one-based wire value
+//! `input_protocol.rs`'s own bounds check already says it is.
+//! [`tests::slot_index_on_the_wire_is_one_based_while_slot_id_is_zero_based`]
+//! pins the convention this module relies on.
 
 use gc_netcode::input_protocol::{self, AuthorityRow, Packet, PacketKind};
 use gc_sim::input_frame;
@@ -87,6 +122,8 @@ fn kind_from_wire(text: &str) -> Result<PacketKind, JsValue> {
     }
 }
 
+/// `row.slot_index` crosses unchanged: it is already the canonical
+/// **one-based** wire value — see the module doc's `slot_index` section.
 fn row_to_json(row: &AuthorityRow) -> Result<Json, JsValue> {
     let sample_wire =
         input_frame::encode_sample(&row.sample).map_err(|err| js_err(err.to_string()))?;
@@ -105,6 +142,12 @@ fn rows_to_json(rows: &[AuthorityRow]) -> Result<Json, JsValue> {
     Ok(Json::Array(items))
 }
 
+/// `slot_index` is read back unchanged, as the one-based wire value — see
+/// the module doc's `slot_index` section. A caller building `rows_json` by
+/// hand (e.g. to forge a bundle for a fault-detection test) must supply the
+/// same one-based convention `gc_sim::input_frame::slot`/
+/// `gc_netcode::input_protocol::validate` use, not `SlotId`'s zero-based
+/// Rust discriminant.
 fn row_from_json(json: &Json) -> Result<AuthorityRow, JsValue> {
     let tick = json
         .field_i64("tick")
@@ -495,6 +538,53 @@ mod tests {
     // ownership-violation-shaped forgery `net_diagnostics_fixture.ts`'s
     // `forgedBundle` builds downstream of this binding (a single row that
     // does not start at the expected first tick).
+
+    #[test]
+    fn slot_index_on_the_wire_is_one_based_while_slot_id_is_zero_based() {
+        // Pins the convention the module doc's `slot_index` section
+        // documents (defect #3): `row_to_json`/`row_from_json` pass
+        // `slot_index` straight through with no +/-1 conversion, and the
+        // wire value they carry is one-based -- matching
+        // `gc_sim::input_frame::slot`'s own one-based parameter and
+        // `gc_netcode::input_protocol::validate`'s `1..=SLOT_COUNT` bounds
+        // check -- while the `SlotId` identity that same index resolves to
+        // has an ordinary, zero-based Rust enum discriminant. Conflating the
+        // two silently retargets a forged bundle at a different, still
+        // legitimately-owned slot instead of violating one.
+        let wire_index = 1_i64;
+        let slot = input_frame::slot(wire_index).expect("1 is a valid one-based slot index");
+        assert_eq!(
+            slot.id,
+            input_frame::SlotId::Home1,
+            "wire index 1 must resolve to the first canonical slot identity"
+        );
+        assert_eq!(
+            input_frame::SlotId::Home1 as i64,
+            0,
+            "SlotId's own Rust discriminant is zero-based, not one-based"
+        );
+
+        // `row_to_json`: the wire value crosses to JS completely unchanged.
+        let rows_json = guest_rows_json(wire_index, 0);
+        let parsed = Json::parse(&rows_json).unwrap();
+        let first_row = &parsed.as_array().unwrap()[0];
+        assert_eq!(
+            first_row.field_i64("slot_index"),
+            Some(wire_index),
+            "row_to_json must not shift slot_index toward SlotId's zero-based discriminant"
+        );
+
+        // `row_from_json`: the reverse direction is equally unshifted.
+        let round_tripped = row_from_json(first_row).unwrap();
+        assert_eq!(round_tripped.slot_index, wire_index);
+
+        // The last canonical slot (Away4, discriminant 7) is wire index 8 --
+        // not 7, which would be the zero-based discriminant leaking onto the
+        // wire.
+        let last_slot = input_frame::slot(8).expect("8 is a valid one-based slot index");
+        assert_eq!(last_slot.id, input_frame::SlotId::Away4);
+        assert_eq!(input_frame::SlotId::Away4 as i64, 7);
+    }
 
     #[test]
     fn packet_id_is_stable_for_the_same_identity() {

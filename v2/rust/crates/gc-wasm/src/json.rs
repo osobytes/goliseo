@@ -92,6 +92,37 @@ impl Json {
         )
     }
 
+    /// [`Json::obj`], but a pair whose value is [`Json::Null`] is dropped
+    /// from the object entirely rather than written as `"key":null`.
+    ///
+    /// Use this for a field that mirrors an `Option<T>`/`t[k] = nil` on the
+    /// Lua side, where "absent" is the actual wire contract: Lua's
+    /// `t[k] = nil` deletes the key outright, so a Lua caller reading that
+    /// table sees the key missing, never present with a `nil` value. This
+    /// crate's `Json::opt_int`/`Json::opt_str` (and any `Option`-shaped field
+    /// built by hand with `.map_or(Json::Null, ...)`) previously encoded that
+    /// same "absent" case as an explicit JSON `null`, which round-trips
+    /// through `JSON.parse` as JS `null` — a value `!== undefined`, so a
+    /// caller checking `field !== undefined` (the natural TypeScript
+    /// spelling of "this optional field is present") sees a stray `null` and
+    /// crashes dereferencing it. That is the same class of bug this port
+    /// already fixed once for `gc_netcode::protocol::Value::Nil` stored as a
+    /// present table field — see `coordinator_bridge.rs`'s `value_to_json`.
+    /// Use [`Json::obj`] instead when `null` genuinely is a meaningful,
+    /// present value on the wire (e.g. round-tripping a real
+    /// `protocol::Value::Nil` payload) rather than a stand-in for "this
+    /// optional field has no value."
+    #[must_use]
+    pub fn obj_omit_null(fields: Vec<(&str, Json)>) -> Json {
+        Json::Object(
+            fields
+                .into_iter()
+                .filter(|(_, value)| !value.is_null())
+                .map(|(key, value)| (key.to_string(), value))
+                .collect(),
+        )
+    }
+
     /// An array.
     #[must_use]
     pub fn arr(items: Vec<Json>) -> Json {
@@ -562,6 +593,22 @@ mod tests {
         assert_eq!(peers[0].get("id").unwrap().as_str(), Some("a"));
         assert_eq!(peers[1].field_bool("ready"), Some(false));
         assert_eq!(parsed.field_i64("count"), Some(2));
+    }
+
+    #[test]
+    fn obj_omit_null_drops_null_valued_pairs_but_keeps_everything_else() {
+        let value = Json::obj_omit_null(vec![
+            ("present", Json::int(1)),
+            ("absent", Json::Null),
+            ("also_present", Json::bool(false)),
+        ]);
+        let text = value.to_json_string();
+        assert_eq!(text, r#"{"present":1,"also_present":false}"#);
+        let parsed = Json::parse(&text).unwrap();
+        // The whole point: `field()`/a JS `!== undefined` check sees the key
+        // itself missing, not present with a `null` value.
+        assert!(parsed.get("absent").is_none());
+        assert_eq!(parsed.field_i64("present"), Some(1));
     }
 
     #[test]

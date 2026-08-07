@@ -257,3 +257,156 @@ describe("matchDriverFixture bridge: the constructor-panic regression", () => {
     }
   });
 });
+
+describe("matchDriverFixture bridge: MatchDriverBridge's queueLimit and transportDiagnosticsJson", () => {
+  it("queueLimit defaults to 64 and is configurable, reaching the wrapped transport", () => {
+    // Before `queueLimit` existed, `MatchDriverBridge`'s own internal
+    // transport's inbound queue was permanently fixed at 64 with nothing on
+    // this bridge's public surface able to raise it -- a burst wide enough
+    // to exceed the ~30-tick rollback window overflowed the queue itself
+    // first, so a genuine window-exceeded condition was unreachable through
+    // the public API (see `crates/gc-wasm/src/match_driver_bridge.rs`'s
+    // `MatchDriverBridge::new` doc).
+    const host = loadSimHost();
+    const freezeJson = host.matchDriverFixtureFreezeJson("1v1");
+    const manifestJson = host.matchDriverFixtureManifestJson("1v1");
+    const session = newSession(host);
+    try {
+      const defaultBridge = new host.MatchDriverBridge(
+        session,
+        "host",
+        "host",
+        freezeJson,
+        manifestJson,
+        undefined,
+      );
+      const defaultDiagnostics = JSON.parse(defaultBridge.transportDiagnosticsJson()) as {
+        queue_limit: number;
+      };
+      expect(defaultDiagnostics.queue_limit).toBe(64);
+
+      const raisedBridge = new host.MatchDriverBridge(
+        session,
+        "host",
+        "host2",
+        freezeJson,
+        manifestJson,
+        undefined,
+        200,
+      );
+      const raisedDiagnostics = JSON.parse(raisedBridge.transportDiagnosticsJson()) as {
+        queue_limit: number;
+      };
+      expect(raisedDiagnostics.queue_limit).toBe(200);
+
+      raisedBridge.initializeTransport();
+      raisedBridge.openPeer("guest_x");
+      raisedBridge.setPeerConnected("guest_x");
+      // Well past the old fixed cap of 64, with nothing ever draining them
+      // (`advance` drains; this never calls it) -- the exact scenario the
+      // defect made unreachable.
+      for (let seq = 0; seq < 100; seq += 1) {
+        expect(() =>
+          raisedBridge.enqueueInbound("guest_x", "input", "input", seq, seq, new Uint8Array()),
+        ).not.toThrow();
+      }
+
+      defaultBridge.initializeTransport();
+      defaultBridge.openPeer("guest_y");
+      defaultBridge.setPeerConnected("guest_y");
+      let overflowedAt = -1;
+      for (let seq = 0; seq < 100; seq += 1) {
+        try {
+          defaultBridge.enqueueInbound("guest_y", "input", "input", seq, seq, new Uint8Array());
+        } catch {
+          overflowedAt = seq;
+          break;
+        }
+      }
+      expect(overflowedAt).toBe(64);
+    } finally {
+      session.free();
+    }
+  });
+
+  it("diagnosticsJson omits terminal/late_input_tick when absent, rather than nulling them", () => {
+    // The exact JSON-boundary defect this closes: `terminal`,
+    // `late_input_tick`, and `control_slot` used to always be present keys
+    // (`null` when absent), which `JSON.parse` turns into `null`, not
+    // `undefined` -- `@gc/online`'s `MatchDriverDiagnostics` declares them
+    // TypeScript-optional (`field?: T`), and its `recordStep` checks
+    // `!== undefined`, which a JSON `null` satisfies, crashing on
+    // `terminal.status` the moment a step has no active terminal (every
+    // step until one is reached).
+    const host = loadSimHost();
+    const freezeJson = host.matchDriverFixtureFreezeJson("1v1");
+    const manifestJson = host.matchDriverFixtureManifestJson("1v1");
+    const session = newSession(host);
+    try {
+      const bridge = new host.MatchDriverBridge(session, "host", "host", freezeJson, manifestJson, undefined);
+      bridge.initializeTransport();
+      bridge.openPeer("guest_1");
+      bridge.setPeerConnected("guest_1");
+      bridge.advance(host.inputFrameNeutralSample());
+
+      const diagnostics = JSON.parse(bridge.diagnosticsJson()) as Record<string, unknown>;
+      expect(Object.prototype.hasOwnProperty.call(diagnostics, "terminal")).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(diagnostics, "late_input_tick")).toBe(false);
+      // control_slot, by contrast, genuinely is present for a seated host.
+      expect(Object.prototype.hasOwnProperty.call(diagnostics, "control_slot")).toBe(true);
+      expect(typeof diagnostics.control_slot).toBe("string");
+    } finally {
+      session.free();
+    }
+  });
+});
+
+describe("matchDriverFixture bridge: MatchDriverBridge's observeCheckpoint", () => {
+  it("agrees with its own published checkpoint hash, and forces a hash_mismatch on repeated disagreement", () => {
+    // Before this method existed there was no way to force a hash
+    // divergence deterministically from `@gc/wasm` at all -- confirmed
+    // absent from `MatchDriverBridge`'s surface and `types.ts`.
+    const host = loadSimHost();
+    const freezeJson = host.matchDriverFixtureFreezeJson("1v1");
+    const manifestJson = host.matchDriverFixtureManifestJson("1v1");
+    const session = newSession(host);
+    try {
+      const bridge = new host.MatchDriverBridge(session, "host", "host", freezeJson, manifestJson, undefined);
+      bridge.initializeTransport();
+      bridge.openPeer("guest_1");
+      bridge.setPeerConnected("guest_1");
+
+      let checkpoint: { tick: number; hash: string } | undefined;
+      for (let step = 0; step < 40 && checkpoint === undefined; step += 1) {
+        const batch = JSON.parse(bridge.advance(host.inputFrameNeutralSample())) as {
+          checkpoints: Array<{ tick: number; hash: string }>;
+        };
+        checkpoint = batch.checkpoints[0];
+      }
+      expect(checkpoint).toBeDefined();
+      const { tick, hash } = checkpoint as { tick: number; hash: string };
+
+      // Agreement: the driver's own hash, reported back to it.
+      expect(bridge.observeCheckpoint(tick, hash)).toBe(true);
+      expect(JSON.parse(bridge.diagnosticsJson()).hash_mismatches).toBe(0);
+
+      // A tick this driver never published a checkpoint at all is treated
+      // as agreement too (nothing to compare against yet).
+      expect(bridge.observeCheckpoint(999_999, "deadbeef")).toBe(true);
+
+      // Repeated disagreement on a real, published tick eventually
+      // terminates the driver -- `gc_netcode::match_driver::MAX_HASH_MISMATCHES`
+      // is 3.
+      expect(bridge.observeCheckpoint(tick, "0000000000000000")).toBe(false);
+      expect(bridge.observeCheckpoint(tick, "0000000000000000")).toBe(false);
+      expect(bridge.observeCheckpoint(tick, "0000000000000000")).toBe(false);
+
+      expect(JSON.parse(bridge.statusJson())).toBe("hash_mismatch");
+      const terminal = JSON.parse(bridge.terminalJson()) as { status: string; failure?: string };
+      expect(terminal.status).toBe("hash_mismatch");
+      expect(terminal.failure).toBe("desync");
+    } finally {
+      session.free();
+    }
+  });
+});

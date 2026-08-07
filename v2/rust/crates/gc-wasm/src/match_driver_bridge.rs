@@ -24,7 +24,14 @@
 //! step, inside [`MatchDriverBridge::advance`] — see that module's doc and
 //! [`crate::net_inbox`] for the discipline. [`MatchDriverBridge::enqueue_inbound`]
 //! is the only network-facing entry point on this bridge; it only ever
-//! appends to the transport's inbound queue.
+//! appends to the transport's inbound queue, whose capacity
+//! [`MatchDriverBridge::new`]'s `queue_limit` parameter controls (defaulting
+//! to [`crate::wasm_transport::DEFAULT_QUEUE_LIMIT`] — 64 — like every other
+//! `WasmStarTransport` caller). A caller that needs to hold open a delivery
+//! gap wider than the default queue can buffer (e.g. to provoke a genuine
+//! `gc_sim::rollback_events`/`gc_netcode::match_driver` unconfirmed-window
+//! failure through a burst, rather than a permanent stall) must raise it
+//! here — see that parameter's own doc for why.
 //!
 //! ## Why a `MatchSnapshot` never crosses to JS
 //!
@@ -239,8 +246,15 @@ fn output_summary_to_json(output: &RollbackTickOutput) -> Json {
     rollback_events_bridge::tick_output_to_json(&to_event_tick_output(output))
 }
 
+/// `failure`/`tick` are `Option`-shaped (`MatchDriverTerminal.failure`/
+/// `.tick`) and use [`Json::obj_omit_null`] so an absent one is an omitted
+/// key, not a present `null` — `packages/online/src/net_diagnostics.ts`'s
+/// `MatchDriverTerminal.failure?`/`.tick?` are TypeScript optional
+/// (absent-or-present) fields, and `recordStep` reads them with
+/// `!== undefined`, which a JSON `null` fails (see [`diagnostics_to_json`]'s
+/// doc for the full defect this fixes).
 fn driver_terminal_to_json(terminal: &MatchDriverTerminal) -> Json {
-    Json::obj(vec![
+    Json::obj_omit_null(vec![
         ("status", Json::str(debug_tag(&terminal.status))),
         (
             "failure",
@@ -253,8 +267,22 @@ fn driver_terminal_to_json(terminal: &MatchDriverTerminal) -> Json {
     ])
 }
 
+/// `terminal`/`late_input_tick`/`control_slot`/`full_time_boundary` are all
+/// `Option`-shaped and use [`Json::obj_omit_null`], not [`Json::obj`] — see
+/// that function's doc. Before this fix every one of them serialized an
+/// absent value as a present JSON `null`; `MatchDriverDiagnostics` in
+/// `packages/online/src/net_diagnostics.ts` declares them
+/// `readonly field?: T` (TypeScript optional, i.e. absent-or-present), and
+/// `recordStep` checks `diagnostics.terminal !== undefined` before reading
+/// `terminal.status` — a `null` satisfies `!== undefined` and the next line
+/// throws "Cannot read properties of null (reading 'status')". Confirmed
+/// empirically driving the real compiled artifact: a raw `JSON.parse` of
+/// this method's own output crashed the moment a step had no active
+/// terminal, which is every step until one is actually reached. Every other
+/// field below is a required (always-present) scalar/array and is therefore
+/// unaffected by switching to the omit-null variant.
 fn diagnostics_to_json(diagnostics: &MatchDriverDiagnostics) -> Json {
-    Json::obj(vec![
+    Json::obj_omit_null(vec![
         (
             "snapshot_captures",
             Json::int(diagnostics.snapshot_captures),
@@ -458,7 +486,59 @@ impl MatchDriverBridge {
     /// `.expect()` a shape this call already guarantees — AGENTS.md §7: a
     /// panic crossing the wasm boundary is not a recoverable `Result` a
     /// caller can catch, and it poisons the instance).
+    ///
+    /// `queue_limit` bounds this bridge's own internal transport's inbound
+    /// queue (`crate::wasm_transport::WasmStarTransport`'s `queue_limit`,
+    /// [`crate::wasm_transport::DEFAULT_QUEUE_LIMIT`] — 64 — when omitted).
+    /// Before this parameter existed the bridge always passed `None` here,
+    /// so the queue was permanently fixed at 64 with nothing on this
+    /// bridge's public surface able to raise it — for a caller (typically a
+    /// test) that needs to hold a genuine multi-tick delivery gap wide
+    /// enough to exceed `gc_sim::rollback_input_history::ROLLBACK_WINDOW_TICKS`
+    /// (30) without the queue itself overflowing first (a different,
+    /// unrelated failure — `"wasm transport inbound queue is full"` — that
+    /// would otherwise mask the window-exceeded condition the caller is
+    /// actually trying to provoke), raise this past the delivery gap under
+    /// test.
+    ///
+    /// `initial_snapshot_override`, when given, replaces `session`'s own
+    /// `capture_snapshot()` as this driver's boundary-zero
+    /// `gc_sim::match_snapshot::MatchSnapshot` — e.g. one of
+    /// [`crate::online_combat_phases_bridge`]'s seven pinned combat-phase
+    /// snapshots, rather than the default match `session` itself started
+    /// from. `session` is still required either way (this constructor has
+    /// no other source of the offline team/ownership resolution it needs —
+    /// see the module doc's "Why a `MatchSnapshot` never crosses to JS"
+    /// section), but its own snapshot goes unused once an override is
+    /// supplied; any freshly-constructed `Session` for an authored team
+    /// pair (e.g. `"nebula"`/`"orion"`) satisfies it.
+    ///
+    /// Consumed by value, like every other exported-class parameter this
+    /// crate accepts across the wasm boundary (`wasm-bindgen` has no
+    /// `OptionFromWasmAbi` for a *reference* to a custom class, only to an
+    /// owned one) — so a caller seeding more than one peer in the same
+    /// session (every peer must share the *same* boundary zero; a differing
+    /// one is a desync fixture, not a correction fixture) does not reuse one
+    /// handle across multiple constructor calls. Instead, call the
+    /// snapshot's own builder once per peer:
+    /// [`crate::online_combat_phases_bridge::online_combat_phase_boundary_zero`]
+    /// is a pure, deterministic function of `(id, duration)`, so two calls
+    /// with the same arguments produce byte-identical snapshots — exactly
+    /// the same guarantee a shared handle would have given, without needing
+    /// reference semantics this ABI does not support for a custom class.
+    ///
+    /// Caution: passing an already-consumed handle a second time does not
+    /// throw. `wasm-bindgen`'s generated `Option<WasmMatchSnapshot>`
+    /// decoding treats a freed JS wrapper's null pointer as `None` — so a
+    /// caller that mistakenly reuses one silently falls back to `session`'s
+    /// own snapshot rather than erroring loudly (confirmed empirically
+    /// against the compiled artifact under node). This is inherent to how
+    /// every `Option<T>`-of-an-exported-class parameter in this crate
+    /// behaves once `T` is consumed, not something specific to this
+    /// parameter; documented here because a silent behavioural fallback is
+    /// easy to miss.
     #[wasm_bindgen(constructor)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         session: &Session,
         role: &str,
@@ -466,6 +546,8 @@ impl MatchDriverBridge {
         freeze_json: &str,
         manifest_json: &str,
         max_guests: Option<f64>,
+        queue_limit: Option<f64>,
+        initial_snapshot_override: Option<WasmMatchSnapshot>,
     ) -> Result<MatchDriverBridge, JsValue> {
         let driver_role = match role {
             "host" => match_driver::DriverRole::Host,
@@ -488,11 +570,17 @@ impl MatchDriverBridge {
         // holds. See this method's doc for why this call exists.
         protocol::validate_assignment_manifest(&manifest, &freeze.assignments)
             .map_err(|err| js_err(err.message))?;
-        let initial_snapshot = session.capture_snapshot();
+        let initial_snapshot = initial_snapshot_override
+            .map(|handle| handle.snapshot)
+            .unwrap_or_else(|| session.capture_snapshot());
         let timeline = rollback_events::new(&initial_snapshot, None);
         let initial_snapshot_for_export = initial_snapshot.clone();
 
-        let transport = WasmStarTransport::new(transport_role, max_guests.map(|n| n as i64), None);
+        let transport = WasmStarTransport::new(
+            transport_role,
+            max_guests.map(|n| n as i64),
+            queue_limit.map(|n| n as i64),
+        );
         let transport_for_driver = transport.clone();
         let rules = DriverRules::new(manifest.clone(), freeze.clone());
 
@@ -638,6 +726,26 @@ impl MatchDriverBridge {
         Ok(self.batch_json(&batch, fed, diffs))
     }
 
+    /// Mirrors `gc_netcode::match_driver::observe_checkpoint`: compares
+    /// `hash` against this driver's own published checkpoint hash at
+    /// `tick`, if it has one. Returns `true` when they agree (or this
+    /// driver never published a checkpoint at `tick`, e.g. `hash` is stale
+    /// or from a boundary this driver has not reached yet — see that
+    /// function's own doc), `false` on a genuine one-off disagreement.
+    /// Every consecutive disagreement is counted internally
+    /// (`diagnosticsJson`'s `hash_mismatches`); at
+    /// `gc_netcode::match_driver::MAX_HASH_MISMATCHES` consecutive
+    /// disagreements this call itself terminates the driver
+    /// (`status` becomes `"hash_mismatch"`, `terminal.failure` becomes
+    /// `"desync"`) rather than the caller having to check the return value
+    /// and act on it separately. Before this method existed there was no
+    /// way to force a hash divergence deterministically from `@gc/wasm` at
+    /// all — confirmed absent from this bridge's surface and `types.ts`.
+    #[wasm_bindgen(js_name = observeCheckpoint)]
+    pub fn observe_checkpoint(&mut self, tick: f64, hash: &str) -> bool {
+        match_driver::observe_checkpoint(&mut self.driver, tick as i64, hash)
+    }
+
     /// This driver's own boundary-zero snapshot (the same one
     /// [`MatchDriverBridge::new`] captured its internal timeline from), as
     /// an opaque handle — for building a standalone
@@ -689,6 +797,27 @@ impl MatchDriverBridge {
     #[must_use]
     pub fn diagnostics_json(&self) -> String {
         diagnostics_to_json(&match_driver::diagnostics(&self.driver)).to_json_string()
+    }
+
+    /// A full read of this bridge's own internal transport
+    /// (`crate::wasm_transport::WasmStarTransport`) — star and per-peer
+    /// channel counters (`sent`/`received`/`dropped_outbound`/
+    /// `dropped_inbound`/`queue_limit`/...), as JSON
+    /// (`crate::match_driver_fixture_bridge::star_diagnostics_to_json`'s
+    /// shape, the exact `TransportStarDiagnostics` mapping
+    /// [`crate::match_driver_fixture_bridge::WasmFakeStarTransport::diagnostics_json`]
+    /// already exposes for the fixture's in-process star). Before this
+    /// method existed nothing on this bridge's public surface could report
+    /// this data at all — confirmed by reading `wasm_transport.rs` end to
+    /// end, it carries no `#[wasm_bindgen]` attribute of its own — so a
+    /// `DiagnosticTransport`-style tap could never observe a
+    /// `MatchDriverBridge`'s own traffic (`net_diagnostics.spec.ts`'s file
+    /// header names this gap precisely).
+    #[wasm_bindgen(js_name = transportDiagnosticsJson)]
+    #[must_use]
+    pub fn transport_diagnostics_json(&self) -> String {
+        crate::match_driver_fixture_bridge::star_diagnostics_to_json(&self.transport.diagnostics())
+            .to_json_string()
     }
 
     /// The rollback-event timeline's retained-state shape, as JSON. See the
@@ -879,15 +1008,16 @@ mod tests {
     /// Builds one connected host driver, seated for a fixture 1v1 session
     /// (host + one guest), with a fresh [`Session`] boundary-zero snapshot —
     /// mirrors [`Session::new`]'s own doc-comment fixture pairing
-    /// (`"nebula"`/`"orion"`).
-    fn new_host_bridge() -> MatchDriverBridge {
+    /// (`"nebula"`/`"orion"`). `queue_limit` is this bridge's own transport
+    /// inbound-queue cap (`None` = the transport's default, 64).
+    fn new_host_bridge_with_queue_limit(queue_limit: Option<f64>) -> MatchDriverBridge {
         let mode = protocol::MatchMode::OneVOne;
         let freeze = match_driver_fixture::freeze(mode, None, None);
         let manifest = protocol_fixture::manifest(Some(mode));
         let freeze_json = freeze_to_json(&freeze).to_json_string();
         let manifest_json = value_to_json(&manifest).to_json_string();
 
-        let session = Session::new("nebula", "orion", 7.0, 20.0, 3)
+        let session = Session::new("nebula", "orion", 7.0, 20.0, 3, None)
             .expect("the fixture team ids always construct a valid session");
 
         let mut bridge = MatchDriverBridge::new(
@@ -896,6 +1026,8 @@ mod tests {
             match_driver_fixture::HOST_PEER_ID,
             &freeze_json,
             &manifest_json,
+            None,
+            queue_limit,
             None,
         )
         .expect("a fixture freeze/manifest always constructs a valid driver");
@@ -907,6 +1039,12 @@ mod tests {
             .expect("opens the fixture guest slot");
         bridge.set_peer_connected(&guest_id);
         bridge
+    }
+
+    /// See [`new_host_bridge_with_queue_limit`]; the default queue limit
+    /// (`None`) is what every pre-existing test in this module wants.
+    fn new_host_bridge() -> MatchDriverBridge {
+        new_host_bridge_with_queue_limit(None)
     }
 
     #[test]
@@ -971,6 +1109,111 @@ mod tests {
                 .as_array()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn diagnostics_json_omits_absent_optional_fields_rather_than_nulling_them() {
+        // Proves defect #1 fixed: before this change, `terminal`,
+        // `late_input_tick`, and `control_slot` were always-present keys,
+        // `null` when this driver had nothing to report for them --
+        // `packages/online/src/net_diagnostics.ts`'s `MatchDriverDiagnostics`
+        // declares all three TypeScript-optional (`field?: T`), and its
+        // `recordStep` checks `!== undefined` before dereferencing
+        // `terminal.status`, which a JSON `null` satisfies -- crashing with
+        // "Cannot read properties of null" on the very first tick, since no
+        // driver has an active terminal that early. See
+        // `diagnostics_to_json`'s doc for the full account.
+        let mut bridge = new_host_bridge();
+        bridge.advance(None).unwrap();
+        let diagnostics = Json::parse(&bridge.diagnostics_json()).unwrap();
+        assert_eq!(
+            diagnostics.field_str("role"),
+            Some("host"),
+            "sanity: still a well-formed diagnostics object"
+        );
+        // `Json::get` (unlike `Json::field`) distinguishes an absent key
+        // from a present `null` -- exactly the distinction this defect was
+        // about. `terminal`/`late_input_tick` are genuinely absent this
+        // early (no terminal reached, no late input observed yet).
+        assert!(
+            diagnostics.get("terminal").is_none(),
+            "an inactive driver's diagnostics must omit 'terminal' entirely, not null it"
+        );
+        assert!(
+            diagnostics.get("late_input_tick").is_none(),
+            "must omit 'late_input_tick' entirely, not null it"
+        );
+        // `control_slot`, by contrast, genuinely IS present for a seated
+        // host (`gc_netcode::match_driver::diagnostics` only reports `None`
+        // when `owned` is empty) -- proving the other half of
+        // `Json::obj_omit_null`'s contract: a present optional value must
+        // still come through as its real value, not be swallowed along with
+        // the absent ones.
+        assert!(
+            diagnostics
+                .get("control_slot")
+                .is_some_and(|v| v.as_str().is_some()),
+            "a seated host's control_slot must be present (a wire slot id string), not omitted"
+        );
+    }
+
+    #[test]
+    fn queue_limit_is_configurable_and_reaches_the_wrapped_transport() {
+        // Proves defect #2 fixed: `MatchDriverBridge::new` used to always
+        // pass `None` for the wrapped transport's `queue_limit`, so the
+        // inbound queue was permanently fixed at
+        // `crate::wasm_transport::DEFAULT_QUEUE_LIMIT` (64) with nothing on
+        // this bridge's public surface able to raise it -- a burst wide
+        // enough to exceed the ~30-tick rollback window
+        // (`gc_sim::rollback_input_history::ROLLBACK_WINDOW_TICKS`)
+        // overflowed the queue itself first, so the window-exceeded
+        // condition was unreachable through the public API.
+        //
+        // This reads the wired-through value back via
+        // `transportDiagnosticsJson` rather than actually overflowing the
+        // queue: `enqueue_inbound`'s overflow error path constructs a
+        // `JsValue` (`crate::wasm_transport`'s `TransportError` mapped
+        // through this crate's `js_err`), which panics off the native
+        // (non-wasm32) test target this runs under -- the same constraint
+        // `crate::coordinator_bridge`'s module doc documents for every
+        // other exported error path in this crate. Reading the diagnostics
+        // value back proves the same wiring without touching that path.
+        let default_bridge = new_host_bridge_with_queue_limit(None);
+        let default_diagnostics =
+            Json::parse(&default_bridge.transport_diagnostics_json()).unwrap();
+        assert_eq!(
+            default_diagnostics.field_i64("queue_limit"),
+            Some(crate::wasm_transport::DEFAULT_QUEUE_LIMIT),
+            "omitting queue_limit must still fall back to the transport's own default"
+        );
+
+        let raised_bridge = new_host_bridge_with_queue_limit(Some(200.0));
+        let raised_diagnostics = Json::parse(&raised_bridge.transport_diagnostics_json()).unwrap();
+        assert_eq!(
+            raised_diagnostics.field_i64("queue_limit"),
+            Some(200),
+            "a caller-supplied queue_limit must reach the wrapped WasmStarTransport"
+        );
+
+        // And the wiring is exercised end to end, not just read back: with
+        // the limit raised, enqueueing well past the old fixed cap (64),
+        // with nothing ever draining them (`advance` drains; this never
+        // calls it), succeeds in full -- the exact scenario the defect made
+        // unreachable.
+        let mut raised_bridge = raised_bridge;
+        let guest_id = match_driver_fixture::guest_peer_id(1);
+        for seq in 0..100 {
+            raised_bridge
+                .enqueue_inbound(
+                    &guest_id,
+                    "input",
+                    "input",
+                    f64::from(seq),
+                    Some(f64::from(seq)),
+                    b"x",
+                )
+                .expect("a queue_limit of 200 accepts 100 unpolled enqueues");
+        }
     }
 
     #[test]

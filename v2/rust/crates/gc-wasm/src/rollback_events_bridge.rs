@@ -719,7 +719,13 @@ fn raw_combat_event_to_json(event: &CombatEvent) -> Json {
     ])
 }
 
-fn raw_combat_event_from_json(json: &Json) -> Result<CombatEvent, String> {
+/// `pub(crate)`, not private: [`crate::online_combat_phases_bridge`]'s
+/// `onlineCombatPhaseObserved` decodes the same `combat_events` shape
+/// [`crate::match_driver_bridge`]'s `advance` batch already embeds per
+/// output (see [`tick_output_to_json`]'s doc), so a caller can hand that
+/// exact array straight back in rather than this crate inventing a second
+/// combat-event wire shape.
+pub(crate) fn raw_combat_event_from_json(json: &Json) -> Result<CombatEvent, String> {
     let kind = combat_event_kind_from_wire(
         json.field_str("kind")
             .ok_or("combat event missing 'kind'")?,

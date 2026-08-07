@@ -278,7 +278,13 @@ fn peer_diagnostics_to_json(diagnostics: &TransportPeerDiagnostics) -> Json {
     ])
 }
 
-fn star_diagnostics_to_json(diagnostics: &TransportStarDiagnostics) -> Json {
+/// `pub(crate)`, not private: [`crate::match_driver_bridge`]'s
+/// `transportDiagnosticsJson` reuses this exact shape for
+/// `MatchDriverBridge`'s own wrapped `WasmStarTransport` — the
+/// `TransportStarDiagnostics`-shaped data `net_diagnostics.spec.ts`'s
+/// header comment names as absent from that bridge's surface — rather than
+/// restating this mapping a second time.
+pub(crate) fn star_diagnostics_to_json(diagnostics: &TransportStarDiagnostics) -> Json {
     Json::obj(vec![
         (
             "role",
@@ -826,7 +832,7 @@ mod tests {
 
         let freeze_json = match_driver_fixture_freeze_json("1v1", None, None).unwrap();
         let manifest_json = match_driver_fixture_manifest_json("1v1").unwrap();
-        let session = Session::new("nebula", "orion", 7.0, 20.0, 3)
+        let session = Session::new("nebula", "orion", 7.0, 20.0, 3, None)
             .expect("the fixture team ids always construct a valid session");
 
         let bridge = crate::match_driver_bridge::MatchDriverBridge::new(
@@ -835,6 +841,8 @@ mod tests {
             match_driver_fixture::HOST_PEER_ID,
             &freeze_json,
             &manifest_json,
+            None,
+            None,
             None,
         );
         assert!(

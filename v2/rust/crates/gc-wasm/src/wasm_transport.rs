@@ -82,8 +82,11 @@ use crate::net_inbox::TickQueue;
 const MAX_PAYLOAD_BYTES: usize = 1024;
 /// Mirrors `transport_contract.MAX_GUESTS`.
 const MAX_GUESTS: i64 = 7;
-/// Mirrors `transport_contract.DEFAULT_QUEUE_LIMIT`.
-const DEFAULT_QUEUE_LIMIT: i64 = 64;
+/// Mirrors `transport_contract.DEFAULT_QUEUE_LIMIT`. `pub(crate)`, not
+/// private: [`crate::match_driver_bridge::MatchDriverBridge::new`]'s own doc
+/// references this as the default its `queue_limit` parameter falls back to
+/// when omitted.
+pub(crate) const DEFAULT_QUEUE_LIMIT: i64 = 64;
 /// Mirrors `transport_contract.DEFAULT_POLL_BATCH`.
 const DEFAULT_POLL_BATCH: i64 = 32;
 

@@ -105,6 +105,17 @@ impl Drop for Session {
 impl Session {
     /// Start a new match between two authored teams
     /// (`gc_data::teams::ALL`'s ids, e.g. `"nebula"` / `"orion"`).
+    /// `home_formation` overrides the home team's authored default formation
+    /// (`gc_data::formations::ALL`'s ids, e.g. `"2-1-1"`) — `None`/omitted
+    /// keeps `home.formation`, exactly `sim_match::new`'s own default. This
+    /// binding does not validate `home_formation` against
+    /// `gc_data::formations::get` itself: `sim_match::new`'s own
+    /// `NewMatchOptions.home_formation` is a plain `Option<&str>` stored
+    /// as-is (`match.rs`'s `formation` field), with no such check on the
+    /// Rust side either — the same content-table membership a screen like
+    /// `packages/screens/src/formation.ts` is responsible for enforcing
+    /// before ever offering an id here, not something this constructor
+    /// silently re-derives.
     ///
     /// # Errors
     ///
@@ -117,6 +128,7 @@ impl Session {
         seed: f64,
         duration_seconds: f64,
         max_goals: i32,
+        home_formation: Option<String>,
     ) -> Result<Session, JsValue> {
         let home =
             teams::get(home_team_id).ok_or_else(|| JsValue::from_str("unknown home team id"))?;
@@ -137,7 +149,7 @@ impl Session {
                 w: FIELD_W,
                 h: FIELD_H,
             },
-            home_formation: None,
+            home_formation: home_formation.as_deref(),
             tactic: None,
             away_tactic: None,
             duration: Some(duration_seconds),

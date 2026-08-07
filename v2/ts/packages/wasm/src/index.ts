@@ -34,6 +34,7 @@ import type {
   MatchDriverBridge,
   MatchDriverBridgeConstructor,
   MatchDriverFixtureBridge,
+  OnlineCombatPhasesBridge,
   RollbackEventsTimelineConstructor,
   SimSessionConstructor,
   TuningRegistryConstructor,
@@ -52,6 +53,8 @@ export type {
   MatchDriverBridge,
   MatchDriverBridgeConstructor,
   MatchDriverFixtureBridge,
+  OnlineCombatPhasesBridge,
+  OnlineCombatPhaseScenario,
   RawExports,
   RollbackEventsTimeline,
   RollbackEventsTimelineConstructor,
@@ -74,7 +77,11 @@ const artifactPath = join(here, "..", "dist", "pkg", "gc_wasm.cjs");
 /** The loaded `gc-wasm` module: session lifecycle, the determinism check,
  * lobby wire helpers, and the raw per-frame render path in one typed
  * surface. */
-export interface SimHost extends InputFrameBridge, InputProtocolBridge, MatchDriverFixtureBridge {
+export interface SimHost
+  extends InputFrameBridge,
+    InputProtocolBridge,
+    MatchDriverFixtureBridge,
+    OnlineCombatPhasesBridge {
   /** Constructs a live match session. See `SimSession`'s doc. */
   readonly Session: SimSessionConstructor;
   /** Constructs a session coordinator (host or guest). See `Coordinator`'s
@@ -201,6 +208,12 @@ export function loadSimHost(): SimHost {
     matchDriverFixtureManifestJson: native.matchDriverFixtureManifestJson,
     matchDriverFixtureInitialSnapshot: native.matchDriverFixtureInitialSnapshot,
     matchDriverFixtureSession: native.matchDriverFixtureSession,
+    // `online_combat_phases_bridge.rs`.
+    onlineCombatPhaseIds: native.onlineCombatPhaseIds,
+    onlineCombatPhaseScenarioJson: native.onlineCombatPhaseScenarioJson,
+    onlineCombatPhaseBoundaryZero: native.onlineCombatPhaseBoundaryZero,
+    onlineCombatPhaseLiveSample: native.onlineCombatPhaseLiveSample,
+    onlineCombatPhaseObserved: native.onlineCombatPhaseObserved,
     memory: raw.memory,
     buildRenderFrame(handle: number): Float64Array | null {
       const ok = raw.render_frame_build(handle);

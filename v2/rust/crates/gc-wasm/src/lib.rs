@@ -138,6 +138,27 @@
 //! is the one place `@gc/wasm`'s TypeScript side converts that `Uint8Array`
 //! to `@gc/transport`'s established "binary string" `TransportMessage.payload`
 //! convention.
+//!
+//! ## Wave W6-A: defect fixes, plus the combat-phase fixture surface
+//!
+//! Three defects found driving the real compiled artifact, fixed in place:
+//! [`json::Json::obj_omit_null`] (an absent optional field must be an
+//! omitted JSON key, not a present `null` — [`match_driver_bridge`]'s
+//! `diagnosticsJson`/terminal JSON now use it); [`match_driver_bridge::MatchDriverBridge::new`]'s
+//! new `queue_limit` parameter (its wrapped transport's inbound queue was
+//! previously fixed at 64 with nothing on the public surface able to raise
+//! it); and [`input_protocol_bridge`]'s module doc, which now documents and
+//! pins (via a dedicated test) the one-based-wire/zero-based-`SlotId`
+//! `slot_index` convention that file's `row_to_json`/`row_from_json` already
+//! relied on without saying so.
+//!
+//! [`online_combat_phases_bridge`] is new: a `#[wasm_bindgen]` surface over
+//! the seven pinned combat-phase boundary zeroes
+//! `crates/gc-netcode/tests/support/online_combat_phases.rs` already proved
+//! out (itself a port of `spec/support/online_combat_phases.lua`) — see that
+//! module's own doc for why this is a second copy rather than a shared one.
+//! [`session::Session::new`] also gained a `home_formation` parameter (it
+//! previously hard-coded `None`, with no way to select a formation at all).
 #![deny(missing_docs)]
 
 pub mod coordinator_bridge;
@@ -148,6 +169,7 @@ pub mod json;
 pub mod match_driver_bridge;
 pub mod match_driver_fixture_bridge;
 pub mod net_inbox;
+pub mod online_combat_phases_bridge;
 pub mod protocol_bridge;
 pub mod registry;
 pub mod render_export;
