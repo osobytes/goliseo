@@ -26,6 +26,7 @@ import { theme } from "@gc/ui";
 import type { Vec2 } from "@gc/core";
 import type { GameSettings, ProductMatchResult, TeamData, TeamResultStats } from "./content.ts";
 import type { MatchContractPort, ObservedMatchSummary, RealMatchInputEvent, RealMatchScreenPort, RealMatchState } from "./real_match.ts";
+import type { OnlineHostPort, RenderFrame, RenderFrameRoster } from "./match.ts";
 
 /**
  * The slice of `sim.match`'s `MatchState` this screen reads directly.
@@ -89,6 +90,18 @@ export interface MatchDriverPort<TDriver, TBatch, TSnapshot, TCheckpoint> {
   batchControl(batch: TBatch): readonly unknown[];
   batchCheckpoints(batch: TBatch): readonly TCheckpoint[];
   batchLive(batch: TBatch): Readonly<Record<string, string>>;
+  /**
+   * The render-facing surface `driverSource()` now also exposes (via
+   * `OnlineHostPort`, `match.ts`) so `MatchScreen`'s ONLINE construction
+   * mode can draw a live online frame -- see that file's "THE
+   * ONLINE-DRIVEN MATCH SCREEN" section header. Mirrors `SimHostPort`'s own
+   * `frame`/`roster`/`tick`/`dispose` quartet, parametrized over `driver`
+   * the same way every other `MatchDriverPort` method already is.
+   */
+  frame(driver: TDriver): RenderFrame;
+  roster(driver: TDriver): RenderFrameRoster;
+  tick(driver: TDriver): number;
+  dispose(driver: TDriver): void;
 }
 
 /** `game.online.match_presentation`, injected -- see this module's header. */
@@ -150,7 +163,14 @@ export interface OnlineMatchOptions<TDriver, TBatch, TSnapshot, TCheckpoint, TPr
     readonly seed: number | undefined;
     readonly combatEnabled: boolean | undefined;
     readonly initialSnapshot: unknown;
-    readonly rollbackSource: () => unknown;
+    /**
+     * The seam `match.ts`'s ONLINE construction mode consumes
+     * (`MatchScreenOptions.online`) -- see `OnlineHostPort`'s doc and this
+     * file's own `driverSource()`. Was `() => unknown` (opaque) before
+     * `match.ts` had an online-driven mode to consume it at all; widened
+     * now that it does.
+     */
+    readonly rollbackSource: () => OnlineHostPort;
   }) => RealMatchScreenPort<OnlineMatchState, unknown>;
 }
 
@@ -239,8 +259,12 @@ export class OnlineMatch<TDriver, TBatch, TSnapshot, TCheckpoint, TPresentation,
   }
 
   // The seam driving `match.ts`'s injected rollback source over the OMP-3
-  // driver instead of the development laboratory.
-  private driverSource(): unknown {
+  // driver instead of the development laboratory. Returns `OnlineHostPort`
+  // now that `match.ts` has an ONLINE construction mode to consume it (see
+  // that file's "THE ONLINE-DRIVEN MATCH SCREEN" section) -- the
+  // `frame`/`roster`/`tick`/`dispose` quartet below is new; every other
+  // field was already exactly this shape (verified correct, untouched).
+  private driverSource(): OnlineHostPort {
     const self = this;
     return {
       needsLocalSample: () => self.ports.matchDriver.status(self.driver) === "active",
@@ -281,6 +305,10 @@ export class OnlineMatch<TDriver, TBatch, TSnapshot, TCheckpoint, TPresentation,
         }
         return self.ports.matchSession.playerIndex(state, liveSlot);
       },
+      frame: () => self.ports.matchDriver.frame(self.driver),
+      roster: () => self.ports.matchDriver.roster(self.driver),
+      tick: () => self.ports.matchDriver.tick(self.driver),
+      dispose: () => self.ports.matchDriver.dispose(self.driver),
     };
   }
 

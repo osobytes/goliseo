@@ -31,11 +31,13 @@
 
 import { combatFeedback, matchEventBatch } from "@gc/presentation";
 import type { CombatEvent, CombatFeedbackState, MatchEvent, RollbackEventDiff, RollbackWrappedEvent } from "@gc/presentation";
+import { Vec2 } from "@gc/core";
 import { correctionSmoothing, viewState } from "@gc/render";
 import type { correctionSmoothingTypes, replayTypes } from "@gc/render";
 import type { LifecyclePayload } from "./online_match_model.ts";
 import type { GameSettings } from "./content.ts";
 import type { RealMatchInputEvent, RealMatchScreenPort, RealMatchState } from "./real_match.ts";
+import type { OnlineMatchState } from "./online_match.ts";
 import { bindings, captureFrame, controller, inputSample } from "@gc/input";
 import type {
   ActionName,
@@ -332,34 +334,93 @@ export interface RenderFrameHud {
   readonly away_score: number;
   /** Read by [`MatchScreenAsRealMatchScreen`]'s `state` (`real_match.ts`'s `RealMatchState.time_left`). */
   readonly time_left: number;
+  /**
+   * Roster slot, one-based -- present on every real wire frame
+   * (`@gc/render`'s `frame_buffer.ts`'s `RenderFrameHud`), but only read now
+   * that ONLINE mode needs a fallback for [`MatchScreen.onlineState`]'s
+   * `controlled` when {@link OnlineHostPort.controlledPlayer} itself returns
+   * `undefined` -- see that getter's doc. Base/rollback fakes that never
+   * populate it (`FakeSimHost`, `FakeRollbackHost`) are unaffected: this
+   * field is optional precisely so they stay valid `RenderFrameHud` values.
+   */
+  readonly controlled?: number;
 }
 
-/** `crates/gc-render/src/frame.rs`'s `RenderFramePossession` -- declared for parity with the real wire shape; this module does not currently read a field off it (carrying comes off `hud.controlled_owns_ball` instead, matching the Lua original's own comparison). */
+/** `crates/gc-render/src/frame.rs`'s `RenderFramePossession` -- declared for parity with the real wire shape; this module does not currently read a field off it (carrying comes off `hud.controlled_owns_ball` instead, matching the Lua original's own comparison), except in ONLINE mode -- see [`MatchScreen.onlineState`]. */
 export interface RenderFramePossession {
   readonly owner?: number;
   readonly owner_team?: "home" | "away";
 }
 
 /**
+ * The minimal slice of `crates/gc-render/src/frame.rs`'s `RenderFramePlayers`
+ * (structure-of-arrays, one entry per roster slot) this module's ONLINE mode
+ * reads -- to build {@link OnlineMatchState.players} and to correct the
+ * render highlight (`controlled`) once {@link OnlineHostPort.controlledPlayer}
+ * has decided the real assignment. NOT part of the general opaque
+ * `players`/`ball`/`control`/`events`/`roster` fields this file otherwise
+ * never inspects (see [`RenderFrame`]'s own doc) -- a real `@gc/render`
+ * `frame_buffer.ts` decode already produces a structurally wider object that
+ * satisfies this narrower read.
+ */
+export interface OnlineRenderFramePlayers {
+  readonly count: number;
+  readonly x: readonly number[];
+  readonly y: readonly number[];
+  readonly facing_x: readonly number[];
+  readonly facing_y: readonly number[];
+  /** Per-slot render highlight -- see this interface's doc. */
+  readonly controlled: readonly boolean[];
+}
+
+/**
+ * The minimal slice of `crates/gc-render/src/frame.rs`'s `RenderFrameControl`
+ * this module's ONLINE mode reads/overrides -- see
+ * [`OnlineRenderFramePlayers`]'s doc for why this is narrower than, but
+ * structurally compatible with, the real wire shape.
+ */
+export interface OnlineRenderFrameControl {
+  readonly pass_target?: number;
+  readonly charge_kind?: "shot" | "pass";
+  readonly charge: number;
+  readonly controlled: number;
+}
+
+/**
  * `crates/gc-render/src/frame.rs`'s `RenderFrame` -- the whole interface
  * between the simulation and a renderer. Only `hud`/`possession` are typed
- * here (this module's own reads); `field`/`players`/`ball`/`control`/
- * `events`/`roster` are real fields on the wire object this module receives
- * and forwards to [`RenderPort.draw`], but this module never inspects them,
- * so they are not declared -- see this section's header.
+ * here for the BASE/ROLLBACK modes (this module's own reads); `field`/
+ * `ball`/`events`/`roster` are real fields on the wire object this module
+ * receives and forwards to [`RenderPort.draw`], but this module never
+ * inspects them, so they are not declared -- see this section's header.
+ * `players`/`control` ARE now declared, narrowly (see
+ * [`OnlineRenderFramePlayers`]/[`OnlineRenderFrameControl`]) -- ONLINE mode
+ * reads and overrides them ([`MatchScreen.onlineState`]/`drawOnline`).
+ * Optional so every existing BASE/ROLLBACK fake (`FakeSimHost`,
+ * `FakeRollbackHost`, which never populate them) remains a valid
+ * `RenderFrame`.
  */
 export interface RenderFrame {
   readonly hud: RenderFrameHud;
   readonly possession: RenderFramePossession;
+  readonly players?: OnlineRenderFramePlayers;
+  readonly control?: OnlineRenderFrameControl;
 }
 
 /**
  * `crates/gc-render/src/frame.rs`'s `RenderFrameRoster` -- match-constant
- * per-player identity. Opaque here: this module never inspects it, only
- * threads it from [`SimHostPort.roster`] to [`RenderPort.draw`], the same
- * way `OpaqueSnapshot` stays opaque in `@gc/online`'s `match_presentation.ts`.
+ * per-player identity. Mostly opaque here: this module only threads it from
+ * [`SimHostPort.roster`] to [`RenderPort.draw`] for BASE/ROLLBACK modes, the
+ * same way `OpaqueSnapshot` stays opaque in `@gc/online`'s
+ * `match_presentation.ts`. `ids`/`teams` ARE now read, narrowly, by ONLINE
+ * mode ([`MatchScreen.onlineState`]) to build {@link OnlineMatchState.players}
+ * -- optional so a `Readonly<Record<string, unknown>>` roster (every
+ * existing BASE/ROLLBACK fake) remains a valid `RenderFrameRoster`.
  */
-export type RenderFrameRoster = Readonly<Record<string, unknown>>;
+export type RenderFrameRoster = Readonly<Record<string, unknown>> & {
+  readonly ids?: readonly string[];
+  readonly teams?: readonly ("home" | "away")[];
+};
 
 /**
  * The seam between this screen and whatever is actually simulating --
@@ -744,6 +805,79 @@ export interface RollbackHostPort {
 /** Constructs a fresh {@link RollbackHostPort} with a `RollbackLabOptions` already baked in by the caller's closure -- the rollback-mode counterpart of {@link SimHostFactory}. `MatchScreen.restart`'s rollback branch calls this again for "R" to rebuild a fresh laboratory with the same options. */
 export type RollbackHostFactory = () => RollbackHostPort;
 
+/** One canonical simulation tick, seconds -- matches `online_match.ts`'s own `TICK_SECONDS` and every fixed-clock fake in this package's spec files. */
+const ONLINE_TICK_SECONDS = 1 / 60;
+const ONLINE_CLOCK_EPSILON = ONLINE_TICK_SECONDS * 1e-9;
+/** A runaway-loop guard only -- see [`MatchScreen.updateOnline`]'s doc for why this is not the determinism-relevant catch-up/drop decision `SimHostPort.planTicks` exists to keep singular. */
+const MAX_ONLINE_TICKS_PER_UPDATE = 8;
+
+// =============================================================================
+// THE ONLINE-DRIVEN MATCH SCREEN -- a third construction mode, parallel to
+// the rollback laboratory above, over `online_match.ts`'s OMP-3 match
+// driver instead of `sim.rollback_playable_lab`.
+//
+// `OnlineHostPort` is the UNION of two shapes this file already handles
+// separately, not a new design of its own:
+//
+//   - `online_match.ts`'s private `driverSource()` return shape
+//     (`needsLocalSample`/`advance`/`currentSnapshot`/`snapshot`/`terminal`/
+//     `failed`/`fullTime`/`debugModel`/`controlledPlayer`) -- already
+//     exactly what `OnlineMatchOptions.newMatch`'s `rollbackSource`
+//     parameter carries (see that file's own doc for `driverSource`).
+//   - `RollbackHostPort`'s render-facing surface (`frame`/`roster`/`tick`/
+//     `dispose`, the same `Pick<SimHostPort, ...>` shape
+//     `MatchScreen.activeHost()` already normalizes `host`/`rollbackHost`
+//     into).
+//
+// Unlike `rollback_lab`'s `createRollbackHost` factory, this file does NOT
+// construct an `OnlineHostPort` itself -- `OnlineMatch` (online_match.ts)
+// already constructs and owns the real instance via its own `driverSource()`
+// closure, so `MatchScreenOptions.online` carries the object directly
+// (already built), not options to build one from.
+//
+// `state.controlled` for this mode is NOT `hud.controlled` (that field is
+// the RAW simulation's own notion -- whichever slot local switch input last
+// picked, or the sim's construction-time default -- and does not know about
+// OMP-3's frozen-owned-set/keeper-exclusion switch rule at all). It is
+// `onlineSource.controlledPlayer(state) ?? hud.controlled` -- see
+// [`MatchScreen.onlineState`]. The `RenderFrame` handed to `RenderPort.draw`
+// is corrected the same way (`hud.controlled`, `control.controlled`, and
+// the per-slot `players.controlled` highlight array) -- see `drawOnline` --
+// or the renderer would highlight whichever player local switching would
+// have picked, not the driver's real assignment: silently passing by
+// drawing the wrong thing correctly.
+// =============================================================================
+
+/**
+ * The union of `online_match.ts`'s private `driverSource()` return shape and
+ * `RollbackHostPort`'s render-facing surface -- see this section's header.
+ * `advance`'s `sample` is typed `InputSample` here (this file's own real
+ * caller); `online_match.ts`'s `driverSource().advance` accepts `unknown`
+ * (a strict superset), so it satisfies this narrower parameter type without
+ * change.
+ */
+export interface OnlineHostPort extends Pick<SimHostPort, "frame" | "roster" | "tick" | "dispose"> {
+  /** Whether this driver still wants a local sample this tick -- `status(driver) === "active"`. Gates [`MatchScreen`]'s online-mode advance loop; there is no `planTicks`-style tick-count decision here (see this section's header) because how many ticks a render call ATTEMPTS is not a determinism-relevant decision the way `gc_sim::fixed_clock`'s local-physics catch-up/drop policy is: the driver's own confirmation/rollback protocol (Rust-owned, `gc_netcode::match_driver`) is what actually decides whether an attempted tick is accepted, and `needsLocalSample()` is exactly that decision surfaced here. */
+  needsLocalSample(): boolean;
+  /** One fixed-tick driver step. */
+  advance(tick: number, sample: InputSample): unknown;
+  currentSnapshot(): unknown;
+  snapshot(boundary: number): unknown;
+  /** Whether the driver has left `"active"` status. */
+  terminal(): boolean;
+  /** Whether the driver's terminal status is a genuine failure (neither `"active"` nor `"completed"`). */
+  failed(): boolean;
+  /** The settled boundary, not merely "the driver stopped" -- see `online_match.ts`'s `driverSource().fullTime` doc. */
+  fullTime(): boolean;
+  debugModel(): unknown;
+  /**
+   * The real, driver-assigned controlled player index (0-based, into
+   * {@link OnlineMatchState.players}), or `undefined` if this peer does not
+   * currently own a live slot. See this section's header.
+   */
+  controlledPlayer(state: OnlineMatchState): number | undefined;
+}
+
 export interface MatchScreenOptions {
   /** Mirrors `Match.new`'s `opts.profile`; defaults to `"playtest"`, matching the Lua original's `self._opts.profile or "playtest"`. */
   readonly profile?: MatchScreenProfile;
@@ -774,6 +908,16 @@ export interface MatchScreenOptions {
   readonly combat_enabled?: boolean;
   /** Mirrors `Match.new`'s `opts.rollback_lab`. See this section's header. */
   readonly rollback_lab?: RollbackLabOptions;
+  /**
+   * The already-constructed OMP-3 online host/source -- see "THE
+   * ONLINE-DRIVEN MATCH SCREEN" section header above. Mutually exclusive
+   * with {@link rollback_lab}; forces this screen's `profile` to `"online"`
+   * regardless of what {@link profile} was passed (see the constructor),
+   * so the rematch-key handling `playtest` mode relies on
+   * (`handleRematchEvent`) can never misfire mid-online-match on an
+   * un-set/default profile.
+   */
+  readonly online?: OnlineHostPort;
 }
 
 export interface MatchScreenPorts {
@@ -840,9 +984,13 @@ export class MatchScreen {
   private readonly ports: MatchScreenPorts;
   private readonly profile: MatchScreenProfile;
   private readonly combatEnabled: boolean;
-  /** Set exactly when {@link MatchScreenOptions.rollback_lab} was supplied; mutually exclusive with `host`. */
+  /** Set exactly when {@link MatchScreenOptions.rollback_lab} was supplied; mutually exclusive with `host`/`onlineHost`. */
   private host: SimHostPort | undefined;
   private rollbackHost: RollbackHostPort | undefined;
+  /** Set exactly when {@link MatchScreenOptions.online} was supplied; mutually exclusive with `host`/`rollbackHost` -- see "THE ONLINE-DRIVEN MATCH SCREEN" section. */
+  private onlineHost: OnlineHostPort | undefined;
+  private onlineAccumulator = 0;
+  private onlineTickCount = 0;
   private rollbackConsumerPorts: MatchRollbackConsumerPorts | undefined;
   private rollbackConsumer: MatchRollbackConsumerState = newMatchRollbackConsumerState();
   private rollbackOutputs: readonly RollbackLabOutput[] = [];
@@ -865,9 +1013,16 @@ export class MatchScreen {
 
   constructor(ports: MatchScreenPorts, options: MatchScreenOptions = {}) {
     this.ports = ports;
-    this.profile = options.profile ?? "playtest";
+    // `online` forces the `"online"` profile regardless of what `profile`
+    // was passed -- see `MatchScreenOptions.online`'s own doc.
+    this.profile = options.online !== undefined ? "online" : (options.profile ?? "playtest");
     this.combatEnabled = options.combat_enabled ?? false;
-    if (options.rollback_lab !== undefined) {
+    if (options.rollback_lab !== undefined && options.online !== undefined) {
+      throw new Error("rollback_lab and online are mutually exclusive MatchScreenOptions");
+    }
+    if (options.online !== undefined) {
+      this.onlineHost = options.online;
+    } else if (options.rollback_lab !== undefined) {
       if (this.profile === "product") {
         throw new Error(
           "rollback_lab is an explicit development-only option; product-profile matches must not construct one",
@@ -922,9 +1077,9 @@ export class MatchScreen {
     );
   }
 
-  /** Either active host, whichever this screen was constructed with -- mutually exclusive, see `host`/`rollbackHost`'s own docs. */
+  /** Either active host, whichever this screen was constructed with -- mutually exclusive, see `host`/`rollbackHost`/`onlineHost`'s own docs. */
   private activeHost(): Pick<SimHostPort, "frame" | "roster" | "tick" | "dispose"> {
-    const host = this.rollbackHost ?? this.host;
+    const host = this.rollbackHost ?? this.onlineHost ?? this.host;
     if (host === undefined) {
       throw new Error("match screen: no active host (unreachable -- constructor always builds one)");
     }
@@ -944,6 +1099,72 @@ export class MatchScreen {
   /** `self._clock.tick` -- delegated straight to the host, which is this screen's only tick authority. */
   get tick(): number {
     return this.activeHost().tick();
+  }
+
+  /** Whether this screen was constructed with an {@link MatchScreenOptions.online} host. Exposed for tests, mirroring `debugRollbackActive`. */
+  get debugOnlineActive(): boolean {
+    return this.onlineHost !== undefined;
+  }
+
+  /**
+   * The narrow `players`/`control`/`roster` read [`OnlineHostPort.frame`]/
+   * `.roster()` must carry in ONLINE mode -- see [`OnlineRenderFramePlayers`]/
+   * [`OnlineRenderFrameControl`]'s own docs for why this is a documented,
+   * narrower read rather than a widening of the general opaque
+   * `RenderFrame`/`RenderFrameRoster` contract. `assert`s (AGENTS.md §7):
+   * an `OnlineHostPort` whose `frame()`/`roster()` do not carry them is a
+   * construction bug, not a recoverable, caller-facing failure.
+   */
+  private onlineFrame(): { readonly frame: RenderFrame; readonly players: OnlineRenderFramePlayers; readonly control: OnlineRenderFrameControl; readonly roster: RenderFrameRoster } {
+    const onlineHost = this.onlineHost;
+    if (onlineHost === undefined) {
+      throw new Error("match screen: onlineFrame is only valid in online mode");
+    }
+    const frame = onlineHost.frame();
+    const players = frame.players;
+    const control = frame.control;
+    if (players === undefined || control === undefined) {
+      throw new Error("match screen: an online host's frame() must carry players/control -- see OnlineHostPort's doc");
+    }
+    return { frame, players, control, roster: onlineHost.roster() };
+  }
+
+  /**
+   * ONLINE mode's `RealMatchScreenPort<OnlineMatchState, ...>.state` source
+   * -- see "THE ONLINE-DRIVEN MATCH SCREEN" section's header for why
+   * `controlled` is NOT `hud.controlled`. `players[]` is built from the
+   * host's `roster().ids`/`.teams` (identity) and `frame().players`
+   * (live `x`/`y`/`facing_x`/`facing_y`), the same wire fields
+   * `@gc/render`'s `pitch.ts` itself reads to draw them.
+   */
+  get onlineState(): OnlineMatchState {
+    const onlineHost = this.onlineHost;
+    if (onlineHost === undefined) {
+      throw new Error("match screen: onlineState is only valid in online mode");
+    }
+    const { frame, players, roster } = this.onlineFrame();
+    const ids = roster.ids ?? [];
+    const teams = roster.teams ?? [];
+    const builtPlayers = ids.map((id, index) => ({
+      id,
+      team: teams[index] ?? "home",
+      pos: new Vec2(players.x[index] ?? 0, players.y[index] ?? 0),
+      facing: new Vec2(players.facing_x[index] ?? 0, players.facing_y[index] ?? 0),
+    }));
+    // `hud.controlled` is one-based (README rule 3's wire-identity
+    // exception); `state.controlled` is a 0-based array index into
+    // `players[]`, matching every other index this file uses.
+    const fallbackControlled = (frame.hud.controlled ?? 1) - 1;
+    const ownerSlot = frame.possession.owner;
+    const withFallback: OnlineMatchState = {
+      time_left: frame.hud.time_left,
+      score: { home: frame.hud.home_score, away: frame.hud.away_score },
+      controlled: fallbackControlled,
+      ...(ownerSlot !== undefined ? { owner: ownerSlot - 1 } : {}),
+      players: builtPlayers,
+    };
+    const controlled = onlineHost.controlledPlayer(withFallback) ?? fallbackControlled;
+    return { ...withFallback, controlled };
   }
 
   /** The `InputSample` this screen last sent to `SimHostPort.step`, if any. Exposed for tests, mirroring how the ported spec reads `Match`'s own `self._switch`/`self._pass` fields directly. */
@@ -1088,12 +1309,27 @@ export class MatchScreen {
     return { players: state.players.map((p) => ({ id: p.id, pos: p.pos })), ball: state.ball };
   }
 
+  /**
+   * `self.state.owner == self.state.controlled`. ONLINE mode cannot read
+   * this off the raw host's `hud.controlled_owns_ball` the way base/
+   * rollback do -- that flag is computed against the RAW sim's own
+   * `controlled` slot, not the driver-corrected one this screen actually
+   * reports (see [`onlineState`]) -- so it recomputes the same comparison
+   * against the corrected `owner`/`controlled` pair instead.
+   */
   private carrying(): boolean {
+    if (this.onlineHost !== undefined) {
+      const state = this.onlineState;
+      return state.owner === state.controlled;
+    }
     return this.activeHost().frame().hud.controlled_owns_ball;
   }
 
-  /** `self:restart()` -- dispose the current host and build a fresh one from the same factory, resetting every frame-to-frame latch and (in rollback mode) every rollback/presentation-owned field. */
+  /** `self:restart()` -- dispose the current host and build a fresh one from the same factory, resetting every frame-to-frame latch and (in rollback mode) every rollback/presentation-owned field. Never reached in ONLINE mode -- `handleRematchEvent` only fires for `profile === "playtest"`, and construction forces `profile = "online"` whenever {@link MatchScreenOptions.online} is set (see that option's doc). */
   private restart(): void {
+    if (this.onlineHost !== undefined) {
+      throw new Error("match screen: restart() is not supported in online mode (unreachable -- see this method's doc)");
+    }
     if (this.rollbackHost !== undefined) {
       this.rollbackHost.dispose();
       this.rollbackHost = this.ports.createRollbackHost!();
@@ -1248,6 +1484,10 @@ export class MatchScreen {
    * render loop.
    */
   update(dt: number): void {
+    if (this.onlineHost !== undefined) {
+      this.updateOnline(dt);
+      return;
+    }
     if (this.rollbackHost !== undefined) {
       this.updateRollback(dt);
       return;
@@ -1508,6 +1748,67 @@ export class MatchScreen {
   }
 
   /**
+   * `Match:update(dt)`'s ONLINE branch -- see "THE ONLINE-DRIVEN MATCH
+   * SCREEN" section's header. Samples this render call's input once (the
+   * same latch/contextual pipeline base/rollback use) and drives
+   * `onlineHost.advance` in a bounded loop, gated by `needsLocalSample()`
+   * every iteration (not just once) so the driver's own readiness --
+   * confirmation window, transport backpressure -- can stop this screen
+   * mid-batch, matching how `updateRollback`'s `unconfirmed_window_exceeded`
+   * check stops that mode mid-batch. `onlineAccumulator`'s bound is a
+   * runaway-loop guard only, not a determinism-relevant catch-up/drop
+   * decision -- see [`OnlineHostPort.needsLocalSample`]'s own doc for why
+   * this does not reintroduce the TypeScript fixed-clock accumulator
+   * `SimHostPort.planTicks` exists to keep singular, in Rust: the DRIVER
+   * (`gc_netcode::match_driver`) is what decides whether an attempted tick
+   * is actually accepted, not this loop's tick count.
+   */
+  private updateOnline(dt: number): void {
+    const onlineHost = this.onlineHost!;
+    if (this.finished) {
+      return;
+    }
+    this.onlineAccumulator += dt;
+    let ticks = 0;
+    while (this.onlineAccumulator + ONLINE_CLOCK_EPSILON >= ONLINE_TICK_SECONDS && ticks < MAX_ONLINE_TICKS_PER_UPDATE) {
+      this.onlineAccumulator -= ONLINE_TICK_SECONDS;
+      ticks += 1;
+    }
+    if (ticks === 0) {
+      return;
+    }
+    const carrying = this.carrying();
+    const poll: MatchControlPoll = {
+      actionDown: bindings.isDown("action", this.ports.keyboard, this.ports.gamepad),
+      playDown: bindings.isDown("play", this.ports.keyboard, this.ports.gamepad),
+      modifierDown: bindings.isDown("modifier", this.ports.keyboard, this.ports.gamepad),
+    };
+    const { contextual, dashEdge } = stepMatchControlLatches(this.latches, carrying, poll);
+    const switchPlayer = this.switchPending;
+    this.switchPending = false;
+    let sample = this.capture.sample({ ...contextual, switchPlayer });
+    if (dashEdge) {
+      sample = { ...sample, edges: sample.edges | inputSample.packEdges(["dash"]) };
+    }
+    this.lastStepSample = sample;
+
+    for (let step = 0; step < ticks; step += 1) {
+      if (!onlineHost.needsLocalSample()) {
+        break;
+      }
+      // Mirrors `updateRollback`'s own rule: this render call's one-shot
+      // edges (switch, dash, ...) go to the FIRST tick of a multi-tick
+      // batch only; a HELD state applies to every tick.
+      const tickSample: InputSample = step === 0 ? sample : { ...sample, edges: 0 };
+      this.onlineTickCount += 1;
+      onlineHost.advance(this.onlineTickCount, tickSample);
+      if (this.finished) {
+        break;
+      }
+    }
+  }
+
+  /**
    * Draw the current frame. Separated from `update` (see that method's
    * doc) so callers control the render cadence independently of the
    * simulation cadence, and so this class satisfies
@@ -1519,10 +1820,41 @@ export class MatchScreen {
    * model without mutating either match").
    */
   draw(): void {
+    if (this.onlineHost !== undefined) {
+      this.drawOnline();
+      return;
+    }
     const host = this.activeHost();
     const frame = host.frame();
     const roster = host.roster();
     this.ports.renderer.draw(frame, roster);
+  }
+
+  /**
+   * ONLINE mode's `draw()` -- see "THE ONLINE-DRIVEN MATCH SCREEN" section's
+   * header. Overrides `hud.controlled`, `control.controlled`, and the
+   * per-slot `players.controlled` highlight array to the driver-corrected
+   * assignment ([`onlineState`]) before forwarding to
+   * [`RenderPort.draw`] -- otherwise the renderer draws the RAW host's own
+   * (wrong) notion of who is controlled, silently passing by drawing the
+   * wrong thing correctly.
+   */
+  private drawOnline(): void {
+    const { frame, players, control, roster } = this.onlineFrame();
+    const state = this.onlineState;
+    const controlledSlot = state.controlled + 1; // back to one-based for the wire shape
+    const overriddenPlayers: OnlineRenderFramePlayers = {
+      ...players,
+      controlled: players.controlled.map((_, index) => index === state.controlled),
+    };
+    const overriddenControl: OnlineRenderFrameControl = { ...control, controlled: controlledSlot };
+    const overriddenFrame: RenderFrame = {
+      ...frame,
+      hud: { ...frame.hud, controlled: controlledSlot },
+      players: overriddenPlayers,
+      control: overriddenControl,
+    };
+    this.ports.renderer.draw(overriddenFrame, roster);
   }
 
   /** Release the underlying host's resources. Safe to call once; does not itself call `SimHostPort.dispose` twice, matching that contract's own "safe to call twice" note being unnecessary to rely on here. */
@@ -1657,5 +1989,75 @@ export class MatchScreenAsRealMatchScreen implements RealMatchScreenPort<RealMat
    * A no-op, not a lie: nothing in this milestone's `MatchScreen` reads a
    * setting, so there is nothing to apply.
    */
+  applySettings(_settings: GameSettings): void {}
+}
+
+/**
+ * Adapts a {@link MatchScreen} constructed with an
+ * {@link MatchScreenOptions.online} host to `online_match.ts`'s
+ * `OnlineMatchOptions.newMatch` return contract
+ * (`RealMatchScreenPort<OnlineMatchState, unknown>`) -- the ONLINE-mode
+ * counterpart of {@link MatchScreenAsRealMatchScreen}, over the same
+ * `MatchScreen`/`RealMatchScreenPort` gap that section's header describes.
+ * `TStep` is `unknown`, not `never`: `online_match.ts`'s own
+ * `RealMatchScreenPort<OnlineMatchState, unknown>` bound requires it, and
+ * (like `MatchScreenAsRealMatchScreen`) this milestone's `MatchScreen` never
+ * populates `rollbackConfirmedSteps` regardless -- `rollbackLab` stays
+ * `false` even for an online-mode screen, matching that this class drives
+ * the OMP-3 driver directly, not `sim.rollback_playable_lab`'s local
+ * laboratory.
+ */
+export class MatchScreenAsOnlineMatchScreen implements RealMatchScreenPort<OnlineMatchState, unknown> {
+  private readonly screen: MatchScreen;
+
+  constructor(screen: MatchScreen) {
+    this.screen = screen;
+  }
+
+  /** `MatchScreen.onlineState` -- see that getter's doc for the `controlled` override this section's header describes. */
+  get state(): OnlineMatchState {
+    return this.screen.onlineState;
+  }
+
+  /** This screen drives the OMP-3 online match driver directly, not `sim.rollback_playable_lab`'s local laboratory -- see this class's doc. */
+  readonly rollbackLab = false;
+
+  /** Never read: `rollbackLab` is always `false` -- see this class's doc. */
+  readonly rollbackConfirmedSteps: readonly unknown[] = [];
+
+  /** `MatchScreen.debugCombatEnabled` -- see that getter's doc. */
+  get debugCombatEnabled(): boolean {
+    return this.screen.debugCombatEnabled;
+  }
+
+  /** Not yet wired -- see `MatchScreenAsRealMatchScreen.frameEvents`'s identical doc; the same gap applies here. */
+  readonly frameEvents: readonly unknown[] = [];
+
+  fullTimeConfirmed(): boolean {
+    return this.screen.finished;
+  }
+
+  /** No replay is wired into `MatchScreen` this milestone (see this file's header), so completion is never blocked. */
+  resultCompletionBlocked(): boolean {
+    return false;
+  }
+
+  update(dt: number): void {
+    this.screen.update(dt);
+  }
+
+  event(evt: RealMatchInputEvent): void {
+    this.screen.event(toControllerInputEvent(evt));
+  }
+
+  draw(): void {
+    this.screen.draw();
+  }
+
+  teardown(): void {
+    this.screen.dispose();
+  }
+
+  /** A no-op -- see `MatchScreenAsRealMatchScreen.applySettings`'s identical doc. */
   applySettings(_settings: GameSettings): void {}
 }

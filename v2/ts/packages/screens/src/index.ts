@@ -191,6 +191,7 @@ export {
   newMatchControlLatches,
   newMatchRollbackConsumerState,
   MatchScreen,
+  MatchScreenAsOnlineMatchScreen,
   MatchScreenAsRealMatchScreen,
   stepMatchControlLatches,
 } from "./match.ts";
@@ -206,6 +207,9 @@ export type {
   MatchScreenOptions,
   MatchScreenPorts,
   MatchScreenProfile,
+  OnlineHostPort,
+  OnlineRenderFrameControl,
+  OnlineRenderFramePlayers,
   RenderFrame,
   RenderFrameHud,
   RenderFramePossession,

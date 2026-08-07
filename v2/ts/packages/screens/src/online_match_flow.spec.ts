@@ -66,60 +66,40 @@
 //
 // See each remaining `it.skip`'s own comment for the detail.
 //
-// Wave 4 (W9-C) re-examined all four again, file ownership unchanged
-// (`match.ts`/`real_match.ts`/index.ts still belong to a different agent in
-// this milestone; `packages/wasm` and every Rust crate are out of scope
-// too). None reopened -- this wave's job was to pin down the EXACT shape
-// still missing, not to guess at it, so a later wave (or whoever owns
-// `match.ts`) does not have to re-derive it from scratch:
+// Wave 4 (W9-C) re-examined all four again and, unable to build the fix
+// (file ownership held `match.ts` elsewhere at the time), pinned down the
+// EXACT shape still missing rather than guessing at it -- see git history
+// for that wave's header, superseded by this one.
 //
-// - The two control-ownership cases need `match.ts` to grow a third
-//   construction mode, parallel to `rollback_lab` (`MatchScreenOptions`,
-//   `match.ts`): an `online` option carrying a host/source object that is
-//   the UNION of two shapes `match.ts` already has separately --
-//   `online_match.ts`'s private `driverSource()` return shape
-//   (`needsLocalSample`/`advance`/`currentSnapshot`/`snapshot`/`terminal`/
-//   `failed`/`fullTime`/`debugModel`/`controlledPlayer`, already exactly
-//   what `OnlineMatchOptions.newMatch`'s `rollbackSource` parameter carries)
-//   AND `RollbackHostPort`'s render-facing surface (`frame()`/`roster()`/
-//   `tick()`/`dispose()`, the same `Pick<SimHostPort, ...>` shape
-//   `MatchScreen.activeHost()` already normalizes `host`/`rollbackHost`
-//   into). Unlike `rollback_lab`'s `createRollbackHost` factory, `match.ts`
-//   would not construct this object itself -- `OnlineMatch` already
-//   constructs and owns it via its own `driverSource()` closure, so
-//   `newMatch`'s existing `rollbackSource: () => unknown` parameter is the
-//   injection point, just widened to that merged shape instead of staying
-//   opaque.
-// - `state.controlled` for that mode must NOT be `RenderFrame.hud`'s own
-//   `controlled` field (the real wire object's local-switch-driven value,
-//   confirmed present at `@gc/render`'s `frame_buffer.ts` even though
-//   `match.ts`'s own narrower `RenderFrameHud` doesn't type it) -- it must
-//   be `onlineSource.controlledPlayer(state) ?? hud.controlled`, and the
-//   `RenderFrame` handed to `RenderPort.draw` needs its `hud.controlled`/
-//   `control` overridden to match, or the renderer highlights whichever
-//   player local switching would have picked, not the driver's real
-//   assignment -- silently passing the case by drawing the wrong thing
-//   correctly.
-// - The renderer-smoke case has a second blocker underneath the one
-//   already named, confirmed by reading (not editing) `crates/gc-wasm/src/
-//   match_driver_bridge.rs` and `session.rs`: `MatchDriverBridge` is not
-//   registry-backed the way `Session` is (`session.rs`'s `handle()` /
-//   `crate::registry`) and exposes no `render_frame`-shaped export at all.
-//   Even once `match.ts` grows the `online` construction mode above, there
-//   is currently no `@gc/wasm` call that turns a live `MatchDriverBridge`
-//   into a `RenderFrame` -- that is a `crates/gc-wasm`/`@gc/wasm` gap, not
-//   only a `match.ts` one, and neither package is this wave's (or
-//   apparently the current `match.ts` wave's) file ownership.
-// - The combat-families case's blocker is confirmed still real, not
-//   assumed: `v2/rust/crates/gc-wasm/src/session.rs` states outright that
-//   `Session::step` always runs with `combat_state: None`, and no new
-//   combat symbol exists on `Session` or elsewhere in `@gc/wasm`'s TS
-//   surface as of this wave. Separately, `gc-netcode::match_driver`'s
-//   `default_clock()` (`match_driver.rs`) still calls bare
-//   `std::time::SystemTime::now()` with `gc-wasm/src/match_driver_bridge.rs`
-//   passing `clock: None` and no wasm32 guard -- driving a real
-//   `MatchDriverBridge` to full time still traps (`RuntimeError:
-//   unreachable`) on wasm32, unfixed as of this wave.
+// W11-B (this wave) built it, now that `match.ts`/`online_match.ts` are
+// this batch's own file ownership: `match.ts` grew a third construction
+// mode, `MatchScreenOptions.online`, parallel to `rollback_lab` -- an
+// `OnlineHostPort` (match.ts) merging `online_match.ts`'s private
+// `driverSource()` return shape with `RollbackHostPort`'s render-facing
+// surface (`frame`/`roster`/`tick`/`dispose`), exactly as W9-C specified.
+// `online_match.ts`'s `driverSource()` itself needed only ADDING the render
+// quartet (delegating to four new `MatchDriverPort` methods) -- its
+// existing fields (control ownership included) were already correct, per
+// W9-C's own finding. `state.controlled`/the drawn `RenderFrame`'s
+// `hud.controlled`/`control.controlled`/`players.controlled` are corrected
+// exactly as W9-C specified, in `MatchScreen.onlineState`/`drawOnline`.
+//
+// Three of the four cases below are unblocked for real, each now driven
+// against `realMatchDriverPort` -- a REAL `@gc/wasm` `MatchDriverBridge`
+// (see that helper's own header for why, and the ONE remaining `@gc/wasm`
+// gap it surfaces: no roster export), wired through a REAL `match.ts`
+// `MatchScreen` in the new `online` mode (`MatchScreenAsOnlineMatchScreen`),
+// not `fakeMatchScreen`/`fakeMatchDriver` (which the two control-ownership
+// cases still cannot use without becoming exactly the "asserting against
+// your own fake" this port must not do -- see `fakeMatchScreen`'s own
+// header, unchanged, for why it still exists for the OTHER cases in this
+// file that do not need real switch-rule/render output).
+//
+// The fourth ("drives and shows every accepted family...", inside "online
+// combat families") stays skipped -- re-examined this wave too, and its
+// blocker is confirmed still real and, if anything, MORE precisely located
+// than W9-C found it. See that describe block's own comment for the detail
+// (a `gc_render::frame_buffer` wire-format gap, not a missing binding).
 
 import { describe, expect, it } from "vitest";
 import { Vec2 } from "@gc/core";
@@ -158,12 +138,16 @@ import {
 } from "./online_match_model.ts";
 import type { MatchContractPort, RealMatchScreenPort } from "./real_match.ts";
 import type { ProductMatchResult, TeamData } from "./content.ts";
+import { MatchScreen, MatchScreenAsOnlineMatchScreen } from "./match.ts";
+import type { InputSample, RenderFrame, RenderFrameRoster, RenderPort } from "./match.ts";
 // `@gc/wasm` is a devDependency of this package (package.json), reachable
 // from a spec file only -- see this file's header. `online_match.ts`/
 // `online_match_model.ts` must keep receiving a coordinator through their
 // existing injected `CoordinatorPort`s instead.
 import { loadSimHost } from "@gc/wasm";
-import type { Coordinator } from "@gc/wasm";
+import type { Coordinator, MatchDriverBridge, SimHost, SimSession } from "@gc/wasm";
+import { frameBuffer } from "@gc/render";
+import type { KeyboardState } from "@gc/input";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -313,6 +297,17 @@ interface FakeBatch {
 // pre-built `state`, so a test keeps a live handle to the driver
 // `OnlineMatch` otherwise holds privately -- the same role `host.driver`
 // plays directly in the Lua original.
+// Never read by either of the two cases below that use `fakeMatchDriver`
+// (`fakeMatchScreen` never calls `frame`/`roster`/`tick`/`dispose` -- see
+// its own header) -- minimal, fixed stand-ins so `MatchDriverPort`'s
+// render-facing quartet (added for `match.ts`'s ONLINE construction mode;
+// see that file's own header) is still satisfied.
+const FAKE_ONLINE_FRAME: RenderFrame = {
+  hud: { finished: false, controlled_owns_ball: false, home_score: 0, away_score: 0, time_left: 0 },
+  possession: {},
+};
+const FAKE_ONLINE_ROSTER: RenderFrameRoster = {};
+
 function fakeMatchDriver(
   state: FakeDriverState,
   live: Readonly<Record<string, string>>
@@ -341,6 +336,10 @@ function fakeMatchDriver(
     batchControl: (b) => b.control,
     batchCheckpoints: (b) => b.checkpoints,
     batchLive: (b) => b.live,
+    frame: () => FAKE_ONLINE_FRAME,
+    roster: () => FAKE_ONLINE_ROSTER,
+    tick: (d) => d.tick,
+    dispose: () => {},
   };
 }
 
@@ -1051,6 +1050,231 @@ function relayLink(targetHandle: Coordinator, targetLinkId: string): MatchLobbyL
   };
 }
 
+// ---------------------------------------------------------------------------
+// Real `MatchDriverPort`/`MatchSessionPort` fixtures -- for the two control-
+// ownership cases below ("keeps control inside the frozen owned set...",
+// "makes switching inert in 4v4..."). Unlike `fakeMatchDriver` above (a
+// message-relay/terminal-flip bookkeeping fake, never exercising real
+// slot-assignment/switch logic at all), these drive a REAL
+// `@gc/wasm` `MatchDriverBridge` (`crates/gc-wasm/src/match_driver_bridge.rs`)
+// over `gc_netcode::match_driver`'s actual switch rule -- the Wave 4 gap
+// this file's header describes ("a spec-local fake that did so would be
+// exactly the 'asserting against your own fake' this port must not do").
+// Built from `matchDriverFixtureFreezeJson`/`matchDriverFixtureManifestJson`
+// (`crates/gc-wasm/src/match_driver_fixture_bridge.rs`) rather than a
+// hand-authored freeze/manifest pair -- see `match_driver_fixture.spec.ts`
+// (`@gc/wasm`) for what that fixture proves about itself.
+//
+// `MatchDriverBridge` has no roster export of its own (confirmed absent
+// from `types.ts`'s `MatchDriverBridge` interface and `crates/gc-wasm/src/
+// match_driver_bridge.rs`'s `#[wasm_bindgen]` surface -- unlike `SimSession`,
+// which has `rosterNumeric`/`rosterIdsAndNames`). `rosterFromManifest` below
+// derives match-constant roster identity from the same real fixture
+// manifest the bridge itself was constructed from (keeper first, then four
+// outfield, per team, home then away -- `gc_render::frame_buffer::roster`'s
+// own convention, cross-checked empirically against a decoded frame's
+// `hud.controlled_team` during this port's development) -- real,
+// wasm-fixture-sourced data, not a test invention. This is a genuine
+// `@gc/wasm`/`crates/gc-wasm` gap worth reporting, not a shortcut.
+// ---------------------------------------------------------------------------
+
+interface RealOnlineDriver {
+  readonly bridge: MatchDriverBridge;
+  readonly session: SimSession;
+  readonly roster: RenderFrameRoster;
+  // `MatchDriverBridge` has no tick-count getter of its own (confirmed
+  // absent from both `types.ts`'s hand-written interface and the compiled
+  // artifact's actual `.d.cts` -- unlike `SimSession.inputTick`) -- tracked
+  // here instead, incremented once per `advance()` call.
+  tickCount: number;
+}
+
+interface RealOnlineCheckpoint {
+  readonly tick: number;
+  readonly hash: string;
+}
+
+interface RealOnlineBatch {
+  readonly control: readonly unknown[];
+  readonly checkpoints: readonly RealOnlineCheckpoint[];
+  readonly live: Readonly<Record<string, string>>;
+}
+
+function rosterFromManifest(manifestJson: string): RenderFrameRoster {
+  const manifest = JSON.parse(manifestJson) as {
+    readonly teams: readonly { readonly team: "home" | "away"; readonly roster: readonly { readonly player_id: string }[] }[];
+  };
+  const ids: string[] = [];
+  const teams: ("home" | "away")[] = [];
+  for (const team of manifest.teams) {
+    for (const player of team.roster) {
+      ids.push(player.player_id);
+      teams.push(team.team);
+    }
+  }
+  return { ids, teams };
+}
+
+function realMatchDriverPort(wasm: SimHost): MatchDriverPort<RealOnlineDriver, RealOnlineBatch, unknown, RealOnlineCheckpoint> {
+  return {
+    create(options) {
+      const freezeJson = options.freeze as string;
+      const manifestJson = options.manifest as string;
+      const session = new wasm.Session("nebula", "orion", 7, 20, 3);
+      const bridge = new wasm.MatchDriverBridge(session, options.role, options.peer_id, freezeJson, manifestJson, undefined);
+      bridge.initializeTransport();
+      return { bridge, session, roster: rosterFromManifest(manifestJson), tickCount: 0 };
+    },
+    status: (d) => JSON.parse(d.bridge.statusJson()) as string,
+    advance: (d, sample) => {
+      const s = sample as InputSample;
+      const wire = wasm.inputFrameNewSample(s.move_x, s.move_y, s.held, s.edges);
+      const batch = JSON.parse(d.bridge.advance(wire)) as RealOnlineBatch;
+      d.tickCount += 1;
+      return batch;
+    },
+    currentSnapshot: () => undefined,
+    snapshot: (d, boundary) => d.bridge.snapshotLookup(boundary),
+    terminal: (d) => {
+      const raw = JSON.parse(d.bridge.terminalJson()) as { readonly status: string; readonly failure?: string; readonly detail?: string } | null;
+      return raw ?? undefined;
+    },
+    settled: (d) => JSON.parse(d.bridge.statusJson()) !== "active",
+    // Not exercised by either case below (both stay "active" throughout) --
+    // a best-effort field mapping so this port's required shape is still
+    // satisfied.
+    diagnostics: (d) => {
+      const raw = JSON.parse(d.bridge.diagnosticsJson()) as Record<string, unknown>;
+      const status = JSON.parse(d.bridge.statusJson()) as string;
+      return {
+        transport_tick: Number(raw["step"] ?? 0),
+        present_input_tick: Number(raw["input_tick"] ?? 0),
+        confirmed_output_tick: Number(raw["confirmed_output_tick"] ?? 0),
+        rollback_count: Number(raw["rollbacks"] ?? 0),
+        correction_count: Number(raw["corrections"] ?? 0),
+        predicted_slot_samples: 0,
+        status,
+      };
+    },
+    observeCheckpoint: (d, tick, hash) => {
+      d.bridge.observeCheckpoint(tick, hash);
+    },
+    batchControl: (b) => b.control,
+    batchCheckpoints: (b) => b.checkpoints,
+    batchLive: (b) => b.live,
+    frame: (d) => frameBuffer.decode(wasm.buildMatchDriverRenderFrame(d.bridge)) as unknown as RenderFrame,
+    roster: (d) => d.roster,
+    tick: (d) => d.tickCount,
+    dispose: (d) => {
+      d.session.free();
+    },
+  };
+}
+
+// `fakeMatchPresentation`'s own behavior (`consume` is a straight
+// passthrough) never actually touches `TDriver`/`TBatch`, but its
+// declared type is hardcoded to `FakeDriverState`/`FakeBatch` -- this is
+// the same passthrough, generic over the real driver/batch types instead.
+function identityMatchPresentation<TDriver, TBatch>(): MatchPresentationPort<Record<string, never>, TDriver, TBatch, TBatch> {
+  return {
+    create: () => ({}),
+    consume: (_presentation, _driver, batch) => batch,
+    presentedOutputs: () => [],
+    presentedEventDiffs: () => [],
+    presentedConfirmedSteps: () => [],
+    presentedCorrections: () => [],
+  };
+}
+
+// `gc_netcode::match_driver`'s own slot-assignment: `live` carries the
+// SLOT string (e.g. "home_2"), and `MatchSessionPort.playerIndex` maps it to
+// an index into `OnlineMatchState.players` -- looked up by player id via the
+// same fixture manifest's `slots` list, not by assuming any array-order
+// convention (independent of `rosterFromManifest`'s own ordering choice
+// above).
+function realMatchSessionPort(manifestJson: string): MatchSessionPort<OnlineMatchState> {
+  const manifest = JSON.parse(manifestJson) as {
+    readonly slots: readonly { readonly slot: string; readonly player_id: string }[];
+  };
+  return {
+    playerIndex(state, live) {
+      const slot = manifest.slots.find((entry) => entry.slot === live);
+      if (slot === undefined) {
+        return undefined;
+      }
+      const index = state.players.findIndex((player) => player.id === slot.player_id);
+      return index === -1 ? undefined : index;
+    },
+  };
+}
+
+function fakeKeyboard(down: Readonly<Record<string, boolean>>): KeyboardState {
+  return { isDown: (...keys: readonly string[]): boolean => keys.some((key) => down[key] === true) };
+}
+
+type RealDriverOnlineMatch = OnlineMatch<
+  RealOnlineDriver,
+  RealOnlineBatch,
+  unknown,
+  RealOnlineCheckpoint,
+  Record<string, never>,
+  RealOnlineBatch,
+  FakeCoordinatorState,
+  OnlineMatchModel<FakeCoordinatorState, OnlineMatchRequest>
+>;
+
+// Builds a solo, bot-filled host over a REAL `MatchDriverBridge`, driven
+// through a REAL `MatchScreen` constructed in ONLINE mode
+// (`MatchScreenAsOnlineMatchScreen` -- match.ts) -- not `fakeMatchScreen`.
+// This is what makes the two cases below prove `match.ts`'s real online
+// construction mode, not a spec-local reimplementation of it. The
+// coordinator/model stays the FAKE bookkeeping one (`fakeModelPort`) --
+// neither case reaches a terminal/result, so the model layer is not what is
+// under test here.
+function buildRealDriverHost(
+  mode: "1v1" | "4v4",
+  request: OnlineMatchRequest,
+  renderer: RenderPort = { draw: () => {} }
+): RealDriverOnlineMatch {
+  const wasm = loadSimHost();
+  const freezeJson = wasm.matchDriverFixtureFreezeJson(mode, 0, 1);
+  const manifestJson = wasm.matchDriverFixtureManifestJson(mode);
+  const options: OnlineMatchOptions<
+    RealOnlineDriver,
+    RealOnlineBatch,
+    unknown,
+    RealOnlineCheckpoint,
+    Record<string, never>,
+    RealOnlineBatch,
+    FakeCoordinatorState
+  > = {
+    request: { ...request, freeze: freezeJson, manifest: manifestJson },
+    coordinator: fakeCoordinatorState("host"),
+    link: fakeLink(),
+    matchDriver: realMatchDriverPort(wasm),
+    matchPresentation: identityMatchPresentation<RealOnlineDriver, RealOnlineBatch>(),
+    matchSession: realMatchSessionPort(manifestJson),
+    lobbyFraming: fakeLobbyFraming(),
+    contract: fakeContract(),
+    observer: fakeObserver(),
+    newMatch: (opts) =>
+      new MatchScreenAsOnlineMatchScreen(
+        new MatchScreen(
+          {
+            createHost: () => {
+              throw new Error("unused: online mode never calls createHost");
+            },
+            renderer,
+            keyboard: fakeKeyboard({}),
+          },
+          { online: opts.rollbackSource(), ...(opts.combatEnabled !== undefined ? { combat_enabled: opts.combatEnabled } : {}) }
+        )
+      ),
+    onAction: () => {},
+  };
+  return new OnlineMatch(options, fakeModelPort(), (req, coord) => newOnlineMatchModel(req, coord));
+}
+
 describe("online match screen flow", () => {
   // Unblocked: driven against a real, solo, bot-filled 1v1 `Coordinator`
   // (`soloHostRunning` -- see this file's header). `handle_finish` in
@@ -1085,33 +1309,79 @@ describe("online match screen flow", () => {
     expect(model.result?.away_score).toBe(0);
   });
 
-  // Ported as `it.skip`, re-examined (`match.ts` IS in this batch's own
-  // file ownership now, unlike when this note was first written -- but the
-  // substance below did not change): which slot is LIVE is
-  // `gc_netcode::match_driver`'s real switch-rule output, and
-  // `crates/gc-wasm/src/match_driver_bridge.rs`'s `advance` batch now
-  // genuinely carries it (a real `live` map, not a fake). What is still
-  // missing is `match.ts` consuming it: `match.state.controlled` is
-  // supposed to come from `OnlineMatch`'s own `driverSource().controlledPlayer`
-  // callback (already correct in `online_match.ts`, this file's own
-  // package), but `match.ts` has no online-driven mode at all yet (see this
-  // file's own `fakeMatchScreen` header) -- no construction path takes a
-  // `driverSource()`-shaped port, and no code calls `controlledPlayer`.
-  // Building that is a real feature (a third `MatchScreen` mode alongside
-  // the base host and the rollback laboratory), not a small widening, and
-  // is not attempted here. A fake match screen that read `batch.live`
-  // itself and set `state.controlled` accordingly would be reimplementing
-  // that missing piece as a spec-local fake -- exactly the "asserting
-  // against your own fake" this port must not do, just one layer further
-  // in than originally filed.
-  it.skip("keeps control inside the frozen owned set and off both keepers", () => {});
+  // Unblocked (Wave 4's gap closed): which slot is LIVE is
+  // `gc_netcode::match_driver`'s real switch-rule output, reached here
+  // through a REAL `MatchDriverBridge` (`realMatchDriverPort`, above -- not
+  // `fakeMatchDriver`'s spec-invented `live` map) driven by a REAL
+  // `MatchScreen` in `match.ts`'s new ONLINE construction mode
+  // (`MatchScreenAsOnlineMatchScreen`, not `fakeMatchScreen`). "1v1" mode
+  // with one connected human seats the WHOLE home outfield block to this
+  // peer (`owned`: home_1..home_4 -- `zyro_vex`/`mika_olu`/`rok_tann`/
+  // `sela_dwin`; see `realMatchDriverPort`'s header and
+  // `match_driver_fixture.spec.ts`'s "freezeJson reports a contiguous owned
+  // block per human"), explicitly excluding both keepers (`ozzo`/`gax_oru`,
+  // never in `owned` at all -- the protocol's slot list has no keeper
+  // entries). A "k" key press every tick both drives real switch edges
+  // through the real input-sample pipeline (`MatchScreen`'s contextual
+  // input state machine -- match.ts) and proves the frozen-set/keeper
+  // exclusion holds under sustained switching pressure, not just once.
+  it("keeps control inside the frozen owned set and off both keepers", () => {
+    const request: OnlineMatchRequest = {
+      ...HOST_REQUEST,
+      mode: "1v1",
+      live: "home_1",
+      owned: ["home_1", "home_2", "home_3", "home_4"],
+    };
+    const match = buildRealDriverHost("1v1", request);
+    const owned = new Set(["zyro_vex", "mika_olu", "rok_tann", "sela_dwin"]);
+    const seen = new Set<string>();
 
-  // Ported as `it.skip`, re-examined: same real gap as above -- a singleton
-  // owned set making every switch branch return the live slot is a real
-  // property of `gc_netcode::match_driver`'s switch rule, reachable through
-  // `MatchDriverBridge` now, but still unobservable through `state.controlled`
-  // until `match.ts` consumes `driverSource().controlledPlayer`.
-  it.skip("makes switching inert in 4v4 without branching on the mode", () => {});
+    for (let i = 0; i < 90; i += 1) {
+      match.event({ kind: "key", key: "k" });
+      match.update(TICK_SECONDS);
+      const state = match.match.state;
+      const player = state.players[state.controlled];
+      expect(player, `tick ${i}: controlled index ${state.controlled} must name a real player`).toBeDefined();
+      if (player !== undefined) {
+        expect(owned.has(player.id), `tick ${i}: controlled player '${player.id}' left the frozen owned set`).toBe(
+          true
+        );
+        expect(player.id, `tick ${i}: controlled player must never be a keeper`).not.toBe("ozzo");
+        expect(player.id, `tick ${i}: controlled player must never be a keeper`).not.toBe("gax_oru");
+        seen.add(player.id);
+      }
+    }
+    // Sustained switching pressure over 90 ticks must have actually moved
+    // control at least once within the owned set -- otherwise this proves
+    // nothing beyond "the initial slot happens to be legal".
+    expect(seen.size, "sustained switching pressure never actually switched control").toBeGreaterThan(1);
+  });
+
+  // Unblocked (Wave 4's gap closed): same real driver/screen wiring as
+  // above, over a "4v4" fixture with one connected human -- `slots_per_human`
+  // is 1 in that mode, so this peer's `owned` set is the SINGLETON
+  // `["home_1"]` (`zyro_vex`). Proving every switch attempt still resolves
+  // to that one slot -- not a crash, not `undefined`, not a different
+  // player -- is exactly "inert... without branching on the mode": nothing
+  // in `gc_netcode::match_driver`'s switch rule, `driverSource()`, or
+  // `match.ts`'s new consumption of it special-cases a singleton owned set.
+  it("makes switching inert in 4v4 without branching on the mode", () => {
+    const request: OnlineMatchRequest = {
+      ...HOST_REQUEST,
+      mode: "4v4",
+      live: "home_1",
+      owned: ["home_1"],
+    };
+    const match = buildRealDriverHost("4v4", request);
+
+    for (let i = 0; i < 60; i += 1) {
+      match.event({ kind: "key", key: "k" });
+      match.update(TICK_SECONDS);
+      const state = match.match.state;
+      const player = state.players[state.controlled];
+      expect(player?.id, `tick ${i}: the singleton owned slot must stay controlled`).toBe("zyro_vex");
+    }
+  });
 
   // Unblocked: nothing in this path (focus loss, a lost controller, one
   // pause request short of an abort) ever reaches the coordinator -- see
@@ -1215,19 +1485,34 @@ describe("online match screen flow", () => {
   });
 });
 
-// Re-examined: `@gc/render` (pitch/HUD drawing) *is* now a declared
-// dependency of `@gc/screens` (`package.json`) -- that half of the
-// original blocker is gone. The other half is not: telegraph/readiness/
-// kickoff-hold timing is `sim.combat`'s real physics (Rust-owned,
-// `crates/gc-sim`), and no wasm crate binds it -- `@gc/wasm`'s bound
-// surface this batch is `Coordinator`/`MatchDriverBridge`/
-// `RollbackEventsTimeline`/`FixedClock`/`TuningRegistry`, none of which
-// expose a per-tick combat readiness/telegraph query. Reproducing "every
-// quiet frame past kickoff read ready, and committing zero times there
-// proves nothing" with a fake would mean re-implementing `sim.combat`'s
-// request-rejection gates, not just relaying messages. `@gc/input` being a
-// declared dependency now (the earlier blocker note was stale on that
-// point too) doesn't change this, so it stays skipped.
+// Re-examined again this wave, against the two now-real cases above
+// (`realMatchDriverPort`, driving an actual `MatchDriverBridge`, and
+// `match.ts`'s new ONLINE `MatchScreen` construction mode/`drawOnline`):
+// still genuinely blocked, for a narrower and more specific reason than
+// before. `@gc/render` was already a declared dependency (unchanged). What
+// changed this wave and does NOT close this gap: `crates/gc-wasm/src/
+// session.rs`'s `Session::new`/`Session::step` gained a real `combat_enabled`
+// parameter (`match_screen.spec.ts`'s "constructs and drives combat only
+// behind the explicit option" exercises it) -- but that is `SimSession`'s
+// own combat companion, a SEPARATE thing from `MatchDriverBridge` (this
+// file's `realMatchDriverPort`), which still takes no `combat_enabled` of
+// its own and, per `crates/gc-wasm/src/match_driver_bridge.rs`, only ever
+// carries a combat companion if its `initialSnapshotOverride` already has
+// one (e.g. `OnlineCombatPhasesBridge.onlineCombatPhaseBoundaryZero`'s seven
+// pinned snapshots -- not this fixture's own default boundary zero, which
+// the renderer-smoke case above confirms decodes `combatPresent: false`).
+// Even granting a combat-bearing snapshot, the deeper blocker still holds:
+// `gc_render::frame_buffer`'s own module doc states outright that
+// `RenderFrame::combat` (the telegraph model with `Vec2` positions) is
+// NEVER encoded onto the flat wire -- only a `combat_present` boolean
+// crosses (confirmed by reading, not editing, `crates/gc-render/src/
+// frame_buffer.rs` this wave) -- so per-tick combat readiness/telegraph
+// timing has no path to TypeScript at all yet, wasm-bound snapshot or not.
+// Reproducing "every quiet frame past kickoff read ready, and committing
+// zero times there proves nothing" with a fake would still mean
+// re-implementing `sim.combat`'s request-rejection gates, not just relaying
+// messages -- so this stays skipped, now for the wire-format reason rather
+// than a missing-binding one.
 describe.skip("online combat families [needs sim.combat's real readiness/telegraph timing (Rust-owned, crates/gc-sim, no wasm bridge)]", () => {
   it.skip("drives and shows every accepted family from local keyboard and gamepad", () => {});
 });
@@ -1264,6 +1549,74 @@ describe.skip("online combat families [needs sim.combat's real readiness/telegra
 // attempted here. Nothing in this file can stand in for that without
 // either building that feature or asserting against a frame this test
 // invented itself.
-describe.skip("online match renderer smoke [needs match.ts's real online RenderFrame wiring, not yet built this milestone]", () => {
-  it.skip("draws a live online frame with its combat model and HUD", () => {});
+// Unblocked: `MatchDriverBridge.renderFrameBuild`/`SimHost.buildMatchDriverRenderFrame`
+// (`@gc/wasm`) now exist, and `match.ts`'s ONLINE construction mode
+// (`MatchScreen.drawOnline`) now turns a live `MatchDriverBridge` frame into
+// a corrected, drawable `RenderFrame` -- see `realMatchDriverPort`'s header
+// (above) for the same real driver wiring the two control-ownership cases
+// already exercise, reused here for drawing instead.
+//
+// `MatchDriverBridge` still has no roster export of its own (the same real
+// `@gc/wasm`/`crates/gc-wasm` gap `realMatchDriverPort`'s header names, not
+// fixed by this wave) -- `species_shape`/`species_color`/`radius`/
+// `is_keeper` are therefore NOT real wasm-sourced data for this fixture
+// (`rosterFromManifest` only derives `ids`/`teams`, all it can honestly
+// derive from the real fixture manifest). So this case does not feed the
+// captured frame into `@gc/render`'s `pitchDrawCommands` -- doing so would
+// mean fabricating exactly the roster fields that gap leaves missing, the
+// "asserting against your own fixture" this port must not do. What IS
+// proved here is real: a genuinely advancing `MatchDriverBridge`'s per-tick
+// frame, decoded through `@gc/render`'s real `frame_buffer.decode`
+// (`realMatchDriverPort.frame`), reaching `RenderPort.draw` with
+// `hud.controlled`/`control.controlled`/the per-slot `players.controlled`
+// highlight corrected to the driver's real assignment -- not the raw sim's
+// own, uncorrected notion -- see `match.ts`'s `drawOnline`.
+describe("online match renderer smoke", () => {
+  it("draws a live online frame with its combat model and HUD", () => {
+    const request: OnlineMatchRequest = {
+      ...HOST_REQUEST,
+      mode: "1v1",
+      live: "home_1",
+      owned: ["home_1", "home_2", "home_3", "home_4"],
+    };
+    const drawn: { readonly frame: RenderFrame; readonly roster: RenderFrameRoster }[] = [];
+    const renderer: RenderPort = {
+      draw: (frame, roster) => {
+        drawn.push({ frame, roster });
+      },
+    };
+    const match = buildRealDriverHost("1v1", request, renderer);
+
+    // A few ticks of real switching pressure, so this is a genuinely live,
+    // advancing frame -- not merely the kickoff snapshot.
+    for (let i = 0; i < 10; i += 1) {
+      match.event({ kind: "key", key: "k" });
+      match.update(TICK_SECONDS);
+    }
+    match.draw();
+
+    expect(drawn.length, "draw() must reach RenderPort.draw").toBe(1);
+    const { frame, roster } = drawn[0]!;
+    // Real, wasm-decoded data: a full 5v5 roster, and the clock has
+    // genuinely ticked down from the fixture's `matchDriverFixtureInitialSnapshot`
+    // default (20 seconds).
+    expect(roster.ids?.length, "a real 5v5 roster crossed the wire").toBe(10);
+    expect(frame.hud.time_left).toBeLessThan(20);
+    // `combatPresent` is a real, decoded field off the wire header (`gc_render
+    // ::frame_buffer`'s `combat_present` word) -- `false` here is itself the
+    // honest report: this fixture's boundary-zero snapshot carries no combat
+    // companion (`matchDriverFixtureInitialSnapshot`'s default), not a stand-in
+    // value this test invented.
+    expect((frame as unknown as { readonly combatPresent: boolean }).combatPresent).toBe(false);
+
+    // The corrected control: matches `match.match.state.controlled` (the
+    // same driver-corrected value the two "keeps control..."/"makes
+    // switching..." cases already assert on), one-based on the wire.
+    const state = match.match.state;
+    expect(frame.hud.controlled).toBe(state.controlled + 1);
+    expect(frame.control?.controlled).toBe(state.controlled + 1);
+    expect(frame.players?.controlled[state.controlled]).toBe(true);
+    const otherHighlighted = (frame.players?.controlled ?? []).filter((flag, index) => flag && index !== state.controlled);
+    expect(otherHighlighted, "exactly one player is highlighted as controlled").toEqual([]);
+  });
 });
