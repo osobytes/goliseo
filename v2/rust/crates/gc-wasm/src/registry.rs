@@ -14,6 +14,7 @@ use std::cell::RefCell;
 
 use gc_render::frame::RenderFrameRoster;
 use gc_sim::match_snapshot::MatchState;
+use gc_sim::slot_input::SlotInputProducerState;
 use gc_sim::tuning::Tuning;
 
 /// One live match's owned state, keyed by its registry handle.
@@ -25,6 +26,13 @@ pub struct Entry {
     /// Match-constant roster identity, built once and reused every frame
     /// (see `gc_render::frame::RenderFrameOptions::roster`'s doc).
     pub roster: RenderFrameRoster,
+    /// This session's fixed-slot input producer (`gc_sim::slot_input`) —
+    /// retains the declared bot fills' RNG/combat-intent state across
+    /// ticks so `crate::session::Session::step` can materialize a complete
+    /// effective `InputFrame` from the single-slot wire it receives. See
+    /// `crate::session`'s module doc for why every session runs in slot
+    /// mode and therefore always needs one.
+    pub producer: SlotInputProducerState,
 }
 
 thread_local! {

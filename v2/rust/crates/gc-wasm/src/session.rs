@@ -21,6 +21,41 @@
 //! `gc-sim`'s combat system through this surface is follow-up work, not
 //! this wave's job.
 //!
+//! ## Slot mode has no legacy-input fallback — `Session` must fill it
+//!
+//! `gc_sim::r#match::step`'s own doc states it plainly: "Slot mode has no
+//! legacy-input fallback... producers must materialize bots or neutral
+//! rows before calling the simulation." An ordinary Lua match never hit
+//! this: `game/screens/match.lua`'s `Match:restart` only builds an
+//! `InputOwnership` (entering slot mode) when `rollback_options` is set, so
+//! a normal single-player match stayed on the legacy path and every
+//! non-controlled player ran the inline AI branch instead.
+//!
+//! [`Session`] has no such branch — every session is slot mode, always
+//! (see [`Session::new`]'s construction below) — so it owns a
+//! [`gc_sim::slot_input::SlotInputProducerState`]
+//! (`crate::registry::Entry::producer`) and [`Session::step`] materializes
+//! a complete effective frame through it
+//! ([`gc_sim::slot_input::materialize`]) before stepping the simulation,
+//! rather than stepping the raw wire directly. This module's private
+//! `local_slot_sources` assigns the single canonical `home_1` slot
+//! (`gc_sim::input_frame::slot`'s index 1) to the wire this session's
+//! caller drives every tick
+//! ([`gc_sim::slot_input::MatchSlotSourceKind::Frame`]); every other
+//! canonical slot is a declared bot fill
+//! ([`gc_sim::slot_input::MatchSlotSourceKind::Bot`]) — the same
+//! already-tested primitive `gc_sim::env` and `gc_sim::headless` use for
+//! their own bot-filled slots. This reproduces what the Lua inline AI
+//! branch did for every non-controlled player; it does not invent a new
+//! input policy.
+//!
+//! Online/rollback callers (`crate::match_driver_bridge`) are unaffected:
+//! they never call [`Session::step`] to drive their match. They only use
+//! [`Session::new`]/[`Session::capture_snapshot`] to obtain a fresh
+//! boundary-zero snapshot, and supply their own producer
+//! (`gc_netcode::match_driver::MatchDriver`'s) for the peers/bots their own
+//! protocol assigns.
+//!
 //! ## Where the `MatchState` actually lives
 //!
 //! `Session` itself is just a `u32` handle into [`crate::registry`]'s slab.
@@ -35,6 +70,7 @@ use gc_sim::fixed_clock;
 use gc_sim::input_frame::{self, InputFixtureRosters, InputOwnership, InputSlotAssignment};
 use gc_sim::r#match as sim_match;
 use gc_sim::match_snapshot::{self, PitchSize};
+use gc_sim::slot_input::{self, MatchSlotSource, MatchSlotSourceKind};
 use gc_sim::tuning::Tuning;
 use wasm_bindgen::prelude::*;
 
@@ -84,6 +120,51 @@ pub(crate) fn ownership(home_roster: &[&str; 5], away_roster: &[&str; 5]) -> Inp
         },
         slots: slots.try_into().expect("exactly eight slots built"),
     }
+}
+
+/// The single canonical slot (`gc_sim::input_frame::slot`'s index 1,
+/// `"home_1"`) this session's own browser player drives — the same
+/// `"home_1"`-is-the-local-slot convention
+/// `crate::online_combat_phases_bridge`'s own driver fixture documents
+/// ("Driver index 1 is the host, whose opening live slot is `home_1`").
+/// Every other canonical slot is a declared bot fill; see
+/// [`local_slot_sources`].
+const LOCAL_SLOT_ZERO_INDEX: usize = 0;
+
+/// Build this session's fixed-slot producer sources
+/// (`gc_sim::slot_input::new_producer`'s input): [`LOCAL_SLOT_ZERO_INDEX`]
+/// sources from the wire [`Session::step`] receives every tick
+/// ([`MatchSlotSourceKind::Frame`]); every other canonical slot is a
+/// declared bot fill ([`MatchSlotSourceKind::Bot`]) — reproducing what the
+/// Lua inline AI branch did for every non-controlled player in an ordinary
+/// (non-slot-mode) match, since [`Session`] has no legacy-input fallback to
+/// fall back to (see this module's doc). Each bot slot's seed is the match
+/// seed offset by its own one-based canonical slot index — the same
+/// base-plus-index convention `gc-sim/tests/slot_input.rs` uses to build a
+/// distinct, deterministic seed per slot from one base value: distinct so
+/// seven bot fills do not share one RNG stream, deterministic so the same
+/// match seed always reproduces the same match.
+fn local_slot_sources(seed: f64) -> [MatchSlotSource; 8] {
+    let mut sources = [MatchSlotSource {
+        kind: MatchSlotSourceKind::Bot,
+        seed: None,
+    }; 8];
+    for (index, source) in sources.iter_mut().enumerate() {
+        *source = if index == LOCAL_SLOT_ZERO_INDEX {
+            MatchSlotSource {
+                kind: MatchSlotSourceKind::Frame,
+                seed: None,
+            }
+        } else {
+            MatchSlotSource {
+                kind: MatchSlotSourceKind::Bot,
+                // One-based canonical slot index, matching the
+                // base-plus-index convention referenced above.
+                seed: Some(seed + 1000.0 + (index as f64 + 1.0)),
+            }
+        };
+    }
+    sources
 }
 
 /// One live match. Construct with [`Session::new`], advance with
@@ -165,10 +246,12 @@ impl Session {
             input_ownership: Some(ownership(&home_roster, &away_roster)),
         });
         let roster = render_frame::roster(&state);
+        let producer = slot_input::new_producer(local_slot_sources(seed));
         let handle = registry::insert(Entry {
             state,
             tune,
             roster,
+            producer,
         });
         Ok(Session { handle })
     }
@@ -180,7 +263,13 @@ impl Session {
 
     /// Advance the match by exactly one fixed tick, consuming one canonical
     /// `input_frame` wire (`gc_sim::input_frame::encode`'s format). `wire`'s
-    /// tick must equal [`Session::input_tick`].
+    /// tick must equal [`Session::input_tick`]. Only the `home_1` slot
+    /// (`gc_sim::input_frame::slot`'s index 1) is read from `wire` — every
+    /// other canonical slot is overwritten by this session's own declared
+    /// bot fills before the simulation ever sees it. See this module's doc
+    /// for why: without that fill, every non-local slot would forever
+    /// receive `wire`'s neutral row, which is the whole-match bug this
+    /// producer exists to fix.
     ///
     /// # Errors
     ///
@@ -189,10 +278,12 @@ impl Session {
     pub fn step(&mut self, wire: &str) -> Result<(), JsValue> {
         let frame = input_frame::decode(wire).map_err(|err| JsValue::from_str(&err.to_string()))?;
         self.with_entry(|entry| {
+            let (effective, _decisions) =
+                slot_input::materialize(&mut entry.producer, &entry.state, &frame, None);
             sim_match::step(
                 &mut entry.state,
                 gc_sim::fixed_clock::TICK_SECONDS,
-                sim_match::StepInput::Frame(&frame),
+                sim_match::StepInput::Frame(&effective),
                 None,
                 &entry.tune,
             );
@@ -439,5 +530,59 @@ mod fixed_clock_tests {
         // stop_early had not zeroed the accumulator, the banked 1/120s
         // would combine with this call and plan one.
         assert_eq!(clock.advance(1.0 / 120.0).unwrap(), 0);
+    }
+}
+
+#[cfg(test)]
+mod slot_wiring_tests {
+    use super::*;
+
+    /// Regression test for this wave's bug: every match played in the
+    /// browser finished 0-0 with zero events because seven of the eight
+    /// canonical slots received a permanent all-neutral row forever, tick
+    /// after tick (see this module's doc, "Slot mode has no legacy-input
+    /// fallback -- `Session` must fill it"). This test drives a real
+    /// [`Session`] end to end with the local `home_1` slot itself ALSO
+    /// idle the whole match (an all-neutral wire every tick, exactly as an
+    /// AFK browser player would produce), across the same seeds the
+    /// diagnosis used. Before the fix this failed on every one of them with
+    /// `total_events == 0 && score_home == 0.0 && score_away == 0.0` --
+    /// [`Session::step`] was stepping the raw wire directly, so the other
+    /// seven declared bot fills never ran and had nothing to do. After the
+    /// fix, [`Session::step`] materializes those seven slots through this
+    /// session's own producer every tick, so the match is live regardless
+    /// of what the local player does.
+    #[test]
+    fn a_full_match_on_an_idle_local_wire_is_not_a_permanent_scoreless_zero_event_stalemate() {
+        for seed in [1.0, 17.0, 42.0, 120.0] {
+            // `gc_sim::r#match::NO_GOAL_LIMIT` -- an explicit cap large
+            // enough that a two-minute match never hits it, so `finished`
+            // is driven by the clock exactly like an ordinary browser
+            // match, not by a test-only goal cap.
+            let mut session = Session::new("nebula", "orion", seed, 120.0, 99, None)
+                .expect("authored teams with five-player rosters");
+            let mut total_events: usize = 0;
+            loop {
+                let finished = session.with_entry(|entry| entry.state.finished);
+                if finished {
+                    break;
+                }
+                let tick = session.input_tick() as i64;
+                let neutral =
+                    input_frame::new(tick, None).expect("an all-neutral frame is always valid");
+                let wire = input_frame::encode(&neutral).expect("a valid frame always encodes");
+                session
+                    .step(&wire)
+                    .expect("a canonical neutral wire always decodes");
+                total_events += session.with_entry(|entry| entry.state.events.len());
+            }
+            let score_home = session.score_home();
+            let score_away = session.score_away();
+            assert!(
+                total_events > 0 || score_home > 0.0 || score_away > 0.0,
+                "seed {seed}: a full match produced zero events and a 0-0 score \
+                 -- every non-local slot is still receiving permanent neutral input"
+            );
+        }
     }
 }

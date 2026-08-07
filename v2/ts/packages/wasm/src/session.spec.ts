@@ -114,3 +114,50 @@ describe("the raw per-frame render path", () => {
     expect(host.buildRenderFrame(handle)).toBeNull();
   });
 });
+
+describe("a session drives a live match, not a permanent scoreless stalemate", () => {
+  // `gc_render::frame_buffer::encode`'s header word index 8 is
+  // `event_count` (the header layout `session.spec.ts`'s own MAGIC check
+  // above already reads word 0 from). Reading it directly off the raw
+  // Float64Array header is cheaper than decoding the whole frame, and is
+  // enough to prove a tick produced discrete match events.
+  const EVENT_COUNT_HEADER_INDEX = 8;
+
+  // Regression test for this wave's bug: `Session::step` used to advance
+  // the simulation directly off the raw `input_frame` wire it received,
+  // which only ever carries a real sample for the local `home_1` slot --
+  // every other one of the eight canonical slots stayed the wire's literal
+  // neutral row forever (see `crates/gc-wasm/src/session.rs`'s module doc,
+  // "Slot mode has no legacy-input fallback"). A match driven entirely
+  // through this package's compiled artifact -- the actual surface a
+  // browser loads -- must still be live even when the local player never
+  // touches an input: some tick along the way must report a discrete match
+  // event, or the match must not end 0-0. Before the fix this held on
+  // every seed: `finished === true`, `scoreHome === 0`, `scoreAway === 0`,
+  // and every single tick's `event_count` header word was `0`.
+  it("reaches a non-zero event count or a non-zero score over a full match on an idle local wire", () => {
+    const host = loadSimHost();
+    for (const seed of [1, 17, 42, 120]) {
+      // `99` mirrors `gc_sim::r#match::NO_GOAL_LIMIT`: a cap high enough
+      // that a two-minute match never hits it, so `finished` is driven by
+      // the clock, exactly like an ordinary browser match.
+      const session = new host.Session("nebula", "orion", seed, 120, 99);
+      let totalEvents = 0;
+      try {
+        while (!session.finished) {
+          session.step(neutralWire(session.inputTick));
+          const frame = host.buildRenderFrame(session.handle);
+          expect(frame).not.toBeNull();
+          totalEvents += frame?.[EVENT_COUNT_HEADER_INDEX] ?? 0;
+        }
+        expect(
+          totalEvents > 0 || session.scoreHome > 0 || session.scoreAway > 0,
+          `seed ${seed}: a full match produced zero events and a 0-0 score -- ` +
+            "every non-local slot is still receiving permanent neutral input",
+        ).toBe(true);
+      } finally {
+        session.free();
+      }
+    }
+  });
+});
