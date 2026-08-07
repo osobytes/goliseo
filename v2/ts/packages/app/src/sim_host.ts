@@ -151,50 +151,15 @@ export interface SimHostOptions {
   readonly localSlot?: number;
   /**
    * Mirrors `crates/gc-wasm/src/session.rs`'s `Session::new`'s own
-   * `combat_enabled` parameter (this wave): `false`/omitted (the default)
-   * reproduces the pre-existing behavior exactly -- no combat companion is
-   * ever built, byte for byte what this constructor did before that
-   * parameter existed. See [`SessionConstructorWithCombat`]'s doc for why
-   * this crosses to the real wasm constructor via a local, temporary type
-   * widening rather than `@gc/wasm`'s own declared `SimSessionConstructor`.
+   * `combat_enabled` parameter: `false`/omitted (the default) reproduces
+   * the pre-existing behavior exactly -- no combat companion is ever built,
+   * byte for byte what this constructor did before that parameter existed.
+   * `packages/wasm/src/types.ts`'s `SimSessionConstructor` now declares this
+   * seventh parameter directly (confirmed by reading `types.ts`), so this
+   * crosses to the real wasm constructor with no local type widening.
    */
   readonly combatEnabled?: boolean;
 }
-
-/**
- * TEMPORARY LOCAL WIDENING -- not an edit of `@gc/wasm`'s own types, and not
- * meant to outlive the reason it exists.
- *
- * `packages/wasm/src/types.ts`'s hand-written `SimSessionConstructor` has
- * not yet grown the `combat_enabled` parameter `Session::new` gained this
- * wave (`crates/gc-wasm/src/session.rs`; see that module's doc) -- confirmed
- * stale by reading `types.ts` directly, not assumed: another agent's
- * concurrent task, per this wave's own brief, so fixing it there is not
- * this file's to do (`packages/wasm` is out of this batch's ownership).
- *
- * The REAL, rebuilt wasm-bindgen constructor (`dist/pkg/gc_wasm.d.cts`,
- * regenerated from the current Rust source via `packages/wasm/scripts/
- * build.mjs`) already accepts a seventh, optional `combat_enabled?: boolean
- * | null` parameter -- confirmed the same way, by reading the regenerated
- * declaration file, not merely the Rust source. Calling `this.host.Session`
- * with a seventh argument is therefore safe at RUNTIME today; only the
- * hand-written `SimSessionConstructor` type stops it compiling directly.
- * This local type plus cast is the narrowest possible bridge: it changes
- * nothing `@gc/wasm` exports, only how THIS file calls a constructor it
- * already knows (from reading `session.rs` and the regenerated `.d.cts`
- * directly) accepts a seventh argument. Delete this type and the cast site
- * below, and call `new this.host.Session(...)` directly with the combat
- * argument, once `SimSessionConstructor` itself grows the parameter.
- */
-type SessionConstructorWithCombat = new (
-  homeTeamId: string,
-  awayTeamId: string,
-  seed: number,
-  durationSeconds: number,
-  maxGoals: number,
-  homeFormation: string | undefined,
-  combatEnabled: boolean | undefined,
-) => SimSession;
 
 class WasmSimHost implements SimHostPort {
   private readonly host: SimHost;
@@ -219,11 +184,7 @@ class WasmSimHost implements SimHostPort {
     }
     this.localSlot = localSlot;
     this.host = loadSimHost();
-    // See `SessionConstructorWithCombat`'s doc for why this cast exists --
-    // `@gc/wasm`'s own declared constructor type has not caught up to
-    // `Session::new`'s seventh (`combat_enabled`) parameter yet.
-    const SessionCtor = this.host.Session as unknown as SessionConstructorWithCombat;
-    this.session = new SessionCtor(
+    this.session = new this.host.Session(
       homeTeamId,
       awayTeamId,
       seed,

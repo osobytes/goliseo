@@ -12,16 +12,25 @@
 // blocker -- the module exists, its published contract just does not carry
 // what these two assertions need.
 //
-// Re-audited this batch, same conclusion as `bootstrap.spec.ts`'s twin case
-// (see that file's header for the full trail): `players.length == 10` is
-// derivable without touching `@gc/wasm` at all (a ten-player roster is
-// already static, known content by the time `Flow` reaches `match`), but
-// `press.home` is not exposed by `@gc/wasm`'s `SimSession`
-// (`crates/gc-wasm/src/session.rs`), by `gc_render::frame::RenderFrame`
-// (`frame.rs`), or by this package's `content.ts` (not this batch's file to
-// extend) -- `gc_sim::match::MatchState.press` has no reachable path onto
-// this port anywhere. Still genuinely blocked, now for that one narrow,
-// confirmed reason rather than the contract's entire narrowness. The walk
+// Re-audited this wave, now that `press` is on the wire: `@gc/wasm`'s
+// `SimSession` grew `matchStateJson()` (`crates/gc-wasm/src/session.rs`,
+// mirrored in `packages/wasm/src/types.ts`), which does carry `press` --
+// so "not exposed by `SimSession` at all" (the previous version of this
+// note) is stale. What is NOT stale, confirmed by reading
+// `crates/gc-wasm/src/session.rs`'s `Session::new` directly (~line 226):
+// it has no `tactic`/`away_tactic` parameter and always builds the match
+// with `tactic: None` (defaults to `tactics::get("balanced")`, per
+// `crates/gc-sim/src/match.rs`'s `NewMatchOptions` doc), and always uses
+// each team's fixed authored roster, never a caller-supplied starting XI.
+// So a real session driven by this package's own `real_match_factory.ts`
+// can never simulate "press_high" -- it always simulates "balanced",
+// regardless of what `Flow` (or `real_match_factory.ts`) passes along as
+// `tactic_id`. `press.home == 2` (a `press_high`-derived value) and a
+// ten-player roster reflecting `home_starter_ids` are therefore still
+// unreachable from this package, now because `Session::new`'s wasm binding
+// (`crates/gc-wasm`, a Rust crate, out of this batch's file ownership) has
+// no parameter to carry either one through -- not because `press` itself
+// is unexposed. Still genuinely blocked, now for that reason. The walk
 // itself (Squad -> Formation -> Tactic, carrying the formation/tactic
 // choice) is ported faithfully below and verified against the injected
 // `MatchScreenFactory` receiving the exact `{formation: "1-1-2", tactic:
@@ -66,6 +75,7 @@ describe("pre-match flow (tier 3)", () => {
     expect(received).toEqual({ formation: "1-1-2", tactic: "press_high" });
   });
 
-  // Needs `RealMatchScreenPort.state.press` -- see this file's header.
+  // Needs `RealMatchScreenPort.state.press`, and a wasm `Session::new` that
+  // accepts a tactic -- see this file's header.
   it.skip("the pushed screen is the real match screen with a ten-player press-high state", () => {});
 });

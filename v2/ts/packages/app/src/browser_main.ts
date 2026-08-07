@@ -148,6 +148,12 @@ async function main(): Promise<void> {
         request.seed ?? Math.floor(Date.now() % 1_000_000),
         MATCH_DURATION_SECONDS,
         MATCH_MAX_GOALS,
+        // Without this the combat opt-in stops here: `browser_sim_host.ts`
+        // accepts `combatEnabled` and forwards it to the wasm `Session`, but
+        // this is the only real call site, and it used to pass five
+        // positional arguments and no options at all -- so a request asking
+        // for combat reached a session built without it.
+        { combatEnabled: request.combat_enabled },
       ),
     renderer,
     keyboard,

@@ -68,6 +68,12 @@ function encodeInputFrameWire(tick: number, localSlot: number, sample: InputSamp
 export interface BrowserSimHostOptions {
   /** See `sim_host.ts`'s `SimHostOptions.localSlot` -- same default, same meaning. */
   readonly localSlot?: number;
+  /** See `sim_host.ts`'s `SimHostOptions.combatEnabled` -- same default, same
+   * meaning, forwarded to the browser-target `gcWasmWeb.Session` constructor's
+   * own seventh, optional `combat_enabled` parameter (`crates/gc-wasm/src/
+   * session.rs`'s `Session::new`; confirmed present in the regenerated
+   * `dist/pkg-web/gc_wasm.d.ts` by reading it directly after rebuilding). */
+  readonly combatEnabled?: boolean;
 }
 
 /**
@@ -107,7 +113,15 @@ class BrowserWasmSimHost implements SimHostPort {
       throw new Error(`browser_sim_host: localSlot must be an integer in [1, ${INPUT_SLOT_COUNT}]`);
     }
     this.localSlot = localSlot;
-    this.session = new gcWasmWeb.Session(homeTeamId, awayTeamId, seed, durationSeconds, maxGoals);
+    this.session = new gcWasmWeb.Session(
+      homeTeamId,
+      awayTeamId,
+      seed,
+      durationSeconds,
+      maxGoals,
+      undefined,
+      options.combatEnabled,
+    );
     this.clock = new gcWasmWeb.FixedClock();
   }
 

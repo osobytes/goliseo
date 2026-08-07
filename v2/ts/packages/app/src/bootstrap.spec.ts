@@ -65,24 +65,32 @@ describe("real match adapter", () => {
   // Needs `screen.match.state.players[1].id`/`.press.home` -- a live
   // `sim.match` state table the Lua original reaches into directly.
   //
-  // Re-audited this batch: `@gc/screens` (`real_match.ts`/`match.ts`) is
-  // now IN this batch's file ownership, so "extending that contract is
-  // someone else's call" (the previous version of this note) is stale --
-  // widening `RealMatchScreenPort.state` was genuinely on the table. It
-  // still does not reach this case, for a narrower, confirmed reason:
-  // `players[1].id`/`players[2].id` (a starting XI) is derivable without
-  // any wasm change at all -- `home_starter_ids` is already static, known
-  // content on the request this factory receives -- but `press.home`
-  // (`gc_sim::match::MatchState.press`, a `ByTeam<f64>` copied from the
-  // authored tactic's `TacticData.press` at kickoff,
-  // `crates/gc-sim/src/match.rs`) is exposed NOWHERE reachable from this
-  // package: not `@gc/wasm`'s `SimSession` (score/timeLeft/finished/
-  // inputTick/snapshotHash/roster only, confirmed by reading `session.rs`),
-  // not `gc_render::frame::RenderFrame` (no `press` field, confirmed by
-  // reading `frame.rs`), and not this package's own `content.ts`'s
-  // `TacticExists` (`{id}` only, no `press`) -- and `content.ts` is NOT in
-  // this batch's file ownership, so adding the field is not this task's to
-  // do either. Still genuinely blocked, now for the `press` half only.
+  // Re-audited this wave, now that `press` is on the wire: `@gc/wasm`'s
+  // `SimSession` grew `matchStateJson()` (`crates/gc-wasm/src/session.rs`'s
+  // `Session::match_state_json`, mirrored in `packages/wasm/src/types.ts`),
+  // which DOES carry `press` -- confirmed by reading the current generated
+  // `dist/pkg/gc_wasm.d.cts` and `types.ts` directly, not assumed stale.
+  // That closes the half of the previous blocker this note named.
+  //
+  // It does not unblock this case, for a new, confirmed-by-reading-the-
+  // Rust reason: `Session::new`'s wasm binding (`crates/gc-wasm/src/
+  // session.rs`, lines ~226-268) has no parameter for either "tactic" or a
+  // custom starting roster at all. It always calls `sim_match::new` with
+  // `tactic: None, away_tactic: None` (defaults to `tactics::get("balanced")`,
+  // `crates/gc-sim/src/match.rs`'s `NewMatchOptions` doc) and always uses
+  // `home.roster`/`away.roster` -- the team's fixed authored five, never a
+  // caller-supplied starting XI. So a request's `tactic_id` (e.g.
+  // `"press_high"`) and `home_starter_ids` never reach a real simulated
+  // match's `press`/roster at all, regardless of how this package wires
+  // `matchStateJson()` in -- every real `Session` always simulates
+  // "balanced" with the team's default roster. Proving "the request's
+  // tactic reaches `press.home == 2`" is therefore not possible from this
+  // package today; it needs `Session::new` to grow `tactic`/`away_tactic`/
+  // roster-override parameters, which is `crates/gc-wasm` (out of this
+  // batch's file ownership, and a Rust-crate edit besides). `formation`
+  // (`home_formation`) and `seed` DO already reach a real session --
+  // this is not "nothing is wired," just narrower than the Lua original's
+  // four-field assertion. Still genuinely blocked, now for this reason.
   it.skip("applies request roster, formation, tactic, and seed", () => {});
 
   it("is the adapter selected by the default bootstrap, and routes a completed match to result", () => {

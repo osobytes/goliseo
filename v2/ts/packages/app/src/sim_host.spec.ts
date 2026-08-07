@@ -94,10 +94,12 @@ describe("createSimHost", () => {
   });
 
   // `crates/gc-wasm/src/session.rs`'s `Session::new` gained a `combat_enabled`
-  // parameter this wave, and `sim_host.ts`'s `SimHostOptions.combatEnabled`
-  // now threads it through (see that file's `SessionConstructorWithCombat`
-  // doc for the temporary local type widening this needs, pending
-  // `packages/wasm/src/types.ts`'s own `SimSessionConstructor` catching up).
+  // parameter, and `sim_host.ts`'s `SimHostOptions.combatEnabled` threads it
+  // through directly -- `packages/wasm/src/types.ts`'s `SimSessionConstructor`
+  // now declares this seventh parameter itself, so `sim_host.ts` calls the
+  // real wasm constructor with no local type-widening cast (confirmed by
+  // reading `types.ts` directly; the temporary cast that used to live there
+  // is gone).
   // Neither `SimSession` nor `SimHostPort` exposes a getter for combat
   // presence or per-tick combat state (confirmed by reading `session.rs`
   // directly), so this is a construction/threading smoke test, not a
