@@ -75,6 +75,98 @@ describe("camera.view", () => {
   });
 });
 
+// ============================================================================
+// VIEWPORT INVARIANCE (#414)
+//
+// The specs above this block -- and every projection spec ported from Lua --
+// only ever ran at one viewport, and Lua only ever ran at `vp == field`. That
+// is exactly how a port that translated every module AND every test still
+// shipped a projection whose entity sizes carried no viewport factor: the
+// tests inherited the degenerate case along with the code. These are the
+// properties that were silently false, written so they fail on the old
+// formula at any viewport other than the field's own size.
+// ============================================================================
+describe("camera.project across viewports", () => {
+  // The near (widest) edge of the pitch trapezoid, in screen pixels. This is
+  // the thing a player's size has to stay in proportion to -- "the players
+  // read as ~20px specks on a full-width pitch" is precisely this ratio going
+  // wrong.
+  function pitchWidth(vp: CameraViewport): number {
+    const [left] = camera.project(0, field.h, field, vp);
+    const [right] = camera.project(field.w, field.h, field, vp);
+    return right - left;
+  }
+
+  // Top (far edge) to bottom (near edge) of the same trapezoid.
+  function pitchHeight(vp: CameraViewport): number {
+    const [, top] = camera.project(field.w / 2, 0, field, vp);
+    const [, bottom] = camera.project(field.w / 2, field.h, field, vp);
+    return bottom - top;
+  }
+
+  // What every entity's drawn size is derived from: `r = radius * scale`
+  // (pitch.ts), and from there the rigged characters' pixels-per-metre, the
+  // goal frames, the ball, the shadows and the reticles.
+  function entityScale(vp: CameraViewport): number {
+    const [, , scale] = camera.project(field.w / 2, field.h, field, vp);
+    return scale;
+  }
+
+  const SAME_ASPECT: readonly CameraViewport[] = [
+    { w: 960, h: 540 }, // the LÖVE window, and the only case the old specs covered
+    { w: 1280, h: 720 },
+    { w: 1920, h: 1080 },
+    { w: 2560, h: 1440 },
+  ];
+
+  const OTHER_ASPECTS: readonly CameraViewport[] = [
+    { w: 3440, h: 1440 }, // ultrawide 21:9 -- the display this was reported from
+    { w: 1280, h: 1024 }, // 5:4
+    { w: 1024, h: 1366 }, // portrait tablet
+  ];
+
+  it("keeps an entity's size in constant proportion to the pitch across viewports", () => {
+    const reference = entityScale(SAME_ASPECT[0]!) / pitchWidth(SAME_ASPECT[0]!);
+    for (const vp of [...SAME_ASPECT, ...OTHER_ASPECTS]) {
+      near(entityScale(vp) / pitchWidth(vp), reference, 1e-12);
+    }
+  });
+
+  it("scales entity size with the viewport, not just position -- doubling the window doubles both", () => {
+    const base = { w: 960, h: 540 };
+    const doubled = { w: 1920, h: 1080 };
+    near(pitchWidth(doubled) / pitchWidth(base), 2, 1e-9);
+    near(entityScale(doubled) / entityScale(base), 2, 1e-9);
+  });
+
+  it("scales the pitch rather than stretching it: the trapezoid keeps its aspect at every viewport aspect ratio", () => {
+    const reference = pitchWidth(SAME_ASPECT[0]!) / pitchHeight(SAME_ASPECT[0]!);
+    for (const vp of [...SAME_ASPECT, ...OTHER_ASPECTS]) {
+      near(pitchWidth(vp) / pitchHeight(vp), reference, 1e-9);
+    }
+  });
+
+  it("fits the whole trapezoid inside every viewport -- the spare space on the long axis is starfield, not a clipped pitch", () => {
+    for (const vp of [...SAME_ASPECT, ...OTHER_ASPECTS]) {
+      const [nearLeft, nearY] = camera.project(0, field.h, field, vp);
+      const [nearRight] = camera.project(field.w, field.h, field, vp);
+      const [, farY] = camera.project(field.w / 2, 0, field, vp);
+      expect(nearLeft).toBeGreaterThanOrEqual(0);
+      expect(nearRight).toBeLessThanOrEqual(vp.w);
+      expect(farY).toBeGreaterThanOrEqual(0);
+      expect(nearY).toBeLessThanOrEqual(vp.h);
+    }
+  });
+
+  it("keeps the pitch centred, so the spare space is split evenly instead of pushed to one side", () => {
+    for (const vp of [...SAME_ASPECT, ...OTHER_ASPECTS]) {
+      const [nearLeft] = camera.project(0, field.h, field, vp);
+      const [nearRight] = camera.project(field.w, field.h, field, vp);
+      near((nearLeft + nearRight) / 2, vp.w / 2, 1e-9);
+    }
+  });
+});
+
 describe("camera perspective mode", () => {
   function withPerspective(fn: () => void): void {
     const saved = camera.perspective_mode;
@@ -268,9 +360,8 @@ describe("camera.perspectiveRig / camera.rigAngleRad", () => {
 // or pixels-per-metre differs from the Lua original, everything on screen
 // moves at the wrong apparent speed/distance even with identical sim state.
 //
-// Captured with a small standalone script (field 960x540, viewport 1280x720
-// -- the product's own dimensions, unlike pitch.spec.ts's shrunk fixture,
-// since camera.project draws nothing and has no hex-floor-style blowup):
+// Captured with a small standalone script (field 960x540, at TWO viewports --
+// see below for why two):
 //
 //   local camera = require("game.render.camera")
 //   local sx, sy, scale = camera.project(wx, wy, field, vp, cfg, view)
@@ -279,6 +370,31 @@ describe("camera.perspectiveRig / camera.rigAngleRad", () => {
 // run for the fixed (default) projection, a fixed projection under a 2x
 // zoomed follow view, and the perspective-mode projection under a 1x follow
 // view -- the three distinct code paths `camera.project` can take.
+//
+// TWO VIEWPORTS, AND ONE DELIBERATE DIVERGENCE (#414)
+//
+// 960x540 is the viewport the LÖVE build actually renders at, and the only
+// one it can: conf.lua pins a non-resizable 960x540 window and
+// sim/env_config.lua's DEFAULT_FIELD is 960x540, so `vp == field` in every
+// LÖVE frame ever drawn. (An earlier revision of this comment called 1280x720
+// "the product's own dimensions". It never was.) There, v2 must and does
+// match Lua on all three returned values.
+//
+// 1280x720 is a viewport only v2 can be in, and it is kept because it pins
+// the one place the two builds now differ ON PURPOSE. Lua's projection puts
+// the world-to-pixel factor into screen POSITIONS and leaves the depth
+// `scale` -- the only input to every entity size -- a pure ratio, so a bigger
+// window grew the pitch and left the players the same number of pixels.
+// camera.ts's `projectFixed` folds a single uniform fit factor into both.
+// The consequences, both asserted below:
+//
+//   * POSITIONS are unchanged at any viewport with the field's aspect ratio.
+//     This fix reframes nothing; the 1280x720 sx/sy rows below are still
+//     matched exactly, character for character with the Lua capture.
+//   * `scale` is multiplied by that fit factor -- 1280/960 == 720/540 == 4/3
+//     here. That IS the fix, and asserting it against the Lua number times
+//     4/3 states the divergence precisely instead of hiding it behind a
+//     re-baselined golden.
 // ============================================================================
 
 interface CameraReferenceRow {
@@ -289,6 +405,32 @@ interface CameraReferenceRow {
   readonly scale: number;
 }
 
+// Viewport 960x540 -- `vp == field`, the LÖVE build's only configuration.
+// prettier-ignore
+const FIXED_REFERENCE_AT_FIELD_SIZE: readonly CameraReferenceRow[] = [
+  { wx: 0, wy: 0, sx: 235.19999999999999, sy: 129.59999999999999, scale: 0.51000000000000001 },
+  { wx: 960, wy: 0, sx: 724.79999999999995, sy: 129.59999999999999, scale: 0.51000000000000001 },
+  { wx: 0, wy: 540, sx: 76.800000000000011, sy: 475.20000000000005, scale: 0.83999999999999997 },
+  { wx: 960, wy: 540, sx: 883.20000000000005, sy: 475.20000000000005, scale: 0.83999999999999997 },
+  { wx: 480, wy: 270, sx: 480, sy: 302.39999999999998, scale: 0.67500000000000004 },
+  { wx: 123.456, wy: 78.9, sx: 280.97119680000003, sy: 180.096, scale: 0.55821666666666669 },
+  { wx: -50, wy: 600, sx: 15.366666666666674, sy: 513.60000000000002, scale: 0.87666666666666671 },
+];
+
+// prettier-ignore
+const FIXED_ZOOM_REFERENCE_AT_FIELD_SIZE: readonly CameraReferenceRow[] = [
+  { wx: 0, wy: 0, sx: 218, sy: 13.999999999999943, scale: 1.02 },
+  { wx: 960, wy: 0, sx: 1197.1999999999998, sy: 13.999999999999943, scale: 1.02 },
+  { wx: 0, wy: 540, sx: -98.799999999999955, sy: 705.20000000000005, scale: 1.6799999999999999 },
+  { wx: 960, wy: 540, sx: 1514, sy: 705.20000000000005, scale: 1.6799999999999999 },
+  { wx: 480, wy: 270, sx: 707.60000000000002, sy: 359.59999999999991, scale: 1.3500000000000001 },
+  { wx: 123.456, wy: 78.9, sx: 309.54239360000008, sy: 114.99199999999996, scale: 1.1164333333333334 },
+  { wx: -50, wy: 600, sx: -221.66666666666663, sy: 782, scale: 1.7533333333333334 },
+];
+
+// Viewport 1280x720 -- a viewport only v2 can be in. See the block comment
+// above: sx/sy must still match Lua exactly, `scale` must be Lua's times the
+// uniform fit factor.
 // prettier-ignore
 const FIXED_REFERENCE: readonly CameraReferenceRow[] = [
   { wx: 0, wy: 0, sx: 313.60000000000002, sy: 172.79999999999998, scale: 0.51000000000000001 },
@@ -355,23 +497,45 @@ const PERSPECTIVE_REFERENCE: readonly CameraReferenceRow[] = [
 describe("camera.project differential against the real Lua game.render.camera", () => {
   const bigField: CameraField = { w: 960, h: 540 };
   const bigVp: CameraViewport = { w: 1280, h: 720 };
+  const fieldSizedVp: CameraViewport = { w: 960, h: 540 };
+  // 1280/960 == 720/540. See the block comment above.
+  const FIT_1280x720 = 4 / 3;
 
-  it("matches the Lua reference for the fixed (default) projection -- the product's actual field/viewport, not a shrunk test fixture", () => {
-    for (const row of FIXED_REFERENCE) {
-      const [sx, sy, scale] = camera.project(row.wx, row.wy, bigField, bigVp);
+  it("matches the Lua reference EXACTLY -- all three returned values -- at the viewport LÖVE actually renders at (vp == field, conf.lua's pinned 960x540 window)", () => {
+    for (const row of FIXED_REFERENCE_AT_FIELD_SIZE) {
+      const [sx, sy, scale] = camera.project(row.wx, row.wy, bigField, fieldSizedVp);
       near(sx, row.sx, 1e-6);
       near(sy, row.sy, 1e-6);
       near(scale, row.scale, 1e-9);
     }
   });
 
-  it("matches the Lua reference for the fixed projection under a 2x zoomed follow view", () => {
+  it("matches the Lua reference exactly at vp == field under a 2x zoomed follow view", () => {
+    const view = camera.view(300, 200, bigField, 2);
+    for (const row of FIXED_ZOOM_REFERENCE_AT_FIELD_SIZE) {
+      const [sx, sy, scale] = camera.project(row.wx, row.wy, bigField, fieldSizedVp, undefined, view);
+      near(sx, row.sx, 1e-6);
+      near(sy, row.sy, 1e-6);
+      near(scale, row.scale, 1e-9);
+    }
+  });
+
+  it("keeps Lua's exact screen POSITIONS at a larger same-aspect viewport, and diverges only by folding the uniform fit factor into the depth scale (#414)", () => {
+    for (const row of FIXED_REFERENCE) {
+      const [sx, sy, scale] = camera.project(row.wx, row.wy, bigField, bigVp);
+      near(sx, row.sx, 1e-6);
+      near(sy, row.sy, 1e-6);
+      near(scale, row.scale * FIT_1280x720, 1e-9);
+    }
+  });
+
+  it("keeps Lua's exact screen positions under a 2x zoomed follow view at that same larger viewport, with the same single scale divergence", () => {
     const view = camera.view(300, 200, bigField, 2);
     for (const row of FIXED_ZOOM_REFERENCE) {
       const [sx, sy, scale] = camera.project(row.wx, row.wy, bigField, bigVp, undefined, view);
       near(sx, row.sx, 1e-6);
       near(sy, row.sy, 1e-6);
-      near(scale, row.scale, 1e-9);
+      near(scale, row.scale * FIT_1280x720, 1e-9);
     }
   });
 

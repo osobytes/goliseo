@@ -195,7 +195,57 @@ function projectPerspective(
   return [(x / w + 1) * 0.5 * vp.w, (1 - y / w) * 0.5 * vp.h, vp.h / (2 * w * halfFovTan)];
 }
 
+/**
+ * The single world-to-pixel factor the whole fixed projection is built on:
+ * how many screen pixels one world unit is worth once the tuned reference
+ * frame has been fitted into `vp`.
+ *
+ * `min` rather than a separate width and height fit, because those two are
+ * what made the pitch STRETCH. The reference frame is exactly the size of the
+ * field, so `min` is the largest uniform factor that still keeps the whole
+ * frame inside the viewport; the leftover space on the long axis is filled by
+ * the starfield backdrop, which is what "the arena floats in space, like a
+ * broadcast frame" (see `camera.DEFAULTS`) already asks for. No letterbox
+ * bars are drawn or needed.
+ */
+function fitFactor(field: CameraField, vp: CameraViewport): number {
+  return Math.min(vp.w / field.w, vp.h / field.h);
+}
+
 // The fixed whole-pitch projection: world point -> screen point + depth scale.
+//
+// #414. The Lua original -- ported here character for character -- put the
+// world-to-pixel factor in the screen POSITION and nowhere else:
+//
+//     sx    = vp.w/2 + (wx - field.w/2) * scale * (vp.w / field.w)
+//     sy    = vp.h*horizon_frac + (vp.h*bottom_frac - vp.h*horizon_frac) * t
+//     scale = far_scale + (near_scale - far_scale) * t     <- a pure ratio
+//
+// `scale` is the ONLY thing entity sizes are derived from (`r = radius *
+// scale` in pitch.ts, and from there every character, billboard, shadow,
+// reticle, goal frame and ball). So positions carried a viewport factor and
+// sizes did not: grow the viewport and the pitch grows while the players stay
+// the same number of pixels. That is invisible at `vp.w == field.w`, which is
+// the ONLY case LÖVE can ever be in (conf.lua pins a non-resizable 960x540
+// window; sim/env_config.lua's DEFAULT_FIELD is 960x540) -- and the only case
+// the ported specs covered, which is why a port that translated every module
+// and every test carried the defect across intact. A browser canvas is never
+// 960x540, so v2 hit it on every real window.
+//
+// The second half of the same defect: `sx` fitted the field to viewport WIDTH
+// while `sy` spanned a fraction of viewport HEIGHT. At 960x540 those two
+// agree; at any other aspect ratio they differ, so the trapezoid was stretched
+// rather than scaled, and correcting entity size alone would have left
+// correctly-sized players standing on a distorted pitch.
+//
+// Both halves go away by construction if the projection is expressed as: build
+// the tuned frame in a REFERENCE viewport exactly the size of the field (where
+// the Lua formula is exactly right, because there the missing factor is 1),
+// then scale that whole frame uniformly about the viewport centre. Positions
+// and sizes then share one factor because there is only one, and `scale` is
+// literally the pixels-per-world-unit at that depth -- so `radius * scale` is
+// a real pixel size instead of a pixel size that happens to be right at one
+// window size.
 function projectFixed(
   wx: number,
   wy: number,
@@ -204,11 +254,16 @@ function projectFixed(
   cfg: CameraConfig,
 ): CameraProjection {
   const t = wy / field.h; // 0 = far, 1 = near
-  const scale = cfg.far_scale + (cfg.near_scale - cfg.far_scale) * t;
-  const horizon = vp.h * cfg.horizon_frac;
-  const bottom = vp.h * cfg.bottom_frac;
-  const sy = horizon + (bottom - horizon) * t;
-  const sx = vp.w / 2 + (wx - field.w / 2) * scale * (vp.w / field.w);
+  const fit = fitFactor(field, vp);
+  // The trapezoid's own near/far convergence ratio, independent of any
+  // viewport. Folding `fit` into it is what gives sizes their viewport term.
+  const scale = (cfg.far_scale + (cfg.near_scale - cfg.far_scale) * t) * fit;
+  // Vertical: the reference frame puts the far edge at `horizon_frac` and the
+  // near edge at `bottom_frac` of the FIELD's height, then that frame is
+  // scaled about the viewport centre like everything else.
+  const frac = cfg.horizon_frac + (cfg.bottom_frac - cfg.horizon_frac) * t;
+  const sy = vp.h / 2 + (frac - 0.5) * field.h * fit;
+  const sx = vp.w / 2 + (wx - field.w / 2) * scale;
   return [sx, sy, scale];
 }
 

@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
 """Profile the v2 browser app's frame loop and attribute its frame drops.
 
+## Status
+
+The shader-recompile stall this script was written to chase is FIXED --
+draw2d.ts's shared-material cache (#403 / PR #411) removed the cause, and this
+script's own `shaderCompiles` section now reports ~1 `linkProgram` call per run
+instead of thousands. It is kept because the harness it builds is general: a
+frame-level profile of the real app shell, which is what localised that bug and
+what the next frame-budget question will need too. `shaderCompiles` doubles as a
+cheap regression check that the cache is still doing its job.
+
 ## What this answers, and why the existing tooling could not
 
 `scripts/browser_render_bench.py` compares Lua-vs-v2 THROUGHPUT on a fixed

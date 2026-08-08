@@ -8,12 +8,10 @@
 
 import { describe, expect, it, afterEach, vi } from "vitest";
 import * as THREE from "three";
-import { pitchDrawCommands, pitch, depthToZ, BACKDROP_Z, ENTITY_Z_NEAR, ENTITY_Z_FAR, OVERLAY_RENDER_ORDER, type PitchDrawOptions, type PitchViewport, type RenderFrame } from "./pitch.ts";
+import { pitchDrawCommands, playerAnchors, pitch, depthToZ, BACKDROP_Z, ENTITY_Z_NEAR, ENTITY_Z_FAR, OVERLAY_RENDER_ORDER, type PitchDrawOptions, type PitchViewport, type RenderFrame } from "./pitch.ts";
 import { camera } from "./camera.ts";
 import * as playerRenderer3d from "./player_renderer_3d.ts";
-import * as playerRenderer from "./player_renderer.ts";
-import type { PlayerRenderOptions } from "./player_renderer.ts";
-import type { DrawCommand, RGB } from "./draw2d.ts";
+import type { DrawCommand } from "./draw2d.ts";
 
 function emptyPlayers(count: number) {
   return {
@@ -74,17 +72,15 @@ describe("pitch.pitchDrawCommands", () => {
     expect(pitchFill).toBeGreaterThan(backdropFill);
   });
 
-  it("depth-sorts players and the ball together by world y (far first)", () => {
-    const f = frame({ players: { ...emptyPlayers(2), y: [500, 50] } });
-    const commands = pitchDrawCommands(f, viewport, opts);
-    // The far player (y=50) is one of the shadow ellipses drawn earliest
-    // among the depth-sorted entities; the near player (y=500) later. We
-    // can't easily recover "which entity" from a flat command list, but we
-    // can confirm the ball (y=270, mid-pack) draws its lit circle strictly
-    // between the two players' ground shadows.
-    const ellipses = commands.filter((c) => c.kind === "ellipse" && c.mode === "fill");
-    expect(ellipses.length).toBeGreaterThanOrEqual(3); // 2 player shadows + 1 ball shadow
-  });
+  // NOTE ON WHAT MOVED (#415): a test here used to assert that players and the
+  // ball were depth-sorted together, by counting the ground-shadow ellipses
+  // `pitchDrawCommands` emitted. Players are no longer draw commands at all
+  // (see that function's doc comment), so it has no subject in this suite. The
+  // property it was reaching for -- a player and the ball interleaving by world
+  // y rather than one class always drawing over the other -- is asserted
+  // directly, on real objects, by "interleaves a rigged player with the ball in
+  // painter's-algorithm order" below, and the depth-sorted ORDER of the anchors
+  // themselves is pinned by the Lua differential further down.
 
   it("skips the loose ball draw when it is not visible (e.g. held by a keeper)", () => {
     const visible = pitchDrawCommands(frame(), viewport, opts);
@@ -118,9 +114,15 @@ describe("pitch.pitchDrawCommands", () => {
 });
 
 describe("pitch config defaults", () => {
-  it("defaults to rigged players on and the follow camera off, matching the Lua original", () => {
-    expect(pitch.rigged_players).toBe(true);
+  it("defaults to the follow camera off, matching the Lua original", () => {
     expect(pitch.follow_camera).toBe(false);
+  });
+
+  // #415 removed `pitch.rigged_players`. There is no second player renderer to
+  // select between, so a flag that could turn the only one off was a way to
+  // ship a frame with no players in it.
+  it("exposes no switch that could turn the rigged player pass off", () => {
+    expect(Object.keys(pitch)).not.toContain("rigged_players");
   });
 
   it("defaults stadium_mode to off, so a world-space stadium layer is opt-in", () => {
@@ -207,17 +209,14 @@ describe("pitch.stadium_mode", () => {
 // the OBSERVABLE consequence instead: the wrapper's contained mesh ends up
 // with a DIFFERENT quaternion depending on the mode, and specifically the
 // perspective-mode one should differ from the fixed one (since
-// camera.PERSPECTIVE's tuned tilt, ~50 degrees, does not equal
+// camera.PERSPECTIVE's tuned tilt, 45 degrees, does not equal
 // player_renderer_3d.ts's ELEVATION -- if it ever did coincidentally, this
 // test would need a mode-independent invariant instead).
 describe("pitch.draw character tilt coherence with camera.perspective_mode", () => {
-  function stubRenderer(): THREE.WebGLRenderer {
-    return { autoClear: true, render(): void {} } as unknown as THREE.WebGLRenderer;
-  }
-
   function firstRiggedMeshQuaternion(f: RenderFrame): THREE.Quaternion | undefined {
     const group = new THREE.Group();
-    pitch.draw(group, f, viewport, opts, stubRenderer());
+    // #415 dropped `pitch.draw`'s renderer parameter -- it rasterizes nothing.
+    pitch.draw(group, f, viewport, opts);
     const wrapper = group.children.find((c) => c.userData["riggedCharacter"] === true);
     const mesh = wrapper?.children.find((c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh);
     return mesh?.quaternion.clone();
@@ -275,37 +274,19 @@ describe("depthToZ", () => {
 // DEPTH BUFFER" header section and this port's report for before/after
 // screenshots/draw-call counts against a live GL context).
 // `player_renderer_3d.ts`'s `build()` only constructs plain three.js
-// geometry/skeleton/material objects -- no GL calls -- so `available()`
-// genuinely returns true under this workspace's "node" vitest environment
-// (the same fact scene.spec.ts's header notes and works around by forcing
-// `pitch.rigged_players = false`; this suite does the opposite and leans on
-// it, since it is exactly the rigged path being tested here). `characterMesh`
-// needs no renderer at all -- there is no per-character render pass or
-// render target anymore -- so `renderer` below is a minimal stub whose sole
-// job is to be non-`undefined` (the `riggedActive` gate) while asserting it
-// is never actually called into; that IS the regression this suite pins:
-// `pitch.draw` no longer rasterizes anything, rigged or not, it only builds
-// `group`'s object graph. What IS verified here: a rigged player lands in
-// the object graph as a real `THREE.SkinnedMesh` (not a quad) and in the
-// correct painter's-algorithm position relative to the ball; what is NOT
+// geometry/skeleton/material objects -- no GL calls -- so the rigged path
+// genuinely runs under this workspace's "node" vitest environment, which is
+// what lets every test below exercise the real product path. `pitch.draw`
+// takes no `THREE.WebGLRenderer` at all since #415 (it never rasterized; the
+// parameter existed only to gate the deleted billboard fallback), so this
+// suite no longer needs a call-counting renderer stub to pin "draw builds an
+// object graph and nothing else" -- the signature does. What IS verified here:
+// a rigged player lands in the object graph as a real `THREE.SkinnedMesh` (not
+// a quad) and in the correct painter's-algorithm position relative to the
+// ball, and a character that cannot be built fails loudly; what is NOT
 // verified (same as everywhere else GPU-adjacent in this package): the
 // actual rendered pixel content.
 describe("pitch.draw (rigged compositing)", () => {
-  interface TrackedRenderer {
-    readonly renderCalls: number;
-  }
-
-  function stubRenderer(): THREE.WebGLRenderer & TrackedRenderer {
-    const stub = {
-      autoClear: true,
-      renderCalls: 0,
-      render(): void {
-        stub.renderCalls += 1;
-      },
-    };
-    return stub as unknown as THREE.WebGLRenderer & TrackedRenderer;
-  }
-
   // A rigged player is now a `THREE.Group` wrapper (see pitch.ts's
   // `riggedCharacterObject`) marked `userData.riggedCharacter`, holding a
   // real `THREE.SkinnedMesh` -- not the old sprite quad tagged
@@ -323,15 +304,14 @@ describe("pitch.draw (rigged compositing)", () => {
     Math.abs(c.material.color.b - 0.7) < 1e-6;
 
   afterEach(() => {
-    pitch.rigged_players = true;
+    vi.restoreAllMocks();
   });
 
-  it("adds a rigged player to the object graph as a real SkinnedMesh, never touching the renderer directly", () => {
+  it("adds a rigged player to the object graph as a real SkinnedMesh", () => {
     const f = frame();
     const group = new THREE.Group();
-    const renderer = stubRenderer();
 
-    pitch.draw(group, f, viewport, opts, renderer);
+    pitch.draw(group, f, viewport, opts);
 
     const wrappers = riggedWrappers(group.children);
     expect(wrappers.length).toBeGreaterThan(0);
@@ -339,37 +319,43 @@ describe("pitch.draw (rigged compositing)", () => {
       const mesh = wrapper.children.find((c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh);
       expect(mesh).toBeDefined();
     }
-    // The whole point of the single-pass redesign: `pitch.draw` only builds
-    // the object graph now, rigged or not -- it never rasterizes, so the one
-    // render pass a real frame needs happens exactly once, later, in
-    // scene.ts's `SceneRoot.render`.
-    expect(renderer.renderCalls).toBe(0);
+  });
+
+  // The whole point of the single-pass redesign: `pitch.draw` only builds the
+  // object graph -- it never rasterizes, so the one render pass a real frame
+  // needs happens exactly once, later, in scene.ts's `SceneRoot.render`. This
+  // used to be asserted with a call-counting `THREE.WebGLRenderer` stub;
+  // since #415 `draw` is not handed a renderer at all, so it is enforced by
+  // the signature. Pinned here so re-adding the parameter is a deliberate act.
+  it("cannot rasterize: draw takes no renderer at all", () => {
+    // (group, frame, viewport, opts, now) -- `now` has a default, so `length`
+    // counts the four required parameters.
+    expect(pitch.draw.length).toBe(4);
   });
 
   it("reuses the SAME pooled mesh instance for the same playerId across frames", () => {
     const f = frame();
     const groupA = new THREE.Group();
-    pitch.draw(groupA, f, viewport, opts, stubRenderer());
+    pitch.draw(groupA, f, viewport, opts);
     const meshA = riggedWrappers(groupA.children)[0]?.children.find((c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh);
 
     const groupB = new THREE.Group();
-    pitch.draw(groupB, f, viewport, opts, stubRenderer());
+    pitch.draw(groupB, f, viewport, opts);
     const meshB = riggedWrappers(groupB.children)[0]?.children.find((c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh);
 
     expect(meshA).toBeDefined();
     expect(meshA).toBe(meshB);
   });
 
-  it("interleaves a rigged player with the ball in painter's-algorithm order, matching pitchDrawCommands' depth sort", () => {
+  it("interleaves a rigged player with the ball in painter's-algorithm order, matching playerAnchors' depth sort", () => {
     // Player 0 is far (small y), player 1 is near (large y); the ball sits
     // between them. depthSortedItems draws far-to-near, so the expected
     // object order is: player 0's wrapper, then the ball, then player 1's
     // wrapper.
     const f = frame({ players: { ...emptyPlayers(2), y: [50, 500] } });
     const group = new THREE.Group();
-    const renderer = stubRenderer();
 
-    pitch.draw(group, f, viewport, opts, renderer);
+    pitch.draw(group, f, viewport, opts);
 
     const children = group.children;
     const wrapperIndices = children.map((c, i) => (c.userData["riggedCharacter"] === true ? i : -1)).filter((i) => i >= 0);
@@ -385,25 +371,58 @@ describe("pitch.draw (rigged compositing)", () => {
     expect(ballIndex).toBeLessThan(nearIndex);
   });
 
-  it("falls back to the procedural billboard (no renderer) without adding any rigged character", () => {
-    const f = frame();
-    const group = new THREE.Group();
+  // FAIL LOUD ON A FAILED RIG BUILD (#415, AGENTS.md §7).
+  //
+  // These replace two "falls back to the procedural billboard" cases (one for
+  // "no renderer supplied", one for `rigged_players = false`) and a third that
+  // asserted a MID-ROSTER fallback got the right depth z. All three encoded
+  // the same behaviour: a player the rigged pass declines is quietly drawn some
+  // other way, or not at all, and the frame proceeds looking plausible.
+  //
+  // `characterMesh` declines only when `player_renderer_3d.build()` failed, and
+  // `build()` fails on an invalid vertex index or missing rig3d content --
+  // programmer errors. AGENTS.md §7: those `assert`, they do not degrade. The
+  // cost of the old behaviour is on record: during #403 "the reporter may have
+  // been on the fallback without realising" stayed a live hypothesis for hours
+  // because the downgrade was invisible from the outside.
+  describe("a rigged character that cannot be built", () => {
+    it("throws, naming the player, rather than rendering that player as nothing", () => {
+      const f = frame();
+      const group = new THREE.Group();
+      vi.spyOn(playerRenderer3d, "characterMesh").mockReturnValue(undefined);
 
-    pitch.draw(group, f, viewport, opts, undefined);
+      expect(() => {
+        pitch.draw(group, f, viewport, opts);
+      }).toThrow(/home-1/);
+    });
 
-    expect(group.children.length).toBeGreaterThan(0);
-    expect(riggedWrappers(group.children)).toHaveLength(0);
-  });
+    it("throws on a MID-ROSTER failure too -- the case that used to downgrade the rest of the team silently", () => {
+      // The far player builds; the near one declines. Before #415 this frame
+      // rendered: one rigged character, one billboard, no error, no signal.
+      const f = frame({ players: { ...emptyPlayers(2), y: [50, 500] } });
+      const group = new THREE.Group();
+      const real = playerRenderer3d.characterMesh;
+      let calls = 0;
+      vi.spyOn(playerRenderer3d, "characterMesh").mockImplementation((...args) => {
+        calls += 1;
+        return calls === 1 ? real(...args) : undefined;
+      });
 
-  it("falls back to the procedural billboard when rigged_players is turned off, even with a renderer supplied", () => {
-    pitch.rigged_players = false;
-    const f = frame();
-    const group = new THREE.Group();
+      expect(() => {
+        pitch.draw(group, f, viewport, opts);
+      }).toThrow(/away-1/);
+      expect(calls).toBe(2);
+    });
 
-    pitch.draw(group, f, viewport, opts, stubRenderer());
+    it("names player_renderer_3d.build() as the cause, so the failure is actionable without a bisect", () => {
+      const f = frame();
+      const group = new THREE.Group();
+      vi.spyOn(playerRenderer3d, "characterMesh").mockReturnValue(undefined);
 
-    expect(group.children.length).toBeGreaterThan(0);
-    expect(riggedWrappers(group.children)).toHaveLength(0);
+      expect(() => {
+        pitch.draw(group, f, viewport, opts);
+      }).toThrow(/player_renderer_3d\.build\(\) failed/);
+    });
   });
 
   // DEPTH ZONES (pitch.ts's file header + the block above `depthToZ`).
@@ -411,7 +430,7 @@ describe("pitch.draw (rigged compositing)", () => {
     it("leaves the backdrop (drawPitchBeforeItems) at BACKDROP_Z", () => {
       const f = frame();
       const group = new THREE.Group();
-      pitch.draw(group, f, viewport, opts, stubRenderer());
+      pitch.draw(group, f, viewport, opts);
 
       // The pitch surface trapezoid: the first filled ShapeGeometry mesh in
       // the child list, drawn well before any depth-sorted entity.
@@ -423,7 +442,7 @@ describe("pitch.draw (rigged compositing)", () => {
     it("positions a rigged player's wrapper within the entity depth zone, mapped from its world y", () => {
       const f = frame(); // both players and the ball sit at y=270, field.h=540
       const group = new THREE.Group();
-      pitch.draw(group, f, viewport, opts, stubRenderer());
+      pitch.draw(group, f, viewport, opts);
 
       const wrappers = riggedWrappers(group.children);
       expect(wrappers.length).toBeGreaterThan(0);
@@ -437,38 +456,11 @@ describe("pitch.draw (rigged compositing)", () => {
     it("positions the ball within the entity depth zone too, so it depth-tests against players consistently", () => {
       const f = frame();
       const group = new THREE.Group();
-      pitch.draw(group, f, viewport, opts, stubRenderer());
+      pitch.draw(group, f, viewport, opts);
 
       const ball = group.children.find(ballMesh);
       expect(ball).toBeDefined();
       expect(ball?.position.z).toBeCloseTo(depthToZ(f.ball.y, f.field.h));
-    });
-
-    it("gives a mid-frame billboard fallback (characterMesh declining one player) the same entity-zone z a rigged wrapper would have gotten", () => {
-      // available() stays true (so the frame is genuinely riggedActive), but
-      // characterMesh itself declines for the FAR player only -- the same
-      // "graceful degradation partway through a frame's roster" this file's
-      // header describes (a build failure, or -- as stubbed here -- any
-      // other reason a specific character comes back undefined).
-      const f = frame({ players: { ...emptyPlayers(2), y: [50, 500] } });
-      const group = new THREE.Group();
-      const spy = vi.spyOn(playerRenderer3d, "characterMesh").mockImplementationOnce(() => undefined);
-      try {
-        pitch.draw(group, f, viewport, opts, stubRenderer());
-      } finally {
-        spy.mockRestore();
-      }
-
-      // Exactly one rigged wrapper made it through (the near player); the
-      // far player fell back to a procedural billboard, which must still
-      // carry the SAME entity-zone z a rigged wrapper would have -- draw2d.ts
-      // content and rigged characters depth-test against the same zone (see
-      // pitch.ts's DEPTH ZONES), not two different conventions.
-      const wrappers = riggedWrappers(group.children);
-      expect(wrappers).toHaveLength(1);
-      const farZ = depthToZ(50, f.field.h);
-      const matched = group.children.some((c) => c.userData["riggedCharacter"] !== true && Math.abs(c.position.z - farZ) < 1e-6);
-      expect(matched).toBe(true);
     });
 
     it("makes the post-entity overlay layer (drawPitchAfterItems) ignore depth and win render order, so it always reads on top", () => {
@@ -478,7 +470,7 @@ describe("pitch.draw (rigged compositing)", () => {
       // DOM-less "node" vitest environment (see draw2d.ts's header).
       const f = frame({ ball: { x: 480, y: 270, z: 40, visible: true, landing_x: 600, landing_y: 300 } });
       const group = new THREE.Group();
-      pitch.draw(group, f, viewport, opts, stubRenderer());
+      pitch.draw(group, f, viewport, opts);
 
       const isReticleRing = (c: THREE.Object3D): c is THREE.LineLoop =>
         c instanceof THREE.LineLoop &&
@@ -504,10 +496,23 @@ describe("pitch.draw (rigged compositing)", () => {
 // pitch.lua/pitch.ts draw directly (arena, floor, hex tiling, markings,
 // goals, outline, chevrons, the loose ball, the overlay layer), plus the
 // full per-player anchor + PlayerRenderOptions payload handed to the player
-// renderer -- NOT the player silhouette's own internal limb geometry (that
-// module has its own port-fidelity spec), and NOT the relative depth order
+// renderer -- NOT the drawn character's own internal geometry (the rig has its
+// own suites under rig3d/), and NOT the relative depth order
 // BETWEEN a player and the ball (both languages' comparator was verified by
 // direct side-by-side reading instead of a second capture).
+//
+// TWO HALVES SINCE #415. The capture is one flat Lua draw list interleaving
+// geometry with `player_renderer.draw` calls. TypeScript now produces those in
+// two pure functions rather than one: `pitchDrawCommands` (everything that is
+// not a player) and `playerAnchors` (the per-player anchor + options payload,
+// in the same depth-sorted order). The comparison is unchanged in substance --
+// `LUA_GEOM_RECORDS` was always compared against a command list with the player
+// draws mocked out to `[]`, and `LUA_PLAYER_RECORDS` against the captured
+// per-player calls -- but neither side needs a `vi.spyOn` on a renderer module
+// to separate them anymore. The one assertion genuinely lost is the per-player
+// `color`: it was the billboard's team tint, and the rigged path resolves
+// colour from rig3d's own team palette instead, so nothing consumes it. The
+// team it was derived from is still asserted, via `options.team`.
 //
 // This is the gate v2/README.md #1's milestone scope never asked for and
 // that the rest of this migration's differential coverage (five suites,
@@ -516,7 +521,7 @@ describe("pitch.draw (rigged compositing)", () => {
 // running it against the CURRENT pitch.ts exposed.
 // ============================================================================
 
-const LUA_REFERENCE_JSON = `[{"alpha":1,"color":[0.014999999999999999,0.021999999999999999,0.055],"h":720,"kind":"rect","mode":"fill","w":1280,"x":0,"y":0},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":1,"x":64,"y":64.799999999999997},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":2,"x":153.59999999999999,"y":129.59999999999999},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":1,"x":256,"y":43.199999999999996},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":1,"x":371.19999999999999,"y":108},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":2,"x":473.60000000000002,"y":36},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":1,"x":588.80000000000007,"y":93.600000000000009},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":1,"x":704,"y":50.400000000000006},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":2,"x":819.20000000000005,"y":115.2},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":1,"x":921.59999999999991,"y":36},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":1,"x":1036.8000000000002,"y":93.600000000000009},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":2,"x":1152,"y":50.400000000000006},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":1,"x":1228.8,"y":129.59999999999999},{"alpha":0.12,"color":[1,0.66000000000000003,0.23999999999999999],"kind":"circle","mode":"fill","r":54,"x":640,"y":147.59999999999999},{"alpha":0.78000000000000003,"color":[1,0.66000000000000003,0.23999999999999999],"kind":"circle","mode":"fill","r":24.48,"x":640,"y":147.59999999999999},{"alpha":0.69999999999999996,"color":[1,0.66000000000000003,0.23999999999999999],"kind":"ellipse","lineWidth":2.6666666666666665,"mode":"line","rx":294.40000000000003,"ry":48.960000000000001,"x":640,"y":147.59999999999999},{"alpha":0.34999999999999998,"color":[0.25,0.88,1],"kind":"ellipse","lineWidth":2.6666666666666665,"mode":"line","rx":396.80000000000001,"ry":64.799999999999997,"x":640,"y":147.59999999999999},{"alpha":0.62,"color":[0.25,0.88,1],"kind":"line","lineWidth":4,"points":[89.600000000000009,159.84,499.20000000000005,159.84]},{"alpha":0.62,"color":[1,0.66000000000000003,0.23999999999999999],"kind":"line","lineWidth":4,"points":[780.79999999999995,159.84,1190.4000000000001,159.84]},{"alpha":0.17999999999999999,"color":[0.25,0.88,1],"h":20.16,"kind":"rect","mode":"fill","rx":3,"ry":3,"w":84.480000000000004,"x":204.80000000000001,"y":145.44},{"alpha":0.17999999999999999,"color":[0.25,0.88,1],"h":20.16,"kind":"rect","mode":"fill","rx":3,"ry":3,"w":84.480000000000004,"x":330.24000000000001,"y":145.44},{"alpha":0.17999999999999999,"color":[0.25,0.88,1],"h":20.16,"kind":"rect","mode":"fill","rx":3,"ry":3,"w":84.480000000000004,"x":455.67999999999995,"y":145.44},{"alpha":0.17999999999999999,"color":[0.25,0.88,1],"h":20.16,"kind":"rect","mode":"fill","rx":3,"ry":3,"w":84.480000000000004,"x":581.12000000000012,"y":145.44},{"alpha":0.17999999999999999,"color":[1,0.66000000000000003,0.23999999999999999],"h":20.16,"kind":"rect","mode":"fill","rx":3,"ry":3,"w":84.480000000000004,"x":706.56000000000006,"y":145.44},{"alpha":0.17999999999999999,"color":[1,0.66000000000000003,0.23999999999999999],"h":20.16,"kind":"rect","mode":"fill","rx":3,"ry":3,"w":84.480000000000004,"x":832,"y":145.44},{"alpha":0.17999999999999999,"color":[1,0.66000000000000003,0.23999999999999999],"h":20.16,"kind":"rect","mode":"fill","rx":3,"ry":3,"w":84.480000000000004,"x":957.44000000000017,"y":145.44},{"alpha":0.17999999999999999,"color":[1,0.66000000000000003,0.23999999999999999],"h":20.16,"kind":"rect","mode":"fill","rx":3,"ry":3,"w":84.480000000000004,"x":1082.8800000000001,"y":145.44},{"alpha":1,"color":[0.025000000000000001,0.16,0.17000000000000001],"kind":"polygon","mode":"fill","points":[313.59999999999997,172.79999999999998,966.40000000000009,172.79999999999998,1177.5999999999999,633.60000000000002,102.39999999999998,633.60000000000002]},{"alpha":0.059999999999999998,"blend":"add","color":[0.050000000000000003,0.16,0.20000000000000001],"kind":"ellipse","mode":"fill","rx":520,"ry":256,"x":640,"y":403.20000000000005},{"alpha":0.059999999999999998,"blend":"add","color":[0.050000000000000003,0.16,0.20000000000000001],"kind":"ellipse","mode":"fill","rx":390,"ry":192,"x":640,"y":403.20000000000005},{"alpha":0.059999999999999998,"blend":"add","color":[0.050000000000000003,0.16,0.20000000000000001],"kind":"ellipse","mode":"fill","rx":260,"ry":128,"x":640,"y":403.20000000000005},{"alpha":0.059999999999999998,"blend":"add","color":[0.050000000000000003,0.16,0.20000000000000001],"kind":"ellipse","mode":"fill","rx":130,"ry":64,"x":640,"y":403.20000000000005},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":4,"mode":"line","points":[387.09437986676261,172.79999999999998,369.3661917887955,222.71999999999997,267.83999999999997,272.63999999999999,290.72000000000003,222.71999999999997,313.59999999999997,172.79999999999998,313.59999999999997,172.79999999999998]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":4,"mode":"line","points":[534.08313960028784,172.79999999999998,526.65857536638646,222.71999999999997,435.43600742165665,272.63999999999999,369.36619178879545,222.71999999999997,387.09437986676255,172.79999999999998,460.58875973352519,172.79999999999998]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":4,"mode":"line","points":[681.07189933381301,172.79999999999998,683.9509589439773,222.71999999999997,603.03201484331328,272.63999999999999,526.65857536638634,222.71999999999997,534.08313960028784,172.79999999999998,607.57751946705037,172.79999999999998]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":4,"mode":"line","points":[828.06065906733818,172.79999999999998,841.24334252156825,222.71999999999997,770.62802226497001,272.63999999999999,683.9509589439773,222.71999999999997,681.07189933381301,172.79999999999998,754.56627920057565,172.79999999999998]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":4,"mode":"line","points":[966.40000000000009,172.79999999999998,989.27999999999997,222.71999999999997,938.22402968662664,272.63999999999999,841.24334252156825,222.71999999999997,828.06065906733818,172.79999999999998,901.55503893410082,172.79999999999998]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":4,"mode":"line","points":[966.40000000000009,172.79999999999998,989.27999999999997,222.71999999999997,1012.1600000000001,272.63999999999999,989.27999999999997,222.71999999999997,966.40000000000009,172.79999999999998,966.40000000000009,172.79999999999998]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":4,"mode":"line","points":[435.43600742165665,272.63999999999999,410.28325510978812,372.48000000000002,298.45343947692686,422.39999999999998,222.07999999999998,372.48000000000002,267.83999999999997,272.63999999999999,369.36619178879545,222.72]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":4,"mode":"line","points":[603.03201484331339,272.63999999999999,598.4865102195763,372.48000000000002,496.96031843078083,422.39999999999998,410.28325510978812,372.48000000000002,435.43600742165665,272.63999999999999,526.65857536638646,222.72]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":4,"mode":"line","points":[770.62802226497001,272.63999999999999,786.68976532936449,372.48000000000002,695.46719738463469,422.39999999999998,598.4865102195763,372.48000000000002,603.03201484331328,272.63999999999999,683.9509589439773,222.72]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":4,"mode":"line","points":[938.22402968662664,272.63999999999999,974.89302043915256,372.48000000000002,893.97407633848854,422.39999999999998,786.68976532936449,372.48000000000002,770.62802226497001,272.63999999999999,841.24334252156825,222.72]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":4,"mode":"line","points":[1012.1600000000001,272.63999999999999,1057.9200000000001,372.48000000000002,1080.8,422.39999999999998,974.89302043915268,372.48000000000002,938.22402968662686,272.63999999999999,989.27999999999997,222.72]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":4,"mode":"line","points":[298.45343947692697,422.39999999999998,262.99706332099271,522.24000000000001,130.55999999999995,572.16000000000008,153.44000000000005,522.24000000000001,199.19999999999999,422.39999999999998,222.07999999999998,372.48000000000002]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":4,"mode":"line","points":[496.96031843078083,422.39999999999998,482.11118996297807,522.24000000000001,359.97775048605109,572.16000000000008,262.99706332099259,522.24000000000001,298.45343947692686,422.39999999999998,410.28325510978812,372.48000000000002]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":4,"mode":"line","points":[695.46719738463469,422.39999999999998,701.22531660496338,522.24000000000001,589.39550097210213,572.16000000000008,482.11118996297796,522.24000000000001,496.96031843078083,422.39999999999998,598.4865102195763,372.48000000000002]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":4,"mode":"line","points":[893.97407633848854,422.39999999999998,920.3394432469488,522.24000000000001,818.81325145815333,572.16000000000008,701.22531660496338,522.24000000000001,695.4671973846348,422.39999999999998,786.68976532936449,372.48000000000002]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":4,"mode":"line","points":[1080.8,422.39999999999998,1126.5599999999999,522.24000000000001,1048.2310019442043,572.16000000000008,920.3394432469488,522.24000000000001,893.97407633848854,422.39999999999998,974.89302043915256,372.48000000000002]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":4,"mode":"line","points":[1080.8,422.39999999999998,1126.5599999999999,522.24000000000001,1149.4400000000001,572.16000000000008,1126.5599999999999,522.24000000000001,1080.8,422.39999999999998,1057.9200000000001,372.48000000000002]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":4,"mode":"line","points":[359.97775048605109,572.16000000000008,344.49913367874734,633.60000000000002,223.44956683937357,633.60000000000002,102.39999999999998,633.60000000000002,130.55999999999995,572.16000000000008,262.99706332099259,522.24000000000001]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":4,"mode":"line","points":[589.39550097210224,572.16000000000008,586.59826735749482,633.60000000000002,465.54870051812111,633.60000000000002,344.49913367874734,633.60000000000002,359.97775048605109,572.16000000000008,482.11118996297807,522.24000000000001]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":4,"mode":"line","points":[818.81325145815333,572.16000000000008,828.69740103624224,633.60000000000002,707.64783419686842,633.60000000000002,586.59826735749471,633.60000000000002,589.39550097210213,572.16000000000008,701.22531660496338,522.24000000000001]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":4,"mode":"line","points":[1048.2310019442043,572.16000000000008,1070.7965347149895,633.60000000000002,949.74696787561584,633.60000000000002,828.69740103624224,633.60000000000002,818.81325145815333,572.16000000000008,920.3394432469488,522.24000000000001]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":4,"mode":"line","points":[1149.4400000000001,572.16000000000008,1177.5999999999999,633.60000000000002,1177.5999999999999,633.60000000000002,1070.7965347149895,633.60000000000002,1048.2310019442045,572.16000000000008,1126.5599999999999,522.24000000000001]},{"alpha":0.84999999999999998,"color":[0.34999999999999998,0.71999999999999997,1],"kind":"line","lineWidth":2,"points":[640,172.79999999999998,640,633.60000000000002]},{"alpha":0.84999999999999998,"color":[0.34999999999999998,0.71999999999999997,1],"kind":"polygon","lineWidth":2,"mode":"line","points":[942.40000000000009,403.20000000000005,952.55377309109463,449.87663015687099,951.88005025534233,495.13501452593971,939.22909751559928,537.60000000000002,914.11674990906545,575.98130948374182,876.84388347909589,609.11274631038134,828.54301541118502,635.98762853725714,771.14389307136582,655.78937646725217,707.25911750668263,667.91632400968149,640,672,572.74088249331737,667.91632400968149,508.85610692863418,655.78937646725217,451.45698458881509,635.98762853725725,403.15611652090411,609.11274631038134,365.88325009093467,575.98130948374182,340.77090248440072,537.60000000000002,328.11994974465767,495.13501452593982,327.44622690890537,449.87663015687099,337.59999999999997,403.20000000000005,356.94204406931112,356.5233698431291,383.55395320402482,311.26498547406027,415.45693330677079,268.79999999999995,450.81307071070739,230.41869051625824,488.08593714067683,197.28725368961872,526.14301541118493,170.41237146274295,564.29011038800127,150.61062353274787,602.23669965372312,138.48367599031843,640,134.39999999999998,677.76330034627676,138.48367599031843,715.70988961199873,150.61062353274781,753.85698458881507,170.4123714627429,791.91406285932317,197.28725368961869,829.18692928929249,230.41869051625815,864.54306669322909,268.7999999999999,896.44604679597501,311.26498547406004,923.05795593068888,356.5233698431291,942.39999999999998,403.19999999999993]},{"alpha":0.84999999999999998,"color":[0.34999999999999998,0.71999999999999997,1],"kind":"circle","mode":"fill","r":3,"x":640,"y":403.20000000000005},{"alpha":0.84999999999999998,"color":[0.34999999999999998,0.71999999999999997,1],"kind":"polygon","lineWidth":2,"mode":"line","points":[260.79999999999995,288,336.63999999999993,288,252.16000000000003,518.39999999999998,155.19999999999999,518.39999999999998]},{"alpha":0.84999999999999998,"color":[0.34999999999999998,0.71999999999999997,1],"kind":"polygon","lineWidth":2,"mode":"line","points":[943.36000000000013,288,1019.2,288,1124.8,518.39999999999998,1027.8399999999999,518.39999999999998]},{"alpha":0.90000000000000002,"color":[0.25,0.88,1],"kind":"polygon","lineWidth":2,"mode":"line","points":[313.59999999999997,172.79999999999998,966.40000000000009,172.79999999999998,1177.5999999999999,633.60000000000002,102.39999999999998,633.60000000000002]},{"alpha":0.57999999999999996,"color":[0.25,0.88,1],"kind":"line","lineWidth":2,"points":[313.59999999999997,172.79999999999998,303.59999999999997,147.79999999999998]},{"alpha":0.57999999999999996,"color":[0.25,0.88,1],"kind":"line","lineWidth":2,"points":[102.39999999999998,633.60000000000002,90.399999999999977,649.60000000000002]},{"alpha":0.57999999999999996,"color":[1,0.66000000000000003,0.23999999999999999],"kind":"line","lineWidth":2,"points":[966.40000000000009,172.79999999999998,976.40000000000009,147.79999999999998]},{"alpha":0.57999999999999996,"color":[1,0.66000000000000003,0.23999999999999999],"kind":"line","lineWidth":2,"points":[1177.5999999999999,633.60000000000002,1189.5999999999999,649.60000000000002]},{"alpha":0.29999999999999999,"color":[0.34999999999999998,0.75,1],"kind":"polygon","mode":"fill","points":[222.07999999999998,372.48000000000002,213.72159999999991,372.48000000000002,213.72159999999991,366.73360000000002,222.07999999999998,362.03200000000004]},{"alpha":0.29999999999999999,"color":[0.34999999999999998,0.75,1],"kind":"polygon","mode":"fill","points":[193.92000000000007,433.91999999999996,184.9984,433.91999999999996,184.9984,427.78639999999996,193.92000000000007,422.76799999999997]},{"alpha":0.29999999999999999,"color":[0.34999999999999998,0.75,1],"kind":"polygon","mode":"fill","points":[213.72159999999991,372.48000000000002,184.9984,433.91999999999996,184.9984,427.78639999999996,213.72159999999991,366.73360000000002]},{"alpha":0.22,"color":[0.34999999999999998,0.75,1],"kind":"polygon","mode":"fill","points":[222.07999999999998,362.03200000000004,193.92000000000007,422.76799999999997,184.9984,427.78639999999996,213.72159999999991,366.73360000000002]},{"alpha":0.94999999999999996,"color":[0.92000000000000004,0.96999999999999997,1],"kind":"line","lineWidth":3,"points":[222.07999999999998,372.48000000000002,222.07999999999998,362.03200000000004]},{"alpha":0.94999999999999996,"color":[0.92000000000000004,0.96999999999999997,1],"kind":"line","lineWidth":3,"points":[193.92000000000007,433.91999999999996,193.92000000000007,422.76799999999997]},{"alpha":0.94999999999999996,"color":[0.92000000000000004,0.96999999999999997,1],"kind":"line","lineWidth":3,"points":[222.07999999999998,362.03200000000004,193.92000000000007,422.76799999999997]},{"alpha":0.5,"color":[0.69999999999999996,0.84999999999999998,1],"kind":"line","lineWidth":1,"points":[213.72159999999991,372.48000000000002,213.72159999999991,366.73360000000002]},{"alpha":0.5,"color":[0.69999999999999996,0.84999999999999998,1],"kind":"line","lineWidth":1,"points":[184.9984,433.91999999999996,184.9984,427.78639999999996]},{"alpha":0.5,"color":[0.69999999999999996,0.84999999999999998,1],"kind":"line","lineWidth":1,"points":[213.72159999999991,366.73360000000002,184.9984,427.78639999999996]},{"alpha":0.29999999999999999,"color":[1,0.55000000000000004,0.25],"kind":"polygon","mode":"fill","points":[1057.9200000000001,372.48000000000002,1066.2784000000001,372.48000000000002,1066.2784000000001,366.73360000000002,1057.9200000000001,362.03200000000004]},{"alpha":0.29999999999999999,"color":[1,0.55000000000000004,0.25],"kind":"polygon","mode":"fill","points":[1086.0799999999999,433.91999999999996,1095.0016000000001,433.91999999999996,1095.0016000000001,427.78639999999996,1086.0799999999999,422.76799999999997]},{"alpha":0.29999999999999999,"color":[1,0.55000000000000004,0.25],"kind":"polygon","mode":"fill","points":[1066.2784000000001,372.48000000000002,1095.0016000000001,433.91999999999996,1095.0016000000001,427.78639999999996,1066.2784000000001,366.73360000000002]},{"alpha":0.22,"color":[1,0.55000000000000004,0.25],"kind":"polygon","mode":"fill","points":[1057.9200000000001,362.03200000000004,1086.0799999999999,422.76799999999997,1095.0016000000001,427.78639999999996,1066.2784000000001,366.73360000000002]},{"alpha":0.94999999999999996,"color":[0.92000000000000004,0.96999999999999997,1],"kind":"line","lineWidth":3,"points":[1057.9200000000001,372.48000000000002,1057.9200000000001,362.03200000000004]},{"alpha":0.94999999999999996,"color":[0.92000000000000004,0.96999999999999997,1],"kind":"line","lineWidth":3,"points":[1086.0799999999999,433.91999999999996,1086.0799999999999,422.76799999999997]},{"alpha":0.94999999999999996,"color":[0.92000000000000004,0.96999999999999997,1],"kind":"line","lineWidth":3,"points":[1057.9200000000001,362.03200000000004,1086.0799999999999,422.76799999999997]},{"alpha":0.5,"color":[0.69999999999999996,0.84999999999999998,1],"kind":"line","lineWidth":1,"points":[1066.2784000000001,372.48000000000002,1066.2784000000001,366.73360000000002]},{"alpha":0.5,"color":[0.69999999999999996,0.84999999999999998,1],"kind":"line","lineWidth":1,"points":[1095.0016000000001,433.91999999999996,1095.0016000000001,427.78639999999996]},{"alpha":0.5,"color":[0.69999999999999996,0.84999999999999998,1],"kind":"line","lineWidth":1,"points":[1066.2784000000001,366.73360000000002,1095.0016000000001,427.78639999999996]},{"color":[1,0.55000000000000004,0.25],"kind":"player","opts":{"controlled":false,"dive":0.34999999999999998,"dive_dir":[1,0],"facing":[0,1],"holding":true,"is_keeper":true,"pose_id":"keeper_ready_tall","pose_priority":2,"pose_source":"keeper","species_color":[0.80000000000000004,0.80000000000000004,1],"species_shape":"round","team":"away"},"r":1.51065,"sx":353.536,"sy":241.91999999999999},{"color":[0.34999999999999998,0.75,1],"kind":"player","opts":{"aerial":0.59999999999999998,"aerial_jump":0.22,"aerial_outcome":"clean","aerial_style":"header","controlled":false,"dive_dir":[],"facing":[-1,0],"is_keeper":false,"pose_id":"aerial_header","pose_priority":3,"pose_source":"combat","species_color":[0.90000000000000002,0.5,0.20000000000000001],"species_shape":"angular","team":"home"},"r":1.653125,"sx":834.67200000000003,"sy":384},{"alpha":0.2857142857142857,"color":[0,0,0],"kind":"ellipse","mode":"fill","rx":3.9514285714285711,"ry":1.9757142857142855,"x":640,"y":426.24000000000001},{"alpha":1,"color":[1,0.94999999999999996,0.69999999999999996],"kind":"circle","mode":"fill","r":3.4575,"x":640,"y":420.70800000000003},{"color":[0.34999999999999998,0.75,1],"kind":"player","opts":{"controlled":true,"dashing":true,"dive_dir":[],"facing":[1,0],"is_keeper":false,"pose_id":"tackle","pose_priority":1,"pose_source":"combat","species_color":[1,1,1],"species_shape":"round","team":"home","windup":0.41999999999999998},"r":1.8799999999999999,"sx":678.50239999999997,"sy":510.72000000000003},{"alpha":0.51000000000000001,"color":[1,0.84999999999999998,0.34999999999999998],"kind":"circle","lineWidth":1.0743750000000001,"mode":"line","r":5.157,"x":763.76800000000003,"y":460.80000000000007},{"alpha":0.40000000000000002,"color":[1,0.84999999999999998,0.34999999999999998],"kind":"circle","lineWidth":1.0743750000000001,"mode":"line","r":5.0137499999999999,"x":763.76800000000003,"y":460.80000000000007},{"alpha":0.55249999999999999,"color":[0.34999999999999998,0.75,1],"kind":"circle","lineWidth":1,"mode":"line","r":4.2981249999999998,"x":834.67200000000003,"y":384},{"alpha":0.29250000000000004,"color":[0.34999999999999998,0.75,1],"kind":"circle","lineWidth":1,"mode":"line","r":6.8770000000000007,"x":834.67200000000003,"y":384},{"alpha":0.55000000000000004,"color":[0,0,0],"h":3.008,"kind":"rect","mode":"fill","w":25.568000000000001,"x":665.71839999999997,"y":519.74400000000003},{"alpha":0.94999999999999996,"color":[1,0.71999999999999997,0.29999999999999999],"h":3.008,"kind":"rect","mode":"fill","w":14.062400000000002,"x":665.71839999999997,"y":519.74400000000003},{"alpha":0.34999999999999998,"color":[1,1,1],"h":3.008,"kind":"rect","lineWidth":1,"mode":"line","w":25.568000000000001,"x":665.71839999999997,"y":519.74400000000003},{"alpha":0.34999999999999998,"color":[1,1,1],"kind":"line","lineWidth":1,"points":[670.83199999999999,519.74400000000003,670.83199999999999,522.75200000000007]},{"alpha":0.34999999999999998,"color":[1,1,1],"kind":"line","lineWidth":1,"points":[675.94560000000001,519.74400000000003,675.94560000000001,522.75200000000007]},{"alpha":0.34999999999999998,"color":[1,1,1],"kind":"line","lineWidth":1,"points":[681.05919999999992,519.74400000000003,681.05919999999992,522.75200000000007]},{"alpha":0.34999999999999998,"color":[1,1,1],"kind":"line","lineWidth":1,"points":[686.17279999999994,519.74400000000003,686.17279999999994,522.75200000000007]},{"align":"center","alpha":0.94999999999999996,"color":[1,0.71999999999999997,0.29999999999999999],"kind":"text","text":"SHOT","w":25.568000000000001,"x":665.71839999999997,"y":523.75200000000007}]`;
+const LUA_REFERENCE_JSON = `[{"alpha":1,"color":[0.014999999999999999,0.021999999999999999,0.055],"h":120,"kind":"rect","mode":"fill","w":200,"x":0,"y":0},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":1,"x":10,"y":10.799999999999999},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":2,"x":24,"y":21.599999999999998},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":1,"x":40,"y":7.1999999999999993},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":1,"x":57.999999999999993,"y":18},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":2,"x":74,"y":6},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":1,"x":92,"y":15.600000000000001},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":1,"x":110.00000000000001,"y":8.4000000000000004},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":2,"x":128,"y":19.199999999999999},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":1,"x":144,"y":6},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":1,"x":162,"y":15.600000000000001},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":2,"x":180,"y":8.4000000000000004},{"alpha":0.34999999999999998,"color":[0.91000000000000003,0.95999999999999996,1],"kind":"circle","mode":"fill","r":1,"x":192,"y":21.599999999999998},{"alpha":0.12,"color":[1,0.66000000000000003,0.23999999999999999],"kind":"circle","mode":"fill","r":9,"x":100,"y":24.599999999999998},{"alpha":0.78000000000000003,"color":[1,0.66000000000000003,0.23999999999999999],"kind":"circle","mode":"fill","r":4.0800000000000001,"x":100,"y":24.599999999999998},{"alpha":0.69999999999999996,"color":[1,0.66000000000000003,0.23999999999999999],"kind":"ellipse","lineWidth":1,"mode":"line","rx":46,"ry":8.1600000000000001,"x":100,"y":24.599999999999998},{"alpha":0.34999999999999998,"color":[0.25,0.88,1],"kind":"ellipse","lineWidth":1,"mode":"line","rx":62,"ry":10.799999999999999,"x":100,"y":24.599999999999998},{"alpha":0.62,"color":[0.25,0.88,1],"kind":"line","lineWidth":2,"points":[14.000000000000002,26.640000000000001,78,26.640000000000001]},{"alpha":0.62,"color":[1,0.66000000000000003,0.23999999999999999],"kind":"line","lineWidth":2,"points":[122,26.640000000000001,186,26.640000000000001]},{"alpha":0.17999999999999999,"color":[0.25,0.88,1],"h":3.3599999999999999,"kind":"rect","mode":"fill","rx":3,"ry":3,"w":13.200000000000001,"x":32,"y":24.240000000000002},{"alpha":0.17999999999999999,"color":[0.25,0.88,1],"h":3.3599999999999999,"kind":"rect","mode":"fill","rx":3,"ry":3,"w":13.200000000000001,"x":51.600000000000001,"y":24.240000000000002},{"alpha":0.17999999999999999,"color":[0.25,0.88,1],"h":3.3599999999999999,"kind":"rect","mode":"fill","rx":3,"ry":3,"w":13.200000000000001,"x":71.200000000000003,"y":24.240000000000002},{"alpha":0.17999999999999999,"color":[0.25,0.88,1],"h":3.3599999999999999,"kind":"rect","mode":"fill","rx":3,"ry":3,"w":13.200000000000001,"x":90.800000000000011,"y":24.240000000000002},{"alpha":0.17999999999999999,"color":[1,0.66000000000000003,0.23999999999999999],"h":3.3599999999999999,"kind":"rect","mode":"fill","rx":3,"ry":3,"w":13.200000000000001,"x":110.40000000000001,"y":24.240000000000002},{"alpha":0.17999999999999999,"color":[1,0.66000000000000003,0.23999999999999999],"h":3.3599999999999999,"kind":"rect","mode":"fill","rx":3,"ry":3,"w":13.200000000000001,"x":130,"y":24.240000000000002},{"alpha":0.17999999999999999,"color":[1,0.66000000000000003,0.23999999999999999],"h":3.3599999999999999,"kind":"rect","mode":"fill","rx":3,"ry":3,"w":13.200000000000001,"x":149.60000000000002,"y":24.240000000000002},{"alpha":0.17999999999999999,"color":[1,0.66000000000000003,0.23999999999999999],"h":3.3599999999999999,"kind":"rect","mode":"fill","rx":3,"ry":3,"w":13.200000000000001,"x":169.20000000000002,"y":24.240000000000002},{"alpha":1,"color":[0.025000000000000001,0.16,0.17000000000000001],"kind":"polygon","mode":"fill","points":[49,28.799999999999997,151,28.799999999999997,184,105.59999999999999,16,105.59999999999999]},{"alpha":0.059999999999999998,"blend":"add","color":[0.050000000000000003,0.16,0.20000000000000001],"kind":"ellipse","mode":"fill","rx":520,"ry":256,"x":100,"y":67.199999999999989},{"alpha":0.059999999999999998,"blend":"add","color":[0.050000000000000003,0.16,0.20000000000000001],"kind":"ellipse","mode":"fill","rx":390,"ry":192,"x":100,"y":67.199999999999989},{"alpha":0.059999999999999998,"blend":"add","color":[0.050000000000000003,0.16,0.20000000000000001],"kind":"ellipse","mode":"fill","rx":260,"ry":128,"x":100,"y":67.199999999999989},{"alpha":0.059999999999999998,"blend":"add","color":[0.050000000000000003,0.16,0.20000000000000001],"kind":"ellipse","mode":"fill","rx":130,"ry":64,"x":100,"y":67.199999999999989},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":2,"mode":"line","points":[60.483496854181659,28.799999999999997,57.713467466999298,37.119999999999997,41.850000000000001,45.439999999999998,45.425000000000004,37.119999999999997,49,28.799999999999997,49,28.799999999999997]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":2,"mode":"line","points":[83.450490562544971,28.799999999999997,82.290402400997877,37.119999999999997,68.036876159633849,45.439999999999998,57.71346746699929,37.119999999999997,60.483496854181652,28.799999999999997,71.966993708363304,28.799999999999997]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":2,"mode":"line","points":[106.41748427090828,28.799999999999997,106.86733733499646,37.119999999999997,94.223752319267703,45.439999999999998,82.290402400997863,37.119999999999997,83.450490562544971,28.799999999999997,94.933987416726623,28.799999999999997]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":2,"mode":"line","points":[129.38447797927159,28.799999999999997,131.44427226899504,37.119999999999997,120.41062847890157,45.439999999999998,106.86733733499646,37.119999999999997,106.41748427090829,28.799999999999997,117.90098112508994,28.799999999999997]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":2,"mode":"line","points":[151,28.799999999999997,154.57499999999999,37.119999999999997,146.59750463853541,45.439999999999998,131.44427226899504,37.119999999999997,129.38447797927159,28.799999999999997,140.86797483345325,28.799999999999997]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":2,"mode":"line","points":[151,28.799999999999997,154.57499999999999,37.119999999999997,158.15000000000001,45.439999999999998,154.57499999999999,37.119999999999997,151,28.799999999999997,151,28.799999999999997]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":2,"mode":"line","points":[68.036876159633849,45.439999999999998,64.106758610904393,62.079999999999998,46.633349918269829,70.399999999999991,34.700000000000003,62.079999999999998,41.850000000000001,45.439999999999998,57.71346746699929,37.119999999999997]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":2,"mode":"line","points":[94.223752319267717,45.439999999999998,93.513517221808797,62.079999999999998,77.650049754809515,70.399999999999991,64.106758610904393,62.079999999999998,68.036876159633863,45.439999999999998,82.290402400997877,37.119999999999997]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":2,"mode":"line","points":[120.41062847890157,45.439999999999998,122.9202758327132,62.079999999999998,108.66674959134917,70.399999999999991,93.513517221808797,62.079999999999998,94.223752319267703,45.439999999999998,106.86733733499646,37.119999999999997]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":2,"mode":"line","points":[146.59750463853541,45.439999999999998,152.32703444361758,62.079999999999998,139.68344942788883,70.399999999999991,122.9202758327132,62.079999999999998,120.41062847890157,45.439999999999998,131.44427226899504,37.119999999999997]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":2,"mode":"line","points":[158.15000000000001,45.439999999999998,165.30000000000001,62.079999999999998,168.875,70.399999999999991,152.32703444361761,62.079999999999998,146.59750463853544,45.439999999999998,154.57499999999999,37.119999999999997]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":2,"mode":"line","points":[46.633349918269843,70.399999999999991,41.093291143905113,87.039999999999992,20.399999999999991,95.359999999999999,23.975000000000009,87.039999999999992,31.125,70.399999999999991,34.700000000000003,62.079999999999998]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":2,"mode":"line","points":[77.650049754809515,70.399999999999991,75.329873431715328,87.039999999999992,56.246523513445482,95.359999999999999,41.093291143905098,87.039999999999992,46.633349918269829,70.399999999999991,64.106758610904393,62.079999999999998]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":2,"mode":"line","points":[108.66674959134917,70.399999999999991,109.56645571952554,87.039999999999992,92.093047026890957,95.359999999999999,75.329873431715313,87.039999999999992,77.650049754809515,70.399999999999991,93.513517221808797,62.079999999999998]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":2,"mode":"line","points":[139.68344942788883,70.399999999999991,143.80303800733574,87.039999999999992,127.93957054033646,95.359999999999999,109.56645571952554,87.039999999999992,108.66674959134919,70.399999999999991,122.9202758327132,62.079999999999998]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":2,"mode":"line","points":[168.875,70.399999999999991,176.02499999999998,87.039999999999992,163.78609405378194,95.359999999999999,143.80303800733574,87.039999999999992,139.68344942788883,70.399999999999991,152.32703444361758,62.079999999999998]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":2,"mode":"line","points":[168.875,70.399999999999991,176.02499999999998,87.039999999999992,179.60000000000002,95.359999999999999,176.02499999999998,87.039999999999992,168.875,70.399999999999991,165.30000000000001,62.079999999999998]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":2,"mode":"line","points":[56.246523513445482,95.359999999999999,53.827989637304277,105.59999999999999,34.913994818652128,105.59999999999999,16,105.59999999999999,20.399999999999991,95.359999999999999,41.093291143905098,87.039999999999992]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":2,"mode":"line","points":[92.093047026890972,95.359999999999999,91.655979274608569,105.59999999999999,72.741984455956427,105.59999999999999,53.827989637304277,105.59999999999999,56.246523513445489,95.359999999999999,75.329873431715328,87.039999999999992]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":2,"mode":"line","points":[127.93957054033646,95.359999999999999,129.48396891191285,105.59999999999999,110.5699740932607,105.59999999999999,91.655979274608555,105.59999999999999,92.093047026890957,95.359999999999999,109.56645571952554,87.039999999999992]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":2,"mode":"line","points":[163.78609405378194,95.359999999999999,167.31195854921711,105.59999999999999,148.39796373056498,105.59999999999999,129.48396891191285,105.59999999999999,127.93957054033646,95.359999999999999,143.80303800733574,87.039999999999992]},{"alpha":0.10000000000000001,"color":[0.16,0.5,0.59999999999999998],"kind":"polygon","lineWidth":2,"mode":"line","points":[179.60000000000002,95.359999999999999,184,105.59999999999999,184,105.59999999999999,167.31195854921714,105.59999999999999,163.78609405378194,95.359999999999999,176.02499999999998,87.039999999999992]},{"alpha":0.84999999999999998,"color":[0.34999999999999998,0.71999999999999997,1],"kind":"line","lineWidth":2,"points":[100,28.799999999999997,100,105.59999999999999]},{"alpha":0.84999999999999998,"color":[0.34999999999999998,0.71999999999999997,1],"kind":"polygon","lineWidth":2,"mode":"line","points":[147.25,67.199999999999989,148.83652704548354,74.979438359478479,148.73125785239722,82.522502420989952,146.75454648681239,89.599999999999994,142.83074217329147,95.996884913956961,137.00685679360873,101.5187910517302,129.45984615799765,105.99793808954284,120.49123329240092,109.29822941120869,110.50923711041915,111.31938733494691,100,111.99999999999999,89.49076288958085,111.31938733494691,79.508766707599094,109.29822941120869,70.540153842002354,105.99793808954286,62.993143206391267,101.5187910517302,57.169257826708545,95.996884913956961,53.245453513187613,89.599999999999994,51.268742147602765,82.522502420989966,51.163472954516472,74.979438359478507,52.75,67.200000000000003,55.772194385829863,59.420561640521512,59.930305188128884,51.87749757901004,64.915145829182933,44.799999999999997,70.439542298548034,38.403115086043037,76.263427678230755,32.881208948269787,82.209846157997646,28.402061910457157,88.170329748125184,25.101770588791311,94.099484320894234,23.080612665053074,100,22.399999999999999,105.90051567910575,23.080612665053074,111.8296702518748,25.101770588791304,117.79015384200235,28.402061910457149,123.73657232176923,32.88120894826978,129.56045770145195,38.403115086043023,135.08485417081704,44.799999999999976,140.0696948118711,51.877497579010011,144.22780561417014,59.420561640521512,147.25,67.199999999999989]},{"alpha":0.84999999999999998,"color":[0.34999999999999998,0.71999999999999997,1],"kind":"circle","mode":"fill","r":3,"x":100,"y":67.199999999999989},{"alpha":0.84999999999999998,"color":[0.34999999999999998,0.71999999999999997,1],"kind":"polygon","lineWidth":2,"mode":"line","points":[40.75,48,52.599999999999994,48,39.400000000000006,86.399999999999991,24.25,86.399999999999991]},{"alpha":0.84999999999999998,"color":[0.34999999999999998,0.71999999999999997,1],"kind":"polygon","lineWidth":2,"mode":"line","points":[147.40000000000001,48,159.25,48,175.75,86.399999999999991,160.59999999999999,86.399999999999991]},{"alpha":0.90000000000000002,"color":[0.25,0.88,1],"kind":"polygon","lineWidth":2,"mode":"line","points":[49,28.799999999999997,151,28.799999999999997,184,105.59999999999999,16,105.59999999999999]},{"alpha":0.29999999999999999,"color":[0.34999999999999998,0.75,1],"kind":"polygon","mode":"fill","points":[34.700000000000003,62.079999999999998,33.393999999999991,62.079999999999998,33.393999999999991,56.333599999999997,34.700000000000003,51.631999999999998]},{"alpha":0.29999999999999999,"color":[0.34999999999999998,0.75,1],"kind":"polygon","mode":"fill","points":[30.300000000000011,72.319999999999993,28.906000000000006,72.319999999999993,28.906000000000006,66.186399999999992,30.300000000000011,61.167999999999992]},{"alpha":0.29999999999999999,"color":[0.34999999999999998,0.75,1],"kind":"polygon","mode":"fill","points":[33.393999999999991,62.079999999999998,28.906000000000006,72.319999999999993,28.906000000000006,66.186399999999992,33.393999999999991,56.333599999999997]},{"alpha":0.22,"color":[0.34999999999999998,0.75,1],"kind":"polygon","mode":"fill","points":[34.700000000000003,51.631999999999998,30.300000000000011,61.167999999999992,28.906000000000006,66.186399999999992,33.393999999999991,56.333599999999997]},{"alpha":0.94999999999999996,"color":[0.92000000000000004,0.96999999999999997,1],"kind":"line","lineWidth":3,"points":[34.700000000000003,62.079999999999998,34.700000000000003,51.631999999999998]},{"alpha":0.94999999999999996,"color":[0.92000000000000004,0.96999999999999997,1],"kind":"line","lineWidth":3,"points":[30.300000000000011,72.319999999999993,30.300000000000011,61.167999999999992]},{"alpha":0.94999999999999996,"color":[0.92000000000000004,0.96999999999999997,1],"kind":"line","lineWidth":3,"points":[34.700000000000003,51.631999999999998,30.300000000000011,61.167999999999992]},{"alpha":0.5,"color":[0.69999999999999996,0.84999999999999998,1],"kind":"line","lineWidth":1,"points":[33.393999999999991,62.079999999999998,33.393999999999991,56.333599999999997]},{"alpha":0.5,"color":[0.69999999999999996,0.84999999999999998,1],"kind":"line","lineWidth":1,"points":[28.906000000000006,72.319999999999993,28.906000000000006,66.186399999999992]},{"alpha":0.5,"color":[0.69999999999999996,0.84999999999999998,1],"kind":"line","lineWidth":1,"points":[33.393999999999991,56.333599999999997,28.906000000000006,66.186399999999992]},{"alpha":0.29999999999999999,"color":[1,0.55000000000000004,0.25],"kind":"polygon","mode":"fill","points":[165.30000000000001,62.079999999999998,166.60599999999999,62.079999999999998,166.60599999999999,56.333599999999997,165.30000000000001,51.631999999999998]},{"alpha":0.29999999999999999,"color":[1,0.55000000000000004,0.25],"kind":"polygon","mode":"fill","points":[169.69999999999999,72.319999999999993,171.09399999999999,72.319999999999993,171.09399999999999,66.186399999999992,169.69999999999999,61.167999999999992]},{"alpha":0.29999999999999999,"color":[1,0.55000000000000004,0.25],"kind":"polygon","mode":"fill","points":[166.60599999999999,62.079999999999998,171.09399999999999,72.319999999999993,171.09399999999999,66.186399999999992,166.60599999999999,56.333599999999997]},{"alpha":0.22,"color":[1,0.55000000000000004,0.25],"kind":"polygon","mode":"fill","points":[165.30000000000001,51.631999999999998,169.69999999999999,61.167999999999992,171.09399999999999,66.186399999999992,166.60599999999999,56.333599999999997]},{"alpha":0.94999999999999996,"color":[0.92000000000000004,0.96999999999999997,1],"kind":"line","lineWidth":3,"points":[165.30000000000001,62.079999999999998,165.30000000000001,51.631999999999998]},{"alpha":0.94999999999999996,"color":[0.92000000000000004,0.96999999999999997,1],"kind":"line","lineWidth":3,"points":[169.69999999999999,72.319999999999993,169.69999999999999,61.167999999999992]},{"alpha":0.94999999999999996,"color":[0.92000000000000004,0.96999999999999997,1],"kind":"line","lineWidth":3,"points":[165.30000000000001,51.631999999999998,169.69999999999999,61.167999999999992]},{"alpha":0.5,"color":[0.69999999999999996,0.84999999999999998,1],"kind":"line","lineWidth":1,"points":[166.60599999999999,62.079999999999998,166.60599999999999,56.333599999999997]},{"alpha":0.5,"color":[0.69999999999999996,0.84999999999999998,1],"kind":"line","lineWidth":1,"points":[171.09399999999999,72.319999999999993,171.09399999999999,66.186399999999992]},{"alpha":0.5,"color":[0.69999999999999996,0.84999999999999998,1],"kind":"line","lineWidth":1,"points":[166.60599999999999,56.333599999999997,171.09399999999999,66.186399999999992]},{"alpha":0.57999999999999996,"color":[0.25,0.88,1],"kind":"line","lineWidth":2,"points":[49,28.799999999999997,39,3.7999999999999972]},{"alpha":0.57999999999999996,"color":[0.25,0.88,1],"kind":"line","lineWidth":2,"points":[16,105.59999999999999,4,121.59999999999999]},{"alpha":0.57999999999999996,"color":[1,0.66000000000000003,0.23999999999999999],"kind":"line","lineWidth":2,"points":[151,28.799999999999997,161,3.7999999999999972]},{"alpha":0.57999999999999996,"color":[1,0.66000000000000003,0.23999999999999999],"kind":"line","lineWidth":2,"points":[184,105.59999999999999,196,121.59999999999999]},{"color":[1,0.55000000000000004,0.25],"kind":"player","opts":{"controlled":false,"dive":0.34999999999999998,"dive_dir":[1,0],"facing":[0,1],"holding":true,"is_keeper":true,"pose_id":"keeper_ready_tall","pose_priority":2,"pose_source":"keeper","species_color":[0.80000000000000004,0.80000000000000004,1],"species_shape":"round","team":"away"},"r":1.51065,"sx":55.240000000000002,"sy":40.319999999999993},{"color":[0.34999999999999998,0.75,1],"kind":"player","opts":{"aerial":0.59999999999999998,"aerial_jump":0.22,"aerial_outcome":"clean","aerial_style":"header","controlled":false,"dive_dir":[],"facing":[-1,0],"is_keeper":false,"pose_id":"aerial_header","pose_priority":3,"pose_source":"combat","species_color":[0.90000000000000002,0.5,0.20000000000000001],"species_shape":"angular","team":"home"},"r":1.653125,"sx":130.41749999999999,"sy":63.999999999999993},{"alpha":0.2857142857142857,"color":[0,0,0],"kind":"ellipse","mode":"fill","rx":3.9514285714285711,"ry":1.9757142857142855,"x":100,"y":71.039999999999992},{"alpha":1,"color":[1,0.94999999999999996,0.69999999999999996],"kind":"circle","mode":"fill","r":3.4575,"x":100,"y":65.507999999999996},{"color":[0.34999999999999998,0.75,1],"kind":"player","opts":{"controlled":true,"dashing":true,"dive_dir":[],"facing":[1,0],"is_keeper":false,"pose_id":"tackle","pose_priority":1,"pose_source":"combat","species_color":[1,1,1],"species_shape":"round","team":"home","windup":0.41999999999999998},"r":1.8799999999999999,"sx":106.01600000000001,"sy":85.11999999999999},{"alpha":0.51000000000000001,"color":[1,0.84999999999999998,0.34999999999999998],"kind":"circle","lineWidth":1.0743750000000001,"mode":"line","r":5.157,"x":119.33875,"y":76.799999999999997},{"alpha":0.40000000000000002,"color":[1,0.84999999999999998,0.34999999999999998],"kind":"circle","lineWidth":1.0743750000000001,"mode":"line","r":5.0137499999999999,"x":119.33875,"y":76.799999999999997},{"alpha":0.55249999999999999,"color":[0.34999999999999998,0.75,1],"kind":"circle","lineWidth":1,"mode":"line","r":4.2981249999999998,"x":130.41749999999999,"y":63.999999999999993},{"alpha":0.29250000000000004,"color":[0.34999999999999998,0.75,1],"kind":"circle","lineWidth":1,"mode":"line","r":6.8770000000000007,"x":130.41749999999999,"y":63.999999999999993},{"alpha":0.55000000000000004,"color":[0,0,0],"h":3.008,"kind":"rect","mode":"fill","w":25.568000000000001,"x":93.231999999999999,"y":94.143999999999991},{"alpha":0.94999999999999996,"color":[1,0.71999999999999997,0.29999999999999999],"h":3.008,"kind":"rect","mode":"fill","w":14.062400000000002,"x":93.231999999999999,"y":94.143999999999991},{"alpha":0.34999999999999998,"color":[1,1,1],"h":3.008,"kind":"rect","lineWidth":1,"mode":"line","w":25.568000000000001,"x":93.231999999999999,"y":94.143999999999991},{"alpha":0.34999999999999998,"color":[1,1,1],"kind":"line","lineWidth":1,"points":[98.345600000000005,94.143999999999991,98.345600000000005,97.151999999999987]},{"alpha":0.34999999999999998,"color":[1,1,1],"kind":"line","lineWidth":1,"points":[103.4592,94.143999999999991,103.4592,97.151999999999987]},{"alpha":0.34999999999999998,"color":[1,1,1],"kind":"line","lineWidth":1,"points":[108.5728,94.143999999999991,108.5728,97.151999999999987]},{"alpha":0.34999999999999998,"color":[1,1,1],"kind":"line","lineWidth":1,"points":[113.68639999999999,94.143999999999991,113.68639999999999,97.151999999999987]},{"align":"center","alpha":0.94999999999999996,"color":[1,0.71999999999999997,0.29999999999999999],"kind":"text","text":"SHOT","w":25.568000000000001,"x":93.231999999999999,"y":98.151999999999987}]`;
 
 /** One `love.graphics` call, normalized -- see capture_pitch_reference.lua. */
 interface LuaGeomRecord {
@@ -538,7 +543,12 @@ interface LuaGeomRecord {
   readonly lineWidth?: number;
 }
 
-/** One `game.render.player_renderer.draw(sx, sy, r, color, v, opts)` call, normalized. */
+/**
+ * One `game.render.player_renderer.draw(sx, sy, r, color, v, opts)` call from
+ * the Lua capture, normalized. The Lua side still HAS a billboard renderer --
+ * this fixture is a recording of it -- so the record shape is unchanged; what
+ * the TypeScript side compares against it is now `playerAnchors` (see #415).
+ */
 interface LuaPlayerRecord {
   readonly kind: "player";
   readonly sx: number;
@@ -637,7 +647,42 @@ function luaDifferentialFrame(): RenderFrame {
   };
 }
 
-const LUA_DIFFERENTIAL_VIEWPORT: PitchViewport = { w: 1280, h: 720 };
+// The viewport is the FIELD's own size (#414) -- see
+// capture_pitch_reference.lua's comment above its own `vp` for the full
+// reasoning. Short version: camera.ts's `projectFixed` now carries one uniform
+// world-to-pixel factor into positions AND sizes, while Lua carries it into
+// positions only; the two therefore agree exactly when that factor is 1, i.e.
+// at `vp == field`. Capturing there keeps this a plain equality differential
+// over all 101 records instead of one that has to characterise a divergence.
+//
+// This fixture's field is a synthetic 200x120 (shrunk to keep the hex-tile
+// count embeddable -- pre-existing, unrelated to #414), which is 5:3, while
+// the old capture viewport was 16:9. So away from `vp == field` the divergence
+// here would be TWO-part -- positions and sizes both -- rather than the
+// single-constant `scale` divergence camera.spec.ts characterises for its
+// same-aspect 1280x720 rows. That, not "this is the shipping configuration",
+// is why the capture moved: LÖVE ships at 960x540, never at 200x120.
+//
+// The switch does NOT weaken the fixture's coverage of entity SIZES: the old
+// Lua `scale` had no viewport term at all, so every size term below (player
+// `r`, goal frame heights, ball radius, meter dimensions) is bit-identical to
+// the previous 1280x720 capture. Only screen POSITIONS moved.
+//
+// WHAT THIS DIFFERENTIAL DOES NOT GUARD. It is not the regression test for
+// #414 and never could have been: at `vp == field` the fit factor is 1 and the
+// fixed formula is byte-identical to the buggy one, so reverting camera.ts to
+// its pre-fix form leaves every record in this block passing (verified). That
+// was equally true before this PR, when `projectFixed` was a line-for-line Lua
+// port. Viewport-safety regression coverage lives in two other places, both
+// viewport-varying by construction:
+//
+//   * `camera.spec.ts`'s kept 1280x720 differential rows -- reverting
+//     camera.ts fails them, off by exactly the predicted fit factor
+//     (0.51*(1/3) = 0.17 and 1.02*(1/3) = 0.34 on `scale`);
+//   * this file's "pitch entity sizes stay in proportion to the pitch at any
+//     viewport" block below, which is Lua-independent and asserts the
+//     invariant across five viewports including non-16:9 ones.
+const LUA_DIFFERENTIAL_VIEWPORT: PitchViewport = { w: 200, h: 120 };
 const LUA_DIFFERENTIAL_OPTS: PitchDrawOptions = { home_color: [0.35, 0.75, 1.0], away_color: [1.0, 0.55, 0.25] };
 
 function round(n: number): number {
@@ -749,13 +794,11 @@ function overlayStart(records: readonly RecordLike[]): number {
 }
 
 describe("pitch.pitchDrawCommands differential against the real Lua game.render.pitch", () => {
+  // Since #415 `pitchDrawCommands` emits no player content at all, so this is
+  // a plain call. It used to mock `playerDrawCommands` to `[]` to get the same
+  // list, which is why every comparison below is unaffected by the removal.
   function drawWithoutPlayers(): DrawCommand[] {
-    const spy = vi.spyOn(playerRenderer, "playerDrawCommands").mockReturnValue([]);
-    try {
-      return pitchDrawCommands(luaDifferentialFrame(), LUA_DIFFERENTIAL_VIEWPORT, LUA_DIFFERENTIAL_OPTS, 0);
-    } finally {
-      spy.mockRestore();
-    }
+    return pitchDrawCommands(luaDifferentialFrame(), LUA_DIFFERENTIAL_VIEWPORT, LUA_DIFFERENTIAL_OPTS, 0);
   }
 
   it("matches the Lua capture's static arena/pitch scene and the loose ball -- backdrop, floor, markings, goal nets/frames, outline, chevrons, ball shadow+lift (content-equal; see sortedNormalized's comment for why this is order-insensitive). The hex floor's line width is excluded here -- see the dedicated KNOWN BUG test below.", () => {
@@ -809,35 +852,18 @@ describe("pitch.pitchDrawCommands differential against the real Lua game.render.
     expect(tsHex.map(normalizeGeom)).toEqual(luaHex.map(normalizeGeom));
   });
 
-  it("hands the player renderer the exact same anchor (sx, sy, r, color) and PlayerRenderOptions payload the Lua original computes, in the same depth-sorted order", () => {
-    interface Captured {
-      readonly sx: number;
-      readonly sy: number;
-      readonly r: number;
-      readonly color: RGB;
-      readonly options: PlayerRenderOptions;
-    }
-    const captured: Captured[] = [];
-    const spy = vi.spyOn(playerRenderer, "playerDrawCommands").mockImplementation((sx, sy, r, color, _v, options) => {
-      captured.push({ sx, sy, r, color, options });
-      return [];
-    });
-    try {
-      pitchDrawCommands(luaDifferentialFrame(), LUA_DIFFERENTIAL_VIEWPORT, LUA_DIFFERENTIAL_OPTS, 0);
-    } finally {
-      spy.mockRestore();
-    }
+  it("derives the exact same per-player anchor (sx, sy, r) and PlayerRenderOptions payload the Lua original computes, in the same depth-sorted order", () => {
+    const captured = playerAnchors(luaDifferentialFrame(), LUA_DIFFERENTIAL_VIEWPORT, LUA_DIFFERENTIAL_OPTS);
 
     expect(captured).toHaveLength(LUA_PLAYER_RECORDS.length);
     for (const [i, luaPlayer] of LUA_PLAYER_RECORDS.entries()) {
       const ts = captured[i];
       if (ts === undefined) {
-        throw new Error(`missing captured player renderer call at depth-sorted index ${i}`);
+        throw new Error(`missing player anchor at depth-sorted index ${i}`);
       }
       expect(round(ts.sx)).toBeCloseTo(round(luaPlayer.sx), 4);
       expect(round(ts.sy)).toBeCloseTo(round(luaPlayer.sy), 4);
       expect(round(ts.r)).toBeCloseTo(round(luaPlayer.r), 4);
-      expect(roundArr(ts.color)).toEqual(roundArr(luaPlayer.color));
 
       const o = ts.options;
       expect(o.facing !== undefined ? [o.facing.x, o.facing.y] : undefined).toEqual(luaPlayer.opts.facing);
@@ -908,10 +934,14 @@ describe("pitch.ts converts frame.control.controlled/pass_target from one-based 
     const commands = pitchDrawCommands(luaDifferentialFrame(), LUA_DIFFERENTIAL_VIEWPORT, LUA_DIFFERENTIAL_OPTS, 0);
     // Lua's charge-meter bar fill (color = home_color, the "shot" charge
     // color multiplied through -- see the captured reference) sits at
-    // x=665.7184 (home-1, roster slot 1 == TS array index 0). The current
+    // x=93.232 (home-1, roster slot 1 == TS array index 0). The current
     // (buggy) pitch.ts instead reads players.x[1] directly -- TS index 1,
     // "away-kp" -- and renders the bar under the WRONG player.
-    const expectedX = 665.7184;
+    // (Was 665.7184 when this fixture was captured at a 1280x720 viewport;
+    // the capture now runs at the field's own size, see
+    // LUA_DIFFERENTIAL_VIEWPORT. Same Lua, same bug, same player -- only the
+    // pixel scale of the whole capture changed.)
+    const expectedX = 93.232;
     const meterFill = commands.find((c) => c.kind === "rect" && c.mode === "fill" && Math.abs(c.color[0] - 1) < 1e-6 && Math.abs(c.color[1] - 0.72) < 1e-6 && Math.abs(c.color[2] - 0.3) < 1e-6);
     expect(meterFill).toBeDefined();
     expect(meterFill?.kind === "rect" ? round(meterFill.x) : undefined).toBeCloseTo(expectedX, 2);
@@ -920,15 +950,130 @@ describe("pitch.ts converts frame.control.controlled/pass_target from one-based 
   it("pass-target preview renders at the CORRECT (one-based-adjusted) target player's position, matching the Lua reference", () => {
     const commands = pitchDrawCommands(luaDifferentialFrame(), LUA_DIFFERENTIAL_VIEWPORT, LUA_DIFFERENTIAL_OPTS, 0);
     // Lua's pass-target rings (home_color, since roster slot 3 / "home-2" is
-    // on the home team) sit at (834.672, 384) -- that player's own projected
+    // on the home team) sit at (130.4175, 64) -- that player's own projected
     // anchor. The current (buggy) pitch.ts reads players.x[3]/players.y[3],
     // both out of bounds on a 3-element zero-based array, defaulting to
     // world (0, 0) via `?? 0` -- nowhere near the intended player.
-    const expectedX = 834.672;
-    const expectedY = 384;
+    // (Was (834.672, 384) at the fixture's previous 1280x720 viewport; see
+    // LUA_DIFFERENTIAL_VIEWPORT for why the capture now runs at field size.)
+    const expectedX = 130.4175;
+    const expectedY = 64;
     const ring = commands.find((c) => c.kind === "circle" && c.mode === "line" && Math.abs(c.color[0] - 0.35) < 1e-6 && Math.abs(c.color[1] - 0.75) < 1e-6 && Math.abs(c.color[2] - 1) < 1e-6);
     expect(ring).toBeDefined();
     expect(ring?.kind === "circle" ? round(ring.x) : undefined).toBeCloseTo(expectedX, 2);
     expect(ring?.kind === "circle" ? round(ring.y) : undefined).toBeCloseTo(expectedY, 2);
+  });
+});
+
+// ============================================================================
+// VIEWPORT INVARIANCE (#414)
+//
+// The renderer-level half of camera.spec.ts's "camera.project across
+// viewports" block. That one pins the projection's own arithmetic; this one
+// pins what a player actually sees, through the real draw list: a player, a
+// goal frame and the ball must all keep a constant size RELATIVE to the pitch
+// as the window changes. Before the fix they did not -- positions carried the
+// viewport factor and sizes did not -- so on any window that was not exactly
+// 960x540 the pitch stretched to fill the frame while the entities stayed at
+// their 960-wide pixel sizes.
+//
+// #414 confirmed the defect for players and left goals and the ball as
+// "reported but not traced". Both are asserted here: every one of them is
+// sized off the projection's third return value, so all three move together.
+// ============================================================================
+describe("pitch entity sizes stay in proportion to the pitch at any viewport", () => {
+  const GOAL_FRAME_COLOR: readonly [number, number, number] = [0.92, 0.97, 1.0];
+  const BALL_COLOR: readonly [number, number, number] = [1, 0.95, 0.7];
+
+  /** Near (widest) edge of the pitch trapezoid, from the floor fill itself. */
+  function pitchNearWidth(commands: readonly DrawCommand[]): number {
+    const floor = commands.find((c) => c.kind === "polygon" && c.mode === "fill");
+    if (floor === undefined || floor.kind !== "polygon") {
+      throw new Error("expected the floor trapezoid fill");
+    }
+    // [far-left, far-right, near-right, near-left], x/y interleaved.
+    return (floor.points[4] ?? NaN) - (floor.points[6] ?? NaN);
+  }
+
+  /**
+   * Drawn radius handed to the player renderer -- `radius * scale`, for the
+   * first player in depth-sorted order.
+   *
+   * This was captured by spying on `playerRenderer.playerDrawCommands` and
+   * reading its third argument. #415 deleted that module, so it now reads
+   * `playerAnchors`' `r` instead. The quantity is unchanged, and deliberately
+   * so: both derivations build `project = pitchProject(frame, vp, opts)` from
+   * the same three arguments, take `scale` from `project(players.x[i],
+   * players.y[i])`, and return `roster.radius[i] * scale` -- the same
+   * expression, the same amount of pipeline, for the same player (both walk
+   * `depthSortedItems`, so index 0 is the same one the spy saw first). The
+   * assertions below therefore still test what #414 fixed. If anything it is
+   * a touch stronger: no mock, and `playerAnchors` is the exported seam
+   * `pitch.draw` itself derives every rigged character's `ppm` from, so this
+   * now reads the size the product actually draws rather than an argument to a
+   * renderer the product no longer has.
+   */
+  function playerRadius(vp: PitchViewport): number {
+    const first = playerAnchors(frame(), vp, opts)[0];
+    if (first === undefined) {
+      throw new Error("expected at least one player anchor");
+    }
+    return first.r;
+  }
+
+  /** Height of a goal post: `crossbar_h * scale`. */
+  function goalPostHeight(commands: readonly DrawCommand[]): number {
+    const post = commands.find((c) => c.kind === "line" && colorCloseTo(c.color, GOAL_FRAME_COLOR) && c.points[0] === c.points[2]);
+    if (post === undefined || post.kind !== "line") {
+      throw new Error("expected an upright goal post in the goal frame colour");
+    }
+    return Math.abs((post.points[1] ?? NaN) - (post.points[3] ?? NaN));
+  }
+
+  /** The loose ball's drawn radius: `5 * scale`. */
+  function ballRadius(commands: readonly DrawCommand[]): number {
+    const ball = commands.find((c) => c.kind === "circle" && c.mode === "fill" && colorCloseTo(c.color, BALL_COLOR));
+    if (ball === undefined || ball.kind !== "circle") {
+      throw new Error("expected the loose ball fill");
+    }
+    return ball.r;
+  }
+
+  const VIEWPORTS: readonly PitchViewport[] = [
+    { w: 960, h: 540 }, // the LÖVE window: the ONLY case the ported specs covered
+    { w: 1280, h: 720 },
+    { w: 1920, h: 1080 },
+    { w: 3440, h: 1440 }, // the ultrawide this was reported from
+    { w: 1280, h: 1024 }, // a non-16:9 viewport, where the pitch used to stretch
+  ];
+
+  it("keeps player, goal-frame and ball sizes at a constant ratio to the pitch width across five viewports", () => {
+    const ratios = VIEWPORTS.map((vp) => {
+      const commands = pitchDrawCommands(frame(), vp, opts);
+      const width = pitchNearWidth(commands);
+      return {
+        vp,
+        player: playerRadius(vp) / width,
+        goal: goalPostHeight(commands) / width,
+        ball: ballRadius(commands) / width,
+      };
+    });
+    const reference = ratios[0]!;
+    for (const r of ratios) {
+      expect(r.player, `player at ${r.vp.w}x${r.vp.h}`).toBeCloseTo(reference.player, 12);
+      expect(r.goal, `goal at ${r.vp.w}x${r.vp.h}`).toBeCloseTo(reference.goal, 12);
+      expect(r.ball, `ball at ${r.vp.w}x${r.vp.h}`).toBeCloseTo(reference.ball, 12);
+    }
+  });
+
+  it("grows entities with the window: a 2x viewport draws a 2x player, goal and ball", () => {
+    const base: PitchViewport = { w: 960, h: 540 };
+    const doubled: PitchViewport = { w: 1920, h: 1080 };
+    const baseCommands = pitchDrawCommands(frame(), base, opts);
+    const doubledCommands = pitchDrawCommands(frame(), doubled, opts);
+    expect(pitchNearWidth(doubledCommands) / pitchNearWidth(baseCommands)).toBeCloseTo(2, 9);
+    expect(playerRadius(doubled) / playerRadius(base)).toBeCloseTo(2, 9);
+    expect(goalPostHeight(doubledCommands) / goalPostHeight(baseCommands)).toBeCloseTo(2, 9);
+    expect(ballRadius(doubledCommands) / ballRadius(baseCommands)).toBeCloseTo(2, 9);
   });
 });

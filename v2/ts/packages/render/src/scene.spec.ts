@@ -8,8 +8,7 @@
 // constructs one. `stubRenderer()` below is NOT a WebGL mock: it is a plain
 // object satisfying the handful of methods `SceneRoot` calls directly on the
 // renderer it was handed (`setPixelRatio`, `setSize`, `autoClear`, `dispose`,
-// and -- only reachable if `pitch.rigged_players` were left on --
-// `render`). None of those touch three.js's actual WebGLRenderer
+// and `render`). None of those touch three.js's actual WebGLRenderer
 // implementation or a GL context; they let this suite verify SceneRoot's OWN
 // orchestration (what it calls, in what order, on what objects) the same way
 // a fake database connection tests a repository's logic without a real
@@ -17,12 +16,15 @@
 // needs a live GL context to verify at all (see pitch.ts's SCOPE NOTE and
 // scene.ts's own doc comment on the rigged-player compositing gap).
 //
-// `pitch.rigged_players` is deliberately forced off for every test in this
-// file (saved/restored around the suite): it is module-level mutable state
-// shared with every other spec importing pitch.ts in the same process, and
-// forcing it off keeps this suite's `populate()` calls on the deterministic,
-// GL-free billboard path instead of depending on whether
-// `player_renderer_3d.available()` happens to succeed in this environment.
+// This suite used to force `pitch.rigged_players = false` around every test so
+// `populate()` ran the procedural billboard rather than depending on whether
+// `player_renderer_3d.available()` succeeds here. Both the flag and the
+// billboard are gone (#415), and the dependency it was avoiding turned out not
+// to exist: `build()` only constructs plain three.js geometry/skeleton/material
+// objects, makes no GL calls, and genuinely succeeds under this workspace's
+// "node" vitest environment -- which is what pitch.spec.ts's own rigged
+// compositing suite has always relied on. So `populate()` here now assembles
+// real rigged characters, and that is strictly closer to the product.
 //
 // This suite calls `SceneRoot.populate` (object-graph assembly), never
 // `SceneRoot.render` (populate + `Bloom.draw`). `Bloom.draw`'s
@@ -36,6 +38,7 @@ import * as THREE from "three";
 import { pitch, resetStaticSceneCache, staticSceneBuildCount, type PitchDrawOptions, type RenderFrame } from "./pitch.ts";
 import { camera, perspectiveRig } from "./camera.ts";
 import { SceneRoot, type WorldLayer } from "./scene.ts";
+import { materialCacheSize, resetMaterialCache } from "./draw2d.ts";
 
 interface StubRenderer {
   autoClear: boolean;
@@ -66,9 +69,10 @@ function stubRenderer(): StubRenderer {
       this.disposeCalls += 1;
     },
     render() {
-      // no-op: never reached with pitch.rigged_players forced off, kept only
-      // so a stray call fails loudly (TypeError) rather than silently, and
-      // so the type below is structurally close to THREE.WebGLRenderer.
+      // no-op: never reached, since this suite only calls `populate` and
+      // `populate` never rasterizes. Kept so a stray call fails loudly
+      // (TypeError) rather than silently, and so the type below is
+      // structurally close to THREE.WebGLRenderer.
     },
   };
 }
@@ -159,16 +163,11 @@ const pitchOptions: PitchDrawOptions = {
   away_color: [1, 0.4, 0.2],
 };
 
-let savedRigged: boolean;
-
 beforeEach(() => {
-  savedRigged = pitch.rigged_players;
-  pitch.rigged_players = false;
   resetStaticSceneCache();
 });
 
 afterEach(() => {
-  pitch.rigged_players = savedRigged;
   resetStaticSceneCache();
 });
 
@@ -445,5 +444,56 @@ describe("SceneRoot.dispose", () => {
     scene.dispose();
 
     expect(layer.disposeCalls).toBe(1);
+  });
+
+  // The test above builds its material by hand, so it never goes through
+  // draw2d.ts's shared-material cache and is not flagged -- which is exactly
+  // why it kept passing while `dispose()` was leaking. #403's cache marks its
+  // entries so `disposeObject` SKIPS them (that is what stops `paint`'s
+  // per-frame clear destroying their GL programs), and at teardown that mark
+  // would leave almost every material in the scene unreleased: three.js frees
+  // a program only through `material.dispose()`, and `renderer.dispose()`
+  // walks neither the `programs` array nor the properties WeakMap.
+  //
+  // So this one populates through the REAL path and asserts the materials
+  // `paint()` actually produced get disposed. Goes red if
+  // `SceneRoot.dispose()` stops calling `resetMaterialCache()` first.
+  it("disposes the shared, cache-flagged materials that populate() actually built", () => {
+    resetMaterialCache();
+    const scene = new SceneRoot(asRenderer(stubRenderer()), { viewport: VIEWPORT });
+    scene.populate(frame(), { pitch: pitchOptions });
+
+    // DISTINCT instances, not one per child -- the whole point of the cache is
+    // that many children share one material, so a per-child list would count
+    // the same object hundreds of times. (Measured here: 383 children, 35
+    // distinct materials.)
+    const shared = new Set<THREE.Material>();
+    let flaggedChildren = 0;
+    for (const child of scene.pitchGroup.children) {
+      const owner = child as Partial<THREE.Mesh>;
+      const material = owner.material;
+      if (material !== undefined && !Array.isArray(material) && material.userData["draw2dSharedMaterial"] === true) {
+        shared.add(material);
+        flaggedChildren += 1;
+      }
+    }
+    // Guards the guard: if the real path ever stops producing cache-flagged
+    // materials, this test would pass vacuously and prove nothing.
+    expect(shared.size).toBeGreaterThan(0);
+    expect(materialCacheSize()).toBeGreaterThan(0);
+    // And the sharing is real rather than one-material-per-child.
+    expect(flaggedChildren).toBeGreaterThan(shared.size);
+
+    const disposed = new Set<THREE.Material>();
+    for (const material of shared) {
+      material.addEventListener("dispose", () => {
+        disposed.add(material);
+      });
+    }
+
+    scene.dispose();
+
+    expect(disposed.size).toBe(shared.size);
+    expect(materialCacheSize()).toBe(0);
   });
 });

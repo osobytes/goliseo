@@ -176,7 +176,12 @@ describe("match_hud.drawMatchHud (population)", () => {
     expect(group.children.length).not.toBe(first + expected); // would be true if paint() had accumulated instead of clearing
   });
 
-  it("disposes each rebuilt frame's mesh geometry, and deliberately RETAINS its cached material", () => {
+  // Materials deliberately NOT disposed here anymore -- they are shared and
+  // cached by draw2d.ts (see its SHARED MATERIALS section and #403: disposing
+  // them destroyed and recompiled five GL programs per frame). Geometry is
+  // still per-frame, and this asserts both halves of that split so a
+  // regression in either direction is loud.
+  it("disposes each rebuilt frame's mesh geometry, and REUSES its shared material", () => {
     const group = new THREE.Group();
     const buildText = (): THREE.Object3D => new THREE.Object3D();
     drawMatchHud(group, model(), layout, theme, viewport, { buildText });
@@ -185,12 +190,14 @@ describe("match_hud.drawMatchHud (population)", () => {
     expect(mesh).toBeDefined();
     let geometryDisposed = false;
     let materialDisposed = false;
+    let firstMaterial: THREE.Material | undefined;
     if (mesh !== undefined) {
       mesh.geometry.dispose = () => {
         geometryDisposed = true;
       };
       const material = mesh.material;
       if (!Array.isArray(material)) {
+        firstMaterial = material;
         material.dispose = () => {
           materialDisposed = true;
         };
@@ -199,23 +206,10 @@ describe("match_hud.drawMatchHud (population)", () => {
 
     drawMatchHud(group, model(), layout, theme, viewport, { buildText });
 
-    // Geometry is still per-frame and still released: HUD geometry is built
-    // from live layout values, so it genuinely cannot be shared between frames.
     expect(geometryDisposed).toBe(true);
-    // Material disposal is now deliberately NOT done, and this assertion is
-    // inverted from what it originally checked. draw2d.ts caches fill/line
-    // materials and skips them in `disposeMaterial`, because
-    // `THREE.WebGLRenderer` refcounts compiled shader programs BY MATERIAL:
-    // disposing the last material using a program deletes the program, so
-    // disposing every material every frame made the renderer recompile every
-    // program every frame. Profiling the real app measured the cost at 3905
-    // `gl.linkProgram` calls in 25 seconds with `getProgramInfoLog` blocking
-    // 3572ms of it -- see draw2d.ts's MATERIAL CACHE note.
-    //
-    // Retaining the material is therefore the CORRECT behaviour now, and this
-    // test pins it so a well-meaning "fix the leak" change cannot quietly
-    // reintroduce the recompile. There is no leak to fix: the cache is bounded
-    // (draw2d.spec.ts pins that) and the material is shared, not duplicated.
-    expect(materialDisposed, "cached materials must survive the repaint -- disposing them recompiles shaders").toBe(false);
+    expect(materialDisposed).toBe(false);
+    const next = group.children.find((c): c is THREE.Mesh => c instanceof THREE.Mesh);
+    expect(next).toBeDefined();
+    expect(next?.material).toBe(firstMaterial);
   });
 });

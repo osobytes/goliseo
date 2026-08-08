@@ -39,7 +39,7 @@ import { Bloom, type BloomConfig } from "./bloom.ts";
 import { camera, perspectiveRig, type CameraField } from "./camera.ts";
 import { cameraFollow } from "./camera_follow.ts";
 import { drawMatchHud, type MatchHudLayout, type MatchHudModel, type MatchHudTheme, type MatchHudViewport } from "./match_hud.ts";
-import { disposeObject } from "./draw2d.ts";
+import { disposeObject, resetMaterialCache } from "./draw2d.ts";
 
 /** `{w, h}` in pixels. Shared shape with `pitch.ts`'s `PitchViewport`. */
 export type SceneViewport = PitchViewport;
@@ -108,10 +108,10 @@ const CAMERA_FAR = 10;
  * ASSEMBLY ORDER, and why:
  *
  *   1. `pitchGroup` -- arena backdrop/frame, the projected floor, markings
- *      and goals, the depth-sorted players (billboard or rigged), effects
+ *      and goals, the depth-sorted rigged players, effects
  *      (ball trail, bursts) and combat telegraphs. This is `pitch.draw`'s
  *      OWN composition (see pitch.ts's file header): pitch.ts already wires
- *      together arena.ts, player_renderer.ts/player_renderer_3d.ts,
+ *      together arena.ts, player_renderer_3d.ts,
  *      effects.ts and combat.ts in a specific, documented order. `SceneRoot`
  *      therefore calls pitch.draw -- the one existing orchestrator -- rather
  *      than re-deriving that order by calling each of those modules itself.
@@ -309,13 +309,15 @@ export class SceneRoot {
    * that call. `pitch.draw`'s rigged pass no longer depends on this the way
    * `player_renderer_3d.ts`'s old direct-render `draw` did (see that file's
    * doc comment and this class's own "FIXED HERE" notes) -- `pitch.draw`
-   * doesn't rasterize anything at all anymore (rigged or not): it only
+   * doesn't rasterize anything at all anymore: it only
    * builds `pitchGroup`'s object graph (`characterMesh`/`riggedCharacterObject`
    * for rigged players, `paint`/`appendCommands` for everything else), and
    * this class's own later `render()` is the one place that ever calls
-   * `renderer.render()`. `autoClear` is still forced off here defensively,
-   * to avoid depending on `SceneRoot` being the only caller that ever sets
-   * it, even though nothing in `populate` currently rasterizes.
+   * `renderer.render()`. Since #415 it is not even HANDED the renderer (see
+   * `pitch.draw`'s own note on the dropped parameter), so this is now
+   * structural rather than a convention. `autoClear` is still forced off here
+   * defensively, to avoid depending on `SceneRoot` being the only caller that
+   * ever sets it, even though nothing in `populate` currently rasterizes.
    *
    * WORLD LAYER SYNC. When a `WorldLayer` is attached AND
    * `camera.perspective_mode` is on, this method ALSO (a) calls
@@ -342,7 +344,7 @@ export class SceneRoot {
     const wasAutoClear = this.renderer.autoClear;
     this.renderer.autoClear = false;
     try {
-      pitch.draw(this.pitchGroup, frame, this.viewport, options.pitch, this.renderer, now);
+      pitch.draw(this.pitchGroup, frame, this.viewport, options.pitch, now);
     } finally {
       this.renderer.autoClear = wasAutoClear;
     }
@@ -423,6 +425,19 @@ export class SceneRoot {
    * than an error, since callers commonly `dispose()` from more than one
    * teardown path.
    *
+   * `resetMaterialCache()` FIRST, and the order is load-bearing. draw2d.ts's
+   * shared-material cache (#403) marks its entries so that `disposeObject`
+   * skips them -- that is what stops `paint`'s per-frame clear from
+   * destroying and recompiling the GL programs behind them. At teardown that
+   * same mark would mean `clearGroup` below disposes almost nothing, and
+   * three.js frees a program only through `material.dispose()`: neither
+   * `WebGLPrograms.dispose()` nor `WebGLProperties.dispose()` walks the
+   * existing `programs` array, so `renderer.dispose()` does not pick up the
+   * slack (checked against the installed three source, not assumed -- the
+   * same standard bloom.ts's own `dispose` was written to). Emptying the
+   * cache first clears the mark, handing every material back to the ordinary
+   * path so the `clearGroup` calls actually free them.
+   *
    * WORLD LAYER: if one is still attached, this is the one place `SceneRoot`
    * calls `layer.dispose()` itself -- see `setWorldLayer`'s doc comment for
    * why that call does not live there instead. `worldScene` itself (like
@@ -433,6 +448,7 @@ export class SceneRoot {
     if (this.disposed) {
       return;
     }
+    resetMaterialCache();
     this.clearGroup(this.pitchGroup);
     this.clearGroup(this.hudGroup);
     this.scene.remove(this.pitchGroup, this.hudGroup);

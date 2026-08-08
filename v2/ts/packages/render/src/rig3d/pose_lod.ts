@@ -33,7 +33,7 @@
 //     timers — refreshes at full rate. Only the plain gait/idle family is ever
 //     held, and only while the character is small on screen.
 
-import type { PlayerRenderOptions } from "../player_renderer.ts";
+import type { PlayerRenderOptions } from "../player_render_options.ts";
 
 /**
  * Characters taller than this on screen re-evaluate every frame: at close-up

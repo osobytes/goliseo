@@ -1,24 +1,36 @@
 // Ported from game/render/pitch.lua.
 //
 // Draws a `RenderFrame` through the camera projection as a perspective pitch
-// with depth-sorted billboard players. This module never sees a
+// with depth-sorted players. This module never sees a
 // `MatchState` -- everything it draws comes off the versioned payload built
 // by `render.frame` (Rust, see below), which is the whole point: the same
 // payload can be handed to a renderer not written in Lua. The only things
 // read from outside it are renderer-owned presentation state (`view_state`
 // gait/lean, the particle systems) and per-match theming.
 //
-// `pitchDrawCommands` is the PURE, tested path: it produces the exact
-// depth-sorted `DrawCommand[]` (draw2d.ts) the Lua original would have drawn
-// for a frame where every player uses the procedural 2.5D renderer
-// (`player_renderer.ts`). `pitch.draw` is the impure orchestrator that also
-// honors `pitch.rigged_players`, calling into `player_renderer_3d.ts`'s
-// genuine `THREE.SkinnedMesh` pass per player where available.
+// TWO EXPORTS, ONE FRAME. `pitchDrawCommands` is the PURE, tested path: it
+// produces the exact `DrawCommand[]` (draw2d.ts) for everything that is not a
+// player -- arena, floor, markings, goals, the loose ball, the overlay layer.
+// `playerAnchors` is the pure, tested per-player half: the depth-sorted screen
+// anchor and `PlayerRenderOptions` payload each player is drawn from.
+// `pitch.draw` is the impure orchestrator that assembles both into `group` and
+// calls `player_renderer_3d.ts`'s genuine `THREE.SkinnedMesh` pass per player.
+//
+// THERE IS EXACTLY ONE PLAYER RENDERER (#415). A procedural 2D billboard
+// avatar (`player_renderer.ts`) used to sit behind three fallback conditions --
+// no `THREE.WebGLRenderer` passed, `player_renderer_3d.build()` having failed,
+// or a `pitch.rigged_players` module flag -- and the middle one was re-checked
+// PER PLAYER, so a rig build that failed partway through a roster silently
+// downgraded the rest of the team mid-frame. `build()` fails on invalid vertex
+// indices and missing rig3d content: programmer errors, which AGENTS.md §7 says
+// fail loud rather than degrade quietly. All three conditions, the flag, the
+// `renderer` parameter that gated them and the billboard itself are gone; a
+// character that cannot be built now throws (see `pitch.draw`).
 //
 // SCOPE NOTE. Compositing a per-player 3D rigged pass with the flat
 // screen-space 2D content at the correct point in the painter's-algorithm
-// depth sort (so a rigged player occludes/is occluded exactly like its
-// procedural billboard would) is real GPU-integration work: it needs a live
+// depth sort (so a rigged player occludes/is occluded exactly like a flat
+// screen-space entity at the same world position would) is real GPU-integration work: it needs a live
 // `WebGLRenderer` to verify pixel-for-pixel, and v2/README.md #1 scopes "a
 // running app" / the wasm-bindings glue out of this milestone. What follows
 // was nonetheless verified against a live GL context outside this milestone's
@@ -30,23 +42,23 @@
 // depth-tested `THREE.SkinnedMesh` (`player_renderer_3d.ts`'s
 // `characterMesh`, pooled per player), wrapped by `riggedCharacterObject`
 // below with its screen position/scale/elevation tilt, and added to `group`
-// at the same point in the depth-sorted iteration a procedural billboard
-// would occupy -- interleaved with the ball and every other player via
-// `depthSortedItems` below, the same ordering `pitchDrawCommands` uses
-// internally, shared through
-// `drawPitchBeforeItems`/`drawPitchAfterItems`/`drawLooseBallCommands` so the
-// two paths cannot silently diverge. This is what lets exactly ONE full-scene
+// at its own point in the depth-sorted iteration -- interleaved with the ball
+// and every other player via `depthSortedItems` below, the same ordering
+// `playerAnchors` returns and `pitchDrawCommands` places the ball by, shared
+// through `drawPitchBeforeItems`/`drawPitchAfterItems`/`drawLooseBallCommands`/
+// `playerAnchor` so the pure and impure paths cannot silently diverge on either
+// content or order. This is what lets exactly ONE full-scene
 // render (`SceneRoot.render`, see scene.ts) draw the whole frame -- flat
 // content and every rigged character together, ONE `renderer.render()` call
 // total instead of one per character -- in the right order and with real
 // depth testing between them, rather than N off-screen full-viewport passes
 // each composited as a `depthTest: false` quad (the shape this had before
 // this port; see `player_renderer_3d.ts`'s `renderToSprite`, kept for
-// parity/diagnostics but no longer on this call path). `pitchDrawCommands`
-// stays the fully-tested reference for the pure procedural path; `pitch.draw`'s
-// rigged branch is -- like the rest of the GPU-adjacent surface in this
-// package -- untested beyond what does not need a live GL context
-// (object-graph shape, ordering, disposal).
+// parity/diagnostics but no longer on this call path). `pitchDrawCommands` and
+// `playerAnchors` stay the fully-tested reference for everything that needs no
+// GL context; `pitch.draw`'s rigged branch is -- like the rest of the
+// GPU-adjacent surface in this package -- untested beyond what does not need a
+// live GL context (object-graph shape, ordering, disposal).
 //
 // Boundary note (v2/README.md rule 6.7): `RenderFrame` is the (Rust)
 // `render/frame.lua` producer's output (`render/**` -> Rust
@@ -159,8 +171,7 @@ import * as arenaRender from "./arena.ts";
 import type { ArenaColors, ArenaThemeColors } from "./arena.ts";
 import * as combatRender from "./combat.ts";
 import * as effectsModule from "./effects.ts";
-import * as playerRenderer from "./player_renderer.ts";
-import type { AerialOutcome, AerialStyle, PlayerRenderOptions, SpeciesShape } from "./player_renderer.ts";
+import type { AerialOutcome, AerialStyle, PlayerRenderOptions, SpeciesShape } from "./player_render_options.ts";
 import * as playerRenderer3d from "./player_renderer_3d.ts";
 import { viewState } from "./view_state.ts";
 import { DrawList, appendCommands, paint, type DrawCommand, type Project, type RGB } from "./draw2d.ts";
@@ -173,8 +184,8 @@ const NET_BACK_FRAC = 0.55; // back frame height as a fraction of the crossbar
 // `pitchGroup` shares ONE `THREE.Scene` (and therefore one real depth buffer)
 // with everything else `SceneRoot` draws -- see scene.ts's class doc comment.
 // That is what lets a rigged `THREE.SkinnedMesh` character depth-test
-// correctly against the ball, against another character, and against a
-// procedural billboard fallback: real per-pixel occlusion, not the quad/
+// correctly against the ball and against another character: real per-pixel
+// occlusion, not the quad/
 // array-insertion-order painter's algorithm this file used before. Studying
 // `game/render/rig3d/renderer.lua`'s `characterCamera`/`beginPass`/`endPass`
 // for this port surfaced a nuance worth recording, because it changes what
@@ -214,8 +225,8 @@ const NET_BACK_FRAC = 0.55; // back frame height as a fraction of the crossbar
 //                          depth testing entirely via draw2d.ts's
 //                          `PaintOptions.depthTest`.
 //
-// WHAT THIS NOW DOES. `ENTITY_Z_NEAR`/`ENTITY_Z_FAR` take effect for the
-// procedural billboard fallback, the ball, AND the rigged branch alike: a
+// WHAT THIS NOW DOES. `ENTITY_Z_NEAR`/`ENTITY_Z_FAR` take effect for the ball
+// and the rigged characters alike: a
 // rigged character (`riggedCharacterObject`, below `pitch.draw`) is a real
 // `THREE.SkinnedMesh` positioned at `depthToZ`'s z with ordinary depth
 // testing/writing (no `depthTest: false` anywhere on it), not the old
@@ -223,7 +234,7 @@ const NET_BACK_FRAC = 0.55; // back frame height as a fraction of the crossbar
 // `renderToSprite` produced (still present, kept for parity/diagnostics, but
 // no longer on this call path -- see that file's header). Two entities'
 // world z, not their `group.children` array position, decides who wins the
-// depth test now -- for player-vs-ball and billboard-vs-rigged this was
+// depth test now -- for player-vs-ball this was
 // already the design's goal (a real single-pass render instead of N
 // full-viewport passes; see file header). Rigged-character-vs-rigged-
 // character per-pixel occlusion falls out of the SAME mechanism for free --
@@ -469,6 +480,58 @@ function drawGoal(dl: DrawList, project: Project, field: RenderFrameField, g: Re
   dl.line([bfx, bfy - backH * bfs, bnx, bny - backH * bns], backFrameColor, { alpha: 0.5, lineWidth: 1 });
 }
 
+/**
+ * One player's screen anchor and presentation payload for one frame: exactly
+ * what `pitch.draw` hands the rigged renderer, and nothing three.js-shaped.
+ *
+ * `sx`/`sy` are screen pixels (the player's feet), `r` the projected body
+ * radius in pixels (`roster.radius[index] * scale`) that every derived size --
+ * the rigged character's pixels-per-metre included -- scales off.
+ */
+export interface PlayerAnchor {
+  /** Zero-based index into the frame's SoA player arrays. */
+  readonly index: number;
+  readonly player_id: string;
+  readonly sx: number;
+  readonly sy: number;
+  readonly r: number;
+  readonly options: PlayerRenderOptions;
+}
+
+/**
+ * Every player's anchor for one frame, in the SAME far-to-near order
+ * `pitch.draw` adds them to the scene graph (see `depthSortedItems`). Pure:
+ * this is the whole sim-to-player-renderer boundary with no three.js in it, so
+ * the payload can be asserted against the Lua original headless -- see
+ * pitch.spec.ts's differential.
+ */
+export function playerAnchors(frame: RenderFrame, vp: PitchViewport, opts: PitchDrawOptions): PlayerAnchor[] {
+  const project = pitchProject(frame, vp, opts);
+  const anchors: PlayerAnchor[] = [];
+  for (const item of depthSortedItems(frame.players, frame.ball)) {
+    const index = item.index;
+    if (index !== undefined) {
+      anchors.push(playerAnchor(frame, index, project));
+    }
+  }
+  return anchors;
+}
+
+// The single derivation `playerAnchors` and `pitch.draw` share, so the pure
+// path cannot drift from the drawn one.
+function playerAnchor(frame: RenderFrame, index: number, project: Project): PlayerAnchor {
+  const players = frame.players;
+  const [sx, sy, scale] = project(players.x[index] ?? 0, players.y[index] ?? 0);
+  return {
+    index,
+    player_id: frame.roster.ids[index] ?? "",
+    sx,
+    sy,
+    r: (frame.roster.radius[index] ?? 0) * scale,
+    options: playerOptions(frame, index),
+  };
+}
+
 function playerOptions(frame: RenderFrame, index: number): PlayerRenderOptions {
   const roster = frame.roster;
   const players = frame.players;
@@ -686,11 +749,10 @@ function drawPitchBeforeItems(dl: DrawList, frame: RenderFrame, vp: PitchViewpor
 }
 
 // Depth-sorted drawables (far first). `index === undefined` is the ball.
-// Shared by `pitchDrawCommands` and `pitch.draw`'s rigged branch (see
-// `pitch.draw`, which needs the ball interleaved with players the same way
-// this pure path does -- a rigged player must occlude/be occluded by the
-// ball exactly as its procedural billboard would, not always draw over or
-// under it regardless of position).
+// Shared by `playerAnchors` (the pure per-player half) and `pitch.draw` (which
+// needs the ball interleaved with the players in that same order -- a rigged
+// player must occlude/be occluded by the ball according to its world position,
+// not always draw over or under it regardless).
 interface Drawable {
   readonly index?: number;
   readonly depth: number;
@@ -792,32 +854,39 @@ function drawPitchAfterItems(dl: DrawList, frame: RenderFrame, opts: PitchDrawOp
 }
 
 /**
- * Render the whole pitch + entities for one frame, using the procedural 2.5D
- * player renderer throughout. Pure, tested reference -- see file header for
- * why the rigged-3D path is not folded in here.
+ * Every flat, screen-space `DrawCommand` one frame of the pitch produces:
+ * arena backdrop and frame, the projected floor and its markings, the goals,
+ * the ball trail and combat's "under" layer, the loose ball, and the overlay
+ * layer (landing reticle, pass preview, charge meter, effects "over").
+ *
+ * PLAYERS ARE NOT IN HERE, and that is the point rather than an omission. A
+ * player is a rigged `THREE.SkinnedMesh` in metre space, not a draw command
+ * (see file header); the pure, headless-testable half of drawing one is
+ * `playerAnchors` above. Until #415 this function ALSO emitted a procedural 2D
+ * billboard per player, which is what made "the whole frame as commands"
+ * possible -- and what let a rig-build failure downgrade the visible product
+ * silently.
+ *
+ * Pure, and the fully-tested reference for everything it does cover: the Lua
+ * differential in pitch.spec.ts compares this output command-for-command
+ * against a capture of `game.render.pitch`.
+ *
+ * It has no product caller of its own -- `pitch.draw` builds a scene graph,
+ * not a command list -- but it is not a parallel implementation either: its
+ * three parts (`drawPitchBeforeItems`, `drawLooseBallCommands`,
+ * `drawPitchAfterItems`) are the SAME functions `pitch.draw` runs, in the same
+ * order. That is what makes asserting on this output an assertion about the
+ * frame the product actually draws.
  */
 export function pitchDrawCommands(frame: RenderFrame, vp: PitchViewport, opts: PitchDrawOptions, now = 0): DrawCommand[] {
   const dl = new DrawList();
-  const roster = frame.roster;
-  const players = frame.players;
   const ball = frame.ball;
   const project = pitchProject(frame, vp, opts);
 
   drawPitchBeforeItems(dl, frame, vp, opts, project);
 
-  for (const item of depthSortedItems(players, ball)) {
-    const index = item.index;
-    if (index !== undefined) {
-      const px = players.x[index] ?? 0;
-      const py = players.y[index] ?? 0;
-      const [sx, sy, scale] = project(px, py);
-      const r = (roster.radius[index] ?? 0) * scale;
-      const color = roster.teams[index] === "home" ? opts.home_color : opts.away_color;
-      const v = viewState.get(roster.ids[index] ?? "");
-      dl.extend(playerRenderer.playerDrawCommands(sx, sy, r, color, v, playerOptions(frame, index)));
-    } else if (ball.visible) {
-      drawLooseBallCommands(dl, project, ball);
-    }
+  if (ball.visible) {
+    drawLooseBallCommands(dl, project, ball);
   }
 
   drawPitchAfterItems(dl, frame, opts, project, now);
@@ -875,14 +944,13 @@ const CHARACTER_DEPTH_SCALE = 0.05;
  * object `pitch.draw` actually adds to `group`, applying everything that
  * used to live in `player_renderer_3d.ts`'s per-character camera -- see file
  * header's "ONE PASS, ONE DEPTH BUFFER" section for the full derivation of
- * each piece below. `r` is the on-screen radius (pixels) the procedural
- * billboard would have used at this player's position; `sx`/`sy`/`z` are the
+ * each piece below. `r` is this player's projected on-screen body radius in
+ * pixels (`playerAnchor`'s `r`); `sx`/`sy`/`z` are the
  * screen position and real depth-tested world z (see `depthToZ`).
  *
- * Returns `undefined` when `player_renderer_3d.ts`'s `ppmForRadius` can't
- * (the rigged pass just became unavailable) -- the caller falls back to the
- * procedural billboard exactly as when `characterMesh` itself returns
- * `undefined`.
+ * THROWS when `player_renderer_3d.ts`'s `ppmForRadius` returns `undefined`,
+ * which happens only when `build()` failed -- see `pitch.draw`'s own throw for
+ * why that is now loud (AGENTS.md §7) rather than a quiet downgrade.
  *
  * COMPOSITION ORDER, and why it is not arbitrary (verified against a live GL
  * context -- see this port's report for before/after screenshots):
@@ -907,10 +975,10 @@ const CHARACTER_DEPTH_SCALE = 0.05;
  * comment. Passed in rather than read from a module constant here so the
  * caller computes it ONCE per `pitch.draw` call, not once per character.
  */
-function riggedCharacterObject(mesh: THREE.Object3D, sx: number, sy: number, z: number, r: number, tilt: THREE.Quaternion): THREE.Group | undefined {
+function riggedCharacterObject(mesh: THREE.Object3D, sx: number, sy: number, z: number, r: number, tilt: THREE.Quaternion): THREE.Group {
   const ppm = playerRenderer3d.ppmForRadius(r);
   if (ppm === undefined) {
-    return undefined;
+    throw new Error("pitch.ts: player_renderer_3d.ppmForRadius() declined -- the rigged character build failed; see the preceding 'rigged 3D players disabled (build failed)' warning for the cause");
   }
   mesh.quaternion.premultiply(tilt);
 
@@ -962,12 +1030,6 @@ function riggedCharacterObject(mesh: THREE.Object3D, sx: number, sy: number, z: 
 
 /** Pitch rendering configuration and the impure orchestrator. See file header. */
 export const pitch = {
-  // Rigged 3D players default to on, matching the Lua original's direction.
-  // See `player_renderer_3d.ts`'s header for how the love.js-specific
-  // "unavailable, not crashed" contract simplifies once a real browser JS
-  // exception model replaces love.js's non-catchable runtime abort.
-  rigged_players: true,
-
   // Opt-in broadcast-style following camera. Off by default: it reframes
   // the whole match, so it stays behind a flag until it has been played.
   follow_camera: false,
@@ -989,33 +1051,32 @@ export const pitch = {
 
   /**
    * Impure: paints one frame into `group` (all screen-space 2D content, via
-   * draw2d.ts), and -- when `renderer` is supplied and the rigged pass is
-   * available -- adds each player's rigged 3D character (a real, depth-tested
-   * `THREE.SkinnedMesh`, from `player_renderer_3d.ts`'s `characterMesh`)
-   * directly INTO `group`, wrapped in a small `THREE.Group` (see
-   * `riggedCharacterObject` below) that carries its screen position/scale and
-   * the elevation tilt, at the same point in the depth-sorted iteration a
-   * procedural billboard for that player would occupy. This is what lets a
+   * draw2d.ts) and adds each player's rigged 3D character (a real,
+   * depth-tested `THREE.SkinnedMesh`, from `player_renderer_3d.ts`'s
+   * `characterMesh`) directly INTO `group`, wrapped in a small `THREE.Group`
+   * (see `riggedCharacterObject` below) that carries its screen position/scale
+   * and the elevation tilt, at its own point in the depth-sorted iteration.
+   * This is what lets a
    * single later full-scene render (see scene.ts's `SceneRoot.render`) draw
    * the flat content and the rigged characters together in ONE pass, with
    * real depth testing between them and the ball -- see this file's "ONE
    * PASS, ONE DEPTH BUFFER" header section and the "DEPTH ZONES" section
-   * above for the full reconciliation. `renderer` is no longer used to build
-   * a character (`characterMesh` needs no `THREE.WebGLRenderer` at all --
-   * there is no per-character render pass anymore) but is kept as the gate
-   * for whether a live render is coming at all: without one (or when the
-   * rigged pass is unavailable/disabled), every player falls back to the
-   * procedural 2.5D renderer via `group`. Untested beyond object-graph
-   * shape/ordering -- see file header's scope note.
+   * above for the full reconciliation.
+   *
+   * NO `renderer` PARAMETER (#415). One used to be threaded in here purely as
+   * a gate -- "is a live render coming at all?", answered so the frame could
+   * fall back to the procedural billboard when it was not. `characterMesh`
+   * needs no `THREE.WebGLRenderer` (there is no per-character render pass
+   * anymore) and there is no longer anything to fall back TO, so the parameter
+   * had exactly one remaining consumer and it was deleted with the billboard.
+   * A useful side effect: this function now cannot rasterize even by accident,
+   * which the spec used to have to assert with a call-counting stub.
+   *
+   * THROWS if a player's rigged character cannot be built -- see the throw
+   * below. Untested beyond object-graph shape/ordering -- see file header's
+   * scope note.
    */
-  draw(group: THREE.Group, frame: RenderFrame, vp: PitchViewport, opts: PitchDrawOptions, renderer?: THREE.WebGLRenderer, now = 0): void {
-    const riggedActive = pitch.rigged_players && renderer !== undefined && playerRenderer3d.available();
-    if (!riggedActive) {
-      paint(group, pitchDrawCommands(frame, vp, opts, now));
-      return;
-    }
-
-    const roster = frame.roster;
+  draw(group: THREE.Group, frame: RenderFrame, vp: PitchViewport, opts: PitchDrawOptions, now = 0): void {
     const players = frame.players;
     const ball = frame.ball;
     const project = pitchProject(frame, vp, opts);
@@ -1056,26 +1117,25 @@ export const pitch = {
       const z = depthToZ(item.depth, frame.field.h);
       const index = item.index;
       if (index !== undefined) {
-        const px = players.x[index] ?? 0;
-        const py = players.y[index] ?? 0;
-        const [sx, sy, scale] = project(px, py);
-        const r = (roster.radius[index] ?? 0) * scale;
-        const color = roster.teams[index] === "home" ? opts.home_color : opts.away_color;
-        const playerId = roster.ids[index] ?? "";
-        const v = viewState.get(playerId);
-        const options = playerOptions(frame, index);
-        // Re-checked per player, not just once via `riggedActive`: a build
-        // failure partway through a frame's roster flips
-        // `playerRenderer3d.available()` to false for the rest of it (see
-        // that module's `build`), and the remaining players should fall
-        // back gracefully rather than the whole frame failing.
-        const mesh = playerRenderer3d.available() ? playerRenderer3d.characterMesh(playerId, v, options, now) : undefined;
-        const wrapper = mesh !== undefined ? riggedCharacterObject(mesh, sx, sy, z, r, tilt) : undefined;
-        if (wrapper !== undefined) {
-          group.add(wrapper);
-        } else {
-          appendCommands(group, playerRenderer.playerDrawCommands(sx, sy, r, color, v, options), { z });
+        const anchor = playerAnchor(frame, index, project);
+        const v = viewState.get(anchor.player_id);
+        const mesh = playerRenderer3d.characterMesh(anchor.player_id, v, anchor.options, now);
+        // FAIL LOUD (#415, AGENTS.md §7). `characterMesh` declines only when
+        // `player_renderer_3d.build()` failed, and `build()` fails on an
+        // invalid vertex index or missing rig3d content -- programmer errors,
+        // not environment conditions. This used to drop the player to a
+        // procedural billboard, re-checked PER PLAYER, so half a roster could
+        // quietly downgrade mid-frame and the match still looked like a match.
+        // During #403 "the reporter may have been on the fallback without
+        // realising" stayed a live hypothesis for hours precisely because that
+        // could happen invisibly. Rendering nothing here, or continuing past a
+        // missing player, would reproduce exactly that; a thrown error names
+        // the player and stops the frame instead. `build()`'s own
+        // `console.warn` (see that module) still carries the underlying cause.
+        if (mesh === undefined) {
+          throw new Error(`pitch.ts: no rigged character for player "${anchor.player_id}" (roster index ${String(index)}) -- player_renderer_3d.build() failed; see the preceding 'rigged 3D players disabled (build failed)' warning for the cause`);
         }
+        group.add(riggedCharacterObject(mesh, anchor.sx, anchor.sy, z, anchor.r, tilt));
       } else if (ball.visible) {
         const ballCommands = new DrawList();
         drawLooseBallCommands(ballCommands, project, ball);

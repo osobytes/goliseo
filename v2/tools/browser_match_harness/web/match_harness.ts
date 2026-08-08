@@ -77,6 +77,10 @@ interface HarnessStats {
    * rasterisation. `renderMs - populateMs` is the GL half (plus, in a real
    * window, the vsync stall the driver blocks on). */
   populateMs: number;
+  /** Milliseconds per frame burned by the `?spin=` measurement lever, if any.
+   * Outside sim/decode/populate/render, so those stay comparable across a
+   * sweep. */
+  spinMs: number;
   /** Ticks the most recent render call consumed. >1 means the renderer is
    * behind the simulation, which is also when the shell's known
    * one-sample-per-render-call input bug would double an edge. */
@@ -96,25 +100,35 @@ async function main(): Promise<void> {
   const seed = Number(params.get("seed") ?? "1");
   // RENDER AT THE FIELD'S OWN SIZE AND UPSCALE, which is what the love.js
   // build does ("keeps the 960x540 logical canvas at 16:9",
-  // docs/online/browser_build.md) and what the projection quietly requires.
+  // docs/online/browser_build.md).
   //
-  // `camera.projectFixed` -- ported character for character from Lua -- puts
-  // the viewport factor in the SCREEN POSITION and not in the depth scale:
+  // HISTORY, and why this is no longer load-bearing. This started as a
+  // workaround for #414: `camera.projectFixed` -- ported character for
+  // character from Lua -- put the viewport factor in the SCREEN POSITION and
+  // not in the depth scale:
   //
   //     sx    = vp.w/2 + (wx - field.w/2) * scale * (vp.w / field.w)
   //     scale = far_scale + (near_scale - far_scale) * t
   //
   // Everything sized off that scale (`r = radius * scale`, and so every
-  // character, billboard, shadow and reticle derived from it) therefore has
-  // NO viewport factor. That is invisible while vp.w == field.w, which is the
-  // only case Lua ever runs and the only case the specs cover. Render at the
-  // window's native size instead and the pitch stretches while the players
-  // stay put -- measured: a 2x viewport moved pitch width 830 -> 1634 px and
-  // left character ppm bit-identical at 29.8969.
+  // character, billboard, shadow and reticle derived from it) therefore had
+  // NO viewport factor. That was invisible while vp.w == field.w, which is
+  // the only case Lua ever runs and was the only case the specs covered.
+  // Rendering at the window's native size instead stretched the pitch while
+  // the players stayed put -- measured: a 2x viewport moved pitch width
+  // 830 -> 1634 px and left character ppm bit-identical at 29.8969.
   //
-  // So the drawing buffer stays at field size and CSS scales it up. Fewer
-  // pixels, and the invariant the projection assumes holds by construction
-  // rather than by luck.
+  // `camera.ts`'s `projectFixed` now carries a single uniform world-to-pixel
+  // factor into both positions and sizes, so rendering at the window's native
+  // size would be CORRECT here too, and `packages/app`'s browser entry does
+  // exactly that with no workaround of its own.
+  //
+  // Pinning is kept because it is still the right choice for THIS page for
+  // two independent reasons that have nothing to do with the defect: the
+  // drawing buffer stays small (fewer pixels, and this page exists to measure
+  // frame cost, so the pixel count should be a constant of the harness rather
+  // than a property of whatever window it was opened in), and a fixed logical
+  // size keeps successive runs comparable. `?width=`/`?height=` override it.
   const width = Number(params.get("width") ?? "960");
   const height = Number(params.get("height") ?? "540");
   // Long by default: this page is for watching, and a match that ends after
@@ -136,6 +150,7 @@ async function main(): Promise<void> {
     renderMs: 0,
     populateMs: 0,
     ticksLastFrame: 0,
+    spinMs: 0,
     tick: 0,
     timeLeft: 0,
     score: "0-0",
@@ -166,12 +181,6 @@ async function main(): Promise<void> {
   await init();
 
   const glRenderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
-  // Matches browser_main.ts's product setting, and matters MORE here than there:
-  // this page exists to report per-frame cost, and leaving three.js's default
-  // `getProgramInfoLog` sync-after-every-link on would put a stall the product
-  // does not pay into the numbers this harness publishes. See browser_main.ts's
-  // own comment for the measurement.
-  glRenderer.debug.checkShaderErrors = params.get("shaderErrors") === "1";
   // Same reason as the render bench: `SceneRoot.render` runs several internal
   // passes (bloom), each of which resets the counter at its own start when
   // `autoReset` is left on, so the number read afterwards would be the LAST
@@ -209,6 +218,23 @@ async function main(): Promise<void> {
   // `?bloom=0` turns the post-process off, for attributing frame cost. The
   // product always has it on; this is a measurement lever, not a setting.
   const bloomEnabled = params.get("bloom") !== "0";
+  // THERE IS NO `?rigged=0` (#415, removing what #411 added here). It fell the
+  // whole roster back to `player_renderer.ts`'s procedural 2.5D billboards, to
+  // attribute frame cost to the ten `THREE.SkinnedMesh` characters and their
+  // per-frame bone-matrix uploads versus everything else. That renderer is
+  // gone -- the product only ever drew the rigged path (#403 measured
+  // `rigged_characters=10, skinned_meshes=10` on hardware) and keeping a second
+  // one alive so it could be measured meant keeping a path a rig-build failure
+  // could silently drop into. Removed rather than left as a dead query string:
+  // a lever that quietly does nothing is worse than no lever. `?bloom=0` and
+  // `?ratio=` above are unaffected.
+  //
+  // See the `?spin=` note in the frame loop below. 0 (the default) skips the
+  // spin entirely, so this page behaves exactly as before unless asked.
+  const spinMs = Math.max(Number(params.get("spin") ?? "0"), 0);
+  // Accumulates the spin loop's counter so it cannot be optimised away, and
+  // is deliberately never read for anything else.
+  let spinSink = 0;
   const sceneRoot = new SceneRoot(glRenderer, {
     viewport: { w: width, h: height },
     pixelRatio: pixelRatioForWindow(),
@@ -339,6 +365,46 @@ async function main(): Promise<void> {
       ticks * DT,
     );
     decodeMsInWindow += performance.now() - tDecode;
+
+    // `?spin=<ms>` burns that many milliseconds of CPU here, BEFORE `tRender`
+    // and outside every other accumulator, so it lands in its own `spinMs`
+    // bucket and inflates none of the numbers being compared.
+    //
+    // WHAT IT IS FOR. #403's frame was attributed 26.29 ms of `renderMs` --
+    // almost exactly two 13.33 ms refresh periods -- and the claim was that
+    // this is one MISSED VSYNC being charged to `render`, not 26 ms of work:
+    // the driver blocks inside a GL call once the swap queue is full, and
+    // `renderMs` is plain wall-clock around the synchronous `sceneRoot.render`
+    // call, so a block lands inside it. That claim was inference, not
+    // measurement.
+    //
+    // This lever tests it directly and destructively. Add a KNOWN amount of
+    // work outside `render`, sweep it across the vsync deadline, and watch
+    // `renderMs`:
+    //
+    //   * if `renderMs` jumps discontinuously the moment the frame misses the
+    //     deadline -- from a nudge far smaller than 13 ms -- the block is real
+    //     and lands inside `render`, and it should then FALL as the spin grows
+    //     further, since the two share one fixed 26.6 ms period;
+    //   * if `renderMs` just stays flat while the rAF interval doubles, the
+    //     block is not inside `render` at all and #403's 26.29 ms means
+    //     genuinely doubled work.
+    //
+    // A sawtooth and a flat line are not close to each other, which is what
+    // makes this decidable. Same category as `?ratio=`/`?bloom=`:
+    // a measurement lever, never a setting. (`?rigged=` used to be listed here
+    // too; #415 removed it along with the renderer it selected -- see the note
+    // above `bloomEnabled`.)
+    if (spinMs > 0) {
+      const spinUntil = performance.now() + spinMs;
+      // A read the JIT cannot fold away, so the loop actually burns time.
+      let sink = 0;
+      while (performance.now() < spinUntil) {
+        sink += 1;
+      }
+      spinSink += sink;
+    }
+
     const tRender = performance.now();
     glRenderer.info.reset();
     const sceneOptions = {
@@ -372,6 +438,7 @@ async function main(): Promise<void> {
       stats.simMs = Number((simMsInWindow / Math.max(framesInWindow, 1)).toFixed(2));
       stats.decodeMs = Number((decodeMsInWindow / Math.max(framesInWindow, 1)).toFixed(2));
       stats.renderMs = Number((renderMsInWindow / Math.max(framesInWindow, 1)).toFixed(2));
+      stats.spinMs = spinMs;
       stats.populateMs = Number((populateMsInWindow / Math.max(framesInWindow, 1)).toFixed(2));
       simMsInWindow = 0;
       decodeMsInWindow = 0;

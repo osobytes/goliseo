@@ -111,22 +111,6 @@ async function main(): Promise<void> {
   await ensureBrowserSimHostReady();
 
   const glRenderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias: true });
-  // `debug.checkShaderErrors` defaults to TRUE, which makes three.js call
-  // `gl.getProgramInfoLog` after every program link. That call BLOCKS until the
-  // driver has finished compiling, so it converts an asynchronous driver
-  // compile into a synchronous frame stall. Profiling the real app
-  // (scripts/v2_frame_profile.py) measured it at 3572ms of a 25s window -- 14%
-  // of wall clock, more than half of all non-idle time, and up to 19ms inside a
-  // single call. draw2d.ts's material cache removes most of the compiles that
-  // trigger it; turning this off removes the synchronous wait for the ones that
-  // legitimately remain (first render of any new material configuration).
-  //
-  // The cost of turning it off is that a genuinely broken shader fails silently
-  // instead of logging, so `?shaderErrors=1` restores it for a shader-authoring
-  // session. Off is the right default: every shader here is committed source,
-  // not user input, so a link failure is a build-time bug rather than something
-  // to pay for on every frame at runtime.
-  glRenderer.debug.checkShaderErrors = new URLSearchParams(window.location.search).get("shaderErrors") === "1";
   const initialViewport = { w: window.innerWidth, h: window.innerHeight };
   const sceneRoot = new SceneRoot(glRenderer, { viewport: initialViewport });
 

@@ -394,7 +394,11 @@ async function main(): Promise<void> {
         // which made the `rigged_active` gate (both here and in
         // scripts/browser_render_bench.py's cross-build check) meaningless:
         // it would report "rigged" even if every character had silently
-        // fallen back to a procedural billboard. `pitch.ts`'s
+        // fallen back to a procedural billboard. That fallback no longer
+        // exists (#415 deleted it; `pitch.draw` throws instead of
+        // downgrading), but this stays a SAMPLE rather than a constant: the
+        // point is to report what the assembled object graph actually holds,
+        // not what the code is believed to produce. `pitch.ts`'s
         // `riggedCharacterObject` tags every rigged character wrapper it
         // creates with `userData.riggedCharacter = true` (see that
         // function); checking for at least one such child in `pitchGroup`

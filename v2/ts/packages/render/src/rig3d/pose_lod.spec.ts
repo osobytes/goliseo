@@ -6,7 +6,7 @@
 // may be degraded, and those are worth pinning whether or not it is switched on.
 
 import { describe, expect, it } from "vitest";
-import type { PlayerRenderOptions } from "../player_renderer.ts";
+import type { PlayerRenderOptions } from "../player_render_options.ts";
 import {
   FULL_RATE_HEIGHT_PX,
   PoseLodScheduler,
