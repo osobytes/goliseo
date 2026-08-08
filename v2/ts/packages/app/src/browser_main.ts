@@ -34,7 +34,7 @@
 // see this port's report for what was actually verified versus not.
 
 import * as THREE from "three";
-import { SceneRoot, Stadium, camera, pitch } from "@gc/render";
+import { SceneRoot, Stadium, camera, cameraFollow, pitch, viewState } from "@gc/render";
 import type { RenderPort } from "@gc/screens";
 import { captureGamepad, captureKeyboard } from "@gc/input";
 import { ok, err, type Result } from "@gc/core";
@@ -111,6 +111,22 @@ async function main(): Promise<void> {
   await ensureBrowserSimHostReady();
 
   const glRenderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias: true });
+  // `debug.checkShaderErrors` defaults to TRUE, which makes three.js call
+  // `gl.getProgramInfoLog` after every program link. That call BLOCKS until the
+  // driver has finished compiling, so it converts an asynchronous driver
+  // compile into a synchronous frame stall. Profiling the real app
+  // (scripts/v2_frame_profile.py) measured it at 3572ms of a 25s window -- 14%
+  // of wall clock, more than half of all non-idle time, and up to 19ms inside a
+  // single call. draw2d.ts's material cache removes most of the compiles that
+  // trigger it; turning this off removes the synchronous wait for the ones that
+  // legitimately remain (first render of any new material configuration).
+  //
+  // The cost of turning it off is that a genuinely broken shader fails silently
+  // instead of logging, so `?shaderErrors=1` restores it for a shader-authoring
+  // session. Off is the right default: every shader here is committed source,
+  // not user input, so a link failure is a build-time bug rather than something
+  // to pay for on every frame at runtime.
+  glRenderer.debug.checkShaderErrors = new URLSearchParams(window.location.search).get("shaderErrors") === "1";
   const initialViewport = { w: window.innerWidth, h: window.innerHeight };
   const sceneRoot = new SceneRoot(glRenderer, { viewport: initialViewport });
 
@@ -126,9 +142,23 @@ async function main(): Promise<void> {
   // size, goal rects, crossbar height), which only exists once a match frame
   // arrives -- built lazily on the first `draw` below and reused for every
   // match after it (the field is constant across matches).
+  //
+  // `pitch.follow_camera` is the third of the set and the one that makes this
+  // a Strikers camera rather than a fixed establishing shot: it points every
+  // projection at camera_follow.ts's smoothed, ball-tracking focus instead of
+  // the whole-pitch centre. It only does anything now that `@gc/screens`'s
+  // `match.ts` actually DRIVES `cameraFollow.update` (see that file's
+  // `updateCameraFollow` -- the port had dropped the Lua's call site, leaving
+  // the module inert and this flag unable to change the picture).
   camera.perspective_mode = true;
   pitch.stadium_mode = true;
+  pitch.follow_camera = true;
   let stadium: Stadium | undefined;
+  // The frame loop owns the authoritative dt; `RenderPort.draw` is handed only
+  // a frame, so the two accumulators it drives (see its own comment) read it
+  // from here. Seeded at one 60Hz step rather than 0 so the very first draw
+  // produces a real velocity instead of a divide-by-zero-guarded no-op.
+  let lastFrameDtSeconds = 1 / 60;
 
   const renderer: RenderPort = {
     draw(frame, _roster) {
@@ -153,6 +183,46 @@ async function main(): Promise<void> {
         });
         sceneRoot.setWorldLayer(stadium);
       }
+
+      // WITHOUT THIS EVERY CHARACTER STANDS STILL.
+      //
+      // `player_renderer_3d.poseFor` blends idle/walk/run by `view.speed` and
+      // phases the gait cycle by `view.gait`, and BOTH come from `viewState` --
+      // a renderer-owned accumulator that no render frame carries. Never
+      // updating it leaves every player at speed 0, so the rig holds the idle
+      // clip however fast they are actually crossing the pitch: players slide
+      // around fully rendered and completely unanimated.
+      //
+      // `@gc/screens`'s `match.ts` is where the Lua drives this, and it does --
+      // but only through `correctionSource()`, which reads the OPTIONAL
+      // `MatchScreenPorts.matchState` port. `real_match_factory.ts` never wires
+      // that port, so `correctionSource()` returns `undefined`,
+      // `updateBaseRenderSmoothing` early-returns, and its `viewState.update`
+      // (and the `cameraFollow.update` beside it) are unreachable in this shell.
+      // That is a pre-existing product-shell gap, not a rendering bug -- and it
+      // is why the match harness, which drives both itself, animates while the
+      // product does not.
+      //
+      // So this entry drives them from the decoded render frame, exactly as
+      // `v2/tools/browser_match_harness/web/match_harness.ts` does. The frame
+      // already carries everything both need: `roster.ids` for stable per-player
+      // identity, the flat SoA player positions, the ball and the field.
+      //
+      // REMOVE THIS BLOCK if `MatchScreenPorts.matchState` is ever wired into
+      // `real_match_factory.ts` -- `match.ts` would then drive the same two
+      // accumulators itself and they would advance twice per frame, running the
+      // gait cycle at double speed. Tracked as its own issue rather than left
+      // as a surprise for whoever wires that port.
+      const players = renderFrame.roster.ids.map((id, index) => ({
+        id,
+        pos: { x: renderFrame.players.x[index] ?? 0, y: renderFrame.players.y[index] ?? 0 },
+      }));
+      viewState.update(players, lastFrameDtSeconds);
+      cameraFollow.update(
+        { field: renderFrame.field, ball: { x: renderFrame.ball.x, y: renderFrame.ball.y }, players },
+        lastFrameDtSeconds,
+      );
+
       sceneRoot.render(renderFrame, {
         pitch: { home_color: HOME_COLOR, away_color: AWAY_COLOR },
         now: performance.now() / 1000,
@@ -213,6 +283,12 @@ async function main(): Promise<void> {
       __gcClickWidget?: (id: string) => boolean;
     };
     devWindow.__gcApp = app;
+    // Same dev-only scene handle the match harness exposes, for the same
+    // reason: a driver script needs to read live three.js state (bone matrices,
+    // materials, draw counts) to VERIFY a rendering change rather than infer it
+    // from a screenshot. Screenshots cannot tell an animating rig from a frozen
+    // one when the characters are also translating across the pitch.
+    (devWindow as { __gcScene?: unknown }).__gcScene = { sceneRoot, glRenderer, THREE };
     // Drives a widget click through the exact same `app.event` seam a real
     // pointer event does (see the click listener below), but computed from
     // the CURRENT live layout instead of externally guessed pixel
@@ -273,10 +349,66 @@ async function main(): Promise<void> {
     menuCanvas.style.display = gl ? "none" : "block";
   }
 
+  // Dev-only per-frame timing ring buffer (stripped from a production `vite
+  // build` with every other `import.meta.env.DEV` branch, like `__gcApp`
+  // above). A CPU profile says WHICH FUNCTIONS cost time; it does not say
+  // which FRAMES were late, and averaged counters (the match harness's
+  // `stats.renderMs` and friends) actively hide that -- a drop is a tail
+  // event, so a mean over a 1s window is the one statistic guaranteed to
+  // miss it. These raw samples are what let a driver line a late frame up
+  // against what the profiler was sampling at that moment.
+  //
+  // `update` vs `draw` is the split that matters first: `app.update` runs the
+  // wasm sim step(s) and screen logic, `draw` runs three.js scene assembly +
+  // GL submission. Blaming the wrong one costs a whole investigation.
+  //
+  // `heap` is `performance.memory.usedJSHeapSize` (Chrome-only, hence the
+  // guarded read): a late frame where the heap SHRANK is a GC pause, which
+  // neither phase timer would otherwise attribute to anything.
+  // `programs`/`geometries`/`textures` are `THREE.WebGLRenderer.info`'s own
+  // live counts. They are here because a GROWING program count is the single
+  // most damning per-frame signal available: every new program is a shader
+  // compile + link + `getProgramInfoLog`, and that last call forces a
+  // synchronous GPU round-trip. A compile mid-match is a dropped frame, and it
+  // is invisible to phase timers that only say "draw was slow this once".
+  interface FrameSample {
+    readonly t: number;
+    readonly delta: number;
+    readonly update: number;
+    readonly draw: number;
+    readonly heap: number;
+    readonly inMatch: boolean;
+    readonly programs: number;
+    readonly geometries: number;
+    readonly textures: number;
+  }
+  const frameSamples: FrameSample[] = [];
+  const MAX_FRAME_SAMPLES = 20000;
+  if (import.meta.env.DEV) {
+    (window as unknown as { __gcFrames?: () => readonly FrameSample[] }).__gcFrames = () => frameSamples;
+    // Long tasks are the other half: a >50ms task blocks the frame loop
+    // outright, and its ATTRIBUTION (script URL) is often the fastest route
+    // to the cause. Wrapped because `longtask` is not observable in every
+    // engine and an unsupported entry type throws.
+    try {
+      const longTasks: { t: number; duration: number; name: string }[] = [];
+      (window as unknown as { __gcLongTasks?: () => readonly unknown[] }).__gcLongTasks = () => longTasks;
+      new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          longTasks.push({ t: entry.startTime, duration: entry.duration, name: entry.name });
+        }
+      }).observe({ entryTypes: ["longtask"] });
+    } catch {
+      // no longtask support -- the frame samples above still stand alone
+    }
+  }
+
   let lastFrameTime = performance.now();
   function frame(now: number): void {
     const dt = Math.min(Math.max((now - lastFrameTime) / 1000, 0), MAX_FRAME_DT_SECONDS);
+    const delta = now - lastFrameTime;
     lastFrameTime = now;
+    lastFrameDtSeconds = dt;
 
     for (const evt of keyboard.drainKeyEvents()) {
       app.event(evt);
@@ -286,7 +418,9 @@ async function main(): Promise<void> {
       app.event(evt);
     }
 
+    const tUpdate = performance.now();
     app.update(dt);
+    const tDraw = performance.now();
 
     const layout = menuLayout(app.stack.current());
     if (layout !== undefined) {
@@ -296,6 +430,21 @@ async function main(): Promise<void> {
     } else {
       setLayerVisibility(true);
       app.stack.current()?.draw?.();
+    }
+
+    if (import.meta.env.DEV && frameSamples.length < MAX_FRAME_SAMPLES) {
+      const tEnd = performance.now();
+      frameSamples.push({
+        t: now,
+        delta,
+        update: tDraw - tUpdate,
+        draw: tEnd - tDraw,
+        heap: (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0,
+        inMatch: layout === undefined,
+        programs: glRenderer.info.programs?.length ?? 0,
+        geometries: glRenderer.info.memory.geometries,
+        textures: glRenderer.info.memory.textures,
+      });
     }
 
     requestAnimationFrame(frame);

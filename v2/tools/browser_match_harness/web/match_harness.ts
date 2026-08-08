@@ -49,7 +49,7 @@
 
 import init, { Session, __getRawExports } from "../../../ts/packages/wasm/dist/pkg-web/gc_wasm.js";
 import * as THREE from "three";
-import { SceneRoot, Stadium, camera, frameBuffer, pitch, viewState } from "@gc/render";
+import { SceneRoot, Stadium, camera, cameraFollow, frameBuffer, pitch, viewState } from "@gc/render";
 import type { frameBufferTypes } from "@gc/render";
 
 const DT = 1 / 60;
@@ -166,6 +166,12 @@ async function main(): Promise<void> {
   await init();
 
   const glRenderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
+  // Matches browser_main.ts's product setting, and matters MORE here than there:
+  // this page exists to report per-frame cost, and leaving three.js's default
+  // `getProgramInfoLog` sync-after-every-link on would put a stall the product
+  // does not pay into the numbers this harness publishes. See browser_main.ts's
+  // own comment for the measurement.
+  glRenderer.debug.checkShaderErrors = params.get("shaderErrors") === "1";
   // Same reason as the render bench: `SceneRoot.render` runs several internal
   // passes (bloom), each of which resets the counter at its own start when
   // `autoReset` is left on, so the number read afterwards would be the LAST
@@ -270,6 +276,12 @@ async function main(): Promise<void> {
     // two pitches or none.
     camera.perspective_mode = true;
     pitch.stadium_mode = true;
+    // Matches browser_main.ts's product flag set, so a screenshot taken here
+    // is representative of the real shot. Unlike the product this harness
+    // drives `cameraFollow.update` itself (see the loop below): it renders
+    // frames straight from a wasm `Session` and never mounts `@gc/screens`'s
+    // `match.ts`, which is what drives the follow camera in the real app.
+    pitch.follow_camera = true;
     const stadium = new Stadium({
       field: frameNow().field,
       home_color: HOME_COLOR,
@@ -312,8 +324,18 @@ async function main(): Promise<void> {
     // how fast they are actually moving across the pitch. `MatchScreen` and
     // `benchmark.ts` both call this; this page did not, which is why its
     // characters slid around frozen next to the Lua benchmark's running ones.
-    viewState.update(
-      roster.ids.map((id, i) => ({ id, pos: { x: frame.players.x[i] ?? 0, y: frame.players.y[i] ?? 0 } })),
+    const followPlayers = roster.ids.map((id, i) => ({ id, pos: { x: frame.players.x[i] ?? 0, y: frame.players.y[i] ?? 0 } }));
+    viewState.update(followPlayers, ticks * DT);
+    // The follow camera has the same "renderer-owned accumulator nothing else
+    // updates" shape the comment above describes for `viewState`: without this
+    // its smoothed focus never leaves `undefined`, `cameraFollow.view` returns
+    // `undefined`, and `pitch.follow_camera` above silently does nothing --
+    // the page would draw the fixed whole-pitch shot while claiming to show
+    // the product's framing. In the real app `@gc/screens`'s `match.ts` owns
+    // this call (its `updateCameraFollow`); this page has no screen stack, so
+    // it drives it directly, from the same decoded frame.
+    cameraFollow.update(
+      { field: frame.field, ball: { x: frame.ball.x, y: frame.ball.y }, players: followPlayers },
       ticks * DT,
     );
     decodeMsInWindow += performance.now() - tDecode;
