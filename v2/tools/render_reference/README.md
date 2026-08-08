@@ -87,6 +87,23 @@ and an active charge meter + pass target exercise every optional
 `PlayerRenderOptions`/overlay field at once. See `capture_pitch_reference.lua`
 for the exact literal.
 
+The **viewport** is pinned to the field's own size (200x120), and unlike the
+field's proportions that is not arbitrary (#414). LÖVE renders the match at
+exactly one viewport and can only render at one — `conf.lua` pins a
+non-resizable 960x540 window and `sim/env_config.lua`'s `DEFAULT_FIELD` is
+960x540 — so `vp == field` in every frame LÖVE has ever drawn. That is also
+the only configuration in which Lua's projection is right: it puts the
+world-to-pixel factor into screen positions and leaves the depth scale (the
+sole input to every entity size) a pure ratio, which is harmless exactly when
+that factor is 1. `packages/render/src/camera.ts` now carries the factor into
+both, so the two builds agree on the whole draw list at `vp == field` and
+deliberately disagree away from it. Capturing here at `vp == field` keeps this
+a full-fidelity differential over the configuration LÖVE actually ships,
+instead of pinning v2 to a LÖVE defect at a viewport LÖVE cannot produce.
+(This capture previously ran at 1280x720. Entity SIZES are unchanged by the
+switch — the old scale had no viewport term at all — so only screen positions
+moved.)
+
 `control.controlled = 1` and `control.pass_target = 3` are deliberately
 1-based Lua roster slots that do NOT equal their own zero-based array position
 (player 1 is roster slot 1, at TS array index 0; player 3 is roster slot 3, at
