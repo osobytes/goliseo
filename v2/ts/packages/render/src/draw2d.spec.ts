@@ -14,9 +14,20 @@
 // used against the HUD specifically (draw2d.ts's `PaintOptions` doc comment
 // explains the choice).
 
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import * as THREE from "three";
-import { appendCommands, disposeObject, paint, DrawList, rotateAround, type DrawCommand, type PivotTransform, type TextCommand } from "./draw2d.ts";
+import {
+  appendCommands,
+  disposeObject,
+  materialCacheSize,
+  paint,
+  resetMaterialCache,
+  DrawList,
+  rotateAround,
+  type DrawCommand,
+  type PivotTransform,
+  type TextCommand,
+} from "./draw2d.ts";
 
 function near(actual: number, expected: number, eps = 1e-9): void {
   expect(Math.abs(actual - expected)).toBeLessThanOrEqual(eps);
@@ -305,5 +316,225 @@ describe("disposeObject", () => {
 
   it("is a no-op for a plain Object3D carrying no owned resources", () => {
     expect(() => disposeObject(new THREE.Object3D())).not.toThrow();
+  });
+});
+
+// #403: the match rendered at exactly half the display refresh rate because
+// `paint`'s per-frame clear disposed every material, which dropped three.js's
+// refcount on the compiled GL program behind it to zero -- five programs
+// destroyed, recompiled and SYNCHRONOUSLY re-validated every frame, ~7.8 ms of
+// a 13.33 ms budget. None of that is observable without a GL context, but the
+// JS-side invariant that prevents it entirely is: materials with identical
+// parameters must be the SAME object across frames, and `paint` must not
+// dispose them. That is what this suite pins.
+describe("draw2d material cache (#403)", () => {
+  beforeEach(() => {
+    resetMaterialCache();
+  });
+
+  const fill = (color: readonly [number, number, number], alpha?: number, blend?: "add"): DrawCommand => ({
+    kind: "rect",
+    mode: "fill",
+    x: 0,
+    y: 0,
+    w: 4,
+    h: 4,
+    color,
+    ...(alpha !== undefined ? { alpha } : {}),
+    ...(blend !== undefined ? { blend } : {}),
+  });
+
+  const stroke = (color: readonly [number, number, number]): DrawCommand => ({
+    kind: "line",
+    points: [0, 0, 4, 4],
+    color,
+  });
+
+  function materialOf(group: THREE.Group, index = 0): THREE.Material {
+    const child = group.children[index];
+    expect(child).toBeDefined();
+    const owner = child as THREE.Mesh | THREE.Line;
+    const material = owner.material;
+    expect(Array.isArray(material)).toBe(false);
+    return material as THREE.Material;
+  }
+
+  it("hands the same material instance to identical commands across repainted frames", () => {
+    const group = new THREE.Group();
+    paint(group, [fill([1, 0, 0])]);
+    const first = materialOf(group);
+    paint(group, [fill([1, 0, 0])]);
+    expect(materialOf(group)).toBe(first);
+    paint(group, [fill([1, 0, 0])]);
+    expect(materialOf(group)).toBe(first);
+  });
+
+  it("does not dispose a shared material when paint() clears the object holding it", () => {
+    const group = new THREE.Group();
+    paint(group, [fill([0, 1, 0])]);
+    const material = materialOf(group);
+    let disposed = false;
+    material.dispose = () => {
+      disposed = true;
+    };
+
+    paint(group, []);
+
+    expect(disposed).toBe(false);
+  });
+
+  it("still disposes the geometry of every cleared child", () => {
+    const group = new THREE.Group();
+    paint(group, [fill([0, 0, 1])]);
+    const mesh = group.children[0] as THREE.Mesh;
+    let disposed = false;
+    mesh.geometry.dispose = () => {
+      disposed = true;
+    };
+
+    paint(group, []);
+
+    expect(disposed).toBe(true);
+  });
+
+  it("separates strokes from fills, and separates colour, alpha and blend", () => {
+    const group = new THREE.Group();
+    paint(group, [
+      fill([1, 0, 0]),
+      fill([0, 1, 0]),
+      fill([1, 0, 0], 0.5),
+      fill([1, 0, 0], undefined, "add"),
+      stroke([1, 0, 0]),
+    ]);
+    const materials = group.children.map((_, i) => materialOf(group, i));
+    expect(new Set(materials).size).toBe(5);
+    expect(materialCacheSize()).toBe(5);
+  });
+
+  it("treats an explicit alpha of 1 as distinct from no alpha (only one sets transparent)", () => {
+    const group = new THREE.Group();
+    paint(group, [fill([1, 0, 0]), fill([1, 0, 0], 1)]);
+    const opaque = materialOf(group, 0);
+    const transparent = materialOf(group, 1);
+    expect(opaque).not.toBe(transparent);
+    expect(opaque.transparent).toBe(false);
+    expect(transparent.transparent).toBe(true);
+  });
+
+  it("keys on PaintOptions.depthTest, so two callers never fight over one instance", () => {
+    const tested = new THREE.Group();
+    const untested = new THREE.Group();
+    appendCommands(tested, [fill([1, 1, 0])], { depthTest: true });
+    appendCommands(untested, [fill([1, 1, 0])], { depthTest: false });
+
+    const a = materialOf(tested);
+    const b = materialOf(untested);
+    expect(a).not.toBe(b);
+    expect(a.depthTest).toBe(true);
+    expect(b.depthTest).toBe(false);
+
+    // And building the depth-tested one again must not have flipped the other.
+    appendCommands(tested, [fill([1, 1, 0])], { depthTest: true });
+    expect(b.depthTest).toBe(false);
+  });
+
+  it("shares one material across a batched stroke run, since colour is per-vertex there", () => {
+    const group = new THREE.Group();
+    const dl = new DrawList();
+    dl.line([0, 0, 4, 0], [1, 0, 0]);
+    dl.line([4, 0, 8, 0], [0, 1, 0]);
+    paint(group, dl.commands, { batchStrokes: true });
+    expect(group.children).toHaveLength(1);
+    const batched = materialOf(group);
+    expect((batched as THREE.LineBasicMaterial).vertexColors).toBe(true);
+
+    paint(group, dl.commands, { batchStrokes: true });
+    expect(materialOf(group)).toBe(batched);
+  });
+
+  it("stays bounded under LRU eviction", () => {
+    const group = new THREE.Group();
+    paint(group, [fill([0, 0, 0])]);
+    const oldest = materialOf(group);
+    // Distinct colours, so distinct keys. Well past the 512-entry cap.
+    for (let i = 1; i < 700; i += 1) {
+      paint(group, [fill([i / 1024, 0, 0])]);
+    }
+    expect(materialCacheSize()).toBeLessThanOrEqual(512);
+    // Least-recently-used, so the very first key is long gone, and dropping it
+    // handed that material back to the ordinary per-object path.
+    expect(oldest.userData["draw2dSharedMaterial"]).toBe(false);
+    // The newest is still cached, and still shared.
+    expect(materialOf(group).userData["draw2dSharedMaterial"]).toBe(true);
+  });
+
+  // The invariant that makes sharing safe at all, and the first thing a
+  // reviewer of three.js's own `FullScreenQuad` bug would look for: module-
+  // level state must never be freed while a participant still holds it.
+  // Eviction happens on INSERT — i.e. midway through building a frame, since
+  // `pitch.draw` issues one `paint` then several `appendCommands` — so a cache
+  // that disposed on eviction would be disposing a material that an object
+  // built earlier in the SAME frame is still using.
+  it("never disposes on eviction — it hands ownership back instead", () => {
+    const group = new THREE.Group();
+    paint(group, [fill([0, 0, 0])]);
+    const material = materialOf(group);
+    let disposed = false;
+    material.addEventListener("dispose", () => {
+      disposed = true;
+    });
+
+    for (let i = 1; i < 700; i += 1) {
+      paint(group, [fill([i / 1024, 0, 0])]);
+    }
+
+    expect(materialCacheSize()).toBeLessThanOrEqual(512);
+    expect(disposed).toBe(false);
+  });
+
+  it("a dropped material is disposed by the ordinary path once its object is cleared", () => {
+    const group = new THREE.Group();
+    paint(group, [fill([0, 0, 0])]);
+    const material = materialOf(group);
+    let disposed = false;
+    material.addEventListener("dispose", () => {
+      disposed = true;
+    });
+    resetMaterialCache();
+    expect(material.userData["draw2dSharedMaterial"]).toBe(false);
+    expect(disposed).toBe(false);
+
+    // The object still holds it, so clearing that object now owns the disposal.
+    paint(group, []);
+
+    expect(disposed).toBe(true);
+  });
+
+  it("resetMaterialCache empties the cache without disposing anything", () => {
+    const group = new THREE.Group();
+    paint(group, [fill([1, 0, 1])]);
+    const material = materialOf(group);
+    let disposed = false;
+    material.addEventListener("dispose", () => {
+      disposed = true;
+    });
+    expect(materialCacheSize()).toBe(1);
+
+    resetMaterialCache();
+
+    expect(materialCacheSize()).toBe(0);
+    expect(disposed).toBe(false);
+    expect(material.userData["draw2dSharedMaterial"]).toBe(false);
+  });
+
+  it("a frame after a reset builds a fresh material rather than reviving the old one", () => {
+    const group = new THREE.Group();
+    paint(group, [fill([0.25, 0.5, 0.75])]);
+    const before = materialOf(group);
+    resetMaterialCache();
+    paint(group, [fill([0.25, 0.5, 0.75])]);
+    const after = materialOf(group);
+    expect(after).not.toBe(before);
+    expect(after.userData["draw2dSharedMaterial"]).toBe(true);
   });
 });

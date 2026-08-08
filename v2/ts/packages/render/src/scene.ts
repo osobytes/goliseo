@@ -37,7 +37,7 @@ import * as THREE from "three";
 import { pitch, type PitchDrawOptions, type PitchViewport, type RenderFrame } from "./pitch.ts";
 import { Bloom, type BloomConfig } from "./bloom.ts";
 import { drawMatchHud, type MatchHudLayout, type MatchHudModel, type MatchHudTheme, type MatchHudViewport } from "./match_hud.ts";
-import { disposeObject } from "./draw2d.ts";
+import { disposeObject, resetMaterialCache } from "./draw2d.ts";
 
 /** `{w, h}` in pixels. Shared shape with `pitch.ts`'s `PitchViewport`. */
 export type SceneViewport = PitchViewport;
@@ -275,11 +275,25 @@ export class SceneRoot {
    * targets, and the renderer. Idempotent -- a second call is a no-op rather
    * than an error, since callers commonly `dispose()` from more than one
    * teardown path.
+   *
+   * `resetMaterialCache()` FIRST, and the order is load-bearing. draw2d.ts's
+   * shared-material cache (#403) marks its entries so that `disposeObject`
+   * skips them -- that is what stops `paint`'s per-frame clear from
+   * destroying and recompiling the GL programs behind them. At teardown that
+   * same mark would mean `clearGroup` below disposes almost nothing, and
+   * three.js frees a program only through `material.dispose()`: neither
+   * `WebGLPrograms.dispose()` nor `WebGLProperties.dispose()` walks the
+   * existing `programs` array, so `renderer.dispose()` does not pick up the
+   * slack (checked against the installed three source, not assumed -- the
+   * same standard bloom.ts's own `dispose` was written to). Emptying the
+   * cache first clears the mark, handing every material back to the ordinary
+   * path so the `clearGroup` calls actually free them.
    */
   dispose(): void {
     if (this.disposed) {
       return;
     }
+    resetMaterialCache();
     this.clearGroup(this.pitchGroup);
     this.clearGroup(this.hudGroup);
     this.scene.remove(this.pitchGroup, this.hudGroup);
