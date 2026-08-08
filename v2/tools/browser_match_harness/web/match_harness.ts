@@ -73,6 +73,10 @@ interface HarnessStats {
   decodeMs: number;
   /** Mean ms per frame inside `SceneRoot.render` -- scene rebuild + GL. */
   renderMs: number;
+  /** Mean ms per frame in `SceneRoot.populate` alone: CPU scene assembly, no
+   * rasterisation. `renderMs - populateMs` is the GL half (plus, in a real
+   * window, the vsync stall the driver blocks on). */
+  populateMs: number;
   /** Ticks the most recent render call consumed. >1 means the renderer is
    * behind the simulation, which is also when the shell's known
    * one-sample-per-render-call input bug would double an edge. */
@@ -130,6 +134,7 @@ async function main(): Promise<void> {
     simMs: 0,
     decodeMs: 0,
     renderMs: 0,
+    populateMs: 0,
     ticksLastFrame: 0,
     tick: 0,
     timeLeft: 0,
@@ -185,12 +190,23 @@ async function main(): Promise<void> {
   //
   // Capped at 3 so a HiDPI display cannot quietly ask for a 9x-area buffer.
   function pixelRatioForWindow(): number {
+    // `?ratio=` pins it, for separating "we render more pixels than love.js
+    // does" from "something is pathologically slow". love.js is effectively
+    // ratio 1: a 960x540 buffer stretched by the browser.
+    const pinned = params.get("ratio");
+    if (pinned !== null) {
+      return Math.max(Number(pinned), 0.1);
+    }
     const fit = Math.min(window.innerWidth / width, window.innerHeight / height);
     return Math.min(Math.max(fit, 1) * (window.devicePixelRatio || 1), 3);
   }
+  // `?bloom=0` turns the post-process off, for attributing frame cost. The
+  // product always has it on; this is a measurement lever, not a setting.
+  const bloomEnabled = params.get("bloom") !== "0";
   const sceneRoot = new SceneRoot(glRenderer, {
     viewport: { w: width, h: height },
     pixelRatio: pixelRatioForWindow(),
+    bloom: { enabled: bloomEnabled },
   });
   window.addEventListener("resize", () => {
     glRenderer.setPixelRatio(pixelRatioForWindow());
@@ -230,6 +246,7 @@ async function main(): Promise<void> {
   let simMsInWindow = 0;
   let decodeMsInWindow = 0;
   let renderMsInWindow = 0;
+  let populateMsInWindow = 0;
   let windowStart = lastTime;
 
   // Diagnostics handle. This page exists to be measured, and attributing draw
@@ -278,10 +295,19 @@ async function main(): Promise<void> {
     decodeMsInWindow += performance.now() - tDecode;
     const tRender = performance.now();
     glRenderer.info.reset();
-    sceneRoot.render(frame, {
+    const sceneOptions = {
       pitch: { home_color: HOME_COLOR, away_color: AWAY_COLOR },
       now: now / 1000,
-    });
+    };
+    // Split deliberately: `populate` assembles the scene graph and rasterises
+    // nothing, so this separates CPU scene-building from GL time. `render`
+    // calls `populate` itself, so calling it here would do the work twice --
+    // time `populate`, then let `render` redo it, and subtract. The double
+    // assembly makes `renderMs` here larger than the product's; the SPLIT is
+    // what this is for, not the absolute.
+    sceneRoot.populate(frame, sceneOptions);
+    populateMsInWindow += performance.now() - tRender;
+    sceneRoot.render(frame, sceneOptions);
     renderMsInWindow += performance.now() - tRender;
     stats.drawCalls = glRenderer.info.render.calls;
 
@@ -300,16 +326,18 @@ async function main(): Promise<void> {
       stats.simMs = Number((simMsInWindow / Math.max(framesInWindow, 1)).toFixed(2));
       stats.decodeMs = Number((decodeMsInWindow / Math.max(framesInWindow, 1)).toFixed(2));
       stats.renderMs = Number((renderMsInWindow / Math.max(framesInWindow, 1)).toFixed(2));
+      stats.populateMs = Number((populateMsInWindow / Math.max(framesInWindow, 1)).toFixed(2));
       simMsInWindow = 0;
       decodeMsInWindow = 0;
       renderMsInWindow = 0;
+      populateMsInWindow = 0;
       framesInWindow = 0;
       ticksInWindow = 0;
       windowStart = now;
       if (readout !== null) {
         readout.textContent =
           `fps ${stats.fps}   sim ${stats.tps}/s   ticks/frame ${stats.ticksLastFrame}\n` +
-          `ms/frame  sim ${stats.simMs}  decode ${stats.decodeMs}  render ${stats.renderMs}\n` +
+          `ms/frame  sim ${stats.simMs}  decode ${stats.decodeMs}  populate ${stats.populateMs}  render ${stats.renderMs}\n` +
           `draw calls ${stats.drawCalls}   tick ${stats.tick}   ${stats.score}   ${stats.timeLeft.toFixed(1)}s left`;
       }
     }
