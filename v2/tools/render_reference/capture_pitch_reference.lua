@@ -272,7 +272,30 @@ local opts = {
     away_color = { 1.0, 0.55, 0.25 },
 }
 
-local vp = { w = 1280, h = 720 }
+-- The viewport is the FIELD's own size, and that is load-bearing (#414).
+--
+-- LÖVE renders the match at exactly one viewport: conf.lua pins a
+-- non-resizable 960x540 window and sim/env_config.lua's DEFAULT_FIELD is
+-- 960x540, so `vp == field` in every frame LÖVE has ever drawn. This capture
+-- previously used 1280x720 and called it "the product's actual viewport",
+-- which was never true of the LÖVE build.
+--
+-- It matters because `game/render/camera.lua`'s fixed projection only puts the
+-- world-to-pixel factor into screen POSITIONS, never into the depth scale
+-- entity sizes are derived from. At `vp == field` that missing factor is 1 and
+-- the formula is exactly right; away from it, LÖVE's projection stretches the
+-- pitch and leaves entities at a fixed pixel size. v2's
+-- `packages/render/src/camera.ts` fixes that (see its `projectFixed` header),
+-- so the two builds agree on the whole draw list at `vp == field` and
+-- deliberately disagree elsewhere.
+--
+-- Capturing here at `vp == field` therefore keeps this a real, full-fidelity
+-- differential over the configuration LÖVE actually ships, instead of pinning
+-- v2 to a LÖVE defect at a viewport LÖVE cannot produce. Note that entity
+-- SIZES in the capture are unchanged by this switch -- the old `scale` had no
+-- viewport term at all, so every size term is identical to the 1280x720
+-- capture and this fixture's discrimination on sizes is exactly what it was.
+local vp = { w = 200, h = 120 }
 
 pitch.draw(frame, vp, opts)
 
