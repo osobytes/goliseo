@@ -100,25 +100,35 @@ async function main(): Promise<void> {
   const seed = Number(params.get("seed") ?? "1");
   // RENDER AT THE FIELD'S OWN SIZE AND UPSCALE, which is what the love.js
   // build does ("keeps the 960x540 logical canvas at 16:9",
-  // docs/online/browser_build.md) and what the projection quietly requires.
+  // docs/online/browser_build.md).
   //
-  // `camera.projectFixed` -- ported character for character from Lua -- puts
-  // the viewport factor in the SCREEN POSITION and not in the depth scale:
+  // HISTORY, and why this is no longer load-bearing. This started as a
+  // workaround for #414: `camera.projectFixed` -- ported character for
+  // character from Lua -- put the viewport factor in the SCREEN POSITION and
+  // not in the depth scale:
   //
   //     sx    = vp.w/2 + (wx - field.w/2) * scale * (vp.w / field.w)
   //     scale = far_scale + (near_scale - far_scale) * t
   //
   // Everything sized off that scale (`r = radius * scale`, and so every
-  // character, billboard, shadow and reticle derived from it) therefore has
-  // NO viewport factor. That is invisible while vp.w == field.w, which is the
-  // only case Lua ever runs and the only case the specs cover. Render at the
-  // window's native size instead and the pitch stretches while the players
-  // stay put -- measured: a 2x viewport moved pitch width 830 -> 1634 px and
-  // left character ppm bit-identical at 29.8969.
+  // character, billboard, shadow and reticle derived from it) therefore had
+  // NO viewport factor. That was invisible while vp.w == field.w, which is
+  // the only case Lua ever runs and was the only case the specs covered.
+  // Rendering at the window's native size instead stretched the pitch while
+  // the players stayed put -- measured: a 2x viewport moved pitch width
+  // 830 -> 1634 px and left character ppm bit-identical at 29.8969.
   //
-  // So the drawing buffer stays at field size and CSS scales it up. Fewer
-  // pixels, and the invariant the projection assumes holds by construction
-  // rather than by luck.
+  // `camera.ts`'s `projectFixed` now carries a single uniform world-to-pixel
+  // factor into both positions and sizes, so rendering at the window's native
+  // size would be CORRECT here too, and `packages/app`'s browser entry does
+  // exactly that with no workaround of its own.
+  //
+  // Pinning is kept because it is still the right choice for THIS page for
+  // two independent reasons that have nothing to do with the defect: the
+  // drawing buffer stays small (fewer pixels, and this page exists to measure
+  // frame cost, so the pixel count should be a constant of the harness rather
+  // than a property of whatever window it was opened in), and a fixed logical
+  // size keeps successive runs comparable. `?width=`/`?height=` override it.
   const width = Number(params.get("width") ?? "960");
   const height = Number(params.get("height") ?? "540");
   // Long by default: this page is for watching, and a match that ends after

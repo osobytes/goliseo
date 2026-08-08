@@ -87,6 +87,42 @@ and an active charge meter + pass target exercise every optional
 `PlayerRenderOptions`/overlay field at once. See `capture_pitch_reference.lua`
 for the exact literal.
 
+The **viewport** is pinned to the field's own size (200x120), and unlike the
+field's proportions that is not arbitrary (#414). It previously ran at
+1280x720, described as "the product's actual viewport" — which was never true
+of the LÖVE build (`conf.lua` pins a non-resizable 960x540 window and
+`sim/env_config.lua`'s `DEFAULT_FIELD` is 960x540, so `vp == field` in every
+frame LÖVE has ever drawn).
+
+That does **not** make this fixture the shipping configuration, and it cannot
+be: its field is the synthetic 200x120 above, and LÖVE never renders at
+200x120. What `vp == field` buys here is narrower. `game/render/camera.lua`
+puts the world-to-pixel factor into screen positions only and leaves the depth
+scale (the sole input to every entity size) a pure ratio;
+`packages/render/src/camera.ts` now carries one uniform factor into both. The
+two therefore agree exactly when that factor is 1 — i.e. at `vp == field` —
+and diverge otherwise, in a shape that depends on the aspect ratios:
+
+- **Same aspect** (960x540 field at 1280x720): positions stay identical and
+  only `scale` differs, by one constant. `camera.spec.ts`'s kept 1280x720 rows
+  characterise exactly that.
+- **Different aspect**, which is this fixture's old case: 200x120 is 5:3 while
+  1280x720 is 16:9, so Lua's `vp.w/field.w` (6.4) and the uniform fit
+  `min(6.4, 6.0)` (6.0) disagree — positions *and* sizes both diverge, and
+  pinning the fixture would mean characterising a two-part divergence across
+  all 101 records.
+
+Capturing at `vp == field` collapses that to zero divergence, keeping this a
+plain equality differential. Entity SIZES are unchanged by the switch — the
+old scale had no viewport term at all — so only screen positions moved.
+
+This capture is therefore **not** the regression guard for #414: at
+`vp == field` the fit factor is 1 and the fixed formula is byte-identical to
+the pre-fix one, so reverting `camera.ts` leaves every record here passing.
+Viewport-safety coverage lives in `camera.spec.ts`'s 1280x720 differential
+rows and in `pitch.spec.ts`'s Lua-independent "pitch entity sizes stay in
+proportion to the pitch at any viewport" block.
+
 `control.controlled = 1` and `control.pass_target = 3` are deliberately
 1-based Lua roster slots that do NOT equal their own zero-based array position
 (player 1 is roster slot 1, at TS array index 0; player 3 is roster slot 3, at
