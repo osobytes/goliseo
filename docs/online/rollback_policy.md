@@ -56,10 +56,11 @@ rows and the one resulting divergence boundary.
 For each missing remote row on tick `N`, search that slot's authoritative
 history at or before `N` and choose the greatest tick found:
 
-1. Copy `move_x`, `move_y`, and `held` from that sample.
+1. Copy `move_x`, `move_y`, `held`, and `aim` from that sample.
 2. Set `edges` to zero unconditionally.
 3. If no prior authoritative sample exists, use the fully neutral sample:
-   zero axes, zero held bits, and zero edges.
+   zero axes, zero held bits, zero edges, and `aim = AIM_NONE` — never `0`, which
+   is a legal direction.
 
 Future out-of-order arrivals are never used to predict an earlier tick.
 Predictions chain from the latest authoritative sample, not from another

@@ -3,6 +3,7 @@
 -- control wires through the real framing, and completes the real manual
 -- offer/answer handshake. No browser, no JavaScript, no display.
 
+local contract = require("game.transport.contract")
 local coordinator = require("game.online.coordinator")
 local lobby_link = require("game.online.lobby_link")
 local lobby_model = require("game.screens.lobby_model")
@@ -187,7 +188,10 @@ t.describe("lobby control framing", function()
     t.it("keeps every frame inside the transport payload bound", function()
         local frames = assert(lobby_link.frame(string.rep("y", protocol.MAX_WIRE_BYTES)))
         for _, frame in ipairs(frames) do
-            t.is_true(#frame <= 1024, "frame exceeds the transport payload bound")
+            t.is_true(
+                #frame <= contract.MAX_PAYLOAD_BYTES,
+                "frame exceeds the transport payload bound"
+            )
         end
     end)
 

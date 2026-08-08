@@ -1415,6 +1415,7 @@ local function guest_apply_authority(driver, batch, messages)
                 or prior.move_y ~= row.sample.move_y
                 or prior.held ~= row.sample.held
                 or prior.edges ~= row.sample.edges
+                or prior.aim ~= row.sample.aim
             then
                 terminate(
                     driver,

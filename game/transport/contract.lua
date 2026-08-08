@@ -156,10 +156,19 @@
 ---@class TransportContractModule
 local contract = {}
 
-contract.VERSION = 1
+contract.VERSION = 2
 contract.DEFAULT_QUEUE_LIMIT = 64
 contract.MAX_QUEUE_LIMIT = 256
-contract.MAX_PAYLOAD_BYTES = 1024
+-- Raised from 1024 by #316, which added a fifth byte to every input sample and
+-- took the maximal host batch from 958 to 1054 bytes -- past the old bound before
+-- any margin. 1280 is the IPv6 minimum MTU, the smallest datagram every path is
+-- required to carry, and the next such landmark above 1024; it is a bound with an
+-- external meaning rather than a round number chosen to fit. It leaves the
+-- maximal batch 226 spare against the 64-byte margin `input_protocol` declares,
+-- and admits one further additive sample byte before this has to be revisited.
+-- The proof bridge in `scripts/webrtc_star_host.js` and the web shim in
+-- `scripts/web_build.py` enforce the same number and must move with it.
+contract.MAX_PAYLOAD_BYTES = 1280
 
 -- Host-star bounds. One host endpoint addresses at most seven guest links.
 contract.MAX_GUESTS = 7

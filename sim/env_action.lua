@@ -23,6 +23,7 @@ local input_frame = require("sim.input_frame")
 ---@class EnvSlotAction
 ---@field version integer? -- Defaults to EnvAction.VERSION when omitted.
 ---@field move { x: number, y: number }? -- Continuous, inside the unit disc; nil means still.
+---@field aim { x: number, y: number }? -- Continuous aim direction; nil means aim follows move.
 ---@field held table<InputHeldAction, boolean>? -- Continuously held intents for this tick.
 ---@field edges table<InputEdgeAction, boolean>? -- One-shot intents fired on this tick only.
 
@@ -32,13 +33,16 @@ local input_frame = require("sim.input_frame")
 ---@field privileged boolean -- True when the mask was derived from a privileged view.
 ---@field slot integer
 ---@field move boolean -- Movement is always legal; kept explicit for consumers.
+---@field aim boolean -- Aiming is always legal; kept explicit for consumers.
 ---@field held table<InputHeldAction, boolean>
 ---@field edges table<InputEdgeAction, boolean>
 
 ---@class EnvActionModule
 local env_action = {}
 
-env_action.VERSION = 1
+-- Bumped to 2 by #316: an action carries an independent aim direction, so a v1
+-- action and a v2 action are not the same contract even when their fields agree.
+env_action.VERSION = 2
 
 ---@type InputHeldAction[]
 env_action.HELD_ACTIONS = {
@@ -66,11 +70,13 @@ env_action.EDGE_ACTIONS = {
 local ACTION_FIELDS = {
     version = true,
     move = true,
+    aim = true,
     held = true,
     edges = true,
 }
 
 local MOVE_FIELDS = { x = true, y = true }
+local AIM_FIELDS = { x = true, y = true }
 
 -- Fixed-slot routing gives every slot exactly one player for the whole fixture,
 -- so the legacy "switch to the outfielder nearest the ball" intent has no
@@ -140,6 +146,23 @@ function env_action.validate(action)
         end
         move = { x = x, y = y }
     end
+    -- Aim is a direction, so unlike `move` it is not confined to the unit disc:
+    -- only its angle survives quantization. A nil or zero-length aim is the
+    -- absence of one, which `to_sample` encodes as AIM_NONE.
+    local aim = nil
+    if action.aim ~= nil then
+        if not only_known_fields(action.aim, AIM_FIELDS) then
+            return reject("malformed", "action.aim must be an { x, y } table")
+        end
+        local x = action.aim.x or 0
+        local y = action.aim.y or 0
+        if not is_finite(x) or not is_finite(y) then
+            return reject("malformed", "action.aim components must be finite numbers")
+        end
+        if x ~= 0 or y ~= 0 then
+            aim = { x = x, y = y }
+        end
+    end
     local held = {}
     if action.held ~= nil then
         if type(action.held) ~= "table" then
@@ -170,7 +193,7 @@ function env_action.validate(action)
             edges[key] = value
         end
     end
-    return { version = env_action.VERSION, move = move, held = held, edges = edges }
+    return { version = env_action.VERSION, move = move, aim = aim, held = held, edges = edges }
 end
 
 -- Drop the one-shot edges, keeping held intents. Used when one action is held
@@ -184,9 +207,11 @@ function env_action.without_edges(action)
         held[key] = value
     end
     local move = action.move or { x = 0, y = 0 }
+    local aim = action.aim
     return {
         version = env_action.VERSION,
         move = { x = move.x, y = move.y },
+        aim = aim and { x = aim.x, y = aim.y } or nil,
         held = held,
         edges = {},
     }
@@ -216,11 +241,20 @@ function env_action.to_sample(action)
             edges = edges + input_frame.EDGE_BITS[name]
         end
     end
+    local aim = input_frame.AIM_NONE
+    if normalized.aim ~= nil then
+        local quantized, aim_err = input_frame.quantize_aim(normalized.aim.x, normalized.aim.y)
+        if not quantized then
+            return reject("malformed", aim_err or "action.aim is not quantizable")
+        end
+        aim = quantized
+    end
     local sample, sample_err = input_frame.new_sample({
         move_x = move_x,
         move_y = move_y,
         held = held,
         edges = edges,
+        aim = aim,
     })
     if not sample then
         return reject("malformed", sample_err or "action is not encodable as an InputSample")
@@ -243,9 +277,18 @@ function env_action.from_sample(sample)
     for _, name in ipairs(env_action.EDGE_ACTIONS) do
         edges[name] = input_frame.has_edge(sample, name) == true
     end
+    local aim = nil
+    if sample.aim ~= input_frame.AIM_NONE then
+        local aim_x, aim_y, aim_err = input_frame.dequantize_aim(sample.aim)
+        if not aim_x or not aim_y then
+            return reject("malformed", aim_err or "sample aim is not decodable")
+        end
+        aim = { x = aim_x, y = aim_y }
+    end
     return {
         version = env_action.VERSION,
         move = { x = move_x, y = move_y },
+        aim = aim,
         held = held,
         edges = edges,
     }
@@ -275,6 +318,7 @@ function env_action.mask(view)
         privileged = view.profile == "privileged",
         slot = view.slot,
         move = true,
+        aim = true,
         held = {
             shoot = true,
             pass = true,

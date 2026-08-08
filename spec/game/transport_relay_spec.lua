@@ -493,8 +493,11 @@ t.describe("relay topology probe: no peer is the sequencer", function()
             -- One own bundle up; seven other bundles down. The uplink is an
             -- order of magnitude under the decision's predicted 1,190 B/tick,
             -- and the downlink is roughly double its predicted ~650 B/tick.
-            t.is_true(up > 180 and up < 200, ("uplink %.1f B/tick"):format(up))
-            t.is_true(down > 1300 and down < 1400, ("downlink %.1f B/tick"):format(down))
+            -- Re-pinned by #316, which added a fifth byte to every input sample:
+            -- uplink moved 194.4 -> 216.5 B/tick and the downlink with it, because
+            -- a member relays seven bundles that each grew by the same field.
+            t.is_true(up > 205 and up < 230, ("uplink %.1f B/tick"):format(up))
+            t.is_true(down > 1450 and down < 1580, ("downlink %.1f B/tick"):format(down))
             t.near(down / up, 7, 0.05, "a member receives exactly the other seven bundles")
             -- `input_downlink_bytes` counts envelopes only, so that it compares
             -- with the star's figure. The wire also carries the per-line origin
@@ -507,12 +510,11 @@ t.describe("relay topology probe: no peer is the sequencer", function()
                 ("framed %.1f must exceed the envelope figure %.1f"):format(framed, down)
             )
             -- Re-pinned by #243, which added one `confirmed_span` header field to
-            -- every input packet. The envelope figures above are unchanged
-            -- because their brackets are wider than the field; this one is
-            -- tighter and moved from ~1,430 to ~1,463 B/tick, which is the seven
+            -- every input packet, and again by #316's fifth sample byte: this
+            -- figure moved ~1,430 -> ~1,463 -> 1,619.5 B/tick, which is the seven
             -- relayed bundles each carrying the new field.
             t.is_true(
-                framed > 1450 and framed < 1475,
+                framed > 1605 and framed < 1635,
                 ("framed downlink %.1f B/tick"):format(framed)
             )
         end

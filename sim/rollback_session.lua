@@ -202,6 +202,7 @@ local function sample_differs(sample, record)
         or sample.move_y ~= used.move_y
         or sample.held ~= used.held
         or sample.edges ~= used.edges
+        or sample.aim ~= used.aim
 end
 
 ---@param event MatchEvent

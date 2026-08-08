@@ -11,7 +11,7 @@
 
 ---@type OutfieldAiBaselineRecord
 return {
-    baseline_version = 1,
+    baseline_version = 2,
     identity = {
         schema = "outfield_ai_baseline",
         schema_version = 1,
@@ -22,12 +22,12 @@ return {
         content_hash = "e6c01365e6311f12",
         tuning_hash = "4e69ddad3a53984f",
         snapshot_version = 11,
-        input_version = 2,
+        input_version = 3,
         tick_rate = 60,
         seed_first = 20001,
         seed_count = 60,
         seed_hash = "accc11e953c394d0",
-        fixture_hash = "766e9087d00023c3",
+        fixture_hash = "60a2df88f5092c86",
     },
     stats = {
         fun = {
@@ -192,5 +192,5 @@ return {
             max = 44,
         },
     },
-    signature = "8fa6a781d26002fe",
+    signature = "6e71671c3c724450",
 }

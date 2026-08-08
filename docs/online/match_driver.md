@@ -202,13 +202,24 @@ window, eight times". That was a design intent, and #243 measured that it was
 never the transport limit it was assumed to be: a maximally-full 56-row batch
 encoded to 755 of the 1,024 available bytes.
 
-The sizing is now the measurement. Each row costs exactly 12 base64 bytes on top
-of a 92-byte worst-case header, so **77 rows is the hard ceiling** at 1,018 bytes
-and a 78th is refused `wire_too_large`. Nine ticks — 72 rows, 958 bytes — is the
-largest whole-slot-window sizing under that ceiling, and it leaves 66 spare bytes
+The sizing is now the measurement. While `RECORD_BYTES` was 9 each row cost
+exactly 12 base64 bytes on top of a 94-byte worst-case prefix, so 77 rows was the
+hard ceiling at 1,018 bytes and a 78th was refused `wire_too_large`; nine ticks —
+72 rows, 958 bytes — was the largest whole-slot-window sizing under it.
+
+#316 added the aim sample byte, taking `RECORD_BYTES` to 10. Ten raw bytes do not
+divide evenly into base64's three-byte groups, so the block costs
+`4 * ceil(rows * 10 / 3)` and a 72-row batch became 1,054 bytes — over the old
+1,024 bound. **The nine-tick window was deliberately not cut to pay for it.**
+Dropping to eight ticks would have fit at 64 rows, but the two ticks above the
+guest's seven-row window are exactly the repair budget described below, so
+spending them on an input field would have been a netcode behaviour change hiding
+inside an encoding change. The transport payload bound moved 1,024 → 1,280
+instead. At that bound the hard ceiling is **88 rows at 1,270 bytes**, 84 rows is
+the last sizing that still clears the margin, and 72 rows leaves 226 spare bytes
 that `input_protocol_conformance` pins against `MIN_WIRE_MARGIN_BYTES` rather than
-leaving for the next person to rediscover. Ten ticks would need 80 rows and does
-not fit.
+leaving for the next person to rediscover. Ten ticks would need 80 rows, which now
+fits the ceiling but is a separate sizing decision nobody has made.
 
 The 16 rows above steady state are not spare capacity for its own sake. They are
 what the targeted repair below spends, and raising the bound **without** the

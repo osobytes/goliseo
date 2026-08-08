@@ -388,6 +388,7 @@ t.describe("fault harness input script", function()
                 t.eq(left.move_y, right.move_y)
                 t.eq(left.edges, right.edges)
                 t.eq(left.held, right.held)
+                t.eq(left.aim, right.aim)
             end
         end
     end)

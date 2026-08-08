@@ -32,20 +32,23 @@ canonical_vectors.SAMPLE_HASH = "2c43b30a590f0da8"
 -- Derived from the checked-in short match tape and the research example package.
 --
 -- These hashes cover the tape's simulation identity, which includes
--- `match_snapshot.VERSION` and `COMBAT_VERSION`. A bump to either legitimately
--- moves every hash below, so the versions they were computed against are pinned
--- here: a stale vector then reports "computed against snapshot version N" rather
--- than an opaque 16-hex mismatch that looks like corruption. Same lesson as #196,
--- where input-packet goldens pinned at snapshot version 9 met a version-10 encoder
--- and took `main` red.
+-- `match_snapshot.VERSION`, `COMBAT_VERSION` and `input_frame.VERSION`. A bump to
+-- any of them legitimately moves every hash below, so the versions they were
+-- computed against are pinned here: a stale vector then reports "computed against
+-- snapshot version N" rather than an opaque 16-hex mismatch that looks like
+-- corruption. Same lesson as #196, where input-packet goldens pinned at snapshot
+-- version 9 met a version-10 encoder and took `main` red. #316 moved every hash
+-- below by taking `input_frame.VERSION` 2 -> 3 for the aim channel; the two that
+-- do not depend on the tape -- RESPONSE_SET_HASH and FEATURE_REGISTRY_HASH -- are
+-- unchanged, which is the evidence the move is confined to the identity.
 canonical_vectors.SNAPSHOT_VERSION = 11
 canonical_vectors.COMBAT_VERSION = 13
-canonical_vectors.TAPE_CONTENT_HASH = "6f21da271b5a4603"
-canonical_vectors.TRACE_ID = "d7491ed5cc4cd10b"
-canonical_vectors.SIMULATION_IDENTITY_HASH = "4a9637a871966a67"
-canonical_vectors.TRACE_MANIFEST_HASH = "b0247e882a7a63ef"
-canonical_vectors.EVENT_STREAM_HASH = "c9a43ff1a3657659"
-canonical_vectors.SESSION_ENVELOPE_HASH = "0da43aba0805a72b"
+canonical_vectors.TAPE_CONTENT_HASH = "dd4ad6031c4b1e4b"
+canonical_vectors.TRACE_ID = "4fa4ef29576870af"
+canonical_vectors.SIMULATION_IDENTITY_HASH = "554615e995eb3be9"
+canonical_vectors.TRACE_MANIFEST_HASH = "0cf667fe89de67f3"
+canonical_vectors.EVENT_STREAM_HASH = "4c8da15dfddcf5e1"
+canonical_vectors.SESSION_ENVELOPE_HASH = "f7cadeaf6b6169c1"
 canonical_vectors.RESPONSE_SET_HASH = "04b559ff59cea90e"
 -- Covers every authored value in the feature register, including the prose in
 -- `goodhart_failure` and `confounds`. Editing that prose is a register change and

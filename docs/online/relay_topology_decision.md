@@ -78,6 +78,22 @@ a peer's own confirmation report, never substitute for a missing one, so it was 
 demoted and `SETTLE_TIMEOUT_TICKS` / `SETTLE_TIMEOUT_SECONDS` are now the settle phase's only
 bounds. What the relay deletes here is the confirmation-report check that remains.)*
 
+**4. Every byte figure on this page predates #316** *(added 2026-08-01)*. `InputSample` gained a
+fifth byte for aim, so `RECORD_BYTES` moved 9 -> 10 and every measurement above moved with it: the
+relay client upload 194.4 -> **216.5 B/tick**, the relay downlink 1,360.8 -> **1,515.5**, and the
+framed downlink ~1,463 -> **1,619.5** (all re-pinned in `spec/game/transport_relay_spec.lua`). The
+maximal canonical batch moved 958 -> **1,054 bytes**, and `MAX_PAYLOAD_BYTES` moved 1,024 ->
+**1,280** to hold it. The ratios this document argues from — roughly 27x uplink concentration and a
+1.79x relay downlink penalty — are unchanged, because both sides of each ratio grew together. Two
+consequences do change:
+
+- The WebTransport rejection below gets **stronger**, not weaker. It notes that the declared
+  1,024-byte ceiling lands near 1,105 bytes after percent-escaping, already uncomfortable against a
+  ~1,200-byte datagram cap with no fragmentation. At 1,280 the declared ceiling lands near
+  **1,382 bytes**, which is over that cap outright rather than merely close to it.
+- The relay-style tables below still quote **755 B** for the canonical batch. That figure was
+  already stale before this change (see correction 2); it is now stale twice over.
+
 ### What still stands
 
 NAT traversal elimination, host uplink concentration (by more than claimed), removal of the

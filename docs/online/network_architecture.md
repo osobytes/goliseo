@@ -33,7 +33,8 @@ decision to move off the host-star in OMP-4.
 | `input_protocol.MAX_HOST_ROWS` | `72` = `SLOT_COUNT * HOST_WINDOW_ROWS`, sized to the byte budget (#243) | `game/online/input_protocol.lua` |
 | `rollback_input_history.ROLLBACK_WINDOW_TICKS` | `30` ticks = 500 ms | `sim/rollback_input_history.lua:86` |
 | `contract.MAX_GUESTS` | `7`, so one star is at most 1 + 7 endpoints | `game/transport/contract.lua:165` |
-| `contract.MAX_PAYLOAD_BYTES` | `1024` per transport message | `game/transport/contract.lua:162` |
+| `contract.MAX_PAYLOAD_BYTES` | `1280` per transport message, raised from `1024` by #316 for the ten-byte input record | `game/transport/contract.lua` |
+| `input_frame.MAX_SAMPLE_WIRE_BYTES` | `10` ASCII bytes = five sample bytes, including aim (#316) | `sim/input_frame.lua` |
 | `match_driver.SETTLE_TIMEOUT_TICKS` / `_SECONDS` | `60` / `2`, the only bounds on the settle phase (#255) | `game/online/match_driver.lua` |
 
 A note on match length, because it used to be quoted inconsistently. A match is
@@ -150,7 +151,9 @@ Step by step, with the code:
    winner, sorts by `(input tick, slot)`, and emits one host packet.
 6. **Fanned back out.** One batch, broadcast to every guest, bounded at
    `MAX_HOST_ROWS = 72` rows — eight slots times a nine-tick window, sized to the
-   1,024-byte wire budget by #243 rather than to the guest's own retained window.
+   wire budget by #243 rather than to the guest's own retained window. That budget
+   moved to 1,280 bytes in #316, which raised the transport bound rather than cut
+   the window to pay for the aim sample byte.
    Steady state is 56 of those rows; the remainder is headroom the host spends
    re-sending the ticks a lagging guest has *reported* it is still missing. Note
    that the batch carries **all eight slots, including the recipient's own rows**;
@@ -223,8 +226,10 @@ flowchart TD
 
 For each missing **remote** row on tick `N`, the history searches that slot's
 authoritative history at or before `N`, takes the greatest tick found, copies
-`move_x`, `move_y` and `held`, and sets `edges` to zero unconditionally
-(`sim/rollback_input_history.lua:516-543`). With no prior sample at all it uses a
+`move_x`, `move_y`, `held` and `aim`, and sets `edges` to zero unconditionally
+(`sim/rollback_input_history.lua`). Aim repeats with `held` rather than resetting
+with `edges` because it is a continuous channel: "still aiming where they last
+aimed" is the same prediction "still holding what they last held" already makes. With no prior sample at all it uses a
 fully neutral sample.
 
 Zeroing edges is the important part. Shoot, pass, switch, dash, dodge, and the two

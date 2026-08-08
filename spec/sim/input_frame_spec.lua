@@ -152,6 +152,11 @@ t.describe("OMP-1 input frame", function()
             t.eq(sample.move_y, 0)
             t.eq(sample.held, 0)
             t.eq(sample.edges, 0)
+            t.eq(
+                sample.aim,
+                input_frame.AIM_NONE,
+                "a neutral sample aims nowhere; zero is a legal direction"
+            )
         end
         frame.slots[1].move_x = 20
         t.eq(frame.slots[2].move_x, 0, "neutral slots do not share a table")
@@ -177,6 +182,7 @@ t.describe("OMP-1 input frame", function()
             move_y = 64,
             held = 0,
             edges = 0,
+            aim = input_frame.AIM_NONE,
         }))
         t.near(decoded_x, -64 / 127)
         t.near(decoded_y, 64 / 127)
@@ -209,7 +215,7 @@ t.describe("OMP-1 input frame", function()
         t.eq(input_frame.has_edge(next_sample, "shoot"), false)
     end)
 
-    t.it("round-trips the compact four-byte sample without omitting combat bits", function()
+    t.it("round-trips the compact five-byte sample without omitting combat bits", function()
         local all_holds = assert(input_frame.new_sample({
             move_x = -127,
             move_y = 127,
@@ -217,23 +223,28 @@ t.describe("OMP-1 input frame", function()
             edges = input_frame.EDGE_BITS.equipment_pressed,
         }))
         local hold_wire = assert(input_frame.encode_sample(all_holds))
-        t.eq(hold_wire, "00feff20")
+        t.eq(hold_wire, "00feff20ff")
         t.eq(#hold_wire, input_frame.MAX_SAMPLE_WIRE_BYTES)
         local decoded_holds = assert(input_frame.decode_sample(hold_wire))
         t.eq(decoded_holds.move_x, -127)
         t.eq(decoded_holds.move_y, 127)
         t.eq(decoded_holds.held, 255)
         t.eq(decoded_holds.edges, input_frame.EDGE_BITS.equipment_pressed)
+        t.eq(decoded_holds.aim, input_frame.AIM_NONE)
 
         local all_edges = assert(input_frame.new_sample({
             held = 0,
             edges = 127,
         }))
         local edge_wire = assert(input_frame.encode_sample(all_edges))
-        t.eq(edge_wire, "7f7f007f")
+        t.eq(edge_wire, "7f7f007fff")
         t.eq(assert(input_frame.decode_sample(edge_wire)).edges, 127)
 
-        for _, wire in ipairs({ "7F7f007f", "7f7f007", "7f7f0080", "zzzzzzzz" }) do
+        local aimed = assert(input_frame.new_sample({ aim = 0 }))
+        t.eq(assert(input_frame.encode_sample(aimed)), "7f7f000000")
+        t.eq(assert(input_frame.decode_sample("7f7f000000")).aim, 0)
+
+        for _, wire in ipairs({ "7F7f007fff", "7f7f007ff", "7f7f0080ff", "zzzzzzzzzz" }) do
             local value, _, code = input_frame.decode_sample(wire)
             t.eq(value, nil)
             t.eq(code, "malformed")
@@ -258,7 +269,8 @@ t.describe("OMP-1 input frame", function()
         local wire = assert(input_frame.encode(frame))
         t.eq(
             wire,
-            "2|42|-127,64,17,1|0,0,0,0|0,0,0,0|0,0,0,0|0,0,0,0|0,0,0,0|0,0,0,0|127,-64,128,32"
+            "3|42|-127,64,17,1,255|0,0,0,0,255|0,0,0,0,255|0,0,0,0,255|0,0,0,0,255"
+                .. "|0,0,0,0,255|0,0,0,0,255|127,-64,128,32,255"
         )
 
         local decoded = assert(input_frame.decode(wire))
@@ -280,6 +292,12 @@ t.describe("OMP-1 input frame", function()
         t.eq(sample, nil)
         t.eq(sample_code, "malformed")
         sample, _, sample_code = input_frame.new_sample({ edges = 128 })
+        t.eq(sample, nil)
+        t.eq(sample_code, "malformed")
+        sample, _, sample_code = input_frame.new_sample({ aim = 256 })
+        t.eq(sample, nil)
+        t.eq(sample_code, "malformed")
+        sample, _, sample_code = input_frame.new_sample({ aim = -1 })
         t.eq(sample, nil)
         t.eq(sample_code, "malformed")
 
@@ -333,5 +351,61 @@ t.describe("OMP-1 input frame", function()
         value, _, decode_code = input_frame.decode(maximum_wire .. "x")
         t.eq(value, nil)
         t.eq(decode_code, "wire_too_large")
+    end)
+    -- A sign flip here mirrors every aimed pass across the halfway line and
+    -- breaks nothing else, so the convention is pinned rather than inferred.
+    t.it("pins the aim angle convention at zero and a quarter turn", function()
+        local zero_x, zero_y = assert(input_frame.dequantize_aim(0))
+        t.eq(zero_x, 1, "aim code zero points toward increasing x, the way home attacks")
+        t.near(zero_y, 0)
+
+        local quarter_x, quarter_y = assert(input_frame.dequantize_aim(64))
+        t.near(quarter_x, 0, 0.02)
+        t.near(quarter_y, 1, 0.02)
+        t.is_true(quarter_y > 0, "increasing aim codes wind from +x toward +y, down the screen")
+
+        t.eq(assert(input_frame.quantize_aim(1, 0)), 0)
+        t.eq(assert(input_frame.quantize_aim(0, 1)), 64)
+        t.eq(assert(input_frame.quantize_aim(-1, 0)), 128)
+        t.eq(
+            assert(input_frame.quantize_aim(7, 0)),
+            0,
+            "only the angle survives; magnitude is discarded"
+        )
+    end)
+
+    t.it("round-trips every aim direction code and refuses the sentinel a direction", function()
+        for code = 0, input_frame.AIM_STEPS - 1 do
+            local x, y = assert(input_frame.dequantize_aim(code))
+            t.eq(assert(input_frame.quantize_aim(x, y)), code, "aim code " .. code)
+        end
+
+        local none_x, _, _, none_code = input_frame.dequantize_aim(input_frame.AIM_NONE)
+        t.eq(none_x, nil, "AIM_NONE names no direction and must not decode to one")
+        t.eq(none_code, "malformed")
+
+        t.eq(
+            assert(input_frame.quantize_aim(0, 0)),
+            input_frame.AIM_NONE,
+            "a zero-length aim is the absence of a direction, not the zero direction"
+        )
+        local bad, _, bad_code = input_frame.quantize_aim(0 / 0, 1)
+        t.eq(bad, nil)
+        t.eq(bad_code, "malformed")
+    end)
+
+    t.it("carries aim across the full frame wire", function()
+        local slots = neutral_slots()
+        slots[3] = assert(input_frame.new_sample({ move_x = 127, aim = 64 }))
+        local frame = assert(input_frame.new(9, slots))
+        local wire = assert(input_frame.encode(frame))
+        local decoded = assert(input_frame.decode(wire))
+        t.eq(decoded.slots[3].aim, 64)
+        t.eq(decoded.slots[3].move_x, 127, "aim and movement are independent channels")
+        t.eq(decoded.slots[4].aim, input_frame.AIM_NONE)
+        t.eq(assert(input_frame.encode(decoded)), wire)
+
+        local copied = assert(input_frame.copy(frame))
+        t.eq(copied.slots[3].aim, 64)
     end)
 end)

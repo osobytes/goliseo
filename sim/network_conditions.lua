@@ -95,6 +95,7 @@ network_conditions.MAX_TRANSPORT_TICK = 2147483647
 local AXIS_CARDINALITY = input_frame.MOVE_SCALE * 2 + 1
 local HELD_CARDINALITY = 256
 local EDGE_CARDINALITY = 128
+local AIM_CARDINALITY = input_frame.AIM_NONE + 1
 
 ---@param value any
 ---@return boolean
@@ -138,6 +139,7 @@ local function samples_equal(left, right)
         and left.move_y == right.move_y
         and left.held == right.held
         and left.edges == right.edges
+        and left.aim == right.aim
 end
 
 ---@param record NetworkInputRecord
@@ -317,14 +319,16 @@ local function arrival_fits(profile, send_tick)
 end
 
 -- This is a collision-free mixed-radix encoding, not a hash. InputSample's
--- declared bounds keep the result below 2^53 on every supported runtime.
+-- declared bounds keep the result below 2^53 on every supported runtime: the
+-- maximum is 255 * 255 * 256 * 128 * 256 - 1, about 5.4e11.
 ---@param sample InputSample
 ---@return integer
 local function sample_fingerprint(sample)
     local packed = sample.move_x + input_frame.MOVE_SCALE
     packed = packed * AXIS_CARDINALITY + sample.move_y + input_frame.MOVE_SCALE
     packed = packed * HELD_CARDINALITY + sample.held
-    return packed * EDGE_CARDINALITY + sample.edges
+    packed = packed * EDGE_CARDINALITY + sample.edges
+    return packed * AIM_CARDINALITY + sample.aim
 end
 
 ---@param records NetworkInputRecord[]

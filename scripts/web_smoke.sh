@@ -45,6 +45,11 @@ def js_number(name: str) -> int:
 
 
 for lua_name, js_name in (
+    # VERSION first, and it was missing until #316. The bounds below were pinned
+    # but the envelope version was not, so bumping `contract.VERSION` without the
+    # JS host drifted silently past this gate and surfaced two scripts later as
+    # "addressed control send failed" -- a routing message for a version fault.
+    ("VERSION", "VERSION"),
     ("MAX_GUESTS", "MAX_GUESTS"),
     ("MAX_PAYLOAD_BYTES", "MAX_PAYLOAD_BYTES"),
     ("MAX_QUEUE_LIMIT", "MAX_QUEUE_LIMIT"),

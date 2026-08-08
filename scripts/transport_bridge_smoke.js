@@ -36,7 +36,17 @@ vm.runInNewContext(source.slice(0, proofMarker) + "\n})();", {
 });
 
 const bridge = window.GoliseoTransportBridge;
-const wire = "1|input|1|1|move";
+
+// Read the envelope version out of the generated loader rather than writing it
+// down. #316 moved `contract.VERSION` to 2 and a literal here would have made
+// the bridge reject its own test message. Same reasoning as webrtc_star_smoke.js.
+// Scoped to the pre-marker slice because the generated player also embeds the
+// OMP-0 proof host, which carries its own unrelated `VERSION` (proof.VERSION).
+const versionMatch = /var VERSION = (\d+);/.exec(source.slice(0, proofMarker));
+if (!versionMatch) {
+  throw new Error("generated player does not define a transport bridge VERSION");
+}
+const wire = versionMatch[1] + "|input|1|1|move";
 
 if (bridge.initialize(1) !== "state|connected") {
   throw new Error("bridge did not initialize");

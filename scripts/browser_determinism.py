@@ -40,8 +40,8 @@ REQUIRED_FIELDS = {
     "ticks": "7201",
     "boundaries": "7202",
     "hash": "fnv1a64-canonical-snapshot-v11",
-    "final_hash": "bfbb106aea5480f8",
-    "sequence_digest": "a190b60058a64e63",
+    "final_hash": "31f98f5764b39337",
+    "sequence_digest": "9a6683206f718542",
     "score": "1-0",
     "outcome": "home",
     "snapshot_bytes": "21820",
@@ -54,8 +54,8 @@ REQUIRED_FIELDS = {
 # against these pins.
 REQUIRED_PROTOCOL_FIELDS = {
     "schema": "1",
-    "manifest_id": "eb59f113614c35b2",
-    "transcript_id": "653cba3b32c62ce9",
+    "manifest_id": "93585c1b7179daf3",
+    "transcript_id": "25b993dc669667c2",
     "messages": "15",
 }
 # Mirrors game/online/input_protocol_conformance.lua's GOLDEN. Regenerate BOTH
@@ -65,15 +65,15 @@ REQUIRED_PROTOCOL_FIELDS = {
 # conformance.marker().
 REQUIRED_INPUT_PROTOCOL_FIELDS = {
     "schema": "1",
-    "input": "2",
+    "input": "3",
     "history": "6",
     "delay": "3",
     "vectors": "2",
-    "guest": "a099c86d6520d6bc",
-    "host": "fb46b26858818ead",
+    "guest": "3a2b968fdc4b83e1",
+    "host": "463f77060de039a7",
     "host_rows": "72",
-    "max_bytes": "958",
-    "margin": "66",
+    "max_bytes": "1054",
+    "margin": "226",
 }
 ERROR_MARKERS = (
     "GC_BROWSER|error|",
@@ -880,8 +880,8 @@ def shard_gate_self_test() -> None:
 
 def self_test() -> None:
     protocol_marker = (
-        "GC_PROTOCOL|golden|schema=1|manifest_id=eb59f113614c35b2"
-        "|transcript_id=653cba3b32c62ce9|messages=15"
+        "GC_PROTOCOL|golden|schema=1|manifest_id=93585c1b7179daf3"
+        "|transcript_id=25b993dc669667c2|messages=15"
     )
     if parse_protocol_marker(protocol_marker) != REQUIRED_PROTOCOL_FIELDS:
         raise RuntimeError("protocol golden marker self-test failed")
@@ -892,20 +892,22 @@ def self_test() -> None:
     else:
         raise RuntimeError("protocol golden marker accepted a changed vector count")
     input_protocol_marker = (
-        "GC_INPUT_PROTOCOL|golden|schema=1|input=2|history=6|delay=3|vectors=2"
-        "|guest=a099c86d6520d6bc|host=fb46b26858818ead|host_rows=72"
-        "|max_bytes=958|margin=66"
+        "GC_INPUT_PROTOCOL|golden|schema=1|input=3|history=6|delay=3|vectors=2"
+        "|guest=3a2b968fdc4b83e1|host=463f77060de039a7|host_rows=72"
+        "|max_bytes=1054|margin=226"
     )
     if parse_input_protocol_marker(input_protocol_marker) != REQUIRED_INPUT_PROTOCOL_FIELDS:
         raise RuntimeError("input protocol golden marker self-test failed")
     try:
-        parse_input_protocol_marker(input_protocol_marker.replace("max_bytes=958", "max_bytes=959"))
+        parse_input_protocol_marker(
+            input_protocol_marker.replace("max_bytes=1054", "max_bytes=1055")
+        )
     except RuntimeError:
         pass
     else:
         raise RuntimeError("input protocol golden marker accepted a changed maximum size")
     try:
-        parse_input_protocol_marker(input_protocol_marker.replace("margin=66", "margin=65"))
+        parse_input_protocol_marker(input_protocol_marker.replace("margin=226", "margin=225"))
     except RuntimeError:
         pass
     else:

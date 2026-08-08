@@ -33,6 +33,37 @@ t.describe("env_action.validate", function()
         t.eq(sample.move_y, neutral.move_y)
         t.eq(sample.held, neutral.held)
         t.eq(sample.edges, neutral.edges)
+        t.eq(sample.aim, neutral.aim)
+        t.eq(sample.aim, input_frame.AIM_NONE, "a no-op action aims nowhere, not at code zero")
+    end)
+
+    -- #316: `to_sample`/`from_sample` used to drop aim on the floor, so a policy
+    -- that expressed one lost it on the round trip without any error.
+    t.it("carries an independent aim direction through the sample round trip", function()
+        local aimless = assert(env_action.validate({ move = { x = 1, y = 0 } }))
+        t.eq(aimless.aim, nil)
+        t.eq(assert(env_action.to_sample(aimless)).aim, input_frame.AIM_NONE)
+
+        local aimed =
+            assert(env_action.validate({ move = { x = 1, y = 0 }, aim = { x = 0, y = 3 } }))
+        local sample = assert(env_action.to_sample(aimed))
+        t.eq(sample.aim, 64, "aim is quantized by angle alone; the magnitude is discarded")
+        t.eq(sample.move_x, input_frame.MOVE_SCALE, "movement is untouched by aim")
+
+        local decoded = assert(env_action.from_sample(sample))
+        t.near(assert(decoded.aim).y, 1, 0.01)
+        t.eq(assert(env_action.to_sample(decoded)).aim, sample.aim)
+
+        local still = assert(env_action.validate({ aim = { x = 0, y = 0 } }))
+        t.eq(still.aim, nil, "a zero-length aim is the absence of one")
+        t.eq(assert(env_action.to_sample(still)).aim, input_frame.AIM_NONE)
+
+        local kept = env_action.without_edges({ aim = { x = -1, y = 0 }, edges = { dodge = true } })
+        t.eq(assert(kept.aim).x, -1, "aim is held across ticks like a held bit, not an edge")
+
+        local bad, _, code = env_action.validate({ aim = { x = 0 / 0, y = 0 } })
+        t.eq(bad, nil)
+        t.eq(code, "malformed")
     end)
 
     t.it("rejects malformed actions with machine-readable reasons", function()
@@ -103,6 +134,7 @@ t.describe("env_action.mask", function()
         t.eq(mask.version, env_action.VERSION)
         t.eq(mask.slot, 1)
         t.eq(mask.move, true)
+        t.eq(mask.aim, true)
         t.eq(mask.privileged, false)
         t.eq(mask.held.shoot, true)
         t.eq(mask.held.pass, true)
