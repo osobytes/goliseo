@@ -898,8 +898,10 @@ function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
   for (const m of materials) {
     // Owned by `materialCache`, not by the object being removed -- disposing
     // it here is exactly the per-frame program destruction #403 turned out to
-    // be (see the SHARED MATERIALS section above). The cache disposes its own
-    // entries on eviction and in `resetMaterialCache`.
+    // be (see the SHARED MATERIALS section above). The cache never disposes
+    // either: eviction and `resetMaterialCache` clear this flag and hand the
+    // material back, so the NEXT clear of an object still holding it takes
+    // this branch and disposes it normally. See `release`.
     if (m.userData[SHARED_MATERIAL_FLAG] === true) {
       continue;
     }

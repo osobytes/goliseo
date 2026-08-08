@@ -77,6 +77,10 @@ interface HarnessStats {
    * rasterisation. `renderMs - populateMs` is the GL half (plus, in a real
    * window, the vsync stall the driver blocks on). */
   populateMs: number;
+  /** Milliseconds per frame burned by the `?spin=` measurement lever, if any.
+   * Outside sim/decode/populate/render, so those stay comparable across a
+   * sweep. */
+  spinMs: number;
   /** Ticks the most recent render call consumed. >1 means the renderer is
    * behind the simulation, which is also when the shell's known
    * one-sample-per-render-call input bug would double an edge. */
@@ -136,6 +140,7 @@ async function main(): Promise<void> {
     renderMs: 0,
     populateMs: 0,
     ticksLastFrame: 0,
+    spinMs: 0,
     tick: 0,
     timeLeft: 0,
     score: "0-0",
@@ -211,6 +216,12 @@ async function main(): Promise<void> {
   if (params.get("rigged") === "0") {
     pitch.rigged_players = false;
   }
+  // See the `?spin=` note in the frame loop below. 0 (the default) skips the
+  // spin entirely, so this page behaves exactly as before unless asked.
+  const spinMs = Math.max(Number(params.get("spin") ?? "0"), 0);
+  // Accumulates the spin loop's counter so it cannot be optimised away, and
+  // is deliberately never read for anything else.
+  let spinSink = 0;
   const sceneRoot = new SceneRoot(glRenderer, {
     viewport: { w: width, h: height },
     pixelRatio: pixelRatioForWindow(),
@@ -301,6 +312,44 @@ async function main(): Promise<void> {
       ticks * DT,
     );
     decodeMsInWindow += performance.now() - tDecode;
+
+    // `?spin=<ms>` burns that many milliseconds of CPU here, BEFORE `tRender`
+    // and outside every other accumulator, so it lands in its own `spinMs`
+    // bucket and inflates none of the numbers being compared.
+    //
+    // WHAT IT IS FOR. #403's frame was attributed 26.29 ms of `renderMs` --
+    // almost exactly two 13.33 ms refresh periods -- and the claim was that
+    // this is one MISSED VSYNC being charged to `render`, not 26 ms of work:
+    // the driver blocks inside a GL call once the swap queue is full, and
+    // `renderMs` is plain wall-clock around the synchronous `sceneRoot.render`
+    // call, so a block lands inside it. That claim was inference, not
+    // measurement.
+    //
+    // This lever tests it directly and destructively. Add a KNOWN amount of
+    // work outside `render`, sweep it across the vsync deadline, and watch
+    // `renderMs`:
+    //
+    //   * if `renderMs` jumps discontinuously the moment the frame misses the
+    //     deadline -- from a nudge far smaller than 13 ms -- the block is real
+    //     and lands inside `render`, and it should then FALL as the spin grows
+    //     further, since the two share one fixed 26.6 ms period;
+    //   * if `renderMs` just stays flat while the rAF interval doubles, the
+    //     block is not inside `render` at all and #403's 26.29 ms means
+    //     genuinely doubled work.
+    //
+    // A sawtooth and a flat line are not close to each other, which is what
+    // makes this decidable. Same category as `?ratio=`/`?bloom=`/`?rigged=`:
+    // a measurement lever, never a setting.
+    if (spinMs > 0) {
+      const spinUntil = performance.now() + spinMs;
+      // A read the JIT cannot fold away, so the loop actually burns time.
+      let sink = 0;
+      while (performance.now() < spinUntil) {
+        sink += 1;
+      }
+      spinSink += sink;
+    }
+
     const tRender = performance.now();
     glRenderer.info.reset();
     const sceneOptions = {
@@ -334,6 +383,7 @@ async function main(): Promise<void> {
       stats.simMs = Number((simMsInWindow / Math.max(framesInWindow, 1)).toFixed(2));
       stats.decodeMs = Number((decodeMsInWindow / Math.max(framesInWindow, 1)).toFixed(2));
       stats.renderMs = Number((renderMsInWindow / Math.max(framesInWindow, 1)).toFixed(2));
+      stats.spinMs = spinMs;
       stats.populateMs = Number((populateMsInWindow / Math.max(framesInWindow, 1)).toFixed(2));
       simMsInWindow = 0;
       decodeMsInWindow = 0;
