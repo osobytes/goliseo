@@ -340,8 +340,14 @@ ${taps}
  * `UnrealBloomPass` chain's final scene blit, which used a built-in
  * `MeshBasicMaterial` -- gets it for free. A hand-written `ShaderMaterial` does
  * not: rendering into a non-XR render target makes three emit
- * `LinearSRGBColorSpace`, so `sceneTarget` holds LINEAR values, and blitting
- * them raw to the canvas produced a **visibly darker frame with bloom on than
+ * `LinearSRGBColorSpace`, so `sceneTarget` is TAGGED linear and its contents
+ * are blitted without a transfer. Read "linear" there as three's compile-time
+ * output tag, NOT as physically-decoded linear light: nothing in v2 is ever
+ * decoded on entry (see #413), so what the buffer actually holds is the
+ * untransformed, Lua-native numbers the materials wrote. That distinction
+ * matters to anyone reasoning about energy in the additive blend below --
+ * these are authored values, not radiometric ones. Blitting them raw to the
+ * canvas produced a **visibly darker frame with bloom on than
  * with `?bloom=0`** -- which is impossible for an additive effect, and would
  * have silently corrupted the `?bloom=0` attribution the browser harness
  * exists for. The include resolves to `linearToOutputTexel`, which three
@@ -353,13 +359,43 @@ ${taps}
  * result. The old chain encoded the scene and then added un-encoded bloom on
  * top, which is not a thing that corresponds to anything.
  *
- * KNOWN, DELIBERATELY NOT CHANGED HERE: this leaves the 0.55 threshold being
- * evaluated against LINEAR values, whereas LOVE's canvas is display-space, so
- * v2 selects a slightly tighter set of pixels than Lua does. That is a
- * pre-existing property of the v2 chain (`LuminosityHighPassShader` thresholded
- * the linear buffer too), it errs toward under-blooming rather than the
- * over-blooming #404 is about, and changing it moves which pixels glow -- a
- * separate decision with its own evidence, not a rider on this fix.
+ * WHY 0.55 IS THE RIGHT NUMBER HERE, which is not obvious and was got wrong
+ * twice before it was got right.
+ *
+ * The threshold runs against the value in `sceneTarget`, and that value is
+ * NUMERICALLY IDENTICAL to what the corresponding LOVE canvas holds -- so
+ * `0.55` here selects exactly the pixels `0.55` selects in
+ * `game/render/bloom.lua`. The selection is the same, not "close" and not
+ * "slightly tighter".
+ *
+ * The load-bearing fact is that v2 has a UNIFORM NO-DECODE colour pipeline.
+ * Content colours are never converted on the way in, at any entry point:
+ * `draw2d.ts`'s `new THREE.Color(r, g, b)` and `Color.setRGB` default to the
+ * WORKING space rather than sRGB (three's `Color.js`), `rig3d`'s palette is
+ * baked into a per-vertex `color` attribute that `color_fragment.glsl.js`
+ * consumes with a bare multiply, and draw2d's text `CanvasTexture` inherits
+ * `NoColorSpace`, whose transfer is linear. So Lua's authored numbers arrive
+ * unchanged and this threshold compares like with like.
+ *
+ * NOT the reason, though it looks like one: that LOVE is gamma-incorrect
+ * (`conf.lua` sets no `t.gammacorrect`). True, but it only says LOVE does no
+ * conversion. It would not save us if v2 decoded on entry -- the buffer would
+ * then hold ~0.603 where Lua holds 0.8, and the correct constant would be
+ * ~0.263. The no-decode property of V2 is what makes the numbers line up.
+ *
+ * CONTINGENT ON #413. That issue is precisely the fact that v2 does not decode
+ * on entry while still encoding on output, which makes the whole build brighter
+ * than the LOVE original. If it is resolved by decoding on entry, this constant
+ * MUST become ~0.263 (and `BLOOM_THRESHOLD_KNEE` ~0.185) or most surfaces will
+ * silently stop blooming. #413 carries that as a required checklist item.
+ *
+ * MEASURED, not just argued (hardware, RTX 2070 SUPER, same scene and tick).
+ * Thresholding at the renormalised linear 0.2633, and thresholding the
+ * sRGB-encoded value at 0.55, agree with each other to within 0.21/255 -- two
+ * spellings of one rule, as expected -- and both add roughly SIX TIMES the
+ * light this constant does close to a character (+22.6 versus +3.8 at 1-4 px),
+ * still adding +4.5 at 21-40 px where this one has fallen to nothing. That is
+ * the haloed look #404 is about. See the PR for the full table.
  */
 export function buildCompositeFragmentShader(clamp: number): string {
   return /* glsl */ `
