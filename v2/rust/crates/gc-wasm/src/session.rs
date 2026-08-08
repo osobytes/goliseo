@@ -183,6 +183,9 @@ pub(crate) fn ownership(home_roster: &[&str; 5], away_roster: &[&str; 5]) -> Inp
 /// every non-controlled player lives inside `sim::match::step` itself, not
 /// in a per-slot producer.
 const LOCAL_SLOT_ZERO_INDEX: usize = 0;
+/// One fixed tick, matching `gc_sim::fixed_clock::TICK_SECONDS`. Only the bot
+/// reads this (see [`Session::bot_wire`]); `Session::step` takes its own dt.
+const TICK_SECONDS: f64 = 1.0 / 60.0;
 
 /// Resolves an optional caller-supplied tactic id (`gc_data::tactics::ALL`'s
 /// ids, e.g. `"press_high"`) into the `&'static TacticData`
@@ -313,6 +316,11 @@ fn leak_roster(roster: [&'static str; 5]) -> &'static [&'static str] {
 #[wasm_bindgen]
 pub struct Session {
     handle: u32,
+    /// An optional bot driving this session's LOCAL slot — see
+    /// [`Session::enable_bot`]. `None` for every ordinary session: the product
+    /// shell drives `home_1` from the keyboard/gamepad, and a bot there would
+    /// be playing the game for the player.
+    bot: Option<gc_sim::bot::BotState>,
 }
 
 impl Drop for Session {
@@ -516,7 +524,72 @@ impl Session {
             tick: 0,
             rollback_boundary,
         });
-        Ok(Session { handle })
+        Ok(Session { handle, bot: None })
+    }
+
+    /// Attach a bot to this session's local (`home_1`) slot.
+    ///
+    /// WHY THIS EXISTS. Everything a session does is already driven by AI
+    /// EXCEPT the one player on the human-input branch, and feeding that slot
+    /// a neutral wire does not make it AI-driven — it makes it an idle human.
+    /// The visible symptom is unmistakable once seen: the moment that player
+    /// wins the ball, they stand still holding it, because nobody is telling
+    /// them to do anything. Any "watch a match play itself" harness that feeds
+    /// neutral input is therefore showing a match with one broken player in
+    /// it, which is worse than useless for judging feel.
+    ///
+    /// `sim/bot.lua` is what the Lua build uses for exactly this, in
+    /// `sim/headless.lua` and in `game/render/benchmark.lua`'s windowed
+    /// ten-player benchmark. This is the same bot (`gc_sim::bot`, differential-
+    /// tested against it by `gc-sim`'s `session_ai_driven_differential`), made
+    /// reachable from the browser so a v2 harness can be the counterpart of
+    /// that Lua one rather than an almost-counterpart.
+    ///
+    /// Deterministic: the bot seeds its OWN stream (`seed * 7919 + 17`) and
+    /// never touches the match's, so a given `seed` replays identically.
+    #[wasm_bindgen(js_name = enableBot)]
+    pub fn enable_bot(&mut self, seed: f64) {
+        self.bot = Some(gc_sim::bot::new(gc_sim::bot::BotOptions {
+            seed: Some(seed),
+            reaction: None,
+        }));
+    }
+
+    /// One canonical `input_frame` wire for the CURRENT tick, authored by the
+    /// bot [`Session::enable_bot`] attached, ready to hand straight to
+    /// [`Session::step`].
+    ///
+    /// Returns the wire rather than stepping, so the caller keeps its existing
+    /// step call and its own clock: this is an input SOURCE, not a driver.
+    /// The bot reads the state as it stands right now, which is why this must
+    /// be called before the step it feeds, not after.
+    ///
+    /// Byte-for-byte the same construction `gc_sim::ai_driven_evidence`'s
+    /// `tick_input` performs — quantize to a slot sample, encode, and let the
+    /// caller's `step` decode and dequantize it back. The lossy round trip is
+    /// deliberate and load-bearing: it is what the real input path does.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `JsValue` (a `String`) when no bot has been enabled.
+    #[wasm_bindgen(js_name = botWire)]
+    pub fn bot_wire(&mut self) -> Result<String, JsValue> {
+        let mut bot_state = self
+            .bot
+            .take()
+            .ok_or_else(|| JsValue::from_str("botWire: call enableBot first"))?;
+        let result = registry::with_entry(self.handle, |entry| {
+            let view = gc_sim::headless::to_bot_view(&entry.state);
+            let raw = gc_sim::bot::input(&mut bot_state, &view, TICK_SECONDS, &entry.tune);
+            let mut slots = [gc_sim::input_frame::neutral_sample(); 8];
+            slots[LOCAL_SLOT_ZERO_INDEX] = gc_sim::slot_input::to_sample(&raw);
+            let frame = gc_sim::input_frame::new(entry.tick, Some(slots))
+                .map_err(|err| format!("botWire: {err}"))?;
+            gc_sim::input_frame::encode(&frame).map_err(|err| format!("botWire: {err}"))
+        })
+        .expect("a live Session's registry entry is never missing");
+        self.bot = Some(bot_state);
+        result.map_err(|err: String| JsValue::from_str(&err))
     }
 
     fn with_entry<R>(&self, f: impl FnOnce(&mut Entry) -> R) -> R {

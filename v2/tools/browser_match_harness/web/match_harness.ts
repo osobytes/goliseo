@@ -25,13 +25,24 @@
 // crossing, and the draw are the REAL ones -- the same `Session`, the same
 // raw pointer -> `Float64Array` view, the same `SceneRoot.render`, on the
 // same browser wasm artifact the app ships. What it deliberately leaves out
-// is the product shell: no HUD, no input, no screen transitions. The local
-// slot is fed a neutral wire every tick, so this is an AI-vs-AI match with an
-// idle human slot. That is a `capture_session_ai_driven_match.lua`-shaped gap
-// on purpose: bit-exact agreement with Lua under a PLAYED match is already
-// covered natively and inside wasm (`gc_sim::ai_driven_evidence`,
-// `runAiDrivenEvidence`), and neither of those needs a canvas. This page is
-// for the questions that DO need one -- how it looks, and how fast it draws.
+// is the product shell: no HUD, no input, no screen transitions.
+//
+// EVERY player is AI-driven, INCLUDING the one on the human-input branch.
+// That is not a detail. Feeding the local slot a neutral wire does not make
+// it AI-driven, it makes it an idle human -- and the symptom is unmistakable
+// once you have seen it: the instant that player wins the ball they stand
+// still holding it, because nothing is telling them to do anything. A harness
+// that does this is showing a match with one broken player in it, which is
+// worse than useless for judging feel. `Session.enableBot`/`botWire` drive
+// that slot from `gc_sim::bot` -- the same bot `sim/headless.lua` and
+// `game/render/benchmark.lua` use on the Lua side, and the same one
+// `session_ai_driven_differential` proves bit-exact against it.
+//
+// The Lua counterpart of this page is `love . --benchmark` (windowed,
+// bot-driven, no menus -- `game/render/benchmark.lua`), reachable in the
+// love.js build as `?arg=["--benchmark", ...]`. Comparing this page against
+// the Lua PRODUCT build instead would be comparing a bot-driven match against
+// a menu-driven one that pauses when you look away.
 //
 // `window.__gcMatchHarness` carries live stats for a driver script; the
 // on-screen readout shows the same numbers for a human watching.
@@ -41,11 +52,6 @@ import * as THREE from "three";
 import { SceneRoot, frameBuffer } from "@gc/render";
 import type { frameBufferTypes } from "@gc/render";
 
-/** Mirrors `gc_sim::input_frame::SLOT_COUNT`. */
-const INPUT_SLOT_COUNT = 8;
-/** `gc_sim::input_frame::VERSION`. */
-const WIRE_VERSION = 2;
-const NEUTRAL_SLOT_WIRE = "0,0,0,0";
 const DT = 1 / 60;
 
 // The product shell's own match colours (`browser_main.ts`).
@@ -81,11 +87,6 @@ declare global {
   var __gcMatchHarness: HarnessStats | undefined;
 }
 
-function neutralWire(tick: number): string {
-  const slots = new Array<string>(INPUT_SLOT_COUNT).fill(NEUTRAL_SLOT_WIRE);
-  return [String(WIRE_VERSION), String(tick), ...slots].join("|");
-}
-
 async function main(): Promise<void> {
   const params = new URLSearchParams(location.search);
   const seed = Number(params.get("seed") ?? "1");
@@ -95,6 +96,9 @@ async function main(): Promise<void> {
   // two minutes stops being useful mid-observation. `?duration=120` gives the
   // product's own length when that is what you want to compare.
   const durationSeconds = Number(params.get("duration") ?? "3600");
+  // Separate from the match seed on purpose, so a difference in how the match
+  // unfolds is attributable to one or the other rather than to both at once.
+  const botSeed = Number(params.get("bot_seed") ?? "11");
 
   const stats: HarnessStats = {
     status: "booting",
@@ -131,6 +135,7 @@ async function main(): Promise<void> {
 
   const sceneRoot = new SceneRoot(glRenderer, { viewport: { w: width, h: height } });
   const session = new Session("nebula", "orion", seed, durationSeconds, 99, undefined, undefined, undefined, undefined, undefined);
+  session.enableBot(botSeed);
 
   const raw = __getRawExports() as {
     memory: WebAssembly.Memory;
@@ -183,7 +188,10 @@ async function main(): Promise<void> {
       if (session.finished) {
         break;
       }
-      session.step(neutralWire(session.inputTick));
+      // Read the state BEFORE the step it feeds -- `botWire` samples the
+      // match as it stands right now, exactly as the Lua benchmark's
+      // `bot.input(self.bot, self.state, DT)` does.
+      session.step(session.botWire());
       accumulator -= DT;
       ticks += 1;
     }
