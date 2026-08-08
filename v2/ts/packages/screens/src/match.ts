@@ -32,7 +32,7 @@
 import { combatFeedback, matchEventBatch } from "@gc/presentation";
 import type { CombatEvent, CombatFeedbackState, MatchEvent, RollbackEventDiff, RollbackWrappedEvent } from "@gc/presentation";
 import { Vec2 } from "@gc/core";
-import { correctionSmoothing, viewState } from "@gc/render";
+import { cameraFollow, correctionSmoothing, viewState } from "@gc/render";
 import type { correctionSmoothingTypes, replayTypes } from "@gc/render";
 import type { LifecyclePayload } from "./online_match_model.ts";
 import type { GameSettings } from "./content.ts";
@@ -1462,6 +1462,7 @@ export class MatchScreen {
     this.replayState = undefined;
     this.renderSmoothing = undefined;
     viewState.reset();
+    cameraFollow.reset();
     this.ports.replay?.reset?.();
     this.latches.shootHeldPrev = false;
     this.latches.passHeldPrev = false;
@@ -1530,6 +1531,7 @@ export class MatchScreen {
     // reseeding baselines below, so the render-live players' gait/lean read
     // back at rest rather than carrying over the replay's last pose.
     viewState.reset();
+    cameraFollow.reset();
     if (source === undefined) {
       return;
     }
@@ -1719,6 +1721,7 @@ export class MatchScreen {
         // The scene jumps back in time, but view state must not carry the
         // post-goal kickoff pose into it.
         viewState.reset();
+        cameraFollow.reset();
         this.replayState = undefined;
       }
     }
@@ -1739,6 +1742,7 @@ export class MatchScreen {
     if (lifecycleReset) {
       this.renderSmoothing = correctionSmoothing.new(source);
       viewState.reset();
+      cameraFollow.reset();
     } else {
       this.renderSmoothing =
         this.renderSmoothing !== undefined
@@ -1750,6 +1754,44 @@ export class MatchScreen {
     // end", which reseeds immediately even on a lifecycle reset rather than
     // waiting for the next render call.
     viewState.update(source.players, dt);
+    this.updateCameraFollow(dt);
+  }
+
+  /**
+   * `update_render_smoothing`'s `camera_follow.update(self.state, dt,
+   * self._render_pose)` -- the driver for render/camera_follow.ts's
+   * broadcast-following camera.
+   *
+   * This call site was DROPPED by the original port, which brought
+   * camera_follow.ts across but nothing that ever ran it: `cameraFollow
+   * .update` had no caller anywhere in the workspace, so the smoothed focus
+   * never left its initial `undefined`, `cameraFollow.view` always returned
+   * `undefined`, and every projection silently fell back to the whole-pitch
+   * view (pitch.ts's `currentView`) no matter what `pitch.follow_camera`
+   * said. The follow camera was inert ported code, and the flag that selects
+   * it could not do anything -- which is why the product shot read as a
+   * fixed establishing view of the stadium rather than a camera watching the
+   * match.
+   *
+   * Takes the FULL `MatchState` (`this.ports.matchState`), not
+   * {@link correctionSource}'s slice: `cameraFollow.update` reads `field`
+   * (to scale its deadzone/keep boxes and clamp the focus inside the
+   * touchlines) and `controlled` (its `ball_weight` blend against the
+   * steered player), neither of which that slice carries. Matches the Lua
+   * original, which passes `self.state` here for the same reason.
+   *
+   * The Lua's third argument (`self._render_pose`) has no counterpart in
+   * this port -- nothing threads a `correctionSmoothing.pose` through, so
+   * `viewState.update` above already omits it identically. That makes the
+   * follow camera track the authoritative ball rather than the smoothed
+   * displayed one; the difference is a sub-frame correction offset, and
+   * wiring the pose through both call sites together is its own change.
+   */
+  private updateCameraFollow(dt: number): void {
+    const state = this.ports.matchState?.();
+    if (state !== undefined) {
+      cameraFollow.update(state, dt);
+    }
   }
 
   // `Match:update`'s legacy-replay branch: the sim is frozen (no `host.step`
@@ -1816,6 +1858,7 @@ export class MatchScreen {
    */
   private clearRollbackRenderSmoothing(): void {
     viewState.reset();
+    cameraFollow.reset();
     const source = this.correctionSource();
     if (source === undefined) {
       return;
@@ -1963,6 +2006,7 @@ export class MatchScreen {
       this.renderSmoothing = correctionSmoothing.new(positions);
       if (!drawingRollbackReplay) {
         viewState.reset();
+        cameraFollow.reset();
       }
     } else {
       for (const correction of corrections) {
@@ -1983,6 +2027,14 @@ export class MatchScreen {
     // `update_view` parameter.
     if (!drawingRollbackReplay) {
       viewState.update(positions.players, dt);
+      // Same `update_view` gate, same pairing as the base path's own
+      // `viewState.update`/`updateCameraFollow` -- the Lua drives both from
+      // the ONE `update_render_smoothing` this port split in two, so the
+      // follow camera has to be driven from both halves or it stalls in
+      // whichever mode was missed. A no-op in rollback configurations that
+      // wire no `matchState` port (see {@link updateCameraFollow}), which is
+      // why it is safe to call unconditionally here.
+      this.updateCameraFollow(dt);
     }
 
     if (this.rollbackConsumerPorts !== undefined) {
