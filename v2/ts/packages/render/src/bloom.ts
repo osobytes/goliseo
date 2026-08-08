@@ -66,20 +66,56 @@ export class Bloom {
   private bloomPass: UnrealBloomPass | undefined;
   private w = 0;
   private h = 0;
+  private ratio = 0;
 
   constructor(config: Partial<BloomConfig> = {}) {
     this.config = { ...DEFAULT_BLOOM_CONFIG, ...config };
   }
 
   private ensure(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera, w: number, h: number): EffectComposer {
-    if (this.composer !== undefined && this.w === w && this.h === h) {
+    // The pixel ratio belongs in the cache key: the composer's target is sized
+    // in DEVICE pixels below, so a ratio change must rebuild it even when the
+    // logical viewport is unchanged.
+    const ratio = renderer.getPixelRatio();
+    if (this.composer !== undefined && this.w === w && this.h === h && this.ratio === ratio) {
       return this.composer;
     }
     this.w = w;
     this.h = h;
-    const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(w / this.config.downscale, h / this.config.downscale));
+    this.ratio = ratio;
+    // `downscale` applies to the BLOOM BUFFERS, not to the scene.
+    //
+    // It used to size the composer's own render target, which is what the
+    // whole frame is rendered into and then blitted to the canvas from. At the
+    // default `downscale: 2` that meant drawing the entire game at 480x270 and
+    // upscaling it to the display -- reported, accurately, as "it looks like
+    // pixel art". This is a porting slip rather than a style choice:
+    // `game/render/bloom.lua` downscales its bright/blur buffers, and this
+    // config field's own doc comment says "bright/blur buffers at 1/downscale
+    // resolution". The intent was right and the wiring was inverted -- the
+    // scene got the downscale and `UnrealBloomPass` got the full size.
+    //
+    // So the composer renders at full DEVICE resolution (`w`/`h` are logical;
+    // the canvas may be backed by more pixels than that -- see `SceneRoot`'s
+    // `pixelRatio`), and the blur pyramid takes the downscale. Blurring at low
+    // resolution is invisible by construction, which is why that is where the
+    // saving is meant to come from.
+    const target = new THREE.WebGLRenderTarget(
+      Math.max(Math.round(w * ratio), 1),
+      Math.max(Math.round(h * ratio), 1),
+    );
+    const composer = new EffectComposer(renderer, target);
+    // Without this the composer re-derives its own size from the renderer on
+    // resize and silently drops back to a ratio of 1.
+    composer.setPixelRatio(ratio);
+    composer.setSize(w, h);
     composer.addPass(new RenderPass(scene, camera));
-    const bloomPass = new UnrealBloomPass(new THREE.Vector2(w, h), this.config.intensity, this.config.radius, this.config.threshold);
+    const bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(Math.max(w / this.config.downscale, 1), Math.max(h / this.config.downscale, 1)),
+      this.config.intensity,
+      this.config.radius,
+      this.config.threshold,
+    );
     composer.addPass(bloomPass);
     this.composer = composer;
     this.bloomPass = bloomPass;
