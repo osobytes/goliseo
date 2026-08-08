@@ -203,6 +203,8 @@ pitch.follow_camera = false
 -- every other code path below (backdrop, markings, goals, depth sort, the
 -- overlay layer) runs identically regardless of field size.
 ---@type RenderFrame
+-- Minimal by design: this fixture carries only the fields `pitch.lua` reads.
+---@diagnostic disable-next-line: missing-fields
 local frame = {
     field = {
         w = 200,
@@ -213,6 +215,8 @@ local frame = {
         goal_home = { x = -2, y = 52, w = 2, h = 16 },
         goal_away = { x = 200, y = 52, w = 2, h = 16 },
     },
+    -- Minimal by design: this fixture carries only the fields `pitch.lua` reads.
+    ---@diagnostic disable-next-line: missing-fields
     roster = {
         radius = { 2.5, 2.7, 2.5 },
         teams = { "home", "away", "home" },
@@ -221,6 +225,8 @@ local frame = {
         species_color = { { 1, 1, 1 }, { 0.8, 0.8, 1 }, { 0.9, 0.5, 0.2 } },
         ids = { "home-1", "away-kp", "home-2" },
     },
+    -- Minimal by design: this fixture carries only the fields `pitch.lua` reads.
+    ---@diagnostic disable-next-line: missing-fields
     players = {
         count = 3,
         x = { 108, 20, 146 },
@@ -240,10 +246,23 @@ local frame = {
         aerial_style = { nil, nil, "header" },
         aerial_outcome = { nil, nil, "clean" },
         aerial_jump = { nil, nil, 0.22 },
+        -- `aerial_header` and `keeper` are NOT members of `PlayerPoseId` /
+        -- `PlayerPoseSource`. That is deliberate here and must stay: `pitch.lua`
+        -- passes both straight through to the player renderer without
+        -- interpreting them, and `v2/ts/packages/render/src/pitch.spec.ts` pins
+        -- these exact strings on the TypeScript side (see its `pose_id` /
+        -- `pose_source` fixture and the captured reference JSON above it). The
+        -- differential compares what the two languages DO with an opaque value;
+        -- changing these to real enum members would mean recapturing the
+        -- reference and editing the spec, for no gain in what is being tested.
+        ---@diagnostic disable-next-line: assign-type-mismatch
         pose_id = { "tackle", "keeper_ready_tall", "aerial_header" },
         pose_priority = { 1, 2, 3 },
+        ---@diagnostic disable-next-line: assign-type-mismatch
         pose_source = { "combat", "keeper", "combat" },
     },
+    -- Minimal by design: this fixture carries only the fields `pitch.lua` reads.
+    ---@diagnostic disable-next-line: missing-fields
     ball = { x = 100, y = 66, z = 4, visible = true, landing_x = 127, landing_y = 75 },
     control = { pass_target = 3, charge_kind = "shot", charge = 0.55, controlled = 1 },
 }
