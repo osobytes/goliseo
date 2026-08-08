@@ -1,0 +1,51 @@
+# Shared cross-language vectors for game/online/diagnostics_schema.lua's
+# canonical serializer and fnv1a64 content digest.
+#
+# Generated from the real Lua implementation (`love .` against a scratch copy
+# of core/, sim/, data/, and game/online/diagnostics_schema.lua — see
+# v2/tools/lua_reference/README.md for the harness). Asserted from:
+#   - Rust:       crates/gc-netcode/src/diagnostics_schema.rs (tests::shared_vectors_agree_with_lua)
+#   - TypeScript: v2/ts/packages/online/src/diagnostics_schema.ts is expected to agree;
+#                 see the port report for whether it currently does.
+#
+# Every case validates against one shared shape, defined identically in each
+# language's test (a "test_record" with an `identity` section — id/integer/
+# boolean/enum/hash/optional-text fields — and a `canonical` section — a
+# `map<id>` field, an `array<integer>` field, and an optional `number`
+# field). The exact shape is reproduced in each test file; see there for the
+# field-by-field definition.
+#
+# Format: one vector per non-comment, non-blank line, tab-separated:
+#   label<TAB>encoded_hex<TAB>digest
+# `encoded_hex` is the lowercase hex encoding of diagnostics_schema.encode()'s
+# raw byte output (kept as hex, not raw bytes, so this file stays plain ASCII
+# even though the "non_utf8_byte_in_text_field" case's payload deliberately
+# contains a byte that is not valid UTF-8). `digest` is the expected lowercase
+# fnv1a64 hex digest of those same raw bytes (diagnostics_schema.digest()'s
+# output).
+#
+# Cases:
+#   ordinary_record                  - a normal, fully-populated record.
+#   empty_values                     - an omitted optional field, an empty
+#                                       map, and an empty array.
+#   non_utf8_byte_in_text_field      - a `text` field whose value contains a
+#                                       raw 0xff byte (invalid UTF-8) and an
+#                                       embedded 0x00 byte.
+#   negative_and_fractional_numbers  - negative integers, a value at
+#                                       -MAX_SAFE_INTEGER, and a non-integer
+#                                       `number` field (exercises `%.17g`
+#                                       formatting, not just `%d`).
+#
+# Two more lines, generated the same way, pin `diagnostics_schema.tuple_digest`
+# (used by desync_package's wire-set digest) independent of any record shape:
+#   tuple_digest_two_parts  - tuple_digest("desync_input_wires", {"GCIP;1;G;wire-one", "GCIP;1;H;wire-two"})
+#   tuple_digest_empty      - tuple_digest("desync_input_wires", {})
+# For these two, `encoded_hex` is empty (tuple_digest has no separate encode
+# step to capture) and only `digest` is meaningful.
+
+ordinary_record	47434e443b313b31313a746573745f7265636f72642b2b31303a706565725f616c7068612b323a34322b542b343a626574612b31363a303132333435363738396162636465662b31313a68656c6c6f20776f726c642b2b313a33313a61353a6669727374313a6d363a6d6964646c65313a7a343a6c6173742b313a33313a31313a32313a332d	77d58b7914a0686a
+empty_values	47434e443b313b31313a746573745f7265636f72642b2b393a706565725f626574612b313a302b462b353a616c7068612b31363a666564636261393837363534333231302d2b2b313a302b313a302d	b13c00082607681e
+non_utf8_byte_in_text_field	47434e443b313b31313a746573745f7265636f72642b2b31303a706565725f67616d6d612b313a372b542b353a67616d6d612b31363a303031313232333334343535363661612b31313a616263ff646566006768692b2b313a31343a736f6c6f333a6f6e652b313a31313a392d	01aa9c7507b34b83
+negative_and_fractional_numbers	47434e443b313b31313a746573745f7265636f72642b2b31303a706565725f64656c74612b313a352b462b353a616c7068612b31363a313131313232323233333333343434342b303a2b2b313a302b313a33323a2d31313a3031373a2d393030373139393235343734303939322b363a3438302e3735	3feb2a9d88b7e903
+tuple_digest_two_parts		b1aa955d75f278c9
+tuple_digest_empty		59c5faef7fa465f6

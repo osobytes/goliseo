@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>gc online peer</title>
+  </head>
+  <body>
+    <!--
+      Deliberately no canvas, no renderer, no screens/app-shell. This page
+      exists to prove exactly one thing: two independent instances of this
+      page, each with a real RTCPeerConnection to the other, derive
+      identical MatchDriverBridge boundary-hash sequences from identical
+      wire traffic. Everything the driver script needs is read back off
+      `window.__gcOnlinePeer` (see online_peer.ts) or the console markers
+      it prints -- no DOM to render, nothing to click.
+    -->
+    <script type="module" src="./online_peer.ts"></script>
+  </body>
+</html>

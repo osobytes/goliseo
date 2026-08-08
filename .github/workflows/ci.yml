@@ -279,6 +279,152 @@ jobs:
             - name: Check the wasm embed manifest
               run: ./scripts/check_wasm_embed_manifest.sh
 
+    # v2 (Rust + TypeScript, see v2/README.md) is an interim gate: it runs
+    # ALONGSIDE `quality` above, not instead of it, until v2 replaces the Lua
+    # tree entirely. Every step lives in scripts/check_v2.sh, which this job
+    # calls exactly as scripts/check.sh does, so the two cannot drift
+    # (AGENTS.md §9's first rule). Its own job because it needs a completely
+    # different toolchain (Rust + Node + pnpm, no LOVE) and nothing here
+    # blocks or is blocked by the Lua gates.
+    v2_gate:
+        name: v2 (Rust + TypeScript) interim gate
+        runs-on: ubuntu-24.04
+        timeout-minutes: 30
+
+        steps:
+            - name: Check out source
+              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+              with:
+                  ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+            # v2/rust/rust-toolchain.toml pins the channel (1.93), the
+            # rustfmt and clippy components, and the wasm32-unknown-unknown
+            # target. rustup reads that file automatically for any
+            # cargo/rustc invocation under v2/rust; `rustup show` below just
+            # forces the download to happen here, as a named step, instead of
+            # silently during the first `cargo fmt` inside check_v2.sh.
+            # ubuntu-24.04 images ship rustup already; this only installs it
+            # if that ever changes.
+            - name: Install rustup if missing
+              run: |
+                  if ! command -v rustup >/dev/null 2>&1; then
+                      curl --fail --location --retry 3 --silent --show-error \
+                          https://sh.rustup.rs \
+                          | sh -s -- -y --profile minimal --default-toolchain none
+                      printf '%s\n' "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+                  fi
+
+            - name: Select the pinned v2/rust toolchain
+              working-directory: v2/rust
+              run: rustup show
+
+            # Pinned to exactly the version crates/gc-wasm/Cargo.toml
+            # requires (`wasm-bindgen = "=0.2.118"`): the CLI checks its
+            # generated glue against the crate's schema version exactly, not
+            # semver, and a mismatch fails opaquely inside wasm-bindgen's own
+            # codegen. wasm-bindgen's releases do not publish a checksums
+            # file, so this hash was computed by hand from the published
+            # asset and pinned here -- the same way LOVE_SHA256 and
+            # STYLUA_SHA256 above are pinned, for the same reason.
+            - name: Install pinned wasm-bindgen-cli
+              env:
+                  WASM_BINDGEN_VERSION: 0.2.118
+                  WASM_BINDGEN_SHA256: 00b519c9fc2d6e087265da1a00f29160bfcc6a823993482bc2e691910287427b
+              run: |
+                  tool_dir="$RUNNER_TEMP/wasm-bindgen-cli"
+                  mkdir -p "$tool_dir"
+                  curl --fail --location --retry 3 --silent --show-error \
+                      --output "$tool_dir/wasm-bindgen.tar.gz" \
+                      "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${WASM_BINDGEN_VERSION}/wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+                  echo "${WASM_BINDGEN_SHA256}  $tool_dir/wasm-bindgen.tar.gz" | sha256sum --check --status
+                  tar -xzf "$tool_dir/wasm-bindgen.tar.gz" -C "$tool_dir" --strip-components=1
+                  chmod +x "$tool_dir/wasm-bindgen"
+                  "$tool_dir/wasm-bindgen" --version
+                  printf '%s\n' "$tool_dir" >> "$GITHUB_PATH"
+
+            # v2/ts/package.json "engines" requires >= 22; the redundant
+            # determinism assertion inside check_v2.sh additionally needs
+            # `node --experimental-strip-types`, stable since Node 22.6.
+            - name: Install pinned Node.js
+              env:
+                  NODE_VERSION: 22.22.0
+                  NODE_SHA256: 9aa8e9d2298ab68c600bd6fb86a6c13bce11a4eca1ba9b39d79fa021755d7c37
+              run: |
+                  tool_dir="$RUNNER_TEMP/node"
+                  mkdir -p "$tool_dir"
+                  curl --fail --location --retry 3 --silent --show-error \
+                      --output "$tool_dir/node.tar.xz" \
+                      "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"
+                  echo "${NODE_SHA256}  $tool_dir/node.tar.xz" | sha256sum --check --status
+                  tar -xJf "$tool_dir/node.tar.xz" -C "$tool_dir" --strip-components=1
+                  "$tool_dir/bin/node" --version
+                  printf '%s\n' "$tool_dir/bin" >> "$GITHUB_PATH"
+
+            # Standalone binary, not resolved through any package manager:
+            # this job must run exactly the pnpm version v2/ts/package.json
+            # ("packageManager": "pnpm@11.1.2") pins, not whatever corepack
+            # or npm would otherwise resolve.
+            - name: Install pinned pnpm
+              env:
+                  PNPM_VERSION: 11.1.2
+                  PNPM_SHA256: f82f761572d9621c5a646ccc00a1ecec4cf5839d66b714497e6ca10cd2e086ee
+              run: |
+                  tool_dir="$RUNNER_TEMP/pnpm"
+                  mkdir -p "$tool_dir"
+                  curl --fail --location --retry 3 --silent --show-error \
+                      --output "$tool_dir/pnpm.tar.gz" \
+                      "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-x64.tar.gz"
+                  echo "${PNPM_SHA256}  $tool_dir/pnpm.tar.gz" | sha256sum --check --status
+                  tar -xzf "$tool_dir/pnpm.tar.gz" -C "$tool_dir"
+                  chmod +x "$tool_dir/pnpm"
+                  "$tool_dir/pnpm" --version
+                  printf '%s\n' "$tool_dir" >> "$GITHUB_PATH"
+
+            # A gate that cannot fail is worse than no gate (AGENTS.md §9).
+            # This sabotages a set of hermetic, throwaway fixtures under
+            # mktemp -- never the real v2/rust or v2/ts trees -- and requires
+            # every one of them to be rejected, pinned to the message each
+            # targets, before the real run below is trusted.
+            - name: Prove the v2 gate detects failure
+              run: ./scripts/check_v2.sh --self-test
+
+            - name: Run the v2 (Rust + TypeScript) interim gate
+              run: ./scripts/check_v2.sh
+
+            # The one property no in-process fake can establish: two INDEPENDENT
+            # wasm instances, connected by a real RTCPeerConnection, deriving
+            # identical boundary hashes from real asynchronously-delivered
+            # traffic. Every other online test in this tree runs through fakes
+            # or a single instance, neither of which can observe it.
+            #
+            # It also exercises net_inbox.rs's discipline -- JS enqueues, Rust
+            # drains per tick, arrival is a tick event and never a callback
+            # reaching sim state between ticks -- under REAL callback timing.
+            #
+            # Same-engine Chrome only. The cross-engine Chrome/Firefox variant
+            # needs both browser assets and is worth running less often; it
+            # belongs on a schedule rather than on every push.
+            - name: Install pinned browser evidence dependencies
+              run: |
+                  python3 -m venv "$RUNNER_TEMP/browser-evidence"
+                  "$RUNNER_TEMP/browser-evidence/bin/pip" install \
+                      --require-hashes \
+                      --requirement scripts/browser_matrix-requirements.txt
+
+            - name: Prove two real browser peers agree bit for bit
+              run: |
+                  "$RUNNER_TEMP/browser-evidence/bin/python" -B \
+                      scripts/browser_online_peers.py \
+                      --output "$RUNNER_TEMP/v2-online-peers.json"
+
+            - name: Publish the agreement evidence
+              if: always()
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+              with:
+                  name: v2-online-peers
+                  path: ${{ runner.temp }}/v2-online-peers.json
+                  if-no-files-found: warn
+
     # Its own job on purpose: the harness is minutes of CPU, it needs nothing but
     # LOVE, and nothing else waits on it, so it costs the critical path nothing.
     # Until #279 no job ran it at all -- the only OMP-3 step in CI was the Python

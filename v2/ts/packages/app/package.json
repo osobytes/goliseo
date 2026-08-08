@@ -1,0 +1,27 @@
+{
+  "name": "@gc/app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "App shell: bootstrap, flow, screen stack, settings.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@gc/core": "workspace:*",
+    "@gc/screens": "workspace:*",
+    "@gc/render": "workspace:*",
+    "@gc/online": "workspace:*",
+    "@gc/input": "workspace:*",
+    "@gc/ui": "workspace:*",
+    "@gc/presentation": "workspace:*",
+    "@gc/wasm": "workspace:*",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.180.0"
+  }
+}

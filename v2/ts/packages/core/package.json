@@ -1,0 +1,10 @@
+{
+  "name": "@gc/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Presentation math: Vec2, Mat4, Quat, camera projection.",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "typecheck": "tsgo --noEmit -p tsconfig.json" },
+  "dependencies": {}
+}

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>gc render bench</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #101018;
+      }
+      #gl-canvas {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      A single GL canvas, no menu layer, no UI -- this page exists to run
+      the #100 ten-player render benchmark against a real match with no
+      screen-stack navigation in the way. See render_bench.ts's header for
+      why this is a standalone page rather than the product app shell.
+      Everything the driver script needs is read back off
+      `window.__gcRenderBench` (see render_bench.ts) or the GC_RENDER_BENCH
+      console markers it prints.
+    -->
+    <canvas id="gl-canvas" width="960" height="540"></canvas>
+    <script type="module" src="./render_bench.ts"></script>
+  </body>
+</html>

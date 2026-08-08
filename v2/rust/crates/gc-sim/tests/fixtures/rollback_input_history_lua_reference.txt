@@ -1,0 +1,19 @@
+after_phase_a_diagnostics=oldest=16;newest=45;auth_ticks=30;auth_samples=240;eff_ticks=30;rec_ticks=30;anchors=8;confirmed=45;divergence=nil
+after_phase_a_accounting=auth_bytes=4862;anchor_bytes=149;eff_bytes=3392;rec_bytes=8342;total_bytes=16745
+materialize_oldest_retained=16|local,authoritative,-2,52,49,21|remote,authoritative,11,55,50,26|remote,authoritative,24,58,51,31|remote,authoritative,37,61,52,4|remote,authoritative,50,64,53,9|remote,authoritative,63,67,54,14|remote,authoritative,76,70,55,19|remote,authoritative,89,73,56,24|confirmed=45|divergence=nil
+add_below_window=err;code=outside_window;message=authoritative input tick 15 is older than retained tick 16
+batch_ok=ok;inserted=8;duplicates=2;confirmed=46;divergence=nil
+batch_conflict=nil;code=conflicting_authoritative;message=authoritative input conflicts at tick 40 slot 3
+materialize_tick_46=46|local,authoritative,-47,127,11,19|remote,authoritative,-34,-125,12,24|remote,authoritative,-21,-122,13,29|remote,authoritative,-8,-119,14,2|remote,authoritative,5,-116,15,7|remote,authoritative,18,-113,16,12|remote,authoritative,31,-110,17,17|remote,authoritative,44,-107,18,22|confirmed=46|divergence=nil
+after_batch=oldest=16;newest=46;auth_ticks=31;auth_samples=248;eff_ticks=31;rec_ticks=31;anchors=8;confirmed=46;divergence=nil
+add_negative_tick=err;code=malformed;message=authoritative input tick must be a bounded non-negative integer
+add_tick_over_max=err;code=malformed;message=authoritative input tick must be a bounded non-negative integer
+divergence_before_max_tick=nil
+add_max_tick=ok;duplicate=false;confirmed=46;divergence=nil
+materialize_max_tick=2147483647|local,authoritative,-107,-113,4,6|remote,predicted,-34,-125,12,0|remote,predicted,-21,-122,13,0|remote,predicted,-8,-119,14,0|remote,predicted,5,-116,15,0|remote,predicted,18,-113,16,0|remote,predicted,31,-110,17,0|remote,predicted,44,-107,18,0|confirmed=46|divergence=nil
+after_max_tick_diagnostics=oldest=16;newest=2147483647;auth_ticks=32;auth_samples=249;eff_ticks=32;rec_ticks=32;anchors=8;confirmed=46;divergence=nil
+after_max_tick_accounting=auth_bytes=5058;anchor_bytes=149;eff_bytes=3631;rec_bytes=8883;total_bytes=17721
+truncate_from_46=ok;boundary=46;effective_removed=2;records_removed=2;cleared_divergence=false
+record_46_after_truncate=nil
+authoritative_46_after_truncate=present
+after_truncate=oldest=16;newest=2147483647;auth_ticks=32;auth_samples=249;eff_ticks=30;rec_ticks=30;anchors=8;confirmed=46;divergence=nil

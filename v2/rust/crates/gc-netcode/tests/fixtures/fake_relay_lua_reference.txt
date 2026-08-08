@@ -1,0 +1,153 @@
+# Reference values captured from the real Lua `game/transport/fake_relay.lua`
+# (plus `game/transport/contract.lua`, `game/transport/fake_star.lua`, and
+# `game/online/input_protocol.lua` for the wire-cost scenario), per
+# v2/tools/lua_reference/README.md. Regenerate from a scratch copy of core/,
+# sim/, data/, game/ with a headless conf.lua and a main.lua that requires
+# `game.transport.contract`, `game.transport.fake_relay`,
+# `game.transport.fake_star`, `sim.input_frame`, and
+# `game.online.input_protocol`, then runs the scenarios below and prints
+# `KEY=value` / `KEY_HEX=<hex>` lines. See `crates/gc-netcode/tests/fake_relay.rs`
+# for the consumer and the exact Rust-side reproduction of each scenario.
+#
+# 1. `ENCODE_ADDRESSED_*_HEX` / `DECODE_*` — `contract.encode_addressed`'s
+#    exact wire bytes for a control message whose payload needs
+#    percent-escaping (space, `|`, `%`, `\n`) and for an input message with a
+#    tick, plus `contract.decode_addressed` round-tripping the control wire
+#    back into its fields. Exercises `fake_relay::encode_addressed`/
+#    `decode_addressed`/`escape`/`unescape` — the one part of this port with
+#    no `crate::fake_star` analog, since a star never round-trips a message
+#    through text.
+#
+# 2. `DRAIN_ORDER` — a 3-member room; `guest_1` sends three control envelopes
+#    and `guest_2` sends two input envelopes to `host`, interleaved, then the
+#    room is pumped once and `host` drains with `poll()` (not `poll_batch`)
+#    one entry at a time. Pins the exact persistent (slot, channel-rank)
+#    cursor order `fake_relay::take` computes — round-robin over 2 slots x 2
+#    channels, control ranked before input, skipping empty (slot, channel)
+#    pairs within one `poll()` call.
+#
+# 3. `BACKPRESSURE_*` — a fresh 3-member room, host `buffered_amount_limit =
+#    25`, broadcasting four 10-byte-payload input envelopes to both guests.
+#    Each 23-byte envelope exceeds the 25-byte budget after the first, so
+#    backpressure latches once per flush pass; this exercises the property
+#    that is the whole point of a relay's shared uplink — the budget is
+#    charged **once** per broadcast unit, not once per target, unlike
+#    `fake_star`. `BACKPRESSURE_FINAL_UPLINK_UNITS`/`_BYTES` are cumulative
+#    since construction (envelope count/bytes put on the uplink, unaffected
+#    by how many pumps it took to drain).
+#
+# 4. `OVERFLOW_*` — a fresh 2-member room, `queue_limit = 2`, five control
+#    sends to the same peer: two accepted, three rejected once the shared
+#    uplink queue is full. `OVERFLOW_DIAGNOSTICS_OVERFLOW_COUNT=7` looks
+#    surprising for three overflow sends — it is real Lua behaviour, not a
+#    capture error: `event_limit = max(2, queue_limit) = 2`, and
+#    construction alone (`initialize` on both sides, each pushing a
+#    `peer_state` event) already evicts one event before any send happens
+#    (+1). Each of the three failed sends then contributes *two* to the
+#    counter: one from `_record_error`'s own `code == "overflow"` branch,
+#    and a second from `_push_event`'s independent "the event queue itself
+#    is full" branch, since the queue is already at its 2-event cap by the
+#    time the first send fails. `1 + 3*2 = 7`. `fake_relay::record_error`/
+#    `push_event` must reproduce this exact compounding, not merely "some
+#    overflow got counted".
+#
+# 5. `WIRE_COST_<member>_*` — the `transport_relay_topology_probe_measures_sequencer_less_per_node_wire_cost`
+#    scenario (8-member room, 60 ticks, one real encoded single-slot guest
+#    bundle broadcast per member per tick), exact per-member integers rather
+#    than the bracket `spec/game/transport_relay_spec.lua`/`tests/protocol.rs`
+#    assert. Member 1 (`host`) receives from seven 7-byte-id `guest_N`
+#    origins; members 2-8 receive from one 4-byte-id `host` origin plus six
+#    7-byte-id origins, so `WIRE_COST_1_DOWNLINK_FRAMED_BYTES` is exactly
+#    `3 * 60 = 180` bytes higher than every other member's — a real,
+#    load-bearing check on per-line origin framing, not a rounding artifact.
+#
+# 6. `COMPARE_RELAY_*` / `COMPARE_STAR_UPLINK_BYTES` — one `broadcast` of a
+#    213-byte input envelope (200-byte payload) across an 8-member relay
+#    room versus the equivalent 7-guest star: `COMPARE_STAR_UPLINK_BYTES`
+#    (1491) is exactly `COMPARE_RELAY_UPLINK_BYTES` (213) `* 7`, the
+#    headline OMP-4 claim this whole module exists to measure.
+
+ENCODE_ADDRESSED_CONTROL_HEX=686f73747c636f6e74726f6c7c317c6576656e747c377c7c68656c6c6f253230776f726c642537436e656564732532352532306573636170696e6725304168657265
+ENCODE_ADDRESSED_INPUT_HEX=67756573745f337c696e7075747c317c696e7075747c337c34317c696e7075742532307061796c6f6164
+DECODE_PEER_ID=host
+DECODE_CHANNEL=control
+DECODE_SEQ=7
+DECODE_TYPE=event
+DECODE_PAYLOAD_HEX=68656c6c6f20776f726c647c6e6565647325206573636170696e670a68657265
+DRAIN_ORDER=guest_1:control:g1c0:1|guest_2:input:g2i0:1|guest_1:control:g1c1:2|guest_2:input:g2i1:2|guest_1:control:g1c2:3
+BACKPRESSURE_AFTER_ONE_PUMP_BACKPRESSURE_COUNT=1
+BACKPRESSURE_AFTER_ONE_PUMP_OUTBOUND_DEPTH_GUEST1=3
+BACKPRESSURE_TOTAL_DELIVERED=8
+BACKPRESSURE_FINAL_UPLINK_UNITS=4
+BACKPRESSURE_FINAL_UPLINK_BYTES=88
+OVERFLOW_ACCEPTED=2
+OVERFLOW_REJECTED=3
+OVERFLOW_DIAGNOSTICS_OVERFLOW_COUNT=7
+WIRE_COST_1_UPLINK_UNITS=60
+WIRE_COST_1_UPLINK_BYTES=11664
+WIRE_COST_1_INPUT_UPLINK_BYTES=11664
+WIRE_COST_1_DOWNLINK_BYTES=81648
+WIRE_COST_1_INPUT_DOWNLINK_BYTES=81648
+WIRE_COST_1_DOWNLINK_FRAMED_BYTES=87888
+WIRE_COST_1_DOWNLINK_FRAMES=60
+WIRE_COST_1_FRAME_OVERHEAD_BYTES=660
+WIRE_COST_2_UPLINK_UNITS=60
+WIRE_COST_2_UPLINK_BYTES=11664
+WIRE_COST_2_INPUT_UPLINK_BYTES=11664
+WIRE_COST_2_DOWNLINK_BYTES=81648
+WIRE_COST_2_INPUT_DOWNLINK_BYTES=81648
+WIRE_COST_2_DOWNLINK_FRAMED_BYTES=87708
+WIRE_COST_2_DOWNLINK_FRAMES=60
+WIRE_COST_2_FRAME_OVERHEAD_BYTES=840
+WIRE_COST_3_UPLINK_UNITS=60
+WIRE_COST_3_UPLINK_BYTES=11664
+WIRE_COST_3_INPUT_UPLINK_BYTES=11664
+WIRE_COST_3_DOWNLINK_BYTES=81648
+WIRE_COST_3_INPUT_DOWNLINK_BYTES=81648
+WIRE_COST_3_DOWNLINK_FRAMED_BYTES=87708
+WIRE_COST_3_DOWNLINK_FRAMES=60
+WIRE_COST_3_FRAME_OVERHEAD_BYTES=840
+WIRE_COST_4_UPLINK_UNITS=60
+WIRE_COST_4_UPLINK_BYTES=11664
+WIRE_COST_4_INPUT_UPLINK_BYTES=11664
+WIRE_COST_4_DOWNLINK_BYTES=81648
+WIRE_COST_4_INPUT_DOWNLINK_BYTES=81648
+WIRE_COST_4_DOWNLINK_FRAMED_BYTES=87708
+WIRE_COST_4_DOWNLINK_FRAMES=60
+WIRE_COST_4_FRAME_OVERHEAD_BYTES=840
+WIRE_COST_5_UPLINK_UNITS=60
+WIRE_COST_5_UPLINK_BYTES=11664
+WIRE_COST_5_INPUT_UPLINK_BYTES=11664
+WIRE_COST_5_DOWNLINK_BYTES=81648
+WIRE_COST_5_INPUT_DOWNLINK_BYTES=81648
+WIRE_COST_5_DOWNLINK_FRAMED_BYTES=87708
+WIRE_COST_5_DOWNLINK_FRAMES=60
+WIRE_COST_5_FRAME_OVERHEAD_BYTES=840
+WIRE_COST_6_UPLINK_UNITS=60
+WIRE_COST_6_UPLINK_BYTES=11664
+WIRE_COST_6_INPUT_UPLINK_BYTES=11664
+WIRE_COST_6_DOWNLINK_BYTES=81648
+WIRE_COST_6_INPUT_DOWNLINK_BYTES=81648
+WIRE_COST_6_DOWNLINK_FRAMED_BYTES=87708
+WIRE_COST_6_DOWNLINK_FRAMES=60
+WIRE_COST_6_FRAME_OVERHEAD_BYTES=840
+WIRE_COST_7_UPLINK_UNITS=60
+WIRE_COST_7_UPLINK_BYTES=11664
+WIRE_COST_7_INPUT_UPLINK_BYTES=11664
+WIRE_COST_7_DOWNLINK_BYTES=81648
+WIRE_COST_7_INPUT_DOWNLINK_BYTES=81648
+WIRE_COST_7_DOWNLINK_FRAMED_BYTES=87708
+WIRE_COST_7_DOWNLINK_FRAMES=60
+WIRE_COST_7_FRAME_OVERHEAD_BYTES=840
+WIRE_COST_8_UPLINK_UNITS=60
+WIRE_COST_8_UPLINK_BYTES=11664
+WIRE_COST_8_INPUT_UPLINK_BYTES=11664
+WIRE_COST_8_DOWNLINK_BYTES=81648
+WIRE_COST_8_INPUT_DOWNLINK_BYTES=81648
+WIRE_COST_8_DOWNLINK_FRAMED_BYTES=87708
+WIRE_COST_8_DOWNLINK_FRAMES=60
+WIRE_COST_8_FRAME_OVERHEAD_BYTES=840
+COMPARE_RELAY_UPLINK_UNITS=1
+COMPARE_RELAY_UPLINK_BYTES=213
+COMPARE_RELAY_INPUT_UPLINK_BYTES=213
+COMPARE_STAR_UPLINK_BYTES=1491

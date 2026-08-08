@@ -1,0 +1,15 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/wasm" },
+    { "path": "packages/ui" },
+    { "path": "packages/input" },
+    { "path": "packages/presentation" },
+    { "path": "packages/render" },
+    { "path": "packages/screens" },
+    { "path": "packages/transport" },
+    { "path": "packages/online" },
+    { "path": "packages/app" }
+  ]
+}
