@@ -49,7 +49,7 @@
 
 import init, { Session, __getRawExports } from "../../../ts/packages/wasm/dist/pkg-web/gc_wasm.js";
 import * as THREE from "three";
-import { SceneRoot, frameBuffer, viewState } from "@gc/render";
+import { SceneRoot, frameBuffer, pitch, viewState } from "@gc/render";
 import type { frameBufferTypes } from "@gc/render";
 
 const DT = 1 / 60;
@@ -203,6 +203,14 @@ async function main(): Promise<void> {
   // `?bloom=0` turns the post-process off, for attributing frame cost. The
   // product always has it on; this is a measurement lever, not a setting.
   const bloomEnabled = params.get("bloom") !== "0";
+  // `?rigged=0` falls the whole roster back to `player_renderer.ts`'s
+  // procedural 2.5D billboards, for attributing frame cost to the ten
+  // `THREE.SkinnedMesh` characters (and their per-frame bone-matrix uploads)
+  // versus everything else. Same category as `?ratio=`/`?bloom=`: a
+  // measurement lever, not a setting -- the product is always rigged.
+  if (params.get("rigged") === "0") {
+    pitch.rigged_players = false;
+  }
   const sceneRoot = new SceneRoot(glRenderer, {
     viewport: { w: width, h: height },
     pixelRatio: pixelRatioForWindow(),

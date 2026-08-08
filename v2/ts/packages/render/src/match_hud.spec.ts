@@ -176,7 +176,12 @@ describe("match_hud.drawMatchHud (population)", () => {
     expect(group.children.length).not.toBe(first + expected); // would be true if paint() had accumulated instead of clearing
   });
 
-  it("disposes each rebuilt frame's mesh geometry/material before the next one lands", () => {
+  // Materials deliberately NOT disposed here anymore -- they are shared and
+  // cached by draw2d.ts (see its SHARED MATERIALS section and #403: disposing
+  // them destroyed and recompiled five GL programs per frame). Geometry is
+  // still per-frame, and this asserts both halves of that split so a
+  // regression in either direction is loud.
+  it("disposes each rebuilt frame's mesh geometry, and REUSES its shared material", () => {
     const group = new THREE.Group();
     const buildText = (): THREE.Object3D => new THREE.Object3D();
     drawMatchHud(group, model(), layout, theme, viewport, { buildText });
@@ -185,12 +190,14 @@ describe("match_hud.drawMatchHud (population)", () => {
     expect(mesh).toBeDefined();
     let geometryDisposed = false;
     let materialDisposed = false;
+    let firstMaterial: THREE.Material | undefined;
     if (mesh !== undefined) {
       mesh.geometry.dispose = () => {
         geometryDisposed = true;
       };
       const material = mesh.material;
       if (!Array.isArray(material)) {
+        firstMaterial = material;
         material.dispose = () => {
           materialDisposed = true;
         };
@@ -200,6 +207,9 @@ describe("match_hud.drawMatchHud (population)", () => {
     drawMatchHud(group, model(), layout, theme, viewport, { buildText });
 
     expect(geometryDisposed).toBe(true);
-    expect(materialDisposed).toBe(true);
+    expect(materialDisposed).toBe(false);
+    const next = group.children.find((c): c is THREE.Mesh => c instanceof THREE.Mesh);
+    expect(next).toBeDefined();
+    expect(next?.material).toBe(firstMaterial);
   });
 });

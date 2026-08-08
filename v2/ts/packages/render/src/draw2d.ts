@@ -368,23 +368,206 @@ function colorOf(c: DrawCommand): THREE.Color {
   return new THREE.Color(c.color[0], c.color[1], c.color[2]);
 }
 
-function lineMaterial(c: DrawCommand): THREE.LineBasicMaterial {
-  return new THREE.LineBasicMaterial({
-    color: colorOf(c),
-    transparent: c.alpha !== undefined,
-    opacity: c.alpha ?? 1,
-    blending: c.blend === "add" ? THREE.AdditiveBlending : THREE.NormalBlending,
-  });
+// ---------------------------------------------------------------------------
+// SHARED MATERIALS -- why this cache exists (#403).
+//
+// `paint` rebuilds the whole group every frame, and used to build a FRESH
+// `THREE.LineBasicMaterial`/`MeshBasicMaterial` per command and dispose it
+// again on the next frame's clear. Materials are cheap JS objects, so that
+// reads harmless. It is not, because of what three.js hangs off a material's
+// lifetime: `WebGLPrograms.acquireProgram` refcounts the compiled GL program
+// a material resolves to (`usedTimes`), and `releaseProgram` -- reached from
+// `material.dispose()` -- calls `program.destroy()` the moment that count
+// hits zero. `paint` disposes EVERY old child BEFORE building any new one, so
+// the count for each program variant reliably passed through zero once per
+// frame. Every frame therefore re-ran `createShader`/`shaderSource`/
+// `compileShader`/`attachShader`/`linkProgram` for the same handful of
+// programs, and then `WebGLProgram`'s `onFirstUse` link-error check
+// (`renderer.debug.checkShaderErrors`, ON by default) called
+// `getProgramInfoLog` -- which BLOCKS until the driver has finished linking.
+//
+// Measured headful on a 74.98 Hz panel, 8 s sample, live match, by wrapping
+// every `WebGL2RenderingContext` method with a counter and a timer:
+//
+//     shaderSource            x10.0/frame
+//     getProgramInfoLog        x5.0/frame     6.29 ms/frame
+//     getShaderInfoLog        x10.0/frame     0.70 ms/frame
+//     getProgramParameter     x15.0/frame     0.32 ms/frame
+//
+// Five programs recompiled and synchronously re-validated per frame, for
+// ~7.8 ms of a 13.33 ms budget -- while the whole frame measured ~12.9 ms.
+// That is the "renders at exactly half the display refresh rate" of #403: the
+// frame sat at ~97% of the vsync deadline, so it tipped onto every second
+// refresh whenever anything else touched the GPU. It also explains why every
+// earlier hypothesis missed -- this cost is identical at 960x540 and at
+// 2193x1234, with bloom on or off, and it is not a draw call.
+//
+// The fix is to stop destroying the programs, which means to stop disposing
+// the materials, which means to share them. Colour, opacity and blending are
+// uniforms and GL state, NOT part of three.js's program cache key, so the
+// number of distinct PROGRAMS behind this cache stays the same handful it
+// always was; the cache only stops their refcounts reaching zero.
+//
+// SAFE TO SHARE because nothing mutates a material after `buildOne` returns:
+// `applyDepthPlacement` is the only writer, and `depthTest` is part of the
+// key below (see that function). A shared material outliving one
+// `THREE.WebGLRenderer` is fine too -- three.js keeps per-renderer GL state in
+// a renderer-owned `WebGLProperties` WeakMap, so the same material picked up
+// by a second renderer simply gets fresh programs there.
+//
+// BOUNDED: LRU, evicting (and disposing) past `MAX_CACHED_MATERIALS`. Alpha
+// is continuous in fades, so the key space is not finite in principle; in
+// practice a match frame's distinct keys are in the low hundreds. An eviction
+// costs at worst one program recompile on the next frame that needs it, which
+// is the old behaviour for one material rather than for all of them.
+// ---------------------------------------------------------------------------
+
+const MAX_CACHED_MATERIALS = 512;
+
+/** Marks a material as owned by `materialCache`, so `disposeMaterial` leaves it alone. */
+const SHARED_MATERIAL_FLAG = "draw2dSharedMaterial";
+
+const materialCache = new Map<string, THREE.Material>();
+
+function sharedMaterial<T extends THREE.Material>(key: string, build: () => T): T {
+  const hit = materialCache.get(key);
+  if (hit !== undefined) {
+    // Re-insert to move it to the end: `Map` iterates in insertion order, so
+    // the front of the map is the least recently used entry.
+    materialCache.delete(key);
+    materialCache.set(key, hit);
+    return hit as T;
+  }
+  const material = build();
+  material.userData[SHARED_MATERIAL_FLAG] = true;
+  materialCache.set(key, material);
+  while (materialCache.size > MAX_CACHED_MATERIALS) {
+    const oldest = materialCache.keys().next();
+    if (oldest.done === true) {
+      break;
+    }
+    release(oldest.value);
+  }
+  return material;
 }
 
-function fillMaterial(c: DrawCommand): THREE.MeshBasicMaterial {
-  return new THREE.MeshBasicMaterial({
-    color: colorOf(c),
-    transparent: c.alpha !== undefined,
-    opacity: c.alpha ?? 1,
-    blending: c.blend === "add" ? THREE.AdditiveBlending : THREE.NormalBlending,
-    side: THREE.DoubleSide,
-  });
+/**
+ * Drops one entry, HANDING OWNERSHIP BACK rather than disposing.
+ *
+ * THE CACHE NEVER DISPOSES ANYTHING. This is the single rule that makes
+ * sharing safe, and it is worth stating as a rule rather than leaving as an
+ * implementation detail, because the obvious alternative — evict and
+ * `dispose()` — is a genuine use-after-dispose. Eviction happens on INSERT,
+ * and inserts happen while a frame is being built: `pitch.draw` issues one
+ * `paint` followed by several `appendCommands`, so a frame with more than
+ * `MAX_CACHED_MATERIALS` distinct keys could evict a material that an object
+ * built EARLIER IN THE SAME FRAME is still holding, and then dispose it out
+ * from under that object.
+ *
+ * That is the same family of bug as three.js's own `FullScreenQuad`, which
+ * shares geometry at module level and frees it on any single instance's
+ * `dispose()` — module-level state destroyed by one participant while others
+ * still reference it. Here the ownership arrow points the other way and never
+ * reverses: the cache is the only thing that may hand a material out, and it
+ * is never the thing that frees one. Clearing the flag returns the material to
+ * the ordinary per-object path, so the next `paint()` that clears an object
+ * holding it disposes it exactly as it would have before this cache existed.
+ *
+ * The cost of never disposing is bounded and, here, actually desirable: a
+ * material dropped while nothing references it is garbage collected without
+ * `dispose()`, which leaves three.js's refcount on its compiled program
+ * permanently incremented. That keeps the program alive — which is the entire
+ * point of this file's SHARED MATERIALS section — and programs are shared by
+ * three.js's own cache key, so the number of them stays the same handful
+ * (measured: 15, flat across a 120 s soak) no matter how many materials pass
+ * through.
+ */
+function release(key: string): void {
+  const material = materialCache.get(key);
+  materialCache.delete(key);
+  if (material !== undefined) {
+    material.userData[SHARED_MATERIAL_FLAG] = false;
+  }
+}
+
+/** How many materials `materialCache` currently holds. For tests -- same
+ * convention as pitch.ts's `staticSceneBuildCount`. */
+export function materialCacheSize(): number {
+  return materialCache.size;
+}
+
+/**
+ * Empties the cache, handing every entry back to the ordinary per-object
+ * disposal path (see `release` -- this does NOT dispose them, for the same
+ * reason eviction does not). For tests, and for a caller that wants to stop
+ * sharing across two `SceneRoot`s. Same convention as pitch.ts's
+ * `resetStaticSceneCache`.
+ */
+export function resetMaterialCache(): void {
+  for (const key of [...materialCache.keys()]) {
+    release(key);
+  }
+}
+
+// `alpha` is distinguished from `alpha: 1` on purpose: only the former leaves
+// `transparent` false, and the two render differently.
+function alphaKey(c: DrawCommand): string {
+  return c.alpha === undefined ? "-" : String(c.alpha);
+}
+
+// The EXACT float triple, deliberately not `THREE.Color.getHexString()`. Hex
+// would quantise to 8 bits per channel and hand two commands whose colours
+// differ below 1/255 the same material -- imperceptible in the framebuffer,
+// but this scene runs a bloom pass with a luminance THRESHOLD (bloom.ts), and
+// a threshold is exactly where a sub-1/255 difference stops being invisible.
+// Sharing must never change a pixel; a slightly larger key space is the
+// cheaper side of that trade, and the LRU bounds it anyway.
+function colorKey(c: DrawCommand): string {
+  return `${c.color[0]},${c.color[1]},${c.color[2]}`;
+}
+
+// `applyDepthPlacement` writes `depthTest` onto the built object's material,
+// so it has to be part of the key or two callers passing different
+// `PaintOptions.depthTest` would fight over one shared instance. Resolved
+// here to the value that function would have written (three.js's own default
+// is `true`), and set at construction instead.
+function depthTestOf(opts?: PaintOptions): boolean {
+  return opts?.depthTest ?? true;
+}
+
+function lineMaterial(c: DrawCommand, opts?: PaintOptions): THREE.LineBasicMaterial {
+  const color = colorOf(c);
+  const depthTest = depthTestOf(opts);
+  const additive = c.blend === "add";
+  return sharedMaterial(
+    `line|${colorKey(c)}|${alphaKey(c)}|${additive ? "add" : "alpha"}|${depthTest ? "z" : "-"}`,
+    () =>
+      new THREE.LineBasicMaterial({
+        color,
+        transparent: c.alpha !== undefined,
+        opacity: c.alpha ?? 1,
+        blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
+        depthTest,
+      }),
+  );
+}
+
+function fillMaterial(c: DrawCommand, opts?: PaintOptions): THREE.MeshBasicMaterial {
+  const color = colorOf(c);
+  const depthTest = depthTestOf(opts);
+  const additive = c.blend === "add";
+  return sharedMaterial(
+    `fill|${colorKey(c)}|${alphaKey(c)}|${additive ? "add" : "alpha"}|${depthTest ? "z" : "-"}`,
+    () =>
+      new THREE.MeshBasicMaterial({
+        color,
+        transparent: c.alpha !== undefined,
+        opacity: c.alpha ?? 1,
+        blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
+        side: THREE.DoubleSide,
+        depthTest,
+      }),
+  );
 }
 
 function ringPoints(x: number, y: number, r: number, segments = CIRCLE_SEGMENTS): THREE.Vector3[] {
@@ -508,7 +691,10 @@ function strokeBatchKey(c: DrawCommand): string {
 // exactly the artifact that would be blamed on something else for an hour.
 // The cost is duplicated interior vertices, which is a vertex-buffer trade
 // against a per-object draw call -- at 353 objects that is not close.
-function batchStrokeRun(run: readonly { readonly command: DrawCommand; readonly points: readonly THREE.Vector3[] }[]): THREE.LineSegments {
+function batchStrokeRun(
+  run: readonly { readonly command: DrawCommand; readonly points: readonly THREE.Vector3[] }[],
+  opts?: PaintOptions,
+): THREE.LineSegments {
   const positions: number[] = [];
   const colors: number[] = [];
   for (const { command, points } of run) {
@@ -527,12 +713,23 @@ function batchStrokeRun(run: readonly { readonly command: DrawCommand; readonly 
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
   const head = run[0]?.command;
-  const material = new THREE.LineBasicMaterial({
-    vertexColors: true,
-    transparent: head?.alpha !== undefined,
-    opacity: head?.alpha ?? 1,
-    blending: head?.blend === "add" ? THREE.AdditiveBlending : THREE.NormalBlending,
-  });
+  // Per-vertex colour, so unlike `lineMaterial` the command's own colour is
+  // NOT part of this material's identity -- only the run head's alpha and
+  // blend are (`strokeBatchKey` already guarantees every command in a run
+  // agrees on both).
+  const depthTest = depthTestOf(opts);
+  const additive = head?.blend === "add";
+  const material = sharedMaterial(
+    `batch|${head?.alpha === undefined ? "-" : String(head.alpha)}|${additive ? "add" : "alpha"}|${depthTest ? "z" : "-"}`,
+    () =>
+      new THREE.LineBasicMaterial({
+        vertexColors: true,
+        transparent: head?.alpha !== undefined,
+        opacity: head?.alpha ?? 1,
+        blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
+        depthTest,
+      }),
+  );
   return new THREE.LineSegments(geometry, material);
 }
 
@@ -541,7 +738,7 @@ function buildOne(c: DrawCommand, opts?: PaintOptions): THREE.Object3D {
     case "rect": {
       if (c.mode === "fill") {
         const geometry = new THREE.PlaneGeometry(c.w, c.h);
-        const mesh = new THREE.Mesh(geometry, fillMaterial(c));
+        const mesh = new THREE.Mesh(geometry, fillMaterial(c, opts));
         mesh.position.set(c.x + c.w / 2, c.y + c.h / 2, 0);
         return mesh;
       }
@@ -552,18 +749,18 @@ function buildOne(c: DrawCommand, opts?: PaintOptions): THREE.Object3D {
         new THREE.Vector3(c.x, c.y + c.h, 0),
         new THREE.Vector3(c.x, c.y, 0),
       ];
-      return new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), lineMaterial(c));
+      return new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), lineMaterial(c, opts));
     }
     case "circle": {
       if (c.mode === "fill") {
         const geometry = new THREE.CircleGeometry(c.r, CIRCLE_SEGMENTS);
-        const mesh = new THREE.Mesh(geometry, fillMaterial(c));
+        const mesh = new THREE.Mesh(geometry, fillMaterial(c, opts));
         mesh.position.set(c.x, c.y, 0);
         return mesh;
       }
       return new THREE.LineLoop(
         new THREE.BufferGeometry().setFromPoints(ringPoints(0, 0, c.r)),
-        lineMaterial(c),
+        lineMaterial(c, opts),
       ).translateX(c.x).translateY(c.y);
     }
     case "ellipse": {
@@ -571,11 +768,11 @@ function buildOne(c: DrawCommand, opts?: PaintOptions): THREE.Object3D {
       const points = curve.getPoints(CIRCLE_SEGMENTS).map((p) => new THREE.Vector3(p.x, p.y, 0));
       if (c.mode === "fill") {
         const shape = new THREE.Shape(curve.getPoints(CIRCLE_SEGMENTS));
-        const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), fillMaterial(c));
+        const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), fillMaterial(c, opts));
         mesh.position.set(c.x, c.y, 0);
         return mesh;
       }
-      const line = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(points), lineMaterial(c));
+      const line = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(points), lineMaterial(c, opts));
       line.position.set(c.x, c.y, 0);
       return line;
     }
@@ -583,26 +780,26 @@ function buildOne(c: DrawCommand, opts?: PaintOptions): THREE.Object3D {
       const points = polylinePoints(c.points);
       if (c.mode === "fill") {
         const shapePoints = points.map((p) => new THREE.Vector2(p.x, p.y));
-        const mesh = new THREE.Mesh(new THREE.ShapeGeometry(new THREE.Shape(shapePoints)), fillMaterial(c));
+        const mesh = new THREE.Mesh(new THREE.ShapeGeometry(new THREE.Shape(shapePoints)), fillMaterial(c, opts));
         return mesh;
       }
       const closed = [...points, points[0]].filter((p): p is THREE.Vector3 => p !== undefined);
-      return new THREE.Line(new THREE.BufferGeometry().setFromPoints(closed), lineMaterial(c));
+      return new THREE.Line(new THREE.BufferGeometry().setFromPoints(closed), lineMaterial(c, opts));
     }
     case "line": {
       const points = polylinePoints(c.points);
-      return new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), lineMaterial(c));
+      return new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), lineMaterial(c, opts));
     }
     case "arc": {
       const curve = new THREE.EllipseCurve(0, 0, c.r, c.r, c.angle1, c.angle2, false, 0);
       const points = curve.getPoints(CIRCLE_SEGMENTS).map((p) => new THREE.Vector3(p.x, p.y, 0));
       if (c.mode === "fill") {
         const shapePoints = [new THREE.Vector2(0, 0), ...points.map((p) => new THREE.Vector2(p.x, p.y))];
-        const mesh = new THREE.Mesh(new THREE.ShapeGeometry(new THREE.Shape(shapePoints)), fillMaterial(c));
+        const mesh = new THREE.Mesh(new THREE.ShapeGeometry(new THREE.Shape(shapePoints)), fillMaterial(c, opts));
         mesh.position.set(c.x, c.y, 0);
         return mesh;
       }
-      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), lineMaterial(c));
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), lineMaterial(c, opts));
       line.position.set(c.x, c.y, 0);
       return line;
     }
@@ -699,6 +896,13 @@ export function disposeObject(child: THREE.Object3D): void {
 function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
   const materials = Array.isArray(material) ? material : [material];
   for (const m of materials) {
+    // Owned by `materialCache`, not by the object being removed -- disposing
+    // it here is exactly the per-frame program destruction #403 turned out to
+    // be (see the SHARED MATERIALS section above). The cache disposes its own
+    // entries on eviction and in `resetMaterialCache`.
+    if (m.userData[SHARED_MATERIAL_FLAG] === true) {
+      continue;
+    }
     if ("map" in m && m.map instanceof THREE.Texture) {
       m.map.dispose();
     }
@@ -741,7 +945,7 @@ export function appendCommands(group: THREE.Group, commands: readonly DrawComman
     }
     // A run of one gains nothing and would needlessly change the object type
     // a caller sees, so it takes the ordinary path.
-    const obj = run.length === 1 ? buildOne(run[0]!.command, opts) : batchStrokeRun(run);
+    const obj = run.length === 1 ? buildOne(run[0]!.command, opts) : batchStrokeRun(run, opts);
     applyDepthPlacement(obj, opts);
     group.add(obj);
     run = [];
@@ -786,6 +990,15 @@ function applyDepthPlacement(obj: THREE.Object3D, opts?: PaintOptions): void {
     if (materialOwner !== undefined) {
       const materials = Array.isArray(materialOwner.material) ? materialOwner.material : [materialOwner.material];
       for (const m of materials) {
+        // A cached material was already CONSTRUCTED with this `depthTest`
+        // (it is part of `materialCache`'s key -- see `depthTestOf`), so
+        // writing it here would be a no-op at best. Skipped explicitly so
+        // that stays true by construction rather than by coincidence: a
+        // shared instance must never be mutated per-object, or two callers
+        // with different `PaintOptions` would fight over one material.
+        if (m.userData[SHARED_MATERIAL_FLAG] === true) {
+          continue;
+        }
         m.depthTest = opts.depthTest;
       }
     }
@@ -800,9 +1013,18 @@ function applyDepthPlacement(obj: THREE.Object3D, opts?: PaintOptions): void {
  * projection.
  *
  * Rebuilding every call is the simplest correct thing (matching the Lua
- * original's fully-immediate-mode redraw each frame) and is left that way
- * deliberately: this milestone has no renderer to profile against, so
- * optimizing object reuse here would be tuning against nothing.
+ * original's fully-immediate-mode redraw each frame) and OBJECTS and
+ * GEOMETRIES are still rebuilt that way: measured, that costs ~0.3 ms/frame
+ * (177 `bufferData` + 177 buffer create/delete + 88 VAO create/delete), which
+ * is not what #403 was.
+ *
+ * MATERIALS are the exception, and are no longer rebuilt or disposed here:
+ * disposing one drops three.js's refcount on the compiled GL program behind
+ * it, and since this loop disposes every old child BEFORE building any new
+ * one, that count passed through zero once per frame and destroyed five
+ * programs -- which then had to be recompiled and, worse, SYNCHRONOUSLY
+ * re-validated, for ~7.8 ms of a 13.33 ms frame budget. See the SHARED
+ * MATERIALS section above for the measurement and the mechanism.
  */
 export function paint(group: THREE.Group, commands: readonly DrawCommand[], opts?: PaintOptions): void {
   for (const child of [...group.children]) {
