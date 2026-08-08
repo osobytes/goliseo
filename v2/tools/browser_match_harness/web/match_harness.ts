@@ -147,13 +147,6 @@ async function main(): Promise<void> {
   // CSS size is independent of the drawing buffer: letterbox the largest
   // field-aspect rectangle that fits, exactly as the love.js host does for a
   // non-16:9 window.
-  // NOTE: this page renders a 960x540 buffer and lets CSS scale it, so it is
-  // SOFT on a large window. That is what love.js does and it keeps the
-  // projection's `vp.w === field.w` invariant intact, but it is not what
-  // three.js is capable of: `renderer.setPixelRatio` would give a native-
-  // resolution buffer over the same logical coordinate space. Tried and backed
-  // out -- `SceneRoot` resets the ratio to 1 after this file sets it, so the
-  // fix belongs in `SceneRoot`, not here.
   const surface = canvas;
   function fitToWindow(): void {
     const scale = Math.min(window.innerWidth / width, window.innerHeight / height);
@@ -174,7 +167,35 @@ async function main(): Promise<void> {
   // pass's rather than the frame's total.
   glRenderer.info.autoReset = false;
 
-  const sceneRoot = new SceneRoot(glRenderer, { viewport: { w: width, h: height } });
+  // NATIVE RESOLUTION OVER A LOGICAL COORDINATE SPACE.
+  //
+  // The logical viewport has to stay at the field's size (see the note on
+  // `width`/`height` above), but rendering a 960x540 BUFFER and letting CSS
+  // stretch it to the window throws away every device pixel above that -- a
+  // 960x540 image blown up ~1.9x, which reads as chunky and soft. love.js pays
+  // that cost because it has no way not to; three.js does. The pixel ratio
+  // scales the DRAWING BUFFER while the scene keeps its own coordinate space,
+  // so the game still draws in Lua's 960x540 and still rasterises at the
+  // display's real resolution.
+  //
+  // Must be passed to `SceneRoot`, not set on the renderer beforehand: its
+  // constructor applies `options.pixelRatio ?? 1` and would reset it.
+  // `SceneRoot.resize` uses `setSize`, which preserves whatever ratio is
+  // current, so this survives resizes.
+  //
+  // Capped at 3 so a HiDPI display cannot quietly ask for a 9x-area buffer.
+  function pixelRatioForWindow(): number {
+    const fit = Math.min(window.innerWidth / width, window.innerHeight / height);
+    return Math.min(Math.max(fit, 1) * (window.devicePixelRatio || 1), 3);
+  }
+  const sceneRoot = new SceneRoot(glRenderer, {
+    viewport: { w: width, h: height },
+    pixelRatio: pixelRatioForWindow(),
+  });
+  window.addEventListener("resize", () => {
+    glRenderer.setPixelRatio(pixelRatioForWindow());
+    sceneRoot.resize({ w: width, h: height });
+  });
   const session = new Session("nebula", "orion", seed, durationSeconds, 99, undefined, undefined, undefined, undefined, undefined);
   session.enableBot(botSeed);
 
