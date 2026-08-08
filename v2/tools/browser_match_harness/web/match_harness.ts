@@ -90,13 +90,29 @@ declare global {
 async function main(): Promise<void> {
   const params = new URLSearchParams(location.search);
   const seed = Number(params.get("seed") ?? "1");
-  // Fill the window by default. A fixed 960x540 box in the corner is not a
-  // fair thing to put beside the Lua benchmark, which sizes itself to the
-  // window -- half the "it adjusts properly to the screen" difference was
-  // this page, not the renderer. `?width=`/`?height=` still pin it when a
-  // measurement needs a fixed viewport.
-  const width = Number(params.get("width") ?? String(Math.max(window.innerWidth, 320)));
-  const height = Number(params.get("height") ?? String(Math.max(window.innerHeight, 180)));
+  // RENDER AT THE FIELD'S OWN SIZE AND UPSCALE, which is what the love.js
+  // build does ("keeps the 960x540 logical canvas at 16:9",
+  // docs/online/browser_build.md) and what the projection quietly requires.
+  //
+  // `camera.projectFixed` -- ported character for character from Lua -- puts
+  // the viewport factor in the SCREEN POSITION and not in the depth scale:
+  //
+  //     sx    = vp.w/2 + (wx - field.w/2) * scale * (vp.w / field.w)
+  //     scale = far_scale + (near_scale - far_scale) * t
+  //
+  // Everything sized off that scale (`r = radius * scale`, and so every
+  // character, billboard, shadow and reticle derived from it) therefore has
+  // NO viewport factor. That is invisible while vp.w == field.w, which is the
+  // only case Lua ever runs and the only case the specs cover. Render at the
+  // window's native size instead and the pitch stretches while the players
+  // stay put -- measured: a 2x viewport moved pitch width 830 -> 1634 px and
+  // left character ppm bit-identical at 29.8969.
+  //
+  // So the drawing buffer stays at field size and CSS scales it up. Fewer
+  // pixels, and the invariant the projection assumes holds by construction
+  // rather than by luck.
+  const width = Number(params.get("width") ?? "960");
+  const height = Number(params.get("height") ?? "540");
   // Long by default: this page is for watching, and a match that ends after
   // two minutes stops being useful mid-observation. `?duration=120` gives the
   // product's own length when that is what you want to compare.
@@ -128,6 +144,26 @@ async function main(): Promise<void> {
   }
   canvas.width = width;
   canvas.height = height;
+  // CSS size is independent of the drawing buffer: letterbox the largest
+  // field-aspect rectangle that fits, exactly as the love.js host does for a
+  // non-16:9 window.
+  // NOTE: this page renders a 960x540 buffer and lets CSS scale it, so it is
+  // SOFT on a large window. That is what love.js does and it keeps the
+  // projection's `vp.w === field.w` invariant intact, but it is not what
+  // three.js is capable of: `renderer.setPixelRatio` would give a native-
+  // resolution buffer over the same logical coordinate space. Tried and backed
+  // out -- `SceneRoot` resets the ratio to 1 after this file sets it, so the
+  // fix belongs in `SceneRoot`, not here.
+  const surface = canvas;
+  function fitToWindow(): void {
+    const scale = Math.min(window.innerWidth / width, window.innerHeight / height);
+    surface.style.width = `${Math.floor(width * scale)}px`;
+    surface.style.height = `${Math.floor(height * scale)}px`;
+    surface.style.display = "block";
+    surface.style.margin = "0 auto";
+  }
+  fitToWindow();
+  window.addEventListener("resize", fitToWindow);
 
   await init();
 
@@ -139,19 +175,6 @@ async function main(): Promise<void> {
   glRenderer.info.autoReset = false;
 
   const sceneRoot = new SceneRoot(glRenderer, { viewport: { w: width, h: height } });
-  // Follow the window, as the product shell does (`browser_main.ts`'s own
-  // `resize` listener) and as the Lua benchmark does. Skipped when the caller
-  // pinned a viewport, since a measurement that silently resizes is not one.
-  if (!params.has("width") && !params.has("height")) {
-    window.addEventListener("resize", () => {
-      const w = Math.max(window.innerWidth, 320);
-      const h = Math.max(window.innerHeight, 180);
-      canvas.width = w;
-      canvas.height = h;
-      glRenderer.setSize(w, h, false);
-      sceneRoot.resize({ w, h });
-    });
-  }
   const session = new Session("nebula", "orion", seed, durationSeconds, 99, undefined, undefined, undefined, undefined, undefined);
   session.enableBot(botSeed);
 
