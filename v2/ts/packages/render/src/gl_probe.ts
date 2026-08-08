@@ -21,10 +21,15 @@
 //     a plain object a test or a log line can read directly -- no transport
 //     encoding is needed.
 //   - `gl_probe.SHADER_LADDER` bisects why a hand-written LÖVE/GLSL-ES-1.00
-//     shader fails to compile/link in a specific browser (#391). There is no
-//     hand-written shader on this path any more (`bloom.ts`, `rig3d`'s
-//     materials): `MeshStandardMaterial`/`UnrealBloomPass` are three.js's
-//     own, already-portable shaders.
+//     shader fails to compile/link in a specific browser (#391). `rig3d`'s
+//     materials are three.js's own (`MeshStandardMaterial`), already portable.
+//     bloom.ts DOES hand-write three small post-process shaders again since
+//     #404 -- three.js's `UnrealBloomPass` turned out not to be the algorithm
+//     the Lua constants describe -- but they are `THREE.ShaderMaterial`s, so
+//     three.js supplies the version directive, precision qualifiers and
+//     attribute/uniform preamble that the Lua ladder existed to bisect, and a
+//     compile failure surfaces as a normal, catchable browser console error
+//     with the full info log. The ladder still has nothing to add.
 //   - `gl_probe.budget()`/`MIN_VERTEX_UNIFORM_VECTORS` computed whether
 //     rig3d's hand-packed bone-uniform array fit inside WebGL1's guaranteed
 //     128-vector floor. three.js skins via a bone matrix texture (or a

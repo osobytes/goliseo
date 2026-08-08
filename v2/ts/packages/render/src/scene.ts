@@ -103,10 +103,10 @@ const CAMERA_FAR = 10;
  *      second render pass keyed off `object.layers`, whose correctness is
  *      exactly the kind of thing that needs a live GL context to verify --
  *      the same tradeoff pitch.ts's own SCOPE NOTE makes for the rigged-
- *      player composite, see below). `UnrealBloomPass` only blooms pixels at
- *      or above `config.threshold` (0.55 by default), so most HUD panel
- *      fills do not visibly glow -- flagged here as a conscious choice
- *      rather than left as a silent side effect.
+ *      player composite, see below). The bloom pass only blooms pixels at or
+ *      above `config.threshold` (0.55 by default), so most HUD panel fills do
+ *      not visibly glow -- flagged here as a conscious choice rather than
+ *      left as a silent side effect.
  *
  * FIXED HERE (was a known gap, #1): `pitch.draw`'s rigged-player pass used
  * to composite each character by calling `renderer.render()` DIRECTLY and
@@ -215,12 +215,13 @@ export class SceneRoot {
    *
    * Split out from `render` specifically so assembly is exercisable headless
    * (see scene.spec.ts): unlike `render`, this method never touches
-   * `Bloom.draw`, whose `EffectComposer` needs a much larger slice of the
-   * real `THREE.WebGLRenderer` surface (clear color, render targets, ...)
-   * than anything else in this class does -- exercising that without a live
-   * GL context would mean faking a WebGL-shaped renderer, which is the exact
-   * thing this milestone's tests are told not to do. `render`'s pixel output
-   * is therefore untested; `populate`'s effect on the object graph is.
+   * `Bloom.draw`, whose threshold/blur/composite chain needs a much larger
+   * slice of the real `THREE.WebGLRenderer` surface (clear color, render
+   * targets, shader compilation, ...) than anything else in this class does
+   * -- exercising that without a live GL context would mean faking a
+   * WebGL-shaped renderer, which is the exact thing this milestone's tests
+   * are told not to do. `render`'s pixel output is therefore untested;
+   * `populate`'s effect on the object graph is.
    *
    * `renderer.autoClear` is restored to whatever the caller had it set to
    * once `pitch.draw` returns; it is only forced `false` for the duration of
@@ -271,8 +272,8 @@ export class SceneRoot {
    * materials/textures/owned render targets (via draw2d.ts's `disposeObject`
    * -- the same function `paint`'s own per-frame cleanup uses, so the two
    * never drift apart the way two independent `instanceof` checks could),
-   * the groups themselves, `Bloom`'s `EffectComposer` and its render
-   * targets, and the renderer. Idempotent -- a second call is a no-op rather
+   * the groups themselves, `Bloom`'s render targets, materials and quad
+   * geometry, and the renderer. Idempotent -- a second call is a no-op rather
    * than an error, since callers commonly `dispose()` from more than one
    * teardown path.
    */

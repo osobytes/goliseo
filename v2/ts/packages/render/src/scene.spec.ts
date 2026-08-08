@@ -26,8 +26,9 @@
 //
 // This suite calls `SceneRoot.populate` (object-graph assembly), never
 // `SceneRoot.render` (populate + `Bloom.draw`). `Bloom.draw`'s
-// `EffectComposer` needs a much larger slice of the real
-// `THREE.WebGLRenderer` surface (clear color, render targets, ...) than
+// threshold/blur/composite chain needs a much larger slice of the real
+// `THREE.WebGLRenderer` surface (clear color, render targets, shader
+// compilation, ...) than
 // anything `stubRenderer()` below provides -- see scene.ts's `populate` doc
 // comment for why that split exists.
 
