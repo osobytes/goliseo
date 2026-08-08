@@ -8,6 +8,7 @@ local bloom = require("game.render.bloom")
 local effects = require("game.render.effects")
 local match_hud_render = require("game.render.match_hud")
 local pitch = require("game.render.pitch")
+local pitch_static = require("game.render.pitch_static")
 local render_frame = require("render.frame")
 local view_state = require("game.render.view_state")
 local release_follow = require("game.render.release_follow")
@@ -104,6 +105,9 @@ function Fixture:draw()
             viewport
         )
     end)
+    -- Outside the bloom pass on purpose: a pending static-scene cache build
+    -- must not bind canvases while bloom's scene pass is active (#393).
+    pitch_static.flush()
     love.graphics.push("all")
     love.graphics.setColor(0.02, 0.03, 0.08, 0.92)
     love.graphics.rectangle("fill", 18, viewport.h - 34, viewport.w - 36, 22, 4, 4)

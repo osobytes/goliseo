@@ -227,7 +227,16 @@ end
 -- real match render path, so unlike every other harness above it needs a GL
 -- context and cannot run through the headless path in conf.lua.
 --
---   love . --benchmark [frames] [warmup] [rigged|procedural]
+--   love . --benchmark [frames] [warmup] [rigged|procedural] [flags...]
+--
+-- Trailing flags, in any order after the renderer choice:
+--   `nocache` disables the #393 static-scene cache so before/after passes can
+--   be interleaved from one build; absent, the shipped cached path is measured.
+--   `phases` turns on the #394 per-character sub-phase profile (pose, skeleton,
+--   bone rows, submission). Off by default: it costs clock reads per character
+--   per frame, which a comparison run should not carry.
+--   `nolod` disables the #394 pose LOD, so before/after passes for it can be
+--   interleaved from one build; absent, the shipped LOD path is measured.
 --
 -- Vsync is turned off for the run. Left on, frame time is pinned to the refresh
 -- rate and reports 16.67 ms whether the renderer has huge headroom or none.
@@ -235,9 +244,13 @@ if has_flag("--benchmark") then
     local fixture ---@type table
     local benchmark ---@type table
     local frames_arg, warmup, mode
+    local flags = {} ---@type table<string, boolean>
     for index, value in ipairs(arg or {}) do
         if value == "--benchmark" then
             frames_arg, warmup, mode = arg[index + 1], arg[index + 2], arg[index + 3]
+            for rest = index + 4, #arg do
+                flags[arg[rest]] = true
+            end
             break
         end
     end
@@ -255,6 +268,9 @@ if has_flag("--benchmark") then
             frames = tonumber(frames_arg) or 3600,
             warmup_frames = tonumber(warmup) or 300,
             rigged = mode ~= "procedural",
+            static_cache = not flags["nocache"],
+            char_phases = flags["phases"] or false,
+            pose_lod = not flags["nolod"],
         })
     end
     function love.update(dt)

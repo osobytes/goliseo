@@ -50,12 +50,21 @@ local renderer = require("game.render.rig3d.renderer")
 local skeleton = require("game.render.rig3d.skeleton")
 local clips = require("game.render.rig3d.clips")
 local masks = require("game.render.rig3d.masks")
+local pose_lod = require("game.render.rig3d.pose_lod")
 local proportions = require("game.render.rig3d.proportions")
 local themes = require("game.render.rig3d.themes")
 local body = require("game.render.rig3d.body")
 local view_state = require("game.render.view_state")
 
 local player_renderer_3d = {}
+
+-- Pose level-of-detail (#394), ON by default -- it is the shipped path. When
+-- enabled, a small on-screen character in the plain gait family re-evaluates
+-- its limb pose every other frame and reuses its cached bone rows in between;
+-- the policy (and why it is conservative) lives in rig3d/pose_lod.lua. The
+-- toggle exists so a benchmark pass can measure both paths from one build
+-- (`nolod`), exactly as pitch_static.enabled serves #393.
+player_renderer_3d.pose_lod = true
 
 -- Character height maps to roughly this many player-radii on screen. Tuned so a
 -- rigged player reads at the same visual weight as the billboard it replaces.
@@ -75,6 +84,46 @@ local state = {
     bone_rows = {},
 }
 
+-- #394 pose-LOD cache, one PoseLodEntry per live character; the whole
+-- lifecycle (create, tick, refresh decision) lives in pose_lod.step so it is
+-- testable headless. Keyed by the character's PlayerView -- the one per-player
+-- table the renderer already receives that survives across frames -- and
+-- weak-keyed, so entries die with their views on view_state.reset() instead of
+-- leaking across matches. Ten entries of 78 four-number rows is a fixed ~3k
+-- numbers, traded for NOT re-deriving them every frame.
+---@type table<table, PoseLodEntry>
+local pose_cache = setmetatable({}, { __mode = "k" })
+
+-- #394 engagement evidence: character draws that HELD a cached pose vs
+-- RE-EVALUATED one, counted whenever the LOD path runs. The benchmark zeroes
+-- and reports these, and its gate fails a "lod" run that never held anything
+-- -- the static_cache_active rule again: a feature that silently never engaged
+-- must not be reported as a measurement of that feature.
+---@class PoseLodStats
+---@field held integer
+---@field refreshed integer
+
+---@type PoseLodStats
+player_renderer_3d.lod_stats = { held = 0, refreshed = 0 }
+
+-- Opt-in per-character sub-phase instrumentation (#394), the same pattern as
+-- pitch.phase_sink (#393) one level down: when a sink table is attached, every
+-- drawn character splits its cost into pose evaluation (clip sampling +
+-- layering + the action overlay), skeleton evaluation, the bone-row build, the
+-- uniform/draw submission, and everything else (shadow, camera, yaw), each
+-- ACCUMULATED into the sink -- the caller owns zeroing it per frame. nil (the
+-- default) costs one branch per character and nothing else.
+---@class CharPhaseSink
+---@field pose_s number
+---@field apply_s number
+---@field rows_s number
+---@field submit_s number
+---@field other_s number
+---@field characters integer
+
+---@type CharPhaseSink?
+player_renderer_3d.phase_sink = nil
+
 -- The one conversion between the pitch's world units and the rig's metres.
 --
 -- Worth stating because it looks depth-dependent and is not. World-to-pixels is
@@ -90,7 +139,7 @@ local function metresPerWorldUnit()
     return state.height / (match.PLAYER_RADIUS * HEIGHT_IN_RADII * 2)
 end
 
----@type fun(sx: number, sy: number, r: number, color: number[], view: PlayerView|nil, opts: table)
+---@type fun(sx: number, sy: number, r: number, color: number[], view: PlayerView|nil, opts: PlayerRenderOptions)
 local draw_player
 
 -- Builds the shared rig, the ONE shared character mesh (colour-free), and one
@@ -189,7 +238,7 @@ end
 
 -- Resolves the pose for one player.
 ---@param view PlayerView|nil
----@param opts table
+---@param opts PlayerRenderOptions
 ---@return table
 local function poseFor(view, opts)
     local speed = view and view.speed or 0
@@ -284,7 +333,7 @@ end
 ---@param r number
 ---@param color number[]
 ---@param view PlayerView|nil
----@param opts table
+---@param opts PlayerRenderOptions
 function player_renderer_3d.draw(sx, sy, r, color, view, opts)
     if not build() then
         return
@@ -306,7 +355,7 @@ end
 ---@param r number
 ---@param color number[]
 ---@param view PlayerView|nil
----@param opts table
+---@param opts PlayerRenderOptions
 function draw_player(sx, sy, r, color, view, opts)
     local team = themes.TEAMS[(opts.team == "away") and 2 or 1]
     local character = state.character
@@ -314,6 +363,14 @@ function draw_player(sx, sy, r, color, view, opts)
     if not character or not palette then
         return
     end
+
+    -- Sub-phase timer (#394): sink attached and a real clock available.
+    local sink = player_renderer_3d.phase_sink
+    if sink and not (love.timer and love.timer.getTime) then
+        sink = nil
+    end
+    local clock = sink and love.timer.getTime
+    local t_start = clock and clock() or 0
 
     -- Ground contact first, in 2D on the pitch plane, matching the billboard
     -- renderer's shadow and selection rings exactly. Without a shadow a rigged
@@ -335,8 +392,40 @@ function draw_player(sx, sy, r, color, view, opts)
     local ppm = (r * HEIGHT_IN_RADII * 2) / state.height
     local cam = renderer.characterCamera(sx, sy, ppm, vw, vh, ELEVATION)
 
-    skeleton.apply(state.rig, poseFor(view, opts))
-    skeleton.boneRows(state.rig, state.bone_rows)
+    -- #394 pose LOD. pose_lod.step decides per draw whether this character's
+    -- pose must be re-evaluated; in between, its own cached bone rows are
+    -- submitted unchanged. Placement is NOT held -- sx/sy, yaw and palette are
+    -- applied fresh below either way, so a held character still moves, turns
+    -- and shrinks smoothly; only its limbs update at the reduced rate. Without
+    -- a view there is nothing stable to key a cache on, so that (rare, e.g. a
+    -- roster id the view tracker has not seen) draws the full path.
+    local rows = state.bone_rows
+    local refresh = true
+    if player_renderer_3d.pose_lod and view then
+        local entry
+        entry, refresh =
+            pose_lod.step(pose_cache, view, pose_lod.interval(opts, r * HEIGHT_IN_RADII * 2))
+        rows = entry.rows
+        local stats = player_renderer_3d.lod_stats
+        if refresh then
+            stats.refreshed = stats.refreshed + 1
+        else
+            stats.held = stats.held + 1
+        end
+    end
+
+    local t_pose = clock and clock() or 0
+    local t_apply, t_rows
+    if refresh then
+        local pose = poseFor(view, opts)
+        t_apply = clock and clock() or 0
+        skeleton.apply(state.rig, pose)
+        t_rows = clock and clock() or 0
+        skeleton.boneRows(state.rig, rows)
+    else
+        t_apply, t_rows = t_pose, t_pose
+    end
+    local t_submit = clock and clock() or 0
 
     -- Facing: the pitch's +y runs toward the near edge (toward the viewer), and
     -- the character's local +Z is its front, so a player running "down" the
@@ -349,8 +438,19 @@ function draw_player(sx, sy, r, color, view, opts)
     -- and the material each vertex shades with are both baked into the vertex,
     -- so there is nothing left to iterate here.
     renderer.beginPass(cam, palette)
-    renderer.draw(character.mesh, world, state.bone_rows)
+    renderer.draw(character.mesh, world, rows)
     renderer.endPass()
+
+    if sink and clock then
+        local t_done = clock()
+        sink.pose_s = (sink.pose_s or 0) + (t_apply - t_pose)
+        sink.apply_s = (sink.apply_s or 0) + (t_rows - t_apply)
+        sink.rows_s = (sink.rows_s or 0) + (t_submit - t_rows)
+        -- The yaw/world build rides in submit: it exists to feed the draw.
+        sink.submit_s = (sink.submit_s or 0) + (t_done - t_submit)
+        sink.other_s = (sink.other_s or 0) + (t_pose - t_start)
+        sink.characters = (sink.characters or 0) + 1
+    end
 end
 
 return player_renderer_3d

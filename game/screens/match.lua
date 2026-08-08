@@ -11,6 +11,7 @@ local arenas = require("data.arenas")
 local teams = require("data.teams")
 local tactics = require("data.tactics")
 local pitch = require("game.render.pitch")
+local pitch_static = require("game.render.pitch_static")
 local render_frame = require("render.frame")
 local bloom = require("game.render.bloom")
 local correction_smoothing = require("game.render.correction_smoothing")
@@ -1159,6 +1160,9 @@ function Match:draw()
             self:draw_frame(self.state, vp, self._combat_state)
         end)
     end
+    -- Build any pending static-scene cache now, outside the bloom pass: a
+    -- setCanvas inside it would detach bloom's depth buffer (#393).
+    pitch_static.flush()
     self:draw_rollback_overlay(vp)
 end
 
