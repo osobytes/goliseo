@@ -15,7 +15,7 @@ import { describe, expect, it } from "vitest";
 import * as THREE from "three";
 import { Vec2 } from "@gc/core";
 import { available, characterCameraParams, characterMesh, clipFor, metresPerWorldUnit, poseFor, ppmForRadius, renderToSprite, DEFAULT_PLAYER_RADIUS } from "./player_renderer_3d.ts";
-import type { PlayerRenderOptions } from "./player_renderer.ts";
+import type { PlayerRenderOptions } from "./player_render_options.ts";
 import type { PlayerView } from "./view_state.ts";
 
 function baseOptions(overrides: Partial<PlayerRenderOptions> = {}): PlayerRenderOptions {

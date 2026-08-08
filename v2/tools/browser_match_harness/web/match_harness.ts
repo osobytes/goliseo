@@ -49,7 +49,7 @@
 
 import init, { Session, __getRawExports } from "../../../ts/packages/wasm/dist/pkg-web/gc_wasm.js";
 import * as THREE from "three";
-import { SceneRoot, frameBuffer, pitch, viewState } from "@gc/render";
+import { SceneRoot, frameBuffer, viewState } from "@gc/render";
 import type { frameBufferTypes } from "@gc/render";
 
 const DT = 1 / 60;
@@ -218,14 +218,17 @@ async function main(): Promise<void> {
   // `?bloom=0` turns the post-process off, for attributing frame cost. The
   // product always has it on; this is a measurement lever, not a setting.
   const bloomEnabled = params.get("bloom") !== "0";
-  // `?rigged=0` falls the whole roster back to `player_renderer.ts`'s
-  // procedural 2.5D billboards, for attributing frame cost to the ten
-  // `THREE.SkinnedMesh` characters (and their per-frame bone-matrix uploads)
-  // versus everything else. Same category as `?ratio=`/`?bloom=`: a
-  // measurement lever, not a setting -- the product is always rigged.
-  if (params.get("rigged") === "0") {
-    pitch.rigged_players = false;
-  }
+  // THERE IS NO `?rigged=0` (#415, removing what #411 added here). It fell the
+  // whole roster back to `player_renderer.ts`'s procedural 2.5D billboards, to
+  // attribute frame cost to the ten `THREE.SkinnedMesh` characters and their
+  // per-frame bone-matrix uploads versus everything else. That renderer is
+  // gone -- the product only ever drew the rigged path (#403 measured
+  // `rigged_characters=10, skinned_meshes=10` on hardware) and keeping a second
+  // one alive so it could be measured meant keeping a path a rig-build failure
+  // could silently drop into. Removed rather than left as a dead query string:
+  // a lever that quietly does nothing is worse than no lever. `?bloom=0` and
+  // `?ratio=` above are unaffected.
+  //
   // See the `?spin=` note in the frame loop below. 0 (the default) skips the
   // spin entirely, so this page behaves exactly as before unless asked.
   const spinMs = Math.max(Number(params.get("spin") ?? "0"), 0);
@@ -348,8 +351,10 @@ async function main(): Promise<void> {
     //     genuinely doubled work.
     //
     // A sawtooth and a flat line are not close to each other, which is what
-    // makes this decidable. Same category as `?ratio=`/`?bloom=`/`?rigged=`:
-    // a measurement lever, never a setting.
+    // makes this decidable. Same category as `?ratio=`/`?bloom=`:
+    // a measurement lever, never a setting. (`?rigged=` used to be listed here
+    // too; #415 removed it along with the renderer it selected -- see the note
+    // above `bloomEnabled`.)
     if (spinMs > 0) {
       const spinUntil = performance.now() + spinMs;
       // A read the JIT cannot fold away, so the loop actually burns time.

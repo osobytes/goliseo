@@ -8,11 +8,9 @@
 
 import { describe, expect, it, afterEach, vi } from "vitest";
 import * as THREE from "three";
-import { pitchDrawCommands, pitch, depthToZ, BACKDROP_Z, ENTITY_Z_NEAR, ENTITY_Z_FAR, OVERLAY_RENDER_ORDER, type PitchDrawOptions, type PitchViewport, type RenderFrame } from "./pitch.ts";
+import { pitchDrawCommands, playerAnchors, pitch, depthToZ, BACKDROP_Z, ENTITY_Z_NEAR, ENTITY_Z_FAR, OVERLAY_RENDER_ORDER, type PitchDrawOptions, type PitchViewport, type RenderFrame } from "./pitch.ts";
 import * as playerRenderer3d from "./player_renderer_3d.ts";
-import * as playerRenderer from "./player_renderer.ts";
-import type { PlayerRenderOptions } from "./player_renderer.ts";
-import type { DrawCommand, RGB } from "./draw2d.ts";
+import type { DrawCommand } from "./draw2d.ts";
 
 function emptyPlayers(count: number) {
   return {
@@ -73,17 +71,15 @@ describe("pitch.pitchDrawCommands", () => {
     expect(pitchFill).toBeGreaterThan(backdropFill);
   });
 
-  it("depth-sorts players and the ball together by world y (far first)", () => {
-    const f = frame({ players: { ...emptyPlayers(2), y: [500, 50] } });
-    const commands = pitchDrawCommands(f, viewport, opts);
-    // The far player (y=50) is one of the shadow ellipses drawn earliest
-    // among the depth-sorted entities; the near player (y=500) later. We
-    // can't easily recover "which entity" from a flat command list, but we
-    // can confirm the ball (y=270, mid-pack) draws its lit circle strictly
-    // between the two players' ground shadows.
-    const ellipses = commands.filter((c) => c.kind === "ellipse" && c.mode === "fill");
-    expect(ellipses.length).toBeGreaterThanOrEqual(3); // 2 player shadows + 1 ball shadow
-  });
+  // NOTE ON WHAT MOVED (#415): a test here used to assert that players and the
+  // ball were depth-sorted together, by counting the ground-shadow ellipses
+  // `pitchDrawCommands` emitted. Players are no longer draw commands at all
+  // (see that function's doc comment), so it has no subject in this suite. The
+  // property it was reaching for -- a player and the ball interleaving by world
+  // y rather than one class always drawing over the other -- is asserted
+  // directly, on real objects, by "interleaves a rigged player with the ball in
+  // painter's-algorithm order" below, and the depth-sorted ORDER of the anchors
+  // themselves is pinned by the Lua differential further down.
 
   it("skips the loose ball draw when it is not visible (e.g. held by a keeper)", () => {
     const visible = pitchDrawCommands(frame(), viewport, opts);
@@ -117,9 +113,15 @@ describe("pitch.pitchDrawCommands", () => {
 });
 
 describe("pitch config defaults", () => {
-  it("defaults to rigged players on and the follow camera off, matching the Lua original", () => {
-    expect(pitch.rigged_players).toBe(true);
+  it("defaults to the follow camera off, matching the Lua original", () => {
     expect(pitch.follow_camera).toBe(false);
+  });
+
+  // #415 removed `pitch.rigged_players`. There is no second player renderer to
+  // select between, so a flag that could turn the only one off was a way to
+  // ship a frame with no players in it.
+  it("exposes no switch that could turn the rigged player pass off", () => {
+    expect(Object.keys(pitch)).not.toContain("rigged_players");
   });
 });
 
@@ -153,37 +155,19 @@ describe("depthToZ", () => {
 // DEPTH BUFFER" header section and this port's report for before/after
 // screenshots/draw-call counts against a live GL context).
 // `player_renderer_3d.ts`'s `build()` only constructs plain three.js
-// geometry/skeleton/material objects -- no GL calls -- so `available()`
-// genuinely returns true under this workspace's "node" vitest environment
-// (the same fact scene.spec.ts's header notes and works around by forcing
-// `pitch.rigged_players = false`; this suite does the opposite and leans on
-// it, since it is exactly the rigged path being tested here). `characterMesh`
-// needs no renderer at all -- there is no per-character render pass or
-// render target anymore -- so `renderer` below is a minimal stub whose sole
-// job is to be non-`undefined` (the `riggedActive` gate) while asserting it
-// is never actually called into; that IS the regression this suite pins:
-// `pitch.draw` no longer rasterizes anything, rigged or not, it only builds
-// `group`'s object graph. What IS verified here: a rigged player lands in
-// the object graph as a real `THREE.SkinnedMesh` (not a quad) and in the
-// correct painter's-algorithm position relative to the ball; what is NOT
+// geometry/skeleton/material objects -- no GL calls -- so the rigged path
+// genuinely runs under this workspace's "node" vitest environment, which is
+// what lets every test below exercise the real product path. `pitch.draw`
+// takes no `THREE.WebGLRenderer` at all since #415 (it never rasterized; the
+// parameter existed only to gate the deleted billboard fallback), so this
+// suite no longer needs a call-counting renderer stub to pin "draw builds an
+// object graph and nothing else" -- the signature does. What IS verified here:
+// a rigged player lands in the object graph as a real `THREE.SkinnedMesh` (not
+// a quad) and in the correct painter's-algorithm position relative to the
+// ball, and a character that cannot be built fails loudly; what is NOT
 // verified (same as everywhere else GPU-adjacent in this package): the
 // actual rendered pixel content.
 describe("pitch.draw (rigged compositing)", () => {
-  interface TrackedRenderer {
-    readonly renderCalls: number;
-  }
-
-  function stubRenderer(): THREE.WebGLRenderer & TrackedRenderer {
-    const stub = {
-      autoClear: true,
-      renderCalls: 0,
-      render(): void {
-        stub.renderCalls += 1;
-      },
-    };
-    return stub as unknown as THREE.WebGLRenderer & TrackedRenderer;
-  }
-
   // A rigged player is now a `THREE.Group` wrapper (see pitch.ts's
   // `riggedCharacterObject`) marked `userData.riggedCharacter`, holding a
   // real `THREE.SkinnedMesh` -- not the old sprite quad tagged
@@ -201,15 +185,14 @@ describe("pitch.draw (rigged compositing)", () => {
     Math.abs(c.material.color.b - 0.7) < 1e-6;
 
   afterEach(() => {
-    pitch.rigged_players = true;
+    vi.restoreAllMocks();
   });
 
-  it("adds a rigged player to the object graph as a real SkinnedMesh, never touching the renderer directly", () => {
+  it("adds a rigged player to the object graph as a real SkinnedMesh", () => {
     const f = frame();
     const group = new THREE.Group();
-    const renderer = stubRenderer();
 
-    pitch.draw(group, f, viewport, opts, renderer);
+    pitch.draw(group, f, viewport, opts);
 
     const wrappers = riggedWrappers(group.children);
     expect(wrappers.length).toBeGreaterThan(0);
@@ -217,37 +200,43 @@ describe("pitch.draw (rigged compositing)", () => {
       const mesh = wrapper.children.find((c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh);
       expect(mesh).toBeDefined();
     }
-    // The whole point of the single-pass redesign: `pitch.draw` only builds
-    // the object graph now, rigged or not -- it never rasterizes, so the one
-    // render pass a real frame needs happens exactly once, later, in
-    // scene.ts's `SceneRoot.render`.
-    expect(renderer.renderCalls).toBe(0);
+  });
+
+  // The whole point of the single-pass redesign: `pitch.draw` only builds the
+  // object graph -- it never rasterizes, so the one render pass a real frame
+  // needs happens exactly once, later, in scene.ts's `SceneRoot.render`. This
+  // used to be asserted with a call-counting `THREE.WebGLRenderer` stub;
+  // since #415 `draw` is not handed a renderer at all, so it is enforced by
+  // the signature. Pinned here so re-adding the parameter is a deliberate act.
+  it("cannot rasterize: draw takes no renderer at all", () => {
+    // (group, frame, viewport, opts, now) -- `now` has a default, so `length`
+    // counts the four required parameters.
+    expect(pitch.draw.length).toBe(4);
   });
 
   it("reuses the SAME pooled mesh instance for the same playerId across frames", () => {
     const f = frame();
     const groupA = new THREE.Group();
-    pitch.draw(groupA, f, viewport, opts, stubRenderer());
+    pitch.draw(groupA, f, viewport, opts);
     const meshA = riggedWrappers(groupA.children)[0]?.children.find((c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh);
 
     const groupB = new THREE.Group();
-    pitch.draw(groupB, f, viewport, opts, stubRenderer());
+    pitch.draw(groupB, f, viewport, opts);
     const meshB = riggedWrappers(groupB.children)[0]?.children.find((c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh);
 
     expect(meshA).toBeDefined();
     expect(meshA).toBe(meshB);
   });
 
-  it("interleaves a rigged player with the ball in painter's-algorithm order, matching pitchDrawCommands' depth sort", () => {
+  it("interleaves a rigged player with the ball in painter's-algorithm order, matching playerAnchors' depth sort", () => {
     // Player 0 is far (small y), player 1 is near (large y); the ball sits
     // between them. depthSortedItems draws far-to-near, so the expected
     // object order is: player 0's wrapper, then the ball, then player 1's
     // wrapper.
     const f = frame({ players: { ...emptyPlayers(2), y: [50, 500] } });
     const group = new THREE.Group();
-    const renderer = stubRenderer();
 
-    pitch.draw(group, f, viewport, opts, renderer);
+    pitch.draw(group, f, viewport, opts);
 
     const children = group.children;
     const wrapperIndices = children.map((c, i) => (c.userData["riggedCharacter"] === true ? i : -1)).filter((i) => i >= 0);
@@ -263,25 +252,58 @@ describe("pitch.draw (rigged compositing)", () => {
     expect(ballIndex).toBeLessThan(nearIndex);
   });
 
-  it("falls back to the procedural billboard (no renderer) without adding any rigged character", () => {
-    const f = frame();
-    const group = new THREE.Group();
+  // FAIL LOUD ON A FAILED RIG BUILD (#415, AGENTS.md §7).
+  //
+  // These replace two "falls back to the procedural billboard" cases (one for
+  // "no renderer supplied", one for `rigged_players = false`) and a third that
+  // asserted a MID-ROSTER fallback got the right depth z. All three encoded
+  // the same behaviour: a player the rigged pass declines is quietly drawn some
+  // other way, or not at all, and the frame proceeds looking plausible.
+  //
+  // `characterMesh` declines only when `player_renderer_3d.build()` failed, and
+  // `build()` fails on an invalid vertex index or missing rig3d content --
+  // programmer errors. AGENTS.md §7: those `assert`, they do not degrade. The
+  // cost of the old behaviour is on record: during #403 "the reporter may have
+  // been on the fallback without realising" stayed a live hypothesis for hours
+  // because the downgrade was invisible from the outside.
+  describe("a rigged character that cannot be built", () => {
+    it("throws, naming the player, rather than rendering that player as nothing", () => {
+      const f = frame();
+      const group = new THREE.Group();
+      vi.spyOn(playerRenderer3d, "characterMesh").mockReturnValue(undefined);
 
-    pitch.draw(group, f, viewport, opts, undefined);
+      expect(() => {
+        pitch.draw(group, f, viewport, opts);
+      }).toThrow(/home-1/);
+    });
 
-    expect(group.children.length).toBeGreaterThan(0);
-    expect(riggedWrappers(group.children)).toHaveLength(0);
-  });
+    it("throws on a MID-ROSTER failure too -- the case that used to downgrade the rest of the team silently", () => {
+      // The far player builds; the near one declines. Before #415 this frame
+      // rendered: one rigged character, one billboard, no error, no signal.
+      const f = frame({ players: { ...emptyPlayers(2), y: [50, 500] } });
+      const group = new THREE.Group();
+      const real = playerRenderer3d.characterMesh;
+      let calls = 0;
+      vi.spyOn(playerRenderer3d, "characterMesh").mockImplementation((...args) => {
+        calls += 1;
+        return calls === 1 ? real(...args) : undefined;
+      });
 
-  it("falls back to the procedural billboard when rigged_players is turned off, even with a renderer supplied", () => {
-    pitch.rigged_players = false;
-    const f = frame();
-    const group = new THREE.Group();
+      expect(() => {
+        pitch.draw(group, f, viewport, opts);
+      }).toThrow(/away-1/);
+      expect(calls).toBe(2);
+    });
 
-    pitch.draw(group, f, viewport, opts, stubRenderer());
+    it("names player_renderer_3d.build() as the cause, so the failure is actionable without a bisect", () => {
+      const f = frame();
+      const group = new THREE.Group();
+      vi.spyOn(playerRenderer3d, "characterMesh").mockReturnValue(undefined);
 
-    expect(group.children.length).toBeGreaterThan(0);
-    expect(riggedWrappers(group.children)).toHaveLength(0);
+      expect(() => {
+        pitch.draw(group, f, viewport, opts);
+      }).toThrow(/player_renderer_3d\.build\(\) failed/);
+    });
   });
 
   // DEPTH ZONES (pitch.ts's file header + the block above `depthToZ`).
@@ -289,7 +311,7 @@ describe("pitch.draw (rigged compositing)", () => {
     it("leaves the backdrop (drawPitchBeforeItems) at BACKDROP_Z", () => {
       const f = frame();
       const group = new THREE.Group();
-      pitch.draw(group, f, viewport, opts, stubRenderer());
+      pitch.draw(group, f, viewport, opts);
 
       // The pitch surface trapezoid: the first filled ShapeGeometry mesh in
       // the child list, drawn well before any depth-sorted entity.
@@ -301,7 +323,7 @@ describe("pitch.draw (rigged compositing)", () => {
     it("positions a rigged player's wrapper within the entity depth zone, mapped from its world y", () => {
       const f = frame(); // both players and the ball sit at y=270, field.h=540
       const group = new THREE.Group();
-      pitch.draw(group, f, viewport, opts, stubRenderer());
+      pitch.draw(group, f, viewport, opts);
 
       const wrappers = riggedWrappers(group.children);
       expect(wrappers.length).toBeGreaterThan(0);
@@ -315,38 +337,11 @@ describe("pitch.draw (rigged compositing)", () => {
     it("positions the ball within the entity depth zone too, so it depth-tests against players consistently", () => {
       const f = frame();
       const group = new THREE.Group();
-      pitch.draw(group, f, viewport, opts, stubRenderer());
+      pitch.draw(group, f, viewport, opts);
 
       const ball = group.children.find(ballMesh);
       expect(ball).toBeDefined();
       expect(ball?.position.z).toBeCloseTo(depthToZ(f.ball.y, f.field.h));
-    });
-
-    it("gives a mid-frame billboard fallback (characterMesh declining one player) the same entity-zone z a rigged wrapper would have gotten", () => {
-      // available() stays true (so the frame is genuinely riggedActive), but
-      // characterMesh itself declines for the FAR player only -- the same
-      // "graceful degradation partway through a frame's roster" this file's
-      // header describes (a build failure, or -- as stubbed here -- any
-      // other reason a specific character comes back undefined).
-      const f = frame({ players: { ...emptyPlayers(2), y: [50, 500] } });
-      const group = new THREE.Group();
-      const spy = vi.spyOn(playerRenderer3d, "characterMesh").mockImplementationOnce(() => undefined);
-      try {
-        pitch.draw(group, f, viewport, opts, stubRenderer());
-      } finally {
-        spy.mockRestore();
-      }
-
-      // Exactly one rigged wrapper made it through (the near player); the
-      // far player fell back to a procedural billboard, which must still
-      // carry the SAME entity-zone z a rigged wrapper would have -- draw2d.ts
-      // content and rigged characters depth-test against the same zone (see
-      // pitch.ts's DEPTH ZONES), not two different conventions.
-      const wrappers = riggedWrappers(group.children);
-      expect(wrappers).toHaveLength(1);
-      const farZ = depthToZ(50, f.field.h);
-      const matched = group.children.some((c) => c.userData["riggedCharacter"] !== true && Math.abs(c.position.z - farZ) < 1e-6);
-      expect(matched).toBe(true);
     });
 
     it("makes the post-entity overlay layer (drawPitchAfterItems) ignore depth and win render order, so it always reads on top", () => {
@@ -356,7 +351,7 @@ describe("pitch.draw (rigged compositing)", () => {
       // DOM-less "node" vitest environment (see draw2d.ts's header).
       const f = frame({ ball: { x: 480, y: 270, z: 40, visible: true, landing_x: 600, landing_y: 300 } });
       const group = new THREE.Group();
-      pitch.draw(group, f, viewport, opts, stubRenderer());
+      pitch.draw(group, f, viewport, opts);
 
       const isReticleRing = (c: THREE.Object3D): c is THREE.LineLoop =>
         c instanceof THREE.LineLoop &&
@@ -382,10 +377,23 @@ describe("pitch.draw (rigged compositing)", () => {
 // pitch.lua/pitch.ts draw directly (arena, floor, hex tiling, markings,
 // goals, outline, chevrons, the loose ball, the overlay layer), plus the
 // full per-player anchor + PlayerRenderOptions payload handed to the player
-// renderer -- NOT the player silhouette's own internal limb geometry (that
-// module has its own port-fidelity spec), and NOT the relative depth order
+// renderer -- NOT the drawn character's own internal geometry (the rig has its
+// own suites under rig3d/), and NOT the relative depth order
 // BETWEEN a player and the ball (both languages' comparator was verified by
 // direct side-by-side reading instead of a second capture).
+//
+// TWO HALVES SINCE #415. The capture is one flat Lua draw list interleaving
+// geometry with `player_renderer.draw` calls. TypeScript now produces those in
+// two pure functions rather than one: `pitchDrawCommands` (everything that is
+// not a player) and `playerAnchors` (the per-player anchor + options payload,
+// in the same depth-sorted order). The comparison is unchanged in substance --
+// `LUA_GEOM_RECORDS` was always compared against a command list with the player
+// draws mocked out to `[]`, and `LUA_PLAYER_RECORDS` against the captured
+// per-player calls -- but neither side needs a `vi.spyOn` on a renderer module
+// to separate them anymore. The one assertion genuinely lost is the per-player
+// `color`: it was the billboard's team tint, and the rigged path resolves
+// colour from rig3d's own team palette instead, so nothing consumes it. The
+// team it was derived from is still asserted, via `options.team`.
 //
 // This is the gate v2/README.md #1's milestone scope never asked for and
 // that the rest of this migration's differential coverage (five suites,
@@ -416,7 +424,12 @@ interface LuaGeomRecord {
   readonly lineWidth?: number;
 }
 
-/** One `game.render.player_renderer.draw(sx, sy, r, color, v, opts)` call, normalized. */
+/**
+ * One `game.render.player_renderer.draw(sx, sy, r, color, v, opts)` call from
+ * the Lua capture, normalized. The Lua side still HAS a billboard renderer --
+ * this fixture is a recording of it -- so the record shape is unchanged; what
+ * the TypeScript side compares against it is now `playerAnchors` (see #415).
+ */
 interface LuaPlayerRecord {
   readonly kind: "player";
   readonly sx: number;
@@ -662,13 +675,11 @@ function overlayStart(records: readonly RecordLike[]): number {
 }
 
 describe("pitch.pitchDrawCommands differential against the real Lua game.render.pitch", () => {
+  // Since #415 `pitchDrawCommands` emits no player content at all, so this is
+  // a plain call. It used to mock `playerDrawCommands` to `[]` to get the same
+  // list, which is why every comparison below is unaffected by the removal.
   function drawWithoutPlayers(): DrawCommand[] {
-    const spy = vi.spyOn(playerRenderer, "playerDrawCommands").mockReturnValue([]);
-    try {
-      return pitchDrawCommands(luaDifferentialFrame(), LUA_DIFFERENTIAL_VIEWPORT, LUA_DIFFERENTIAL_OPTS, 0);
-    } finally {
-      spy.mockRestore();
-    }
+    return pitchDrawCommands(luaDifferentialFrame(), LUA_DIFFERENTIAL_VIEWPORT, LUA_DIFFERENTIAL_OPTS, 0);
   }
 
   it("matches the Lua capture's static arena/pitch scene and the loose ball -- backdrop, floor, markings, goal nets/frames, outline, chevrons, ball shadow+lift (content-equal; see sortedNormalized's comment for why this is order-insensitive). The hex floor's line width is excluded here -- see the dedicated KNOWN BUG test below.", () => {
@@ -722,35 +733,18 @@ describe("pitch.pitchDrawCommands differential against the real Lua game.render.
     expect(tsHex.map(normalizeGeom)).toEqual(luaHex.map(normalizeGeom));
   });
 
-  it("hands the player renderer the exact same anchor (sx, sy, r, color) and PlayerRenderOptions payload the Lua original computes, in the same depth-sorted order", () => {
-    interface Captured {
-      readonly sx: number;
-      readonly sy: number;
-      readonly r: number;
-      readonly color: RGB;
-      readonly options: PlayerRenderOptions;
-    }
-    const captured: Captured[] = [];
-    const spy = vi.spyOn(playerRenderer, "playerDrawCommands").mockImplementation((sx, sy, r, color, _v, options) => {
-      captured.push({ sx, sy, r, color, options });
-      return [];
-    });
-    try {
-      pitchDrawCommands(luaDifferentialFrame(), LUA_DIFFERENTIAL_VIEWPORT, LUA_DIFFERENTIAL_OPTS, 0);
-    } finally {
-      spy.mockRestore();
-    }
+  it("derives the exact same per-player anchor (sx, sy, r) and PlayerRenderOptions payload the Lua original computes, in the same depth-sorted order", () => {
+    const captured = playerAnchors(luaDifferentialFrame(), LUA_DIFFERENTIAL_VIEWPORT, LUA_DIFFERENTIAL_OPTS);
 
     expect(captured).toHaveLength(LUA_PLAYER_RECORDS.length);
     for (const [i, luaPlayer] of LUA_PLAYER_RECORDS.entries()) {
       const ts = captured[i];
       if (ts === undefined) {
-        throw new Error(`missing captured player renderer call at depth-sorted index ${i}`);
+        throw new Error(`missing player anchor at depth-sorted index ${i}`);
       }
       expect(round(ts.sx)).toBeCloseTo(round(luaPlayer.sx), 4);
       expect(round(ts.sy)).toBeCloseTo(round(luaPlayer.sy), 4);
       expect(round(ts.r)).toBeCloseTo(round(luaPlayer.r), 4);
-      expect(roundArr(ts.color)).toEqual(roundArr(luaPlayer.color));
 
       const o = ts.options;
       expect(o.facing !== undefined ? [o.facing.x, o.facing.y] : undefined).toEqual(luaPlayer.opts.facing);
@@ -869,10 +863,6 @@ describe("pitch.ts converts frame.control.controlled/pass_target from one-based 
 // sized off the projection's third return value, so all three move together.
 // ============================================================================
 describe("pitch entity sizes stay in proportion to the pitch at any viewport", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
   const GOAL_FRAME_COLOR: readonly [number, number, number] = [0.92, 0.97, 1.0];
   const BALL_COLOR: readonly [number, number, number] = [1, 0.95, 0.7];
 
@@ -886,23 +876,30 @@ describe("pitch entity sizes stay in proportion to the pitch at any viewport", (
     return (floor.points[4] ?? NaN) - (floor.points[6] ?? NaN);
   }
 
-  /** Drawn radius handed to the player renderer -- `radius * scale`. */
+  /**
+   * Drawn radius handed to the player renderer -- `radius * scale`, for the
+   * first player in depth-sorted order.
+   *
+   * This was captured by spying on `playerRenderer.playerDrawCommands` and
+   * reading its third argument. #415 deleted that module, so it now reads
+   * `playerAnchors`' `r` instead. The quantity is unchanged, and deliberately
+   * so: both derivations build `project = pitchProject(frame, vp, opts)` from
+   * the same three arguments, take `scale` from `project(players.x[i],
+   * players.y[i])`, and return `roster.radius[i] * scale` -- the same
+   * expression, the same amount of pipeline, for the same player (both walk
+   * `depthSortedItems`, so index 0 is the same one the spy saw first). The
+   * assertions below therefore still test what #414 fixed. If anything it is
+   * a touch stronger: no mock, and `playerAnchors` is the exported seam
+   * `pitch.draw` itself derives every rigged character's `ppm` from, so this
+   * now reads the size the product actually draws rather than an argument to a
+   * renderer the product no longer has.
+   */
   function playerRadius(vp: PitchViewport): number {
-    const seen: number[] = [];
-    const spy = vi.spyOn(playerRenderer, "playerDrawCommands").mockImplementation((_sx, _sy, r) => {
-      seen.push(r);
-      return [];
-    });
-    try {
-      pitchDrawCommands(frame(), vp, opts);
-    } finally {
-      spy.mockRestore();
-    }
-    const first = seen[0];
+    const first = playerAnchors(frame(), vp, opts)[0];
     if (first === undefined) {
-      throw new Error("expected the player renderer to be called");
+      throw new Error("expected at least one player anchor");
     }
-    return first;
+    return first.r;
   }
 
   /** Height of a goal post: `crossbar_h * scale`. */

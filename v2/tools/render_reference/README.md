@@ -28,27 +28,33 @@ overlay layer (landing reticle, pass-target preview, charge meter bar/ticks/
 label). This is everything `pitch.lua`/`pitch.ts` compute and draw *without*
 delegating to a player renderer.
 
-**In scope, per-player anchor + full options diff:** the `(sx, sy, r, color)`
+**In scope, per-player anchor + full options diff:** the `(sx, sy, r)`
 screen anchor pitch hands off per player, AND the complete
 `PlayerRenderOptions` payload (pose id/priority/source, windup, aerial*,
 dive*, grab, throw, holding, dashing, controlled, team, species*, facing) --
-this is the exact boundary `player_renderer_3d.ts`'s rigged pass consumes
-(`pitch.ts`'s `playerOptions()` builds this SAME struct for both the
-procedural and rigged branches), so verifying it is a direct, in-scope check
+this is the exact boundary `player_renderer_3d.ts`'s rigged pass consumes, so
+verifying it is a direct, in-scope check
 of "does pose/windup/aerial/dive actually reach the rig" without touching
 `player_renderer_3d.ts`/`rig3d/**` (off limits to this task).
 
+Since #415 the TypeScript side of that comparison is `pitch.ts`'s exported,
+pure `playerAnchors(frame, vp, opts)` rather than a `vi.spyOn` on the renderer
+module. The captured `color` is no longer compared: it was the billboard's team
+tint, the rigged path resolves colour from rig3d's own team palette, and the
+billboard is deleted. `options.team`, which it was derived from, is still
+asserted.
+
 **Narrowed away, and why:** the polygon/line/circle soup `game/render/
-player_renderer.lua` / `player_renderer.ts` draw INSIDE a player silhouette
+player_renderer.lua` draws INSIDE a player silhouette
 (limbs, gait pose, equipment) is not captured here. `pitch.lua` delegates to
 `game.render.player_renderer` for that, and this harness replaces that module
 entirely with a recording stand-in (see `capture_pitch_reference.lua`'s
 header) rather than letting it run — reproducing LÖVE's `push`/`translate`/
 `rotate` transform-stack semantics faithfully enough to compare limb polygons
-one-for-one is a second, much larger porting-fidelity project, and
-`player_renderer.ts` already has its own spec. If the anchor/options payload
-into that module matches, the "same game" question for a given player's
-silhouette is that module's own port-fidelity question, not this harness's.
+one-for-one is a second, much larger porting-fidelity project, and v2 has no
+billboard renderer to compare them against at all (#415). If the anchor/options
+payload into that module matches, the "same game" question for a given player's
+appearance is the rig's own question, not this harness's.
 
 **Also narrowed away:** the relative depth-sort order BETWEEN a player and the
 ball. Both `pitch.lua`'s `table.sort` and `pitch.ts`'s `depthSortedItems`

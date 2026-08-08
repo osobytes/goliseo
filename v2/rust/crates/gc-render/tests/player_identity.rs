@@ -2,9 +2,14 @@
 //!
 //! The Lua spec has two `t.it` cases. Only the first belongs here: the second
 //! ("keeps the four silhouettes geometrically distinct") exercises
-//! `game/render/player_renderer.lua`'s `silhouette`, which is TypeScript in this
-//! port (`@gc/render`'s `player_renderer.ts`), and is covered by that package's
-//! own spec. Splitting it here rather than dropping it silently.
+//! `game/render/player_renderer.lua`'s `silhouette`, the procedural billboard
+//! avatar's own geometry. That module was never carried into this port: #415
+//! deleted `@gc/render`'s `player_renderer.ts` and its spec, because the rigged
+//! `THREE.SkinnedMesh` path is the only way v2 ever draws a player. So the
+//! second case has no counterpart on either side of the port, and the silhouette
+//! shapes it pinned are now the rig's concern (`@gc/render`'s
+//! `rig3d/species_presentation.ts`, which has its own spec). Recorded here
+//! rather than dropped silently.
 
 use gc_data::species::Shape;
 use gc_render::identity;
