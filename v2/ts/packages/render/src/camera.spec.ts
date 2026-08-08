@@ -118,6 +118,79 @@ describe("camera perspective mode", () => {
     });
   });
 
+  // The depth scale is SCREEN PIXELS PER WORLD UNIT (camera.ts's
+  // `projectPerspective` DEPTH SCALE note). Every consumer multiplies an
+  // authored world-unit size by it -- pitch.ts's `r = radius * scale` for a
+  // character, the ball's `5 * scale`, marker rings, health bars -- so these
+  // four tests pin the two terms a previous `scale_k / w` constant omitted.
+  // Both omissions were live bugs, and the FIRST one is the reason players
+  // read as specks in a large window: character pixel size did not grow with
+  // the window while the stadium (drawn by a real `THREE.PerspectiveCamera`
+  // off this same rig -- scene.ts's `syncWorldCamera`) did.
+  //
+  // `PLAYER_FRAME_FRACTION_NUMERATOR` is a character's drawn height in
+  // "scale units": `6 * PLAYER_RADIUS` = `6 * 12`, since pitch.ts's
+  // `r = radius * scale` feeds player_renderer_3d.ts's `ppmForRadius`, whose
+  // mesh-height division cancels to `r * HEIGHT_IN_RADII * 2` = `6 * r`.
+  const PLAYER_FRAME_FRACTION_NUMERATOR = 6 * 12;
+
+  it("scales linearly with viewport height, so a character grows with the window", () => {
+    withPerspective(() => {
+      const v = camera.view(480, 270, field, 1);
+      const at = (h: number): number => camera.project(480, 270, field, { w: (h * 16) / 9, h }, undefined, v)[2];
+      const base = at(540);
+      near(at(1080), base * 2, 1e-9);
+      near(at(1350), base * 2.5, 1e-9);
+    });
+  });
+
+  it("keeps a character's share of frame height resolution-independent", () => {
+    withPerspective(() => {
+      const v = camera.view(480, 270, field, 1);
+      const frac = (w: number, h: number): number =>
+        (PLAYER_FRAME_FRACTION_NUMERATOR * camera.project(480, 270, field, { w, h }, undefined, v)[2]) / h;
+      // The whole point of deriving the scale rather than calibrating it: the
+      // fraction is a property of the RIG (see camera.PERSPECTIVE's step 3),
+      // so it must not move with the window at all.
+      near(frac(960, 540), frac(1280, 720), 1e-9);
+      near(frac(960, 540), frac(2560, 1080), 1e-9);
+      near(frac(960, 540), frac(3000, 1235), 1e-9);
+      // ...and it must land on the framing that derivation solved for.
+      near(frac(1280, 720), 0.121, 5e-4);
+    });
+  });
+
+  it("is independent of viewport WIDTH: an ultrawide window sees more pitch, it does not resize the players", () => {
+    withPerspective(() => {
+      // The rig's fov is VERTICAL and `syncWorldCamera` applies aspect to the
+      // horizontal axis only, so widening the window must widen the view
+      // without touching how big anything standing in it draws.
+      const v = camera.view(480, 270, field, 1);
+      const narrow = camera.project(480, 270, field, { w: 960, h: 540 }, undefined, v)[2];
+      const ultrawide = camera.project(480, 270, field, { w: 2400, h: 540 }, undefined, v)[2];
+      near(ultrawide, narrow, 1e-9);
+    });
+  });
+
+  it("tracks the lens: a wider fov draws the same world smaller", () => {
+    withPerspective(() => {
+      const saved = camera.PERSPECTIVE;
+      try {
+        const v = camera.view(480, 270, field, 1);
+        const scaleAtFov = (fov: number): number => {
+          (camera as { PERSPECTIVE: typeof saved }).PERSPECTIVE = { ...saved, fov };
+          return camera.project(480, 270, field, vp, undefined, v)[2];
+        };
+        // Previously the sprite scale was a constant, so retuning fov moved
+        // the stadium and left the characters behind -- every retune in
+        // camera.ts's history then needed a matching hand-recalibration.
+        expect(scaleAtFov(60)).toBeLessThan(scaleAtFov(30));
+      } finally {
+        (camera as { PERSPECTIVE: typeof saved }).PERSPECTIVE = saved;
+      }
+    });
+  });
+
   it("pushes a point behind the camera out of frame rather than mirroring it", () => {
     withPerspective(() => {
       // Clamping a negative w to a small positive would place the point at a
@@ -169,9 +242,15 @@ describe("camera.perspectiveRig / camera.rigAngleRad", () => {
     expect(rig.far).toBe(8000);
   });
 
-  it("rigAngleRad reports a downward tilt of roughly 50 degrees, matching camera.PERSPECTIVE's tuned framing", () => {
+  it("rigAngleRad reports a downward tilt of 45 degrees, matching camera.PERSPECTIVE's Strikers framing", () => {
     const deg = (camera.rigAngleRad(field) * 180) / Math.PI;
-    near(deg, 50, 0.1);
+    near(deg, 45, 0.1);
+  });
+
+  it("puts the tilt at 45 degrees by construction: height and distance are equal", () => {
+    // camera.PERSPECTIVE's derivation picks the tilt FIRST and splits L by it,
+    // and 45 degrees is the one tilt where that split is verifiable by eye.
+    expect(camera.PERSPECTIVE.height).toBe(camera.PERSPECTIVE.distance);
   });
 
   it("rigAngleRad matches atan(height / distance) directly off camera.PERSPECTIVE", () => {
@@ -232,40 +311,45 @@ const FIXED_ZOOM_REFERENCE: readonly CameraReferenceRow[] = [
   { wx: -50, wy: 600, sx: -295.55555555555543, sy: 1042.6666666666667, scale: 1.7533333333333334 },
 ];
 
-// PERSPECTIVE RETUNE (camera.ts's `camera.PERSPECTIVE` doc comment has the
+// PERSPECTIVE REFERENCE (camera.ts's `camera.PERSPECTIVE` doc comment has the
 // full derivation). This table used to be an independent Lua capture, the
 // same way FIXED_REFERENCE/FIXED_ZOOM_REFERENCE still are -- but
 // `camera.PERSPECTIVE` was deliberately retuned away from the Lua original's
-// close-in framing (height 180/distance 216/fov 45) to a whole-pitch
-// broadcast angle for the true-perspective Strikers camera work, so a byte-
-// for-byte Lua capture at the OLD tuning is no longer a meaningful
-// regression target for the NEW one -- the two cameras are not the same shot
-// on purpose. What still needs pinning is that `projectPerspective`'s MATH
-// (the mat4 lookAt/perspective/multiply pipeline, now routed through
-// `perspectiveRig` -- see camera.ts) keeps producing exactly what that
-// pipeline computes for the current tuning, so a future refactor cannot
-// silently perturb it. These rows are therefore recomputed directly from the
-// pipeline at the new tuning (same sample points, same view, same
-// field/viewport as before) rather than re-captured from Lua; the "camera
-// perspective mode" describe block above is what still protects the
-// CONVERGENCE/FORESHORTENING invariants independent of tuning.
+// framing for the true-perspective Strikers camera work, so a byte-for-byte
+// Lua capture at the OLD tuning is no longer a meaningful regression target
+// for the NEW one -- the two cameras are not the same shot on purpose. What
+// still needs pinning is that `projectPerspective`'s MATH (the mat4
+// lookAt/perspective/multiply pipeline, routed through `perspectiveRig` --
+// see camera.ts) keeps producing exactly what that pipeline computes for the
+// current tuning, so a future refactor cannot silently perturb it. These rows
+// are therefore recomputed directly from the pipeline at the current tuning
+// (same sample points, same view, same field/viewport as the Lua capture
+// used) rather than re-captured from Lua; the "camera perspective mode"
+// describe block above is what still protects the CONVERGENCE/
+// FORESHORTENING invariants independent of tuning.
 //
-// Regenerated for the GAMEPLAY REFRAME (height 722->660, distance 606->554,
-// same 50-degree tilt ratio; fov 50->46; scale_k 636->582 -- the polish
-// pass's fov-50 full-bowl view was a beautiful establishing shot but shrank
-// the pitch to ~55% of frame height, which is not the Strikers reference;
-// see camera.ts's own PERSPECTIVE comment for the framing decision) with a
-// scratch vitest snippet evaluating this same unchanged pipeline at the new
-// PERSPECTIVE tuning, per this comment's own instructions.
+// Regenerated for the STRIKERS REFRAME (height 660 -> 495, distance
+// 554 -> 495 -- tilt 50 -> 45 degrees, L 862 -> 700; fov 46 unchanged; and
+// the `scale_k` constant REMOVED, the `scale` column now being the derived
+// `vp.h / (2 * w * tan(fov/2))` pixels-per-world-unit -- see camera.ts's
+// `projectPerspective` DEPTH SCALE note for why that constant was a bug),
+// with a scratch vitest snippet evaluating this same unchanged pipeline at
+// the new PERSPECTIVE tuning, per this comment's own instructions.
+//
+// Note the `scale` column is now ~1.2 at the focus rather than ~0.68: it is a
+// real pixels-per-world-unit ratio at THIS viewport (1280x720), not a
+// dimensionless sprite fudge, so it necessarily scales with `bigVp.h`. The
+// "scales linearly with viewport height" test below is what pins that
+// property independently of these rows.
 // prettier-ignore
 const PERSPECTIVE_REFERENCE: readonly CameraReferenceRow[] = [
-  { wx: 0, wy: 0, sx: 246.7822395897798, sy: 190.58702093460187, scale: 0.5621656440384241 },
-  { wx: 960, wy: 0, sx: 1033.2177604102203, sy: 190.58702093460187, scale: 0.5621656440384241 },
-  { wx: 0, wy: 540, sx: 48.388103959085385, sy: 614.8886236833745, scale: 0.8458007649798662 },
-  { wx: 960, wy: 540, sx: 1231.6118960409146, sy: 614.8886236833745, scale: 0.8458007649798662 },
-  { wx: 480, wy: 270, sx: 640, sy: 359.99999999999994, scale: 0.6754140279591309 },
-  { wx: 123.456, wy: 78.9, sx: 332.86916081227673, sy: 233.91541064110814, scale: 0.5911296002784843 },
-  { wx: -50, wy: 600, sx: -52.033544888599295, sy: 690.0321465572539, scale: 0.896032350390394 },
+  { wx: 0, wy: 0, sx: 183.0841097101677, sy: 178.26281749359623, scale: 0.9519081047704837 },
+  { wx: 960, wy: 0, sx: 1096.9158902898323, sy: 178.26281749359623, scale: 0.9519081047704837 },
+  { wx: 0, wy: 540, sx: -159.6028080072064, sy: 678.0400693862066, scale: 1.6658391833483466 },
+  { wx: 960, wy: 540, sx: 1439.6028080072062, sy: 678.0400693862066, scale: 1.6658391833483466 },
+  { wx: 480, wy: 270, sx: 640, sy: 360, scale: 1.2115194060715249 },
+  { wx: 123.456, wy: 78.9, sx: 277.9304247166352, sy: 222.77773316466775, scale: 1.0154975971643465 },
+  { wx: -50, wy: 600, sx: -323.1579278268623, sy: 784.0534258482754, scale: 1.8172791091072868 },
 ];
 
 describe("camera.project differential against the real Lua game.render.camera", () => {

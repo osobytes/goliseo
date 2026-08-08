@@ -50,7 +50,6 @@ export interface CameraPerspectiveConfig {
   readonly distance: number;
   /** degrees, vertical */
   readonly fov: number;
-  readonly scale_k: number;
 }
 
 /** `[screenX, screenY, depthScale]`, matching the Lua original's 3 return values. */
@@ -125,7 +124,6 @@ function projectPerspective(
   vp: CameraViewport,
   view: CameraView | undefined,
 ): CameraProjection {
-  const cfg = camera.PERSPECTIVE;
   const rig = perspectiveRig(field, view);
   // `mat4.lookAt` builds its basis from a fixed world-up of (0, 1, 0) (see
   // mat4.ts's own `lookAt` -- `cross(0, 1, 0, ...)`), the SAME default
@@ -151,7 +149,50 @@ function projectPerspective(
     return [-1e6, -1e6, 0];
   }
 
-  return [(x / w + 1) * 0.5 * vp.w, (1 - y / w) * 0.5 * vp.h, cfg.scale_k / w];
+  // DEPTH SCALE = SCREEN PIXELS PER WORLD UNIT AT THIS DEPTH.
+  //
+  // Every consumer multiplies an authored WORLD-unit size by this to get a
+  // pixel size: pitch.ts's `r = radius * scale` (`radius` is the sim's own
+  // `PLAYER_RADIUS_PX`, 12 world units -- `gc-sim`'s match.rs calls it
+  // "world units" in as many words), the ball's `5 * scale`, marker rings,
+  // health bars, `lineWidth`s. So the factor has to be exactly the
+  // world->pixel ratio a perspective camera actually produces:
+  //
+  //   px_per_world(w) = vp.h / (2 * w * tan(fov / 2))
+  //
+  // which is just the standard symmetric-perspective vertical mapping: the
+  // frustum is `2 * w * tan(fov/2)` world units tall at clip-depth `w`, and
+  // that height maps onto `vp.h` pixels. No calibration constant is needed
+  // or wanted -- the pitch is 960x540 WORLD units and `@gc/ui`'s virtual
+  // canvas (viewport.ts's `baseW`/`baseH`) is 960x540 PIXELS, so one world
+  // unit is one virtual pixel by construction and the ratio is absolute.
+  //
+  // This replaces a `scale_k / w` constant (scale_k = 582), which was
+  // calibrated to match the fixed trapezoid's ~0.675 mid-pitch scale and
+  // carried NEITHER of the two terms above. Both omissions were live bugs:
+  //
+  //   1. NO `vp.h`. Character pixel size was independent of resolution while
+  //      the stadium -- drawn by a REAL `THREE.PerspectiveCamera` off this
+  //      same rig (scene.ts's `syncWorldCamera`) -- scaled with `vp.h` as a
+  //      perspective camera must. So players did not "grow with the window":
+  //      at 540p a player read at the intended ~9% of frame height, and at
+  //      1235p at ~4%, shrinking against the pitch as the window grew. The
+  //      menu half of the app never had this bug because `viewport.create`
+  //      letterboxes the whole virtual canvas; the match path takes raw
+  //      pixel `vp` and so has to apply the ratio itself, which it did for
+  //      POSITIONS (`* vp.w`, `* vp.h` above) but not for SIZES.
+  //   2. NO `fov`. A lens change moved the world geometry without resizing
+  //      the characters standing on it, so any `fov` retune silently
+  //      desynced the two -- the sprites had to be hand-recalibrated
+  //      afterwards to catch up (see this file's own retune history).
+  //
+  // Deriving both means character size now tracks the resolution and the
+  // lens automatically, and stays locked to the stadium under either.
+  // Authored visual weight ("how tall is a player, in radii") is
+  // player_renderer_3d.ts's `HEIGHT_IN_RADII`, which is where that
+  // judgement belongs -- not smuggled into the projection as a constant.
+  const halfFovTan = Math.tan((rig.fov * Math.PI) / 360);
+  return [(x / w + 1) * 0.5 * vp.w, (1 - y / w) * 0.5 * vp.h, vp.h / (2 * w * halfFovTan)];
 }
 
 // The fixed whole-pitch projection: world point -> screen point + depth scale.
@@ -188,98 +229,61 @@ export const camera = {
   } satisfies CameraConfig as CameraConfig,
 
   PERSPECTIVE: {
-    // Retuned for whole-pitch Strikers-style broadcast framing on the
-    // product's actual 960x540 field at a 16:9 viewport (v2/README.md's own
-    // reference dimensions -- see camera.spec.ts's differential fixtures).
-    // Previously (height 180 / distance 216 / fov 45) this rig framed a
-    // CLOSE-IN shot -- right for reading one player's face, wrong for a
-    // broadcast angle that has to show the whole pitch. Derivation, redone
-    // here rather than left as bare numbers because every input matters if
-    // this ever needs retuning again:
+    // STRIKERS REFRAME. A true-perspective broadcast rig for the coliseum,
+    // tuned against Mario Strikers reference stills, on the product's actual
+    // 960x540 field (v2/README.md's own reference dimensions -- see
+    // camera.spec.ts's differential fixtures).
     //
-    //   1. TILT. Chosen first, not derived: 50 degrees down from horizontal
-    //      is the Strikers/broadcast reference angle this task specifies --
-    //      steep enough to read depth/occlusion between players, shallow
-    //      enough that the far touchline does not collapse to a sliver.
-    //      `tilt = atan(height / distance)`, so height/distance below are
-    //      picked to land on 50 degrees, not the other way around.
-    //   2. LENS. `fov: 42` (vertical, degrees) is the other free choice --
-    //      picked, like the tilt, for the reference framing rather than
-    //      derived from anything else. Horizontal FOV follows from it and
-    //      the 16:9 aspect: `hFov = 2 * atan(tan(fov/2) * aspect)`, giving
-    //      hFov ~= 68.6 degrees (half-angle ~= 34.3 degrees).
-    //   3. DISTANCE. Fit so the pitch width, padded 18% for margin (matching
-    //      DEFAULTS' own inset framing above), stays within that horizontal
-    //      FOV at the eye-to-focus (pitch centre) distance L:
-    //      `L = (field.w / 2 * 1.18) / tan(hFov / 2)`
-    //        = (480 * 1.18) / tan(34.3 deg) ~= 830 world units.
-    //      This is a deliberately simple fit -- it calibrates the
-    //      horizontal budget at the FOCUS point's distance, not at the
-    //      pitch's nearest (and therefore widest-appearing) corners, which
-    //      sit closer to the eye and so eat slightly more of the frame than
-    //      this budget assumes. Checked against the tuned numbers below:
-    //      the near corners land about 19px outside a 1280-wide viewport
-    //      (~1.5%), i.e. barely clipped at the very edge -- an accepted,
-    //      documented trade-off for a broadcast angle, not an error,
-    //      matching how real sports broadcast cameras routinely crop the
-    //      two nearest corners.
-    //   4. HEIGHT/DISTANCE. Split `L` by the tilt: `height = L * sin(tilt)`,
-    //      `distance = L * cos(tilt)`. Rounded to whole world units below
-    //      (656 / 551) -- their ratio still lands tilt at ~49.97 degrees,
-    //      well inside "~50" for a hand-tuned broadcast angle.
+    // What "match Strikers" reduces to, measurably: a player reads at
+    // roughly a TENTH of frame height, and the camera FOLLOWS play at a
+    // moderate downward tilt instead of holding a fixed establishing shot of
+    // the whole stadium. The second half is not this table's job -- see
+    // `pitch.follow_camera` / camera_follow.ts, which the product entry now
+    // switches on alongside `perspective_mode` (browser_main.ts). This table
+    // only sets the shot's geometry.
     //
-    //   VISUAL POLISH RETUNE (stadium art-direction pass, creative brief item
-    //   2 -- "show the sky"): the framing above put the far bowl rim right at
-    //   (or past) the top screen edge, leaving no sky above it. Pulled the
-    //   whole rig back ~10% along the SAME tilt ratio (both height and
-    //   distance scaled by the same 1.1 factor, so the 50-degree tilt angle
-    //   -- camera.rigAngleRad's own invariant -- is unchanged; only the
-    //   eye's distance from the focus grows): 656 -> 722, 551 -> 606. Distance
-    //   alone was not enough on its own -- a live scan of the rendered frame
-    //   (a scratch script projecting the bowl's own tier/rim world points
-    //   through this exact rig) showed the pullback moves the WHOLE bowl
-    //   toward screen centre (a dolly-back converges off-axis geometry
-    //   inward, it does not shrink it out of frame), so `fov` also went
-    //   42 -> 50 -- a genuinely wider lens is what actually buys vertical
-    //   headroom above the bowl, paired with a shorter bowl itself
-    //   (stadium_layout.ts's `tierHeight`/`arcadeHeight`, cut for the same
-    //   reason). Confirmed live: the nebula and arcade silhouette are now
-    //   visible along both top corners of the broadcast frame.
-    //   GAMEPLAY REFRAME (after the polish pass): fov 50 at L ~= 943 showed
-    //   the WHOLE bowl -- a beautiful establishing shot, but the pitch shrank
-    //   to ~55% of frame height, which is not the Strikers reference (pitch
-    //   dominant, crowd as a band along the top). Tightened to fov 46 at
-    //   L ~= 862 (height/distance re-split on the same 50-degree tilt):
-    //   the pitch regains the frame while the shorter bowl (the polish
-    //   pass's tierHeight/arcadeHeight cut) keeps the far arcade + nebula
-    //   sky visible in the top corners. Verified live against screenshots
-    //   of both tunings side by side.
-    height: 660,
-    distance: 554,
+    // Derivation, kept here rather than left as bare numbers because every
+    // input matters if this ever needs retuning again:
+    //
+    //   1. TILT. Chosen, not derived: 45 degrees down from horizontal.
+    //      `tilt = atan(height / distance)`, so 45 degrees is exactly
+    //      `height == distance` -- which is why both numbers below are the
+    //      same, and why the ratio is verifiable by eye. Shallower than the
+    //      50 degrees this rig used while it framed the whole bowl: 50 looks
+    //      down ONTO the pitch (a stadium establishing angle), 45 reads more
+    //      along it, which is the reference's flatter, more side-on look.
+    //   2. LENS. `fov: 46` (vertical, degrees) -- unchanged by this retune.
+    //   3. DISTANCE. Derived from the CHARACTER SIZE target rather than from
+    //      a whole-pitch fit; that inversion is the point of this retune. A
+    //      character's drawn height in pixels is `6 * radius * scale`
+    //      (pitch.ts's `r = radius * scale`, then player_renderer_3d.ts's
+    //      `ppmForRadius` times the mesh's own metre height, which cancels
+    //      to `r * HEIGHT_IN_RADII * 2` = `6 * r`), and `scale` at the focus
+    //      is `vp.h / (2 * L * tan(fov / 2))` (`projectPerspective`'s DEPTH
+    //      SCALE note). `vp.h` cancels, so the FRACTION of frame height a
+    //      player occupies is resolution-independent and a property of the
+    //      rig alone:
+    //        player_frac = 6 * PLAYER_RADIUS / (2 * L * tan(fov / 2))
+    //                    = 72 / (2 * L * tan(23 deg))
+    //      Solving for the reference's ~12%:
+    //        L = 72 / (0.121 * 2 * 0.42447) ~= 700 world units.
+    //      (`PLAYER_RADIUS` is 12 world units -- gc-sim's match.rs, exported
+    //      to the renderer as `PLAYER_RADIUS_PX`.)
+    //   4. HEIGHT/DISTANCE. Split `L` by the tilt: at 45 degrees both are
+    //      `L / sqrt(2)` ~= 495. Recovered from the rounded pair below:
+    //      tilt exactly 45 degrees, `L = sqrt(2) * 495` ~= 700.0,
+    //      `player_frac` ~= 12.1%.
+    //
+    // Note what is deliberately NOT here anymore: a `scale_k` sprite-size
+    // calibration constant. Character size is now derived from this rig plus
+    // the viewport (`projectPerspective`'s DEPTH SCALE note explains why the
+    // old constant was two live bugs), so retuning `fov`/`height`/`distance`
+    // no longer needs a matching hand-recalibration to keep players the
+    // right size relative to the stadium they stand in -- which is what made
+    // every earlier retune in this file's history a two-step dance.
+    height: 495,
+    distance: 495,
     fov: 46,
-    // SCALE_K. `projectPerspective`'s returned scale is `scale_k / w_clip`
-    // (`w_clip` being the clip-space w at the projected point -- see that
-    // function's return). Retuned so a player standing at the pitch centre
-    // projects at roughly the SAME on-screen radius the fixed trapezoid
-    // path already gives there today, so switching `perspective_mode` on
-    // does not also make every sprite jump to a wildly different size:
-    //   fixed-path scale at centre ~= (far_scale + near_scale) / 2
-    //                              = (0.51 + 0.84) / 2 = 0.675
-    //   w_clip at the pitch centre, under THIS rig (height 722 / distance
-    //   606, 16:9 viewport, zoom 1, no follow view) ~= 942.6 -- note this
-    //   does NOT depend on fov (a standard symmetric perspective matrix's
-    //   clip-space w is -view-space-z, which fov does not touch; only the
-    //   x/y clip components scale with fov), so the fov 42 -> 50 visual
-    //   polish retune above did not require rederiving this number.
-    //   scale_k = 0.675 * w_clip; at the GAMEPLAY REFRAME's rig (height 660 /
-    //   distance 554) w_clip at the pitch centre is L = sqrt(660^2 + 554^2)
-    //   ~= 861.6, so scale_k = 0.675 * 861.6 ~= 581.6, rounded: 582
-    //     (recovered centre scale: 582 / 861.6 ~= 0.6755, ~0.07% off
-    //     target -- well within "roughly the same radius")
-    //   Recomputed the same way on every retune (a scratch vitest snippet
-    //   evaluating this same unchanged pipeline, per this file's own
-    //   convention -- see camera.spec.ts's PERSPECTIVE_REFERENCE comment).
-    scale_k: 582,
   } satisfies CameraPerspectiveConfig as CameraPerspectiveConfig,
 
   // Clamped focus for a following camera.
