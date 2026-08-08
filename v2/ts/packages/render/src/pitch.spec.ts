@@ -863,10 +863,6 @@ describe("pitch.ts converts frame.control.controlled/pass_target from one-based 
 // sized off the projection's third return value, so all three move together.
 // ============================================================================
 describe("pitch entity sizes stay in proportion to the pitch at any viewport", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
   const GOAL_FRAME_COLOR: readonly [number, number, number] = [0.92, 0.97, 1.0];
   const BALL_COLOR: readonly [number, number, number] = [1, 0.95, 0.7];
 
@@ -880,23 +876,30 @@ describe("pitch entity sizes stay in proportion to the pitch at any viewport", (
     return (floor.points[4] ?? NaN) - (floor.points[6] ?? NaN);
   }
 
-  /** Drawn radius handed to the player renderer -- `radius * scale`. */
+  /**
+   * Drawn radius handed to the player renderer -- `radius * scale`, for the
+   * first player in depth-sorted order.
+   *
+   * This was captured by spying on `playerRenderer.playerDrawCommands` and
+   * reading its third argument. #415 deleted that module, so it now reads
+   * `playerAnchors`' `r` instead. The quantity is unchanged, and deliberately
+   * so: both derivations build `project = pitchProject(frame, vp, opts)` from
+   * the same three arguments, take `scale` from `project(players.x[i],
+   * players.y[i])`, and return `roster.radius[i] * scale` -- the same
+   * expression, the same amount of pipeline, for the same player (both walk
+   * `depthSortedItems`, so index 0 is the same one the spy saw first). The
+   * assertions below therefore still test what #414 fixed. If anything it is
+   * a touch stronger: no mock, and `playerAnchors` is the exported seam
+   * `pitch.draw` itself derives every rigged character's `ppm` from, so this
+   * now reads the size the product actually draws rather than an argument to a
+   * renderer the product no longer has.
+   */
   function playerRadius(vp: PitchViewport): number {
-    const seen: number[] = [];
-    const spy = vi.spyOn(playerRenderer, "playerDrawCommands").mockImplementation((_sx, _sy, r) => {
-      seen.push(r);
-      return [];
-    });
-    try {
-      pitchDrawCommands(frame(), vp, opts);
-    } finally {
-      spy.mockRestore();
-    }
-    const first = seen[0];
+    const first = playerAnchors(frame(), vp, opts)[0];
     if (first === undefined) {
-      throw new Error("expected the player renderer to be called");
+      throw new Error("expected at least one player anchor");
     }
-    return first;
+    return first.r;
   }
 
   /** Height of a goal post: `crossbar_h * scale`. */
