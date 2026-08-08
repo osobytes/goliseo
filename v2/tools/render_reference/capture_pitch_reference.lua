@@ -112,7 +112,10 @@ local function stub_graphics()
         push_geom(state, rec)
     end
     g.printf = function(text, x, y, w, align)
-        push_geom(state, { kind = "text", text = text, x = x, y = y, w = w, align = align or "left" })
+        push_geom(
+            state,
+            { kind = "text", text = text, x = x, y = y, w = w, align = align or "left" }
+        )
     end
     -- The goal-net mesh shader is a shading detail with no bearing on shape or
     -- position (pitch.ts's drawGoal has the same intentional omission) -- noop
@@ -122,7 +125,9 @@ local function stub_graphics()
     end
     g.setShader = function() end
     g.push = function()
-        error("unexpected love.graphics.push -- pitch.lua's own draw path should never call this directly")
+        error(
+            "unexpected love.graphics.push -- pitch.lua's own draw path should never call this directly"
+        )
     end
     g.translate = function()
         error("unexpected love.graphics.translate")
@@ -137,12 +142,18 @@ local function stub_graphics()
 end
 
 love.graphics = stub_graphics()
-love.timer = { getTime = function() return 0 end }
+love.timer = {
+    getTime = function()
+        return 0
+    end,
+}
 
 -- Replace the procedural and rigged player renderers BEFORE game.render.pitch
 -- is required, so pitch.lua's own `require` calls resolve to these stand-ins.
 package.loaded["game.render.player_renderer_3d"] = {
-    available = function() return false end,
+    available = function()
+        return false
+    end,
 }
 package.loaded["game.render.player_renderer"] = {
     draw = function(sx, sy, r, color, v, opts)
