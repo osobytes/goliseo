@@ -351,6 +351,25 @@ gate_app_bundle() {
     return 0
 }
 
+# Remove ANSI SGR sequences.
+#
+# vitest colourises its summary when it detects CI, so the line arrives as
+# `ESC[2m      Tests ESC[22m 865 passed...` and an anchored `^\s*Tests` never
+# matches it. That is how this gate reported "vitest produced no recognizable
+# 'Tests' summary line -- absent evidence is not a pass" on a run where every
+# one of the 865 tests had passed and the summary was right there in the log.
+#
+# Exactly the failure mode this file exists to prevent, pointed the other way:
+# not a harness that passes without evidence, but one that discards the
+# evidence it was handed and fails. Both are the gate lying about what it saw.
+#
+# Stripping is preferred over forcing colour off (`NO_COLOR`, `--no-color`)
+# because it keeps the human-readable log coloured and cannot be defeated by a
+# tool that colours anyway.
+strip_ansi() {
+    sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g'
+}
+
 # Pure logic, no wasm and no vite involved -- shared by gate_app_bundle() and
 # self_test()'s stale_web_artifact_scenario, so the check the gate performs and
 # the check the self-test proves can go red are the same code, not two
@@ -374,7 +393,7 @@ gate_ts_test() {
     local status=$?
 
     local summary
-    summary="$(grep -E '^\s*Tests\s' "$log" | tail -n 1)"
+    summary="$(strip_ansi < "$log" | grep -E '^\s*Tests\s' | tail -n 1)"
     rm -f "$log"
 
     if [ "$status" -ne 0 ]; then
@@ -777,6 +796,46 @@ stale_web_artifact_scenario() {
     return "$failures"
 }
 
+# Reproduces the 2026-08-08 CI failure: every test passed, vitest printed its
+# summary, and the gate reported "no recognizable 'Tests' summary line" because
+# CI colourises that line and the anchored grep never saw it. Both directions
+# matter -- a coloured summary must be READ, and a genuinely absent one must
+# still be REJECTED.
+vitest_summary_scenario() {
+    local failures=0
+    local coloured plain
+    # Exactly what vitest emits under CI: SGR codes around the label and counts.
+    coloured="$(printf '\033[2m      Tests \033[22m \033[1m\033[32m865 passed\033[39m\033[22m | 2 expected fail | 9 skipped (876)')"
+    plain="$(printf '%s' "$coloured" | strip_ansi | grep -E '^\s*Tests\s' | tail -n 1)"
+    if [ -n "$plain" ]; then
+        echo "    ok: a colourised summary line is recognised"
+    else
+        echo "SELF-TEST FAIL: a colourised 'Tests' summary line was NOT recognised -- this is the 2026-08-08 CI failure"
+        failures=1
+    fi
+
+    local passed
+    passed="$(printf '%s' "$plain" | grep -o '[0-9]\+ passed' | grep -o '^[0-9]\+')"
+    if [ "${passed:-0}" -eq 865 ]; then
+        echo "    ok: the count is parsed out of the colourised line"
+    else
+        echo "SELF-TEST FAIL: parsed '${passed:-}' passing tests from the colourised summary, want 865"
+        failures=1
+    fi
+
+    # The gate must still refuse a run that produced no summary at all.
+    local absent
+    absent="$(printf 'some other output\n' | strip_ansi | grep -E '^\s*Tests\s' | tail -n 1)"
+    if [ -z "$absent" ]; then
+        echo "    ok: a log with no summary line is still rejected"
+    else
+        echo "SELF-TEST FAIL: matched a 'Tests' summary in a log that has none"
+        failures=1
+    fi
+
+    return "$failures"
+}
+
 self_test() {
     if ! v2_toolchain_present; then
         echo "   ! cargo/node/pnpm not fully installed -- skipping v2 gate self-test"
@@ -805,6 +864,9 @@ self_test() {
     echo "==> v2 gate self-test: tsc --build --force (gate 6)"
     mkdir -p "$work/tsc_force"
     tsc_force_scenario "$work/tsc_force" || failures=1
+
+    echo "==> v2 gate self-test: vitest summary extraction (gate 8)"
+    vitest_summary_scenario || failures=1
 
     echo "==> v2 gate self-test: stale browser wasm in the shipped bundle (gate 10)"
     mkdir -p "$work/stale_web"
