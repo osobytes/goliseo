@@ -115,7 +115,8 @@ function projectPerspective(
   // alone (`vp.h`), while `mat4.perspective`'s aspect term already gives the
   // horizontal axis its own correct treatment. Picking `fitFactor` here would
   // be wrong for a tall viewport. Fixing it needs its own tuning pass against
-  // the follow camera, which is what this note is for rather than a guess.
+  // the follow camera, so it is tracked as its own issue (#417) rather than
+  // guessed at here.
   return [(x / w + 1) * 0.5 * vp.w, (1 - y / w) * 0.5 * vp.h, cfg.scale_k / w];
 }
 
