@@ -341,8 +341,10 @@ async function main(): Promise<void> {
     //     genuinely doubled work.
     //
     // A sawtooth and a flat line are not close to each other, which is what
-    // makes this decidable. Same category as `?ratio=`/`?bloom=`/`?rigged=`:
-    // a measurement lever, never a setting.
+    // makes this decidable. Same category as `?ratio=`/`?bloom=`:
+    // a measurement lever, never a setting. (`?rigged=` used to be listed here
+    // too; #415 removed it along with the renderer it selected -- see the note
+    // above `bloomEnabled`.)
     if (spinMs > 0) {
       const spinUntil = performance.now() + spinMs;
       // A read the JIT cannot fold away, so the loop actually burns time.

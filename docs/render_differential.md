@@ -31,14 +31,22 @@ a bug: they don't overlap on screen, so painter's-algorithm order between
 them is invisible) — and an **ordered**, exact match for the reticle and for
 `camera.project` itself (see below).
 
-**Covered, full per-player payload diff:** the `(sx, sy, r, color)` screen
+**Covered, full per-player payload diff:** the `(sx, sy, r)` screen
 anchor AND the complete `PlayerRenderOptions` struct (pose id/priority/
 source, windup, aerial\*, dive\*, grab, throw, holding, dashing, controlled,
 team, species\*, facing) pitch.lua/pitch.ts hand to the player renderer, in
 depth-sorted order. This is the exact boundary `player_renderer_3d.ts`'s
-rigged pass consumes (`pitch.ts`'s shared `playerOptions()` builds this same
-struct for both branches) — so it directly answers "does pose/windup/aerial/
+rigged pass consumes — so it directly answers "does pose/windup/aerial/
 dive reach the rig" without touching the off-limits rig files.
+
+> **Updated (#415).** As captured, this diff covered `(sx, sy, r, color)` and
+> described `playerOptions()` as building one struct "for both branches". There
+> is only one branch now: the billboard is deleted, and the TypeScript side of
+> the comparison is `pitch.ts`'s exported, pure `playerAnchors(frame, vp, opts)`
+> rather than a `vi.spyOn` on the renderer module. The `color` assertion was
+> dropped with it — it was the billboard's team tint, and the rigged path
+> resolves colour from rig3d's own team palette. `options.team`, which it was
+> derived from, is still asserted.
 
 **Also new: a `camera.project` numeric differential** (`camera.spec.ts`),
 run against the product's real 960×540/1280×720 dimensions (not a shrunk
@@ -46,12 +54,14 @@ fixture) across the fixed projection, a 2× zoomed follow view, and
 perspective mode.
 
 **Deliberately narrowed away**, stated honestly: the polygon/line soup
-`player_renderer.lua`/`.ts` draw *inside* one player's silhouette (limbs,
+`player_renderer.lua` draws *inside* one player's silhouette (limbs,
 gait, equipment) — reproducing LÖVE's `push/translate/rotate` transform
 stack faithfully enough to diff that one-for-one is a second, much larger
-project, `player_renderer.ts` already has its own spec, and `pitch.lua`
+project, and `pitch.lua`
 delegates to it as one opaque call this harness intercepts rather than lets
-run. Also narrowed: the relative depth order **between** a player and the
+run. (As written this also said "`player_renderer.ts` already has its own
+spec". #415 deleted both that module and its spec; v2 has no billboard
+renderer to diff limb geometry against at all.) Also narrowed: the relative depth order **between** a player and the
 ball — both languages' comparator (`table.sort` vs `Array.prototype.sort`
 over an identical `{index, depth}` structure) were read side by side and
 found identical; not worth a second capture.
