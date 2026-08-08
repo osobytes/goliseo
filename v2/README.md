@@ -330,7 +330,7 @@ mechanism, but it is content, and deleting it throws away the game.
 | --- | --- |
 | `rig3d/meshbuilder.lua`, `rig3d/shapes.lua` | **replace** — primitive geometry construction → `BufferGeometry` and three.js primitives |
 | `rig3d/renderer.lua` and its hand-written GLSL | **replace** — `WebGLRenderer`, `MeshStandardMaterial` |
-| `bloom.lua` | **replace** — `UnrealBloomPass` |
+| `bloom.lua` | **port** — was "**replace** — `UnrealBloomPass`"; corrected by #404. The pyramid is a different algorithm from Lua's single-resolution 9-tap blur, so handing it Lua's constants haloed every character: the mechanism was three.js's, but the falloff was content. `bloom.ts` now runs Lua's own threshold → blur → additive-composite chain over three `ShaderMaterial`s. A worked example of the warning directly above this table. |
 | `gl_probe.lua` | **replace** — three.js capability detection |
 | `rig3d/skeleton.lua` | **split** — the skinning maths is `Skeleton`/`Bone`; the specific bone hierarchy is content and must be ported |
 | `rig3d/body.lua`, `equipment`, `headgear`, `face` | **port** — these describe what the characters look like, expressed via `SkinnedMesh` instead of the old builder |
