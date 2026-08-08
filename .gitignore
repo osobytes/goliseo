@@ -84,3 +84,13 @@ bench/native_shell/tauri/icons/
 # Rust host build artifacts (#327).
 wasm/sim-host/target/
 wasm/sim-host/dist/
+
+# Diagnostic output from scripts/v2_frame_profile.py: a .cpuprofile, a devtools
+# trace and the raw per-frame samples behind them. Evidence for one
+# investigation, regenerated on demand — the CONCLUSIONS belong in code comments
+# and docs/, not multi-megabyte traces in the tree.
+v2-frame-profile/
+
+# Vite's on-disk dep-optimiser cache for the out-of-workspace browser harnesses
+# (their vite.config.ts sets `root` to web/, so the cache lands there).
+v2/tools/*/web/.vite/

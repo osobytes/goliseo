@@ -16,7 +16,7 @@
 
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
-import { appendCommands, disposeObject, paint, DrawList, rotateAround, type DrawCommand, type PivotTransform, type TextCommand } from "./draw2d.ts";
+import { appendCommands, clearMaterialCache, disposeObject, materialCacheSize, paint, DrawList, rotateAround, type DrawCommand, type PivotTransform, type TextCommand } from "./draw2d.ts";
 
 function near(actual: number, expected: number, eps = 1e-9): void {
   expect(Math.abs(actual - expected)).toBeLessThanOrEqual(eps);
@@ -305,5 +305,99 @@ describe("disposeObject", () => {
 
   it("is a no-op for a plain Object3D carrying no owned resources", () => {
     expect(() => disposeObject(new THREE.Object3D())).not.toThrow();
+  });
+});
+
+// The material cache is a PERFORMANCE fix with a correctness hazard on either
+// side, so both sides get pinned here. Profiling the real app
+// (scripts/v2_frame_profile.py) measured 3905 `gl.linkProgram` calls in 25
+// seconds -- ~2.6 shader compiles every frame, with `getProgramInfoLog`
+// blocking 3572ms of that window -- because `paint` disposed every material
+// each frame, dropping each compiled program's refcount to zero. See draw2d.ts's
+// MATERIAL CACHE note for the mechanism.
+//
+// Hazard on one side: if `paint` still disposes cached materials, the compiles
+// come straight back (and silently -- nothing about the picture changes).
+// Hazard on the other: if the cache key is too coarse, two commands with
+// DIFFERENT colours share one material and the second silently repaints the
+// first. Both are invisible to every other test in this file.
+describe("draw2d material cache", () => {
+  const cmd = (color: readonly [number, number, number], alpha?: number): DrawCommand =>
+    ({ kind: "rect", mode: "fill", x: 0, y: 0, w: 10, h: 10, color, ...(alpha === undefined ? {} : { alpha }) }) as DrawCommand;
+
+  it("reuses one material across frames instead of disposing it, so the program is never released", () => {
+    clearMaterialCache();
+    const group = new THREE.Group();
+    paint(group, [cmd([1, 0, 0])]);
+    const first = (group.children[0] as THREE.Mesh).material as THREE.Material;
+
+    // The frame boundary: `paint` clears and rebuilds, which is exactly where
+    // the old code disposed the material and forced the recompile.
+    paint(group, [cmd([1, 0, 0])]);
+    const second = (group.children[0] as THREE.Mesh).material as THREE.Material;
+
+    expect(second, "the same command must reuse the same material instance").toBe(first);
+    // `Material.dispose()` is what calls three.js's `releaseProgram`; a
+    // disposed material would have had its `version` bumped past use. The
+    // observable proxy is that the instance survived the repaint at all, which
+    // the identity check above already establishes -- this asserts it is still
+    // attached and usable rather than a zombie.
+    expect(first.userData["gcCachedMaterial"]).toBe(true);
+  });
+
+  it("does not share a material between different colours or alphas", () => {
+    clearMaterialCache();
+    const group = new THREE.Group();
+    paint(group, [cmd([1, 0, 0]), cmd([0, 1, 0]), cmd([1, 0, 0], 0.5)]);
+    const materials = group.children.map((child) => (child as THREE.Mesh).material);
+    expect(new Set(materials).size, "three distinct visual configs, three materials").toBe(3);
+  });
+
+  it("keeps the cache BOUNDED under continuously varying alpha", () => {
+    // Callers pass continuous alphas (pulsing rings use `0.3 * hk`), so an
+    // unquantised key would grow the cache without limit -- trading a shader
+    // recompile for a memory leak is not a fix. Quantisation caps it at the
+    // number of distinct 1/255 steps.
+    clearMaterialCache();
+    const group = new THREE.Group();
+    for (let i = 0; i < 4000; i += 1) {
+      paint(group, [cmd([1, 0, 0], (i % 1000) / 1000)]);
+    }
+    expect(materialCacheSize()).toBeLessThanOrEqual(256);
+  });
+
+  it("does not let an overlay's depthTest:false leak onto depth-tested draws with the same colour", () => {
+    // The hazard a shared material introduces that a per-frame material never
+    // could. `applyDepthPlacement` WRITES `depthTest` onto the material after
+    // construction, and pitch.ts's overlay pass paints with `depthTest: false`
+    // (`drawPitchAfterItems`). With `depthTest` missing from the cache key, the
+    // overlay and the ordinary depth-tested pass shared one instance, so the
+    // overlay's `false` came back and flattened depth ordering for every draw
+    // of that colour -- characters and pitch content losing their occlusion
+    // against each other, with nothing thrown and no test failing.
+    clearMaterialCache();
+    const normal = new THREE.Group();
+    const overlay = new THREE.Group();
+    paint(normal, [cmd([1, 0, 0])]);
+    paint(overlay, [cmd([1, 0, 0])], { depthTest: false });
+
+    const normalMaterial = (normal.children[0] as THREE.Mesh).material as THREE.Material;
+    const overlayMaterial = (overlay.children[0] as THREE.Mesh).material as THREE.Material;
+
+    expect(overlayMaterial, "different depthTest must not share an instance").not.toBe(normalMaterial);
+    expect(overlayMaterial.depthTest).toBe(false);
+    expect(normalMaterial.depthTest, "the ordinary pass must keep depth testing").toBe(true);
+  });
+
+  it("still disposes NON-cached materials, so per-sprite textures are not leaked", () => {
+    clearMaterialCache();
+    const texture = new THREE.Texture();
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture }));
+    let disposed = false;
+    texture.addEventListener("dispose", () => {
+      disposed = true;
+    });
+    disposeObject(sprite);
+    expect(disposed, "a sprite's own texture is not cache-owned and must still be released").toBe(true);
   });
 });

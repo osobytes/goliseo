@@ -368,23 +368,118 @@ function colorOf(c: DrawCommand): THREE.Color {
   return new THREE.Color(c.color[0], c.color[1], c.color[2]);
 }
 
-function lineMaterial(c: DrawCommand): THREE.LineBasicMaterial {
-  return new THREE.LineBasicMaterial({
-    color: colorOf(c),
-    transparent: c.alpha !== undefined,
-    opacity: c.alpha ?? 1,
-    blending: c.blend === "add" ? THREE.AdditiveBlending : THREE.NormalBlending,
-  });
+// ---------------------------------------------------------------------------
+// MATERIAL CACHE -- why this exists, measured
+// ---------------------------------------------------------------------------
+//
+// `paint` below rebuilds `group`'s children every frame and disposes the old
+// ones. That is immediate-mode correct, and its own doc comment noted that
+// reusing objects would be "tuning against nothing" because this milestone had
+// no renderer to profile against. There is one now, and profiling it
+// (scripts/v2_frame_profile.py, driving the real app shell) found this:
+//
+//   3905 gl.linkProgram + 7810 gl.compileShader calls in 25 seconds
+//   -- about 2.6 shader programs compiled EVERY FRAME, indefinitely
+//   getProgramInfoLog: 3572ms of that 25s -- 14% of wall clock, and more than
+//   half of all non-idle time, spiking to 19ms in a single call
+//
+// The mechanism is `disposeMaterial`, NOT material construction.
+// `THREE.WebGLRenderer` refcounts compiled programs BY MATERIAL: disposing the
+// last material using a program calls `releaseProgram` -> `gl.deleteProgram`.
+// Disposing every material each frame therefore deletes every program each
+// frame, and the next frame recompiles them all from source -- which is why
+// `resolveIncludes`/`replaceLightNums`/`unrollLoops` all sit in the profile
+// too. The pain lands on `getProgramInfoLog` because it BLOCKS until the
+// driver has finished compiling, converting an asynchronous driver compile
+// into a synchronous frame stall.
+//
+// Caching these materials and never disposing them keeps a live reference to
+// each program, so the refcount never reaches zero and each compile happens
+// once instead of every frame.
+//
+// KEYED ON COLOR AND ALPHA even though neither affects the program (both are
+// uniforms; three.js builds its program cache key from what changes shader
+// SOURCE). Two reasons: a shared material cannot carry per-mesh colour -- every
+// mesh referencing it draws in whichever colour was written last -- and keying
+// on the full visual config makes this a plain value-keyed pool with no
+// mutation-order hazard. The program is shared across all these entries
+// regardless, which is the whole point: many cached materials, one compile.
+//
+// `alpha` is quantised because callers pass continuous values (pulsing rings
+// use `0.3 * hk`), which would otherwise make the key space unbounded. 1/255 is
+// finer than an 8-bit framebuffer can show, so nothing visible is lost.
+const ALPHA_QUANTISATION = 255;
+const materialCache = new Map<string, THREE.Material>();
+// A cached material outlives every object referencing it, so `paint`'s teardown
+// must not dispose it (see `disposeMaterial`). Marked on the material itself
+// rather than tracked in a parallel set, so the check cannot desync from the
+// cache.
+const CACHED_MATERIAL_FLAG = "gcCachedMaterial";
+
+// `depthTest` is part of the key even though it arrives via `PaintOptions`
+// rather than the command. It HAS to be: `applyDepthPlacement` used to write it
+// onto the material after construction, which is safe for a material used once
+// and fatal for a shared one -- the overlay pass paints with `depthTest: false`
+// (pitch.ts's `drawPitchAfterItems` call), so a shared material would carry that
+// back to every depth-tested draw with the same colour and silently flatten the
+// scene's depth ordering. Baking it into the key gives the overlay pass its own
+// material instead of poisoning the shared one.
+function materialKey(kind: string, c: DrawCommand, depthTest: boolean | undefined): string {
+  const alpha = c.alpha === undefined ? -1 : Math.round(c.alpha * ALPHA_QUANTISATION);
+  return `${kind}|${c.color[0]},${c.color[1]},${c.color[2]}|${alpha}|${c.blend ?? "normal"}|dt${depthTest === undefined ? "-" : depthTest ? "1" : "0"}`;
 }
 
-function fillMaterial(c: DrawCommand): THREE.MeshBasicMaterial {
-  return new THREE.MeshBasicMaterial({
-    color: colorOf(c),
-    transparent: c.alpha !== undefined,
-    opacity: c.alpha ?? 1,
-    blending: c.blend === "add" ? THREE.AdditiveBlending : THREE.NormalBlending,
-    side: THREE.DoubleSide,
-  });
+function cachedMaterial<T extends THREE.Material>(key: string, build: () => T): T {
+  const hit = materialCache.get(key);
+  if (hit !== undefined) {
+    return hit as T;
+  }
+  const built = build();
+  built.userData[CACHED_MATERIAL_FLAG] = true;
+  materialCache.set(key, built);
+  return built;
+}
+
+function lineMaterial(c: DrawCommand, opts?: PaintOptions): THREE.LineBasicMaterial {
+  return cachedMaterial(
+    materialKey("line", c, opts?.depthTest),
+    () =>
+      new THREE.LineBasicMaterial({
+        color: colorOf(c),
+        transparent: c.alpha !== undefined,
+        opacity: c.alpha ?? 1,
+        blending: c.blend === "add" ? THREE.AdditiveBlending : THREE.NormalBlending,
+        ...(opts?.depthTest === undefined ? {} : { depthTest: opts.depthTest }),
+      }),
+  );
+}
+
+function fillMaterial(c: DrawCommand, opts?: PaintOptions): THREE.MeshBasicMaterial {
+  return cachedMaterial(
+    materialKey("fill", c, opts?.depthTest),
+    () =>
+      new THREE.MeshBasicMaterial({
+        color: colorOf(c),
+        transparent: c.alpha !== undefined,
+        opacity: c.alpha ?? 1,
+        blending: c.blend === "add" ? THREE.AdditiveBlending : THREE.NormalBlending,
+        side: THREE.DoubleSide,
+        ...(opts?.depthTest === undefined ? {} : { depthTest: opts.depthTest }),
+      }),
+  );
+}
+
+/** Drops every cached material. For teardown and tests -- ordinary per-frame teardown must NOT do this (see the MATERIAL CACHE note above). */
+export function clearMaterialCache(): void {
+  for (const material of materialCache.values()) {
+    material.dispose();
+  }
+  materialCache.clear();
+}
+
+/** How many distinct materials the cache holds. Exported so a regression spec can prove the cache is BOUNDED -- an ever-growing cache would be a leak, not a fix. */
+export function materialCacheSize(): number {
+  return materialCache.size;
 }
 
 function ringPoints(x: number, y: number, r: number, segments = CIRCLE_SEGMENTS): THREE.Vector3[] {
@@ -541,7 +636,7 @@ function buildOne(c: DrawCommand, opts?: PaintOptions): THREE.Object3D {
     case "rect": {
       if (c.mode === "fill") {
         const geometry = new THREE.PlaneGeometry(c.w, c.h);
-        const mesh = new THREE.Mesh(geometry, fillMaterial(c));
+        const mesh = new THREE.Mesh(geometry, fillMaterial(c, opts));
         mesh.position.set(c.x + c.w / 2, c.y + c.h / 2, 0);
         return mesh;
       }
@@ -552,18 +647,18 @@ function buildOne(c: DrawCommand, opts?: PaintOptions): THREE.Object3D {
         new THREE.Vector3(c.x, c.y + c.h, 0),
         new THREE.Vector3(c.x, c.y, 0),
       ];
-      return new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), lineMaterial(c));
+      return new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), lineMaterial(c, opts));
     }
     case "circle": {
       if (c.mode === "fill") {
         const geometry = new THREE.CircleGeometry(c.r, CIRCLE_SEGMENTS);
-        const mesh = new THREE.Mesh(geometry, fillMaterial(c));
+        const mesh = new THREE.Mesh(geometry, fillMaterial(c, opts));
         mesh.position.set(c.x, c.y, 0);
         return mesh;
       }
       return new THREE.LineLoop(
         new THREE.BufferGeometry().setFromPoints(ringPoints(0, 0, c.r)),
-        lineMaterial(c),
+        lineMaterial(c, opts),
       ).translateX(c.x).translateY(c.y);
     }
     case "ellipse": {
@@ -571,11 +666,11 @@ function buildOne(c: DrawCommand, opts?: PaintOptions): THREE.Object3D {
       const points = curve.getPoints(CIRCLE_SEGMENTS).map((p) => new THREE.Vector3(p.x, p.y, 0));
       if (c.mode === "fill") {
         const shape = new THREE.Shape(curve.getPoints(CIRCLE_SEGMENTS));
-        const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), fillMaterial(c));
+        const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), fillMaterial(c, opts));
         mesh.position.set(c.x, c.y, 0);
         return mesh;
       }
-      const line = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(points), lineMaterial(c));
+      const line = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(points), lineMaterial(c, opts));
       line.position.set(c.x, c.y, 0);
       return line;
     }
@@ -583,26 +678,26 @@ function buildOne(c: DrawCommand, opts?: PaintOptions): THREE.Object3D {
       const points = polylinePoints(c.points);
       if (c.mode === "fill") {
         const shapePoints = points.map((p) => new THREE.Vector2(p.x, p.y));
-        const mesh = new THREE.Mesh(new THREE.ShapeGeometry(new THREE.Shape(shapePoints)), fillMaterial(c));
+        const mesh = new THREE.Mesh(new THREE.ShapeGeometry(new THREE.Shape(shapePoints)), fillMaterial(c, opts));
         return mesh;
       }
       const closed = [...points, points[0]].filter((p): p is THREE.Vector3 => p !== undefined);
-      return new THREE.Line(new THREE.BufferGeometry().setFromPoints(closed), lineMaterial(c));
+      return new THREE.Line(new THREE.BufferGeometry().setFromPoints(closed), lineMaterial(c, opts));
     }
     case "line": {
       const points = polylinePoints(c.points);
-      return new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), lineMaterial(c));
+      return new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), lineMaterial(c, opts));
     }
     case "arc": {
       const curve = new THREE.EllipseCurve(0, 0, c.r, c.r, c.angle1, c.angle2, false, 0);
       const points = curve.getPoints(CIRCLE_SEGMENTS).map((p) => new THREE.Vector3(p.x, p.y, 0));
       if (c.mode === "fill") {
         const shapePoints = [new THREE.Vector2(0, 0), ...points.map((p) => new THREE.Vector2(p.x, p.y))];
-        const mesh = new THREE.Mesh(new THREE.ShapeGeometry(new THREE.Shape(shapePoints)), fillMaterial(c));
+        const mesh = new THREE.Mesh(new THREE.ShapeGeometry(new THREE.Shape(shapePoints)), fillMaterial(c, opts));
         mesh.position.set(c.x, c.y, 0);
         return mesh;
       }
-      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), lineMaterial(c));
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), lineMaterial(c, opts));
       line.position.set(c.x, c.y, 0);
       return line;
     }
@@ -699,6 +794,15 @@ export function disposeObject(child: THREE.Object3D): void {
 function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
   const materials = Array.isArray(material) ? material : [material];
   for (const m of materials) {
+    // A cached material is shared by every object with the same visual config
+    // and deliberately outlives all of them: disposing it here is what caused
+    // a shader recompile every frame (see the MATERIAL CACHE note above for
+    // the measurement). Skipped BEFORE the `map` branch on purpose -- cached
+    // materials carry no texture, and a sprite's per-sprite texture is not
+    // cached, so the two cases never overlap.
+    if (m.userData[CACHED_MATERIAL_FLAG] === true) {
+      continue;
+    }
     if ("map" in m && m.map instanceof THREE.Texture) {
       m.map.dispose();
     }
@@ -786,6 +890,14 @@ function applyDepthPlacement(obj: THREE.Object3D, opts?: PaintOptions): void {
     if (materialOwner !== undefined) {
       const materials = Array.isArray(materialOwner.material) ? materialOwner.material : [materialOwner.material];
       for (const m of materials) {
+        // A cached material already has this baked into its key (see
+        // `materialKey`), and writing to it here would change every OTHER
+        // object sharing the instance. Non-cached materials -- a text sprite's
+        // own `SpriteMaterial`, anything a caller built itself -- still need
+        // the write, which is why this skips rather than returning early.
+        if (m.userData[CACHED_MATERIAL_FLAG] === true) {
+          continue;
+        }
         m.depthTest = opts.depthTest;
       }
     }
