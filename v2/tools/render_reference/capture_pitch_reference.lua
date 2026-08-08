@@ -272,29 +272,49 @@ local opts = {
     away_color = { 1.0, 0.55, 0.25 },
 }
 
--- The viewport is the FIELD's own size, and that is load-bearing (#414).
+-- The viewport is the FIELD's own size (#414). This capture previously used
+-- 1280x720 and called it "the product's actual viewport", which was never true
+-- of the LÖVE build: conf.lua pins a non-resizable 960x540 window and
+-- sim/env_config.lua's DEFAULT_FIELD is 960x540, so `vp == field` in every
+-- frame LÖVE has ever drawn.
 --
--- LÖVE renders the match at exactly one viewport: conf.lua pins a
--- non-resizable 960x540 window and sim/env_config.lua's DEFAULT_FIELD is
--- 960x540, so `vp == field` in every frame LÖVE has ever drawn. This capture
--- previously used 1280x720 and called it "the product's actual viewport",
--- which was never true of the LÖVE build.
+-- Do NOT read that as "this fixture now captures the shipping configuration".
+-- It does not, and cannot: the field above is a synthetic 200x120, shrunk to
+-- keep the hex-tile count low enough to embed as a literal (see the block
+-- comment above `frame` -- a pre-existing choice, unrelated to #414). LÖVE
+-- never ships at 200x120. What `vp == field` buys HERE is narrower and purely
+-- practical.
 --
--- It matters because `game/render/camera.lua`'s fixed projection only puts the
--- world-to-pixel factor into screen POSITIONS, never into the depth scale
--- entity sizes are derived from. At `vp == field` that missing factor is 1 and
--- the formula is exactly right; away from it, LÖVE's projection stretches the
--- pitch and leaves entities at a fixed pixel size. v2's
--- `packages/render/src/camera.ts` fixes that (see its `projectFixed` header),
--- so the two builds agree on the whole draw list at `vp == field` and
--- deliberately disagree elsewhere.
+-- `game/render/camera.lua`'s fixed projection puts the world-to-pixel factor
+-- into screen POSITIONS only, never into the depth scale that entity sizes are
+-- derived from; v2's `packages/render/src/camera.ts` now carries one uniform
+-- factor into both (see its `projectFixed` header). The two therefore agree
+-- exactly when that factor is 1 -- i.e. at `vp == field` -- and diverge
+-- otherwise. How they diverge depends on the field/vp aspect ratios:
 --
--- Capturing here at `vp == field` therefore keeps this a real, full-fidelity
--- differential over the configuration LÖVE actually ships, instead of pinning
--- v2 to a LÖVE defect at a viewport LÖVE cannot produce. Note that entity
--- SIZES in the capture are unchanged by this switch -- the old `scale` had no
--- viewport term at all, so every size term is identical to the 1280x720
--- capture and this fixture's discrimination on sizes is exactly what it was.
+--   * Same aspect (960x540 field at 1280x720): positions are still identical
+--     and only `scale` differs, by a single constant. That is a one-part
+--     divergence, and `camera.spec.ts` characterises it exactly -- its kept
+--     1280x720 rows assert Lua's `sx`/`sy` verbatim and Lua's `scale` times
+--     4/3.
+--   * DIFFERENT aspect, which is this fixture's old case: 200x120 is 5:3 and
+--     1280x720 is 16:9, so Lua's `vp.w/field.w` (6.4) and the uniform fit
+--     `min(6.4, 6.0)` (6.0) disagree. Positions AND sizes then both diverge,
+--     and pinning the fixture would mean characterising a two-part divergence
+--     across every one of its 101 records.
+--
+-- Capturing at `vp == field` collapses that to zero divergence, so this stays
+-- a plain equality differential over the whole draw list. Entity SIZES in the
+-- capture are unchanged by the switch -- the old `scale` had no viewport term
+-- at all -- so only screen positions moved.
+--
+-- This capture is therefore NOT the regression guard for #414: at `vp ==
+-- field` the fixed and the buggy formula are byte-identical, so reverting
+-- camera.ts leaves every record here passing (verified). Viewport-safety
+-- coverage lives in two other places, both viewport-varying by construction:
+-- `camera.spec.ts`'s kept 1280x720 differential rows, and `pitch.spec.ts`'s
+-- Lua-independent "pitch entity sizes stay in proportion to the pitch at any
+-- viewport" block.
 local vp = { w = 200, h = 120 }
 
 pitch.draw(frame, vp, opts)

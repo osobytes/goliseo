@@ -515,22 +515,41 @@ function luaDifferentialFrame(): RenderFrame {
   };
 }
 
-// The viewport is the FIELD's own size, and that is load-bearing (#414) --
-// see capture_pitch_reference.lua's comment above its own `vp` for the full
-// reasoning. Short version: LÖVE only ever renders at `vp == field` (conf.lua
-// pins a non-resizable 960x540 window; sim/env_config.lua's DEFAULT_FIELD is
-// 960x540), and that is exactly the configuration where the Lua projection's
-// missing world-to-pixel factor on the depth scale is 1 and therefore
-// harmless. camera.ts's `projectFixed` now carries that factor, so the two
-// builds agree on the entire draw list here and deliberately disagree away
-// from `vp == field`, where Lua stretches the pitch and leaves entities at a
-// fixed pixel size. This fixture must therefore stay at the field's size for
-// the comparison to mean anything.
+// The viewport is the FIELD's own size (#414) -- see
+// capture_pitch_reference.lua's comment above its own `vp` for the full
+// reasoning. Short version: camera.ts's `projectFixed` now carries one uniform
+// world-to-pixel factor into positions AND sizes, while Lua carries it into
+// positions only; the two therefore agree exactly when that factor is 1, i.e.
+// at `vp == field`. Capturing there keeps this a plain equality differential
+// over all 101 records instead of one that has to characterise a divergence.
 //
-// This does NOT weaken the fixture's coverage of entity SIZES: the old Lua
-// `scale` had no viewport term at all, so every size term below (player `r`,
-// goal frame heights, ball radius, meter dimensions) is bit-identical to the
-// previous 1280x720 capture. Only screen POSITIONS moved.
+// This fixture's field is a synthetic 200x120 (shrunk to keep the hex-tile
+// count embeddable -- pre-existing, unrelated to #414), which is 5:3, while
+// the old capture viewport was 16:9. So away from `vp == field` the divergence
+// here would be TWO-part -- positions and sizes both -- rather than the
+// single-constant `scale` divergence camera.spec.ts characterises for its
+// same-aspect 1280x720 rows. That, not "this is the shipping configuration",
+// is why the capture moved: LÖVE ships at 960x540, never at 200x120.
+//
+// The switch does NOT weaken the fixture's coverage of entity SIZES: the old
+// Lua `scale` had no viewport term at all, so every size term below (player
+// `r`, goal frame heights, ball radius, meter dimensions) is bit-identical to
+// the previous 1280x720 capture. Only screen POSITIONS moved.
+//
+// WHAT THIS DIFFERENTIAL DOES NOT GUARD. It is not the regression test for
+// #414 and never could have been: at `vp == field` the fit factor is 1 and the
+// fixed formula is byte-identical to the buggy one, so reverting camera.ts to
+// its pre-fix form leaves every record in this block passing (verified). That
+// was equally true before this PR, when `projectFixed` was a line-for-line Lua
+// port. Viewport-safety regression coverage lives in two other places, both
+// viewport-varying by construction:
+//
+//   * `camera.spec.ts`'s kept 1280x720 differential rows -- reverting
+//     camera.ts fails them, off by exactly the predicted fit factor
+//     (0.51*(1/3) = 0.17 and 1.02*(1/3) = 0.34 on `scale`);
+//   * this file's "pitch entity sizes stay in proportion to the pitch at any
+//     viewport" block below, which is Lua-independent and asserts the
+//     invariant across five viewports including non-16:9 ones.
 const LUA_DIFFERENTIAL_VIEWPORT: PitchViewport = { w: 200, h: 120 };
 const LUA_DIFFERENTIAL_OPTS: PitchDrawOptions = { home_color: [0.35, 0.75, 1.0], away_color: [1.0, 0.55, 0.25] };
 
