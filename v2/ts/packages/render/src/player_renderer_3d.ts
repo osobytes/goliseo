@@ -1,11 +1,12 @@
 // Ported from game/render/player_renderer_3d.lua.
 //
-// Rigged 3D player renderer: a drop-in alternative to
-// `player_renderer.playerDrawCommands`. `sx`, `sy` and `r` still come from
-// `camera.ts` -- that projection stays the authority on where a player is
-// and how large they appear. This module only decides *how* the player is
-// drawn at that spot: a rigged, animated, depth-tested character instead of
-// a billboard.
+// Rigged 3D player renderer, and since #415 the ONLY one: the procedural 2D
+// billboard this was once "a drop-in alternative to" is deleted, along with
+// every path that could substitute it silently. `sx`, `sy` and `r` still come
+// from `camera.ts` -- that projection stays the authority on where a player is
+// and how large they appear (see pitch.ts's `playerAnchor`). This module only
+// decides *how* the player is drawn at that spot: a rigged, animated,
+// depth-tested character.
 //
 // PURE AND TESTED: pose selection (`clipFor`/`poseFor`) and the metres-per-
 // world-unit conversion. These are content decisions (which clip plays for
@@ -35,7 +36,7 @@
 // SCOPE NOTE on the character camera. The Lua original renders each rigged
 // character through its OWN small orthographic camera
 // (`rig3d/renderer.lua`'s `characterCamera`), positioned so the character
-// lands at the billboard's exact screen coordinates -- a "3D insert into a
+// lands at the projection's exact screen coordinates -- a "3D insert into a
 // 2D scene" trick, not a single whole-pitch 3D camera. `rig3d/renderer.lua`
 // is itself mechanism (v2/README.md #7: "replace -- WebGLRenderer,
 // MeshStandardMaterial") and was never ported by anyone in this package (it
@@ -66,11 +67,11 @@ import * as themes from "./rig3d/themes.ts";
 import * as body from "./rig3d/body.ts";
 import * as geometry from "./rig3d/geometry.ts";
 import * as celShader from "./rig3d/cel_shader.ts";
-import type { PlayerRenderOptions } from "./player_renderer.ts";
+import type { PlayerRenderOptions } from "./player_render_options.ts";
 
 // Character height maps to roughly this many player-radii on screen. Tuned
 // so a rigged player reads at the same visual weight as the billboard it
-// replaces.
+// replaced (#415 deleted that renderer; this calibration outlived it).
 const HEIGHT_IN_RADII = 3.0;
 // Match camera looks down at the pitch; this is the apparent elevation.
 // Exported: pitch.ts's single-pass compositing (see that file's "ONE PASS,
@@ -655,12 +656,12 @@ function pooledCharacter(playerId: string, character: BuiltCharacter, team: "hom
 
 /**
  * Pixels-per-metre uniform scale for a character rendered at on-screen
- * radius `r` (pixels -- matching the billboard fallback's own `r = radius *
- * scale`, see pitch.ts's `playerOptions`/`depthSortedItems` callers).
+ * radius `r` (pixels -- `r = radius * scale`, see pitch.ts's `playerAnchor`).
  * Mirrors `prepareCharacter`'s own `ppm` derivation exactly, so a rigged
  * player reads at the same visual weight it did as an offscreen-rendered
  * sprite. `undefined` when the rigged pass is unavailable (`build()` failed),
- * matching `characterMesh`'s own contract below.
+ * matching `characterMesh`'s own contract below -- which pitch.ts now turns
+ * into a thrown error rather than a quiet downgrade (#415).
  */
 export function ppmForRadius(r: number): number | undefined {
   const character = build();
@@ -686,9 +687,11 @@ export function ppmForRadius(r: number): number | undefined {
  * arbitrary), since none of the three.js state involved (a per-entity
  * `THREE.Group`, `depthToZ`'s world z) is this file's to know about.
  *
- * Returns `undefined` when the rigged pass is unavailable (`build()`
- * failed) -- callers fall back to the procedural billboard, same contract
- * as `renderToSprite`.
+ * Returns `undefined` when the rigged pass is unavailable (`build()` failed),
+ * same contract as `renderToSprite`. The ONE caller on the product path
+ * (`pitch.draw`) treats that as fatal and throws (#415, AGENTS.md §7): the
+ * failures `build()` catches are programmer errors, and there is no second
+ * renderer left to fall back to.
  */
 export function characterMesh(
   playerId: string,

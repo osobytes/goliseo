@@ -8,8 +8,7 @@
 // constructs one. `stubRenderer()` below is NOT a WebGL mock: it is a plain
 // object satisfying the handful of methods `SceneRoot` calls directly on the
 // renderer it was handed (`setPixelRatio`, `setSize`, `autoClear`, `dispose`,
-// and -- only reachable if `pitch.rigged_players` were left on --
-// `render`). None of those touch three.js's actual WebGLRenderer
+// and `render`). None of those touch three.js's actual WebGLRenderer
 // implementation or a GL context; they let this suite verify SceneRoot's OWN
 // orchestration (what it calls, in what order, on what objects) the same way
 // a fake database connection tests a repository's logic without a real
@@ -17,12 +16,15 @@
 // needs a live GL context to verify at all (see pitch.ts's SCOPE NOTE and
 // scene.ts's own doc comment on the rigged-player compositing gap).
 //
-// `pitch.rigged_players` is deliberately forced off for every test in this
-// file (saved/restored around the suite): it is module-level mutable state
-// shared with every other spec importing pitch.ts in the same process, and
-// forcing it off keeps this suite's `populate()` calls on the deterministic,
-// GL-free billboard path instead of depending on whether
-// `player_renderer_3d.available()` happens to succeed in this environment.
+// This suite used to force `pitch.rigged_players = false` around every test so
+// `populate()` ran the procedural billboard rather than depending on whether
+// `player_renderer_3d.available()` succeeds here. Both the flag and the
+// billboard are gone (#415), and the dependency it was avoiding turned out not
+// to exist: `build()` only constructs plain three.js geometry/skeleton/material
+// objects, makes no GL calls, and genuinely succeeds under this workspace's
+// "node" vitest environment -- which is what pitch.spec.ts's own rigged
+// compositing suite has always relied on. So `populate()` here now assembles
+// real rigged characters, and that is strictly closer to the product.
 //
 // This suite calls `SceneRoot.populate` (object-graph assembly), never
 // `SceneRoot.render` (populate + `Bloom.draw`). `Bloom.draw`'s
@@ -33,7 +35,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as THREE from "three";
-import { pitch, resetStaticSceneCache, staticSceneBuildCount, type PitchDrawOptions, type RenderFrame } from "./pitch.ts";
+import { resetStaticSceneCache, staticSceneBuildCount, type PitchDrawOptions, type RenderFrame } from "./pitch.ts";
 import { SceneRoot } from "./scene.ts";
 import { materialCacheSize, resetMaterialCache } from "./draw2d.ts";
 
@@ -66,9 +68,10 @@ function stubRenderer(): StubRenderer {
       this.disposeCalls += 1;
     },
     render() {
-      // no-op: never reached with pitch.rigged_players forced off, kept only
-      // so a stray call fails loudly (TypeError) rather than silently, and
-      // so the type below is structurally close to THREE.WebGLRenderer.
+      // no-op: never reached, since this suite only calls `populate` and
+      // `populate` never rasterizes. Kept so a stray call fails loudly
+      // (TypeError) rather than silently, and so the type below is
+      // structurally close to THREE.WebGLRenderer.
     },
   };
 }
@@ -132,16 +135,11 @@ const pitchOptions: PitchDrawOptions = {
   away_color: [1, 0.4, 0.2],
 };
 
-let savedRigged: boolean;
-
 beforeEach(() => {
-  savedRigged = pitch.rigged_players;
-  pitch.rigged_players = false;
   resetStaticSceneCache();
 });
 
 afterEach(() => {
-  pitch.rigged_players = savedRigged;
   resetStaticSceneCache();
 });
 

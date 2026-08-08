@@ -173,9 +173,8 @@ function transformPoints(t: PivotTransform | undefined, points: readonly number[
 /**
  * Accumulates `DrawCommand`s in the order they are issued, exactly mirroring
  * a sequence of `love.graphics.*` calls. Every method optionally applies a
- * `PivotTransform` (see above), which is how the ported `figure()` (in
- * `player_renderer.ts`) represents the Lua original's rotated push/pop
- * blocks without a graphics-state stack.
+ * `PivotTransform` (see above), which is how a ported call site represents
+ * the Lua original's rotated push/pop blocks without a graphics-state stack.
  */
 export class DrawList {
   readonly commands: DrawCommand[] = [];
@@ -917,10 +916,10 @@ function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
  * whatever is already there. `paint` (below) is `appendCommands` preceded by
  * a clear; this half is exposed separately for callers that need to
  * interleave `DrawCommand`-derived objects with content built some other way
- * at specific points in the child order -- pitch.ts's mixed procedural/rigged
- * player pass is the one today (see its file header and `pitch.draw`): the
- * painter's-algorithm depth sort requires the ball, procedural billboards
- * and rigged-player sprites to land in `group.children` interleaved by
+ * at specific points in the child order -- pitch.ts's depth-sorted entity
+ * pass is the one today (see its file header and `pitch.draw`): the
+ * painter's-algorithm depth sort requires the ball and the rigged player
+ * meshes to land in `group.children` interleaved by
  * world-depth, not as one `paint()` replacing everything and a second
  * wiping it out.
  */

@@ -85,7 +85,7 @@ import type {
   RenderFramePlayers,
   RenderFrameRoster,
 } from "./pitch.ts";
-import type { AerialOutcome, AerialStyle, SpeciesShape } from "./player_renderer.ts";
+import type { AerialOutcome, AerialStyle, SpeciesShape } from "./player_render_options.ts";
 
 // ---------------------------------------------------------------------------
 // Layout constants. Mirror `crates/gc-render/src/frame_buffer.rs` exactly;

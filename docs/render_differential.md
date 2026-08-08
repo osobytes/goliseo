@@ -358,6 +358,18 @@ call site that feeds BOTH renderers, exactly as `pitch.ts` does. The billboard
 is still a live fallback (`pitch.rigged_players && available()`), so they are
 not dead code on either side.
 
+**Update (#415): in v2 they now are dead, and the count is larger than three.**
+`player_renderer.ts` is deleted, so on the TypeScript side nothing reads
+`is_keeper`, `dashing`, `grab`, `aerial_outcome`, `species_shape`,
+`species_color` or `combat` off `PlayerRenderOptions` — grep for `opts.<field>`
+across `packages/render/src` returns zero hits outside `pitch.ts`'s own
+`playerOptions()`, which produces them. They are deliberately still produced:
+the Rust `crates/gc-render` frame builder writes them, `frame_buffer.ts`
+decodes them, and `pitch.spec.ts`'s Lua differential pins them, so pruning is a
+wire-format change across both languages rather than a TypeScript tidy-up. The
+paragraph above stays accurate for the LÖVE tree, where the billboard is still
+the fallback it describes.
+
 The mechanics do reach the rig — through `pose_id`, which `player_pose.select`
 derives from the same timers (`slide_timer`, `grab_timer`, `aerial_timer`,
 `tackle_timer`, `stun_timer`, ...). Three separate mechanisms consume it, and
