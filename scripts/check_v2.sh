@@ -325,7 +325,18 @@ gate_wasm_build() {
 # that touched files in the wrong order.
 gate_app_bundle() {
     step "v2/ts: pnpm exec vite build, and the bundled wasm must match the fresh browser artifact"
-    run_in "$ts_dir" pnpm exec vite build || return 1
+    # Report the exit code rather than returning silently. This step failed in
+    # CI with no message at all -- "v2 GATE FAILED" straight after a build that
+    # had just printed its own success line -- which told the reader nothing.
+    # A gate that fails without saying why costs more than one that does not
+    # fail at all, because the next person has to reproduce it to learn
+    # anything.
+    run_in "$ts_dir" pnpm exec vite build
+    local build_status=$?
+    if [ "$build_status" -ne 0 ]; then
+        fail_msg "pnpm exec vite build exited $build_status"
+        return 1
+    fi
 
     local fresh="$wasm_pkg_dir/dist/pkg-web/gc_wasm_bg.wasm"
     if [ ! -f "$fresh" ]; then
