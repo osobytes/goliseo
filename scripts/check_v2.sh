@@ -35,7 +35,11 @@
 #      wasm_clippy_scenario for a demonstration that a native-only run misses
 #      exactly this shape.
 #   5. pnpm install --frozen-lockfile                              (v2/ts)
-#   6. pnpm exec tsc --build --force
+#   6. build both gc-wasm artifacts (see 7) -- BEFORE the typecheck, because
+#      `@gc/wasm`'s `web` subpath resolves to a wasm-bindgen-GENERATED
+#      `.d.ts` under the gitignored `dist/`, so a clean checkout cannot type-
+#      check until it exists.
+#   7. pnpm exec tsc --build --force
 #      -- --force, not plain `--build`. An incremental build reuses
 #      .tsbuildinfo and, once a changed file's mtime is not newer than the
 #      recorded build (a normal outcome of `git checkout`, `rsync`, or a
@@ -911,8 +915,15 @@ main() {
     gate_rust_clippy_wasm || fail=1
 
     gate_ts_install || fail=1
-    gate_ts_typecheck || fail=1
+    # The wasm build comes BEFORE the typecheck, not after. `@gc/wasm`'s `web`
+    # subpath resolves to `dist/pkg-web/gc_wasm.d.ts`, which wasm-bindgen
+    # GENERATES -- and `dist/` is gitignored, so on a clean checkout it does not
+    # exist until this step runs. Type-checking first fails with
+    # `TS2307: Cannot find module '@gc/wasm/web'`, which is invisible to anyone
+    # whose working tree still has yesterday's artifacts on disk. That is
+    # exactly how it passed locally for everyone and failed every CI run.
     gate_wasm_build || fail=1
+    gate_ts_typecheck || fail=1
     gate_ts_test || fail=1
     gate_determinism || fail=1
     gate_app_bundle || fail=1
