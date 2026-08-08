@@ -49,7 +49,7 @@
 
 import init, { Session, __getRawExports } from "../../../ts/packages/wasm/dist/pkg-web/gc_wasm.js";
 import * as THREE from "three";
-import { SceneRoot, frameBuffer } from "@gc/render";
+import { SceneRoot, frameBuffer, viewState } from "@gc/render";
 import type { frameBufferTypes } from "@gc/render";
 
 const DT = 1 / 60;
@@ -90,8 +90,13 @@ declare global {
 async function main(): Promise<void> {
   const params = new URLSearchParams(location.search);
   const seed = Number(params.get("seed") ?? "1");
-  const width = Number(params.get("width") ?? "960");
-  const height = Number(params.get("height") ?? "540");
+  // Fill the window by default. A fixed 960x540 box in the corner is not a
+  // fair thing to put beside the Lua benchmark, which sizes itself to the
+  // window -- half the "it adjusts properly to the screen" difference was
+  // this page, not the renderer. `?width=`/`?height=` still pin it when a
+  // measurement needs a fixed viewport.
+  const width = Number(params.get("width") ?? String(Math.max(window.innerWidth, 320)));
+  const height = Number(params.get("height") ?? String(Math.max(window.innerHeight, 180)));
   // Long by default: this page is for watching, and a match that ends after
   // two minutes stops being useful mid-observation. `?duration=120` gives the
   // product's own length when that is what you want to compare.
@@ -134,6 +139,19 @@ async function main(): Promise<void> {
   glRenderer.info.autoReset = false;
 
   const sceneRoot = new SceneRoot(glRenderer, { viewport: { w: width, h: height } });
+  // Follow the window, as the product shell does (`browser_main.ts`'s own
+  // `resize` listener) and as the Lua benchmark does. Skipped when the caller
+  // pinned a viewport, since a measurement that silently resizes is not one.
+  if (!params.has("width") && !params.has("height")) {
+    window.addEventListener("resize", () => {
+      const w = Math.max(window.innerWidth, 320);
+      const h = Math.max(window.innerHeight, 180);
+      canvas.width = w;
+      canvas.height = h;
+      glRenderer.setSize(w, h, false);
+      sceneRoot.resize({ w, h });
+    });
+  }
   const session = new Session("nebula", "orion", seed, durationSeconds, 99, undefined, undefined, undefined, undefined, undefined);
   session.enableBot(botSeed);
 
@@ -201,6 +219,18 @@ async function main(): Promise<void> {
 
     const tDecode = performance.now();
     const frame = frameNow();
+    // WITHOUT THIS EVERY CHARACTER STANDS STILL. `player_renderer_3d.poseFor`
+    // blends idle/walk/run by `view.speed` and phases the cycle by
+    // `view.gait`, and BOTH come from `viewState` -- which is a renderer-owned
+    // accumulator, not something the render frame carries. Never updating it
+    // leaves every player at speed 0, so the rig holds the idle clip no matter
+    // how fast they are actually moving across the pitch. `MatchScreen` and
+    // `benchmark.ts` both call this; this page did not, which is why its
+    // characters slid around frozen next to the Lua benchmark's running ones.
+    viewState.update(
+      roster.ids.map((id, i) => ({ id, pos: { x: frame.players.x[i] ?? 0, y: frame.players.y[i] ?? 0 } })),
+      ticks * DT,
+    );
     decodeMsInWindow += performance.now() - tDecode;
     const tRender = performance.now();
     glRenderer.info.reset();
