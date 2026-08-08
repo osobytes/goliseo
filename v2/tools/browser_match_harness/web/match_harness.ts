@@ -49,7 +49,7 @@
 
 import init, { Session, __getRawExports } from "../../../ts/packages/wasm/dist/pkg-web/gc_wasm.js";
 import * as THREE from "three";
-import { SceneRoot, frameBuffer, viewState } from "@gc/render";
+import { SceneRoot, Stadium, camera, frameBuffer, pitch, viewState } from "@gc/render";
 import type { frameBufferTypes } from "@gc/render";
 
 const DT = 1 / 60;
@@ -224,6 +224,14 @@ async function main(): Promise<void> {
 
   const roster = frameBuffer.decodeRoster(session.rosterNumeric(), session.rosterIdsAndNames());
 
+  // The coliseum stadium + true-perspective broadcast camera. On by default
+  // (it is the product look this harness exists to evaluate); `?stadium=0`
+  // restores the legacy fixed-trapezoid space backdrop for A/B comparison.
+  // The Stadium needs the field's real geometry (pitch size, goal rects,
+  // crossbar height), which only exists once a session is live -- built from
+  // the first decoded frame below, before the loop starts.
+  const stadiumEnabled = params.get("stadium") !== "0";
+
   function frameNow(): frameBufferTypes.RenderFrame {
     if (raw.render_frame_build(session.handle) === 0) {
       throw new Error("match_harness: no live session for this handle");
@@ -253,6 +261,22 @@ async function main(): Promise<void> {
   // calls needs the scene graph and the renderer -- see the breakdown driver
   // in scripts/. Not a product affordance: nothing under v2/ts reads this.
   (globalThis as unknown as { __gcScene?: unknown }).__gcScene = { sceneRoot, glRenderer, THREE };
+
+  if (stadiumEnabled) {
+    // Flags first, then the layer: `SceneRoot.render` only routes through the
+    // world layer when `camera.perspective_mode` is on (scene.ts), and
+    // `pitch.stadium_mode` hands the backdrop/floor/markings/goals over to
+    // the stadium (pitch.ts) -- setting one without the other draws either
+    // two pitches or none.
+    camera.perspective_mode = true;
+    pitch.stadium_mode = true;
+    const stadium = new Stadium({
+      field: frameNow().field,
+      home_color: HOME_COLOR,
+      away_color: AWAY_COLOR,
+    });
+    sceneRoot.setWorldLayer(stadium);
+  }
 
   stats.status = "running";
 

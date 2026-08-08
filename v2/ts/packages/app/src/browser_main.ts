@@ -34,7 +34,7 @@
 // see this port's report for what was actually verified versus not.
 
 import * as THREE from "three";
-import { SceneRoot } from "@gc/render";
+import { SceneRoot, Stadium, camera, pitch } from "@gc/render";
 import type { RenderPort } from "@gc/screens";
 import { captureGamepad, captureKeyboard } from "@gc/input";
 import { ok, err, type Result } from "@gc/core";
@@ -118,6 +118,18 @@ async function main(): Promise<void> {
   keyboard.attach();
   const gamepad = new captureGamepad.BrowserGamepadCapture(0);
 
+  // The coliseum stadium + true-perspective broadcast camera (the product
+  // look). Flags first -- `SceneRoot.render` only routes through the world
+  // layer under `camera.perspective_mode`, and `pitch.stadium_mode` hands the
+  // backdrop/floor/markings/goals over to the stadium (see scene.ts /
+  // pitch.ts). The `Stadium` itself needs the field's real geometry (pitch
+  // size, goal rects, crossbar height), which only exists once a match frame
+  // arrives -- built lazily on the first `draw` below and reused for every
+  // match after it (the field is constant across matches).
+  camera.perspective_mode = true;
+  pitch.stadium_mode = true;
+  let stadium: Stadium | undefined;
+
   const renderer: RenderPort = {
     draw(frame, _roster) {
       // `frame`/`roster` are `@gc/screens`'s `match.ts`'s deliberately
@@ -132,7 +144,16 @@ async function main(): Promise<void> {
       // documents the gap rather than hiding it -- the same pattern
       // `app.ts`'s `asMenu`/`flow.ts`'s `asScreen` use for an analogous
       // "narrower published type, richer real value" seam.
-      sceneRoot.render(frame as unknown as Parameters<SceneRoot["render"]>[0], {
+      const renderFrame = frame as unknown as Parameters<SceneRoot["render"]>[0];
+      if (stadium === undefined) {
+        stadium = new Stadium({
+          field: renderFrame.field,
+          home_color: HOME_COLOR,
+          away_color: AWAY_COLOR,
+        });
+        sceneRoot.setWorldLayer(stadium);
+      }
+      sceneRoot.render(renderFrame, {
         pitch: { home_color: HOME_COLOR, away_color: AWAY_COLOR },
         now: performance.now() / 1000,
       });

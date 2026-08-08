@@ -34,7 +34,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as THREE from "three";
 import { pitch, resetStaticSceneCache, staticSceneBuildCount, type PitchDrawOptions, type RenderFrame } from "./pitch.ts";
-import { SceneRoot } from "./scene.ts";
+import { camera, perspectiveRig } from "./camera.ts";
+import { SceneRoot, type WorldLayer } from "./scene.ts";
 
 interface StubRenderer {
   autoClear: boolean;
@@ -74,6 +75,33 @@ function stubRenderer(): StubRenderer {
 
 function asRenderer(stub: StubRenderer): THREE.WebGLRenderer {
   return stub as unknown as THREE.WebGLRenderer;
+}
+
+// A minimal `WorldLayer` (scene.ts's own interface -- see its doc comment):
+// a real `THREE.Group` so `setWorldLayer`'s scene-graph add/remove is
+// genuinely exercised, plus counters so `populate`/`dispose`'s calls into
+// `update`/`dispose` are observable without needing a live GL context (the
+// world layer's OWN content is never rasterized by anything this suite
+// calls -- see this file's header on `populate` vs `render`).
+interface StubWorldLayer extends WorldLayer {
+  readonly updateCalls: number[];
+  disposeCalls: number;
+}
+
+function stubWorldLayer(): StubWorldLayer {
+  const group = new THREE.Group();
+  const updateCalls: number[] = [];
+  return {
+    group,
+    updateCalls,
+    disposeCalls: 0,
+    update(now) {
+      updateCalls.push(now);
+    },
+    dispose() {
+      this.disposeCalls += 1;
+    },
+  };
 }
 
 const VIEWPORT = { w: 800, h: 600 };
@@ -161,6 +189,13 @@ describe("SceneRoot construction", () => {
     expect(scene.camera.top).toBe(0);
     expect(scene.camera.left).toBe(0);
   });
+
+  it("always constructs worldScene/worldCamera, even with no world layer attached", () => {
+    const scene = new SceneRoot(asRenderer(stubRenderer()), { viewport: VIEWPORT });
+    expect(scene.worldScene).toBeInstanceOf(THREE.Scene);
+    expect(scene.worldCamera).toBeInstanceOf(THREE.PerspectiveCamera);
+    expect(scene.worldScene.children).toHaveLength(0);
+  });
 });
 
 describe("SceneRoot.resize", () => {
@@ -194,6 +229,12 @@ describe("SceneRoot.resize", () => {
     const scene = new SceneRoot(asRenderer(stubRenderer()), { viewport: VIEWPORT });
     scene.dispose();
     expect(() => scene.resize({ w: 10, h: 10 })).toThrow(/dispose/);
+  });
+
+  it("updates worldCamera's aspect too, regardless of whether a world layer is attached", () => {
+    const scene = new SceneRoot(asRenderer(stubRenderer()), { viewport: VIEWPORT });
+    scene.resize({ w: 1024, h: 768 });
+    expect(scene.worldCamera.aspect).toBeCloseTo(1024 / 768);
   });
 });
 
@@ -251,6 +292,98 @@ describe("SceneRoot.populate", () => {
   });
 });
 
+// See scene.ts's WORLD LAYER class doc comment section and `populate`'s own
+// WORLD LAYER SYNC doc comment. `camera.perspective_mode` is module-level
+// mutable state shared with camera.spec.ts and every other spec importing
+// camera.ts, so it is saved/restored around this describe block the same
+// way `pitch.rigged_players` is saved/restored above.
+describe("SceneRoot world layer", () => {
+  let savedPerspective: boolean;
+
+  beforeEach(() => {
+    savedPerspective = camera.perspective_mode;
+  });
+
+  afterEach(() => {
+    camera.perspective_mode = savedPerspective;
+  });
+
+  it("setWorldLayer adds the layer's group to worldScene, and removes it when set back to undefined", () => {
+    const scene = new SceneRoot(asRenderer(stubRenderer()), { viewport: VIEWPORT });
+    const layer = stubWorldLayer();
+
+    scene.setWorldLayer(layer);
+    expect(scene.worldScene.children).toEqual([layer.group]);
+
+    scene.setWorldLayer(undefined);
+    expect(scene.worldScene.children).toHaveLength(0);
+    // Detaching does NOT dispose -- see setWorldLayer's ownership doc comment.
+    expect(layer.disposeCalls).toBe(0);
+  });
+
+  it("setWorldLayer swaps to a new layer, detaching (not disposing) the old one", () => {
+    const scene = new SceneRoot(asRenderer(stubRenderer()), { viewport: VIEWPORT });
+    const first = stubWorldLayer();
+    const second = stubWorldLayer();
+
+    scene.setWorldLayer(first);
+    scene.setWorldLayer(second);
+
+    expect(scene.worldScene.children).toEqual([second.group]);
+    expect(first.disposeCalls).toBe(0);
+  });
+
+  it("calls the world layer's update(now) during populate when perspective_mode is on", () => {
+    camera.perspective_mode = true;
+    const scene = new SceneRoot(asRenderer(stubRenderer()), { viewport: VIEWPORT });
+    const layer = stubWorldLayer();
+    scene.setWorldLayer(layer);
+
+    scene.populate(frame(), { pitch: pitchOptions, now: 12.5 });
+
+    expect(layer.updateCalls).toEqual([12.5]);
+  });
+
+  it("does not update the world layer when perspective_mode is off, even with a layer attached", () => {
+    camera.perspective_mode = false;
+    const scene = new SceneRoot(asRenderer(stubRenderer()), { viewport: VIEWPORT });
+    const layer = stubWorldLayer();
+    scene.setWorldLayer(layer);
+
+    scene.populate(frame(), { pitch: pitchOptions, now: 12.5 });
+
+    expect(layer.updateCalls).toEqual([]);
+  });
+
+  it("does not update anything when no world layer is attached, even with perspective_mode on", () => {
+    camera.perspective_mode = true;
+    const scene = new SceneRoot(asRenderer(stubRenderer()), { viewport: VIEWPORT });
+    // No setWorldLayer call at all -- populate must not throw or touch worldCamera meaningfully.
+    expect(() => scene.populate(frame(), { pitch: pitchOptions })).not.toThrow();
+  });
+
+  it("syncs worldCamera position/fov/near/far from camera.perspectiveRig for the frame's field, with aspect from the viewport", () => {
+    camera.perspective_mode = true;
+    const scene = new SceneRoot(asRenderer(stubRenderer()), { viewport: VIEWPORT });
+    scene.setWorldLayer(stubWorldLayer());
+    const f = frame();
+
+    scene.populate(f, { pitch: pitchOptions });
+
+    // pitch.follow_camera defaults to false (pitch.spec.ts pins this), so
+    // this must match perspectiveRig with NO view -- the same call
+    // syncWorldCamera makes internally.
+    const rig = perspectiveRig(f.field);
+    expect(scene.worldCamera.position.x).toBeCloseTo(rig.eye[0]);
+    expect(scene.worldCamera.position.y).toBeCloseTo(rig.eye[1]);
+    expect(scene.worldCamera.position.z).toBeCloseTo(rig.eye[2]);
+    expect(scene.worldCamera.fov).toBeCloseTo(rig.fov);
+    expect(scene.worldCamera.near).toBeCloseTo(rig.near);
+    expect(scene.worldCamera.far).toBeCloseTo(rig.far);
+    expect(scene.worldCamera.aspect).toBeCloseTo(VIEWPORT.w / VIEWPORT.h);
+  });
+});
+
 describe("SceneRoot.dispose", () => {
   it("empties both groups, calls renderer.dispose exactly once, and is idempotent", () => {
     const renderer = stubRenderer();
@@ -285,5 +418,32 @@ describe("SceneRoot.dispose", () => {
 
     expect(geometryDisposed).toBe(true);
     expect(materialDisposed).toBe(true);
+  });
+
+  it("disposes and detaches a still-attached world layer", () => {
+    const scene = new SceneRoot(asRenderer(stubRenderer()), { viewport: VIEWPORT });
+    const layer = stubWorldLayer();
+    scene.setWorldLayer(layer);
+
+    scene.dispose();
+
+    expect(layer.disposeCalls).toBe(1);
+    expect(scene.worldScene.children).toHaveLength(0);
+  });
+
+  it("does not throw disposing when no world layer was ever attached", () => {
+    const scene = new SceneRoot(asRenderer(stubRenderer()), { viewport: VIEWPORT });
+    expect(() => scene.dispose()).not.toThrow();
+  });
+
+  it("does not double-dispose a world layer across two dispose() calls", () => {
+    const scene = new SceneRoot(asRenderer(stubRenderer()), { viewport: VIEWPORT });
+    const layer = stubWorldLayer();
+    scene.setWorldLayer(layer);
+
+    scene.dispose();
+    scene.dispose();
+
+    expect(layer.disposeCalls).toBe(1);
   });
 });
