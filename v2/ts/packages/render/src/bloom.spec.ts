@@ -25,15 +25,18 @@ import {
   Bloom,
   BLOOM_BLUR_TAP_RADIUS,
   BLOOM_BLUR_WEIGHTS,
+  BLOOM_COMPOSITE_CLAMP,
   BLOOM_THRESHOLD_KNEE,
   DEFAULT_BLOOM_CONFIG,
   bloomKernelReachPixels,
   blurDirection,
   brightPassFactor,
   buildBlurFragmentShader,
+  buildCompositeFragmentShader,
   buildThresholdFragmentShader,
   compositeChannel,
   lowResSize,
+  sameBloomBufferKey,
   smoothstep,
 } from "./bloom.ts";
 
@@ -252,6 +255,42 @@ describe("the generated GLSL is generated from the constants above", () => {
   it("thresholds on the max channel, matching brightPassFactor", () => {
     expect(buildThresholdFragmentShader(BLOOM_THRESHOLD_KNEE)).toContain("max(c.r, max(c.g, c.b))");
   });
+
+  it("writes alpha as a literal 1.0, NOT the keep factor -- the composite depends on this", () => {
+    // COMPOSITE_FRAGMENT_SHADER reads only `.rgb` from the glow buffer, where
+    // LOVE's "add" blend composites THROUGH alpha. Those agree only while glow
+    // alpha is 1.0 everywhere, which needs BOTH halves: alpha a literal here
+    // (not `f`, not `c.a * f`), and a kernel summing to exactly 1 so the blur
+    // carries it through. The other half is asserted in the
+    // BLOOM_BLUR_WEIGHTS suite above. See COMPOSITE_FRAGMENT_SHADER's comment.
+    expect(buildThresholdFragmentShader(BLOOM_THRESHOLD_KNEE)).toContain("gl_FragColor = vec4(c.rgb * f, 1.0);");
+  });
+});
+
+describe("sameBloomBufferKey -- when the render targets must be rebuilt", () => {
+  const base = { w: 960, h: 540, ratio: 1, downscale: 2 };
+
+  it("is true for an identical key -- a steady-state frame reallocates nothing", () => {
+    expect(sameBloomBufferKey(base, { ...base })).toBe(true);
+  });
+
+  it("is false when the viewport changes", () => {
+    expect(sameBloomBufferKey(base, { ...base, w: 1280 })).toBe(false);
+    expect(sameBloomBufferKey(base, { ...base, h: 720 })).toBe(false);
+  });
+
+  it("is false when the pixel ratio changes at an unchanged viewport", () => {
+    // Targets are sized in DEVICE pixels, so this alone must rebuild them.
+    expect(sameBloomBufferKey(base, { ...base, ratio: 2 })).toBe(false);
+  });
+
+  it("is false when downscale changes at an unchanged viewport and ratio", () => {
+    // `downscale` sizes blurA/blurB and nothing else would notice it moving.
+    // `BloomConfig`'s fields are mutable and runtime_settings.ts already
+    // mutates one of them (`enabled`), so this is keyed rather than assumed
+    // constant -- see Bloom.ensure's doc comment.
+    expect(sameBloomBufferKey(base, { ...base, downscale: 4 })).toBe(false);
+  });
 });
 
 // `draw` needs a live GL context for everything except the disabled path, and
@@ -320,5 +359,191 @@ describe("Bloom.dispose", () => {
     const bloom = new Bloom({ threshold: 0.2 });
     bloom.dispose();
     expect(bloom.config).toEqual({ ...DEFAULT_BLOOM_CONFIG, threshold: 0.2 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE ENABLED PATH, i.e. the half that was previously never executed at all.
+//
+// Everything above proves the pure functions correct. None of it proved they
+// were the values actually WIRED INTO the running pass -- that link lived only
+// in comments, so an edit that rewired `ensure()`'s constants, or made the
+// composite non-additive, left the whole suite green. That is the same shape
+// of gap as #404 itself: right pieces, wrong assembly.
+//
+// `recordingRenderer()` closes it. It is NOT a WebGL mock and does not
+// rasterise: `Bloom.draw`'s non-disabled path calls exactly five methods on the
+// renderer (`getPixelRatio`, `getRenderTarget`, `setRenderTarget`, `clear`,
+// `render`) plus the `autoClear` property, none of which need a GL context to
+// stand in for. Because `Quad.render` hands the renderer the quad MESH, the
+// recorder can read `mesh.material` off each call and assert on the REAL
+// `ShaderMaterial` -- its `fragmentShader` string and its live uniform values
+// -- which is what makes "the constants the tests assert on are the constants
+// the GPU runs" a checked statement rather than a hopeful one.
+//
+// `THREE.WebGLRenderTarget` is a plain JS object until something renders to
+// it, so constructing them here touches no GL either.
+
+interface RenderRecord {
+  readonly target: THREE.WebGLRenderTarget | null;
+  readonly material: THREE.ShaderMaterial | undefined;
+  readonly isScene: boolean;
+}
+
+interface RecordingRenderer {
+  autoClear: boolean;
+  readonly records: RenderRecord[];
+  readonly clears: number;
+  getPixelRatio(): number;
+  getRenderTarget(): THREE.WebGLRenderTarget | null;
+  setRenderTarget(target: THREE.WebGLRenderTarget | null): void;
+  clear(color?: boolean, depth?: boolean, stencil?: boolean): void;
+  render(object: THREE.Object3D, camera: THREE.Camera): void;
+}
+
+function recordingRenderer(pixelRatio = 1): RecordingRenderer {
+  const records: RenderRecord[] = [];
+  let current: THREE.WebGLRenderTarget | null = null;
+  return {
+    autoClear: true,
+    records,
+    clears: 0,
+    getPixelRatio: () => pixelRatio,
+    getRenderTarget: () => current,
+    setRenderTarget(target) {
+      current = target;
+    },
+    clear() {
+      (this as { clears: number }).clears += 1;
+    },
+    render(object) {
+      const material = (object as THREE.Mesh).material;
+      records.push({
+        target: current,
+        material: material instanceof THREE.ShaderMaterial ? material : undefined,
+        isScene: (object as THREE.Scene).isScene === true,
+      });
+    },
+  };
+}
+
+function drawOnce(bloom: Bloom, w = 960, h = 540, pixelRatio = 1): RecordingRenderer {
+  const renderer = recordingRenderer(pixelRatio);
+  bloom.draw(renderer as unknown as THREE.WebGLRenderer, new THREE.Scene(), new THREE.Camera(), w, h);
+  return renderer;
+}
+
+describe("Bloom.draw with enabled: true -- the pure functions are the ones actually wired in", () => {
+  it("runs scene capture, bright pass, 2 blur passes per axis, and one composite", () => {
+    const renderer = drawOnce(new Bloom());
+    // 1 scene + 1 threshold + 2*passes blur + 1 composite.
+    expect(renderer.records.length).toBe(1 + 1 + 2 * DEFAULT_BLOOM_CONFIG.passes + 1);
+    expect(renderer.records[0]?.isScene).toBe(true);
+    expect(renderer.records.slice(1).every((r) => r.isScene === false)).toBe(true);
+  });
+
+  it("honours `passes` -- the knob UnrealBloomPass had nothing to map to", () => {
+    expect(drawOnce(new Bloom({ passes: 0 })).records.length).toBe(3);
+    expect(drawOnce(new Bloom({ passes: 1 })).records.length).toBe(5);
+    expect(drawOnce(new Bloom({ passes: 4 })).records.length).toBe(11);
+  });
+
+  it("composites to whatever render target the caller had bound -- the canvas, in production", () => {
+    const renderer = drawOnce(new Bloom());
+    expect(renderer.records[renderer.records.length - 1]?.target).toBe(null);
+  });
+
+  it("renders the scene into an offscreen target, never straight to the canvas", () => {
+    const renderer = drawOnce(new Bloom());
+    expect(renderer.records[0]?.target).not.toBe(null);
+  });
+
+  it("ping-pongs the blur between two DIFFERENT low-res targets", () => {
+    const renderer = drawOnce(new Bloom());
+    const blurTargets = renderer.records.slice(2, 6).map((r) => r.target);
+    expect(blurTargets[0]).not.toBe(blurTargets[1]);
+    expect(blurTargets[0]).toBe(blurTargets[2]);
+    expect(blurTargets[1]).toBe(blurTargets[3]);
+  });
+
+  it("sizes the bright/blur buffers through lowResSize, in DEVICE pixels", () => {
+    const bloom = new Bloom();
+    drawOnce(bloom, 960, 540, 2);
+    expect(bloom.getBufferSize()).toEqual(lowResSize(1920, 1080, DEFAULT_BLOOM_CONFIG.downscale));
+    expect(bloom.getBufferSize()).toEqual({ w: 960, h: 540 });
+  });
+
+  it("feeds the threshold shader `config.threshold`, and the composite `config.intensity`", () => {
+    const bloom = new Bloom({ threshold: 0.31, intensity: 2.25 });
+    const renderer = drawOnce(bloom);
+    const threshold = renderer.records[1]?.material;
+    const composite = renderer.records[renderer.records.length - 1]?.material;
+    expect(threshold?.uniforms.threshold?.value).toBe(0.31);
+    expect(composite?.uniforms.intensity?.value).toBe(2.25);
+  });
+
+  it("feeds the blur shader the exact vector blurDirection derives", () => {
+    const bloom = new Bloom({ radius: 3.0 });
+    const renderer = drawOnce(bloom);
+    // The last blur of the loop is the vertical one, so that is what the
+    // shared uniform holds when drawing ends.
+    const blur = renderer.records[5]?.material;
+    const expected = blurDirection(3.0, bloom.getBufferSize(), "vertical");
+    expect(blur?.uniforms.direction?.value.x).toBeCloseTo(expected[0], 12);
+    expect(blur?.uniforms.direction?.value.y).toBeCloseTo(expected[1], 12);
+  });
+
+  it("runs the GENERATED shaders, not some other copy of them", () => {
+    const renderer = drawOnce(new Bloom());
+    expect(renderer.records[1]?.material?.fragmentShader).toBe(buildThresholdFragmentShader(BLOOM_THRESHOLD_KNEE));
+    expect(renderer.records[2]?.material?.fragmentShader).toBe(buildBlurFragmentShader(BLOOM_BLUR_WEIGHTS));
+    expect(renderer.records[renderer.records.length - 1]?.material?.fragmentShader).toBe(
+      buildCompositeFragmentShader(BLOOM_COMPOSITE_CLAMP),
+    );
+  });
+
+  it("reuses its targets across frames at an unchanged size, and rebuilds them when downscale moves", () => {
+    const bloom = new Bloom();
+    const first = drawOnce(bloom);
+    const sceneTarget = first.records[0]?.target;
+    const second = drawOnce(bloom);
+    expect(second.records[0]?.target).toBe(sceneTarget);
+
+    bloom.config.downscale = 4;
+    const third = drawOnce(bloom);
+    expect(third.records[0]?.target).not.toBe(sceneTarget);
+    expect(bloom.getBufferSize()).toEqual(lowResSize(960, 540, 4));
+  });
+
+  it("restores the caller's autoClear rather than leaving it forced off", () => {
+    const renderer = recordingRenderer();
+    renderer.autoClear = true;
+    new Bloom().draw(renderer as unknown as THREE.WebGLRenderer, new THREE.Scene(), new THREE.Camera(), 960, 540);
+    expect(renderer.autoClear).toBe(true);
+  });
+});
+
+describe("the composite shader is additive -- the property the whole effect rests on", () => {
+  const source = buildCompositeFragmentShader(BLOOM_COMPOSITE_CLAMP);
+
+  it("adds the glow to the scene, scaled by intensity", () => {
+    expect(source).toContain("scene + glow * intensity");
+  });
+
+  it("clamps at BLOOM_COMPOSITE_CLAMP, agreeing with compositeChannel", () => {
+    expect(source).toContain("vec3(1.0000)");
+    expect(compositeChannel(0.9, 0.9, 1.3)).toBe(BLOOM_COMPOSITE_CLAMP);
+  });
+
+  it("applies the output colour-space encode -- without it the bloomed frame is darker than ?bloom=0", () => {
+    // Found on hardware, not in a test: three.js encodes automatically only
+    // for its own materials, so `renderer.render()` (the ?bloom=0 path) got the
+    // sRGB transfer and this hand-written ShaderMaterial did not. See
+    // buildCompositeFragmentShader's comment.
+    expect(source).toContain("#include <colorspace_fragment>");
+  });
+
+  it("tracks the clamp it is given rather than hardcoding one", () => {
+    expect(buildCompositeFragmentShader(0.5)).toContain("vec3(0.5000)");
   });
 });

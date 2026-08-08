@@ -70,13 +70,16 @@
 // `LinearFilter` + `ClampToEdgeWrapping` (the three.js defaults, left alone)
 // match LOVE's default canvas filter and wrap mode for the same reason.
 //
-// COLOR MANAGEMENT is unchanged from the `UnrealBloomPass` version: neither
-// chain applies an output color-space conversion. Rendering into a non-XR
-// render target makes three.js emit `LinearSRGBColorSpace` output, and the
-// final blit is a raw `ShaderMaterial` with no `<colorspace_fragment>` include
-// -- exactly as `UnrealBloomPass`'s own composite/blend materials are (checked
-// against the installed `three/examples/jsm/postprocessing` source). This port
-// is not the place to change that.
+// COLOR MANAGEMENT: the composite pass applies the output sRGB encode via
+// `#include <colorspace_fragment>`, and it has to -- see that shader's own
+// comment for the full account. Short version: the old chain got the encode
+// for free because `UnrealBloomPass`'s final scene blit used a built-in
+// `MeshBasicMaterial`; a hand-written `ShaderMaterial` gets nothing
+// automatically, and without the include the bloomed frame came out visibly
+// DARKER than the same frame with `?bloom=0`, which is impossible for an
+// additive effect. An earlier revision of this header claimed the two chains
+// were equivalent here. They were not, and a hardware screenshot is what
+// showed it.
 //
 // WHAT IS STILL DROPPED: `bloom.DEPTH_FORMATS` and the depth-canvas fallback
 // ladder (Lua lines 38-68, 139-186). That list exists solely because love.js's
@@ -122,6 +125,14 @@ export const DEFAULT_BLOOM_CONFIG: BloomConfig = {
 export const BLOOM_THRESHOLD_KNEE = 0.15;
 
 /**
+ * Ceiling the composite clamps to, i.e. Lua's implicit one: LOVE's additive
+ * draw lands in the 8-bit window framebuffer, and ours in the 8-bit canvas, so
+ * both saturate at 1.0. Named and tested rather than inlined so
+ * `compositeChannel` and the shader cannot disagree about it.
+ */
+export const BLOOM_COMPOSITE_CLAMP = 1.0;
+
+/**
  * The separable blur kernel, tap for tap, from `BLUR_SRC` (bloom.lua lines
  * 24-32). Index 0 is the `-4` tap, index 8 the `+4`; the centre tap is index
  * 4. They sum to exactly 1, which is what makes the blur energy-preserving --
@@ -139,6 +150,28 @@ export const BLOOM_BLUR_TAP_RADIUS = (BLOOM_BLUR_WEIGHTS.length - 1) / 2;
 export interface BloomBufferSize {
   readonly w: number;
   readonly h: number;
+}
+
+/**
+ * Everything the render-target sizes depend on. `Bloom.ensure` reallocates when
+ * and only when this changes, so it has to name EVERY such input -- see
+ * `Bloom.ensure`'s doc comment for why `downscale` in particular is keyed
+ * rather than assumed constant.
+ */
+export interface BloomBufferKey {
+  readonly w: number;
+  readonly h: number;
+  readonly ratio: number;
+  readonly downscale: number;
+}
+
+/**
+ * Whether two buffer keys describe the same allocation. Split out of
+ * `Bloom.ensure` so the cache-invalidation rule is provable without a GL
+ * context -- `ensure` itself needs a real `THREE.WebGLRenderer` to reach.
+ */
+export function sameBloomBufferKey(a: BloomBufferKey, b: BloomBufferKey): boolean {
+  return a.w === b.w && a.h === b.h && a.ratio === b.ratio && a.downscale === b.downscale;
 }
 
 /**
@@ -194,7 +227,7 @@ export function blurDirection(radius: number, size: BloomBufferSize, axis: "hori
  * the 8-bit canvas; the composite shader applies the same `min`.
  */
 export function compositeChannel(scene: number, glow: number, intensity: number): number {
-  return Math.min(scene + glow * intensity, 1);
+  return Math.min(scene + glow * intensity, BLOOM_COMPOSITE_CLAMP);
 }
 
 /**
@@ -282,8 +315,54 @@ ${taps}
  * `scene.rgb + glow.rgb * intensity`, clamped by the 8-bit destination. Doing
  * it in the shader avoids depending on three.js blend-state defaults for
  * something this load-bearing. Mirrors `compositeChannel`.
+ *
+ * IT DROPS THE GLOW BUFFER'S ALPHA, and that is only correct because of an
+ * invariant the two shaders above enforce. LOVE's `"add"` blend mode composites
+ * THROUGH alpha (`src.rgb * src.a + dst.rgb`), so Lua's step 4 is scaled by the
+ * glow canvas's alpha; this reads `.rgb` and ignores it. The two agree today
+ * because glow alpha is 1.0 everywhere by construction: the threshold shader
+ * writes `vec4(c.rgb * f, 1.0)` -- alpha a literal, NOT multiplied by `f` --
+ * and `BLOOM_BLUR_WEIGHTS` sums to exactly 1, so the blur carries that 1.0
+ * through unchanged.
+ *
+ * If either half ever changes -- the threshold pass writing `f` into alpha, or
+ * a kernel that does not sum to 1 -- this shader silently stops matching Lua
+ * and must multiply by `texture2D(tGlow, vUv).a`. Both halves are pinned by
+ * tests in bloom.spec.ts, so the drift fails loudly rather than visually.
+ *
+ * `#include <colorspace_fragment>` IS LOAD-BEARING, and its absence was a real
+ * bug caught from a hardware screenshot rather than from a test. This is the
+ * one pass in the chain whose render target is the CANVAS, so it is the one
+ * that owes the output an sRGB encode.
+ *
+ * three.js applies that encode automatically only to its own materials.
+ * `renderer.render(scene, camera)` -- the `enabled: false` path, and the old
+ * `UnrealBloomPass` chain's final scene blit, which used a built-in
+ * `MeshBasicMaterial` -- gets it for free. A hand-written `ShaderMaterial` does
+ * not: rendering into a non-XR render target makes three emit
+ * `LinearSRGBColorSpace`, so `sceneTarget` holds LINEAR values, and blitting
+ * them raw to the canvas produced a **visibly darker frame with bloom on than
+ * with `?bloom=0`** -- which is impossible for an additive effect, and would
+ * have silently corrupted the `?bloom=0` attribution the browser harness
+ * exists for. The include resolves to `linearToOutputTexel`, which three
+ * generates from `renderer.outputColorSpace`, so this tracks the renderer
+ * rather than hardcoding sRGB.
+ *
+ * Encoding ONCE, here, on the summed value is also the right place for it: the
+ * add happens in linear light and the transfer function is applied to the
+ * result. The old chain encoded the scene and then added un-encoded bloom on
+ * top, which is not a thing that corresponds to anything.
+ *
+ * KNOWN, DELIBERATELY NOT CHANGED HERE: this leaves the 0.55 threshold being
+ * evaluated against LINEAR values, whereas LOVE's canvas is display-space, so
+ * v2 selects a slightly tighter set of pixels than Lua does. That is a
+ * pre-existing property of the v2 chain (`LuminosityHighPassShader` thresholded
+ * the linear buffer too), it errs toward under-blooming rather than the
+ * over-blooming #404 is about, and changing it moves which pixels glow -- a
+ * separate decision with its own evidence, not a rider on this fix.
  */
-const COMPOSITE_FRAGMENT_SHADER = /* glsl */ `
+export function buildCompositeFragmentShader(clamp: number): string {
+  return /* glsl */ `
 uniform sampler2D tScene;
 uniform sampler2D tGlow;
 uniform float intensity;
@@ -291,9 +370,11 @@ varying vec2 vUv;
 void main() {
     vec3 scene = texture2D(tScene, vUv).rgb;
     vec3 glow = texture2D(tGlow, vUv).rgb;
-    gl_FragColor = vec4(min(scene + glow * intensity, vec3(1.0)), 1.0);
+    gl_FragColor = vec4(min(scene + glow * intensity, vec3(${clamp.toFixed(4)})), 1.0);
+    #include <colorspace_fragment>
 }
 `;
+}
 
 /**
  * A full-screen quad this class OWNS.
@@ -390,9 +471,7 @@ export class Bloom {
   private blurMaterial: BlurMaterial | undefined;
   private compositeMaterial: CompositeMaterial | undefined;
   private quad: Quad | undefined;
-  private w = 0;
-  private h = 0;
-  private ratio = 0;
+  private key: BloomBufferKey = { w: 0, h: 0, ratio: 0, downscale: 0 };
   private low: BloomBufferSize = { w: 0, h: 0 };
 
   constructor(config: Partial<BloomConfig> = {}) {
@@ -413,21 +492,32 @@ export class Bloom {
    * Allocate (or reallocate) the three render targets and the three materials,
    * mirroring Lua's `ensure` (bloom.lua lines 102-137).
    *
-   * The pixel ratio belongs in the cache key: the targets are sized in DEVICE
+   * THE CACHE KEY IS EVERY INPUT TO THE TARGET SIZES, which is `{w, h, ratio,
+   * downscale}` -- not just the viewport.
+   *
+   * The pixel ratio belongs in it because the targets are sized in DEVICE
    * pixels, so a ratio change must rebuild them even when the logical viewport
    * is unchanged. Device pixels are also the base `downscale` divides -- Lua
    * divides the window resolution it actually renders at, and ours is
    * `w * ratio`, not `w`.
+   *
+   * `downscale` belongs in it because it sizes `blurA`/`blurB` and nothing else
+   * would notice it changing. It is keyed rather than assumed-constant on
+   * purpose: `BloomConfig`'s fields are mutable and ARE mutated at runtime --
+   * `runtime_settings.ts` writes `bloom.config.enabled` from the settings
+   * screen, so "nothing ever mutates this config" is already false for one
+   * field, and resting on it for another is the kind of invariant that holds
+   * until it quietly does not. Keying costs one comparison per frame; the bug
+   * it forecloses is low-res buffers left stale until the next real resize.
    */
   private ensure(renderer: THREE.WebGLRenderer, w: number, h: number): void {
-    const ratio = renderer.getPixelRatio();
-    if (this.sceneTarget !== undefined && this.w === w && this.h === h && this.ratio === ratio) {
+    const next: BloomBufferKey = { w, h, ratio: renderer.getPixelRatio(), downscale: this.config.downscale };
+    if (this.sceneTarget !== undefined && sameBloomBufferKey(this.key, next)) {
       return;
     }
     this.disposeTargets();
-    this.w = w;
-    this.h = h;
-    this.ratio = ratio;
+    this.key = next;
+    const { ratio } = next;
 
     const fullW = Math.max(Math.round(w * ratio), 1);
     const fullH = Math.max(Math.round(h * ratio), 1);
@@ -466,7 +556,7 @@ export class Bloom {
         tex: { value: null },
         direction: { value: new THREE.Vector2(0, 0) },
       });
-      const composite: CompositeMaterial = postMaterial(COMPOSITE_FRAGMENT_SHADER, {
+      const composite: CompositeMaterial = postMaterial(buildCompositeFragmentShader(BLOOM_COMPOSITE_CLAMP), {
         tScene: { value: null },
         tGlow: { value: null },
         intensity: { value: this.config.intensity },
@@ -582,8 +672,6 @@ export class Bloom {
     this.blurMaterial = undefined;
     this.compositeMaterial = undefined;
     this.quad = undefined;
-    this.ratio = 0;
-    this.low = { w: 0, h: 0 };
   }
 
   private disposeTargets(): void {
@@ -593,7 +681,7 @@ export class Bloom {
     this.sceneTarget = undefined;
     this.blurA = undefined;
     this.blurB = undefined;
-    this.w = 0;
-    this.h = 0;
+    this.key = { w: 0, h: 0, ratio: 0, downscale: 0 };
+    this.low = { w: 0, h: 0 };
   }
 }
