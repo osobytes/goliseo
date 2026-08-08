@@ -146,10 +146,17 @@ const NET_FRAGMENT = /* glsl */ `
     float strand = min(da, db);
     float aa = fwidth(strand) + 0.001;
     float alpha = 1.0 - smoothstep(0.05, 0.05 + aa * 2.0, strand);
-    // Slightly brighter strands (creative brief item 4) so the net reads
-    // clearly against the dark apron/pitch behind it instead of near-
-    // vanishing at broadcast-camera distance.
-    vec3 netColor = mix(vec3(0.95, 0.97, 1.0), uTeamColor, 0.22);
+    // Bright enough to read against the dark apron/pitch behind it at
+    // broadcast-camera distance (creative brief item 4), but deliberately
+    // BELOW the bloom pass's 0.55 luminance threshold (bloom.ts's
+    // DEFAULT_BLOOM_CONFIG). The previous vec3(0.95, 0.97, 1.0) put the
+    // strands at luminance ~0.90, so every strand ignited the bloom -- and
+    // because this is an UNLIT ShaderMaterial writing colour straight out,
+    // nothing damped it. Net, emissive frame and trim then all bloomed at
+    // once and the goal read as one blown-out white mass instead of a net.
+    // ~0.52 keeps the net clearly visible while leaving the TRIM as the only
+    // part of a goal that deliberately glows.
+    vec3 netColor = mix(vec3(0.44, 0.47, 0.52), uTeamColor, 0.22);
     gl_FragColor = vec4(netColor, alpha * 0.92);
   }
 `;
@@ -174,15 +181,24 @@ export function buildGoal(rect: Rect, crossbarH: number, mouthLineX: number, tea
   const frameGeometry = mergeGeometries([frontFrame, backFrame], false);
   frontFrame.dispose();
   backFrame.dispose();
-  // Near-white metal with its own emissive glow (creative brief item 4): the
-  // frame itself should visibly bloom, the way the old 2D goals' outline
-  // glow read, not just the trim rings riding on top of a flat-lit post.
+  // Bright metal that catches the rig lights, with only a FAINT emissive lift
+  // -- not a self-lit tube. At the previous `emissiveIntensity: 0.9` the frame
+  // emitted luminance ~0.85 against the bloom pass's 0.55 threshold
+  // (bloom.ts's DEFAULT_BLOOM_CONFIG) BEFORE any lighting was added, so the
+  // whole frame ignited unconditionally. Stacked on the net (also over
+  // threshold, since fixed) and the trim, the three together turned each goal
+  // into a white blob rather than readable geometry.
+  //
+  // 0.18 puts the emissive contribution well under threshold, so the frame
+  // glows only where a light actually specularly hits it -- which is what
+  // reads as polished metal -- and the trim below stays the deliberate
+  // bloom-catcher this file's header describes.
   const frameMaterial = new THREE.MeshStandardMaterial({
     color: 0xdfe8f2,
     roughness: 0.35,
     metalness: 0.85,
     emissive: new THREE.Color(0.9, 0.95, 1.0),
-    emissiveIntensity: 0.9,
+    emissiveIntensity: 0.18,
   });
   const frame = new THREE.Mesh(frameGeometry, frameMaterial);
   frame.name = "goal_frame";
@@ -190,7 +206,17 @@ export function buildGoal(rect: Rect, crossbarH: number, mouthLineX: number, tea
 
   const trimGeometry = buildTrimGeometry(zNear, zFar, mouthLineX, crossbarH);
   const trimColor = new THREE.Color(teamColor[0], teamColor[1], teamColor[2]);
-  const trimMaterial = new THREE.MeshStandardMaterial({ color: trimColor, emissive: trimColor, emissiveIntensity: 1.2, roughness: 0.4 });
+  // The one part of a goal that is SUPPOSED to bloom, so it stays clearly over
+  // the 0.55 threshold -- eased 1.2 -> 1.0 now that it is no longer competing
+  // with a glowing frame and net for the same highlight.
+  //
+  // Not tuned any closer to the threshold on purpose: the trim takes the TEAM
+  // colour, and team colours differ in luminance (the home blue [0.35, 0.75,
+  // 1.0] is ~0.68, the away orange [1.0, 0.55, 0.25] ~0.63). A value chosen to
+  // sit just above threshold for one team would fall BELOW it for the other,
+  // and one team's goal would silently stop glowing. 1.0 keeps both clear of
+  // it.
+  const trimMaterial = new THREE.MeshStandardMaterial({ color: trimColor, emissive: trimColor, emissiveIntensity: 1.0, roughness: 0.4 });
   const trim = new THREE.Mesh(trimGeometry, trimMaterial);
   trim.name = "goal_trim";
   group.add(trim);
