@@ -23,6 +23,23 @@
 #     the change that introduced this file for the transcript of a real run.
 #
 # WHAT THIS GATES, IN ORDER:
+#   0. node scripts/check_wire_enum_parity.mjs
+#      -- numbered 0 because it runs FIRST (it needs no toolchain, no build
+#      and no install, so drift is reported in seconds rather than after ten
+#      minutes of cargo), while every number below keeps the value the rest
+#      of this file and its self-test scenarios already refer to by name.
+#      Every closed set crossing the RenderFrame wire is defined twice: a
+#      Rust enum with a `*_code` numbering in
+#      crates/gc-render/src/frame_buffer.rs, and a TypeScript union with a
+#      `*FromCode` numbering in packages/render/src/frame_buffer.ts. Each
+#      side is internally compiler-checked and neither can see the other, so
+#      a variant added on one side only surfaces as a THROW IN A PLAYER'S
+#      BROWSER, MID-MATCH (`frame_buffer: unknown pose id code 33`), and a
+#      reordering that preserves membership while shifting codes surfaces as
+#      nothing at all -- `team`, `species shape` and `event kind` decode
+#      through requireDecode, where a shifted code is a different VALID
+#      value, not an error. See that script's header and self_test()'s
+#      wire_enum_parity_scenario. (#433)
 #   1. cargo fmt --all --check                                   (v2/rust)
 #   2. cargo clippy --workspace --all-targets -- -D warnings
 #   3. cargo test --workspace
@@ -141,6 +158,16 @@ REQUIRED_PNPM_VERSION="11.1.2"
 MIN_RUST_TESTS_PASSED=500
 MIN_TS_TESTS_PASSED=300
 
+# The same shape of floor for gate 0: a parity checker that resolved no enums
+# at all would find no disagreement and exit 0. Eleven enums cross the
+# frame-buffer wire today (team, species shape, charge kind, pose source,
+# aerial style, aerial outcome, save style, keeper state, shot type, pose id,
+# event kind). The checker itself refuses to pass if its registry does not
+# cover every `*_code`/`*FromCode` pair it finds in the two sources, so this
+# floor guards against a silenced or emptied registry, not against the
+# boundary growing.
+MIN_WIRE_ENUMS=11
+
 # ---------------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------------
@@ -231,6 +258,39 @@ verify_toolchain_pins() {
 # ---------------------------------------------------------------------------
 # Gate steps
 # ---------------------------------------------------------------------------
+
+# Gate 0. Cross-language parity for every wire enum on the RenderFrame
+# boundary (#433). Cheap, build-free, and therefore first.
+gate_wire_enum_parity() {
+    step "v2: wire enum parity (Rust producer <-> TypeScript reader, every frame-buffer enum)"
+    local log
+    log="$(mktemp)"
+    run_in "$project_root" node scripts/check_wire_enum_parity.mjs 2>&1 | tee "$log"
+    local status=$?
+
+    # NEVER TRUST ONE SIGNAL. A checker whose parse silently matched nothing
+    # would find no disagreement and exit 0 -- exactly the shape AGENTS.md §9
+    # names. The script is fail-loud about that internally; this reads its
+    # summary line back independently and requires a floor on the count.
+    local counted
+    counted="$(strip_ansi <"$log" | sed -n 's/^wire enum parity: OK (\([0-9]\+\) enums)$/\1/p' | tail -n 1)"
+    rm -f "$log"
+
+    if [ "$status" -ne 0 ]; then
+        fail_msg "wire enum parity check exited $status"
+        return 1
+    fi
+    if [ -z "$counted" ]; then
+        fail_msg "wire enum parity exited 0 but printed no 'wire enum parity: OK (N enums)' summary -- treating that as a failure, not a pass"
+        return 1
+    fi
+    if [ "$counted" -lt "$MIN_WIRE_ENUMS" ]; then
+        fail_msg "wire enum parity compared only $counted enum(s) (want >= $MIN_WIRE_ENUMS) -- the registry has been narrowed or silenced"
+        return 1
+    fi
+    echo "    $counted wire enums agree across Rust and TypeScript, numeric codes included"
+    return 0
+}
 
 gate_rust_fmt() {
     step "v2/rust: cargo fmt --all --check"
@@ -851,6 +911,116 @@ vitest_summary_scenario() {
     return "$failures"
 }
 
+# Reproduces #433 hermetically, twice over, against mutated COPIES of the real
+# sources under mktemp -- never the real tree.
+#
+# The two mutations are the two distinct failure modes, and the second is the
+# one nobody had been checking:
+#
+#   (a) MEMBERSHIP. TypeScript loses a pose the Rust producer still encodes.
+#       In a live match that is `frame_buffer: unknown pose id code 31`
+#       thrown at the wire boundary on the first frame carrying it -- loud,
+#       but only once it is in front of a player.
+#   (b) NUMERIC CODES, MEMBERSHIP UNCHANGED. `team_code`'s two arms swap
+#       numbers. Both sides stay internally consistent, `Team` still has
+#       exactly `home` and `away` on both sides, and `team` decodes through
+#       requireDecode -- so the swapped code is not an unmapped code, it is a
+#       DIFFERENT VALID VALUE. Nothing throws anywhere; the renderer just
+#       draws every player on the wrong side. `team_code` is used for this
+#       scenario deliberately: Rust has no `team_from_code`, so the
+#       cross-language comparison is the ONLY signal that can catch it.
+#
+# Both are checked for the specific message, not merely a nonzero exit: a
+# scenario that goes red for the wrong reason is indistinguishable from one
+# that works, right up until the day the guard it names actually breaks.
+wire_enum_parity_scenario() {
+    local dir="$1"
+    local failures=0
+    local checker="$project_root/scripts/check_wire_enum_parity.mjs"
+    local log
+    log="$(mktemp)"
+
+    # 1. The checker's own red demonstration, over in-memory mutations: a
+    #    one-sided variant, a code swap, a lost decoder case, a wildcard match
+    #    arm, a renamed decoder, and an unregistered twelfth enum.
+    if node "$checker" --self-test >"$log" 2>&1; then
+        sed 's/^/      /' "$log"
+        echo "ok  the parity checker's own self-test passes (it goes red on every drift shape it claims to catch)"
+    else
+        echo "SELF-TEST FAIL: node scripts/check_wire_enum_parity.mjs --self-test failed:"
+        sed 's/^/      /' "$log"
+        failures=1
+    fi
+
+    # 2. Independently of that, on disk: copy exactly the files the checker
+    #    reads into $dir, mutate them there, and drive the REAL check through
+    #    --repo. A self-test that only exercised the script's own in-memory
+    #    fixtures would never prove the on-disk path it actually gates with.
+    local rel
+    while IFS= read -r rel; do
+        mkdir -p "$dir/$(dirname "$rel")"
+        cp "$project_root/$rel" "$dir/$rel"
+    done < <(node "$checker" --list-sources)
+
+    if [ ! -f "$dir/v2/ts/packages/render/src/frame_buffer.ts" ]; then
+        echo "SELF-TEST FAIL: --list-sources did not name the TypeScript decoder; the fixture copy is empty"
+        rm -f "$log"
+        return 1
+    fi
+
+    if node "$checker" --repo "$dir" >"$log" 2>&1; then
+        echo "ok  an untouched copy of the real sources is accepted"
+    else
+        echo "SELF-TEST FAIL: an untouched COPY of the real sources was REJECTED:"
+        sed 's/^/      /' "$log"
+        failures=1
+    fi
+
+    # (a) TypeScript forgets a pose Rust still encodes: drop `fatigue` from
+    #     both the union and the decoder's switch, leaving `pose_id_code`'s
+    #     `Fatigue => 31` with no reader.
+    local ts_copy="$dir/v2/ts/packages/render/src/frame_buffer.ts"
+    local ts_pristine="$dir/frame_buffer.ts.orig"
+    cp "$ts_copy" "$ts_pristine"
+    sed -i '/^  | "fatigue"$/d' "$ts_copy"
+    sed -i '/^    case 31:$/{N;/return "fatigue";/d;}' "$ts_copy"
+    if node "$checker" --repo "$dir" >"$log" 2>&1; then
+        echo "SELF-TEST FAIL: a pose present in Rust and absent from TypeScript was ACCEPTED -- this is #433, and the gate would not catch it"
+        failures=1
+    elif grep -q 'Rust has "fatigue" (code 31) and TypeScript does not' "$log"; then
+        echo "ok  a pose Rust encodes and TypeScript has never heard of is rejected"
+    else
+        echo "SELF-TEST FAIL: the missing-pose fixture was rejected, but not for the missing pose:"
+        sed 's/^/      /' "$log"
+        failures=1
+    fi
+    cp "$ts_pristine" "$ts_copy"
+
+    # (b) The silent one: `team_code`'s codes swap, membership untouched.
+    local rust_copy="$dir/v2/rust/crates/gc-render/src/frame_buffer.rs"
+    sed -i \
+        -e 's/^        Team::Home => 1\.0,$/        Team::Home => 9.0,/' \
+        -e 's/^        Team::Away => 2\.0,$/        Team::Away => 1.0,/' \
+        -e 's/^        Team::Home => 9\.0,$/        Team::Home => 2.0,/' \
+        "$rust_copy"
+    if ! grep -q '^        Team::Home => 2\.0,$' "$rust_copy"; then
+        echo "SELF-TEST FAIL: could not swap team_code's arms in the fixture copy; the scenario no longer reproduces a code shift"
+        failures=1
+    elif node "$checker" --repo "$dir" >"$log" 2>&1; then
+        echo "SELF-TEST FAIL: a SWAPPED team numbering with identical membership was ACCEPTED -- every player would render on the wrong side, silently"
+        failures=1
+    elif grep -q 'code 1 is "away" in Rust and "home" in TypeScript' "$log"; then
+        echo "ok  a code swap that preserves membership is rejected (the failure mode that throws nothing anywhere)"
+    else
+        echo "SELF-TEST FAIL: the swapped-code fixture was rejected, but not for the swap:"
+        sed 's/^/      /' "$log"
+        failures=1
+    fi
+
+    rm -f "$log"
+    return "$failures"
+}
+
 self_test() {
     if ! v2_toolchain_present; then
         echo "   ! cargo/node/pnpm not fully installed -- skipping v2 gate self-test"
@@ -864,6 +1034,10 @@ self_test() {
 
     echo "==> v2 gate self-test: plumbing"
     plumbing_scenario || failures=1
+
+    echo "==> v2 gate self-test: wire enum parity, Rust <-> TypeScript (gate 0)"
+    mkdir -p "$work/wire_enum_parity"
+    wire_enum_parity_scenario "$work/wire_enum_parity" || failures=1
 
     echo "==> v2 gate self-test: determinism digest comparison logic"
     digest_drift_scenario || failures=1
@@ -908,6 +1082,10 @@ main() {
     local fail=0
 
     verify_toolchain_pins || fail=1
+
+    # Gate 0 first: it needs nothing built or installed, and enum drift is the
+    # one failure here that reaches a player's browser rather than a console.
+    gate_wire_enum_parity || fail=1
 
     gate_rust_fmt || fail=1
     gate_rust_clippy_workspace || fail=1
