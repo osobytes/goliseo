@@ -180,6 +180,55 @@ fn the_combat_model_carries_each_slot_s_own_phase_and_forced_state() {
     assert_eq!(model.players[2].forced_ticks, 4);
 }
 
+/// The alignment guard, shown FIRING rather than merely present.
+///
+/// The case above pins positional correspondence on a well-formed pair, but
+/// a passing assertion and an absent one look identical from outside. This
+/// hands `combat_model` a genuinely reordered `player_ids` and requires the
+/// panic. Misalignment is the one failure in this module that would look
+/// like working software — a bystander staggering while the struck player
+/// runs on — so it is the guard most worth having tested.
+#[test]
+#[should_panic(expected = "combat presentation player identity mismatch")]
+fn a_reordered_combat_state_panics_instead_of_posing_the_wrong_player() {
+    let mut state = fixture();
+    let mut combat = combat::new_state(&mut state, None);
+    assert_ne!(combat.player_ids[1], combat.player_ids[2]);
+    combat.player_ids.swap(1, 2);
+    let _ = frame::combat_model(&state, &combat);
+}
+
+/// The other half of the same guard: a combat companion describing a
+/// different-sized fixture is refused before any slot is read, rather than
+/// silently posing whichever prefix happened to line up.
+#[test]
+#[should_panic(expected = "combat presentation player count mismatch")]
+fn a_short_combat_state_panics_instead_of_posing_a_prefix() {
+    let mut state = fixture();
+    let mut combat = combat::new_state(&mut state, None);
+    combat.players.pop();
+    let _ = frame::combat_model(&state, &combat);
+}
+
+/// WHAT THIS GUARD DOES NOT COVER, recorded so nobody reads the two cases
+/// above as broader than they are: `player_ids` is the only identity the
+/// combat state carries, so a `players` vector reordered while `player_ids`
+/// stays put is undetectable here — and by `gc_sim::combat_snapshot::copy`'s
+/// identical assertion, which is where this one is modelled on. That pairing
+/// cannot be produced upstream (`gc_sim::combat::new_state` builds both
+/// vectors in one pass over `state.players`, and every step and rollback
+/// moves the whole `CombatMatchState` as a unit), which is why neither layer
+/// tries to detect it. This case pins the honest scope: ids aligned, so no
+/// panic, whatever the runtimes say.
+#[test]
+fn an_id_aligned_pair_is_accepted_and_that_is_the_whole_check() {
+    let mut state = fixture();
+    let mut combat = combat::new_state(&mut state, None);
+    combat.players.swap(1, 2);
+    let model = frame::combat_model(&state, &combat);
+    assert_eq!(model.players.len(), state.players.len());
+}
+
 /// THE REACHABILITY CONTRACT #441 exists for, at the `frame::build` seam:
 /// every one of the seven combat poses must come out of a built frame's
 /// `pose_id` column when the match's own combat state says so. Before the

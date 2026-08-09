@@ -327,11 +327,23 @@ pub struct RenderFrameEvents {
 /// fields, not because the data was out of reach.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FrameCombatModel {
-    /// Whether combat presentation is enabled for this match. A model is
-    /// only ever built for a match that runs combat (see [`combat_model`]),
-    /// so a present model always reports `true`; a match without combat is
-    /// represented by [`RenderFrameOptions::combat`] being `None`, exactly
-    /// as it was before a model was ever built.
+    /// RESERVED, AND NOT THE SIGNAL ANYTHING READS. Carried for parity with
+    /// `game/presentation/combat.lua`'s `CombatPresentationModel.enabled`,
+    /// which distinguishes an empty-but-present model from a real one
+    /// because Lua has no `Option`. Rust does, and this port uses it:
+    /// [`combat_model`] hardcodes `true` and is only ever called for a match
+    /// that runs combat, so this field carries no information a reader can
+    /// act on.
+    ///
+    /// TODAY'S ACTUAL SIGNAL IS `Option::is_some` on
+    /// [`RenderFrameOptions::combat`] / [`RenderFrame::combat`] — that is
+    /// what [`build`] branches on to offer
+    /// [`crate::player_pose::select`] a combat sample, and what
+    /// [`crate::frame_buffer`] encodes as its header's `combat_present`.
+    /// Neither reads this field. Anything that starts branching on combat
+    /// should branch on the `Option` too, or give this field a meaning
+    /// first; do not read a `true` here as an independent confirmation of
+    /// anything.
     pub enabled: bool,
     /// One entry per roster slot; exactly the shape
     /// [`crate::player_pose::CombatPoseSample`] reads.
@@ -359,9 +371,32 @@ pub struct FrameCombatModel {
 /// # Panics
 ///
 /// If `combat` does not describe `state`: a different player count, or a
-/// player id at some slot that is not `state`'s. Both are programmer errors
-/// (a caller pairing a combat companion with the wrong match), and both
-/// would otherwise show one player's combat pose on another player's body.
+/// player id at some slot that is not `state`'s.
+///
+/// ## Why this panics rather than degrading, ON THE RENDER PATH
+///
+/// A panic here takes down the frame, and the frame is what the player is
+/// looking at — a harsher blast radius than the same assertion in `gc-sim`.
+/// It is still the right call, and the reason is that the failure it catches
+/// is IMPOSSIBLE BY CONSTRUCTION UPSTREAM, so reaching it means something
+/// this module cannot reason about is already wrong:
+///
+/// - `gc_sim::combat::new_state` builds `player_ids`/`players` by iterating
+///   `state.players` in order, so the correspondence is positional from
+///   birth;
+/// - `gc_sim::combat_snapshot::copy` re-asserts `player_ids[i] ==
+///   state.players[i].id` at every index;
+/// - every step and every rollback moves state and combat together —
+///   `r#match::step` takes both, `rollback_snapshot_history::restore_simulation`
+///   returns both from one ring entry — so they cannot come from different
+///   ticks.
+///
+/// Degrading (returning `None`, or skipping the mismatched slot) would trade
+/// a loud stop for the one failure mode here that LOOKS LIKE WORKING
+/// SOFTWARE: a bystander staggering while the player who was actually struck
+/// runs on untouched. Nothing downstream could detect that, and no player
+/// would report it as a bug. Per AGENTS.md §7 this is an invariant, not
+/// recoverable input; fail loud.
 #[must_use]
 pub fn combat_model(state: &MatchState, combat: &CombatMatchState) -> FrameCombatModel {
     assert_eq!(
