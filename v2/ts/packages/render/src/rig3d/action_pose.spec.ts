@@ -144,3 +144,123 @@ describe("rigged whole-body action poses", () => {
     expect(left?.rot.root?.[2]).toBe(-(right?.rot.root?.[2] ?? Number.NaN));
   });
 });
+
+// #430: the held body attitudes recovered from the 2.5D billboard deleted in
+// #418. These are postures rather than actions, and the distinction is what
+// most of this suite is about -- see `action_pose.ts`'s TWO KINDS OF ROOT
+// TRANSFORM note. Degrees are not pinned: they fall out of a documented
+// conversion from the billboard's own constants and re-tuning them by eye at
+// match-camera scale is a legitimate follow-up, not a regression. Signs,
+// ordering and the composition rules ARE pinned, because those are the things
+// a future edit can silently get backwards.
+describe("held body attitudes", () => {
+  const FORWARD = ["kick_follow", "run_telegraph"];
+  const BACKWARD = ["contain", "fatigue"];
+  const CROUCHED = ["settle", "contain", "fatigue", "keeper_set", "keeper_ready_low"];
+
+  it("is not an action: the balance-lean gate must keep seeing `null`", () => {
+    for (const id of [...FORWARD, ...BACKWARD, ...CROUCHED]) {
+      expect(actionPose.forOptions(opts(id)), id).toBeNull();
+      expect(actionPose.attitudeFor(opts(id)), id).not.toBeNull();
+    }
+    expect(actionPose.attitudeFor(opts("locomotion"))).toBeNull();
+    expect(actionPose.attitudeFor(opts(undefined))).toBeNull();
+    // The gap that stays a gap: a slide is a whole-body ground action, not a
+    // root transform, and guessing at one would be worse than showing none.
+    expect(actionPose.attitudeFor(opts("slide"))).toBeNull();
+  });
+
+  it("leans a follow-through and a telegraph forward, and a contain and a sag back", () => {
+    for (const id of FORWARD) {
+      expect(actionPose.attitudeFor(opts(id))?.rot.root?.[0] ?? 0, id).toBeGreaterThan(0);
+    }
+    for (const id of BACKWARD) {
+      expect(actionPose.attitudeFor(opts(id))?.rot.root?.[0] ?? 0, id).toBeLessThan(0);
+    }
+  });
+
+  // The billboard wrote `actionLean = fx * r * k`, projecting "forward" onto
+  // the SCREEN's x axis, so a player running straight up the pitch (fx = 0)
+  // did not lean at all. The rig is already yawed to `facing`, so forward is
+  // local +Z and the facing term does not survive the port.
+  it("leans by the same amount whichever way the player is facing", () => {
+    const up = actionPose.attitudeFor(opts("run_telegraph", { facing: { x: 0, y: 1 } }));
+    const across = actionPose.attitudeFor(opts("run_telegraph", { facing: { x: 1, y: 0 } }));
+    const none = actionPose.attitudeFor({ pose: { id: "run_telegraph" } });
+    expect(up?.rot.root).toEqual(across?.rot.root);
+    expect(up?.rot.root).toEqual(none?.rot.root);
+  });
+
+  it("crouches rather than rises, and keeps the billboard's ordering", () => {
+    const drop = (id: string) => -(actionPose.attitudeFor(opts(id))?.move.root?.[1] ?? 0);
+    for (const id of CROUCHED) {
+      expect(drop(id), id).toBeGreaterThan(0);
+    }
+    // 0.32r > 0.3r > 0.26r > 0.18r > 0.16r, straight off the deleted renderer.
+    expect(drop("keeper_ready_low")).toBeGreaterThan(drop("settle"));
+    expect(drop("settle")).toBeGreaterThan(drop("contain"));
+    expect(drop("contain")).toBeGreaterThan(drop("keeper_set"));
+    expect(drop("keeper_set")).toBeGreaterThan(drop("fatigue"));
+    // A follow-through is a lean and nothing else.
+    expect(actionPose.attitudeFor(opts("kick_follow"))?.move.root).toBeUndefined();
+  });
+
+  it("keeps the lean ordering the billboard had: a telegraph commits harder than a follow-through", () => {
+    const tilt = (id: string) => Math.abs(actionPose.attitudeFor(opts(id))?.rot.root?.[0] ?? 0);
+    expect(tilt("run_telegraph")).toBeGreaterThan(tilt("kick_follow"));
+    expect(tilt("contain")).toBeGreaterThan(tilt("fatigue"));
+  });
+
+  // EXACT RATIOS, not floors, and specifically for the reason `ATTITUDES`'
+  // `fatigue` note records: fatigue's lean is the smallest quantity anything
+  // here asserts (~2 degrees), so an ordering test passes on it trivially and
+  // a magnitude floor it shares with a crouch lets the crouch carry it. These
+  // are the pins that fail if somebody halves it.
+  //
+  // A ratio is the right shape because it is SCALE-FREE. Every lean here is
+  // `asin(k * METRES_PER_RADIUS / LEAN_REFERENCE_HEIGHT)`, so `sin(theta)` is
+  // exactly proportional to the billboard's `k` and the ratio of two poses'
+  // sines is exactly the ratio of their constants -- independent of the rig's
+  // height, of the reference point, and of #436's conversion question. So this
+  // survives an honest re-tune of the mapping (which the file invites) and
+  // fails a per-pose magnitude drift (which it does not).
+  it("keeps fatigue's magnitude tied to contain's, so a shrunk sag cannot pass on the crouch's coat-tails", () => {
+    const sinLean = (id: string) => Math.sin(((actionPose.attitudeFor(opts(id))?.rot.root?.[0] ?? 0) * Math.PI) / 180);
+    const drop = (id: string) => -(actionPose.attitudeFor(opts(id))?.move.root?.[1] ?? 0);
+    // Billboard: fatigue -0.12r against contain -0.3r, and 0.16r against 0.26r.
+    expect(sinLean("fatigue") / sinLean("contain")).toBeCloseTo(0.12 / 0.3, 12);
+    expect(drop("fatigue") / drop("contain")).toBeCloseTo(0.16 / 0.26, 12);
+    // ...and the same relation holds for the forward pair, so the ratio pin is
+    // a property of the table rather than one hand-checked pose.
+    expect(sinLean("kick_follow") / sinLean("run_telegraph")).toBeCloseTo(0.28 / 0.5, 12);
+  });
+
+  // COMPOSES, where an action ASSIGNS. The locomotion clips write the run's
+  // vertical bob to `move.root`; a crouch that assigned there would flatten it
+  // and leave a settling player gliding.
+  it("adds its crouch to whatever the gait already resolved, instead of replacing it", () => {
+    const bob = 0.05;
+    const pose = actionPose.apply({ rot: {}, move: { root: [0, bob, 0] } }, opts("settle"));
+    const drop = actionPose.attitudeFor(opts("settle"))?.move.root?.[1] ?? 0;
+    expect(pose.move["root"]?.[1]).toBeCloseTo(bob + drop, 12);
+    expect(drop).toBeLessThan(0);
+  });
+
+  it("lets an action win outright when a pose id would claim both", () => {
+    // SYNTHETIC, and worth saying so plainly: `SAVES`/`TIPS` and `ATTITUDES`
+    // have disjoint keys, so no pose id can reach a real conflict and this
+    // cannot prove precedence under one. What it does prove is that the code
+    // path exists and behaves -- `apply` returns after the action branch, so
+    // the assigning semantics win and the composing ones never run. It becomes
+    // a real test the day the two tables overlap; until then it is the
+    // executable form of a documented rule, which beats a comment alone.
+    const dive = opts("keeper_dive", { dive: 1, dive_dir: LEFT });
+    const posed = actionPose.apply({ rot: {}, move: { root: [0, 0.05, 0] } }, dive);
+    expect(posed.move["root"]).toEqual(actionPose.forOptions(dive)?.move.root);
+  });
+
+  it("leaves a plain run completely untouched", () => {
+    const pose = actionPose.apply({ rot: {}, move: {} }, opts("locomotion"));
+    expect(pose).toEqual({ rot: {}, move: {} });
+  });
+});

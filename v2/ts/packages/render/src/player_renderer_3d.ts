@@ -290,15 +290,30 @@ const CHEST_LEAN_DEGREES = 7;
 
 // WHY THE SPINE AND CHEST, NOT THE ROOT.
 //
-// `actionPose.apply` owns `root` outright, and it ASSIGNS rather than
-// composes (`pose.rot[bone] = quat.fromEuler(...)`). So a lean written to
-// `root` BEFORE the overlay is silently discarded the instant a keeper dives,
-// and a lean composed onto `root` AFTER it would stack 16 degrees of balance
-// tilt onto a 72-degree committed dive about a neighbouring axis -- the
-// "keeper dive and lean fighting each other" case. Keeping lean off `root`
-// entirely means there is no ordering question to get wrong and
-// action_pose.ts's stated contract ("every pose is a transform of the rig
-// ROOT bone") keeps exactly one owner.
+// `actionPose.apply` owns `root`, and since #430 it writes there with TWO
+// different semantics -- which changes nothing about the conclusion below but
+// must not be misread as one rule:
+//
+//   * an ACTION (a dive, an aerial, a knockback: whatever `forOptions`
+//     returns) ASSIGNS `root` outright, `pose.rot[bone] = quat.fromEuler(...)`;
+//   * a held ATTITUDE (`attitudeFor`: a contain, a crouch, a follow-through)
+//     COMPOSES onto `root` instead -- pre-multiplied rotation, added
+//     translation -- so it rides the gait rather than overwriting its bob.
+//
+// The reason lean stays off `root` is the ACTION case, and it is unaffected:
+// a lean written to `root` BEFORE the overlay is silently discarded the
+// instant a keeper dives, and a lean composed onto `root` AFTER it would
+// stack 16 degrees of balance tilt onto a 72-degree committed dive about a
+// neighbouring axis -- the "keeper dive and lean fighting each other" case.
+// Keeping lean off `root` entirely means there is no ordering question to get
+// wrong and `root` keeps exactly one owner.
+//
+// The attitude case does not reopen it either, from the other direction: an
+// attitude is deliberately NOT part of `forOptions`, so the gate below does
+// not fire for one, and lean and attitude coexist on different bones (torso
+// vs root) rather than competing for the same one. That is the whole design
+// -- a defender containing at speed still leans -- and it is pinned in this
+// file's spec. See action_pose.ts's TWO KINDS OF ROOT TRANSFORM note.
 //
 // It is also the anatomically right joint: a torso lean leaves the feet where
 // the locomotion clip planted them, which matters because this rig has no IK

@@ -100,17 +100,24 @@ describe("rig3d/pose_table.POSE_ACTIONS", () => {
       "combat_knockback",
       "combat_stagger",
       "stumble",
+      // #430: the five body attitudes recovered from the deleted billboard.
+      // They are root overlays for the same reason a dive is -- a whole-figure
+      // lean and a crouch are transforms of the root, not limb animation --
+      // but they are HELD postures rather than timed actions, which is what
+      // `action_pose.ts` keeps out of `forOptions`.
+      "kick_follow",
+      "settle",
+      "run_telegraph",
+      "contain",
+      "fatigue",
     ]);
     expect(byFallback("locomotion_base")).toEqual(["keeper_shuffle", "keeper_ready_tall", "locomotion"]);
-    // REAL gaps, named as such. Each has a distinct intended reading that
-    // nothing renders today -- five of the six READ DISTINCTLY UNTIL #418
-    // deleted the procedural billboard's body-attitude vocabulary, and each
-    // entry's note carries that renderer's own constants so recovering it is a
-    // transcription (#430 owns that work). `kick_follow` is the sharpest case:
-    // #428 proved the pose id reaches a live match on hardware GL and it STILL
-    // renders bit-identically to plain running. If this list grows, somebody
-    // added a pose id without deciding how it animates and this test says so.
-    expect(byFallback("unanimated")).toEqual(["slide", "kick_follow", "settle", "run_telegraph", "contain", "fatigue"]);
+    // THE REAL GAP, singular since #430. A slide is a whole-body ground action
+    // that no root transform approximates, so it is blocked on #423's asset
+    // set and #424's pipeline rather than merely unscheduled. If this list
+    // grows, somebody added a pose id without deciding how it animates and
+    // this test says so.
+    expect(byFallback("unanimated")).toEqual(["slide"]);
   });
 
   // The user-facing claim of #425's asset-agnostic slice: these are the poses
