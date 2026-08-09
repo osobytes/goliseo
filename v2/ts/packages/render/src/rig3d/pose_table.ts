@@ -379,6 +379,14 @@ function clamp01(x: number): number {
  *
  * A run is not a fast walk, so the two stay separate clips blended by speed
  * rather than one clip played quicker.
+ *
+ * The identity above is EXACT rather than approximate only because the blend
+ * is never genuinely three-way -- `runMix` leaves zero only once `walkMix` has
+ * already saturated, so at most two weights are ever positive, and nested
+ * slerps of two rotations are associative in a way three are not. That in turn
+ * holds only while `RUN_SPEED > WALK_SPEED > 0`, which nothing here enforces
+ * structurally; `pose_table.spec.ts` asserts the precondition before sweeping
+ * the consequence.
  */
 export function locomotionBlend(speed: number): LocomotionBlend {
   const walkMix = clamp01(speed / WALK_SPEED);

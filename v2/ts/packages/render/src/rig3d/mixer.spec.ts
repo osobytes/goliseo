@@ -171,4 +171,32 @@ describe("rig3d/mixer.MixerLayer", () => {
     const layer = new MixerLayer([{ id: "walk", clip: clips.WALK }]);
     expect(() => layer.set("sprint", 0, 1)).toThrow(/no action "sprint"/);
   });
+
+  // THE PRECONDITION `evaluate()`'s zero-delta path depends on. Three.js's
+  // `AnimationAction._updateTime` early-returns on a zero delta and hands back
+  // `this.time` unchanged, so NONE of `LoopRepeat`'s wrap, `LoopOnce`'s clamp
+  // or `clampWhenFinished` ever runs. An out-of-range phase would therefore
+  // freeze on the first or last keyframe -- silently, and for a clock-driven
+  // action only after several seconds of play. Enforced by `set()` rather than
+  // left to its one current caller's habit.
+  it("rejects a phase outside the clip, which zero-delta evaluation would otherwise freeze on", () => {
+    const layer = new MixerLayer([{ id: "swing", clip: clips.SWING, loop: "clamp" }]);
+    expect(() => layer.set("swing", -0.01, 1)).toThrow(/outside "swing"/);
+    expect(() => layer.set("swing", clips.SWING.duration + 0.01, 1)).toThrow(/outside "swing"/);
+    expect(() => layer.set("swing", Number.NaN, 1)).toThrow(/outside "swing"/);
+    // Both ends of the closed interval are legal: a wrapped loop phase can be
+    // exactly 0, and a clamped one-shot phase can be exactly the duration.
+    expect(() => layer.set("swing", 0, 1)).not.toThrow();
+    expect(() => layer.set("swing", clips.SWING.duration, 1)).not.toThrow();
+  });
+
+  // The same invariant, checked against the concrete mistake `set()` exists to
+  // catch: an unwrapped wall-clock phase. It is the one a caller is most
+  // likely to make, because `now` grows without bound.
+  it("would catch an unwrapped wall-clock phase rather than freezing on the last key", () => {
+    const layer = new MixerLayer([{ id: "idle", clip: clips.IDLE }]);
+    const tenSecondsIn = 10 * 0.35;
+    expect(tenSecondsIn).toBeGreaterThan(clips.IDLE.duration);
+    expect(() => layer.set("idle", tenSecondsIn, 1)).toThrow(/outside "idle"/);
+  });
 });

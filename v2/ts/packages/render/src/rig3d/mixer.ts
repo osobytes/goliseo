@@ -265,11 +265,38 @@ export class MixerLayer {
   /**
    * Pins one action's playback phase (seconds into the clip) and blend weight.
    * `weight` 0 leaves the action enabled but contributing nothing.
+   *
+   * PRECONDITION, ENFORCED HERE: `time` must already lie in `[0, duration]`.
+   * This is an invariant of the caller, not recoverable input, so it fails
+   * loud (AGENTS.md §7) rather than returning an error to be checked.
+   *
+   * Why it has to be enforced rather than assumed. `evaluate()` advances the
+   * mixer by zero, and three.js's `AnimationAction._updateTime` early-returns
+   * on a zero delta (`AnimationAction.js:721-726`): it hands back `this.time`
+   * UNCHANGED and never reaches the loop/bounds handling below it. So none of
+   * the three mechanisms that would normally keep a phase in range runs --
+   * `LoopRepeat`'s wrap, `LoopOnce`'s clamp, and `clampWhenFinished` are all
+   * downstream of that return. A caller that pins `now * RATE` without
+   * wrapping would walk off the end of the keyframes and freeze on the last
+   * key, silently and only after several seconds of play; a negative phase
+   * would freeze on the first. Both are exactly the shape of bug that reaches
+   * a browser rather than a test.
+   *
+   * `animator.ts`'s `wrapPhase` is what satisfies this today -- wrapping for
+   * a looping action, clamping for a one-shot, since only the caller knows
+   * which phase source it is reading. This check makes that a contract of the
+   * layer instead of a habit of its one current caller.
    */
   set(id: string, time: number, weight: number, timeScale = 1): void {
     const action = this.actions.get(id);
     if (action === undefined) {
       throw new Error(`rig3d/mixer.ts: no action "${id}" in this layer`);
+    }
+    const duration = action.getClip().duration;
+    if (!(time >= 0 && time <= duration)) {
+      throw new Error(
+        `rig3d/mixer.ts: phase ${String(time)} is outside "${id}"'s [0, ${String(duration)}] -- evaluate() advances by zero, so three.js never wraps or clamps it (see set()'s doc comment); wrap or clamp before calling`,
+      );
     }
     action.time = time;
     action.weight = weight;

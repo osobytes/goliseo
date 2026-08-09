@@ -18,6 +18,16 @@
 //
 // Then `view.lean` as a root/spine tilt, then `action_pose.apply`.
 //
+// HONEST ABOUT LAYER 3: it has exactly one action active at a time and never
+// blends, so it gets none of the N-way accumulation that is the reason layers
+// 1 and 2 are mixers at all. It is the mixer apparatus wrapped around what is
+// effectively a single `clips.sample`, kept that way for API uniformity -- one
+// `MixerLayer` type, one `set`/`evaluate` contract, one place the baked-clip
+// and phase-precondition rules live. Worth stating rather than leaving a
+// reader to infer that all three layers earn their machinery equally. If the
+// possession rules stay a two-way `if` forever, collapsing this layer back to
+// a direct sample would lose nothing but the uniformity.
+//
 // ONE SET OF LAYERS FOR EVERY CHARACTER. `MixerLayer` is stateless between
 // evaluations (see its doc comment), so all 22 players share the three layers
 // the same way `player_renderer_3d.ts`'s `characterMesh` already shares one
@@ -184,6 +194,12 @@ function clamp(x: number, lo: number, hi: number): number {
 // mixer by zero and therefore never applies three.js's own loop handling: an
 // unwrapped `now * IDLE_RATE` would walk off the end of the idle clip's
 // keyframes after nine seconds and freeze on its last key.
+//
+// This is the caller's half of a contract `MixerLayer.set` ENFORCES -- it
+// throws on a phase outside `[0, duration]` (see its doc comment for the
+// three.js early-return that makes the check load-bearing). Only this side
+// knows whether a given phase source loops, which is why the wrap lives here
+// and the check lives there.
 function wrapPhase(time: number, duration: number, loop: boolean): number {
   if (!loop) {
     return clamp(time, 0, duration);

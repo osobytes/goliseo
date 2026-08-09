@@ -196,7 +196,19 @@ describe("rig3d/pose_table.locomotionBlend", () => {
   // so the blend is only ever two-way. That is what makes the nested-slerp
   // equivalence above EXACT rather than approximate -- a genuine three-way
   // quaternion blend would not be associative.
+  //
+  // NOT A STRUCTURAL GUARANTEE. It holds only while `RUN_SPEED > WALK_SPEED >
+  // 0`, which nothing in the type system or the arithmetic enforces: reorder
+  // the two thresholds and `runMix` starts leaving zero before `walkMix`
+  // saturates, all three weights go positive together, and the exactness the
+  // parity suite relies on quietly becomes an approximation. This test is the
+  // only thing standing between that edit and a silent accuracy loss, so it
+  // asserts the precondition explicitly before sweeping the consequence.
   it("is never a genuine three-way blend", () => {
+    // The precondition the two-way property depends on, stated rather than
+    // assumed -- see this test's comment.
+    expect(viewState.WALK_SPEED).toBeGreaterThan(0);
+    expect(viewState.RUN_SPEED).toBeGreaterThan(viewState.WALK_SPEED);
     for (let speed = 0; speed <= viewState.MAX_DISPLAY_SPEED; speed += 3) {
       const { idle, walk, run } = locomotionBlend(speed);
       const nonZero = [idle, walk, run].filter((w) => w > 0);
