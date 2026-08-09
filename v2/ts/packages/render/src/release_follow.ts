@@ -75,6 +75,37 @@ export const releaseFollow = {
     return open;
   },
 
+  // The same snapshot as `windows()`, as a ROSTER-SLOT BITMASK: bit `i` is
+  // set when `rosterIds[i]` has an open window.
+  //
+  // This exists because `render.frame` is not in this process any more. The
+  // payload builder that consumes `kick_follow` is
+  // `gc_render::frame::build`, called from inside wasm
+  // (`gc_wasm::render_export::render_frame_build` /
+  // `MatchDriverBridge::renderFrameBuild`), and `crates/gc-wasm/src/
+  // render_export.rs`'s module doc is explicit that the per-frame path
+  // carries only FFI-safe scalars -- no `wasm-bindgen` marshalling, no
+  // string allocation per frame. A roster is ten stable slots, so every
+  // window that can be open at once fits in one `u32` with 22 bits to
+  // spare, and the ids the Rust side needs are already sitting in the
+  // roster it caches per match. The mask is that scalar.
+  //
+  // Slots past 32 are dropped rather than silently aliasing onto low bits.
+  // No roster in this game comes near that (`sim/match.lua`: five a side),
+  // and a follow-through that fails to show is a missing beat of
+  // presentation, not a wrong one.
+  slotMask(rosterIds: readonly string[]): number {
+    let mask = 0;
+    const count = Math.min(rosterIds.length, 32);
+    for (let index = 0; index < count; index += 1) {
+      const id = rosterIds[index];
+      if (id !== undefined && (remaining.get(id) ?? 0) > 0) {
+        mask = (mask | (1 << index)) >>> 0;
+      }
+    }
+    return mask;
+  },
+
   // Drop every window (fresh match, kickoff, correction reset, replay
   // boundary) so a follow-through can never survive the timeline that
   // produced it.

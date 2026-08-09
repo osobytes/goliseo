@@ -32,7 +32,7 @@
 import { combatFeedback, matchEventBatch } from "@gc/presentation";
 import type { CombatEvent, CombatFeedbackState, MatchEvent, RollbackEventDiff, RollbackWrappedEvent } from "@gc/presentation";
 import { Vec2 } from "@gc/core";
-import { cameraFollow, correctionSmoothing, viewState } from "@gc/render";
+import { cameraFollow, correctionSmoothing, releaseFollow, viewState } from "@gc/render";
 import type { correctionSmoothingTypes, replayTypes } from "@gc/render";
 import type { LifecyclePayload } from "./online_match_model.ts";
 import type { GameSettings } from "./content.ts";
@@ -1463,6 +1463,7 @@ export class MatchScreen {
     this.renderSmoothing = undefined;
     viewState.reset();
     cameraFollow.reset();
+    releaseFollow.reset();
     this.ports.replay?.reset?.();
     this.latches.shootHeldPrev = false;
     this.latches.passHeldPrev = false;
@@ -1532,6 +1533,7 @@ export class MatchScreen {
     // back at rest rather than carrying over the replay's last pose.
     viewState.reset();
     cameraFollow.reset();
+    releaseFollow.reset();
     if (source === undefined) {
       return;
     }
@@ -1714,6 +1716,19 @@ export class MatchScreen {
     const host = this.host!;
     const hud = host.frame().hud;
     const scoreAfter = hud.home_score + hud.away_score;
+    // `release_follow.update(events, dt)` -- the renderer-owned kick
+    // follow-through window, aged by this render call's dt and then latched
+    // from THIS call's own accumulated event batch (`observedFrameEvents`,
+    // filled once per simulated tick above, so a catch-up batch cannot drop
+    // a release). Presentation only: it never enters a snapshot, a hash or a
+    // resimulation -- see `release_follow.ts`'s header. Read back out at the
+    // payload-build site (`sim_host.ts`'s `frame()`), which turns it into
+    // the roster-slot mask `RenderFrameOptions.kick_follow` is built from.
+    //
+    // Sits before `updateBaseRenderSmoothing` so that call's own lifecycle
+    // reset (a goal, full time) still gets the last word and clears a window
+    // that must not survive the timeline that produced it.
+    releaseFollow.update(this.observedFrameEvents, dt);
     this.updateBaseRenderSmoothing(dt, scoreAfter !== scoreBefore || hud.finished);
     if (scoreAfter > this.lastScore && !hud.finished) {
       const scoringTeam: "home" | "away" = hud.home_score > this.lastHome ? "home" : "away";
@@ -1722,6 +1737,7 @@ export class MatchScreen {
         // post-goal kickoff pose into it.
         viewState.reset();
         cameraFollow.reset();
+        releaseFollow.reset();
         this.replayState = undefined;
       }
     }
@@ -1743,6 +1759,7 @@ export class MatchScreen {
       this.renderSmoothing = correctionSmoothing.new(source);
       viewState.reset();
       cameraFollow.reset();
+      releaseFollow.reset();
     } else {
       this.renderSmoothing =
         this.renderSmoothing !== undefined
@@ -1859,6 +1876,7 @@ export class MatchScreen {
   private clearRollbackRenderSmoothing(): void {
     viewState.reset();
     cameraFollow.reset();
+    releaseFollow.reset();
     const source = this.correctionSource();
     if (source === undefined) {
       return;
@@ -2007,6 +2025,7 @@ export class MatchScreen {
       if (!drawingRollbackReplay) {
         viewState.reset();
         cameraFollow.reset();
+        releaseFollow.reset();
       }
     } else {
       for (const correction of corrections) {

@@ -92,7 +92,7 @@ dts += `
 // (init) has resolved -- see this script's header.
 export function __getRawExports(): {
     readonly memory: WebAssembly.Memory;
-    render_frame_build(handle: number): number;
+    render_frame_build(handle: number, kickFollowSlots: number): number;
     render_frame_ptr(): number;
     render_frame_len(): number;
 };

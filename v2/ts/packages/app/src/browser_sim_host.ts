@@ -40,7 +40,7 @@
 
 import { inputSample } from "@gc/input";
 import type { inputSampleTypes } from "@gc/input";
-import { frameBuffer } from "@gc/render";
+import { frameBuffer, releaseFollow } from "@gc/render";
 import type { frameBufferTypes } from "@gc/render";
 import type { RenderFrame, RenderFrameRoster, SimHostPort } from "@gc/screens";
 import init, * as gcWasmWeb from "@gc/wasm/web";
@@ -116,7 +116,7 @@ class BrowserWasmSimHost implements SimHostPort {
   private readonly localSlot: number;
   private disposed = false;
   private rosterCache: frameBufferTypes.DecodedRenderFrameRoster | undefined;
-  private frameCache: { readonly tick: number; readonly frame: RenderFrame } | undefined;
+  private frameCache: { readonly tick: number; readonly kickFollowSlots: number; readonly frame: RenderFrame } | undefined;
 
   constructor(
     homeTeamId: string,
@@ -173,11 +173,16 @@ class BrowserWasmSimHost implements SimHostPort {
   frame(): RenderFrame {
     this.assertLive();
     const tick = this.session.inputTick;
-    if (this.frameCache !== undefined && this.frameCache.tick === tick) {
+    // The renderer's own release follow-through window as a roster-slot
+    // bitmask, and part of the cache key because it changes the frame
+    // without changing the tick -- see `sim_host.ts`'s `frame()`, which this
+    // mirrors exactly.
+    const kickFollowSlots = releaseFollow.slotMask(this.rosterInternal().ids);
+    if (this.frameCache !== undefined && this.frameCache.tick === tick && this.frameCache.kickFollowSlots === kickFollowSlots) {
       return this.frameCache.frame;
     }
     const raw = gcWasmWeb.__getRawExports();
-    const ok = raw.render_frame_build(this.session.handle);
+    const ok = raw.render_frame_build(this.session.handle, kickFollowSlots);
     if (ok === 0) {
       throw new Error("browser_sim_host: no live session for this handle (already disposed?)");
     }
@@ -189,7 +194,7 @@ class BrowserWasmSimHost implements SimHostPort {
     const words = new Float64Array(raw.memory.buffer, ptr, len);
     const decoded = frameBuffer.decode(words);
     const frame = frameBuffer.toRenderFrame(decoded, this.rosterInternal());
-    this.frameCache = { tick, frame };
+    this.frameCache = { tick, kickFollowSlots, frame };
     return frame;
   }
 

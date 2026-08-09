@@ -1162,7 +1162,7 @@ function realMatchDriverPort(wasm: SimHost): MatchDriverPort<RealOnlineDriver, R
     batchControl: (b) => b.control,
     batchCheckpoints: (b) => b.checkpoints,
     batchLive: (b) => b.live,
-    frame: (d) => frameBuffer.decode(wasm.buildMatchDriverRenderFrame(d.bridge)) as unknown as RenderFrame,
+    frame: (d) => frameBuffer.decode(wasm.buildMatchDriverRenderFrame(d.bridge, 0)) as unknown as RenderFrame,
     roster: (d) => d.roster,
     tick: (d) => d.tickCount,
     dispose: (d) => {

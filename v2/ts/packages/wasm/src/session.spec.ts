@@ -91,7 +91,7 @@ describe("the raw per-frame render path", () => {
     try {
       session.step(neutralWire(0));
 
-      const frame = host.buildRenderFrame(session.handle);
+      const frame = host.buildRenderFrame(session.handle, 0);
       expect(frame).not.toBeNull();
       expect(frame).toBeInstanceOf(Float64Array);
       // Header word 0 is gc_render::frame_buffer::MAGIC (0x474F_4C46).
@@ -103,7 +103,7 @@ describe("the raw per-frame render path", () => {
 
   it("returns null for a handle naming no live session", () => {
     const host = loadSimHost();
-    expect(host.buildRenderFrame(999_999)).toBeNull();
+    expect(host.buildRenderFrame(999_999, 0)).toBeNull();
   });
 
   it("invalidates the handle once the session is freed", () => {
@@ -111,7 +111,7 @@ describe("the raw per-frame render path", () => {
     const session = new host.Session("nebula", "orion", 7, 20, 3);
     const handle = session.handle;
     session.free();
-    expect(host.buildRenderFrame(handle)).toBeNull();
+    expect(host.buildRenderFrame(handle, 0)).toBeNull();
   });
 });
 
@@ -146,7 +146,7 @@ describe("a session drives a live match, not a permanent scoreless stalemate", (
       try {
         while (!session.finished) {
           session.step(neutralWire(session.inputTick));
-          const frame = host.buildRenderFrame(session.handle);
+          const frame = host.buildRenderFrame(session.handle, 0);
           expect(frame).not.toBeNull();
           totalEvents += frame?.[EVENT_COUNT_HEADER_INDEX] ?? 0;
         }
