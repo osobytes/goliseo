@@ -177,9 +177,12 @@ interface AnimatorState {
 const states = new Map<string, AnimatorState>();
 
 /**
- * Drops every character's crossfade state. Call when starting a fresh match so
- * player ids do not carry a previous match's stance across, mirroring
- * `viewState.reset()`.
+ * Drops every character's crossfade state.
+ *
+ * Called wherever `viewState.reset()` is -- the scene-discontinuity points in
+ * `screens/match.ts` and `benchmark.ts`'s constructor -- via
+ * `player_renderer_3d.resetAnimation`, which carries the reasoning for why
+ * those are exactly the right sites.
  */
 export function reset(): void {
   states.clear();

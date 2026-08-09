@@ -32,7 +32,7 @@
 import { combatFeedback, matchEventBatch } from "@gc/presentation";
 import type { CombatEvent, CombatFeedbackState, MatchEvent, RollbackEventDiff, RollbackWrappedEvent } from "@gc/presentation";
 import { Vec2 } from "@gc/core";
-import { cameraFollow, correctionSmoothing, releaseFollow, viewState } from "@gc/render";
+import { cameraFollow, correctionSmoothing, player3dResetAnimation, releaseFollow, viewState } from "@gc/render";
 import type { correctionSmoothingTypes, replayTypes } from "@gc/render";
 import type { LifecyclePayload } from "./online_match_model.ts";
 import type { GameSettings } from "./content.ts";
@@ -1467,6 +1467,7 @@ export class MatchScreen {
     viewState.reset();
     cameraFollow.reset();
     releaseFollow.reset();
+    player3dResetAnimation();
     this.ports.replay?.reset?.();
     this.latches.shootHeldPrev = false;
     this.latches.passHeldPrev = false;
@@ -1537,6 +1538,7 @@ export class MatchScreen {
     viewState.reset();
     cameraFollow.reset();
     releaseFollow.reset();
+    player3dResetAnimation();
     if (source === undefined) {
       return;
     }
@@ -1741,6 +1743,7 @@ export class MatchScreen {
         viewState.reset();
         cameraFollow.reset();
         releaseFollow.reset();
+        player3dResetAnimation();
         this.replayState = undefined;
       }
     }
@@ -1763,6 +1766,7 @@ export class MatchScreen {
       viewState.reset();
       cameraFollow.reset();
       releaseFollow.reset();
+      player3dResetAnimation();
     } else {
       this.renderSmoothing =
         this.renderSmoothing !== undefined
@@ -1880,6 +1884,7 @@ export class MatchScreen {
     viewState.reset();
     cameraFollow.reset();
     releaseFollow.reset();
+    player3dResetAnimation();
     const source = this.correctionSource();
     if (source === undefined) {
       return;
@@ -2029,6 +2034,7 @@ export class MatchScreen {
         viewState.reset();
         cameraFollow.reset();
         releaseFollow.reset();
+        player3dResetAnimation();
       }
     } else {
       for (const correction of corrections) {

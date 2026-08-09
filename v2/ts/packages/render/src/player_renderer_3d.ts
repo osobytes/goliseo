@@ -456,18 +456,31 @@ export function mixerPoseFor(
 }
 
 /**
- * Drops every character's animation state (the per-`playerId` stance
- * crossfade), the counterpart to `viewState.reset()`.
+ * Drops every character's animation state -- the per-`playerId` stance
+ * crossfade, the mask each in-flight action was engaged with, and the
+ * timestamp the frame delta is derived from.
  *
- * NOT WIRED INTO `screens/match.ts` ALONGSIDE `viewState.reset()`, deliberately
- * and for now. Those call sites are mostly rollback/replay smoothing clears
- * rather than match-lifecycle boundaries, and the crossfade is self-correcting
- * across one anyway: a stale stance fades out within its own crossfade
- * (0.24s at the longest) and a stale timestamp is capped by the animator's own
- * frame clamp, so nothing gets stuck. Deciding which of those six sites should
- * also re-snap animation is a presentation question worth answering on its own
- * rather than inside #425's playback rewrite. Exported and tested so that
- * decision is a one-line change when somebody makes it.
+ * WIRED AT EVERY `viewState.reset()` SITE (`screens/match.ts`, and
+ * `benchmark.ts` in this package). That is a settled decision, not a default:
+ * #425 introduced genuinely new per-player state where `poseFor` had been a
+ * pure function of `(view, opts, now)`, so it introduced a new thing that can
+ * be stale, and leaving that to self-correct would be a judgement call every
+ * future reader has to re-make.
+ *
+ * Why exactly those sites and not a subset: every one of them already resets
+ * `viewState` AND `cameraFollow` together, because each is a point where the
+ * scene stops being continuous with the frame before it -- a fresh host, a
+ * replay jumping the scene back in time, a rollback re-seed, a match going
+ * terminal. `match.ts`'s own comment at the goal-replay site puts it exactly
+ * right: "the scene jumps back in time, but view state must not carry the
+ * post-goal kickoff pose into it." A stance crossfade is that same kind of
+ * state -- derived presentation continuity, meaningless across the cut -- so
+ * it resets with the other two rather than being reasoned about separately.
+ *
+ * Not resetting would have been SURVIVABLE: a stale stance fades out within
+ * its own crossfade (0.24s at the longest) and a stale timestamp is capped by
+ * the animator's frame clamp, so nothing gets stuck. Survivable is not the bar
+ * for state that is trivially resettable at a boundary that already exists.
  */
 export function resetAnimation(): void {
   animator.reset();
