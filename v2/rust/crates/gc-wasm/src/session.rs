@@ -110,7 +110,7 @@
 use gc_data::players;
 use gc_data::tactics::{self, TacticData};
 use gc_data::teams::{self, TeamData};
-use gc_render::frame::{self as render_frame, RenderFrameOptions};
+use gc_render::frame::{self as render_frame, RenderFrameOptions, RenderFrameRoster};
 use gc_render::frame_buffer;
 use gc_sim::combat;
 use gc_sim::fixed_clock;
@@ -815,12 +815,57 @@ impl Session {
     }
 }
 
+/// Resolve a renderer-supplied roster-slot bitmask into the player ids
+/// [`gc_render::frame::RenderFrameOptions::kick_follow`] wants.
+///
+/// ## Why a bitmask crosses the boundary instead of the ids themselves
+///
+/// The follow-through window is renderer-owned state
+/// (`packages/render/src/release_follow.ts` -- a pass/shot is a one-tick
+/// `MatchEvent`, but the striking leg has to stay extended for a beat after
+/// it, and that beat must never enter a snapshot, a hash or a rollback
+/// resimulation). The payload builder that consumes it lives on this side of
+/// the wasm boundary, so the window has to cross it every frame.
+///
+/// [`crate::render_export`]'s module doc is explicit about what the
+/// per-frame path may carry: FFI-safe scalars only, no `wasm-bindgen`
+/// marshalling, so that the encoded frame block stays the only thing moving.
+/// A roster is ten stable slots, so every window that can be open at once
+/// fits in one `u32` -- and the ids themselves are already here, in the
+/// per-match roster this module caches. So TypeScript sends the SLOTS and
+/// this function looks up the ids, instead of allocating and marshalling a
+/// string per follow-through per frame.
+///
+/// Returns `None` for an empty mask so [`gc_render::frame::build`] takes its
+/// "no window is open" path without allocating, which is the common case.
+/// Bits past the roster's own length are ignored.
+pub(crate) fn kick_follow_ids(roster: &RenderFrameRoster, slots: u32) -> Option<Vec<String>> {
+    if slots == 0 {
+        return None;
+    }
+    let ids: Vec<String> = roster
+        .ids
+        .iter()
+        .enumerate()
+        .take(u32::BITS as usize)
+        .filter(|(index, _)| slots & (1 << index) != 0)
+        .map(|(_, id)| id.clone())
+        .collect();
+    (!ids.is_empty()).then_some(ids)
+}
+
 /// Build a [`RenderFrameOptions`] that reuses `entry`'s cached roster
 /// instead of rebuilding it every frame. Shared with
 /// [`crate::render_export`].
-pub(crate) fn frame_options(entry: &Entry) -> RenderFrameOptions {
+///
+/// `kick_follow_slots` is the renderer's follow-through window as a
+/// roster-slot bitmask -- see [`kick_follow_ids`]. `0` means no window is
+/// open, which is what every caller passed implicitly before this parameter
+/// existed.
+pub(crate) fn frame_options(entry: &Entry, kick_follow_slots: u32) -> RenderFrameOptions {
     RenderFrameOptions {
         roster: Some(entry.roster.clone()),
+        kick_follow: kick_follow_ids(&entry.roster, kick_follow_slots),
         ..Default::default()
     }
 }
@@ -1397,5 +1442,79 @@ mod tactic_and_starter_xi_tests {
         clashes_with_away[4] = "gax_oru".to_string(); // orion's keeper
         resolve_starter_roster(&clashes_with_away, &away_roster)
             .expect_err("an id already on the away roster must be rejected");
+    }
+}
+
+#[cfg(test)]
+mod kick_follow_tests {
+    use super::*;
+    use gc_render::player_pose::PlayerPoseId;
+
+    fn session() -> Session {
+        Session::new(
+            "nebula", "orion", 7.0, 20.0, 3, None, None, None, None, None,
+        )
+        .expect("authored teams with five-player rosters")
+    }
+
+    #[test]
+    fn an_empty_mask_opens_no_window_at_all() {
+        let session = session();
+        session.with_entry(|entry| {
+            assert_eq!(kick_follow_ids(&entry.roster, 0), None);
+            assert_eq!(frame_options(entry, 0).kick_follow, None);
+        });
+    }
+
+    #[test]
+    fn each_set_bit_resolves_to_that_roster_slot_s_id() {
+        let session = session();
+        session.with_entry(|entry| {
+            let ids = &entry.roster.ids;
+            assert_eq!(
+                kick_follow_ids(&entry.roster, 0b0010),
+                Some(vec![ids[1].clone()])
+            );
+            assert_eq!(
+                kick_follow_ids(&entry.roster, 0b1001),
+                Some(vec![ids[0].clone(), ids[3].clone()])
+            );
+        });
+    }
+
+    #[test]
+    fn bits_past_the_roster_are_ignored_rather_than_wrapping_onto_real_slots() {
+        let session = session();
+        session.with_entry(|entry| {
+            let past_the_end = 1u32 << 31;
+            assert!(entry.roster.ids.len() < 31);
+            assert_eq!(kick_follow_ids(&entry.roster, past_the_end), None);
+        });
+    }
+
+    /// THE END-TO-END PROOF this wiring exists for: a mask handed to
+    /// [`frame_options`] must actually come out of
+    /// `gc_render::player_pose::select` as the `kick_follow` pose. Before
+    /// this parameter existed both production construction sites built
+    /// `RenderFrameOptions { roster, ..Default::default() }`, so
+    /// `PlayerPoseId::KickFollow` was structurally unreachable in a real
+    /// match no matter what the renderer's own follow-through window said.
+    ///
+    /// Slot 1, not slot 0: slot 0 is the keeper, and `player_pose::select`
+    /// gates every outfield pose (this one included) on `!is_keeper`.
+    #[test]
+    fn a_masked_outfield_slot_reaches_the_frame_as_the_kick_follow_pose() {
+        let session = session();
+        session.with_entry(|entry| {
+            assert!(!entry.roster.is_keeper[1], "slot 1 must be an outfielder");
+
+            let without = render_frame::build(&entry.state, &frame_options(entry, 0));
+            assert_ne!(without.players.pose_id[1], PlayerPoseId::KickFollow);
+
+            let with = render_frame::build(&entry.state, &frame_options(entry, 0b0010));
+            assert_eq!(with.players.pose_id[1], PlayerPoseId::KickFollow);
+            // ...and only that slot.
+            assert_ne!(with.players.pose_id[2], PlayerPoseId::KickFollow);
+        });
     }
 }
