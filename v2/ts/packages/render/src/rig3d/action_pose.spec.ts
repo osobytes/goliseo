@@ -145,6 +145,84 @@ describe("rigged whole-body action poses", () => {
   });
 });
 
+// #436: the translations leave this file in METRES, not in rig heights.
+//
+// Signs and orderings were pinned above from the day the poses landed, and all
+// of them passed while every dive, aerial and reaction travelled 64% of its
+// authored distance -- the four translation sites divided by `RADII_PER_HEIGHT`
+// (6, radii per rig height) where the metres `skeleton.apply` adds onto bone
+// offsets need `* RIG_HEIGHT_METRES / 6`. A relative pin cannot catch that,
+// because scaling every distance by one factor preserves every ordering. So
+// these are ABSOLUTE, and they are the only tests here that are.
+//
+// Each assertion is made twice on purpose. `metres(k)` ties the pose to the
+// file's single conversion, which fails if a call site stops using it; the
+// literal metre value ties the conversion itself to the rig, which fails if
+// `metres` is redefined so the first check passes vacuously. The short value
+// each pose used to produce is written down next to it, so a revert reads as a
+// named regression rather than as an unexplained number.
+describe("root translations in metres", () => {
+  // 1.5676 m / 6 radii. Written out rather than imported so that a change to
+  // the rig's proportions is a deliberate edit here, not a silent re-scale.
+  const METRE_PER_RADIUS = 0.26126;
+
+  it("crosses from radii to metres through the rig's height, not through 6", () => {
+    expect(actionPose.metres(1)).toBeCloseTo(METRE_PER_RADIUS, 4);
+    // The rig is 6 radii tall by construction, so this round-trips to its
+    // standing height. If this reads 1.0 the conversion is back to rig heights.
+    expect(actionPose.metres(6)).toBeCloseTo(1.5676, 3);
+  });
+
+  it("throws a keeper the full 1.6r of their dive", () => {
+    const pose = actionPose.forOptions(opts("keeper_dive", { dive: 1, dive_dir: LEFT }));
+    const travel = pose?.move.root?.[0] ?? Number.NaN;
+    expect(travel).toBeCloseTo(actionPose.metres(1.6), 12);
+    // 0.418 m, not the 0.267 m (1.6 / 6) this moved before #436.
+    expect(travel).toBeCloseTo(0.418, 3);
+  });
+
+  it("reaches every save family in metres, keeper_tip the furthest", () => {
+    const travel = (id: string) =>
+      actionPose.forOptions(opts(id, { dive: 1, dive_dir: LEFT }))?.move.root?.[0] ?? Number.NaN;
+    // SAVES' own radii: spread 0.65, central 0.95, stretch 1.9, tip 2.2.
+    expect(travel("keeper_spread")).toBeCloseTo(actionPose.metres(0.65), 12);
+    expect(travel("keeper_central")).toBeCloseTo(actionPose.metres(0.95), 12);
+    expect(travel("keeper_stretch")).toBeCloseTo(actionPose.metres(1.9), 12);
+    expect(travel("keeper_tip")).toBeCloseTo(actionPose.metres(2.2), 12);
+    expect(travel("keeper_tip")).toBeCloseTo(0.5748, 4);
+  });
+
+  it("lifts a bicycle kick 2r off the turf, which is a third of the figure", () => {
+    const pose = actionPose.forOptions(opts("aerial_bicycle", { aerial: 1, aerial_style: "bicycle", aerial_jump: 1 }));
+    const lift = pose?.move.root?.[1] ?? Number.NaN;
+    // 0.35 + 1.65 * jump, at jump = 1.
+    expect(lift).toBeCloseTo(actionPose.metres(2.0), 12);
+    // 0.523 m, not the 0.333 m this rose before #436. Before the rig's own
+    // motion_scale (0.88), which `skeleton.apply` applies afterwards.
+    expect(lift).toBeCloseTo(0.5225, 4);
+  });
+
+  it("drives a knockback off the feet and settles a stagger, both in metres", () => {
+    const lift = actionPose.forOptions(opts("combat_knockback"))?.move.root?.[1] ?? Number.NaN;
+    const settle = actionPose.forOptions(opts("combat_stagger"))?.move.root?.[1] ?? Number.NaN;
+    expect(lift).toBeCloseTo(actionPose.metres(0.45), 12);
+    expect(lift).toBeCloseTo(0.1176, 4);
+    expect(settle).toBeCloseTo(actionPose.metres(-0.28), 12);
+  });
+
+  it("drops a stumble back behind the challenge in metres", () => {
+    const pose = actionPose.forOptions(opts("stumble"));
+    expect(pose?.move.root?.[1] ?? Number.NaN).toBeCloseTo(actionPose.metres(0.12), 12);
+    expect(pose?.move.root?.[2] ?? Number.NaN).toBeCloseTo(actionPose.metres(-0.35), 12);
+    expect(pose?.move.root?.[2] ?? Number.NaN).toBeCloseTo(-0.0914, 4);
+  });
+
+  it("gets a keeper up off the ground they landed on, in metres", () => {
+    const pose = actionPose.forOptions(opts("keeper_get_up", { dive_dir: LEFT }));
+    expect(pose?.move.root?.[1] ?? Number.NaN).toBeCloseTo(actionPose.metres(-0.18), 12);
+  });
+});
+
 // #430: the held body attitudes recovered from the 2.5D billboard deleted in
 // #418. These are postures rather than actions, and the distinction is what
 // most of this suite is about -- see `action_pose.ts`'s TWO KINDS OF ROOT
@@ -221,9 +299,11 @@ describe("held body attitudes", () => {
   // `asin(k * METRES_PER_RADIUS / LEAN_REFERENCE_HEIGHT)`, so `sin(theta)` is
   // exactly proportional to the billboard's `k` and the ratio of two poses'
   // sines is exactly the ratio of their constants -- independent of the rig's
-  // height, of the reference point, and of #436's conversion question. So this
-  // survives an honest re-tune of the mapping (which the file invites) and
-  // fails a per-pose magnitude drift (which it does not).
+  // height and of the reference point. So this survives an honest re-tune of
+  // the mapping (which the file invites) and fails a per-pose magnitude drift
+  // (which it does not). What a scale-free pin CANNOT see is the whole mapping
+  // being wrong at once, which is exactly what #436 was; the absolute pins in
+  // "root translations in metres" above are there for that half.
   it("keeps fatigue's magnitude tied to contain's, so a shrunk sag cannot pass on the crouch's coat-tails", () => {
     const sinLean = (id: string) => Math.sin(((actionPose.attitudeFor(opts(id))?.rot.root?.[0] ?? 0) * Math.PI) / 180);
     const drop = (id: string) => -(actionPose.attitudeFor(opts(id))?.move.root?.[1] ?? 0);

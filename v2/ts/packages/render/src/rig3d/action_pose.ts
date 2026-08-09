@@ -30,8 +30,9 @@
 //     Like every clip translation it rides the rig's motion_scale.
 //
 // Distances are expressed in PLAYER RADII, the same unit the 2.5D constants
-// were written in, and converted once on the way out. That keeps the numbers
-// directly comparable to the renderer they came from.
+// were written in, and converted once on the way out -- through `metres()`,
+// which is the only radii-to-metres crossing in the file (#436). That keeps
+// the numbers directly comparable to the renderer they came from.
 //
 // No IK here: every pose is a transform of the rig ROOT bone, not a limb
 // solve. rig3d has no two-bone IK anywhere in this milestone's source files.
@@ -99,44 +100,44 @@ export interface ActionPoseOptions {
   readonly aerial_jump?: number;
 }
 
-// One player radius, in metres. The rig is HEIGHT_IN_RADII * 2 radii tall by
-// construction, so this is the conversion and it needs no camera state.
-const RADII_PER_HEIGHT = 6.0;
-
-// The same conversion, carried all the way into metres.
+// ONE UNIT, ONE CONVERSION (#436).
 //
-// TWO CONVENTIONS LIVE IN THIS FILE, separated only by this comment. That is a
-// copy-paste trap, so it is stated here rather than left to be inferred from
-// whichever constant a function happens to reach for.
+// Every distance in this file is authored in PLAYER RADII and every distance
+// that leaves it is in METRES, because `proportions.RigSegments` is metres and
+// `skeleton.apply` adds `pose.move` straight onto a bone offset. `metres()`
+// below is the only place that crossing happens.
 //
-// `RADII_PER_HEIGHT` on its own turns radii into RIG HEIGHTS; the numbers that
-// reach the skeleton are metres (`proportions.RigSegments` is metres, and
-// `skeleton.apply` adds `pose.move` straight onto a bone offset). The
-// SAVES/TIPS translations below divide by `RADII_PER_HEIGHT` alone, so every
-// dive, tip, get-up, knockback and stagger travels a factor of the rig's own
-// height (~1.57) short of the radii it is labelled with -- `keeper_dive` moves
-// 0.267 m where its 1.6r says 0.418 m.
+// It is a function rather than a comment because the comment did not hold.
+// Until #436 this file carried a second constant, `RADII_PER_HEIGHT = 6.0`,
+// which turns radii into RIG HEIGHTS rather than metres -- a plausible-looking
+// divisor sitting one line above the honest conversion, guarded only by a note
+// saying which one to use. Four translation sites used it: `save`, `aerial`
+// and `tip` twice. Every keeper dive, tip, get-up, knockback, stagger, bicycle
+// kick, header and volley therefore travelled a factor of the rig's own height
+// (~1.57x) short of the radii it was labelled with -- `keeper_dive` moved
+// 0.267 m where its 1.6r says 0.418 m. That name no longer exists, so the
+// short idiom is now a compile error rather than a thing to remember.
 //
-// That is a real defect and it is **#436**, deliberately NOT fixed here:
-// correcting it re-scales every keeper save and combat reaction in the game by
-// 1.57x, which is a re-tune of poses with their own sign-off and has nothing
-// to do with standing postures. It survived this long because those constants
-// are byte-identical to the deleted billboard's, ported rather than retuned,
-// so nobody ever signed off on the short scale -- and #418 deleted the only
-// renderer a 36% shortfall could have been spotted against by eye.
-//
-// ANYTHING NEW USES `METRES_PER_RADIUS`, which is the honest conversion. Do
-// not copy a bare `/ RADII_PER_HEIGHT` out of the SAVES/TIPS code into a new
-// pose; that idiom is short by design only until #436 lands, at which point it
-// should disappear from this file entirely.
-//
-// The conversion itself is `player_renderer_3d.ts`'s TORSO LEAN block, not a
-// new claim: `ppmForRadius` sets ppm = r * HEIGHT_IN_RADII * 2 / height, so
-// `k * r` on-screen pixels is `k * height / RADII_PER_HEIGHT` metres for any
-// k and any r -- the `r` cancels, which is why a billboard constant written in
-// projected pixels converts to rig metres with no camera state at all.
+// The rig is HEIGHT_IN_RADII * 2 = 6 radii tall by construction, which is why
+// the divisor is 6 and why no camera state is needed. That identity is
+// `player_renderer_3d.ts`'s TORSO LEAN block, not a new claim: `ppmForRadius`
+// sets ppm = r * HEIGHT_IN_RADII * 2 / height, so `k * r` on-screen pixels is
+// `k * height / 6` metres for any k and any r -- the `r` cancels, which is why
+// a billboard constant written in projected pixels converts to rig metres with
+// no camera state at all.
 const RIG_HEIGHT_METRES = proportions.height(proportions.RIG_MEDIUM);
-const METRES_PER_RADIUS = RIG_HEIGHT_METRES / RADII_PER_HEIGHT;
+const METRES_PER_RADIUS = RIG_HEIGHT_METRES / 6.0;
+
+/**
+ * One distance in player radii, in the metres `skeleton.apply` consumes.
+ *
+ * Exported so a sibling cannot re-derive the crossing and get a different
+ * answer, and so the specs can pin a travel against the conversion rather than
+ * against a hand-copied decimal.
+ */
+export function metres(radii: number): number {
+  return radii * METRES_PER_RADIUS;
+}
 
 // Where a whole-figure lean is read off, in metres above the ground.
 //
@@ -233,7 +234,7 @@ function save(poseId: string | undefined, opts: ActionPoseOptions): RootPose | n
   const pose = empty();
   // Head toward the dive side: +X needs a negative z (see the note above).
   pose.rot.root = [0, 0, -sign * spec.angle * amount];
-  pose.move.root = [(sign * spec.travel * amount) / RADII_PER_HEIGHT, 0, 0];
+  pose.move.root = [metres(sign * spec.travel * amount), 0, 0];
   return pose;
 }
 
@@ -250,7 +251,7 @@ function aerial(poseId: string | undefined, opts: ActionPoseOptions): RootPose |
   const amount = clamp(opts.aerial ?? 0, 0, 1);
   const lift = (0.35 + 1.65 * (opts.aerial_jump ?? 0)) * amount;
   const pose = empty();
-  pose.move.root = [0, lift / RADII_PER_HEIGHT, 0];
+  pose.move.root = [0, metres(lift), 0];
   if (opts.aerial_style === "bicycle") {
     // Over backwards, which is negative x: the head goes behind the hips.
     pose.rot.root = [-78 * amount, 0, 0];
@@ -283,7 +284,7 @@ function tip(poseId: string | undefined, opts: ActionPoseOptions): RootPose | nu
   if (poseId === "stumble") {
     const pose = empty();
     pose.rot.root = [-24, 0, 0];
-    pose.move.root = [0, 0.12 / RADII_PER_HEIGHT, -0.35 / RADII_PER_HEIGHT];
+    pose.move.root = [0, metres(0.12), metres(-0.35)];
     return pose;
   }
 
@@ -302,7 +303,7 @@ function tip(poseId: string | undefined, opts: ActionPoseOptions): RootPose | nu
   }
   const dy = (spec.lift ?? 0) - (spec.drop ?? 0);
   if (dy !== 0) {
-    pose.move.root = [0, dy / RADII_PER_HEIGHT, 0];
+    pose.move.root = [0, metres(dy), 0];
   }
   return pose;
 }
@@ -413,7 +414,7 @@ export function attitudeFor(opts: ActionPoseOptions): RootPose | null {
   if (lean !== 0) {
     // Displacement at LEAN_REFERENCE_HEIGHT, turned into the root tilt that
     // produces it. Positive x tips forward onto the face.
-    const displacement = lean * METRES_PER_RADIUS;
+    const displacement = metres(lean);
     const radians = Math.asin(clamp(displacement / LEAN_REFERENCE_HEIGHT, -1, 1));
     pose.rot.root = [(radians * 180) / Math.PI, 0, 0];
   }
@@ -426,7 +427,7 @@ export function attitudeFor(opts: ActionPoseOptions): RootPose | null {
     // largest here, `keeper_ready_low`, is 0.084 m before the rig's own
     // motion_scale, against a 1.57 m figure). Named rather than hidden: a
     // knee-bent crouch is limb work and belongs with the clip set.
-    pose.move.root = [0, -drop * METRES_PER_RADIUS, 0];
+    pose.move.root = [0, -metres(drop), 0];
   }
   return pose;
 }
