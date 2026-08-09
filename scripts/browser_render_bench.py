@@ -180,24 +180,37 @@ def _inherited_env() -> dict[str, str]:
     return dict(os.environ)
 
 
-def build_v2_harness(skip_wasm_build: bool) -> None:
+def build_v2_harness(
+    skip_wasm_build: bool,
+    vite_config: Path = HARNESS_VITE_CONFIG,
+    dist: Path = HARNESS_DIST,
+    label: str = "v2 render-bench harness",
+) -> None:
     """`node packages/wasm/scripts/build_web.mjs` then `pnpm exec vite build`
     against this harness's own vite.config.ts -- exactly the recipe this
-    task's brief specifies."""
+    task's brief specifies.
+
+    The three defaulted parameters are this file's own harness, so every
+    existing call is unchanged. They exist because the recipe is identical
+    for the sibling harnesses under `v2/tools/` -- only the vite config and
+    the output directory differ -- and `scripts/browser_match_harness.py`
+    needs exactly this for `v2/tools/browser_match_harness`. Duplicating
+    fifteen lines there would mean the wasm-build step and its
+    `--skip-wasm-build` precondition could drift between the two."""
     if not skip_wasm_build:
         print("[browser_render_bench] node packages/wasm/scripts/build_web.mjs")
         subprocess.run(["node", str(WASM_BUILD_SCRIPT)], cwd=V2_TS, check=True)
     elif not (V2_TS / "packages" / "wasm" / "dist" / "pkg-web" / "gc_wasm.js").is_file():
         raise RuntimeError("--skip-wasm-build was given but dist/pkg-web/gc_wasm.js is missing")
-    print("[browser_render_bench] pnpm exec vite build (v2 render-bench harness)")
+    print(f"[browser_render_bench] pnpm exec vite build ({label})")
     subprocess.run(
-        ["pnpm", "exec", "vite", "build", "--config", str(HARNESS_VITE_CONFIG)],
+        ["pnpm", "exec", "vite", "build", "--config", str(vite_config)],
         cwd=V2_TS,
         check=True,
         env={"VITE_CONFIG_NATIVE_IGNORE_WARNING": "true", **_inherited_env()},
     )
-    if not (HARNESS_DIST / "index.html").is_file():
-        raise RuntimeError(f"v2 harness build did not produce {HARNESS_DIST / 'index.html'}")
+    if not (dist / "index.html").is_file():
+        raise RuntimeError(f"{label} build did not produce {dist / 'index.html'}")
 
 
 def build_lua_web(output_dir: Path, skip: bool) -> None:

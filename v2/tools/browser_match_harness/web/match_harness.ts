@@ -49,7 +49,7 @@
 
 import init, { Session, __getRawExports } from "../../../ts/packages/wasm/dist/pkg-web/gc_wasm.js";
 import * as THREE from "three";
-import { SceneRoot, Stadium, camera, cameraFollow, frameBuffer, pitch, releaseFollow, viewState } from "@gc/render";
+import { SceneRoot, Stadium, camera, cameraFollow, effects, frameBuffer, pitch, releaseFollow, viewState } from "@gc/render";
 import type { frameBufferTypes } from "@gc/render";
 
 const DT = 1 / 60;
@@ -97,6 +97,34 @@ interface HarnessStats {
    * v2/ts reads these. */
   poses: (string | undefined)[];
   leans: number[];
+  /** Per-roster-slot WORLD position, the ball's world position, the field's
+   * size, and the follow camera's current view -- all read straight off the
+   * frame this loop already decoded and the `cameraFollow` it already
+   * updated. Same diagnostics-only status as `poses`/`leans` above, added
+   * for the same reason and to answer the question those two could not:
+   * WHERE the posed player is relative to what the camera is framing.
+   *
+   * `scripts/browser_match_harness.py --pose` finds ticks at which some
+   * player holds a given pose; without these fields it cannot tell a pose
+   * held in shot from one held off screen, which is exactly how #438's one
+   * `keeper_tip` sighting turned out to be useless. The driver derives the
+   * on-camera test in Python from `view_zoom` and the field size rather
+   * than projecting here, so this stays a read of state and adds no
+   * geometry to the page.
+   *
+   * `view_*` are null until `cameraFollow` has a smoothed focus (its own
+   * `view()` returns undefined before the first update) or when
+   * `?stadium=0` leaves the follow camera off. Nothing under v2/ts reads
+   * any of this. */
+  playerX: number[];
+  playerY: number[];
+  ballX: number;
+  ballY: number;
+  fieldW: number;
+  fieldH: number;
+  viewX: number | null;
+  viewY: number | null;
+  viewZoom: number | null;
 }
 
 declare global {
@@ -165,6 +193,15 @@ async function main(): Promise<void> {
     score: "0-0",
     poses: [],
     leans: [],
+    playerX: [],
+    playerY: [],
+    ballX: 0,
+    ballY: 0,
+    fieldW: 0,
+    fieldH: 0,
+    viewX: null,
+    viewY: null,
+    viewZoom: null,
   };
   globalThis.__gcMatchHarness = stats;
 
@@ -255,7 +292,43 @@ async function main(): Promise<void> {
     glRenderer.setPixelRatio(pixelRatioForWindow());
     sceneRoot.resize({ w: width, h: height });
   });
-  const session = new Session("nebula", "orion", seed, durationSeconds, 99, undefined, undefined, undefined, undefined, undefined);
+  // `?combat=1` OPTS THE SESSION INTO THE COMBAT LAYER. Off by default, so
+  // this page behaves exactly as it did before unless asked -- same posture
+  // as `?bloom=0`/`?ratio=`/`?spin=` above.
+  //
+  // WHY IT WAS ADDED, AND WHAT IT DOES NOT FIX. `Session::new`'s
+  // `combat_enabled` argument defaults to `false` when omitted
+  // (`session.rs`: "None/omitted defaults to false"), and this page omitted
+  // it, so the session never even built a `CombatMatchState`. Turning it on
+  // demonstrably changes the match -- run
+  // `scripts/browser_match_harness.py scan` with and without `--combat` and
+  // the pose histogram differs from the first few hundred ticks.
+  //
+  // It does NOT make combat POSES appear, and the reason is worth recording
+  // here because two sessions have now spent time looking for them.
+  // `player_pose::select` only considers `combat_stagger`,
+  // `combat_knockback`, `combat_guard`, `combat_active`, `combat_windup`,
+  // `combat_aim` and `combat_recovery` when it is handed a
+  // `FrameCombatModel`; that model is built in TypeScript
+  // (`@gc/presentation`), and `gc_wasm`'s `frame_options` (session.rs)
+  // constructs `RenderFrameOptions` with `..Default::default()`, so
+  // `options.combat` is always `None` on this path. The marshalling layer
+  // that would carry a live model into wasm is an explicitly out-of-scope
+  // milestone (`frame.rs`'s `FrameCombatModel` doc, v2/README §1), and the
+  // wire does not carry the model either (`frame_buffer.ts`: "WHAT IS NOT
+  // CARRIED: RenderFrame.combat"). So those seven poses are currently
+  // unreachable in EVERY v2 render frame, not merely rare in this harness.
+  // #438 recorded three of them as "never reached in ~22,000 ticks across
+  // four seeds" and read that as rarity; this is why. #439 wants
+  // `combat_stagger` on camera and cannot have it until that milestone
+  // lands.
+  //
+  // The lever is kept, off by default, because it is what makes that
+  // distinction demonstrable rather than asserted, and because the product's
+  // own match screen has the same opt-in
+  // (`game/screens/match.lua`'s `_opts.combat_enabled`).
+  const combatEnabled = params.get("combat") === "1";
+  const session = new Session("nebula", "orion", seed, durationSeconds, 99, undefined, combatEnabled, undefined, undefined, undefined);
   session.enableBot(botSeed);
 
   const raw = __getRawExports() as {
@@ -311,7 +384,22 @@ async function main(): Promise<void> {
   // Diagnostics handle. This page exists to be measured, and attributing draw
   // calls needs the scene graph and the renderer -- see the breakdown driver
   // in scripts/. Not a product affordance: nothing under v2/ts reads this.
-  (globalThis as unknown as { __gcScene?: unknown }).__gcScene = { sceneRoot, glRenderer, THREE };
+  //
+  // `effects` rides along for one specific reason. It is the only thing this
+  // page can reach that would break a deterministic capture: `effects.burst`
+  // spawns spark particles from bare `Math.random()` -- deliberately, since
+  // it is juice that never feeds back into the simulation, unlike
+  // `stadium_prng.ts` whose output must be reproducible. Nothing here drives
+  // it today (this page never calls `effects.update`/`consume`/
+  // `apply_event_diff`/`confirm_event`/`consume_combat`, so its arrays stay
+  // empty and `pitch.ts`'s draw calls emit nothing), but `pitch.ts` already
+  // imports it, so wiring match or combat events in here is a plausible
+  // future edit. Exposing it lets
+  // `scripts/browser_match_harness.py`'s `renderer_state_verdict` refuse a
+  // capture with a NAMED cause instead of leaving the next person with a
+  // control that fails unpredictably near every shot. Read-only: the driver
+  // calls `diagnostics()` and nothing else.
+  (globalThis as unknown as { __gcScene?: unknown }).__gcScene = { sceneRoot, glRenderer, THREE, effects };
 
   if (stadiumEnabled) {
     // Flags first, then the layer: `SceneRoot.render` only routes through the
@@ -395,6 +483,21 @@ async function main(): Promise<void> {
       { field: frame.field, ball: { x: frame.ball.x, y: frame.ball.y }, players: followPlayers },
       ticks * DT,
     );
+    // Read AFTER `cameraFollow.update` so the view reported for this tick is
+    // the one this frame is about to be drawn through, not the previous
+    // frame's. See `HarnessStats`'s `playerX` note for why a driver needs
+    // these at all; nothing here derives geometry, it only republishes state
+    // the loop already has.
+    stats.playerX = roster.ids.map((_id, i) => frame.players.x[i] ?? 0);
+    stats.playerY = roster.ids.map((_id, i) => frame.players.y[i] ?? 0);
+    stats.ballX = frame.ball.x;
+    stats.ballY = frame.ball.y;
+    stats.fieldW = frame.field.w;
+    stats.fieldH = frame.field.h;
+    const followView = pitch.follow_camera ? cameraFollow.view(frame.field) : undefined;
+    stats.viewX = followView?.x ?? null;
+    stats.viewY = followView?.y ?? null;
+    stats.viewZoom = followView?.zoom ?? null;
     decodeMsInWindow += performance.now() - tDecode;
 
     // `?spin=<ms>` burns that many milliseconds of CPU here, BEFORE `tRender`
