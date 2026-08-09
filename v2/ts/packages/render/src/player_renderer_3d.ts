@@ -445,6 +445,11 @@ export function poseFor(view: PlayerView | undefined, opts: PlayerRenderOptions,
  * crossfade state `rig3d/animator.ts` keeps (`poseFor` has no notion of a
  * previous frame, so it cannot crossfade at all). Everything the mixer path
  * adds over `poseFor` is listed in `rig3d/pose_table.ts`'s `POSE_ACTIONS`.
+ *
+ * The torso lean is NOT one of those differences: both paths call the same
+ * `applyLean` under the same `forOptions` gate, so `leanTilt`'s tuning is
+ * shared rather than duplicated and the A/B parity suite can compare the two
+ * at a non-zero `lean`.
  */
 export function mixerPoseFor(
   playerId: string,
@@ -452,7 +457,18 @@ export function mixerPoseFor(
   opts: PlayerRenderOptions,
   now: number,
 ): actionPose.MutablePose {
-  return animator.poseFor(playerId, view, opts, now);
+  const posed = animator.poseFor(playerId, view, opts, now);
+  // The SAME torso lean `poseFor` applies, from the same `applyLean`, under
+  // the same `forOptions` gate and in the same position in the order (after
+  // the whole-body root overlay, which `animator.poseFor` applies as its last
+  // step). One implementation, not two tunings that have to agree -- see the
+  // TORSO LEAN section above, whose derivation rests on `ppmForRadius` and
+  // `HEIGHT_IN_RADII` and therefore belongs to this file rather than to
+  // rig3d.
+  if (actionPose.forOptions(opts) === null) {
+    applyLean(posed, view?.lean ?? 0, opts.facing);
+  }
+  return posed;
 }
 
 /**

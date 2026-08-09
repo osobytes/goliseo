@@ -246,10 +246,11 @@ describe("player_renderer_3d mixer/procedural parity", () => {
     return worst;
   }
 
-  function view(speed: number, gait: number): PlayerView {
-    // lean 0: `poseFor` has no lean treatment at all, so the comparison is
-    // only meaningful upright. `animator.spec.ts` covers the lean itself.
-    return { px: 0, py: 0, speed, phase: 0, gait, lean: 0 };
+  function view(speed: number, gait: number, lean = 0): PlayerView {
+    // `animator.basePose` is the clip blend alone, so the sweep below compares
+    // it upright; the whole-pipeline cases pass a real `lean`, which both
+    // paths now route through the same `applyLean` (#428's).
+    return { px: 0, py: 0, speed, phase: 0, gait, lean };
   }
 
   // The idle/walk/run blend, which is where three.js's cumulative-weight
@@ -302,6 +303,34 @@ describe("player_renderer_3d mixer/procedural parity", () => {
     const v = view(180, 0.6);
     const opts = baseOptions({ pose: { id: "keeper_stretch" }, dive: 0.8, dive_dir: new Vec2(0, 1), facing: new Vec2(1, 0) });
     expect(delta(poseFor(v, opts, 4.2), mixerPoseFor("parity-dive", v, opts, 4.2))).toBeLessThan(PARITY_TOLERANCE);
+  });
+
+  // LEAN PARITY. Both paths call #428's `applyLean` under #428's
+  // `forOptions` gate -- one implementation, not two tunings that have to
+  // agree. Before this rebase the mixer path had its own root-roll lean, which
+  // #428's review showed left a spine counter-rotation stranded during a dive
+  // (`action_pose.apply` assigns `root`, so the roll was discarded but the
+  // counter survived). Deleting it in favour of #428's spine/chest treatment
+  // is what these two tests pin.
+  it("leans identically on both paths, and the lean actually reaches the pose", () => {
+    resetAnimation();
+    const opts = baseOptions({ pose: { id: "locomotion" }, facing: new Vec2(0.6, 0.8) });
+    const upright = view(240, 0.3, 0);
+    const leaning = view(240, 0.3, 0.85);
+    // It is a real difference, not a no-op that would make the parity below vacuous.
+    expect(delta(poseFor(upright, opts, 5.5), poseFor(leaning, opts, 5.5))).toBeGreaterThan(0.01);
+    expect(delta(poseFor(leaning, opts, 5.5), mixerPoseFor("parity-lean", leaning, opts, 5.5))).toBeLessThan(PARITY_TOLERANCE);
+  });
+
+  it("suppresses the lean on both paths while a whole-body action owns the body", () => {
+    resetAnimation();
+    const dive = baseOptions({ pose: { id: "keeper_dive" }, dive: 1, dive_dir: new Vec2(0, 1), facing: new Vec2(1, 0) });
+    const upright = view(240, 0.3, 0);
+    const leaning = view(240, 0.3, 0.85);
+    // `forOptions` is non-null here, so lean must make NO difference at all --
+    // on either path, and on every bone rather than just `root`.
+    expect(delta(poseFor(upright, dive, 6.5), poseFor(leaning, dive, 6.5))).toBe(0);
+    expect(delta(mixerPoseFor("parity-dive-upright", upright, dive, 6.5), mixerPoseFor("parity-dive-leaning", leaning, dive, 6.5))).toBe(0);
   });
 
   // The `"swing"` branch `poseFor` used to carry was unreachable: no

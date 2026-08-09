@@ -1,5 +1,5 @@
 // Tier-2 tests for the character animator: the composition of the three
-// mixer layers, the crossfade, the lean, and the user-facing claim #425's
+// mixer layers, the crossfade, and the user-facing claim #425's
 // asset-agnostic slice makes -- that a set of poses which used to render as a
 // plain jog now have their own silhouette.
 //
@@ -9,14 +9,14 @@
 // the PR's note on the visual pass this slice does not include.
 
 import { beforeEach, describe, expect, it } from "vitest";
-import { quat, type Quat } from "@gc/core";
+import type { Quat } from "@gc/core";
 import * as actionPose from "./action_pose.ts";
-import { poseFor, reset, applyLean, basePose, LEAN_ROOT_DEGREES } from "./animator.ts";
+import { poseFor, reset, basePose } from "./animator.ts";
 import type { AnimatorOptions, AnimatorView } from "./animator.ts";
 import { POSE_ACTIONS } from "./pose_table.ts";
 
-const RUNNING: AnimatorView = { speed: 260, gait: 0.31, lean: 0 };
-const STANDING: AnimatorView = { speed: 0, gait: 0, lean: 0 };
+const RUNNING: AnimatorView = { speed: 260, gait: 0.31 };
+const STANDING: AnimatorView = { speed: 0, gait: 0 };
 
 function opts(overrides: Partial<AnimatorOptions> = {}): AnimatorOptions {
   return overrides;
@@ -212,55 +212,11 @@ describe("rig3d/animator crossfade", () => {
   });
 });
 
-describe("rig3d/animator lean", () => {
-  it("tilts the root and takes part of it back on the spine", () => {
-    const upright: actionPose.MutablePose = { rot: {}, move: {} };
-    const leaning = applyLean({ rot: {}, move: {} }, 1);
-    expect(delta(upright, leaning)).toBeGreaterThan(0);
-    const root = leaning.rot["root"];
-    const spine = leaning.rot["spine"];
-    if (root === undefined || spine === undefined) {
-      throw new Error("expected a root and spine rotation");
-    }
-    // Full lean rolls the root by LEAN_ROOT_DEGREES about z; the spine takes
-    // back a signed fraction of it, so the two roll opposite ways.
-    const expected = quat.fromEuler(0, 0, (-LEAN_ROOT_DEGREES * Math.PI) / 180);
-    expect(root[2]).toBeCloseTo(expected[2], 9);
-    expect(Math.sign(spine[2])).toBe(-Math.sign(root[2]));
-  });
-
-  it("is a no-op at zero and mirrors itself either side of it", () => {
-    const flat = applyLean({ rot: {}, move: {} }, 0);
-    expect(flat.rot["root"]).toBeUndefined();
-    const left = applyLean({ rot: {}, move: {} }, 0.6).rot["root"];
-    const right = applyLean({ rot: {}, move: {} }, -0.6).rot["root"];
-    if (left === undefined || right === undefined) {
-      throw new Error("expected root rotations");
-    }
-    expect(left[2]).toBeCloseTo(-right[2], 12);
-  });
-
-  it("reaches the composed pose, so a running character actually leans", () => {
-    const straight = poseFor(freshId(), { ...RUNNING, lean: 0 }, opts(), 7);
-    const leaning = poseFor(freshId(), { ...RUNNING, lean: 0.9 }, opts(), 7);
-    expect(delta(straight, leaning)).toBeGreaterThan(0.01);
-  });
-
-  // Applied BEFORE action_pose, so a committed whole-body action -- which sets
-  // the root outright -- wins. A keeper mid-save is not also cornering.
-  it("yields the root to a whole-body action rather than fighting it", () => {
-    const dive: Partial<AnimatorOptions> = { dive: 1, dive_dir: { x: 0, y: 1 }, facing: { x: 1, y: 0 } };
-    const straight = poseFor(freshId(), { ...RUNNING, lean: 0 }, withPose("keeper_dive", dive), 8);
-    const leaning = poseFor(freshId(), { ...RUNNING, lean: 0.9 }, withPose("keeper_dive", dive), 8);
-    expect(straight.rot["root"]).toEqual(leaning.rot["root"]);
-  });
-});
-
 describe("rig3d/animator.basePose", () => {
   it("changes with speed and with gait phase, independently", () => {
-    const slow = basePose({ speed: 40, gait: 0.25, lean: 0 }, 0);
-    const fast = basePose({ speed: 380, gait: 0.25, lean: 0 }, 0);
-    const shifted = basePose({ speed: 380, gait: 0.75, lean: 0 }, 0);
+    const slow = basePose({ speed: 40, gait: 0.25 }, 0);
+    const fast = basePose({ speed: 380, gait: 0.25 }, 0);
+    const shifted = basePose({ speed: 380, gait: 0.75 }, 0);
     expect(delta(slow, fast)).toBeGreaterThan(0.05);
     expect(delta(fast, shifted)).toBeGreaterThan(0.05);
   });
@@ -269,10 +225,10 @@ describe("rig3d/animator.basePose", () => {
     // `MixerLayer` advances by zero, so nothing wraps the pinned phase for it.
     // An unwrapped `now * IDLE_RATE` would walk past the idle clip's last key
     // after nine seconds and freeze there for the rest of the match.
-    const early = basePose({ speed: 0, gait: 0, lean: 0 }, 1.0);
-    const late = basePose({ speed: 0, gait: 0, lean: 0 }, 1.0 + 3.4 / 0.35);
+    const early = basePose({ speed: 0, gait: 0 }, 1.0);
+    const late = basePose({ speed: 0, gait: 0 }, 1.0 + 3.4 / 0.35);
     expect(delta(early, late)).toBeLessThan(1e-6);
-    const midCycle = basePose({ speed: 0, gait: 0, lean: 0 }, 1.0 + 3.4 / 0.35 / 2);
+    const midCycle = basePose({ speed: 0, gait: 0 }, 1.0 + 3.4 / 0.35 / 2);
     expect(delta(early, midCycle)).toBeGreaterThan(0.005);
   });
 });

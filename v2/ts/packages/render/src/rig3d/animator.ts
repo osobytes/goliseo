@@ -16,7 +16,16 @@
 //      `poseFor` always had it: arms wrapped around a ball beat whatever else
 //      the keeper is doing.
 //
-// Then `view.lean` as a root/spine tilt, then `action_pose.apply`.
+// Then `action_pose.apply` for the whole-body root overlay.
+//
+// LEAN IS NOT HERE, deliberately. `view.lean` becomes a torso tilt in
+// `player_renderer_3d.ts` (#428's `leanTilt`/`applyLean`), applied to the pose
+// this function returns. That is the right home for it and not merely where
+// it happened to land: the magnitude is derived from `ppmForRadius` and
+// `HEIGHT_IN_RADII`, both of which are that file's, so putting the tilt here
+// would mean rig3d reaching upward for a screen-space calibration. Keeping
+// one implementation there also means the procedural and mixer paths lean
+// identically by construction rather than by two tunings agreeing.
 //
 // HONEST ABOUT LAYER 3: it has exactly one action active at a time and never
 // blends, so it gets none of the N-way accumulation that is the reason layers
@@ -41,10 +50,12 @@
 // property bags and the mixer's own scheduler, none of which need a GL
 // context -- which is why `animator.spec.ts` runs the whole thing headless.
 // Options are declared structurally here rather than imported from
-// `../player_renderer.ts`, matching `action_pose.ts`'s own boundary note, so
+// `../player_render_options.ts`, matching `action_pose.ts`'s own boundary note, so
 // rig3d keeps pointing only upward.
 
-import { quat, type Quat } from "@gc/core";
+// (no @gc/core import: the animator composes poses through `clips.layer` and
+// `action_pose`, and no longer builds quaternions of its own -- see the header
+// note on where the torso lean lives.)
 import * as clips from "./clips.ts";
 import * as masks from "./masks.ts";
 import * as actionPose from "./action_pose.ts";
@@ -58,8 +69,9 @@ export interface AnimatorView {
   readonly speed: number;
   /** Normalised gait cycle position in [0, 1). */
   readonly gait: number;
-  /** Smoothed screen-x lean, -1..1. */
-  readonly lean: number;
+  // `PlayerView.lean` is deliberately absent: the torso tilt is
+  // `player_renderer_3d.ts`'s (see this file's header). A `PlayerView` still
+  // satisfies this interface -- it just carries a field the animator ignores.
 }
 
 /** The `PlayerRenderOptions` fields the animator reads, on top of the root overlay's. */
@@ -96,20 +108,6 @@ const DEFAULT_FADE_SECONDS = 0.16;
 // longest crossfade in `POSE_ACTIONS` (0.24s), or the clamp would let a single
 // long frame complete any fade and would not be a clamp at all.
 const MAX_FRAME_DT = 0.1;
-
-/**
- * Maximum root roll, in degrees, at full `view.lean`. Small on purpose: the
- * lean is a running character's body angle, not a stagger, and
- * `action_pose.ts`'s reactions start at 8 degrees.
- */
-export const LEAN_ROOT_DEGREES = 9;
-
-/**
- * How much of the root's lean the spine takes back. A body leaning into a turn
- * keeps its head roughly over its feet; without the counter-rotation the whole
- * character reads as falling over rather than cornering.
- */
-export const LEAN_SPINE_COUNTER = -0.35;
 
 const BASE_CLIPS: readonly LayerClip[] = [
   // Construction order is playback order is accumulation order: three.js
@@ -259,49 +257,6 @@ function activeMask(state: AnimatorState, weights: Readonly<Record<string, numbe
   return merged;
 }
 
-const IDENTITY: Quat = quat.identity();
-
-function degreesZ(degrees: number): Quat {
-  return quat.fromEuler(0, 0, (degrees * Math.PI) / 180);
-}
-
-/**
- * Tilts the rig into `view.lean`, mutating and returning the pose.
- *
- * Sign, in `skeleton.ts`'s frame (+Y up, character faces +Z, their own right
- * at -X): `action_pose.ts` records that a POSITIVE root z tips the body toward
- * their own right, so a positive `lean` -- moving toward screen-right -- takes
- * a NEGATIVE z, which swings the head toward +X.
- *
- * Applied to `root` (and taken back a little on `spine`) rather than baked
- * into the locomotion clips, because `lean` is smoothed per-frame motion the
- * simulation does not know about, and because a root rotation composes with
- * whatever gait resolved instead of replacing it -- the same argument
- * `action_pose.ts` makes for its own overlays.
- *
- * Deliberately applied BEFORE `action_pose.apply`, so a dive, knockback or
- * stumble -- all of which set `root` outright -- wins. A keeper committing to a
- * save is not also leaning into a turn.
- *
- * KNOWN APPROXIMATION, and #426's to sharpen: `lean` is a SCREEN-x quantity
- * while this rotation is in the character's own frame, and the two only
- * coincide for a character whose facing is square to the camera. The 2.5D
- * renderer this ports from had the same limitation (it leaned the whole
- * billboard in screen space). #426 lands the general treatment on this same
- * seam.
- */
-export function applyLean(pose: actionPose.MutablePose, lean: number): actionPose.MutablePose {
-  const amount = clamp(lean, -1, 1);
-  if (amount === 0) {
-    return pose;
-  }
-  const root = degreesZ(-amount * LEAN_ROOT_DEGREES);
-  pose.rot["root"] = quat.multiply(root, pose.rot["root"] ?? IDENTITY);
-  const spine = degreesZ(-amount * LEAN_ROOT_DEGREES * LEAN_SPINE_COUNTER);
-  pose.rot["spine"] = quat.multiply(spine, pose.rot["spine"] ?? IDENTITY);
-  return pose;
-}
-
 /**
  * The locomotion base layer, evaluated on its own. Exported so
  * `player_renderer_3d.spec.ts` can pin it against the procedural sampler's own
@@ -416,9 +371,7 @@ export function poseFor(
     pose = clips.layer(pose, possession.evaluate(), masks.UPPER_BODY, 1);
   }
 
-  applyLean(pose, view?.lean ?? 0);
-
   // Whole-body actions last: they move the root, so they ride on top of
-  // whatever gait, stance and lean resolved instead of competing with them.
+  // whatever gait and stance resolved instead of competing with them.
   return actionPose.apply(pose, opts);
 }
