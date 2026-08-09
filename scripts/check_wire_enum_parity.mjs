@@ -74,6 +74,35 @@
 // the gate additionally requires the printed enum count to match the
 // registry.
 //
+// WHAT THIS PARSER CANNOT DO. Three limits are known, none of them live
+// today. They are written down because the next reader will not have the
+// context that established them, and because assuming coverage that is not
+// here is worse than the gaps themselves:
+//
+//   - IT DOES NOT EVALUATE `#[cfg(...)]`. `rustEnumVariants` and
+//     `rustDeclaredNames` SKIP attribute lines rather than interpreting them,
+//     so a cfg-gated variant is read as unconditional. No registered enum
+//     uses `cfg` today. If one ever does, the gate goes RED -- the right
+//     direction -- but the message will describe a parity mismatch rather
+//     than the cfg it actually tripped over, so read it with this paragraph
+//     in mind.
+//   - `bracedBody` COUNTS BRACES WITHOUT STRING OR COMMENT AWARENESS. One
+//     stray unmatched brace in a doc comment fails loud ("unbalanced
+//     braces"), which is correct behaviour. Only a contrived double fault --
+//     two stray unmatched braces of OPPOSITE sign, inside comments or
+//     strings, within the same scanned span -- could rebalance the count and
+//     desynchronise silently. Latent, not live: the braces in the current doc
+//     comments are balanced within their own lines.
+//   - WILDCARD DETECTION IS PATTERN-BASED, NOT LINE-BASED (see
+//     `rustArmPatterns`). It reads the text left of each `=>` and splits it on
+//     `|`, so an or-pattern alternative (`Self::A | _ => 2,`) and a compact
+//     one-line match are both caught, not just an arm that begins its line
+//     with `_`. Two independent backstops sit behind it anyway: the
+//     enum-vs-arms cross-check refuses any enum whose declared variants and
+//     `*_code` arms disagree, and `cargo fmt --all --check` (gate 1 of
+//     check_v2.sh, the same CI job) expands multi-arm matches one per line
+//     before any of this is read.
+//
 //   node scripts/check_wire_enum_parity.mjs                 -- check this repo
 //   node scripts/check_wire_enum_parity.mjs --repo DIR      -- check a copy
 //   node scripts/check_wire_enum_parity.mjs --list-sources  -- print the files read
@@ -82,8 +111,10 @@
 // `--self-test` mutates IN-MEMORY copies of the real sources (never the tree)
 // and requires each mutation to be rejected with a specific message:
 // a variant present on one side only, a two-code swap that preserves
-// membership, a wildcard match arm, a decoder that lost a `case`, and a
-// parse that matched nothing. `scripts/check_v2.sh --self-test` runs the same
+// membership, a wildcard match arm in each of its three shapes (bare,
+// or-pattern alternative, compact one-line match), a decoder that lost a
+// `case`, and a parse that matched nothing.
+// `scripts/check_v2.sh --self-test` runs the same
 // demonstration a second, independent way: against mutated file COPIES under
 // `mktemp -d`, through `--repo`.
 
@@ -123,6 +154,13 @@ const WIRE_ENUMS = [
 const NAME_EXCEPTIONS = new Map();
 
 // A Rust crate name as it appears in a `use` path -> its source directory.
+//
+// Only `gc_data` and `gc_sim` are exercised today (`gc_render`'s own types
+// arrive through `use crate::...`, below). The other three are listed anyway
+// because an unresolvable crate is a HARD ERROR, not a skip: an enum moved
+// into gc-core or gc-netcode would otherwise fail the gate for a reason that
+// has nothing to do with parity. Listing the whole workspace costs three
+// lines and removes that trap.
 const CRATE_DIRS = new Map([
   ["gc_core", "v2/rust/crates/gc-core/src"],
   ["gc_data", "v2/rust/crates/gc-data/src"],
@@ -266,16 +304,35 @@ function rustParamType(params, fnName, file) {
   return match[1];
 }
 
+// Every match arm's PATTERN (the text left of its `=>`), for wildcard
+// detection. Splitting on `=>` and taking what follows the preceding arm's
+// `,` -- rather than anchoring on line starts -- is what makes this see a
+// wildcard hiding as an or-pattern alternative (`Self::A | _ =>`) or on a
+// compact one-line match, neither of which begins its line with `_`.
+function rustArmPatterns(body) {
+  const segments = body.split("=>");
+  const patterns = [];
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    const tail = segments[i].split(/[,{]/).pop();
+    patterns.push(tail === undefined ? "" : tail.trim());
+  }
+  return patterns;
+}
+
 // `EnumName::Variant => 7,` / `Variant => 7.0,` arms of a `*_code` match.
 // A wildcard arm is refused: `*_code`'s exhaustiveness with no `_ =>` is the
 // property that makes the Rust side compiler-checked, and this gate reads the
 // arms as the authoritative variant enumeration precisely because of it.
 function rustCodeArms(body, fnName, file) {
-  if (/(?:^|\n)\s*_\s*=>/.test(body)) {
-    fail(
-      `${file}: ${fnName} has a wildcard '_ =>' arm. A wire numbering must be exhaustive with no ` +
-        `wildcard, or a new variant compiles into a wrong code instead of a compile error.`,
-    );
+  for (const pattern of rustArmPatterns(body)) {
+    const alternatives = pattern.split("|").map((part) => part.trim());
+    if (alternatives.includes("_")) {
+      fail(
+        `${file}: ${fnName} has a wildcard '_' match arm (in pattern '${pattern}'). A wire numbering ` +
+          `must be exhaustive with no wildcard, or a new variant compiles into a wrong code instead of ` +
+          `a compile error.`,
+      );
+    }
   }
   const arms = new Map();
   const pattern = /(?:^|\n)\s*(?:(?:Self|[A-Z]\w*)::)?([A-Z]\w*)\s*=>\s*(\d+)(?:\.0*)?\s*,/g;
@@ -365,8 +422,23 @@ function rustEnumVariants(text, enumName, file) {
       variants.push(variant[1]);
       continue;
     }
-    if (/^[A-Z]\w*\s*[({=]/.test(line)) {
-      fail(`${file}: enum ${enumName} has a non-unit variant (${line}); a wire enum must be unit-only`);
+    // Both shapes below are refused, but for different reasons, so they are
+    // named separately: a payload-carrying variant is not a wire member at
+    // all, while an explicit discriminant IS a unit variant whose number the
+    // `*_code` numbering does not own. Reporting the second as "non-unit"
+    // would send the reader looking for a payload that is not there.
+    if (/^[A-Z]\w*\s*[({]/.test(line)) {
+      fail(
+        `${file}: enum ${enumName} has a payload-carrying variant (${line}); a wire enum must be ` +
+          `unit-only, since a wire member is a bare code`,
+      );
+    }
+    if (/^[A-Z]\w*\s*=/.test(line)) {
+      fail(
+        `${file}: enum ${enumName} has a variant with an explicit discriminant (${line}). The wire ` +
+          `numbering lives in this crate's *_code functions, not in the enum, and two numberings ` +
+          `for one enum is exactly the drift this gate exists to catch.`,
+      );
     }
     fail(`${file}: enum ${enumName} has an unparseable line: ${line}`);
   }
@@ -831,6 +903,33 @@ function selfTest(root) {
     expectRejected(
       "a wildcard '_ =>' arm in a Rust wire numbering",
       mutate(files, RUST_FRAME_BUFFER, "        KeeperShotType::Chip => 2.0,", "        _ => 2.0,"),
+      "wildcard",
+    ) && ok;
+
+  // (e2) The same wildcard, hiding as an or-pattern alternative. This is the
+  //      shape a line-anchored `_ =>` check would miss: the arm does not
+  //      begin with `_`, and the enum-vs-arms cross-check would report it as
+  //      a vague "the enum declares Chip, which shot_type_code does not
+  //      number" rather than naming the wildcard.
+  ok =
+    expectRejected(
+      "a wildcard hiding as an or-pattern alternative",
+      mutate(files, RUST_FRAME_BUFFER, "        KeeperShotType::Chip => 2.0,", "        KeeperShotType::Chip | _ => 2.0,"),
+      "wildcard",
+    ) && ok;
+
+  // (e3) And the same wildcard on a compact one-line match, the other shape
+  //      that begins no line with `_`. `cargo fmt` would expand this before
+  //      it could reach CI, but the detector must not depend on that.
+  ok =
+    expectRejected(
+      "a wildcard in a compact one-line match",
+      mutate(
+        files,
+        RUST_FRAME_BUFFER,
+        "    match shot_type {\n        KeeperShotType::Ground => 1.0,\n        KeeperShotType::Chip => 2.0,\n    }",
+        "    match shot_type { KeeperShotType::Ground => 1.0, _ => 2.0 }",
+      ),
       "wildcard",
     ) && ok;
 
