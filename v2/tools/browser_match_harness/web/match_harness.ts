@@ -49,7 +49,7 @@
 
 import init, { Session, __getRawExports } from "../../../ts/packages/wasm/dist/pkg-web/gc_wasm.js";
 import * as THREE from "three";
-import { SceneRoot, Stadium, camera, cameraFollow, frameBuffer, pitch, releaseFollow, viewState } from "@gc/render";
+import { SceneRoot, Stadium, camera, cameraFollow, effects, frameBuffer, pitch, releaseFollow, viewState } from "@gc/render";
 import type { frameBufferTypes } from "@gc/render";
 
 const DT = 1 / 60;
@@ -384,7 +384,22 @@ async function main(): Promise<void> {
   // Diagnostics handle. This page exists to be measured, and attributing draw
   // calls needs the scene graph and the renderer -- see the breakdown driver
   // in scripts/. Not a product affordance: nothing under v2/ts reads this.
-  (globalThis as unknown as { __gcScene?: unknown }).__gcScene = { sceneRoot, glRenderer, THREE };
+  //
+  // `effects` rides along for one specific reason. It is the only thing this
+  // page can reach that would break a deterministic capture: `effects.burst`
+  // spawns spark particles from bare `Math.random()` -- deliberately, since
+  // it is juice that never feeds back into the simulation, unlike
+  // `stadium_prng.ts` whose output must be reproducible. Nothing here drives
+  // it today (this page never calls `effects.update`/`consume`/
+  // `apply_event_diff`/`confirm_event`/`consume_combat`, so its arrays stay
+  // empty and `pitch.ts`'s draw calls emit nothing), but `pitch.ts` already
+  // imports it, so wiring match or combat events in here is a plausible
+  // future edit. Exposing it lets
+  // `scripts/browser_match_harness.py`'s `renderer_state_verdict` refuse a
+  // capture with a NAMED cause instead of leaving the next person with a
+  // control that fails unpredictably near every shot. Read-only: the driver
+  // calls `diagnostics()` and nothing else.
+  (globalThis as unknown as { __gcScene?: unknown }).__gcScene = { sceneRoot, glRenderer, THREE, effects };
 
   if (stadiumEnabled) {
     // Flags first, then the layer: `SceneRoot.render` only routes through the

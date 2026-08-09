@@ -83,10 +83,15 @@ not per-pose.
 A scan run renders at `--scan-width`/`--scan-height` with the stadium and
 bloom off. That is safe because the thing being scanned is SIM state: pose
 selection happens in `gc-render`'s `player_pose.rs` from the match state, and
-nothing in it reads the viewport. The capture that follows re-opens the page
-at full fidelity and RE-VERIFIES that the pose is actually held at that tick
-before shooting, so a wrong assumption here fails loudly instead of producing
-a mislabelled screenshot.
+nothing in it reads the viewport.
+
+That argument is checked, not trusted. `pose_hold_verdict` compares the pose
+the scan asked for against the poses BOTH full-fidelity capturing sessions
+report at each captured tick, and refuses the whole capture on any
+disagreement -- so if pose selection ever stops being viewport-independent,
+the failure is a named refusal rather than a plausible screenshot filed
+under the wrong pose. The guard has its own red-path coverage in
+`--self-test`.
 
 `--pose` also reports whether the posed player was ON CAMERA, from the
 harness's `playerX`/`playerY`/`viewX`/`viewY`/`viewZoom` diagnostics. #438
@@ -480,6 +485,110 @@ def frozen_capture_verdict(run: dict[int, str]) -> dict[str, Any]:
     return {"ok": True, "reason": "every requested tick produced distinct pixels", "collisions": []}
 
 
+def pose_hold_verdict(pose: str | None, runs: dict[str, dict[int, list[str]]]) -> dict[str, Any]:
+    """The scan found these ticks; the capture says what was actually held.
+
+    THIS IS THE RE-VERIFICATION THE SCAN'S CHEAPNESS IS BOUGHT WITH. `--pose`
+    locates ticks in a small, bloom-less session on the argument that pose
+    selection is simulation state -- `player_pose::select` takes no viewport
+    -- so the tick a scan finds is the tick a full-fidelity run will hold.
+    That argument is true today and load-bearing, and nothing else would
+    notice it stopping being true: a scan/capture disagreement produces a
+    perfectly plausible screenshot filed under the wrong pose.
+
+    So the ticks are checked against the FULL-FIDELITY runs' own reported
+    poses -- read from `__gcMatchHarness.poses` at the captured tick, in
+    every capturing session, not just the first -- and a disagreement
+    refuses the whole capture. Checking only the run whose files are
+    reported would leave the second session's evidence unexamined while
+    still calling it a control.
+    """
+    if pose is None:
+        return {"ok": True, "reason": "no pose was requested, so there is nothing to re-verify", "missing": []}
+    missing: list[dict[str, Any]] = []
+    checked = 0
+    for label in sorted(runs):
+        held = runs[label]
+        for tick in sorted(held):
+            checked += 1
+            if pose not in held[tick]:
+                missing.append({"run": label, "tick": tick, "held": sorted(set(held[tick]))})
+    if not checked:
+        return {"ok": False, "reason": f"{pose} was requested but no tick was captured", "missing": []}
+    if missing:
+        first = missing[0]
+        return {
+            "ok": False,
+            "reason": (
+                f"the scan said {pose} is held at every captured tick and the capture disagrees "
+                f"({len(missing)} of {checked} tick/run pairs) -- e.g. {first['run']} at tick "
+                f"{first['tick']} held {first['held']}. The scan runs at a smaller viewport, so "
+                f"either pose selection has stopped being viewport-independent or the two sessions "
+                f"are not the same match; refusing to file these frames under {pose}"
+            ),
+            "missing": missing,
+        }
+    return {
+        "ok": True,
+        "reason": f"{pose} confirmed held at all {checked} captured tick/run pairs by the full-fidelity runs",
+        "missing": [],
+    }
+
+
+def renderer_state_verdict(diagnostics: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Refuse a capture taken while `@gc/render`'s `effects` layer holds state.
+
+    `effects.burst` spawns spark particles from bare `Math.random()` --
+    deliberately, and correctly: it is juice, never fed back into the
+    simulation (`effects.ts`'s own comment). `stadium_prng.ts` uses a seeded
+    PRNG precisely because ITS output must be reproducible; `effects` makes
+    the opposite trade.
+
+    That makes it the one known thing on this page that would break the
+    control if it were ever live. It is not live today -- `match_harness.ts`
+    never calls `effects.update`/`consume`/`apply_event_diff`/
+    `confirm_event`/`consume_combat`, so the particle and trail arrays stay
+    empty and `pitch.ts`'s draw calls emit nothing. But `pitch.ts` already
+    imports `effects`, so wiring match or combat events into it here is a
+    plausible future edit, and the failure it would cause is the worst kind:
+    the control would start failing near any shot, pass, tackle or
+    reception, and neither the bootstrap nor the self-test would say why.
+
+    So the capture reads `effects.diagnostics()` and refuses with a NAMED
+    CAUSE if anything is there. This does not fix `effects.ts` and must not
+    -- an unseeded particle system is right for the product. It makes the
+    next person's mystery into a sentence.
+    """
+    offenders: list[dict[str, Any]] = []
+    for label in sorted(diagnostics):
+        entry = diagnostics[label] or {}
+        if entry.get("unavailable"):
+            # Older harness builds do not publish the handle. Not a failure:
+            # this guard is a diagnosis aid, not a determinism requirement.
+            continue
+        particles = int(entry.get("particle_count") or 0)
+        trail = int(entry.get("trail_count") or 0)
+        if particles or trail:
+            offenders.append({"run": label, "particle_count": particles, "trail_count": trail})
+    if offenders:
+        return {
+            "ok": False,
+            "reason": (
+                "`@gc/render`'s `effects` layer held state during a capture "
+                f"({offenders}). `effects.burst` spawns particles from unseeded "
+                "`Math.random()`, so two sessions cannot agree and the control below is "
+                "not meaningful. Something now drives `effects` from this page; that is "
+                "the cause, not the clock and not the swap chain"
+            ),
+            "offenders": offenders,
+        }
+    return {
+        "ok": True,
+        "reason": "the unseeded `effects` particle layer was empty in every capturing session",
+        "offenders": [],
+    }
+
+
 def ab_verdict(build_a: dict[int, str], build_b: dict[int, str]) -> dict[str, Any]:
     """Before/after across two builds. An A/B where EVERY pair is identical is
     refused: either the capture never advanced, or the two builds were the
@@ -789,6 +898,29 @@ class BrowserSlot:
             quit_browser_bounded(self.driver)
 
 
+def read_effects_diagnostics(driver: Any) -> dict[str, Any]:
+    """`effects.diagnostics()` through the page's `__gcScene` handle.
+
+    Returns `{"unavailable": ...}` rather than raising when the handle is not
+    there: an older harness build is a reason this guard cannot run, not a
+    reason to fail a capture. `renderer_state_verdict` treats it that way.
+    """
+    try:
+        value = driver.execute_script(
+            """
+            const scene = window.__gcScene;
+            if (!scene || !scene.effects || typeof scene.effects.diagnostics !== "function") {
+              return {unavailable: "window.__gcScene.effects is not exposed by this harness build"};
+            }
+            const d = scene.effects.diagnostics();
+            return {particle_count: d.particle_count, trail_count: d.trail_count};
+            """
+        )
+    except Exception as error:  # page navigated away/closed underneath us
+        return {"unavailable": str(error)}
+    return value if isinstance(value, dict) else {"unavailable": "effects.diagnostics() returned a non-dict"}
+
+
 def capture_run(
     args: argparse.Namespace,
     base_url: str,
@@ -824,6 +956,7 @@ def capture_run(
             files[tick] = str(path)
             poses_at[tick] = [pose for pose in (state.get("poses") or []) if pose]
         final = driver_state(driver)
+        effects_state = read_effects_diagnostics(driver)
     return {
         "label": label,
         "seed": seed if seed is not None else args.seed,
@@ -831,6 +964,7 @@ def capture_run(
         "hashes": images,
         "files": files,
         "poses_at": poses_at,
+        "effects": effects_state,
         "gpu": gpu,
         "final_state": {key: final.get(key) for key in ("tick", "score", "status", "frames", "draw_calls")},
     }
@@ -853,7 +987,8 @@ def scan_run(
     Renders small, with the stadium and bloom off. Pose selection is SIM
     state (`gc-render`'s `player_pose.rs` reads the match, never the
     viewport), so what this finds is exactly what a full-fidelity run would
-    find at the same seed -- and the capture that follows re-verifies it.
+    find at the same seed. `pose_hold_verdict` checks that rather than
+    assuming it -- see its docstring.
     """
 
     def scan_with(active: Any) -> dict[str, Any]:
@@ -1033,6 +1168,13 @@ def command_capture(args: argparse.Namespace) -> int:
         "reason": "only one tick requested, so there is nothing to compare within the run",
         "collisions": [],
     }
+    # Both capturing sessions, not just the one whose files get reported.
+    pose_held = pose_hold_verdict(
+        pose_scan["pose"] if pose_scan is not None else None,
+        {run_a["label"]: run_a["poses_at"], run_b["label"]: run_b["poses_at"]},
+    )
+    renderer_state = renderer_state_verdict({run_a["label"]: run_a["effects"], run_b["label"]: run_b["effects"]})
+    ok = control["ok"] and frozen["ok"] and pose_held["ok"] and renderer_state["ok"]
     report = {
         "kind": "capture",
         "dist": str(dist),
@@ -1041,11 +1183,15 @@ def command_capture(args: argparse.Namespace) -> int:
         "runs": [run_a, run_b],
         "control": control,
         "frozen_capture": frozen,
-        "verdict": "ok" if control["ok"] and frozen["ok"] else "refused",
+        "pose_held": pose_held,
+        "renderer_state": renderer_state,
+        "verdict": "ok" if ok else "refused",
     }
     emit(report, out_dir)
+    print_guard("unseeded-renderer-state guard", renderer_state)
     print_guard("control (two sessions, same build)", control)
     print_guard("frozen-capture guard", frozen)
+    print_guard("pose re-verification (scan vs capture)", pose_held)
     if report["verdict"] != "ok":
         print("[browser_match_harness] REFUSED: the captures in this directory are not evidence.")
         return 1
@@ -1078,7 +1224,13 @@ def command_ab(args: argparse.Namespace) -> int:
     control_b = control_verdict(b1["hashes"], b2["hashes"])
     frozen_a = frozen_capture_verdict(a1["hashes"])
     frozen_b = frozen_capture_verdict(b1["hashes"])
-    controls_ok = control_a["ok"] and control_b["ok"] and frozen_a["ok"] and frozen_b["ok"]
+    # Checked across all four sessions: if the unseeded `effects` layer is
+    # live it is the cause of whatever the controls are about to say, and
+    # naming it here is the whole point of the guard.
+    renderer_state = renderer_state_verdict({run["label"]: run["effects"] for run in (a1, a2, b1, b2)})
+    controls_ok = (
+        control_a["ok"] and control_b["ok"] and frozen_a["ok"] and frozen_b["ok"] and renderer_state["ok"]
+    )
 
     # The A/B comparison is COMPUTED but WITHHELD when a control failed: a
     # difference measured against a build that is not deterministic under
@@ -1095,17 +1247,19 @@ def command_ab(args: argparse.Namespace) -> int:
         "control_b": control_b,
         "frozen_capture_a": frozen_a,
         "frozen_capture_b": frozen_b,
+        "renderer_state": renderer_state,
         "comparison": comparison if controls_ok else None,
         "comparison_withheld": None if controls_ok else "a control failed; see control_a/control_b",
         "verdict": "ok" if controls_ok and comparison["ok"] else "refused",
     }
     emit(report, out_dir)
+    print_guard("unseeded-renderer-state guard", renderer_state)
     print_guard("control A (two sessions, build A)", control_a)
     print_guard("control B (two sessions, build B)", control_b)
     print_guard("frozen-capture guard, build A", frozen_a)
     print_guard("frozen-capture guard, build B", frozen_b)
     if not controls_ok:
-        print("[browser_match_harness] REFUSED: a control failed, so the A/B result is withheld entirely.")
+        print("[browser_match_harness] REFUSED: a control guard failed, so the A/B result is withheld entirely.")
         return 1
     print_guard("A/B", comparison)
     if not comparison["ok"]:
@@ -1290,6 +1444,51 @@ def self_test() -> int:
     ab_same = ab_verdict(good, dict(good))
     check("A/B refuses an all-identical pair", not ab_same["ok"], str(ab_same))
     check("A/B refuses mismatched tick sets", not ab_verdict(good, {100: "aaa"})["ok"])
+
+    # 3b. Pose RE-VERIFICATION. The scan's cheapness -- a small, bloom-less
+    #     viewport -- is bought with this check, so it gets the same
+    #     treatment as the control rather than living in a docstring.
+    held_ok = {"run-1": {50: ["locomotion", "aerial_action"]}, "run-2": {50: ["aerial_action"]}}
+    check("pose re-verification passes when both runs hold the pose", pose_hold_verdict("aerial_action", held_ok)["ok"])
+    check("pose re-verification is a no-op when no pose was requested", pose_hold_verdict(None, {"run-1": {}})["ok"])
+    drifted = pose_hold_verdict("aerial_action", {"run-1": {50: ["aerial_action"], 116: ["locomotion", "tackle"]}})
+    check(
+        "pose re-verification catches a scan/capture disagreement",
+        not drifted["ok"] and drifted["missing"] == [{"run": "run-1", "tick": 116, "held": ["locomotion", "tackle"]}],
+        str(drifted),
+    )
+    second_only = pose_hold_verdict("tackle", {"run-1": {50: ["tackle"]}, "run-2": {50: ["locomotion"]}})
+    check(
+        "pose re-verification checks the SECOND capturing run too",
+        not second_only["ok"] and second_only["missing"][0]["run"] == "run-2",
+        str(second_only),
+    )
+    check(
+        "pose re-verification refuses when a pose was requested but nothing was captured",
+        not pose_hold_verdict("tackle", {"run-1": {}})["ok"],
+    )
+
+    # 3c. The unseeded-particle guard: a named cause instead of a mystery.
+    check(
+        "renderer-state guard passes on an empty effects layer",
+        renderer_state_verdict({"run-1": {"particle_count": 0, "trail_count": 0}})["ok"],
+    )
+    live = renderer_state_verdict(
+        {"run-1": {"particle_count": 0, "trail_count": 0}, "run-2": {"particle_count": 7, "trail_count": 0}}
+    )
+    check(
+        "renderer-state guard catches live unseeded particles and names the run",
+        not live["ok"] and live["offenders"] == [{"run": "run-2", "particle_count": 7, "trail_count": 0}],
+        str(live),
+    )
+    check(
+        "renderer-state guard also catches a live ball trail",
+        not renderer_state_verdict({"run-1": {"particle_count": 0, "trail_count": 3}})["ok"],
+    )
+    check(
+        "renderer-state guard tolerates a harness build that does not expose the handle",
+        renderer_state_verdict({"run-1": {"unavailable": "not exposed"}})["ok"],
+    )
 
     # 4. Pose-scan verdicts.
     summary = {"recorded_ticks": 3000, "poses": {"tackle": {"holds": 12, "on_camera_holds": 0}}}
