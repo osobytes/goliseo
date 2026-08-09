@@ -13,8 +13,23 @@
 
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
-import { Vec2 } from "@gc/core";
-import { available, characterCameraParams, characterMesh, clipFor, leanTilt, metresPerWorldUnit, poseFor, ppmForRadius, renderToSprite, DEFAULT_PLAYER_RADIUS } from "./player_renderer_3d.ts";
+import { Vec2, type Quat } from "@gc/core";
+import {
+  available,
+  characterCameraParams,
+  characterMesh,
+  clipFor,
+  leanTilt,
+  metresPerWorldUnit,
+  mixerPoseFor,
+  poseFor,
+  ppmForRadius,
+  renderToSprite,
+  resetAnimation,
+  DEFAULT_PLAYER_RADIUS,
+} from "./player_renderer_3d.ts";
+import * as animator from "./rig3d/animator.ts";
+import type { MutablePose } from "./rig3d/action_pose.ts";
 import type { PlayerRenderOptions } from "./player_render_options.ts";
 import type { PlayerView } from "./view_state.ts";
 
@@ -193,6 +208,157 @@ describe("player_renderer_3d.poseFor lean", () => {
     expect(second).toEqual(first);
   });
 });
+
+// A/B PARITY: the `THREE.AnimationMixer` path (#425) against the procedural
+// sampler it replaces on pitch.ts's call path.
+//
+// This is the assertion the whole rewrite rests on. `poseFor` stays in the
+// file purely to be the reference half of these tests until the visual pass
+// signs off on removing it (#425's last task); if the mixer path drifts from
+// it for a pose whose mapping did NOT change, that is a regression and not a
+// re-tune, and this suite is what says so.
+//
+// The tolerance is the resampling error `rig3d/mixer.ts` documents (the mixer
+// plays clips baked from `clips.sample` at `BAKE_FPS`, because three.js will
+// not cubic-interpolate a quaternion track), widened once for the blend the
+// two layers compose through.
+describe("player_renderer_3d mixer/procedural parity", () => {
+  const PARITY_TOLERANCE = 5e-3;
+
+  function delta(a: MutablePose, b: MutablePose): number {
+    let worst = 0;
+    for (const bone of new Set([...Object.keys(a.rot), ...Object.keys(b.rot)])) {
+      const qa: Quat = a.rot[bone] ?? [0, 0, 0, 1];
+      const qb: Quat = b.rot[bone] ?? [0, 0, 0, 1];
+      const dot = qa[0] * qb[0] + qa[1] * qb[1] + qa[2] * qb[2] + qa[3] * qb[3];
+      const sign = dot < 0 ? -1 : 1;
+      for (let i = 0; i < 4; i += 1) {
+        worst = Math.max(worst, Math.abs((qa[i] ?? 0) - sign * (qb[i] ?? 0)));
+      }
+    }
+    for (const bone of new Set([...Object.keys(a.move), ...Object.keys(b.move)])) {
+      const ma = a.move[bone] ?? [0, 0, 0];
+      const mb = b.move[bone] ?? [0, 0, 0];
+      for (let i = 0; i < 3; i += 1) {
+        worst = Math.max(worst, Math.abs((ma[i] ?? 0) - (mb[i] ?? 0)));
+      }
+    }
+    return worst;
+  }
+
+  function view(speed: number, gait: number, lean = 0): PlayerView {
+    // `animator.basePose` is the clip blend alone, so the sweep below compares
+    // it upright; the whole-pipeline cases pass a real `lean`, which both
+    // paths now route through the same `applyLean` (#428's).
+    return { px: 0, py: 0, speed, phase: 0, gait, lean };
+  }
+
+  // The idle/walk/run blend, which is where three.js's cumulative-weight
+  // accumulation has to reproduce `poseFor`'s two nested `clips.layer` calls
+  // exactly. Swept across the whole speed range, including both thresholds.
+  it("reproduces the locomotion blend at every speed, including both thresholds", () => {
+    for (const speed of [0, 40, 149, 150, 151, 220, 300, 399, 400, 480]) {
+      for (const gait of [0, 0.17, 0.5, 0.83]) {
+        const v = view(speed, gait);
+        const procedural = poseFor(v, baseOptions({ pose: { id: "locomotion" } }), 1.4);
+        const mixer = animator.basePose(v, 1.4);
+        expect(delta(procedural, mixer), `speed ${speed}, gait ${gait}`).toBeLessThan(PARITY_TOLERANCE);
+      }
+    }
+  });
+
+  // Every pose id whose mapping `rig3d/pose_table.ts` deliberately left
+  // unchanged from `POSE_CLIP`. A difference here means the rewrite moved
+  // something it said it would not.
+  it.each([
+    "locomotion",
+    "contain",
+    "run_telegraph",
+    "fatigue",
+    "keeper_shuffle",
+    "settle",
+    "kick_follow",
+    "combat_guard",
+    "combat_active",
+    "combat_recovery",
+    "combat_aim",
+  ])("reproduces the procedural pose for %s, whose mapping did not change", (id) => {
+    resetAnimation();
+    const v = view(230, 0.42);
+    const opts = baseOptions({ pose: { id } });
+    expect(delta(poseFor(v, opts, 2.6), mixerPoseFor(`parity-${id}`, v, opts, 2.6))).toBeLessThan(PARITY_TOLERANCE);
+  });
+
+  it("reproduces the keeper's possession overrides, which never went through the pose id", () => {
+    resetAnimation();
+    const v = view(60, 0.2);
+    const gather = baseOptions({ holding: true });
+    expect(delta(poseFor(v, gather, 3.1), mixerPoseFor("parity-gather", v, gather, 3.1))).toBeLessThan(PARITY_TOLERANCE);
+    const sling = baseOptions({ throw: 0.65 });
+    expect(delta(poseFor(v, sling, 3.1), mixerPoseFor("parity-sling", v, sling, 3.1))).toBeLessThan(PARITY_TOLERANCE);
+  });
+
+  it("reproduces the whole-body root overlay, which stays action_pose.ts's", () => {
+    resetAnimation();
+    const v = view(180, 0.6);
+    const opts = baseOptions({ pose: { id: "keeper_stretch" }, dive: 0.8, dive_dir: new Vec2(0, 1), facing: new Vec2(1, 0) });
+    expect(delta(poseFor(v, opts, 4.2), mixerPoseFor("parity-dive", v, opts, 4.2))).toBeLessThan(PARITY_TOLERANCE);
+  });
+
+  // LEAN PARITY. Both paths call #428's `applyLean` under #428's
+  // `forOptions` gate -- one implementation, not two tunings that have to
+  // agree. Before this rebase the mixer path had its own root-roll lean, which
+  // #428's review showed left a spine counter-rotation stranded during a dive
+  // (`action_pose.apply` assigns `root`, so the roll was discarded but the
+  // counter survived). Deleting it in favour of #428's spine/chest treatment
+  // is what these two tests pin.
+  it("leans identically on both paths, and the lean actually reaches the pose", () => {
+    resetAnimation();
+    const opts = baseOptions({ pose: { id: "locomotion" }, facing: new Vec2(0.6, 0.8) });
+    const upright = view(240, 0.3, 0);
+    const leaning = view(240, 0.3, 0.85);
+    // It is a real difference, not a no-op that would make the parity below vacuous.
+    expect(delta(poseFor(upright, opts, 5.5), poseFor(leaning, opts, 5.5))).toBeGreaterThan(0.01);
+    expect(delta(poseFor(leaning, opts, 5.5), mixerPoseFor("parity-lean", leaning, opts, 5.5))).toBeLessThan(PARITY_TOLERANCE);
+  });
+
+  it("suppresses the lean on both paths while a whole-body action owns the body", () => {
+    resetAnimation();
+    const dive = baseOptions({ pose: { id: "keeper_dive" }, dive: 1, dive_dir: new Vec2(0, 1), facing: new Vec2(1, 0) });
+    const upright = view(240, 0.3, 0);
+    const leaning = view(240, 0.3, 0.85);
+    // `forOptions` is non-null here, so lean must make NO difference at all --
+    // on either path, and on every bone rather than just `root`.
+    expect(delta(poseFor(upright, dive, 6.5), poseFor(leaning, dive, 6.5))).toBe(0);
+    expect(delta(mixerPoseFor("parity-dive-upright", upright, dive, 6.5), mixerPoseFor("parity-dive-leaning", leaning, dive, 6.5))).toBe(0);
+  });
+
+  // The `"swing"` branch `poseFor` used to carry was unreachable: no
+  // `POSE_CLIP` entry ever returned it. Removing it is part of #425, and this
+  // pins that no caller regressed into depending on it.
+  it("confirms the removed `swing` branch was unreachable from clipFor", () => {
+    for (const id of Object.keys(POSE_CLIP_IDS)) {
+      expect(clipFor(id)).not.toBe("swing");
+    }
+    expect(clipFor(undefined)).not.toBe("swing");
+  });
+});
+
+// The 12 ids `POSE_CLIP` actually mapped, for the reachability check above.
+const POSE_CLIP_IDS: Readonly<Record<string, true>> = {
+  locomotion: true,
+  contain: true,
+  run_telegraph: true,
+  fatigue: true,
+  keeper_shuffle: true,
+  settle: true,
+  kick_follow: true,
+  combat_guard: true,
+  combat_windup: true,
+  combat_active: true,
+  combat_recovery: true,
+  combat_aim: true,
+};
 
 describe("player_renderer_3d.characterCameraParams", () => {
   it("centres the frustum so the character lands at the requested screen point", () => {

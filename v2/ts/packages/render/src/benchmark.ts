@@ -54,6 +54,7 @@
 // for whoever builds that browser-build glue.
 
 import { viewState, type ViewStatePlayer } from "./view_state.ts";
+import * as animator from "./rig3d/animator.ts";
 
 export interface BenchmarkGates {
   readonly update_p95_ms: number;
@@ -295,7 +296,12 @@ export class Benchmark {
     this.finalStateHashFn = options.finalStateHash;
     this.environment = options.environment;
 
+    // Both halves of per-player presentation state: `viewState`'s derived
+    // gait/lean/speed, and the animator's stance crossfades. A benchmark run
+    // must start from a clean pose for the same reason it starts from clean
+    // motion.
     viewState.reset();
+    animator.reset();
   }
 
   warming(): boolean {
