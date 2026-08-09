@@ -39,6 +39,8 @@ export {
   metresPerWorldUnit,
   clipFor,
   poseFor,
+  mixerPoseFor as player3dMixerPoseFor,
+  resetAnimation as player3dResetAnimation,
   characterCameraParams,
   ppmForRadius as player3dPpmForRadius,
   characterMesh as player3dCharacterMesh,

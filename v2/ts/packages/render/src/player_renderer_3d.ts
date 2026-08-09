@@ -49,6 +49,29 @@
 // (an `OrthographicCamera`'s position/target/frustum) rather than a
 // reconstruction of unseen GLSL.
 //
+// ANIMATION PLAYBACK (#425). What actually poses a character on pitch.ts's
+// call path is `rig3d/animator.ts`, a `THREE.AnimationMixer` over the same
+// `rig3d/clips.ts` content, driven by `rig3d/pose_table.ts`'s explicit
+// 32-entry `PlayerPoseId -> action` table. `poseFor` and `clipFor` below are
+// the PREVIOUS, procedural sampler, kept -- unchanged in behaviour apart from
+// one dead branch removed -- as the A/B parity reference the two paths are
+// pinned against in `player_renderer_3d.spec.ts`. Removing them is signed off
+// separately (#425's last task), once the mixer path has been through a
+// visual pass.
+//
+// The mixer does NOT change this file's skinning path, which is the one thing
+// that looked like it would have to change: an `AnimationMixer` drives LOCAL
+// bone transforms and needs three.js to derive world matrices, whereas the
+// `THREE.Bone`s built below deliberately bypass that pipeline entirely
+// (`matrixAutoUpdate = false`, `matrixWorldAutoUpdate = false`, `bindMode =
+// "detached"`, `bone.matrixWorld` written directly) -- three separate fixes
+// for three separate defects, each documented at its own assignment below.
+// `rig3d/mixer.ts` resolves that by never touching a `THREE.Bone`: it drives a
+// private graph of plain `THREE.Object3D` pose carriers and hands back the
+// same sparse `{rot, move}` pose `clips.sample`/`clips.layer` always produced,
+// so everything from `skeleton.apply` downward is untouched. See that file's
+// header for the full argument.
+//
 // Boundary note (v2/README.md rule 6.7): `match.PLAYER_RADIUS` is
 // `sim/match.lua`'s (Rust `crates/gc-sim`). `DEFAULT_PLAYER_RADIUS` mirrors
 // its current value (12) as an injectable default, the same pattern
@@ -64,6 +87,7 @@ import * as proportions from "./rig3d/proportions.ts";
 import * as clips from "./rig3d/clips.ts";
 import * as masks from "./rig3d/masks.ts";
 import * as actionPose from "./rig3d/action_pose.ts";
+import * as animator from "./rig3d/animator.ts";
 import * as themes from "./rig3d/themes.ts";
 import * as body from "./rig3d/body.ts";
 import * as geometry from "./rig3d/geometry.ts";
@@ -165,7 +189,11 @@ export function metresPerWorldUnit(height: number, playerRadius = DEFAULT_PLAYER
   return height / (playerRadius * HEIGHT_IN_RADII * 2);
 }
 
-// Maps a presentation pose id onto the LIMB clips that exist today.
+// SUPERSEDED BY `rig3d/pose_table.ts` (#425), kept as the A/B parity
+// reference -- see this file's ANIMATION PLAYBACK header note. This table maps
+// 12 of the 32 `PlayerPoseId`s onto a clip name and silently returns `"idle"`
+// for the other 20, which is the defect `POSE_ACTIONS` exists to fix; nothing
+// on pitch.ts's call path reads it any more.
 //
 // Three mechanisms cover the pose contract between them, and which one owns
 // an id is not arbitrary:
@@ -337,7 +365,18 @@ function applyLean(pose: actionPose.MutablePose, lean: number, facing?: actionPo
   return pose;
 }
 
-/** Resolves the pose for one player. `now`: seconds, replacing `love.timer.getTime()`. */
+/**
+ * Resolves the pose for one player with the PROCEDURAL sampler. `now`:
+ * seconds, replacing `love.timer.getTime()`.
+ *
+ * Superseded on pitch.ts's call path by `mixerPoseFor` below; kept as the A/B
+ * parity reference the mixer path is pinned against (see this file's
+ * ANIMATION PLAYBACK header note and `player_renderer_3d.spec.ts`'s parity
+ * suite). Behaviour is unchanged from before #425 except for the removal of an
+ * unreachable `"swing"` branch -- no `POSE_CLIP` entry has ever returned
+ * `"swing"`, so that code had never run; `rig3d/pose_table.ts` is where the
+ * SWING clip finally gets a caller.
+ */
 export function poseFor(view: PlayerView | undefined, opts: PlayerRenderOptions, now: number): actionPose.MutablePose {
   const speed = view?.speed ?? 0;
   const idle = clips.ORDER[0];
@@ -368,12 +407,6 @@ export function poseFor(view: PlayerView | undefined, opts: PlayerRenderOptions,
     // The charge is a held pose, so it only needs a phase to breathe on;
     // tying it to the stride keeps the sway in step with the legs.
     pose = clips.layer(pose, clips.sample(clips.CHARGE, cycles * clips.CHARGE.duration), masks.UPPER_BODY, 1);
-  } else if (selected === "swing") {
-    const swingClip = clips.ORDER[2];
-    if (swingClip !== undefined) {
-      const t = (opts.windup ?? 0) > 0 ? 0.3 : 0.55;
-      pose = clips.layer(pose, clips.sample(swingClip, t * swingClip.duration), masks.UPPER_BODY, 1);
-    }
   }
 
   // The keeper's hands follow possession, not the pose id: arms wrapped
@@ -403,6 +436,49 @@ export function poseFor(view: PlayerView | undefined, opts: PlayerRenderOptions,
   }
   return posed;
 }
+
+/**
+ * Resolves the pose for one player with the `THREE.AnimationMixer` path
+ * (#425). This is what pitch.ts's call path uses.
+ *
+ * Same inputs as `poseFor` plus `playerId`, which keys the per-character
+ * crossfade state `rig3d/animator.ts` keeps (`poseFor` has no notion of a
+ * previous frame, so it cannot crossfade at all). Everything the mixer path
+ * adds over `poseFor` is listed in `rig3d/pose_table.ts`'s `POSE_ACTIONS`.
+ */
+export function mixerPoseFor(
+  playerId: string,
+  view: PlayerView | undefined,
+  opts: PlayerRenderOptions,
+  now: number,
+): actionPose.MutablePose {
+  return animator.poseFor(playerId, view, opts, now);
+}
+
+/**
+ * Drops every character's animation state (the per-`playerId` stance
+ * crossfade), the counterpart to `viewState.reset()`.
+ *
+ * NOT WIRED INTO `screens/match.ts` ALONGSIDE `viewState.reset()`, deliberately
+ * and for now. Those call sites are mostly rollback/replay smoothing clears
+ * rather than match-lifecycle boundaries, and the crossfade is self-correcting
+ * across one anyway: a stale stance fades out within its own crossfade
+ * (0.24s at the longest) and a stale timestamp is capped by the animator's own
+ * frame clamp, so nothing gets stuck. Deciding which of those six sites should
+ * also re-snap animation is a presentation question worth answering on its own
+ * rather than inside #425's playback rewrite. Exported and tested so that
+ * decision is a one-line change when somebody makes it.
+ */
+export function resetAnimation(): void {
+  animator.reset();
+}
+
+// The player id `draw`/`renderToSprite` animate under. Those two are
+// parity/diagnostic entry points with no roster behind them (see their doc
+// comments), but the animator still needs a key to hang a crossfade off, and
+// giving them a fixed one keeps a standalone character preview animating
+// continuously instead of re-snapping its stance every call.
+const PREVIEW_PLAYER_ID = "__preview";
 
 // ---------------------------------------------------------------------------
 // GPU-adjacent: mesh construction, skeleton posing, per-character camera.
@@ -861,7 +937,7 @@ export function characterMesh(
   const team = opts.team ?? "home";
   const pooled = pooledCharacter(playerId, character, team);
 
-  const pose = poseFor(view, opts, now);
+  const pose = mixerPoseFor(playerId, view, opts, now);
   skeleton.apply(character.rig, pose);
   pooled.bones.forEach((bone, i) => {
     const name = character.rig.order[i];
@@ -958,7 +1034,7 @@ function prepareCharacter(
   if (character === undefined) {
     return undefined;
   }
-  const pose = poseFor(view, opts, now);
+  const pose = mixerPoseFor(PREVIEW_PLAYER_ID, view, opts, now);
   skeleton.apply(character.rig, pose);
   character.bones.forEach((bone, i) => {
     const name = character.rig.order[i];
