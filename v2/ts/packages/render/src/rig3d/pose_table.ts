@@ -99,7 +99,8 @@ export type PhaseSource = "clock" | "gait" | "throw_timer" | "windup";
  * follow-up is a transcription rather than a re-invention. Those are root
  * transforms, which makes `rig3d/action_pose.ts` -- not a clip -- their
  * natural home; deliberately not attempted here, since tuning a body attitude
- * without a visual pass is guesswork.
+ * without a visual pass is guesswork. #430 is that work, filed with these
+ * constants.
  */
 export type PoseFallback = "root_overlay" | "locomotion_base" | "unanimated";
 
@@ -211,7 +212,7 @@ export const POSE_ACTIONS: Readonly<Record<PlayerPoseId, PoseActionEntry>> = {
     "clock",
     EASE,
     "repeat",
-    "was: plain gait. The deleted billboard also dropped the stance 0.18r; the crouch is not recovered",
+    "was: plain gait. The deleted billboard also dropped the stance 0.18r; that crouch is #430's",
   ),
   keeper_ready_low: stance(
     "guard_stance",
@@ -219,7 +220,7 @@ export const POSE_ACTIONS: Readonly<Record<PlayerPoseId, PoseActionEntry>> = {
     "clock",
     SETTLE,
     "repeat",
-    "was: plain gait. The deleted billboard dropped the stance 0.32r -- the LOW half is not recovered, only the braced arms",
+    "was: plain gait. The deleted billboard dropped the stance 0.32r -- #430 owns the LOW half; this entry is the braced arms",
   ),
   // Shuffling along the line IS locomotion -- that is the whole pose.
   keeper_shuffle: noAction("locomotion_base", "a shuffling keeper is walking; the base layer is the pose"),
@@ -284,25 +285,34 @@ export const POSE_ACTIONS: Readonly<Record<PlayerPoseId, PoseActionEntry>> = {
   // A failed challenge: `action_pose.tip`'s own `stumble` branch tips the body
   // back off the trailing heel.
   stumble: noAction("root_overlay", "action_pose.tip's stumble branch"),
-  // The follow-through after a kick is released. Owned by the locomotion base
-  // today; #426 adds a lean/kick-follow treatment on top of the same base.
-  kick_follow: noAction("locomotion_base", "base layer today; #426 lands the follow-through lean (billboard: 0.28r forward) on this seam"),
+  // The follow-through after a kick is released. CONFIRMED INVISIBLE, not
+  // merely unmapped: #428 wired the pose id end to end and a browser run of
+  // `v2/tools/browser_match_harness` on hardware GL observed it on a real
+  // roster slot at tick 600 -- so the wire works, and the pose still renders
+  // bit-identically to plain running because neither this table nor
+  // `action_pose.ts` claims it. `player_renderer_3d.spec.ts` pins that
+  // equality as a stated gap.
+  //
+  // #426 is closed and did NOT close this: the torso lean it landed is a
+  // velocity-derived balance cue, not a follow-through. #430 owns giving this
+  // pose a root treatment of its own (billboard: 0.28r forward).
+  kick_follow: noAction("unanimated", "wire confirmed live (#428), still renders as plain running; #430 owns the 0.28r follow-through"),
   // Deleted billboard: stanceDrop 0.3r -- a first touch is taken at a run, but
   // taken LOW, and the drop is what separated it from plain running.
-  settle: noAction("unanimated", "billboard read it as stanceDrop 0.3r; the crouch has no 3D equivalent yet"),
+  settle: noAction("unanimated", "billboard read it as stanceDrop 0.3r; #430 owns the crouch"),
   // Deleted billboard: actionLean 0.5r forward -- the telegraph is a body
   // committing before the feet do, not merely a change of speed.
-  run_telegraph: noAction("unanimated", "billboard read it as actionLean 0.5r forward; not recovered in 3D"),
+  run_telegraph: noAction("unanimated", "billboard read it as actionLean 0.5r forward; #430 owns recovering it"),
   // Deleted billboard: actionLean -0.3r (weight BACK) plus stanceDrop 0.26r --
   // "contain holds its weight back: it shepherds, it does not commit". A guard
   // stance would be the opposite reading (weight forward), so this stays on the
   // base until the body attitude exists rather than borrowing a wrong one.
-  contain: noAction("unanimated", "billboard read it as weight back 0.3r + stanceDrop 0.26r; a forward stance would read as combat"),
+  contain: noAction("unanimated", "billboard read it as weight back 0.3r + stanceDrop 0.26r (#430); a forward stance would read as combat"),
   // `POSE_CLIP` mapped this to `"idle"`, which reached no branch in `poseFor`
   // at all -- so on the rigged path it has always rendered exactly as
   // `locomotion` does. The billboard did distinguish it (actionLean -0.12r,
   // stanceDrop 0.16r: a spent player sags), and that reading died with #418.
-  fatigue: noAction("unanimated", "POSE_CLIP's `idle` entry was inert; billboard sagged it -0.12r + stanceDrop 0.16r"),
+  fatigue: noAction("unanimated", "POSE_CLIP's `idle` entry was inert; billboard sagged it -0.12r + stanceDrop 0.16r (#430)"),
   locomotion: noAction("locomotion_base", "the fallback every player always has"),
 };
 

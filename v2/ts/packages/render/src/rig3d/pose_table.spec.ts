@@ -101,14 +101,16 @@ describe("rig3d/pose_table.POSE_ACTIONS", () => {
       "combat_stagger",
       "stumble",
     ]);
-    expect(byFallback("locomotion_base")).toEqual(["keeper_shuffle", "keeper_ready_tall", "kick_follow", "locomotion"]);
+    expect(byFallback("locomotion_base")).toEqual(["keeper_shuffle", "keeper_ready_tall", "locomotion"]);
     // REAL gaps, named as such. Each has a distinct intended reading that
-    // nothing renders today -- four of the five READ DISTINCTLY UNTIL #418
+    // nothing renders today -- five of the six READ DISTINCTLY UNTIL #418
     // deleted the procedural billboard's body-attitude vocabulary, and each
     // entry's note carries that renderer's own constants so recovering it is a
-    // transcription. If this list grows, somebody added a pose id without
-    // deciding how it animates and this test is the place that says so.
-    expect(byFallback("unanimated")).toEqual(["slide", "settle", "run_telegraph", "contain", "fatigue"]);
+    // transcription (#430 owns that work). `kick_follow` is the sharpest case:
+    // #428 proved the pose id reaches a live match on hardware GL and it STILL
+    // renders bit-identically to plain running. If this list grows, somebody
+    // added a pose id without deciding how it animates and this test says so.
+    expect(byFallback("unanimated")).toEqual(["slide", "kick_follow", "settle", "run_telegraph", "contain", "fatigue"]);
   });
 
   // The user-facing claim of #425's asset-agnostic slice: these are the poses
