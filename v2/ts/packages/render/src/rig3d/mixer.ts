@@ -108,7 +108,7 @@ const ZERO: EulerTriple = [0, 0, 0];
 
 /**
  * Resamples one `rig3d/clips.ts` clip into a `THREE.AnimationClip` whose track
- * names address the pose carriers `poseGraph` builds.
+ * names address the pose carriers `MixerLayer`'s constructor builds.
  *
  * Pure: same clip in, same tracks out. Track names are `"<bone>.quaternion"`
  * and `"<bone>.position"`. Bone names contain dots (`upper_arm.L`), which
