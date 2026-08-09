@@ -55,6 +55,7 @@
 // `pitch.ts`'s `DEFAULT_ARENA` uses for Rust-owned content.
 
 import * as THREE from "three";
+import { quat } from "@gc/core";
 import type { Mat4 } from "@gc/core";
 import type { PlayerView } from "./view_state.ts";
 import { viewState } from "./view_state.ts";
@@ -194,6 +195,148 @@ export function clipFor(poseId?: string): string {
   return POSE_CLIP[poseId ?? ""] ?? "idle";
 }
 
+// ---------------------------------------------------------------------------
+// TORSO LEAN (`view_state.ts`'s `PlayerView.lean`)
+// ---------------------------------------------------------------------------
+//
+// `viewState` derives one `lean` per player per frame -- `clamp(vx / 120, -1,
+// 1)`, exponentially smoothed, from WORLD-X velocity alone. Nothing in this
+// package read it until this function did, so the rigged character never
+// leaned into a sprint or a turn; and since #418 deleted the procedural
+// billboard, this file is the ONLY renderer, so "nobody consumes `lean`" and
+// "no player on the pitch leans" were the same statement.
+//
+// WHERE THE MAGNITUDE COMES FROM. The retired billboard renderer sized this
+// signal against the real game, and that tuning is the only empirical anchor
+// the constant has, so it is what the rig is calibrated back to. Its `figure`
+// did `cx = bx + lean * r * 0.5 + ...` -- one on-screen player-radius `r`
+// being the same unit the projection already speaks in. That source is gone;
+// read it at `git show 0333065^:v2/ts/packages/render/src/player_renderer.ts`
+// if the derivation below ever needs re-checking. Everything the derivation
+// USES is live code: `ppmForRadius` here, `proportions.RIG_MEDIUM` and
+// `proportions.height` in rig3d/proportions.ts.
+//
+// TRANSLATION THERE, ROTATION HERE. `cx` was a pure horizontal SHIFT of the
+// whole billboard -- hips, feet and head moving together -- which a billboard
+// can afford because it has no ground contact to violate. The rig does: its
+// feet are placed by the skeleton and there is no IK to put a slid foot back
+// (skeleton.ts, "No IK here"), so the same displacement has to arrive as a
+// tilt. That substitution is the reason the mapping needs an argument at all:
+// a translation moves every point by the same distance, while a rotation
+// moves each point in proportion to its height above the pivot, so "the same
+// amount of lean" is only well defined once you name WHICH point.
+//
+// DEGREES PER UNIT LEAN:
+//
+//   1. The target displacement, exactly. At |lean| = 1 the billboard moved by
+//      0.5 * r pixels, and `k * r` pixels is `k * height / 6` metres for any
+//      k: `ppmForRadius` sets ppm = r * HEIGHT_IN_RADII * 2 / height, so the
+//      `r` cancels and this conversion is depth-independent, not a fit.
+//      `proportions.height(RIG_MEDIUM)` is 1.5676 m, so 0.5 * r is 0.1306 m.
+//
+//   2. The reference point, approximately. The head is what the eye tracks in
+//      a lean, and on this rig the head spans y = 1.23 m (the `head` bone) to
+//      y = 1.5676 m (the crown `height()` accounts for). This step is a
+//      judgement about where to read the displacement, not a second exact
+//      conversion -- the drawn billboard's own pixel extent was 3.2-3.6r
+//      depending on `species_shape`, so there was never a single exact
+//      percentage-of-height to recover from it either.
+//
+//   3. Tilting the torso chain -- spine at y = 0.89 m, chest at y = 1.08 m
+//      (`proportions.RIG_MEDIUM`) -- by t1 then t2 displaces a point at
+//      height h by 0.19 * sin(t1) + (h - 1.08) * sin(t1 + t2). At t1 = 9 deg,
+//      t2 = 7 deg that is 0.071 m at the head bone and 0.164 m at the crown,
+//      straddling step 1's 0.1306 m and matching it at y ~ 1.45 m, mid-skull.
+//
+// So: 16 degrees of torso tilt per unit lean, spread 9 on the spine and 7 on
+// the chest. Spread rather than concentrated because skeleton.ts's own design
+// rules say so ("the arch is spread across hips + spine + chest + neck") --
+// a single 16-degree hinge at one joint reads as a broken back.
+//
+// The tests below the constant pin the SHAPE of this (which bones move, the
+// axis decomposition, the sign, the action-pose interaction), not the two
+// numbers: 9 and 7 are a tuning, and re-tuning them by eye at match-camera
+// scale is a legitimate follow-up, not a regression.
+const SPINE_LEAN_DEGREES = 9;
+const CHEST_LEAN_DEGREES = 7;
+
+// WHY THE SPINE AND CHEST, NOT THE ROOT.
+//
+// `actionPose.apply` owns `root` outright, and it ASSIGNS rather than
+// composes (`pose.rot[bone] = quat.fromEuler(...)`). So a lean written to
+// `root` BEFORE the overlay is silently discarded the instant a keeper dives,
+// and a lean composed onto `root` AFTER it would stack 16 degrees of balance
+// tilt onto a 72-degree committed dive about a neighbouring axis -- the
+// "keeper dive and lean fighting each other" case. Keeping lean off `root`
+// entirely means there is no ordering question to get wrong and
+// action_pose.ts's stated contract ("every pose is a transform of the rig
+// ROOT bone") keeps exactly one owner.
+//
+// It is also the anatomically right joint: a torso lean leaves the feet where
+// the locomotion clip planted them, which matters because this rig has no IK
+// (skeleton.ts: "No IK here") and nothing would put a slid foot back.
+//
+// The tilt is MULTIPLIED onto whatever the locomotion blend already resolved
+// for those two bones rather than replacing it, so a leaning player keeps
+// their stride's own torso motion. Pre-multiplying applies the lean in the
+// PARENT's frame (`skeleton.apply` evaluates `rot * rest` under the parent),
+// which is what makes it a tilt of the torso relative to the pelvis.
+//
+// Derived, never stored: `poseFor` is called fresh every frame and this reads
+// `view.lean`, which `view_state.ts` owns.
+
+/**
+ * The torso tilt one player's `view.lean` asks for, in DEGREES, decomposed
+ * into the character's OWN axes (`x` tips forward onto the face, `z` tips
+ * toward their own right -- action_pose.ts's orientation note).
+ *
+ * `lean` is a world-X signal but the rig is yawed to `facing`, so the world-X
+ * direction has to be resolved into the character's local frame or a player
+ * running "up" the pitch would lean sideways when they should be leaning
+ * forward. Local +Z is `(facing.x, facing.y)` in pitch coordinates and local
+ * +X is `(facing.y, -facing.x)`, so world +X projects onto them as `facing.y`
+ * and `facing.x` respectively. With no facing the rig is drawn unyawed
+ * (`characterMesh`'s `yaw = 0`), whose local +X IS pitch +x -- so the
+ * no-facing fallback is a pure roll, matching what is actually drawn.
+ *
+ * Returns `undefined` when there is no meaningful lean to apply.
+ */
+export function leanTilt(lean: number, facing?: actionPose.XY): { readonly x: number; readonly z: number } | undefined {
+  if (!Number.isFinite(lean) || Math.abs(lean) < 1e-4) {
+    return undefined;
+  }
+  const amount = Math.max(-1, Math.min(1, lean));
+  const fx = facing?.x ?? 0;
+  const fy = facing?.y ?? 1;
+  const len = Math.hypot(fx, fy);
+  // An all-but-zero facing carries no orientation, so fall back to the
+  // unyawed frame the renderer would actually draw.
+  const nx = len > 1e-6 ? fx / len : 0;
+  const ny = len > 1e-6 ? fy / len : 1;
+  // Positive x tips FORWARD (toward local +Z); toward local +X needs a
+  // NEGATIVE z (see action_pose.ts's orientation note).
+  return { x: amount * nx, z: -amount * ny };
+}
+
+// Composes `leanTilt`'s tilt onto the torso chain, mutating and returning the
+// pose. See the LEAN section above for the mapping and the bone choice.
+function applyLean(pose: actionPose.MutablePose, lean: number, facing?: actionPose.XY): actionPose.MutablePose {
+  const tilt = leanTilt(lean, facing);
+  if (tilt === undefined) {
+    return pose;
+  }
+  const toRadians = Math.PI / 180;
+  for (const [bone, degrees] of [
+    ["spine", SPINE_LEAN_DEGREES],
+    ["chest", CHEST_LEAN_DEGREES],
+  ] as const) {
+    const q = quat.fromEuler(tilt.x * degrees * toRadians, 0, tilt.z * degrees * toRadians);
+    const existing = pose.rot[bone];
+    pose.rot[bone] = existing !== undefined ? quat.multiply(q, existing) : q;
+  }
+  return pose;
+}
+
 /** Resolves the pose for one player. `now`: seconds, replacing `love.timer.getTime()`. */
 export function poseFor(view: PlayerView | undefined, opts: PlayerRenderOptions, now: number): actionPose.MutablePose {
   const speed = view?.speed ?? 0;
@@ -246,7 +389,19 @@ export function poseFor(view: PlayerView | undefined, opts: PlayerRenderOptions,
 
   // Whole-body actions last: they move the root, so they ride on top of
   // whatever gait and stance resolved instead of competing with them.
-  return actionPose.apply(pose, opts);
+  const posed = actionPose.apply(pose, opts);
+
+  // Balance lean, on the torso only -- see the TORSO LEAN section above for
+  // the mapping and for why this never touches `root`. Suppressed outright
+  // while a whole-body action owns the body: a dive/aerial/knockback IS the
+  // displacement of the mass, and the velocity-derived lean it produces is a
+  // second reading of the same motion, not an extra cue. `forOptions` is the
+  // same pure predicate `apply` just consulted -- cheap enough to ask twice
+  // rather than widening action_pose.ts's interface for this.
+  if (actionPose.forOptions(opts) === null) {
+    applyLean(posed, view?.lean ?? 0, opts.facing);
+  }
+  return posed;
 }
 
 // ---------------------------------------------------------------------------

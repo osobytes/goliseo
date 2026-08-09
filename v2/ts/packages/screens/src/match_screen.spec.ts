@@ -44,14 +44,22 @@
 // uses for `correctionSmoothing`/`viewState`) against a fake `matchState`
 // source, the same role `FakeSimHost` already plays for `SimHostPort`.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { Vec2 } from "@gc/core";
 import { bindings, inputSample } from "@gc/input";
 import type { KeyboardState } from "@gc/input";
-import { cameraFollow, replay } from "@gc/render";
+import { cameraFollow, releaseFollow, replay } from "@gc/render";
 import type { replayTypes } from "@gc/render";
 import { MatchScreen, MatchScreenAsRealMatchScreen } from "./match.ts";
-import type { InputSample, RenderFrame, RenderFrameRoster, RenderPort, SimHostFactory, SimHostPort } from "./match.ts";
+import type {
+  InputSample,
+  RealMatchRenderFrameEvents,
+  RenderFrame,
+  RenderFrameRoster,
+  RenderPort,
+  SimHostFactory,
+  SimHostPort,
+} from "./match.ts";
 
 // A test-only stand-in for the wasm session's `gc_sim::fixed_clock`-backed
 // `FixedClock` (`crates/gc-wasm/src/session.rs`, bound through `@gc/wasm`).
@@ -110,7 +118,25 @@ class FakeSimHost implements SimHostPort {
     away_score: 0,
     time_left: 300,
   };
+  /** One tick's worth of `RenderFrame.events`, returned by `frame()` and
+   * cleared by the next `step` -- mirrors the real host, whose `frame()`
+   * only ever reports the LAST stepped tick's events. Left empty unless a
+   * test arms it via `emitOnNextStep`. */
+  private pendingEvents: RealMatchRenderFrameEvents | undefined;
+  private armedEvents: RealMatchRenderFrameEvents | undefined;
+  private armedHomeGoal = false;
   private tickCount = 0;
+
+  /** Make the NEXT `step` produce `events` on the following `frame()` read. */
+  emitOnNextStep(events: RealMatchRenderFrameEvents): void {
+    this.armedEvents = events;
+  }
+
+  /** Make the NEXT `step` score for the home side -- the score EDGE
+   * `finishBaseUpdate` treats as a scene discontinuity. */
+  scoreOnNextStep(): void {
+    this.armedHomeGoal = true;
+  }
   private clockAccumulator = 0;
 
   planTicks(dt: number): number {
@@ -138,6 +164,12 @@ class FakeSimHost implements SimHostPort {
 
   step(sample: InputSample): void {
     this.stepCalls.push(sample);
+    this.pendingEvents = this.armedEvents;
+    this.armedEvents = undefined;
+    if (this.armedHomeGoal) {
+      this.armedHomeGoal = false;
+      this.hud.home_score += 1;
+    }
     this.tickCount += 1;
     // A goal replay's "the sim is frozen during the replay" assertion needs
     // SOMETHING to observably advance only while `step` is actually called
@@ -150,11 +182,11 @@ class FakeSimHost implements SimHostPort {
   }
 
   frame(): RenderFrame {
-    return { hud: this.hud, possession: {} };
+    return { hud: this.hud, possession: {}, ...(this.pendingEvents !== undefined ? { events: this.pendingEvents } : {}) };
   }
 
   roster(): RenderFrameRoster {
-    return {};
+    return { ids: ["keeper", "striker", "playmaker"] };
   }
 
   tick(): number {
@@ -677,5 +709,102 @@ describe("match screen broadcast follow camera (tier 2)", () => {
 
     screen.dispose();
     cameraFollow.reset();
+  });
+});
+
+// The producer half of the kick follow-through wiring. `release_follow.ts`
+// had no caller anywhere in the tree: nothing fed it match events, so no
+// window ever opened, so the `kick_follow` pose was unreachable in a live
+// match regardless of what the payload builder did with it. These cases
+// drive `MatchScreen.update` and assert on the REAL `@gc/render`
+// `releaseFollow` module (already pure, no wasm involved -- the same
+// "TS-glue-observable analog" pattern this file's goal-replay and follow-
+// camera cases already use for `replay`/`cameraFollow`).
+describe("match screen release follow-through (tier 3)", () => {
+  afterEach(() => {
+    // Module-level state shared with every other consumer in this process.
+    releaseFollow.reset();
+  });
+
+  function screenWith(): { readonly screen: MatchScreen; readonly host: FakeSimHost } {
+    const { factory, hosts } = makeHostFactory();
+    const screen = new MatchScreen({
+      createHost: factory,
+      renderer: noopRenderer,
+      keyboard: fakeKeyboard({}),
+      // A goal is only a scene discontinuity `MatchScreen` can act on when
+      // it has a correction source to reseed from -- the same port
+      // `viewState.reset()` already depends on for this branch.
+      matchState: fixtureMatchStateSource(() => nth(hosts, 0)),
+    });
+    return { screen, host: nth(hosts, 0) };
+  }
+
+  it("opens a window for the player a shot is attributed to", () => {
+    const { screen, host } = screenWith();
+    // Slot 2 of `FakeSimHost.roster()`'s ids -- one-based on the wire.
+    host.emitOnNextStep({ count: 1, kind: ["shot"], slot: [2] });
+
+    screen.update(1 / 60);
+
+    expect(releaseFollow.windows()).toEqual({ striker: true });
+  });
+
+  it("opens one for a pass too, and for nothing else", () => {
+    const { screen, host } = screenWith();
+    host.emitOnNextStep({ count: 2, kind: ["pass", "tackle"], slot: [3, 2] });
+
+    screen.update(1 / 60);
+
+    expect(releaseFollow.windows()).toEqual({ playmaker: true });
+  });
+
+  it("ages the window out over DURATION seconds of render time", () => {
+    const { screen, host } = screenWith();
+    host.emitOnNextStep({ count: 1, kind: ["shot"], slot: [2] });
+    screen.update(1 / 60);
+    expect(releaseFollow.active("striker")).toBe(true);
+
+    // Enough render calls to cover DURATION with room to spare.
+    for (let call = 0; call < 12; call += 1) {
+      screen.update(1 / 60);
+    }
+    expect(releaseFollow.active("striker")).toBe(false);
+  });
+
+  it("clears every window on a goal, so a follow-through cannot outlive its timeline", () => {
+    const { screen, host } = screenWith();
+    host.emitOnNextStep({ count: 1, kind: ["shot"], slot: [2] });
+    screen.update(1 / 60);
+    expect(releaseFollow.active("striker")).toBe(true);
+
+    host.emitOnNextStep({ count: 1, kind: ["shot"], slot: [3] });
+    host.scoreOnNextStep();
+    screen.update(1 / 60);
+
+    // Latched and then discarded within the same render call: the scene
+    // discontinuity gets the last word.
+    expect(releaseFollow.windows()).toEqual({});
+  });
+
+  it("clears every window on a rematch", () => {
+    const { screen, host } = screenWith();
+    host.emitOnNextStep({ count: 1, kind: ["shot"], slot: [2] });
+    screen.update(1 / 60);
+    expect(releaseFollow.active("striker")).toBe(true);
+
+    host.hud.finished = true;
+    screen.event({ kind: "key", key: "r" });
+
+    expect(releaseFollow.windows()).toEqual({});
+  });
+
+  it("ignores an unattributed release", () => {
+    const { screen, host } = screenWith();
+    host.emitOnNextStep({ count: 1, kind: ["shot"], slot: [undefined] });
+
+    screen.update(1 / 60);
+
+    expect(releaseFollow.windows()).toEqual({});
   });
 });

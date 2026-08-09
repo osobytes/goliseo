@@ -164,8 +164,14 @@ export interface SimHost
    * The returned view is only valid until the next `buildRenderFrame`
    * call (the underlying buffer is reused and can move if it grows) —
    * copy out anything that needs to outlive that call.
+   *
+   * `kickFollowSlots` is the renderer's release follow-through window as a
+   * roster-slot bitmask — `releaseFollow.slotMask(roster.ids)` from
+   * `@gc/render`, or `0` when nothing is following through. It crosses as a
+   * scalar rather than as ids because this is the per-frame path; see
+   * `crates/gc-wasm/src/session.rs`'s `kick_follow_ids`.
    */
-  buildRenderFrame(handle: number): Float64Array | null;
+  buildRenderFrame(handle: number, kickFollowSlots: number): Float64Array | null;
   /**
    * Builds `bridge`'s CURRENT render frame (the live boundary
    * {@link MatchDriverBridge.advance} most recently produced) and returns a
@@ -184,7 +190,7 @@ export interface SimHost
    * wasm memory growth from either call would, same as `buildRenderFrame`'s
    * own caveat) — copy out anything that needs to outlive that call.
    */
-  buildMatchDriverRenderFrame(bridge: MatchDriverBridge): Float64Array;
+  buildMatchDriverRenderFrame(bridge: MatchDriverBridge, kickFollowSlots: number): Float64Array;
 }
 
 let cached: SimHost | undefined;
@@ -270,8 +276,8 @@ export function loadSimHost(): SimHost {
     // `player_pose_bridge.rs`.
     playerPoseSelect: native.playerPoseSelect,
     memory: raw.memory,
-    buildRenderFrame(handle: number): Float64Array | null {
-      const ok = raw.render_frame_build(handle);
+    buildRenderFrame(handle: number, kickFollowSlots: number): Float64Array | null {
+      const ok = raw.render_frame_build(handle, kickFollowSlots);
       if (ok === 0) {
         return null;
       }
@@ -283,11 +289,11 @@ export function loadSimHost(): SimHost {
       // and a stale view would point at a detached ArrayBuffer.
       return new Float64Array(raw.memory.buffer, ptr, len);
     },
-    buildMatchDriverRenderFrame(bridge: MatchDriverBridge): Float64Array {
+    buildMatchDriverRenderFrame(bridge: MatchDriverBridge, kickFollowSlots: number): Float64Array {
       // Always `1` -- see `MatchDriverBridge.renderFrameBuild`'s own doc for
       // why this call can never report "no live bridge" the way
       // `render_frame_build(handle)` can.
-      bridge.renderFrameBuild();
+      bridge.renderFrameBuild(kickFollowSlots);
       const ptr = raw.driver_render_frame_ptr();
       const len = raw.driver_render_frame_len();
       return new Float64Array(raw.memory.buffer, ptr, len);

@@ -118,9 +118,22 @@ export type RealMatchEventKind =
   | "juke"
   | "reception";
 
-/** One frame event entry -- see {@link RealMatchEventKind}'s doc. */
+/**
+ * One frame event entry -- see {@link RealMatchEventKind}'s doc.
+ *
+ * `kind` is a plain `string`, deliberately NOT narrowed to
+ * {@link RealMatchEventKind}: the wire carries about twenty-five event kinds
+ * and `match_observer.lua`'s `observe` iterates the whole raw list, switching
+ * on `kind` and ignoring what it does not recognise. Every producer here
+ * forwards the batch unfiltered for exactly that reason (see
+ * `MatchScreen.appendObservedFrameEvents` and `@gc/app`'s
+ * `real_match_factory.ts`, which both say so in their own comments), so
+ * declaring the narrow subset here described the observer's INTEREST rather
+ * than this field's contents. {@link RealMatchEventKind} remains exported as
+ * documentation of that subset.
+ */
 export interface RealMatchEvent {
-  readonly kind: RealMatchEventKind;
+  readonly kind: string;
   readonly player?: string;
 }
 

@@ -56,7 +56,7 @@ import { loadSimHost } from "@gc/wasm";
 import type { FixedClock, SimHost, SimSession } from "@gc/wasm";
 import { inputSample } from "@gc/input";
 import type { inputSampleTypes } from "@gc/input";
-import { frameBuffer } from "@gc/render";
+import { frameBuffer, releaseFollow } from "@gc/render";
 import type { frameBufferTypes } from "@gc/render";
 
 /** Re-exported so callers of this module need not also import `@gc/input`. */
@@ -239,7 +239,7 @@ class WasmSimHost implements SimHostPort {
   private readonly localSlot: number;
   private disposed = false;
   private rosterCache: RenderFrameRoster | undefined;
-  private frameCache: { readonly tick: number; readonly frame: RenderFrame } | undefined;
+  private frameCache: { readonly tick: number; readonly kickFollowSlots: number; readonly frame: RenderFrame } | undefined;
 
   constructor(
     homeTeamId: string,
@@ -297,13 +297,26 @@ class WasmSimHost implements SimHostPort {
   frame(): RenderFrame {
     this.assertLive();
     const tick = this.session.inputTick;
-    if (this.frameCache !== undefined && this.frameCache.tick === tick) {
+    // The renderer's own release follow-through window, as the roster-slot
+    // bitmask the per-frame wasm path takes (see `releaseFollow.slotMask`
+    // and `crates/gc-wasm/src/session.rs`'s `kick_follow_ids`). Read HERE
+    // rather than pushed in from the match screen because this is the
+    // payload-build site: `release_follow.ts` deliberately hands the builder
+    // a snapshot and never lets the builder reach back into it, and this
+    // adapter is the only place that has both that snapshot and the roster
+    // needed to turn ids into slots.
+    //
+    // A window opening or ageing out changes the FRAME without changing the
+    // tick, so it is part of the cache key -- keying on `tick` alone would
+    // serve a stale pose for as long as the sim stood still.
+    const kickFollowSlots = releaseFollow.slotMask(this.roster().ids);
+    if (this.frameCache !== undefined && this.frameCache.tick === tick && this.frameCache.kickFollowSlots === kickFollowSlots) {
       return this.frameCache.frame;
     }
     // Fresh every call, never cached across ticks -- see this file's header
     // on memory-view invalidation. `buildRenderFrame` itself re-derives its
     // `Float64Array` from the module's current `memory.buffer` every call.
-    const words = this.host.buildRenderFrame(this.session.handle);
+    const words = this.host.buildRenderFrame(this.session.handle, kickFollowSlots);
     if (words === null) {
       throw new Error("sim_host: no live session for this handle (already disposed?)");
     }
@@ -312,7 +325,7 @@ class WasmSimHost implements SimHostPort {
     // with no copy -- see this file's header.
     const decoded = frameBuffer.decode(words);
     const frame = frameBuffer.toRenderFrame(decoded, this.roster());
-    this.frameCache = { tick, frame };
+    this.frameCache = { tick, kickFollowSlots, frame };
     return frame;
   }
 

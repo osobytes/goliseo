@@ -323,13 +323,13 @@ async function main(): Promise<void> {
 
     // `Session`'s per-frame render payload crosses through the SAME raw
     // exports `browser_sim_host.ts` uses (`__getRawExports()` ->
-    // `render_frame_build(handle)` / `render_frame_ptr()` /
+    // `render_frame_build(handle, kickFollowSlots)` / `render_frame_ptr()` /
     // `render_frame_len()` -> a `Float64Array` view into wasm linear memory,
     // decoded fresh every call -- never cached across ticks, since
     // `raw.memory.buffer` is replaced wholesale whenever wasm memory grows).
     const raw = __getRawExports() as {
       memory: WebAssembly.Memory;
-      render_frame_build: (handle: number) => number;
+      render_frame_build: (handle: number, kickFollowSlots: number) => number;
       render_frame_ptr: () => number;
       render_frame_len: () => number;
     };
@@ -342,7 +342,12 @@ async function main(): Promise<void> {
     const roster = rosterOnce();
 
     function frameNow(): frameBufferTypes.RenderFrame {
-      const ok = raw.render_frame_build(session.handle);
+      // Always 0: this page measures frame COST, and the release
+      // follow-through window would only add a pose selection whose cost is
+      // identical to the locomotion pose it currently resolves to. Declared
+      // and passed explicitly rather than relied on as a missing-argument
+      // coercion, so this cast cannot drift from the real ABI unnoticed.
+      const ok = raw.render_frame_build(session.handle, 0);
       if (ok === 0) {
         throw new Error("render_bench: no live session for this handle");
       }

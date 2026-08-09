@@ -863,10 +863,17 @@ impl MatchDriverBridge {
     /// [`crate::render_export::render_frame_build`]'s `u32` success/failure
     /// convention): unlike a registry handle, a live `&mut self` can never
     /// name a freed or nonexistent bridge.
+    ///
+    /// `kick_follow_slots`: the renderer's release follow-through window as
+    /// a roster-slot bitmask, the same scalar
+    /// [`crate::render_export::render_frame_build`] takes — see
+    /// [`crate::session::kick_follow_ids`] for why the window crosses as
+    /// slots rather than as ids. Pass `0` when no window is open.
     #[wasm_bindgen(js_name = renderFrameBuild)]
-    pub fn render_frame_build(&mut self) -> u32 {
+    pub fn render_frame_build(&mut self, kick_follow_slots: u32) -> u32 {
         let options = RenderFrameOptions {
             roster: Some(self.roster.clone()),
+            kick_follow: crate::session::kick_follow_ids(&self.roster, kick_follow_slots),
             ..Default::default()
         };
         let built = render_frame::build(&self.driver.session.state, &options);
@@ -1418,7 +1425,7 @@ mod tests {
         let mut bridge = new_host_bridge();
         bridge.advance(None).unwrap();
 
-        let ok = bridge.render_frame_build();
+        let ok = bridge.render_frame_build(0);
         assert_eq!(ok, 1);
         let ptr = crate::render_export::driver_render_frame_ptr();
         let len = crate::render_export::driver_render_frame_len();
@@ -1432,7 +1439,7 @@ mod tests {
             "nebula", "orion", 7.0, 20.0, 3, None, None, None, None, None,
         )
         .expect("the fixture team ids always construct a valid session");
-        let session_ok = crate::render_export::render_frame_build(session.handle());
+        let session_ok = crate::render_export::render_frame_build(session.handle(), 0);
         assert_eq!(session_ok, 1);
         assert_eq!(crate::render_export::driver_render_frame_ptr(), ptr);
         assert_eq!(crate::render_export::driver_render_frame_len(), len);

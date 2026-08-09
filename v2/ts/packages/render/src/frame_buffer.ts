@@ -928,6 +928,25 @@ function at2(parts: readonly string[], index: number): string {
 export interface RenderFrame extends PitchRenderFrame {
   readonly possession: RenderFramePossession;
   readonly hud: RenderFrameHud;
+  /**
+   * This frame's discrete match events.
+   *
+   * CARRIED, after having been silently dropped. `decode` has always
+   * recovered these off the wire, but `toRenderFrame` used to leave them
+   * behind -- so every consumer downstream of it (both `SimHostPort`
+   * implementations in `@gc/app`, and therefore `@gc/screens`'s
+   * `MatchScreen`) received a frame with no `events` field at all. That is
+   * what made `MatchScreen.appendObservedFrameEvents` an unconditional
+   * early return in production, which in turn left BOTH consumers of the
+   * per-tick event batch inert: `MatchScreenAsRealMatchScreen.frameEvents`
+   * (`game.match_observer`'s attribution) and the release follow-through
+   * window. Neither is reachable in a live match without this field, no
+   * matter what either of them does with it.
+   *
+   * `pitch.draw` neither declares nor reads it -- this type stays a strict
+   * superset of `PitchRenderFrame`, and drawing is unaffected.
+   */
+  readonly events: RenderFrameEvents;
 }
 
 /**
@@ -949,6 +968,7 @@ export function toRenderFrame(
     control: frame.control,
     possession: frame.possession,
     hud: frame.hud,
+    events: frame.events,
     ...(combat !== undefined ? { combat } : {}),
   };
 }

@@ -2,8 +2,9 @@
 // artifact (requires `pnpm --filter @gc/wasm build` to have run first, same
 // precondition `packages/wasm/src/session.spec.ts` documents).
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { loadSimHost } from "@gc/wasm";
+import { releaseFollow } from "@gc/render";
 import { createSimHost } from "./sim_host.ts";
 
 const HOME = "nebula";
@@ -350,13 +351,13 @@ describe("createSimHost", () => {
       const wire = ["2", "0", ...Array.from({ length: 8 }, () => "0,0,0,0")].join("|");
       session.step(wire);
 
-      const first = rawHost.buildRenderFrame(session.handle);
+      const first = rawHost.buildRenderFrame(session.handle, 0);
       expect(first).not.toBeNull();
       const firstBuffer = first?.buffer;
 
       rawHost.memory.grow(4);
 
-      const second = rawHost.buildRenderFrame(session.handle);
+      const second = rawHost.buildRenderFrame(session.handle, 0);
       expect(second).not.toBeNull();
       // A view derived after growth must not still point at the pre-growth
       // buffer -- if it did, that would mean stale-view caching crept back
@@ -365,6 +366,136 @@ describe("createSimHost", () => {
       expect(second?.[0]).toBe(0x474f_4c46); // MAGIC
     } finally {
       session.free();
+    }
+  });
+});
+
+// The whole reason `frame()` reads `releaseFollow` at all. Before this
+// wiring, BOTH production `RenderFrameOptions` construction sites built
+// `{ roster, ..Default::default() }`, so `kick_follow` was always `None` and
+// `PlayerPoseId::KickFollow` could never be selected in a real match no
+// matter what the renderer's follow-through window said. These cases drive
+// the full chain: renderer window -> roster-slot mask -> raw wasm export ->
+// `gc_render::player_pose::select` -> decoded frame.
+describe("createSimHost carries the renderer's kick_follow window into the built frame", () => {
+  afterEach(() => {
+    // Module-level state shared with every other consumer in this process.
+    releaseFollow.reset();
+  });
+
+  function outfieldSlot(ids: readonly string[], isKeeper: readonly boolean[]): number {
+    const slot = isKeeper.findIndex((keeper) => !keeper);
+    expect(slot).toBeGreaterThanOrEqual(0);
+    expect(ids[slot]).toBeDefined();
+    return slot;
+  }
+
+  it("selects the kick_follow pose for a player with an open window, and only that player", () => {
+    const host = createSimHost(HOME, AWAY, 7, 20, 3);
+    try {
+      host.step(neutralSample());
+      const roster = host.roster();
+      const slot = outfieldSlot(roster.ids, roster.is_keeper);
+
+      expect(host.frame().players.pose_id[slot]).not.toBe("kick_follow");
+
+      releaseFollow.update([{ kind: "shot", player: roster.ids[slot]! }], 0);
+      const following = host.frame();
+      expect(following.players.pose_id[slot]).toBe("kick_follow");
+      for (let other = 0; other < following.players.count; other += 1) {
+        if (other !== slot) {
+          expect(following.players.pose_id[other]).not.toBe("kick_follow");
+        }
+      }
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it("drops the pose again once the window ages out, without the tick having moved", () => {
+    const host = createSimHost(HOME, AWAY, 7, 20, 3);
+    try {
+      host.step(neutralSample());
+      const roster = host.roster();
+      const slot = outfieldSlot(roster.ids, roster.is_keeper);
+      const tick = host.tick();
+
+      releaseFollow.update([{ kind: "shot", player: roster.ids[slot]! }], 0);
+      expect(host.frame().players.pose_id[slot]).toBe("kick_follow");
+
+      releaseFollow.update([], releaseFollow.DURATION);
+      // The per-tick frame cache must not serve the stale pose: the window
+      // is part of its key precisely because it changes the frame while the
+      // simulation stands still.
+      expect(host.tick()).toBe(tick);
+      expect(host.frame().players.pose_id[slot]).not.toBe("kick_follow");
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it("ignores a window whose id is not on this match's roster", () => {
+    const host = createSimHost(HOME, AWAY, 7, 20, 3);
+    try {
+      host.step(neutralSample());
+      releaseFollow.update([{ kind: "shot", player: "not_on_this_roster" }], 0);
+      const frame = host.frame();
+      for (let slot = 0; slot < frame.players.count; slot += 1) {
+        expect(frame.players.pose_id[slot]).not.toBe("kick_follow");
+      }
+    } finally {
+      host.dispose();
+    }
+  });
+});
+
+// REGRESSION: `frameBuffer.toRenderFrame` used to drop `events` on the floor.
+// `decode` recovered them off the wire correctly, but the object handed to
+// every consumer had no `events` field at all -- so
+// `MatchScreen.appendObservedFrameEvents` was an unconditional early return
+// in production and BOTH consumers of the per-tick batch were inert: the
+// `game.match_observer` attribution feed and the release follow-through
+// window. A fake host can never catch this; only a real decode can.
+describe("createSimHost surfaces the wire's per-tick match events", () => {
+  it("carries a decoded, well-shaped events block on every frame", () => {
+    const host = createSimHost(HOME, AWAY, 7, 20, 3);
+    try {
+      host.step(neutralSample());
+      const events = host.frame().events;
+      expect(events).toBeDefined();
+      expect(typeof events.count).toBe("number");
+      expect(events.kind.length).toBe(events.count);
+      expect(events.slot.length).toBe(events.count);
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it("actually reports events from a live match, attributed to a roster slot", () => {
+    const host = createSimHost(HOME, AWAY, 7, 60, 3);
+    try {
+      const kinds = new Set<string>();
+      let attributed = 0;
+      // Long enough for the inline AI to produce touches/tackles/passes.
+      for (let tick = 0; tick < 1800; tick += 1) {
+        host.step(neutralSample());
+        const events = host.frame().events;
+        for (let index = 0; index < events.count; index += 1) {
+          const kind = events.kind[index];
+          if (kind !== undefined) {
+            kinds.add(kind);
+          }
+          const slot = events.slot[index];
+          if (slot !== undefined) {
+            attributed += 1;
+            expect(host.roster().ids[slot - 1]).toBeDefined();
+          }
+        }
+      }
+      expect(kinds.size, "a minute of real match produced no events at all").toBeGreaterThan(0);
+      expect(attributed, "no event was attributed to a roster slot").toBeGreaterThan(0);
+    } finally {
+      host.dispose();
     }
   });
 });
