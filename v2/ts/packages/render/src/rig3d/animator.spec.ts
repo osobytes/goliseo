@@ -99,18 +99,27 @@ describe("rig3d/animator.poseFor", () => {
     expect(delta(coiled, contact)).toBeGreaterThan(0.05);
   });
 
-  // The other half of the explicit table: entries that deliberately have no
-  // action must be indistinguishable from plain locomotion, not accidentally
-  // different from it.
-  it.each(["keeper_shuffle", "keeper_ready_tall", "kick_follow", "settle", "run_telegraph", "contain", "fatigue"])(
-    "leaves %s on the locomotion base exactly as `locomotion` itself is",
-    (id) => {
-      expect(POSE_ACTIONS[id as keyof typeof POSE_ACTIONS].fallback).toBe("locomotion_base");
-      const plain = poseFor(freshId(), RUNNING, withPose("locomotion"), 4);
-      const posed = poseFor(freshId(), RUNNING, withPose(id), 4);
-      expect(delta(plain, posed)).toBe(0);
-    },
-  );
+  // The other half of the explicit table: entries with no action of their own
+  // must be indistinguishable from plain locomotion, not accidentally
+  // different from it. That covers both the poses that are SUPPOSED to look
+  // like locomotion and the ones recorded as gaps (`slide`, `contain`,
+  // `fatigue`, ...) -- the point of the table is that the difference is
+  // written down, not that the two render differently today.
+  it.each([
+    "keeper_shuffle",
+    "keeper_ready_tall",
+    "kick_follow",
+    "settle",
+    "run_telegraph",
+    "contain",
+    "fatigue",
+    "slide",
+  ])("leaves %s on the locomotion base exactly as `locomotion` itself is", (id) => {
+    expect(POSE_ACTIONS[id as keyof typeof POSE_ACTIONS].action).toBeNull();
+    const plain = poseFor(freshId(), RUNNING, withPose("locomotion"), 4);
+    const posed = poseFor(freshId(), RUNNING, withPose(id), 4);
+    expect(delta(plain, posed)).toBe(0);
+  });
 
   it("leaves the root-overlay poses to action_pose.ts, which still reaches the root", () => {
     const grounded = poseFor(freshId(), RUNNING, withPose("locomotion"), 5);
