@@ -383,6 +383,19 @@ enforced gate — the one wired into `scripts/check.sh` and
 
 It is stricter than the commands above in ways that matter:
 
+- it checks **cross-language wire-enum parity** before anything is built
+  (`node scripts/check_wire_enum_parity.mjs`). Every closed set on the
+  `RenderFrame` boundary is defined twice — a Rust enum with a `*_code`
+  numbering in `crates/gc-render/src/frame_buffer.rs`, a TypeScript union with
+  a `*FromCode` numbering in `packages/render/src/frame_buffer.ts` — and each
+  side is compiler-checked only against itself. A variant added on one side
+  only first surfaces as `frame_buffer: unknown pose id code 33` thrown in a
+  player's browser, mid-match; a reordering that preserves membership while
+  shifting codes surfaces as nothing at all, since `team`, `species shape` and
+  `event kind` decode through `requireDecode`, where a shifted code is a
+  different *valid* value rather than an error. The gate compares membership
+  **and** numeric codes for all eleven enums, and refuses to pass if it finds
+  a `*_code`/`*FromCode` pair its registry does not cover (#433).
 - `cargo clippy -p gc-wasm --target wasm32-unknown-unknown -- -D warnings` runs
   as an **explicit, separate** step from the workspace clippy run. The native
   workspace run never compiles `gc-wasm`'s wasm-only code paths at all, so a
