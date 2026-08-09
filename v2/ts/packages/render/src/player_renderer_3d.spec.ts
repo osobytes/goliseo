@@ -14,7 +14,7 @@
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
 import { Vec2 } from "@gc/core";
-import { available, characterCameraParams, characterMesh, clipFor, metresPerWorldUnit, poseFor, ppmForRadius, renderToSprite, DEFAULT_PLAYER_RADIUS } from "./player_renderer_3d.ts";
+import { available, characterCameraParams, characterMesh, clipFor, leanTilt, metresPerWorldUnit, poseFor, ppmForRadius, renderToSprite, DEFAULT_PLAYER_RADIUS } from "./player_renderer_3d.ts";
 import type { PlayerRenderOptions } from "./player_render_options.ts";
 import type { PlayerView } from "./view_state.ts";
 
@@ -87,6 +87,83 @@ describe("player_renderer_3d.poseFor", () => {
     const diving = poseFor(idleView, baseOptions({ dive: 1, dive_dir: new Vec2(0, 1), pose: { id: "keeper_dive" } }), 1.0);
     expect(diving.rot["root"]).toBeDefined();
     expect(grounded.rot["root"]).not.toEqual(diving.rot["root"]);
+  });
+});
+
+describe("player_renderer_3d.leanTilt", () => {
+  it("is nothing at all for a player with no lean", () => {
+    expect(leanTilt(0, new Vec2(0, 1))).toBeUndefined();
+    expect(leanTilt(Number.NaN, new Vec2(0, 1))).toBeUndefined();
+  });
+
+  it("is a pure ROLL for a player facing across world-X, and a pure PITCH for one facing along it", () => {
+    // Local +X is `(facing.y, -facing.x)` and local +Z is `(facing.x,
+    // facing.y)`, so world +X resolves entirely onto one axis or the other
+    // at these two facings.
+    const across = leanTilt(1, new Vec2(0, 1));
+    expect(across?.x).toBeCloseTo(0, 10);
+    expect(across?.z).toBeCloseTo(-1, 10);
+
+    const along = leanTilt(1, new Vec2(1, 0));
+    expect(along?.x).toBeCloseTo(1, 10);
+    expect(along?.z).toBeCloseTo(0, 10);
+  });
+
+  it("falls back to the unyawed frame -- a pure roll -- when there is no facing to resolve against", () => {
+    // Matches what `characterMesh` actually draws with no facing (`yaw = 0`),
+    // whose local +X IS pitch +x.
+    expect(leanTilt(1, undefined)).toEqual({ x: 0, z: -1 });
+  });
+
+  it("mirrors sign with the lean and clamps beyond the signal's own [-1, 1] range", () => {
+    expect(leanTilt(-1, new Vec2(0, 1))?.z).toBeCloseTo(1, 10);
+    expect(leanTilt(4, new Vec2(0, 1))?.z).toBeCloseTo(-1, 10);
+  });
+});
+
+describe("player_renderer_3d.poseFor lean", () => {
+  const running: PlayerView = { px: 0, py: 0, speed: 300, phase: 0, gait: 0.25, lean: 0 };
+
+  it("tilts the TORSO when a player leans, leaving the root to action_pose.ts", () => {
+    const upright = poseFor(running, baseOptions({ facing: new Vec2(0, 1) }), 1.0);
+    const leaning = poseFor({ ...running, lean: 1 }, baseOptions({ facing: new Vec2(0, 1) }), 1.0);
+    expect(leaning.rot["spine"]).not.toEqual(upright.rot["spine"]);
+    expect(leaning.rot["chest"]).not.toEqual(upright.rot["chest"]);
+    expect(leaning.rot["root"]).toEqual(upright.rot["root"]);
+    // Legs stay exactly where the locomotion clip planted them -- this rig
+    // has no IK to put a slid foot back.
+    expect(leaning.rot["thigh.L"]).toEqual(upright.rot["thigh.L"]);
+    expect(leaning.rot["foot.R"]).toEqual(upright.rot["foot.R"]);
+  });
+
+  it("leans the opposite way for the opposite sign, and not at all at zero", () => {
+    const left = poseFor({ ...running, lean: 1 }, baseOptions({ facing: new Vec2(0, 1) }), 1.0);
+    const right = poseFor({ ...running, lean: -1 }, baseOptions({ facing: new Vec2(0, 1) }), 1.0);
+    const none = poseFor(running, baseOptions({ facing: new Vec2(0, 1) }), 1.0);
+    expect(left.rot["spine"]).not.toEqual(right.rot["spine"]);
+    expect(none.rot["spine"]).not.toEqual(left.rot["spine"]);
+  });
+
+  it("resolves the world-X lean into the character's own frame, so facing changes what leaning looks like", () => {
+    const across = poseFor({ ...running, lean: 1 }, baseOptions({ facing: new Vec2(0, 1) }), 1.0);
+    const along = poseFor({ ...running, lean: 1 }, baseOptions({ facing: new Vec2(1, 0) }), 1.0);
+    expect(across.rot["spine"]).not.toEqual(along.rot["spine"]);
+  });
+
+  it("yields the body to a whole-body action: a keeper dive is never also leaned", () => {
+    // `facing` is across the dive direction so `lateralSign` is nonzero and
+    // the save overlay actually fires (see rig3d/action_pose.ts).
+    const dive = baseOptions({ dive: 1, dive_dir: new Vec2(0, 1), pose: { id: "keeper_dive" }, facing: new Vec2(1, 0) });
+    const still = poseFor(running, dive, 1.0);
+    const sprinting = poseFor({ ...running, lean: 1 }, dive, 1.0);
+    expect(sprinting).toEqual(still);
+  });
+
+  it("is derived per call, never accumulated across frames", () => {
+    const opts = baseOptions({ facing: new Vec2(0, 1) });
+    const first = poseFor({ ...running, lean: 0.7 }, opts, 1.0);
+    const second = poseFor({ ...running, lean: 0.7 }, opts, 1.0);
+    expect(second).toEqual(first);
   });
 });
 
