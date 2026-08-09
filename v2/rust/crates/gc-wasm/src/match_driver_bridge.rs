@@ -869,16 +869,45 @@ impl MatchDriverBridge {
     /// [`crate::render_export::render_frame_build`] takes — see
     /// [`crate::session::kick_follow_ids`] for why the window crosses as
     /// slots rather than as ids. Pass `0` when no window is open.
+    ///
+    /// `combat` comes off the driver's OWN rollback session
+    /// (`gc_sim::rollback_session::RollbackSession::combat_state`), not off
+    /// the [`Session`] this bridge was constructed from: the rollback
+    /// session's companion is the one `rollback_session::step` advances and
+    /// `rollback_session` rolls back and re-simulates, so it is the only
+    /// combat state that describes the `MatchState` two lines below. It is
+    /// `Some` exactly when this driver's initial snapshot carried a combat
+    /// companion (`gc_sim::match_snapshot::restore_owned`) — i.e. an online
+    /// session seated for combat — and `None` otherwise, which unlike
+    /// `kick_follow_slots` above is a real value here rather than a
+    /// placeholder for an unbuilt path. Without it all seven combat poses
+    /// are structurally unreachable (#441).
     #[wasm_bindgen(js_name = renderFrameBuild)]
     pub fn render_frame_build(&mut self, kick_follow_slots: u32) -> u32 {
-        let options = RenderFrameOptions {
-            roster: Some(self.roster.clone()),
-            kick_follow: crate::session::kick_follow_ids(&self.roster, kick_follow_slots),
-            ..Default::default()
-        };
+        let options = self.frame_options(kick_follow_slots);
         let built = render_frame::build(&self.driver.session.state, &options);
         crate::render_export::build_driver_frame(&built);
         1
+    }
+
+    /// [`MatchDriverBridge::render_frame_build`]'s options, split out for the
+    /// same reason [`crate::session::frame_options`] is a function of its
+    /// own: what a construction site puts in `RenderFrameOptions` decides
+    /// which poses are reachable at all, and a field left at `Default` there
+    /// is invisible from the encoded frame block a JS caller reads back.
+    /// This crate's native tests assert on it directly.
+    fn frame_options(&self, kick_follow_slots: u32) -> RenderFrameOptions {
+        RenderFrameOptions {
+            roster: Some(self.roster.clone()),
+            kick_follow: crate::session::kick_follow_ids(&self.roster, kick_follow_slots),
+            combat: self
+                .driver
+                .session
+                .combat_state
+                .as_ref()
+                .map(|combat| render_frame::combat_model(&self.driver.session.state, combat)),
+            ..Default::default()
+        }
     }
 
     /// Match-constant per-player roster fields, as a flat `Float64Array` —
@@ -1187,6 +1216,9 @@ impl MatchDriverBridge {
 mod tests {
     use super::*;
     use gc_netcode::{match_driver_fixture, protocol_fixture};
+    use gc_render::player_pose::PlayerPoseId;
+    use gc_sim::combat_feasibility::CombatActionPhase;
+    use gc_sim::combat_snapshot::CombatForcedState;
 
     use crate::coordinator_bridge::{freeze_to_json, value_to_json};
 
@@ -1232,6 +1264,38 @@ mod tests {
     /// (`None`) is what every pre-existing test in this module wants.
     fn new_host_bridge() -> MatchDriverBridge {
         new_host_bridge_with_queue_limit(None)
+    }
+
+    /// The same fixture host bridge, but seated on a COMBAT-ACTIVE initial
+    /// snapshot (`match_driver_fixture::initial_snapshot`'s `combat_active`)
+    /// instead of the plain [`Session`] boundary-zero one — the only way a
+    /// driver's rollback session gets a `combat_state` companion at all
+    /// (`gc_sim::match_snapshot::restore_owned`).
+    fn new_host_bridge_with_combat() -> MatchDriverBridge {
+        let mode = protocol::MatchMode::OneVOne;
+        let freeze = match_driver_fixture::freeze(mode, None, None);
+        let manifest = protocol_fixture::manifest(Some(mode));
+        let freeze_json = freeze_to_json(&freeze).to_json_string();
+        let manifest_json = value_to_json(&manifest).to_json_string();
+
+        let session = Session::new(
+            "nebula", "orion", 7.0, 20.0, 3, None, None, None, None, None,
+        )
+        .expect("the fixture team ids always construct a valid session");
+
+        MatchDriverBridge::new(
+            &session,
+            "host",
+            match_driver_fixture::HOST_PEER_ID,
+            &freeze_json,
+            &manifest_json,
+            None,
+            None,
+            Some(WasmMatchSnapshot::new(
+                match_driver_fixture::initial_snapshot(None, true, None),
+            )),
+        )
+        .expect("a fixture freeze/manifest always constructs a valid driver")
     }
 
     #[test]
@@ -1469,5 +1533,43 @@ mod tests {
             bridge.roster_ids_and_names(),
             session.roster_ids_and_names()
         );
+    }
+
+    /// #441's second construction site. A driver seated for a NON-combat
+    /// session restores no combat companion, so its frame options carry
+    /// `None` — a real value here, not a stand-in.
+    #[test]
+    fn a_non_combat_driver_carries_no_combat_model() {
+        let bridge = new_host_bridge();
+        assert!(bridge.driver.session.combat_state.is_none());
+        assert!(bridge.frame_options(0).combat.is_none());
+    }
+
+    /// ...and a driver whose initial snapshot DID carry a combat companion
+    /// reaches the frame's pose column with it, exactly like
+    /// `crate::session::frame_options` does for a local match. This is the
+    /// site that pass `0` for `kick_follow_slots` because no production
+    /// caller supplies a follow-through window yet; combat is different —
+    /// the rollback session owns a real companion, so there is nothing to
+    /// stand in for.
+    #[test]
+    fn a_combat_seated_driver_reaches_the_frame_as_a_combat_pose() {
+        let mut bridge = new_host_bridge_with_combat();
+        let combat = bridge
+            .driver
+            .session
+            .combat_state
+            .as_mut()
+            .expect("a combat-active initial snapshot restores its companion");
+        combat.players[1].phase = CombatActionPhase::Guard;
+        combat.players[2].forced_state = Some(CombatForcedState::Stagger);
+        combat.players[2].forced_ticks = 4;
+
+        let options = bridge.frame_options(0);
+        assert!(options.combat.is_some());
+        let built = render_frame::build(&bridge.driver.session.state, &options);
+        assert_eq!(built.players.pose_id[1], PlayerPoseId::CombatGuard);
+        assert_eq!(built.players.pose_id[2], PlayerPoseId::CombatStagger);
+        assert_eq!(built.players.pose_id[3], PlayerPoseId::Locomotion);
     }
 }

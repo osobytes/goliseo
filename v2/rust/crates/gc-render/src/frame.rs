@@ -40,6 +40,7 @@
 use gc_core::vec2::Vec2;
 use gc_sim::aerial::{AerialOutcome, AerialStyle};
 use gc_sim::brain::TeamPhase;
+use gc_sim::combat_snapshot::CombatMatchState;
 use gc_sim::keeper::{self, KeeperBehaviorState, KeeperShotType, SaveStyle};
 use gc_sim::r#match as sim_match;
 use gc_sim::match_snapshot::{ByTeam, MatchEvent, MatchEventKind, MatchState, Rect, Team};
@@ -296,20 +297,139 @@ pub struct RenderFrameEvents {
 /// (`RenderFrame.combat`) and reads only `combat.players[index]`'s
 /// phase/forced-state fields, to hand [`crate::player_pose::select`] its
 /// `combat` sample; [`crate::frame_buffer`] never encodes any of it (see that
-/// module's own doc, "WHAT IS NOT CARRIED"). Since the real model is built in
-/// TypeScript and the JS↔wasm marshalling layer that would carry a live one
-/// into this crate is a separate, out-of-scope milestone
-/// (`v2/README.md` §1), this is declared locally and narrow rather than
-/// imported — the same adapter pattern §5.1 documents for a module that
-/// reads shaped state before its full type exists on this side of the
-/// boundary.
+/// module's own doc, "WHAT IS NOT CARRIED").
+///
+/// ## This type is narrow on purpose, and it is NOT blocked on marshalling
+///
+/// This doc used to say the JS↔wasm marshalling layer that would carry a
+/// live model into this crate was "a separate, out-of-scope milestone", and
+/// a reader took that to mean the whole model — pose selection included —
+/// had to wait for it. It does not, and reading it that way is what left
+/// [`RenderFrameOptions::combat`] unpopulated at both production
+/// construction sites, making all seven combat poses structurally
+/// unreachable in a real match (#441; #426 was the identical mistake one
+/// field over).
+///
+/// The distinction is which half of `CombatPresentationModel` a field comes
+/// from:
+///
+/// - The RICH PRESENTATION half — equipment and family display names,
+///   telegraph kinds, reach/arc geometry, readiness fractions — is genuinely
+///   TypeScript-owned and genuinely does need a marshalling layer this crate
+///   does not have. None of it is declared here.
+/// - The POSE-SELECTION half — `phase`, `forced_state`, `forced_ticks` — is
+///   not TypeScript-owned at all. It is already native Rust simulation
+///   state, stepped every tick, on this side of the wall:
+///   `gc_sim::combat_snapshot::CombatPlayerState`. [`combat_model`] below
+///   adapts it in-process, with no boundary crossing whatsoever.
+///
+/// So this type stays narrow because pose selection only ever needed three
+/// fields, not because the data was out of reach.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FrameCombatModel {
-    /// Whether combat presentation is enabled for this match.
+    /// RESERVED, AND NOT THE SIGNAL ANYTHING READS. Carried for parity with
+    /// `game/presentation/combat.lua`'s `CombatPresentationModel.enabled`,
+    /// which distinguishes an empty-but-present model from a real one
+    /// because Lua has no `Option`. Rust does, and this port uses it:
+    /// [`combat_model`] hardcodes `true` and is only ever called for a match
+    /// that runs combat, so this field carries no information a reader can
+    /// act on.
+    ///
+    /// TODAY'S ACTUAL SIGNAL IS `Option::is_some` on
+    /// [`RenderFrameOptions::combat`] / [`RenderFrame::combat`] — that is
+    /// what [`build`] branches on to offer
+    /// [`crate::player_pose::select`] a combat sample, and what
+    /// [`crate::frame_buffer`] encodes as its header's `combat_present`.
+    /// Neither reads this field. Anything that starts branching on combat
+    /// should branch on the `Option` too, or give this field a meaning
+    /// first; do not read a `true` here as an independent confirmation of
+    /// anything.
     pub enabled: bool,
     /// One entry per roster slot; exactly the shape
     /// [`crate::player_pose::CombatPoseSample`] reads.
     pub players: Vec<CombatPoseSample>,
+}
+
+/// Adapt one live [`CombatMatchState`] into the pose-selection slice
+/// [`build`] hands [`crate::player_pose::select`], one entry per roster slot
+/// in canonical player order.
+///
+/// This is the in-process adapter [`FrameCombatModel`]'s doc describes: both
+/// sides are Rust in the same process, so nothing is marshalled, copied
+/// across a boundary, or re-derived. `phase` in particular needs no mapping
+/// at all — `gc_sim::combat_snapshot::CombatPhase` is a re-exported alias of
+/// `gc_sim::combat_feasibility::CombatActionPhase` (`combat_snapshot.rs`'s
+/// `pub type CombatPhase = CombatActionPhase`), which is the very type
+/// [`crate::player_pose::CombatPoseSample::phase`] declares, so the field
+/// copy below is the compiler's own identity, not a hand-written
+/// correspondence that could silently pick the wrong pose.
+///
+/// Mirrors `game/presentation/combat.lua`'s `presentation.model` for the
+/// three fields it shares with it, including that function's identity
+/// assertions.
+///
+/// # Panics
+///
+/// If `combat` does not describe `state`: a different player count, or a
+/// player id at some slot that is not `state`'s.
+///
+/// ## Why this panics rather than degrading, ON THE RENDER PATH
+///
+/// A panic here takes down the frame, and the frame is what the player is
+/// looking at — a harsher blast radius than the same assertion in `gc-sim`.
+/// It is still the right call, and the reason is that the failure it catches
+/// is IMPOSSIBLE BY CONSTRUCTION UPSTREAM, so reaching it means something
+/// this module cannot reason about is already wrong:
+///
+/// - `gc_sim::combat::new_state` builds `player_ids`/`players` by iterating
+///   `state.players` in order, so the correspondence is positional from
+///   birth;
+/// - `gc_sim::combat_snapshot::copy` re-asserts `player_ids[i] ==
+///   state.players[i].id` at every index;
+/// - every step and every rollback moves state and combat together —
+///   `r#match::step` takes both, `rollback_snapshot_history::restore_simulation`
+///   returns both from one ring entry — so they cannot come from different
+///   ticks.
+///
+/// Degrading (returning `None`, or skipping the mismatched slot) would trade
+/// a loud stop for the one failure mode here that LOOKS LIKE WORKING
+/// SOFTWARE: a bystander staggering while the player who was actually struck
+/// runs on untouched. Nothing downstream could detect that, and no player
+/// would report it as a bug. Per AGENTS.md §7 this is an invariant, not
+/// recoverable input; fail loud.
+#[must_use]
+pub fn combat_model(state: &MatchState, combat: &CombatMatchState) -> FrameCombatModel {
+    assert_eq!(
+        combat.players.len(),
+        state.players.len(),
+        "combat presentation player count mismatch"
+    );
+    assert_eq!(
+        combat.player_ids.len(),
+        state.players.len(),
+        "combat presentation identity mismatch"
+    );
+    let players = state
+        .players
+        .iter()
+        .zip(combat.player_ids.iter())
+        .zip(combat.players.iter())
+        .map(|((player, id), runtime)| {
+            assert_eq!(
+                id, &player.id,
+                "combat presentation player identity mismatch"
+            );
+            CombatPoseSample {
+                phase: runtime.phase,
+                forced_state: runtime.forced_state,
+                forced_ticks: runtime.forced_ticks,
+            }
+        })
+        .collect();
+    FrameCombatModel {
+        enabled: true,
+        players,
+    }
 }
 
 /// One drawable frame: the whole interface between the simulation and any
@@ -377,7 +497,14 @@ pub struct RenderFrameOptions {
     /// following through. A `Vec` rather than a map for the same reason as
     /// [`RenderPose::players`].
     pub kick_follow: Option<Vec<String>>,
-    /// Combat telegraph model for this frame.
+    /// Combat telegraph model for this frame — [`combat_model`] over the
+    /// match's live `CombatMatchState`, or `None` for a match that does not
+    /// run combat. `None` is what every combat pose's reachability hinges
+    /// on: [`build`] only ever offers
+    /// [`crate::player_pose::select`] a combat sample when this is `Some`,
+    /// so a caller leaving it at its `Default` makes all seven combat poses
+    /// unselectable no matter what the simulation underneath is doing
+    /// (#441).
     pub combat: Option<FrameCombatModel>,
 }
 
