@@ -6,13 +6,20 @@
 //! player pose priority", exercises `render.player_pose.select` — Rust here
 //! — and was deferred to this crate by the TypeScript presentation agent for
 //! exactly that reason. Both of that block's `t.it` cases are ported below.
+//!
+//! #441 added the two cases at the bottom, which are this crate's own: they
+//! cover `frame::combat_model` (the adapter that finally feeds `select`'s
+//! `combat` argument from live simulation state) and the reachability of all
+//! seven combat poses through `frame::build`.
 
 use gc_core::vec2::Vec2;
 use gc_data::teams;
+use gc_render::frame::{self, RenderFrameOptions};
 use gc_render::player_pose::{
     self, CombatPoseSample, PlayerPoseId, PlayerPoseSelection, PlayerPoseSource,
 };
 use gc_sim::aerial::AerialStyle;
+use gc_sim::combat;
 use gc_sim::combat_feasibility::CombatActionPhase;
 use gc_sim::combat_snapshot::CombatForcedState;
 use gc_sim::r#match::{self as sim_match, NewMatchOptions};
@@ -144,4 +151,91 @@ fn chooses_overlapping_poses_from_declared_priority_with_a_stable_tie_rule() {
         PlayerPoseId::Slide,
         "equal priorities choose the lexically smaller pose id"
     );
+}
+
+/// The adapter #441 added: one live `CombatMatchState` in, one
+/// `FrameCombatModel` out, in canonical player order. `phase` needs no
+/// mapping (`CombatPhase` IS `CombatActionPhase`, see
+/// `gc_render::frame::combat_model`'s doc), so this checks the thing that
+/// could actually go wrong: that slot N's model entry describes slot N's
+/// player.
+#[test]
+fn the_combat_model_carries_each_slot_s_own_phase_and_forced_state() {
+    let mut state = fixture();
+    let mut combat = combat::new_state(&mut state, None);
+    combat.players[1].phase = CombatActionPhase::Aim;
+    combat.players[2].forced_state = Some(CombatForcedState::Knockback);
+    combat.players[2].forced_ticks = 4;
+
+    let model = frame::combat_model(&state, &combat);
+    assert!(model.enabled, "a model is only built for a combat match");
+    assert_eq!(model.players.len(), state.players.len());
+    assert_eq!(model.players[0].phase, CombatActionPhase::Ready);
+    assert_eq!(model.players[1].phase, CombatActionPhase::Aim);
+    assert_eq!(model.players[1].forced_state, None);
+    assert_eq!(
+        model.players[2].forced_state,
+        Some(CombatForcedState::Knockback)
+    );
+    assert_eq!(model.players[2].forced_ticks, 4);
+}
+
+/// THE REACHABILITY CONTRACT #441 exists for, at the `frame::build` seam:
+/// every one of the seven combat poses must come out of a built frame's
+/// `pose_id` column when the match's own combat state says so. Before the
+/// fix `RenderFrameOptions.combat` was never populated, so every case below
+/// produced `Locomotion` instead.
+///
+/// The list is written out rather than derived so a new phase or forced
+/// state has to be added here deliberately; `player_pose::select`'s own
+/// `match` over `CombatActionPhase` is already exhaustive with no wildcard,
+/// so a new variant cannot silently fall through to no pose at all.
+#[test]
+fn every_combat_pose_reaches_a_built_frame_s_pose_column() {
+    let expectations: [(CombatActionPhase, Option<CombatForcedState>, PlayerPoseId); 7] = [
+        (
+            CombatActionPhase::Ready,
+            Some(CombatForcedState::Knockback),
+            PlayerPoseId::CombatKnockback,
+        ),
+        (
+            CombatActionPhase::Ready,
+            Some(CombatForcedState::Stagger),
+            PlayerPoseId::CombatStagger,
+        ),
+        (CombatActionPhase::Guard, None, PlayerPoseId::CombatGuard),
+        (CombatActionPhase::Active, None, PlayerPoseId::CombatActive),
+        (CombatActionPhase::Windup, None, PlayerPoseId::CombatWindup),
+        (CombatActionPhase::Aim, None, PlayerPoseId::CombatAim),
+        (
+            CombatActionPhase::Recovery,
+            None,
+            PlayerPoseId::CombatRecovery,
+        ),
+    ];
+
+    for (phase, forced_state, expected) in expectations {
+        let mut state = fixture();
+        let mut combat = combat::new_state(&mut state, None);
+        combat.players[1].phase = phase;
+        combat.players[1].forced_state = forced_state;
+        combat.players[1].forced_ticks = if forced_state.is_some() { 3 } else { 0 };
+
+        let without = frame::build(&state, &RenderFrameOptions::default());
+        assert_eq!(
+            without.players.pose_id[1],
+            PlayerPoseId::Locomotion,
+            "no combat model means no combat pose, whatever the simulation says"
+        );
+
+        let options = RenderFrameOptions {
+            combat: Some(frame::combat_model(&state, &combat)),
+            ..Default::default()
+        };
+        let built = frame::build(&state, &options);
+        assert_eq!(built.players.pose_id[1], expected);
+        assert_eq!(built.players.pose_source[1], PlayerPoseSource::Combat);
+        // ...and only the slot the combat state named.
+        assert_eq!(built.players.pose_id[2], PlayerPoseId::Locomotion);
+    }
 }

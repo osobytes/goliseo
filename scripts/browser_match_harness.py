@@ -1572,9 +1572,10 @@ def add_common(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help=(
             "?combat=1 -- build the session with the combat layer on. Off by default, as the page "
-            "is. NOTE this does not make combat POSES appear: gc_wasm's frame_options never hands "
-            "frame::build a FrameCombatModel, so combat_stagger and its six siblings are currently "
-            "unreachable in every v2 render frame (see match_harness.ts's note on `combatEnabled`)."
+            "is. REQUIRED for any of the seven combat_* poses: without it the session builds no "
+            "CombatMatchState at all, so gc_wasm's frame_options has nothing to hand frame::build "
+            "and combat_stagger and its six siblings cannot occur. Before #441 they could not "
+            "occur even WITH it (see match_harness.ts's note on `combatEnabled`)."
         ),
     )
     parser.add_argument("--gpu-mode", choices=GPU_MODES, default="hardware")

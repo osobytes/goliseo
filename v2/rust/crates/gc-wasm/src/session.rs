@@ -862,10 +862,24 @@ pub(crate) fn kick_follow_ids(roster: &RenderFrameRoster, slots: u32) -> Option<
 /// roster-slot bitmask -- see [`kick_follow_ids`]. `0` means no window is
 /// open, which is what every caller passed implicitly before this parameter
 /// existed.
+///
+/// `combat` comes straight off this session's own live combat companion
+/// ([`crate::registry::Entry::combat`], stepped every [`Session::step`]) via
+/// `gc_render::frame::combat_model`, and is `None` for a session
+/// constructed without `combat_enabled` -- which is every ordinary match, so
+/// their frames are unchanged by it. This field is not optional polish:
+/// while it stayed at its `Default` (`None`), `gc_render::player_pose::select`
+/// was never offered a combat sample and ALL SEVEN combat poses were
+/// structurally unreachable in a real match (#441), the same way
+/// `kick_follow` above was before #428.
 pub(crate) fn frame_options(entry: &Entry, kick_follow_slots: u32) -> RenderFrameOptions {
     RenderFrameOptions {
         roster: Some(entry.roster.clone()),
         kick_follow: kick_follow_ids(&entry.roster, kick_follow_slots),
+        combat: entry
+            .combat
+            .as_ref()
+            .map(|combat| render_frame::combat_model(&entry.state, combat)),
         ..Default::default()
     }
 }
@@ -1515,6 +1529,101 @@ mod kick_follow_tests {
             assert_eq!(with.players.pose_id[1], PlayerPoseId::KickFollow);
             // ...and only that slot.
             assert_ne!(with.players.pose_id[2], PlayerPoseId::KickFollow);
+        });
+    }
+}
+
+#[cfg(test)]
+mod combat_pose_tests {
+    use super::*;
+    use gc_render::player_pose::PlayerPoseId;
+    use gc_sim::combat_feasibility::CombatActionPhase;
+    use gc_sim::combat_snapshot::CombatForcedState;
+
+    /// `combat_enabled` is the seventh parameter; `Session::new`'s own
+    /// signature order is easy to get wrong from a call site, and getting it
+    /// wrong here would silently test a non-combat session.
+    fn session(combat_enabled: bool) -> Session {
+        Session::new(
+            "nebula",
+            "orion",
+            7.0,
+            20.0,
+            3,
+            None,
+            Some(combat_enabled),
+            None,
+            None,
+            None,
+        )
+        .expect("authored teams with five-player rosters")
+    }
+
+    /// An ordinary match builds no combat companion (`combat_enabled`
+    /// defaults to `false`), so this fix must leave its frames exactly as
+    /// they were. The comparison is against the LITERAL pre-#441 options —
+    /// roster and `kick_follow` only, everything else `Default` — so this
+    /// goes red the moment a non-combat session starts carrying a model.
+    #[test]
+    fn an_ordinary_match_s_frame_is_unchanged_by_this_wiring() {
+        let session = session(false);
+        session.with_entry(|entry| {
+            assert!(entry.combat.is_none(), "an ordinary match runs no combat");
+            let options = frame_options(entry, 0);
+            assert!(options.combat.is_none());
+
+            let before_the_fix = RenderFrameOptions {
+                roster: Some(entry.roster.clone()),
+                kick_follow: kick_follow_ids(&entry.roster, 0),
+                ..Default::default()
+            };
+            assert_eq!(
+                render_frame::build(&entry.state, &options),
+                render_frame::build(&entry.state, &before_the_fix)
+            );
+        });
+    }
+
+    /// THE END-TO-END PROOF, exactly parallel to
+    /// [`kick_follow_tests::a_masked_outfield_slot_reaches_the_frame_as_the_kick_follow_pose`]:
+    /// this session's own live combat companion must reach the built frame's
+    /// `pose_id` column. Before #441 `frame_options` built
+    /// `..Default::default()` for `combat`, so every one of the seven combat
+    /// poses was structurally unreachable however the simulation underneath
+    /// behaved.
+    ///
+    /// Slot 1 rather than slot 0 only so the assertion reads against an
+    /// outfielder; `player_pose::select` gates no combat pose on `is_keeper`.
+    #[test]
+    fn a_live_combat_phase_reaches_the_frame_as_a_combat_pose() {
+        let session = session(true);
+        session.with_entry(|entry| {
+            let combat = entry.combat.as_mut().expect("combat_enabled builds one");
+            combat.players[1].phase = CombatActionPhase::Windup;
+
+            let built = render_frame::build(&entry.state, &frame_options(entry, 0));
+            assert_eq!(built.players.pose_id[1], PlayerPoseId::CombatWindup);
+            assert_ne!(built.players.pose_id[2], PlayerPoseId::CombatWindup);
+        });
+    }
+
+    /// A forced state outranks a phase, and reaches the frame the same way —
+    /// `combat_stagger`/`combat_knockback` are the two poses #439 went
+    /// looking for and could not find.
+    #[test]
+    fn a_forced_state_reaches_the_frame_as_the_knockback_or_stagger_pose() {
+        let session = session(true);
+        session.with_entry(|entry| {
+            let combat = entry.combat.as_mut().expect("combat_enabled builds one");
+            combat.players[1].phase = CombatActionPhase::Recovery;
+            combat.players[1].forced_state = Some(CombatForcedState::Knockback);
+            combat.players[1].forced_ticks = 6;
+            combat.players[2].forced_state = Some(CombatForcedState::Stagger);
+            combat.players[2].forced_ticks = 3;
+
+            let built = render_frame::build(&entry.state, &frame_options(entry, 0));
+            assert_eq!(built.players.pose_id[1], PlayerPoseId::CombatKnockback);
+            assert_eq!(built.players.pose_id[2], PlayerPoseId::CombatStagger);
         });
     }
 }

@@ -296,37 +296,41 @@ async function main(): Promise<void> {
   // this page behaves exactly as it did before unless asked -- same posture
   // as `?bloom=0`/`?ratio=`/`?spin=` above.
   //
-  // WHY IT WAS ADDED, AND WHAT IT DOES NOT FIX. `Session::new`'s
-  // `combat_enabled` argument defaults to `false` when omitted
-  // (`session.rs`: "None/omitted defaults to false"), and this page omitted
-  // it, so the session never even built a `CombatMatchState`. Turning it on
-  // demonstrably changes the match -- run
+  // WHY IT WAS ADDED. `Session::new`'s `combat_enabled` argument defaults to
+  // `false` when omitted (`session.rs`: "None/omitted defaults to false"),
+  // and this page omitted it, so the session never even built a
+  // `CombatMatchState`. Turning it on demonstrably changes the match -- run
   // `scripts/browser_match_harness.py scan` with and without `--combat` and
   // the pose histogram differs from the first few hundred ticks.
   //
-  // It does NOT make combat POSES appear, and the reason is worth recording
-  // here because two sessions have now spent time looking for them.
+  // IT NOW ALSO MAKES COMBAT POSES APPEAR (#441). This comment used to say
+  // the opposite, and the reason it was right at the time is worth keeping:
   // `player_pose::select` only considers `combat_stagger`,
   // `combat_knockback`, `combat_guard`, `combat_active`, `combat_windup`,
   // `combat_aim` and `combat_recovery` when it is handed a
-  // `FrameCombatModel`; that model is built in TypeScript
-  // (`@gc/presentation`), and `gc_wasm`'s `frame_options` (session.rs)
-  // constructs `RenderFrameOptions` with `..Default::default()`, so
-  // `options.combat` is always `None` on this path. The marshalling layer
-  // that would carry a live model into wasm is an explicitly out-of-scope
-  // milestone (`frame.rs`'s `FrameCombatModel` doc, v2/README §1), and the
-  // wire does not carry the model either (`frame_buffer.ts`: "WHAT IS NOT
-  // CARRIED: RenderFrame.combat"). So those seven poses are currently
-  // unreachable in EVERY v2 render frame, not merely rare in this harness.
-  // #438 recorded three of them as "never reached in ~22,000 ticks across
-  // four seeds" and read that as rarity; this is why. #439 wants
-  // `combat_stagger` on camera and cannot have it until that milestone
-  // lands.
+  // `FrameCombatModel`, and `gc_wasm`'s `frame_options` (session.rs) built
+  // `RenderFrameOptions` with `..Default::default()`, so `options.combat`
+  // was always `None` and those seven poses were unreachable in EVERY v2
+  // render frame -- not merely rare in this harness. #438 recorded three of
+  // them as "never reached in ~22,000 ticks across four seeds" and read that
+  // as rarity; that was the cause.
   //
-  // The lever is kept, off by default, because it is what makes that
-  // distinction demonstrable rather than asserted, and because the product's
-  // own match screen has the same opt-in
-  // (`game/screens/match.lua`'s `_opts.combat_enabled`).
+  // What was wrong was the DIAGNOSIS of the remedy, not the observation:
+  // this was filed under the out-of-scope JS<->wasm marshalling milestone,
+  // when in fact the three fields pose selection reads (`phase`,
+  // `forced_state`, `forced_ticks`) were already native Rust state on the
+  // wasm side of the wall (`gc_sim::combat_snapshot::CombatPlayerState`).
+  // `frame_options` now adapts them in-process via
+  // `gc_render::frame::combat_model`. Nothing crosses the boundary for it,
+  // and the wire still does not carry the model (`frame_buffer.ts`: "WHAT IS
+  // NOT CARRIED: RenderFrame.combat") -- only the numeric `pose_id` column
+  // it decides.
+  //
+  // So with `?combat=1` this page can now show a combat pose, and without it
+  // nothing about the frame changes at all.
+  //
+  // The lever is off by default because the product's own match screen has
+  // the same opt-in (`game/screens/match.lua`'s `_opts.combat_enabled`).
   const combatEnabled = params.get("combat") === "1";
   const session = new Session("nebula", "orion", seed, durationSeconds, 99, undefined, combatEnabled, undefined, undefined, undefined);
   session.enableBot(botSeed);
