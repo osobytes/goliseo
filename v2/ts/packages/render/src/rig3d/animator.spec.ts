@@ -147,10 +147,26 @@ describe("rig3d/animator.poseFor", () => {
   const FORWARD = ["kick_follow", "run_telegraph"] as const;
   const BACKWARD = ["contain", "fatigue"] as const;
 
+  // EACH COMPONENT ON ITS OWN, never their sum. `contain` and `fatigue` carry
+  // both a lean and a crouch, and the crouch is the larger of the two -- so a
+  // combined metric would let the crouch hold the assertion up while the lean
+  // shrank to nothing, which is precisely the regression worth catching for
+  // `fatigue` (see `action_pose.ts`'s note on it). Asserting the halves
+  // separately means the smallest quantity in the table has to clear the floor
+  // by itself; `action_pose.spec.ts` then pins its magnitude as an exact ratio
+  // against `contain`, which a floor cannot do.
   it.each([...FORWARD, ...BACKWARD, "settle"])("gives %s a body attitude instead of plain locomotion", (id) => {
     const plain = poseFor(freshId(), RUNNING, withPose("locomotion"), 4);
     const posed = poseFor(freshId(), RUNNING, withPose(id), 4);
-    expect(delta(plain, posed) + Math.abs(rootDrop(plain, posed))).toBeGreaterThan(0.01);
+    const leans = ([...FORWARD, ...BACKWARD] as readonly string[]).includes(id);
+    const crouches = id !== "kick_follow" && id !== "run_telegraph";
+    expect(leans || crouches, `${id}: an attitude must claim at least one of the two`).toBe(true);
+    if (leans) {
+      expect(delta(plain, posed), `${id}: lean`).toBeGreaterThan(0.01);
+    }
+    if (crouches) {
+      expect(rootDrop(plain, posed), `${id}: crouch`).toBeGreaterThan(0.01);
+    }
   });
 
   it("leans a follow-through and a telegraph forward, and a contain and a fatigue back", () => {

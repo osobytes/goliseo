@@ -105,14 +105,30 @@ const RADII_PER_HEIGHT = 6.0;
 
 // The same conversion, carried all the way into metres.
 //
+// TWO CONVENTIONS LIVE IN THIS FILE, separated only by this comment. That is a
+// copy-paste trap, so it is stated here rather than left to be inferred from
+// whichever constant a function happens to reach for.
+//
 // `RADII_PER_HEIGHT` on its own turns radii into RIG HEIGHTS; the numbers that
 // reach the skeleton are metres (`proportions.RigSegments` is metres, and
-// `skeleton.apply` adds `pose.move` straight onto a bone offset). The existing
-// SAVES/TIPS translations above divide by `RADII_PER_HEIGHT` alone and are
-// therefore a factor of the rig's height short of the radii they are labelled
-// with -- left exactly as they are, because re-scaling a dive is a re-tune of
-// poses a visual pass has already signed off on and this issue is not that.
-// The attitudes below use the honest conversion and say so.
+// `skeleton.apply` adds `pose.move` straight onto a bone offset). The
+// SAVES/TIPS translations below divide by `RADII_PER_HEIGHT` alone, so every
+// dive, tip, get-up, knockback and stagger travels a factor of the rig's own
+// height (~1.57) short of the radii it is labelled with -- `keeper_dive` moves
+// 0.267 m where its 1.6r says 0.418 m.
+//
+// That is a real defect and it is **#436**, deliberately NOT fixed here:
+// correcting it re-scales every keeper save and combat reaction in the game by
+// 1.57x, which is a re-tune of poses with their own sign-off and has nothing
+// to do with standing postures. It survived this long because those constants
+// are byte-identical to the deleted billboard's, ported rather than retuned,
+// so nobody ever signed off on the short scale -- and #418 deleted the only
+// renderer a 36% shortfall could have been spotted against by eye.
+//
+// ANYTHING NEW USES `METRES_PER_RADIUS`, which is the honest conversion. Do
+// not copy a bare `/ RADII_PER_HEIGHT` out of the SAVES/TIPS code into a new
+// pose; that idiom is short by design only until #436 lands, at which point it
+// should disappear from this file entirely.
 //
 // The conversion itself is `player_renderer_3d.ts`'s TORSO LEAN block, not a
 // new claim: `ppmForRadius` sets ppm = r * HEIGHT_IN_RADII * 2 / height, so
@@ -343,6 +359,33 @@ const ATTITUDES: Readonly<Record<string, AttitudeSpec>> = {
   // attacking challenge, which is the opposite instruction.
   contain: { lean: -0.3, drop: 0.26 },
   // A spent player sags: weight behind them, knees gone.
+  //
+  // THE WEAKEST ENTRY IN THIS TABLE, on three independent counts. Recorded
+  // together because each one alone is acceptable and the three together are
+  // not, and because the next person should not have to rediscover them:
+  //
+  //   1. WEAKEST READ. -0.12r is about 2 degrees of whole-body tilt. The
+  //      billboard's fatigue read did not come from that at all -- it came
+  //      from its `slump`, 0.24r lowering the SHOULDERS AND HEAD with the hips
+  //      unmoved, which is a rounded spine and therefore limb work this
+  //      root-only file cannot express. What is here is the part of the
+  //      billboard's reading that ports; the part that carried it does not.
+  //   2. NEVER SEEN LIVE. A hardware-GL run of `v2/tools/browser_match_harness`
+  //      at seed 7, ~18000 ticks, tallied every other pose id in this table --
+  //      `contain` 1789 slot-frames, `settle` 1180, `kick_follow` 469 -- and
+  //      observed `fatigue` ZERO times. So this entry is verified in tests and
+  //      in a static pose gallery, and NOT in a real match. Whether
+  //      `gc_render::player_pose::select` reaches it at ordinary match length
+  //      is an open question, not a settled one.
+  //   3. THINNEST TEST MARGIN. Its lean is the smallest quantity any pin here
+  //      asserts. `action_pose.spec.ts` therefore pins fatigue's magnitude as
+  //      an exact RATIO against `contain` rather than only against a floor, so
+  //      a halving of it fails rather than passing on the crouch's coat-tails.
+  //
+  // If fatigue turns out to matter on screen, the fix is the slump (a spine
+  // clip), not a bigger root tilt: inflating this number past what the
+  // billboard had would be inventing, and the poses would stop being ordered
+  // the way the renderer they came from ordered them.
   fatigue: { lean: -0.12, drop: 0.16 },
   // The crouch halves of the two keeper ready stances. #429 gave both their
   // braced arms (`guard_stance` over the upper body); this is the part of the

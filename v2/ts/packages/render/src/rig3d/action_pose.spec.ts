@@ -211,6 +211,30 @@ describe("held body attitudes", () => {
     expect(tilt("contain")).toBeGreaterThan(tilt("fatigue"));
   });
 
+  // EXACT RATIOS, not floors, and specifically for the reason `ATTITUDES`'
+  // `fatigue` note records: fatigue's lean is the smallest quantity anything
+  // here asserts (~2 degrees), so an ordering test passes on it trivially and
+  // a magnitude floor it shares with a crouch lets the crouch carry it. These
+  // are the pins that fail if somebody halves it.
+  //
+  // A ratio is the right shape because it is SCALE-FREE. Every lean here is
+  // `asin(k * METRES_PER_RADIUS / LEAN_REFERENCE_HEIGHT)`, so `sin(theta)` is
+  // exactly proportional to the billboard's `k` and the ratio of two poses'
+  // sines is exactly the ratio of their constants -- independent of the rig's
+  // height, of the reference point, and of #436's conversion question. So this
+  // survives an honest re-tune of the mapping (which the file invites) and
+  // fails a per-pose magnitude drift (which it does not).
+  it("keeps fatigue's magnitude tied to contain's, so a shrunk sag cannot pass on the crouch's coat-tails", () => {
+    const sinLean = (id: string) => Math.sin(((actionPose.attitudeFor(opts(id))?.rot.root?.[0] ?? 0) * Math.PI) / 180);
+    const drop = (id: string) => -(actionPose.attitudeFor(opts(id))?.move.root?.[1] ?? 0);
+    // Billboard: fatigue -0.12r against contain -0.3r, and 0.16r against 0.26r.
+    expect(sinLean("fatigue") / sinLean("contain")).toBeCloseTo(0.12 / 0.3, 12);
+    expect(drop("fatigue") / drop("contain")).toBeCloseTo(0.16 / 0.26, 12);
+    // ...and the same relation holds for the forward pair, so the ratio pin is
+    // a property of the table rather than one hand-checked pose.
+    expect(sinLean("kick_follow") / sinLean("run_telegraph")).toBeCloseTo(0.28 / 0.5, 12);
+  });
+
   // COMPOSES, where an action ASSIGNS. The locomotion clips write the run's
   // vertical bob to `move.root`; a crouch that assigned there would flatten it
   // and leave a settling player gliding.
@@ -223,8 +247,13 @@ describe("held body attitudes", () => {
   });
 
   it("lets an action win outright when a pose id would claim both", () => {
-    // No pose id is in both tables today, so this pins the rule rather than a
-    // live case: `apply` returns after the action branch.
+    // SYNTHETIC, and worth saying so plainly: `SAVES`/`TIPS` and `ATTITUDES`
+    // have disjoint keys, so no pose id can reach a real conflict and this
+    // cannot prove precedence under one. What it does prove is that the code
+    // path exists and behaves -- `apply` returns after the action branch, so
+    // the assigning semantics win and the composing ones never run. It becomes
+    // a real test the day the two tables overlap; until then it is the
+    // executable form of a documented rule, which beats a comment alone.
     const dive = opts("keeper_dive", { dive: 1, dive_dir: LEFT });
     const posed = actionPose.apply({ rot: {}, move: { root: [0, 0.05, 0] } }, dive);
     expect(posed.move["root"]).toEqual(actionPose.forOptions(dive)?.move.root);
