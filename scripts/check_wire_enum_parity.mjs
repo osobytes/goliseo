@@ -68,8 +68,8 @@
 // prevent, so every parse here is fail-loud: a missing function, a body with
 // zero arms, a wildcard `_ =>` in a `*_code` match, an enum whose variant
 // list disagrees with its own `*_code` arms, an unresolvable type name, a
-// non-unit variant -- each is a hard error with a message naming the file and
-// the symbol. There is no code path that reports success without having
+// payload-carrying variant, a variant with an explicit discriminant -- each
+// is a hard error with a message naming the file and the symbol. There is no code path that reports success without having
 // compared a nonzero number of members for all of the registered enums, and
 // the gate additionally requires the printed enum count to match the
 // registry.
