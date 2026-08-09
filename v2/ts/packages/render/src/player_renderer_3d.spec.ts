@@ -90,6 +90,33 @@ describe("player_renderer_3d.poseFor", () => {
   });
 });
 
+// KNOWN GAP, pinned deliberately rather than left to be discovered.
+//
+// Wiring `kick_follow` end to end makes the pose id REACHABLE in a live match
+// (`gc_render::player_pose::select` emits it, and a browser run of
+// `v2/tools/browser_match_harness` observed it on a real roster slot at tick
+// 600). It does not make it VISIBLE: `POSE_CLIP` maps `kick_follow` onto the
+// `locomotion` clip, and nothing in `action_pose.ts` claims the id, so the rig
+// draws a follow-through exactly as it draws a run. The retired 2D billboard
+// DID differentiate it -- it threw the striking leg out to `cx + strikeSign *
+// r * 1.5` -- so this is a capability the rigged renderer has not caught up to
+// yet, not a regression this branch introduced.
+//
+// Authoring that clip belongs to the outfield locomotion-gap library
+// (milestone 10's #101), not here. This case exists so the gap is a stated
+// fact with a test behind it: when a real follow-through clip lands, this
+// assertion flips and whoever lands it is told to update this comment.
+describe("player_renderer_3d.poseFor kick_follow (known gap)", () => {
+  it("is currently drawn identically to locomotion -- the pose id is reachable but not yet visible", () => {
+    const view: PlayerView = { px: 0, py: 0, speed: 300, phase: 1, gait: 0.3, lean: 0.5 };
+    const opts = { is_keeper: false, controlled: false, facing: new Vec2(1, 0) };
+    expect(clipFor("kick_follow")).toBe(clipFor("locomotion"));
+    expect(poseFor(view, { ...opts, pose: { id: "kick_follow" } }, 1)).toEqual(
+      poseFor(view, { ...opts, pose: { id: "locomotion" } }, 1),
+    );
+  });
+});
+
 describe("player_renderer_3d.leanTilt", () => {
   it("is nothing at all for a player with no lean", () => {
     expect(leanTilt(0, new Vec2(0, 1))).toBeUndefined();
