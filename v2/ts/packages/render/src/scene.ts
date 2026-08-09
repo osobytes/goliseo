@@ -36,6 +36,8 @@
 import * as THREE from "three";
 import { pitch, type PitchDrawOptions, type PitchViewport, type RenderFrame } from "./pitch.ts";
 import { Bloom, type BloomConfig } from "./bloom.ts";
+import { camera, perspectiveRig, type CameraField } from "./camera.ts";
+import { cameraFollow } from "./camera_follow.ts";
 import { drawMatchHud, type MatchHudLayout, type MatchHudModel, type MatchHudTheme, type MatchHudViewport } from "./match_hud.ts";
 import { disposeObject, resetMaterialCache } from "./draw2d.ts";
 
@@ -65,6 +67,25 @@ export interface SceneRootOptions {
   readonly viewport: SceneViewport;
   readonly bloom?: Partial<BloomConfig>;
   readonly pixelRatio?: number;
+}
+
+/**
+ * A world-space 3D layer (the stadium: bowl, crowd, sky, whatever sits
+ * behind/around the flat pitch content) that `SceneRoot` can composite
+ * UNDER `pitchGroup`/`hudGroup` when `camera.perspective_mode` is on. Kept
+ * deliberately minimal and content-agnostic -- `SceneRoot` never constructs
+ * or names anything inside `group`, it only adds/removes the group itself
+ * and calls `update`/`dispose` -- so this file has no dependency on whatever
+ * builds the actual stadium geometry (a `stadium*.ts` module elsewhere in
+ * this package, out of this file's scope).
+ */
+export interface WorldLayer {
+  /** Added to `worldScene` by `setWorldLayer`; never mutated by `SceneRoot` itself. */
+  readonly group: THREE.Group;
+  /** Called once per `populate()` (i.e. once per frame), before rasterizing. */
+  update(now: number): void;
+  /** Releases whatever GPU-side resources `group`'s subtree owns. See `setWorldLayer`'s and `dispose`'s own doc comments for exactly when `SceneRoot` calls this. */
+  dispose(): void;
 }
 
 // HUD paints after (visually on top of) the pitch regardless of the z=0 tie
@@ -153,16 +174,39 @@ const CAMERA_FAR = 10;
  * the object-graph assembly, no rasterization) precisely so the assembly
  * half can be exercised without a live GL context -- see `populate`'s own
  * doc comment.
+ *
+ * WORLD LAYER (the stadium). `worldScene`/`worldCamera` are a SECOND,
+ * independent scene graph, always constructed (see the constructor) but
+ * only ever rendered through when BOTH a `WorldLayer` is attached (via
+ * `setWorldLayer`) AND `camera.perspective_mode` is on -- see `populate`'s
+ * and `render`'s own doc comments for exactly what each half does. Kept
+ * entirely separate from `scene`/`camera` (the existing screen-space
+ * ortho scene every draw2d.ts command already lives in) rather than added
+ * as a third child group of the SAME scene, because it is not
+ * screen-space content at all: it is real, metre-scaled 3D geometry seen
+ * through a real `THREE.PerspectiveCamera`, and mixing that into the
+ * ortho scene's single shared camera the way `pitchGroup`/`hudGroup` share
+ * one would mean every world-layer object also has to be reprojected into
+ * screen-pixel coordinates by hand, which is exactly the "camera per
+ * subject" complexity `pitch.ts`'s "ONE PASS, ONE DEPTH BUFFER" section
+ * fought hard to get away from for rigged characters. `bloom.ts`'s
+ * `draw_layers` (not `draw`) is what reconciles the two into one
+ * composite when both are active -- see `render`'s doc comment.
  */
 export class SceneRoot {
   readonly scene: THREE.Scene;
   readonly camera: THREE.OrthographicCamera;
   readonly pitchGroup: THREE.Group;
   readonly hudGroup: THREE.Group;
+  /** See the class doc comment's WORLD LAYER section. */
+  readonly worldScene: THREE.Scene;
+  /** Synced from `camera.perspectiveRig` every `populate()` call -- see that method. */
+  readonly worldCamera: THREE.PerspectiveCamera;
 
   private readonly renderer: THREE.WebGLRenderer;
   private readonly bloomPass: Bloom;
   private viewport: SceneViewport;
+  private worldLayer: WorldLayer | undefined;
   private disposed = false;
 
   constructor(renderer: THREE.WebGLRenderer, options: SceneRootOptions) {
@@ -182,10 +226,42 @@ export class SceneRoot {
     this.camera.position.set(0, 0, 1);
     this.camera.lookAt(0, 0, 0);
 
+    // Always constructed -- see the class doc comment's WORLD LAYER section
+    // -- but unused (never added as a `draw_layers` layer) until BOTH a
+    // `WorldLayer` is attached and `camera.perspective_mode` is on. The
+    // initial fov/near/far mirror `camera.PERSPECTIVE`/`perspectiveRig`'s
+    // own defaults so this camera is never left in a nonsensical state
+    // before the first `populate()` call re-syncs it properly.
+    this.worldScene = new THREE.Scene();
+    this.worldCamera = new THREE.PerspectiveCamera(camera.PERSPECTIVE.fov, options.viewport.w / options.viewport.h, 1, 8000);
+
     this.bloomPass = new Bloom(options.bloom ?? {});
 
     this.renderer.setPixelRatio(options.pixelRatio ?? 1);
     this.renderer.setSize(options.viewport.w, options.viewport.h, false);
+  }
+
+  /**
+   * Attaches (or, with `undefined`, detaches) a world layer: adds/removes
+   * `layer.group` from `worldScene`. OWNERSHIP: `SceneRoot` does NOT call
+   * `layer.dispose()` here -- detaching via `setWorldLayer(undefined)` (or
+   * swapping to a different layer) hands the OLD layer back to its owner
+   * un-disposed, the same way `SceneRoot`'s constructor-injected `renderer`
+   * itself is owned by whoever constructed it, not by every class it is
+   * threaded through. The one place `SceneRoot` DOES call `dispose()` on a
+   * still-attached layer is its own `dispose()` (see that method) -- at
+   * teardown there is no later `setWorldLayer` call coming to hand
+   * ownership back, so leaving it undisposed there would leak.
+   */
+  setWorldLayer(layer: WorldLayer | undefined): void {
+    this.assertNotDisposed();
+    if (this.worldLayer !== undefined) {
+      this.worldScene.remove(this.worldLayer.group);
+    }
+    this.worldLayer = layer;
+    if (layer !== undefined) {
+      this.worldScene.add(layer.group);
+    }
   }
 
   /** The viewport `resize` last set. Exposed so a test can assert `resize` took effect. */
@@ -194,9 +270,13 @@ export class SceneRoot {
   }
 
   /**
-   * Resize the owned renderer and recompute the camera frustum. Reuses the
-   * existing `camera`/`scene`/groups/renderer -- none of them are
-   * reconstructed.
+   * Resize the owned renderer and recompute the camera frustum(s). Reuses
+   * the existing `camera`/`worldCamera`/`scene`/groups/renderer -- none of
+   * them are reconstructed. `worldCamera`'s ASPECT is updated here (a
+   * window resize changes it regardless of whether a world layer or
+   * `perspective_mode` is currently active); its position/fov/near/far stay
+   * `populate`'s job, since those depend on the FRAME (the follow-camera
+   * view, in particular) rather than the viewport.
    */
   resize(viewport: SceneViewport): void {
     this.assertNotDisposed();
@@ -206,6 +286,8 @@ export class SceneRoot {
     this.camera.top = 0;
     this.camera.bottom = viewport.h;
     this.camera.updateProjectionMatrix();
+    this.worldCamera.aspect = viewport.w / viewport.h;
+    this.worldCamera.updateProjectionMatrix();
     this.renderer.setSize(viewport.w, viewport.h, false);
   }
 
@@ -236,6 +318,24 @@ export class SceneRoot {
    * structural rather than a convention. `autoClear` is still forced off here
    * defensively, to avoid depending on `SceneRoot` being the only caller that
    * ever sets it, even though nothing in `populate` currently rasterizes.
+   *
+   * WORLD LAYER SYNC. When a `WorldLayer` is attached AND
+   * `camera.perspective_mode` is on, this method ALSO (a) calls
+   * `layer.update(now)` -- the same `now` `pitch.draw` gets, so both halves
+   * of one frame agree on the clock -- and (b) re-derives `worldCamera`'s
+   * position/orientation/lens from `camera.perspectiveRig`, using the EXACT
+   * SAME `view` (`pitch.follow_camera ? cameraFollow.view(frame.field) :
+   * undefined`) `pitch.ts`'s own `pitchProject` computes internally. This is
+   * not incidental duplication: importing `camera`/`cameraFollow` directly
+   * here (rather than, say, asking `pitch.ts` to hand back whatever view it
+   * used) means both this file and pitch.ts derive the view from the SAME
+   * two flags (`pitch.follow_camera`, and the `cameraFollow` module's own
+   * frame-to-frame state) through the SAME two calls -- there is no third
+   * copy of "how do I get the current view" to drift out of sync with
+   * either. If `worldCamera`'s eye ever disagreed with the screen-space
+   * projection's own implied eye, the world-space stadium would visibly
+   * swim relative to the flat pitch/players drawn over it the moment the
+   * follow camera moved. Neither half is rasterized here -- see `render`.
    */
   populate(frame: RenderFrame, options: SceneRenderOptions): void {
     this.assertNotDisposed();
@@ -255,17 +355,64 @@ export class SceneRoot {
     } else {
       this.clearGroup(this.hudGroup);
     }
+
+    if (this.worldLayer !== undefined && camera.perspective_mode) {
+      this.worldLayer.update(now);
+      this.syncWorldCamera(frame.field);
+    }
+  }
+
+  // See `populate`'s WORLD LAYER SYNC section for why this reads
+  // `pitch.follow_camera`/`cameraFollow` directly instead of taking a `view`
+  // parameter from the caller.
+  private syncWorldCamera(field: CameraField): void {
+    const view = pitch.follow_camera ? cameraFollow.view(field) : undefined;
+    const rig = perspectiveRig(field, view);
+    this.worldCamera.position.set(rig.eye[0], rig.eye[1], rig.eye[2]);
+    // `mat4.lookAt` (camera.ts's own hand-rolled path) always builds its
+    // basis off a world-up of (0, 1, 0) -- `THREE.Camera.up`'s own default,
+    // left untouched here rather than reset explicitly, so both projections
+    // agree without either one special-casing a roll. See camera.ts's
+    // `projectPerspective` doc comment for the matching note on that side.
+    this.worldCamera.lookAt(rig.target[0], rig.target[1], rig.target[2]);
+    this.worldCamera.fov = rig.fov;
+    this.worldCamera.near = rig.near;
+    this.worldCamera.far = rig.far;
+    this.worldCamera.aspect = this.viewport.w / this.viewport.h;
+    this.worldCamera.updateProjectionMatrix();
   }
 
   /**
    * Render one frame: `populate` (see above), then rasterize the assembled
-   * scene through bloom. Needs a live GL context to run at all -- see
+   * scene(s) through bloom. Needs a live GL context to run at all -- see
    * `populate`'s doc comment -- so it is not exercised by scene.spec.ts.
+   *
+   * With an active world layer under `camera.perspective_mode`, this uses
+   * `bloom.ts`'s `draw_layers` with the world layer FIRST (so it composites
+   * underneath, per that method's clear semantics -- see bloom.ts) and this
+   * class's own screen-space `scene`/`camera` second: `[{ scene:
+   * worldScene, camera: worldCamera }, { scene, camera }]`. Otherwise --
+   * no layer, or `perspective_mode` off -- this is EXACTLY today's
+   * single-layer path (`Bloom.draw`), bit-identical to before this world-
+   * layer support existed: no behaviour change for the default, flags-off
+   * configuration.
    */
   render(frame: RenderFrame, options: SceneRenderOptions): void {
     this.assertNotDisposed();
     this.populate(frame, options);
-    this.bloomPass.draw(this.renderer, this.scene, this.camera, this.viewport.w, this.viewport.h);
+    if (this.worldLayer !== undefined && camera.perspective_mode) {
+      this.bloomPass.draw_layers(
+        this.renderer,
+        [
+          { scene: this.worldScene, camera: this.worldCamera },
+          { scene: this.scene, camera: this.camera },
+        ],
+        this.viewport.w,
+        this.viewport.h,
+      );
+    } else {
+      this.bloomPass.draw(this.renderer, this.scene, this.camera, this.viewport.w, this.viewport.h);
+    }
   }
 
   /**
@@ -290,6 +437,12 @@ export class SceneRoot {
    * same standard bloom.ts's own `dispose` was written to). Emptying the
    * cache first clears the mark, handing every material back to the ordinary
    * path so the `clearGroup` calls actually free them.
+   *
+   * WORLD LAYER: if one is still attached, this is the one place `SceneRoot`
+   * calls `layer.dispose()` itself -- see `setWorldLayer`'s doc comment for
+   * why that call does not live there instead. `worldScene` itself (like
+   * `scene`) is not disposed -- a `THREE.Scene` holds no GPU resources of
+   * its own beyond its children's, which are what actually get released.
    */
   dispose(): void {
     if (this.disposed) {
@@ -299,6 +452,11 @@ export class SceneRoot {
     this.clearGroup(this.pitchGroup);
     this.clearGroup(this.hudGroup);
     this.scene.remove(this.pitchGroup, this.hudGroup);
+    if (this.worldLayer !== undefined) {
+      this.worldScene.remove(this.worldLayer.group);
+      this.worldLayer.dispose();
+      this.worldLayer = undefined;
+    }
     this.bloomPass.dispose();
     this.renderer.dispose();
     this.disposed = true;

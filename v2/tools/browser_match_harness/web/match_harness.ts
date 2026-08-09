@@ -49,7 +49,7 @@
 
 import init, { Session, __getRawExports } from "../../../ts/packages/wasm/dist/pkg-web/gc_wasm.js";
 import * as THREE from "three";
-import { SceneRoot, frameBuffer, viewState } from "@gc/render";
+import { SceneRoot, Stadium, camera, cameraFollow, frameBuffer, pitch, viewState } from "@gc/render";
 import type { frameBufferTypes } from "@gc/render";
 
 const DT = 1 / 60;
@@ -256,6 +256,14 @@ async function main(): Promise<void> {
 
   const roster = frameBuffer.decodeRoster(session.rosterNumeric(), session.rosterIdsAndNames());
 
+  // The coliseum stadium + true-perspective broadcast camera. On by default
+  // (it is the product look this harness exists to evaluate); `?stadium=0`
+  // restores the legacy fixed-trapezoid space backdrop for A/B comparison.
+  // The Stadium needs the field's real geometry (pitch size, goal rects,
+  // crossbar height), which only exists once a session is live -- built from
+  // the first decoded frame below, before the loop starts.
+  const stadiumEnabled = params.get("stadium") !== "0";
+
   function frameNow(): frameBufferTypes.RenderFrame {
     if (raw.render_frame_build(session.handle) === 0) {
       throw new Error("match_harness: no live session for this handle");
@@ -285,6 +293,28 @@ async function main(): Promise<void> {
   // calls needs the scene graph and the renderer -- see the breakdown driver
   // in scripts/. Not a product affordance: nothing under v2/ts reads this.
   (globalThis as unknown as { __gcScene?: unknown }).__gcScene = { sceneRoot, glRenderer, THREE };
+
+  if (stadiumEnabled) {
+    // Flags first, then the layer: `SceneRoot.render` only routes through the
+    // world layer when `camera.perspective_mode` is on (scene.ts), and
+    // `pitch.stadium_mode` hands the backdrop/floor/markings/goals over to
+    // the stadium (pitch.ts) -- setting one without the other draws either
+    // two pitches or none.
+    camera.perspective_mode = true;
+    pitch.stadium_mode = true;
+    // Matches browser_main.ts's product flag set, so a screenshot taken here
+    // is representative of the real shot. Unlike the product this harness
+    // drives `cameraFollow.update` itself (see the loop below): it renders
+    // frames straight from a wasm `Session` and never mounts `@gc/screens`'s
+    // `match.ts`, which is what drives the follow camera in the real app.
+    pitch.follow_camera = true;
+    const stadium = new Stadium({
+      field: frameNow().field,
+      home_color: HOME_COLOR,
+      away_color: AWAY_COLOR,
+    });
+    sceneRoot.setWorldLayer(stadium);
+  }
 
   stats.status = "running";
 
@@ -320,8 +350,18 @@ async function main(): Promise<void> {
     // how fast they are actually moving across the pitch. `MatchScreen` and
     // `benchmark.ts` both call this; this page did not, which is why its
     // characters slid around frozen next to the Lua benchmark's running ones.
-    viewState.update(
-      roster.ids.map((id, i) => ({ id, pos: { x: frame.players.x[i] ?? 0, y: frame.players.y[i] ?? 0 } })),
+    const followPlayers = roster.ids.map((id, i) => ({ id, pos: { x: frame.players.x[i] ?? 0, y: frame.players.y[i] ?? 0 } }));
+    viewState.update(followPlayers, ticks * DT);
+    // The follow camera has the same "renderer-owned accumulator nothing else
+    // updates" shape the comment above describes for `viewState`: without this
+    // its smoothed focus never leaves `undefined`, `cameraFollow.view` returns
+    // `undefined`, and `pitch.follow_camera` above silently does nothing --
+    // the page would draw the fixed whole-pitch shot while claiming to show
+    // the product's framing. In the real app `@gc/screens`'s `match.ts` owns
+    // this call (its `updateCameraFollow`); this page has no screen stack, so
+    // it drives it directly, from the same decoded frame.
+    cameraFollow.update(
+      { field: frame.field, ball: { x: frame.ball.x, y: frame.ball.y }, players: followPlayers },
       ticks * DT,
     );
     decodeMsInWindow += performance.now() - tDecode;

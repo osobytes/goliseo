@@ -48,7 +48,7 @@ import { describe, expect, it } from "vitest";
 import { Vec2 } from "@gc/core";
 import { bindings, inputSample } from "@gc/input";
 import type { KeyboardState } from "@gc/input";
-import { replay } from "@gc/render";
+import { cameraFollow, replay } from "@gc/render";
 import type { replayTypes } from "@gc/render";
 import { MatchScreen, MatchScreenAsRealMatchScreen } from "./match.ts";
 import type { InputSample, RenderFrame, RenderFrameRoster, RenderPort, SimHostFactory, SimHostPort } from "./match.ts";
@@ -624,5 +624,58 @@ describe("match screen goal replay (tier 2)", () => {
 
     screen.update(1 / 60);
     expect(hosts[0]!.hud.time_left, "live play resumes").toBeLessThan(t0);
+  });
+});
+
+// The broadcast follow camera (render/camera_follow.ts) is renderer-owned
+// accumulator state: `pitch.follow_camera` only reframes anything if SOMETHING
+// calls `cameraFollow.update` every frame, and the Lua original calls it from
+// `update_render_smoothing`, right beside `view_state.update`.
+//
+// This port originally brought camera_follow.ts across but NOT that call site,
+// so `cameraFollow.update` had no caller anywhere in the workspace: the
+// smoothed focus never left `undefined`, `cameraFollow.view` therefore always
+// returned `undefined`, and pitch.ts's `currentView` silently fell back to the
+// whole-pitch view no matter what the flag said. The follow camera was inert
+// code and the flag selecting it could not change the picture -- which is
+// exactly AGENTS.md §9's "a harness self-test is not a harness run" failure
+// shape: everything present, nothing running. Asserting `view` goes from
+// undefined to defined-and-TRACKING is what pins the driver rather than the
+// mere presence of the module.
+describe("match screen broadcast follow camera (tier 2)", () => {
+  it("MatchScreen.update drives cameraFollow, and the focus tracks the moving ball", () => {
+    cameraFollow.reset();
+    const field = { w: 960, h: 540 };
+    expect(cameraFollow.view(field), "dormant until something updates it").toBeUndefined();
+
+    const { factory, hosts } = makeHostFactory();
+    const screen = new MatchScreen({
+      createHost: factory,
+      renderer: noopRenderer,
+      keyboard: fakeKeyboard({}),
+      // `fixtureMatchStateSource`'s ball drifts +2 world units per read, which
+      // is what gives the camera something to actually follow.
+      matchState: fixtureMatchStateSource(() => hosts[0]!),
+    });
+
+    for (let i = 0; i < 30; i += 1) {
+      screen.update(1 / 60);
+    }
+    const early = cameraFollow.view(field);
+    expect(early, "MatchScreen.update must drive cameraFollow.update").toBeDefined();
+
+    for (let i = 0; i < 120; i += 1) {
+      screen.update(1 / 60);
+    }
+    const late = cameraFollow.view(field);
+    expect(late).toBeDefined();
+    // Tracking, not merely initialised: a focus that is defined but frozen
+    // would pass the assertion above while still framing the wrong thing.
+    expect(late!.x, "the focus follows the drifting ball downfield").toBeGreaterThan(early!.x);
+    // ...and it stays clamped inside the pitch (camera_follow.ts's `margin_x`).
+    expect(late!.x).toBeLessThanOrEqual(field.w);
+
+    screen.dispose();
+    cameraFollow.reset();
   });
 });

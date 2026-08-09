@@ -9,6 +9,7 @@
 import { describe, expect, it, afterEach, vi } from "vitest";
 import * as THREE from "three";
 import { pitchDrawCommands, playerAnchors, pitch, depthToZ, BACKDROP_Z, ENTITY_Z_NEAR, ENTITY_Z_FAR, OVERLAY_RENDER_ORDER, type PitchDrawOptions, type PitchViewport, type RenderFrame } from "./pitch.ts";
+import { camera } from "./camera.ts";
 import * as playerRenderer3d from "./player_renderer_3d.ts";
 import type { DrawCommand } from "./draw2d.ts";
 
@@ -122,6 +123,124 @@ describe("pitch config defaults", () => {
   // ship a frame with no players in it.
   it("exposes no switch that could turn the rigged player pass off", () => {
     expect(Object.keys(pitch)).not.toContain("rigged_players");
+  });
+
+  it("defaults stadium_mode to off, so a world-space stadium layer is opt-in", () => {
+    expect(pitch.stadium_mode).toBe(false);
+  });
+});
+
+// STADIUM MODE: a world-space `WorldLayer` (scene.ts) owns the backdrop,
+// floor, hex grid, markings, goals and arena chevrons; this screen-space
+// path must stop building a second, flat copy of the same content while
+// keeping the ball trail/combat/entities/overlay commands, which have no
+// world-layer equivalent (see pitch.ts's own "STADIUM MODE" doc comment on
+// `drawPitchBeforeItems`). `stadium_mode` is module-level mutable state
+// shared with every other spec importing pitch.ts, so it is restored in
+// `afterEach` -- the same pattern `pitch.draw (rigged compositing)` below
+// uses for `pitch.rigged_players`.
+describe("pitch.stadium_mode", () => {
+  afterEach(() => {
+    pitch.stadium_mode = false;
+  });
+
+  const FLOOR_COLOR = [0.025, 0.16, 0.17] as const; // DEFAULT_ARENA.floor_color, mirrored (not exported) -- see the "falls back to DEFAULT_ARENA" test above.
+  const BALL_SHADOW_COLOR = [0, 0, 0] as const;
+  const BALL_LIT_COLOR = [1, 0.95, 0.7] as const;
+
+  function colorEq(c: readonly number[], target: readonly [number, number, number]): boolean {
+    return c[0] === target[0] && c[1] === target[1] && c[2] === target[2];
+  }
+
+  it("removes the full-viewport backdrop rect and the pitch-surface fill polygon", () => {
+    const off = pitchDrawCommands(frame(), viewport, opts);
+    pitch.stadium_mode = true;
+    const on = pitchDrawCommands(frame(), viewport, opts);
+
+    const hasBackdropRect = (cs: readonly DrawCommand[]) => cs.some((c) => c.kind === "rect" && c.mode === "fill" && c.w === viewport.w && c.h === viewport.h);
+    const hasFloorPolygon = (cs: readonly DrawCommand[]) => cs.some((c) => c.kind === "polygon" && c.mode === "fill" && colorEq(c.color, FLOOR_COLOR));
+
+    expect(hasBackdropRect(off)).toBe(true);
+    expect(hasBackdropRect(on)).toBe(false);
+    expect(hasFloorPolygon(off)).toBe(true);
+    expect(hasFloorPolygon(on)).toBe(false);
+  });
+
+  it("drops the overall command count substantially (the static scene + chevrons, not just the backdrop)", () => {
+    const off = pitchDrawCommands(frame(), viewport, opts);
+    pitch.stadium_mode = true;
+    const on = pitchDrawCommands(frame(), viewport, opts);
+
+    // The hex floor alone is on the order of hundreds of line commands (see
+    // this file's own "batchStrokes" comment in pitch.ts, which measured 353
+    // Line objects on a comparable frame) -- losing the whole static scene
+    // should more than halve the command count for this otherwise-identical
+    // fixture.
+    expect(on.length).toBeLessThan(off.length / 2);
+  });
+
+  it("keeps the ball trail/entities/overlay: the loose ball still draws its shadow+lit circle, and the landing reticle still appears", () => {
+    pitch.stadium_mode = true;
+    const withLanding = pitchDrawCommands(frame({ ball: { x: 480, y: 270, z: 40, visible: true, landing_x: 600, landing_y: 300 } }), viewport, opts, 0.25);
+
+    const hasBallShadow = withLanding.some((c) => c.kind === "ellipse" && c.mode === "fill" && colorEq(c.color, BALL_SHADOW_COLOR));
+    const hasBallLit = withLanding.some((c) => c.kind === "circle" && c.mode === "fill" && colorEq(c.color, BALL_LIT_COLOR));
+    const hasReticle = withLanding.some((c) => c.kind === "circle" && c.mode === "line" && colorEq(c.color, [1, 0.85, 0.35]));
+
+    expect(hasBallShadow).toBe(true);
+    expect(hasBallLit).toBe(true);
+    expect(hasReticle).toBe(true);
+  });
+
+  it("keeps the charge meter overlay (an entity-anchored, non-arena command)", () => {
+    pitch.stadium_mode = true;
+    const commands = pitchDrawCommands(frame({ control: { charge: 0.6, charge_kind: "shot", controlled: 0 } }), viewport, opts);
+    const hasMeter = commands.some((c) => c.kind === "rect" && c.mode === "fill" && colorEq(c.color, [1, 0.72, 0.3]));
+    expect(hasMeter).toBe(true);
+  });
+});
+
+// CHARACTER TILT COHERENCE: `pitch.draw`'s rigged pass tilts every character
+// by `characterTilt`'s return -- `ELEVATION_TILT` (a fixed quaternion) under
+// the flat trapezoid, or `camera.rigAngleRad`'s real camera angle under
+// `camera.perspective_mode`. Both quaternion CONSTRUCTION and the module-
+// level `camera.perspective_mode`/`ELEVATION` values are private to pitch.ts
+// (`characterTilt`/`ELEVATION_TILT` are not exported), so this suite asserts
+// the OBSERVABLE consequence instead: the wrapper's contained mesh ends up
+// with a DIFFERENT quaternion depending on the mode, and specifically the
+// perspective-mode one should differ from the fixed one (since
+// camera.PERSPECTIVE's tuned tilt, 45 degrees, does not equal
+// player_renderer_3d.ts's ELEVATION -- if it ever did coincidentally, this
+// test would need a mode-independent invariant instead).
+describe("pitch.draw character tilt coherence with camera.perspective_mode", () => {
+  function firstRiggedMeshQuaternion(f: RenderFrame): THREE.Quaternion | undefined {
+    const group = new THREE.Group();
+    // #415 dropped `pitch.draw`'s renderer parameter -- it rasterizes nothing.
+    pitch.draw(group, f, viewport, opts);
+    const wrapper = group.children.find((c) => c.userData["riggedCharacter"] === true);
+    const mesh = wrapper?.children.find((c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh);
+    return mesh?.quaternion.clone();
+  }
+
+  afterEach(() => {
+    camera.perspective_mode = false;
+  });
+
+  it("tilts rigged characters differently under perspective_mode than under the fixed trapezoid", () => {
+    const f = frame();
+
+    camera.perspective_mode = false;
+    const fixedQuat = firstRiggedMeshQuaternion(f);
+
+    camera.perspective_mode = true;
+    const perspectiveQuat = firstRiggedMeshQuaternion(f);
+
+    expect(fixedQuat).toBeDefined();
+    expect(perspectiveQuat).toBeDefined();
+    if (fixedQuat === undefined || perspectiveQuat === undefined) {
+      throw new Error("expected a rigged character mesh in both modes");
+    }
+    expect(fixedQuat.equals(perspectiveQuat)).toBe(false);
   });
 });
 

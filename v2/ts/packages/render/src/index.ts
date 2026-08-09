@@ -51,6 +51,10 @@ export { Bloom, DEFAULT_BLOOM_CONFIG } from "./bloom.ts";
 export { drawUnderCommands, drawOverCommands, drawUnder, drawOver } from "./combat.ts";
 export { matchHudCommands, drawMatchHud } from "./match_hud.ts";
 export { SceneRoot } from "./scene.ts";
+// The world-space coliseum stadium (bowl, crowd, sky, goals) rendered as
+// `SceneRoot`'s world layer under `camera.perspective_mode` -- see scene.ts's
+// `setWorldLayer` and stadium.ts's own header.
+export { Stadium } from "./stadium.ts";
 
 export type * as cameraTypes from "./camera.ts";
 export type * as cameraFollowTypes from "./camera_follow.ts";
@@ -67,6 +71,7 @@ export type * as bloomTypes from "./bloom.ts";
 export type * as combatTypes from "./combat.ts";
 export type * as matchHudTypes from "./match_hud.ts";
 export type * as sceneTypes from "./scene.ts";
+export type * as stadiumTypes from "./stadium.ts";
 
 // NOT YET ON THE PACKAGE SURFACE: draw2d.ts (DrawCommand/DrawList/paint --
 // internal plumbing every module above already re-exposes the parts of it

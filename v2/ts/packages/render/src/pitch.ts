@@ -666,9 +666,20 @@ export function staticSceneBuildCount(): number {
   return staticSceneBuilds;
 }
 
+// The view every projection in this file uses: `pitch.follow_camera`'s own
+// broadcast-follow view when the flag is on, or `undefined` (the whole-pitch
+// default). Factored out so `pitchProject` and `characterTilt` (below)
+// derive it through the SAME call -- both need to agree on which view is
+// "current" for a frame, and a second, independently-written copy of "check
+// the flag, call cameraFollow.view" is exactly the kind of thing that drifts
+// the moment one call site gets touched and the other does not.
+function currentView(field: RenderFrameField): CameraView | undefined {
+  return pitch.follow_camera ? cameraFollow.view(field) : undefined;
+}
+
 function pitchProject(frame: RenderFrame, vp: PitchViewport, opts: PitchDrawOptions): Project {
   const field = frame.field;
-  const view: CameraView | undefined = pitch.follow_camera ? cameraFollow.view(field) : undefined;
+  const view = currentView(field);
   const cameraField: CameraField = field;
   const cameraViewport: CameraViewport = vp;
   return (wx, wy) => {
@@ -683,29 +694,56 @@ function pitchProject(frame: RenderFrame, vp: PitchViewport, opts: PitchDrawOpti
 // the dynamic arena frame chevrons, the ball trail and combat's "under"
 // layer. Shared by `pitchDrawCommands` and `pitch.draw`'s rigged branch so
 // the two paths cannot silently diverge on ordering.
+//
+// STADIUM MODE (`pitch.stadium_mode`). When a world-space stadium layer owns
+// the backdrop/floor/hex-grid/markings/goals/chevrons (scene.ts's
+// `WorldLayer`, composited underneath via `bloom.ts`'s `draw_layers`), this
+// screen-space pass must not ALSO draw a second, flat copy of the same
+// content on top of it -- so `staticSceneCommands` and
+// `arenaRender.frameCommands` are skipped ENTIRELY (not built and then
+// discarded: `staticSceneCommands` has its own memoisation counter,
+// `staticSceneBuildCount`, which tests assert against, so calling it and
+// throwing the result away would still (wrongly) count as a build). Only the
+// ball trail and combat's "under" layer -- content anchored to gameplay
+// state, not the arena itself -- still draw here. See this file's own
+// header (the ONE PASS / DEPTH ZONES sections) for how the remaining
+// content still composes correctly with no opaque backdrop rect underneath
+// it: `SceneRoot`'s `bloom.draw_layers` clears the canvas on its FIRST pass
+// (the world layer) regardless of what pitch.ts draws afterward -- the
+// backdrop rect was never what cleared the canvas even in non-stadium mode,
+// it was always just the first thing painted onto an already-cleared
+// target. Stadium mode simply stops painting a second, redundant backdrop
+// over a target that is already correctly cleared and already has real
+// stadium geometry behind it.
 function drawPitchBeforeItems(dl: DrawList, frame: RenderFrame, vp: PitchViewport, opts: PitchDrawOptions, project: Project): void {
   const field = frame.field;
-  const arena = opts.arena ?? DEFAULT_ARENA;
-  const theme = opts.ui_theme ?? DEFAULT_UI_THEME;
 
-  const [ax, ay] = project(0, 0);
-  const [bx, by] = project(field.w, 0);
-  const [cx, cy] = project(field.w, field.h);
-  const [dx, dy] = project(0, field.h);
+  if (!pitch.stadium_mode) {
+    const arena = opts.arena ?? DEFAULT_ARENA;
+    const theme = opts.ui_theme ?? DEFAULT_UI_THEME;
 
-  // The static scene: backdrop, floor trapezoid, glow, hex tiling, markings,
-  // neon outline and goals. Built once per distinct projection and reused.
-  dl.extend(staticSceneCommands(field, vp, opts, arena, theme, project));
+    const [ax, ay] = project(0, 0);
+    const [bx, by] = project(field.w, 0);
+    const [cx, cy] = project(field.w, field.h);
+    const [dx, dy] = project(0, field.h);
 
-  // The arena frame chevrons pulse with the kickoff banner, so they are NOT
-  // part of the static scene and are issued live over it. They sit at the
-  // trapezoid corners, clear of the goals, so emitting them after the goals
-  // instead of before the outline is visually identical. This ordering comes
-  // from the Lua's own static/dynamic split (#398) — getting it wrong freezes
-  // the kickoff pulse.
-  dl.extend(arenaRender.frameCommands(arena, { ax, ay, bx, by, cx, cy, dx, dy }, opts.arena_pulse));
+    // The static scene: backdrop, floor trapezoid, glow, hex tiling, markings,
+    // neon outline and goals. Built once per distinct projection and reused.
+    dl.extend(staticSceneCommands(field, vp, opts, arena, theme, project));
 
-  // Ball trail sits on the ground, under the entities.
+    // The arena frame chevrons pulse with the kickoff banner, so they are NOT
+    // part of the static scene and are issued live over it. They sit at the
+    // trapezoid corners, clear of the goals, so emitting them after the goals
+    // instead of before the outline is visually identical. This ordering comes
+    // from the Lua's own static/dynamic split (#398) — getting it wrong freezes
+    // the kickoff pulse.
+    dl.extend(arenaRender.frameCommands(arena, { ax, ay, bx, by, cx, cy, dx, dy }, opts.arena_pulse));
+  }
+
+  // Ball trail sits on the ground, under the entities. Kept in BOTH modes:
+  // it is gameplay-state content (the ball's own recent path), not arena
+  // geometry, so a world-space stadium layer has no equivalent of it to
+  // take over.
   dl.extend(effectsModule.effects.drawTrailCommands(project));
   dl.extend(combatRender.drawUnderCommands(frame, project));
 }
@@ -857,13 +895,38 @@ export function pitchDrawCommands(frame: RenderFrame, vp: PitchViewport, opts: P
 }
 
 // The elevation tilt (see file header's ELEVATION bullet) as a fixed
-// quaternion, computed once: it is the SAME rotation for every character
-// every frame (a property of the shared camera's fixed viewing angle, not of
-// any one player), so there is nothing to recompute per player. Rotation
-// about the shared camera's local X axis (== world X here, since the camera
-// has no roll/pitch of its own -- see scene.ts's `SceneRoot`), matching
+// quaternion, computed once at module load: it is the SAME rotation for
+// every character every frame under the FIXED trapezoid projection (a
+// property of the shared camera's fixed viewing angle, not of any one
+// player), so there is nothing to recompute per player. Rotation about the
+// shared camera's local X axis (== world X here, since the camera has no
+// roll/pitch of its own -- see scene.ts's `SceneRoot`), matching
 // `player_renderer_3d.ts`'s exported `ELEVATION` constant.
 const ELEVATION_TILT = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), playerRenderer3d.ELEVATION);
+
+// CHARACTER TILT COHERENCE. `ELEVATION_TILT` above approximates the fixed
+// trapezoid's implied viewing angle -- there is no REAL camera behind that
+// projection to match exactly, just a screen-space approximation tuned to
+// look right. Under `camera.perspective_mode` there IS a real camera
+// (`camera.rigAngleRad`, derived from the exact same `PerspectiveRig` the
+// mat4 projection and `scene.ts`'s `worldCamera` both use), and it looks at
+// the pitch from a specific, computed angle that is not generally
+// `playerRenderer3d.ELEVATION` -- using the fixed constant there would tilt
+// every rigged character to an angle the actual camera is not at, which
+// reads as visibly wrong (the character's own silhouette/shading implies a
+// different camera than the one actually rendering it) the moment a
+// character turns and its asymmetry becomes visible. `characterTilt` picks
+// the RIGHT rotation for whichever camera is actually active this frame,
+// computed ONCE per `pitch.draw` call (not per character) via `currentView`
+// -- the same reasoning `ELEVATION_TILT` itself already applies (one shared
+// camera pose, not a per-player one), just now conditional on the mode.
+function characterTilt(field: RenderFrameField): THREE.Quaternion {
+  if (!camera.perspective_mode) {
+    return ELEVATION_TILT;
+  }
+  const angle = camera.rigAngleRad(field, currentView(field));
+  return new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), angle);
+}
 
 // A rigged character's own local Z (front-to-back thickness) scale, applied
 // by `riggedCharacterObject` -- see that function's SCALE comment for the
@@ -893,25 +956,31 @@ const CHARACTER_DEPTH_SCALE = 0.05;
  * context -- see this port's report for before/after screenshots):
  * `characterMesh` already baked the character's own YAW onto `mesh`'s local
  * quaternion. The elevation tilt is PREMULTIPLIED onto that SAME quaternion
- * -- `mesh.quaternion = ELEVATION_TILT * yaw`, i.e. tilt composed after yaw,
- * exactly the `finalQuat` formula in the file header -- rather than living on
- * the wrapper, because the wrapper also carries the Y-inverting mirror
- * (folded into its negative-Y scale), and a mirror does not commute with a
- * tilt about a DIFFERENT axis (it commutes fine with the yaw, a rotation
- * about the mirrored axis itself, which is why yaw can sit on either object
- * with no visible difference -- but not with a tilt about X, which mixes Y
- * and Z). Putting BOTH rotations on `mesh` and leaving the wrapper
+ * -- `mesh.quaternion = tilt * yaw`, i.e. tilt composed after yaw, exactly
+ * the `finalQuat` formula in the file header -- rather than living on the
+ * wrapper, because the wrapper also carries the Y-inverting mirror (folded
+ * into its negative-Y scale), and a mirror does not commute with a tilt
+ * about a DIFFERENT axis (it commutes fine with the yaw, a rotation about
+ * the mirrored axis itself, which is why yaw can sit on either object with
+ * no visible difference -- but not with a tilt about X, which mixes Y and
+ * Z). Putting BOTH rotations on `mesh` and leaving the wrapper
  * rotation-free guarantees the vertex pipeline is rotate (yaw, then tilt) ->
  * scale (the Y-mirror) -> translate, matching how the old two-step render-
  * then-flip-the-image process actually composed (the tilt was baked into the
  * rendered pixels before the image-space flip was ever applied).
+ *
+ * `tilt` is `characterTilt`'s return for the current frame (`ELEVATION_TILT`
+ * under the fixed trapezoid, the real camera's own angle under
+ * `perspective_mode`) -- see that function's CHARACTER TILT COHERENCE doc
+ * comment. Passed in rather than read from a module constant here so the
+ * caller computes it ONCE per `pitch.draw` call, not once per character.
  */
-function riggedCharacterObject(mesh: THREE.Object3D, sx: number, sy: number, z: number, r: number): THREE.Group {
+function riggedCharacterObject(mesh: THREE.Object3D, sx: number, sy: number, z: number, r: number, tilt: THREE.Quaternion): THREE.Group {
   const ppm = playerRenderer3d.ppmForRadius(r);
   if (ppm === undefined) {
     throw new Error("pitch.ts: player_renderer_3d.ppmForRadius() declined -- the rigged character build failed; see the preceding 'rigged 3D players disabled (build failed)' warning for the cause");
   }
-  mesh.quaternion.premultiply(ELEVATION_TILT);
+  mesh.quaternion.premultiply(tilt);
 
   const wrapper = new THREE.Group();
   // SCALE: ppm (pixels-per-metre for THIS player, from `r = radius * scale`
@@ -965,6 +1034,21 @@ export const pitch = {
   // the whole match, so it stays behind a flag until it has been played.
   follow_camera: false,
 
+  // Opt-in: a world-space `WorldLayer` (scene.ts) owns the backdrop, floor,
+  // hex grid, markings, goals AND the arena frame chevrons, composited
+  // UNDERNEATH this file's screen-space content instead of this file
+  // drawing a flat copy of the same thing -- see `drawPitchBeforeItems`'s
+  // own "STADIUM MODE" doc comment for exactly what gets skipped and why
+  // that is safe with no backdrop rect to clear the canvas. Off by default,
+  // matching `follow_camera`'s own reasoning: this changes what a frame
+  // looks like, so it stays behind a flag until the app shell (not this
+  // package) decides to flip it -- almost always alongside
+  // `camera.perspective_mode`, since a flat trapezoid pitch with a 3D
+  // stadium underneath it would look broken, but this file does not
+  // enforce that pairing itself (see `characterTilt` below for the one
+  // place this file DOES branch on `camera.perspective_mode` directly).
+  stadium_mode: false,
+
   /**
    * Impure: paints one frame into `group` (all screen-space 2D content, via
    * draw2d.ts) and adds each player's rigged 3D character (a real,
@@ -996,6 +1080,9 @@ export const pitch = {
     const players = frame.players;
     const ball = frame.ball;
     const project = pitchProject(frame, vp, opts);
+    // Computed once for the whole frame, not per character -- see
+    // `characterTilt`'s own CHARACTER TILT COHERENCE doc comment.
+    const tilt = characterTilt(frame.field);
 
     // One `paint()` clears `group` and populates everything before the
     // depth-sorted items; everything from here on uses `appendCommands` (or
@@ -1048,7 +1135,7 @@ export const pitch = {
         if (mesh === undefined) {
           throw new Error(`pitch.ts: no rigged character for player "${anchor.player_id}" (roster index ${String(index)}) -- player_renderer_3d.build() failed; see the preceding 'rigged 3D players disabled (build failed)' warning for the cause`);
         }
-        group.add(riggedCharacterObject(mesh, anchor.sx, anchor.sy, z, anchor.r));
+        group.add(riggedCharacterObject(mesh, anchor.sx, anchor.sy, z, anchor.r, tilt));
       } else if (ball.visible) {
         const ballCommands = new DrawList();
         drawLooseBallCommands(ballCommands, project, ball);
