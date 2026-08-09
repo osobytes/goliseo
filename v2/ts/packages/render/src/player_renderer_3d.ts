@@ -200,36 +200,63 @@ export function clipFor(poseId?: string): string {
 // ---------------------------------------------------------------------------
 //
 // `viewState` derives one `lean` per player per frame -- `clamp(vx / 120, -1,
-// 1)`, exponentially smoothed, from WORLD-X velocity alone -- and the 2D
-// billboard renderer has always consumed it (`player_renderer.ts`'s `figure`:
-// `cx = bx + lean * r * 0.5 + ...`). This file never read it, so the rigged
-// character was the only thing on the pitch that did not lean into a sprint
-// or a turn.
+// 1)`, exponentially smoothed, from WORLD-X velocity alone. Nothing in this
+// package read it until this function did, so the rigged character never
+// leaned into a sprint or a turn; and since #418 deleted the procedural
+// billboard, this file is the ONLY renderer, so "nobody consumes `lean`" and
+// "no player on the pitch leans" were the same statement.
 //
-// TRANSLATION THERE, ROTATION HERE -- and why the mapping is not arbitrary.
-// The 2D usage is a pure horizontal SHIFT of the whole billboard (`cx` moves
-// the hips, the feet and the head together), which is available to a
-// billboard precisely because it has no ground contact to violate. The rig
-// does: its feet are placed by the skeleton, so shifting the body sideways
-// would slide them through the pitch. The honest 3D equivalent of "the mass
-// is displaced toward the direction of travel" is a tilt.
+// WHERE THE MAGNITUDE COMES FROM. The retired billboard renderer sized this
+// signal against the real game, and that tuning is the only empirical anchor
+// the constant has, so it is what the rig is calibrated back to. Its `figure`
+// did `cx = bx + lean * r * 0.5 + ...` -- one on-screen player-radius `r`
+// being the same unit the projection already speaks in. That source is gone;
+// read it at `git show 0333065^:v2/ts/packages/render/src/player_renderer.ts`
+// if the derivation below ever needs re-checking. Everything the derivation
+// USES is live code: `ppmForRadius` here, `proportions.RIG_MEDIUM` and
+// `proportions.height` in rig3d/proportions.ts.
 //
-// DEGREES PER UNIT LEAN, derived rather than guessed:
-//   * At |lean| = 1 the 2D renderer displaces the figure by 0.5 * r pixels.
-//   * One on-screen radius `r` is `height / 6` metres for this rig
-//     (`ppmForRadius`: ppm = r * HEIGHT_IN_RADII * 2 / height, so
-//     r pixels = height / 6 metres). With `RIG_MEDIUM`, height ~ 1.588 m,
-//     so 0.5 * r ~ 0.132 m of lateral displacement to reproduce.
-//   * The 2D figure's head sits at ~92% of its drawn height (`headY` is
-//     2.75r above the feet in a ~3r figure), i.e. ~1.46 m up this rig.
-//   * Tilting the torso chain -- spine at y = 0.89 m, chest at y = 1.08 m
-//     (`proportions.RIG_MEDIUM`) -- by t1 then t2 displaces that point by
-//     0.19 * sin(t1) + 0.38 * sin(t1 + t2). t1 = 9 deg, t2 = 7 deg gives
-//     0.134 m: the 2D displacement, within a millimetre.
+// TRANSLATION THERE, ROTATION HERE. `cx` was a pure horizontal SHIFT of the
+// whole billboard -- hips, feet and head moving together -- which a billboard
+// can afford because it has no ground contact to violate. The rig does: its
+// feet are placed by the skeleton and there is no IK to put a slid foot back
+// (skeleton.ts, "No IK here"), so the same displacement has to arrive as a
+// tilt. That substitution is the reason the mapping needs an argument at all:
+// a translation moves every point by the same distance, while a rotation
+// moves each point in proportion to its height above the pivot, so "the same
+// amount of lean" is only well defined once you name WHICH point.
+//
+// DEGREES PER UNIT LEAN:
+//
+//   1. The target displacement, exactly. At |lean| = 1 the billboard moved by
+//      0.5 * r pixels, and `k * r` pixels is `k * height / 6` metres for any
+//      k: `ppmForRadius` sets ppm = r * HEIGHT_IN_RADII * 2 / height, so the
+//      `r` cancels and this conversion is depth-independent, not a fit.
+//      `proportions.height(RIG_MEDIUM)` is 1.5676 m, so 0.5 * r is 0.1306 m.
+//
+//   2. The reference point, approximately. The head is what the eye tracks in
+//      a lean, and on this rig the head spans y = 1.23 m (the `head` bone) to
+//      y = 1.5676 m (the crown `height()` accounts for). This step is a
+//      judgement about where to read the displacement, not a second exact
+//      conversion -- the drawn billboard's own pixel extent was 3.2-3.6r
+//      depending on `species_shape`, so there was never a single exact
+//      percentage-of-height to recover from it either.
+//
+//   3. Tilting the torso chain -- spine at y = 0.89 m, chest at y = 1.08 m
+//      (`proportions.RIG_MEDIUM`) -- by t1 then t2 displaces a point at
+//      height h by 0.19 * sin(t1) + (h - 1.08) * sin(t1 + t2). At t1 = 9 deg,
+//      t2 = 7 deg that is 0.071 m at the head bone and 0.164 m at the crown,
+//      straddling step 1's 0.1306 m and matching it at y ~ 1.45 m, mid-skull.
+//
 // So: 16 degrees of torso tilt per unit lean, spread 9 on the spine and 7 on
 // the chest. Spread rather than concentrated because skeleton.ts's own design
 // rules say so ("the arch is spread across hips + spine + chest + neck") --
 // a single 16-degree hinge at one joint reads as a broken back.
+//
+// The tests below the constant pin the SHAPE of this (which bones move, the
+// axis decomposition, the sign, the action-pose interaction), not the two
+// numbers: 9 and 7 are a tuning, and re-tuning them by eye at match-camera
+// scale is a legitimate follow-up, not a regression.
 const SPINE_LEAN_DEGREES = 9;
 const CHEST_LEAN_DEGREES = 7;
 

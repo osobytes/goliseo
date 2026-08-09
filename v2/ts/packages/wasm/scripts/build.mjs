@@ -80,7 +80,7 @@ dts += `
 // src/index.ts's hot render path needs.
 export const __wbg_raw: {
     readonly memory: WebAssembly.Memory;
-    render_frame_build(handle: number): number;
+    render_frame_build(handle: number, kickFollowSlots: number): number;
     render_frame_ptr(): number;
     render_frame_len(): number;
 };
