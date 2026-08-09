@@ -27,6 +27,12 @@ function withPose(id: string, overrides: Partial<AnimatorOptions> = {}): Animato
 }
 
 // Largest absolute component difference across every bone either pose touches.
+//
+// ROTATION ONLY, deliberately. A quaternion component and a translation in
+// metres are not commensurable, so folding both into one `worst` would make
+// the 0.05 threshold below mean two different things depending on which bone
+// won. `rootDrop` is the translation half, used where a pose's whole reading
+// IS a translation (a crouch has no rotation at all).
 function delta(a: actionPose.MutablePose, b: actionPose.MutablePose): number {
   let worst = 0;
   for (const bone of new Set([...Object.keys(a.rot), ...Object.keys(b.rot)])) {
@@ -39,6 +45,12 @@ function delta(a: actionPose.MutablePose, b: actionPose.MutablePose): number {
     }
   }
   return worst;
+}
+
+// How much lower one pose puts the rig root than another, in metres. Positive
+// means `b` is the more crouched of the two.
+function rootDrop(a: actionPose.MutablePose, b: actionPose.MutablePose): number {
+  return (a.move["root"]?.[1] ?? 0) - (b.move["root"]?.[1] ?? 0);
 }
 
 let nextId = 0;
@@ -99,26 +111,87 @@ describe("rig3d/animator.poseFor", () => {
     expect(delta(coiled, contact)).toBeGreaterThan(0.05);
   });
 
-  // The other half of the explicit table: entries with no action of their own
-  // must be indistinguishable from plain locomotion, not accidentally
-  // different from it. That covers both the poses that are SUPPOSED to look
-  // like locomotion and the ones recorded as gaps (`slide`, `contain`,
-  // `fatigue`, ...) -- the point of the table is that the difference is
-  // written down, not that the two render differently today.
-  it.each([
-    "keeper_shuffle",
-    "keeper_ready_tall",
-    "kick_follow",
-    "settle",
-    "run_telegraph",
-    "contain",
-    "fatigue",
-    "slide",
-  ])("leaves %s on the locomotion base exactly as `locomotion` itself is", (id) => {
-    expect(POSE_ACTIONS[id as keyof typeof POSE_ACTIONS].action).toBeNull();
+  // The other half of the explicit table: entries with no action AND no root
+  // overlay must be indistinguishable from plain locomotion, not accidentally
+  // different from it. Two are supposed to look like locomotion, and `slide`
+  // is the one remaining gap -- a whole-body ground action no root transform
+  // approximates, blocked on #423/#424 rather than merely unscheduled. The
+  // point of the table is that the difference is written down.
+  it.each(["keeper_shuffle", "keeper_ready_tall", "slide"])(
+    "leaves %s on the locomotion base exactly as `locomotion` itself is",
+    (id) => {
+      expect(POSE_ACTIONS[id as keyof typeof POSE_ACTIONS].action).toBeNull();
+      const plain = poseFor(freshId(), RUNNING, withPose("locomotion"), 4);
+      const posed = poseFor(freshId(), RUNNING, withPose(id), 4);
+      expect(delta(plain, posed)).toBe(0);
+      expect(rootDrop(plain, posed)).toBe(0);
+    },
+  );
+
+  // #430's headline, and the direct replacement for the five ids this suite
+  // used to pin at `delta === 0`. Each of these is a posture the simulation
+  // selects every match and that NO renderer has shown since #418 deleted the
+  // billboard's `actionLean`/`stanceDrop` vocabulary.
+  //
+  // The threshold is not the 0.05 the stance tests above use, and that is a
+  // statement about what an attitude IS rather than a weaker test. A stance
+  // clip rotates a shoulder through tens of degrees; a whole-figure lean at
+  // the billboard's own constants is a few degrees of ROOT tilt, which moves
+  // every part of the body at once and reads out of proportion to its
+  // quaternion magnitude. Inventing a bigger number to clear a threshold
+  // borrowed from limb animation would be tuning by test. So this asserts the
+  // three things that are actually claimed -- it is not zero, it is in the
+  // right DIRECTION, and the poses stay ordered as the billboard had them --
+  // and leaves "does it read" to the visual pass, which is the only honest
+  // judge of it.
+  const FORWARD = ["kick_follow", "run_telegraph"] as const;
+  const BACKWARD = ["contain", "fatigue"] as const;
+
+  it.each([...FORWARD, ...BACKWARD, "settle"])("gives %s a body attitude instead of plain locomotion", (id) => {
     const plain = poseFor(freshId(), RUNNING, withPose("locomotion"), 4);
     const posed = poseFor(freshId(), RUNNING, withPose(id), 4);
-    expect(delta(plain, posed)).toBe(0);
+    expect(delta(plain, posed) + Math.abs(rootDrop(plain, posed))).toBeGreaterThan(0.01);
+  });
+
+  it("leans a follow-through and a telegraph forward, and a contain and a fatigue back", () => {
+    const plain = poseFor(freshId(), RUNNING, withPose("locomotion"), 4);
+    // Positive rot.x tips FORWARD onto the face (action_pose.ts's orientation
+    // note), and the root quaternion's x component carries its sign.
+    for (const id of FORWARD) {
+      const posed = poseFor(freshId(), RUNNING, withPose(id), 4);
+      expect(posed.rot["root"]?.[0] ?? 0, id).toBeGreaterThan(0);
+    }
+    for (const id of BACKWARD) {
+      const posed = poseFor(freshId(), RUNNING, withPose(id), 4);
+      expect(posed.rot["root"]?.[0] ?? 0, id).toBeLessThan(0);
+    }
+    expect(plain.rot["root"]).toBeUndefined();
+  });
+
+  it("keeps the billboard's ordering: a telegraph commits harder than a follow-through, a contain than a sag", () => {
+    const at = (id: string) => Math.abs(poseFor(freshId(), RUNNING, withPose(id), 4).rot["root"]?.[0] ?? 0);
+    expect(at("run_telegraph")).toBeGreaterThan(at("kick_follow"));
+    expect(at("contain")).toBeGreaterThan(at("fatigue"));
+  });
+
+  it.each([
+    ["settle", "contain"],
+    ["keeper_ready_low", "keeper_set"],
+  ])("crouches %s lower than %s, and both lower than plain locomotion", (deeper, shallower) => {
+    const plain = poseFor(freshId(), RUNNING, withPose("locomotion"), 4);
+    const a = poseFor(freshId(), RUNNING, withPose(deeper), 4);
+    const b = poseFor(freshId(), RUNNING, withPose(shallower), 4);
+    expect(rootDrop(plain, a)).toBeGreaterThan(rootDrop(plain, b));
+    expect(rootDrop(plain, b)).toBeGreaterThan(0);
+  });
+
+  // The crouch ADDS to the run's vertical bob rather than replacing it. The
+  // locomotion clips write that bob to `move.root`, so an attitude that
+  // assigned there would flatten it and leave a settling player gliding.
+  it("keeps the run's vertical bob under a crouch", () => {
+    const bobbing = poseFor(freshId(), { speed: 260, gait: 0.15 }, withPose("settle"), 4);
+    const contact = poseFor(freshId(), { speed: 260, gait: 0 }, withPose("settle"), 4);
+    expect(bobbing.move["root"]?.[1] ?? 0).toBeGreaterThan(contact.move["root"]?.[1] ?? 0);
   });
 
   it("leaves the root-overlay poses to action_pose.ts, which still reaches the root", () => {

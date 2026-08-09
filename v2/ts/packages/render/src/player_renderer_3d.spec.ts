@@ -29,6 +29,7 @@ import {
   DEFAULT_PLAYER_RADIUS,
 } from "./player_renderer_3d.ts";
 import * as animator from "./rig3d/animator.ts";
+import * as actionPose from "./rig3d/action_pose.ts";
 import type { MutablePose } from "./rig3d/action_pose.ts";
 import type { PlayerRenderOptions } from "./player_render_options.ts";
 import type { PlayerView } from "./view_state.ts";
@@ -105,30 +106,31 @@ describe("player_renderer_3d.poseFor", () => {
   });
 });
 
-// KNOWN GAP, pinned deliberately rather than left to be discovered.
+// THE GAP THIS SUITE USED TO PIN, now closed (#430).
 //
-// Wiring `kick_follow` end to end makes the pose id REACHABLE in a live match
-// (`gc_render::player_pose::select` emits it, and a browser run of
-// `v2/tools/browser_match_harness` observed it on a real roster slot at tick
-// 600). It does not make it VISIBLE: `POSE_CLIP` maps `kick_follow` onto the
-// `locomotion` clip, and nothing in `action_pose.ts` claims the id, so the rig
-// draws a follow-through exactly as it draws a run. The retired 2D billboard
-// DID differentiate it -- it threw the striking leg out to `cx + strikeSign *
-// r * 1.5` -- so this is a capability the rigged renderer has not caught up to
-// yet, not a regression this branch introduced.
+// #428 made `kick_follow` REACHABLE in a live match (`gc_render::player_pose::
+// select` emits it, and a browser run of `v2/tools/browser_match_harness`
+// observed it on a real roster slot at tick 600) without making it VISIBLE:
+// `POSE_CLIP` mapped it onto the `locomotion` clip and nothing in
+// `action_pose.ts` claimed the id, so the rig drew a follow-through exactly as
+// it drew a run. The assertion here was that equality, kept as a stated fact
+// with a test behind it and a note that whoever closed it should flip it.
 //
-// Authoring that clip belongs to the outfield locomotion-gap library
-// (milestone 10's #101), not here. This case exists so the gap is a stated
-// fact with a test behind it: when a real follow-through clip lands, this
-// assertion flips and whoever lands it is told to update this comment.
-describe("player_renderer_3d.poseFor kick_follow (known gap)", () => {
-  it("is currently drawn identically to locomotion -- the pose id is reachable but not yet visible", () => {
+// It is flipped. The CLIP mapping is deliberately still `locomotion` -- the
+// follow-through is a root attitude, not limb animation, so there was never a
+// clip to change -- and the leg half of a kick remains #101/#424's.
+describe("player_renderer_3d.poseFor kick_follow", () => {
+  it("no longer renders identically to locomotion: the follow-through carries the mass past the ball", () => {
     const view: PlayerView = { px: 0, py: 0, speed: 300, phase: 1, gait: 0.3, lean: 0.5 };
     const opts = { is_keeper: false, controlled: false, facing: new Vec2(1, 0) };
+    // Unchanged, and not an oversight: the difference is a root transform.
     expect(clipFor("kick_follow")).toBe(clipFor("locomotion"));
-    expect(poseFor(view, { ...opts, pose: { id: "kick_follow" } }, 1)).toEqual(
-      poseFor(view, { ...opts, pose: { id: "locomotion" } }, 1),
-    );
+    const follow = poseFor(view, { ...opts, pose: { id: "kick_follow" } }, 1);
+    const running = poseFor(view, { ...opts, pose: { id: "locomotion" } }, 1);
+    expect(follow).not.toEqual(running);
+    // Forward, which is a positive rotation about the character's own x axis.
+    expect(follow.rot["root"]?.[0] ?? 0).toBeGreaterThan(0);
+    expect(running.rot["root"]).toBeUndefined();
   });
 });
 
@@ -267,9 +269,16 @@ describe("player_renderer_3d mixer/procedural parity", () => {
     }
   });
 
-  // Every pose id whose mapping `rig3d/pose_table.ts` deliberately left
+  // Every pose id whose CLIP mapping `rig3d/pose_table.ts` deliberately left
   // unchanged from `POSE_CLIP`. A difference here means the rewrite moved
   // something it said it would not.
+  //
+  // Five of them (`contain`, `run_telegraph`, `fatigue`, `settle`,
+  // `kick_follow`) gained a root body attitude in #430, which does not weaken
+  // this: attitudes live in `action_pose.ts`, which both paths call as their
+  // last step, so parity here is the check that they do -- the mixer path is
+  // production and `poseFor` is the oracle, and neither is allowed to be the
+  // only one showing a follow-through.
   it.each([
     "locomotion",
     "contain",
@@ -332,6 +341,35 @@ describe("player_renderer_3d mixer/procedural parity", () => {
     expect(delta(poseFor(upright, dive, 6.5), poseFor(leaning, dive, 6.5))).toBe(0);
     expect(delta(mixerPoseFor("parity-dive-upright", upright, dive, 6.5), mixerPoseFor("parity-dive-leaning", leaning, dive, 6.5))).toBe(0);
   });
+
+  // THE OTHER HALF OF THAT GATE, and the regression #430 was most likely to
+  // introduce. `contain`, `fatigue`, `run_telegraph`, `kick_follow` and
+  // `settle` are HELD postures on a player who is still running, not actions
+  // that own the body. If they had been folded into `forOptions` to get their
+  // root transform applied, the test above would have started passing for them
+  // too -- silently switching the balance lean off for five of the commonest
+  // poses on the pitch, in exactly the situation (a defender containing at
+  // speed) where a lean is most visible. So: the attitude reaches the pose AND
+  // the lean survives, on both paths.
+  it.each(["contain", "fatigue", "run_telegraph", "kick_follow", "settle"])(
+    "keeps the balance lean for a running player who is %s -- an attitude is not an action",
+    (id) => {
+      resetAnimation();
+      const opts = baseOptions({ pose: { id }, facing: new Vec2(0.6, 0.8) });
+      const upright = view(240, 0.3, 0);
+      const leaning = view(240, 0.3, 0.85);
+      expect(actionPose.forOptions(opts), "an attitude must not read as an action").toBeNull();
+      expect(delta(poseFor(upright, opts, 7.5), poseFor(leaning, opts, 7.5))).toBeGreaterThan(0.01);
+      expect(
+        delta(mixerPoseFor(`attitude-upright-${id}`, upright, opts, 7.5), mixerPoseFor(`attitude-leaning-${id}`, leaning, opts, 7.5)),
+      ).toBeGreaterThan(0.01);
+      // ...and the attitude itself is there, so the above is not vacuous.
+      // This suite's `delta` spans `move` as well as `rot`, which matters for
+      // `settle`: its whole reading is a root translation.
+      const plain = baseOptions({ pose: { id: "locomotion" }, facing: new Vec2(0.6, 0.8) });
+      expect(delta(poseFor(leaning, opts, 7.5), poseFor(leaning, plain, 7.5))).toBeGreaterThan(0.01);
+    },
+  );
 
   // The `"swing"` branch `poseFor` used to carry was unreachable: no
   // `POSE_CLIP` entry ever returned it. Removing it is part of #425, and this
