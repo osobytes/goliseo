@@ -448,3 +448,54 @@ describe("createSimHost carries the renderer's kick_follow window into the built
     }
   });
 });
+
+// REGRESSION: `frameBuffer.toRenderFrame` used to drop `events` on the floor.
+// `decode` recovered them off the wire correctly, but the object handed to
+// every consumer had no `events` field at all -- so
+// `MatchScreen.appendObservedFrameEvents` was an unconditional early return
+// in production and BOTH consumers of the per-tick batch were inert: the
+// `game.match_observer` attribution feed and the release follow-through
+// window. A fake host can never catch this; only a real decode can.
+describe("createSimHost surfaces the wire's per-tick match events", () => {
+  it("carries a decoded, well-shaped events block on every frame", () => {
+    const host = createSimHost(HOME, AWAY, 7, 20, 3);
+    try {
+      host.step(neutralSample());
+      const events = host.frame().events;
+      expect(events).toBeDefined();
+      expect(typeof events.count).toBe("number");
+      expect(events.kind.length).toBe(events.count);
+      expect(events.slot.length).toBe(events.count);
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it("actually reports events from a live match, attributed to a roster slot", () => {
+    const host = createSimHost(HOME, AWAY, 7, 60, 3);
+    try {
+      const kinds = new Set<string>();
+      let attributed = 0;
+      // Long enough for the inline AI to produce touches/tackles/passes.
+      for (let tick = 0; tick < 1800; tick += 1) {
+        host.step(neutralSample());
+        const events = host.frame().events;
+        for (let index = 0; index < events.count; index += 1) {
+          const kind = events.kind[index];
+          if (kind !== undefined) {
+            kinds.add(kind);
+          }
+          const slot = events.slot[index];
+          if (slot !== undefined) {
+            attributed += 1;
+            expect(host.roster().ids[slot - 1]).toBeDefined();
+          }
+        }
+      }
+      expect(kinds.size, "a minute of real match produced no events at all").toBeGreaterThan(0);
+      expect(attributed, "no event was attributed to a roster slot").toBeGreaterThan(0);
+    } finally {
+      host.dispose();
+    }
+  });
+});

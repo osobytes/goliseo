@@ -381,7 +381,10 @@ export interface RenderFramePossession {
  */
 export interface RealMatchRenderFrameEvents {
   readonly count: number;
-  readonly kind: readonly RealMatchEventKind[];
+  /** Plain strings, not {@link RealMatchEventKind}: this is the HOST's wire
+   * vocabulary (~25 kinds), of which that alias names only the subset
+   * `game.match_observer` acts on -- see {@link RealMatchEvent}. */
+  readonly kind: readonly string[];
   readonly slot: readonly (number | undefined)[];
 }
 

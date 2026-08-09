@@ -49,7 +49,7 @@
 
 import init, { Session, __getRawExports } from "../../../ts/packages/wasm/dist/pkg-web/gc_wasm.js";
 import * as THREE from "three";
-import { SceneRoot, Stadium, camera, cameraFollow, frameBuffer, pitch, viewState } from "@gc/render";
+import { SceneRoot, Stadium, camera, cameraFollow, frameBuffer, pitch, releaseFollow, viewState } from "@gc/render";
 import type { frameBufferTypes } from "@gc/render";
 
 const DT = 1 / 60;
@@ -88,6 +88,15 @@ interface HarnessStats {
   tick: number;
   timeLeft: number;
   score: string;
+  /** Per-roster-slot pose id from the most recent decoded frame, and the
+   * per-slot `viewState` lean that drives the rigged torso tilt. Diagnostics
+   * only, in the same spirit as `__gcScene` below: a driver script watching
+   * for "a shot just happened" or "this player is leaning hard" has no other
+   * way to know WHEN to capture, because both facts live inside the frame
+   * loop and neither is legible from a screenshot alone. Nothing under
+   * v2/ts reads these. */
+  poses: (string | undefined)[];
+  leans: number[];
 }
 
 declare global {
@@ -154,6 +163,8 @@ async function main(): Promise<void> {
     tick: 0,
     timeLeft: 0,
     score: "0-0",
+    poses: [],
+    leans: [],
   };
   globalThis.__gcMatchHarness = stats;
 
@@ -249,7 +260,7 @@ async function main(): Promise<void> {
 
   const raw = __getRawExports() as {
     memory: WebAssembly.Memory;
-    render_frame_build: (handle: number) => number;
+    render_frame_build: (handle: number, kickFollowSlots: number) => number;
     render_frame_ptr: () => number;
     render_frame_len: () => number;
   };
@@ -265,7 +276,15 @@ async function main(): Promise<void> {
   const stadiumEnabled = params.get("stadium") !== "0";
 
   function frameNow(): frameBufferTypes.RenderFrame {
-    if (raw.render_frame_build(session.handle) === 0) {
+    // The renderer's release follow-through window, as the roster-slot
+    // bitmask the per-frame path takes. Third instance of the same shape
+    // `viewState`/`cameraFollow` already have on this page (see the two
+    // comments in the loop below): renderer-owned state that only exists if
+    // something drives it, owned by `@gc/screens`'s `match.ts` in the real
+    // app and by this page here, since it has no screen stack. Without it
+    // `kick_follow` is always empty and a shot snaps straight back to the run
+    // cycle -- which is exactly what this page would be used to check.
+    if (raw.render_frame_build(session.handle, releaseFollow.slotMask(roster.ids)) === 0) {
       throw new Error("match_harness: no live session for this handle");
     }
     // Never cached across ticks: `raw.memory.buffer` is replaced wholesale
@@ -352,6 +371,18 @@ async function main(): Promise<void> {
     // characters slid around frozen next to the Lua benchmark's running ones.
     const followPlayers = roster.ids.map((id, i) => ({ id, pos: { x: frame.players.x[i] ?? 0, y: frame.players.y[i] ?? 0 } }));
     viewState.update(followPlayers, ticks * DT);
+    // Ages and latches the follow-through window from this frame's own event
+    // batch -- see `frameNow`'s comment for why this page owns the call.
+    releaseFollow.update(
+      Array.from({ length: frame.events.count }, (_unused, i) => {
+        const slot = frame.events.slot[i];
+        const player = slot !== undefined ? roster.ids[slot - 1] : undefined;
+        return player !== undefined ? { kind: frame.events.kind[i] ?? "", player } : { kind: frame.events.kind[i] ?? "" };
+      }),
+      ticks * DT,
+    );
+    stats.poses = roster.ids.map((_id, i) => frame.players.pose_id[i]);
+    stats.leans = roster.ids.map((id) => viewState.get(id)?.lean ?? 0);
     // The follow camera has the same "renderer-owned accumulator nothing else
     // updates" shape the comment above describes for `viewState`: without this
     // its smoothed focus never leaves `undefined`, `cameraFollow.view` returns
