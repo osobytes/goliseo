@@ -119,13 +119,13 @@ baselines is explicitly out of scope for the issue this file closes (#432).
 ## What it reuses
 
 Browser lifecycle is not reimplemented here. `serve_dist`, `wait_until`,
-`launch`, `bounded_launch`, `probe_gpu`, `resolve_binary_pair`,
-`_inherited_env` and `build_v2_harness` come from
+`launch` (and the `bounded_launch` it wraps), `probe_gpu`,
+`resolve_binary_pair` and `build_v2_harness` come from
 `scripts/browser_render_bench.py`; `quit_browser_bounded` and
 `bounded_log_tail` come from `scripts/browser_determinism.py` through it.
 That is the same import direction those two files already use between
-themselves. `build_v2_harness` grew two defaulted parameters so this file can
-point it at a different harness directory; its existing call site is
+themselves. `build_v2_harness` grew three defaulted parameters so this file
+can point it at a different harness directory; its existing call site is
 unchanged.
 """
 
