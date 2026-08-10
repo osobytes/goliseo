@@ -253,6 +253,47 @@ export function newRig(rig: RigLike): Rig {
   return out;
 }
 
+/**
+ * The same skeleton, standing `metres` higher off the pitch plane.
+ *
+ * WHY THIS IS A WHOLE-RIG PROPERTY AND NOT A POSE. The bone lengths above
+ * describe a body; where that body's boots come to rest relative to y = 0 is a
+ * property of the built character's GEOMETRY, which this file cannot see -- it
+ * has no mesh, by charter. `rig3d/ground.ts` measures it once and hands the
+ * answer here, so the offset is resolved at construction instead of being
+ * re-measured sixty times a second. See that file's REST POSE section.
+ *
+ * It raises the ROOT's offset, which is the one bone whose translation is
+ * world-space: `root` has no parent, so `apply` writes its local transform
+ * straight into `world` and every descendant inherits that translation
+ * unrotated. A metre here is a metre of world travel for every vertex in the
+ * character, whatever the pose is doing -- the same property
+ * `action_pose.ts`'s GROUND CONTACT note and `ground.poseAndGround` both rest
+ * on.
+ *
+ * Returns a NEW rig; the input is untouched. It re-evaluates the rest pose, so
+ * it is a construction-time call, not a per-frame one.
+ *
+ * NOT CANCELLED BY A BIND POSE, checked rather than assumed:
+ * `player_renderer_3d.ts` builds its `THREE.Bone`s with an identity `matrix`
+ * and never positions them, so `THREE.Skeleton`'s bone inverses are all
+ * identity and the mesh's vertices are already bone-local. The skinning
+ * transform is this rig's `world` outright, so raising it raises what is
+ * drawn.
+ */
+export function raised(rig: Rig, metres: number): Rig {
+  const defs = rig.defs.map((def) =>
+    def.parent === null ? { ...def, offset: [def.offset[0], def.offset[1] + metres, def.offset[2]] as Offset } : def,
+  );
+  const byName: Record<string, PreparedBoneDef> = {};
+  for (const def of defs) {
+    byName[def.name] = def;
+  }
+  const out: Rig = { style: rig.style, defs, world: {}, byName, order: rig.order };
+  apply(out, { rot: {}, move: {} });
+  return out;
+}
+
 // Evaluates every bone's world transform for one pose. `pose.rot` carries
 // already-baked quaternions and `pose.move` is an additive translation on top
 // of the rest offset; both are sparse -- a bone the clip never mentions

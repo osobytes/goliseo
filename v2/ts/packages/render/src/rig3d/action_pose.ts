@@ -210,32 +210,36 @@ const LEAN_REFERENCE_HEIGHT = proportions.RIG_MEDIUM.seg.hips_y;
 // WHAT THIS DELIBERATELY DOES NOT COVER, because an undisclosed gap is worse
 // than a disclosed one:
 //
-//   * ROOT ROTATIONS. Every attitude `lean` is a root tilt, `combat_stagger`
-//     pitches -8 degrees and `keeper_get_up` rolls 16, and a tilt about a root
-//     at y = 0 swings the far boot below the plane just as surely as a drop
-//     does. Measured residuals at a standstill, with the drop already
-//     grounded, quoted as the floors `ground_contact.spec.ts` pins: 50 mm
-//     keeper_get_up, 24 mm run_telegraph, 13 mm kick_follow, 11 mm
-//     combat_stagger, 8 mm contain, 4 mm fatigue.
+//   * ROOT ROTATIONS -- now `rig3d/ground.ts`'s (#446), not an open gap.
+//     Every attitude `lean` is a root tilt, `combat_stagger` pitches -8
+//     degrees, `keeper_get_up` rolls 16 and the saves roll up to 84, and a
+//     tilt about a root at y = 0 swings the far boot below the plane just as
+//     surely as a drop does. Measured residuals at a standstill, with the drop
+//     already grounded: 50 mm keeper_get_up, 24 mm run_telegraph, 13 mm
+//     kick_follow, 11 mm combat_stagger, 8 mm contain, 4 mm fatigue, and
+//     192-595 mm across the keeper saves.
 //
-//     THE SAVES ARE DEEPER AND ARE NOT A SINGLE NUMBER. `save()` scales its
-//     roll and its travel by `opts.dive`, so the residual scales with it.
-//     Quoted as the floors `ground_contact.spec.ts` pins, body first:
-//     `keeper_dive` 57 mm at a quarter dive, 111 mm at half, 192 mm at full --
-//     and 412 mm at full counting the shield on `socket_shield.L`, which a
-//     72-degree roll swings with the arm chain. `keeper_tip` is `fixed: 1`, so
-//     it is 362 mm of body and 595 mm with the shield ALL the time;
-//     `keeper_stretch` is floored at 0.82, so it is 171 mm before any amount
-//     arrives and 279 mm at full (294 and 502 mm with the shield). Full dive is not a corner case: `gc-render`'s frame builder
-//     pushes `min(dive_timer / 0.3, 1)` and the timer starts at 0.32 s, so
-//     every dive opens saturated and eases down.
+//     THAT IS NOT FIXED HERE, and cannot be: how far a rotation drives a limb
+//     under the turf depends on WHERE THE LIMB IS, and the overlay is authored
+//     before any clip has posed one. Measured, a closed form in this file
+//     using a single rig-derived half-extent fits the three saves whose lowest
+//     point is a boot and under-lifts `keeper_stretch` by 92 mm and
+//     `keeper_tip` by 172 mm, whose lowest point is a stance clip's
+//     outstretched hand. So the correction is a LIFT measured off the posed
+//     rig, in `ground.poseAndGround`, which every display path calls in place
+//     of `skeleton.apply`. See that file for why a lift rather than a moved
+//     pivot, and for the cost of measuring it.
 //
-//     None of that is this issue's to fix -- correcting it means deciding what
-//     a dive should look like once its pivot moves to the plane, which is a
-//     visual question rather than a unit or a clamp. It is pinned as a table
-//     in `ground_contact.spec.ts`, amount by amount and body separately from
-//     props, so it cannot deepen unnoticed and so nobody reads a half dive as
-//     the ceiling.
+//     THE TWO CORRECTIONS ARE NOT REDUNDANT even though both end up in
+//     `move.root.y`. This one is constant and applied before evaluation; that
+//     one necessarily reads the posed rig every frame. Apply a per-frame
+//     correction to a CROUCH and it tracks the gait's own vertical bob --
+//     absorbed at the top of the stride, fully applied at the bottom -- which
+//     is a wobble at stride frequency on poses whose whole job is to read as a
+//     held posture, and is exactly what the GROUND CLEARANCE note below
+//     rejects a per-frame budget for. Drops are floored here; what the
+//     rotation leaves is lifted there. `ground_contact.spec.ts` drives the
+//     interaction rather than asserting it.
 //   * CLIP-AUTHORED ROOT MOTION. `clips.ts`'s SWING authors a 32 mm root drop
 //     mid-lunge -- 28 mm of world travel once `skeleton.apply` has applied the
 //     same motion_scale this file divides by three paragraphs up, because that
@@ -412,6 +416,13 @@ function save(poseId: string | undefined, opts: ActionPoseOptions): RootPose | n
   const pose = empty();
   // Head toward the dive side: +X needs a negative z (see the note above).
   pose.rot.root = [0, 0, -sign * spec.angle * amount];
+  // LATERAL ONLY, AND THAT IS DELIBERATE (#446). A dive has a vertical
+  // component too -- a keeper leaves the ground -- and it is NOT authored
+  // here, because how far this roll has to rise to keep a limb out of the turf
+  // depends on where the stance clip has put the limbs, which this file cannot
+  // see. `rig3d/ground.ts` measures it off the posed rig instead. Writing a
+  // `spec.lift` next to `spec.travel` would be five hand-tuned numbers that
+  // silently stop matching the moment a keeper's clip changes.
   pose.move.root = [metres(sign * spec.travel * amount), 0, 0];
   return pose;
 }
