@@ -55,12 +55,21 @@ if (THEME === undefined || FIGURE === undefined) {
 const [MESH] = body.accumulate(RIG, THEME, FIGURE);
 const BONE_ORDER = skeleton.bones(RIG).map((b) => b.name);
 
-/** The lowest rendered point of a posed character, in metres, and its bone. */
-function lowestRendered(rig: skeleton.Rig): { y: number; bone: string } {
+/**
+ * The lowest rendered point of a posed character, in metres, and its bone.
+ *
+ * `skip` narrows it to part of the figure -- used to separate the keeper's own
+ * body from the shield and sword hanging off the socket bones, which a hard
+ * root roll swings deeper than anything anatomical (see SAVE_RESIDUALS).
+ */
+function lowestRendered(rig: skeleton.Rig, skip?: (bone: string) => boolean): { y: number; bone: string } {
   let y = Infinity;
   let bone = "";
   for (const vertex of MESH.verts) {
     const name = BONE_ORDER[vertex.bone];
+    if (name !== undefined && skip?.(name) === true) {
+      continue;
+    }
     const world = name !== undefined ? rig.world[name] : undefined;
     if (world === undefined) {
       throw new Error(`ground_contact.spec.ts: vertex on unknown bone index ${vertex.bone}`);
@@ -102,9 +111,15 @@ let poseSeq = 0;
  * it. Every sample here is a character seen on its own first frame, which is
  * also the frame that commits to its stance outright.
  */
-function poseOnRig(rig: skeleton.Rig, id: string | undefined, frame: Frame): actionPose.MutablePose {
+function poseOnRig(
+  rig: skeleton.Rig,
+  id: string | undefined,
+  frame: Frame,
+  extra?: Partial<actionPose.ActionPoseOptions>,
+): actionPose.MutablePose {
   poseSeq += 1;
-  const opts = id === undefined ? {} : { pose: { id }, dive_dir: { x: 1, y: 0 }, facing: { x: 0, y: 1 } };
+  const opts =
+    id === undefined ? {} : { pose: { id }, dive_dir: { x: 1, y: 0 }, facing: { x: 0, y: 1 }, ...extra };
   const pose = animator.poseFor(`gc_${String(poseSeq)}`, { speed: frame.speed, gait: frame.gait }, opts, frame.now);
   skeleton.apply(rig, pose);
   return pose;
@@ -149,6 +164,29 @@ describe("ground contact: the rig's own clearance", () => {
       lowestBob = Math.min(lowestBob, pose.move["root"]?.[1] ?? 0);
     }
     expect(lowestBob, "the gait's bob is a rise, never a sink").toBeGreaterThanOrEqual(0);
+  });
+
+  // The other half of that reasoning, and the reason the budget is measured on
+  // a STANDING figure: a moving one is nowhere near the plane. Loose bounds on
+  // purpose -- the exact peak is a clip-tuning detail, but "a walking figure is
+  // never near the turf and a running one is sometimes a hand's width above it"
+  // is the fact a per-frame budget would have been read off, and it is what
+  // makes such a budget vary by more than the drops it was meant to bound.
+  it("floats a moving figure far off the plane, which is why the budget is measured standing", () => {
+    const rig = skeleton.newRig(RIG);
+    const peak: Record<string, { min: number; max: number }> = {};
+    for (const frame of frames()) {
+      const key = frame.speed === 0 ? "idle" : frame.speed === WALK_SPEED ? "walk" : "run";
+      poseOnRig(rig, undefined, frame);
+      const y = lowestRendered(rig).y;
+      const seen = peak[key] ?? { min: Infinity, max: -Infinity };
+      peak[key] = { min: Math.min(seen.min, y), max: Math.max(seen.max, y) };
+    }
+    expect(peak["idle"]?.min, "a standing figure is on the plane").toBeGreaterThan(-2 * MM);
+    expect(peak["idle"]?.max, "and stays there").toBeLessThan(5 * MM);
+    expect(peak["walk"]?.min, "a walk never brings the boots back to the turf").toBeGreaterThan(10 * MM);
+    expect(peak["run"]?.min, "nor does a run").toBeGreaterThan(15 * MM);
+    expect(peak["run"]?.max, "and a run peaks a hand's width up").toBeGreaterThan(100 * MM);
   });
 });
 
@@ -200,6 +238,29 @@ describe("ground contact: downward root translations (#439)", () => {
     }
   });
 
+  // THE COST, PINNED RATHER THAN DESCRIBED. `pose_table.ts` says
+  // `keeper_ready_low` "is LOW because of the attitude -- without it the two
+  // stances differed only in crossfade duration", and grounding the drop takes
+  // exactly that attitude away. So the two keeper stances now resolve to the
+  // same held pose, and this says so in the suite instead of in a comment
+  // nobody re-reads: it is the disclosure, and it goes red the moment a knee
+  // bend gives `keeper_ready_low` its silhouette back -- which is the point at
+  // which someone should be looking at this again.
+  it("collapses keeper_set and keeper_ready_low into the same held pose", () => {
+    const standing = { speed: 0, gait: 0, now: 0 };
+    const rigA = skeleton.newRig(RIG);
+    const rigB = skeleton.newRig(RIG);
+    const set = poseOnRig(rigA, "keeper_set", standing);
+    const readyLow = poseOnRig(rigB, "keeper_ready_low", standing);
+    expect(readyLow, "the two stances differ only in the drop, which is now floored").toEqual(set);
+    expect(lowestRendered(rigB).y, "and they render identically").toBeCloseTo(lowestRendered(rigA).y, 9);
+    // Not a claim that the TABLE stopped distinguishing them: it still does,
+    // and the day the rig can absorb a crouch they part again.
+    const authored = actionPose.attitudeFor({ pose: { id: "keeper_ready_low" } })?.move.root?.[1] ?? 0;
+    const authoredSet = actionPose.attitudeFor({ pose: { id: "keeper_set" } })?.move.root?.[1] ?? 0;
+    expect(authored, "ATTITUDES still authors the deeper crouch").toBeLessThan(authoredSet);
+  });
+
   // Upward is not this fix's business: an aerial, a knockback, a save and a
   // stumble all mean to leave the ground, and a floor that touched them would
   // be a new defect rather than a fix for an old one.
@@ -225,7 +286,10 @@ describe("ground contact: downward root translations (#439)", () => {
     }
   });
 
-  // A clip may drop the root, and SWING does -- 32 mm at its deepest lunge key.
+  // A clip may drop the root, and SWING does -- 32 mm at its deepest lunge key,
+  // which is 28 mm of world travel once `skeleton.apply` has applied the rig's
+  // motion_scale, since that multiply is uniform and does not care whether a
+  // clip or an overlay wrote the value.
   // It does not penetrate, because its own thigh and shin keys raise the feet
   // by more than it lowers the hips, which is what limb work buys and what the
   // root-only overlay cannot do. Pinned so that "the clips are fine" stays a
@@ -237,6 +301,10 @@ describe("ground contact: downward root translations (#439)", () => {
       deepestKey = Math.min(deepestKey, key.move["root"]?.[1] ?? 0);
     }
     expect(deepestKey, "SWING really does translate the root downward").toBeLessThan(-20 * MM);
+    // The authored key and the world travel it becomes, both measured, so the
+    // two numbers in the comments above cannot drift apart from each other.
+    expect(deepestKey * RIG.motion_scale, "and 32 mm authored is 28 mm travelled").toBeGreaterThan(-30 * MM);
+    expect(deepestKey * RIG.motion_scale, "and 32 mm authored is 28 mm travelled").toBeLessThan(-26 * MM);
 
     let lowest = Infinity;
     for (let i = 0; i <= 40; i += 1) {
@@ -262,15 +330,20 @@ describe("ground contact: what root rotations still do (out of scope, measured)"
   const standing = { speed: 0, gait: 0, now: 0 };
 
   // Pose -> the depth its ROTATION alone leaves, in millimetres, once the drop
-  // is grounded. Rounded down to the millimetre from a standing measurement.
+  // is grounded. Each is a FLOOR: the standing measurement rounded up to the
+  // next millimetre, so the assertion reads "no deeper than this".
+  //
+  // Everything in THIS table takes no amount: `TIPS` and `ATTITUDES` are
+  // constants, so one measurement is the whole story. The saves are not, and
+  // they are pinned separately below -- see the note there, which is the more
+  // important half of this block.
   const RESIDUAL_MM: Readonly<Record<string, number>> = {
     keeper_get_up: 50,
-    keeper_dive: 111,
     run_telegraph: 24,
     kick_follow: 13,
     combat_stagger: 11,
     contain: 8,
-    fatigue: 5,
+    fatigue: 4,
   };
 
   for (const [id, mm] of Object.entries(RESIDUAL_MM)) {
@@ -281,4 +354,79 @@ describe("ground contact: what root rotations still do (out of scope, measured)"
       expect(lowest, `${id}'s residual is a rotation, so it does not vanish`).toBeLessThan(0);
     });
   }
+
+  // THE SAVES ARE SCALED BY AN AMOUNT, AND A PIN THAT FORGETS TO PASS ONE
+  // MEASURES NOTHING.
+  //
+  // `save()` computes `amount = spec.fixed ?? clamp(opts.dive ?? 0, 0, 1)` and
+  // multiplies BOTH the roll and the travel by it. Omit `dive` and
+  // `keeper_dive` resolves to a 0-degree roll and a 0 m slide -- the standing
+  // rig, -1.2 mm, which sails under any floor you care to write. The first
+  // version of this block did exactly that and pinned "111 mm" against a pose
+  // that was not happening. It would have passed with the dive maths deleted.
+  //
+  // So every entry here names its amount and the table is indexed BY amount,
+  // which also states the thing a single number cannot: THE RESIDUAL IS NOT A
+  // CONSTANT. `keeper_dive` spans 57 mm to 412 mm across the amounts a real
+  // dive passes through, and 111 mm -- the figure this PR first disclosed -- is
+  // the halfway point, not the ceiling.
+  //
+  // The ceiling is not hypothetical either. `gc-render`'s frame builder pushes
+  // `eased(dive_timer, DIVE_EASE)` = `min(timer / 0.3, 1)`, and
+  // `KEEPER_DIVE_DURATION` is 0.32 s, so every dive STARTS at a saturated 1.0
+  // and eases down. The deepest row below is the opening frame of every save
+  // in the game, not a corner case.
+  //
+  // BODY AND PROPS ARE REPORTED SEPARATELY because they are different facts. A
+  // 72-degree root roll swings the whole arm chain, and the shield hanging off
+  // `socket_shield.L` reaches more than twice as deep as any part of the
+  // keeper: at full dive, 192 mm of body and 412 mm of shield. Conflating them
+  // would let a shield fix look like a body fix.
+  const PROP = (bone: string): boolean => bone.startsWith("socket_");
+
+  /** id, the `dive` passed in, and the floors: body-only, then including props. */
+  const SAVE_RESIDUALS: readonly { id: string; dive: number; body: number; props: number }[] = [
+    // Amount-driven: no `fixed`, no `floor`, so these scale from nothing.
+    { id: "keeper_dive", dive: 0.25, body: 57, props: 57 },
+    { id: "keeper_dive", dive: 0.5, body: 111, props: 111 },
+    { id: "keeper_dive", dive: 1, body: 192, props: 412 },
+    { id: "keeper_spread", dive: 1, body: 88, props: 88 },
+    { id: "keeper_central", dive: 1, body: 141, props: 141 },
+    // `floor: 0.82`, so this one is already 82% deep with no amount at all.
+    { id: "keeper_stretch", dive: 0, body: 171, props: 294 },
+    { id: "keeper_stretch", dive: 1, body: 279, props: 502 },
+    // `fixed: 1`, so the amount is ignored entirely and it is always this deep.
+    { id: "keeper_tip", dive: 0, body: 362, props: 595 },
+  ];
+
+  for (const row of SAVE_RESIDUALS) {
+    it(`${row.id} at dive ${String(row.dive)}: ${String(row.body)} mm of body, ${String(row.props)} mm with props`, () => {
+      poseOnRig(rig, row.id, standing, { dive: row.dive });
+      const body = lowestRendered(rig, PROP).y;
+      const all = lowestRendered(rig).y;
+      expect(body, `${row.id}'s body residual must not be deepening`).toBeGreaterThan(-row.body * MM);
+      expect(all, `${row.id}'s residual including props must not be deepening`).toBeGreaterThan(-row.props * MM);
+      expect(all, `${row.id} at dive ${String(row.dive)} is a rotation, so it does not vanish`).toBeLessThan(-2 * MM);
+    });
+  }
+
+  // The guard that makes the table above non-vacuous, stated as a property
+  // rather than left to whoever writes the next row: if a save's amount ever
+  // stops reaching the pose, these floors go back to measuring a standing rig
+  // and every one of them passes. `keeper_tip` is `fixed` and `keeper_stretch`
+  // is floored, so they are deep with no amount at all; the other three must
+  // be at the standing baseline without one, and far past it with one.
+  it("proves each save's residual is driven by its amount, not by the rig standing still", () => {
+    const baseline = lowestRendered(skeleton.newRig(RIG)).y;
+    for (const id of ["keeper_dive", "keeper_spread", "keeper_central"]) {
+      poseOnRig(rig, id, standing, { dive: 0 });
+      expect(lowestRendered(rig).y, `${id} with no dive amount is just a standing character`).toBeCloseTo(baseline, 6);
+      poseOnRig(rig, id, standing, { dive: 1 });
+      expect(lowestRendered(rig).y, `${id} at full dive must be far past standing`).toBeLessThan(baseline - 50 * MM);
+    }
+    for (const id of ["keeper_stretch", "keeper_tip"]) {
+      poseOnRig(rig, id, standing, { dive: 0 });
+      expect(lowestRendered(rig).y, `${id} is fixed or floored, so it is deep with no amount`).toBeLessThan(baseline - 50 * MM);
+    }
+  });
 });
