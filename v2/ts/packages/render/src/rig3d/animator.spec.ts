@@ -155,19 +155,39 @@ describe("rig3d/animator.poseFor", () => {
   // separately means the smallest quantity in the table has to clear the floor
   // by itself; `action_pose.spec.ts` then pins its magnitude as an exact ratio
   // against `contain`, which a floor cannot do.
-  it.each([...FORWARD, ...BACKWARD, "settle"])("gives %s a body attitude instead of plain locomotion", (id) => {
+  it.each([...FORWARD, ...BACKWARD])("gives %s a body attitude instead of plain locomotion", (id) => {
     const plain = poseFor(freshId(), RUNNING, withPose("locomotion"), 4);
     const posed = poseFor(freshId(), RUNNING, withPose(id), 4);
-    const leans = ([...FORWARD, ...BACKWARD] as readonly string[]).includes(id);
-    const crouches = id !== "kick_follow" && id !== "run_telegraph";
-    expect(leans || crouches, `${id}: an attitude must claim at least one of the two`).toBe(true);
-    if (leans) {
-      expect(delta(plain, posed), `${id}: lean`).toBeGreaterThan(0.01);
-    }
-    if (crouches) {
-      expect(rootDrop(plain, posed), `${id}: crouch`).toBeGreaterThan(0.01);
-    }
+    expect(delta(plain, posed), `${id}: lean`).toBeGreaterThan(0.01);
   });
+
+  // THE CROUCH HALF, AND WHY IT NOW ASSERTS ZERO (#439).
+  //
+  // This used to be the same `it.each` as the lean above, `settle` included,
+  // asserting `rootDrop > 0.01` for every id that crouches. It passed while
+  // those crouches drove the character's ankles under the turf: the rig plants
+  // exactly on the pitch plane and has no IK, so a root drop is penetration
+  // and nothing else (`action_pose.ts`'s GROUND CONTACT section, and
+  // `ground_contact.spec.ts`, which measures it on real geometry).
+  // `action_pose.apply` now floors it, so the honest pin is that a crouch
+  // reaches the resolved pose as ZERO.
+  //
+  // The coverage does not leave with the behaviour. The authored magnitudes
+  // and their ordering are still pinned one layer down, on `attitudeFor` --
+  // `action_pose.spec.ts`'s "crouches rather than rises, and keeps the
+  // billboard's ordering" -- so shrinking or deleting a `drop` still fails.
+  // What this asserts is the seam: the table still says crouch, and the rig
+  // still stands on the pitch.
+  it.each(["settle", "contain", "fatigue", "keeper_set", "keeper_ready_low"])(
+    "grounds %s's crouch instead of sinking the character into the pitch",
+    (id) => {
+      const authored = actionPose.attitudeFor({ pose: { id } })?.move.root?.[1] ?? 0;
+      expect(authored, `${id}: the table must still author a crouch`).toBeLessThan(0);
+      const plain = poseFor(freshId(), RUNNING, withPose("locomotion"), 4);
+      const posed = poseFor(freshId(), RUNNING, withPose(id), 4);
+      expect(rootDrop(plain, posed), `${id}: the crouch must not reach the root`).toBe(0);
+    },
+  );
 
   it("leans a follow-through and a telegraph forward, and a contain and a fatigue back", () => {
     const plain = poseFor(freshId(), RUNNING, withPose("locomotion"), 4);
@@ -190,20 +210,26 @@ describe("rig3d/animator.poseFor", () => {
     expect(at("contain")).toBeGreaterThan(at("fatigue"));
   });
 
+  // The ordering these two pairs used to assert on the RESOLVED pose is now
+  // unobservable there -- every crouch resolves to the same grounded zero --
+  // so it is asserted where it is still a live quantity, on the authored
+  // table. Same claim, same pairs, one layer down; `action_pose.spec.ts` pins
+  // the full five-deep chain and the exact fatigue/contain ratio.
   it.each([
     ["settle", "contain"],
     ["keeper_ready_low", "keeper_set"],
-  ])("crouches %s lower than %s, and both lower than plain locomotion", (deeper, shallower) => {
-    const plain = poseFor(freshId(), RUNNING, withPose("locomotion"), 4);
-    const a = poseFor(freshId(), RUNNING, withPose(deeper), 4);
-    const b = poseFor(freshId(), RUNNING, withPose(shallower), 4);
-    expect(rootDrop(plain, a)).toBeGreaterThan(rootDrop(plain, b));
-    expect(rootDrop(plain, b)).toBeGreaterThan(0);
+  ])("still authors %s as a deeper crouch than %s", (deeper, shallower) => {
+    const drop = (id: string) => -(actionPose.attitudeFor({ pose: { id } })?.move.root?.[1] ?? 0);
+    expect(drop(deeper)).toBeGreaterThan(drop(shallower));
+    expect(drop(shallower)).toBeGreaterThan(0);
   });
 
-  // The crouch ADDS to the run's vertical bob rather than replacing it. The
-  // locomotion clips write that bob to `move.root`, so an attitude that
-  // assigned there would flatten it and leave a settling player gliding.
+  // The attitude COMPOSES onto the run's vertical bob rather than replacing
+  // it. The locomotion clips write that bob to `move.root`, so an attitude
+  // that assigned there would flatten it and leave a settling player gliding
+  // -- and so would a ground contact that floored the SUM instead of the
+  // attitude's own contribution (#439). This is the test that tells those
+  // apart: the bob survives a grounded crouch intact.
   it("keeps the run's vertical bob under a crouch", () => {
     const bobbing = poseFor(freshId(), { speed: 260, gait: 0.15 }, withPose("settle"), 4);
     const contact = poseFor(freshId(), { speed: 260, gait: 0 }, withPose("settle"), 4);

@@ -318,12 +318,17 @@ describe("held body attitudes", () => {
   // COMPOSES, where an action ASSIGNS. The locomotion clips write the run's
   // vertical bob to `move.root`; a crouch that assigned there would flatten it
   // and leave a settling player gliding.
+  //
+  // Since #439 the crouch is floored to the rig's ground clearance on its way
+  // through `apply`, so the composed result is the bob ALONE. That still tells
+  // composition from assignment apart, and more sharply than before: an
+  // assignment would put the grounded zero in the bob's place.
   it("adds its crouch to whatever the gait already resolved, instead of replacing it", () => {
     const bob = 0.05;
     const pose = actionPose.apply({ rot: {}, move: { root: [0, bob, 0] } }, opts("settle"));
     const drop = actionPose.attitudeFor(opts("settle"))?.move.root?.[1] ?? 0;
-    expect(pose.move["root"]?.[1]).toBeCloseTo(bob + drop, 12);
-    expect(drop).toBeLessThan(0);
+    expect(drop, "the table still authors a crouch").toBeLessThan(0);
+    expect(pose.move["root"]?.[1], "the gait's bob survives the crouch intact").toBeCloseTo(bob, 12);
   });
 
   it("lets an action win outright when a pose id would claim both", () => {
@@ -342,5 +347,87 @@ describe("held body attitudes", () => {
   it("leaves a plain run completely untouched", () => {
     const pose = actionPose.apply({ rot: {}, move: {} }, opts("locomotion"));
     expect(pose).toEqual({ rot: {}, move: {} });
+  });
+});
+
+// #439: ground contact for downward root translations.
+//
+// These are the ARITHMETIC pins. They are not the test that proves the defect
+// is fixed -- `ground_contact.spec.ts` is, by measuring the lowest rendered
+// vertex of the real character through the real `skeleton.apply`, because a
+// clamp that clamps is not the same claim as a character that stands on the
+// pitch (AGENTS.md §9). What these add is the unit discipline #436 was about,
+// and the generality the issue asks for: the floor is a property of downward
+// root translation, not a list of seven pose names.
+describe("ground contact for downward root translations", () => {
+  const MOTION_SCALE = 0.88;
+
+  it("floors a drop and leaves a lift alone", () => {
+    expect(actionPose.groundedRootY(-0.07)).toBe(0);
+    expect(actionPose.groundedRootY(0.07)).toBe(0.07);
+    expect(actionPose.groundedRootY(0)).toBe(0);
+    // Not -0: `Object.is` distinguishes the two, and a pose carrying -0 where
+    // every other path carries 0 is a difference that shows up in an equality
+    // assertion and nowhere else.
+    expect(Object.is(actionPose.groundedRootY(-0.07), 0)).toBe(true);
+  });
+
+  // THE UNIT, which is the whole of #436 in one line. `skeleton.apply`
+  // multiplies `move` by the rig's motion_scale, so a budget expressed in
+  // metres of WORLD travel has to be divided by it before it can be a floor on
+  // `move`. Exercised with a deliberately non-zero budget, because the rig's
+  // own is zero and would multiply the mistake away.
+  it("spends a clearance budget in world metres, on the authoring side of motion_scale", () => {
+    const budget = 0.05;
+    // 0.05 m of world clearance is 0.0568 m of authored travel at 0.88.
+    expect(actionPose.groundedRootY(-1, budget)).toBeCloseTo(-budget / MOTION_SCALE, 12);
+    expect(actionPose.groundedRootY(-1, budget) * MOTION_SCALE).toBeCloseTo(-budget, 12);
+    // A drop that fits inside the budget is not touched at all.
+    expect(actionPose.groundedRootY(-0.01, budget)).toBe(-0.01);
+  });
+
+  // GENERAL, not seven special cases: `apply` is the boundary every root
+  // overlay crosses, so a pose invented tomorrow is grounded by construction.
+  // Both tables are checked through it, and so is a synthetic drop deeper than
+  // anything either table authors.
+  it("grounds every authored drop, in both tables, whatever its magnitude", () => {
+    for (const id of ["settle", "contain", "fatigue", "keeper_set", "keeper_ready_low"]) {
+      const authored = actionPose.attitudeFor(opts(id))?.move.root?.[1] ?? 0;
+      expect(authored, `${id} authors a drop`).toBeLessThan(0);
+      expect(actionPose.apply({ rot: {}, move: {} }, opts(id)).move["root"]?.[1] ?? 0, id).toBe(0);
+    }
+    for (const id of ["combat_stagger", "keeper_get_up"]) {
+      const authored = actionPose.forOptions(opts(id, { dive_dir: LEFT }))?.move.root?.[1] ?? 0;
+      expect(authored, `${id} authors a drop`).toBeLessThan(0);
+      expect(actionPose.apply({ rot: {}, move: {} }, opts(id, { dive_dir: LEFT })).move["root"]?.[1] ?? 0, id).toBe(0);
+    }
+    // A drop an order of magnitude past the deepest one authored today.
+    expect(actionPose.groundedRootY(-2.5)).toBe(0);
+  });
+
+  // The tables keep their authored magnitudes: this is a ground contact, not a
+  // re-tune, and #439 rules the re-tune out explicitly. `forOptions` and
+  // `attitudeFor` return the geometry as written; only `apply` grounds it.
+  it("does not touch the authored constants it grounds", () => {
+    expect(actionPose.attitudeFor(opts("keeper_ready_low"))?.move.root?.[1]).toBeCloseTo(actionPose.metres(-0.32), 12);
+    expect(actionPose.forOptions(opts("combat_stagger"))?.move.root?.[1]).toBeCloseTo(actionPose.metres(-0.28), 12);
+    expect(actionPose.forOptions(opts("keeper_get_up", { dive_dir: LEFT }))?.move.root?.[1]).toBeCloseTo(
+      actionPose.metres(-0.18),
+      12,
+    );
+  });
+
+  // A body leaving the ground means to leave it. Nothing here may change.
+  it("leaves every upward and lateral travel exactly as authored", () => {
+    const lift = (id: string, extra?: Partial<ActionPoseOptions>) =>
+      actionPose.apply({ rot: {}, move: {} }, opts(id, { dive_dir: LEFT, ...extra })).move["root"];
+    expect(lift("aerial_bicycle", { aerial: 1, aerial_style: "bicycle", aerial_jump: 1 })?.[1]).toBeCloseTo(
+      actionPose.metres(2.0),
+      12,
+    );
+    expect(lift("combat_knockback")?.[1]).toBeCloseTo(actionPose.metres(0.45), 12);
+    expect(lift("stumble")?.[1]).toBeCloseTo(actionPose.metres(0.12), 12);
+    expect(lift("stumble")?.[2]).toBeCloseTo(actionPose.metres(-0.35), 12);
+    expect(lift("keeper_dive", { dive: 1 })?.[0]).toBeCloseTo(actionPose.metres(1.6), 12);
   });
 });
