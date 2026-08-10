@@ -22,6 +22,7 @@ export * as mixer from "./mixer.ts";
 export * as animator from "./animator.ts";
 export * as speciesPresentation from "./species_presentation.ts";
 export * as geometry from "./geometry.ts";
+export * as ground from "./ground.ts";
 export * as face from "./face.ts";
 export * as headgear from "./headgear.ts";
 export * as equipment from "./equipment.ts";

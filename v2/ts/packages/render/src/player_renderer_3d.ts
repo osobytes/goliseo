@@ -91,6 +91,7 @@ import * as animator from "./rig3d/animator.ts";
 import * as themes from "./rig3d/themes.ts";
 import * as body from "./rig3d/body.ts";
 import * as geometry from "./rig3d/geometry.ts";
+import * as ground from "./rig3d/ground.ts";
 import * as celShader from "./rig3d/cel_shader.ts";
 import type { PlayerRenderOptions } from "./player_render_options.ts";
 
@@ -538,6 +539,10 @@ interface BuiltCharacter {
   // `materialsForTeam` can bake a per-team vertex `color` attribute against
   // the SAME shared geometry (see that function).
   readonly paletteSlots: Float32Array;
+  // Ground-contact probes (#446), built from the SAME `body.accumulate`
+  // output the mesh above is uploaded from, so the geometry that is grounded
+  // and the geometry that is drawn cannot describe different figures.
+  readonly groundProbes: ground.GroundProbes;
 }
 
 interface TeamMaterials {
@@ -568,7 +573,6 @@ function build(): BuiltCharacter | undefined {
   }
   try {
     const rigProportions = RIG_PROPORTIONS;
-    const rig = skeleton.newRig(rigProportions);
     const height = proportions.height(rigProportions);
     const theme = themes.LIST[0];
     const figure = themes.FIGURES[0];
@@ -576,6 +580,20 @@ function build(): BuiltCharacter | undefined {
       throw new Error("player_renderer_3d.ts: no rig3d theme/figure content available");
     }
     const [partBuilder] = body.accumulate(rigProportions, theme, figure);
+
+    // GROUND CONTACT (#446), resolved before the rig this file poses exists.
+    // `skeleton.bones(style)` IS the bone index order the vertices were baked
+    // against (`skeleton.ts`'s BONE INDEX CONTRACT), so the probes resolve the
+    // same vertex-to-bone mapping the skinning does. `restLift` is the rest
+    // pose's own penetration -- 1.2 mm, a constant of the geometry -- and the
+    // rig is raised by it once here rather than re-measured every frame; see
+    // `rig3d/ground.ts`'s REST POSE section.
+    const groundProbes = ground.probesFrom(
+      rigProportions,
+      partBuilder.verts,
+      skeleton.bones(rigProportions).map((bone) => bone.name),
+    );
+    const rig = skeleton.raised(skeleton.newRig(rigProportions), groundProbes.restLift);
 
     const vertCount = partBuilder.verts.length;
     const positions = new Float32Array(vertCount * 3);
@@ -701,7 +719,14 @@ function build(): BuiltCharacter | undefined {
     mesh.add(bones[0] ?? new THREE.Bone());
     mesh.bind(skeletonObj);
 
-    built = { rig, bones, mesh, height, paletteSlots };
+    built = {
+      rig,
+      bones,
+      mesh,
+      height,
+      paletteSlots,
+      groundProbes,
+    };
     return built;
   } catch (error) {
     failed = true;
@@ -982,7 +1007,9 @@ export function characterMesh(
   const pooled = pooledCharacter(playerId, character, team);
 
   const pose = mixerPoseFor(playerId, view, opts, now);
-  skeleton.apply(character.rig, pose);
+  // `ground.poseAndGround` rather than `skeleton.apply`: same evaluation, plus
+  // the lift a root rotation needs so no limb ends under the turf (#446).
+  ground.poseAndGround(character.rig, pose, character.groundProbes);
   pooled.bones.forEach((bone, i) => {
     const name = character.rig.order[i];
     const world = name !== undefined ? character.rig.world[name] : undefined;
@@ -1079,7 +1106,9 @@ function prepareCharacter(
     return undefined;
   }
   const pose = mixerPoseFor(PREVIEW_PLAYER_ID, view, opts, now);
-  skeleton.apply(character.rig, pose);
+  // Grounded exactly as `characterMesh` above -- the two paths must not
+  // disagree about where the pitch is (#446).
+  ground.poseAndGround(character.rig, pose, character.groundProbes);
   character.bones.forEach((bone, i) => {
     const name = character.rig.order[i];
     const world = name !== undefined ? character.rig.world[name] : undefined;
