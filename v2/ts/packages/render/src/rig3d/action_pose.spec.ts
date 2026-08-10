@@ -13,6 +13,11 @@ import type { ActionPoseOptions, XY } from "./action_pose.ts";
 const FACING_UP: XY = { x: 0, y: 1 };
 const LEFT: XY = { x: 1, y: 0 };
 const RIGHT: XY = { x: -1, y: 0 };
+// The zero vector `gc-sim`'s `launch_dive` leaves when the shot crosses the
+// keeper's line under a pixel from where the keeper already stands (#451).
+// Distinct from an ABSENT `dive_dir`, which means the renderer was told
+// nothing at all and still declines the overlay.
+const STRAIGHT: XY = { x: 0, y: 0 };
 
 function opts(id: string | undefined, extra?: Partial<ActionPoseOptions>): ActionPoseOptions {
   const out: ActionPoseOptions = { facing: FACING_UP, ...extra };
@@ -85,6 +90,62 @@ describe("rigged whole-body action poses", () => {
     expect(actionPose.forOptions(opts("keeper_dive", { dive: 1 }))).toBeNull();
   });
 
+  // #451. A near-straight shot leaves `launch_dive` with `dive_dir` at the
+  // ZERO VECTOR, which is not the same thing as no `dive_dir` at all: the
+  // renderer has been told there is no lateral component, not told nothing.
+  // The keeper takes that one at the body, and the overlay must survive.
+  it("takes a save with no lateral component at the body rather than skipping it", () => {
+    for (const id of ["keeper_spread", "keeper_central", "keeper_stretch", "keeper_dive", "keeper_tip"]) {
+      const pose = actionPose.forOptions(opts(id, { dive: 1, dive_dir: STRAIGHT }));
+      expect(pose, id).not.toBeNull();
+      if (!pose) continue;
+      // Forward onto the ball, not off to either side: positive x tips onto
+      // the face, and BOTH lateral components stay exactly zero, so nothing
+      // here can read as a dive to a side the keeper never picked.
+      expect(pose.rot.root?.[0], `${id} must commit forward`).toBeGreaterThan(0);
+      expect(pose.rot.root?.[2] ?? 0, `${id} must not roll to a side`).toBe(0);
+      expect(pose.move.root?.[0] ?? 0, `${id} must not travel sideways`).toBe(0);
+      expect(pose.move.root?.[2], `${id} must travel forward`).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps the body save at the same commitment as the dive it stands in for", () => {
+    // The families are ordered by commitment laterally (above); the body save
+    // borrows those magnitudes rather than inventing its own, so the ordering
+    // has to survive the change of axis. If it does not, a spread and a full
+    // stretch start looking like the same save whenever the shot arrives
+    // straight at the keeper.
+    const straight = (id: string) =>
+      actionPose.forOptions(opts(id, { dive: 1, dive_dir: STRAIGHT }))?.rot.root?.[0] ?? Number.NaN;
+    const lateral = (id: string) =>
+      Math.abs(actionPose.forOptions(opts(id, { dive: 1, dive_dir: LEFT }))?.rot.root?.[2] ?? Number.NaN);
+    for (const id of ["keeper_spread", "keeper_central", "keeper_stretch", "keeper_dive", "keeper_tip"]) {
+      expect(straight(id), id).toBeCloseTo(lateral(id), 12);
+    }
+    expect(straight("keeper_spread")).toBeLessThan(straight("keeper_central"));
+    expect(straight("keeper_central")).toBeLessThan(straight("keeper_dive"));
+    expect(straight("keeper_dive")).toBeLessThan(straight("keeper_stretch"));
+  });
+
+  it("travels a body save forward by the same reach the dive goes sideways", () => {
+    for (const [id, radii] of [
+      ["keeper_spread", 0.65],
+      ["keeper_central", 0.95],
+      ["keeper_stretch", 1.9],
+      ["keeper_dive", 1.6],
+    ] as const) {
+      const pose = actionPose.forOptions(opts(id, { dive: 1, dive_dir: STRAIGHT }));
+      expect(pose?.move.root?.[2] ?? Number.NaN, id).toBeCloseTo(actionPose.metres(radii), 12);
+    }
+  });
+
+  it("eases a body save in on the dive timer like the lateral one", () => {
+    // `keeper_central` carries no floor, so the whole ramp is visible on it.
+    const early = actionPose.forOptions(opts("keeper_central", { dive: 0.25, dive_dir: STRAIGHT }));
+    const late = actionPose.forOptions(opts("keeper_central", { dive: 1, dive_dir: STRAIGHT }));
+    expect(early?.rot.root?.[0] ?? Number.NaN).toBeCloseTo((late?.rot.root?.[0] ?? Number.NaN) * 0.25, 12);
+  });
+
   it("takes a bicycle kick over backwards and off the ground", () => {
     const pose = actionPose.forOptions(opts("aerial_bicycle", { aerial: 1, aerial_style: "bicycle", aerial_jump: 1 }));
     expect(pose).not.toBeNull();
@@ -142,6 +203,27 @@ describe("rigged whole-body action poses", () => {
     expect(left).not.toBeNull();
     expect(right).not.toBeNull();
     expect(left?.rot.root?.[2]).toBe(-(right?.rot.root?.[2] ?? Number.NaN));
+  });
+
+  // #451. `keeper_get_up` reads the same `lateralSign` off the same
+  // uncleared `dive_dir`, so a body save's recovery lost its tilt the same
+  // way -- and worse than the save did, because `apply` grounds this pose's
+  // drop away entirely, leaving a keeper who simply snapped upright.
+  it("gets a keeper up off their front when they went down at the body", () => {
+    const straight = actionPose.forOptions(opts("keeper_get_up", { dive_dir: STRAIGHT }));
+    const left = actionPose.forOptions(opts("keeper_get_up", { dive_dir: LEFT }));
+    expect(straight).not.toBeNull();
+    if (!straight || !left) return;
+    // Still pushing up off the front: forward tilt, no roll to either side.
+    expect(straight.rot.root?.[0], "a body save is recovered from forward").toBeGreaterThan(0);
+    expect(straight.rot.root?.[2] ?? 0).toBe(0);
+    // One magnitude, two axes -- the recovery is as deep whichever way the
+    // keeper went down.
+    expect(straight.rot.root?.[0]).toBeCloseTo(Math.abs(left.rot.root?.[2] ?? Number.NaN), 12);
+    // Shallower than the save it recovers from, whichever axis it is on: a
+    // get-up that matched the dive would not read as getting up.
+    const dive = actionPose.forOptions(opts("keeper_dive", { dive: 1, dive_dir: STRAIGHT }));
+    expect(straight.rot.root?.[0]).toBeLessThan(dive?.rot.root?.[0] ?? Number.NaN);
   });
 });
 
