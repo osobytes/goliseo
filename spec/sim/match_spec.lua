@@ -3640,3 +3640,77 @@ t.describe("match standing-start inertia (lever)", function()
         )
     end)
 end)
+
+-- #449. Not a rendering test: it pins a SIMULATION property that
+-- `render/frame.lua`'s `drawn_facing` depends on, and it lives here, next to
+-- `launch_dive`, so the person editing the dive logic meets it.
+t.describe("match keeper dive timers", function()
+    ---@param seed number
+    ---@return MatchState
+    local function seeded(seed)
+        return match.new({
+            home = teams.nebula,
+            away = teams.orion,
+            field = { w = 960, h = 540 },
+            seed = seed,
+        })
+    end
+
+    -- The precondition `render/frame.lua`'s `drawn_facing` rests on, pinned
+    -- instead of assumed.
+    --
+    -- That function hands the goal-line normal to anyone inside a dive window
+    -- without testing `is_keeper`, which is only correct because nothing but a
+    -- keeper ever carries a `dive_timer`: `sim/match.lua` sets it nonzero in
+    -- exactly one place (`launch_dive`), reached from the keeper save path and
+    -- from a `dive_delay > 0` gate whose only nonzero assignment lives in that
+    -- same path; `keeper_get_up_timer` is armed only at the dive-end
+    -- transition.
+    --
+    -- An assertion inside `drawn_facing` would be the wrong shape for this: a
+    -- hand-built render fixture may legitimately set the field on a
+    -- non-keeper, as the "normalises pose timers ..." spec in
+    -- `spec/render/frame_spec.lua` does. What needs pinning is the
+    -- SIMULATION's behaviour, so this sweeps real stepped matches. Introduce
+    -- an outfield dive and it goes red, which is the signal to go re-read
+    -- `drawn_facing`'s precondition note.
+    t.it("only ever gives a keeper a dive timer", function()
+        local keeper_dive_ticks, keeper_get_up_ticks = 0, 0
+        -- Seed 1 is the eventful one the frame-buffer fixture uses; 17 is the
+        -- render frame spec's.
+        for _, seed in ipairs({ 1, 17 }) do
+            local state = seeded(seed)
+            for tick = 1, 2000 do
+                match.step(state, 1 / 60, NO_INPUT)
+                for slot, p in ipairs(state.players) do
+                    if p.is_keeper then
+                        if (p.dive_timer or 0) > 0 then
+                            keeper_dive_ticks = keeper_dive_ticks + 1
+                        end
+                        if (p.keeper_get_up_timer or 0) > 0 then
+                            keeper_get_up_ticks = keeper_get_up_ticks + 1
+                        end
+                    else
+                        t.eq(
+                            p.dive_timer or 0,
+                            0,
+                            "seed "
+                                .. seed
+                                .. " tick "
+                                .. tick
+                                .. ": outfield slot "
+                                .. slot
+                                .. " holds a dive_timer, so `drawn_facing` would hand it the "
+                                .. "goal-line normal -- re-read that function's precondition note"
+                        )
+                        t.eq(p.keeper_get_up_timer or 0, 0)
+                    end
+                end
+            end
+        end
+        -- Silence is not success: the sweep would also pass if no keeper ever
+        -- dived at all, which would make it evidence of nothing.
+        t.is_true(keeper_dive_ticks > 0, "the sweep never observed a keeper dive")
+        t.is_true(keeper_get_up_ticks > 0, "the sweep never observed a keeper get-up")
+    end)
+end)

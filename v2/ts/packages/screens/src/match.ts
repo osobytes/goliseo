@@ -1252,6 +1252,23 @@ export class MatchScreen {
    * host's `roster().ids`/`.teams` (identity) and `frame().players`
    * (live `x`/`y`/`facing_x`/`facing_y`), the same wire fields
    * `@gc/render`'s `pitch.ts` itself reads to draw them.
+   *
+   * `facing` HERE IS THE DRAWN FACING, NOT THE SIMULATION'S AIM (#449).
+   * `gc-render`'s `frame::drawn_facing` replaces `facing_x`/`facing_y` with
+   * the goal-line normal for a keeper inside a dive, get-up or tip window, so
+   * what this builds is post-override. That matters because `online_match.ts`
+   * feeds this `players[]` into `@gc/presentation`'s `combat.model`, which
+   * stores `player.facing` as `CombatPlayerPresentation.direction` -- a
+   * telegraph direction.
+   *
+   * It is inert today, and asserted so rather than assumed: `gc-sim`'s
+   * `combat_snapshot.rs` refuses a keeper a combat loadout ("keeper cannot
+   * have a combat loadout") and its `validate_player` refuses a family
+   * without a loadout ("family requires a loadout"), so a keeper's
+   * `family_id` is always `None`, `telegraphKind` returns `undefined`, and
+   * nothing is ever drawn from a keeper's `direction`. Give keepers a combat
+   * loadout and that chain breaks: re-audit this line, `combat.model`'s
+   * `direction`, and `frame::drawn_facing`'s consumer list together.
    */
   get onlineState(): OnlineMatchState {
     const onlineHost = this.onlineHost;

@@ -569,3 +569,98 @@ fn normalises_pose_timers_so_no_renderer_re_derives_a_duration() {
         0.0
     );
 }
+
+/// #449. `MatchPlayer.facing` serves two jobs — how the body is DRAWN, and
+/// the aim `sim::match`'s `keeper_throw`/`select_throw_target` reads to pick
+/// a receiver — and `move_offball_keeper` points it along the dive. That is
+/// defensible for the aim and wrong for the drawing: `launch_dive` builds
+/// `dive_target` at the keeper's own `pos.x`, so `dive_dir` is exactly
+/// `(0, ±1)` and a `facing` written from the same vector is exactly parallel
+/// to it. The rig takes the side a save rolls to from those two vectors' 2D
+/// cross product (`rig3d/action_pose.ts`'s `lateralSign`), and parallel means
+/// zero means NO overlay at all — roll and travel skipped together.
+///
+/// So the frame publishes the goal-line normal instead, for every state that
+/// reaches `lateralSign`. What this pins is the property, not the mechanism:
+/// the drawn facing does not track `dive_dir`, and their cross product is
+/// never zero. Reinstating `players.facing_x.push(player.facing.x)` fails it.
+#[test]
+fn frame_facing_never_tracks_dive_dir_while_a_keeper_leans_along_it() {
+    let tune = Tuning::new();
+    let mut state = fixture(17.0);
+    // Both keepers, so the normal is read off the defended goal rather than
+    // assumed. Home defends the left goal mouth, away the right one.
+    for (slot, expected_x) in [(0_usize, 1.0_f64), (5_usize, -1.0_f64)] {
+        assert!(state.players[slot].is_keeper, "slot {slot} is a keeper");
+
+        for window in ["dive", "get_up"] {
+            let mut s = state.clone();
+            let p = &mut s.players[slot];
+            // Exactly what the simulation produces: a purely lateral dive,
+            // with `facing` pointed along it.
+            p.dive_dir = Vec2::new(0.0, 1.0);
+            p.facing = Vec2::new(0.0, 1.0);
+            if window == "dive" {
+                p.dive_timer = 0.2;
+            } else {
+                // `dive_dir` is NOT cleared when the dive timer expires, and
+                // the keeper is flat on the floor with no locomotion to
+                // rewrite `facing`, so the recovery inherits the degeneracy.
+                p.dive_timer = 0.0;
+                p.keeper_get_up_timer = 0.2;
+            }
+
+            let players = render_frame::build(&s, &RenderFrameOptions::default()).players;
+            let (fx, fy) = (players.facing_x[slot], players.facing_y[slot]);
+            let (dx, dy) = (players.dive_dir_x[slot], players.dive_dir_y[slot]);
+            assert_eq!(
+                (fx, fy),
+                (expected_x, 0.0),
+                "slot {slot} in the {window} window is drawn facing up the pitch"
+            );
+            assert!(
+                (dx * fy - dy * fx).abs() > 0.5,
+                "slot {slot} in the {window} window: dive_dir and the drawn facing must not be parallel"
+            );
+        }
+
+        // A tip's `dive_dir` is synthesised by the frame builder itself while
+        // `dive_timer` is already zero, so it needs the same treatment.
+        let mut s = state.clone();
+        s.players[slot].facing = Vec2::new(0.0, 1.0);
+        let (tx, ty) = (s.players[slot].pos.x, s.players[slot].pos.y);
+        let id = s.players[slot].id.clone();
+        let players = render_frame::build(
+            &s,
+            &RenderFrameOptions {
+                events: Some(vec![MatchEvent {
+                    player: Some(id),
+                    ..bare_event(MatchEventKind::Tip, tx, ty - 40.0)
+                }]),
+                ..Default::default()
+            },
+        )
+        .players;
+        assert_eq!(players.pose_id[slot], PlayerPoseId::KeeperTip);
+        let (fx, fy) = (players.facing_x[slot], players.facing_y[slot]);
+        assert_eq!((fx, fy), (expected_x, 0.0), "slot {slot} tipping");
+        assert!(
+            (players.dive_dir_x[slot] * fy - players.dive_dir_y[slot] * fx).abs() > 0.5,
+            "slot {slot} tipping: a tip direction must not be parallel to the drawn facing"
+        );
+    }
+
+    // SCOPED, not global: outside those windows the simulation's own facing
+    // is what the frame reports, unchanged.
+    step(&mut state, &tune);
+    let players = render_frame::build(&state, &RenderFrameOptions::default()).players;
+    for (slot, p) in state.players.iter().enumerate() {
+        assert_eq!(p.dive_timer, 0.0);
+        assert_eq!(p.keeper_get_up_timer, 0.0);
+        assert_eq!(
+            (players.facing_x[slot], players.facing_y[slot]),
+            (p.facing.x, p.facing.y),
+            "slot {slot} is not diving, so its facing passes straight through"
+        );
+    }
+}

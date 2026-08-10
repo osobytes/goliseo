@@ -421,4 +421,86 @@ t.describe("render frame payload", function()
         player.grab_timer = 0
         t.eq(render_frame.build(state).players.dive[3], 0)
     end)
+
+    -- #449. `MatchPlayer.facing` serves two jobs -- how the body is DRAWN, and
+    -- the aim `sim.match`'s `keeper_throw`/`select_throw_target` reads to pick
+    -- a receiver -- and `move_offball_keeper` points it along the dive. That is
+    -- defensible for the aim and wrong for the drawing: `launch_dive` builds
+    -- `dive_target` at the keeper's own `pos.x`, so `dive_dir` is exactly
+    -- (0, +/-1) and a `facing` written from the same vector is exactly parallel
+    -- to it. The rig takes the side a save rolls to from those two vectors' 2D
+    -- cross product (`game/render/rig3d/action_pose.lua`'s `lateralSign`), and
+    -- parallel means zero means NO overlay at all -- roll and travel skipped
+    -- together.
+    --
+    -- What this pins is the property, not the mechanism: the drawn facing does
+    -- not track `dive_dir`, and their cross product is never zero. Restoring
+    -- `players.facing_x[index] = player.facing.x` fails it.
+    t.it("never tracks dive_dir with the drawn facing while a keeper leans along it", function()
+        -- Both keepers, so the normal is read off the defended goal rather
+        -- than assumed. Home defends the left goal mouth, away the right one.
+        for _, case in ipairs({ { slot = 1, x = 1 }, { slot = 6, x = -1 } }) do
+            for _, window in ipairs({ "dive", "get_up" }) do
+                local state = fixture()
+                local p = state.players[case.slot]
+                t.is_true(p.is_keeper)
+                -- Exactly what the simulation produces: a purely lateral dive,
+                -- with `facing` pointed along it.
+                p.dive_dir = Vec2.new(0, 1)
+                p.facing = Vec2.new(0, 1)
+                if window == "dive" then
+                    p.dive_timer = 0.2
+                else
+                    -- `dive_dir` is NOT cleared when the dive timer expires,
+                    -- and the keeper is flat on the floor with no locomotion to
+                    -- rewrite `facing`, so the recovery inherits the degeneracy.
+                    p.dive_timer = 0
+                    p.keeper_get_up_timer = 0.2
+                end
+
+                local players = render_frame.build(state).players
+                local fx, fy = players.facing_x[case.slot], players.facing_y[case.slot]
+                local dx, dy = players.dive_dir_x[case.slot], players.dive_dir_y[case.slot]
+                t.eq(fx, case.x, window .. ": drawn facing up the pitch")
+                t.eq(fy, 0)
+                t.is_true(
+                    math.abs(dx * fy - dy * fx) > 0.5,
+                    window .. ": dive_dir and the drawn facing must not be parallel"
+                )
+            end
+
+            -- A tip's `dive_dir` is synthesised by the frame builder itself
+            -- while `dive_timer` is already zero, so it needs the same
+            -- treatment.
+            local state = fixture()
+            local p = state.players[case.slot]
+            p.facing = Vec2.new(0, 1)
+            local players = render_frame.build(state, {
+                events = {
+                    { kind = "tip", x = p.pos.x, y = p.pos.y - 40, player = p.id },
+                },
+            }).players
+            t.eq(players.pose_id[case.slot], "keeper_tip")
+            local fx, fy = players.facing_x[case.slot], players.facing_y[case.slot]
+            t.eq(fx, case.x, "tip: drawn facing up the pitch")
+            t.eq(fy, 0)
+            t.is_true(
+                math.abs(players.dive_dir_x[case.slot] * fy - players.dive_dir_y[case.slot] * fx)
+                    > 0.5,
+                "tip: a tip direction must not be parallel to the drawn facing"
+            )
+        end
+
+        -- SCOPED, not global: outside those windows the simulation's own facing
+        -- is what the frame reports, unchanged.
+        local state = fixture()
+        match.step(state, 1 / 60, NO_INPUT)
+        local players = render_frame.build(state).players
+        for index, p in ipairs(state.players) do
+            t.eq(p.dive_timer, 0)
+            t.eq(p.keeper_get_up_timer, 0)
+            t.eq(players.facing_x[index], p.facing.x, "slot " .. index .. " passes facing through")
+            t.eq(players.facing_y[index], p.facing.y)
+        end
+    end)
 end)

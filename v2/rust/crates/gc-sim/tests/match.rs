@@ -5103,3 +5103,66 @@ fn start_accel_scales_the_push_off_from_rest() {
         "the lever is live: max {light:.1}px vs min {heavy:.1}px in 8 frames"
     );
 }
+
+// ---------------------------------------------------------------------
+// keeper dive timers (#449) -- not a port; this pins a simulation property
+// that `gc-render`'s `drawn_facing` depends on, and it lives here, next to
+// `launch_dive`, so the person editing the dive logic meets it.
+// ---------------------------------------------------------------------
+
+/// The precondition `gc-render`'s `frame::drawn_facing` rests on, pinned
+/// instead of assumed.
+///
+/// That function hands a diving player the goal-line normal without testing
+/// `is_keeper`, which is only correct because nothing but a keeper ever
+/// carries a `dive_timer`: `match.rs` sets it nonzero in exactly one place
+/// (`launch_dive`), reached from the keeper save path and from a
+/// `dive_delay > 0.0` gate whose only nonzero assignment lives in that same
+/// path; `keeper_get_up_timer` is armed only at the dive-end transition.
+///
+/// A `debug_assert!` inside `drawn_facing` would be the wrong shape for this
+/// — a hand-built render fixture may legitimately set the field on a
+/// non-keeper, and `gc-render`'s
+/// `normalises_pose_timers_so_no_renderer_re_derives_a_duration` does. What
+/// actually needs pinning is the SIMULATION's behaviour, so this sweeps real
+/// stepped matches. Introduce an outfield dive and it goes red, which is the
+/// signal to go re-read `drawn_facing`'s precondition note in
+/// `v2/rust/crates/gc-render/src/frame.rs`.
+#[test]
+fn only_a_keeper_ever_carries_a_dive_timer() {
+    let tune = Tuning::new();
+    // Seed 1 is the eventful one the frame-buffer fixture uses; 17 is the
+    // render frame spec's; 5 is the `ai_driven_evidence` match's.
+    let mut keeper_dive_ticks = 0_u32;
+    let mut keeper_get_up_ticks = 0_u32;
+    for seed in [1.0, 5.0, 17.0] {
+        let mut state = new_match_seeded(seed);
+        for tick in 0..3000 {
+            step_frames(&mut state, 1, &tune);
+            for (slot, p) in state.players.iter().enumerate() {
+                if p.is_keeper {
+                    keeper_dive_ticks += u32::from(p.dive_timer > 0.0);
+                    keeper_get_up_ticks += u32::from(p.keeper_get_up_timer > 0.0);
+                    continue;
+                }
+                assert_eq!(
+                    p.dive_timer, 0.0,
+                    "seed {seed} tick {tick}: outfield slot {slot} holds a dive_timer, so \
+                     `drawn_facing` would hand it the goal-line normal — re-read that \
+                     function's precondition note before changing anything here"
+                );
+                assert_eq!(
+                    p.keeper_get_up_timer, 0.0,
+                    "seed {seed} tick {tick}: outfield slot {slot} holds a keeper_get_up_timer"
+                );
+            }
+        }
+    }
+    // Silence is not success: the sweep above would also pass if no keeper
+    // ever dived at all, which would make it evidence of nothing.
+    assert!(
+        keeper_dive_ticks > 0 && keeper_get_up_ticks > 0,
+        "the sweep never observed a keeper dive ({keeper_dive_ticks} dive ticks, \
+         {keeper_get_up_ticks} get-up ticks), so it proves nothing"
+    );
+}
