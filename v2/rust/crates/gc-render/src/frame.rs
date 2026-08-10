@@ -786,18 +786,24 @@ fn landing_point(state: &MatchState, ball_x: f64, ball_y: f64) -> (Option<f64>, 
 // side a save rolls to from the 2D cross product of those two
 // (`rig3d/action_pose.ts`'s `lateralSign`), and two exactly-parallel vectors
 // have a zero cross product — so `save()` returned `null` and the ENTIRE
-// overlay, roll and travel together, was skipped on 880 of 946 save frames of
-// a 24,000-tick session. Worse, it was not skipped consistently:
-// `apply_locomotion` leaves a velocity-derived `facing` that the dive branch
-// overwrites one tick later, so 40 of 64 save episodes changed by the whole
-// overlay partway through.
+// overlay, roll and travel together, was skipped for the large majority of
+// save frames. Worse, it was not skipped consistently: `apply_locomotion`
+// leaves a velocity-derived `facing` for the one tick before the dive branch
+// overwrites it, so a save that opened with a lean lost the whole overlay
+// partway through the episode.
+//
+// No count appears in this comment on purpose. The impact tally came from one
+// harness session, and nothing committed to this tree re-derives it, so a
+// number here would read as a measured fact that no reader can check. #449 and
+// PR #452 carry the figures, dated and with the method stated, which is where
+// a point-in-time measurement belongs.
 //
 // WHY THE GOAL-LINE NORMAL rather than the facing latched at launch. The
-// latched value is whatever locomotion last left, and measurement shows it
-// can point back into the keeper's own goal — latching that yaws the drawn
-// keeper backwards, which is a different wrong picture rather than a fix.
-// A keeper faces up the pitch. Taking it from the defended goal's own rect
-// rather than from the team enum means a side swap carries it.
+// latched value is whatever locomotion last left, and it can point back into
+// the keeper's own goal — latching that yaws the drawn keeper backwards,
+// which is a different wrong picture rather than a fix. A keeper faces up the
+// pitch. Taking it from the defended goal's own rect rather than from the team
+// enum means a side swap carries it.
 //
 // WHY ALL THREE WINDOWS. `lateralSign` is reached from exactly three states,
 // and the degeneracy is one defect across them, not three:
@@ -807,29 +813,46 @@ fn landing_point(state: &MatchState, ball_x: f64, ball_y: f64) -> (Option<f64>, 
 //     same `lateralSign` with the same `dive_dir` (`dive_dir` is NOT cleared
 //     when `dive_timer` expires), and the keeper is on the floor with
 //     `run_vel` at zero, so `facing` still holds the dive-parallel value the
-//     dive branch last wrote: 222 of 300 get-up frames of that session had no
-//     lean either;
+//     dive branch last wrote, and the recovery loses its lean the same way;
 //   * a tip (`keeper_tip`), whose `dive_dir` THIS FUNCTION'S CALLER
 //     synthesises as `(0, ±1)` from the tip target while `dive_timer` is
 //     already zero. Pairing a synthesised lateral direction with a raw
 //     simulation facing is the same design error one step removed, and it
-//     lands: 1 of the 4 tip frames in that session had `facing` at exactly
-//     `(0, 1)` against a `(0, -1)` tip.
+//     does land in play rather than only in principle.
 //
 // Together they give the invariant
 // `frame_facing_never_tracks_dive_dir_while_a_keeper_leans_along_it` pins: whenever
 // the frame selects a pose that reads `lateralSign`, the published facing is
 // the goal-line normal, so it can never be parallel to the published
-// `dive_dir`. The only way a lean is still skipped is `dive_dir` itself being
-// `(0, 0)`, which `launch_dive` leaves when the correction is under a pixel —
-// a separate simulation-side defect, filed separately, and the reason this
-// caps at ~98% rather than 100%.
+// `dive_dir`. The only way a lean is still skipped after this is `dive_dir`
+// itself being `(0, 0)`, which `launch_dive` leaves when the correction is
+// under a pixel — a separate simulation-side defect, filed separately, and the
+// reason this does not reach every save frame.
+//
+// WHY THIS OVERRIDES `facing_x`/`facing_y` RATHER THAN ADDING
+// `drawn_facing_x`/`drawn_facing_y`. Redefining a field inside a payload
+// AGENTS.md §2 calls versioned for a future renderer is not free, and the
+// separate field was considered and declined for three reasons. (1) The
+// consumer audit found no reader that treats the FRAME's `facing` as
+// simulation truth: rollback snapshots and both replay paths read
+// `MatchPlayer.facing` off the sim struct directly, `gc-netcode` has zero
+// references to the frame field, and the RL observation encoders read the raw
+// sim struct too. (2) It is a stateless per-tick derivation from fields
+// `render/` already reads — categorically unlike the stateful presentation
+// state (gait, lean, correction smoothing) §2 requires be passed in as an
+// explicit input, which is why it may live here at all. (3) A second field
+// would widen the wire, and the versioned payload it widens, for exactly one
+// consumer. If a reader ever does need the raw simulation aim per frame, that
+// is the moment to add the field — and this note is the argument to revisit.
 //
 // The frame's `facing_x`/`facing_y` has exactly two other consumers and
 // neither is harmed: `pitch.ts`/`game/render/pitch.lua` (the draw path this
-// exists for) and `screens/match.ts`'s online `MatchState`, which passes it
-// to `combat.model` as a telegraph direction — and combat excludes keepers,
-// so the override cannot reach one.
+// exists for) and `screens/match.ts`'s `onlineState`, which passes it through
+// `online_match.ts` to `combat.model` as a telegraph direction — inert for a
+// keeper, and asserted so rather than assumed: `combat_snapshot.rs` refuses a
+// keeper a combat loadout and `validate_player` refuses a family without one,
+// so a keeper's `family_id` is `None` and `telegraphKind` returns `undefined`.
+// `onlineState` carries a comment pointing back here.
 //
 // PRECONDITION: NOTHING BUT A KEEPER CARRIES A `dive_timer`.
 //
@@ -853,10 +876,12 @@ fn landing_point(state: &MatchState, ball_x: f64, ball_y: f64) -> (Option<f64>, 
 // outfield dive should face — not a fall-through.
 //
 // The precondition is pinned rather than assumed, by
-// `only_a_keeper_ever_carries_a_dive_timer` in `tests/frame.rs` (and its Lua
-// twin in `spec/render/frame_spec.lua`): it sweeps stepped matches and goes
-// red on the first tick an outfield player holds either timer. Start there and
-// `launch_dive`'s call sites are one hop away. A debug assertion would be
+// `only_a_keeper_ever_carries_a_dive_timer` in `gc-sim`'s own
+// `tests/match.rs` (and its Lua twin in `spec/sim/match_spec.lua`): it sweeps
+// stepped matches and goes red on the first tick an outfield player holds
+// either timer. It lives with the simulation it constrains, next to
+// `launch_dive`, so the person editing the dive logic meets it — this pointer
+// is the other half of that link. A debug assertion would be
 // WRONG in its place: a hand-built fixture may legitimately put the field on a
 // non-keeper — `normalises_pose_timers_so_no_renderer_re_derives_a_duration`
 // does exactly that — and such a player does receive the override, which is

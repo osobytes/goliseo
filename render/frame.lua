@@ -396,9 +396,15 @@ end
 -- same lateral unit vector. The rig decides which side a save rolls to from
 -- the 2D cross product of those two (`game/render/rig3d/action_pose.lua`'s
 -- `lateralSign`), and two exactly-parallel vectors have a zero cross product
--- — so the whole overlay, roll and travel together, was skipped on 880 of 946
--- save frames of a 24,000-tick session, and 40 of its 64 save episodes
--- changed by the entire overlay partway through.
+-- — so the whole overlay, roll and travel together, was skipped for the large
+-- majority of save frames. It was not even skipped consistently: locomotion
+-- leaves a velocity-derived `facing` for the one tick before the dive branch
+-- overwrites it, so a save that opened with a lean lost it partway through.
+--
+-- No count appears here on purpose. The impact tally came from one harness
+-- session and nothing committed to this tree re-derives it, so a number in a
+-- source comment would read as a measured fact no reader can check. #449 and
+-- PR #452 carry the figures, dated and with the method stated.
 --
 -- WHY THE GOAL-LINE NORMAL rather than the facing latched at launch: the
 -- latched value is whatever locomotion last left, and it can point back into
@@ -410,6 +416,20 @@ end
 -- what the dive branch last wrote) and a tip (whose `dive_dir` this file
 -- synthesises as (0, ±1) while `dive_timer` is already zero). One defect in
 -- three states, not three defects.
+--
+-- WHY THIS OVERRIDES `facing_x`/`facing_y` RATHER THAN ADDING A SECOND
+-- `drawn_facing_x`/`_y` PAIR. Redefining a field in a payload AGENTS.md §2
+-- calls versioned for a future renderer is not free; the separate field was
+-- considered and declined. No reader treats the FRAME's `facing` as
+-- simulation truth -- rollback snapshots and both replay paths read
+-- `MatchPlayer.facing` off the sim state directly, and the observation
+-- encoders read the raw sim state too. This is a stateless per-tick
+-- derivation from fields `render/` already reads, categorically unlike the
+-- stateful presentation state (gait, lean, correction smoothing) §2 requires
+-- be passed in as an explicit input -- which is why it may live here at all.
+-- And a second field would widen the versioned wire for exactly one consumer.
+-- If a reader ever does need the raw simulation aim per frame, that is the
+-- moment to add the field.
 --
 -- PRECONDITION: NOTHING BUT A KEEPER CARRIES A `dive_timer`.
 --
@@ -431,15 +451,17 @@ end
 -- then is a real decision about what an outfield dive should face.
 --
 -- Pinned rather than assumed by "only ever gives a keeper a dive timer" in
--- `spec/render/frame_spec.lua`, which sweeps stepped matches and goes red on
--- the first tick an outfield player holds either timer; `launch_dive`'s call
--- sites are one hop from there. An assertion here would be the wrong shape: a
--- hand-built fixture may legitimately set the field on a non-keeper (the
--- "normalises pose timers" spec does), and such a player does receive the
--- override -- harmless in a fixture, and not a reachable simulation state.
+-- `spec/sim/match_spec.lua` -- with the simulation it constrains, next to
+-- `launch_dive`, so the person editing the dive logic meets it; this pointer
+-- is the other half of that link. It sweeps stepped matches and goes red on
+-- the first tick an outfield player holds either timer. An assertion here
+-- would be the wrong shape: a hand-built fixture may legitimately set the
+-- field on a non-keeper (the "normalises pose timers" spec does), and such a
+-- player does receive the override -- harmless in a fixture, and not a
+-- reachable simulation state.
 --
 -- Mirrors `v2/rust/crates/gc-render/src/frame.rs`'s `drawn_facing`; see that
--- function for the full argument and the measured figures.
+-- function for the full argument.
 ---@param state MatchState
 ---@param player MatchPlayer
 ---@param tipping boolean
