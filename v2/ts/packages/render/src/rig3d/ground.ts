@@ -4,16 +4,26 @@
 // WHAT WAS MISSING
 // ---------------------------------------------------------------------------
 //
-// `action_pose.save()` writes exactly two things: a roll about Z, and a
-// LATERAL travel along X. The Y component of that translation is zero, for
-// every save, at every amount -- while the roll reaches 84 degrees. So the
-// rig, whose `root` sits on the pitch plane at [0, 0, 0], rolls a standing
-// body most of the way onto its side and never rises. The down-side boot,
-// then the hand, then anything strapped to the forearm sweeps under the turf.
-// Measured through the real geometry: 87 mm at `keeper_spread`, 140 mm at
-// `keeper_central`, 192 mm at `keeper_dive`, 278 mm at `keeper_stretch`,
-// 361 mm at `keeper_tip` -- body only, and roughly twice that counting the
-// shield the render layer currently gives every keeper (#447).
+// `action_pose.save()` writes a rotation and a horizontal travel, and nothing
+// else. For a dive to a side that is a roll about Z with LATERAL travel along
+// X; since #451, for a save the simulation reports no lateral component for,
+// it is a forward pitch about X with travel along Z instead. What both have in
+// common is the part that matters here: the Y component of that translation is
+// zero, for every save, at every amount -- while the rotation reaches 84
+// degrees. So the rig, whose `root` sits on the pitch plane at [0, 0, 0],
+// takes a standing body most of the way over and never rises. The down-side
+// boot, then the hand, then anything strapped to the forearm sweeps under the
+// turf.
+//
+// Measured through the real geometry on the LATERAL branch: 87 mm at
+// `keeper_spread`, 140 mm at `keeper_central`, 192 mm at `keeper_dive`,
+// 278 mm at `keeper_stretch`, 361 mm at `keeper_tip` -- body only, and roughly
+// twice that counting the shield the render layer currently gives every keeper
+// (#447). The body save trades those round: shallower on the body, deeper on
+// the props. `ground_contact.spec.ts` carries and pins both sets, and NEITHER
+// set is read by the code below -- see the next section for why the lift is
+// measured off the posed rig rather than derived from any of them, which is
+// also why a new rotation axis needed no change here.
 //
 // #439/#444 grounded downward root TRANSLATIONS by flooring the overlay's Y.
 // That fix is exact and costs nothing per frame, and it does not reach this:

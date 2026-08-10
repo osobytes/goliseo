@@ -531,10 +531,17 @@ describe("ground contact: root rotations, grounded (#446)", () => {
   // `poseAndGround`, and this is where it gets checked rather than assumed.
   //
   // WHAT THE MEASUREMENT SAYS, in both directions. THE BODY GOES LESS DEEP
-  // FORWARD THAN SIDEWAYS at every family -- 74 mm against 87 for a spread,
-  // 118 against 140 for a central, 153 against 192 for a dive -- because a
+  // FORWARD THAN SIDEWAYS at every family -- 74 mm against 88 for a spread,
+  // 118 against 141 for a central, 153 against 192 for a dive -- because a
   // forward pitch swings the figure over a foot that is already under it,
   // while a roll throws it off the side of both.
+  //
+  // Every millimetre figure in this block is rounded UP to the floor pinned
+  // beside it, which is `SAVE_RESIDUALS`'s own convention rather than a new
+  // one: prose and assertion are then the same number, and a reader comparing
+  // the two never has to work out which way each was rounded. The lateral
+  // spread and central are 87.3 and 140.3 measured, pinned and quoted at 88
+  // and 141.
   //
   // THE PROPS GO DEEPER, and by more than the body gains: 674 mm at
   // `keeper_dive` against the lateral 412. That is the sword and shield #447
@@ -585,6 +592,15 @@ describe("ground contact: root rotations, grounded (#446)", () => {
     for (const id of ["keeper_spread", "keeper_central", "keeper_dive"]) {
       poseOnRig(flat, id, standing, { dive: 1, dive_dir: { x: 0, y: 0 } });
       const straight = lowestRendered(flat, PROP).y;
+      // NON-VACUOUS, and this floor is the whole reason the comparison means
+      // anything. A "shallower" test passes MOST easily when there is no pose
+      // at all: skip the overlay -- which is exactly what this file's own
+      // subject did before #451 -- and the rig sits at its ~-1.2 mm standing
+      // baseline, shallower than any real dive depth, and the assertion below
+      // sails through while proving nothing. The floor is the same `-2 mm`
+      // guard the row loop above uses, and it is what makes this a statement
+      // about the body save rather than about its absence.
+      expect(straight, `${id} at the body must be a real rotation, not a standing rig`).toBeLessThan(-2 * MM);
       poseOnRig(flat, id, standing, { dive: 1 });
       const lateral = lowestRendered(flat, PROP).y;
       expect(straight, `${id} at the body must not sink past the lateral dive`).toBeGreaterThan(lateral);
