@@ -377,6 +377,84 @@ local function tip_events_by_player(events)
     return tips
 end
 
+-- A KEEPER IS NOT DRAWN FACING ITS OWN DIVE (#449).
+--
+-- `MatchPlayer.facing` serves two jobs that had never been separated: it is
+-- the direction the body is DRAWN pointing, and it is the aim the simulation
+-- reads to decide who receives a keeper's throw (`sim/match.lua`'s
+-- `keeper_throw` / `select_throw_target`). `move_offball_keeper` points it
+-- along the dive while `dive_timer` runs, which is defensible for the second
+-- job and wrong for the first — so the split happens here, at the
+-- sim-to-renderer boundary, exactly where AGENTS.md §2 puts
+-- presentation-derived state. The simulation keeps its own value untouched;
+-- nothing downstream of `sim/match.lua` changes.
+--
+-- WHY IT IS NOT MERELY UNTIDY. `launch_dive` builds `dive_target` as
+-- `Vec2.new(k.pos.x, y_cross)`, so `to_cross.x` is exactly 0 (IEEE-754
+-- `a - a`) and `normalized()` keeps it exactly 0: a keeper's `dive_dir` is
+-- ALWAYS (0, ±1), and the direction the dive branch writes to `facing` is the
+-- same lateral unit vector. The rig decides which side a save rolls to from
+-- the 2D cross product of those two (`game/render/rig3d/action_pose.lua`'s
+-- `lateralSign`), and two exactly-parallel vectors have a zero cross product
+-- — so the whole overlay, roll and travel together, was skipped on 880 of 946
+-- save frames of a 24,000-tick session, and 40 of its 64 save episodes
+-- changed by the entire overlay partway through.
+--
+-- WHY THE GOAL-LINE NORMAL rather than the facing latched at launch: the
+-- latched value is whatever locomotion last left, and it can point back into
+-- the keeper's own goal. A keeper faces up the pitch. Taken from the defended
+-- goal's own rect rather than from the team name, so a side swap carries it.
+--
+-- WHY ALL THREE WINDOWS: the dive, its get-up recovery (same `lateralSign`,
+-- same uncleared `dive_dir`, keeper flat on the floor so `facing` still holds
+-- what the dive branch last wrote) and a tip (whose `dive_dir` this file
+-- synthesises as (0, ±1) while `dive_timer` is already zero). One defect in
+-- three states, not three defects.
+--
+-- PRECONDITION: NOTHING BUT A KEEPER CARRIES A `dive_timer`.
+--
+-- This function never tests `is_keeper`, and that is a decision rather than an
+-- oversight -- the test would be dead code today. `sim/match.lua` sets
+-- `dive_timer` nonzero in exactly one place, `launch_dive`, which has exactly
+-- two call sites: one inside the keeper save path indexed by `keeper_idx`, and
+-- one gated on `dive_delay > 0`, whose only nonzero assignment is
+-- `s.players[ki].dive_delay` inside that same keeper save path.
+-- `keeper_get_up_timer` is armed in one place too -- the dive-end transition,
+-- which a player can only reach by having dived. So both windows imply
+-- `is_keeper` by construction, and a guard here would never take its false arm.
+--
+-- WHAT WOULD BREAK IF THAT CHANGED: give an outfield player a dive and this
+-- override reorients it too, drawing it facing up the pitch for the length of
+-- that dive and its recovery -- right for a keeper defending a goal line,
+-- wrong for anyone else. Bolting an `is_keeper` guard on at that point would
+-- merely restore the ORIGINAL degenerate facing for outfield dives, so the fix
+-- then is a real decision about what an outfield dive should face.
+--
+-- Pinned rather than assumed by "only ever gives a keeper a dive timer" in
+-- `spec/render/frame_spec.lua`, which sweeps stepped matches and goes red on
+-- the first tick an outfield player holds either timer; `launch_dive`'s call
+-- sites are one hop from there. An assertion here would be the wrong shape: a
+-- hand-built fixture may legitimately set the field on a non-keeper (the
+-- "normalises pose timers" spec does), and such a player does receive the
+-- override -- harmless in a fixture, and not a reachable simulation state.
+--
+-- Mirrors `v2/rust/crates/gc-render/src/frame.rs`'s `drawn_facing`; see that
+-- function for the full argument and the measured figures.
+---@param state MatchState
+---@param player MatchPlayer
+---@param tipping boolean
+---@return number facing_x
+---@return number facing_y
+local function drawn_facing(state, player, tipping)
+    if player.dive_timer <= 0 and player.keeper_get_up_timer <= 0 and not tipping then
+        return player.facing.x, player.facing.y
+    end
+    local goal = player.team == "home" and state.goal_home or state.goal_away
+    -- Into the field of play, away from the goal this keeper defends.
+    local inward = (goal.x + goal.w / 2) < (state.field.w / 2) and 1 or -1
+    return inward, 0
+end
+
 ---@param state MatchState
 ---@param events MatchEvent[]
 ---@param roster RenderFrameRoster
@@ -510,6 +588,11 @@ function render_frame.build(state, opts)
             dive_dir_x, dive_dir_y = player.dive_dir.x, player.dive_dir.y
         end
 
+        -- Displayed facing: a keeper leaning along a dive is DRAWN facing up
+        -- the pitch, whatever the simulation's `facing` says (#449). See
+        -- `drawn_facing`.
+        local facing_x, facing_y = drawn_facing(state, player, tip ~= nil)
+
         local keeper_context = nil
         if player.is_keeper then
             keeper_context = {
@@ -542,8 +625,8 @@ function render_frame.build(state, opts)
 
         players.x[index] = displayed.x
         players.y[index] = displayed.y
-        players.facing_x[index] = player.facing.x
-        players.facing_y[index] = player.facing.y
+        players.facing_x[index] = facing_x
+        players.facing_y[index] = facing_y
         players.speed[index] = player.run_vel and player.run_vel:length() or 0
         players.pose_id[index] = pose.id
         players.pose_priority[index] = pose.priority

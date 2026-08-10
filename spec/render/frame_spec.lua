@@ -421,4 +421,141 @@ t.describe("render frame payload", function()
         player.grab_timer = 0
         t.eq(render_frame.build(state).players.dive[3], 0)
     end)
+
+    -- #449. `MatchPlayer.facing` serves two jobs -- how the body is DRAWN, and
+    -- the aim `sim.match`'s `keeper_throw`/`select_throw_target` reads to pick
+    -- a receiver -- and `move_offball_keeper` points it along the dive. That is
+    -- defensible for the aim and wrong for the drawing: `launch_dive` builds
+    -- `dive_target` at the keeper's own `pos.x`, so `dive_dir` is exactly
+    -- (0, +/-1) and a `facing` written from the same vector is exactly parallel
+    -- to it. The rig takes the side a save rolls to from those two vectors' 2D
+    -- cross product (`game/render/rig3d/action_pose.lua`'s `lateralSign`), and
+    -- parallel means zero means NO overlay at all -- roll and travel skipped
+    -- together.
+    --
+    -- What this pins is the property, not the mechanism: the drawn facing does
+    -- not track `dive_dir`, and their cross product is never zero. Restoring
+    -- `players.facing_x[index] = player.facing.x` fails it.
+    t.it("never tracks dive_dir with the drawn facing while a keeper leans along it", function()
+        -- Both keepers, so the normal is read off the defended goal rather
+        -- than assumed. Home defends the left goal mouth, away the right one.
+        for _, case in ipairs({ { slot = 1, x = 1 }, { slot = 6, x = -1 } }) do
+            for _, window in ipairs({ "dive", "get_up" }) do
+                local state = fixture()
+                local p = state.players[case.slot]
+                t.is_true(p.is_keeper)
+                -- Exactly what the simulation produces: a purely lateral dive,
+                -- with `facing` pointed along it.
+                p.dive_dir = Vec2.new(0, 1)
+                p.facing = Vec2.new(0, 1)
+                if window == "dive" then
+                    p.dive_timer = 0.2
+                else
+                    -- `dive_dir` is NOT cleared when the dive timer expires,
+                    -- and the keeper is flat on the floor with no locomotion to
+                    -- rewrite `facing`, so the recovery inherits the degeneracy.
+                    p.dive_timer = 0
+                    p.keeper_get_up_timer = 0.2
+                end
+
+                local players = render_frame.build(state).players
+                local fx, fy = players.facing_x[case.slot], players.facing_y[case.slot]
+                local dx, dy = players.dive_dir_x[case.slot], players.dive_dir_y[case.slot]
+                t.eq(fx, case.x, window .. ": drawn facing up the pitch")
+                t.eq(fy, 0)
+                t.is_true(
+                    math.abs(dx * fy - dy * fx) > 0.5,
+                    window .. ": dive_dir and the drawn facing must not be parallel"
+                )
+            end
+
+            -- A tip's `dive_dir` is synthesised by the frame builder itself
+            -- while `dive_timer` is already zero, so it needs the same
+            -- treatment.
+            local state = fixture()
+            local p = state.players[case.slot]
+            p.facing = Vec2.new(0, 1)
+            local players = render_frame.build(state, {
+                events = {
+                    { kind = "tip", x = p.pos.x, y = p.pos.y - 40, player = p.id },
+                },
+            }).players
+            t.eq(players.pose_id[case.slot], "keeper_tip")
+            local fx, fy = players.facing_x[case.slot], players.facing_y[case.slot]
+            t.eq(fx, case.x, "tip: drawn facing up the pitch")
+            t.eq(fy, 0)
+            t.is_true(
+                math.abs(players.dive_dir_x[case.slot] * fy - players.dive_dir_y[case.slot] * fx)
+                    > 0.5,
+                "tip: a tip direction must not be parallel to the drawn facing"
+            )
+        end
+
+        -- SCOPED, not global: outside those windows the simulation's own facing
+        -- is what the frame reports, unchanged.
+        local state = fixture()
+        match.step(state, 1 / 60, NO_INPUT)
+        local players = render_frame.build(state).players
+        for index, p in ipairs(state.players) do
+            t.eq(p.dive_timer, 0)
+            t.eq(p.keeper_get_up_timer, 0)
+            t.eq(players.facing_x[index], p.facing.x, "slot " .. index .. " passes facing through")
+            t.eq(players.facing_y[index], p.facing.y)
+        end
+    end)
+    -- The precondition `drawn_facing` rests on, pinned instead of assumed.
+    --
+    -- That function hands the goal-line normal to anyone inside a dive window
+    -- without testing `is_keeper`, which is only correct because nothing but a
+    -- keeper ever carries a `dive_timer`: `sim/match.lua` sets it nonzero in
+    -- exactly one place (`launch_dive`), reached from the keeper save path and
+    -- from a `dive_delay > 0` gate whose only nonzero assignment lives in that
+    -- same path; `keeper_get_up_timer` is armed only at the dive-end
+    -- transition.
+    --
+    -- An assertion inside `drawn_facing` would be the wrong shape for this: a
+    -- hand-built fixture may legitimately set the field on a non-keeper, as
+    -- "normalises pose timers ..." above does. What needs pinning is the
+    -- SIMULATION's behaviour, so this sweeps real stepped matches. Introduce
+    -- an outfield dive and it goes red, which is the signal to go re-read
+    -- `drawn_facing`'s precondition note.
+    t.it("only ever gives a keeper a dive timer", function()
+        local keeper_dive_ticks, keeper_get_up_ticks = 0, 0
+        -- Seed 1 is the eventful one the frame-buffer fixture uses; 17 is the
+        -- rest of this file's.
+        for _, seed in ipairs({ 1, 17 }) do
+            local state = fixture(seed)
+            for tick = 1, 2000 do
+                match.step(state, 1 / 60, NO_INPUT)
+                for slot, p in ipairs(state.players) do
+                    if p.is_keeper then
+                        if (p.dive_timer or 0) > 0 then
+                            keeper_dive_ticks = keeper_dive_ticks + 1
+                        end
+                        if (p.keeper_get_up_timer or 0) > 0 then
+                            keeper_get_up_ticks = keeper_get_up_ticks + 1
+                        end
+                    else
+                        t.eq(
+                            p.dive_timer or 0,
+                            0,
+                            "seed "
+                                .. seed
+                                .. " tick "
+                                .. tick
+                                .. ": outfield slot "
+                                .. slot
+                                .. " holds a dive_timer, so `drawn_facing` would hand it the "
+                                .. "goal-line normal -- re-read that function's precondition note"
+                        )
+                        t.eq(p.keeper_get_up_timer or 0, 0)
+                    end
+                end
+            end
+        end
+        -- Silence is not success: the sweep would also pass if no keeper ever
+        -- dived at all, which would make it evidence of nothing.
+        t.is_true(keeper_dive_ticks > 0, "the sweep never observed a keeper dive")
+        t.is_true(keeper_get_up_ticks > 0, "the sweep never observed a keeper get-up")
+    end)
 end)

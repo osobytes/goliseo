@@ -569,3 +569,152 @@ fn normalises_pose_timers_so_no_renderer_re_derives_a_duration() {
         0.0
     );
 }
+
+/// #449. `MatchPlayer.facing` serves two jobs — how the body is DRAWN, and
+/// the aim `sim::match`'s `keeper_throw`/`select_throw_target` reads to pick
+/// a receiver — and `move_offball_keeper` points it along the dive. That is
+/// defensible for the aim and wrong for the drawing: `launch_dive` builds
+/// `dive_target` at the keeper's own `pos.x`, so `dive_dir` is exactly
+/// `(0, ±1)` and a `facing` written from the same vector is exactly parallel
+/// to it. The rig takes the side a save rolls to from those two vectors' 2D
+/// cross product (`rig3d/action_pose.ts`'s `lateralSign`), and parallel means
+/// zero means NO overlay at all — roll and travel skipped together.
+///
+/// So the frame publishes the goal-line normal instead, for every state that
+/// reaches `lateralSign`. What this pins is the property, not the mechanism:
+/// the drawn facing does not track `dive_dir`, and their cross product is
+/// never zero. Reinstating `players.facing_x.push(player.facing.x)` fails it.
+#[test]
+fn frame_facing_never_tracks_dive_dir_while_a_keeper_leans_along_it() {
+    let tune = Tuning::new();
+    let mut state = fixture(17.0);
+    // Both keepers, so the normal is read off the defended goal rather than
+    // assumed. Home defends the left goal mouth, away the right one.
+    for (slot, expected_x) in [(0_usize, 1.0_f64), (5_usize, -1.0_f64)] {
+        assert!(state.players[slot].is_keeper, "slot {slot} is a keeper");
+
+        for window in ["dive", "get_up"] {
+            let mut s = state.clone();
+            let p = &mut s.players[slot];
+            // Exactly what the simulation produces: a purely lateral dive,
+            // with `facing` pointed along it.
+            p.dive_dir = Vec2::new(0.0, 1.0);
+            p.facing = Vec2::new(0.0, 1.0);
+            if window == "dive" {
+                p.dive_timer = 0.2;
+            } else {
+                // `dive_dir` is NOT cleared when the dive timer expires, and
+                // the keeper is flat on the floor with no locomotion to
+                // rewrite `facing`, so the recovery inherits the degeneracy.
+                p.dive_timer = 0.0;
+                p.keeper_get_up_timer = 0.2;
+            }
+
+            let players = render_frame::build(&s, &RenderFrameOptions::default()).players;
+            let (fx, fy) = (players.facing_x[slot], players.facing_y[slot]);
+            let (dx, dy) = (players.dive_dir_x[slot], players.dive_dir_y[slot]);
+            assert_eq!(
+                (fx, fy),
+                (expected_x, 0.0),
+                "slot {slot} in the {window} window is drawn facing up the pitch"
+            );
+            assert!(
+                (dx * fy - dy * fx).abs() > 0.5,
+                "slot {slot} in the {window} window: dive_dir and the drawn facing must not be parallel"
+            );
+        }
+
+        // A tip's `dive_dir` is synthesised by the frame builder itself while
+        // `dive_timer` is already zero, so it needs the same treatment.
+        let mut s = state.clone();
+        s.players[slot].facing = Vec2::new(0.0, 1.0);
+        let (tx, ty) = (s.players[slot].pos.x, s.players[slot].pos.y);
+        let id = s.players[slot].id.clone();
+        let players = render_frame::build(
+            &s,
+            &RenderFrameOptions {
+                events: Some(vec![MatchEvent {
+                    player: Some(id),
+                    ..bare_event(MatchEventKind::Tip, tx, ty - 40.0)
+                }]),
+                ..Default::default()
+            },
+        )
+        .players;
+        assert_eq!(players.pose_id[slot], PlayerPoseId::KeeperTip);
+        let (fx, fy) = (players.facing_x[slot], players.facing_y[slot]);
+        assert_eq!((fx, fy), (expected_x, 0.0), "slot {slot} tipping");
+        assert!(
+            (players.dive_dir_x[slot] * fy - players.dive_dir_y[slot] * fx).abs() > 0.5,
+            "slot {slot} tipping: a tip direction must not be parallel to the drawn facing"
+        );
+    }
+
+    // SCOPED, not global: outside those windows the simulation's own facing
+    // is what the frame reports, unchanged.
+    step(&mut state, &tune);
+    let players = render_frame::build(&state, &RenderFrameOptions::default()).players;
+    for (slot, p) in state.players.iter().enumerate() {
+        assert_eq!(p.dive_timer, 0.0);
+        assert_eq!(p.keeper_get_up_timer, 0.0);
+        assert_eq!(
+            (players.facing_x[slot], players.facing_y[slot]),
+            (p.facing.x, p.facing.y),
+            "slot {slot} is not diving, so its facing passes straight through"
+        );
+    }
+}
+
+/// The precondition `drawn_facing` rests on, pinned instead of assumed.
+///
+/// That function hands the goal-line normal to anyone inside a dive window
+/// without testing `is_keeper`, which is only correct because nothing but a
+/// keeper ever carries a `dive_timer`: `match.rs` sets it nonzero in exactly
+/// one place (`launch_dive`), reached from the keeper save path and from a
+/// `dive_delay > 0.0` gate whose only nonzero assignment lives in that same
+/// path; `keeper_get_up_timer` is armed only at the dive-end transition.
+///
+/// A `debug_assert!` inside `drawn_facing` would be the wrong shape for this
+/// — a hand-built fixture may legitimately set the field on a non-keeper, as
+/// `normalises_pose_timers_so_no_renderer_re_derives_a_duration` does. What
+/// actually needs pinning is the SIMULATION's behaviour, so this sweeps real
+/// stepped matches. Introduce an outfield dive and it goes red, which is the
+/// signal to go re-read `drawn_facing`'s precondition note.
+#[test]
+fn only_a_keeper_ever_carries_a_dive_timer() {
+    let tune = Tuning::new();
+    // Seed 1 is the eventful one the frame-buffer fixture uses; 17 is the
+    // rest of this file's; 5 is the `ai_driven_evidence` match's.
+    let mut keeper_dive_ticks = 0_u32;
+    let mut keeper_get_up_ticks = 0_u32;
+    for seed in [1.0, 5.0, 17.0] {
+        let mut state = fixture(seed);
+        for tick in 0..3000 {
+            step(&mut state, &tune);
+            for (slot, p) in state.players.iter().enumerate() {
+                if p.is_keeper {
+                    keeper_dive_ticks += u32::from(p.dive_timer > 0.0);
+                    keeper_get_up_ticks += u32::from(p.keeper_get_up_timer > 0.0);
+                    continue;
+                }
+                assert_eq!(
+                    p.dive_timer, 0.0,
+                    "seed {seed} tick {tick}: outfield slot {slot} holds a dive_timer, so \
+                     `drawn_facing` would hand it the goal-line normal — re-read that \
+                     function's precondition note before changing anything here"
+                );
+                assert_eq!(
+                    p.keeper_get_up_timer, 0.0,
+                    "seed {seed} tick {tick}: outfield slot {slot} holds a keeper_get_up_timer"
+                );
+            }
+        }
+    }
+    // Silence is not success: the sweep above would also pass if no keeper
+    // ever dived at all, which would make it evidence of nothing.
+    assert!(
+        keeper_dive_ticks > 0 && keeper_get_up_ticks > 0,
+        "the sweep never observed a keeper dive ({keeper_dive_ticks} dive ticks, \
+         {keeper_get_up_ticks} get-up ticks), so it proves nothing"
+    );
+}
