@@ -105,6 +105,57 @@ pose a single match never produces, and reports the search space it covered
 whether or not it found one. "Never observed in N seed-runs of M ticks" is
 evidence; "I did not happen to see it" is not.
 
+## Counting an outcome, not just locating a frame
+
+`count` answers a different question from everything above: not "where is a
+frame worth looking at" but "over a whole session, how often did the renderer
+actually do the thing". It exists because #449's fix was justified by a
+measurement -- save frames that reached their lean, before and after -- taken
+by hand in a scratch worktree that no longer exists, so nobody could re-derive
+it and nothing would notice if the fix regressed. The invariant test that
+shipped with the fix pins the PROPERTY (a keeper's drawn facing never tracks
+its own dive direction); a regression that keeps the property and collapses
+the count passes every gate.
+
+What it tallies, per session: save frames and how many reached a lean; save
+EPISODES -- one contiguous hold by one slot -- classified always-leaning,
+never-leaning, or POPPED (leaning changed mid-episode, which is what #449
+actually looked like on screen); and the same treatment for `keeper_get_up`
+and `keeper_tip`. Output is a `report.json` a later gate could assert on,
+plus a table for a human.
+
+IT COUNTS THE SIGNAL A RENDERED FRAME USES, which is the whole point and the
+part that is easy to get subtly wrong. Not a proxy re-derived from simulation
+state: the numbers come out of `gc_render::frame::build`'s own output block,
+through `rig3d/action_pose.ts`'s own `lateralSign` formula, because that
+function returning zero is precisely what makes `save()` skip a dive's entire
+overlay. `lateral_sign` here mirrors it and `--self-test` reads the formula
+and its dead band back out of `action_pose.ts` to catch a drift.
+
+HOW THE FRAME IS READ, and why it is not read from the page. `match_harness.ts`
+republishes pose ids and world positions for a driver, but not `facing` or
+`dive_dir` -- the two `lateralSign` needs. Adding them to that page would make
+the instrument exist only at revisions carrying the edit, and a count's whole
+purpose is to compare a fix against the build BEFORE it. So the driver adopts
+the page's own `WebAssembly.Instance` as it is instantiated and reads the same
+block the page has just decoded (bootstrap section 3). One instrument, every
+revision, including builds made before this mode existed.
+
+The bargain that buys: at every counted tick, for every slot, the pose code
+and world position the driver read by field index are compared against what
+the page decoded through `frame_buffer.ts` for the same slot. A moved column
+is a named refusal (`page_cross_check_verdict`), not a plausible number. The
+two columns that cross-check cannot reach are checked structurally instead --
+`facing` and `dive_dir` are unit vectors or zero, and no neighbouring column
+is that by accident over thousands of frames.
+
+Three sessions, all mandatory. Two counting sessions in independent browser
+processes must produce the IDENTICAL stream of counted frames -- same control
+discipline as the pixel subcommands, and a count needs it more, since an
+unstable count is reported as a number with no image for anyone to disbelieve.
+The third runs a short prefix at full size with bloom on and must count the
+same stream, which is what earns the small, fast viewport the other two use.
+
 ## `--self-test` proves this file, and nothing else
 
 Per AGENTS.md §9: a harness self-test proves the CONTROLLER's own logic --
@@ -120,6 +171,13 @@ This is a developer tool for producing visual evidence on demand. It is
 deliberately absent from `scripts/check.sh` and `.github/workflows/ci.yml`:
 asserting screenshots in CI is AGENTS.md §9's opt-in tier 4, and pinning
 baselines is explicitly out of scope for the issue this file closes (#432).
+
+`count` is out for a second, independent reason (#454's own scope): its
+figures are a function of one seed, one bot seed and one tick budget, and
+pinning them would need a stability argument nobody has made. Making the
+measurement reproducible is the deliverable; asserting on it is a later
+decision, and the report.json exists so that decision does not need new
+instrumentation.
 
 ## What it reuses
 
@@ -167,6 +225,7 @@ HARNESS_DIR = ROOT / "v2" / "tools" / "browser_match_harness"
 HARNESS_DIST = HARNESS_DIR / "dist"
 HARNESS_VITE_CONFIG = HARNESS_DIR / "vite.config.ts"
 FRAME_BUFFER_TS = V2_TS / "packages" / "render" / "src" / "frame_buffer.ts"
+ACTION_POSE_TS = V2_TS / "packages" / "render" / "src" / "rig3d" / "action_pose.ts"
 
 CANVAS_SELECTOR = "#gl-canvas"
 
@@ -234,12 +293,72 @@ POSE_IDS = (
     "locomotion",
 )
 
+# Where `count` reads a render frame from, inside the flat f64 block
+# `gc_render::frame::build` writes.
+#
+# `magic` is `frame_buffer.ts`'s `MAGIC` ("GOLF"), and the field numbers are
+# its own `column(words, playersAt, N, count)` arguments -- the same
+# structure-of-arrays indices `frame_buffer.rs` and `render/frame_buffer.lua`
+# write. Nothing about the block's SHAPE is duplicated here: the header
+# carries its own sizes and the bootstrap reads them from it. `--self-test`
+# re-derives every number below from `frame_buffer.ts` and fails if they have
+# drifted, and the bootstrap additionally cross-checks `pose_id`/`x`/`y`
+# against the page's own decode of the same block at every counted tick.
+FRAME_FIELDS = {
+    "magic": 0x474F4C46,
+    "x": 0,
+    "y": 1,
+    "facing_x": 2,
+    "facing_y": 3,
+    "pose_id": 5,
+    "dive": 11,
+    "dive_dir_x": 12,
+    "dive_dir_y": 13,
+}
+
+# The poses whose drawn root transform is decided by `lateralSign`, split into
+# the families #449 reported against.
+#
+# `save` is exactly the key set of `rig3d/action_pose.ts`'s `SAVES`, because
+# that table is what `save()` looks a pose id up in; `keeper_tip` is a member
+# of it and is ALSO reported on its own, since it reaches `lateralSign` by a
+# `dive_dir` that `gc_render::frame::build` synthesises rather than one the
+# simulation ran a dive along. `keeper_get_up` reads the same sign from
+# `tip()` and is its own family.
+SAVE_POSES = ("keeper_spread", "keeper_central", "keeper_stretch", "keeper_tip", "keeper_dive")
+GET_UP_POSES = ("keeper_get_up",)
+TIP_POSES = ("keeper_tip",)
+LEAN_POSES = SAVE_POSES + GET_UP_POSES
+
+# `rig3d/action_pose.ts`'s own dead-band on the cross product. Mirrored, not
+# approximated: a lean is skipped at exactly this threshold and not one ulp
+# either side. `--self-test` reads it back out of that file.
+LATERAL_SIGN_EPSILON = 1e-6
+
+# Rows a counting session may record before it gives up. One row is one
+# watched player-frame; a 24,000-tick session records low thousands. The cap
+# exists so a mis-armed watch (every pose id, say) cannot exhaust the page's
+# memory silently -- hitting it sets `truncated`, which refuses the count.
+DEFAULT_ROW_LIMIT = 400_000
+
+# `count`'s session shape. The tick budget is #449's own: it is the session
+# whose figures this mode exists to make re-derivable, and a shorter one
+# simply sees fewer saves. Deliberately NOT a pinned expectation anywhere --
+# see "Not a CI gate" in this file's header.
+DEFAULT_COUNT_TICKS = 24_000
+DEFAULT_COUNT_WIDTH = 320
+DEFAULT_COUNT_HEIGHT = 180
+DEFAULT_FIDELITY_TICKS = 1_200
+
 BOOT_TIMEOUT_SECONDS = 180
 # Frames pumped per `Runtime.evaluate` round trip. Large enough that stepping
 # thousands of ticks is not dominated by round trips, small enough that one
 # call cannot outrun the webdriver command timeout on a slow GL path.
 PUMP_CHUNK_FRAMES = 120
 DEFAULT_HOLD_FRAMES = 2
+# How long one `execute_script` may take before selenium gives up. See
+# `BrowserSlot.__enter__` for why the 30 s default is not enough.
+SCRIPT_TIMEOUT_SECONDS = 600
 
 SELF_TEST_LIMITS = """\
 --self-test exercised THIS DRIVER's own logic only: its verdict rules, its
@@ -263,6 +382,7 @@ _BOOTSTRAP_JS = """
   if (window.__gcDriver !== undefined) { return; }
 
   var FRAME_MS = __FRAME_MS__;
+  var FRAME = __FRAME_FIELDS__;
   var virtualNow = 0;
   var nextHandle = 1;
   var pending = new Map();
@@ -271,6 +391,18 @@ _BOOTSTRAP_JS = """
   var recordedTicks = 0;
   var lastRecordedTick = -1;
   var onCamera = new Map();    // pose id -> flat [tick, slot, ...] for in-shot holds
+  var wasm = null;             // the module's own raw exports, see 3 below
+  var wasmNote = "no WebAssembly instance exporting render_frame_ptr was instantiated";
+  var watch = null;            // pose code -> 1, or null when not counting
+  var rows = [];               // one row per watched player-frame
+  var rowLimit = 0;
+  var rowsTruncated = false;
+  var framesRead = 0;
+  var crossFailures = 0;       // raw read vs the page's own frame_buffer.decode
+  var unposedDives = 0;        // a dive the wire named no pose for
+  var crossExamples = [];
+  var readError = null;
+  var layout = null;
 
   // 1. THE CLOCK. Replaced before the harness module reads it, so its
   //    `lastTime = performance.now()` starts at 0 and every frame it sees is
@@ -287,6 +419,123 @@ _BOOTSTRAP_JS = """
     return handle;
   };
   window.cancelAnimationFrame = function (handle) { pending.delete(handle); };
+
+  // 3. THE RENDER FRAME'S OWN WORDS, for `count`.
+  //
+  //    `gc_render::frame::build` writes one flat f64 block into wasm linear
+  //    memory and `match_harness.ts` decodes it through `frame_buffer.decode`
+  //    once per frame. Counting how a keeper is DRAWN needs two per-player
+  //    fields that page does not republish -- `facing` and `dive_dir`, the
+  //    two `rig3d/action_pose.ts`'s `lateralSign` is computed from -- so they
+  //    are read here, out of the same block the page has just decoded.
+  //
+  //    WHY NOT PUBLISH THEM FROM THE PAGE INSTEAD, which would be less
+  //    machinery. Because the instrument would then only exist at revisions
+  //    that carry the edit, and a count's whole purpose is to compare a fix
+  //    against the build BEFORE it. Reading the block from the driver keeps
+  //    one instrument for every revision, including ones built months ago.
+  //
+  //    WHAT MAKES IT SAFE. The block is self-describing: word 0 is the magic,
+  //    words 4/5/6/7 are the header size, scalar count, player count and
+  //    per-player field count, so nothing about the block's SHAPE is assumed
+  //    here. What is assumed is which field index means what, and that is
+  //    checked rather than trusted -- `readFrame` compares the pose code and
+  //    world position it reads against the ones the page itself decoded
+  //    through `frame_buffer.ts` for the same tick, every tick, every slot.
+  //    A field-index drift shows up as a named cross-check failure instead of
+  //    a plausible-looking count.
+  function adopt(instance) {
+    if (wasm !== null || !instance || !instance.exports) { return; }
+    var e = instance.exports;
+    if (typeof e.render_frame_ptr !== "function") { return; }
+    if (typeof e.render_frame_len !== "function" || !e.memory) { return; }
+    wasm = e;
+    wasmNote = "adopted the WebAssembly instance exporting render_frame_ptr/render_frame_len/memory";
+  }
+
+  function interceptInstantiation(name) {
+    var original = WebAssembly[name];
+    if (typeof original !== "function") { return; }
+    WebAssembly[name] = function () {
+      var out = original.apply(WebAssembly, arguments);
+      return Promise.resolve(out).then(function (result) {
+        // `instantiate(bytes|Response)` resolves to {instance, module};
+        // `instantiate(Module)` resolves to the Instance itself.
+        adopt(result && result.instance ? result.instance : result);
+        return result;
+      });
+    };
+  }
+  interceptInstantiation("instantiateStreaming");
+  interceptInstantiation("instantiate");
+
+  function readFrame(tick, stats) {
+    var ptr = wasm.render_frame_ptr();
+    var len = wasm.render_frame_len();
+    if (!(len > 0)) {
+      readError = readError || ("render_frame_len() returned " + len + " at tick " + tick);
+      return;
+    }
+    // Never cached across ticks: `memory.buffer` is replaced wholesale when
+    // wasm memory grows, which detaches any view held over it.
+    var words = new Float64Array(wasm.memory.buffer, ptr, len);
+    if (words[0] !== FRAME.magic) {
+      readError = readError || ("frame block magic is " + words[0] + ", expected " + FRAME.magic);
+      return;
+    }
+    var headerWords = words[4];
+    var scalarWords = words[5];
+    var count = words[6];
+    if (layout === null) {
+      layout = {
+        magic: words[0],
+        layout_version: words[1],
+        render_frame_version: words[2],
+        total_words: words[3],
+        header_words: headerWords,
+        scalar_words: scalarWords,
+        player_count: count,
+        player_fields: words[7],
+        words: len
+      };
+    }
+    var at0 = headerWords + scalarWords;
+    var poses = stats.poses || [];
+    var px = stats.playerX || [];
+    var py = stats.playerY || [];
+    for (var i = 0; i < count; i += 1) {
+      var code = words[at0 + FRAME.pose_id * count + i];
+      var rawX = words[at0 + FRAME.x * count + i];
+      var rawY = words[at0 + FRAME.y * count + i];
+      var pagePose = (poses[i] === undefined || poses[i] === null) ? null : poses[i];
+      if ((code !== 0) !== (pagePose !== null) || rawX !== px[i] || rawY !== py[i]) {
+        crossFailures += 1;
+        if (crossExamples.length < 16) {
+          crossExamples.push({
+            tick: tick, slot: i + 1, code: code, page_pose: pagePose,
+            raw_x: rawX, page_x: px[i] === undefined ? null : px[i],
+            raw_y: rawY, page_y: py[i] === undefined ? null : py[i]
+          });
+        }
+      }
+      // `save()` also fires for a frame with NO pose id when `dive > 0`,
+      // falling back to `SAVES.keeper_dive`. A count keyed to pose ids cannot
+      // see that, so it is counted here as the thing the count would miss --
+      // see `unposed_dive_verdict`.
+      if (code === 0 && words[at0 + FRAME.dive * count + i] > 0) { unposedDives += 1; }
+      if (watch[code] !== 1) { continue; }
+      if (rows.length >= rowLimit) { rowsTruncated = true; break; }
+      rows.push([
+        tick, i + 1, code,
+        words[at0 + FRAME.facing_x * count + i],
+        words[at0 + FRAME.facing_y * count + i],
+        words[at0 + FRAME.dive_dir_x * count + i],
+        words[at0 + FRAME.dive_dir_y * count + i],
+        pagePose
+      ]);
+    }
+    framesRead += 1;
+  }
 
   function push(index, id, tick, slot) {
     var rows = index.get(id);
@@ -319,6 +568,9 @@ _BOOTSTRAP_JS = """
         if (dx <= halfW && dy <= halfH) { push(onCamera, id, tick, i + 1); }
       }
     }
+    // Same one-entry-per-tick discipline as the pose index above, and after
+    // it, so a counted frame is a frame the pose scan also saw.
+    if (watch !== null && wasm !== null) { readFrame(tick, stats); }
   }
 
   function runFrame(advance) {
@@ -399,6 +651,39 @@ _BOOTSTRAP_JS = """
       return hits(requireOnCamera ? onCamera : poseIndex, id, limit);
     },
 
+    // Arm the render-frame reader for `count`. Must be called BEFORE the
+    // first `step`: nothing is recorded retroactively.
+    leanWatch: function (codes, limit) {
+      watch = {};
+      for (var i = 0; i < codes.length; i += 1) { watch[codes[i]] = 1; }
+      rows = [];
+      rowLimit = limit;
+      rowsTruncated = false;
+      framesRead = 0;
+      crossFailures = 0;
+      crossExamples = [];
+      unposedDives = 0;
+      readError = null;
+      layout = null;
+      return { armed: codes.length, wasm_available: wasm !== null, wasm_note: wasmNote };
+    },
+
+    leanRows: function () {
+      return {
+        rows: rows,
+        truncated: rowsTruncated,
+        frames_read: framesRead,
+        cross_check_failures: crossFailures,
+        cross_check_examples: crossExamples,
+        unposed_dive_frames: unposedDives,
+        read_error: readError,
+        layout: layout,
+        wasm_available: wasm !== null,
+        wasm_note: wasmNote,
+        recorded_ticks: recordedTicks
+      };
+    },
+
     // The DOM readout overlays the canvas and its text changes every tick,
     // so it would dominate any pixel comparison. It is not part of the
     // rendered frame -- `#stats` is a <div>, not the WebGL canvas.
@@ -428,7 +713,11 @@ def bootstrap_source(frame_ms: float = FRAME_MS) -> str:
     `performance.now` replacement, #429's camera drift comes straight back and
     every capture silently becomes artefact again.
     """
-    return _BOOTSTRAP_JS.replace("__FRAME_MS__", repr(frame_ms)).replace("__CANVAS__", CANVAS_SELECTOR)
+    return (
+        _BOOTSTRAP_JS.replace("__FRAME_MS__", repr(frame_ms))
+        .replace("__FRAME_FIELDS__", json.dumps(FRAME_FIELDS, sort_keys=True))
+        .replace("__CANVAS__", CANVAS_SELECTOR)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -622,6 +911,474 @@ def ab_verdict(build_a: dict[int, str], build_b: dict[int, str]) -> dict[str, An
         "reason": f"{len(changed)} of {len(build_a)} captured ticks differ between the builds",
         "identical_ticks": identical,
         "changed_ticks": changed,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Counting: what a rendered frame's keeper actually does
+# ---------------------------------------------------------------------------
+
+
+def lateral_sign(dive_dir_x: float, dive_dir_y: float, facing_x: float, facing_y: float) -> int:
+    """`rig3d/action_pose.ts`'s `lateralSign`, character for character.
+
+    THIS IS THE WHOLE MEASUREMENT, so it is a mirror and not an approximation:
+    same 2D cross product, same operand order, same dead band. It decides
+    whether a save's roll and travel happen at all -- `save()` returns `null`
+    on a zero sign and the ENTIRE overlay is skipped -- and whether a
+    `keeper_get_up` keeps the side it landed on.
+
+    Reproduced here rather than imported because it lives in TypeScript inside
+    a bundled ES module, with no runtime handle on the page. `--self-test`
+    reads the formula and the epsilon back out of `action_pose.ts` and fails
+    if either has moved, which is the same anti-drift treatment `POSE_IDS`
+    gets.
+
+    The `facing ? facing.x : 1` fallback in the TypeScript is deliberately not
+    reproduced: `pitch.ts`'s `playerOptions` always constructs `facing` from
+    the frame's own `facing_x`/`facing_y`, so the undefined branch is
+    unreachable from a rendered frame. A zero facing vector still yields a
+    zero sign here, exactly as it does there.
+    """
+    along_left = dive_dir_x * facing_y - dive_dir_y * facing_x
+    if abs(along_left) < LATERAL_SIGN_EPSILON:
+        return 0
+    return 1 if along_left > 0 else -1
+
+
+def lean_records(raw_rows: list[list[Any]]) -> list[dict[str, Any]]:
+    """One recorded player-frame per row, with its lean resolved.
+
+    A row is `[tick, slot, pose_code, facing_x, facing_y, dive_dir_x,
+    dive_dir_y, page_pose]` as the bootstrap pushed it: the first seven read
+    straight out of `frame::build`'s block, the last one the pose id the PAGE
+    decoded for the same slot on the same tick through `frame_buffer.ts`.
+    `pose_code_verdict` is what makes the two agree; this only resolves them.
+    """
+    records: list[dict[str, Any]] = []
+    for row in raw_rows:
+        tick, slot, code, facing_x, facing_y, dive_x, dive_y, page_pose = row
+        index = int(code) - 1
+        pose = POSE_IDS[index] if 0 <= index < len(POSE_IDS) else None
+        sign = lateral_sign(float(dive_x), float(dive_y), float(facing_x), float(facing_y))
+        records.append(
+            {
+                "tick": int(tick),
+                "slot": int(slot),
+                "pose": pose,
+                "page_pose": page_pose,
+                "facing": (float(facing_x), float(facing_y)),
+                "dive_dir": (float(dive_x), float(dive_y)),
+                "sign": sign,
+                "leaned": sign != 0,
+            }
+        )
+    return records
+
+
+def count_family(records: list[dict[str, Any]], poses: tuple[str, ...]) -> dict[str, Any]:
+    """Frames, leans and EPISODES for one pose family.
+
+    An episode is one contiguous hold: the same roster slot, the family's
+    poses, consecutive ticks. It is the unit that matters for #449, because
+    the defect's visible symptom was not a lost lean but a lean that came and
+    went WITHIN one save -- a hard state-meaning switch, drawn as a pop.
+    Frame counts alone cannot distinguish "half the saves never leaned" from
+    "every save leaned for half its length", and those look nothing alike on
+    screen.
+
+    A gap of even one tick opens a new episode. That is the conservative
+    direction: it can only split one real save into two, never merge two
+    saves into one, so `popped` is never inflated by the bookkeeping.
+    """
+    subset = [record for record in records if record["pose"] in poses]
+    by_slot: dict[int, list[dict[str, Any]]] = {}
+    for record in subset:
+        by_slot.setdefault(record["slot"], []).append(record)
+
+    episodes: list[list[dict[str, Any]]] = []
+    for slot in sorted(by_slot):
+        run: list[dict[str, Any]] = []
+        for record in sorted(by_slot[slot], key=lambda item: item["tick"]):
+            if run and record["tick"] != run[-1]["tick"] + 1:
+                episodes.append(run)
+                run = []
+            run.append(record)
+        if run:
+            episodes.append(run)
+
+    always = never = popped = 0
+    for episode in episodes:
+        leaning = sum(1 for record in episode if record["leaned"])
+        if leaning == len(episode):
+            always += 1
+        elif leaning == 0:
+            never += 1
+        else:
+            popped += 1
+
+    leaned = sum(1 for record in subset if record["leaned"])
+    return {
+        "poses": list(poses),
+        "frames": len(subset),
+        "leaned": leaned,
+        "not_leaned": len(subset) - leaned,
+        "episodes": {
+            "total": len(episodes),
+            "always_leaning": always,
+            "never_leaning": never,
+            "popped_mid_episode": popped,
+        },
+        "longest_episode_ticks": max((len(episode) for episode in episodes), default=0),
+    }
+
+
+def tally(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """The whole count: per family, and per pose so a family is traversable.
+
+    `save` is the five ids `action_pose.ts`'s `SAVES` table holds, which is
+    the set `save()` will pose at all -- with one deliberate exclusion:
+    `save()` also fires for a frame carrying NO pose id at all when
+    `opts.dive > 0`, falling back to `SAVES.keeper_dive`. That branch is not
+    counted, because it is not a pose the wire names and a count keyed to a
+    pose id cannot honestly attribute it -- and it is not silently ignored
+    either: `unposed_dive_verdict` counts exactly those frames and refuses the
+    whole session if any occurred, so "the count saw every save" is a checked
+    claim rather than an assumption. `tip` and `save_excluding_tip` are both
+    reported because `keeper_tip` is a member of `SAVES` AND reaches
+    `lateralSign` through a `dive_dir` the frame builder synthesises, so
+    "save frames" is ambiguous between the two readings and a reader should
+    not have to guess which one a number came from.
+    """
+    return {
+        "families": {
+            "save": count_family(records, SAVE_POSES),
+            "save_excluding_tip": count_family(records, tuple(p for p in SAVE_POSES if p not in TIP_POSES)),
+            "tip": count_family(records, TIP_POSES),
+            "get_up": count_family(records, GET_UP_POSES),
+        },
+        "by_pose": {pose: count_family(records, (pose,)) for pose in LEAN_POSES},
+    }
+
+
+def records_digest(records: list[dict[str, Any]]) -> str:
+    """A run's whole counted stream, not just its totals.
+
+    Two sessions that disagree about WHICH frames leaned but happen to agree
+    on how many is a determinism failure the totals would hide, so the control
+    hashes the stream."""
+    payload = [
+        [record["tick"], record["slot"], record["pose"], record["sign"]] for record in records
+    ]
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def frame_read_verdict(runs: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """The render frame was actually read, and the block was the right one.
+
+    The reader adopts the page's own `WebAssembly.Instance` as it is
+    instantiated. If wasm-bindgen ever stops going through
+    `WebAssembly.instantiate`/`instantiateStreaming`, nothing is adopted and
+    the count is simply empty -- which would otherwise read as "no keeper ever
+    dived". It is a named refusal instead.
+    """
+    problems: list[dict[str, Any]] = []
+    for label in sorted(runs):
+        raw = runs[label]
+        if not raw.get("wasm_available"):
+            problems.append({"run": label, "problem": raw.get("wasm_note", "no wasm instance was adopted")})
+        elif raw.get("read_error"):
+            problems.append({"run": label, "problem": raw["read_error"]})
+        elif raw.get("truncated"):
+            problems.append({"run": label, "problem": "the row limit was hit; the count is a prefix, not a count"})
+        elif not raw.get("frames_read"):
+            problems.append({"run": label, "problem": "no frame was read at all"})
+    if problems:
+        return {
+            "ok": False,
+            "reason": f"the render frame could not be read in {len(problems)} run(s): {problems[0]['problem']}",
+            "problems": problems,
+        }
+    return {
+        "ok": True,
+        "reason": "every run read `frame::build`'s own block, with its header sizes taken from the block",
+        "problems": [],
+    }
+
+
+def unposed_dive_verdict(runs: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """No save happened that a pose-id-keyed count could not see.
+
+    `action_pose.ts`'s `save()` has a branch this count is blind to by
+    construction: a frame carrying NO pose id but `dive > 0` falls back to
+    `SAVES.keeper_dive` and is drawn as a save anyway. `count` keys everything
+    to pose ids, so such a frame would be missing from the total AND from the
+    denominator -- the worst shape of undercount, because the ratio would
+    still look fine.
+
+    It does not happen today: `player_pose::select` names a pose for a diving
+    keeper. This is that fact checked once per session instead of assumed
+    forever, and it costs one comparison per slot per tick.
+    """
+    offenders = [
+        {"run": label, "frames": int(runs[label].get("unposed_dive_frames", 0))}
+        for label in sorted(runs)
+        if int(runs[label].get("unposed_dive_frames", 0))
+    ]
+    if offenders:
+        return {
+            "ok": False,
+            "reason": (
+                f"{offenders[0]['frames']} frame(s) in {offenders[0]['run']} carried a live dive with no "
+                f"pose id, which `action_pose.ts`'s `save()` still draws as a save: this count is keyed "
+                f"to pose ids and cannot see them, so its totals are an undercount of unknown size"
+            ),
+            "offenders": offenders,
+        }
+    return {
+        "ok": True,
+        "reason": "no frame carried a dive without a pose id, so every drawn save is one this count could see",
+        "offenders": [],
+    }
+
+
+def page_cross_check_verdict(runs: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """The driver's raw read agrees with the page's own `frame_buffer.decode`.
+
+    THIS IS WHAT THE RAW READ IS BOUGHT WITH, and it is the same bargain
+    `pose_hold_verdict` strikes for the scan. The driver reads the block by
+    field index; the page reads the same block through `frame_buffer.ts`. At
+    every counted tick, for every slot, the pose code and the world position
+    the driver read must resolve to exactly what the page decoded. If the
+    per-player field layout ever moves, this fails loudly rather than
+    producing a count of the wrong column.
+    """
+    offenders: list[dict[str, Any]] = []
+    for label in sorted(runs):
+        failures = int(runs[label].get("cross_check_failures", 0))
+        if failures:
+            offenders.append(
+                {
+                    "run": label,
+                    "failures": failures,
+                    "examples": runs[label].get("cross_check_examples", [])[:4],
+                }
+            )
+    if offenders:
+        return {
+            "ok": False,
+            "reason": (
+                f"the driver's field-index read of `frame::build`'s block disagrees with the page's "
+                f"own `frame_buffer.decode` of it ({offenders[0]['failures']} slot-ticks in "
+                f"{offenders[0]['run']}): the per-player layout has moved, so every column this "
+                f"count reads is suspect"
+            ),
+            "offenders": offenders,
+        }
+    return {
+        "ok": True,
+        "reason": "pose ids and world positions agree with the page's own decode at every counted slot-tick",
+        "offenders": [],
+    }
+
+
+def pose_code_verdict(runs: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    """`POSE_IDS[code - 1]` is the pose the page named for that same slot-tick.
+
+    The wire carries a pose as an integer. Turning it back into a name is a
+    table, and a table that has silently rotated would file every save frame
+    under the wrong pose while the totals stayed plausible. The page decoded
+    the same word through `frame_buffer.ts`'s `poseIdFromCode`; this is the
+    two agreeing on live data, on top of `--self-test`'s static check that the
+    two tables are the same tables.
+    """
+    mismatches: list[dict[str, Any]] = []
+    checked = 0
+    for label in sorted(runs):
+        for record in runs[label]:
+            checked += 1
+            if record["pose"] != record["page_pose"]:
+                if len(mismatches) < 8:
+                    mismatches.append(
+                        {"run": label, "tick": record["tick"], "driver": record["pose"], "page": record["page_pose"]}
+                    )
+    if not checked:
+        return {"ok": False, "reason": "no watched frame was recorded, so nothing was cross-checked", "mismatches": []}
+    if mismatches:
+        return {
+            "ok": False,
+            "reason": (
+                f"the driver's pose-code table disagrees with the page's at {len(mismatches)}+ of "
+                f"{checked} recorded frames -- e.g. tick {mismatches[0]['tick']}: driver "
+                f"{mismatches[0]['driver']}, page {mismatches[0]['page']}"
+            ),
+            "mismatches": mismatches,
+        }
+    return {
+        "ok": True,
+        "reason": f"all {checked} recorded frames resolve to the pose the page decoded for them",
+        "mismatches": [],
+    }
+
+
+def vector_shape_verdict(runs: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    """`facing` and `dive_dir` are unit vectors (or zero), as the sim writes them.
+
+    The two columns `lateralSign` is computed from are the two the page does
+    NOT republish, so `page_cross_check_verdict` cannot reach them. This is
+    the structural check that stands in for it: `MatchPlayer::facing` and
+    `dive_dir` are normalised (or left at zero), and no neighbouring column in
+    the block -- `speed`, a pose code, a pose priority, a dive amount -- is a
+    unit vector's component by coincidence over thousands of frames. Reading
+    the wrong pair fails this almost immediately.
+    """
+    offenders: list[dict[str, Any]] = []
+    checked = 0
+    for label in sorted(runs):
+        for record in runs[label]:
+            checked += 1
+            for name in ("facing", "dive_dir"):
+                x, y = record[name]
+                length = (x * x + y * y) ** 0.5
+                if abs(length) > 1e-6 and abs(length - 1.0) > 1e-6:
+                    if len(offenders) < 8:
+                        offenders.append(
+                            {"run": label, "tick": record["tick"], "field": name, "value": [x, y], "length": length}
+                        )
+    if not checked:
+        return {"ok": False, "reason": "no watched frame was recorded, so nothing was checked", "offenders": []}
+    if offenders:
+        first = offenders[0]
+        return {
+            "ok": False,
+            "reason": (
+                f"a recorded {first['field']} is neither unit nor zero (|{first['value']}| = "
+                f"{first['length']:.6f} at tick {first['tick']}): the columns being read are not "
+                f"the columns this count claims to read"
+            ),
+            "offenders": offenders,
+        }
+    return {
+        "ok": True,
+        "reason": f"every recorded facing and dive_dir over {checked} frames is unit-length or zero",
+        "offenders": [],
+    }
+
+
+def count_control_verdict(run_a: list[dict[str, Any]], run_b: list[dict[str, Any]]) -> dict[str, Any]:
+    """Same build, two independent browser processes, same counted stream.
+
+    The pixel subcommands run this guard because a capture that is not
+    reproducible is not evidence. A COUNT has the same exposure and a worse
+    failure mode: an unstable count would be reported as a number, with no
+    image for anyone to disbelieve. So it is mandatory here too, and it
+    compares the whole stream (which tick, which slot, which sign) rather than
+    the totals.
+    """
+    digest_a, digest_b = records_digest(run_a), records_digest(run_b)
+    if not run_a and not run_b:
+        return {"ok": False, "reason": "neither control session recorded a single watched frame", "digests": []}
+    if digest_a != digest_b:
+        totals_a = tally(run_a)["families"]["save"]
+        totals_b = tally(run_b)["families"]["save"]
+        return {
+            "ok": False,
+            "reason": (
+                "same build, two sessions, different counted frames: this measurement is not "
+                f"deterministic, so no figure from it means anything (save frames "
+                f"{totals_a['frames']} vs {totals_b['frames']}, rolled {totals_a['leaned']} vs "
+                f"{totals_b['leaned']})"
+            ),
+            "digests": [digest_a, digest_b],
+        }
+    return {
+        "ok": True,
+        "reason": f"two independent sessions counted an identical stream of {len(run_a)} frames ({digest_a[:12]})",
+        "digests": [digest_a, digest_b],
+    }
+
+
+def fidelity_verdict(small: list[dict[str, Any]], full: list[dict[str, Any]], ticks: int) -> dict[str, Any]:
+    """A count is a property of the simulation, not of the viewport it drew at.
+
+    A counting session renders small, with bloom off, because 24,000 frames of
+    full-fidelity SwiftShader is an hour that buys nothing: what is counted is
+    `frame::build`'s output, and `frame::build` takes a `MatchState` and no
+    viewport. That is the same argument `scan_run` makes -- and, like it, the
+    argument is checked instead of trusted. A third session runs the first
+    `ticks` ticks at the harness's full size with bloom and the stadium on,
+    and its counted stream must be exactly the small session's prefix.
+
+    Skipped, not assumed, when `--fidelity-ticks 0` asks for it: the verdict
+    then says so rather than reporting an unrun check as passed.
+    """
+    if ticks <= 0:
+        return {
+            "ok": True,
+            "reason": "SKIPPED by --fidelity-ticks 0: nothing checked that the small viewport is irrelevant",
+            "compared": 0,
+        }
+    prefix = [record for record in small if record["tick"] <= ticks]
+    trimmed = [record for record in full if record["tick"] <= ticks]
+    if records_digest(prefix) != records_digest(trimmed):
+        return {
+            "ok": False,
+            "reason": (
+                f"the full-fidelity session counted a different stream over its first {ticks} ticks "
+                f"({len(trimmed)} frames) than the small one did ({len(prefix)}): what this counts "
+                f"is not viewport-independent after all, and the whole session's figures are void"
+            ),
+            "compared": len(prefix),
+        }
+    return {
+        "ok": True,
+        "reason": (
+            f"a full-size, bloom-on session counted the identical stream over its first {ticks} "
+            f"ticks ({len(prefix)} frames), so the small viewport is not what is being measured"
+        ),
+        "compared": len(prefix),
+    }
+
+
+def frame_layout_verdict(dist: Path) -> dict[str, Any]:
+    """The build being counted decodes a frame the way this tree does.
+
+    Only reachable for a `--rev` build, which is the case that matters: a
+    count exists to compare a fix against the build before it, and if
+    `frame_buffer.ts` moved a per-player column between the two revisions then
+    the driver's field indices are right for one of them and wrong for the
+    other. `page_cross_check_verdict` would catch a moved `pose_id`/`x`/`y`
+    live; this catches a moved `facing`/`dive_dir` too, which nothing live
+    can see.
+
+    Reports `unavailable` rather than failing when the dist did not come from
+    a source tree -- a bare `--dist` is a reason this cannot run, not a reason
+    to refuse.
+    """
+    here = ROOT / "v2" / "ts" / "packages" / "render" / "src" / "frame_buffer.ts"
+    for parent in [dist] + list(dist.parents):
+        candidate = parent / "v2" / "ts" / "packages" / "render" / "src" / "frame_buffer.ts"
+        if candidate.is_file():
+            if candidate == here:
+                return {"ok": True, "reason": "the counted build is this tree", "sha256": {}}
+            theirs = hashlib.sha256(candidate.read_bytes()).hexdigest()
+            ours = hashlib.sha256(here.read_bytes()).hexdigest()
+            if theirs != ours:
+                return {
+                    "ok": False,
+                    "reason": (
+                        f"{candidate} differs from this tree's frame_buffer.ts, so the per-player "
+                        f"field indices this driver reads by may not mean the same thing in the "
+                        f"build being counted"
+                    ),
+                    "sha256": {"build": theirs, "tree": ours},
+                }
+            return {"ok": True, "reason": "the counted build's frame_buffer.ts is byte-identical to this tree's",
+                    "sha256": {"build": theirs, "tree": ours}}
+    return {
+        "ok": True,
+        "reason": "unavailable: this dist has no source tree next to it, so the frame layout was not compared",
+        "sha256": {},
     }
 
 
@@ -884,6 +1641,15 @@ class BrowserSlot:
             raise RuntimeError(f"chromedriver not found at {driver_path}")
         self.log.parent.mkdir(parents=True, exist_ok=True)
         self.driver = launch("chrome", binary, driver_path, self.log, self.args.gpu_mode, None, CONNECT_TIMEOUT_SECONDS)
+        # WebDriver's default script timeout is 30 s, and `__gcDriver.step` is
+        # a SYNCHRONOUS call that runs a whole chunk of frames inside it. On
+        # the software GL path a chunk of `PUMP_CHUNK_FRAMES` can pass 30 s --
+        # `scan --scan-ticks 3000 --gpu-mode software` hits it today -- and
+        # the failure is a bare `TimeoutException` from selenium's internals
+        # that says nothing about frames. Raised here rather than by shrinking
+        # the chunk, because the chunk size is a round-trip/latency tradeoff
+        # and this is a hang budget.
+        self.driver.set_script_timeout(SCRIPT_TIMEOUT_SECONDS)
         install_bootstrap(self.driver)
         return self.driver
 
@@ -1029,6 +1795,96 @@ def scan_run(
     log = Path(args.log_dir) / f"scan-{seed}-{bot_seed}-webdriver.log"
     with BrowserSlot(args, log, f"scan seed={seed}") as fresh:
         return scan_with(fresh)
+
+
+def count_run(
+    args: argparse.Namespace,
+    base_url: str,
+    *,
+    label: str,
+    ticks: int,
+    width: int,
+    height: int,
+    full_fidelity: bool,
+) -> dict[str, Any]:
+    """One counting session: arm the frame reader, step, read the rows back.
+
+    Nothing is captured and nothing is drawn that anyone looks at. The session
+    still renders -- the page has one loop and it draws -- but small, with
+    bloom and the stadium off, because what is counted comes out of
+    `gc_render::frame::build`, which takes a `MatchState` and none of those.
+    `fidelity_verdict` is the check on that argument, not this docstring.
+    """
+    log = Path(args.log_dir) / f"{label}-webdriver.log"
+    codes = [POSE_IDS.index(pose) + 1 for pose in LEAN_POSES]
+    with BrowserSlot(args, log, label) as driver:
+        # A counting session draws a small, bloom-less, stadium-less frame
+        # nobody looks at, because 24,000 frames of full-fidelity SwiftShader
+        # buys nothing a count can use: `frame::build` takes a `MatchState`
+        # and no viewport, no bloom flag and no stadium. That argument is what
+        # `fidelity_verdict` checks -- the full-fidelity session below turns
+        # every one of these levers back on.
+        extra: dict[str, Any] = {} if full_fidelity else {"bloom": 0, "stadium": 0}
+        _open_page(
+            driver,
+            base_url,
+            seed=args.seed,
+            bot_seed=args.bot_seed,
+            width=width,
+            height=height,
+            extra=page_extras(args, extra),
+        )
+        gpu = probe_gpu(driver, CANVAS_SELECTOR)
+        # ARMED BEFORE THE FIRST STEP. `record()` writes one entry per tick as
+        # the tick happens and never backfills, so a watch installed late
+        # silently counts a shorter session than the one reported.
+        armed = driver.execute_script(
+            "return window.__gcDriver.leanWatch(arguments[0], arguments[1]);", codes, DEFAULT_ROW_LIMIT
+        )
+        if not armed.get("wasm_available"):
+            raise RuntimeError(
+                f"{label}: the render frame reader has no WebAssembly instance ({armed.get('wasm_note')}). "
+                f"The page's wasm module did not go through WebAssembly.instantiate/instantiateStreaming, "
+                f"so nothing can be counted -- see the bootstrap's section 3."
+            )
+        remaining = ticks
+        state: dict[str, Any] = {}
+        started = time.monotonic()
+        last_report = started
+        while remaining > 0:
+            chunk = min(remaining, PUMP_CHUNK_FRAMES)
+            state = driver.execute_script("return window.__gcDriver.step(arguments[0]);", chunk)
+            remaining -= chunk
+            # A 24,000-tick software-GL session is minutes long. Without this
+            # it is indistinguishable from a hang, which is how you end up
+            # killing a run that was fine.
+            if time.monotonic() - last_report > 30:
+                last_report = time.monotonic()
+                print(
+                    f"[browser_match_harness] {label}: tick {state.get('tick')}/{ticks}, "
+                    f"{round(time.monotonic() - started)}s elapsed",
+                    flush=True,
+                )
+            if state.get("status") in ("finished", "error"):
+                break
+        raw = driver.execute_script("return window.__gcDriver.leanRows();")
+        effects_state = read_effects_diagnostics(driver)
+        final = driver_state(driver)
+    elapsed = round(time.monotonic() - started, 1)
+    print(
+        f"[browser_match_harness] {label}: {final.get('tick')} ticks, "
+        f"{raw.get('frames_read')} frames read, {len(raw.get('rows') or [])} watched frames, {elapsed}s"
+    )
+    return {
+        "label": label,
+        "raw": raw,
+        "records": lean_records(raw.get("rows") or []),
+        "effects": effects_state,
+        "gpu": gpu,
+        "viewport": {"width": width, "height": height, "bloom": full_fidelity, "stadium": full_fidelity},
+        "elapsed_seconds": elapsed,
+        "final_state": {key: final.get(key) for key in ("tick", "score", "status", "frames", "recorded_ticks")},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1291,6 +2147,137 @@ def command_scan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _count_table(counts: dict[str, Any]) -> list[str]:
+    lines = [f"{'family / pose':<22}{'frames':>8}{'leaned':>8}{'flat':>7}{'episodes':>10}{'always':>8}{'never':>7}{'popped':>8}"]
+    rows: list[tuple[str, dict[str, Any]]] = [(f"[{name}]", entry) for name, entry in counts["families"].items()]
+    rows += list(counts["by_pose"].items())
+    for name, entry in rows:
+        episodes = entry["episodes"]
+        lines.append(
+            f"{name:<22}{entry['frames']:>8}{entry['leaned']:>8}{entry['not_leaned']:>7}"
+            f"{episodes['total']:>10}{episodes['always_leaning']:>8}"
+            f"{episodes['never_leaning']:>7}{episodes['popped_mid_episode']:>8}"
+        )
+    return lines
+
+
+def command_count(args: argparse.Namespace) -> int:
+    dist = resolve_build(args.dist, args.rev, args, Path(args.build_root))
+    layout = frame_layout_verdict(dist)
+    server, _thread, base_url = serve_dist(dist)
+    try:
+        run_a = count_run(
+            args, base_url, label="count-1", ticks=args.count_ticks,
+            width=args.count_width, height=args.count_height, full_fidelity=False,
+        )
+        run_b = count_run(
+            args, base_url, label="count-2", ticks=args.count_ticks,
+            width=args.count_width, height=args.count_height, full_fidelity=False,
+        )
+        run_full: dict[str, Any] | None = None
+        if args.fidelity_ticks > 0:
+            run_full = count_run(
+                args, base_url, label="count-fidelity", ticks=args.fidelity_ticks,
+                width=args.width, height=args.height, full_fidelity=True,
+            )
+    finally:
+        server.shutdown()
+
+    runs = {run["label"]: run for run in [run_a, run_b] + ([run_full] if run_full else [])}
+    raw_by_label = {label: run["raw"] for label, run in runs.items()}
+    records_by_label = {label: run["records"] for label, run in runs.items()}
+
+    guards = {
+        "frame read": frame_read_verdict(raw_by_label),
+        "page cross-check": page_cross_check_verdict(raw_by_label),
+        "unposed dives": unposed_dive_verdict(raw_by_label),
+        "pose code table": pose_code_verdict(records_by_label),
+        "vector shape": vector_shape_verdict(records_by_label),
+        "control": count_control_verdict(run_a["records"], run_b["records"]),
+        "viewport independence": fidelity_verdict(
+            run_a["records"], run_full["records"] if run_full else [], args.fidelity_ticks
+        ),
+        "renderer state": renderer_state_verdict({label: run["effects"] for label, run in runs.items()}),
+        "frame layout": layout,
+    }
+    counts = tally(run_a["records"])
+
+    for name, verdict in guards.items():
+        print_guard(name, verdict)
+    print()
+    for line in _count_table(counts):
+        print(line)
+
+    report = {
+        "kind": "count",
+        "session": {
+            "seed": args.seed,
+            "bot_seed": args.bot_seed,
+            "combat_enabled": bool(args.combat),
+            "requested_ticks": args.count_ticks,
+            "teams": "nebula/orion",
+            "dist": str(dist),
+            "rev": args.rev,
+            "count_viewport": [args.count_width, args.count_height],
+            "fidelity_ticks": args.fidelity_ticks,
+            "gpu_mode": args.gpu_mode,
+        },
+        "guards": {name: verdict for name, verdict in guards.items()},
+        "counts": counts,
+        "runs": {
+            label: {
+                "final_state": run["final_state"],
+                "viewport": run["viewport"],
+                "elapsed_seconds": run["elapsed_seconds"],
+                "watched_frames": len(run["records"]),
+                "frames_read": run["raw"].get("frames_read"),
+                "layout": run["raw"].get("layout"),
+                "gpu": run["gpu"],
+                "digest": records_digest(run["records"]),
+            }
+            for label, run in runs.items()
+        },
+    }
+    emit(report, Path(args.out))
+    # THE COUNTED FRAMES THEMSELVES, next to the totals.
+    #
+    # A total is only ever an answer to the question that was asked. #449
+    # reported "save frames"; whether that reading included `keeper_tip`, and
+    # where one episode ended and the next began, are exactly the questions a
+    # later reader has about a number they did not take -- and re-running a
+    # 24,000-tick session to re-slice it is half an hour. Every counted frame
+    # is written out so any grouping can be re-derived from the same
+    # measurement, and so #450/#451 can ask their own questions of it.
+    stream = Path(args.out) / "records.json"
+    stream.write_text(
+        json.dumps(
+            {
+                "session": report["session"],
+                "digest": records_digest(run_a["records"]),
+                "columns": ["tick", "slot", "pose", "facing_x", "facing_y", "dive_dir_x", "dive_dir_y", "lateral_sign"],
+                "rows": [
+                    [
+                        record["tick"], record["slot"], record["pose"],
+                        record["facing"][0], record["facing"][1],
+                        record["dive_dir"][0], record["dive_dir"][1],
+                        record["sign"],
+                    ]
+                    for record in run_a["records"]
+                ],
+            },
+            indent=1,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    print(f"[browser_match_harness] counted frames: {stream}")
+    failed = [name for name, verdict in guards.items() if not verdict["ok"]]
+    if failed:
+        print(f"[browser_match_harness] REFUSED: {', '.join(failed)} -- the counts above are not evidence")
+        return 1
+    return 0
+
+
 def command_search(args: argparse.Namespace) -> int:
     if args.pose not in POSE_IDS:
         raise RuntimeError(f"{args.pose!r} is not a pose id; see PoseId in {FRAME_BUFFER_TS}")
@@ -1403,6 +2390,57 @@ def _pose_ids_from_typescript() -> tuple[str, ...]:
     if match is None:
         raise RuntimeError(f"could not find PlayerPoseId in {FRAME_BUFFER_TS}")
     return tuple(re.findall(r'"([a-z_]+)"', match.group(1)))
+
+
+def _pose_codes_from_typescript() -> dict[int, str]:
+    """`poseIdFromCode`'s switch, as {wire code: pose id}.
+
+    `count` turns a wire code back into a name by `POSE_IDS[code - 1]`, which
+    only works while that tuple is in wire order -- and the existing check
+    above compares the two as SETS, so a rotation would pass it."""
+    text = FRAME_BUFFER_TS.read_text(encoding="utf-8")
+    match = re.search(r"function poseIdFromCode\(code: number\).*?\n}", text, re.DOTALL)
+    if match is None:
+        raise RuntimeError(f"could not find poseIdFromCode in {FRAME_BUFFER_TS}")
+    pairs = re.findall(r'case (\d+):\s*\n\s*return "([a-z_]+)";', match.group(0))
+    return {int(code): name for code, name in pairs}
+
+
+def _player_fields_from_typescript() -> dict[str, int]:
+    """`decode`'s own `column(words, playersAt, N, count)` arguments.
+
+    The bootstrap reads the block's shape out of its header but has to be told
+    which field index means what. This is where those numbers come from, so
+    `--self-test` reads them back from the same file rather than trusting the
+    constant."""
+    text = FRAME_BUFFER_TS.read_text(encoding="utf-8")
+    pairs = re.findall(r"(\w+): column\(words, playersAt, (\d+), count\)", text)
+    return {name: int(index) for name, index in pairs}
+
+
+def _lateral_sign_from_typescript() -> dict[str, Any]:
+    """`lateralSign`'s cross product and dead band, out of `action_pose.ts`."""
+    text = ACTION_POSE_TS.read_text(encoding="utf-8")
+    match = re.search(r"function lateralSign\(.*?\n}", text, re.DOTALL)
+    if match is None:
+        raise RuntimeError(f"could not find lateralSign in {ACTION_POSE_TS}")
+    body = match.group(0)
+    epsilon = re.search(r"Math\.abs\(alongLeft\) < ([0-9.e-]+)", body)
+    formula = re.search(r"const alongLeft = ([^;]+);", body)
+    return {
+        "epsilon": float(epsilon.group(1)) if epsilon else None,
+        "formula": " ".join(formula.group(1).split()) if formula else None,
+        "positive_is": 1 if "alongLeft > 0 ? 1 : -1" in " ".join(body.split()) else None,
+    }
+
+
+def _save_poses_from_typescript() -> tuple[str, ...]:
+    """The `SAVES` table's keys -- the pose ids `save()` will pose at all."""
+    text = ACTION_POSE_TS.read_text(encoding="utf-8")
+    match = re.search(r"const SAVES: Readonly<Record<string, SaveSpec>> = \{(.*?)\n\};", text, re.DOTALL)
+    if match is None:
+        raise RuntimeError(f"could not find SAVES in {ACTION_POSE_TS}")
+    return tuple(re.findall(r"^\s*(\w+): \{", match.group(1), re.MULTILINE))
 
 
 def self_test() -> int:
@@ -1533,6 +2571,118 @@ def self_test() -> int:
     check("bootstrap replaces performance.now", "performance.now = function" in source)
     check("bootstrap has no unsubstituted placeholders", "__FRAME_MS__" not in source and "__CANVAS__" not in source)
     check("bootstrap exposes the pose index", "poseSummary" in source and "poseHits" in source)
+    check("bootstrap exposes the render-frame reader", "leanWatch" in source and "leanRows" in source)
+    check(
+        "bootstrap intercepts both wasm instantiation entry points",
+        'interceptInstantiation("instantiateStreaming")' in source and 'interceptInstantiation("instantiate")' in source,
+    )
+
+    # 8b. `count`'s own logic: the sign, the episodes, and the guards.
+    check("lateralSign is zero when dive and facing are parallel", lateral_sign(0.0, 1.0, 0.0, 1.0) == 0)
+    check("lateralSign is zero when they are antiparallel", lateral_sign(0.0, -1.0, 0.0, 1.0) == 0)
+    check("lateralSign is +1 diving to the character's own left", lateral_sign(0.0, 1.0, -1.0, 0.0) == 1)
+    check("lateralSign is -1 diving to their right", lateral_sign(0.0, 1.0, 1.0, 0.0) == -1)
+    check("lateralSign is zero with no dive direction at all", lateral_sign(0.0, 0.0, 1.0, 0.0) == 0)
+    check(
+        "lateralSign's dead band is exclusive, as the TypeScript's `<` is",
+        lateral_sign(LATERAL_SIGN_EPSILON, 0.0, 0.0, 1.0) == 1
+        and lateral_sign(LATERAL_SIGN_EPSILON / 2, 0.0, 0.0, 1.0) == 0,
+    )
+
+    def _row(tick: int, slot: int, pose: str, leaned: bool) -> list[Any]:
+        code = POSE_IDS.index(pose) + 1
+        # Facing across the dive when it leans, along it when it does not --
+        # the exact degeneracy #449 is about.
+        return [tick, slot, code, 1.0, 0.0, 0.0, 1.0, pose] if leaned else [tick, slot, code, 0.0, 1.0, 0.0, 1.0, pose]
+
+    episode_rows = (
+        [_row(t, 1, "keeper_dive", True) for t in range(10, 15)]           # one always-leaning save
+        + [_row(t, 1, "keeper_dive", False) for t in range(40, 44)]        # one that never leans
+        + [_row(t, 2, "keeper_stretch", t < 72) for t in range(70, 75)]    # one that pops mid-save
+        + [_row(t, 2, "keeper_get_up", True) for t in range(75, 78)]       # a separate family
+    )
+    counted = tally(lean_records(episode_rows))
+    save = counted["families"]["save"]
+    check(
+        "episodes split by slot and by tick gap, and classify three ways",
+        save["frames"] == 14
+        and save["leaned"] == 7
+        and save["episodes"] == {"total": 3, "always_leaning": 1, "never_leaning": 1, "popped_mid_episode": 1},
+        str(save),
+    )
+    check(
+        "get-up is counted as its own family, not folded into saves",
+        counted["families"]["get_up"]["frames"] == 3 and counted["families"]["get_up"]["episodes"]["total"] == 1,
+        str(counted["families"]["get_up"]),
+    )
+    check(
+        "a save family spanning two pose ids is one episode, not two",
+        count_family(
+            lean_records(
+                [_row(t, 1, "keeper_dive", True) for t in range(10, 13)]
+                + [_row(t, 1, "keeper_stretch", True) for t in range(13, 16)]
+            ),
+            SAVE_POSES,
+        )["episodes"]["total"]
+        == 1,
+    )
+    check(
+        "tip is reported both inside and outside the save family",
+        counted["families"]["save"]["frames"]
+        == counted["families"]["save_excluding_tip"]["frames"] + counted["families"]["tip"]["frames"],
+    )
+
+    leaning_records = lean_records([_row(10, 1, "keeper_dive", True)])
+    check("count control passes on two identical streams", count_control_verdict(leaning_records, list(leaning_records))["ok"])
+    check(
+        "count control refuses two sessions that counted different frames",
+        not count_control_verdict(leaning_records, lean_records([_row(11, 1, "keeper_dive", True)]))["ok"],
+    )
+    check("count control refuses two empty sessions", not count_control_verdict([], [])["ok"])
+    check(
+        "count control catches a stream that differs only in WHICH frames leaned",
+        not count_control_verdict(leaning_records, lean_records([_row(10, 1, "keeper_dive", False)]))["ok"],
+    )
+
+    check("frame-read guard passes on a healthy run", frame_read_verdict({"a": {"wasm_available": True, "frames_read": 9}})["ok"])
+    check(
+        "frame-read guard refuses when no wasm instance was adopted",
+        not frame_read_verdict({"a": {"wasm_available": False, "wasm_note": "none"}})["ok"],
+    )
+    check(
+        "frame-read guard refuses a truncated recording rather than reporting a prefix",
+        not frame_read_verdict({"a": {"wasm_available": True, "frames_read": 9, "truncated": True}})["ok"],
+    )
+    check(
+        "page cross-check refuses a layout that has moved",
+        not page_cross_check_verdict({"a": {"cross_check_failures": 3, "cross_check_examples": []}})["ok"],
+    )
+    check("page cross-check passes when nothing disagreed", page_cross_check_verdict({"a": {"cross_check_failures": 0}})["ok"])
+    check("unposed-dive guard passes when the wire named a pose for every dive", unposed_dive_verdict({"a": {"unposed_dive_frames": 0}})["ok"])
+    check(
+        "unposed-dive guard refuses a session with a save the count cannot see",
+        not unposed_dive_verdict({"a": {"unposed_dive_frames": 4}})["ok"],
+    )
+    check(
+        "pose-code guard catches a driver/page disagreement",
+        not pose_code_verdict({"a": lean_records([[10, 1, POSE_IDS.index("keeper_dive") + 1, 1.0, 0.0, 0.0, 1.0, "keeper_tip"]])})["ok"],
+    )
+    check("pose-code guard refuses an empty recording", not pose_code_verdict({"a": []})["ok"])
+    check("vector-shape guard passes on unit and zero vectors", vector_shape_verdict({"a": leaning_records})["ok"])
+    check(
+        "vector-shape guard catches a non-unit column",
+        not vector_shape_verdict({"a": lean_records([[10, 1, 8, 3.7, 0.0, 0.0, 1.0, "keeper_dive"]])})["ok"],
+    )
+    check(
+        "viewport-independence guard compares the small run's prefix",
+        fidelity_verdict(leaning_records, list(leaning_records), 100)["ok"],
+    )
+    check(
+        "viewport-independence guard catches a viewport-dependent count",
+        not fidelity_verdict(leaning_records, lean_records([_row(10, 1, "keeper_dive", False)]), 100)["ok"],
+    )
+    skipped = fidelity_verdict(leaning_records, [], 0)
+    check("viewport-independence guard says SKIPPED rather than passing silently", skipped["ok"] and "SKIPPED" in skipped["reason"])
 
     # 9. The pose table has not drifted from the wire enum.
     if FRAME_BUFFER_TS.is_file():
@@ -1544,6 +2694,68 @@ def self_test() -> int:
         )
     else:
         check("frame_buffer.ts is readable", False, f"{FRAME_BUFFER_TS} is missing")
+
+    # 10. `count` reads the wire by index and by code. Both tables come from
+    #     TypeScript, so both are read back out of it here -- the same
+    #     anti-drift treatment POSE_IDS gets above, and the only thing
+    #     standing between a moved column and a plausible wrong number that
+    #     does not need a browser to catch.
+    if FRAME_BUFFER_TS.is_file():
+        codes = _pose_codes_from_typescript()
+        expected = {index + 1: pose for index, pose in enumerate(POSE_IDS)}
+        check(
+            f"POSE_IDS is in WIRE ORDER, not merely the same set ({len(codes)} codes)",
+            codes == expected,
+            f"differs at: {sorted(code for code in set(codes) | set(expected) if codes.get(code) != expected.get(code))}",
+        )
+        fields = _player_fields_from_typescript()
+        drifted = {
+            name: (index, fields.get(name))
+            for name, index in FRAME_FIELDS.items()
+            if name != "magic" and fields.get(name) != index
+        }
+        check(
+            f"FRAME_FIELDS matches decode()'s own column indices in {FRAME_BUFFER_TS.name}",
+            not drifted,
+            f"here vs frame_buffer.ts: {drifted}",
+        )
+        magic = re.search(r"export const MAGIC = (0x[0-9a-fA-F]+);", FRAME_BUFFER_TS.read_text(encoding="utf-8"))
+        check(
+            "FRAME_FIELDS['magic'] matches frame_buffer.ts's MAGIC",
+            magic is not None and int(magic.group(1), 16) == FRAME_FIELDS["magic"],
+        )
+
+    if ACTION_POSE_TS.is_file():
+        formula = _lateral_sign_from_typescript()
+        check(
+            "the epsilon mirrors action_pose.ts's own dead band",
+            formula["epsilon"] == LATERAL_SIGN_EPSILON,
+            f"action_pose.ts: {formula['epsilon']}, here: {LATERAL_SIGN_EPSILON}",
+        )
+        check(
+            "lateralSign's cross product has not been re-ordered under this mirror",
+            formula["formula"] == "diveDir.x * fy - diveDir.y * fx",
+            f"action_pose.ts: {formula['formula']!r}",
+        )
+        check("a positive cross product still means the character's LEFT", formula["positive_is"] == 1)
+        from_ts = _save_poses_from_typescript()
+        check(
+            f"SAVE_POSES is exactly action_pose.ts's SAVES table ({len(from_ts)} ids)",
+            set(from_ts) == set(SAVE_POSES),
+            f"only in TS: {sorted(set(from_ts) - set(SAVE_POSES))}; only here: {sorted(set(SAVE_POSES) - set(from_ts))}",
+        )
+        # The other half of what `count` counts. `tip()` reaches `lateralSign`
+        # for exactly one pose id; if that ever stops being true, the get-up
+        # family here is measuring something that no longer exists.
+        tip_body = re.search(r"function tip\(.*?\n}\n", ACTION_POSE_TS.read_text(encoding="utf-8"), re.DOTALL)
+        check(
+            "keeper_get_up still reaches lateralSign in tip(), so it is still worth counting",
+            tip_body is not None
+            and 'poseId === "keeper_get_up"' in tip_body.group(0)
+            and "lateralSign(" in tip_body.group(0),
+        )
+    else:
+        check("action_pose.ts is readable", False, f"{ACTION_POSE_TS} is missing")
 
     print()
     print(SELF_TEST_LIMITS)
@@ -1647,6 +2859,27 @@ def main() -> int:
     p_search.add_argument("--rev", default=None)
     p_search.add_argument("--out", type=Path, default=None)
 
+    p_count = sub.add_parser(
+        "count",
+        help="tally how many keeper save/get-up/tip frames actually reach their lean",
+    )
+    add_common(p_count)
+    p_count.add_argument("--count-ticks", type=int, default=DEFAULT_COUNT_TICKS,
+                         help="ticks to step in each counting session")
+    p_count.add_argument("--count-width", type=int, default=DEFAULT_COUNT_WIDTH,
+                         help="counting sessions render at this size; `fidelity_verdict` is what makes that safe")
+    p_count.add_argument("--count-height", type=int, default=DEFAULT_COUNT_HEIGHT)
+    p_count.add_argument("--fidelity-ticks", type=int, default=DEFAULT_FIDELITY_TICKS,
+                         help="ticks of a third, full-size, bloom-on session that must count the same stream; "
+                              "0 skips the check and says so in the report")
+    p_count.add_argument("--dist", type=Path, default=None, help="a prebuilt harness dist to use as-is")
+    p_count.add_argument("--rev", default=None, help="build the harness from this git revision first")
+    p_count.add_argument("--out", type=Path, default=ROOT / "build" / "browser_match_harness-count")
+    # This mode needs no GPU: it draws nothing anyone looks at. Defaulting it
+    # to software keeps a long counting session off a machine's one display
+    # adapter, which other work may be using.
+    p_count.set_defaults(gpu_mode="software")
+
     args = parser.parse_args()
     if args.self_test:
         return self_test()
@@ -1659,6 +2892,7 @@ def main() -> int:
         "ab": command_ab,
         "scan": command_scan,
         "search": command_search,
+        "count": command_count,
     }
     try:
         return handlers[args.command](args)
