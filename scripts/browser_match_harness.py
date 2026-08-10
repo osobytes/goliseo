@@ -1075,6 +1075,9 @@ def tally(records: list[dict[str, Any]]) -> dict[str, Any]:
     not have to guess which one a number came from.
     """
     return {
+        # What a zero lateral sign MEANS in the build being counted -- read
+        # from its own `action_pose.ts`, not assumed. See `zero_sign_outcome`.
+        "zero_sign_outcome": zero_sign_outcome(),
         "families": {
             "save": count_family(records, SAVE_POSES),
             "save_excluding_tip": count_family(records, tuple(p for p in SAVE_POSES if p not in TIP_POSES)),
@@ -1083,6 +1086,46 @@ def tally(records: list[dict[str, Any]]) -> dict[str, Any]:
         },
         "by_pose": {pose: count_family(records, (pose,)) for pose in LEAN_POSES},
     }
+
+
+def zero_sign_outcome(source: str | None = None) -> str:
+    """WHAT THE RENDERER DRAWS when the lateral sign comes back zero.
+
+    This count keys everything to `lateralSign`, and for #449 a zero sign meant
+    one very specific thing: `save()` returned `null` and the ENTIRE overlay --
+    roll and travel together -- was skipped, so the keeper stood upright while
+    the ball was saved beside them. "946 save frames, 926 rolled" is a sentence
+    about that.
+
+    #455 changed it. A zero sign is now answered with `bodySave`: a save with
+    no side to throw to is one taken at the BODY, drawn as a forward pitch
+    instead of a lateral roll. The MEASUREMENT is unchanged and still worth
+    taking -- how many save frames get a lateral overlay, and whether that
+    flips mid-save -- but the WORD changed under it. Reporting those frames as
+    "flat", or as saves that "did not reach their lean", on a build that draws
+    them as body saves would be this tool telling exactly the kind of
+    unverifiable story it was written to stop.
+
+    So the outcome is read out of the source this driver mirrors rather than
+    assumed, and `mirrored_source_verdict` is what makes that legitimate: it
+    refuses unless the counted build's `action_pose.ts` is byte-identical to
+    the file parsed here.
+
+    Returns `"body_save"` or `"no_overlay"`.
+    """
+    text = source if source is not None else ACTION_POSE_TS.read_text(encoding="utf-8")
+    match = re.search(r"function save\(poseId.*?\n\}", text, re.DOTALL)
+    if match is None:
+        raise RuntimeError(f"could not find save() in {ACTION_POSE_TS}")
+    branch = re.search(r"if \(sign === 0\) \{\s*\n\s*([^\n;]+);", match.group(0))
+    if branch is None:
+        raise RuntimeError(f"save() in {ACTION_POSE_TS} no longer has a `sign === 0` branch to classify")
+    body = branch.group(1)
+    if "return null" in body:
+        return "no_overlay"
+    if "bodySave" in body:
+        return "body_save"
+    raise RuntimeError(f"save()'s `sign === 0` branch is neither null nor a body save: {body!r}")
 
 
 def records_digest(records: list[dict[str, Any]]) -> str:
@@ -2294,8 +2337,16 @@ def command_scan(args: argparse.Namespace) -> int:
     return 0
 
 
+_ZERO_SIGN_LEGEND = {
+    # #449's world: a zero lateral sign skipped the whole overlay.
+    "no_overlay": "no lateral sign => `save()` returns null and NO overlay is drawn (the #449 defect)",
+    # #455's: a zero lateral sign is a save taken at the body.
+    "body_save": "no lateral sign => `save()` draws a forward BODY SAVE, not nothing (#455)",
+}
+
+
 def _count_table(counts: dict[str, Any]) -> list[str]:
-    lines = [f"{'family / pose':<22}{'frames':>8}{'leaned':>8}{'flat':>7}{'episodes':>10}{'always':>8}{'never':>7}{'popped':>8}"]
+    lines = [f"{'family / pose':<22}{'frames':>8}{'lateral':>8}{'no lat':>7}{'episodes':>10}{'always':>8}{'never':>7}{'popped':>8}"]
     rows: list[tuple[str, dict[str, Any]]] = [(f"[{name}]", entry) for name, entry in counts["families"].items()]
     rows += list(counts["by_pose"].items())
     for name, entry in rows:
@@ -2311,6 +2362,32 @@ def _count_table(counts: dict[str, Any]) -> list[str]:
 def command_count(args: argparse.Namespace) -> int:
     dist = resolve_build(args.dist, args.rev, args, Path(args.build_root))
     mirrored = mirrored_source_verdict(dist)
+    # CHECKED BEFORE A SINGLE SESSION RUNS. This guard's answer does not depend
+    # on anything the sessions produce, and the sessions cost the better part
+    # of an hour on software GL. Refusing afterwards would mean counting a
+    # whole match with a mirror that is already known not to match it -- and
+    # the numbers would be printed before the refusal was.
+    if not mirrored["ok"]:
+        print_guard("mirrored sources", mirrored)
+        print(
+            "[browser_match_harness] REFUSED before stepping: the build's own TypeScript is not what "
+            "this driver mirrors, so nothing counted from it would mean what the table says. Count "
+            "this revision with a driver from the same era, or compare revisions that share these files."
+        )
+        emit(
+            {
+                "kind": "count",
+                "session": {"dist": str(dist), "rev": args.rev},
+                "guards": {"mirrored sources": mirrored},
+                "verdict": "refused",
+                "failed_guards": ["mirrored sources"],
+                "counts": None,
+                "counts_withheld": "the counted build's mirrored sources differ from this tree's",
+                "runs": {},
+            },
+            Path(args.out),
+        )
+        return 1
     server, _thread, base_url = serve_dist(dist)
     try:
         run_a = count_run(
@@ -2356,6 +2433,12 @@ def command_count(args: argparse.Namespace) -> int:
     print()
     for line in _count_table(counts):
         print(line)
+    # WITHOUT THIS THE TABLE LIES BY OMISSION on a post-#455 build: `no lat` is
+    # a frame with no LATERAL overlay, which used to mean no overlay at all and
+    # now means a body save. The counted build's own `action_pose.ts` says
+    # which, and `mirrored_source_verdict` is what makes reading it here sound.
+    print(f"\n[browser_match_harness] `no lat` in this build: {_ZERO_SIGN_LEGEND[counts['zero_sign_outcome']]}")
+    print("[browser_match_harness] `popped` = the lateral sign changed within one contiguous hold.")
     if failed:
         print("\n[browser_match_harness] the table above is NOT a result: see the failed guard(s).")
 
@@ -3005,6 +3088,43 @@ def self_test() -> int:
             set(from_ts) == set(SAVE_POSES),
             f"only in TS: {sorted(set(from_ts) - set(SAVE_POSES))}; only here: {sorted(set(SAVE_POSES) - set(from_ts))}",
         )
+        # What a zero lateral sign MEANS is a property of the counted build,
+        # not of this driver, and it has already changed once: #449 skipped the
+        # whole overlay, #455 draws a body save. Reading it rather than
+        # assuming it is what keeps the `no lat` column from asserting
+        # something false, so the parse is pinned here -- both shapes, and a
+        # hard error rather than a guess if it ever becomes a third.
+        outcome = zero_sign_outcome()
+        check(
+            f"the zero-lateral-sign outcome is read from action_pose.ts (this build: {outcome})",
+            outcome in _ZERO_SIGN_LEGEND,
+            outcome,
+        )
+        check(
+            "the zero-sign parse recognises #449's shape (a skipped overlay)",
+            zero_sign_outcome(
+                "function save(poseId: x) {\n  const sign = lateralSign(a, b);\n"
+                "  if (sign === 0) {\n    return null;\n  }\n  return pose;\n}"
+            )
+            == "no_overlay",
+        )
+        check(
+            "the zero-sign parse recognises #455's shape (a body save)",
+            zero_sign_outcome(
+                "function save(poseId: x) {\n  const sign = lateralSign(a, b);\n"
+                "  if (sign === 0) {\n    return bodySave(spec, amount);\n  }\n  return pose;\n}"
+            )
+            == "body_save",
+        )
+        try:
+            zero_sign_outcome(
+                "function save(poseId: x) {\n  const sign = lateralSign(a, b);\n"
+                "  if (sign === 0) {\n    return somethingNew(spec);\n  }\n  return pose;\n}"
+            )
+            check("the zero-sign parse refuses a third shape rather than guessing", False)
+        except RuntimeError:
+            check("the zero-sign parse refuses a third shape rather than guessing", True)
+
         # The other half of what `count` counts. `tip()` reaches `lateralSign`
         # for exactly one pose id; if that ever stops being true, the get-up
         # family here is measuring something that no longer exists.
