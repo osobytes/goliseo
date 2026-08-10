@@ -5166,3 +5166,56 @@ fn only_a_keeper_ever_carries_a_dive_timer() {
          {keeper_get_up_ticks} get-up ticks), so it proves nothing"
     );
 }
+
+/// A keeper never holds a `dive_timer` while it holds the ball (#450).
+///
+/// The dive branch in `move_offball_keeper` owns a diving keeper's `pos` and
+/// `facing`, and `select_throw_target` defaults its aim cone to `facing`. While
+/// `dive_timer` was allowed to outlive the catch that ended the dive, the tick
+/// the keeper released the ball handed it straight back to a dive from before
+/// the save: it was dragged toward a stale `dive_target`, and the aim of its
+/// NEXT distribution was whatever that dive last wrote. Possession now ends the
+/// dive outright, which is what this pins.
+///
+/// The counter is the other half. An invariant of the form "X never happens"
+/// passes trivially if the situation never arises, so this also requires the
+/// sweep to have OBSERVED a dive being cut short by possession — a keeper that
+/// took the ball with more than one tick of lunge left, which under the old
+/// code kept running. Revert `end_dive`'s possession callers and both halves go
+/// red: the assertion inside the loop fires, and so does the counter.
+#[test]
+fn a_keeper_never_holds_a_dive_timer_while_it_holds_the_ball() {
+    let tune = Tuning::new();
+    let dt = 1.0 / 60.0;
+    let mut possession_ended_dives = 0_u32;
+    // Seed 1 is the eventful one the frame-buffer fixture uses; 17 is the
+    // render frame spec's; 5 is the `ai_driven_evidence` match's.
+    for seed in [1.0, 5.0, 17.0] {
+        let mut state = new_match_seeded(seed);
+        let mut previous = vec![0.0_f64; state.players.len()];
+        for tick in 0..3000 {
+            step_frames(&mut state, 1, &tune);
+            for (slot, p) in state.players.iter().enumerate() {
+                let owns = state.owner == Some((slot + 1) as i64);
+                assert!(
+                    !(owns && p.dive_timer > 0.0),
+                    "seed {seed} tick {tick}: slot {slot} holds the ball with \
+                     dive_timer {} still running, so the off-ball dive branch owns its \
+                     facing the moment it releases the ball -- see #450",
+                    p.dive_timer
+                );
+                // A dive that was still longer than one tick and is now over,
+                // on a tick this player owns the ball: only possession can
+                // have ended it, because decay could not have reached zero.
+                if previous[slot] > dt && p.dive_timer == 0.0 && owns {
+                    possession_ended_dives += 1;
+                }
+                previous[slot] = p.dive_timer;
+            }
+        }
+    }
+    assert!(
+        possession_ended_dives > 0,
+        "the sweep never saw a keeper take the ball mid-dive, so it proves nothing"
+    );
+}

@@ -43,7 +43,9 @@ remain derived from formation order and serialized match stats rather than
 adding persistent fields. Version 10 adds `MatchPlayer.keeper_get_up_timer`,
 the simulation-owned post-dive recovery window that the presentation layer
 reads for the `keeper_get_up` pose; it is armed when a dive lunge ends, decays
-under the fixed timestep, and is cleared by the kickoff reset. Version 11 adds
+under the fixed timestep, and is cleared by the kickoff reset. A dive ends
+either by running out of lunge window or by the keeper taking possession
+(#450) — one transition, two ways in, and never both for the same dive. Version 11 adds
 `MatchState.transition_windows` (each team's authored counter-press and
 counter-attack seconds) and `MatchState.transition` (the versioned possession
 memory: last and currently holding established team, the capped hold streak, the
@@ -52,7 +54,7 @@ live window on a finished match or one that outlived both tactic windows, so a
 leaked timer cannot survive a lifecycle boundary. Soccer-only
 input-tape envelopes remain version 1. The current soccer
 fixture uses InputFrame v2 and is pinned at tape digest
-`93bed4e168228a07`;
+`9375affb2dcd5588`;
 the published historical InputFrame-v1/InputTape-v1 artifact remains archived
 at `881917e3ba798703`. Version 11 preserves the version-1 soccer tape envelope
 and all 7,201 effective input wires, not snapshot byte identity.

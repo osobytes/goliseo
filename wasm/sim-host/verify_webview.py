@@ -14,7 +14,7 @@ presentation-only and cannot desync.
 That is reasoning. This script is the evidence. It loads the same module, the
 same page and the same worker `verify_browser.py` already runs in Chrome and
 Firefox, points them at a desktop webview instead, and compares the hashes the
-fixture prints against the frozen `bfbb106aea5480f8` / `a190b60058a64e63`.
+fixture prints against the frozen `bfbb106aea5480f8` / `0bfd0ed355f87322`.
 
 If the hashes do not match, the finding is much larger than Tauri: it would
 undermine the portable-simulation core the whole milestone rests on. So this

@@ -76,7 +76,7 @@
 #      (via vitest's own `toBe`) the exact digests step 9 checks again.
 #   9. an explicit, redundant assertion that the freshly built wasm module's
 #      runDeterminismEvidence() returns exactly
-#      final_hash=bfbb106aea5480f8 and sequence_digest=a190b60058a64e63.
+#      final_hash=bfbb106aea5480f8 and sequence_digest=0bfd0ed355f87322.
 #      This is the single most important assertion in the repository: it is
 #      what proves the wasm build did not perturb float behaviour. It is
 #      checked twice, independently, on purpose (AGENTS.md §9: never trust
@@ -142,7 +142,7 @@ determinism_spec="$wasm_pkg_dir/src/determinism.spec.ts"
 # own copy of the same two constants -- self_test()'s digest_drift_scenario
 # requires the two copies to still agree.
 EXPECTED_FINAL_HASH="bfbb106aea5480f8"
-EXPECTED_SEQUENCE_DIGEST="a190b60058a64e63"
+EXPECTED_SEQUENCE_DIGEST="0bfd0ed355f87322"
 EXPECTED_TICKS="7201"
 EXPECTED_BOUNDARIES="7202"
 EXPECTED_OUTCOME="home"

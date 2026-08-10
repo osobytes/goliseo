@@ -54,7 +54,7 @@ The authoritative values are:
 ```text
 boundaries=7202
 final_hash=bfbb106aea5480f8
-sequence_digest=a190b60058a64e63
+sequence_digest=0bfd0ed355f87322
 score=1-0
 outcome=home
 final_snapshot_bytes=21820
@@ -66,11 +66,27 @@ The complete match produced:
 catch=1 claim=3 header=2 pass=4 reception=1 shot=2 tackle=147 touch=180
 ```
 
-These values were last refreshed for the possessed-ball touchline fix. That
-fix clamps an owned ball to the arena, and this fixture is direct evidence the
-old code let one out: boundaries `0..2026` are bit-identical across the
-refresh and only `2027` onward moves, so the clamp is a genuine no-op until the
-first tick on which the ball actually leaves the pitch.
+These values were last refreshed for
+[#450](https://github.com/osobytes/goliseo/issues/450), which ends a keeper's
+dive at the moment it takes possession instead of letting `dive_timer` run out
+underneath the catch. This fixture is direct evidence of how narrow that is:
+exactly **26 of the 7,202 boundary hashes move**, `1693..1718`, and nothing
+else. `final_hash` does not move, nor does the `1-0` score, the event counts,
+`frame_wires`, the identity, the schema versions or the restore windows.
+Compared field by field, the only differences across the whole recording are
+three fields on one player — the away keeper's `dive_timer`, `dive_target` and
+`keeper_get_up_timer` — which is the dive ending 15 ticks earlier and its
+get-up window starting 15 ticks earlier. No position, ball, score or RNG value
+differs on any boundary, so the fixture's *play* is unchanged and only the
+keeper's own dive bookkeeping moved. (The AI-driven reference match in
+`crates/gc-sim/tests/fixtures/session_ai_driven_lua_reference.txt` is the
+scenario where the same change does alter play; it is not this fixture.)
+
+Before that, the values were refreshed for the possessed-ball touchline fix.
+That fix clamps an owned ball to the arena, and this fixture was direct
+evidence the old code let one out: boundaries `0..2026` were bit-identical
+across that refresh and only `2027` onward moved, so the clamp is a genuine
+no-op until the first tick on which the ball actually leaves the pitch.
 
 Because a stranded ball no longer kills the attack it was part of, the fixture
 now runs to `1-0` rather than `0-0`; one `claim` and one `pass` become seven

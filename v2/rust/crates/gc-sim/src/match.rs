@@ -2012,6 +2012,9 @@ fn attempt_steals(s: &mut MatchState, combat_state: Option<&CombatMatchState>, t
             keeper_mut.grab_timer = KEEPER_GRAB_POSE;
             keeper_mut.hold_timer = KEEPER_HOLD;
             keeper_mut.feet_ball = false;
+            if keeper_mut.dive_timer > 0.0 {
+                end_dive(keeper_mut); // possession ends the dive (#450)
+            }
             return;
         }
     }
@@ -4417,6 +4420,44 @@ fn launch_dive(s: &mut MatchState, keeper_idx: i64) {
     };
 }
 
+/// End a dive and hand the keeper to its get-up recovery.
+///
+/// THE ONLY DIVE-END TRANSITION, and the only place `keeper_get_up_timer` is
+/// armed — `gc-render`'s `frame::drawn_facing` rests on that, so keep it true.
+/// Two things reach it, and a dive reaches exactly one of them because this
+/// zeroes `dive_timer`: the lunge window running out (`step`'s timer sweep),
+/// and the keeper taking the ball.
+///
+/// THE SECOND CALLER IS THE POINT (#450). `dive_timer` used to outlive the
+/// catch that ended the dive, and the gap was not cosmetic. For as long as it
+/// ran, `move_offball_keeper`'s dive branch owned the keeper's `pos` and
+/// `facing` on every tick the keeper was not the owner — so the instant it
+/// released the ball, a dive from BEFORE the save dragged it back toward a
+/// stale `dive_target` and pointed `facing` along the way.
+/// `select_throw_target` defaults its aim cone to `facing`, so which teammate
+/// received the NEXT distribution was decided by a dive that had already been
+/// caught. A keeper who has caught the ball is not diving any more; ending the
+/// dive at the moment of possession cuts that coupling in the state machine
+/// rather than at either of its symptoms.
+///
+/// Every site that hands a keeper the ball calls it — the completed catch, the
+/// smother, the loose-ball gather — each guarded by `dive_timer > 0.0`, so a
+/// keeper that was not diving is never handed a get-up window it did not earn.
+/// A kickoff resets the whole field outright and needs no call. A QUEUED dive
+/// (`dive_delay`) needs no equivalent either: it only fires on an inbound ball,
+/// and a held ball has zero velocity.
+///
+/// Mirrors `end_dive` in `sim/match.lua`.
+fn end_dive(p: &mut MatchPlayer) {
+    p.dive_timer = 0.0;
+    p.dive_target = None;
+    p.save_style = None;
+    p.save_tip_emitted = false;
+    // The lunge is over: the keeper is on the floor and pushes back up before
+    // any ready posture reads as truthful again.
+    p.keeper_get_up_timer = KEEPER_GET_UP_POSE;
+}
+
 /// The keeper of the threatened goal COMMITS against an on-target shot: it
 /// picks its verdict now (catch / parry / beaten — pure and deterministic,
 /// a function of reach, handling, pace and angle), but the ball is NOT
@@ -4667,6 +4708,9 @@ fn resolve_pending_save(s: &mut MatchState, dt: f64) -> Option<crate::match_snap
                 k.grab_timer = KEEPER_GRAB_POSE;
                 k.hold_timer = KEEPER_HOLD;
                 k.feet_ball = false;
+                if k.dive_timer > 0.0 {
+                    end_dive(k); // possession ends the dive (#450)
+                }
                 return Some(SavePending::Catch);
             }
             // Parry from the actual contact point: punch it clear — out
@@ -5896,6 +5940,10 @@ fn update_ball(
             s.owner = Some(best);
             s.ball_vel = Vec2::new(0.0, 0.0);
             s.ball_spin = 0.0;
+            let best_mut = &mut s.players[(best - 1) as usize];
+            if best_mut.dive_timer > 0.0 {
+                end_dive(best_mut); // possession ends the dive (#450)
+            }
             // Auto-switch: the human takes over whichever home outfielder
             // wins the ball (like FIFA / Mario Strikers). Keepers stay AI.
             if !s.slot_mode && s.human_controlled && bp.team == Team::Home && !bp.is_keeper {
@@ -6080,15 +6128,10 @@ pub fn step(
         if p.dive_timer > 0.0 {
             p.dive_timer = (p.dive_timer - dt).max(0.0);
             if p.dive_timer == 0.0 {
-                p.dive_target = None;
-                p.save_style = None;
-                p.save_tip_emitted = false;
-                // The lunge just finished: the keeper is on the floor and
-                // pushes back up before any ready posture reads as
-                // truthful again. This is the ONLY place the get-up window
-                // is armed, so it is exactly one dive-end transition per
-                // dive under the fixed timestep.
-                p.keeper_get_up_timer = KEEPER_GET_UP_POSE;
+                // The lunge window ran out. `end_dive` is the one dive-end
+                // transition; the other way in is possession, and a dive
+                // reaches exactly one of them because both zero `dive_timer`.
+                end_dive(p);
             }
         }
         let mut launch_dive_now = false;

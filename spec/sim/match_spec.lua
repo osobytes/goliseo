@@ -3713,4 +3713,61 @@ t.describe("match keeper dive timers", function()
         t.is_true(keeper_dive_ticks > 0, "the sweep never observed a keeper dive")
         t.is_true(keeper_get_up_ticks > 0, "the sweep never observed a keeper get-up")
     end)
+
+    -- #450. The dive branch in the off-ball keeper path owns a diving keeper's
+    -- pos and facing, and `select_throw_target` defaults its aim cone to
+    -- facing. While `dive_timer` was allowed to outlive the catch that ended
+    -- the dive, the tick the keeper released the ball handed it straight back
+    -- to a dive from before the save: it was dragged toward a stale
+    -- dive_target, and the aim of its NEXT distribution was whatever that dive
+    -- last wrote. Possession now ends the dive outright, which is what this
+    -- pins.
+    --
+    -- The counter is the other half. An invariant of the form "X never
+    -- happens" passes trivially if the situation never arises, so this also
+    -- requires the sweep to have OBSERVED a dive cut short by possession -- a
+    -- keeper that took the ball with more than one tick of lunge left, which
+    -- under the old code kept running. Revert `_end_dive`'s possession callers
+    -- and both halves go red.
+    t.it("never lets a keeper hold a dive timer while it holds the ball", function()
+        local dt = 1 / 60
+        local possession_ended_dives = 0
+        for _, seed in ipairs({ 1, 5, 17 }) do
+            local state = seeded(seed)
+            local previous = {}
+            for tick = 1, 2000 do
+                match.step(state, dt, NO_INPUT)
+                for slot, p in ipairs(state.players) do
+                    local owns = state.owner == slot
+                    local live = p.dive_timer or 0
+                    if owns and live > 0 then
+                        t.is_true(
+                            false,
+                            "seed "
+                                .. seed
+                                .. " tick "
+                                .. tick
+                                .. ": slot "
+                                .. slot
+                                .. " holds the ball with a dive_timer still running, so "
+                                .. "the off-ball dive branch owns its facing the moment it "
+                                .. "releases the ball -- see #450"
+                        )
+                    end
+                    -- A dive that was still longer than one tick and is now
+                    -- over, on a tick this player owns the ball: only
+                    -- possession can have ended it, because decay could not
+                    -- have reached zero.
+                    if (previous[slot] or 0) > dt and live == 0 and owns then
+                        possession_ended_dives = possession_ended_dives + 1
+                    end
+                    previous[slot] = live
+                end
+            end
+        end
+        t.is_true(
+            possession_ended_dives > 0,
+            "the sweep never saw a keeper take the ball mid-dive, so it proves nothing"
+        )
+    end)
 end)

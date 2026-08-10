@@ -20,8 +20,8 @@ import { loadSimHost } from "./index.ts";
 const runAiDrivenEvidence = () => loadSimHost().runAiDrivenEvidence();
 
 /** Derived from the Lua capture -- see `crates/gc-sim/tests/ai_driven_evidence.rs`. */
-const LUA_FINAL_HASH = "5254dcc8efde305b";
-const LUA_SEQUENCE_DIGEST = "5278f4a48da4800a";
+const LUA_FINAL_HASH = "628d7fc71238dec6";
+const LUA_SEQUENCE_DIGEST = "29bbbc0f32b78dfa";
 
 describe("the compiled wasm module against the AI-driven Lua reference", () => {
   it("replays the scenario it claims to, and plays it", () => {
@@ -46,13 +46,21 @@ describe("the compiled wasm module against the AI-driven Lua reference", () => {
   // KNOWN DIVERGENCE -- wasm vs native, first observed 2026-08-07.
   //
   // The wasm build's tick SEQUENCE does not match Lua's, while its final
-  // state does. Measured, and reproducible:
+  // state does. Measured 2026-08-07, and reproducible AS OF THAT DATE:
   //
   //   Lua fixture   final 5254dcc8efde305b   sequence 5278f4a48da4800a
   //   native Rust   final 5254dcc8efde305b   sequence 5278f4a48da4800a
   //   wasm          final 5254dcc8efde305b   sequence 17998dc0e72d8510
   //
-  // The wasm result is stable across repeated runs, so this is not
+  // Those three rows are left at what was actually printed. #450 later changed
+  // the simulation, moving the Lua and native values to final
+  // 628d7fc71238dec6 / sequence 29bbbc0f32b78dfa (the constants above, both
+  // re-derived from a fresh Lua capture). The wasm row was NOT re-measured --
+  // that needs a rebuilt module -- so no number is claimed for it here. What
+  // still holds is the shape of the finding, and the `it.fails` below is what
+  // actually checks it against whatever the current build produces.
+  //
+  // The wasm result was stable across repeated runs, so this is not
   // nondeterminism -- it is the same source compiled for a different target
   // taking a different path and reconverging. Bisecting prefix digests
   // (`runAiDrivenEvidenceTo`) puts the FIRST divergent tick at 96: ticks 1-95

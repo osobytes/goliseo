@@ -68,6 +68,17 @@ that ran, across two separate harness invocations.
 
 Host: Linux 7.0.0-28-generic x86_64, `DISPLAY=:1`. Measured 2026-08-04.
 
+**The sequence digest above is the 2026-08-04 contract, not today's.**
+[#450](https://github.com/osobytes/goliseo/issues/450) changed the simulation on
+2026-08-10 and regenerated `data/omp1_determinism.lua`, moving the sequence
+digest to `0bfd0ed355f87322` (the final hash `bfbb106aea5480f8` did not move —
+only 26 mid-match boundaries did). The rows above are left at the value the
+runtimes actually printed, because rewriting a measurement to a number no run
+produced would turn evidence into assertion. What the table establishes is
+unaffected: every runtime agreed with every other and with the contract of the
+day, on the same binary. Re-running it needs a rebuilt `wasm/sim-host` and a
+desktop webview, so it is evidence run by hand — see the recipe below.
+
 A fourth, unpinned agreement is worth recording because nobody chose it as a
 contract: the performance run that follows the fixture prints
 `state hash: ab55d5912c3b6009` after 600 ticks, and every runtime above printed

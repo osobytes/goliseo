@@ -196,7 +196,7 @@ mod tests {
         assert_eq!(f.event_counts.get("touch"), Some(&180));
         assert_eq!(f.expected_score, Omp1ExpectedScore { home: 1, away: 0 });
         assert_eq!(f.expected_final_hash, "bfbb106aea5480f8");
-        assert_eq!(f.expected_sequence_digest, "a190b60058a64e63");
+        assert_eq!(f.expected_sequence_digest, "0bfd0ed355f87322");
         assert_eq!(f.identity.tape_version, 1);
         assert_eq!(f.identity.seed, 19);
         assert_eq!(

@@ -11,7 +11,7 @@ BATCH of frames and divides rather than pretending to time one.
 
 Deliberately a SEPARATE file from `verify_browser.py`, which owns the frozen
 determinism fixture. That file asserts hashes `bfbb106aea5480f8` /
-`a190b60058a64e63` on the default entry point, and #332 must not change what it
+`0bfd0ed355f87322` on the default entry point, and #332 must not change what it
 sees. Two harnesses, two entry points of the same artifact, no shared state.
 
 FOLLOW-UP, and it is a real duplication rather than a tidy one: the page
