@@ -159,6 +159,184 @@ export function metres(radii: number): number {
 // than written down, so a proportions change carries it.
 const LEAN_REFERENCE_HEIGHT = proportions.RIG_MEDIUM.seg.hips_y;
 
+// ---------------------------------------------------------------------------
+// GROUND CONTACT (#439)
+// ---------------------------------------------------------------------------
+//
+// A root translation moves the WHOLE rig, feet included, and there is no IK
+// here to put a slid foot back (see this file's "No IK here" note). Upward is
+// fine -- an aerial, a knockback and a stumble mean to leave the ground. A
+// DOWNWARD translation is not: it drives the feet through the pitch, and it
+// did, in seven places across `TIPS` and `ATTITUDES`, by 3.7 cm to 7.4 cm.
+//
+// WHY THE SINK EQUALS THE DROP. The rig is authored to plant exactly on the
+// pitch plane: measured through the real `body.accumulate` geometry and the
+// real `skeleton.apply`, the lowest rendered point of a STANDING character is
+// -1.2 mm -- the boot's outer sole corner, a millimetre into the turf because
+// the thigh carries a 2 degree rest roll. There is no clearance to spend, so a
+// drop of d puts the sole d below the turf and nothing absorbs any of it.
+// `ground_contact.spec.ts` measures that number rather than trusting this
+// comment, and fails if the rig ever changes underneath it.
+//
+// THE FIX IS A FLOOR ON THE OVERLAY'S DOWNWARD COMPONENT, applied in `apply`
+// below -- the one place every root overlay reaches a real pose, so a pose
+// authored tomorrow is covered by construction rather than by remembering to
+// call something. Three properties make that floor exact rather than
+// approximate:
+//
+//   * `root` HAS NO PARENT, and `skeleton.apply` builds its local transform as
+//     `quat.toMat4(rot, offset + move * motion_scale)` -- the translation is
+//     the matrix's own column, with nothing above it to re-orient. So a metre
+//     of authored `move.root.y` is a metre of WORLD travel for every vertex in
+//     the character, whatever the rest of the pose is doing. A floor in metres
+//     is therefore a floor in penetration, with no second evaluation pass and
+//     no per-frame cost at all.
+//   * IT IS EXPRESSED ON THE AUTHORING SIDE OF `motion_scale`, which is the
+//     mistake #436 was: `skeleton.apply` multiplies `move` by the rig's
+//     motion_scale (0.88), so a budget in world metres becomes a budget in
+//     `move` units only after dividing by it. `groundedRootY` does that
+//     division, and its spec pins it with a deliberately non-zero budget so
+//     the arithmetic is exercised rather than multiplied away by today's zero.
+//   * IT CLAMPS THE OVERLAY, NOT THE TOTAL. The locomotion clips write the
+//     run's vertical bob to `move.root` too, and `apply` COMPOSES an attitude
+//     onto that rather than assigning (see this file's ASSIGN FOR AN ACTION
+//     note). Clamping the sum would eat the bob and leave a settling player
+//     gliding, which is the exact failure that composition exists to avoid.
+//     Clamping the overlay is conservative with respect to the sum because no
+//     locomotion blend ever writes a NEGATIVE root y -- the walk and run clips
+//     bottom out at exactly 0 on their contact keys -- which
+//     `ground_contact.spec.ts` pins rather than assumes.
+//
+// WHAT THIS DELIBERATELY DOES NOT COVER, because an undisclosed gap is worse
+// than a disclosed one:
+//
+//   * ROOT ROTATIONS. Every attitude `lean` is a root tilt, `combat_stagger`
+//     pitches -8 degrees and `keeper_get_up` rolls 16, and a tilt about a root
+//     at y = 0 swings the far boot below the plane just as surely as a drop
+//     does. Measured residuals at a standstill, with the drop already
+//     grounded, quoted as the floors `ground_contact.spec.ts` pins: 50 mm
+//     keeper_get_up, 24 mm run_telegraph, 13 mm kick_follow, 11 mm
+//     combat_stagger, 8 mm contain, 4 mm fatigue.
+//
+//     THE SAVES ARE DEEPER AND ARE NOT A SINGLE NUMBER. `save()` scales its
+//     roll and its travel by `opts.dive`, so the residual scales with it.
+//     Quoted as the floors `ground_contact.spec.ts` pins, body first:
+//     `keeper_dive` 57 mm at a quarter dive, 111 mm at half, 192 mm at full --
+//     and 412 mm at full counting the shield on `socket_shield.L`, which a
+//     72-degree roll swings with the arm chain. `keeper_tip` is `fixed: 1`, so
+//     it is 362 mm of body and 595 mm with the shield ALL the time;
+//     `keeper_stretch` is floored at 0.82, so it is 171 mm before any amount
+//     arrives and 279 mm at full (294 and 502 mm with the shield). Full dive is not a corner case: `gc-render`'s frame builder
+//     pushes `min(dive_timer / 0.3, 1)` and the timer starts at 0.32 s, so
+//     every dive opens saturated and eases down.
+//
+//     None of that is this issue's to fix -- correcting it means deciding what
+//     a dive should look like once its pivot moves to the plane, which is a
+//     visual question rather than a unit or a clamp. It is pinned as a table
+//     in `ground_contact.spec.ts`, amount by amount and body separately from
+//     props, so it cannot deepen unnoticed and so nobody reads a half dive as
+//     the ceiling.
+//   * CLIP-AUTHORED ROOT MOTION. `clips.ts`'s SWING authors a 32 mm root drop
+//     mid-lunge -- 28 mm of world travel once `skeleton.apply` has applied the
+//     same motion_scale this file divides by three paragraphs up, because that
+//     multiply is uniform and does not care that a clip wrote the value. It
+//     does NOT penetrate, because its own thigh and shin keys raise the feet
+//     by more than that. That is the legitimate way to settle a body on this
+//     rig, it is limb work, and clamping it would flatten a pose that is
+//     already correct. Measured and pinned too.
+//
+// WHAT IT COSTS THE POSES, stated plainly because it is the point a reader
+// will care about: on RIG_MEDIUM the budget below is ZERO, so a grounded drop
+// is no drop. `settle`, `keeper_ready_low` and `keeper_set` are drop-only
+// poses, so they no longer change the silhouette at all; `contain` and
+// `fatigue` keep their lean and lose their crouch. That is not a re-tune and
+// not a deletion -- the constants stay exactly as `ATTITUDES` and `TIPS`
+// author them, and they become live the moment the rig can absorb them. The
+// thing that would absorb them is a knee bend, which is limb work and which
+// `attitudeFor` has said belongs with the clip set since #430.
+//
+// TWO COLLISIONS COME WITH THAT, and they are the reason the sentence above is
+// not the whole cost:
+//
+//   * `keeper_set` and `keeper_ready_low` become THE SAME HELD POSE.
+//     `pose_table.ts` says `keeper_ready_low` "is LOW because of the attitude
+//     -- without it the two stances differed only in crossfade duration", and
+//     the drop was that attitude entire. Grounded, the only thing left telling
+//     the two apart is how long each takes to blend in.
+//   * `settle` becomes plain locomotion. Its own entry calls the drop "the
+//     whole read, and it is what separated a settle from plain running".
+//
+// Both are pinned as equalities in the specs rather than left as prose, so
+// they read as deliberate and go red the moment a knee bend gives either one
+// its silhouette back.
+//
+// The ground clearance a downward root translation may spend, in metres of
+// world travel. Zero for RIG_MEDIUM, and not a placeholder: the rig plants at
+// the plane with a millimetre to spare on the wrong side (see above). It is a
+// named constant with a measured spec rather than an inlined `0` so that a rig
+// which ever DOES stand clear of the turf -- a thicker sole, a higher ankle --
+// raises it deliberately, with the measurement in front of whoever does it.
+//
+// Deliberately NOT the clearance of a MOVING character. The walk and run clips
+// float the whole figure well above the plane for the entire cycle (measured
+// over 24 phases: never below +14 mm walking or +21 mm running, peaking at
+// +137 mm mid-run -- pinned as bounds in `ground_contact.spec.ts`), so
+// a per-frame budget read off the posed rig would let a settle sink its full
+// 7 cm at one phase of the stride and none of it at another -- a 5 cm vertical
+// wobble at stride frequency, added to poses whose whole job is to read as a
+// held posture. A standing figure is the bound because these poses can and do
+// occur at a standstill.
+const GROUND_CLEARANCE_METRES = 0;
+
+// One rig, one motion_scale -- the same single-rig assumption `metres()` above
+// already rests on (`proportions.ts`: "there is one rig here").
+//
+// THE COUPLING, NAMED SO IT IS NOT A SURPRISE LATER. This is read from
+// `RIG_MEDIUM` at module load, while `skeleton.apply` divides by
+// `rig.style.motion_scale` from the `Rig` it is handed. They agree today
+// because there is exactly one `RigProportions` and one construction site, and
+// they would silently disagree the moment a second rig or a per-species
+// motion_scale appears: the floor would then be expressed in one rig's units
+// and applied in another's, and the error would be the ratio between them --
+// a wrong-by-a-few-millimetres bug, which is the hardest kind to see here.
+// `action_pose.ts` has no access to the real `Rig` (the overlay is authored
+// before a rig is chosen), so fixing it means passing the scale in, not
+// reading a different constant. Deliberately not done now: a second rig is the
+// event that should force it, and doing it early would add a parameter to
+// every caller for a case that does not exist.
+const MOTION_SCALE = proportions.RIG_MEDIUM.motion_scale;
+
+// The only bone the floor applies to, and the only bone this file's overlays
+// ever translate. It is not a shorthand for "the first bone": `root` is the
+// one bone whose translation is world-space, because it has no parent to
+// re-orient it. A -Y translation on any other bone is down the PARENT's axes,
+// which is not down the pitch, so flooring it would be arithmetic on two
+// different quantities.
+const ROOT = "root";
+
+/**
+ * One root translation's vertical component, floored so it cannot drive the
+ * feet through the pitch. In `move` units (metres BEFORE `skeleton.apply`
+ * multiplies by the rig's motion_scale), which is why the budget is divided by
+ * it here.
+ *
+ * Upward travel is returned untouched: an aerial lift, a knockback, a save and
+ * a stumble all mean to leave the ground.
+ *
+ * `clearanceMetres` is a parameter only so the spec can exercise the
+ * conversion with a non-zero budget; every caller uses the rig's own.
+ */
+export function groundedRootY(y: number, clearanceMetres: number = GROUND_CLEARANCE_METRES): number {
+  if (y >= 0) {
+    return y;
+  }
+  // `0 - x` rather than `-x`: at a zero budget the unary form yields -0, which
+  // `Object.is` (and therefore `toBe`) distinguishes from the 0 every other
+  // path produces.
+  const floor = 0 - clearanceMetres / MOTION_SCALE;
+  return Math.max(y, floor);
+}
+
 interface SaveSpec {
   readonly angle: number;
   readonly travel: number;
@@ -423,10 +601,21 @@ export function attitudeFor(opts: ActionPoseOptions): RootPose | null {
     // The billboard raised hipY/shoulderY/headY and left footY alone, so its
     // crouch compressed the legs. The rig has no IK to fold a leg under a
     // dropped pelvis, so the whole root settles instead and the feet settle
-    // with it -- a few millimetres into the turf at these magnitudes (the
-    // largest here, `keeper_ready_low`, is 0.084 m before the rig's own
-    // motion_scale, against a 1.57 m figure). Named rather than hidden: a
-    // knee-bent crouch is limb work and belongs with the clip set.
+    // with it -- the WHOLE WAY into the turf at these magnitudes, because the
+    // rig has no ground clearance to spend. The largest here,
+    // `keeper_ready_low`, is 0.084 m before the rig's own motion_scale and
+    // 0.074 m after it, against a 1.57 m figure: 4.7% of the character's
+    // height, feet and ankles below the pitch.
+    //
+    // This comment used to call that "a few millimetres into the turf" in the
+    // same sentence that quoted 0.084 m -- the number computed correctly and
+    // the size of it mis-stated by a factor of twenty, which is why half of
+    // #439 stayed invisible after being written down. The authored magnitude
+    // is unchanged and correct; what was missing was the ground contact, and
+    // `apply` now floors this against the rig's clearance (see GROUND CONTACT
+    // above). A knee-bent crouch is still limb work and still belongs with the
+    // clip set -- and now that the drop is grounded, it is the ONLY thing that
+    // will make these poses read as a crouch again.
     pose.move.root = [0, -metres(drop), 0];
   }
   return pose;
@@ -466,6 +655,15 @@ export function forOptions(opts: ActionPoseOptions): RootPose | null {
 // crouch that assigned there would flatten the bob and leave a settling player
 // gliding. Actions run first and return, so a pose id that ever appeared in
 // both tables would be an action; today the two are disjoint.
+//
+// GROUNDED ON THE WAY THROUGH. Both branches below floor the ROOT's downward
+// translation against the rig's ground clearance -- see the GROUND CONTACT
+// section above for why this is the right place for it, why it is the overlay
+// and not the sum that gets floored, and what it deliberately leaves alone.
+// `forOptions` and `attitudeFor` keep returning the AUTHORED geometry, so the
+// tables stay readable and testable in the units they are written in; this is
+// the boundary where a pose becomes something a skeleton will actually be
+// posed with, and therefore the boundary where the pitch exists.
 export function apply(pose: MutablePose, opts: ActionPoseOptions): MutablePose {
   const action = forOptions(opts);
   if (action) {
@@ -473,7 +671,7 @@ export function apply(pose: MutablePose, opts: ActionPoseOptions): MutablePose {
       pose.rot[bone] = quat.fromEuler((r[0] * Math.PI) / 180, (r[1] * Math.PI) / 180, (r[2] * Math.PI) / 180);
     }
     for (const [bone, m] of Object.entries(action.move)) {
-      pose.move[bone] = m;
+      pose.move[bone] = bone === ROOT ? [m[0], groundedRootY(m[1]), m[2]] : m;
     }
     return pose;
   }
@@ -492,7 +690,11 @@ export function apply(pose: MutablePose, opts: ActionPoseOptions): MutablePose {
   }
   for (const [bone, m] of Object.entries(held.move)) {
     const existing = pose.move[bone] ?? [0, 0, 0];
-    pose.move[bone] = [(existing[0] ?? 0) + m[0], (existing[1] ?? 0) + m[1], (existing[2] ?? 0) + m[2]];
+    // The attitude's own contribution is what gets floored, and it is floored
+    // BEFORE it is added: the gait's bob is the clip's business and survives
+    // untouched, exactly as composition (rather than assignment) intends.
+    const dy = bone === ROOT ? groundedRootY(m[1]) : m[1];
+    pose.move[bone] = [(existing[0] ?? 0) + m[0], (existing[1] ?? 0) + dy, (existing[2] ?? 0) + m[2]];
   }
   return pose;
 }

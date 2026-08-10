@@ -364,10 +364,25 @@ describe("player_renderer_3d mixer/procedural parity", () => {
         delta(mixerPoseFor(`attitude-upright-${id}`, upright, opts, 7.5), mixerPoseFor(`attitude-leaning-${id}`, leaning, opts, 7.5)),
       ).toBeGreaterThan(0.01);
       // ...and the attitude itself is there, so the above is not vacuous.
-      // This suite's `delta` spans `move` as well as `rot`, which matters for
-      // `settle`: its whole reading is a root translation.
+      // This suite's `delta` spans `move` as well as `rot`.
+      //
+      // `settle` is the exception, and it is a deliberate one (#439). Its
+      // whole reading WAS a root translation -- a 6.9 cm drop on a rig with no
+      // IK and no ground clearance, which is 6.9 cm of the character's ankles
+      // under the turf and not a crouch at all. `action_pose.apply` grounds
+      // it, so `settle` now resolves exactly as plain locomotion does, and
+      // asserting a difference here would be asserting the defect. What this
+      // case still proves is the thing the gate is about: the balance lean
+      // survives, above. The crouch's own constants stay pinned in
+      // `action_pose.spec.ts` and the ground contact in
+      // `rig3d/ground_contact.spec.ts`.
       const plain = baseOptions({ pose: { id: "locomotion" }, facing: new Vec2(0.6, 0.8) });
-      expect(delta(poseFor(leaning, opts, 7.5), poseFor(leaning, plain, 7.5))).toBeGreaterThan(0.01);
+      const fromPlain = delta(poseFor(leaning, opts, 7.5), poseFor(leaning, plain, 7.5));
+      if (id === "settle") {
+        expect(fromPlain, "a grounded drop-only attitude is plain locomotion").toBe(0);
+      } else {
+        expect(fromPlain).toBeGreaterThan(0.01);
+      }
     },
   );
 
