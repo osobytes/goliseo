@@ -630,8 +630,9 @@ describe("ground contact: what the lift is, exactly", () => {
   // as "no clearance", which is what let it floor a drop at zero. An exact lift
   // does not get to be selective about which millimetre it is exact about, so
   // every character now plants ON the plane instead of a millimetre under it --
-  // 0.076% of the figure's height, invisible at any camera scale this game
-  // uses, and in the direction of correct.
+  // 0.02 px at match camera (derived once in `ground.ts`, alongside the figure
+  // height and the ~26 px it divides into), invisible at any camera scale this
+  // game uses, and in the direction of correct.
   //
   // WHAT THIS PAIR IS REALLY ABOUT is that it is a CONSTANT and is paid ONCE.
   // The idle clip never reaches below the identity rest pose -- measured over

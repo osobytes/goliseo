@@ -184,6 +184,17 @@
 //     running                 7.9 us     8.8 us (1.1x)      --
 //     full keeper_dive        8.5 us    14.8 us (1.7x)      --
 //
+// READ THE RATIOS, NOT THE MICROSECONDS. These come from a Node microbenchmark
+// over this module, not from the browser/three.js/GPU path the game actually
+// ships on, so they are not a frame budget and the absolute figures do not
+// survive being quoted as one. An independent re-run on the same machine
+// reproduced the ordering and the story -- raised cheaper than unraised,
+// keeper_dive heaviest -- while landing the idle-before at 8.3 us and the
+// unraised idle ratio anywhere from 1.15x to 1.9x. The ratio is what the
+// argument below rests on and the ratio is what reproduces; the third
+// significant figure is noise, and the count tests, not these numbers, are
+// what hold the property.
+//
 // The right-hand column is what this file looked like before the rest pose
 // moved to build time: every standing character taking the correction branch
 // and paying a second skeleton evaluation to be raised 0.02 px.
