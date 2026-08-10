@@ -42,6 +42,14 @@ Desktop.ini
 .codex/
 .claude/
 
+# Rollback validation evidence. `scripts/rollback_ci.py` writes a `<run>.json`
+# plus a `<run>-raw/` log tree per run; docs/online/omp2_rollback_validation.md
+# points `--output` at /tmp, but the flag takes any path and a repo-root run
+# leaves megabytes of generated JSON and webdriver logs sitting untracked. The
+# reviewed numbers live in that document, so the runs themselves are
+# reproducible output, not evidence — never commit them.
+/omp2-rollback-*/
+
 # Logs, coverage, profiling, and scratch output
 *.log
 .cache/
