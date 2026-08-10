@@ -149,12 +149,35 @@ two columns that cross-check cannot reach are checked structurally instead --
 `facing` and `dive_dir` are unit vectors or zero, and no neighbouring column
 is that by accident over thousands of frames.
 
+Reading another revision's frames is the primary use, so the mirrors are
+checked against THAT revision, not this one: `mirrored_source_verdict` hashes
+both `frame_buffer.ts` and `action_pose.ts` at the counted build against this
+tree's. `--self-test`'s drift checks can only ever read ROOT, so without it a
+`--rev` build whose own `lateralSign` differed would be measured with this
+tree's formula and nothing would say so.
+
 Three sessions, all mandatory. Two counting sessions in independent browser
 processes must produce the IDENTICAL stream of counted frames -- same control
 discipline as the pixel subcommands, and a count needs it more, since an
 unstable count is reported as a number with no image for anyone to disbelieve.
 The third runs a short prefix at full size with bloom on and must count the
 same stream, which is what earns the small, fast viewport the other two use.
+
+AND EVERY SESSION MUST COVER ITS WHOLE TICK BUDGET, which the control cannot
+check and must not be mistaken for checking. The simulation is deterministic,
+so two sessions that stop early stop at the SAME tick -- the control then
+compares two identically truncated streams and says they agree, which reads as
+reassurance while the count is a fraction of the run. A session can stop early
+by erroring, by the match ending, or by the page quietly failing to re-arm its
+`requestAnimationFrame`, after which every step is a successful no-op. All
+three are refused by `session_completeness_verdict`, and the report carries
+the ticks reached beside the ticks asked for so the two cannot be read apart.
+
+On a failed guard the report withholds `counts` entirely and carries a
+top-level `verdict`, the way `command_ab` withholds its `comparison`: a
+downstream reader should not have to iterate ten verdicts to learn whether a
+number means anything, and a JSON file outlives the terminal that printed the
+refusal.
 
 ## `--self-test` proves this file, and nothing else
 
@@ -201,6 +224,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -1106,6 +1130,72 @@ def frame_read_verdict(runs: dict[str, dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def session_completeness_verdict(runs: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Every session counted the whole budget it was asked for.
+
+    THE FAILURE THIS EXISTS FOR IS A CONTROL THAT REASSURES YOU ABOUT A
+    TRUNCATED RUN. A session can stop early three ways and none of them used
+    to reach a verdict:
+
+      * `match_harness.ts`'s `main().catch` sets `status = "error"`, and the
+        stepping loop broke out of the pump on it exactly as it does for a
+        legitimate `finished`;
+      * the match itself ends (`?duration=`) before the tick budget does;
+      * the page stops re-registering its `requestAnimationFrame` -- `loop`
+        re-arms on its LAST line, so anything returning early leaves `pending`
+        empty, after which every `step()` is a successful no-op and the tick
+        silently stops advancing while the driver pumps out the rest of the
+        budget.
+
+    The simulation is deterministic, so two control sessions on one seed stop
+    at the SAME tick. `count_control_verdict` then compares two identically
+    truncated streams and reports ok -- "two independent sessions counted an
+    identical stream of N frames" -- which reads as reassurance while N is a
+    fraction of the run, and the report carries only the budget that was
+    REQUESTED. A number about to justify changes in #450 and #451 cannot be
+    allowed to fail that way.
+
+    So the budget is checked three ways per session -- the page's own final
+    tick, the bootstrap's recorded-tick count, and the frames the reader
+    actually read -- and all three must equal what was asked for. That triple
+    is also the one-frame-one-tick identity this driver's tick addressing
+    rests on, checked rather than assumed.
+    """
+    problems: list[dict[str, Any]] = []
+    for label in sorted(runs):
+        run = runs[label]
+        requested = int(run["requested_ticks"])
+        final_tick = run.get("final_tick")
+        if run.get("status") == "error":
+            problems.append(
+                {"run": label, "problem": f"the page reported an error at tick {final_tick}: {run.get('error')}"}
+            )
+            continue
+        if final_tick != requested:
+            ended = " (the match ended)" if run.get("status") == "finished" else ""
+            problems.append({"run": label, "problem": f"stopped at tick {final_tick} of {requested} requested{ended}"})
+            continue
+        for name, value in (("recorded ticks", run.get("recorded_ticks")), ("frames read", run.get("frames_read"))):
+            if value != requested:
+                problems.append({"run": label, "problem": f"{name} is {value}, not the {requested} ticks stepped"})
+    if problems:
+        return {
+            "ok": False,
+            "reason": (
+                f"a counting session did not cover its tick budget ({problems[0]['run']}: "
+                f"{problems[0]['problem']}). Both control sessions stop at the same tick on a "
+                f"deterministic seed, so the control CANNOT catch this -- refusing rather than "
+                f"reporting a fraction of a session as a session"
+            ),
+            "problems": problems,
+        }
+    return {
+        "ok": True,
+        "reason": "every session reached its full tick budget, with one recorded tick and one frame read per tick",
+        "problems": [],
+    }
+
+
 def unposed_dive_verdict(runs: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """No save happened that a pose-id-keyed count could not see.
 
@@ -1340,45 +1430,78 @@ def fidelity_verdict(small: list[dict[str, Any]], full: list[dict[str, Any]], ti
     }
 
 
-def frame_layout_verdict(dist: Path) -> dict[str, Any]:
-    """The build being counted decodes a frame the way this tree does.
+def mirrored_source_verdict(dist: Path, *, tree_root: Path = ROOT) -> dict[str, Any]:
+    """The build being counted mirrors the SAME TypeScript this driver does.
 
-    Only reachable for a `--rev` build, which is the case that matters: a
-    count exists to compare a fix against the build before it, and if
-    `frame_buffer.ts` moved a per-player column between the two revisions then
-    the driver's field indices are right for one of them and wrong for the
-    other. `page_cross_check_verdict` would catch a moved `pose_id`/`x`/`y`
-    live; this catches a moved `facing`/`dive_dir` too, which nothing live
-    can see.
+    This driver reproduces two TypeScript files in Python, and `--self-test`
+    keeps both mirrors honest by reading the originals back out of THIS TREE:
+
+      * `frame_buffer.ts` -- the per-player column indices `FRAME_FIELDS`
+        reads a frame block by, and the wire order `POSE_IDS` turns a pose
+        code back into a name with;
+      * `action_pose.ts` -- `lateralSign`'s cross product and its 1e-6 dead
+        band, which `lateral_sign` mirrors, and the `SAVES` table that
+        `SAVE_POSES` mirrors.
+
+    THE GAP THIS CLOSES IS THAT `--self-test` ONLY EVER READS THIS TREE. A
+    count's primary use is `--rev`: build another revision and compare. If
+    that revision's `action_pose.ts` carried a different `lateralSign` --
+    a different operand order, a different epsilon, a different `SAVES` set --
+    the Python mirror would silently apply THIS tree's formula to THAT
+    revision's frames, and nothing would notice. `--self-test` is looking at
+    the wrong tree; the live page cross-check cannot reach `facing`/`dive_dir`
+    at all (which is why `vector_shape_verdict` exists as a structural
+    stand-in); and `vector_shape_verdict` only proves the columns are unit
+    vectors, not that the formula consuming them still means the same thing.
+
+    So both files are hashed at the counted build and compared with this
+    tree's. It is a blunt instrument on purpose -- ANY difference refuses,
+    including a comment-only one -- because the alternative is deciding which
+    differences are safe, and the whole point is that this driver cannot see
+    inside the revision it is counting.
 
     Reports `unavailable` rather than failing when the dist did not come from
-    a source tree -- a bare `--dist` is a reason this cannot run, not a reason
+    a source tree: a bare `--dist` is a reason this cannot run, not a reason
     to refuse.
     """
-    here = ROOT / "v2" / "ts" / "packages" / "render" / "src" / "frame_buffer.ts"
+    mirrored = {path.name: path.relative_to(tree_root) for path in (FRAME_BUFFER_TS, ACTION_POSE_TS)}
     for parent in [dist] + list(dist.parents):
-        candidate = parent / "v2" / "ts" / "packages" / "render" / "src" / "frame_buffer.ts"
-        if candidate.is_file():
-            if candidate == here:
-                return {"ok": True, "reason": "the counted build is this tree", "sha256": {}}
-            theirs = hashlib.sha256(candidate.read_bytes()).hexdigest()
-            ours = hashlib.sha256(here.read_bytes()).hexdigest()
+        if not all((parent / relative).is_file() for relative in mirrored.values()):
+            continue
+        if parent == tree_root:
+            return {"ok": True, "reason": "the counted build is this tree", "sha256": {}}
+        digests: dict[str, dict[str, str]] = {}
+        drifted: list[str] = []
+        for name, relative in mirrored.items():
+            theirs = hashlib.sha256((parent / relative).read_bytes()).hexdigest()
+            ours = hashlib.sha256((tree_root / relative).read_bytes()).hexdigest()
+            digests[name] = {"build": theirs, "tree": ours}
             if theirs != ours:
-                return {
-                    "ok": False,
-                    "reason": (
-                        f"{candidate} differs from this tree's frame_buffer.ts, so the per-player "
-                        f"field indices this driver reads by may not mean the same thing in the "
-                        f"build being counted"
-                    ),
-                    "sha256": {"build": theirs, "tree": ours},
-                }
-            return {"ok": True, "reason": "the counted build's frame_buffer.ts is byte-identical to this tree's",
-                    "sha256": {"build": theirs, "tree": ours}}
+                drifted.append(name)
+        if drifted:
+            return {
+                "ok": False,
+                "reason": (
+                    f"{', '.join(drifted)} differs between {parent} and this tree, so what this "
+                    f"driver mirrors in Python -- the frame's column indices, the pose-code order, "
+                    f"`lateralSign`'s formula and dead band, the SAVES table -- is checked against "
+                    f"the wrong revision. --self-test only ever reads this tree, so nothing else "
+                    f"would notice"
+                ),
+                "sha256": digests,
+                "drifted": drifted,
+            }
+        return {
+            "ok": True,
+            "reason": f"the counted build's {' and '.join(sorted(mirrored))} are byte-identical to this tree's",
+            "sha256": digests,
+            "drifted": [],
+        }
     return {
         "ok": True,
-        "reason": "unavailable: this dist has no source tree next to it, so the frame layout was not compared",
+        "reason": "unavailable: this dist has no source tree beside it, so the mirrored sources were not compared",
         "sha256": {},
+        "drifted": [],
     }
 
 
@@ -1865,14 +1988,27 @@ def count_run(
                     f"{round(time.monotonic() - started)}s elapsed",
                     flush=True,
                 )
-            if state.get("status") in ("finished", "error"):
+            # NOT BROKEN OUT OF LIKE A LEGITIMATE END. `_open_page` already
+            # refuses a boot error; treating a mid-run one as an ordinary
+            # end-of-session hands a truncated stream to the report, and a
+            # deterministic seed makes both control sessions die at the same
+            # tick, so the control would call the pair identical and fine.
+            # `session_completeness_verdict` is the backstop that catches
+            # every other way a session can stop short; this is the loud
+            # failure at the point it happens.
+            if state.get("status") == "error":
+                raise RuntimeError(
+                    f"{label}: the match harness reported an error at tick {state.get('tick')} of "
+                    f"{ticks} requested: {state.get('error')}"
+                )
+            if state.get("status") == "finished":
                 break
         raw = driver.execute_script("return window.__gcDriver.leanRows();")
         effects_state = read_effects_diagnostics(driver)
         final = driver_state(driver)
     elapsed = round(time.monotonic() - started, 1)
     print(
-        f"[browser_match_harness] {label}: {final.get('tick')} ticks, "
+        f"[browser_match_harness] {label}: {final.get('tick')} of {ticks} ticks, "
         f"{raw.get('frames_read')} frames read, {len(raw.get('rows') or [])} watched frames, {elapsed}s"
     )
     return {
@@ -1883,6 +2019,17 @@ def count_run(
         "gpu": gpu,
         "viewport": {"width": width, "height": height, "bloom": full_fidelity, "stadium": full_fidelity},
         "elapsed_seconds": elapsed,
+        # What `session_completeness_verdict` reads. The tick budget is carried
+        # next to what was actually reached, in the same dict, so a reader of
+        # the report cannot see one without the other.
+        "budget": {
+            "requested_ticks": ticks,
+            "final_tick": final.get("tick"),
+            "recorded_ticks": final.get("recorded_ticks"),
+            "frames_read": raw.get("frames_read"),
+            "status": final.get("status"),
+            "error": final.get("error"),
+        },
         "final_state": {key: final.get(key) for key in ("tick", "score", "status", "frames", "recorded_ticks")},
     }
 
@@ -2163,7 +2310,7 @@ def _count_table(counts: dict[str, Any]) -> list[str]:
 
 def command_count(args: argparse.Namespace) -> int:
     dist = resolve_build(args.dist, args.rev, args, Path(args.build_root))
-    layout = frame_layout_verdict(dist)
+    mirrored = mirrored_source_verdict(dist)
     server, _thread, base_url = serve_dist(dist)
     try:
         run_a = count_run(
@@ -2198,8 +2345,10 @@ def command_count(args: argparse.Namespace) -> int:
             run_a["records"], run_full["records"] if run_full else [], args.fidelity_ticks
         ),
         "renderer state": renderer_state_verdict({label: run["effects"] for label, run in runs.items()}),
-        "frame layout": layout,
+        "session completeness": session_completeness_verdict({label: run["budget"] for label, run in runs.items()}),
+        "mirrored sources": mirrored,
     }
+    failed = [name for name, verdict in guards.items() if not verdict["ok"]]
     counts = tally(run_a["records"])
 
     for name, verdict in guards.items():
@@ -2207,6 +2356,8 @@ def command_count(args: argparse.Namespace) -> int:
     print()
     for line in _count_table(counts):
         print(line)
+    if failed:
+        print("\n[browser_match_harness] the table above is NOT a result: see the failed guard(s).")
 
     report = {
         "kind": "count",
@@ -2223,10 +2374,22 @@ def command_count(args: argparse.Namespace) -> int:
             "gpu_mode": args.gpu_mode,
         },
         "guards": {name: verdict for name, verdict in guards.items()},
-        "counts": counts,
+        # WITHHELD ON A FAILED GUARD, the same way `command_ab` withholds its
+        # `comparison`. A downstream reader -- #450 and #451 are the named
+        # ones -- should not have to iterate nine verdicts to learn whether
+        # `counts` means anything, and a JSON file outlives the terminal that
+        # printed the refusal.
+        "verdict": "refused" if failed else "ok",
+        "failed_guards": failed,
+        "counts": None if failed else counts,
+        "counts_withheld": f"guard(s) failed: {', '.join(failed)}" if failed else None,
         "runs": {
             label: {
                 "final_state": run["final_state"],
+                # The tick budget carried NEXT TO the ticks actually reached.
+                # Council review of PR #456 found the report surfaced only the
+                # requested count, so a truncated session read as a whole one.
+                "budget": run["budget"],
                 "viewport": run["viewport"],
                 "elapsed_seconds": run["elapsed_seconds"],
                 "watched_frames": len(run["records"]),
@@ -2253,6 +2416,10 @@ def command_count(args: argparse.Namespace) -> int:
         json.dumps(
             {
                 "session": report["session"],
+                # Carried here too: this file is the one a later analysis
+                # opens, often without the report beside it.
+                "verdict": report["verdict"],
+                "failed_guards": failed,
                 "digest": records_digest(run_a["records"]),
                 "columns": ["tick", "slot", "pose", "facing_x", "facing_y", "dive_dir_x", "dive_dir_y", "lateral_sign"],
                 "rows": [
@@ -2271,7 +2438,6 @@ def command_count(args: argparse.Namespace) -> int:
         encoding="utf-8",
     )
     print(f"[browser_match_harness] counted frames: {stream}")
-    failed = [name for name, verdict in guards.items() if not verdict["ok"]]
     if failed:
         print(f"[browser_match_harness] REFUSED: {', '.join(failed)} -- the counts above are not evidence")
         return 1
@@ -2663,6 +2829,101 @@ def self_test() -> int:
         "unposed-dive guard refuses a session with a save the count cannot see",
         not unposed_dive_verdict({"a": {"unposed_dive_frames": 4}})["ok"],
     )
+
+    # 8c. The truncation guard. A control CANNOT catch a short run -- both
+    #     sessions stop at the same tick on a deterministic seed and the
+    #     control calls the pair identical -- so this is the only thing
+    #     between a fraction of a session and a confidently reported count.
+    whole = {"requested_ticks": 24000, "final_tick": 24000, "recorded_ticks": 24000,
+             "frames_read": 24000, "status": "running", "error": None}
+    check("completeness guard passes on a session that covered its budget",
+          session_completeness_verdict({"a": whole})["ok"])
+    short = session_completeness_verdict({"a": {**whole, "final_tick": 9312}})
+    check(
+        "completeness guard catches a session that stopped short, and names the tick",
+        not short["ok"] and "9312" in short["problems"][0]["problem"],
+        str(short),
+    )
+    errored = session_completeness_verdict({"a": {**whole, "status": "error", "error": "boom", "final_tick": 400}})
+    check(
+        "completeness guard catches a page error and reports its message",
+        not errored["ok"] and "boom" in errored["problems"][0]["problem"],
+        str(errored),
+    )
+    ended = session_completeness_verdict({"a": {**whole, "status": "finished", "final_tick": 7200}})
+    check(
+        "completeness guard distinguishes a match that ended from a run that died",
+        not ended["ok"] and "the match ended" in ended["problems"][0]["problem"],
+        str(ended),
+    )
+    frozen_ticks = session_completeness_verdict({"a": {**whole, "recorded_ticks": 5000}})
+    check(
+        "completeness guard catches a frozen recorder even when the tick reached the budget",
+        not frozen_ticks["ok"] and "recorded ticks" in frozen_ticks["problems"][0]["problem"],
+        str(frozen_ticks),
+    )
+    check(
+        "completeness guard catches a reader that read fewer frames than were stepped",
+        not session_completeness_verdict({"a": {**whole, "frames_read": 5000}})["ok"],
+    )
+    check(
+        "completeness guard checks EVERY session, not just the first",
+        not session_completeness_verdict({"a": whole, "b": {**whole, "final_tick": 12}})["ok"],
+    )
+
+    # 8d. The mirrored-source guard, which had NO coverage at all -- not even
+    #     positive-path -- until council review of PR #456 found the claim
+    #     that it did. It is the only guard that can see a `--rev` build whose
+    #     own TypeScript no longer matches what this driver mirrors in Python,
+    #     and the checks in section 10 below cannot see that themselves
+    #     because they only ever read ROOT.
+    with tempfile.TemporaryDirectory() as scratch:
+        build = Path(scratch) / "build"
+        for source in (FRAME_BUFFER_TS, ACTION_POSE_TS):
+            copy = build / source.relative_to(ROOT)
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            copy.write_bytes(source.read_bytes())
+        dist = build / "v2" / "tools" / "browser_match_harness" / "dist"
+        dist.mkdir(parents=True, exist_ok=True)
+        same = mirrored_source_verdict(dist, tree_root=ROOT)
+        check("mirrored-source guard passes when the counted build matches this tree", same["ok"], str(same))
+        check(
+            "mirrored-source guard hashes BOTH mirrored files, not just the frame layout",
+            set(same.get("sha256", {})) == {FRAME_BUFFER_TS.name, ACTION_POSE_TS.name},
+            str(sorted(same.get("sha256", {}))),
+        )
+        # The drift this driver was blind to: another revision's own
+        # `lateralSign`, silently measured with this revision's formula.
+        pose_copy = build / ACTION_POSE_TS.relative_to(ROOT)
+        pose_copy.write_bytes(pose_copy.read_bytes().replace(b"1e-6", b"1e-3", 1))
+        drifted_pose = mirrored_source_verdict(dist, tree_root=ROOT)
+        check(
+            "mirrored-source guard catches a drifted action_pose.ts (the mirror-drift gap)",
+            not drifted_pose["ok"] and drifted_pose["drifted"] == [ACTION_POSE_TS.name],
+            str(drifted_pose.get("drifted")),
+        )
+        pose_copy.write_bytes(ACTION_POSE_TS.read_bytes())
+        buffer_copy = build / FRAME_BUFFER_TS.relative_to(ROOT)
+        buffer_copy.write_bytes(buffer_copy.read_bytes().replace(b"playersAt, 12", b"playersAt, 15", 1))
+        drifted_buffer = mirrored_source_verdict(dist, tree_root=ROOT)
+        check(
+            "mirrored-source guard catches a moved per-player column",
+            not drifted_buffer["ok"] and drifted_buffer["drifted"] == [FRAME_BUFFER_TS.name],
+            str(drifted_buffer.get("drifted")),
+        )
+        bare = mirrored_source_verdict(Path(scratch) / "nothing-here", tree_root=ROOT)
+        check(
+            "mirrored-source guard reports unavailable for a bare --dist rather than refusing",
+            bare["ok"] and "unavailable" in bare["reason"],
+            str(bare),
+        )
+    own = mirrored_source_verdict(HARNESS_DIST, tree_root=ROOT)
+    check(
+        "mirrored-source guard recognises this tree's own dist as this tree",
+        own["ok"] and "this tree" in own["reason"],
+        str(own),
+    )
+
     check(
         "pose-code guard catches a driver/page disagreement",
         not pose_code_verdict({"a": lean_records([[10, 1, POSE_IDS.index("keeper_dive") + 1, 1.0, 0.0, 0.0, 1.0, "keeper_tip"]])})["ok"],

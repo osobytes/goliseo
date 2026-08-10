@@ -187,6 +187,25 @@ else
     echo "   ! python3 not installed — skipping"
 fi
 
+# The v2 live-match harness driver (#432/#440/#454), on the same standing as the
+# steps above. Its measurements — pixel captures, and the keeper-lean COUNTS that
+# #449, #450 and #451 turn on — need a browser and minutes of software GL, so they
+# run by hand; none of that is gated here and a green line here is not evidence
+# about the renderer. What IS gated is the driver's own logic, and in particular
+# its ANTI-DRIFT checks, which are why this step is not optional: the driver
+# mirrors two TypeScript files in Python — `frame_buffer.ts`'s per-player column
+# indices and wire pose ORDER, and `action_pose.ts`'s `lateralSign` formula, its
+# 1e-6 dead band and the SAVES table — and the self-test re-derives every one of
+# them from those sources. A mirror nothing re-derives is a mirror that silently
+# stops matching, and the counts it produces stay perfectly plausible while doing
+# it. THIS STARTS NO BROWSER.
+echo "==> v2 match harness driver self-test (verdict rules + TypeScript mirror drift; starts no browser)"
+if command -v python3 >/dev/null 2>&1; then
+    python3 -B scripts/browser_match_harness.py --self-test || fail=1
+else
+    echo "   ! python3 not installed — skipping"
+fi
+
 echo "==> OMP-2 rollback validation harness self-test"
 if command -v python3 >/dev/null 2>&1; then
     ./scripts/check_rollback.sh --self-test || fail=1
