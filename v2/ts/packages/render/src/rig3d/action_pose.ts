@@ -376,6 +376,15 @@ function empty(): { rot: Record<string, EulerTriple>; move: Record<string, Euler
 //
 // Returns +1 when the dive goes to the keeper's LEFT (toward +X), -1 to their
 // right, and 0 when there is nothing to lean along.
+//
+// ZERO IS A REAL ANSWER, NOT A FAILURE (#451). Callers must not read it as
+// "no pose": `gc-sim`'s `launch_dive` leaves `dive_dir` as the ZERO VECTOR
+// whenever the intercept is under a pixel from where the keeper already
+// stands, and this function then correctly reports that a save with no
+// lateral component has no lateral component. That is a save the keeper takes
+// at the BODY, and `bodySave` below is what it looks like. Treating the zero
+// as "skip the overlay" is what left a keeper standing upright while the ball
+// was saved beside them.
 function lateralSign(diveDir: XY | undefined, facing: XY | undefined): number {
   if (!diveDir) {
     return 0;
@@ -390,6 +399,52 @@ function lateralSign(diveDir: XY | undefined, facing: XY | undefined): number {
     return 0;
   }
   return alongLeft > 0 ? 1 : -1;
+}
+
+// A save with NO lateral component: the keeper takes it at the body (#451).
+//
+// A near-straight shot leaves `gc-sim`'s `launch_dive` with `dive_dir` at the
+// zero vector, because the point where the shot crosses the keeper's line is
+// under a pixel from where the keeper already stands. There is genuinely no
+// side to throw the body to, and inventing one would draw a lateral dive for a
+// ball arriving down the middle -- a different wrong picture, which is why
+// this is a pose rather than a sign.
+//
+// WHAT A KEEPER ACTUALLY DOES with a ball arriving at them is get behind it:
+// the chest comes over the ball and the body commits FORWARD, down the line
+// the shot is travelling, rather than sideways off it. So the transform is the
+// lateral one turned onto the other axis -- `rot.x` forward instead of `rot.z`
+// to the side (see ORIENTATION at the top of this file), and travel along
+// `move.z`, the character's own facing, instead of across it. For a keeper
+// that facing is the goal-line normal, which `gc_render::frame`'s
+// `drawn_facing` publishes precisely so a leaning keeper has a stable
+// reference (#449) -- so forward here is up the pitch, into the shot.
+//
+// THE MAGNITUDES ARE THE FAMILY'S OWN, deliberately not new constants. Each
+// `SaveSpec` says how far THAT save commits the body; the lateral sign only
+// ever answered which way. Reusing `angle` and `travel` keeps spread, central
+// and dive as far apart from each other here as they are laterally -- pinned
+// in `action_pose.spec.ts` on both axes -- and means a re-tune of the save
+// families carries to the body save for free instead of drifting from it.
+//
+// `keeper_stretch` and `keeper_tip` reach this in principle and not in play: a
+// full stretch is CLASSIFIED by a large lateral distance (`gc_sim::keeper`'s
+// `save_style`), and a tip's `dive_dir` is synthesised as a unit lateral
+// vector by `gc_render::frame` rather than read from the simulation. They are
+// covered because the branch is per-family, not because they are expected.
+//
+// NO VERTICAL COMPONENT HERE, for exactly the reason the lateral branch has
+// none: how far this pitch has to rise to keep a toe out of the turf depends
+// on where the stance clip put the limbs, and `rig3d/ground.ts` measures that
+// off the posed rig. It is the same lift, on a rotation about a different
+// axis, and it needs no new code there -- `poseAndGround` scans the posed rig,
+// not the overlay.
+function bodySave(spec: SaveSpec, amount: number): RootPose {
+  const pose = empty();
+  // Positive x tips the body forward onto its face: over the ball, not off it.
+  pose.rot.root = [spec.angle * amount, 0, 0];
+  pose.move.root = [0, 0, metres(spec.travel * amount)];
+  return pose;
 }
 
 // The keeper save families, plus the un-posed dive the renderer falls back to
@@ -410,7 +465,7 @@ function save(poseId: string | undefined, opts: ActionPoseOptions): RootPose | n
   }
   const sign = lateralSign(opts.dive_dir, opts.facing);
   if (sign === 0) {
-    return null;
+    return bodySave(spec, amount);
   }
 
   const pose = empty();
@@ -463,8 +518,15 @@ const TIPS: Readonly<Record<string, TipSpec>> = {
   // A rocked-back beat, deliberately shallow so it never reads as knockback.
   combat_stagger: { pitch: -8, drop: 0.28 },
   // Back onto the feet after a save: shallower still, and to the dive side.
+  // Its own tilt is `GET_UP_TILT` below rather than `pitch`, because which
+  // AXIS it tilts about depends on which way the keeper went down.
   keeper_get_up: { pitch: 0, drop: 0.18 },
 };
+
+// How far a keeper is still tipped while pushing back up off the floor. One
+// magnitude, two axes: rolled to the side they dived to, or pitched forward
+// when they went down at the body and there was no side (#451).
+const GET_UP_TILT = 16;
 
 function tip(poseId: string | undefined, opts: ActionPoseOptions): RootPose | null {
   // A failed challenge tips the body away from the direction it committed to.
@@ -485,8 +547,14 @@ function tip(poseId: string | undefined, opts: ActionPoseOptions): RootPose | nu
   const pose = empty();
   if (poseId === "keeper_get_up") {
     // Still leaning on the hand they landed on, so this keeps the dive side.
+    // A keeper who went down with no lateral component landed on their FRONT,
+    // so the same tilt is a forward one -- the `bodySave` argument, one beat
+    // later and at the recovery's own shallower magnitude (#451). Without it
+    // this pose resolved to a zero rotation and a drop the rig grounds away,
+    // which is to say to nothing at all: a keeper snapping upright the instant
+    // a body save ended.
     const sign = lateralSign(opts.dive_dir, opts.facing);
-    pose.rot.root = [0, 0, -sign * 16];
+    pose.rot.root = sign === 0 ? [GET_UP_TILT, 0, 0] : [0, 0, -sign * GET_UP_TILT];
   } else {
     pose.rot.root = [spec.pitch, 0, 0];
   }

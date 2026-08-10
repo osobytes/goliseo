@@ -521,6 +521,92 @@ describe("ground contact: root rotations, grounded (#446)", () => {
     });
   }
 
+  // THE BODY SAVE ROTATES ABOUT THE OTHER AXIS (#451), so the lift has to
+  // reach it there too.
+  //
+  // Every row above dives to a SIDE, which is a roll about Z. A save with no
+  // lateral component pitches FORWARD instead -- about X, at the same angle --
+  // and #446's lift is measured off the posed rig rather than derived from the
+  // overlay, so it covers a new axis with no new code. That is a claim about
+  // `poseAndGround`, and this is where it gets checked rather than assumed.
+  //
+  // WHAT THE MEASUREMENT SAYS, in both directions. THE BODY GOES LESS DEEP
+  // FORWARD THAN SIDEWAYS at every family -- 74 mm against 88 for a spread,
+  // 118 against 141 for a central, 153 against 192 for a dive -- because a
+  // forward pitch swings the figure over a foot that is already under it,
+  // while a roll throws it off the side of both.
+  //
+  // Every millimetre figure in this block is rounded UP to the floor pinned
+  // beside it, which is `SAVE_RESIDUALS`'s own convention rather than a new
+  // one: prose and assertion are then the same number, and a reader comparing
+  // the two never has to work out which way each was rounded. The lateral
+  // spread and central are 87.3 and 140.3 measured, pinned and quoted at 88
+  // and 141.
+  //
+  // THE PROPS GO DEEPER, and by more than the body gains: 674 mm at
+  // `keeper_dive` against the lateral 412. That is the sword and shield #447
+  // hands EVERY player including keepers, swung down and forward by the same
+  // pitch, and it is the same defect the lateral rows already carry (412, 502
+  // and 595 mm) rather than a new one. It binds the lift, so a body save
+  // floats higher than the equivalent lateral one until a keeper stops
+  // carrying a shield. Recorded rather than tuned around: shrinking the
+  // authored pitch to flatter a prop the keeper should not have would be
+  // fixing #447 in the wrong file.
+  const BODY_SAVE_RESIDUALS: readonly { id: string; dive: number; body: number; props: number }[] = [
+    { id: "keeper_spread", dive: 1, body: 74, props: 166 },
+    { id: "keeper_central", dive: 1, body: 118, props: 428 },
+    { id: "keeper_dive", dive: 1, body: 153, props: 674 },
+    // The recovery from one, on the same axis and at its own shallower tilt.
+    { id: "keeper_get_up", dive: 0, body: 42, props: 42 },
+  ];
+
+  for (const row of BODY_SAVE_RESIDUALS) {
+    it(`${row.id} taken at the body: a forward pitch is lifted clear too`, () => {
+      const straight = { dive: row.dive, dive_dir: { x: 0, y: 0 } };
+      poseOnRig(flat, row.id, standing, straight);
+      const ungroundedBody = lowestRendered(flat, PROP).y;
+      const ungroundedAll = lowestRendered(flat).y;
+      expect(ungroundedBody, `${row.id}'s body residual must not be deepening`).toBeGreaterThan(-row.body * MM);
+      expect(ungroundedAll, `${row.id}'s residual including props must not be deepening`).toBeGreaterThan(
+        -row.props * MM,
+      );
+      // Non-vacuous: the pitch is a real rotation, so it really does reach
+      // below the plane. Without this the floors above would pass on a
+      // standing rig, which is the mistake the lateral table records.
+      expect(ungroundedAll, `${row.id} at the body is a rotation, so it does not vanish`).toBeLessThan(-2 * MM);
+
+      const { lift } = groundedOnRig(rig, row.id, standing, straight);
+      expect(lowestRendered(rig).y, `${row.id} must not reach through the pitch`).toBeGreaterThan(-TOLERANCE);
+      expect(lowestRendered(rig).y, `${row.id} must not hover above it`).toBeLessThan(TOLERANCE);
+      expect(lift, `${row.id}'s lift is exactly what it would otherwise sink`).toBeCloseTo(
+        perFrameLiftFor(ungroundedAll),
+        9,
+      );
+    });
+  }
+
+  it("keeps a body save shallower on the body than the dive it stands in for", () => {
+    // The comparison the table above states in prose, asserted so it cannot
+    // quietly invert: whatever the props do, the KEEPER is never driven deeper
+    // by taking a save at the body than by throwing themselves at it.
+    for (const id of ["keeper_spread", "keeper_central", "keeper_dive"]) {
+      poseOnRig(flat, id, standing, { dive: 1, dive_dir: { x: 0, y: 0 } });
+      const straight = lowestRendered(flat, PROP).y;
+      // NON-VACUOUS, and this floor is the whole reason the comparison means
+      // anything. A "shallower" test passes MOST easily when there is no pose
+      // at all: skip the overlay -- which is exactly what this file's own
+      // subject did before #451 -- and the rig sits at its ~-1.2 mm standing
+      // baseline, shallower than any real dive depth, and the assertion below
+      // sails through while proving nothing. The floor is the same `-2 mm`
+      // guard the row loop above uses, and it is what makes this a statement
+      // about the body save rather than about its absence.
+      expect(straight, `${id} at the body must be a real rotation, not a standing rig`).toBeLessThan(-2 * MM);
+      poseOnRig(flat, id, standing, { dive: 1 });
+      const lateral = lowestRendered(flat, PROP).y;
+      expect(straight, `${id} at the body must not sink past the lateral dive`).toBeGreaterThan(lateral);
+    }
+  });
+
   // The guard that makes the table above non-vacuous, stated as a property
   // rather than left to whoever writes the next row: if a save's amount ever
   // stops reaching the pose, these measurements go back to describing a
