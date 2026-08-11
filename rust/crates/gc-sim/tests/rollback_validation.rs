@@ -2,14 +2,14 @@
 //!
 //! ## What runs here, and what runs elsewhere (#469)
 //!
-//! `rollback_validation::new_campaign` accepts five suites. Before #469 only
+//! `rollback_validation::new_campaign` accepted five suites and only
 //! `LateWindow` was ever constructed by a test, so `Native`, `BrowserFull`,
 //! `BrowserStress` and `Soak` were entry points nothing executed — a plan
 //! that is built and validated is not a plan that has been run, and the
 //! difference is the whole point of AGENTS.md §9.
 //!
-//! Four of the five now execute here, and the fifth is a strict subset of
-//! one that does:
+//! Five of the six suites now execute here, and the sixth is a strict
+//! subset of one that does:
 //!
 //! - `LateWindow` — the 30/31-tick boundary pair, unchanged. Per PR.
 //! - `BrowserStress` — despite the name, the plan is pure CPU: the nine
@@ -20,12 +20,20 @@
 //!   this case list once per authored seed, so running it here runs the
 //!   scenario layer of the native matrix on every PR. It is NOT browser
 //!   evidence — running these cases in a real browser is #472's.
-//! - `Native` — the complete matrix, including the twelve 7,201-tick
-//!   `complete_fixture` runs (four profiles x three seeds) that
-//!   `BrowserStress` does not carry. Those dominate the runtime, so the
-//!   full-matrix test is `#[ignore]`d and driven by
-//!   `scripts/check_rollback_native.sh`; see that script and
-//!   `scripts/check.sh`'s header for the measured numbers and where it runs.
+//! - `CombatProfiles` — per PR. Exactly `Native`'s twelve
+//!   `combat-{profile}-{seed}` cases, extracted so the combat fixture's
+//!   NETWORK-PROFILE dimension gates every PR rather than waiting on a
+//!   human dispatch. Its test below says why that dimension is not
+//!   decoration.
+//! - `Native` — the complete matrix. **Count its arms rather than
+//!   eyeballing them.** Its first loop pushes TWO cases per (profile,
+//!   seed), `full-…` and `combat-…`, so that loop is 4 x 3 x 2 = 24, not
+//!   12; the second adds 3 x 14 = 42. Of the 66, the per-PR tier covers 54
+//!   (42 via `BrowserStress` x 3 seeds, 12 via `CombatProfiles`), so what
+//!   this suite adds is the twelve 7,201-tick `complete_fixture` runs —
+//!   which dominate its runtime. Hence `#[ignore]`d, and driven by
+//!   `scripts/check_rollback_native.sh`; see that script for the measured
+//!   numbers and where it runs.
 //! - `Soak` — same treatment, same script. Read its test's doc comment
 //!   before treating it as soak evidence: it proves the suite runs and
 //!   converges, and measures no memory at all.
@@ -209,11 +217,13 @@ fn accepts_delay_thirty_and_classifies_delay_thirty_one_as_the_explicit_terminal
     );
 }
 
-/// The per-PR half of #469: every authored game moment, every combat
-/// fixture, executed under the stress profile for every authored network
-/// seed. This is the native matrix's scenario layer, case for case — the
-/// twelve 7,201-tick `complete_fixture` runs it omits are what
-/// `executes_the_complete_native_matrix` below adds.
+/// Part one of the per-PR half of #469: every authored game moment, every
+/// combat-load fixture, executed under the stress profile for every
+/// authored network seed. This is the native matrix's scenario layer, case
+/// for case — 42 of its 66. Part two is
+/// `executes_the_combat_fixture_under_every_authored_network_profile`
+/// below, which covers 12 more; between them the on-demand matrix is left
+/// with only the twelve 7,201-tick `complete_fixture` runs.
 #[test]
 fn executes_every_authored_scenario_under_the_stress_profile_for_every_seed() {
     let config = rollback_validation::config();
@@ -265,14 +275,100 @@ fn executes_every_authored_scenario_under_the_stress_profile_for_every_seed() {
     );
 }
 
+/// Part two of the per-PR half of #469: the combat determinism fixture
+/// under every authored network profile, on every authored seed — exactly
+/// the twelve `combat-{profile}-{seed}` cases `Native` builds in the same
+/// loop as its twelve `complete_fixture` cases.
+///
+/// WHY THIS IS NOT REDUNDANT WITH THE STRESS-PROFILE TEST ABOVE. That test
+/// runs the combat fixture at ONE profile, `stress`. The four authored
+/// profiles are not a difficulty ladder over one code path
+/// (`gc_data::network_profiles`): `clean` is zero delay, zero jitter, zero
+/// loss — the near-degenerate rollback path where corrections mostly do not
+/// happen — while `omp0_parity` adds fixed delay plus independent loss, and
+/// `stress` adds bursts. A combat regression that only appears when the
+/// correction path is barely exercised is exactly the kind a stress-only
+/// run cannot see.
+///
+/// These twelve cases were, before this test, reachable only by a human
+/// dispatching the on-demand workflow. There is no `schedule:` trigger in
+/// this repository, so "eventually" had no date on it. The argument for
+/// deferring them did not survive measuring them apart from the
+/// complete-fixture cases they were bundled with: 2.81s on its own (the
+/// fixture is 80 ticks — these were only ever expensive because `Native`
+/// pairs each one with a 7,201-tick case), and no measurable change to this
+/// test binary's wall clock, because it runs concurrently with the 12.3s
+/// stress-profile test above.
+#[test]
+fn executes_the_combat_fixture_under_every_authored_network_profile() {
+    let config = rollback_validation::config();
+    let expected_cases = (config.full_profiles.len() * config.network_seeds.len()) as i64;
+
+    let (result, completed) = run_to_completion(
+        RollbackValidationSuite::CombatProfiles,
+        RollbackValidationOptions::default(),
+    );
+
+    assert_eq!(
+        result.case_count,
+        expected_cases,
+        "{}",
+        rollback_validation::result_marker(&result)
+    );
+    for case in &completed {
+        assert_reconverged(case);
+        assert_eq!(case.scenario, "combat", "{}", case.id);
+    }
+
+    // Every authored profile x seed pair, not just a plausible-looking
+    // subset: the whole point of this test is the profile dimension.
+    let pairs: BTreeSet<(String, i64)> = completed
+        .iter()
+        .map(|case| (case.result.profile.clone(), case.result.network_seed))
+        .collect();
+    assert_eq!(pairs.len() as i64, expected_cases);
+    for profile in config.full_profiles {
+        for &network_seed in config.network_seeds {
+            assert!(
+                pairs.contains(&((*profile).to_string(), network_seed)),
+                "the combat fixture never ran under {profile}/{network_seed}"
+            );
+        }
+    }
+
+    // These are `Native`'s own cases, so their ids must be `Native`'s ids.
+    // If this suite ever drifted into building its own lookalikes, the
+    // claim that the on-demand matrix adds only the complete-fixture cases
+    // would quietly stop being true.
+    for profile in config.full_profiles {
+        for &network_seed in config.network_seeds {
+            let id = format!("combat-{profile}-{network_seed}");
+            assert!(
+                completed.iter().any(|case| case.id == id),
+                "expected a case with Native's own id '{id}'"
+            );
+        }
+    }
+
+    assert!(
+        result.success,
+        "{}",
+        rollback_validation::result_marker(&result)
+    );
+}
+
 /// The complete `RollbackValidationSuite::Native` matrix, executed.
 ///
 /// `#[ignore]`d for runtime, not for doubt. Measured locally in a debug
 /// build: 325.9s for all 66 cases, of which the twelve 7,201-tick
 /// `complete_fixture` runs are 310.2s — 95% of the total — and the other 54
-/// cases are 11.2s. Those twelve are the only thing this test adds over
-/// `executes_every_authored_scenario_under_the_stress_profile_for_every_seed`
-/// above, which runs on every PR in 12.4s.
+/// cases are 11.2s. Those twelve are the only thing this test adds over the
+/// per-PR tier, which covers the other 54 (42 through
+/// `executes_every_authored_scenario_under_the_stress_profile_for_every_seed`,
+/// 12 through
+/// `executes_the_combat_fixture_under_every_authored_network_profile`) for
+/// 15.5s of CPU measured serially — 12.3s of wall clock in the gate, where
+/// the two run concurrently.
 ///
 /// `cargo test --workspace` — the per-PR gate in `scripts/check.sh` — does
 /// not run `#[ignore]`d tests, so this one is run by
@@ -345,6 +441,59 @@ fn executes_the_complete_native_matrix() {
             scenario.id
         );
     }
+
+    // THE TIERING CLAIM, ASSERTED RATHER THAN WRITTEN DOWN. Every prose
+    // statement in this PR, in scripts/check.sh's header and in ci.yml
+    // rests on "the per-PR tier covers everything here except the
+    // complete-fixture cases". That sentence was WRONG in the first draft
+    // of this change — the native arm pushes two cases per (profile,
+    // seed), so it adds 24, and nine of the twelve combat cases in that 24
+    // ran at profiles no per-PR test touched. A hand-counted claim restated
+    // in six places is exactly the thing to replace with a computation, so
+    // this re-plans the per-PR suites through the real planners (no id
+    // format is restated here) and diffs the id sets. ~12s inside a ~326s
+    // test.
+    let mut per_pr_ids: BTreeSet<String> = BTreeSet::new();
+    for &network_seed in config.network_seeds {
+        let (_, per_pr) = run_to_completion(
+            RollbackValidationSuite::BrowserStress,
+            RollbackValidationOptions {
+                profile_name: Some(config.stress_profile.to_string()),
+                network_seed: Some(network_seed),
+                measure: None,
+            },
+        );
+        per_pr_ids.extend(per_pr.into_iter().map(|case| case.id));
+    }
+    let (_, combat_profiles) = run_to_completion(
+        RollbackValidationSuite::CombatProfiles,
+        RollbackValidationOptions::default(),
+    );
+    per_pr_ids.extend(combat_profiles.into_iter().map(|case| case.id));
+
+    let native_ids: BTreeSet<String> = completed.iter().map(|case| case.id.clone()).collect();
+    let deferred: BTreeSet<&String> = native_ids.difference(&per_pr_ids).collect();
+    let expected_deferred: BTreeSet<String> = config
+        .full_profiles
+        .iter()
+        .flat_map(|profile| {
+            config
+                .network_seeds
+                .iter()
+                .map(move |seed| format!("full-{profile}-{seed}"))
+        })
+        .collect();
+    assert_eq!(
+        deferred,
+        expected_deferred.iter().collect::<BTreeSet<&String>>(),
+        "the on-demand tier defers something other than exactly the {} complete-fixture cases -- every prose claim about this split is now wrong",
+        expected_deferred.len()
+    );
+    assert_eq!(
+        per_pr_ids.len() as i64,
+        expected_cases - expected_deferred.len() as i64,
+        "the per-PR tier no longer accounts for every native case but the complete-fixture ones"
+    );
 
     assert!(
         completed

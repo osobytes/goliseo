@@ -14,19 +14,34 @@
 # release profile) on one developer machine with other work running, so treat
 # them as an upper-ish bound with maybe 30% noise, not a benchmark:
 #
-#   - The scenario layer -- all nine authored game moments (tackle, shot,
-#     goal, kickoff, aerial, keeper action, possession change, repeated
-#     rollback, full time) plus the combat and combat-load fixtures, at the
-#     stress profile, on all three authored network seeds -- runs on EVERY
-#     PR, inside `cargo test --workspace` (scripts/check.sh gate 3). It is an
-#     ordinary, un-ignored `#[test]`. Measured: 12.4s.
+#   - 54 of the native matrix's 66 cases run on EVERY PR, inside
+#     `cargo test --workspace` (scripts/check.sh gate 3), as ordinary
+#     un-ignored `#[test]`s. Two of them, because the native plan has two
+#     dimensions and both need covering:
+#       * the SCENARIO layer, 42 cases -- all nine authored game moments
+#         (tackle, shot, goal, kickoff, aerial, keeper action, possession
+#         change, repeated rollback, full time) plus the combat and
+#         combat-load fixtures, at the stress profile, on all three authored
+#         network seeds. Measured: 12.3s.
+#       * the combat fixture's NETWORK-PROFILE dimension, 12 cases --
+#         `combat-{profile}-{seed}` across all four authored profiles.
+#         Measured: 2.81s alone, and it runs concurrently with the above, so
+#         the test binary's wall clock is unchanged at 12.3s (15.5s serial).
 #
-#   - The full native matrix additionally runs the twelve 7,201-tick
-#     `complete_fixture` cases (four profiles x three seeds). Measured: 325.9s
-#     for all 66 cases, of which those twelve are 310.2s -- 95% of the total,
-#     at 21-31s each. The other 54 cases account for 11.2s. Five and a half
-#     minutes of CPU, on a GitHub runner slower than the machine that measured
-#     it, to add twelve cases to a scenario layer that already ran, is not a
+#   - The full native matrix adds exactly the twelve 7,201-tick
+#     `complete_fixture` cases (four profiles x three seeds).
+#     COUNT THE PLAN'S ARMS RATHER THAN EYEBALLING THEM: the native arm's
+#     first loop pushes TWO cases per (profile, seed) -- `full-...` AND
+#     `combat-...` -- so it contributes 24, not 12. An earlier draft of this
+#     file said "twelve", and that undercount silently deferred nine combat
+#     cases at `clean`, `omp0_parity` and `playable` to a workflow only a
+#     human can start. The `#[ignore]`d native test now COMPUTES this split
+#     from the real planners and asserts it, so this comment cannot drift
+#     away from the code again.
+#     Measured: 325.9s for all 66 cases, of which those twelve are 310.2s --
+#     95% of the total, at 21-31s each. The other 54 account for 11.2s. Five
+#     and a half minutes of CPU, on a GitHub runner slower than the machine
+#     that measured it, to add twelve cases to 54 that already ran, is not a
 #     per-PR cost worth paying. So it is `#[ignore]`d and run here.
 #
 #   - The soak matrix is ten cases (five seeds x complete fixture + combat) at
@@ -67,9 +82,12 @@ TEST_TARGET="rollback_validation"
 # what it claims.
 #
 # Native is 66 cases today: four profiles x three seeds x (complete_fixture +
-# combat) = 24, plus three seeds x (nine scenarios + combat + four
-# combat-load fixtures) = 42. Soak is five seeds x (complete_fixture +
-# combat) = 10.
+# combat) = 24 -- note the x2, it is the count an earlier draft got wrong --
+# plus three seeds x (nine scenarios + combat + four combat-load fixtures) =
+# 42. Soak is five seeds x (complete_fixture + combat) = 10. Both figures are
+# unchanged by #469's per-PR/on-demand split: the split changes where cases
+# also run, never what these two campaigns plan, so these floors bite exactly
+# as before.
 MIN_NATIVE_CASES=66
 MIN_SOAK_CASES=10
 
@@ -196,7 +214,7 @@ run_gate() {
 # rather than minutes and is safe to run anywhere.
 # ---------------------------------------------------------------------------
 
-REAL_SUMMARY="test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 325.87s"
+REAL_SUMMARY="test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 325.87s"
 REAL_TERMINATOR="GC_ROLLBACK_VALIDATION|result|schema=1|suite=Native|success=1|logical_digest=9bf479ce1bad6bf8|case_count=66"
 
 expect_fail() {
@@ -243,7 +261,7 @@ self_test() {
     # a suite that is named by a gate and executed by nobody.
     expect_fail "a filter that matched NO test (exit 0, '0 passed') is rejected" \
         check_matrix_run Native "$MIN_NATIVE_CASES" 0 \
-        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s" "" \
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s" "" \
         || failures=1
 
     expect_fail "a run whose test passed but printed no campaign terminator is rejected" \
