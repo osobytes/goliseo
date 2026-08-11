@@ -609,6 +609,49 @@ export function layer(base: Pose, overlay: Pose, mask: ReadonlySet<string>, weig
   return { rot, move };
 }
 
+// Composes a sparse overlay ADDITIVELY onto a base pose: rotations
+// pre-multiplied, translations added.
+//
+// THE OTHER HALF OF `layer`, AND THE DIFFERENCE IS NOT A DETAIL. `layer` is
+// OVERRIDE: the mask decides which bones the overlay owns, and a bone it owns
+// but never mentions goes to REST. That is right for a stance -- a guard is a
+// complete statement about the arms. It is wrong for a MODIFIER: a crouch is
+// something a body does WHILE running, so an override would have to restate the
+// stride to keep it, and a sparse crouch masked over the legs would delete it.
+//
+// So this one has no mask at all, deliberately. The overlay's own key set is
+// the mask, because there is no "the mask owns it and the overlay is silent"
+// case to resolve. Bones the overlay does not name keep the base pose exactly.
+//
+// PRE-MULTIPLIED, matching `action_pose.apply`'s attitude branch: the overlay's
+// rotation is applied in the PARENT's frame, so a fold added to a thigh is a
+// fold of the whole leg from the hip rather than a re-expression inside
+// whatever the stride resolved. Every rotation this composes is authored about
+// a single axis and `quat.fromEuler` puts x outermost after y, so for the leg
+// bones (which carry x and z only) the composition is exactly additive in the
+// authored angle -- `crouch.spec.ts` measures that rather than assuming it.
+//
+// No weight parameter, and that is load-bearing rather than an omission. A
+// weight would scale the rotation and the translation by the SAME factor, and
+// they do not scale together: a fold of `w * c` raises the foot by
+// `L * (1 - cos(w * c))`, which is quadratic in `w`, while `w * drop` is
+// linear -- so any weight below 1 would sink the feet. `crouch.poseFor` takes
+// the DEPTH instead and re-derives the fold from it, which stays exact at every
+// value the depth ramps through.
+export function compose(base: Pose, overlay: Pose): Pose {
+  const rot: Record<string, Quat> = { ...base.rot };
+  const move: Record<string, EulerTriple> = { ...base.move };
+  for (const [name, q] of Object.entries(overlay.rot)) {
+    const existing = base.rot[name];
+    rot[name] = existing !== undefined ? quat.multiply(q, existing) : q;
+  }
+  for (const [name, m] of Object.entries(overlay.move)) {
+    const existing = base.move[name] ?? ZERO;
+    move[name] = [(existing[0] ?? 0) + m[0], (existing[1] ?? 0) + m[1], (existing[2] ?? 0) + m[2]];
+  }
+  return { rot, move };
+}
+
 // Samples a clip at `time`, wrapping so every clip loops seamlessly.
 export function sample(clip: Clip, time: number): Pose {
   const t = time % clip.duration;

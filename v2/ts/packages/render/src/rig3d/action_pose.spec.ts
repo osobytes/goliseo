@@ -405,6 +405,12 @@ describe("held body attitudes", () => {
   // through `apply`, so the composed result is the bob ALONE. That still tells
   // composition from assignment apart, and more sharply than before: an
   // assignment would put the grounded zero in the bob's place.
+  //
+  // NOT A CLAIM THAT THE CROUCH IS GONE (#445). This file's subject is the ROOT
+  // overlay, and a root translation still cannot deliver a crouch without
+  // taking the feet with it. `rig3d/crouch.ts` delivers it as a knee bend off
+  // the same authored magnitude, and `rig3d/ground_contact.spec.ts` measures
+  // the result on real geometry.
   it("adds its crouch to whatever the gait already resolved, instead of replacing it", () => {
     const bob = 0.05;
     const pose = actionPose.apply({ rot: {}, move: { root: [0, bob, 0] } }, opts("settle"));
