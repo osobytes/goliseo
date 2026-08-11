@@ -254,6 +254,22 @@ jobs:
             - name: Check the love.js depth probe verdict logic (starts no browser)
               run: python3 -B scripts/lovejs_depth_probe.py --self-test
 
+            # #432/#440/#454, and the same standing again. The v2 live-match
+            # harness driver's real output — pixel captures, and the keeper-lean
+            # COUNTS that #449, #450 and #451 turn on — needs a browser and
+            # minutes of software GL, so it runs by hand and a green line here is
+            # not evidence about the renderer. Gated here: the driver's verdict
+            # rules, its virtual-clock arithmetic, its bootstrap invariants, and
+            # above all its ANTI-DRIFT checks. That driver mirrors two TypeScript
+            # files in Python — `frame_buffer.ts`'s per-player column indices and
+            # wire pose ORDER, and `action_pose.ts`'s `lateralSign` formula, its
+            # 1e-6 dead band and the SAVES table — and the self-test re-derives
+            # each from its source. A mirror nothing re-derives silently stops
+            # matching while the counts it produces stay plausible. Starts no
+            # browser.
+            - name: Check the v2 match harness driver logic and its TypeScript mirrors (starts no browser)
+              run: python3 -B scripts/browser_match_harness.py --self-test
+
             # #343: `render/` was added to the repository and never added to the
             # wasm host's embed manifest, so the module built clean and then died
             # at run time before reaching the determinism section it exists to
