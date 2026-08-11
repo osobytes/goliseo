@@ -28,6 +28,7 @@ import * as body from "./body.ts";
 import * as clips from "./clips.ts";
 import * as ground from "./ground.ts";
 import * as poseTable from "./pose_table.ts";
+import * as presentationContent from "./presentation_content.ts";
 import { RIG_MEDIUM } from "./proportions.ts";
 import * as skeleton from "./skeleton.ts";
 import * as themes from "./themes.ts";
@@ -80,10 +81,8 @@ const PROBES = ground.probesFrom(RIG, MESH.verts, BONE_ORDER);
 const flatRig = (): skeleton.Rig => skeleton.newRig(RIG);
 const groundedRig = (): skeleton.Rig => skeleton.raised(skeleton.newRig(RIG), PROBES.restLift);
 
-// The same character with nothing in its hands -- what a keeper will be once
-// #447 stops handing every player `themes.LIST[0]`'s sword and shield. Kept
-// here so the figures below can be stated for both worlds rather than
-// re-measured when that lands.
+// The same character with nothing in its hands. This was written before #447
+// as a projection of what a keeper WOULD be; it is now what a keeper IS.
 const BODY_ONLY_PROBES = ground.probesFrom(
   RIG,
   MESH.verts.filter((v) => {
@@ -93,17 +92,57 @@ const BODY_ONLY_PROBES = ground.probesFrom(
   BONE_ORDER,
 );
 
+// ---------------------------------------------------------------------------
+// THE TWO FIGURES #447 MADE REAL
+// ---------------------------------------------------------------------------
+//
+// Before #447 there was one character mesh in the game, built from
+// `themes.LIST[0]`'s own authored loadout -- a tournament sword AND a heater
+// shield -- and every player wore it, keepers included. That is why this file
+// could measure "body" and "props" as two columns of ONE figure: there was no
+// second figure to build.
+//
+// There is now. `body.accumulate` takes the loadout the player's authored
+// `loadout_id` resolves to, and a keeper's is empty, so a keeper's mesh is
+// genuinely a different mesh with no equipment vertices in it. The tables
+// below are stated against whichever figure the pose belongs to:
+//
+//   * KEEPER_MESH  -- a keeper. No props at all, so `body` and `props` are
+//                     the same measurement, which is exactly what #447
+//                     predicted would happen to the `props` column.
+//   * SHIELD_MESH  -- an outfield defender carrying `loadout_emberguard_shield`
+//                     (brakka, drell and sela_dwin in `gc-data`). Still has a
+//                     shield on `socket_shield.L`, which is what keeps the
+//                     `combat_knockback` case below meaningful.
+//   * MESH         -- the theme's own authored sword+shield figure, still what
+//                     `draw`/`renderToSprite` and this file's non-#447 blocks
+//                     render, and the figure every ungrounded number in the
+//                     #439 blocks was measured against.
+const KEEPER_MESH = body.accumulate(RIG, THEME, FIGURE, presentationContent.loadoutFor(undefined))[0];
+const KEEPER_PROBES = ground.probesFrom(RIG, KEEPER_MESH.verts, BONE_ORDER);
+const SHIELD_MESH = body.accumulate(RIG, THEME, FIGURE, presentationContent.loadoutFor("loadout_emberguard_shield"))[0];
+const SHIELD_PROBES = ground.probesFrom(RIG, SHIELD_MESH.verts, BONE_ORDER);
+
 /**
  * The lowest rendered point of a posed character, in metres, and its bone.
  *
- * `skip` narrows it to part of the figure -- used to separate the keeper's own
- * body from the shield and sword hanging off the socket bones, which a hard
- * root roll swings deeper than anything anatomical (see SAVE_RESIDUALS).
+ * `skip` narrows it to part of the figure -- used to separate a player's own
+ * body from anything hanging off the socket bones, which a hard root roll
+ * swings deeper than anything anatomical (see SAVE_RESIDUALS).
+ *
+ * `verts` picks WHICH figure is being measured (#447). It defaults to the
+ * sword-and-shield `MESH` every block above this one was written against, so
+ * those numbers keep meaning what they meant; the keeper blocks below pass
+ * `KEEPER_MESH.verts` instead, because that is what a keeper now renders.
  */
-function lowestRendered(rig: skeleton.Rig, skip?: (bone: string) => boolean): { y: number; bone: string } {
+function lowestRendered(
+  rig: skeleton.Rig,
+  skip?: (bone: string) => boolean,
+  verts: readonly { readonly bone: number; readonly position: readonly [number, number, number] }[] = MESH.verts,
+): { y: number; bone: string } {
   let y = Infinity;
   let bone = "";
-  for (const vertex of MESH.verts) {
+  for (const vertex of verts) {
     const name = BONE_ORDER[vertex.bone];
     if (name !== undefined && skip?.(name) === true) {
       continue;
@@ -477,40 +516,67 @@ describe("ground contact: root rotations, grounded (#446)", () => {
   // and eases down. The deepest row below is the opening frame of every save
   // in the game, not a corner case.
   //
-  // BODY AND PROPS STAY SEPARATE COLUMNS even though the lift now covers
-  // both, because they are still different facts and because #447 is going to
-  // move one of them: a 72-degree root roll swings the whole arm chain, and
-  // the shield hanging off `socket_shield.L` reaches more than twice as deep
-  // as any part of the keeper. Which of the two BINDS is what decides how far
-  // the character rises, and `equipment (#447)` below pins that directly.
+  // BODY AND PROPS STAY SEPARATE COLUMNS, and #447 has now moved one of them,
+  // which is the change this table records.
+  //
+  // BEFORE: every player rendered `themes.LIST[0]`'s sword and shield, so a
+  // 72-degree root roll swung the whole arm chain and took `socket_shield.L`
+  // with it -- more than twice as deep as any part of the keeper (412 mm
+  // against 192 on a full `keeper_dive`, 502 against 279, 595 against 362).
+  // The shield BOUND the lift, so the keeper's own body floated clear of the
+  // turf by the difference.
+  //
+  // AFTER: a keeper's mesh has no props in it at all, so the two columns are
+  // the same measurement over the same figure and the `props` column equals
+  // the `body` one throughout. The `body` figures are UNCHANGED -- #447 moved
+  // no bone, retuned no angle and touched no clip; it removed geometry that
+  // was never the keeper's. The prediction this file recorded before the fix
+  // ("only the magnitude moves, and the pins that would change are the
+  // `props` column of SAVE_RESIDUALS, which becomes equal to the `body`
+  // column") is what landed, and this is it landed.
+  //
+  // Both columns are kept rather than collapsed to one, so the shape of the
+  // table still says which quantity is which -- and so the day a keeper is
+  // authored something to carry, there is a column to put it in.
 
-  /** id, the `dive` passed in, and the ungrounded depths: body-only, then including props. */
+  /**
+   * id, the `dive` passed in, and the ungrounded depths of A KEEPER: body-only,
+   * then including whatever props the keeper renders -- which since #447 is
+   * nothing, so the two agree.
+   */
   const SAVE_RESIDUALS: readonly { id: string; dive: number; body: number; props: number }[] = [
     // Amount-driven: no `fixed`, no `floor`, so these scale from nothing.
     { id: "keeper_dive", dive: 0.25, body: 57, props: 57 },
     { id: "keeper_dive", dive: 0.5, body: 111, props: 111 },
-    { id: "keeper_dive", dive: 1, body: 192, props: 412 },
+    { id: "keeper_dive", dive: 1, body: 192, props: 192 },
     { id: "keeper_spread", dive: 1, body: 88, props: 88 },
     { id: "keeper_central", dive: 1, body: 141, props: 141 },
     // `floor: 0.82`, so this one is already 82% deep with no amount at all.
-    { id: "keeper_stretch", dive: 0, body: 171, props: 294 },
-    { id: "keeper_stretch", dive: 1, body: 279, props: 502 },
+    { id: "keeper_stretch", dive: 0, body: 171, props: 171 },
+    { id: "keeper_stretch", dive: 1, body: 279, props: 279 },
     // `fixed: 1`, so the amount is ignored entirely and it is always this deep.
-    { id: "keeper_tip", dive: 0, body: 362, props: 595 },
+    { id: "keeper_tip", dive: 0, body: 362, props: 362 },
   ];
 
   for (const row of SAVE_RESIDUALS) {
     it(`${row.id} at dive ${String(row.dive)}: ${String(row.body)} mm of body and ${String(row.props)} mm with props, lifted clear`, () => {
       poseOnRig(flat, row.id, standing, { dive: row.dive });
-      const ungroundedBody = lowestRendered(flat, PROP).y;
-      const ungroundedAll = lowestRendered(flat).y;
+      const ungroundedBody = lowestRendered(flat, PROP, KEEPER_MESH.verts).y;
+      const ungroundedAll = lowestRendered(flat, undefined, KEEPER_MESH.verts).y;
       expect(ungroundedBody, `${row.id}'s body residual must not be deepening`).toBeGreaterThan(-row.body * MM);
       expect(ungroundedAll, `${row.id}'s residual including props must not be deepening`).toBeGreaterThan(-row.props * MM);
       expect(ungroundedAll, `${row.id} at dive ${String(row.dive)} is a rotation, so it does not vanish`).toBeLessThan(-2 * MM);
+      // THE #447 CLAIM ITSELF, per row rather than in prose: for a keeper the
+      // two columns are one measurement, because there is no prop to be the
+      // deeper of the two. Non-vacuous by the `-2 mm` floor just above -- a
+      // pose that stopped happening would fail there, not pass here.
+      expect(ungroundedAll, `${row.id}: a keeper renders no props, so body and props are the same depth`).toBe(
+        ungroundedBody,
+      );
 
-      const { lift } = groundedOnRig(rig, row.id, standing, { dive: row.dive });
-      expect(lowestRendered(rig).y, `${row.id} must not reach through the pitch`).toBeGreaterThan(-TOLERANCE);
-      expect(lowestRendered(rig).y, `${row.id} must not hover above it`).toBeLessThan(TOLERANCE);
+      const { lift } = groundedOnRig(rig, row.id, standing, { dive: row.dive }, KEEPER_PROBES);
+      expect(lowestRendered(rig, undefined, KEEPER_MESH.verts).y, `${row.id} must not reach through the pitch`).toBeGreaterThan(-TOLERANCE);
+      expect(lowestRendered(rig, undefined, KEEPER_MESH.verts).y, `${row.id} must not hover above it`).toBeLessThan(TOLERANCE);
       expect(lift, `${row.id}'s lift is exactly what it would otherwise sink`).toBeCloseTo(
         perFrameLiftFor(ungroundedAll),
         9,
@@ -543,19 +609,22 @@ describe("ground contact: root rotations, grounded (#446)", () => {
   // spread and central are 87.3 and 140.3 measured, pinned and quoted at 88
   // and 141.
   //
-  // THE PROPS GO DEEPER, and by more than the body gains: 674 mm at
-  // `keeper_dive` against the lateral 412. That is the sword and shield #447
-  // hands EVERY player including keepers, swung down and forward by the same
-  // pitch, and it is the same defect the lateral rows already carry (412, 502
-  // and 595 mm) rather than a new one. It binds the lift, so a body save
-  // floats higher than the equivalent lateral one until a keeper stops
-  // carrying a shield. Recorded rather than tuned around: shrinking the
-  // authored pitch to flatter a prop the keeper should not have would be
-  // fixing #447 in the wrong file.
+  // THE PROPS USED TO GO DEEPER STILL, and by more than the body gained: 674
+  // mm at `keeper_dive` against the lateral 412, 428 at a central against
+  // 141, 166 at a spread against 88. That was the sword and shield the
+  // renderer handed EVERY player including keepers, swung down and forward by
+  // the same pitch. It BOUND the lift, so a body save floated higher than the
+  // equivalent lateral one -- and this block recorded that rather than tuning
+  // around it, on the grounds that shrinking the authored pitch to flatter a
+  // prop the keeper should not have would be fixing #447 in the wrong file.
+  //
+  // #447 fixed it in the right file. A keeper's mesh has no props, so the
+  // `props` column here is the `body` column too, and the hover it caused is
+  // gone with it. Every `body` figure is unchanged.
   const BODY_SAVE_RESIDUALS: readonly { id: string; dive: number; body: number; props: number }[] = [
-    { id: "keeper_spread", dive: 1, body: 74, props: 166 },
-    { id: "keeper_central", dive: 1, body: 118, props: 428 },
-    { id: "keeper_dive", dive: 1, body: 153, props: 674 },
+    { id: "keeper_spread", dive: 1, body: 74, props: 74 },
+    { id: "keeper_central", dive: 1, body: 118, props: 118 },
+    { id: "keeper_dive", dive: 1, body: 153, props: 153 },
     // The recovery from one, on the same axis and at its own shallower tilt.
     { id: "keeper_get_up", dive: 0, body: 42, props: 42 },
   ];
@@ -564,8 +633,8 @@ describe("ground contact: root rotations, grounded (#446)", () => {
     it(`${row.id} taken at the body: a forward pitch is lifted clear too`, () => {
       const straight = { dive: row.dive, dive_dir: { x: 0, y: 0 } };
       poseOnRig(flat, row.id, standing, straight);
-      const ungroundedBody = lowestRendered(flat, PROP).y;
-      const ungroundedAll = lowestRendered(flat).y;
+      const ungroundedBody = lowestRendered(flat, PROP, KEEPER_MESH.verts).y;
+      const ungroundedAll = lowestRendered(flat, undefined, KEEPER_MESH.verts).y;
       expect(ungroundedBody, `${row.id}'s body residual must not be deepening`).toBeGreaterThan(-row.body * MM);
       expect(ungroundedAll, `${row.id}'s residual including props must not be deepening`).toBeGreaterThan(
         -row.props * MM,
@@ -574,10 +643,13 @@ describe("ground contact: root rotations, grounded (#446)", () => {
       // below the plane. Without this the floors above would pass on a
       // standing rig, which is the mistake the lateral table records.
       expect(ungroundedAll, `${row.id} at the body is a rotation, so it does not vanish`).toBeLessThan(-2 * MM);
+      expect(ungroundedAll, `${row.id}: a keeper renders no props, so body and props are the same depth`).toBe(
+        ungroundedBody,
+      );
 
-      const { lift } = groundedOnRig(rig, row.id, standing, straight);
-      expect(lowestRendered(rig).y, `${row.id} must not reach through the pitch`).toBeGreaterThan(-TOLERANCE);
-      expect(lowestRendered(rig).y, `${row.id} must not hover above it`).toBeLessThan(TOLERANCE);
+      const { lift } = groundedOnRig(rig, row.id, standing, straight, KEEPER_PROBES);
+      expect(lowestRendered(rig, undefined, KEEPER_MESH.verts).y, `${row.id} must not reach through the pitch`).toBeGreaterThan(-TOLERANCE);
+      expect(lowestRendered(rig, undefined, KEEPER_MESH.verts).y, `${row.id} must not hover above it`).toBeLessThan(TOLERANCE);
       expect(lift, `${row.id}'s lift is exactly what it would otherwise sink`).toBeCloseTo(
         perFrameLiftFor(ungroundedAll),
         9,
@@ -617,25 +689,29 @@ describe("ground contact: root rotations, grounded (#446)", () => {
   // past it with one. Asserted on the LIFT as well as on the depth, because
   // the lift is the new quantity and a vacuous pin would leave it at zero.
   it("proves each save's lift is driven by its amount, not by the rig standing still", () => {
-    const baseline = lowestRendered(flatRig()).y;
+    // Measured on the KEEPER's own figure (#447), matching the two tables
+    // above -- these are keeper poses, and the whole point of the fix is that
+    // a keeper's depth is now their own.
+    const keeperVerts = KEEPER_MESH.verts;
+    const baseline = lowestRendered(flatRig(), undefined, keeperVerts).y;
     for (const id of ["keeper_dive", "keeper_spread", "keeper_central"]) {
       poseOnRig(flat, id, standing, { dive: 0 });
-      expect(lowestRendered(flat).y, `${id} with no dive amount is just a standing character`).toBeCloseTo(baseline, 6);
+      expect(lowestRendered(flat, undefined, keeperVerts).y, `${id} with no dive amount is just a standing character`).toBeCloseTo(baseline, 6);
       // Exactly zero, not "small": a standing character is what the rig's own
       // rest correction already covers, so the per-frame lift has nothing left
       // to do and the second skeleton evaluation is not paid.
-      expect(groundedOnRig(rig, id, standing, { dive: 0 }).lift, `${id} with no dive amount needs no lift`).toBe(0);
+      expect(groundedOnRig(rig, id, standing, { dive: 0 }, KEEPER_PROBES).lift, `${id} with no dive amount needs no lift`).toBe(0);
 
       poseOnRig(flat, id, standing, { dive: 1 });
-      expect(lowestRendered(flat).y, `${id} at full dive must be far past standing`).toBeLessThan(baseline - 50 * MM);
-      expect(groundedOnRig(rig, id, standing, { dive: 1 }).lift, `${id} at full dive must be lifted far`).toBeGreaterThan(
+      expect(lowestRendered(flat, undefined, keeperVerts).y, `${id} at full dive must be far past standing`).toBeLessThan(baseline - 50 * MM);
+      expect(groundedOnRig(rig, id, standing, { dive: 1 }, KEEPER_PROBES).lift, `${id} at full dive must be lifted far`).toBeGreaterThan(
         50 * MM,
       );
     }
     for (const id of ["keeper_stretch", "keeper_tip"]) {
       poseOnRig(flat, id, standing, { dive: 0 });
-      expect(lowestRendered(flat).y, `${id} is fixed or floored, so it is deep with no amount`).toBeLessThan(baseline - 50 * MM);
-      expect(groundedOnRig(rig, id, standing, { dive: 0 }).lift, `${id} is lifted with no amount too`).toBeGreaterThan(
+      expect(lowestRendered(flat, undefined, keeperVerts).y, `${id} is fixed or floored, so it is deep with no amount`).toBeLessThan(baseline - 50 * MM);
+      expect(groundedOnRig(rig, id, standing, { dive: 0 }, KEEPER_PROBES).lift, `${id} is lifted with no amount too`).toBeGreaterThan(
         50 * MM,
       );
     }
@@ -889,68 +965,108 @@ describe("ground contact: #444's floor and #446's lift compose", () => {
 // EQUIPMENT (#447)
 // ---------------------------------------------------------------------------
 //
-// `player_renderer_3d.ts` builds ONE memoised geometry for the whole game from
-// `themes.LIST[0]` -- Medieval Fantasy, which carries a sword and a shield --
-// and `pitch.ts` passes it neither `loadout_id` nor `is_keeper`. So every
-// keeper on screen today dives holding a shield, despite `gc-data` asserting
-// keepers have no loadout. That is #447 and not this change's to fix; what IS
-// this change's business is that the fix must be correct in both worlds, and
-// must not quietly depend on the defective one.
+// This block was written BEFORE #447, against a renderer that built ONE
+// memoised geometry for the whole game from `themes.LIST[0]` -- Medieval
+// Fantasy, which carries a sword and a shield -- and a `pitch.ts` that passed
+// it neither `loadout_id` nor `presentation_id`. Every keeper on screen dived
+// holding a shield, despite `gc-data` asserting keepers have none. Its job
+// then was to make sure #446's fix was correct in BOTH worlds and did not
+// quietly depend on the defective one.
+//
+// #447 has landed, so its job now is to say what actually changed, and to
+// keep the one case that must NOT change honest.
 describe("ground contact: equipment (#447)", () => {
   const standing = { speed: 0, gait: 0, now: 0 };
 
-  // THE ONE OUTFIELD CASE WHERE A BODY-ONLY MEASUREMENT LIES. Everywhere else
-  // in this file, ignoring the props understates the depth. Here it inverts
-  // the answer: the body reads a comfortable 43 mm CLEAR of the plane -- this
-  // pose lifts 0.45r on purpose -- while the shield on `socket_shield.L`,
-  // swung by a 68-degree backward pitch, dips below it. A table keyed on pose
-  // id and measured body-only would have gone on passing while that margin
-  // eroded to nothing.
-  it("combat_knockback: the body reads clear while the shield does not", () => {
+  // THE ONE OUTFIELD CASE WHERE A BODY-ONLY MEASUREMENT LIES, AND IT SURVIVES
+  // #447 UNCHANGED. Everywhere else in this file, ignoring the props
+  // understates the depth. Here it inverts the answer: the body reads a
+  // comfortable 43 mm CLEAR of the plane -- this pose lifts 0.45r on purpose
+  // -- while the shield on `socket_shield.L`, swung by a 68-degree backward
+  // pitch, dips below it. A table keyed on pose id and measured body-only
+  // would have gone on passing while that margin eroded to nothing.
+  //
+  // MEASURED ON A REAL OUTFIELD FIGURE, not on the preview default: this is
+  // `SHIELD_MESH`, the mesh a defender carrying `loadout_emberguard_shield`
+  // now renders -- brakka, drell and sela_dwin in `gc-data`. #447 took the
+  // shield away from keepers and from nobody else, so the case is not a
+  // hypothetical about a figure that no longer exists.
+  it("combat_knockback: an outfielder's body reads clear while their shield does not", () => {
     const flat = flatRig();
     poseOnRig(flat, "combat_knockback", standing);
-    const bodyOnly = lowestRendered(flat, PROP);
-    const withProps = lowestRendered(flat);
+    const bodyOnly = lowestRendered(flat, PROP, SHIELD_MESH.verts);
+    const withProps = lowestRendered(flat, undefined, SHIELD_MESH.verts);
     expect(bodyOnly.y, "body-only, this pose looks entirely fine").toBeGreaterThan(40 * MM);
     expect(withProps.y, "and it is not: the shield is through the turf").toBeLessThan(0);
     expect(withProps.y, "though only just -- this is a small margin, not a gouge").toBeGreaterThan(-10 * MM);
     expect(withProps.bone, "and it is the shield that does it").toBe("socket_shield.L");
 
     const rig = groundedRig();
-    const { lift } = groundedOnRig(rig, "combat_knockback", standing);
+    const { lift } = groundedOnRig(rig, "combat_knockback", standing, undefined, SHIELD_PROBES);
     expect(lift, "the lift is driven by the shield, so it is small").toBeCloseTo(
-      -(withProps.y + PROBES.restLift),
+      -(withProps.y + SHIELD_PROBES.restLift),
       9,
     );
-    expect(lowestRendered(rig).y, "and nothing is left below the plane").toBeGreaterThan(-TOLERANCE);
+    expect(lowestRendered(rig, undefined, SHIELD_MESH.verts).y, "and nothing is left below the plane").toBeGreaterThan(-TOLERANCE);
   });
 
-  // WHAT #447 DOES TO THE FIGURES ABOVE, measured now so nobody has to guess
-  // later: it does not invalidate them, it halves the deep ones. Grounding is
-  // a measurement over whatever is RENDERED, so when the shield stops being
+  // THE KEEPER RULE AT THE MESH, which is the assertion #447 asks for and the
+  // one this file is the right place for: everywhere else it is checked
+  // against the part list or the loadout table, and here it is checked
+  // against the VERTICES that get grounded, because a keeper who still had a
+  // shield in their geometry would still be lifted by it no matter what any
+  // table said.
+  it("renders a keeper with no equipment vertices at all, and an outfielder with some", () => {
+    const keeperSockets = new Set(
+      KEEPER_MESH.verts.map((v) => BONE_ORDER[v.bone]).filter((name): name is string => name !== undefined && PROP(name)),
+    );
+    expect([...keeperSockets], "a keeper's mesh carries nothing on a socket bone").toEqual([]);
+    // NON-VACUOUS, and this is the half that matters: the same scan over an
+    // outfielder's mesh must find the shield, or the assertion above would
+    // pass on a broken scan, a renamed bone convention, or an empty mesh.
+    const shieldSockets = new Set(
+      SHIELD_MESH.verts.map((v) => BONE_ORDER[v.bone]).filter((name): name is string => name !== undefined && PROP(name)),
+    );
+    expect([...shieldSockets], "an emberguard defender still has one").toEqual(["socket_shield.L"]);
+    expect(KEEPER_MESH.verts.length).toBeLessThan(SHIELD_MESH.verts.length);
+  });
+
+  // WHAT #447 DID TO THE FIGURES ABOVE, measured rather than described: it
+  // did not invalidate them, it halved the deep ones. Grounding is a
+  // measurement over whatever is RENDERED, so once the shield stops being
   // rendered for keepers the same code lifts them by their own body's depth
-  // instead of the shield's. Both worlds satisfy the property; only the
-  // magnitude moves, and the pins that would change are the `props` column of
-  // SAVE_RESIDUALS, which is an UNGROUNDED measurement and becomes equal to
-  // the `body` column.
-  it("lifts a keeper by the shield today and by their own hand once #447 lands", () => {
+  // instead of the shield's -- no change to `ground.ts` at all.
+  //
+  // Both the old and the new figure are asserted here, from the same rig, so
+  // the size of the change is a measurement and not a memory: `PROBES` is
+  // still the sword-and-shield figure (what a keeper used to render) and
+  // `KEEPER_PROBES` is what a keeper renders now.
+  it("lifts a keeper by their own hand, where it used to lift them by a shield", () => {
     // Both probe sets measure the same rest pose -- the lowest point of a
     // standing character is a BOOT, not a prop -- so the rig this poses is
-    // correctly raised for either, and #447 does not move the rest correction.
+    // correctly raised for either, and #447 did not move the rest correction.
     expect(BODY_ONLY_PROBES.restLift, "the rest pose's lowest point is a boot, with or without kit").toBe(
       PROBES.restLift,
     );
+    // And the keeper's OWN mesh agrees with the filtered one to the bit,
+    // which is what makes `BODY_ONLY_PROBES` -- written before the fix as a
+    // projection -- a legitimate stand-in for the real thing throughout this
+    // file.
+    expect(KEEPER_PROBES.restLift, "building with an empty loadout is the same figure as filtering the props out").toBe(
+      BODY_ONLY_PROBES.restLift,
+    );
+
     const rig = groundedRig();
-    const withShield = groundedOnRig(rig, "keeper_dive", standing, { dive: 1 }).lift;
-    const withoutShield = groundedOnRig(rig, "keeper_dive", standing, { dive: 1 }, BODY_ONLY_PROBES).lift;
-    expect(withShield, "today a diving keeper is lifted by the shield they should not have").toBeGreaterThan(400 * MM);
-    expect(withoutShield, "their own deepest point is the hand, at roughly half that").toBeGreaterThan(180 * MM);
-    expect(withoutShield, "roughly half that").toBeLessThan(200 * MM);
+    const asKeeperRendersNow = groundedOnRig(rig, "keeper_dive", standing, { dive: 1 }, KEEPER_PROBES).lift;
+    const asKeeperUsedToRender = groundedOnRig(rig, "keeper_dive", standing, { dive: 1 }, PROBES).lift;
+    expect(asKeeperUsedToRender, "the old figure was lifted by the shield it should not have had").toBeGreaterThan(400 * MM);
+    expect(asKeeperRendersNow, "a keeper's own deepest point is the hand, at roughly half that").toBeGreaterThan(180 * MM);
+    expect(asKeeperRendersNow, "roughly half that").toBeLessThan(200 * MM);
     // The visible consequence, stated as a number rather than left for
-    // somebody to notice on screen: until #447 lands, a diving keeper's own
-    // body clears the turf by the difference, because the shield is what is
-    // touching it.
-    expect(withShield - withoutShield, "so the keeper's body hovers by the shield's extra reach").toBeGreaterThan(
+    // somebody to notice on screen: before #447 a diving keeper's own body
+    // cleared the turf by the difference, because the shield was what was
+    // touching it. That hover is what this change removes.
+    expect(asKeeperUsedToRender - asKeeperRendersNow, "the hover the shield's extra reach used to cause").toBeGreaterThan(
       200 * MM,
     );
   });

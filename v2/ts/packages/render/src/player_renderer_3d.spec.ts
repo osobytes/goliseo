@@ -740,6 +740,72 @@ describe("player_renderer_3d.characterMesh / ppmForRadius", () => {
     expect(awayColor).not.toEqual(homeColor);
   });
 
+  // -------------------------------------------------------------------
+  // CHARACTER VARIANTS (#447)
+  // -------------------------------------------------------------------
+  //
+  // The whole of #447 at this layer, stated as what a caller can observe.
+  // `characterMesh` used to return geometry from one memoised, argument-free
+  // `build()` no matter what it was handed, so every assertion below would
+  // have failed by returning the SAME object.
+  it("builds a different geometry per authored presentation, on the same team", () => {
+    const medieval = characterMesh("v-med", idleView, baseOptions({ team: "home", presentation_id: "medieval_rook_emberguard", loadout_id: "loadout_tournament_sword" }), 0) as THREE.SkinnedMesh;
+    const scifi = characterMesh("v-sci", idleView, baseOptions({ team: "home", presentation_id: "scifi_nova_quell", loadout_id: "loadout_tournament_sword" }), 0) as THREE.SkinnedMesh;
+    expect(medieval.geometry).not.toBe(scifi.geometry);
+    expect(medieval.geometry.getAttribute("position").count).not.toBe(scifi.geometry.getAttribute("position").count);
+  });
+
+  it("builds a different geometry per authored loadout, within one presentation", () => {
+    const shield = characterMesh("v-shield", idleView, baseOptions({ team: "home", presentation_id: "scifi_axi", loadout_id: "loadout_emberguard_shield" }), 0) as THREE.SkinnedMesh;
+    const blade = characterMesh("v-blade", idleView, baseOptions({ team: "home", presentation_id: "scifi_axi", loadout_id: "loadout_vector_blade" }), 0) as THREE.SkinnedMesh;
+    expect(shield.geometry).not.toBe(blade.geometry);
+    expect(shield.geometry.getAttribute("position").count).not.toBe(blade.geometry.getAttribute("position").count);
+  });
+
+  // THE DEFECT, INVERTED. Same presentation, same team, one with a loadout
+  // and one without -- which is exactly the two `scifi_axi` players `gc-data`
+  // authors (`sela_dwin` carries a shield, `ozzo` keeps goal). The keeper's
+  // mesh must be the smaller one, and the assertion is on the vertex count
+  // rather than on object identity so "returned a different object that
+  // happens to be identical" cannot pass it.
+  // `rig3d/presentation_content.spec.ts` makes the stronger claim -- no
+  // `socket_*` vertices at all -- against the geometry builder directly.
+  it("gives a keeper a strictly smaller mesh than the outfielder sharing their presentation", () => {
+    const keeper = characterMesh("v-ozzo", idleView, baseOptions({ team: "home", is_keeper: true, presentation_id: "scifi_axi" }), 0) as THREE.SkinnedMesh;
+    const outfield = characterMesh("v-sela", idleView, baseOptions({ team: "home", presentation_id: "scifi_axi", loadout_id: "loadout_emberguard_shield" }), 0) as THREE.SkinnedMesh;
+    expect(keeper.geometry).not.toBe(outfield.geometry);
+    expect(keeper.geometry.getAttribute("position").count).toBeLessThan(outfield.geometry.getAttribute("position").count);
+  });
+
+  // Two players who really do share a variant must still SHARE the geometry:
+  // the cache is keyed by the variant, not by the player, and losing that
+  // would mean one expensive geometry per player on the pitch instead of one
+  // per distinct kit. `brakka` and `drell` are that pair in `gc-data`; they
+  // are on opposite teams, so this uses one team to isolate the claim from
+  // `geometryForTeam`'s own per-team split.
+  it("shares one geometry between two players whose presentation and loadout agree", () => {
+    const opts = { team: "home", presentation_id: "medieval_rook_emberguard", loadout_id: "loadout_emberguard_shield" } as const;
+    const a = characterMesh("v-share-a", idleView, baseOptions(opts), 0) as THREE.SkinnedMesh;
+    const b = characterMesh("v-share-b", idleView, baseOptions(opts), 0) as THREE.SkinnedMesh;
+    expect(a).not.toBe(b);
+    expect(a.geometry).toBe(b.geometry);
+  });
+
+  // ONE MATERIAL FOR EVERY CHARACTER (see `sharedMaterial`). Keying the
+  // materials cache by variant as well as team would have produced up to
+  // eighteen identical `MeshStandardMaterial`s as a side effect of a change
+  // about GEOMETRY; this is what says it did not.
+  it("shares one material across every variant and both teams", () => {
+    const a = characterMesh("v-mat-a", idleView, baseOptions({ team: "home", presentation_id: "medieval_rook_emberguard", loadout_id: "loadout_tournament_sword" }), 0) as THREE.SkinnedMesh;
+    const b = characterMesh("v-mat-b", idleView, baseOptions({ team: "away", presentation_id: "toy_tock" }), 0) as THREE.SkinnedMesh;
+    expect(Array.isArray(a.material)).toBe(false);
+    expect(a.material).toBe(b.material);
+  });
+
+  it("refuses a presentation id content never authored instead of quietly drawing the first theme", () => {
+    expect(() => characterMesh("v-bogus", idleView, baseOptions({ presentation_id: "not_a_presentation" }), 0)).toThrow(/no theme for presentation id/);
+  });
+
   it("bakes the facing yaw onto the mesh's own quaternion", () => {
     const forward = characterMesh("yaw-a", idleView, baseOptions({ facing: new Vec2(0, 1) }), 0) as THREE.SkinnedMesh;
     const sideways = characterMesh("yaw-b", idleView, baseOptions({ facing: new Vec2(1, 0) }), 0) as THREE.SkinnedMesh;
