@@ -30,7 +30,7 @@
 // this file. Do not let the word "differential" imply more than it delivers:
 // if the two implementations are ever changed together, re-derive the golden
 // from the Rust side and re-read `network_conditions.rs` while doing it.
-////
+//
 // See the Rust file's header for the transcript's grammar.
 
 import { describe, expect, it } from "vitest";
