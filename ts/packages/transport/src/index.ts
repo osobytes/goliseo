@@ -27,6 +27,29 @@ export {
   type BrowserStarTransportOptions,
   type StarEvalFn,
 } from "./browser_star.ts";
+// Scripted network impairment: the authored profiles the native rollback
+// matrix runs, and a decorator that applies them to any adapter (#472).
+export {
+  type NetworkProfile,
+  type NetworkProfileName,
+  NETWORK_PROFILES,
+  NETWORK_PROFILE_NAMES,
+  networkProfile,
+} from "./network_profiles.ts";
+export {
+  ImpairmentLink,
+  ImpairedTransport,
+  ImpairedStarTransport,
+  impaired,
+  impairedStar,
+  type ImpairmentCounters,
+  type ImpairmentDropReason,
+  type ImpairmentOptions,
+  type ImpairmentReceipt,
+  type ImpairmentRelease,
+  type ImpairedStarRelease,
+} from "./impairment.ts";
+export { RNG_MOD, RNG_MULT, rngRoll, rngSeed, type RngRoll } from "./impairment_rng.ts";
 export {
   installGoliseoStarTransport,
   newGoliseoStarTransportBridge,
