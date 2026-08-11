@@ -1,19 +1,13 @@
-//! Port of `spec/sim/research_timeline_spec.lua`.
+//! Tests for `gc_sim::research_timeline`.
 //!
-//! `example_package.lua`'s `rollback_sequence`/`gameplay` fixtures build
-//! their diffs and steps from a *real* rollback timeline over the checked-in
-//! short match tape (`rollback_events.new`/`.apply`/`.confirm` against
-//! `sim/match.lua` state). Neither `sim::rollback_events` nor `sim::r#match`
-//! is available to this port yet (see `research_timeline.rs`'s module doc
-//! comment on the local `RollbackEvent`/`RollbackEventDiff`/
-//! `RollbackEventStep` view types), so [`fresh_timeline`] below hand-builds
-//! a [`gc_sim::research_timeline::RollbackEventDiff`]/[`RollbackEventStep`]
-//! sequence with the identical narrative the Lua fixture documents: tick 0
-//! confirmed as a `touch`, tick 1 first predicted as a `tackle` and then
-//! corrected to a `pass`. None of this spec's assertions pin a hash or byte
-//! value computed by the real tape (that pinning lives in
-//! `research_canonical_spec.lua`, ported separately), so every case here
-//! survives as a real, non-`#[ignore]`d test.
+//! [`fresh_timeline`] hand-builds a synthetic
+//! [`gc_sim::research_timeline::RollbackEventDiff`]/[`RollbackEventStep`]
+//! sequence — tick 0 confirmed as a `touch`, tick 1 first predicted as a
+//! `tackle` and then corrected to a `pass` — rather than deriving it from a
+//! real rollback timeline over the checked-in short match tape. None of
+//! this file's assertions pin a hash or byte value computed by the real
+//! tape; that pinning lives in `research_canonical.rs`, so every case here
+//! runs as a real test with no `#[ignore]`.
 
 use gc_sim::research_schema::Value;
 use gc_sim::research_timeline::{
@@ -60,8 +54,9 @@ struct Sequence {
     revoked_rollback_event_id: String,
 }
 
-/// Mirrors `example_package.lua`'s `rollback_sequence` (minus `first_diff`
-/// and `tape`, which no test here reads) and `fresh_timeline`.
+/// Builds a fresh `ResearchTimeline` plus the synthetic
+/// speculative/correction diff and confirmed-step sequence most tests below
+/// share.
 fn fresh_timeline() -> (research_timeline::ResearchTimeline, Sequence) {
     let touch = event("e-touch", "soccer/touch", 0, 1);
     let tackle = event("e-tackle", "soccer/tackle", 1, 1);

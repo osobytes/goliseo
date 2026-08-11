@@ -1,13 +1,14 @@
-//! Port of `spec/core/vec2_spec.lua`.
+//! Tests for `Vec2` arithmetic, length, normalization and distance.
 //!
-//! `t.near` in the Lua runner is an approximate comparison; here that is an
-//! epsilon check. `t.eq` is exact, and stays exact — the zero-vector case in
-//! particular is asserting that `normalized` returns a true zero rather than a
-//! NaN, so weakening it would defeat the test.
+//! Length/distance/normalization checks use an epsilon comparison
+//! (`assert_near`) since they route through `sqrt`; equality checks
+//! (`assert_eq!`) stay exact — the zero-vector case in particular is
+//! asserting that `normalized` returns a true zero rather than a NaN, so
+//! weakening it to an epsilon check would defeat the test.
 
 use gc_core::vec2::Vec2;
 
-/// The Lua runner's `t.near` tolerance.
+/// Tolerance for approximate (`sqrt`-derived) comparisons.
 const EPSILON: f64 = 1e-9;
 
 fn assert_near(actual: f64, expected: f64) {

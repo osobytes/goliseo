@@ -1,11 +1,10 @@
-//! Carry-forward from `spec/game/combat_presentation_spec.lua`.
+//! Combat presentation tests.
 //!
-//! That spec's first `t.describe` ("combat presentation projection") drives
-//! `game/presentation/combat.lua`, TypeScript in this port (`@gc/presentation`,
-//! covered by that package's own spec). Its second `t.describe`, "shared
-//! player pose priority", exercises `render.player_pose.select` — Rust here
-//! — and was deferred to this crate by the TypeScript presentation agent for
-//! exactly that reason. Both of that block's `t.it` cases are ported below.
+//! "shared player pose priority" exercises `player_pose::select` (Rust) and
+//! lives here rather than in `@gc/presentation`'s own spec: combat
+//! presentation projection itself is TypeScript (`@gc/presentation`, covered
+//! by that package's own spec), but pose priority resolution crosses the
+//! language boundary into this crate.
 //!
 //! #441 added the two cases at the bottom, which are this crate's own: they
 //! cover `frame::combat_model` (the adapter that finally feeds `select`'s
@@ -103,12 +102,12 @@ fn chooses_overlapping_poses_from_declared_priority_with_a_stable_tie_rule() {
     let default = player_pose::select(player, None, None, None).id;
     assert_eq!(default, PlayerPoseId::SoccerWindup);
 
-    // The Lua original raises `slide`'s declared priority above
-    // `soccer_windup`'s by mutating the module-global `PRIORITY` table in
-    // place, observes the winner flip, then sets them equal and observes
-    // the lexical tie-break. `player_pose::resolve` is `select`'s reduction
-    // step, factored out precisely so this contract is testable without a
-    // mutable global — see that function's own doc comment for why.
+    // `player_pose::resolve` is `select`'s reduction step, factored out
+    // precisely so the priority/tie-break contract can be driven with
+    // explicit `PlayerPoseSelection` priorities below — raising `slide`'s
+    // priority above `soccer_windup`'s to observe the winner flip, then
+    // setting them equal to observe the lexical tie-break — without a
+    // mutable global. See that function's own doc comment for why.
     let soccer_windup_priority = PlayerPoseId::SoccerWindup.priority();
     let raised = [
         PlayerPoseSelection {

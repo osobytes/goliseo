@@ -1,25 +1,25 @@
-// Ported from game/screens/online_match.lua -- the impure half of the
-// online match: it owns the OMP-3 driver, borrows the lobby's star link,
-// drives the shipped combat match renderer through the renderer's own
-// drive seam, and draws one extra online overlay.
+// OnlineMatch: the impure half of the online match screen -- it owns the
+// OMP-3 driver, borrows the lobby's star link, drives the shipped combat
+// match renderer through the renderer's own drive seam, and draws one
+// extra online overlay.
 //
 // Every decision it makes is delegated: the driver owns simulation and
-// authority, `game.online.match_presentation` owns the stable event
-// timeline, and `online_match_model.ts` owns session policy. This file
-// translates input, executes effects, and reports facts.
+// authority, `MatchPresentationPort` owns the stable event timeline, and
+// `online_match_model.ts` owns session policy. This file translates input,
+// executes effects, and reports facts.
 //
-// `game.online.match_driver`, `game.online.match_session`,
-// `game.online.lobby_link`, `game.match_contract`, `game.match_observer`
-// are all Rust-owned or `@gc/app`/`@gc/online`-owned (v2/README.md §2.1;
-// content.ts's header), none a declared dependency of this package, so all
-// are injected ports, following the pattern used throughout this package
-// (`real_match.ts`'s `MatchContractPort`/`MatchObserverPort`,
-// `lobby_model.ts`'s `CoordinatorPort`). `match.ts` itself only ports the
+// `MatchDriverPort`, `MatchSessionPort`, `MatchLobbyLinkPort`,
+// `MatchContractPort`, and `MatchObserverPort` are all Rust-owned or
+// `@gc/app`/`@gc/online`-owned (ARCHITECTURE.md §1.1; content.ts's header),
+// none a declared dependency of this package, so all are injected ports,
+// following the pattern used throughout this package (`real_match.ts`'s
+// `MatchContractPort`/`MatchObserverPort`, `lobby_model.ts`'s
+// `CoordinatorPort`). `match.ts` itself only implements the
 // rollback-consumption seam this milestone (see its header) -- there is no
-// working, self-constructing `Match` class to build here either, so (like
+// working, self-constructing match class to build here either, so (like
 // `real_match.ts`) this module takes the constructed match screen as a
-// parameter. `game.presentation.combat` and `game.ui.theme` *are* declared
-// dependencies (`@gc/presentation`, `@gc/ui`) and are used directly.
+// parameter. `combat` (`@gc/presentation`) and `theme` (`@gc/ui`) *are*
+// declared dependencies and are used directly.
 
 import { combat, type CombatPresentationData, type CombatMatchState } from "@gc/presentation";
 import { theme } from "@gc/ui";
@@ -499,8 +499,7 @@ export class OnlineMatch<TDriver, TBatch, TSnapshot, TCheckpoint, TPresentation,
   }
 
   // The online status panel. Left as raw lines -- see this module's header
-  // for why the full renderer (`match_hud`, `love.graphics`) is out of
-  // scope this milestone.
+  // for why the full renderer is out of scope this milestone.
   overlayLines(combatData: CombatPresentationData): string[] {
     const diagnostics = this.ports.matchDriver.diagnostics(this.driver);
     const state = this.match.state;

@@ -1,5 +1,3 @@
-//! Port of `sim/network_conditions.lua`.
-//!
 //! Deterministic, in-process packet impairment for rollback laboratory runs.
 //! Transport time is an integer tick owned by the caller and is deliberately
 //! separate from the input tick carried by each authoritative sample.
@@ -7,16 +5,17 @@
 //! Slot identity (`source_slot`, matching [`crate::input_frame::SLOT_COUNT`]'s
 //! one-based `1..=8` domain) and RNG-consumption order are protocol-facing —
 //! two peers replaying the same sends must schedule byte-identical
-//! deliveries — so both stay exactly as the Lua source defines them rather
-//! than converting to 0-based internal indexing (README rule 5.3's wire
-//! exception). This module is differential-tested against the reference Lua
-//! implementation (see `v2/tools/lua_reference`).
+//! deliveries — so both stay exactly as the original Lua source defined them
+//! rather than converting to 0-based internal indexing (ARCHITECTURE.md §3
+//! rule 3's wire exception). This module is differential-tested against reference
+//! vectors captured from the Lua implementation this simulation was
+//! originally validated against (see `tools/lua_reference`).
 //!
-//! `_records`/`_pending_references`/`_delivered_fingerprints` are Lua tables
-//! keyed by `source_slot` (`1..=8`) or by `input_tick`. Per-slot state uses a
-//! fixed 8-element `Vec` indexed by `source_slot - 1` (deterministic,
+//! `_records`/`_pending_references`/`_delivered_fingerprints` were Lua tables
+//! keyed by `source_slot` (`1..=8`) or by `input_tick`. Per-slot state here
+//! uses a fixed 8-element `Vec` indexed by `source_slot - 1` (deterministic,
 //! `O(1)`, and not a hash map); per-tick state within a slot uses a small
-//! linear-scan `Vec<(tick, value)>`, mirroring the Lua table's lookup
+//! linear-scan `Vec<(tick, value)>`, mirroring that Lua table's lookup
 //! shape without `HashMap` (clippy denies it workspace-wide).
 
 use crate::input_frame::{self, InputSample};
@@ -56,7 +55,7 @@ pub enum NetworkDropReason {
     BurstLoss,
 }
 
-/// An expected, recoverable network-conditions failure (README rule 5.5):
+/// An expected, recoverable network-conditions failure (ARCHITECTURE.md §3 rule 5):
 /// the caller is meant to handle it, not a programmer error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NetworkConditionError {
@@ -94,7 +93,7 @@ fn failure<T>(code: NetworkConditionErrorCode, message: impl Into<String>) -> Re
 /// `gc_data::network_profiles::NetworkProfile`, which additionally carries a
 /// `name` used only for the authored profile registry; this is the bare
 /// tuning shape `sim/network_conditions.lua`'s own `---@class NetworkProfile`
-/// declares (no `name` field), so ad hoc profiles (as the differential tests
+/// declared (no `name` field), so ad hoc profiles (as the differential tests
 /// and several spec cases build) don't need to invent one.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NetworkProfile {

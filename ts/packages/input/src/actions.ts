@@ -1,6 +1,6 @@
-// game/input/actions.lua — edge layer: one key or button press becomes one
-// ActionEvent. Menus and the global toggles consume these. The (not-yet-
-// ported) match screen additionally POLLS the same controls for held state.
+// Edge layer: one key or button press becomes one ActionEvent. Menus and
+// the global toggles consume these. The match screen additionally POLLS
+// the same controls for held state.
 //
 // Both maps are derived from bindings.ts. Never add a literal key here; add
 // the control there.

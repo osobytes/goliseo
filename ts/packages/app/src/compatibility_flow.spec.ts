@@ -1,15 +1,11 @@
-// Ported from spec/game/compatibility_flow_spec.lua.
-//
 // The second case ("drives the production bootstrap into and out of the
-// real match") needs `game.screens.real_match` (via `bootstrap.new`) -- now
-// ported (`@gc/screens`'s `real_match.ts`/`match.ts`) and wired by this
-// batch's `real_match_factory.ts`. It reads `screen.match.state.finished =
-// true` directly in the Lua original; this port instead flips the
-// underlying fake `SimHostPort`'s `hud.finished` (the same seam
-// `bootstrap.spec.ts`'s "is the adapter selected by the default bootstrap"
-// test uses, for the identical reason -- `RealMatchScreenPort.state` has no
-// settable `finished` field, only a `time_left`/`score` getter derived from
-// the host's HUD).
+// real match") exercises `bootstrap.new` wired through `real_match_factory.ts`
+// against `@gc/screens`'s `real_match.ts`/`match.ts`. It flips the
+// underlying fake `SimHostPort`'s `hud.finished` rather than a `finished`
+// field on the screen directly (the same seam `bootstrap.spec.ts`'s "is the
+// adapter selected by the default bootstrap" test uses, for the identical
+// reason -- `RealMatchScreenPort.state` has no settable `finished` field,
+// only a `time_left`/`score` getter derived from the host's HUD).
 
 import { describe, expect, it } from "vitest";
 import { App } from "./app.ts";

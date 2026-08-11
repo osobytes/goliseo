@@ -1,14 +1,15 @@
-//! Ported from `spec/data/players_spec.lua`.
+//! Tests player content invariants: stat shape, id/number uniqueness and
+//! range, and the loadout/presentation identity split.
 
 use gc_data::players::{self, StatBlock};
 
 #[test]
 fn player_data_authors_exactly_the_five_canonical_attributes() {
-    // Lua checks a dynamic table has exactly the five canonical stat keys, all
-    // numeric. Here that invariant is structural: `StatBlock` has exactly five
-    // `i64` fields and nothing else could compile. This test still exercises
-    // every field on every player so the intent stays visible and the check
-    // cannot silently stop compiling against `StatBlock`.
+    // The five-canonical-stats invariant is structural: `StatBlock` has
+    // exactly five `i64` fields and nothing else could compile. This test
+    // still exercises every field on every player so the intent stays
+    // visible and the check cannot silently stop compiling against
+    // `StatBlock`.
     for player in players::ALL {
         let StatBlock {
             pace,
@@ -63,8 +64,7 @@ fn player_data_keeps_persistent_identity_separate_from_presentation_and_loadout_
         }
 
         // `PlayerData` has no `species` or `presentation_species` field at all:
-        // mechanical species moved to `showcase_player_compatibility`. The Lua
-        // spec asserts `rawget(player, "species") == nil`; here that is
-        // enforced at compile time by the struct's shape.
+        // mechanical species moved to `showcase_player_compatibility`, and
+        // that separation is enforced at compile time by the struct's shape.
     }
 }

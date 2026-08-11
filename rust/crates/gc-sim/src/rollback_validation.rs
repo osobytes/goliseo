@@ -1,26 +1,23 @@
-//! Port of `sim/rollback_validation.lua`.
-//!
 //! Pure OMP-2 validation campaign and deterministic scenario registry
 //! adapter. Runtime clocks, process memory, browser identity, and
 //! game-layer consumers remain outside this module.
 //!
 //! ## Scope note
 //!
-//! This module's own campaign machinery (`new_campaign`/`step_campaign`)
-//! is a real, complete port — every suite ("native", "browser-full",
-//! "browser-stress", "late-window", "soak") builds its case list from
+//! This module's own campaign machinery (`new_campaign`/`step_campaign`) is
+//! complete — every suite ("native", "browser-full", "browser-stress",
+//! "late-window", "soak") builds its case list from
 //! `crate::determinism_evidence::fixture_tape`, `crate::rollback_lab`, and
-//! `gc_data::omp2_rollback_validation`, all now available. What time did
-//! not allow in this pass is *exercising* the expensive suites
+//! `gc_data::omp2_rollback_validation`, all available. What is not exercised
+//! by the test suite is the expensive suites themselves
 //! (`plan_cases("native" | "soak")` alone builds dozens of multi-hundred-tick
 //! cases): `tests/rollback_validation.rs` only runs the cheap, fully
 //! self-contained assertions (`config()`, `profile_digest()`) plus the
-//! two-case `"late-window"` suite the Lua spec itself uses for its
-//! `new_campaign`/`step_campaign` case. Report this precisely — the module
-//! is ported, the expensive suites are unverified by this pass, not
-//! "blocked".
+//! two-case `"late-window"` suite that `new_campaign`/`step_campaign` use
+//! for their own case. Report this precisely — the module is complete, the
+//! expensive suites are unverified by that test run, not "blocked".
 //!
-//! ## Value types replace the Lua `copy_*` helpers, as elsewhere
+//! ## No manual deep-copy helpers, as elsewhere
 //!
 //! Every payload type here is an owned Rust value with a real [`Clone`]
 //! impl, matching `rollback_session`/`rollback_lab`/`rollback_playable_lab`.
@@ -567,8 +564,8 @@ fn combat_load_frames(fixture: &Omp2RollbackCombatLoadFixture) -> Vec<input_fram
 
 /// Build the pinned combat-load input tape for a frozen OMP-2 fixture.
 ///
-/// `pub` per README §5 rule 8: `spec/sim/combat_load_fixtures_spec.lua` drives
-/// this directly, and the alternative was reconstructing ~150 lines of fixture
+/// `pub` per ARCHITECTURE.md §3 rule 6: `tests/combat_load_fixtures.rs` drives this
+/// directly, and the alternative was reconstructing ~150 lines of fixture
 /// setup inside the test. These fixtures exist to guard bit-exact hashes, so a
 /// second independent construction path could silently diverge and pin the
 /// wrong thing — which is worse than widening visibility inside an internal
@@ -801,14 +798,14 @@ fn combat_load_cases(network_seed: i64, tune: &Tuning) -> Vec<RollbackValidation
         .collect()
 }
 
-/// Build the complete case plan for `suite`. Every suite is a real port of
-/// `sim/rollback_validation.lua`'s `plan_cases`; see the module doc comment
-/// for which ones `tests/rollback_validation.rs` actually exercises.
+/// Build the complete case plan for `suite`. Every suite's case list is
+/// complete; see the module doc comment for which ones
+/// `tests/rollback_validation.rs` actually exercises.
 ///
 /// # Panics
 ///
 /// Panics if `suite` requires `options.profile_name`/`.network_seed` and
-/// either is missing (producer invariant, README rule 5.5).
+/// either is missing (producer invariant, ARCHITECTURE.md §3 rule 5).
 fn plan_cases(
     suite: RollbackValidationSuite,
     options: &RollbackValidationOptions,
@@ -1018,7 +1015,7 @@ fn combat_load_covered(
 /// # Panics
 ///
 /// Panics if `scenario` names no authored combat load fixture (producer
-/// invariant, README rule 5.5).
+/// invariant, ARCHITECTURE.md §3 rule 5).
 #[must_use]
 pub fn combat_load_covered_for(result: &RollbackLabResult, scenario: &str) -> bool {
     let fixture = combat_load_by_scenario(scenario)
@@ -1125,7 +1122,7 @@ fn complete_case(
 ///
 /// Panics if `suite` requires `options.profile_name`/`.network_seed` and
 /// they are missing, or if `suite`'s case plan is empty (producer
-/// invariants, README rule 5.5). Every suite builds its full case plan; see
+/// invariants, ARCHITECTURE.md §3 rule 5). Every suite builds its full case plan; see
 /// the module doc comment for which ones `tests/rollback_validation.rs`
 /// actually exercises within this pass's time budget.
 #[must_use]
@@ -1152,8 +1149,8 @@ pub fn new_campaign(
 ///
 /// # Panics
 ///
-/// Panics if `max_ticks` is not positive (producer invariant, README rule
-/// 5.5).
+/// Panics if `max_ticks` is not positive (producer invariant,
+/// ARCHITECTURE.md §3 rule 5).
 pub fn step_campaign(
     campaign: &mut RollbackValidationCampaign,
     max_ticks: i64,
@@ -1274,7 +1271,7 @@ fn network_profile_by_name(name: &str) -> Option<&'static network_profiles::Netw
 /// # Panics
 ///
 /// Panics if `gc_data::omp2_rollback_validation::DATA.full_profiles` names
-/// an unauthored profile (a data-consistency invariant, README rule 5.5).
+/// an unauthored profile (a data-consistency invariant, ARCHITECTURE.md §3 rule 5).
 #[must_use]
 pub fn profile_digest() -> String {
     let mut state = Fnv1a64State::new();

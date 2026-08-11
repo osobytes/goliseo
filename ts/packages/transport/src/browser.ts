@@ -1,6 +1,5 @@
 // Real browser transport, driven through a single bounded-string eval seam
-// (mirrors the LÖVE `love.js.eval` hook the Lua source targets, generalised
-// here to the DOM `window` bridge). Ported from game/transport/browser.lua.
+// against the DOM `window` bridge.
 
 import { ok, err } from "@gc/core";
 import * as contract from "./contract.ts";
@@ -15,10 +14,9 @@ import type {
 } from "./contract.ts";
 
 /**
- * Test seam; defaults to evaluating `window.GoliseoTransportBridge`. Returns
- * a `[result, error]` pair — Lua's `local result, err = self._eval(command)`
- * captures both of the callee's returns, so a mock is free to explain a
- * `nil` result with a message.
+ * Test seam; defaults to evaluating `window.GoliseoTransportBridge`.
+ * Returns a `[result, error]` pair so a mock is free to explain a `null`
+ * result with a message.
  */
 export type EvalFn = (command: string) => readonly [result: string | null, error: string | null];
 
@@ -113,8 +111,8 @@ export class BrowserTransport implements TransportAdapter {
 
   private static _defaultEval(_command: string): readonly [result: string | null, error: string | null] {
     // The real DOM bridge (`window.GoliseoTransportBridge`) is wired up by
-    // the app shell at runtime; this milestone only ports behaviour, not the
-    // bindings, so the default seam has nothing to call.
+    // the app shell at runtime; this package implements transport behavior
+    // only, not those bindings, so the default seam has nothing to call.
     return [null, "window.GoliseoTransportBridge is not available"];
   }
 

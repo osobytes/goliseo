@@ -1,18 +1,18 @@
-// Ported from game/screens/result.lua — full-time summary and the hub for
-// rematch / change-lineup / change-plan / main-menu. See squad.ts's header
-// for the pure/impure seam and content-injection rationale.
+// Full-time summary and the hub for rematch / change-lineup /
+// change-plan / main-menu. See squad.ts's header for the pure/impure seam
+// and content-injection rationale.
 //
-// `ProductMatchResult` is `game/match_contract.lua`'s shape (-> `@gc/app`,
-// not this package's to own); it is declared locally in content.ts,
-// structurally compatible, the same way `@gc/ui`'s `types.ts` declares
-// `FocusEvent` locally rather than importing it.
+// `ProductMatchResult` is `@gc/app`'s `match_contract.ts`'s shape (not this
+// package's to own); it is declared locally in content.ts, structurally
+// compatible, the same way `@gc/ui`'s `types.ts` declares `FocusEvent`
+// locally rather than importing it.
 
 import { focus, type Layout } from "@gc/ui";
 import type { FocusEvent } from "@gc/ui";
 import type { ProductMatchResult, TeamResultStats } from "./content.ts";
 
 export interface ResultContentData {
-  /** The slice of `data.players` this screen reads: just the display name. */
+  /** The slice of player data this screen reads: just the display name. */
   readonly players: Readonly<Record<string, { readonly name: string }>>;
 }
 

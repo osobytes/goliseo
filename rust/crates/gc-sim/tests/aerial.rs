@@ -1,11 +1,11 @@
-//! Port of `spec/sim/aerial_spec.lua`.
+//! Tests for `gc_sim::aerial` integrated with a real match.
 //!
-//! Every case in this Lua spec builds a real fixture via `match.new` and
-//! drives it with `match.step` — it is testing the integration between
-//! `sim/match.lua`'s tick (ball/player physics, possession) and
-//! `sim/aerial.lua`'s contact resolution, not `aerial` in isolation.
-//! `aerial`'s own resolver logic is fully ported and tested separately in
-//! `tests/aerial_resolver.rs` (from `aerial_resolver_spec.lua`).
+//! Every case in this file builds a real fixture via `match.new` and drives
+//! it with `match.step` — it is testing the integration between
+//! `gc_sim::r#match`'s tick (ball/player physics, possession) and
+//! `gc_sim::aerial`'s contact resolution, not `aerial` in isolation.
+//! `aerial`'s own resolver logic is tested separately in
+//! `tests/aerial_resolver.rs`.
 
 use gc_core::vec2::Vec2;
 use gc_sim::r#match::{self as sim_match, NewMatchOptions, StepInput};

@@ -1,47 +1,46 @@
-//! Port of `spec/sim/rollback_session_spec.lua`.
+//! Tests for `gc_sim::rollback_session`.
 //!
-//! ## Adaptations from the Lua original
+//! ## Design notes
 //!
-//! - **Defensive-copy demonstrations are trimmed, not dropped.** Lua tables
-//!   are references, so the original repeatedly mutates a value the API just
-//!   returned and re-reads the retained state to prove the two are
-//!   independent. Every payload type this module returns
+//! - **Copy-independence is verified behaviorally, not just relied on as a
+//!   type-system guarantee.** Every payload type this module returns
 //!   ([`RollbackTickOutput`], [`RollbackComparison`], ...) is an owned Rust
-//!   value with a real [`Clone`] impl, so that independence is a type-system
-//!   guarantee rather than a behavior under test. Each case still performs
-//!   at least one such mutation, both to keep the assertion coverage this
-//!   file is meant to preserve and because it costs nothing to check.
+//!   value with a real [`Clone`] impl, so mutating a value the API just
+//!   returned can never affect retained session state. Even so, each case
+//!   that can plausibly touch this still performs at least one such
+//!   mutation and re-reads the retained state to assert the independence
+//!   directly, both to keep the assertion coverage this file is meant to
+//!   preserve and because it costs nothing to check.
 //! - **`MatchSnapshotDifference.expected`/`.actual` are rendered `String`s**
-//!   (see `gc_sim::match_snapshot`), not nested tables, so the Lua case that
-//!   reads `difference.expected.x` off a newly-appeared `dive_target` has no
-//!   direct port: a presence/absence difference (`None` vs `Some`) renders
-//!   as the boolean `"true"`/`"false"`, not the point's coordinates (see
-//!   `match_snapshot.rs`'s `dive_target` diff arm). "reports confirmation
-//!   and deterministic boundary diagnostics" below instead diverges
-//!   `state.score.home`, an `i64` leaf whose rendered `expected`/`actual`
-//!   are unambiguous, and asserts the same path/copy-independence contract.
-//! - **1-based `slots`/`players` indices become 0-based** per
-//!   `rollback_input_history`/`match.rs`'s own documented conventions
-//!   (canonical slot *identity* stays 1-based at the `add_authoritative`
-//!   call boundary; the `RollbackInputTickRecord.slots` array and
-//!   `MatchState.players` array are 0-based Rust collections).
-//! - **`sources()` with no local slot** (Lua `sources()`, no `local_first`)
-//!   returns every slot `"remote"` — `add_authoritative` never gates
-//!   acceptance on ownership, only `input.slots[n].source` diagnostics read
-//!   it — so this port spells that case `sources(false)`.
+//!   (see `gc_sim::match_snapshot`), not nested tables: a presence/absence
+//!   difference (`None` vs `Some`) renders as the boolean
+//!   `"true"`/`"false"`, not a nested value's coordinates (see
+//!   `match_snapshot.rs`'s `dive_target` diff arm). Because of that,
+//!   "reports confirmation and deterministic boundary diagnostics" below
+//!   diverges `state.score.home`, an `i64` leaf whose rendered
+//!   `expected`/`actual` are unambiguous, and asserts the same
+//!   path/copy-independence contract.
+//! - **Slot and player *array* indices are 0-based; slot *identity* stays
+//!   1-based.** Per `rollback_input_history`/`match.rs`'s own documented
+//!   conventions, canonical slot identity is 1-based at the
+//!   `add_authoritative` call boundary, while the
+//!   `RollbackInputTickRecord.slots` array and `MatchState.players` array
+//!   are 0-based Rust collections — the two must not be conflated when
+//!   indexing.
+//! - **`sources(false)` (no local slot)** returns every slot `"remote"` —
+//!   `add_authoritative` never gates acceptance on ownership, only
+//!   `input.slots[n].source` diagnostics read it.
 //! - **Fixture snapshots use `match_snapshot::capture_owned`, not
-//!   `capture`** (Lua's `match_snapshot.capture(state)` has no `_owned`
-//!   distinction to make). `crate::r#match::new`'s freshly constructed
-//!   `MatchState` leaves `marks.home`/`.away` empty exactly as
-//!   `sim/match.lua` does (`marks = { home = {}, away = {} }`) — the
-//!   marking-assignment pass that sizes them to one entry per player only
-//!   runs during `step`. `capture`'s `match_snapshot::validate` requires
-//!   that length immediately, which a never-stepped fixture cannot satisfy;
-//!   `capture_owned` is the established port of "state I trust came from
-//!   `sim::match`, not arbitrary external input" (see its own doc comment),
-//!   which is exactly what every fixture function below is. `rollback_session::new`
-//!   itself matches this: it restores via `restore_owned` for the same reason
-//!   (see its doc comment), so the two choices agree end to end.
+//!   `capture`.** `crate::r#match::new`'s freshly constructed `MatchState`
+//!   leaves `marks.home`/`.away` empty — the marking-assignment pass that
+//!   sizes them to one entry per player only runs during `step`.
+//!   `capture`'s `match_snapshot::validate` requires that length
+//!   immediately, which a never-stepped fixture cannot satisfy;
+//!   `capture_owned` is for state trusted to have come from `sim::match`,
+//!   not arbitrary external input (see its own doc comment), which is
+//!   exactly what every fixture function below is. `rollback_session::new`
+//!   itself matches this: it restores via `restore_owned` for the same
+//!   reason (see its doc comment), so the two choices agree end to end.
 
 use gc_core::vec2::Vec2;
 use gc_sim::input_frame::{self, InputSample, InputSampleOptions};
@@ -909,14 +908,12 @@ fn asserts_a_retained_range_snapshot_gap_before_consuming_or_restoring() {
 
 #[test]
 fn keeps_no_op_reconciliation_and_matching_comparison_diagnostics_lazy() {
-    // The Lua original monkeypatches `match_snapshot.capture`/`.hash`/
-    // `.first_difference` to count calls; Rust has no equivalent for a
-    // module-level function pointer swap. This instead asserts the same
-    // logical contract directly: a no-op `reconcile` (no divergence, or a
-    // stalled session) performs no snapshot restore/resimulation work, which
-    // is already covered by `changed == false` plus the untouched present
-    // boundary below, and a matching `compare` still reports a hash for
-    // both sides.
+    // This asserts the "lazy" contract directly rather than counting calls
+    // to `match_snapshot::capture`/`hash`/`first_difference`: a no-op
+    // `reconcile` (no divergence, or a stalled session) performs no
+    // snapshot restore/resimulation work, which is already covered by
+    // `changed == false` plus the untouched present boundary below, and a
+    // matching `compare` still reports a hash for both sides.
     let mut session = rollback_session::new(&initial_snapshot(), sources(false), None, None);
     step_many(&mut session, 2);
     rollback_session::add_authoritative(&mut session, 1, 1, input_frame::neutral_sample())
@@ -1251,9 +1248,10 @@ fn reports_confirmation_and_deterministic_boundary_diagnostics() {
     assert_eq!(diagnostics.confirmed_tick, 0);
     assert_eq!(diagnostics.confirmed_output_tick, 0);
 
-    // Adapted (see the module doc comment): diverge an unambiguous `i64`
-    // leaf (`state.score.home`) rather than `dive_target`, whose Rust diff
-    // for a presence change renders as a boolean, not a point.
+    // Diverges an unambiguous `i64` leaf (`state.score.home`) rather than
+    // `dive_target`, whose diff for a presence change renders as a
+    // boolean, not a point (see `match_snapshot.rs`'s `dive_target` diff
+    // arm).
     let mut expected = rollback_session::current_snapshot(&session);
     expected.state.score.home = 12;
     let comparison = rollback_session::compare(&mut session, &expected, Some(0));

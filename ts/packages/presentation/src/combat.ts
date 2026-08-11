@@ -1,22 +1,19 @@
-// Ported from game/presentation/combat.lua.
-//
 // This layer only *reads* simulation state — a `MatchState` and a
 // `CombatMatchState` come in, a presentation projection goes out. Nothing
 // here mutates its inputs or produces anything that could flow back into
 // simulation truth.
 //
-// Boundary note: the Lua original requires `data.action_families`,
-// `data.equipment_presentations`, and `data.loadouts` as module-level
-// globals. Under the v2 split, `data/**` lives in Rust (`crates/gc-data`,
-// see v2/README.md §2) — there is no TypeScript module to import them from.
-// The lookup tables are therefore threaded through as an explicit
-// `CombatPresentationData` parameter instead of a top-level `require`,
-// which keeps `@gc/presentation` free of any dependency on Rust-owned
-// content while preserving the exact same projection logic.
+// Boundary note: `data/action_families`, `data/equipment_presentations`,
+// and `data/loadouts` are owned by Rust (`crates/gc-data`, see
+// ARCHITECTURE.md §4 rule 6) — there is no TypeScript module to import them
+// from. The lookup tables are therefore threaded through as an explicit
+// `CombatPresentationData` parameter instead of a top-level import, which
+// keeps `@gc/presentation` free of any dependency on Rust-owned content
+// while preserving the exact same projection logic.
 //
 // Likewise `MatchState`/`CombatMatchState`/`CombatEvent` and friends are
-// declared by `sim/*.lua` (also Rust-owned, `crates/gc-sim`). Only the
-// fields this module actually reads are declared locally below.
+// declared by the sim (also Rust-owned, `crates/gc-sim`). Only the fields
+// this module actually reads are declared locally below.
 
 import type { Vec2 } from "@gc/core";
 
@@ -53,11 +50,11 @@ export type CombatEventKind =
   | "cancelled"
   | "match_terminated";
 
-// Declared by `sim/combat.lua` in the Lua source (see the comment there: "the
-// authority that emits it. Presentation only renders the closed set."). No
-// TypeScript sim exists to import this from, so the closed vocabulary is
-// declared here, mirroring what `data.loadouts`/`data.action_families` are
-// to the other data shapes on this boundary.
+// Declared by the sim (`crates/gc-sim`), which is the authority that emits
+// it — presentation only renders the closed set. No TypeScript sim exists
+// to import this from, so the closed vocabulary is declared here, mirroring
+// what `CombatPresentationData`'s `loadouts`/`action_families` are to the
+// other data shapes on this boundary.
 export type CombatRequestRejectionReason =
   | "protected_keeper_or_no_loadout"
   | "kickoff_hold"

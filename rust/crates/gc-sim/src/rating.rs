@@ -1,5 +1,3 @@
-//! Port of `sim/rating.lua`.
-//!
 //! Frozen, position-aware squad strength estimate. This is deliberately a
 //! small content-independent ordering function, not a prediction formula for
 //! match results.

@@ -1,10 +1,8 @@
-// Ported from game/presentation/combat_feedback.lua.
-//
 // This module never reads or writes simulation state directly — every
 // function here operates on an already-detached `CombatEvent` record (or on
 // this module's own `CombatFeedbackState`, which is purely local HUD/camera
 // bookkeeping: notices, a camera impulse, dedup ids). Nothing computed here
-// can flow back into the sim. See v2/README.md §2 and the task's rollback
+// can flow back into the sim. See ARCHITECTURE.md §1.1 and the task's rollback
 // note: correction smoothing is presentation, strictly one-directional.
 
 import { combat, type ActionFamilyId, type CombatContactResult, type CombatEvent } from "./combat.ts";
@@ -105,7 +103,7 @@ export interface CombatFeedbackDiagnostics {
   readonly reduced_flash: boolean;
 }
 
-/** Minimal settings shape this module reads (`GameSettings` in the Lua original). */
+/** Minimal settings shape this module reads. */
 export interface CombatFeedbackSettings {
   readonly screen_shake: boolean;
   readonly bloom: boolean;
@@ -425,8 +423,8 @@ function configure(state: CombatFeedbackState, reducedMotion: boolean, reducedFl
 function stableDirection(id: string): number {
   let value = 0;
   for (let index = 0; index < id.length; index += 1) {
-    // Lua strings are 1-indexed and `id:byte(index)` reads the index'th
-    // byte; `index` there runs 1..#id, matching `index + 1` here.
+    // Weight each byte by its 1-based position (not its 0-based array
+    // index) so the first byte still contributes a nonzero weight.
     value = (value + id.charCodeAt(index) * (index + 1)) % 2;
   }
   return value === 0 ? -1 : 1;

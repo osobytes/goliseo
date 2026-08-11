@@ -1,15 +1,10 @@
 #!/usr/bin/env bash
-# Interim CI gate for v2 (the Rust + TypeScript port) -- see v2/README.md.
+# The quality gate for this repository (Rust + TypeScript) -- see
+# ARCHITECTURE.md.
 #
-# INTERIM ON PURPOSE. v2 is going to replace the Lua tree entirely, but not
-# yet: today this gate runs ALONGSIDE the Lua gates elsewhere in
-# scripts/check.sh and .github/workflows/ci.yml, not instead of them. When the
-# cutover lands, promoting this file to be THE gate should be a small diff --
-# delete the Lua-specific steps, keep this script and its two call sites.
-#
-# WHY THIS EXISTS. Until now, `v2` appeared in NEITHER scripts/check.sh NOR
-# .github/workflows/ci.yml. Every green result across this migration was a
-# human running the commands in v2/README.md#8 by hand. AGENTS.md §9 records
+# WHY THIS EXISTS. Before this script existed, none of what follows ran as
+# part of any automated gate -- every green result was a human running the
+# commands in ARCHITECTURE.md's command list by hand. AGENTS.md §9 records
 # exactly this shape of failure: a heading that said "fault harness" over a
 # command that started no harness is how a defect breaking every online match
 # passed nine green checks (#279). AGENTS.md §9 states two rules this file
@@ -46,7 +41,7 @@
 #      gc-data authors which theme each character presentation belongs to and
 #      which equipment each fixed loadout carries; the renderer restates both
 #      by hand in packages/render/src/rig3d/presentation_content.ts, because
-#      v2/README.md forbids a TS package reading a Rust crate's source. A
+#      ARCHITECTURE.md forbids a TS package reading a Rust crate's source. A
 #      renamed presentation throws in a player's browser the first time that
 #      player is drawn; a loadout pointed at the wrong equipment throws
 #      NOTHING and simply draws the wrong item forever. The duplicated
@@ -55,7 +50,7 @@
 #      catch it drifting. Numbered 0b rather than renumbering every step
 #      below, which this file and its scenarios refer to by name. See that
 #      script's header and self_test()'s presentation_parity_scenario. (#447)
-#   1. cargo fmt --all --check                                   (v2/rust)
+#   1. cargo fmt --all --check                                      (rust)
 #   2. cargo clippy --workspace --all-targets -- -D warnings
 #   3. cargo test --workspace
 #   4. cargo clippy -p gc-wasm --target wasm32-unknown-unknown -- -D warnings
@@ -66,7 +61,7 @@
 #      for that target, is invisible to #2. See self_test()'s
 #      wasm_clippy_scenario for a demonstration that a native-only run misses
 #      exactly this shape.
-#   5. pnpm install --frozen-lockfile                              (v2/ts)
+#   5. pnpm install --frozen-lockfile                                 (ts)
 #   6. build both gc-wasm artifacts (see 7) -- BEFORE the typecheck, because
 #      `@gc/wasm`'s `web` subpath resolves to a wasm-bindgen-GENERATED
 #      `.d.ts` under the gitignored `dist/`, so a clean checkout cannot type-
@@ -76,15 +71,15 @@
 #      .tsbuildinfo and, once a changed file's mtime is not newer than the
 #      recorded build (a normal outcome of `git checkout`, `rsync`, or a
 #      container layer copy), skips rechecking it and reports clean over
-#      source that is not. That exact shape passed for several waves of this
-#      migration before a forced build caught what an incremental one had
+#      source that is not. That exact shape passed for several successive
+#      changes before a forced build caught what an incremental one had
 #      been silently missing. See self_test()'s tsc_force_scenario.
 #   7. build the gc-wasm wasm artifact:
-#      node v2/ts/packages/wasm/scripts/build.mjs
-#      -- dist/pkg/ is gitignored (v2/.gitignore), so nothing already on disk
+#      node ts/packages/wasm/scripts/build.mjs
+#      -- dist/pkg/ is gitignored (see .gitignore), so nothing already on disk
 #      can be trusted as current. A Rust fix that was never folded into a
 #      freshly rebuilt artifact is a fix nothing downstream can see, and that
-#      has bitten this migration more than once. This step is not optional.
+#      has bitten this repository more than once. This step is not optional.
 #   8. pnpm exec vitest run
 #      -- now that step 7 has built the artifact, this includes
 #      packages/wasm/src/determinism.spec.ts, which independently asserts
@@ -115,27 +110,27 @@
 #      is the thing that was tested". See self_test()'s
 #      stale_web_artifact_scenario.
 #
-# `./scripts/check_v2.sh`              -- run every gate above
-# `./scripts/check_v2.sh --self-test`  -- prove this script can go red
+# `./scripts/check.sh`              -- run every gate above
+# `./scripts/check.sh --self-test`  -- prove this script can go red
 #
-# TOOLCHAIN PINS (also enforced in .github/workflows/ci.yml's v2_gate job,
-# which downloads and verifies each of these before calling this script):
-#   Rust              v2/rust/rust-toolchain.toml pins channel 1.93, the
+# TOOLCHAIN PINS (also enforced in .github/workflows/ci.yml's gate job, which
+# downloads and verifies each of these before calling this script):
+#   Rust              rust/rust-toolchain.toml pins channel 1.93, the
 #                      rustfmt and clippy components, and the
 #                      wasm32-unknown-unknown target. rustup activates this
 #                      automatically for any cargo/rustc invocation under
-#                      v2/rust -- nothing here selects it explicitly.
+#                      rust/ -- nothing here selects it explicitly.
 #   wasm-bindgen-cli   exactly 0.2.118. crates/gc-wasm/Cargo.toml pins
 #                      `wasm-bindgen = "=0.2.118"` because the CLI matches its
 #                      crate's schema version exactly, not semver -- a
 #                      mismatched CLI fails opaquely inside wasm-bindgen's own
 #                      codegen, not here, which is why this script verifies
 #                      the version up front instead.
-#   Node               >= 22 (v2/ts/package.json "engines"). The redundant
+#   Node               >= 22 (ts/package.json "engines"). The redundant
 #                      determinism assertion in step 9 additionally needs
 #                      --experimental-strip-types (stable behaviour since
 #                      Node 22.6); the pinned CI Node is 22.22.0.
-#   pnpm               exactly 11.1.2 (v2/ts/package.json "packageManager").
+#   pnpm               exactly 11.1.2 (ts/package.json "packageManager").
 #
 # NEVER TRUST ONE SIGNAL (AGENTS.md §9). Every external command below runs
 # under this script's own `set -o pipefail` (not a subshell's), so piping a
@@ -147,13 +142,13 @@
 set -uo pipefail
 
 project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-rust_dir="$project_root/v2/rust"
-ts_dir="$project_root/v2/ts"
+rust_dir="$project_root/rust"
+ts_dir="$project_root/ts"
 wasm_pkg_dir="$ts_dir/packages/wasm"
 determinism_spec="$wasm_pkg_dir/src/determinism.spec.ts"
 
 # The single most important assertion in the repository (see the header).
-# Pinned here, independently of v2/ts/packages/wasm/src/determinism.spec.ts's
+# Pinned here, independently of ts/packages/wasm/src/determinism.spec.ts's
 # own copy of the same two constants -- self_test()'s digest_drift_scenario
 # requires the two copies to still agree.
 EXPECTED_FINAL_HASH="bfbb106aea5480f8"
@@ -168,8 +163,8 @@ REQUIRED_PNPM_VERSION="11.1.2"
 
 # Floors, not exact counts: they exist only to catch a suite that silently
 # matched and ran nothing (still exit 0), not to pin the exact count, which
-# grows as the migration proceeds. Comfortably below the counts recorded when
-# this gate was written (1,521 Rust tests; 831 vitest tests).
+# grows as the codebase does. Comfortably below the counts recorded when this
+# gate was written (1,521 Rust tests; 831 vitest tests).
 MIN_RUST_TESTS_PASSED=500
 MIN_TS_TESTS_PASSED=300
 
@@ -213,20 +208,20 @@ run_in() {
 # ---------------------------------------------------------------------------
 
 # Returns 0 if cargo/node/pnpm are not even on PATH -- callers treat that as
-# "skip the whole v2 gate", mirroring how every other step in
+# "skip the whole gate", mirroring how every other step in
 # scripts/check.sh skips when its tool is missing, so a machine that has not
 # bootstrapped Rust/Node yet does not hard-fail `check.sh`. Once those three
 # ARE present, everything below is a hard requirement, not a soft bootstrap
 # check: this gate exists specifically to pin exact toolchain versions, and a
 # silent mismatch defeats that.
-v2_toolchain_present() {
+toolchain_present() {
     command -v cargo >/dev/null 2>&1 && command -v node >/dev/null 2>&1 && command -v pnpm >/dev/null 2>&1
 }
 
 verify_toolchain_pins() {
     local status=0
 
-    step "v2 toolchain pins"
+    step "toolchain pins"
 
     local rustc_version
     rustc_version="$(run_in "$rust_dir" rustc --version)"
@@ -234,7 +229,7 @@ verify_toolchain_pins() {
 
     if command -v rustup >/dev/null 2>&1; then
         if ! run_in "$rust_dir" rustup target list --installed 2>/dev/null | grep -qx "wasm32-unknown-unknown"; then
-            fail_msg "wasm32-unknown-unknown is not installed for the pinned v2/rust toolchain"
+            fail_msg "wasm32-unknown-unknown is not installed for the pinned rust toolchain"
             status=1
         fi
     fi
@@ -269,7 +264,7 @@ verify_toolchain_pins() {
     local pnpm_version
     pnpm_version="$(pnpm --version)"
     if [ "$pnpm_version" != "$REQUIRED_PNPM_VERSION" ]; then
-        fail_msg "pnpm is $pnpm_version, need exactly $REQUIRED_PNPM_VERSION (v2/ts/package.json \"packageManager\")"
+        fail_msg "pnpm is $pnpm_version, need exactly $REQUIRED_PNPM_VERSION (ts/package.json \"packageManager\")"
         status=1
     else
         echo "    pnpm: $pnpm_version"
@@ -285,7 +280,7 @@ verify_toolchain_pins() {
 # Gate 0. Cross-language parity for every wire enum on the RenderFrame
 # boundary (#433). Cheap, build-free, and therefore first.
 gate_wire_enum_parity() {
-    step "v2: wire enum parity (Rust producer <-> TypeScript reader, every frame-buffer enum)"
+    step "wire enum parity (Rust producer <-> TypeScript reader, every frame-buffer enum)"
     local log
     log="$(mktemp)"
     run_in "$project_root" node scripts/check_wire_enum_parity.mjs 2>&1 | tee "$log"
@@ -318,7 +313,7 @@ gate_wire_enum_parity() {
 # Gate 0b. Cross-language parity for the character-presentation content
 # mapping (#447). Same cost and same shape as gate 0, so it runs beside it.
 gate_presentation_parity() {
-    step "v2: presentation content parity (gc-data authored ids <-> rig3d themes, loadouts and equipment)"
+    step "presentation content parity (gc-data authored ids <-> rig3d themes, loadouts and equipment)"
     local log
     log="$(mktemp)"
     run_in "$project_root" node scripts/check_presentation_parity.mjs 2>&1 | tee "$log"
@@ -349,17 +344,17 @@ gate_presentation_parity() {
 }
 
 gate_rust_fmt() {
-    step "v2/rust: cargo fmt --all --check"
+    step "rust: cargo fmt --all --check"
     run_in "$rust_dir" cargo fmt --all --check
 }
 
 gate_rust_clippy_workspace() {
-    step "v2/rust: cargo clippy --workspace --all-targets -- -D warnings"
+    step "rust: cargo clippy --workspace --all-targets -- -D warnings"
     run_in "$rust_dir" cargo clippy --workspace --all-targets -- -D warnings
 }
 
 gate_rust_test() {
-    step "v2/rust: cargo test --workspace"
+    step "rust: cargo test --workspace"
     local log
     log="$(mktemp)"
     run_in "$rust_dir" cargo test --workspace 2>&1 | tee "$log"
@@ -391,22 +386,22 @@ gate_rust_test() {
 }
 
 gate_rust_clippy_wasm() {
-    step "v2/rust: cargo clippy -p gc-wasm --target wasm32-unknown-unknown -- -D warnings"
+    step "rust: cargo clippy -p gc-wasm --target wasm32-unknown-unknown -- -D warnings"
     run_in "$rust_dir" cargo clippy -p gc-wasm --target wasm32-unknown-unknown -- -D warnings
 }
 
 gate_ts_install() {
-    step "v2/ts: pnpm install --frozen-lockfile"
+    step "ts: pnpm install --frozen-lockfile"
     run_in "$ts_dir" pnpm install --frozen-lockfile
 }
 
 gate_ts_typecheck() {
-    step "v2/ts: pnpm exec tsc --build --force"
+    step "ts: pnpm exec tsc --build --force"
     run_in "$ts_dir" pnpm exec tsc --build --force
 }
 
 gate_wasm_build() {
-    step "v2/ts/packages/wasm: node scripts/build.mjs (rebuilds the gitignored NODE wasm artifact)"
+    step "ts/packages/wasm: node scripts/build.mjs (rebuilds the gitignored NODE wasm artifact)"
     run_in "$wasm_pkg_dir" node scripts/build.mjs || return 1
     if [ ! -f "$wasm_pkg_dir/dist/pkg/gc_wasm.cjs" ]; then
         fail_msg "wasm build reported success but dist/pkg/gc_wasm.cjs is missing"
@@ -426,7 +421,7 @@ gate_wasm_build() {
     # target, because the node target was correct. A gate that rebuilds the
     # artifact ADJACENT to the one that ships is worse than no gate: it reads
     # as covered. See self_test()'s stale_web_artifact_scenario.
-    step "v2/ts/packages/wasm: node scripts/build_web.mjs (rebuilds the gitignored BROWSER wasm artifact)"
+    step "ts/packages/wasm: node scripts/build_web.mjs (rebuilds the gitignored BROWSER wasm artifact)"
     run_in "$wasm_pkg_dir" node scripts/build_web.mjs || return 1
     if [ ! -f "$wasm_pkg_dir/dist/pkg-web/gc_wasm.js" ]; then
         fail_msg "web wasm build reported success but dist/pkg-web/gc_wasm.js is missing"
@@ -444,9 +439,9 @@ gate_wasm_build() {
 # Comparing BYTES is the point: an mtime comparison passes on any checkout
 # that touched files in the wrong order.
 gate_app_bundle() {
-    step "v2/ts: pnpm exec vite build, and the bundled wasm must match the fresh browser artifact"
+    step "ts: pnpm exec vite build, and the bundled wasm must match the fresh browser artifact"
     # Report the exit code rather than returning silently. This step failed in
-    # CI with no message at all -- "v2 GATE FAILED" straight after a build that
+    # CI with no message at all -- "GATE FAILED" straight after a build that
     # had just printed its own success line -- which told the reader nothing.
     # A gate that fails without saying why costs more than one that does not
     # fail at all, because the next person has to reproduce it to learn
@@ -476,7 +471,7 @@ gate_app_bundle() {
         echo "    fresh:   $fresh ($(wc -c < "$fresh") bytes)"
         echo "    bundled: $bundled ($(wc -c < "$bundled") bytes)"
         echo "    The browser would run stale simulation code. Rebuild with:"
-        echo "      node v2/ts/packages/wasm/scripts/build_web.mjs && (cd v2/ts && pnpm exec vite build)"
+        echo "      node ts/packages/wasm/scripts/build_web.mjs && (cd ts && pnpm exec vite build)"
         return 1
     fi
     return 0
@@ -517,7 +512,7 @@ wasm_bundle_matches() {
 }
 
 gate_ts_test() {
-    step "v2/ts: pnpm exec vitest run"
+    step "ts: pnpm exec vitest run"
     local log
     log="$(mktemp)"
     run_in "$ts_dir" pnpm exec vitest run 2>&1 | tee "$log"
@@ -564,7 +559,7 @@ import { loadSimHost } from "'"$index_ts"'";
 const host = loadSimHost();
 const result = host.runDeterminismEvidence();
 console.log(
-  "GC_V2_DETERMINISM" +
+  "GC_DETERMINISM" +
     "|final_hash=" + result.final_hash +
     "|sequence_digest=" + result.sequence_digest +
     "|ticks=" + result.ticks +
@@ -574,14 +569,14 @@ console.log(
 '
 }
 
-# Compares a GC_V2_DETERMINISM terminator line against the pinned constants.
+# Compares a GC_DETERMINISM terminator line against the pinned constants.
 # Pure logic, no wasm involved -- shared by the real gate and self_test().
 check_determinism_terminator() {
     local terminator="$1"
     local final_hash sequence_digest ticks boundaries outcome
 
     if [ -z "$terminator" ]; then
-        fail_msg "determinism probe produced no GC_V2_DETERMINISM terminator: absent evidence is not a pass"
+        fail_msg "determinism probe produced no GC_DETERMINISM terminator: absent evidence is not a pass"
         return 1
     fi
 
@@ -611,7 +606,7 @@ check_determinism_terminator() {
 }
 
 gate_determinism() {
-    step "v2/ts/packages/wasm: redundant runDeterminismEvidence() assertion (bypasses vitest)"
+    step "ts/packages/wasm: redundant runDeterminismEvidence() assertion (bypasses vitest)"
 
     # Guard against the two pinned copies of these constants (this script's,
     # and determinism.spec.ts's) drifting apart silently -- see the header.
@@ -634,7 +629,7 @@ gate_determinism() {
     run_determinism_probe "$wasm_pkg_dir/src/index.ts" >"$out_log" 2>"$err_log"
     local probe_status=$?
     local terminator
-    terminator="$(grep -o 'GC_V2_DETERMINISM.*' "$out_log" | tail -n 1)"
+    terminator="$(grep -o 'GC_DETERMINISM.*' "$out_log" | tail -n 1)"
 
     if [ "$probe_status" -ne 0 ] || [ -z "$terminator" ]; then
         echo "    determinism probe stderr (exit $probe_status):"
@@ -649,7 +644,7 @@ gate_determinism() {
 # Self-test: proves this gate can go red, per AGENTS.md §9's second rule.
 #
 # Each scenario builds a small, hermetic, throwaway fixture under mktemp --
-# never the real v2/rust or v2/ts trees, which this script does not own and
+# never the real rust or ts trees, which this script does not own and
 # must not mutate, and which may legitimately be mid-edit by other agents
 # while this runs. Every scenario is pinned to the specific failure message it
 # targets, not just a nonzero exit code, for the same reason
@@ -701,7 +696,7 @@ plumbing_scenario() {
 # Scenario: a lint that only exists under the wasm32 target is invisible to a
 # native (no --target) clippy run, and caught only by the explicit
 # `--target wasm32-unknown-unknown` invocation -- reproducing, in miniature,
-# exactly the shape gate 4 exists for. Reuses v2/rust's own pinned toolchain
+# exactly the shape gate 4 exists for. Reuses rust's own pinned toolchain
 # file so the fixture has the same wasm32-unknown-unknown target and clippy
 # component already installed for the real workspace.
 wasm_clippy_scenario() {
@@ -710,7 +705,7 @@ wasm_clippy_scenario() {
     cp "$rust_dir/rust-toolchain.toml" "$dir/rust-toolchain.toml"
     cat >"$dir/Cargo.toml" <<'EOF'
 [package]
-name = "gc_v2_gate_wasm_clippy_fixture"
+name = "gc_gate_wasm_clippy_fixture"
 version = "0.0.0"
 edition = "2021"
 publish = false
@@ -799,7 +794,7 @@ EOF
     # something new.
     local tsc_bin="$ts_dir/node_modules/.bin/tsc"
     if [ ! -x "$tsc_bin" ]; then
-        echo "    (self-test: installing v2/ts dependencies, none present yet)"
+        echo "    (self-test: installing ts dependencies, none present yet)"
         if ! (cd "$ts_dir" && pnpm install --frozen-lockfile) >/dev/null 2>&1; then
             echo "SELF-TEST FAIL: pnpm install --frozen-lockfile failed in $ts_dir"
             return 1
@@ -860,11 +855,11 @@ digest_drift_scenario() {
     local failures=0
 
     expect_fail "a wrong final_hash is rejected" \
-        check_determinism_terminator "GC_V2_DETERMINISM|final_hash=deadbeefdeadbeef|sequence_digest=$EXPECTED_SEQUENCE_DIGEST|ticks=$EXPECTED_TICKS|boundaries=$EXPECTED_BOUNDARIES|outcome=$EXPECTED_OUTCOME" \
+        check_determinism_terminator "GC_DETERMINISM|final_hash=deadbeefdeadbeef|sequence_digest=$EXPECTED_SEQUENCE_DIGEST|ticks=$EXPECTED_TICKS|boundaries=$EXPECTED_BOUNDARIES|outcome=$EXPECTED_OUTCOME" \
         || failures=1
 
     expect_fail "a wrong sequence_digest is rejected" \
-        check_determinism_terminator "GC_V2_DETERMINISM|final_hash=$EXPECTED_FINAL_HASH|sequence_digest=cafefeedcafefeed|ticks=$EXPECTED_TICKS|boundaries=$EXPECTED_BOUNDARIES|outcome=$EXPECTED_OUTCOME" \
+        check_determinism_terminator "GC_DETERMINISM|final_hash=$EXPECTED_FINAL_HASH|sequence_digest=cafefeedcafefeed|ticks=$EXPECTED_TICKS|boundaries=$EXPECTED_BOUNDARIES|outcome=$EXPECTED_OUTCOME" \
         || failures=1
 
     expect_fail "an absent terminator is rejected, not treated as a pass" \
@@ -872,11 +867,11 @@ digest_drift_scenario() {
         || failures=1
 
     expect_fail "drifted fixture facts (wrong outcome) are rejected even with correct hashes" \
-        check_determinism_terminator "GC_V2_DETERMINISM|final_hash=$EXPECTED_FINAL_HASH|sequence_digest=$EXPECTED_SEQUENCE_DIGEST|ticks=$EXPECTED_TICKS|boundaries=$EXPECTED_BOUNDARIES|outcome=away" \
+        check_determinism_terminator "GC_DETERMINISM|final_hash=$EXPECTED_FINAL_HASH|sequence_digest=$EXPECTED_SEQUENCE_DIGEST|ticks=$EXPECTED_TICKS|boundaries=$EXPECTED_BOUNDARIES|outcome=away" \
         || failures=1
 
     expect_pass "the real pinned pair is accepted" \
-        check_determinism_terminator "GC_V2_DETERMINISM|final_hash=$EXPECTED_FINAL_HASH|sequence_digest=$EXPECTED_SEQUENCE_DIGEST|ticks=$EXPECTED_TICKS|boundaries=$EXPECTED_BOUNDARIES|outcome=$EXPECTED_OUTCOME" \
+        check_determinism_terminator "GC_DETERMINISM|final_hash=$EXPECTED_FINAL_HASH|sequence_digest=$EXPECTED_SEQUENCE_DIGEST|ticks=$EXPECTED_TICKS|boundaries=$EXPECTED_BOUNDARIES|outcome=$EXPECTED_OUTCOME" \
         || failures=1
 
     return "$failures"
@@ -1018,7 +1013,7 @@ wire_enum_parity_scenario() {
         cp "$project_root/$rel" "$dir/$rel"
     done < <(node "$checker" --list-sources)
 
-    if [ ! -f "$dir/v2/ts/packages/render/src/frame_buffer.ts" ]; then
+    if [ ! -f "$dir/ts/packages/render/src/frame_buffer.ts" ]; then
         echo "SELF-TEST FAIL: --list-sources did not name the TypeScript decoder; the fixture copy is empty"
         rm -f "$log"
         return 1
@@ -1035,7 +1030,7 @@ wire_enum_parity_scenario() {
     # (a) TypeScript forgets a pose Rust still encodes: drop `fatigue` from
     #     both the union and the decoder's switch, leaving `pose_id_code`'s
     #     `Fatigue => 31` with no reader.
-    local ts_copy="$dir/v2/ts/packages/render/src/frame_buffer.ts"
+    local ts_copy="$dir/ts/packages/render/src/frame_buffer.ts"
     local ts_pristine="$dir/frame_buffer.ts.orig"
     cp "$ts_copy" "$ts_pristine"
     sed -i '/^  | "fatigue"$/d' "$ts_copy"
@@ -1053,7 +1048,7 @@ wire_enum_parity_scenario() {
     cp "$ts_pristine" "$ts_copy"
 
     # (b) The silent one: `team_code`'s codes swap, membership untouched.
-    local rust_copy="$dir/v2/rust/crates/gc-render/src/frame_buffer.rs"
+    local rust_copy="$dir/rust/crates/gc-render/src/frame_buffer.rs"
     sed -i \
         -e 's/^        Team::Home => 1\.0,$/        Team::Home => 9.0,/' \
         -e 's/^        Team::Away => 2\.0,$/        Team::Away => 1.0,/' \
@@ -1103,7 +1098,7 @@ presentation_parity_scenario() {
         cp "$project_root/$rel" "$dir/$rel"
     done < <(node "$checker" --list-sources)
 
-    if [ ! -f "$dir/v2/ts/packages/render/src/rig3d/presentation_content.ts" ]; then
+    if [ ! -f "$dir/ts/packages/render/src/rig3d/presentation_content.ts" ]; then
         echo "SELF-TEST FAIL: --list-sources did not name the renderer's content mapping; the fixture copy is empty"
         rm -f "$log"
         return 1
@@ -1121,7 +1116,7 @@ presentation_parity_scenario() {
     # Nothing throws at runtime -- the player just renders the wrong item, for
     # every match, forever. This is the failure only a cross-language read can
     # see.
-    local ts_copy="$dir/v2/ts/packages/render/src/rig3d/presentation_content.ts"
+    local ts_copy="$dir/ts/packages/render/src/rig3d/presentation_content.ts"
     sed -i 's/loadout_emberguard_shield: "medieval_heater_shield"/loadout_emberguard_shield: "medieval_tournament_sword"/' "$ts_copy"
     if ! grep -q 'loadout_emberguard_shield: "medieval_tournament_sword"' "$ts_copy"; then
         echo "SELF-TEST FAIL: could not repoint a loadout in the fixture copy; the scenario no longer reproduces content drift"
@@ -1142,8 +1137,8 @@ presentation_parity_scenario() {
 }
 
 self_test() {
-    if ! v2_toolchain_present; then
-        echo "   ! cargo/node/pnpm not fully installed -- skipping v2 gate self-test"
+    if ! toolchain_present; then
+        echo "   ! cargo/node/pnpm not fully installed -- skipping self-test"
         return 0
     fi
 
@@ -1152,44 +1147,44 @@ self_test() {
     work="$(mktemp -d)"
     trap 'rm -rf "$work"' RETURN
 
-    echo "==> v2 gate self-test: plumbing"
+    echo "==> self-test: plumbing"
     plumbing_scenario || failures=1
 
-    echo "==> v2 gate self-test: wire enum parity, Rust <-> TypeScript (gate 0)"
+    echo "==> self-test: wire enum parity, Rust <-> TypeScript (gate 0)"
     mkdir -p "$work/wire_enum_parity"
     wire_enum_parity_scenario "$work/wire_enum_parity" || failures=1
 
-    echo "==> v2 gate self-test: presentation content parity, gc-data <-> rig3d (gate 0b)"
+    echo "==> self-test: presentation content parity, gc-data <-> rig3d (gate 0b)"
     mkdir -p "$work/presentation_parity"
     presentation_parity_scenario "$work/presentation_parity" || failures=1
 
-    echo "==> v2 gate self-test: determinism digest comparison logic"
+    echo "==> self-test: determinism digest comparison logic"
     digest_drift_scenario || failures=1
 
     if command -v wasm-bindgen >/dev/null 2>&1; then
-        echo "==> v2 gate self-test: wasm-only clippy lint (gate 4)"
+        echo "==> self-test: wasm-only clippy lint (gate 4)"
         mkdir -p "$work/wasm_clippy"
         wasm_clippy_scenario "$work/wasm_clippy" || failures=1
     else
         echo "   ! wasm-bindgen not installed -- skipping the wasm-only clippy self-test scenario"
     fi
 
-    echo "==> v2 gate self-test: tsc --build --force (gate 6)"
+    echo "==> self-test: tsc --build --force (gate 6)"
     mkdir -p "$work/tsc_force"
     tsc_force_scenario "$work/tsc_force" || failures=1
 
-    echo "==> v2 gate self-test: vitest summary extraction (gate 8)"
+    echo "==> self-test: vitest summary extraction (gate 8)"
     vitest_summary_scenario || failures=1
 
-    echo "==> v2 gate self-test: stale browser wasm in the shipped bundle (gate 10)"
+    echo "==> self-test: stale browser wasm in the shipped bundle (gate 10)"
     mkdir -p "$work/stale_web"
     stale_web_artifact_scenario "$work/stale_web" || failures=1
 
     if [ "$failures" -ne 0 ]; then
-        echo "v2 gate self-test: FAILED"
+        echo "self-test: FAILED"
         return 1
     fi
-    echo "v2 gate self-test: OK"
+    echo "self-test: OK"
     return 0
 }
 
@@ -1198,8 +1193,8 @@ self_test() {
 # ---------------------------------------------------------------------------
 
 main() {
-    if ! v2_toolchain_present; then
-        echo "   ! cargo, node, or pnpm not installed -- skipping the v2 gate"
+    if ! toolchain_present; then
+        echo "   ! cargo, node, or pnpm not installed -- skipping the gate"
         return 0
     fi
 
@@ -1234,10 +1229,10 @@ main() {
     gate_app_bundle || fail=1
 
     if [ "$fail" -ne 0 ]; then
-        echo "v2 GATE FAILED"
+        echo "GATE FAILED"
         return 1
     fi
-    echo "v2 GATE OK"
+    echo "GATE OK"
     return 0
 }
 

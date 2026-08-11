@@ -1,5 +1,6 @@
-//! Differential test of `gc_sim::r#match::step` against the real Lua
-//! `sim/match.lua`, per `v2/tools/lua_reference/README.md`.
+//! Differential test of `gc_sim::r#match::step` against reference vectors
+//! captured from the real Lua `sim/match.lua`, per
+//! `tools/lua_reference/README.md`.
 //!
 //! The fixture (`fixtures/match_step_ai_ai_lua_reference.txt`) was captured
 //! by running the unmodified Lua tree under headless `love` (`love .` in a
@@ -22,12 +23,12 @@
 //! `outfield_ai_baseline_reproduces_the_frozen_fixture_exactly`'s frozen-fixture
 //! evidence): 600 ticks is not enough to exercise every AI decision branch,
 //! and this test's job is to find the earliest tick, player, and quantity
-//! where the port disagrees with the reference.
+//! where this simulation disagrees with the reference.
 //!
 //! Every field is compared at every tick (not just the last), and floats
 //! are compared by bit pattern (`f64::to_bits`) after parsing, not by
-//! printed text — see the porting README's warning that a divergence which
-//! self-corrects a tick later is still a desync.
+//! printed text — see `tools/lua_reference/README.md`'s warning that a
+//! divergence which self-corrects a tick later is still a desync.
 
 use gc_sim::r#match::{self as sim_match, NewMatchOptions, StepInput};
 use gc_sim::match_snapshot::PitchSize;

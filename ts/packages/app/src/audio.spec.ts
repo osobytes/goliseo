@@ -1,19 +1,14 @@
-// Supplementary coverage for game/audio.lua's own control flow.
+// Coverage for `audio.ts`'s own control flow.
 //
-// `game/audio.lua` has no dedicated `spec/game/audio_spec.lua` -- its real
-// Lua coverage is scattered across `spec/game/rollback_presentation_spec.lua`,
-// `spec/screens/match_rollback_lab_spec.lua`,
-// `spec/game/combat_feedback_rollback_spec.lua`, and
-// `spec/render/audio_headless_spec.lua`, none of which are this package's
-// to claim (they are primarily about `game/screens/match.lua`,
-// `sim/match.lua`, and `@gc/presentation`'s `combat_feedback` -- see this
-// package's porting report). `rollback_validation.spec.ts` exercises
-// `Audio.consumeConfirmed` indirectly through `observeImpairedStep`; this
-// file adds direct coverage of the "HEADLESS CONTRACT" (audio.ts's header)
-// and the confirmed-cue bookkeeping that contract has to keep working even
-// with no `AudioBackend` wired up, plus the two-way `setMuted`/
-// `toggleMute` and `consumeCombat` paths no other spec in this port
-// reaches.
+// Broader coverage of match/rollback/combat-feedback audio behavior belongs
+// to `@gc/screens`'s match screen, `sim`'s match logic, and
+// `@gc/presentation`'s `combat_feedback` -- not this package's to claim.
+// `rollback_validation.spec.ts` exercises `Audio.consumeConfirmed`
+// indirectly through `observeImpairedStep`; this file adds direct coverage
+// of the "HEADLESS CONTRACT" (audio.ts's header) and the confirmed-cue
+// bookkeeping that contract has to keep working even with no
+// `AudioBackend` wired up, plus the two-way `setMuted`/`toggleMute` and
+// `consumeCombat` paths no other spec in this package reaches.
 
 import { describe, expect, it } from "vitest";
 import { Audio, type CombatFeedbackPort, type RollbackWrappedEvent } from "./audio.ts";

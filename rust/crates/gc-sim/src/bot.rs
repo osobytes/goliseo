@@ -1,5 +1,3 @@
-//! Port of `sim/bot.lua`.
-//!
 //! Human-proxy input driver for the controlled slot in headless matches.
 //! Produces a `MatchInput` per frame the way a *predictable mediocre* player
 //! would: decisions refresh only every reaction window (not every frame),
@@ -15,33 +13,19 @@
 //! explicit policy id, and must never be reported as the gameplay AI by
 //! accident.
 //!
-//! The Lua original's `s: MatchState` parameter is defined by `sim/match.lua`.
-//! This module was ported before that landed and, like `crate::aerial` and
-//! `crate::metrics`, declared its own typed, minimal surface for it rather
-//! than depending on an unported placeholder — [`BotMatchView`] and
-//! [`BotPlayerView`], exactly the fields [`input`] and its helpers touch,
-//! named after the Lua fields they mirror.
+//! [`BotMatchView`]/[`BotPlayerView`] are a deliberately narrow read
+//! interface onto match state, exactly the fields [`input`] and its helpers
+//! touch — a human-proxy input driver has no business seeing keeper release
+//! timers, tactic state, or the rest of `MatchState`. [`crate::headless::to_bot_view`]
+//! builds one from a real `MatchState`.
 //!
-//! Now that `gc_sim::r#match` has landed, README §5.1 gives two ways to
-//! resolve that debt. `crate::aerial`'s local view needed nearly the entire
-//! canonical `MatchState`/`MatchPlayer` shape, so it was folded onto
-//! [`crate::match_snapshot`]'s real types directly (end state 1). This
-//! module's view stays genuinely narrow — a human-proxy input driver has no
-//! business seeing keeper release timers, tactic state, or the rest of
-//! `MatchState` — so [`BotMatchView`]/[`BotPlayerView`] survive as a
-//! deliberately narrow read interface (end state 2), just renamed from the
-//! generic `MatchStateView`/`MatchPlayerView` every pre-consolidation module
-//! used (this crate had three colliding structs under those names; `aerial`'s
-//! is gone, and this one and `crate::metrics`'s narrow view are now unique).
-//! `crate::headless::to_bot_view` builds one from a real `MatchState`.
+//! [`input`]'s *output*, by contrast, is not narrow — every `MatchInput`
+//! field this driver produces is one the real simulation reads — so it
+//! returns [`crate::match_snapshot::MatchInput`] directly rather than a
+//! local mirror.
 //!
-//! [`input`]'s *output*, by contrast, was never legitimately narrow — every
-//! `MatchInput` field this driver produces is one the real simulation reads
-//! — so it returns [`crate::match_snapshot::MatchInput`] directly rather
-//! than a fourth local mirror.
-//!
-//! `sim/tuning.lua`'s `TUNE` global likewise becomes an explicit `&Tuning`
-//! parameter (AGENTS.md §3; see [`crate::tuning`]'s doc).
+//! [`crate::tuning::Tuning`] is an explicit `&Tuning` parameter, never a
+//! shared global (AGENTS.md §3; see [`crate::tuning`]'s doc).
 //!
 //! `move` is a Rust keyword, so
 //! [`crate::match_snapshot::MatchInput::r#move`] and [`BotState::r#move`]

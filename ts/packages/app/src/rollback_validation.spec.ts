@@ -1,68 +1,49 @@
-// Ported from spec/game/rollback_validation_spec.lua.
-//
-// The Lua original builds its fixtures from `sim.match`/`sim.combat`/
+// This spec's fixtures build on `sim.match`/`sim.combat`/
 // `sim.match_snapshot`/`sim.rollback_events` (Rust-owned, `crates/gc-sim`;
-// v2/README.md §2) and `game.screens.match`. That header note used to say
-// none of that reaches TypeScript this milestone -- stale by the time this
-// task started: `@gc/presentation`'s `combatFeedback` (real audio/vfx
-// disposition mapping) and `@gc/screens`'s `match.ts` (the rollback-
-// consumption seam, `consumeConfirmedLifecycle`) are BOTH declared
-// dependencies of this package already (see package.json) and are used for
-// real below, not faked. Six of the Lua original's seven cases turn out not
-// to need `sim.match`/`sim.rollback_events` at all once read closely: they
-// build their `RollbackEventStep`/`RollbackEventDiff` fixtures by hand
-// (`match_event`/`lifecycle_event`/`step`/`diff` below, transcribed from the
-// Lua helpers of the same name) and drive `rollback_validation.ts`'s own
-// `run`/`newAudit`/`finish` against them -- exactly the "small hand-written
-// fakes" technique `combat_feedback_rollback.spec.ts` already established
-// for this kind of port, just applied to `EffectsPort`/`ReplayPort` too
+// ARCHITECTURE.md §1) and `game.screens.match`. `@gc/presentation`'s
+// `combatFeedback` (real audio/vfx disposition mapping) and `@gc/screens`'s
+// `match.ts` (the rollback-consumption seam, `consumeConfirmedLifecycle`)
+// are declared dependencies of this package already (see package.json) and
+// are used for real below, not faked. Six of the seven cases below do not
+// need `sim.match`/`sim.rollback_events` at all: they build their
+// `RollbackEventStep`/`RollbackEventDiff` fixtures by hand
+// (`match_event`/`lifecycle_event`/`step`/`diff` below) and drive
+// `rollback_validation.ts`'s own `run`/`newAudit`/`finish` against them --
+// the same "small hand-written fakes" technique `combat_feedback_rollback
+// .spec.ts` establishes, applied here also to `EffectsPort`/`ReplayPort`
 // (`trackingEffectsPort`/`recordingReplayPort` below) so the cross-checks
 // those two fixtures exist to prove (`consumer_speculative_residue`,
 // `replay_matched`) are genuine rather than trivially zero.
 //
-// The one case that remains skipped, "derives reference identities from raw
-// campaign step inputs", is the one case that genuinely calls
-// `sim.rollback_events.new/apply/confirm` -- a real Rust timeline
-// (create/apply/confirm), not just the wire shapes it produces.
+// The remaining case, "derives reference identities from raw campaign step
+// inputs", genuinely calls `sim.rollback_events.new/apply/confirm` -- a real
+// Rust timeline (create/apply/confirm), not just the wire shapes it
+// produces. `crates/gc-wasm/src/rollback_events_bridge.rs`'s
+// `RollbackEventsTimeline` is a standalone, directly-callable
+// `create`/`apply`/`confirm` port (`match_presentation.spec.ts` builds a
+// real `RollbackEventsPort` adapter over it, driven by a real two-peer
+// `MatchDriverBridge` harness, for four of *its* thirteen cases).
 //
-// # Re-audited against the current `@gc/wasm` -- cleared
-//
-// The claim this comment used to make -- "`@gc/wasm` does not expose that
-// surface directly, only the bundled `MatchDriverBridge`" -- is **stale**:
-// `crates/gc-wasm/src/rollback_events_bridge.rs`'s `RollbackEventsTimeline`
-// is exactly a standalone, directly-callable `create`/`apply`/`confirm`
-// port (`match_presentation.spec.ts` builds a real `RollbackEventsPort`
-// adapter over it, driven by a real two-peer `MatchDriverBridge` harness,
-// for four of *its* thirteen cases).
-//
-// What was real and narrower -- and is now also stale: this specific case
-// needed a `WasmMatchSnapshot` for a *hand-specified* game state
+// That case needs a `WasmMatchSnapshot` for a hand-specified game state
 // (`final.owner = 2`, a `"shot"` event at the ball's exact position,
-// `time_left` nudged by one tick) -- the Lua original builds it with
-// `match_snapshot.capture(final)` on a hand-mutated `MatchState` table. A
-// prior pass here found `@gc/wasm` had no snapshot-construction entry point
-// at all (`SimSession.snapshotHandle()`/`MatchDriverBridge
-// .initialSnapshotHandle` only ever capture whatever state a real,
-// already-stepped session/driver reached). That gap is now closed:
-// `crates/gc-wasm/src/match_snapshot_bridge.rs`'s `matchSnapshotBuild`
-// builds a fresh, slot-mode `MatchState` exactly like `Session::new` does
-// and applies a small set of JSON overrides on top -- `owner` (nullable),
-// `time_left`, `input_tick`, `ball`, and a wholesale `events` replacement
-// are exactly the fields that Rust module's own doc cross-checks against
-// this file's fixture. `matchSnapshotStateJson` is the read-back half, used
-// below to read the fixture's real ball position/second player id/
-// `time_left` before nudging it -- the same
-// `match_snapshot.restore(match_snapshot.capture(initial))` round trip the
-// Lua original performs on a plain table. Below builds a REAL
-// `WasmMatchSnapshot` through that entry point (never a fabricated one: the
-// overrides describe a legitimate state -- a fresh kickoff position with
-// one nudged tick and a plausible shot event -- not an invented shortcut
-// around what the simulation could reach), and drives a real
-// `RollbackEventsTimeline` exactly as `match_presentation.spec.ts` already
-// does, mirroring the Lua original's own two-timeline structure (one
-// standalone `timeline` to derive `added`/`derived` before the real
-// `rollback_validation.run` call, matching this file's own `rollbackEvents`
-// port through `newAudit`'s internal one).
+// `time_left` nudged by one tick). `crates/gc-wasm/src/match_snapshot_bridge
+// .rs`'s `matchSnapshotBuild` builds a fresh, slot-mode `MatchState` exactly
+// like `Session::new` does and applies a small set of JSON overrides on top
+// -- `owner` (nullable), `time_left`, `input_tick`, `ball`, and a wholesale
+// `events` replacement are exactly the fields that Rust module's own doc
+// cross-checks against this file's fixture. `matchSnapshotStateJson` is the
+// read-back half, used below to read the fixture's real ball position/
+// second player id/`time_left` before nudging it, through a
+// `match_snapshot.restore(match_snapshot.capture(initial))` round trip.
+// Below builds a REAL `WasmMatchSnapshot` through that entry point (never a
+// fabricated one: the overrides describe a legitimate state -- a fresh
+// kickoff position with one nudged tick and a plausible shot event -- not
+// an invented shortcut around what the simulation could reach), and drives
+// a real `RollbackEventsTimeline` exactly as `match_presentation.spec.ts`
+// does, using two timelines: one standalone `timeline` to derive
+// `added`/`derived` before the real `rollback_validation.run` call,
+// matching this file's own `rollbackEvents` port through `newAudit`'s
+// internal one.
 
 import { describe, expect, it } from "vitest";
 import { Vec2, type Result } from "@gc/core";
@@ -127,7 +108,7 @@ interface RawMatchEventJson {
   readonly player?: string;
 }
 
-/** `crate::rollback_events_bridge::tick_output_to_json`'s shape -- what `RollbackEventsTimeline.apply` actually decodes (`tick_output_from_json`): score/time_left/finished sit at the TOP level, not nested under a `state` key the way the Lua original's own `output.state` table does. */
+/** `crate::rollback_events_bridge::tick_output_to_json`'s shape -- what `RollbackEventsTimeline.apply` actually decodes (`tick_output_from_json`): score/time_left/finished sit at the TOP level, not nested under a `state` key. */
 interface RawTickOutputJson {
   readonly tick: number;
   readonly start_boundary: number;
@@ -208,8 +189,8 @@ describe("rollback validation (cross-boundary integration)", () => {
   it("derives reference identities from raw campaign step inputs", () => {
     const host = loadSimHost();
 
-    // `initial`: a fresh kickoff state with possession explicitly cleared --
-    // `new_state()` + `initial.owner = nil` in the Lua original.
+    // `initial`: a fresh kickoff state with possession explicitly cleared
+    // (an undefined `owner`).
     const initialOverrides = JSON.stringify({ owner: null });
     const initialSnapshotForInspection = buildWasmFixtureSnapshot(host, initialOverrides);
     const initialJson = JSON.parse(
@@ -222,8 +203,7 @@ describe("rollback validation (cross-boundary integration)", () => {
     // nudged by one tick, and events replaced with a single shot by the
     // second player at the ball's own (unmoved) position -- a legitimate
     // state the simulation could reach (a shot taken from a stationary
-    // kickoff position), reproducing the Lua original's `final` table
-    // field-for-field.
+    // kickoff position).
     const secondPlayer = initialJson.players[1];
     if (secondPlayer === undefined) {
       throw new Error("fixture roster must carry at least two players");
@@ -246,13 +226,12 @@ describe("rollback validation (cross-boundary integration)", () => {
       events: [shotEvent],
     };
 
-    // Precompute `derived`/`added` through a standalone timeline -- mirrors
-    // the Lua original's own separate `timeline`, built purely to derive the
-    // confirmed step before the real `rollback_validation.run` call below.
-    // A fresh `WasmMatchSnapshot` per use throughout this test: `apply`
-    // consumes its `snapshots` by value (`Vec<WasmMatchSnapshot>` on the
-    // Rust side), so the same handle can never back two separate `apply`
-    // calls, unlike the Lua original's plain (non-owned) table.
+    // Precompute `derived`/`added` through a standalone timeline, built
+    // purely to derive the confirmed step before the real
+    // `rollback_validation.run` call below. A fresh `WasmMatchSnapshot` per
+    // use throughout this test: `apply` consumes its `snapshots` by value
+    // (`Vec<WasmMatchSnapshot>` on the Rust side), so the same handle can
+    // never back two separate `apply` calls.
     const precomputeInitialSnapshot = buildWasmFixtureSnapshot(host, initialOverrides);
     const precomputeTimeline = host.RollbackEventsTimeline.create(precomputeInitialSnapshot);
     precomputeInitialSnapshot.free();
@@ -457,7 +436,7 @@ describe("rollback validation's own control flow", () => {
 // `combatFeedback` (audio disposition) and hand-fixtured trace rows.
 // =============================================================================
 
-/** A speculative-id ledger that actually tracks add/revoke/replace/confirm, the same bookkeeping `game/render/effects.lua`'s real ledger performs -- so `consumer_speculative_residue` cross-checks something real rather than being trivially zero (`fakePorts`' own `EffectsPort` above, by contrast, is deliberately inert -- fine for the control-flow tests, not for these). */
+/** A speculative-id ledger that actually tracks add/revoke/replace/confirm, the same bookkeeping `@gc/render`'s real `effects.ts` ledger performs -- so `consumer_speculative_residue` cross-checks something real rather than being trivially zero (`fakePorts`' own `EffectsPort` above, by contrast, is deliberately inert -- fine for the control-flow tests, not for these). */
 function trackingEffectsPort(): EffectsPort {
   const speculative = new Set<string>();
   return {
@@ -481,7 +460,7 @@ function trackingEffectsPort(): EffectsPort {
   };
 }
 
-/** A bounded, boundary-keyed ring buffer mirroring `game/render/replay.lua`'s real `record_boundary`/`truncate_from`/`diagnostics`/`boundary_sample` semantics (insert-or-replace by boundary, evict oldest past capacity, truncate drops everything from a boundary onward). */
+/** A bounded, boundary-keyed ring buffer mirroring `@gc/render`'s real `replay.ts` `recordBoundary`/`truncateFrom`/`diagnostics`/`boundarySample` semantics (insert-or-replace by boundary, evict oldest past capacity, truncate drops everything from a boundary onward). */
 function recordingReplayPort(capacity: number): ReplayPort<FakeState, undefined> & {
   truncateCount: number;
 } {
@@ -864,9 +843,9 @@ describe("rollback validation (fixture-driven integration -- see this file's hea
     expect(consumeConfirmedLifecycle(state, ports, kickoff)).toBe(false);
     expect(consumeConfirmedLifecycle(state, ports, fullTime)).toBe(true);
     expect(consumeConfirmedLifecycle(state, ports, fullTime)).toBe(false);
-    // `Match:full_time_confirmed()`'s source-driven branch is out of scope
-    // this milestone (`MatchScreen` has no `_source`, see match.ts's
-    // header); its pure analog is this consumer state's own flag.
+    // `MatchScreen`'s source-driven full-time-confirmation branch is out of
+    // scope for this package (`MatchScreen` has no `_source` here, see
+    // match.ts's header); its pure analog is this consumer state's own flag.
     expect(state.presentation_full_time).toBe(true);
 
     const cues = audio.confirmedCueCounts();

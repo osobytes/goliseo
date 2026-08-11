@@ -1,5 +1,4 @@
-// Keyframed animation clips, authored directly in TypeScript (ported verbatim
-// from clips.lua's Lua tables).
+// Keyframed animation clips, authored directly in TypeScript.
 //
 // A clip is a list of keyframes sorted by time. Each keyframe holds a *sparse*
 // pose: `rot` gives bone rotations in degrees, `move` gives additive

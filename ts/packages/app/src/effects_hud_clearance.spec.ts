@@ -1,31 +1,29 @@
-// Ported from spec/render/combat_feedback_spec.lua's "preserves ball and HUD
-// clearance at every supported fixture size" -- left `it.skip` in
-// `@gc/render`'s effects.spec.ts (packages/render/src/effects.spec.ts)
-// because `game.match_hud`'s model ported to `packages/app/src/match_hud.ts`
-// (`hud.layout`), and `@gc/render` cannot import `@gc/app` back without a
-// circular package dependency (`@gc/app` already depends on `@gc/render`,
-// package.json). `@gc/app` sits on the correct side of that edge: `effects`
-// and `camera` (`@gc/render`, a declared dependency) and `hud.layout`
-// (local, match_hud.ts) are both reachable here, so the assertion runs for
-// real instead of staying stubbed.
+// This test exercises `@gc/render`'s effects.spec.ts's skipped "preserves
+// ball and HUD clearance at every supported fixture size" case for real:
+// `@gc/render` cannot import `@gc/app` back to reach `hud.layout`
+// (`packages/app/src/match_hud.ts`) without a circular package dependency
+// (`@gc/app` already depends on `@gc/render`, package.json). `@gc/app`
+// sits on the correct side of that edge: `effects` and `camera`
+// (`@gc/render`, a declared dependency) and `hud.layout` (local,
+// match_hud.ts) are both reachable here, so the assertion runs for real
+// instead of staying stubbed.
 //
-// The Lua original drives `spec.fixtures.crowded_combat_feedback` (5 combat
-// events plus selection/threat occluders around a 960x540 pitch, with one
-// event -- a "ball_spill" -- placed exactly at the ball). `@gc/render`'s own
-// effects.spec.ts already simplified that shared fixture down to two
-// synthetic "contact" events for its two ported cases (see that file)
-// rather than porting the fixture module itself; this case follows the
-// same, already-established simplification, with one further adjustment:
-// the ball sits away from the synthetic event cluster rather than inside
-// it. The real fixture's masking-avoidance geometry (glyph sizes, occluder
-// placement, exactly which event kinds emit a maskable glyph) is tuned data
-// this port does not have and is not reproducing; placing the ball clear of
-// the cluster is the same "far from the events, so nothing should mask it"
-// choice this file's sibling case ("reports crowded geometry without
-// masking the ball or HUD") already makes for its own ball. What this case
-// checks -- that `effects.readability_observation` and `hud.layout`
-// compose correctly at every supported viewport, with clearance held where
-// the fixture places it -- holds either way.
+// `@gc/render`'s own effects.spec.ts already simplifies the full fixture
+// (5 combat events plus selection/threat occluders around a 960x540 pitch,
+// with one event -- a "ball_spill" -- placed exactly at the ball) down to
+// two synthetic "contact" events for its two cases (see that file); this
+// case follows the same, already-established simplification, with one
+// further adjustment: the ball sits away from the synthetic event cluster
+// rather than inside it. The full fixture's masking-avoidance geometry
+// (glyph sizes, occluder placement, exactly which event kinds emit a
+// maskable glyph) is tuned data this package does not have and is not
+// reproducing; placing the ball clear of the cluster is the same "far from
+// the events, so nothing should mask it" choice this file's sibling case
+// ("reports crowded geometry without masking the ball or HUD") already
+// makes for its own ball. What this case checks -- that
+// `effects.readability_observation` and `hud.layout` compose correctly at
+// every supported viewport, with clearance held where the fixture places
+// it -- holds either way.
 
 import { describe, expect, it } from "vitest";
 import type { CombatEvent, RollbackWrappedEvent } from "@gc/presentation";

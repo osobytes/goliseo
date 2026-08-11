@@ -13,11 +13,11 @@
 // `AerialOutcome` -- so they sit here, in a module that declares shapes and
 // nothing else, rather than in whichever renderer happens to be current.
 //
-// Boundary note (v2/README.md rule 6.7): `PlayerPoseSelection` is
-// `render/player_pose.lua`'s (the Rust RenderFrame producer, `render/**` ->
-// `crates/gc-render`) -- only the fields this package's renderers read are
-// declared here. `CombatPlayerPresentation` is reused from `@gc/presentation`
-// (a declared dependency).
+// Boundary note (ARCHITECTURE.md §4 rule 6): `PlayerPoseSelection` mirrors the
+// Rust RenderFrame producer's pose selection (`render/**` -> `crates/gc-render`)
+// -- only the fields this package's renderers read are declared here.
+// `CombatPlayerPresentation` is reused from `@gc/presentation` (a declared
+// dependency).
 
 import type { Vec2 } from "@gc/core";
 import type { CombatPlayerPresentation } from "@gc/presentation";
@@ -27,7 +27,7 @@ export type AerialStyle = "leg_control" | "chest_control" | "volley" | "header" 
 export type AerialOutcome = "clean" | "heavy" | "miss";
 export type SpeciesShape = "round" | "broad" | "angular" | "cluster";
 
-/** The slice of `render/player_pose.lua`'s pose selection the renderers read. */
+/** The slice of the Rust RenderFrame producer's pose selection the renderers read. */
 export interface PlayerPoseSelection {
   readonly id?: string;
   readonly priority?: number;
@@ -43,8 +43,9 @@ export interface PlayerPoseSelection {
  * carried from the wire, through `pitch.ts`'s `playerAnchor`, and dropped. They
  * are deliberately kept rather than pruned here: they are produced by the Rust
  * `crates/gc-render` frame builder, decoded by `frame_buffer.ts`, and pinned by
- * `pitch.spec.ts`'s Lua differential, so removing them is a wire-format change
- * spanning both languages rather than a TypeScript tidy-up. See #415's report.
+ * `pitch.spec.ts`'s wire-fixture differential, so removing them is a
+ * wire-format change spanning both languages rather than a TypeScript
+ * tidy-up. See #415's report.
  */
 export interface PlayerRenderOptions {
   readonly facing?: Vec2;

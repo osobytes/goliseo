@@ -1,6 +1,6 @@
 //! Deterministic online: rollback scheduling, input frames, state hashing.
 //!
-//! Every module is declared up front, including unported ones, so agents working
+//! Every module is declared up front, including ones still being built out, so agents working
 //! on different parts of `game/online/` never contend on this file.
 #![deny(missing_docs)]
 

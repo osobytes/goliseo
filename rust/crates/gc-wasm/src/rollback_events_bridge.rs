@@ -956,7 +956,7 @@ fn apply_result_json(result: rollback_events::Result<RollbackEventDiff>) -> Stri
 /// `RollbackEventsTimeline`, `TSnapshot` = [`WasmMatchSnapshot`]).
 ///
 /// `rollback_events::apply`'s [`RollbackEventsErrorCode::UnconfirmedWindowExceeded`]
-/// is an expected, recoverable failure (README rule 5.5) — [`Self::apply`]
+/// is an expected, recoverable failure (ARCHITECTURE.md §3 rule 5) — [`Self::apply`]
 /// reports it as JSON data (`{"ok": false, "error": {...}}`, mirroring
 /// `RollbackApplyResult`'s discriminated union), never a thrown `JsValue`.
 /// Everything else `rollback_events::apply`/`confirm` guard with `assert!`

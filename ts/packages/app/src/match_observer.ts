@@ -1,16 +1,14 @@
-// Ported from game/match_observer.lua.
-//
-// The Lua original reads `sim.fixed_clock.TICK_SECONDS` (Rust-owned,
-// v2/README.md rule 6.7) inside `observe_confirmed`. Rather than duplicate
-// that constant here, `observeConfirmed` takes it as an explicit
-// `tickSeconds` parameter — the caller (which does own a real fixed clock,
-// once wasm-compiled `gc-sim` is wired up) supplies it.
+// `sim.fixed_clock.TICK_SECONDS` (Rust-owned, ARCHITECTURE.md §4 rule 6) is
+// not read directly here. Rather than duplicate that constant in this
+// module, `observeConfirmed` takes it as an explicit `tickSeconds`
+// parameter — the caller (which does own a real fixed clock, once
+// wasm-compiled `gc-sim` is wired up) supplies it.
 
 import type { TeamResultStats } from "./match_contract.ts";
 
 export type MatchTeam = "home" | "away";
 
-/** The slice of `sim/match.lua`'s `MatchPlayer` this module reads. */
+/** The slice of the sim layer's `MatchPlayer` this module reads. */
 export interface ObservedPlayer {
   readonly id: string;
   readonly team: MatchTeam;
@@ -18,9 +16,9 @@ export interface ObservedPlayer {
 }
 
 /**
- * The slice of `sim/match.lua`'s `MatchState` `observer.observe` reads.
+ * The slice of the sim layer's `MatchState` `observer.observe` reads.
  * Mutable, mirroring the real `MatchState` table this stands in for --
- * `game/screens/match.lua` mutates `events`/`owner`/`score` in place every
+ * the real-match screen mutates `events`/`owner`/`score` in place every
  * tick, and this module only reads them, never owns them.
  */
 export interface ObservedMatchState {

@@ -1,4 +1,4 @@
-//! Port of `spec/sim/combat_spec.lua`.
+//! Tests for `gc_sim::combat`.
 
 use gc_core::vec2::Vec2;
 use gc_data::action_families::{self, ActionFamilyId};

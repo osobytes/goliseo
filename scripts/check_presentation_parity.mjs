@@ -5,8 +5,8 @@
 // WHAT BREAKS WITHOUT THIS. `gc-data` authors which theme each character
 // presentation belongs to, and which equipment presentation each fixed
 // loadout carries. The renderer needs both, in ITS own vocabulary -- and
-// v2/README.md forbids a TypeScript package reading a Rust crate's source, so
-// `v2/ts/packages/render/src/rig3d/presentation_content.ts` restates the two
+// ARCHITECTURE.md forbids a TypeScript package reading a Rust crate's source, so
+// `ts/packages/render/src/rig3d/presentation_content.ts` restates the two
 // mappings by hand. That is the same shape #433 found in the wire enums: each
 // side is compiler-checked against itself, neither can see the other, and
 // drift is therefore invisible to every other gate.
@@ -35,7 +35,7 @@
 // part count, at decode time, in a browser.
 //
 // WHY AN ASSERTION AND NOT CODEGEN: the same argument #433 settled. A shared
-// content schema generating both sides is a later milestone (v2/README.md
+// content schema generating both sides is a later milestone (ARCHITECTURE.md
 // rule 6.7 says so explicitly); an assertion that reads both sources costs no
 // build plumbing and catches the same divergence.
 //
@@ -68,14 +68,14 @@ import { fileURLToPath } from "node:url";
 // Sources
 // ---------------------------------------------------------------------------
 
-const RUST_PRESENTATIONS = "v2/rust/crates/gc-data/src/character_presentations.rs";
-const RUST_LOADOUTS = "v2/rust/crates/gc-data/src/loadouts.rs";
-const RUST_EQUIPMENT = "v2/rust/crates/gc-data/src/equipment_presentations.rs";
-const RUST_FRAME_BUFFER = "v2/rust/crates/gc-render/src/frame_buffer.rs";
-const TS_CONTENT = "v2/ts/packages/render/src/rig3d/presentation_content.ts";
-const TS_EQUIPMENT = "v2/ts/packages/render/src/rig3d/equipment.ts";
-const TS_BODY = "v2/ts/packages/render/src/rig3d/body.ts";
-const TS_FRAME_BUFFER = "v2/ts/packages/render/src/frame_buffer.ts";
+const RUST_PRESENTATIONS = "rust/crates/gc-data/src/character_presentations.rs";
+const RUST_LOADOUTS = "rust/crates/gc-data/src/loadouts.rs";
+const RUST_EQUIPMENT = "rust/crates/gc-data/src/equipment_presentations.rs";
+const RUST_FRAME_BUFFER = "rust/crates/gc-render/src/frame_buffer.rs";
+const TS_CONTENT = "ts/packages/render/src/rig3d/presentation_content.ts";
+const TS_EQUIPMENT = "ts/packages/render/src/rig3d/equipment.ts";
+const TS_BODY = "ts/packages/render/src/rig3d/body.ts";
+const TS_FRAME_BUFFER = "ts/packages/render/src/frame_buffer.ts";
 
 // `PrototypeThemeId` variant -> the theme key `rig3d/themes.ts` uses. This is
 // the ONE naming bridge between the two languages here, and it is declared

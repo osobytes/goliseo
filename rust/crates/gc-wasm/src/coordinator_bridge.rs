@@ -962,7 +962,7 @@ mod tests {
     // target ("function not implemented on non-wasm32 targets", aborting
     // the whole native test process — a hard abort, not a normal panic
     // recoverable by `#[should_panic]`). This mirrors wave 1's own split
-    // (`v2/rust/crates/gc-wasm/src/lib.rs`'s doc, `session.spec.ts`'s
+    // (`crates/gc-wasm/src/lib.rs`'s doc, `session.spec.ts`'s
     // `expect(() => session.step("not a wire")).toThrow()`): a
     // `Result<_, JsValue>` error path is exercised from the TypeScript
     // suite, never from a native `#[test]`. `packages/wasm/src/coordinator.spec.ts`

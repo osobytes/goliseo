@@ -1,5 +1,3 @@
-//! Port of `sim/research_trace.lua`.
-//!
 //! Versioned gameplay trace manifest.
 //!
 //! The manifest *references* the authoritative gameplay spine in
@@ -10,9 +8,8 @@
 //!   1. `simulation` is the only manifest group that feeds
 //!      [`simulation_identity_hash`], so research annotations and
 //!      observational runtime diagnostics cannot move a simulation boundary
-//!      hash (enforced by the `#[cfg(test)]` check at the bottom of this
-//!      file, the Rust equivalent of the Lua original's module-load `do ...
-//!      end` self-check); and
+//!      hash (enforced by the `#[cfg(test)]` self-check at the bottom of
+//!      this file); and
 //!   2. `research_links` is an append-only list of opaque join keys, so one
 //!      tape can carry many research annotations without the tape or its
 //!      simulation identity changing.
@@ -25,7 +22,7 @@
 //! ## Slot wire strings are duplicated from `env_observation.rs`, not shared
 //!
 //! `input_frame.rs` exposes no public function mapping [`input_frame::SlotId`]
-//! /[`input_frame::Team`] to their canonical Lua wire strings (`"home_1"`..
+//! /[`input_frame::Team`] to their canonical wire strings (`"home_1"`..
 //! `"away_4"`, `"home"`/`"away"`). `env_observation.rs` has private
 //! `slot_id_wire`/`input_team_wire` helpers that do exactly this, but they
 //! are private to that module, so [`slot_id_wire`] and [`input_team_wire`]
@@ -67,7 +64,6 @@ const ENVELOPE_GROUP: &[&str] = &[
 
 /// The manifest field partition. `simulation` alone determines simulation
 /// identity; `annotation` and `envelope` groups are deliberately excluded.
-/// Mirrors the Lua original's `research_trace.FIELD_GROUPS`.
 #[must_use]
 pub fn field_groups() -> Vec<(&'static str, &'static [&'static str])> {
     vec![
@@ -574,10 +570,9 @@ pub fn decode(bytes: &[u8]) -> Result<Value> {
 }
 
 /// Input for one canonical slot's producer diagnostics, supplied to
-/// [`from_tape`]. Not part of the wire shape — `options.producers` in the
-/// Lua original is a plain convenience table, never itself serialized; the
-/// manifest [`from_tape`] builds is a [`Value`], exactly like the rest of
-/// this module.
+/// [`from_tape`]. Not part of the wire shape — this is a plain convenience
+/// struct, never itself serialized; the manifest [`from_tape`] builds is a
+/// [`Value`], exactly like the rest of this module.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResearchTraceProducerInput {
     /// `"human"`, `"bot"`, or `"replay"`.
@@ -617,10 +612,10 @@ pub struct ResearchTraceOptions {
 /// owns. The tape is only read: no field of `tape` is written, and no
 /// research identifier reaches `tape.identity`.
 ///
-/// The Lua original's `type(options) ~= "table"` guard has no Rust
-/// equivalent: `options` is a typed [`ResearchTraceOptions`], not a
-/// dynamically-typed table, so that check is structurally redundant here
-/// (README rule 9) and is dropped.
+/// There is no runtime "is this the right shape" guard on `options`:
+/// `options` is a typed [`ResearchTraceOptions`], not a dynamically-typed
+/// value, so such a check would be structurally redundant here (README
+/// rule 9).
 pub fn from_tape(tape: &InputTape, options: &ResearchTraceOptions) -> Result<Value> {
     let content_hash = tape_content_hash(tape)?;
     let identity = input_tape::copy_identity(&tape.identity)
@@ -822,11 +817,11 @@ pub fn with_research_link(manifest: &Value, link: &Value) -> Result<Value> {
 mod tests {
     use super::*;
 
-    /// Mirrors the Lua original's module-load `do ... end` self-check: the
-    /// field groups are disjoint and cover every declared manifest field.
-    /// `spec/sim/research_trace_spec.lua`'s "keeps every manifest field in
-    /// exactly one identity group" is the outside-in version of this same
-    /// invariant, ported separately in `tests/research_trace.rs`.
+    /// The self-check the module doc comment refers to: the field groups
+    /// are disjoint and cover every declared manifest field. An outside-in
+    /// version of this same invariant — "keeps every manifest field in
+    /// exactly one identity group" — is asserted separately in
+    /// `tests/research_trace.rs`.
     #[test]
     fn field_groups_are_disjoint_and_cover_every_manifest_field() {
         research_schema::assert_disjoint("gameplay_trace_manifest field groups", &field_groups())

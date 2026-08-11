@@ -13,18 +13,17 @@
 //! whatever real channel the browser gives JS (a WebRTC data channel, a
 //! `WebSocket`), instead of an in-process peer.
 //!
-//! `game/transport/**` (wire encode/decode, WebRTC signaling) is
-//! TypeScript-owned per `v2/README.md` §2 — `packages/transport` already
-//! owns that, and `fake_star.rs`/`fake_relay.rs` only restate it locally
-//! because *they* need to round-trip real bytes between two in-process
-//! fakes. This module has no such need: it hands JS structured
-//! [`TransportMessage`] fields directly (peer id, channel, kind, sequence,
-//! tick, and the raw payload bytes as a `Uint8Array`) and lets
-//! `packages/transport` do the actual wire encoding and the actual send.
-//! Symmetrically, an arrival is decoded by `packages/transport` on the way
-//! in and handed to [`WasmStarTransport::enqueue_inbound`] already
-//! structured. This crate never re-implements `contract.lua`'s wire codec a
-//! third time.
+//! Transport wire encode/decode and WebRTC signaling are TypeScript-owned
+//! per ARCHITECTURE.md §1 — `packages/transport` already owns that, and
+//! `fake_star.rs`/`fake_relay.rs` only restate it locally because *they*
+//! need to round-trip real bytes between two in-process fakes. This module
+//! has no such need: it hands JS structured [`TransportMessage`] fields
+//! directly (peer id, channel, kind, sequence, tick, and the raw payload
+//! bytes as a `Uint8Array`) and lets `packages/transport` do the actual wire
+//! encoding and the actual send. Symmetrically, an arrival is decoded by
+//! `packages/transport` on the way in and handed to
+//! [`WasmStarTransport::enqueue_inbound`] already structured. This crate
+//! never re-implements the transport contract's wire codec a third time.
 //!
 //! ## The seam itself
 //!
@@ -75,7 +74,7 @@ use indexmap::IndexMap;
 
 use crate::net_inbox::TickQueue;
 
-/// Mirrors `transport_contract.MAX_PAYLOAD_BYTES` (`game/transport/contract.lua:162`),
+/// Mirrors `packages/transport/src/contract.ts`'s `MAX_PAYLOAD_BYTES`,
 /// duplicated the same way `gc_netcode::match_driver`/`gc_netcode::fake_star`
 /// duplicate it: a plain numeric bound, not logic that belongs to the
 /// TypeScript-owned contract module.

@@ -1,21 +1,19 @@
-//! Port of `spec/game/online_match_modes_spec.lua`.
+//! Match-mode tests.
 //!
-//! Covers all four `describe` blocks: `"OMP-3 match modes"`, `"OMP-3
-//! multi-slot ownership"`, `"OMP-3 mode-aware coordinator ownership"`, and
-//! `"OMP-3 live slot selection"`.
+//! Covers four scenario groups: "OMP-3 match modes", "OMP-3
+//! multi-slot ownership", "OMP-3 mode-aware coordinator ownership", and
+//! "OMP-3 live slot selection".
 //!
-//! `protocol::MATCH_MODES` (a Lua runtime table the spec iterates with
-//! `pairs`) has no Rust counterpart: `protocol::MatchMode` is a closed
-//! three-variant enum instead, so "exactly three sizes" is a compile-time
-//! invariant here rather than something a loop additionally has to prove.
-//! [`MODES`] below is the fixed three-element stand-in the Lua spec's local
-//! `MODES` table becomes.
+//! `protocol::MATCH_MODES` doesn't need a runtime-iterated collection:
+//! `protocol::MatchMode` is a closed three-variant enum instead, so "exactly
+//! three sizes" is a compile-time invariant here rather than something a
+//! loop additionally has to prove. [`MODES`] below is a fixed three-element
+//! stand-in for the cases that need to iterate over all three modes.
 //!
-//! Two cases are ported faithfully but `#[ignore]`d, because they exercise a
-//! behavior `coordinator::slot_sources` (`src/coordinator.rs`) does not
-//! currently reproduce from the Lua reference
-//! (`game/online/coordinator.lua`'s `coordinator.slot_sources`,
-//! lines 595-631): see
+//! Two cases are exercised faithfully but `#[ignore]`d, because they
+//! exercise a behavior `coordinator::slot_sources` (`src/coordinator.rs`)
+//! does not currently reproduce from the pinned reference behavior (see
+//! `tools/lua_reference/README.md`): see
 //! [`lets_one_human_cover_several_slots_while_every_slot_keeps_one_source`]
 //! and [`keeps_both_keepers_unassignable_in_every_mode`] for the specific
 //! expected/actual values.
@@ -29,17 +27,16 @@ use gc_sim::input_frame::{self, SlotId};
 
 const HOST: &str = fixture::HOST_PEER_ID;
 
-/// Stand-in for the Lua spec's local `MODES = { "1v1", "2v2", "4v4" }` — see
-/// the module doc comment for why this is a fixed array rather than an
-/// iterated `protocol.MATCH_MODES` table.
+/// A fixed `{ "1v1", "2v2", "4v4" }` array — see the module doc comment for
+/// why this is a fixed array rather than an iterated `protocol.MATCH_MODES`
+/// table.
 const MODES: [protocol::MatchMode; 3] = [
     protocol::MatchMode::OneVOne,
     protocol::MatchMode::TwoVTwo,
     protocol::MatchMode::FourVFour,
 ];
 
-/// The fixture session id, mirroring the Lua spec's
-/// `local SESSION = fixture.manifest().session_id`.
+/// The fixture session id: `fixture.manifest().session_id`.
 fn session_id() -> String {
     fixture::manifest(None)
         .get("session_id")
@@ -50,7 +47,7 @@ fn session_id() -> String {
 
 /// Ownership shaped by hand rather than by `coordinator::plan_assignments`,
 /// so the validators are exercised against inputs the planner would never
-/// produce. Mirrors the Lua spec's local `seated` helper.
+/// produce.
 fn seated(mode: protocol::MatchMode, humans: i64) -> (Value, Value) {
     let manifest = fixture::manifest(Some(mode));
     let shape = protocol::match_mode_shape(mode);
@@ -91,8 +88,7 @@ fn seated(mode: protocol::MatchMode, humans: i64) -> (Value, Value) {
     (manifest, Value::array(assignments))
 }
 
-/// The owned set of `producer_id`, joined for comparison. Mirrors the Lua
-/// spec's local `owned_text` helper.
+/// The owned set of `producer_id`, joined for comparison.
 fn owned_text(assignments: &Value, producer_id: &str) -> String {
     protocol::owned_slots(assignments, producer_id).join(",")
 }
@@ -107,8 +103,7 @@ fn joined_slots(slots: &[SlotId]) -> String {
 }
 
 /// Overwrite one field of the producer at 1-based canonical `index` in a
-/// slot-assignment array, in place. Mirrors the Lua spec's direct table
-/// field mutation (`assignments[index].field = value`).
+/// slot-assignment array, in place.
 fn set_field(assignments: &mut Value, index: i64, field: &str, value: Value) {
     if let Value::Table(entries) = assignments {
         for (key, entry) in entries.iter_mut() {
@@ -122,7 +117,6 @@ fn set_field(assignments: &mut Value, index: i64, field: &str, value: Value) {
 }
 
 /// Deliver an already-built control message over `peer_id`'s fixture link.
-/// Mirrors the Lua spec's local `deliver` helper.
 fn deliver(
     state: &CoordinatorState,
     peer_id: &str,
@@ -139,8 +133,7 @@ fn deliver(
 }
 
 /// A host that has admitted `guest_count` guests and seen every acceptance
-/// of a manifest in `mode`, ready for ownership to be published. Mirrors
-/// the Lua spec's local `accepted_host` helper.
+/// of a manifest in `mode`, ready for ownership to be published.
 fn accepted_host(guest_count: i64, mode: protocol::MatchMode) -> CoordinatorState {
     let mut state = fixture::host(None);
     for index in 1..=guest_count {

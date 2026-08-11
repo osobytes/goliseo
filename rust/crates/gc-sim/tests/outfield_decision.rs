@@ -1,4 +1,4 @@
-//! Port of `spec/sim/outfield_decision_spec.lua`.
+//! Tests for `gc_sim::outfield_decision`.
 
 use gc_core::rng;
 use gc_sim::brain;

@@ -1,5 +1,6 @@
-//! Differential test against the reference Lua implementation (README rule
-//! 5.9, `v2/tools/lua_reference/README.md`), required for `aerial`: it
+//! Differential test against reference vectors captured from the Lua
+//! implementation this simulation was originally validated against (README
+//! rule 5.9, `tools/lua_reference/README.md`), required for `aerial`: it
 //! consumes `core.rng` directly (`aerial::resolve` draws four rolls) and its
 //! probability/geometry arithmetic feeds ball trajectory that must be
 //! bit-identical across two rollback clients.

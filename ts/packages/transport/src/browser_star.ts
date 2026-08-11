@@ -1,10 +1,7 @@
 // Browser host-star adapter. Every WebRTC object stays behind
 // `window.GoliseoStarTransport`; this module only exchanges bounded ASCII
-// strings through a single eval seam (the DOM analogue of the LÖVE
-// `love.js.eval` hook the Lua source targets), so no JavaScript/DOM value
-// ever escapes typed diagnostics. Nothing here is a simulation authority.
-//
-// Ported from game/transport/browser_star.lua.
+// strings through a single eval seam, so no JavaScript/DOM value ever
+// escapes typed diagnostics. Nothing here is a simulation authority.
 
 import { ok, err } from "@gc/core";
 import * as contract from "./contract.ts";
@@ -25,9 +22,9 @@ import type {
 const BRIDGE = "window.GoliseoStarTransport.";
 
 /**
- * Test seam; defaults to evaluating `window.GoliseoStarTransport`. Returns a
- * `[result, error]` pair, mirroring Lua's `local result, err =
- * self._eval(command)` capturing both of the callee's returns.
+ * Test seam; defaults to evaluating `window.GoliseoStarTransport`. Returns
+ * a `[result, error]` pair so a mock is free to explain a `null` result
+ * with a message.
  */
 export type StarEvalFn = (command: string) => readonly [result: string | null, error: string | null];
 
@@ -45,8 +42,8 @@ function failure<T>(code: TransportErrorCode, message: string): TransportResult<
 
 function defaultEval(_command: string): readonly [result: string | null, error: string | null] {
   // The real DOM bridge (`window.GoliseoStarTransport`) is wired up by the
-  // app shell at runtime; this milestone only ports behaviour, not the
-  // bindings, so the default seam has nothing to call.
+  // app shell at runtime; this package implements transport behavior only,
+  // not those bindings, so the default seam has nothing to call.
   return [null, "window.GoliseoStarTransport is not available"];
 }
 

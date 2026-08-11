@@ -1,15 +1,13 @@
-//! Port of `spec/sim/rollback_events_spec.lua`.
+//! Tests for `gc_sim::rollback_events`.
 //!
-//! `sim/match.lua` is now fully ported (`gc_sim::r#match`) and
-//! `sim/rollback_session.lua` is too (`gc_sim::rollback_session`), so every
-//! case that only manipulates `MatchSnapshot`s directly still ports using
-//! the hand-built `MatchState` fixture below (the same pattern
+//! Most cases that only manipulate `MatchSnapshot`s directly use the
+//! hand-built `MatchState` fixture below (the same pattern
 //! `tests/match_snapshot_differential.rs`'s `base_state` and
 //! `tests/rollback_snapshot_history.rs` use — it is cheaper and does not
 //! need a real match), but the five cases that drive a real
 //! `rollback_session` (`run_real_match`, and the two combat-request cases)
-//! are ported against `gc_sim::r#match::new` and `gc_sim::rollback_session`
-//! directly, matching the Lua spec's own `new_state`/`run_real_match`.
+//! build a real match via `gc_sim::r#match::new` and drive
+//! `gc_sim::rollback_session` directly.
 
 use gc_core::vec2::Vec2;
 use gc_data::action_families::ActionFamilyId;
@@ -145,8 +143,9 @@ fn make_players() -> Vec<MatchPlayer> {
     ]
 }
 
-/// Equivalent of the spec's `new_state()`: `match.new` is unavailable, so
-/// this builds an already-valid `MatchState` fixture directly.
+/// Builds an already-valid `MatchState` fixture directly rather than going
+/// through `sim_match::new` — cheaper, and the non-real-match cases below
+/// don't need a fully initialized slot-mode match.
 fn new_state() -> MatchState {
     MatchState {
         field: PitchSize { w: 960.0, h: 540.0 },
@@ -312,13 +311,11 @@ fn match_payload_x(event: &RollbackEventPayload) -> f64 {
 }
 
 // --- Real-match fixtures for the five cases that need a live rollback
-// session (`sim::match` plus `sim::rollback_session`), mirroring the Lua
-// spec's own `new_state`/`run_real_match`/`shot_fixture` helpers. Everything
-// above this point stays on the hand-built `MatchState` fixture, which is
+// session (`sim::match` plus `sim::rollback_session`). Everything above
+// this point stays on the hand-built `MatchState` fixture, which is
 // cheaper for the cases that never need a real simulated tick.
 
-/// Equivalent of the spec's `new_state(options)`: builds a real, slot-mode
-/// match via `sim::match.new`, defaulting to the Lua spec's own
+/// Builds a real, slot-mode match via `sim::match.new`, defaulting to
 /// `duration = 4, max_goals = 3, seed = 720`.
 fn new_real_state(duration: f64, max_goals: i64, seed: f64) -> MatchState {
     let home = gc_data::teams::get("nebula").expect("nebula is authored");
@@ -342,9 +339,9 @@ fn new_real_state(duration: f64, max_goals: i64, seed: f64) -> MatchState {
     })
 }
 
-/// Every canonical slot owned remotely, matching the Lua spec's own
-/// `sources()` (a real session's local/remote split does not matter to
-/// these cases; only its predicted-vs-authoritative behaviour does).
+/// Every canonical slot owned remotely (a real session's local/remote
+/// split does not matter to these cases; only its predicted-vs-authoritative
+/// behaviour does).
 fn sources_all_remote() -> [RollbackInputSource; 8] {
     [RollbackInputSource::Remote; 8]
 }
@@ -404,8 +401,7 @@ fn shot_fixture(max_goals: i64) -> MatchSnapshot {
 
 /// Drive a real session with one authoritative shoot press on slot one, then
 /// keep stepping (predicting neutral input everywhere else) until `stop`
-/// reports the target lifecycle transition. Matches the Lua spec's own
-/// `run_real_match`.
+/// reports the target lifecycle transition.
 fn run_real_match(
     initial: &MatchSnapshot,
     mut stop: impl FnMut(&MatchSnapshot) -> bool,
@@ -448,7 +444,6 @@ fn run_real_match(
 }
 
 /// Every lifecycle-domain wrapped event added across a run, in order.
-/// Matches the Lua spec's own `lifecycle_additions`.
 fn lifecycle_additions(
     diffs: &[rollback_events::RollbackEventDiff],
 ) -> Vec<rollback_events::RollbackWrappedEvent> {

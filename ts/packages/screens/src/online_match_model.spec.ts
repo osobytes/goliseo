@@ -1,23 +1,19 @@
-// Ported from spec/screens/online_match_model_spec.lua.
+// This suite exercises `online_match_model.ts`'s pure flow policy. Its
+// `CoordinatorState` instances never come from a real, running session: the
+// coordinator itself is Rust-owned (`crates/gc-netcode`; ARCHITECTURE.md
+// §1.1) with no wasm bridge yet, so there is no way to drive one to
+// `running` over real canonical wires here.
 //
-// The Lua spec builds its `CoordinatorState` instances from
-// `game.online.coordinator_driver`, driven to `running` over real canonical
-// wires -- see its own header comment. `coordinator_driver`/`coordinator`
-// are Rust-owned (`crates/gc-netcode`; v2/README.md §2.1) with no wasm
-// bridge this milestone, so this port cannot start from a real session.
-//
-// Unlike `@gc/online`'s `match_presentation.spec.ts` (which skips its whole
-// live-session block outright), every assertion below turns out to be about
-// `online_match_model.ts`'s *own* control flow: which coordinator events it
-// issues, in what order, and how its local fields (`phase`, `score`,
-// `tick`, `notice`, `abort_prompt`, `terminal`, `result`) evolve. The
-// coordinator itself is only ever asked to relay a message or flip to
+// That's not a loss for this suite's purpose. Every assertion below is
+// about `online_match_model.ts`'s *own* control flow: which coordinator
+// events it issues, in what order, and how its local fields (`phase`,
+// `score`, `tick`, `notice`, `abort_prompt`, `terminal`, `result`) evolve.
+// The coordinator itself is only ever asked to relay a message or flip to
 // `terminal`, never to arbitrate admission, slots, or readiness -- so a
-// small hand-scripted `CoordinatorPort` fake (mirroring
-// `match_presentation.spec.ts`'s `fakeRollbackEvents`) is enough to run the
-// Lua spec's assertions for real, without reimplementing any of
-// `coordinator.lua`'s protocol logic. Every `t.it` below is ported as a real
-// test against that fake.
+// small hand-scripted `CoordinatorPort` fake (in the same spirit as
+// `match_presentation.spec.ts`'s `fakeRollbackEvents`) is enough to run
+// every test below for real, without reimplementing any of the
+// coordinator's own protocol logic.
 
 import { describe, expect, it } from "vitest";
 import {

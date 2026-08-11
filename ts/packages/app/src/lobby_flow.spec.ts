@@ -1,32 +1,30 @@
-// Ported from spec/game/online_lobby_flow_spec.lua's "is reachable from the
-// title and returns to it" -- left `it.skip` in `@gc/screens`
-// (packages/screens/src/lobby_flow.spec.ts, "online lobby screen shell"
-// describe block) because the case is actually about `game.app`'s routing
-// (`App.stack`, `App:current_route`), and `@gc/screens` cannot depend on
-// `@gc/app` -- the dependency runs the other way (see that file's comment,
-// left in place, for the full reasoning). `@gc/app` is the correct side of
-// that edge; this file is where the case now lives, alongside this
-// package's own `online_match_flow.spec.ts` (the same move, for the
+// The case "is reachable from the title and returns to it" is left
+// `it.skip` in `@gc/screens` (packages/screens/src/lobby_flow.spec.ts,
+// "online lobby screen shell" describe block) because it is actually about
+// `@gc/app`'s routing (`App.stack`, `App:current_route`), and `@gc/screens`
+// cannot depend on `@gc/app` -- the dependency runs the other way (see that
+// file's comment, left in place, for the full reasoning). `@gc/app` is the
+// correct side of that edge; this file is where the case lives, alongside
+// this package's own `online_match_flow.spec.ts` (the same move, for the
 // sibling "routes the lobby's synchronized start..." case).
 //
 // # What this case proves, and at what level of fakery
 //
-// The Lua original mounts a single real `App`, clicks the title's real
-// "online lobby" widget, and asserts the route becomes `"lobby"`; then
-// presses escape and asserts the route returns to `"title"`. It never
-// drives a real coordinator, transport, or handshake -- the assertion is
-// entirely about `App`'s own shell routing (`showLobby`/`popRoute`), not
-// about `game.online.lobby`'s session logic. So this port drives the same
-// two lines through `App`'s real title menu (`@gc/screens`'s `title.ts`,
-// via `App.stack`/`clickWidget`, exactly like `app.spec.ts`'s own cases)
-// and a hand-written `OnlinePorts.newLobbyScreen` fake -- the same level of
-// fakery `online_match_flow.spec.ts` (this package) already uses for
-// `App`-level routing cases, and the one `app.spec.ts` itself uses for the
-// offline fake match adapter. A real `OnlineLobby`/`lobby_link` round trip
-// (open a star, complete a handshake) is exercised for real already, in
-// `@gc/screens`' own "online lobby screen shell" describe block (the
-// sibling case right above where this one used to sit) -- duplicating that
-// here would prove transport/session behaviour a second time under a
+// This test mounts a single real `App`, clicks the title's real "online
+// lobby" widget, and asserts the route becomes `"lobby"`; then presses
+// escape and asserts the route returns to `"title"`. It never drives a real
+// coordinator, transport, or handshake -- the assertion is entirely about
+// `App`'s own shell routing (`showLobby`/`popRoute`), not about online
+// lobby session logic. It drives `App`'s real title menu (`@gc/screens`'s
+// `title.ts`, via `App.stack`/`clickWidget`, exactly like `app.spec.ts`'s
+// own cases) and a hand-written `OnlinePorts.newLobbyScreen` fake -- the
+// same level of fakery `online_match_flow.spec.ts` (this package) already
+// uses for `App`-level routing cases, and the one `app.spec.ts` itself uses
+// for the offline fake match adapter. A real `OnlineLobby`/`lobby_link`
+// round trip (open a star, complete a handshake) is exercised for real
+// already, in `@gc/screens`' own "online lobby screen shell" describe block
+// (the sibling case right above where this one used to sit) -- duplicating
+// that here would prove transport/session behaviour a second time under a
 // fake `OnlinePorts.requestMatchSession`/`newOnlineMatchScreen`, not this
 // case's actual claim.
 //

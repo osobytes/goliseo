@@ -1,11 +1,3 @@
-// Ported from spec/render/camera_follow_spec.lua.
-//
-// The Lua spec file has two `describe` blocks: `camera_follow` (exercising
-// game/render/camera_follow.lua) and `view_state gait phase` (exercising
-// game/render/view_state.lua). Both are kept in this one file, mirroring the
-// 1:1 file mapping (v2/README.md §4) applied to the *spec* file rather than
-// the module under test.
-
 import { describe, expect, it } from "vitest";
 import { camera, type CameraField } from "./camera.ts";
 import { cameraFollow, type CameraFollowMatchState } from "./camera_follow.ts";
@@ -191,12 +183,12 @@ describe("view_state gait phase", () => {
     // jumped most of a cycle whenever speed wobbled -- the animation
     // appeared to flick between two poses.
     //
-    // No view_state.reset() here, matching the Lua original: this describe
-    // block relies on "p1" being untouched by any earlier-loaded spec file
-    // (alphabetically, correction_smoothing_spec.lua, the only other file
-    // that touches player "p1"/view_state, runs after this one and clears up
-    // after itself). vitest isolates module state per spec *file* by
-    // default, which reproduces the same "first touch" starting condition.
+    // No view_state.reset() here: this describe block relies on "p1" being
+    // untouched by any earlier-loaded spec file (alphabetically,
+    // correction_smoothing.spec.ts, the only other file that touches player
+    // "p1"/view_state, runs after this one and clears up after itself).
+    // vitest isolates module state per spec *file* by default, which
+    // reproduces the same "first touch" starting condition.
     let x = 0;
     let prev: number | undefined;
     let worst = 0;

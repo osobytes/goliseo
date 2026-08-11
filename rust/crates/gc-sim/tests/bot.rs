@@ -1,30 +1,27 @@
-//! Port of `spec/sim/bot_spec.lua`.
+//! Tests for `gc_sim::bot`.
 //!
-//! Six of the eight Lua cases call `new_match()` (`sim.match.new`) only to
-//! get a plausible ten-player fixture, then drive `bot.input` directly —
-//! `match.step` is never called, so nothing in them actually depends on real
-//! match physics. [`base_state`] below hand-builds that same minimal
-//! surface, the same way `spec/sim/metrics_spec.lua` and this crate's
-//! `tests/metrics.rs` already do for the identical reason (see that
+//! Most of this file's cases only need a plausible ten-player fixture to
+//! drive `bot.input` directly — `match.step` is never called, so nothing in
+//! them actually depends on real match physics. [`base_state`] below
+//! hand-builds that minimal surface, the same way this crate's
+//! `tests/metrics.rs` already does for the identical reason (see that
 //! module's doc): a `BotMatchView` with two full 5-a-side rosters at
 //! plausible positions, `controlled` pointing at a home outfielder, and
-//! `owner` defaulted to `controlled` — matching `sim/match.lua`'s
+//! `owner` defaulted to `controlled` — matching `gc_sim::r#match`'s
 //! `place_kickoff` default (the kicking team's most advanced player owns the
-//! ball at kickoff; see `sim/match.lua` around `s.owner = kicker`).
+//! ball at kickoff; see `gc_sim::r#match` around `s.owner = kicker`).
 //!
 //! The remaining two cases ("same seed produces the identical match", "keeps
 //! the controlled player active") call `match.step` in a loop to run real
-//! physics for up to 600 ticks. `sim::match` (`gc_sim::r#match`) is now
-//! fully ported, so both cases build a real fixture via `sim_match::new`
-//! and drive `sim_match::step`. Neither `bot.rs` nor its test file own
+//! physics for up to 600 ticks, building a real fixture via `sim_match::new`
+//! and driving `sim_match::step`. Neither `bot.rs` nor its test file own
 //! `crates/gc-sim/src/headless.rs`'s private `to_bot_view`/`to_bot_player`
 //! adapters, so [`to_bot_view`] below is a test-local copy of that same
 //! conversion (`MatchState`/`MatchPlayer` -> `BotMatchView`/`BotPlayerView`).
 //!
-//! `bot::input` additionally takes an explicit `&Tuning` where the Lua
-//! closes over the `sim.tuning` global (AGENTS.md §3; see
-//! `gc_sim::tuning`'s doc); every case here passes a fresh default
-//! `Tuning`, matching the Lua spec's untouched tuning defaults.
+//! `bot::input` additionally takes an explicit `&Tuning` rather than closing
+//! over a global (AGENTS.md §3; see `gc_sim::tuning`'s doc); every case here
+//! passes a fresh default `Tuning`.
 
 use gc_core::vec2::Vec2;
 use gc_sim::bot::{self, BotMatchView, BotOptions, BotPlayerView, Field, Team};

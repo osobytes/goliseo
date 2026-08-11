@@ -1,4 +1,4 @@
-//! Port of `spec/sim/research_features_spec.lua`.
+//! Tests for `gc_sim::research_features`.
 
 use gc_sim::research_features;
 use gc_sim::research_schema::{self, Value};

@@ -1,17 +1,15 @@
-// Ported from game/render/combat.lua.
-//
 // Combat telegraphs (arcs, guard fans, ranged sightlines) and projectile
 // trails, drawn on the ground under the players (`drawUnderCommands`) and
 // on top of everything (`drawOverCommands`). Pure content: every function
-// here returns a `DrawCommand[]` (draw2d.ts) rather than calling
-// `love.graphics`/three.js directly, so it is fully testable headless.
+// here returns a `DrawCommand[]` (draw2d.ts) rather than calling three.js
+// directly, so it is fully testable headless.
 //
-// Boundary note (v2/README.md rule 6.7): `CombatPlayerPresentation` and
+// Boundary note (ARCHITECTURE.md §4 rule 6): `CombatPlayerPresentation` and
 // `CombatProjectilePresentation` are `@gc/presentation`'s (already a
 // declared dependency), reused rather than redeclared. `RenderFrame` is the
-// (Rust) `render/frame.lua` producer's output (`render/**` -> Rust
-// `crates/gc-render`, v2/README.md #2) -- only the slice this module reads
-// is declared locally. `player_index` on a `CombatPlayerPresentation` is
+// Rust render-frame builder's output (`render/**` -> Rust `crates/gc-render`,
+// ARCHITECTURE.md §1) -- only the slice this module reads is declared locally.
+// `player_index` on a `CombatPlayerPresentation` is
 // 1-based (an identifier that survives the wasm boundary, matching
 // `@gc/presentation`'s own convention), so it is adjusted by one when
 // indexing this module's 0-based `RenderFrame.players` arrays.

@@ -1,13 +1,14 @@
-//! Port of `spec/sim/rollback_playable_lab_spec.lua`.
+//! Tests for `gc_sim::rollback_playable_lab`.
 //!
-//! Adaptations mirror `tests/rollback_session.rs`'s module doc comment:
-//! fixture snapshots use `match_snapshot::capture_owned`/`hash_canonical`
+//! Fixture snapshots use `match_snapshot::capture_owned`/`hash_canonical`
 //! (a never-stepped `MatchState`'s `marks` are legitimately shorter than the
-//! roster — see `rollback_session::normalize_marks`'s doc comment), and
-//! `RollbackPlayableCorrection.causal_tick` mutation demonstrations are kept
-//! (batches are owned, `Clone` values, so independence is a type-system
-//! guarantee, not a behavior under test — but the case still performs one
-//! such mutation for parity).
+//! roster — see `rollback_session::normalize_marks`'s doc comment, and
+//! `tests/rollback_session.rs`'s own module doc for the same fixture
+//! shape). `RollbackPlayableCorrection.causal_tick` mutation demonstrations
+//! are kept even though batches are owned, `Clone` values, so independence
+//! is already a type-system guarantee rather than a behavior under test —
+//! the case still performs one such mutation to make that guarantee
+//! visible.
 
 use gc_core::vec2::Vec2;
 use gc_sim::fixed_clock;

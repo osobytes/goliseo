@@ -37,7 +37,8 @@ describe("translateCode", () => {
   // KeyboardEvent.code that reaches it -- otherwise that control is
   // silently unreachable from a real keyboard, which a passing
   // "layoutProblems" check (bindings.spec.ts) cannot see, since that check
-  // only knows about LÖVE names and never looks at this translation table.
+  // only knows about the canonical control-vocabulary names and never
+  // looks at this translation table.
   it("translates every physical key bindings.ts's CONTROLS table names", () => {
     const reachableLoveNames = new Set(KEY_CODE_MAP.values());
     for (const entry of bindings.CONTROLS) {

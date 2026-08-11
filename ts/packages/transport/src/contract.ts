@@ -1,6 +1,6 @@
 // The transport interface every implementation satisfies: envelope shape,
 // wire encoding, and the peer-addressed framing the star and relay adapters
-// share. Ported from game/transport/contract.lua.
+// share.
 
 import { type Result, ok, err } from "@gc/core";
 
@@ -36,8 +36,7 @@ export type TransportErrorCode =
 
 /**
  * The failure half of every transport operation: a human-readable message
- * plus the typed code callers branch on. Lua returns this as `nil, err,
- * code`; here it is the error arm of a `Result`.
+ * plus the typed code callers branch on -- the error arm of a `Result`.
  */
 export interface TransportFailure {
   readonly message: string;
@@ -295,10 +294,10 @@ export function validate(message: unknown): TransportResult<true> {
   return ok(true);
 }
 
-// Lua strings are raw byte sequences, not Unicode text — `#string` counts
-// bytes, and a payload may carry any byte value, valid UTF-8 or not (the
-// spec exercises a bare `\255`). The wire layer is ported the same way: a JS
-// string here is a "binary string", one JS UTF-16 code unit per byte (code
+// This wire layer treats a payload as a raw byte sequence, not Unicode
+// text: `byteLength` counts bytes, and a payload may carry any byte value,
+// valid UTF-8 or not (the spec exercises a bare `\255`). A JS string here
+// is treated as a "binary string", one JS UTF-16 code unit per byte (code
 // points 0-255 only), the same convention `Buffer.from(s, "binary")` uses.
 // The layer above this one is responsible for UTF-8 encoding/decoding its
 // own payload text before it reaches `contract`.
@@ -321,7 +320,7 @@ export function newMessage(options: TransportMessageOptions): TransportResult<Tr
   return ok(message);
 }
 
-/** Throws if `message` fails validation — mirrors the Lua `assert(ok, err)`. */
+/** Throws if `message` fails validation. */
 export function copy(message: TransportMessage): TransportMessage {
   const validated = validate(message);
   if (!validated.ok) {

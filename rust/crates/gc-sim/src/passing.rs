@@ -1,5 +1,3 @@
-//! Port of `sim/passing.lua`.
-//!
 //! Pass target selection: the teammate that best matches the aim direction.
 
 use gc_core::vec2::Vec2;
@@ -11,9 +9,8 @@ const ALIGN_WEIGHT: f64 = 2.0;
 /// Px of distance that costs one point of score.
 const DIST_NORM: f64 = 100.0;
 
-/// Pick the index (0-based; the Lua original is 1-based `ipairs` order, not a
-/// wire format, so the index converts per README rule 5.3) of the best
-/// teammate to pass to.
+/// Pick the index (0-based — this is an in-memory position, not a wire
+/// format, per ARCHITECTURE.md §3 rule 3) of the best teammate to pass to.
 ///
 /// A tap pass goes to the CLOSEST teammate along the aim direction —
 /// proximity dominates, with alignment deciding between comparable distances

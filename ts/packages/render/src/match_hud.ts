@@ -1,20 +1,19 @@
-// Ported from game/render/match_hud.lua.
-//
 // Draws the product match HUD (scorebug, clock, possession, player identity
 // + stamina, combat readiness, plan banner, onboarding prompt, full-time/goal
 // announcement) from an already-computed `MatchHudModel`/`MatchHudLayout`.
 // Pure content: `matchHudCommands` returns a `DrawCommand[]` (draw2d.ts).
 //
-// Boundary notes (v2/README.md rule 6.7):
-//   - `MatchHudModel`/`MatchHudLayout` are `game/match_hud.lua`'s (the HUD
-//     *model*, not this drawing module -- a different, unported file this
-//     package does not own). Only the fields this module reads are declared
-//     locally, and both are threaded through as parameters rather than
-//     computed here, exactly as `combat.ts` threads `CombatDrawFrame`.
-//   - `theme.colors`/`theme.radius`/`theme.border_width`/`theme.fonts`
-//     (`game/ui/theme.lua`) would be `@gc/ui`, which `@gc/render`'s
-//     package.json does not depend on (see `arena.ts`'s identical note), so
-//     the theme is threaded through as an explicit `MatchHudTheme` parameter.
+// Boundary notes (ARCHITECTURE.md §4 rule 6):
+//   - `MatchHudModel`/`MatchHudLayout` come from the HUD *model*
+//     (`packages/app/src/match_hud.ts`), not this drawing module -- a
+//     different module this package does not own. Only the fields this
+//     module reads are declared locally, and both are threaded through as
+//     parameters rather than computed here, exactly as `combat.ts` threads
+//     `CombatDrawFrame`.
+//   - `theme.colors`/`theme.radius`/`theme.border_width`/`theme.fonts` would
+//     be `@gc/ui`, which `@gc/render`'s package.json does not depend on (see
+//     `arena.ts`'s identical note), so the theme is threaded through as an
+//     explicit `MatchHudTheme` parameter.
 
 import * as THREE from "three";
 import { DrawList, paint, type DrawCommand, type PaintOptions, type RGB } from "./draw2d.ts";
@@ -28,7 +27,7 @@ export interface OnboardingPrompt {
   readonly body: string;
 }
 
-/** The slice of `game/match_hud.lua`'s `MatchHudModel` this module reads. */
+/** The slice of the HUD model's `MatchHudModel` this module reads. */
 export interface MatchHudModel {
   readonly home_name: string;
   readonly away_name: string;
@@ -63,7 +62,7 @@ interface Rect {
   readonly h: number;
 }
 
-/** The slice of `game/match_hud.lua`'s `MatchHudLayout` this module reads. */
+/** The slice of the HUD model's `MatchHudLayout` this module reads. */
 export interface MatchHudLayout {
   readonly venue: Rect;
   readonly scorebug: Rect;
@@ -77,7 +76,7 @@ export interface MatchHudLayout {
   readonly scale: number;
 }
 
-/** The slice of `game/ui/theme.lua`'s `theme` this module reads. */
+/** The slice of `@gc/ui`'s theme this module reads. */
 export interface MatchHudTheme {
   readonly colors: {
     readonly void: RGB;

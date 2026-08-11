@@ -1,6 +1,7 @@
 //! Differential test of an ordinary match in which EVERY player is driven by
-//! an AI — including the one that takes the human-input branch — against real
-//! Lua `sim/match.lua`, per `v2/tools/lua_reference/README.md`.
+//! an AI — including the one that takes the human-input branch — against
+//! reference vectors captured from real Lua `sim/match.lua`, per
+//! `tools/lua_reference/README.md`.
 //!
 //! WHAT THIS COVERS THAT THE TWO TESTS BESIDE IT DO NOT.
 //!
@@ -31,7 +32,7 @@
 //!     Until this test, `bot.rs` was reachable only from `headless.rs`, and
 //!     changing its `REACTION` constant from 0.2 to 0.5 broke NO test in the
 //!     workspace. The same is true of [`gc_sim::headless::to_bot_view`],
-//!     a port artifact with no Lua counterpart at all (Lua's `bot.input`
+//!     a Rust-only adapter with no Lua counterpart at all (Lua's `bot.input`
 //!     takes the raw match state), which this test is the only thing that
 //!     checks.
 //!
@@ -49,7 +50,7 @@
 //!
 //! The fixture (`fixtures/session_ai_driven_lua_reference.txt`) was captured
 //! by running the unmodified Lua tree under headless `love` via
-//! `v2/tools/lua_reference/capture_session_ai_driven_match.lua` — see that
+//! `tools/lua_reference/capture_session_ai_driven_match.lua` — see that
 //! script's header. Match seed 5, bot seed 11 (deliberately different, so a
 //! divergence in either is attributable), teams nebula/orion, a 960x540
 //! field, `match.step`'s default duration and goal limit, no

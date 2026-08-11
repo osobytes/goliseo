@@ -1,26 +1,25 @@
-// Port of the wire-shape half of `gc_sim::input_frame`
-// (v2/rust/crates/gc-sim/src/input_frame.rs) -- constants, quantization,
-// and bit-packing only. Not a port of `sim/input_frame.lua`/the Rust
-// module wholesale: validation of the frame/ownership/slot machinery stays
-// Rust-owned (v2/README.md's `sim/**` row), and encode()/decode() (the
-// wire codec) stay Rust-owned too -- v2/README.md §2.1 draws the line at
+// Mirrors the wire-shape half of `gc_sim::input_frame`
+// (rust/crates/gc-sim/src/input_frame.rs) -- constants, quantization,
+// and bit-packing only, not the module wholesale: validation of the
+// frame/ownership/slot machinery stays Rust-owned, and encode()/decode() (the
+// wire codec) stay Rust-owned too -- ARCHITECTURE.md §1.1 draws the line at
 // "input capture is TS; input *encoding* is Rust."
 //
 // This file exists on the TS side of that line anyway, and that needs
-// explaining. The wasm boundary this milestone stops short of (see this
-// package's porting report) does not exist yet, so there is today no way
+// explaining. The wasm boundary this milestone stops short of does not
+// exist yet, so there is today no way
 // for a browser capture layer to hand a raw held/edge snapshot to Rust and
 // get an `InputSample` back -- Wave 2 wires that marshalling. Until then,
 // producing an actual `InputSample`-shaped value at all means quantizing
 // and bit-packing here, in TypeScript, which duplicates a determinism-path
-// algorithm exactly the way README §2.2 describes for `fnv1a64`: allowed,
+// algorithm exactly the way ARCHITECTURE.md §1.2 describes for `fnv1a64`: allowed,
 // but only pinned by a shared vector file, never trusted by construction.
 // `../fixtures/input_sample_vector.txt` (generated straight from this
 // crate, see `gc-sim/tests/input_sample_vector_generator.rs`) is that
 // vector; `input_sample.spec.ts` asserts every case in it. Once Wave 2's
 // marshalling exists, the intent is for this module's quantize/pack half
 // to be deleted in favor of calling the real wasm `gc_sim::input_frame`
-// functions, leaving only capture behind the README's line.
+// functions, leaving only capture behind the determinism line.
 //
 // `InputSample` itself has no optional/nullable field -- `move_x`,
 // `move_y`, `held`, and `edges` are always-populated integers, packed as
@@ -115,8 +114,8 @@ export function neutralSample(): InputSample {
  * Quantize a raw `[-1, 1]` axis into a signed 8-bit value, saturating
  * outside that range and rounding half-away-from-zero. Mirrors
  * `gc_sim::input_frame::quantize_axis` bit for bit -- see that function's
- * doc for the algorithm this is not permitted to "simplify" (README §5
- * rule 2, which binds TS ports of determinism-path math exactly as it
+ * doc for the algorithm this is not permitted to "simplify" (ARCHITECTURE.md
+ * §3 rule 2, which binds TS ports of determinism-path math exactly as it
  * binds Rust ports).
  */
 export function quantizeAxis(rawAxis: number): number {

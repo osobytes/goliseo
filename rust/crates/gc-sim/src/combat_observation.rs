@@ -1,5 +1,3 @@
-//! Port of `sim/combat_observation.lua`.
-//!
 //! `combat_sim_observation/v1`: the only observation schema available inside
 //! `sim::` and to the shipped gameplay AI.
 //!
@@ -15,9 +13,8 @@
 //! canonical player index; projectile rows follow `(source_sequence,
 //! source_player_id, projectile_id)`. No field is ever absent: optional
 //! values materialize as explicit sentinels (`0` for integers, `None`/
-//! [`ActionFamilyId`] absent for "none", `false` for flags) exactly as the
-//! Lua schema's own no-nil-key rule asks for, except that here that rule is
-//! simply what a total Rust struct already gives for free.
+//! [`ActionFamilyId`] absent for "none", `false` for flags) rather than an
+//! omitted key — a total Rust struct gives this for free.
 //!
 //! The digest is FNV-1a-64 over the canonical encoding below, mirroring
 //! [`crate::match_snapshot::number_bytes`]'s scalar format exactly (this
@@ -26,15 +23,14 @@
 //!
 //! ## Bridging to `combat_feasibility`
 //!
-//! [`crate::combat_feasibility`] was ported before this module existed, so it
-//! duck-typed its own narrower local `CombatObservation*` view (see that
-//! module's doc comment, which explicitly anticipates this one landing:
-//! "the canonical schema type should be able to populate these fields
-//! directly"). [`to_feasibility_view`] is that bridge: a pure projection
-//! from this module's full schema down to `combat_feasibility`'s narrower
-//! read shape, so [`crate::combat_policy`] and [`crate::combat`] can call
-//! the already-ported feasibility predicates without this module
-//! duplicating their logic.
+//! [`crate::combat_feasibility`] declares its own narrower local
+//! `CombatObservation*` view rather than depending on this module's full
+//! schema, keeping that leaf module's dependency surface minimal (see that
+//! module's doc comment). [`to_feasibility_view`] is the bridge: a pure
+//! projection from this module's full schema down to `combat_feasibility`'s
+//! narrower read shape, so [`crate::combat_policy`] and [`crate::combat`]
+//! can call the feasibility predicates without this module duplicating
+//! their logic.
 
 use crate::combat_feasibility::{self, CombatActionPhase, Team as FeasibilityTeam};
 use crate::combat_snapshot::{CombatForcedState, CombatMatchState, action_family_wire_id};
@@ -137,10 +133,10 @@ fn phase_wire(v: CombatActionPhase) -> &'static str {
 }
 
 /// A fixture side, matching `InputTeam`. Reuses
-/// [`crate::combat_feasibility::Team`] rather than declaring a fourth
-/// (README §5.1-adjacent): this schema feeds `combat_feasibility` directly
-/// via [`to_feasibility_view`], so sharing the type makes that bridge a
-/// pure field copy instead of a conversion.
+/// [`crate::combat_feasibility::Team`] rather than declaring a fourth: this
+/// schema feeds `combat_feasibility` directly via [`to_feasibility_view`],
+/// so sharing the type makes that bridge a pure field copy instead of a
+/// conversion.
 pub type Team = FeasibilityTeam;
 
 fn team_wire(v: Team) -> &'static str {
@@ -434,9 +430,8 @@ pub struct CombatObservation {
 
 /// The catalog digest of every action family's full definition plus the
 /// shared combat rule constants: `"family_catalog." <> fnv1a64(...)`.
-/// Recomputed on demand rather than cached (README rule: correctness over
-/// speed) — it is a pure function of `gc-data`'s content and never changes
-/// within a build.
+/// Recomputed on demand rather than cached — it is a pure function of
+/// `gc-data`'s content and never changes within a build.
 #[must_use]
 pub fn family_catalog_version() -> String {
     let mut parts = String::from("GCCV;1;");
@@ -1231,9 +1226,8 @@ pub fn digest(observation: &CombatObservation) -> String {
 /// Strict validation: every declared field is present, every enum member is
 /// known, rows are in canonical order, and the digest covers the body.
 ///
-/// Most of the Lua original's checks (undeclared field, missing field,
-/// wrong scalar kind, unknown enum member reached through an untyped
-/// table) are structurally redundant here — a typed [`CombatObservation`]
+/// Undeclared field, missing field, wrong scalar kind, and unknown
+/// enum-member checks are unnecessary here — a typed [`CombatObservation`]
 /// cannot have an undeclared or missing field, and every enum-shaped field
 /// is a closed Rust enum. What remains, and is checked below, are the
 /// invariants a type cannot express: schema/version/catalog tags, row

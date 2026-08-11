@@ -1,21 +1,18 @@
-// Ported from spec/game/online_lobby_flow_spec.lua.
-//
-// That spec spans a boundary `v2/README.md` §2.1 draws deliberately: its
-// `LobbyTestDriver` drives the real `game.screens.lobby_model` (this
-// package's `lobby_model.ts`) over a real `game.online.lobby_link`
-// (`@gc/online`'s `lobby_link.ts`), completing a real manual offer/answer
-// handshake against `game.online.coordinator` (Rust-owned, `crates/
-// gc-netcode`, no wasm bridge this milestone).
+// This suite's `Driver` class (defined below) drives `lobby_model.ts`'s
+// pure model over a link layer, completing a real manual offer/answer
+// handshake against the coordinator (Rust-owned, `crates/gc-netcode`, no
+// wasm bridge this milestone) -- the boundary `ARCHITECTURE.md` §1.1 draws
+// deliberately.
 //
 // # Why this file cannot import the real `lobby_link`
 //
 // `@gc/screens`' own `package.json` depends on `@gc/core`, `@gc/ui`, and
 // `@gc/presentation` only -- not `@gc/online` or `@gc/transport`, and this
-// port may not edit `package.json`. pnpm's workspace linking is strict
+// task may not edit `package.json`. pnpm's workspace linking is strict
 // about that: `packages/screens/node_modules/@gc` only symlinks the three
 // declared dependencies, so `import ... from "@gc/online"` cannot resolve
 // here, at either `tsc --build` or `vitest run` time. (This is also the
-// correct direction per `v2/README.md`'s file-mapping table: `@gc/online`
+// correct direction per `ARCHITECTURE.md`'s file-mapping table: `@gc/online`
 // depends on nothing in `@gc/screens`, and `@gc/app` -- which *does* depend
 // on both -- is the layer meant to wire them together, not this one.)
 //
@@ -34,26 +31,26 @@
 //
 // # The `CoordinatorPort` fake, and what it does and does not prove
 //
-// `game.online.coordinator` is a ~3,300-line replicated state machine
-// (manifest proposal, slot assignment, the pair-preference protocol,
-// readiness, the countdown/freeze barrier, build-skew detection, guest
-// drop/departure). Reimplementing it here would create a second source of
-// truth for exactly the kind of state two peers must agree on bit for bit
-// -- precisely what `v2/README.md` §2.1 exists to prevent, and precisely
-// why it is Rust and has no TypeScript port.
+// The real coordinator is a ~3,300-line replicated state machine (manifest
+// proposal, slot assignment, the pair-preference protocol, readiness, the
+// countdown/freeze barrier, build-skew detection, guest drop/departure).
+// Reimplementing it here would create a second source of truth for exactly
+// the kind of state two peers must agree on bit for bit -- precisely what
+// `ARCHITECTURE.md` §1.1 exists to prevent, and precisely why it stays
+// Rust-only, with no TypeScript implementation of its own.
 //
 // The fake below is not that. It is a compact, general (not per-test
 // scripted) implementation of the same *shape* of protocol -- one JSON
 // message per coordinator wire kind, exchanged over `FakeTransport` --
-// built by reading the real `game/online/coordinator.lua` and carrying over
-// its rules (contiguous-block seat planning, the pair-preference verdict
-// order: frozen -> seated -> shape -> team -> continuity -> claimed, claim
-// survival on a roster change, the client-side preference timeout, the
-// two-ack countdown/start barrier, build- vs manifest-mismatch
-// classification) rather than hand-tuning responses per assertion. Every
-// case below exercises this fake through the *same* `lobby_model.command`
-// entry point the real coordinator would be driven through; nothing in
-// `lobby_model.ts` itself is touched or duplicated.
+// built by reading the real coordinator's rules (`crates/gc-netcode`) and
+// carrying them over (contiguous-block seat planning, the pair-preference
+// verdict order: frozen -> seated -> shape -> team -> continuity ->
+// claimed, claim survival on a roster change, the client-side preference
+// timeout, the two-ack countdown/start barrier, build- vs
+// manifest-mismatch classification) rather than hand-tuning responses per
+// assertion. Every case below exercises this fake through the *same*
+// `lobby_model.command` entry point the real coordinator would be driven
+// through; nothing in `lobby_model.ts` itself is touched or duplicated.
 //
 // What that buys, honestly: every assertion in the driver-based cases below
 // is about `lobby_model`'s own projection and control flow (the `view()`
@@ -61,11 +58,11 @@
 // *plausible* coordinator, not about whether the real coordinator's
 // admission/assignment/preference logic is correct -- that is `crates/
 // gc-netcode`'s `tests/coordinator.rs` and `tests/coordinator_driver.rs`
-// job, including a differential against the real Lua. No case here was
-// written by picking the assertion first and hand-tuning the fake's
-// response to match; every verdict the fake produces falls out of the
-// general rules above applied to that case's actual roster/assignment
-// state.
+// job, including, historically, a differential against an earlier
+// reference implementation. No case here was written by picking the
+// assertion first and hand-tuning the fake's response to match; every
+// verdict the fake produces falls out of the general rules above applied
+// to that case's actual roster/assignment state.
 
 import { describe, expect, it } from "vitest";
 import {
@@ -214,11 +211,11 @@ function fakeManifest(mode: SessionMatchMode): SessionManifest {
   return baseManifest(mode);
 }
 
-// See `spec/game/online_lobby_flow_spec.lua`'s `foreign_template`: the
-// manifest a peer would propose from a build whose control vocabulary
-// differs, with everything else -- name, version, channel -- identical.
-// The real spec gets this by monkey-patching `protocol.vocabulary_id`
-// (Rust-owned); here the same effect is produced directly on the fixture.
+// `foreignManifest` produces the manifest a peer would propose from a
+// build whose control vocabulary differs, with everything else -- name,
+// version, channel -- identical. That effect comes from monkey-patching
+// `protocol.vocabulary_id` (Rust-owned) elsewhere; here it is produced
+// directly on the fixture instead.
 function foreignManifest(mode: SessionMatchMode): SessionManifest {
   return { ...baseManifest(mode), build_id: `${baseManifest(mode).build_id}0` };
 }
@@ -287,8 +284,8 @@ function fakeFnv1a64(): Fnv1a64Port {
 // ---------------------------------------------------------------------------
 
 // How long a guest waits for the host's verdict on a pair request before it
-// gives up. Mirrors `game.online.coordinator.PREFERENCE_TIMEOUT_TICKS`
-// (Rust-owned, no bridge -- see this file's header).
+// gives up. Mirrors the real coordinator's `PREFERENCE_TIMEOUT_TICKS`
+// constant (Rust-owned, no bridge -- see this file's header).
 const PREFERENCE_TIMEOUT_TICKS = 300;
 
 interface FakePreference {
@@ -330,8 +327,8 @@ interface FakeFreeze {
 // fake needs and `lobby_model.ts` never reads. `role`/`peer_id`/`phase`/
 // `manifest`/`manifest_id`/`assignments`/`countdown_remaining`/`terminal`/
 // `departure` all keep their public meaning; `peers[0]` is always this
-// coordinator's own entry (mirrors the real `coordinator.lua`'s
-// `local_peer`), matching every other peer.
+// coordinator's own entry (mirrors the real coordinator's own local-peer
+// entry), matching every other peer.
 interface FakeCoordState {
   readonly role: LobbyRole;
   readonly peer_id: string;
@@ -391,10 +388,10 @@ const TERMINAL_CODES: Readonly<Record<CoordinatorTerminalReason, string>> = {
   hash_mismatch: "desync",
 };
 
-// Mirrors `coordinator.DISCONNECT_REASONS` (Rust-owned; no bridge). Also
-// used directly by the "has host-side language for every reason a drop can
-// carry" completeness case below, since that table has no TypeScript port
-// to read it from.
+// Mirrors the real coordinator's `DISCONNECT_REASONS` table (Rust-owned;
+// no bridge). Also used directly by the "has host-side language for every
+// reason a drop can carry" completeness case below, since that table has
+// no TypeScript counterpart to read it from.
 const DISCONNECT_REASONS: Readonly<Record<string, CoordinatorTerminalReason>> = {
   peer_left: "guest_left",
   transport_lost: "transport_lost",
@@ -1492,8 +1489,8 @@ class FakeTransport {
 }
 
 // ---------------------------------------------------------------------------
-// The bare-model test driver -- mirrors `spec/game/online_lobby_flow_spec
-// .lua`'s `LobbyTestDriver` (the `Driver` local at the top of that file).
+// The bare-model test driver: wires a fake transport and a roster of lobby
+// models together so a scenario can be scripted peer by peer.
 // ---------------------------------------------------------------------------
 
 interface TestPeer {
@@ -2024,12 +2021,13 @@ describe("lobby pair selection", () => {
     expect(view(modelPorts, chooser).phase).toBe("assigned");
   });
 
-  // Not driven through `LobbyTestDriver` at all: a pure completeness check
-  // that `lobby_model.PREFERENCE_TEXT` has a non-empty string for every
+  // Not driven through `Driver` at all: a pure completeness check that
+  // `lobby_model.PREFERENCE_TEXT` has a non-empty string for every
   // status/reason the closed vocabulary can produce, and nothing extra.
   // `SessionPreferenceStatus`/`SessionPreferenceRejection` are that
-  // vocabulary, already ported into `lobby_model.ts` from `protocol.lua`
-  // (Rust-owned, no bridge -- see this file's header).
+  // vocabulary, already declared in `lobby_model.ts` and sourced from the
+  // real protocol's own vocabulary (Rust-owned, no bridge -- see this
+  // file's header).
   it("has plain language for every outcome a request can end on", () => {
     const statuses: readonly SessionPreferenceStatus[] = ["granted", "unchanged", "rejected"];
     const reasons: readonly SessionPreferenceRejection[] = [
@@ -2150,12 +2148,12 @@ describe("lobby build skew", () => {
     expect(hostState.terminal).toBeUndefined();
   });
 
-  // Not driven through `LobbyTestDriver`: a pure completeness check that
+  // Not driven through `Driver`: a pure completeness check that
   // `lobby_model.DEPARTURE_TEXT`/`TERMINAL_TEXT` have a sentence for every
-  // coordinator disconnect code and every departure reason.
-  // `coordinator.DISCONNECT_REASONS` is Rust-owned with no TypeScript port
-  // (see this file's `DISCONNECT_REASONS` constant above, which mirrors it
-  // directly from `game/online/coordinator.lua` for this one purpose).
+  // coordinator disconnect code and every departure reason. The real
+  // coordinator's `DISCONNECT_REASONS` table is Rust-owned with no
+  // TypeScript counterpart (see this file's `DISCONNECT_REASONS` constant
+  // above, which mirrors it directly for this one purpose).
   it("has host-side language for every reason a drop can carry", () => {
     for (const [reason, text] of Object.entries(DEPARTURE_TEXT)) {
       expect(typeof text === "string" && text.length > 0).toBe(true);

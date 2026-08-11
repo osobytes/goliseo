@@ -3,14 +3,12 @@ import { loadSimHost } from "@gc/wasm";
 import { TuningPanel } from "./tuning_panel.ts";
 import type { Knob, TuningPreset, TuningSource } from "./tuning_panel.ts";
 
-// The Lua spec (spec/ui/tuning_panel_spec.lua) exercises the panel against
-// the REAL knob registry (sim/tuning.lua) and REAL presets
-// (data/tuning_presets.lua). Both are Rust now — see tuning_panel.ts's
-// header comment — so this fake stands in for `sim/tuning.lua`'s behavior
-// just accurately enough to drive the panel's own state-machine logic
-// (apply-on-top-of-reset, no stacking, wrap to defaults). It is a test
-// double, not a second port of the knob registry: its keys and values are
-// synthetic, not the shipped balance numbers.
+// This fake stands in for the real knob registry (Rust `crates/gc-sim` —
+// see tuning_panel.ts's header comment) just accurately enough to drive the
+// panel's own state-machine logic (apply-on-top-of-reset, no stacking, wrap
+// to defaults). It is a test double, not a reimplementation of the knob
+// registry: its keys and values are synthetic, not the shipped balance
+// numbers.
 function makeFakeTuning(knobs: readonly Knob[]): TuningSource {
   const byKey = new Map(knobs.map((k) => [k.key, k]));
   const values = new Map(knobs.map((k) => [k.key, k.default]));
@@ -162,11 +160,10 @@ describe("tuning panel row/category navigation", () => {
   });
 });
 
-// The Lua spec's "tuning presets data" block validates the REAL preset
-// blobs (data/tuning_presets.lua) against the REAL knob registry
-// (sim/tuning.lua) — every preset line names a real knob within its
+// This "tuning presets data" block validates the REAL preset blobs against
+// the REAL knob registry — every preset line names a real knob within its
 // min/max, and the first preset is pure defaults. Both source modules are
-// Rust now (crates/gc-data/src/tuning_presets.rs, crates/gc-sim/src/tuning.rs).
+// Rust (crates/gc-data/src/tuning_presets.rs, crates/gc-sim/src/tuning.rs).
 //
 // This used to be `it.skip`, twice over: first because "the JS<->wasm
 // bridge does not exist" (stale by the time the second pass landed), then
@@ -177,7 +174,7 @@ describe("tuning panel row/category navigation", () => {
 // (`gc_data::tuning_presets::ALL`), and `TuningRegistry`'s own method set
 // (`categories`/`inCategory`/`valueOf`/`nudge`/`reset`/`isDefault`/
 // `serialize`/`deserialize`) already satisfies this file's own
-// `TuningSource` interface structurally. Re-ported for real below.
+// `TuningSource` interface structurally. Implemented for real below.
 describe("tuning presets data", () => {
   it("every preset line names a real knob with an in-range value", () => {
     const host = loadSimHost();

@@ -87,4 +87,4 @@ export type * as stadiumTypes from "./stadium.ts";
 // internal plumbing every module above already re-exposes the parts of it
 // callers need, e.g. RGB via each module's own types) and gl_probe.ts
 // (capability reporting, not part of this wave's "assemble a frame" scope).
-// Left out deliberately rather than silently; see this port's report.
+// Left out deliberately rather than silently.

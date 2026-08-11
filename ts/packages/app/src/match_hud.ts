@@ -1,22 +1,19 @@
-// Ported from game/match_hud.lua.
-//
 // The HUD reads the scoreboard section of the same versioned render payload
 // the pitch draws from, never a `MatchState`. `RenderFrameHud` is
-// `render/frame.lua`'s (Rust-owned, `render/**` -> `crates/gc-render`;
-// v2/README.md §2), declared locally per rule 6.7 -- only the fields this
-// module reads. `render/identity.lua`'s `PlayerPresentationIdentity` is
-// TypeScript-owned (`@gc/render`) but not yet ported there either (this
-// package's porting report), so `identity.for_player` is injected as an
+// `render.frame`'s (Rust-owned, `render/**` -> `crates/gc-render`;
+// ARCHITECTURE.md §1), declared locally per §4 rule 6 -- only the fields this
+// module reads. `@gc/render`'s `PlayerPresentationIdentity` is not
+// available to this package, so `identity.for_player` is injected as an
 // `IdentityPort`. `CombatPlayerPresentation`/`CombatFeedbackNotice` are
-// `@gc/presentation`'s (not a declared dependency -- report per the task
-// brief); declared locally, structurally compatible, same as `content.ts`
-// patterns elsewhere in this port.
+// `@gc/presentation`'s (not a declared dependency here); declared locally,
+// structurally compatible, same as `content.ts` patterns elsewhere in this
+// package.
 
 export type RenderSpeciesShape = "round" | "broad" | "angular" | "cluster";
 export type RenderTeam = "home" | "away";
 export type BroadcastPhase = "kickoff" | "goal" | "replay" | "full_time";
 
-/** The slice of `render/frame.lua`'s `RenderFrameHud` this module reads. */
+/** The slice of `render.frame`'s `RenderFrameHud` this module reads. */
 export interface RenderFrameHud {
   readonly home_score: number;
   readonly away_score: number;
@@ -61,7 +58,7 @@ export interface MatchHudContext {
   readonly combat_notice?: CombatFeedbackNotice;
 }
 
-/** `game/match_onboarding.lua`'s `OnboardingPrompt` -- see match_onboarding.ts. */
+/** `match_onboarding.ts`'s `OnboardingPrompt`. */
 export interface OnboardingPromptLike {
   readonly id: string;
   readonly title: string;
@@ -115,7 +112,7 @@ export interface MatchHudLayout {
   readonly scale: number;
 }
 
-/** `render/identity.lua`'s `identity.for_player`, injected -- see this file's header. */
+/** `identity.for_player`, injected -- see this file's header. */
 export interface PlayerPresentationIdentity {
   readonly name: string;
   readonly species_name: string;

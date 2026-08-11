@@ -1,5 +1,3 @@
-// Ported from game/online/net_diagnostics_fixture.lua.
-//
 // Fixtures for OMP-3 network diagnostics: a full peer set, each with its own
 // recorder and its own diagnostic transport tap, driven step by step over
 // the in-process star.
@@ -18,7 +16,7 @@
 // Every dependency this fixture drives -- `game.online.match_driver`,
 // `game.online.match_driver_fixture`, `game.online.input_protocol`,
 // `game.online.protocol`, and `sim.input_frame` -- is Rust-owned
-// (v2/README.md §2.1). Building a real match session means running the
+// (ARCHITECTURE.md §1.1). Building a real match session means running the
 // real rollback session, which is precisely the logic that must never be
 // duplicated on this side of the determinism line. So, following the same
 // pattern as `match_presentation.ts`, every one of those dependencies is
@@ -28,7 +26,7 @@
 // only passes them to the env and to `MatchDriverBatch`'s already-typed
 // fields.
 //
-// No TS-only fake for `NetDiagnosticsFixtureEnv` ships in this port: a
+// No TS-only fake for `NetDiagnosticsFixtureEnv` ships here: a
 // fake real enough to exercise rollback, ownership violations, hash
 // mismatches, or confirmation stalls would itself be a rollback
 // implementation, which is exactly what the boundary rule forbids here.
@@ -68,7 +66,7 @@
 // transport-level counters. See that file's header for the full breakdown
 // of what is and is not reachable this way, and for why that leaves this
 // module's own port shapes unused rather than rewritten: a caller who does
-// want the Lua original's dependency-injection shape (e.g. wiring a *real*
+// want this dependency-injection shape (e.g. wiring a *real*
 // `@gc/transport` adapter, not a test fixture) still needs the thin
 // `StarTransportAdapter` wrapper over `MatchDriverBridge`'s queue/drain seam
 // that `match_driver_bridge.rs`'s own doc names as `@gc/online`'s job --

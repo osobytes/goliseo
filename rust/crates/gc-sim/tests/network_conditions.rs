@@ -1,8 +1,10 @@
-//! Port of `spec/sim/network_conditions_spec.lua`.
+//! Unit-test coverage carried from the original Lua spec
+//! (`spec/sim/network_conditions_spec.lua`).
 //!
 //! On the determinism path (uses `core.rng` and feeds rollback resim): see
-//! `differential.rs` for the required bit-for-bit comparison against the
-//! reference Lua implementation.
+//! `differential.rs` for the required bit-for-bit comparison against
+//! reference vectors captured from the Lua implementation this simulation
+//! was originally validated against.
 
 use gc_core::rng;
 use gc_sim::input_frame::{self, InputSample, InputSampleOptions};
@@ -169,10 +171,10 @@ fn omp2_deterministic_network_conditions_preserves_exact_samples_and_send_order_
     // The Lua original mutates its local `supplied.move_x` here and later
     // asserts the retained record still reads 14, proving `send` copies
     // rather than aliases the caller's sample. `InputSample` is `Copy` in
-    // this port, so `send`'s `&InputSample` parameter can never alias
-    // anything the caller later mutates — the property is structurally
-    // guaranteed rather than merely tested. The `move_x == 14` assertion
-    // below is kept as direct evidence of the same fact.
+    // Rust, so `send`'s `&InputSample` parameter can never alias anything
+    // the caller later mutates — the property is structurally guaranteed
+    // rather than merely tested. The `move_x == 14` assertion below is kept
+    // as direct evidence of the same fact.
     network_conditions::send(&mut conditions, 1, 1, 1, &sample(Some(22), None)).unwrap();
 
     let mut deliveries = network_conditions::poll(&mut conditions, 1);

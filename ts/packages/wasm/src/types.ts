@@ -1,5 +1,5 @@
 // Hand-written interfaces mirroring `gc-wasm`'s generated bindings
-// (`dist/pkg/gc_wasm.d.cts`, produced from `v2/rust/crates/gc-wasm/src/**`
+// (`dist/pkg/gc_wasm.d.cts`, produced from `rust/crates/gc-wasm/src/**`
 // by `scripts/build.mjs`). Kept separate from a generated import so this
 // package's public API is explicit and reviewable without reading Rust —
 // but it must be kept in sync by hand: if a `gc-wasm` binding's shape
@@ -74,9 +74,9 @@ export interface SimSession {
  * `crates/gc-wasm/src/session.rs`'s `Session::new` doc for why that check
  * stays the caller's (e.g. a formation-select screen's) job.
  *
- * `combatEnabled` (omitted defaults to `false`) mirrors
- * `game/screens/match.lua`'s own `_opts.combat_enabled` -- `true` builds a
- * combat companion once, at construction, and every {@link SimSession.step}
+ * `combatEnabled` (omitted defaults to `false`) preserves this option's
+ * original semantics -- `true` builds a combat companion once, at
+ * construction, and every {@link SimSession.step}
  * call afterward threads it through; `false`/omitted never builds one, byte
  * for byte the behavior before this parameter existed. This was previously
  * missing from this interface even though the compiled artifact's
@@ -435,8 +435,7 @@ export interface RollbackPlayableLab {
    * `network_high_water`, `convergence` (`{status, boundary, expected_hash,
    * actual_hash, first_difference?}`), `event_status`,
    * `predicted_early_finish`, `late_input_tick?`, `settlement_ticks`,
-   * `settlement_limit` — mirrors `gc_sim::rollback_playable_lab::debug_model`
-   * (the Lua original's `RollbackPlayableLabDebugModel`). */
+   * `settlement_limit` — mirrors `gc_sim::rollback_playable_lab::debug_model`. */
   debugModelJson(): string;
   /** An independent capture of the predicted client's current live
    * boundary, as an opaque handle — see {@link WasmMatchSnapshot}'s doc. */
@@ -662,7 +661,7 @@ export interface MatchDriverBridgeConstructor {
 /**
  * Mirrors `gc_wasm::session::FixedClock` (`crates/gc-wasm/src/session.rs`)
  * -- the render-driven tick-count decision (`gc_sim::fixed_clock::advance`'s
- * accumulator/catch-up/drop policy, v2/README.md §2.1), planned once per
+ * accumulator/catch-up/drop policy, ARCHITECTURE.md §1.1), planned once per
  * render update from a `dt`. This exists specifically so no TypeScript
  * package has to re-derive that policy itself: call {@link FixedClock.advance}
  * with a render `dt` and run `step` that many times, in order.
@@ -1039,7 +1038,7 @@ export interface MatchDriverFixtureBridge {
 // `online_combat_phases_bridge.rs` — the driver-level combat-phase fixture,
 // a `#[wasm_bindgen]` surface over the seven pinned combat-phase boundary
 // zeroes `crates/gc-netcode/tests/support/online_combat_phases.rs` already
-// proves out (itself a port of `spec/support/online_combat_phases.lua`).
+// proves out.
 // `packages/online/src/match_presentation.spec.ts`'s nine blocked
 // combat-phase cases need exactly this: pick a phase, build its pinned
 // boundary-zero snapshot, drive a real `MatchDriverBridge` from it, script

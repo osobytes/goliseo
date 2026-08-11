@@ -1,5 +1,3 @@
-// Ported from game/render/effects.lua.
-//
 // The "juice" layer: turns one-frame sim events (shots, passes, traps) into
 // short-lived particles, and samples a fading trail behind a fast loose
 // ball. Renderer-side state only -- the sim stays pure. Rollback actions use
@@ -12,14 +10,14 @@
 // headless; only `drawTrail`/`drawOver` (the three.js materialization) are
 // impure, and they are thin wrappers around the pure `*Commands` builders.
 //
-// Boundary notes (v2/README.md rule 6.7): `MatchEvent`/`MatchEventKind` are
+// Boundary notes (ARCHITECTURE.md §4 rule 6): `MatchEvent`/`MatchEventKind` are
 // reused from `replay.ts` (same package, already declares the sim-shaped
 // slice this module needs) rather than redeclared. `CombatEvent`,
 // `RollbackWrappedEvent`, `RollbackEventDiff` are `@gc/presentation`'s
-// (a declared dependency). `GameSettings` (`game/settings.lua`) would be
-// `@gc/screens`, which `@gc/render`'s package.json does not depend on, so
-// only the two fields this module reads are declared locally and injected,
-// matching `arena.ts`'s treatment of `game/ui/theme.lua`.
+// (a declared dependency). `GameSettings` would be `@gc/screens`, which
+// `@gc/render`'s package.json does not depend on, so only the two fields
+// this module reads are declared locally and injected, matching `arena.ts`'s
+// treatment of its own theme settings.
 
 import * as THREE from "three";
 import type { CombatEvent, RollbackEventDiff, RollbackWrappedEvent } from "@gc/presentation";
@@ -27,7 +25,7 @@ import { combatFeedback } from "@gc/presentation";
 import type { MatchEvent } from "./replay.ts";
 import { DrawList, paint, type DrawCommand, type Project, type RGB } from "./draw2d.ts";
 
-// Match the ball's billboard lift in pitch.lua so flashes/trails sit on the ball.
+// Match the ball's billboard lift in pitch.ts so flashes/trails sit on the ball.
 const BALL_LIFT = 4;
 const TRAIL_LIFE = 0.32; // base seconds a trail dot lingers (hot dots last longer)
 const TRAIL_SPACING = 7; // world units between samples (fps-independent spacing)
@@ -89,7 +87,7 @@ export interface ReadabilityObservation {
   readonly non_color_only: boolean;
 }
 
-/** The slice of `MatchState` (`sim/match.lua`) `sample_ball`/`consume` read. */
+/** The slice of `MatchState` (Rust `crates/gc-sim`) `sample_ball`/`consume` read. */
 export interface EffectsMatchState {
   readonly ball: { readonly x: number; readonly y: number };
   readonly ball_vel: { length(): number };
@@ -171,7 +169,7 @@ function glyphParticle(x: number, y: number, life: number, size: number, color: 
 
 // A radial spray of sparks. Direction is randomized -- presentation-only
 // "juice", never fed back into simulation state, so `Math.random()` is fine
-// here (unlike anything on the determinism path, v2/README.md #2).
+// here (unlike anything on the determinism path, ARCHITECTURE.md §1).
 function burst(x: number, y: number, n: number, speed: number, life: number, size: number, color: RGB, eventId?: string): void {
   for (let i = 0; i < n; i += 1) {
     const a = Math.random() * Math.PI * 2;

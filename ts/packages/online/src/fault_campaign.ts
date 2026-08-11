@@ -1,5 +1,3 @@
-// Ported from game/online/fault_campaign.lua.
-//
 // The headless entry point for the OMP-3 fault harness.
 //
 // It prints one line per fact, in a fixed order, so two runs -- or two
@@ -12,7 +10,7 @@
 // ## Boundary note: `game.online.fault_scenarios`
 //
 // `game.online.fault_scenarios` (and the `fault_harness` it drives) is
-// Rust-owned (`crates/gc-netcode`, v2/README.md §2.1) -- this campaign
+// Rust-owned (`crates/gc-netcode`, ARCHITECTURE.md §1.1) -- this campaign
 // controller only selects rows, runs them, and formats the result. The
 // scenario table and the `run` function are therefore threaded through as
 // an injected `FaultScenariosPort` rather than required, following the same
@@ -20,26 +18,26 @@
 // is injected too, defaulting to `console.log`, so a spec can capture the
 // marker stream instead of it landing on stdout.
 //
-// ## The hash-order probe does not survive the port
+// ## Why the hash-order probe is now a constant
 //
-// The Lua original's `hash_order_probe` exists because this LuaJIT/LOVE
-// build randomizes `pairs()` iteration order *per process*, and that
-// randomization is exactly what lets a same-process multi-client harness
-// fail to catch a hash-order-induced divergence: two clients in one process
-// share a hash seed and would agree by accident. The probe emits this
-// process's observed iteration order over a fixed table, so a campaign
-// controller comparing two processes can *demonstrate* they really had
-// different seeds rather than assume it.
+// `hashOrderProbe` exists so a campaign controller comparing two processes
+// can *demonstrate* they really used different hash seeds, rather than
+// assume it. The idea: a per-process randomized iteration order over a
+// fixed table is exactly what would let a same-process multi-client harness
+// fail to catch a hash-order-induced divergence, since two clients sharing
+// one process would otherwise share a seed and agree by accident. The probe
+// emits this process's observed iteration order over `PROBE_KEYS` so two
+// runs can be diffed.
 //
-// JavaScript objects and `Map`s have no equivalent: `Object.keys()`,
+// JavaScript objects and `Map`s have no such randomization: `Object.keys()`,
 // `for...in`, and `Map` iteration are all specified to preserve insertion
 // order deterministically, with no per-process hash-seed randomization.
-// There is therefore no way to reproduce this probe's actual purpose in
-// TypeScript -- two Node processes running this function will always report
-// the same order, every time, which is the opposite of what the check is
-// for. `hashOrderProbe` is ported for interface parity (and because the
-// marker stream's shape is otherwise unchanged), but it is a constant, not
-// a probe, on this side of the port. See this port's final report.
+// There is therefore no way for this probe to serve its original purpose
+// here -- two Node processes running this function will always report the
+// same order, every time, which is the opposite of what the check is for.
+// `hashOrderProbe` is kept for interface parity (and because the marker
+// stream's shape is otherwise unchanged), but it is a constant, not a
+// probe, in this implementation.
 
 export type FaultHarnessTopology = "star" | "relay";
 
@@ -77,8 +75,8 @@ export interface FaultRunOptions {
 /**
  * `game.online.fault_scenarios`, injected -- see the module doc comment.
  * `SCENARIOS` is the full declared table (used only to name every known
- * gap, selected or not); `select`/`find`/`run` mirror the Lua module
- * functions of the same name.
+ * gap, selected or not); `select`/`find`/`run` mirror
+ * `game.online.fault_scenarios`'s functions of the same name.
  */
 export interface FaultScenariosPort {
   readonly SCENARIOS: readonly FaultScenario[];
@@ -90,9 +88,10 @@ export interface FaultScenariosPort {
 export const MARKER_VERSION = 1;
 
 // A fixed table with enough string keys that a per-process hash seed would
-// reorder it with overwhelming probability, in Lua. It is never used for
-// anything else. Kept for interface parity with the Lua module; see the
-// header comment above for why the probe itself is now a constant.
+// reorder it with overwhelming probability, in a runtime that randomizes
+// iteration order. It is never used for anything else. Kept for interface
+// parity; see the header comment above for why the probe itself is now a
+// constant.
 export const PROBE_KEYS: readonly string[] = [
   "alpha",
   "bravo",
@@ -144,10 +143,9 @@ export function main(scenarios: FaultScenariosPort, options: FaultCampaignOption
     // eslint-disable-next-line no-console
     console.log(line);
   });
-  // A raised error inside the Lua original's `love.load` reaches LOVE's
-  // error handler, which in a headless run has no window to draw on and no
-  // key to dismiss it with: the process hangs instead of failing. The
-  // TypeScript equivalent has no such handler to worry about, but the same
+  // A crash escaping unprotected used to hang a headless run rather than
+  // fail it, because there was no way to dismiss the runtime's own error
+  // screen without a window. Nothing here has that problem, but the same
   // discipline holds -- every row is protected, and a crash is reported as
   // a failing row and a `false` return rather than an uncaught exception.
   try {

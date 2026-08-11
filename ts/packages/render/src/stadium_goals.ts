@@ -10,8 +10,8 @@
 // box extends behind it to `rect`'s OTHER x edge (whichever of `rect.x`/
 // `rect.x + rect.w` is not `mouthLineX`) -- this module derives that "back"
 // x itself, since the caller only passes `mouthLineX`, not a second explicit
-// back-line parameter (contrast pitch.ts's `drawGoal`, ported from the 2D
-// original, which took both `lineX` and `backX` directly).
+// back-line parameter (contrast pitch.ts's `drawGoal`, which took both
+// `lineX` and `backX` directly).
 //
 // Draw calls per goal: 3 (frame -- front + back posts/crossbar merged into
 // one mesh/material; emissive trim rings; net -- four panels merged into

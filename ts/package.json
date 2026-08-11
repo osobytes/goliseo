@@ -1,5 +1,5 @@
 {
-  "name": "@gc/v2",
+  "name": "@gc/goliseo",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.1.2",

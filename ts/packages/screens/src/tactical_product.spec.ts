@@ -1,13 +1,11 @@
-// Ported from spec/screens/tactical_product_spec.lua.
-//
-// Fixture note: the Lua spec seeds its state from `game.session.new()`
-// (`game/session.lua` -> `@gc/app`, not this package's to own — see
-// content.ts's header) purely to get Nebula FC's default starters and
-// formation. Those defaults (`data/teams.lua`'s `teams.nebula.roster` /
-// `teams.nebula.formation`) are transcribed verbatim below instead. Player
-// names/identities are the same Nebula FC fixture squad_product.spec.ts
-// uses (data/players.lua, render/identity.lua), duplicated per-file to
-// keep each spec self-contained, matching @gc/presentation's combat.spec.ts.
+// Fixture note: production seeds this state from `@gc/app`'s `session.ts`
+// (not this package's to own — see content.ts's header) purely to get
+// Nebula FC's default starters and formation. Those defaults (`gc-data`'s
+// `teams.nebula.roster` / `teams.nebula.formation`) are transcribed
+// verbatim below instead. Player names/identities are the same Nebula FC
+// fixture squad_product.spec.ts uses (`gc-data`'s players, `gc-render`'s
+// identity), duplicated per-file to keep each spec self-contained, matching
+// @gc/presentation's combat.spec.ts.
 
 import { describe, expect, it } from "vitest";
 import { hit } from "@gc/ui";

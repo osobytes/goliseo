@@ -1,22 +1,22 @@
-//! Port of `game/online/coordinator.lua`.
+//! The session-lifecycle reducer: agrees the manifest, assigns slots, and
+//! decides when a match starts, desyncs, or ends.
 //!
 //! `coordinator` reads like lobby code, and that is exactly the trap (see
-//! `v2/README.md` §2.1). It is Rust because it records per-tick hashes,
+//! `ARCHITECTURE.md` §1.1). It is Rust because it records per-tick hashes,
 //! decides `hash_mismatch` / `late_input` / `desync` outcomes, and freezes
 //! the session at an agreed `first_input_tick`. Both peers run it over the
 //! same event stream and must land in the same state; a divergence here is a
 //! protocol violation, not a cosmetic difference.
 //!
 //! It is a pure `step(state, event) -> (state, outcome)` reducer: no clock
-//! reads, no I/O, no globals. [`CoordinatorState`] derives `Clone`, so the
-//! Lua original's hand-written `copy_state`/`copy_peer`/`copy_value`
-//! deep-copy helpers collapse to `state.clone()`.
+//! reads, no I/O, no globals. [`CoordinatorState`] derives `Clone`, so a
+//! deep copy of the whole state is just `state.clone()`.
 //!
 //! ## Following `protocol`'s `Value` design
 //!
-//! `crate::protocol` (`game/online/protocol.lua`) represents a manifest,
-//! a slot-assignment array, and a runtime identity as a generic
-//! [`protocol::Value`] rather than one struct per shape — see that module's
+//! `crate::protocol` represents a manifest, a slot-assignment array, and a
+//! runtime identity as a generic [`protocol::Value`] rather than one struct
+//! per shape — see that module's
 //! doc comment for why (in short: the malformed/unknown-field spec coverage
 //! needs a value that a struct's static shape cannot hold). This module
 //! follows the same choice for the same data: [`CoordinatorState::manifest`]
@@ -24,7 +24,7 @@
 //! built through small accessor/constructor helpers below
 //! (`manifest_*`, `producer_*`) rather than struct field access.
 //!
-//! Everything that is *coordinator-local* — never itself a `protocol.lua`
+//! Everything that is *coordinator-local* — never itself a `protocol`
 //! wire shape — stays a typed Rust enum: [`Role`], [`ProducerKind`],
 //! [`RejectCode`], [`TerminalReason`], [`Origin`], [`Disposition`],
 //! [`SlotDriver`], [`PreferenceState`]. Canonical slot identity reuses
@@ -43,7 +43,7 @@ use gc_sim::input_frame::{self, SlotId, Team};
 use indexmap::IndexMap;
 
 // ---------------------------------------------------------------------------
-// Coordinator-local closed-set enums (never a `protocol.lua` wire shape of
+// Coordinator-local closed-set enums (never a `protocol` wire shape of
 // their own, but pervasive enough in this module's control flow to be worth
 // typing rather than left as loose strings).
 // ---------------------------------------------------------------------------
@@ -58,7 +58,7 @@ pub enum Role {
 }
 
 impl Role {
-    /// The exact Lua wire string.
+    /// The exact wire string.
     #[must_use]
     pub fn wire_str(self) -> &'static str {
         match self {
@@ -88,7 +88,7 @@ pub enum ProducerKind {
 }
 
 impl ProducerKind {
-    /// The exact Lua wire string.
+    /// The exact wire string.
     #[must_use]
     pub fn wire_str(self) -> &'static str {
         match self {
@@ -290,7 +290,7 @@ fn failure<T>(code: RejectCode, message: impl Into<String>) -> Result<T> {
 
 // ---------------------------------------------------------------------------
 // `protocol::Value` accessors / constructors for manifests and slot
-// producers. `protocol.lua`'s own shape, mirrored exactly: see the module
+// producers. Follows `protocol`'s own wire shape exactly: see the module
 // doc comment.
 // ---------------------------------------------------------------------------
 
@@ -474,10 +474,9 @@ pub const STALE_PREFERENCE_REASON: &str = "pair preference result answers no pen
 
 /// The closed protocol code a terminal reason is announced as.
 ///
-/// `game/online/coordinator.lua:254` exposes this as the public
-/// `coordinator.TERMINAL_CODES` table, and its spec walks it exhaustively, so
-/// it is `pub` here for the same reason (README §5 rule 8). `Completed` maps to
-/// `None`: a finished match is not a failure and announces no code.
+/// `pub` because ARCHITECTURE.md §3 rule 6 requires everything a test touches to be
+/// public, and the test suite walks this mapping exhaustively. `Completed`
+/// maps to `None`: a finished match is not a failure and announces no code.
 pub fn terminal_code(reason: TerminalReason) -> Option<&'static str> {
     use TerminalReason::*;
     Some(match reason {
@@ -740,10 +739,10 @@ pub struct Freeze {
     pub live: IndexMap<String, SlotId>,
 }
 
-/// The frozen slot-producer record for `slot`, equivalent to the Lua
-/// original's `freeze.sources[slot.id]` (this port drops the redundant
-/// `sources` field and looks up directly into `freeze.assignments`, which
-/// is already in canonical slot order — see [`Freeze::assignments`]).
+/// The frozen slot-producer record for `slot`. Looks up directly into
+/// `freeze.assignments`, which is already in canonical slot order — see
+/// [`Freeze::assignments`] — rather than keeping a separate, redundant
+/// `sources` index.
 #[must_use]
 pub fn freeze_source(freeze: &Freeze, slot: SlotId) -> &Value {
     assignment_at(&freeze.assignments, live_slot::slot_index(slot))
@@ -815,9 +814,9 @@ pub struct Terminal {
     pub detail: Option<String>,
 }
 
-/// One coordinator side effect. Variant-per-kind translation of the Lua
-/// original's tagged `CoordinatorAction` class: an enum is strictly more
-/// precise and gives the exhaustiveness checking the port calls for.
+/// One coordinator side effect, variant-per-kind rather than one tagged
+/// struct: an enum is strictly more precise here and gives callers
+/// exhaustiveness checking over the full set of effects a step can produce.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     /// Send `message` over every link in `targets`.
@@ -964,10 +963,10 @@ pub struct Summary {
 }
 
 // ---------------------------------------------------------------------------
-// One coordinator event. Fields Lua validates at runtime against a closed
+// One coordinator event. Fields validated at runtime against a closed
 // vocabulary (rejecting with a typed "malformed"/"unknown" outcome on a
 // miss) stay loosely typed (`String`) here on purpose, so those rejection
-// paths — exercised by the spec — stay reachable.
+// paths — exercised by the test suite — stay reachable.
 // ---------------------------------------------------------------------------
 
 /// One event driving [`step`].
@@ -1211,10 +1210,10 @@ pub struct TerminationOptions {
     pub exclude_link: Option<String>,
 }
 
-/// [`TerminationOptions::origin`] has no meaningful zero value in the Lua
-/// original (every call site names one); this exists purely so
-/// `TerminationOptions` can derive `Default` for struct-update syntax at call
-/// sites, the same way Lua's table literals only set the fields they need.
+/// [`TerminationOptions::origin`] has no meaningful zero value (every real
+/// call site names one); this exists purely so `TerminationOptions` can
+/// derive `Default` for struct-update syntax at call sites that only need to
+/// set a few fields.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum OriginOrDefault {
     #[default]
@@ -1328,16 +1327,16 @@ pub fn slot_sources(manifest: &Value, assignments: &Value) -> Result<Value> {
     for producer in assignments_producers(assignments) {
         if keepers.contains(&producer_player_id(producer)) {
             return failure(
-                // `game/online/coordinator.lua:614` returns "invalid_assignment"
-                // here, not an ownership code. The distinction is visible to a
-                // peer, which rejects on the code rather than the message.
+                // "invalid_assignment" here, deliberately not an ownership
+                // code. The distinction is visible to a peer, which rejects
+                // on the code rather than the message.
                 RejectCode::InvalidAssignment,
                 "combat-protected keepers cannot own a canonical outfield slot",
             );
         }
     }
     protocol::validate_assignment_manifest(manifest, assignments)?;
-    // Re-shape into a slot-id-keyed table, as `coordinator.lua:625-630` does.
+    // Re-shape into a slot-id-keyed table.
     // `validate_assignment_manifest` has already proven the array holds exactly
     // the eight canonical slots in OMP-1 order, so indexing by slot id cannot
     // collide — this only makes `sources["home_1"]` work for callers. Returning
@@ -4505,8 +4504,7 @@ pub fn receive(state: &CoordinatorState, link_id: &str, wire: &str) -> (Coordina
 // Small conversion shim from the wire's `SessionRejectCode` vocabulary
 // (used when a link is refused before it names any `protocol::ErrorCode` of
 // its own, e.g. `reject_link`) to this module's own `RejectCode`. The two
-// vocabularies are different closed sets with no canonical 1:1 mapping in
-// the Lua original either.
+// vocabularies are different closed sets with no canonical 1:1 mapping.
 // ---------------------------------------------------------------------------
 
 fn reject_code_from_session_reject(code: &str) -> RejectCode {

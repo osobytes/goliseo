@@ -7,9 +7,9 @@
 //! `match_driver.rs`'s own doc explains why: `carrier`/`transition`/
 //! `next_live_slot`/`slot_drivers` are real business logic
 //! (`gc_netcode::live_slot`/`gc_netcode::coordinator`) the driver's own file
-//! must not reimplement, and `canonical_host_batch` needs `protocol.lua`
-//! machinery (`gc_netcode::protocol`, `gc_netcode::input_protocol`) that
-//! file was built without. `gc_netcode::match_driver_fixture::DriverRules`
+//! must not reimplement, and `canonical_host_batch` needs protocol machinery
+//! (`gc_netcode::protocol`, `gc_netcode::input_protocol`) that file was
+//! built without. `gc_netcode::match_driver_fixture::DriverRules`
 //! already closes every one of those gaps for real — its own doc says
 //! plainly it is "the real `MatchDriverRules` implementation," not a test
 //! double, despite the file it lives in being named `_fixture`. This bridge
@@ -39,7 +39,7 @@
 //! session type) instead of raw team/roster parameters: it reuses
 //! [`Session::capture_snapshot`] to get a real boundary-zero
 //! `gc_sim::match_snapshot::MatchSnapshot`, and that snapshot never leaves
-//! Rust. `gc_netcode::match_session.lua`'s own module doc explains why full
+//! Rust. `gc_netcode::match_session`'s own module doc explains why full
 //! online content resolution (arena/loadout/roster identity resolved from a
 //! manifest's `content_id`) needs `gc-data`, which `gc-netcode` deliberately
 //! does not depend on; wiring that up generically is a separate task from
@@ -59,9 +59,8 @@
 //! `rollback_events::apply`'s replaced-interval contract
 //! (`replaced_from_tick`/`replaced_through_tick`, matching the *complete*
 //! stale speculative tail) belonged one layer up, in
-//! `match_presentation.lua`'s TypeScript successor. That successor
-//! (`packages/online/src/match_presentation.ts`) turned out to already
-//! encode the general rule, independent of any Lua source: a driver batch's
+//! `packages/online/src/match_presentation.ts`. That module turned out to
+//! already encode the general rule: a driver batch's
 //! `outputs` are in session-tick order, and any output at or below the
 //! highest tick this timeline has already applied is the head of a
 //! correction run that replaces the complete speculative tail from that

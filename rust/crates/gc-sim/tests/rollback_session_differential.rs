@@ -1,8 +1,9 @@
-//! Differential test against the reference Lua implementation (README rule
-//! 9, `v2/tools/lua_reference/README.md`), required for `rollback_session`:
-//! it is the actual rollback state machine, and a re-simulation that
-//! self-corrects to the wrong bits is a desync a spec-only port cannot
-//! catch.
+//! Differential test against reference vectors captured from the Lua
+//! implementation this simulation was originally validated against (README
+//! rule 9, `tools/lua_reference/README.md`), required for
+//! `rollback_session`: it is the actual rollback state machine, and a
+//! re-simulation that self-corrects to the wrong bits is a desync a
+//! spec-only unit test cannot catch.
 //!
 //! `tests/fixtures/rollback_session_lua_reference.txt` is the captured
 //! stdout of running the real Lua `sim/rollback_session.lua` under headless
@@ -34,8 +35,8 @@
 //! twice for ticks 15–19: once from the stale predicted timeline (`pre.*`)
 //! and once from the corrected resimulation (`post.*`). The two disagree in
 //! the fixture (a real, self-correcting divergence, not a no-op), so this
-//! also proves the Rust port lands on the *new* bits, not merely on *some*
-//! stable bits.
+//! also proves this Rust implementation lands on the *new* bits, not merely
+//! on *some* stable bits.
 
 use gc_sim::input_frame::{self, InputSampleOptions};
 use gc_sim::r#match::{self as sim_match, NewMatchOptions};
@@ -77,8 +78,9 @@ fn expect<'a>(reference: &IndexMap<&'a str, &'a str>, key: &str) -> &'a str {
 /// unsized until the first marking-assignment pass; `home` specifically
 /// stays empty for the entire multi-second kickoff hold this fixture's
 /// scripted scenario runs inside, confirmed against a real trace). This is
-/// therefore not a simulation difference the port needs to reproduce, only
-/// a fixed-length-`Vec`-versus-sparse-table representational gap this
+/// therefore not a simulation difference this Rust implementation needs to
+/// reproduce, only a fixed-length-`Vec`-versus-sparse-table representational
+/// gap this
 /// harness closes itself: pad both sides out to `player_count` with `None`
 /// before every hash, so the wire bytes agree with what Lua's positional
 /// read already produces.

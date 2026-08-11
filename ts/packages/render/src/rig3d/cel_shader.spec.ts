@@ -6,27 +6,26 @@
 // during program compilation, and this suite calls it directly the same way,
 // against three's own unmodified template rather than a hand-copied stand-in.
 //
-// WHAT THIS CANNOT CATCH (see player_renderer_3d.ts's port report): whether
-// the generated GLSL actually LINKS, whether the toon bands/rim/specular
-// look correct once rasterised, or whether `viewMatrix`/`cameraPosition`/
-// `normal`/`vViewPosition`/`diffuseColor`/`reflectedLight` resolve the way
-// this module assumes at the injection point for every three.js version this
-// package might run under. This suite pins three things a live-GL check
-// cannot easily pin down instead: the four target chunks genuinely get
-// removed (not merely "some replace ran"), the ported numbers are the exact
-// numbers rig3d/renderer.lua's SHADER_SOURCE used, and each shading family
-// produces a distinct, deterministic string (so a program-cache collision
-// between families would show up here as one).
+// WHAT THIS CANNOT CATCH: whether the generated GLSL actually LINKS, whether
+// the toon bands/rim/specular look correct once rasterised, or whether
+// `viewMatrix`/`cameraPosition`/`normal`/`vViewPosition`/`diffuseColor`/
+// `reflectedLight` resolve the way this module assumes at the injection
+// point for every three.js version this package might run under. This suite
+// pins three things a live-GL check cannot easily pin down instead: the four
+// target chunks genuinely get removed (not merely "some replace ran"), the
+// constants below are the exact numbers this shading uses, and each shading
+// family produces a distinct, deterministic string (so a program-cache
+// collision between families would show up here as one).
 
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
 import { applyCelShading, applyCombinedCelShading, ELEVATION, SHADING_EYE, SHADING_EYE_DISTANCE, SHADING_NORMAL_VARYING, SHADING_WORLD_VARYING, shadingFrameVertexChunk, BAND_HIGH, BAND_HIGH_THRESHOLD, BAND_LOW, BAND_MID, BAND_MID_THRESHOLD, BOUNCE_SCALE, CEL_SHADING_TARGET_INCLUDES, EMISSIVE_BASE, EMISSIVE_FACING_SCALE, LIGHT_DIR, RIM_METAL_MIX_HIGH, RIM_METAL_MIX_LOW, RIM_POWER, RIM_SMOOTH_HIGH, RIM_SMOOTH_LOW, shaderChunkFor, shaderChunkForCombined, SPEC_POWER, SPEC_SCALE, SPEC_SMOOTH_HIGH, SPEC_SMOOTH_LOW } from "./cel_shader.ts";
 
-// rig3d/renderer.lua's SHADER_SOURCE, PIXEL stage -- the numbers this file
-// ports. Kept here as a second, independent statement of the same nine
-// numbers (rather than importing the module's own constants for the
-// expectation) so a typo introduced in cel_shader.ts's exported constants
-// would still be caught, not just echoed back at itself.
+// The reference numbers this file's shading constants must match. Kept here
+// as a second, independent statement of the same nine numbers (rather than
+// importing the module's own constants for the expectation) so a typo
+// introduced in cel_shader.ts's exported constants would still be caught,
+// not just echoed back at itself.
 describe("cel_shader ported constants match rig3d/renderer.lua's SHADER_SOURCE", () => {
   it("bands: ndl > 0.55 -> 1.0, ndl > 0.12 -> 0.72, else 0.42", () => {
     expect(BAND_HIGH_THRESHOLD).toBe(0.55);
@@ -101,7 +100,7 @@ describe("cel_shader.shaderChunkFor", () => {
   });
 
   it("metal's rim reads mix(0.55, 1.05, 1.0) -- plain's reads mix(0.55, 1.05, 0.0)", () => {
-    // The Lua's `mix(0.55, 1.05, u_metal)` term: this is the one place the
+    // The `mix(0.55, 1.05, u_metal)` term: this is the one place the
     // plain/metal split shows up OUTSIDE the specular block itself.
     expect(shaderChunkFor("plain")).toContain("mix( 0.55, 1.05, 0.0 )");
     expect(shaderChunkFor("metal")).toContain("mix( 0.55, 1.05, 1.0 )");
@@ -287,9 +286,10 @@ describe("cel_shader shading frame", () => {
   it("flips two-sided normals by N.V, not by gl_FrontFacing (which the two hosts disagree about)", () => {
     const chunk = shaderChunkFor("plain");
     expect(chunk).toContain("if ( dot( gcNormal, gcViewDir ) < 0.0 )");
-    // The Lua's own spelling. It does not port: three.js flips the raster
-    // front-face convention for pitch.ts's mirrored wrapper and LÖVE does not,
-    // so copying this line leaves every visible fragment inward-facing.
+    // The original renderer's own spelling does not carry over unmodified:
+    // three.js flips the raster front-face convention for pitch.ts's
+    // mirrored wrapper and the original renderer's convention did not, so
+    // copying this line leaves every visible fragment inward-facing.
     expect(chunk).not.toContain("gl_FrontFacing");
   });
 
@@ -298,8 +298,8 @@ describe("cel_shader shading frame", () => {
     expect(SHADING_EYE.x).toBeCloseTo(0, 12);
     expect(SHADING_EYE.y).toBeCloseTo(Math.sin(ELEVATION) * 24, 12);
     expect(SHADING_EYE.z).toBeCloseTo(Math.cos(ELEVATION) * 24, 12);
-    // Distant on purpose, per the Lua: a unit-length eye next to a ~1.8 unit
-    // figure swings the view direction between the feet and the head.
+    // Distant on purpose: a unit-length eye next to a ~1.8 unit figure
+    // swings the view direction between the feet and the head.
     expect(SHADING_EYE.length()).toBeGreaterThan(10);
   });
 
@@ -360,7 +360,7 @@ describe("cel_shader shading frame", () => {
       .compose(new THREE.Vector3(640, 400, 0.5), new THREE.Quaternion(), new THREE.Vector3(ppm, -ppm, 0.05))
       .multiply(new THREE.Matrix4().makeRotationFromQuaternion(rotation));
 
-    // Ground truth: the yaw alone, which is rig3d/renderer.lua's `u_model`.
+    // Ground truth: the yaw alone, which is the shading frame's model.
     const yawOnly = new THREE.Matrix4().makeRotationY(yaw);
 
     let crushed = 0;

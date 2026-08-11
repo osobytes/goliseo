@@ -1,4 +1,4 @@
-//! Port of `spec/sim/slot_input_spec.lua`.
+//! Tests for `gc_sim::slot_input`.
 
 use gc_core::vec2::Vec2;
 use gc_sim::input_frame::{
@@ -78,7 +78,7 @@ fn copy_slots(s: &MatchState) -> Vec<Option<i64>> {
 
 /// `MatchPlayer.team` (`match_snapshot::Team`) and `InputSlot.team`
 /// (`input_frame::Team`) are deliberately separate enums (one per module,
-/// per README rule 6); this is the same-side comparison the Lua original
+/// per ARCHITECTURE.md §3 rule 4); this is the same-side comparison the Lua original
 /// gets for free from a shared `"home"|"away"` string.
 fn same_side(player_team: Team, slot_team: input_frame::Team) -> bool {
     matches!(

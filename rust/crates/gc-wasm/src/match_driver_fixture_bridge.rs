@@ -3,15 +3,14 @@
 //!
 //! ## `session`'s transports: a real in-process star, not a stub
 //!
-//! The Lua/Rust fixture's `session` builds a fully connected in-process star
-//! (`gc_netcode::fake_star::FakeStarTransport`, itself a port of
-//! `game/transport/fake_star.lua` kept in `gc-netcode` only because
-//! `match_driver_fixture.rs` needs a real transport to link — see that
-//! module's own doc) — one host endpoint plus one linked guest endpoint per
-//! seated guest. [`WasmFakeStarTransport`] wraps that real type, delegating
-//! every `StarTransportAdapter` operation straight through rather than
-//! reimplementing the fixture's networking, exactly the discipline this
-//! crate's doc names for [`crate::match_driver_bridge`] reusing
+//! The fixture's `session` builds a fully connected in-process star
+//! (`gc_netcode::fake_star::FakeStarTransport`, kept in `gc-netcode` only
+//! because `match_driver_fixture.rs` needs a real transport to link — see
+//! that module's own doc) — one host endpoint plus one linked guest endpoint
+//! per seated guest. [`WasmFakeStarTransport`] wraps that real type,
+//! delegating every `StarTransportAdapter` operation straight through rather
+//! than reimplementing the fixture's networking, exactly the discipline
+//! this crate's doc names for [`crate::match_driver_bridge`] reusing
 //! `DriverRules` verbatim.
 //!
 //! It does **not** literally implement TypeScript's `StarTransportAdapter`
@@ -341,7 +340,7 @@ pub(crate) fn star_diagnostics_to_json(diagnostics: &TransportStarDiagnostics) -
 /// Cheap `Clone`-backed handle, like the wrapped type itself: obtained from
 /// [`WasmMatchDriverFixtureSession::host_transport`]/
 /// [`WasmMatchDriverFixtureSession::guest_transport`], never constructed
-/// directly — a standalone, unlinked star is not a fixture this port needs
+/// directly — a standalone, unlinked star is not a fixture this crate needs
 /// to expose.
 #[wasm_bindgen]
 pub struct WasmFakeStarTransport {

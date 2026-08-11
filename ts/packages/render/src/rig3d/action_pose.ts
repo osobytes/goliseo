@@ -628,7 +628,7 @@ const ATTITUDES: Readonly<Record<string, AttitudeSpec>> = {
   //      unmoved, which is a rounded spine and therefore limb work this
   //      root-only file cannot express. What is here is the part of the
   //      billboard's reading that ports; the part that carried it does not.
-  //   2. NEVER SEEN LIVE. A hardware-GL run of `v2/tools/browser_match_harness`
+  //   2. NEVER SEEN LIVE. A hardware-GL run of `tools/browser_match_harness`
   //      at seed 7, ~18000 ticks, tallied every other pose id in this table --
   //      `contain` 1789 slot-frames, `settle` 1180, `kick_follow` 469 -- and
   //      observed `fatigue` ZERO times. So this entry is verified in tests and

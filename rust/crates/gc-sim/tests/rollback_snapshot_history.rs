@@ -1,13 +1,12 @@
-//! Port of `spec/sim/rollback_snapshot_history_spec.lua`.
+//! Tests for `gc_sim::rollback_snapshot_history`.
 //!
-//! `sim/match.lua` is not ported yet (`gc_sim::r#match` is a placeholder), so
-//! every fixture here builds a `MatchState` directly through
-//! `match_snapshot`'s public types — the same "minimal MatchState-shaped
-//! fixture" pattern `tests/match_snapshot_differential.rs`'s `base_state`
-//! uses, and the one the porting brief calls out for `metrics`/`bot`. No
-//! test in the original spec drives a real `rollback_session` (that module
-//! is intentionally not ported here either — it needs `sim/match.lua` too),
-//! so every case in this file ports without an `#[ignore]`.
+//! Every fixture here builds a `MatchState` directly through
+//! `match_snapshot`'s public types rather than via `gc_sim::r#match::new` —
+//! a hand-built minimal roster instead of real team data, the same
+//! "minimal MatchState-shaped fixture" pattern
+//! `tests/match_snapshot_differential.rs`'s `base_state` uses. No test in
+//! this file drives a real `rollback_session`; that state machine is
+//! exercised in its own `tests/rollback_session.rs`.
 
 use gc_core::vec2::Vec2;
 use gc_data::tactics::{MarkingConfig, MarkingScheme, TransitionConfig};
@@ -467,8 +466,8 @@ fn rollback_snapshot_history_updates_byte_accounting_and_invalidates_replaced_la
     let initial_bytes = match_snapshot::encode(&initial).len() as i64;
     let first = rollback_snapshot_history::store(&mut history, &initial).unwrap();
     assert!(!first.replaced);
-    // Capacity 1: the ring's sole 0-based slot is index 0 (README rule 5.3;
-    // the Lua original peeked its 1-based equivalent `_entries[1]`).
+    // Capacity 1: the ring's sole 0-based slot is index 0 (ARCHITECTURE.md
+    // §3 rule 3).
     assert_eq!(history.entries[0].as_ref().unwrap().canonical_wire, None);
     assert_eq!(
         rollback_snapshot_history::diagnostics(&history).canonical_bytes,
@@ -569,9 +568,9 @@ fn rollback_snapshot_history_rejects_malformed_missing_and_outside_floor_truncat
         missing.unwrap_err().code,
         gc_sim::rollback_snapshot_history::RollbackSnapshotHistoryErrorCode::Missing
     );
-    // Lua's fractional `6.5` malformed case has no Rust equivalent (`i64`
-    // cannot be fractional, README rule 9); an out-of-range tick exercises
-    // the same `Malformed` branch instead.
+    // A fractional tick (e.g. `6.5`) cannot be constructed here at all
+    // (`i64` cannot be fractional); an out-of-range tick exercises the same
+    // `Malformed` branch instead.
     let malformed = rollback_snapshot_history::truncate_after(&mut history, -1);
     assert_eq!(
         malformed.unwrap_err().code,

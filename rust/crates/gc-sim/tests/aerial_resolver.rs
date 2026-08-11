@@ -1,16 +1,15 @@
-//! Port of `spec/sim/aerial_resolver_spec.lua`.
+//! Tests for `gc_sim::aerial`'s resolver logic in isolation.
 //!
-//! Nothing here needs the unported `gc_sim::r#match`: every case builds an
-//! `AerialContext` directly, exactly like the Lua spec's own `context()`
-//! helper, and calls `aerial::best_contact`/`resolve`/`claim_score` in
-//! isolation.
+//! Nothing here needs `gc_sim::r#match`: every case builds an
+//! `AerialContext` directly and calls
+//! `aerial::best_contact`/`resolve`/`claim_score` in isolation.
 
 use gc_core::vec2::Vec2;
 use gc_sim::aerial::{self, AerialContext, AerialIntent, AerialStyle};
 use gc_sim::stats;
 
-/// Mirrors the Lua spec's `context(overrides)` helper: every field has the
-/// same default, callers override only what the case cares about.
+/// Every field has the same default; callers override only what the case
+/// cares about.
 struct ContextBuilder {
     ball_pos: Vec2,
     ball_vel: Vec2,

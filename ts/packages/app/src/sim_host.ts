@@ -1,12 +1,12 @@
 // The per-frame glue tying `@gc/wasm` (the compiled simulation), `@gc/render`
 // (frame decode + presentation types) and `@gc/input` (captured player
 // intent) into one port: `SimHostPort`. `@gc/screens`' match screen consumes
-// this port via injection -- it must not import `@gc/wasm` directly (v2/
-// README.md's file-mapping table puts `game/screens/**` in `packages/screens`,
-// which must not depend on `packages/app`; this module lives in `packages/app`
+// this port via injection -- it must not import `@gc/wasm` directly
+// (`@gc/screens` must not depend on `@gc/app`, per ARCHITECTURE.md §1's
+// package-ownership table; this module lives in `packages/app`
 // specifically so the dependency runs the right way).
 //
-// ## Memory-view invalidation (v2/README.md's determinism-line doc; see
+// ## Memory-view invalidation (ARCHITECTURE.md §1's determinism-line argument; see
 // `crates/gc-wasm/src/render_export.rs` and `packages/wasm/src/index.ts`)
 //
 // `SimHost.buildRenderFrame` (from `@gc/wasm`) returns a `Float64Array` VIEW
@@ -78,7 +78,7 @@ export interface SimHostPort {
    * Plan how many fixed ticks this render update should simulate, given
    * `dt` seconds elapsed since the last call -- delegates to
    * `gc_sim::fixed_clock`'s accumulator/catch-up/drop policy
-   * (v2/README.md §2.1) via the wasm session's `FixedClock`, so this
+   * (ARCHITECTURE.md §1: only Rust can change simulation state) via the wasm session's `FixedClock`, so this
    * decision has exactly one implementation, in Rust. Call once per render
    * update, then call `step` up to that many times, in order.
    */
@@ -145,8 +145,8 @@ export interface SimHostPort {
 // `SimSession.step` (see `@gc/wasm`) takes a canonical `gc_sim::input_frame`
 // wire string covering all eight canonical slots
 // (`version|tick|move_x,move_y,held,edges|...`, one group per slot) --
-// v2/README.md's own slot-mode doc (`crates/gc-wasm/src/session.rs`'s
-// header). `SimHostPort.step`, by contract, takes exactly one `InputSample`.
+// see `crates/gc-wasm/src/session.rs`'s
+// header, which documents the slot-mode format. `SimHostPort.step`, by contract, takes exactly one `InputSample`.
 // This wave's sim host is a LOCAL single-controlled-slot host: the given
 // sample drives one canonical slot (`SimHostOptions.localSlot`, default 1 --
 // home outfield slot 1) and every other slot stays neutral. See this file's

@@ -26,7 +26,7 @@ use std::fmt::Write as _;
 /// A JSON value. `Object` is an ordered `Vec` of pairs, never a map — this
 /// crate's own workspace lint denies hash-map types, and object key order is
 /// preserved on the wire the same way `gc_netcode::protocol::Value::Table`
-/// preserves table order (README rule 5.4).
+/// preserves table order (ARCHITECTURE.md §3 rule 4).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Json {
     /// JSON `null`.
@@ -95,19 +95,18 @@ impl Json {
     /// [`Json::obj`], but a pair whose value is [`Json::Null`] is dropped
     /// from the object entirely rather than written as `"key":null`.
     ///
-    /// Use this for a field that mirrors an `Option<T>`/`t[k] = nil` on the
-    /// Lua side, where "absent" is the actual wire contract: Lua's
-    /// `t[k] = nil` deletes the key outright, so a Lua caller reading that
-    /// table sees the key missing, never present with a `nil` value. This
-    /// crate's `Json::opt_int`/`Json::opt_str` (and any `Option`-shaped field
-    /// built by hand with `.map_or(Json::Null, ...)`) previously encoded that
-    /// same "absent" case as an explicit JSON `null`, which round-trips
-    /// through `JSON.parse` as JS `null` — a value `!== undefined`, so a
-    /// caller checking `field !== undefined` (the natural TypeScript
-    /// spelling of "this optional field is present") sees a stray `null` and
-    /// crashes dereferencing it. That is the same class of bug this port
-    /// already fixed once for `gc_netcode::protocol::Value::Nil` stored as a
-    /// present table field — see `coordinator_bridge.rs`'s `value_to_json`.
+    /// Use this for a field where "absent" is the actual wire contract for an
+    /// `Option<T>`: the key should be missing entirely, not present with a
+    /// `null` value. This crate's `Json::opt_int`/`Json::opt_str` (and any
+    /// `Option`-shaped field built by hand with `.map_or(Json::Null, ...)`)
+    /// previously encoded the `None` case as an explicit JSON `null`, which
+    /// round-trips through `JSON.parse` as JS `null` — a value
+    /// `!== undefined`, so a caller checking `field !== undefined` (the
+    /// natural TypeScript spelling of "this optional field is present") sees
+    /// a stray `null` and crashes dereferencing it. That is the same class
+    /// of bug already fixed once for `gc_netcode::protocol::Value::Nil`
+    /// stored as a present table field — see `coordinator_bridge.rs`'s
+    /// `value_to_json`.
     /// Use [`Json::obj`] instead when `null` genuinely is a meaningful,
     /// present value on the wire (e.g. round-tripping a real
     /// `protocol::Value::Nil` payload) rather than a stand-in for "this
@@ -225,7 +224,7 @@ impl Json {
 
     /// Parses `text` as JSON. Returns `Err` for anything malformed — this is
     /// external input crossing the wasm boundary, so a parse failure is an
-    /// expected, recoverable error (README rule 5.5), never a panic.
+    /// expected, recoverable error (ARCHITECTURE.md §3 rule 5), never a panic.
     pub fn parse(text: &str) -> Result<Json, String> {
         let mut parser = Parser {
             bytes: text.as_bytes(),

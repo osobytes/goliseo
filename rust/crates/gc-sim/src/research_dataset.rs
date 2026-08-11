@@ -1,5 +1,3 @@
-//! Port of `sim/research_dataset.lua`.
-//!
 //! Dataset, split, and lineage manifests.
 //!
 //! A dataset manifest is the only artifact allowed to claim "these rows are
@@ -23,8 +21,8 @@
 //! Like [`crate::research_session`], every manifest here is a
 //! [`research_schema::Value`] built and read through small private field
 //! helpers, never a bespoke Rust struct — see that module's doc comment for
-//! the rationale this file follows. README rule 4 (never `HashMap`/
-//! `HashSet`) means every membership/coverage set below is a `Vec`, checked
+//! the rationale this file follows. ARCHITECTURE.md §3 rule 4 (never
+//! `HashMap`/`HashSet`) means every membership/coverage set below is a `Vec`, checked
 //! with linear scans; these sets are small (participants and builds per
 //! split, not per match tick) and never hashed or serialized themselves, so
 //! this costs nothing on any hot path.

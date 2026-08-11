@@ -1,19 +1,10 @@
-//! Port of `spec/render/outfield_pose_spec.lua`.
+//! Tests outfield pose projection: `player_pose::select`, driven directly
+//! for the seven contract poses below.
 //!
-//! The Lua spec has five `t.describe` blocks. Only the first
-//! ("outfield pose projection") exercises `render.player_pose.select`
-//! directly, and only its first seven `t.it` cases (this file's tests
-//! below); its eighth case ("draws all seven contract poses with distinct
-//! procedural geometry") drives `game/render/player_renderer.lua` through a
-//! stubbed `love.graphics`.
-//!
-//! The remaining four `t.describe` blocks — "outfield release
-//! follow-through", "outfield pose pitch projection", "outfield poses
-//! through the goal replay buffer", "outfield follow-through driven by the
-//! simulation", "outfield contain against the counter-press window" — all
-//! drive `game/render/release_follow.lua`, `game/render/pitch.lua`,
-//! `game/render/replay.lua` and `game/render/player_renderer.lua` through a
-//! stubbed `love.graphics`. All of those are TypeScript in this port
+//! Other outfield pose behavior — release follow-through, pitch projection,
+//! poses through the goal replay buffer, follow-through driven by the
+//! simulation, contain against the counter-press window, and drawing all
+//! seven contract poses with distinct procedural geometry — is TypeScript
 //! (`@gc/render`), covered by that package's own spec.
 
 use gc_data::teams;
@@ -61,8 +52,7 @@ const POSES: [PlayerPoseId; 7] = [
 /// committed-combat band lives here; the combat band itself is
 /// `player_pose`'s own concern (see `tests/keeper_pose.rs` and
 /// `tests/combat_presentation.rs` for the combat-adjacent cases), asserted
-/// separately so the two contracts stay visibly independent — matching the
-/// Lua spec's own split.
+/// separately so the two contracts stay visibly independent.
 const PRIORITY_ORDER: [PlayerPoseId; 10] = [
     PlayerPoseId::SoccerWindup,
     PlayerPoseId::Slide,

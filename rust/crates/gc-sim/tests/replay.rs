@@ -1,9 +1,8 @@
-//! Port of `spec/sim/replay_spec.lua`.
+//! Tests for `gc_sim::replay`.
 //!
-//! `spec/fixtures/short_match_tape.lua` is a Lua spec-support fixture, not
-//! a spec itself; `short_match_tape` below reproduces its `make()` (same
-//! seed, same frames, same pinned `EXPECTED_BOUNDARY_HASHES`) as a local
-//! test helper, per README §4's "translate the harness" guidance.
+//! `short_match_tape` below builds a known-good fixture (a fixed seed, fixed
+//! frames, and the pinned `EXPECTED_BOUNDARY_HASHES`) as a local test
+//! helper.
 //!
 //! Every `match_snapshot::capture` call in this file is preceded by the
 //! same `normalize_marks` compensating step documented at length in
@@ -11,14 +10,12 @@
 //! contract mismatch, not owned by this file) — see that doc comment for
 //! the full report.
 //!
-//! A handful of Lua assertions here use `rawset`/duck typing to construct a
-//! table that has an extra field, a missing field, or a field of the wrong
-//! Lua type (a `false` where a string is expected, `nil` where a table is
-//! required). None of those are constructible in Rust's static type system
-//! — the compiler enforces the same invariant more strongly than the
-//! runtime check did. Each dropped case is called out at its site with the
-//! same reasoning `input_frame.rs`'s module doc already established for
-//! this crate.
+//! Some malformed-shape cases are not exercised here: constructing a value
+//! with an extra field, a missing field, or a field of the wrong type is
+//! not possible in Rust's static type system — the compiler enforces the
+//! same invariant more strongly than a runtime check could. Each omitted
+//! case is called out at its site with the same reasoning `input_frame.rs`'s
+//! module doc already established for this crate.
 
 use gc_core::vec2::Vec2;
 use gc_data::action_families::ActionFamilyId;
@@ -443,10 +440,6 @@ fn input_tape_replay_rejects_identity_and_active_tuning_mismatches_separately() 
 fn input_tape_replay_rejects_identity_before_simulation_aware_tape_validation() {
     let tune = Tuning::new();
     let (mut tape, identity) = short_match_tape();
-    // Lua's `tape.frames[4] = ...` on a 3-element table appends a 4th
-    // element (Lua tables grow on assignment past their length); the
-    // faithful Rust translation is `push`, not an index assignment (the
-    // Vec has no index 3 yet).
     tape.frames
         .push(input_frame::neutral(3).expect("canonical frame"));
     tape.boundary_hashes.push(
@@ -468,13 +461,11 @@ fn input_tape_replay_rejects_identity_before_simulation_aware_tape_validation() 
     assert_eq!(tune_mismatch.code, ReplayFailureCode::IdentityMismatch);
     assert_eq!(tune_mismatch.path.as_deref(), Some("identity.tuning"));
 
-    // The Lua spec also drops the `identity` field entirely via
-    // `rawset(missing_identity, "identity", nil)` and confirms `replay.run`
-    // reports "malformed" rather than crashing. `InputTape::identity` is a
-    // non-optional `InputTapeIdentity` field in Rust — there is no way to
-    // construct a tape without one — so that case is compile-time
-    // impossible here rather than a runtime check, same reasoning as
-    // `input_frame.rs`'s dropped `assert_fields` checks.
+    // Constructing a tape with no `identity` at all is not tested here:
+    // `InputTape::identity` is a non-optional `InputTapeIdentity` field in
+    // Rust, so there is no way to build a tape without one. That case is a
+    // compile-time impossibility here rather than a runtime check, the same
+    // reasoning as `input_frame.rs`'s dropped `assert_fields` checks.
 }
 
 #[test]
@@ -533,9 +524,9 @@ fn input_tape_replay_diagnoses_a_changed_keeper_behavior_state_before_any_causal
     let divergence = compared.divergence.expect("a divergence was found");
     assert_eq!(divergence.causal_input_tick, None);
     assert_eq!(divergence.boundary_tick, 0);
-    // `match_snapshot`'s diff paths use the same 1-based player index the
-    // Lua original's `ipairs` produces (this is a diagnostic string, not a
-    // wire value — README rule 3 does not apply to it).
+    // `match_snapshot`'s diff paths use a 1-based player index (this is a
+    // diagnostic string, not a wire value — ARCHITECTURE.md §3 rule 3 does
+    // not apply to it).
     assert_eq!(divergence.state_path, "state.players.1.keeper_state");
 }
 
@@ -595,9 +586,6 @@ fn input_tape_replay_rejects_ownership_detached_from_the_initial_snapshot_and_po
     assert_eq!(detached.code, ReplayFailureCode::Malformed);
 
     let (complete, complete_identity) = short_match_tape();
-    // Lua's `frames[4] = ...`/`complete.frames[4] = ...` on 3-element
-    // tables append a 4th element; see the identical note in
-    // `input_tape_replay_rejects_identity_before_simulation_aware_tape_validation`.
     let mut frames = copy_frames(&complete);
     frames.push(input_frame::neutral(3).expect("canonical frame"));
     assert!(

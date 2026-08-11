@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Profile the v2 browser app's frame loop and attribute its frame drops.
+"""Profile the browser app's frame loop and attribute its frame drops.
 
 ## Status
 
@@ -13,19 +13,19 @@ cheap regression check that the cache is still doing its job.
 
 ## What this answers, and why the existing tooling could not
 
-`scripts/browser_render_bench.py` compares Lua-vs-v2 THROUGHPUT on a fixed
-render fixture and reads back percentiles each fixture computes itself. It is
+`scripts/browser_render_bench.py` reports render THROUGHPUT on a fixed
+render fixture and reads back percentiles that fixture computes itself. It is
 a comparison harness, not a diagnostic: it cannot say *why* a particular frame
 was late, and it does not drive the real app shell at all.
 
-The match harness (`v2/tools/browser_match_harness`) reports
+The match harness (`tools/browser_match_harness`) reports
 `simMs`/`decodeMs`/`populateMs`/`renderMs`, but as MEANS over a rolling
 window -- the one statistic guaranteed to hide a drop, since a drop is a tail
 event. It also deliberately assembles the scene TWICE per frame (see that
 file's own note on splitting `populate` from `render`), so its absolute
 numbers are not the product's.
 
-So this script drives the PRODUCT entry (`v2/ts/packages/app/src/
+So this script drives the PRODUCT entry (`ts/packages/app/src/
 browser_main.ts`) and collects three independent signals, because no single
 one of them localises a drop on its own:
 
@@ -53,11 +53,10 @@ neither is a guess.
 
 Same pinned-asset resolution, same hardware-GL Chrome invocation
 (`--use-gl=angle --use-angle=gl-egl --ignore-gpu-blocklist`, verified in this
-environment to reach the real GPU with no DISPLAY), same bounded launch and
-teardown imported from `browser_determinism` rather than reimplemented. The
-one real departure is that this script needs CDP, so it uses
-`execute_cdp_cmd` -- unavailable for Firefox, which is why this script is
-Chrome-only and says so rather than silently degrading.
+environment to reach the real GPU with no DISPLAY). The one real departure is
+that this script needs CDP, so it uses `execute_cdp_cmd` -- unavailable for
+Firefox, which is why this script is Chrome-only and says so rather than
+silently degrading.
 
 ## Driving the app to a match
 
@@ -405,7 +404,7 @@ def summarise_trace(events: list[dict[str, Any]]) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--url", default=DEFAULT_URL, help="dev-server URL of the v2 app (default %(default)s)")
+    parser.add_argument("--url", default=DEFAULT_URL, help="dev-server URL of the app (default %(default)s)")
     parser.add_argument("--seconds", type=float, default=25.0, help="profile duration (default %(default)s)")
     parser.add_argument("--gpu-mode", choices=("hardware", "software"), default="hardware")
     parser.add_argument("--window", default="1600x900", help="browser window size (default %(default)s)")

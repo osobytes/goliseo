@@ -1,34 +1,22 @@
-//! Port of `sim/metrics.lua`.
-//!
 //! Fun-proxy metrics: fold a running match into the per-match numbers that
 //! `docs/design/fun_metrics.md` bands and scores. Pure observer — reads
 //! match state after each step, never mutates it.
 //!
-//! The Lua original takes a `MatchState` duck-typed table (defined by
-//! `sim/match.lua`) and reads a runtime-tunable knob off a shared global
-//! (`local TUNE = require("sim.tuning").values`). Neither survives
-//! mechanically:
+//! - This module never depends on [`crate::r#match`] directly, and
+//!   `tests/metrics.rs` never builds a real `MatchState` either — it
+//!   hand-builds a minimal MatchState-shaped value: enough surface for the
+//!   collector. [`MetricsMatchView`] and [`MetricsPlayerView`] are that same
+//!   minimal surface, typed. `crate::headless::to_metrics_view` adapts a
+//!   real [`crate::match_snapshot::MatchState`] into one.
 //!
-//! - This module never `require`s `sim/match.lua` and `metrics_spec.lua`
-//!   never builds a real `MatchState` either — it hand-builds a "minimal
-//!   MatchState-shaped table: enough surface for the collector."
-//!   [`MetricsMatchView`] and [`MetricsPlayerView`] are that same minimal
-//!   surface, typed. `crate::headless::to_metrics_view` adapts a real
-//!   [`crate::match_snapshot::MatchState`] into one.
-//!
-//!   These were named `MatchStateView`/`MatchPlayerView` before README
-//!   §5.1's resolution: `crate::bot` declared an unrelated, differently
-//!   shaped pair under the same names, and `crate::aerial`'s (also
-//!   differently shaped) third copy needed nearly the whole canonical
-//!   `MatchState` and was folded onto `match_snapshot`'s real types instead
-//!   (end state 1). This module's view stays genuinely narrow — a fun-proxy
-//!   observer has no business seeing keeper release timers or tactic state
-//!   — so it survives (end state 2), renamed to stop colliding with
-//!   `crate::bot`'s equally narrow but differently shaped view.
-//! - AGENTS.md §3 forbids stray global mutable state, and this crate's port
-//!   of `sim/tuning.lua` ([`crate::tuning`]) is accordingly an owned value,
-//!   not a singleton (see that module's doc). [`observe`] therefore takes an
-//!   explicit `&Tuning` parameter where the Lua source closed over a global.
+//!   This module's view stays genuinely narrow — a fun-proxy observer has
+//!   no business seeing keeper release timers or tactic state — distinct
+//!   from `crate::bot`'s equally narrow but differently shaped
+//!   `BotMatchView`/`BotPlayerView`.
+//! - AGENTS.md §3 forbids stray global mutable state, so [`crate::tuning::Tuning`]
+//!   is an owned value, not a singleton (see that module's doc). [`observe`]
+//!   therefore takes an explicit `&Tuning` parameter rather than reading a
+//!   global.
 
 use crate::tuning::Tuning;
 use gc_core::vec2::Vec2;
@@ -104,14 +92,14 @@ pub struct MetricsPlayerView {
     /// Seconds remaining on an active dodge/juke.
     pub dodge_timer: f64,
     /// Live keeper behavior state; only meaningful when `is_keeper`. `None`
-    /// (Lua `nil`) falls back to [`KeeperState::Base`] for the time bucket.
+    /// falls back to [`KeeperState::Base`] for the time bucket.
     pub keeper_state: Option<KeeperState>,
 }
 
 /// One frame's match event, in the shape [`observe`] inspects. `kind` and
-/// `shot_type` stay open strings — `sim/match.lua` (not yet ported) owns the
-/// full event vocabulary; this collector only branches on a subset of it and
-/// ignores everything else, exactly like the Lua original's `elseif` chain.
+/// `shot_type` stay open strings — [`crate::r#match`] owns the full event
+/// vocabulary; this collector only branches on a subset of it and ignores
+/// everything else.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MetricsEventView {
     /// Event kind, e.g. `"pass"`, `"shot"`, `"catch"`, `"touch"`, `"juke"`.
@@ -145,7 +133,7 @@ pub struct MetricsMatchView {
     pub players: Vec<MetricsPlayerView>,
     /// Whether a human is controlling the `controlled` slot.
     pub human_controlled: bool,
-    /// Index (0-based; not a wire value, see README rule 5.3) of the
+    /// Index (0-based; not a wire value, see ARCHITECTURE.md §3 rule 3) of the
     /// human-controllable player.
     pub controlled: usize,
     /// Current score.
@@ -890,10 +878,9 @@ pub struct MetricStats {
     pub max: f64,
 }
 
-/// Per-key distribution stats over a batch of per-match metric maps (any
-/// maps with numeric fields — not tied to [`MatchMetrics`]'s shape, mirroring
-/// the Lua original's genericity). Keys missing from a given entry are
-/// excluded from that key's stats.
+/// Per-key distribution stats over a batch of per-match metric maps — any
+/// maps with numeric fields, not tied to [`MatchMetrics`]'s shape. Keys
+/// missing from a given entry are excluded from that key's stats.
 #[must_use]
 pub fn aggregate<'a>(list: &[IndexMap<&'a str, f64>]) -> IndexMap<&'a str, MetricStats> {
     let mut keys: Vec<&'a str> = Vec::new();

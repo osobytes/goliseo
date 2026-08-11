@@ -1,14 +1,12 @@
-// Ported from game/screens/settings.lua — the in-menu audio/video settings
-// screen. See squad.ts's header for the pure/impure seam and
-// content-injection rationale.
+// The in-menu audio/video settings screen. See squad.ts's header for the
+// pure/impure seam and content-injection rationale.
 //
-// `game/settings.lua` (`defaults`/`validate`) is `game/` root -> `@gc/app`,
-// not this package's to own, so it is injected as a `SettingsSource`
-// (content.ts), the same pattern `@gc/ui`'s `tuning_panel.ts` uses for
-// `TuningSource`. The Lua original re-validates through
-// `settings_model.validate` on every `update` call, purely to get an
-// independent clone before mutating; TypeScript's `update` never mutates
-// its input (see squad.ts et al.), so a plain object spread gives the same
+// `@gc/app`'s `settings.ts` (`defaults`/`validate`) is not this package's
+// to own, so it is injected as a `SettingsSource` (content.ts), the same
+// pattern `@gc/ui`'s `tuning_panel.ts` uses for `TuningSource`.
+// Re-validating on every `update` call would only be needed to get an
+// independent clone before mutating; `update` here never mutates its input
+// (see squad.ts et al.), so a plain object spread gives the same
 // clone-before-mutate guarantee without calling back into the injected
 // source on every keystroke. `validate` is therefore only needed once, at
 // `newState`, keeping `update`'s arity matching the pure `(state, event)`
@@ -126,8 +124,8 @@ function update(state: SettingsScreenState, event: FocusEvent): readonly [Settin
     return [next, { go: "back", settings: next.settings }];
   }
   if (event.kind === "action" && (event.action === "left" || event.action === "right")) {
-    // Matches the Lua original: the action fires even when `focus` is not
-    // an adjustable row (e.g. "back") — `adjust` is simply a no-op there.
+    // The action fires even when `focus` is not an adjustable row (e.g.
+    // "back") — `adjust` is simply a no-op there.
     if (isAdjustableKey(next.focus)) {
       next = { ...next, settings: adjust(next.settings, next.focus, event.action === "left" ? -0.1 : 0.1) };
     }
@@ -139,10 +137,10 @@ function update(state: SettingsScreenState, event: FocusEvent): readonly [Settin
   if (id === "back") {
     return [next, { go: "back", settings: next.settings }];
   } else if (id !== null) {
-    // Matches the Lua original: `adjust` is called (and no-ops) even for an
-    // activated id that is not one of the six adjustable rows — none exist
-    // in this screen's layout besides "back" (handled above), but the
-    // structure is kept identical rather than assumed.
+    // `adjust` is called (and no-ops) even for an activated id that is not
+    // one of the six adjustable rows — none exist in this screen's layout
+    // besides "back" (handled above), but the guard stays explicit rather
+    // than assumed.
     next = {
       ...next,
       focus: id,

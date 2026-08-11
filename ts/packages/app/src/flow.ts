@@ -1,14 +1,11 @@
-// Ported from game/flow.lua.
-//
 // Wires the pre-match screen sequence: Squad -> Formation -> Tactic -> Match.
 // Each menu reports an action; this router pushes the next screen and
 // carries the player's choices forward into the match.
 //
-// The Lua original's final step is `Match.new({formation, tactic})`
-// (`game.screens.match`), not yet ported to `@gc/screens` (this package's
-// porting report) -- injected as a `MatchScreenFactory` instead. Every
-// screen in `@gc/screens` now takes its content as an explicit `newState`
-// parameter (v2/README.md rule 6.7; see `menu.ts`'s header in that
+// The final step needs a concrete match screen, which this package does not
+// depend on directly -- injected as a `MatchScreenFactory` instead. Every
+// screen in `@gc/screens` takes its content as an explicit `newState`
+// parameter (ARCHITECTURE.md §4 rule 6; see `menu.ts`'s header in that
 // package), so `Flow.start` takes a `FlowContent` bundle for the same
 // reason `app.ts` does.
 
@@ -27,13 +24,13 @@ export interface FlowChoice {
   readonly tactic: string;
 }
 
-/** `game.screens.match.new`, injected -- see this file's header. */
+/** A concrete match screen constructor, injected -- see this file's header. */
 export type MatchScreenFactory = (choice: FlowChoice) => Screen;
 
 function asScreen<State extends { readonly viewport: Viewport }, Action>(menu: Menu<State, Action>): Screen {
   // See app.ts's `asMenu` for why this cast is safe: `Menu.draw` needs a
   // `@gc/ui` backend this milestone does not wire up, and nothing in this
-  // port's test coverage calls `draw`.
+  // package's test coverage calls `draw`.
   return menu as unknown as Screen;
 }
 

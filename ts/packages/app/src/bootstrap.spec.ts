@@ -1,16 +1,15 @@
-// Supplementary coverage for game/bootstrap.lua's own control flow, and for
-// spec/game/real_match_spec.lua's "real match adapter" describe block.
+// Coverage for `bootstrap.ts`'s own control flow, and for the "real match
+// adapter" describe block below.
 //
-// `game.screens.real_match`/`game.screens.match` are now ported
-// (`@gc/screens`'s `real_match.ts`/`match.ts`, `RealMatchScreen`/
-// `MatchScreen`/`MatchScreenAsRealMatchScreen`), and this batch's
+// `@gc/screens`'s `real_match.ts`/`match.ts` (`RealMatchScreen`/
+// `MatchScreen`/`MatchScreenAsRealMatchScreen`) exist, and this batch's
 // `real_match_factory.ts` wires them into a `RealMatchFactory` against an
 // INJECTED `createHost`/`renderer` seam specifically so a real
 // `RealMatchScreen` can be driven end to end here, against a hand-written
 // `FakeSimHost` (`test_support/fixtures.ts`, mirroring `@gc/screens`'s own
 // `match_screen.spec.ts` `FakeSimHost`), with no real wasm build or live GL
-// context needed. All four originally-skipped cases below are now unblocked
-// (the combat case joined two others in an earlier wave once
+// context needed. All four cases below that were originally skipped are now
+// unblocked (the combat case joined two others in an earlier wave once
 // `crates/gc-wasm/src/session.rs`'s `Session::new`/`step` grew a real combat
 // surface; the roster/formation/tactic/seed case is unblocked this wave, now
 // that the same constructor also grew `tactic`/`away_tactic`/
@@ -43,25 +42,20 @@ describe("bootstrap", () => {
   });
 });
 
-// spec/game/real_match_spec.lua's "real match adapter" describe block. The
-// Lua original's `RealMatch.new(request, callbacks)` builds its own
-// `sim.match` state and hands the spec direct read/write access to it
-// (`screen.match.state.players[1].id`, `screen.match.state.score.home = 2`,
-// ...) -- duck typing with no privacy, per that language. This port's
+// This block covers the "real match adapter" describe block.
 // `RealMatchScreenPort.state` (`real_match.ts`) is a narrow, explicitly
 // declared, READ-ONLY interface (`{time_left, score}`) by design (this
-// package's `real_match_factory.ts` header) -- there is no live `sim.match`
-// table to reach into at all, on either language's side of this milestone
-// (the sim itself lives in Rust; `MatchScreenAsRealMatchScreen` only ever
-// reads its host's decoded HUD). So this suite drives the same real classes
-// the Lua spec drove, through the seams THIS port's contract actually
-// exposes: a fake `SimHostPort`'s mutable `hud`, and `RealMatchScreen`'s own
-// `update`/`event`.
+// package's `real_match_factory.ts` header) -- there is no live
+// match-state table to reach into at all (the sim itself lives in Rust;
+// `MatchScreenAsRealMatchScreen` only ever reads its host's decoded HUD).
+// So this suite drives the real classes through the seams this package's
+// contract actually exposes: a fake `SimHostPort`'s mutable `hud`, and
+// `RealMatchScreen`'s own `update`/`event`.
 describe("real match adapter", () => {
   // "keeps the fake adapter available for isolated product-flow tests"
   // (`match_adapter.fake()/.real().kind`, no real match needed at all) is
-  // ported in match_adapter.spec.ts, not duplicated here -- see that file's
-  // header.
+  // covered in match_adapter.spec.ts, not duplicated here -- see that
+  // file's header.
 
   // Re-audited a third time this wave, against current code rather than the
   // prior pass's comment. `Session::new`'s wasm binding
@@ -79,19 +73,17 @@ describe("real match adapter", () => {
   // `RealMatchScreenPort.state` (`real_match.ts`, `@gc/screens`, out of
   // this batch's file ownership) stays deliberately narrowed to
   // `{time_left, score}` -- there is no route from an actual constructed
-  // `RealMatchScreen` to `players`/`press` the way the Lua original's
-  // `screen.match.state.players[1].id` reached in. So this proves the
-  // claim at the layer this package DOES own and control end to end: the
-  // exact parameters `real_match_factory.ts`'s injected `deps.createHost`
+  // `RealMatchScreen` to `players`/`press`. So this proves the claim at
+  // the layer this package DOES own and control end to end: the exact
+  // parameters `real_match_factory.ts`'s injected `deps.createHost`
   // closure receives from a `ProductMatchRequest` -- the same shape
   // `browser_main.ts`'s real call site now forwards (see that file's
   // `createHost` closure; it used to silently drop `formation_id`/
   // `tactic_id`/`home_starter_ids` entirely, forwarding only
   // `combat_enabled`) -- reach a real `createSimHost`-built session's
   // `matchStateJson()`/`snapshotHash()` correctly. `players[0]`/`players[1]`
-  // and `press.home` mirror the Lua original's `players[1]`/`players[2]`/
-  // `press.home` one-based-to-zero-based; `snapshotHash` stands in for the
-  // Lua original's `result.seed` check (that one is downstream of
+  // and `press.home` use zero-based array indexing; `snapshotHash` stands
+  // in for a direct `result.seed` check (that one is downstream of
   // `@gc/screens`'s own result-building, out of scope here) by proving
   // `seed` reaches the session deterministically.
   it("applies request roster, formation, tactic, and seed", () => {
@@ -198,9 +190,7 @@ describe("real match adapter", () => {
   // `MatchScreenOptions.combat_enabled` at all -- it silently dropped the
   // flag on every request, combat or not. That plumbing gap is now closed,
   // and `MatchScreen.debugCombatEnabled` (reached here through
-  // `RealMatchScreen.match`, mirroring how `Lua`'s
-  // `screen.match._combat_state` presence check worked) is this port's
-  // observable analog.
+  // `RealMatchScreen.match`) is the observable analog used here.
   //
   // What is STILL genuinely blocked, for a real reason rather than a stale
   // one: neither `@gc/wasm`'s `SimSession` nor `@gc/screens`'s `SimHostPort`

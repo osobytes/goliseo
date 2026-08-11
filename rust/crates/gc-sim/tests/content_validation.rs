@@ -1,20 +1,19 @@
-//! Port of `spec/sim/content_validation_spec.lua`.
+//! Tests for `gc_sim::content_validation`.
 //!
-//! The Lua original's `pcall(...)` around every rejection case catches a Lua
-//! `error()`/`assert()` failure; this port's `validate_catalog`/
-//! `validate_fixture` use `assert!` the same way (AGENTS.md §7 — authored
-//! content is a programmer-controlled invariant, not a recoverable runtime
-//! condition), so each `pcall` becomes `std::panic::catch_unwind`.
+//! `validate_catalog`/`validate_fixture` use `assert!` to reject invalid
+//! authored content (AGENTS.md §7 — authored content is a
+//! programmer-controlled invariant, not a recoverable runtime condition), so
+//! each rejection case below wraps the call in `std::panic::catch_unwind`.
 //!
-//! One Lua case ("rejects out-of-bounds family data and presentation-owned
-//! mechanics" > the `hidden_stat` sub-case) mutates a cloned presentation
-//! table with `rawset(..., "pace", 1)` to add a field the record's declared
-//! shape doesn't have, and expects `validate_catalog` to reject the
-//! resulting malformed table. A typed Rust `struct` cannot carry an
-//! undeclared extra field at all — the check that case exercises is
-//! structurally impossible to violate here, not merely already-passing — so
-//! only that one sub-case is dropped; the file's other two sub-cases
-//! (`long_interrupt`, `invalid_arc`) are ported and pass.
+//! One sub-case of "rejects out-of-bounds family data and presentation-owned
+//! mechanics" is deliberately not covered: adding an undeclared field (e.g.
+//! a stray `pace` field) to a presentation record, to check that
+//! `validate_catalog` rejects the resulting malformed data. A typed Rust
+//! `struct` cannot carry an undeclared extra field at all — the check that
+//! case would exercise is structurally impossible to violate here, not
+//! merely already-passing — so only that one sub-case is omitted; the
+//! file's other two sub-cases (`long_interrupt`, `invalid_arc`) are covered
+//! below and pass.
 
 use gc_data::action_families::ActionFamilyId;
 use gc_data::{
@@ -165,16 +164,13 @@ fn prototype_content_validation_rejects_wrong_team_size_unknown_roster_ids_and_r
 
 #[test]
 fn prototype_content_validation_rejects_sparse_squads_and_players_eligible_for_both_teams() {
-    // The Lua case sets `squad[7] = nil`, leaving a HOLE in the middle of a
-    // dense Lua array (index 7 of 8 goes missing while 8 stays present);
-    // `assert_dense_array` catches exactly that shape. A Rust `Vec` cannot
-    // hold such a hole — removing an element always yields a shorter, still
-    // dense, sequence — so there is no way to reproduce that specific
-    // structural violation. The closest faithful equivalent, preserving the
-    // assertion this case is really pinning ("a squad that stops covering a
-    // roster starter is rejected"), is to drop a STARTER from the squad
-    // (Lua's removed index happened to be a non-starter bench player, so
-    // this is a strictly stronger check of the same invariant).
+    // A Rust `Vec` cannot hold a hole (a missing middle index while a later
+    // index stays present) — removing an element always yields a shorter,
+    // still dense, sequence. The assertion this case is really pinning is
+    // "a squad that stops covering a roster starter is rejected", so it
+    // drops a STARTER from the squad directly, which is a strictly stronger
+    // check of the same invariant than removing an arbitrary bench player
+    // would be.
     let mut sparse_home = nebula();
     let starter = sparse_home.roster[4]; // "zyro_vex", a nebula starter
     sparse_home
@@ -227,6 +223,6 @@ fn prototype_content_validation_rejects_out_of_bounds_family_data_and_presentati
         content_validation::validate_catalog(&invalid_arc);
     }));
 
-    // The Lua case's third sub-case (`hidden_stat`, adding an undeclared
-    // field via `rawset`) has no Rust equivalent — see the module doc above.
+    // The undeclared-field sub-case (`hidden_stat`) has no Rust equivalent
+    // — see the module doc above.
 }

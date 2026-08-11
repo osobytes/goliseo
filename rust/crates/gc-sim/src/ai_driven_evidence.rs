@@ -29,7 +29,7 @@
 //! [`Digest::push_f64`].
 //!
 //! The field order and the field set are exactly the Lua capture's row layout
-//! (`v2/tools/lua_reference/capture_session_ai_driven_match.lua`), which is
+//! (`tools/lua_reference/capture_session_ai_driven_match.lua`), which is
 //! what lets `tests/ai_driven_evidence.rs` derive the expected digest FROM the
 //! Lua fixture rather than from another Rust run. Agreement here is therefore
 //! agreement with Lua directly, not transitively.
@@ -208,7 +208,7 @@ fn tick_input(b: &mut bot::BotState, s: &MatchState, tick: i64, tune: &Tuning) -
 }
 
 /// The reference match, built exactly as `game/screens/match.lua`'s
-/// `Match:restart` builds an ordinary one and as
+/// `Match:restart` built an ordinary one and as
 /// `crates/gc-wasm/src/session.rs` builds its live state: no
 /// `input_ownership`, no `human_controlled` override, default duration and
 /// goal limit.

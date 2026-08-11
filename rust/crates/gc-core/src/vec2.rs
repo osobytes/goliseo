@@ -6,14 +6,13 @@
 //! so its arithmetic feeds simulation state and must be bit-reproducible.
 //!
 //! `length` uses `sqrt`, which IEEE 754 specifies as correctly rounded, so it is
-//! exact on every conforming runtime. That is why the Lua original could use it
+//! exact on every conforming runtime. That is why it can be used directly
 //! on the determinism path while the transcendentals had to be routed through
 //! [`crate::deterministic_math`].
 
 /// An immutable 2D vector.
 ///
-/// Every operation returns a new value; nothing mutates in place, matching the
-/// Lua original.
+/// Every operation returns a new value; nothing mutates in place.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Vec2 {
     /// The horizontal component.
@@ -22,17 +21,17 @@ pub struct Vec2 {
     pub y: f64,
 }
 
-// The inherent `add`/`sub`/`scale` methods mirror the Lua call shape one to one,
-// so porting `a:add(b)` is mechanical and hard to get wrong. The operator traits
-// below give the same results for anyone who prefers `a + b`. Clippy objects to
-// inherent methods that shadow trait names; keeping both is the deliberate
-// trade, so the lint is silenced here rather than in the workspace config.
+// The inherent `add`/`sub`/`scale` methods give an explicit call shape
+// (`a.add(b)`) alongside the operator traits below, which give the same
+// results for anyone who prefers `a + b`. Clippy objects to inherent methods
+// that shadow trait names; keeping both is the deliberate trade, so the lint
+// is silenced here rather than in the workspace config.
 #[allow(clippy::should_implement_trait)]
 impl Vec2 {
     /// Construct a vector from its components.
     ///
-    /// The Lua `Vec2.new(x, y)` defaults missing arguments to zero; callers that
-    /// want that here use [`Vec2::default`] or pass `0.0` explicitly.
+    /// Callers that want a zero vector use [`Vec2::default`] or pass `0.0`
+    /// explicitly.
     #[must_use]
     pub const fn new(x: f64, y: f64) -> Self {
         Self { x, y }
@@ -58,9 +57,9 @@ impl Vec2 {
 
     /// Euclidean length.
     ///
-    /// The operand order matches the Lua source exactly — `x * x + y * y`, then
-    /// `sqrt` — because floating-point addition is not associative and the
-    /// determinism evidence depends on bit-exact output.
+    /// The operand order is fixed — `x * x + y * y`, then `sqrt` — because
+    /// floating-point addition is not associative and the determinism evidence
+    /// depends on bit-exact output.
     #[must_use]
     pub fn length(self) -> f64 {
         (self.x * self.x + self.y * self.y).sqrt()
@@ -78,8 +77,8 @@ impl Vec2 {
 
     /// Distance to another vector.
     ///
-    /// Computed as `self.sub(o).length()`, the same route the Lua takes, rather
-    /// than a fused form — the intermediate rounding is part of the result.
+    /// Computed as `self.sub(o).length()` rather than a fused form — the
+    /// intermediate rounding is part of the result.
     #[must_use]
     pub fn dist(self, o: Self) -> f64 {
         self.sub(o).length()

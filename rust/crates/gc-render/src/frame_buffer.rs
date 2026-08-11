@@ -1,5 +1,3 @@
-//! Port of `render/frame_buffer.lua`.
-//!
 //! The [`RenderFrame`] payload as a flat block a foreign runtime can read
 //! (#332).
 //!
@@ -7,7 +5,7 @@
 //! CROSSABLE. A `RenderFrame` is Rust structs and heap strings, and neither
 //! exists on the far side of a wasm boundary. Handing it to JavaScript field
 //! by field would be one boundary crossing per field per entity per frame —
-//! exactly the shape `render/frame.lua` was designed to avoid, undone at the
+//! exactly the shape [`crate::frame`] was designed to avoid, undone at the
 //! last step. So the payload is serialised once into one contiguous array of
 //! doubles, copied into linear memory in one go, and read on the far side as
 //! a single typed-array view. One crossing per rendered frame, in batch.
@@ -35,7 +33,7 @@
 //!
 //! 3. ONE-BASED SLOTS MAKE 0 A FREE SENTINEL. `possession_owner`,
 //!    `control_pass_target` and an event's `slot` are roster indices (the
-//!    README rule 3 wire-identity exception — they keep the 1-based value
+//!    ARCHITECTURE.md §3 rule 3 wire-identity exception — they keep the 1-based value
 //!    `render::frame` already carries), so 0 encodes "none" without a flag.
 //!
 //! 4. STRINGS DO NOT CROSS PER FRAME. The only per-frame strings in the
@@ -65,17 +63,15 @@
 //! A field reordered here changes the second and not the first; a field
 //! added to [`RenderFrame`] changes the first. [`decode`] hard-asserts both,
 //! and [`encode`] hard-asserts the frame it was handed carries the version
-//! it claims. The non-Rust reader (`wasm/sim-host/frame_payload.js`, not yet
-//! ported — the JS↔wasm marshalling layer is a separate milestone per
-//! `v2/README.md` §1) is meant to check the same two words against its own
-//! constants, so a Rust producer and a JS reader cannot silently disagree.
+//! it claims. The non-Rust reader (`wasm/sim-host/frame_payload.js`) is
+//! meant to check the same two words against its own constants, so a Rust
+//! producer and a JS reader cannot silently disagree.
 //!
 //! Every failure mode in this module — a version mismatch, a corrupted
 //! header, an unmapped enum, a roster string with an embedded newline — is
-//! `assert!`, matching the Lua original's exclusive use of `assert` here
-//! (never `return nil, err`): all of them are protocol violations (the
-//! producer and reader disagreeing about the wire's shape), not expected,
-//! recoverable input to handle gracefully (AGENTS.md §7).
+//! `assert!` (never `return nil, err`): all of them are protocol violations
+//! (the producer and reader disagreeing about the wire's shape), not
+//! expected, recoverable input to handle gracefully (AGENTS.md §7).
 
 use gc_data::species::Shape;
 use gc_sim::aerial::{AerialOutcome, AerialStyle};
@@ -141,7 +137,7 @@ pub const ROSTER_FIELD_COUNT: usize = 7;
 /// doubles only, so carrying them there would mean inventing a second
 /// enum numbering for content ids that `gc-data` already keys by string.
 /// It would also break the one differential test that pins this wire
-/// against the real Lua (`tests/frame_buffer_differential.rs`), which
+/// against a frozen reference (`tests/frame_buffer_differential.rs`), which
 /// compares the numeric block word for word against a captured fixture and
 /// whose first assertion is a word-count equality. The blob is discarded by
 /// that test (`let (roster_words, _digest) = ...`) by explicit, documented
@@ -176,12 +172,12 @@ fn opt_decode<T>(code: f64, from: impl FnOnce(f64) -> Option<T>, what: &str) -> 
     }
 }
 
-/// This team's wire code. Numbered as `render/frame_buffer.lua`'s `TEAM`
-/// table: `home = 1, away = 2`. `pub` (unlike most `*_code` helpers here)
-/// because the enum-density contract
-/// (`spec/render/frame_buffer_spec.lua`'s "numbers every enum from one,
-/// leaving zero for absent") is exercised from `tests/frame_buffer.rs`,
-/// external to this module.
+/// This team's wire code: `home = 1, away = 2`. `pub` (unlike most `*_code`
+/// helpers here) because the enum-density contract ("numbers every enum
+/// from one, leaving zero for absent") is exercised by
+/// `tests/frame_buffer.rs`'s
+/// `numbers_every_enum_from_one_leaving_zero_for_absent`, external to this
+/// module.
 #[must_use]
 pub fn team_code(team: Team) -> f64 {
     match team {
@@ -282,8 +278,7 @@ pub fn shot_type_code(shot_type: KeeperShotType) -> f64 {
     }
 }
 
-/// This pose's wire code. Numbered exactly as `render/frame_buffer.lua`'s
-/// `POSE_ID` table: `keeper_grab` through `locomotion`, 1..32.
+/// This pose's wire code: `keeper_grab` through `locomotion`, 1..32.
 #[must_use]
 pub fn pose_id_code(id: PlayerPoseId) -> f64 {
     use PlayerPoseId::{
@@ -378,9 +373,7 @@ pub fn pose_id_from_code(code: f64) -> Option<PlayerPoseId> {
     }
 }
 
-/// This event kind's wire code. Numbered exactly as
-/// `render/frame_buffer.lua`'s `EVENT_KIND` table: `shot` through `juke`,
-/// 1..25.
+/// This event kind's wire code: `shot` through `juke`, 1..25.
 #[must_use]
 pub fn event_kind_code(kind: MatchEventKind) -> f64 {
     use MatchEventKind::{
@@ -528,11 +521,10 @@ fn write_scalars(frame: &RenderFrame, out: &mut [f64]) {
 
 // Field-major fill of one structure-of-arrays section: `out` holds
 // `field_count` runs of `count` words each. `at(field_index, slot_index)`
-// mirrors `render/frame_buffer.lua`'s `write_soa`, just with a fixed field
-// order (0..field_count) baked into each caller instead of a name lookup —
-// Rust has no generic "index a struct by field name" without reflection this
-// crate does not have, and a hand-written call per field is exactly as
-// faithful to the Lua source's field order.
+// takes a fixed field order (0..field_count) baked into each caller instead
+// of a name lookup — Rust has no generic "index a struct by field name"
+// without reflection this crate does not have, so a hand-written call per
+// field is what keeps the field order consistent.
 fn soa_at(field_index: usize, slot_index: usize, count: usize) -> usize {
     field_index * count + slot_index
 }
@@ -589,9 +581,8 @@ fn write_events(events: &RenderFrameEvents, out: &mut [f64], count: usize) {
 ///
 /// `words` is reused in place: resized to exactly this frame's length and
 /// refilled, so a per-frame producer allocates once and never again — Rust's
-/// ownership model makes this the caller's own array by construction, unlike
-/// the Lua original where "reused, not replaced" had to be a runtime promise
-/// about a table reference.
+/// ownership model makes this the caller's own array by construction, a
+/// structural guarantee rather than a runtime promise.
 ///
 /// # Panics
 ///
@@ -1084,14 +1075,12 @@ pub fn decode_roster(words: &[f64], strings: &str) -> DecodedRenderFrameRoster {
     // `split` on the newline-terminated blob always yields one trailing
     // empty element past the last delimiter, and it is dropped here.
     //
-    // DIVERGENCE FROM `render/frame_buffer.lua` (#447). The Lua producer
-    // still writes two parts per slot; this reads four. That is deliberate
-    // and it is the first place in this port where the Lua is allowed to
-    // fall behind rather than being mirrored — v2 is replacing the Lua tree,
-    // and #447 is a v2-only fix (see the PR). Nothing feeds a Lua-produced
-    // blob into this decoder: the one test that compares the two
+    // THE BLOB FORMAT CHANGED AT #447: from two parts per slot to four
+    // (`id`, `name`, `presentation_id`, `loadout_id`); this decoder reads
+    // four (see the PR). Nothing still produces the old two-part blob, and
+    // the one test that pins the wire against a frozen reference
     // (`tests/frame_buffer_differential.rs`) discards the blob entirely, so
-    // this is a divergence in a lane the differential does not run in. A
+    // this format change is in a lane the differential does not run in. A
     // mismatched producer/reader pair fails on the part-count assertion
     // below rather than mis-parsing.
     let mut blob = strings.to_string();
@@ -1101,7 +1090,7 @@ pub fn decode_roster(words: &[f64], strings: &str) -> DecodedRenderFrameRoster {
     // THIS ASSERTION CARRIES THE BLOB'S ENTIRE SHAPE-VERSIONING BURDEN,
     // because [`LAYOUT_VERSION`] cannot be bumped for a blob change (it is
     // stamped into the numeric block, which is pinned word-for-word against a
-    // captured Lua fixture — see [`ROSTER_STRING_FIELD_COUNT`]). And it
+    // frozen reference fixture — see [`ROSTER_STRING_FIELD_COUNT`]). And it
     // DEGENERATES TO A NO-OP at `count == 0`: `0 == 0` holds for any field
     // count, so a producer and a reader that disagreed would agree vacuously
     // on an empty roster. Harmless today — a match always fields two teams,
@@ -1174,13 +1163,14 @@ pub fn event_kind(decoded: &DecodedRenderFrame, index: usize) -> Option<MatchEve
 
 #[cfg(test)]
 mod enum_coverage {
-    //! Sanity checks that the `*_code` functions above stay dense from 1,
-    //! mirroring `spec/render/frame_buffer_spec.lua`'s "numbers every enum
-    //! from one, leaving zero for absent" — ported as a real test in
-    //! `tests/frame_buffer_spec.rs`, not here; these are compile-time-ish
-    //! guards that the from-code inverse tables stay total over the
-    //! forward direction (every value `*_code` can produce, `*_from_code`
-    //! recognises).
+    //! Sanity checks that the `*_code` functions above stay dense from 1.
+    //! The enum-density contract itself ("numbers every enum from one,
+    //! leaving zero for absent") is a real test in
+    //! `tests/frame_buffer.rs`'s
+    //! `numbers_every_enum_from_one_leaving_zero_for_absent`, not here;
+    //! these are compile-time-ish guards that the from-code inverse tables
+    //! stay total over the forward direction (every value `*_code` can
+    //! produce, `*_from_code` recognises).
 
     use super::*;
 

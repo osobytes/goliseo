@@ -1,8 +1,4 @@
-// New tests for combat.ts, covering what spec/render/combat_presentation_spec.lua
-// asserted about game/render/combat.lua's telegraph/projectile geometry --
-// see this package's port report for why the Lua spec itself (which also
-// exercises pitch.lua and player_renderer.lua through a stubbed
-// love.graphics) is not claimed wholesale.
+// Tests for combat.ts's telegraph/projectile geometry.
 
 import { describe, expect, it } from "vitest";
 import { Vec2 } from "@gc/core";

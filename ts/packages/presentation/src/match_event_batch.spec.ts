@@ -1,5 +1,3 @@
-// Ported from spec/game/match_event_batch_spec.lua.
-
 import { describe, expect, it } from "vitest";
 import { matchEventBatch, type RollbackEventDiff, type RollbackWrappedEvent } from "./match_event_batch.ts";
 

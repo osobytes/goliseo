@@ -1,23 +1,21 @@
-// Ported from spec/game/online_net_diagnostics_spec.lua.
+// The "diagnostics schema" describe block below is pure and needs no live
+// driver. Everything else drives `net_diagnostics_fixture.ts`'s
+// `fixture.harness`, which needs a real `game.online.match_driver`
+// (Rust-owned, `crates/gc-netcode`).
 //
-// The Lua spec's "diagnostics schema" describe block is pure and ports
-// one-to-one. Everything else drives `net_diagnostics_fixture.lua`'s
-// `fixture.harness`, which -- on this side of the port -- needs a real
-// `game.online.match_driver` (Rust-owned, `crates/gc-netcode`).
+// Two different kinds of case follow, kept apart deliberately:
 //
-// Two different adaptations follow, kept apart deliberately:
-//
-//   * Where the *only* reason the Lua case reaches for `fixture.harness` is
+//   * Where the *only* reason a case reaches for `fixture.harness` is
 //     to obtain a valid, opted-in recorder (manifest/freeze data plus a
-//     handful of direct `record_*` calls), this port constructs that
+//     handful of direct `record_*` calls), this file constructs that
 //     recorder directly with `newTestRecorder` instead. The assertion under
 //     test is unchanged; only how the fixture is obtained is different.
 //   * Where the case's actual claim is about the *driver's own* behaviour
 //     under a live rollback session (a real correction, a real hash
 //     mismatch, a real ownership violation, a real transport loss) it is
-//     ported as `it.skip`, because faking that behaviour in TypeScript
+//     written as `it.skip`, because faking that behaviour in TypeScript
 //     would mean re-implementing rollback scheduling here -- exactly what
-//     v2/README.md §2.1 says must never happen on this side of the
+//     ARCHITECTURE.md §1.1 says must never happen on this side of the
 //     determinism line.
 //
 // # Re-audited against the current `@gc/wasm`
@@ -35,8 +33,8 @@
 //
 // `net_diagnostics_fixture.ts`'s own `MatchDriverPort` (`create`/`advance`/
 // `diagnostics`, taking an *injected* `transport: StarTransportAdapter` the
-// driver calls into) mirrors the Lua original's dependency-injection shape,
-// where `match_driver.new({transport = tap})` has the driver call
+// driver calls into) is the same dependency-injection shape as
+// `match_driver.new({transport = tap})`, where the driver calls
 // `tap:send`/`tap:poll` itself, and `DiagnosticTransport`'s wrapped methods
 // record star/channel/packet diagnostics as a side effect of being called
 // *by the driver*. `MatchDriverBridge` does not support that shape at all:
@@ -667,10 +665,10 @@ interface RunRealOptions {
    * confirmed by reading the whole crate: this is the *one* place any
    * `ice_state` value is ever produced). `net_diagnostics`'s own export
    * schema requires `ice_state` to be at least 1 byte -- a real invariant,
-   * not an arbitrary one: it matches `game/transport/fake_star.lua`'s own
-   * `"new"`/`"checking"`/`"connected"`/`"closed"` state machine, which is
-   * what the Lua original's fixture star (and every real `@gc/transport`
-   * WebRTC star) actually produces. `WasmStarTransport` is a from-scratch,
+   * not an arbitrary one: it matches `crates/gc-netcode/src/fake_star.rs`'s
+   * own `"new"`/`"checking"`/`"connected"`/`"closed"` state machine, which
+   * is what a fixture star (and every real `@gc/transport` WebRTC star)
+   * actually produces. `WasmStarTransport` is a from-scratch,
    * ICE-free queue/drain relay for netcode testing, not a WebRTC stand-in,
    * so it structurally cannot satisfy that invariant -- any harness that
    * turns this on and then calls `exportArtifact`/`exportOf` fails with
@@ -988,23 +986,22 @@ describe("diagnostics schema", () => {
 });
 
 describe("net diagnostics collection", () => {
-  // Ported cases 1-6 in the Lua original ("summarises a clean 2v2 run...",
-  // "folds star and per-channel transport counters...", "records the
-  // sample, send, arrival, and apply lifecycle of a packet", "counts
-  // rollback, resimulation, and event reconciliation under impairment",
-  // "keeps canonical evidence byte-stable while runtime observation
-  // moves", "reproduces the canonical projection across two identical
-  // runs") all assert on values a *live* `match_driver` produces across a
-  // real multi-tick run -- rollback counts, checkpoint hashes, packet
-  // lifecycle timing. See this file's header comment: re-port these once a
-  // `NetDiagnosticsFixtureEnv` backed by the real `gc-netcode` exists.
+  // Six cases below ("summarises a clean 2v2 run...", "folds star and
+  // per-channel transport counters...", "records the sample, send,
+  // arrival, and apply lifecycle of a packet", "counts rollback,
+  // resimulation, and event reconciliation under impairment", "keeps
+  // canonical evidence byte-stable while runtime observation moves",
+  // "reproduces the canonical projection across two identical runs") all
+  // assert on values a *live* `match_driver` produces across a real
+  // multi-tick run -- rollback counts, checkpoint hashes, packet lifecycle
+  // timing. See "Re-audited against the current `@gc/wasm`" below.
   //
   // # Re-audited against the current `@gc/wasm` -- both gaps are now fixed
   //
   // A prior pass here recorded both cases blocked by `WasmStarTransport`'s
   // `TransportPeerDiagnostics.ice_state` being unconditionally the empty
   // string, failing `net_diagnostics`'s own export schema (a real
-  // invariant: it mirrors `game/transport/fake_star.lua`'s own
+  // invariant: it mirrors `crates/gc-netcode/src/fake_star.rs`'s own
   // `"new"`/`"checking"`/`"connected"`/`"closed"` vocabulary, what every
   // real `@gc/transport` WebRTC star actually produces), and then by a
   // second, narrower defect underneath it: `WasmStarTransport::diagnostics()`
@@ -1047,8 +1044,8 @@ describe("net diagnostics collection", () => {
   //
   // Separately: the second case ("folds star and per-channel transport
   // counters...") also needs `artifact.runtime.events` non-empty with
-  // monotonic ordinals -- the Lua original's "the tap records transport
-  // lifecycle events, in order". `DiagnosticTransport`'s own
+  // monotonic ordinals -- i.e. that the tap records transport lifecycle
+  // events, in order. `DiagnosticTransport`'s own
   // forwarded-surface wrapping (`sendMessage`/`pollInbound`/`shutdown`
   // calling `this.note(...)`) still cannot wrap a `MatchDriverBridge` (it
   // owns its transport internally, with no `pollEvent`-shaped surface --
@@ -1178,8 +1175,7 @@ describe("net diagnostics collection", () => {
         0: host.inputFrameNewSample(90, 0),
         1: host.inputFrameNewSample(0, -70),
       };
-      // Bursty, under-delivered: every 6th step, like the Lua original's
-      // `fixture.run_bursty(harness, 60, 6, samples)`.
+      // Bursty, under-delivered: every 6th step.
       runReal(host, harness, 60, { period: 6, samples });
 
       const artifact = exportOf(realPeer(harness, "host").recorder);
@@ -1555,12 +1551,11 @@ describe("net diagnostics bounds", () => {
 });
 
 describe("net diagnostics failure fixtures", () => {
-  // Ported cases: an ownership violation, an authority conflict,
+  // These cases -- an ownership violation, an authority conflict,
   // over-window input, hash divergence, and a guest disconnect / host loss
-  // all require a real `match_driver` to actually detect the fault (the
-  // Lua originals forge input bundles and hand them to a live driver's
-  // transport, or call `match_driver.observe_checkpoint` directly). See
-  // this file's header comment.
+  // -- all require a real `match_driver` to actually detect the fault:
+  // forging input bundles and handing them to a live driver's transport, or
+  // calling `match_driver.observe_checkpoint` directly.
   // Unblocked: `MatchDriverBridge.observeCheckpoint(tick, hash)` is exactly
   // `gc_netcode::match_driver::observe_checkpoint`, confirmed present on
   // both `match_driver_bridge.rs` and `types.ts` -- absent when the earlier
@@ -1683,7 +1678,7 @@ describe("net diagnostics failure fixtures", () => {
         const simulation = exportOf(peer.recorder).canonical.simulation;
         // Since #241 the driver catches this on confirmation liveness at the
         // step the tick becomes unconfirmable, rather than on the arrival
-        // that used to reveal it (see the Lua original's own comment).
+        // that used to reveal it.
         if (simulation.status === "confirmation_stalled") {
           terminal += 1;
           expect(simulation.terminal_failure).toBe("late_input");

@@ -1,11 +1,11 @@
 // The rigged-player presentation: skeleton, clips, whole-body action poses,
-// theming, and per-part character content. Ported from game/render/rig3d/
-// (see v2/README.md #7 for the mechanism/content split this followed).
+// theming, and per-part character content (see ARCHITECTURE.md §5 for the
+// mechanism/content split this follows).
 //
-// Each submodule is re-exported under its own namespace, mirroring the one
-// Lua-file-per-TS-file mapping (v2/README.md #4) and avoiding name collisions
-// -- `build` exists on three different submodules here, exactly as
-// `headgear.build` / `equipment.build` / (a future) `body.build` did in Lua.
+// Each submodule is re-exported under its own namespace, which avoids name
+// collisions -- `build` exists on three different
+// submodules here: `headgear.build`, `equipment.build`, and (a future)
+// `body.build`.
 
 export * as palette from "./palette.ts";
 export * as proportions from "./proportions.ts";

@@ -1,4 +1,4 @@
-//! Port of `spec/sim/keeper_spec.lua`.
+//! Tests for `gc_sim::keeper`.
 
 use gc_core::vec2::Vec2;
 use gc_sim::keeper;

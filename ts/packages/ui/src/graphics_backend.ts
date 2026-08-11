@@ -1,13 +1,13 @@
 // The presentation-agnostic drawing surface `draw.ts` and `tuning_panel.ts`
-// render through, standing in for `love.graphics`.
+// render through.
 //
-// LÖVE's `love.graphics` calls have no TypeScript equivalent yet, and
-// wiring one — a three.js or Canvas2D implementation of this interface — is
-// deliberately out of scope for this milestone (v2/README.md §1: "the glue
-// that makes a playable browser build ... is a separate milestone. Do not
-// build it, and do not block on it."). This interface exists so `draw.ts`
-// can be ported now and implemented later without another pass over its
-// logic; nothing in this package implements it.
+// No rendering engine backs this interface yet, and wiring one — a three.js
+// or Canvas2D implementation of this interface — is deliberately out of
+// scope for this milestone: the glue that makes a playable browser build is
+// a separate milestone, and this package does not build it or block on it.
+// This interface exists so `draw.ts` can be written
+// now and implemented later without another pass over its logic; nothing in
+// this package implements it.
 
 import type { FontKind } from "./theme.ts";
 
@@ -35,7 +35,7 @@ export interface GraphicsBackend {
   ): void;
   circle(mode: DrawMode, x: number, y: number, radius: number): void;
   ellipse(mode: DrawMode, x: number, y: number, radiusX: number, radiusY: number): void;
-  /** `points` is a flat `[x0, y0, x1, y1, ...]` list, matching `love.graphics.polygon`. */
+  /** `points` is a flat `[x0, y0, x1, y1, ...]` list. */
   polygon(mode: DrawMode, points: readonly number[]): void;
   line(x1: number, y1: number, x2: number, y2: number): void;
   print(text: string, x: number, y: number): void;
@@ -44,6 +44,6 @@ export interface GraphicsBackend {
   pop(): void;
   translate(x: number, y: number): void;
   scale(sx: number, sy: number): void;
-  /** Selects a themed font. The backend owns font creation/caching (LÖVE's `newFont` + a cache table, folded in). */
+  /** Selects a themed font. The backend owns font creation/caching. */
   setFont(kind: FontKind): void;
 }

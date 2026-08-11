@@ -1,5 +1,3 @@
-// Ported from spec/game/compatibility_metrics_spec.lua.
-
 import { describe, expect, it } from "vitest";
 import { CompatibilityMetrics } from "./compatibility_metrics.ts";
 

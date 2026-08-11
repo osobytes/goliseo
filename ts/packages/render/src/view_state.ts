@@ -1,5 +1,3 @@
-// Ported from game/render/view_state.lua.
-//
 // Per-player view state derived from frame-to-frame motion. The sim stays
 // pure (a MatchPlayer has no velocity); the renderer needs cadence, lean and
 // speed to animate, so we derive them here from position deltas. Keyed by
@@ -11,7 +9,7 @@
 // back to idle.
 //
 // Boundary note: `MatchPlayer`/`CorrectionSmoothingPose` are sim/render
-// shapes (v2/README.md rule 6.7). Only the fields this module reads are
+// shapes (ARCHITECTURE.md §4 rule 6). Only the fields this module reads are
 // declared locally, matching `correction_smoothing.ts`.
 
 export interface ViewStatePoint {

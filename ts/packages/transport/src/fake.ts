@@ -1,4 +1,4 @@
-// In-memory loopback transport. Ported from game/transport/fake.lua.
+// In-memory loopback transport.
 
 import { ok, err } from "@gc/core";
 import * as contract from "./contract.ts";

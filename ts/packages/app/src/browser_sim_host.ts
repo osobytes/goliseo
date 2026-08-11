@@ -8,7 +8,7 @@
 // glue reads the `.wasm` bytes with `node:fs`'s synchronous
 // `readFileSync`. None of `require`, `node:module`, or `node:fs` exist in a
 // browser, so that path cannot run there regardless of bundler -- this
-// is exactly the gap `v2/README.md`'s app-shell milestone brief calls out
+// is exactly the gap the app-shell milestone brief called out
 // ("wasm loading in a browser differs from node"). `packages/wasm/scripts/
 // build_web.mjs` (this batch) builds a second, `--target web` artifact for
 // exactly this reason; this file is its one, browser-only consumer.

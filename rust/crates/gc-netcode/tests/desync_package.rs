@@ -1,43 +1,45 @@
-//! Port of `spec/game/online_desync_package_spec.lua`.
+//! Tests for `desync_package`: reproducibility classification, wire
+//! truncation, digest determinism, and offline boundary-hash reproduction.
 //!
-//! ## What could not be ported as-is
+//! ## What this file cannot exercise directly
 //!
-//! The Lua spec's `capture()` helper spins up a real 2v2 fixture match
-//! through `game.online.match_driver`, `game.online.net_diagnostics_fixture`,
-//! and `sim.rollback_session`. `match_driver` and `sim.match_snapshot`/
-//! `sim.rollback_session` have since landed in this workspace (`gc-netcode`'s
-//! `match_driver`/`match_driver_fixture`, `gc-sim`'s `match_snapshot`/
-//! `rollback_session`) and are used directly below — see
+//! A full end-to-end capture — spinning up a real 2v2 fixture match, driving
+//! it, and diffing rollback state — needs `game.online.match_driver`,
+//! `game.online.net_diagnostics_fixture`, and `sim.rollback_session`.
+//! `match_driver` and `sim.match_snapshot`/`sim.rollback_session` have since
+//! landed in this workspace (`gc-netcode`'s `match_driver`/
+//! `match_driver_fixture`, `gc-sim`'s `match_snapshot`/`rollback_session`)
+//! and are used directly below — see
 //! `hash_at_boundary`/`rebuilds_the_agreed_boundary_hash_from_the_package_alone`.
 //! `game.online.net_diagnostics`/`net_diagnostics_fixture` remain
-//! TypeScript-owned per `v2/README.md` §2 with no Rust port planned, so
-//! `capture()`'s live-harness half stays out of reach.
+//! TypeScript-owned per `ARCHITECTURE.md` §1.1 with no Rust implementation
+//! planned, so that live-harness capture path stays out of reach here.
 //!
-//! What *is* ported below exercises exactly the same `desync_package` logic
-//! the Lua spec does — reproducibility classification, wire truncation,
-//! digest determinism, the opt-in requirement, boundary ordering, `rows`
+//! What the tests below exercise instead is the same `desync_package` logic
+//! surface — reproducibility classification, wire truncation, digest
+//! determinism, the opt-in requirement, boundary ordering, `rows`
 //! de-duplication and ordering, redaction-free summaries, and (now) offline
 //! boundary-hash reproduction through a real `rollback_session` — using
 //! hand-built
 //! [`gc_netcode::desync_package::Diagnostics`]/[`gc_netcode::desync_package::BuildOptions`]
 //! fixtures in place of a live match harness.
 //!
-//! The Lua spec's "keeps the export and the package agreeing on identity"
-//! case is ported too now, as
+//! The cross-language "keeps the export and the package agreeing on
+//! identity" case is exercised too, as
 //! `keeps_the_export_and_the_package_agreeing_on_identity` below, but not by
-//! calling a Rust `net_diagnostics.export` (there is none, and this port's
+//! calling a Rust `net_diagnostics.export` (there is none, and
 //! `desync_package::build` takes an already-exported [`Diagnostics`]
 //! directly rather than a recorder, so there is no second in-process export
 //! call for the package's session to disagree with — see
 //! `crates/gc-netcode/src/desync_package.rs`'s own module doc comment). What
-//! is actually load-bearing about that Lua case — that the session-identity
-//! fields a real `manifest`+`freeze` produce come out right — is checked
-//! instead against a committed vector captured from the real Lua's
+//! is actually load-bearing here — that the session-identity fields a real
+//! `manifest`+`freeze` produce come out right — is checked instead against
+//! a committed, frozen reference vector captured from
 //! `net_diagnostics.export(recorder).session`
 //! (`tests/fixtures/desync_package_identity_vector.txt`, generated per
-//! `v2/tools/lua_reference/README.md`), the same shape as
+//! `tools/lua_reference/README.md`), the same shape as
 //! `diagnostics_schema_vectors.txt` pins for `diagnostics_schema` per
-//! `v2/README.md` §2.2.
+//! `ARCHITECTURE.md` §1.2.
 
 use gc_netcode::desync_package::{
     self, BuildOptions, CheckpointRecord, ControlRecord, Diagnostics, DifferenceValue,
@@ -328,9 +330,9 @@ fn rows_deduplicates_and_orders_canonically() {
 
 /// Feeds `rows` into a fresh [`gc_sim::rollback_session`], steps it to
 /// `boundary`, and returns [`gc_sim::match_snapshot::hash`] of the boundary
-/// it reaches. Mirrors the Lua original's offline-reproduction steps: a
-/// reproducer holds no local slots, so every row arrives as remote
-/// authority, exactly as it would on a machine that never played.
+/// it reaches — the offline-reproduction steps a peer without the original
+/// match would run: a reproducer holds no local slots, so every row arrives
+/// as remote authority, exactly as it would on a machine that never played.
 fn hash_at_boundary(rows: &[AuthorityRow], boundary: i64) -> String {
     let initial = gc_netcode::match_driver_fixture::initial_snapshot(None, false, None);
     let sources = [gc_sim::rollback_input_history::RollbackInputSource::Remote; 8];
@@ -376,12 +378,12 @@ fn hash_at_boundary(rows: &[AuthorityRow], boundary: i64) -> String {
 
 /// `gc_sim::match_snapshot`/`gc_sim::rollback_session` — this test's
 /// original blocker — have since landed, so the offline-reproduction proof
-/// itself is ported for real below. What is still substituted, same as
-/// every other test in this file: the Lua original's `capture()` runs a real
-/// 2v2 match through `net_diagnostics_fixture` (`fixture.harness`/
+/// itself is exercised for real below. What is still substituted, same as
+/// every other test in this file: a full capture would run a real 2v2 match
+/// through `net_diagnostics_fixture` (`fixture.harness`/
 /// `fixture.run`) to get a *captured* boundary hash to reproduce; that
-/// fixture is TypeScript-owned with no Rust port planned (see the module doc
-/// comment), so this builds the "captured" side the same way the rest of
+/// fixture is TypeScript-owned with no Rust implementation planned (see the
+/// module doc comment), so this builds the "captured" side the same way the rest of
 /// this file substitutes a live harness — hand-built wires, real
 /// `rollback_session` math — and computes the hash it claims via the exact
 /// same reproduction recipe rather than importing one from a live capture.
@@ -479,10 +481,10 @@ fn manifest_int(manifest: &Value, field: &str) -> i64 {
 }
 
 /// The `SessionIdentity` a Rust caller building the same "2v2" fixture the
-/// vector was captured from would produce, using the already-ported
+/// reference vector was captured from would produce, using
 /// `gc_netcode::protocol_fixture::manifest`/`gc_netcode::match_driver_fixture::freeze`
-/// exactly as `net_diagnostics.new` reads its own `manifest`/`freeze`
-/// options in the Lua (`game/online/net_diagnostics.lua:769-804`): most
+/// to reconstruct the same `manifest`/`freeze` fields the reference
+/// implementation's `net_diagnostics.new` reads: most
 /// fields already sit on `coordinator::Freeze` field-for-field, and the rest
 /// (`session_id`, `build_id`, `source_id`, `match_config_id`, `fixture_id`,
 /// `arena_id`, and the four schema-version integers) are read off the
@@ -562,19 +564,19 @@ fn identity_field(identity: &SessionIdentity, field: &str) -> String {
     }
 }
 
-/// Cross-language identity agreement (`v2/README.md` §2.2's shared-vector
-/// contract, ported from the Lua spec's "keeps the export and the package
-/// agreeing on identity" — see the module doc comment for how the
-/// assertion was adapted for this crate's `build` signature). Checks two
-/// things against `tests/fixtures/desync_package_identity_vector.txt`:
+/// Cross-language identity agreement (`ARCHITECTURE.md` §1.2's shared-vector
+/// contract — see the module doc comment for how this assertion was adapted
+/// for this crate's `build` signature). Checks two things against the
+/// frozen reference vector
+/// `tests/fixtures/desync_package_identity_vector.txt`:
 ///
 /// 1. That `gc_netcode::protocol_fixture`/`gc_netcode::match_driver_fixture`
-///    -- ported independently of `net_diagnostics.lua` -- derive the exact
+///    -- implemented independently of `net_diagnostics` -- derive the exact
 ///    same session-identity fields from the "2v2" fixture manifest/freeze
-///    that the real Lua's `net_diagnostics.new`/`export` do.
+///    that the reference implementation's `net_diagnostics.new`/`export` do.
 /// 2. That `desync_package::build` carries that identity into
-///    `package.session` unchanged, which is the property the Lua's own case
-///    was actually protecting.
+///    `package.session` unchanged, which is the property this vector is
+///    actually protecting.
 #[test]
 fn keeps_the_export_and_the_package_agreeing_on_identity() {
     let vector = load_identity_vector();

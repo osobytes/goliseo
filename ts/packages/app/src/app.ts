@@ -1,32 +1,26 @@
-// Ported from game/app.lua.
-//
-// The Lua original requires `game.online.match_manifest`/`match_session`
-// (Rust-owned `gc-netcode`; v2/README.md §2.1) -- still true and still
-// injected below, since neither has a wasm bridge this milestone (no
-// `@gc/wasm` export builds a `SessionManifest` or a match-session request;
-// see online_match_flow.spec.ts, this package's own spec, for the same
-// gap from the test side). `game.screens.online_lobby`/`online_match`,
-// though, ARE now real, ported screens (`@gc/screens`'s `OnlineLobby`/
-// `OnlineMatch`) -- that half of this note was stale. They stay behind
+// Match manifest/session types (Rust-owned `gc-netcode`; ARCHITECTURE.md
+// §1.1) are injected below since neither has a wasm bridge this milestone
+// (no `@gc/wasm` export builds a `SessionManifest` or a match-session
+// request; see online_match_flow.spec.ts, this package's own spec, for the
+// same gap from the test side). The online lobby/match screens, though,
+// ARE real (`@gc/screens`'s `OnlineLobby`/`OnlineMatch`). They stay behind
 // `OnlinePorts` regardless: this file is decoupled from how a lobby/match
 // screen gets built (a test can supply lighter fakes than the real
 // classes), matching `match_adapter.ts`'s injection pattern for the
 // offline match screen.
 //
-// `start_online_match` used to be an unconditional stub -- it never even
-// read the mounted lobby's coordinator state, on the theory that
-// `OnlinePorts` had no way to expose it. That was the actual bug, not a
-// structural blocker: `OnlinePorts.requestMatchSession`/`newOnlineMatchScreen`
-// were already the right shape (mirroring `match_session.request`/
-// `OnlineMatch.new`), and `OnlineLobbyScreen` below (added by this port)
-// gives the one missing piece -- a read on `state.model.coordinator`/
-// `link`, exactly what the Lua original's `---@cast lobby OnlineLobby`
-// exposes. See online_match_flow.spec.ts (this package) for the case this
-// was ported to unblock.
+// `startOnlineMatch` used to be an unconditional stub -- it never even read
+// the mounted lobby's coordinator state, on the theory that `OnlinePorts`
+// had no way to expose it. That was the actual bug, not a structural
+// blocker: `OnlinePorts.requestMatchSession`/`newOnlineMatchScreen` were
+// already the right shape, and `OnlineLobbyScreen` below gives the one
+// missing piece -- a read on `state.model.coordinator`/`link`. See
+// online_match_flow.spec.ts (this package) for the case this was added to
+// unblock.
 //
-// `game.ui.viewport`/`game.input.controller` compose the same way
-// `ui_bridge.ts`'s header explains; `controller` itself IS a declared
-// dependency (`@gc/input`) and is used directly.
+// `viewport`/`controller` compose the same way `ui_bridge.ts`'s header
+// explains; `controller` itself IS a declared dependency (`@gc/input`) and
+// is used directly.
 
 import { bindings, controller, type ControllerInputEvent } from "@gc/input";
 import {
@@ -58,7 +52,7 @@ export interface Viewport {
   readonly h: number;
 }
 
-/** `game.online.coordinator`'s state as read by `App:start_online_match` -- `state.role`/`state.peer_id`/`state.manifest`. Kept structural (no `@gc/screens` import) rather than named after `@gc/screens`'s `CoordinatorState` so a test can supply a lighter fake than the real one. */
+/** The online coordinator's state as read by `App.startOnlineMatch` -- `state.role`/`state.peer_id`/`state.manifest`. Kept structural (no `@gc/screens` import) rather than named after `@gc/screens`'s `CoordinatorState` so a test can supply a lighter fake than the real one. */
 export interface OnlineLobbyCoordinatorState {
   readonly role: unknown;
   readonly peer_id: unknown;
@@ -66,9 +60,8 @@ export interface OnlineLobbyCoordinatorState {
 }
 
 /**
- * Minimal read surface `start_online_match` needs off the mounted lobby
- * screen -- mirrors the Lua original's `---@cast lobby OnlineLobby` before
- * reading `lobby.state.model.coordinator`/`lobby.link`. See this file's
+ * Minimal read surface `startOnlineMatch` needs off the mounted lobby
+ * screen: `lobby.state.model.coordinator`/`lobby.link`. See this file's
  * header for why this exists (it did not, before).
  */
 export interface OnlineLobbyScreen extends Screen<ControllerInputEvent, GameSettings> {
@@ -76,7 +69,7 @@ export interface OnlineLobbyScreen extends Screen<ControllerInputEvent, GameSett
   readonly link: unknown;
 }
 
-/** `game.online.match_manifest`/`match_session` (Rust-owned, no wasm bridge), and the real (but injected) online lobby/match screens -- see this file's header. */
+/** Match manifest/session types (Rust-owned, no wasm bridge), and the real (but injected) online lobby/match screens -- see this file's header. */
 export interface OnlinePorts {
   readonly matchManifestTemplate: unknown;
   requestMatchSession(options: {
@@ -127,9 +120,9 @@ function asMenu<State extends { readonly viewport: Viewport }, Action>(
   menu: Menu<State, Action>,
 ): Screen<ControllerInputEvent, GameSettings> {
   // `Menu.draw` needs a `@gc/ui` `GraphicsBackend` this milestone
-  // deliberately does not wire up (v2/README.md §1). See match_adapter.ts's
+  // deliberately does not wire up. See match_adapter.ts's
   // header for the identical cast and why it is safe here: nothing in this
-  // port's test coverage calls `draw`.
+  // package's test coverage calls `draw`.
   return menu as unknown as Screen<ControllerInputEvent, GameSettings>;
 }
 
@@ -303,7 +296,7 @@ export class App {
   // Route the lobby's synchronized start into the real online match. The
   // lobby keeps its link: the match borrows the same star, because the
   // session's control channel and the match's input channel are the same
-  // transport (game/app.lua's own comment on this method).
+  // transport.
   startOnlineMatch(freeze: unknown): void {
     if (!this.online) {
       throw new Error("no online ports were injected into this App");
@@ -478,7 +471,7 @@ export class App {
   }
 
   // Focus loss pauses an offline match and deliberately does not pause an
-  // online one -- see the Lua original's comment (game/app.lua).
+  // online one.
   focus(focused: boolean): void {
     if (focused) {
       return;

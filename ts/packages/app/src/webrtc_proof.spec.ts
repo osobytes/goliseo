@@ -1,5 +1,3 @@
-// Ported from spec/game/webrtc_proof_spec.lua.
-
 import { describe, expect, it } from "vitest";
 import {
   MAX_INPUT_BYTES,

@@ -4,8 +4,6 @@
 // channel per link, bounded queues, simulated `bufferedAmount` backpressure,
 // typed events, and deterministic poll batching. It owns no simulation
 // authority and never inspects a payload.
-//
-// Ported from game/transport/fake_star.lua.
 
 import { ok, err } from "@gc/core";
 import * as contract from "./contract.ts";

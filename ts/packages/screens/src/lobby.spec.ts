@@ -1,15 +1,14 @@
-// Ported from spec/screens/lobby_spec.lua.
-//
-// The Lua spec drives the real `game.online.coordinator` (Rust-owned,
-// `crates/gc-netcode`; v2/README.md §2.1) through `lobby_model.ts`'s
-// injected `CoordinatorPort`. Most of what it asserts turns out to be about
-// `lobby.ts`/`lobby_model.ts`'s own layout and control-flow -- role choice,
-// signaling digests, invitation effects, focus movement, terminal-reason
-// text -- and none of that needs the coordinator to arbitrate admission,
-// slot assignment, or pair preferences for real. A small hand-scripted
-// `CoordinatorPort` fake (mirroring `match_presentation.spec.ts`'s
-// `fakeRollbackEvents`) tracks only phase/manifest/assignment bookkeeping,
-// and is enough to run most of the Lua spec's assertions for real.
+// This spec mostly exercises `lobby.ts`/`lobby_model.ts` against a small
+// hand-scripted `CoordinatorPort` fake (mirroring
+// `match_presentation.spec.ts`'s `fakeRollbackEvents`) that tracks only
+// phase/manifest/assignment bookkeeping, rather than the real coordinator
+// (Rust-owned, `crates/gc-netcode`; ARCHITECTURE.md §1.1). Most of what it
+// asserts turns out to be about `lobby.ts`/`lobby_model.ts`'s own layout
+// and control-flow -- role choice, signaling digests, invitation effects,
+// focus movement, terminal-reason text -- and none of that needs the
+// coordinator to arbitrate admission, slot assignment, or pair preferences
+// for real, so the fake is enough to give most of these assertions real
+// coverage.
 //
 // Three cases genuinely need the coordinator's real slot-assignment and
 // pair-preference protocol logic to produce meaningful output (exactly
@@ -32,8 +31,8 @@
 // which validates an already-computed assignment, never the function that
 // computes one from a manifest and a seating order. So `realPlanAssignments`
 // below does not attempt a faithful, general port of it (that would be
-// exactly the "re-implementing coordinator.lua's rules a second time"
-// v2/README.md §2.1 exists to prevent) -- it only covers the single
+// exactly the "re-implementing the coordinator's rules a second time"
+// ARCHITECTURE.md §1.1 exists to prevent) -- it only covers the single
 // degenerate case every case below actually needs: a lone connected host,
 // bot-filling the rest. For that case the answer is not really an
 // "algorithm" to reimplement, it falls straight out of `matchModes` shape
@@ -345,10 +344,9 @@ function hosting(): LobbyScreenState {
   return click(newState(VP, ports()), "role_host");
 }
 
-// Every method a no-op, matching the Lua original's `with_stub_graphics`:
-// real draw code executes against this, so a nil field or a bad projection
-// fails here rather than on a device. `getDimensions` answers the same
-// 1280x720 the Lua stub did.
+// Every method a no-op: real draw code executes against this, so a missing
+// field or a bad projection fails here rather than on a device.
+// `getDimensions` answers a fixed 1280x720.
 function fakeGraphicsBackend(): GraphicsBackend {
   const noop = () => {};
   return {
@@ -826,9 +824,9 @@ describe("online lobby screen", () => {
   // `GraphicsBackend` (this package's own seam -- `@gc/ui` is a declared
   // dependency), so the stated blocker ("this package does not own that
   // seam") was stale. No implementation of `GraphicsBackend` exists yet
-  // (`graphics_backend.ts`'s header), but the Lua original didn't need one
-  // either -- it stubbed `love.graphics` -- so a hand-written no-op
-  // `GraphicsBackend` plays the same role here.
+  // (`graphics_backend.ts`'s header), so a hand-written no-op
+  // `GraphicsBackend` -- `fakeGraphicsBackend` above -- plays that role
+  // here.
   it("renders every state without touching a real display", () => {
     const roleState = newState(VP, ports());
     const hostState = hosting();

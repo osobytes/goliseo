@@ -1,21 +1,21 @@
-//! Port of `spec/game/online_input_protocol_spec.lua`.
+//! Input-protocol tests.
 //!
-//! ## What could not be ported as-is
+//! ## What this file cannot exercise directly
 //!
-//! The Lua spec also exercises `game.online.protocol`, `game.online.protocol_fixture`,
-//! and `game.transport.contract`. `protocol.lua`/`coordinator.lua`/`match_driver.lua`
-//! have since landed in `gc-netcode` (they were out of scope when this file
-//! was first written, but are not any more — see `host_fixture`/
-//! `packet_arrival` below, which drive the real
-//! `match_driver_fixture::DriverRules::canonical_host_batch` port for the
-//! three cases that need `input_protocol.canonical_host_batch`).
-//! `game/transport/contract.lua` is still TypeScript-owned with no Rust port
-//! planned (`v2/README.md` §2), so `input_protocol::validate_envelope`
-//! (which needs its `TransportMessage` type) stays unreachable — one
-//! `#[ignore]` below still names that. Assertions that only needed *a* valid
-//! session/manifest id string (not `protocol.lua`'s specific hashing logic)
-//! were ported using the same literal identity `input_protocol_fixture`
-//! uses — see that module's doc comment.
+//! Full coverage also touches `game.online.protocol`,
+//! `game.online.protocol_fixture`, and `game.transport.contract`.
+//! `protocol`/`coordinator`/`match_driver` have since landed in
+//! `gc-netcode` (they were out of scope when this file was first written,
+//! but are not any more — see `host_fixture`/`packet_arrival` below, which
+//! drive the real `match_driver_fixture::DriverRules::canonical_host_batch`
+//! for the three cases that need `input_protocol.canonical_host_batch`).
+//! `game/transport/contract` is still TypeScript-owned with no Rust
+//! implementation planned (`ARCHITECTURE.md` §1), so
+//! `input_protocol::validate_envelope` (which needs its `TransportMessage`
+//! type) stays unreachable — one `#[ignore]` below still names that.
+//! Assertions that only needed *a* valid session/manifest id string (not
+//! `protocol`'s specific hashing logic) use the same literal identity
+//! `input_protocol_fixture` uses — see that module's doc comment.
 
 use gc_netcode::coordinator;
 use gc_netcode::fault_transport::{TransportMessage, TransportMessageType};
@@ -68,8 +68,9 @@ fn row(tick: i64, slot_index: i64, sample: input_frame::InputSample) -> Authorit
 
 /// `value * 73 % 256` and friends are always non-negative here (every call
 /// site feeds a non-negative tick/offset sum, see `guest_packet` and the
-/// `0..=1023` fuzz loop below), so plain `%` agrees with Lua's floored `%` —
-/// no `rem_euclid` needed. See `v2/tools/lua_reference/README.md`'s trap note.
+/// `0..=1023` fuzz loop below), so plain `%` agrees with the reference
+/// implementation's floored `%` — no `rem_euclid` needed. See
+/// `tools/lua_reference/README.md`'s trap note.
 fn fuzz_sample(value: i64) -> input_frame::InputSample {
     let mut held = (value * 73) % 256;
     let edges = (value * 41) % 128;
@@ -148,18 +149,19 @@ fn omp3_pins_literal_native_and_lovejs_conformance_vectors() {
 }
 
 // `gc_sim::match_snapshot` has since landed (it was the blocker this test
-// used to name), so the golden-version identity the Lua original checks
-// first is asserted for real below. The Lua test's second half — bump
-// `GOLDEN.snapshot_version` by one, call `verify`, and expect it to panic
-// naming "input packet goldens are stale for snapshot" — stays unported:
+// used to name), so the golden-version identity check is asserted for real
+// below. The other half of this scenario — bump `GOLDEN.snapshot_version`
+// by one, call `verify`, and expect it to panic naming "input packet
+// goldens are stale for snapshot" — is still not exercised here:
 // `input_protocol_conformance::GOLDEN` is a Rust `const`, and `verify` reads
 // it directly rather than taking one as a parameter (see that module's own
 // doc comment: the live staleness cross-check was never implemented in
-// `verify`, deliberately, because `match_snapshot` was unported when that
-// file was written). There is still no seam to force a mutated golden
-// through `verify` without changing its signature — a `src/` change, out of
-// this pass's scope; worth reopening now that the equalities below hold and
-// the module doc's premise for skipping the check no longer does.
+// `verify`, deliberately, because `match_snapshot` had no Rust
+// implementation when that file was written). There is still no seam to
+// force a mutated golden through `verify` without changing its signature —
+// a `src/` change, out of this pass's scope; worth reopening now that the
+// equalities below hold and the module doc's premise for skipping the
+// check no longer does.
 #[test]
 fn names_the_snapshot_version_its_literals_were_generated_against() {
     assert_eq!(
@@ -184,10 +186,11 @@ fn round_trips_current_plus_exactly_six_prior_guest_rows_with_distinct_clocks() 
     assert_eq!(decoded.rows[6].tick, 6);
     assert_eq!(decoded.rows[0].slot_index, 2);
     assert_eq!(decoded.input_delay_ticks, 3);
-    // The Lua test also asserts
+    // Full coverage also asserts
     // `input_protocol.validate_envelope(decoded, envelope(decoded))` here.
-    // `input_protocol::validate_envelope` has no `pub` free-function port —
-    // see `validate_envelope_rejects_a_transport_tick_mismatch` below, which
+    // `input_protocol::validate_envelope` has no `pub` free-function
+    // equivalent exposed here — see
+    // `validate_envelope_rejects_a_transport_tick_mismatch` below, which
     // exercises the same check indirectly through
     // `DriverRules::canonical_host_batch`, and that test's own comment for
     // the current (non-stale) reason there is no direct standalone call.
@@ -294,8 +297,7 @@ fn covers_every_slot_soccer_combat_bit_axis_boundary_and_generated_valid_sample(
     }
 }
 
-/// Every canonical slot owned remotely — mirrors the Lua spec's local
-/// `remote_sources()` helper.
+/// Every canonical slot owned remotely.
 fn remote_sources() -> [gc_sim::rollback_input_history::RollbackInputSource; 8] {
     [gc_sim::rollback_input_history::RollbackInputSource::Remote; 8]
 }
@@ -415,10 +417,11 @@ fn rejects_malformed_noncanonical_unsupported_mismatched_and_oversized_data() {
         ErrorCode::Malformed
     );
 
-    // Lua builds a sparse array (`rows[2] = nil`), which is a shape violation
-    // with no Rust equivalent (`Vec<T>` cannot have a hole — README rule 8 /
-    // the precedent in `gc_sim::input_frame`'s doc comment on structurally
-    // redundant shape checks). The closest faithful adaptation — actually
+    // The original scenario for this case builds a sparse array
+    // (`rows[2] = nil`), which is a shape violation with no Rust equivalent
+    // (`Vec<T>` cannot have a hole, so the shape check the case targets is
+    // structurally redundant here — the same reasoning `gc_sim::input_frame`'s
+    // doc comment records). The closest faithful adaptation — actually
     // removing a row, which breaks tick contiguity instead of array shape —
     // still reaches the same observable outcome: `Malformed`.
     let mut invalid = input_protocol::copy(&packet).unwrap();
@@ -436,12 +439,14 @@ fn rejects_malformed_noncanonical_unsupported_mismatched_and_oversized_data() {
     assert_eq!(constructed.unwrap_err().code, ErrorCode::Malformed);
 }
 
-// The Lua case builds a packet table carrying a field nobody declared and
-// asserts `input_protocol.validate_envelope` rejects it. A Rust `Packet` is a
-// typed struct, so that exact injection is unconstructible — but the assertion
-// protects the envelope check itself, and that IS reachable. This drives every
-// rejection branch `validate_envelope` has, each with the error code the Lua
-// distinguishes, because a peer branches on the code and not the message.
+// The original scenario builds a packet table carrying a field nobody
+// declared and asserts `input_protocol.validate_envelope` rejects it. A
+// Rust `Packet` is a typed struct, so that exact injection is
+// unconstructible — but the assertion protects the envelope check itself,
+// and that IS reachable. This drives every rejection branch
+// `validate_envelope` has, each with the error code the reference
+// implementation distinguishes, because a peer branches on the code and
+// not the message.
 #[test]
 fn rejects_a_packet_with_an_undeclared_extra_field() {
     let packet = gc_netcode::input_protocol_fixture::guest();
@@ -498,12 +503,12 @@ fn rejects_a_packet_with_an_undeclared_extra_field() {
     );
 }
 
-// `game/transport/contract.lua`'s `TransportMessage` shape now exists in
+// `game/transport/contract`'s `TransportMessage` shape now exists in
 // Rust as `fault_transport::TransportMessage` (the old blocker this test
 // used to name), and the envelope check itself is even implemented in this
 // crate — but as a private `fn validate_envelope` inside
 // `match_driver_fixture.rs`, not as the `pub` free function
-// `input_protocol::validate_envelope` the Lua original calls directly. There
+// `input_protocol::validate_envelope` a direct call would need. There
 // is still no way to call it standalone from a test; the current blocker is
 // that gap, not the absent-type one this used to name. The check is real and
 // reachable indirectly, though: every `DriverRules::canonical_host_batch`
@@ -538,13 +543,13 @@ fn validate_envelope_rejects_a_transport_tick_mismatch() {
 
 // ---------------------------------------------------------------------------
 // `input_protocol.canonical_host_batch` was out of scope when this file was
-// first ported (needed `protocol.lua`'s `SessionManifest`/
+// first written (needed `protocol`'s `SessionManifest`/
 // `SessionSlotProducer`, "out of scope for this agent" per its brief). It
-// was never ported as a free function even after `protocol.lua` landed —
-// see `input_protocol.rs`'s own module doc — but a real port exists on
-// `match_driver_fixture::DriverRules`, driven directly below exactly as the
-// Lua original drives `input_protocol.canonical_host_batch` directly rather
-// than through a live driver.
+// was never implemented as a free function even after `protocol` landed —
+// see `input_protocol.rs`'s own module doc — but a real implementation
+// exists on `match_driver_fixture::DriverRules`, driven directly below to
+// exercise `input_protocol.canonical_host_batch`'s behaviour without going
+// through a live driver.
 // ---------------------------------------------------------------------------
 
 /// `coordinator::plan_assignments`'s wire-shaped `Value`, converted into
@@ -579,9 +584,9 @@ fn slot_assignments(assignments_value: &Value) -> [SlotAssignment; 8] {
 
 /// The fixed session this file's `canonical_host_batch` cases run under: the
 /// `protocol_fixture` manifest/assignments (host, five more peers, two
-/// declared bot fills), and the [`DriverRules`] built from them. Mirrors the
-/// Lua spec's local `host_options` helper, minus the per-call
-/// `sequence`/`transport_tick` it also carries — those stay per-test.
+/// declared bot fills), and the [`DriverRules`] built from them. The
+/// per-call `sequence`/`transport_tick` a full options bundle also carries
+/// stay per-test instead of living here.
 struct HostFixture {
     driver_manifest: DriverSessionManifest,
     driver_assignments: [SlotAssignment; 8],
@@ -641,8 +646,7 @@ fn host_fixture() -> HostFixture {
     }
 }
 
-/// One arrived packet, wrapped in its wire envelope — mirrors the Lua spec's
-/// local `arrival`/`envelope` helpers.
+/// One arrived packet, wrapped in its wire envelope.
 fn packet_arrival(
     packet: &input_protocol::Packet,
     arrival_tick: i64,
@@ -769,7 +773,7 @@ fn classifies_packet_and_authority_duplicates_without_first_arrival_wins() {
 /// against whichever sender named itself, and the host's own local input is
 /// held to the same fixed fairness delay a network arrival gets for free —
 /// `input_protocol.canonical_host_batch`'s "fairness_delay" outcome
-/// coarsens to [`HostBatchErrorCode::Other`] in this port (the enum has no
+/// coarsens to [`HostBatchErrorCode::Other`] in this crate (the enum has no
 /// dedicated variant; see [`DriverRules::canonical_host_batch`]'s body).
 #[test]
 fn enforces_frozen_ownership_and_the_hosts_three_tick_local_fairness_path() {

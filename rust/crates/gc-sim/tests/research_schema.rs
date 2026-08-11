@@ -1,4 +1,5 @@
-//! Port of `spec/sim/research_schema_spec.lua`.
+//! Unit-test coverage carried from the original Lua spec
+//! (`spec/sim/research_schema_spec.lua`).
 //!
 //! Two cases from the Lua spec have no Rust counterpart and are dropped
 //! rather than stubbed `#[ignore]`: `sparse.tags = { "a", nil, "c" }` and

@@ -1,31 +1,29 @@
-// Wires keyboard/gamepad capture, `bindings.ts`'s already-ported CONTROLS
-// table, and `input_sample.ts`'s quantize/pack rules together into an
-// actual `InputSample` per render frame -- the concrete answer to this
-// package's GOAL ("keyboard and gamepad events -> values shaped like
-// InputSample").
+// Wires keyboard/gamepad capture, `bindings.ts`'s CONTROLS table, and
+// `input_sample.ts`'s quantize/pack rules together into an actual
+// `InputSample` per render frame -- the concrete answer to this package's
+// GOAL ("keyboard and gamepad events -> values shaped like InputSample").
 //
 // It only goes as far as the physical controls that mean the same thing in
-// every context. Walking `game/screens/match.lua`'s real per-frame
-// construction (the block building its local `frame_input`, match.lua
-// roughly lines 833-877) shows two different kinds of `InputSample` bit:
+// every context. The match screen's real per-frame construction shows two
+// different kinds of `InputSample` bit:
 //
-//   * CONTEXT-FREE: `move` (`read_move_axis`), `dodge` (JUKE always fires
-//     it, `elseif control_id == "juke" then self._dodge = true`, no
-//     `carrying` check), `sprint` (`control_down("sprint")`, a direct
-//     read), and `equipment_held`/`equipment_pressed`/`equipment_released`
-//     (also direct/poll-diffed, no `carrying` check). These need nothing
-//     but the physical controls, and this file computes them for real.
+//   * CONTEXT-FREE: `move` (from the raw movement axis), `dodge` (a JUKE
+//     press always fires it, no possession check), `sprint` (a direct
+//     held-key read), and `equipment_held`/`equipment_pressed`/
+//     `equipment_released` (also direct/poll-diffed, no possession check).
+//     These need nothing but the physical controls, and this file computes
+//     them for real.
 //
 //   * CONTEXTUAL: `shoot`/`shoot_held`, `pass`/`pass_held`, `switch`,
 //     `dash`, `jockey`, `lob`, `aerial_strike`, `aerial_acrobatic`. Every
-//     one of these is gated on `self.state.owner == self.state.controlled`
-//     ("carrying") or stateful latches derived from it (`_lob_latch`,
-//     `_shoot_held_prev`, `_action_held_prev`) -- match-state knowledge
-//     `@gc/input` structurally cannot have (v2/README.md's file-mapping
-//     table puts `match.lua` itself in `packages/screens`, not
-//     `packages/input`; @gc/input owns "capture and bindings" only).
+//     one of these is gated on whether this player currently has
+//     possession, or stateful latches derived from that -- match-state
+//     knowledge `@gc/input` structurally cannot have (ARCHITECTURE.md §1's
+//     package table puts the match screen itself in
+//     `@gc/screens`, not `@gc/input`; this package owns "capture
+//     and bindings" only).
 //
-// So this module does NOT reimplement match.lua's contextual state
+// So this module does NOT reimplement the match screen's contextual state
 // machine -- doing so here would duplicate logic that belongs one layer up
 // and, worse, fork it from the real thing the moment either copy changed.
 // Instead, [`InputSampleCapture.sample`] takes the contextual booleans as an
@@ -35,9 +33,9 @@
 // `packages/screens`' match screen exists (Wave 2, needs a wasm-compiled
 // `gc-sim` per the four skipped specs this package's task brief points at:
 // match_screen.spec.ts, match_gamepad.spec.ts), it computes those booleans
-// from live `MatchState` -- exactly what `match.lua` does today -- and
-// calls this function once per render frame. Until then every contextual
-// field defaults to neutral, matching `neutralSample()`.
+// from live `MatchState` and calls this function once per render frame.
+// Until then every contextual field defaults to neutral, matching
+// `neutralSample()`.
 
 import { bindings } from "./bindings.ts";
 import type { GamepadState, KeyboardState } from "./bindings.ts";
@@ -78,10 +76,10 @@ const NOOP_TRANSFORM: ViewportTransform = {
 };
 const NOOP_VIEWPORT_MAPPER: ViewportMapper = { toVirtual: () => null };
 
-/** Match.lua's `STICK_DEADZONE`: the analog stick's raw magnitude below which it reads as centered. */
+/** The analog stick's raw magnitude below which it reads as centered. */
 export const STICK_DEADZONE = 0.2;
 
-/** Mirrors match.lua's `read_move_axis`: WASD/D-pad plus the raw left stick, context-free. */
+/** WASD/D-pad plus the raw left stick, context-free. */
 export function readMoveAxis(keyboard: KeyboardState, gamepad?: GamepadState): readonly [x: number, y: number] {
   let x = 0;
   let y = 0;
@@ -160,12 +158,11 @@ function edgeActionsOf(
   if (contextual.switchPlayer === true) {
     edges.push("switch");
   }
-  // `dash` has no context-free source and no contextual field either:
-  // match.lua derives it from the jockey-release edge
-  // (`self._action_held_prev and not action_down_offball and not carrying`),
-  // which needs both a previous-frame contextual value AND this frame's
-  // contextual value -- strictly Wave 2's state to hold, not a boolean this
-  // call can take neutrally.
+  // `dash` has no context-free source and no contextual field either: it
+  // is derived from the jockey-release edge, which needs both a
+  // previous-frame contextual value AND this frame's contextual value --
+  // strictly Wave 2's state to hold, not a boolean this call can take
+  // neutrally.
   if (dodge) {
     edges.push("dodge");
   }
@@ -184,18 +181,16 @@ function edgeActionsOf(
  * fields (defaulting to neutral) into one real `InputSample`.
  *
  * Stateful across calls for the two edges that need frame-to-frame
- * diffing: `dodge` from queued JUKE press events (mirroring match.lua's
- * one-shot `self._dodge = true` inside its keypress handler), and
- * `equipment_pressed`/`equipment_released` from comparing this poll's
- * `equipment` hold against the previous one (mirroring match.lua's
- * `equipment_before_poll ~= equipment_held`, `Match:update`).
+ * diffing: `dodge` from queued JUKE press events (a one-shot flag per
+ * press), and `equipment_pressed`/`equipment_released` from comparing
+ * this poll's `equipment` hold against the previous one.
  */
 export class InputSampleCapture {
   // Explicit fields rather than constructor parameter properties: this
-  // workspace's tsconfig sets `erasableSyntaxOnly` (v2/README §6 rule 1's
-  // TypeScript 7 posture), which forbids parameter properties because they
-  // are not erasable syntax (they emit real field-assignment code, not
-  // just types) -- see this package's porting report.
+  // workspace's tsconfig sets `erasableSyntaxOnly` (ARCHITECTURE.md §4 rule
+  // 1's TypeScript strictness posture), which forbids parameter properties
+  // because they are not erasable syntax (they emit real field-assignment
+  // code, not just types).
   private readonly keyboard: KeyboardState;
   private readonly gamepad: GamepadState | undefined;
   private readonly drainKeyEvents: () => readonly ControllerInputEvent[];

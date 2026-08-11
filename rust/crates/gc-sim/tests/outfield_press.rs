@@ -1,4 +1,4 @@
-//! Port of `spec/sim/outfield_press_spec.lua`.
+//! Tests for `gc_sim::outfield_press`.
 
 use gc_core::vec2::Vec2;
 use gc_sim::brain;

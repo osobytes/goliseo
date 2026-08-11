@@ -1,5 +1,3 @@
-//! Port of `sim/research_response.lua`.
-//!
 //! Experience-response contract: instrument register validation, response
 //! set validation, and construct scoring that refuses to pool distinct
 //! constructs.
@@ -194,15 +192,15 @@ fn is_finite(value: f64) -> bool {
 ///
 /// Panics (`assert!`) on any structural or cross-field violation.
 ///
-/// Several of the Lua original's checks (`scale_kind` is `"likert"` or
-/// `"continuous"`, `score_aggregation` is `"mean_all_items"` or
-/// `"item_only"`, `analysis_role` is one of three roles, `reverse_scored`
-/// is a boolean) exist because Lua fields are untyped strings/values; here
+/// Checks like "`scale_kind` is `\"likert\"` or `\"continuous\"`",
+/// "`score_aggregation` is `\"mean_all_items\"` or `\"item_only\"`", "
+/// `analysis_role` is one of three roles", or "`reverse_scored` is a
+/// boolean" are absent here because
 /// [`gc_data::research_instruments::ResearchScaleKind`] etc. are closed Rust
 /// enums, so those specific checks are structurally impossible to violate
-/// and are dropped rather than ported as dead code. The cross-field checks
-/// they were adjacent to (mean scoring requires the complete-item rule, a
-/// primary role requires a validated instrument, ...) are real and kept.
+/// and would be dead code. The cross-field checks they were adjacent to
+/// (mean scoring requires the complete-item rule, a primary role requires a
+/// validated instrument, ...) are real and kept.
 #[must_use]
 pub fn validate_register(register: Option<&[ResearchInstrumentData]>) -> bool {
     let register = register.unwrap_or(data_instruments::ALL);

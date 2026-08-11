@@ -65,7 +65,7 @@ dist/
 # Local benchmark evidence; the report in docs/ carries the reviewed numbers.
 .bench/
 
-# Diagnostic output from scripts/v2_frame_profile.py: a .cpuprofile, a devtools
+# Diagnostic output from scripts/frame_profile.py: a .cpuprofile, a devtools
 # trace and the raw per-frame samples behind them. Evidence for one
 # investigation, regenerated on demand — the CONCLUSIONS belong in code comments
 # and docs/, not multi-megabyte traces in the tree.

@@ -1,14 +1,12 @@
-// Ported from spec/screens/squad_product_spec.lua.
-//
-// Fixture note: the Lua spec drives the real `data/players.lua` /
-// `data/teams.lua` / `render/identity.lua`. Those are content this package
-// receives rather than imports (content.ts's header; v2/README.md rule
-// 6.7), so the fixture below transcribes the real Nebula FC squad verbatim
-// — same ids, names, stats, and derived identities as the production
-// tables (`data/players.lua`, `data/teams.lua`, `data/species.lua`,
-// `data/showcase_player_compatibility.lua`) — so the assertions exercise
-// the exact same values the Lua spec does. Same approach `@gc/presentation`'s
-// `combat.spec.ts` takes for `data/action_families.lua` et al.
+// Fixture note: player data, team data, and presentation identity are
+// content this package receives rather than imports (content.ts's header;
+// ARCHITECTURE.md §4 rule 6), so the fixture below transcribes the real
+// Nebula FC squad verbatim — same ids, names, stats, and derived
+// identities as the production tables (`gc-data`'s `players.rs`,
+// `teams.rs`, `species.rs`, `showcase_player_compatibility.rs`) — so the
+// assertions exercise the exact same values production does. Same
+// approach `@gc/presentation`'s `combat.spec.ts` takes for
+// `gc-data`'s `action_families.rs` et al.
 
 import { describe, expect, it } from "vitest";
 import { hit } from "@gc/ui";

@@ -1,5 +1,3 @@
-// Ported from game/webrtc_proof.lua.
-//
 // Pure protocol and diagnostics helpers for the OMP-0 WebRTC proof. Browser
 // APIs stay outside this module; it is reusable by a later game-facing
 // adapter without importing DOM or WebRTC types.

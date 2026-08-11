@@ -1,18 +1,18 @@
 // A match that is already running when the page loads.
 //
-// WHY THIS PAGE EXISTS. Comparing v2 against the Lua build, or profiling
-// either, kept being defeated by the product shell rather than by the thing
-// under test:
+// WHY THIS PAGE EXISTS. Profiling the match, or evaluating it in the
+// browser, kept being defeated by the product shell rather than by the
+// thing under test:
 //
-//   * Four menu steps stand between load and kickoff, and the two builds row
-//     their buttons at slightly different heights, so any coordinate-driven
-//     script diverges between them and lands on the wrong control.
+//   * Four menu steps stand between load and kickoff, and buttons move
+//     between UI iterations, so any coordinate-driven script is fragile and
+//     easily lands on the wrong control.
 //   * `browser_main.ts` pauses the match when the window loses focus
-//     (`window.addEventListener("blur", ...)`). The Lua build does the same,
-//     so it is CORRECT there -- and fatal here: a window driven over CDP, or
-//     sat beside a second window, is never focused, so the match freezes the
-//     instant you look away. Several "the simulation is frozen" observations
-//     during this port were only ever that.
+//     (`window.addEventListener("blur", ...)`) -- correct behavior for the
+//     shipped product, and fatal here: a window driven over CDP, or sat
+//     beside a second window, is never focused, so the match freezes the
+//     instant you look away. Several "the simulation is frozen"
+//     observations early in this tool's use were only ever that.
 //   * A click that misses a menu button by a few pixels lands on the running
 //     match and pauses it, which looks identical to a hang.
 //
@@ -34,15 +34,14 @@
 // still holding it, because nothing is telling them to do anything. A harness
 // that does this is showing a match with one broken player in it, which is
 // worse than useless for judging feel. `Session.enableBot`/`botWire` drive
-// that slot from `gc_sim::bot` -- the same bot `sim/headless.lua` and
-// `game/render/benchmark.lua` use on the Lua side, and the same one
-// `session_ai_driven_differential` proves bit-exact against it.
+// that slot from `gc_sim::bot` -- the same bot module
+// `crates/gc-sim/tests/session_ai_driven_differential.rs` proves bit-exact
+// against the historical reference implementation.
 //
-// The Lua counterpart of this page is `love . --benchmark` (windowed,
-// bot-driven, no menus -- `game/render/benchmark.lua`), reachable in the
-// love.js build as `?arg=["--benchmark", ...]`. Comparing this page against
-// the Lua PRODUCT build instead would be comparing a bot-driven match against
-// a menu-driven one that pauses when you look away.
+// Comparing this page against the full product build (`browser_main.ts`,
+// menu-driven, pauses on blur) instead of this bare harness would be
+// comparing a bot-driven match against a menu-driven one that pauses when
+// you look away.
 //
 // `window.__gcMatchHarness` carries live stats for a driver script; the
 // on-screen readout shows the same numbers for a human watching.
@@ -94,7 +93,7 @@ interface HarnessStats {
    * for "a shot just happened" or "this player is leaning hard" has no other
    * way to know WHEN to capture, because both facts live inside the frame
    * loop and neither is legible from a screenshot alone. Nothing under
-   * v2/ts reads these. */
+   * ts reads these. */
   poses: (string | undefined)[];
   leans: number[];
   /** Per-roster-slot WORLD position, the ball's world position, the field's
@@ -114,7 +113,7 @@ interface HarnessStats {
    *
    * `view_*` are null until `cameraFollow` has a smoothed focus (its own
    * `view()` returns undefined before the first update) or when
-   * `?stadium=0` leaves the follow camera off. Nothing under v2/ts reads
+   * `?stadium=0` leaves the follow camera off. Nothing under ts reads
    * any of this. */
   playerX: number[];
   playerY: number[];
@@ -135,25 +134,24 @@ declare global {
 async function main(): Promise<void> {
   const params = new URLSearchParams(location.search);
   const seed = Number(params.get("seed") ?? "1");
-  // RENDER AT THE FIELD'S OWN SIZE AND UPSCALE, which is what the love.js
-  // build does ("keeps the 960x540 logical canvas at 16:9",
+  // RENDER AT THE FIELD'S OWN SIZE AND UPSCALE, which is what the product's
+  // browser build does ("keeps the 960x540 logical canvas at 16:9",
   // docs/online/browser_build.md).
   //
   // HISTORY, and why this is no longer load-bearing. This started as a
-  // workaround for #414: `camera.projectFixed` -- ported character for
-  // character from Lua -- put the viewport factor in the SCREEN POSITION and
-  // not in the depth scale:
+  // workaround for #414: `camera.projectFixed` put the viewport factor in
+  // the SCREEN POSITION and not in the depth scale:
   //
   //     sx    = vp.w/2 + (wx - field.w/2) * scale * (vp.w / field.w)
   //     scale = far_scale + (near_scale - far_scale) * t
   //
   // Everything sized off that scale (`r = radius * scale`, and so every
   // character, billboard, shadow and reticle derived from it) therefore had
-  // NO viewport factor. That was invisible while vp.w == field.w, which is
-  // the only case Lua ever runs and was the only case the specs covered.
-  // Rendering at the window's native size instead stretched the pitch while
-  // the players stayed put -- measured: a 2x viewport moved pitch width
-  // 830 -> 1634 px and left character ppm bit-identical at 29.8969.
+  // NO viewport factor. That was invisible whenever vp.w == field.w, which
+  // was the only case the specs covered. Rendering at the window's native
+  // size instead stretched the pitch while the players stayed put --
+  // measured: a 2x viewport moved pitch width 830 -> 1634 px and left
+  // character ppm bit-identical at 29.8969.
   //
   // `camera.ts`'s `projectFixed` now carries a single uniform world-to-pixel
   // factor into both positions and sizes, so rendering at the window's native
@@ -213,8 +211,8 @@ async function main(): Promise<void> {
   canvas.width = width;
   canvas.height = height;
   // CSS size is independent of the drawing buffer: letterbox the largest
-  // field-aspect rectangle that fits, exactly as the love.js host does for a
-  // non-16:9 window.
+  // field-aspect rectangle that fits, exactly as the product's browser host
+  // does for a non-16:9 window.
   const surface = canvas;
   function fitToWindow(): void {
     const scale = Math.min(window.innerWidth / width, window.innerHeight / height);
@@ -240,10 +238,10 @@ async function main(): Promise<void> {
   // The logical viewport has to stay at the field's size (see the note on
   // `width`/`height` above), but rendering a 960x540 BUFFER and letting CSS
   // stretch it to the window throws away every device pixel above that -- a
-  // 960x540 image blown up ~1.9x, which reads as chunky and soft. love.js pays
-  // that cost because it has no way not to; three.js does. The pixel ratio
-  // scales the DRAWING BUFFER while the scene keeps its own coordinate space,
-  // so the game still draws in Lua's 960x540 and still rasterises at the
+  // 960x540 image blown up ~1.9x, which reads as chunky and soft. three.js
+  // does not have to pay that cost. The pixel ratio scales the DRAWING
+  // BUFFER while the scene keeps its own coordinate space, so the game
+  // still draws in a 960x540 logical space and still rasterises at the
   // display's real resolution.
   //
   // Must be passed to `SceneRoot`, not set on the renderer beforehand: its
@@ -253,9 +251,9 @@ async function main(): Promise<void> {
   //
   // Capped at 3 so a HiDPI display cannot quietly ask for a 9x-area buffer.
   function pixelRatioForWindow(): number {
-    // `?ratio=` pins it, for separating "we render more pixels than love.js
-    // does" from "something is pathologically slow". love.js is effectively
-    // ratio 1: a 960x540 buffer stretched by the browser.
+    // `?ratio=` pins it, for separating "we render more pixels than a 1:1
+    // buffer" from "something is pathologically slow". Ratio 1 is a
+    // 960x540 buffer stretched by the browser.
     const pinned = params.get("ratio");
     if (pinned !== null) {
       return Math.max(Number(pinned), 0.1);
@@ -330,7 +328,7 @@ async function main(): Promise<void> {
   // nothing about the frame changes at all.
   //
   // The lever is off by default because the product's own match screen has
-  // the same opt-in (`game/screens/match.lua`'s `_opts.combat_enabled`).
+  // the same opt-in (`@gc/screens`'s `match.ts`'s `MatchScreenOptions.combat_enabled`).
   const combatEnabled = params.get("combat") === "1";
   const session = new Session("nebula", "orion", seed, durationSeconds, 99, undefined, combatEnabled, undefined, undefined, undefined);
   session.enableBot(botSeed);
@@ -387,7 +385,7 @@ async function main(): Promise<void> {
 
   // Diagnostics handle. This page exists to be measured, and attributing draw
   // calls needs the scene graph and the renderer -- see the breakdown driver
-  // in scripts/. Not a product affordance: nothing under v2/ts reads this.
+  // in scripts/. Not a product affordance: nothing under ts reads this.
   //
   // `effects` rides along for one specific reason. It is the only thing this
   // page can reach that would break a deterministic capture: `effects.burst`
@@ -441,8 +439,7 @@ async function main(): Promise<void> {
         break;
       }
       // Read the state BEFORE the step it feeds -- `botWire` samples the
-      // match as it stands right now, exactly as the Lua benchmark's
-      // `bot.input(self.bot, self.state, DT)` does.
+      // match as it stands right now, before that tick's step advances it.
       session.step(session.botWire());
       accumulator -= DT;
       ticks += 1;
@@ -460,7 +457,8 @@ async function main(): Promise<void> {
     // leaves every player at speed 0, so the rig holds the idle clip no matter
     // how fast they are actually moving across the pitch. `MatchScreen` and
     // `benchmark.ts` both call this; this page did not, which is why its
-    // characters slid around frozen next to the Lua benchmark's running ones.
+    // characters used to slide around frozen while everything else in the
+    // frame moved correctly.
     const followPlayers = roster.ids.map((id, i) => ({ id, pos: { x: frame.players.x[i] ?? 0, y: frame.players.y[i] ?? 0 } }));
     viewState.update(followPlayers, ticks * DT);
     // Ages and latches the follow-through window from this frame's own event

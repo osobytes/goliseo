@@ -1,5 +1,3 @@
-// Ported from game/online/lobby_link.lua.
-//
 // Carries lobby control traffic over a star transport.
 //
 // The session protocol bounds a control wire at 8,192 bytes while the
@@ -19,13 +17,13 @@
 //
 // ## Boundary note: `game.online.protocol.MAX_WIRE_BYTES`
 //
-// `game.online.protocol` is Rust-owned (`crates/gc-netcode`, v2/README.md
-// §2.1) and cannot be imported here. `MAX_WIRE_BYTES` (8192, as of this
-// port) is a plain integer bound this module uses only to reject an
-// oversized wire before framing it -- not an algorithm, not a content
-// table -- so it is duplicated as a local constant rather than threaded
-// through as an injected parameter. If the protocol's bound ever changes,
-// this constant needs a matching update.
+// `game.online.protocol` is Rust-owned (`crates/gc-netcode`, ARCHITECTURE.md
+// §1.1) and cannot be imported here. `MAX_WIRE_BYTES` (8192) is a plain
+// integer bound this module uses only to reject an oversized wire before
+// framing it -- not an algorithm, not a content table -- so it is
+// duplicated as a local constant rather than threaded through as an
+// injected parameter. If the protocol's bound ever changes, this constant
+// needs a matching update.
 
 import { type Result, ok, err } from "@gc/core";
 import {
@@ -71,7 +69,8 @@ export type LobbyEffect =
   | { readonly kind: "shutdown" }
   // Every other lobby-model effect kind (e.g. `clipboard`, `start_match`,
   // `leave`) is the caller's own concern; `apply` is a no-op for anything
-  // it does not recognize, matching the Lua original's fallthrough `return true`.
+  // it does not recognize, returning success rather than failing on an
+  // effect kind it does not own.
   | { readonly kind: string };
 
 export const FRAME_PREFIX = "GCLF;1;";
@@ -158,7 +157,7 @@ export function absorb(buffer: LobbyFrameBuffer, payload: string): Result<string
   return ok(wire);
 }
 
-/** Carries lobby control traffic over a star transport (`game/online/lobby_link.lua`'s `LobbyLink`). */
+/** Carries lobby control traffic over a star transport. */
 export class LobbyLink {
   readonly star: StarTransportAdapter;
   private readonly _buffers = new Map<string, LobbyFrameBuffer>();

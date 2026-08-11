@@ -302,7 +302,7 @@ export const POSE_ACTIONS: Readonly<Record<PlayerPoseId, PoseActionEntry>> = {
   stumble: noAction("root_overlay", "action_pose.tip's stumble branch"),
   // The follow-through after a kick is released. This was the sharpest case in
   // the table: #428 wired the pose id end to end and a browser run of
-  // `v2/tools/browser_match_harness` on hardware GL observed it on a real
+  // `tools/browser_match_harness` on hardware GL observed it on a real
   // roster slot at tick 600 -- the wire worked, and the pose still rendered
   // bit-identically to plain running because nothing claimed it. #430 does:
   // the mass carries on past the ball instead of snapping back into the run.

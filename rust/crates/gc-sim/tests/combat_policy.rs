@@ -1,14 +1,12 @@
-//! Port of `spec/sim/combat_policy_spec.lua`.
+//! Tests for `gc_sim::combat_policy`.
 //!
 //! `gameplay_ai/combat/v1` scoring, reason vocabulary, and availability.
 //!
 //! Scoring is pure: it takes a candidate record, not a world. That is what
 //! lets the soccer-value ordering be asserted directly instead of inferred
-//! from whichever match happened to be simulated — so the "scoring" and
-//! "combat decision reasons" describe blocks below port in full. The
-//! "decisions" describe block's tests build their fixture via the Lua
-//! spec's `bare_match()`, which calls `match.new` (`sim/match.lua`). That
-//! module is now ported (`gc_sim::r#match`), so the full block ports below.
+//! from whichever match happened to be simulated. The "decisions" tests
+//! build their fixture via `bare_match()` below, which calls
+//! `sim_match::new`.
 
 use gc_core::vec2::Vec2;
 use gc_data::action_families::ActionFamilyId;
@@ -29,10 +27,10 @@ use gc_sim::match_snapshot::{MatchState, PitchSize, Team};
 const SOURCE: i64 = 2;
 const TARGET: i64 = 7;
 
-/// Mirrors the spec's `bare_match()`: a fresh 5v5 fixture with every player
-/// parked on a diagonal, facing their attacking direction, and the ball
-/// sitting untouched in the corner — a blank canvas the "decisions" cases
-/// pose explicitly rather than relying on kickoff placement.
+/// A fresh 5v5 fixture with every player parked on a diagonal, facing their
+/// attacking direction, and the ball sitting untouched in the corner — a
+/// blank canvas the "decisions" cases pose explicitly rather than relying on
+/// kickoff placement.
 fn bare_match() -> (MatchState, CombatMatchState) {
     let home = gc_data::teams::get("nebula").expect("nebula team is authored");
     let away = gc_data::teams::get("orion").expect("orion team is authored");
@@ -65,7 +63,7 @@ fn bare_match() -> (MatchState, CombatMatchState) {
     (state, combat_state)
 }
 
-/// Mirrors the spec's `observe(state, combat_state)`.
+/// Builds a `CombatObservation` for `SOURCE` from `state`/`combat_state`.
 fn observe(state: &MatchState, combat_state: &CombatMatchState) -> CombatObservation {
     combat_observation::build(
         state,
@@ -76,9 +74,8 @@ fn observe(state: &MatchState, combat_state: &CombatMatchState) -> CombatObserva
     )
 }
 
-/// Mirrors the spec's `candidate(overrides)`: `CombatPolicyCandidate` in its
-/// commit-a-carrier-contest baseline shape, so each test only names the
-/// fields it varies.
+/// `CombatPolicyCandidate` in its commit-a-carrier-contest baseline shape,
+/// so each test only names the fields it varies.
 fn candidate(
     purpose: Purpose,
     family_id: ActionFamilyId,
@@ -176,8 +173,8 @@ fn scoring_charges_the_whole_commitment_so_a_cheap_family_beats_an_expensive_one
         combat_policy::commitment_ticks(ActionFamilyId::Ranged),
         18 + 1 + 27 + 60
     );
-    // Kept as the spec's literal `windup + active + recovery + cooldown`
-    // sum (active/cooldown are zero for guard) rather than pre-folded, so a
+    // Written as the literal `windup + active + recovery + cooldown` sum
+    // (active/cooldown are zero for guard) rather than pre-folded, so a
     // reader can check it against the family definition term by term.
     #[allow(clippy::identity_op)]
     let guard_expected = 6 + 0 + 9 + 0;
@@ -276,12 +273,11 @@ fn scoring_always_offers_a_decline_option_and_unique_kind_id_pairs() {
 
 #[test]
 fn combat_decision_reasons_keeps_decline_out_of_the_commit_vocabulary_and_unattributed_inside_it() {
-    // `combat_intent.REASONS`/`COMMIT_REASONS` membership checks against a
-    // string vocabulary are structurally redundant here: `CombatDecisionReason`
-    // is a closed Rust enum, so every value already IS a valid reason, and
-    // the (Lua-only) `formation_risk_tradeoff` cost-flag string cannot even
-    // be constructed as one. What is not structurally guaranteed — which
-    // reasons are COMMIT reasons — is asserted directly.
+    // A string-vocabulary membership check would be structurally redundant
+    // here: `CombatDecisionReason` is a closed Rust enum, so every value
+    // already IS a valid reason, and the `formation_risk_tradeoff` cost-flag
+    // string cannot even be constructed as one. What is not structurally
+    // guaranteed — which reasons are COMMIT reasons — is asserted directly.
     assert!(!CombatDecisionReason::Decline.is_commit_reason());
     assert!(CombatDecisionReason::UnattributedOffBall.is_commit_reason());
     for purpose in [
@@ -308,9 +304,9 @@ fn combat_decision_reasons_refuses_to_label_a_commit_with_decline() {
 
 #[test]
 fn combat_decision_reasons_materializes_only_legal_equipment_transitions() {
-    // Kept in the spec's original `!(a) && !(b)` shape (rather than the
-    // De Morgan-folded form clippy prefers) so it reads next to
-    // `input_frame::validate_sample`'s prose rule it mirrors.
+    // Kept in the `!(a) && !(b)` shape (rather than the De Morgan-folded
+    // form clippy prefers) so it reads next to `input_frame::validate_sample`'s
+    // prose rule it mirrors.
     #[allow(clippy::nonminimal_bool)]
     fn legal(signals: combat_intent::CombatIntentSignals) -> bool {
         let pressed = signals.equipment_pressed;
@@ -374,12 +370,11 @@ fn combat_decision_reasons_derives_a_stat_scaled_cadence_and_a_per_tick_decision
     assert!(seed >= 1);
 }
 
-// The remaining spec describe block ("gameplay_ai/combat/v1 decisions") builds
-// its fixture via the Lua spec's `bare_match()`, which calls `match.new`
-// (`sim/match.lua`, now ported as `gc_sim::r#match`). The first five cases
-// below use the `bare_match()`/`observe()` helpers above; the sixth
+// The remaining "gameplay_ai/combat/v1 decisions" tests build their fixture
+// via `bare_match()`, which calls `gc_sim::r#match::new`. The first five
+// cases below use the `bare_match()`/`observe()` helpers above; the sixth
 // (`decisions_rejects_any_observation_that_is_not_this_schema`) needs no
-// match fixture at all, so it was already ported directly.
+// match fixture at all.
 
 #[test]
 fn decisions_reports_the_closed_unavailability_reason_instead_of_guessing() {

@@ -1,5 +1,3 @@
-//! Port of `game/online/desync_package.lua`.
-//!
 //! A deterministic desync capture: the smallest artifact that lets someone
 //! else reproduce a divergence offline.
 //!
@@ -42,32 +40,32 @@
 //!
 //! No SDP, no ICE, no addresses, no participant payloads.
 //!
-//! ## Adapted from the Lua original: how diagnostics and identity arrive
+//! ## Why `build` takes explicit diagnostics and identity parameters
 //!
-//! The Lua original's `desync_package.build` takes a `recorder` (a live
-//! `NetDiagnostics` instance) and calls `net_diagnostics.export(recorder)`
-//! itself, and takes a full `manifest: SessionManifest` /
-//! `freeze: CoordinatorFreeze` for identity. None of those three types are
-//! available here:
+//! A natural API would have [`build`] take a `recorder` (a live
+//! `NetDiagnostics` instance) and call its export function itself, and take
+//! a full `manifest: SessionManifest` / `freeze: CoordinatorFreeze` for
+//! identity. None of those three types are available to it:
 //!
-//! - `net_diagnostics.lua` is TypeScript-owned (`v2/README.md` §2's
-//!   `game/online/**` split; `game.online.net_diagnostics` is not in the
-//!   Rust-owned list) — there is no `export` function to call.
-//! - `SessionManifest` and `CoordinatorFreeze` are defined in
-//!   `game/online/protocol.lua` and `game/online/coordinator.lua`
-//!   respectively, both explicitly out of this agent's scope ("later agents
-//!   own those").
+//! - `net_diagnostics` is TypeScript-owned (ARCHITECTURE.md §1.1's
+//!   `@gc/online` split) — there is no exported function in this crate to
+//!   call.
+//! - `SessionManifest` and `CoordinatorFreeze` are defined in `protocol` and
+//!   `coordinator` respectively, and `build` only ever reads three scalar
+//!   fields off of them; requiring the whole struct for that would be an
+//!   avoidable coupling.
 //!
-//! Per README §6 rule 7's TypeScript idiom (equally applicable here, since
-//! the underlying problem is the same: a module that cannot import content
-//! it does not own) [`build`] takes the *already-exported* diagnostics data
-//! as an explicit [`Diagnostics`] parameter (`None` standing in for the Lua
-//! original's `net_diagnostics.export` returning `nil` when a recorder
-//! opted out) instead of a recorder, and takes the two or three identity
+//! Per ARCHITECTURE.md §4 rule 6's TypeScript idiom (equally applicable
+//! here, since the underlying problem is the same: a module that cannot, or
+//! should not have to, import content it does not own) [`build`] takes the
+//! *already-exported* diagnostics data as an explicit [`Diagnostics`]
+//! parameter (`None` standing in for a recorder that never opted in to
+//! export) instead of a recorder, and takes the two or three identity
 //! strings it actually reads (`session_id`, `manifest_id`,
-//! `first_input_tick`) instead of the two whole structs. Everything [`build`]
-//! itself computes — reproducibility classification, wire bounding and
-//! truncation, digesting, shape validation — is unchanged.
+//! `first_input_tick`) instead of the two whole structs. None of [`build`]'s
+//! own logic — reproducibility classification, wire bounding and
+//! truncation, digesting, shape validation — depends on any of those
+//! unavailable types; only how the inputs arrive does.
 
 use crate::diagnostics_schema::{self, Domain, Field, FieldKind, Shape, Value};
 use crate::input_protocol::{self, AuthorityRow, DecodeContext};
@@ -138,8 +136,9 @@ pub struct TapeReference {
 }
 
 /// A value naming the first point two snapshots disagreed. `expected`/`actual`
-/// mirror the Lua original's `any` (a number formatted with `%.17g`, or
-/// text) — see [`diagnostics_schema::format_g17`].
+/// are numeric-or-text because a snapshot field can diverge either as a
+/// formatted `%.17g` number or as text; see
+/// [`diagnostics_schema::format_g17`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum DifferenceValue {
     /// A `%.17g`-formatted numeric difference.
@@ -159,10 +158,10 @@ pub struct FirstDifference {
     pub actual: DifferenceValue,
 }
 
-/// One session-identity field set, matching
-/// `net_diagnostics.SESSION_SHAPE` (`game/online/net_diagnostics.lua:299`).
-/// This crate does not own `net_diagnostics.lua` (TypeScript per
-/// `v2/README.md` §2), so this struct is this module's own typed mirror of
+/// One session-identity field set, matching `net_diagnostics.ts`'s
+/// `SESSION_SHAPE` (`ts/packages/online/src/net_diagnostics.ts`). This crate
+/// does not own that module — it's TypeScript per ARCHITECTURE.md §1.1's
+/// `@gc/online` split — so this struct is this module's own typed mirror of
 /// that shape rather than a shared type — see the module doc comment.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SessionIdentity {
@@ -290,8 +289,7 @@ pub struct Diagnostics {
 #[derive(Clone, Debug, PartialEq)]
 pub struct BuildOptions {
     /// The recorder's already-exported diagnostics, or `None` if it never
-    /// opted in to export (mirrors the Lua original's
-    /// `net_diagnostics.export` returning `nil`).
+    /// opted in to export.
     pub diagnostics: Option<Diagnostics>,
     /// The frozen session's `manifest.session_id`.
     pub session_id: String,
@@ -523,10 +521,10 @@ impl RuntimeEventRecord {
     }
 }
 
-/// The shared `net_diagnostics.SESSION_SHAPE` fields
-/// (`game/online/net_diagnostics.lua:299-327`), reproduced here as data
-/// (not logic) because `net_diagnostics.lua` is TypeScript-owned — see the
-/// module doc comment.
+/// The shared `net_diagnostics.ts`'s `SESSION_SHAPE` fields
+/// (`ts/packages/online/src/net_diagnostics.ts`), reproduced here as data
+/// (not logic) because that module is TypeScript-owned — see the module
+/// doc comment.
 fn session_shape_fields() -> Vec<Field> {
     let integer = |name: &str| Field::new(FieldKind::Integer).named(name);
     vec![
@@ -572,7 +570,7 @@ fn session_shape_fields() -> Vec<Field> {
     ]
 }
 
-/// The desync package shape (`game/online/desync_package.lua:80-193`).
+/// The desync package shape.
 #[must_use]
 pub fn shape() -> Shape {
     diagnostics_schema::record(
@@ -958,8 +956,9 @@ pub fn digest(package: &Package) -> std::result::Result<String, String> {
 /// fresh rollback session built from the identity in `session`, step to
 /// `divergence.divergence_tick`, and compare.
 ///
-/// `session_id`/`sender_id` replace the Lua original's
-/// `manifest: SessionManifest` parameter — see the module doc comment.
+/// `session_id`/`sender_id` are taken as explicit parameters rather than a
+/// whole `SessionManifest`, for the same reason as [`build`]'s parameters —
+/// see the module doc comment.
 pub fn rows(
     package: &Package,
     session_id: &str,

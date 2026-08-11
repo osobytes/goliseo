@@ -1,15 +1,15 @@
-// game/input/controller.lua — normalizes a raw input event (key press,
-// gamepad button, click, or an already-normalized action) into the
-// ActionEvent/click shape screens consume.
+// Normalizes a raw input event (key press, gamepad button, click, or an
+// already-normalized action) into the ActionEvent/click shape screens
+// consume.
 //
-// The click branch needs game/ui/viewport.lua's actual-window ->
-// virtual-canvas coordinate mapping. @gc/ui owns that (viewport.ts), but
-// @gc/input's package.json cannot gain a dependency on @gc/ui here: this
-// port runs alongside a concurrent Rust/data port sharing the same
-// pnpm-lock.yaml, and editing a workspace package.json risks corrupting
-// that lockfile mid-flight (see this package's porting report — this is
-// the "needed dependency, report rather than add it" case the task brief
-// calls out). `ViewportMapper` is injected instead: the real
+// The click branch needs @gc/ui's actual-window -> virtual-canvas
+// coordinate mapping (viewport.ts). @gc/ui owns that, but @gc/input's
+// package.json cannot gain a dependency on @gc/ui here: other workspace
+// packages are being edited concurrently and share the same
+// pnpm-lock.yaml, so editing a workspace package.json risks corrupting
+// that lockfile mid-flight (this is a needed `@gc/ui` dependency deliberately
+// not added — the "needed dependency, report rather than add it" case the
+// task brief calls out). `ViewportMapper` is injected instead: the real
 // implementation is `@gc/ui`'s `viewport.toVirtual`/`ViewportTransform`,
 // which are structurally identical to the types below, so
 // `{ toVirtual: viewport.toVirtual }` from `@gc/ui` satisfies this

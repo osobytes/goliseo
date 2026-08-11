@@ -1,18 +1,14 @@
-// Ported from spec/render/correction_smoothing_spec.lua.
-//
-// Fixture note (mirrors @gc/presentation's combat.spec.ts): the Lua spec
-// builds its `MatchState` fixture via `sim.match.new` (Rust-owned,
-// `crates/gc-sim`) and `data.teams` (Rust-owned, `crates/gc-data`), and
-// checks purity with `sim.match_snapshot.hash`. None of that exists in
+// Fixture note (mirrors @gc/presentation's combat.spec.ts): a real
+// `MatchState` would come from `sim.match`/`data.teams` (both Rust-owned,
+// `crates/gc-sim` and `crates/gc-data`), neither of which exists in
 // TypeScript. `correction_smoothing`'s functions are a pure transformation
 // of whatever `{ players: [{id, pos}], ball: {x, y} }`-shaped source they
 // are handed, so the fixture below is a self-consistent synthetic stand-in
-// that exercises the exact same code paths. The purity assertions, which
-// used `match_snapshot.hash`, are expressed instead as a structural
-// before/after `JSON.stringify` snapshot of the inputs -- there is no
-// TypeScript `match_snapshot` to hash against, but "the inputs are
-// untouched" is exactly what that assertion was checking, and this is the
-// same substitution combat.spec.ts uses.
+// that exercises the exact same code paths. The purity assertions are
+// expressed as a structural before/after `JSON.stringify` snapshot of the
+// inputs -- there is no TypeScript `match_snapshot` to hash against, but
+// "the inputs are untouched" is exactly what that would check, and this is
+// the same substitution combat.spec.ts uses.
 
 import { describe, expect, it } from "vitest";
 import {

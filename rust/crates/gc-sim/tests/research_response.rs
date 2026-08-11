@@ -1,11 +1,12 @@
-//! Port of `spec/sim/research_response_spec.lua`.
+//! Tests for `gc_sim::research_response`.
 //!
-//! `example_package.lua`'s `enjoyment_responses` fixture is reproduced
-//! locally as [`enjoyment`] rather than porting the whole fixture module:
-//! this spec only ever calls the response/session-envelope-shaped helpers
-//! (`enjoyment_responses`, plus the constant participant/session ids), never
-//! the trace/rollback-derived ones — see `research_package.rs` for the
-//! fixtures that do need those and are `#[ignore]`d.
+//! The `enjoyment_responses` fixture is reproduced locally as [`enjoyment`]
+//! rather than pulled from `research_fixtures` (this crate's shared
+//! trace/rollback fixture module): this file only ever needs the
+//! response/session-envelope-shaped helpers (`enjoyment_responses`, plus the
+//! constant participant/session ids), never the trace/rollback-derived ones
+//! — see `research_package.rs` for the fixtures that do need those and are
+//! `#[ignore]`d.
 
 use gc_data::research_instruments as data_instruments;
 use gc_sim::research_response;
@@ -47,8 +48,8 @@ struct EnjoymentOverrides {
     session_id: Option<&'static str>,
 }
 
-/// Mirrors `spec/fixtures/research/example_package.lua`'s
-/// `enjoyment_responses`.
+/// Builds the enjoyment response-set fixture used across this file's tests,
+/// with optional overrides.
 fn enjoyment_with(overrides: EnjoymentOverrides) -> Value {
     let mut responses = vec![
         record(vec![
@@ -282,9 +283,9 @@ fn research_instrument_register_keeps_separately_named_constructs_separate() {
 #[test]
 fn research_instrument_register_rejects_a_register_that_claims_a_primary_unvalidated_instrument() {
     // Each case mutates one authored instrument in a local copy of the
-    // register and expects validate_register to panic (the Lua original's
-    // `pcall`-wrapped assert). `std::panic::catch_unwind` is the Rust
-    // analogue.
+    // register and expects validate_register to panic;
+    // `std::panic::catch_unwind` catches that panic so the assertion can
+    // inspect the result.
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
 

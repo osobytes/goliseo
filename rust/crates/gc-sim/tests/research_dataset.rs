@@ -1,4 +1,4 @@
-//! Port of `spec/sim/research_dataset_spec.lua`.
+//! Tests for `gc_sim::research_dataset`.
 
 mod research_fixtures;
 

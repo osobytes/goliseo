@@ -1,5 +1,3 @@
-// Ported from game/online/net_diagnostics.lua.
-//
 // Bounded, privacy-safe OMP-3 network diagnostics.
 //
 // This module is a *recorder*, not an instrument. It never reaches into the
@@ -42,10 +40,10 @@
 //
 // ## Boundary note: `game.online.protocol`
 //
-// The Lua original has exactly one call into Rust-owned code:
-// `protocol.decode(payload)` inside `record_control`, to recover a session
-// control message's `kind`/`sequence`/`message_id` from its wire payload.
-// `game.online.protocol` is `crates/gc-netcode` (v2/README.md §2.1), so it
+// Recovering a session control message's `kind`/`sequence`/`message_id`
+// from its wire payload needs exactly one call into Rust-owned code:
+// `protocol.decode(payload)` inside `record_control`.
+// `game.online.protocol` is `crates/gc-netcode` (ARCHITECTURE.md §1.1), so it
 // cannot be imported here. The decoder is threaded through as an explicit
 // `decodeControlMessage` field on `NetDiagnosticsOptions` instead -- the
 // same injection pattern `@gc/presentation/src/combat.ts` uses for content
@@ -197,7 +195,7 @@ export interface MatchDriverDiagnostics {
   readonly terminal?: MatchDriverTerminal;
 }
 
-/** A single free-form event field's value, as `sim/*.lua` emits it. */
+/** A single free-form event field's value, as `sim.match.MatchEvent`/`sim.combat.CombatEvent` emit it. */
 export type DiagnosticEventFieldValue = string | number | boolean;
 
 /**
@@ -276,7 +274,7 @@ export interface NetDiagnosticsOptions {
 interface NetDiagnosticsRing<T> {
   items: Array<T | undefined>;
   limit: number;
-  head: number; // 0-based next write position (Lua's ring was 1-based).
+  head: number; // 0-based next write position.
   count: number;
   dropped: number;
   keep: NetDiagnosticsKeep;

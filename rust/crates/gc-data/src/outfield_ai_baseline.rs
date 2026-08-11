@@ -1,21 +1,27 @@
 //! Frozen combat-disabled Outfield AI baseline (#59). DO NOT hand-edit and
-//! DO NOT refresh to silence a failing `love . --ai-baseline`: #148/#149 cite
+//! DO NOT refresh to silence a failing baseline check: #148/#149 cite
 //! this artifact as their control, so a moved baseline is evidence.
 //!
 //! A deliberate re-freeze is:
 //!   1. confirm the change is intended and record it in the drift log of
 //!      docs/design/fun_metrics.md;
-//!   2. `love . --ai-baseline write --refreeze-ack` (bumps `baseline_version`).
+//!   2. re-run the frozen fixture and bump `baseline_version` -- this
+//!      repository does not currently provide a runner that drives that
+//!      re-run outside `cargo test`'s own self-reproducibility checks (see
+//!      `gc_sim::outfield_ai_baseline` for the record shape and
+//!      `serialize`). Regenerating by hand defeats the purpose of a frozen
+//!      control, so treat a moved baseline as a finding to investigate
+//!      first, not a check to clear.
 //!
 //! See `sim::outfield_ai_baseline` and docs/design/fun_metrics.md.
 //!
-//! The recorded means/standard-deviations below are transcribed verbatim from
-//! `data/outfield_ai_baseline.lua` at full precision, matching the frozen
-//! evidence contract's `%.17g` round-trip requirement (see that file). Clippy's
-//! `excessive_precision` lint would otherwise ask for a shorter — bit-identical
-//! — decimal form; this file keeps the literal digit sequence the Lua source
-//! authored instead, since a reviewer diffing the two files line by line
-//! should see the same digits.
+//! The recorded means/standard-deviations below are kept at full precision,
+//! matching the frozen evidence contract's `%.17g` round-trip requirement
+//! (see `gc_sim::outfield_ai_baseline::serialize`). Clippy's
+//! `excessive_precision` lint would otherwise ask for a shorter —
+//! bit-identical — decimal form; this file keeps the full literal digit
+//! sequence instead, so a reviewer diffing a re-frozen version against this
+//! one sees every digit.
 #![allow(clippy::excessive_precision)]
 
 /// One tracked metric's summary statistics across the baseline seed set.

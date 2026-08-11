@@ -1,8 +1,12 @@
-//! Fun-signature tripwire baseline. REGENERATE, don't hand-edit:
-//!   `love . --tripwire write`
-//! ...and only after confirming the drift is intended, re-running
-//! `love . --sim 100`, and logging the shift in the drift log of
-//! docs/design/fun_metrics.md.
+//! Fun-signature tripwire baseline. REGENERATE, don't hand-edit.
+//!
+//! Regenerating this baseline needs a sweep runner -- something that plays
+//! a fresh batch of seeded matches and calls `gc_sim::tripwire::measure`/
+//! `serialize` -- which this repository does not currently provide.
+//! Refreshing it by hand defeats the purpose of the tripwire: confirm the
+//! drift is intended, log the shift in the drift log of
+//! docs/design/fun_metrics.md, and only then replace this header and const
+//! with `gc_sim::tripwire::serialize`'s output.
 
 /// The frozen fun-signature tripwire baseline.
 #[derive(Clone, Copy, Debug, PartialEq)]

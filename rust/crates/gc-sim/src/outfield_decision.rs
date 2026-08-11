@@ -1,5 +1,3 @@
-//! Port of `sim/outfield_decision.lua`.
-//!
 //! Serializable personal decision cadence and carrier-option construction.
 //! Callers own world geometry and execution; this module retains only value
 //! state and resolves deterministic numeric contexts through

@@ -1,5 +1,3 @@
-//! Port of `sim/research_session.lua`.
-//!
 //! Versioned research session envelope and withdrawal tombstone.
 //!
 //! The envelope is the *only* place participant, protocol, and condition
@@ -16,9 +14,8 @@
 //!     label must name the versioned calibration that derived it.
 //!
 //! `validate_against_traces` (the orphan-join guard against
-//! `ResearchTraceManifest`) is not ported: it needs `sim::research_trace`
-//! (`sim/research_trace.lua`), which this port explicitly defers — see
-//! `v2/README.md`'s porting notes for this crate. Every other public
+//! `ResearchTraceManifest`) is out of scope for this module — it needs
+//! `crate::research_trace` and is not implemented here. Every other public
 //! function is here.
 
 use crate::research_schema::{

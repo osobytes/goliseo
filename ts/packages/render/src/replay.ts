@@ -1,5 +1,3 @@
-// Ported from game/render/replay.lua.
-//
 // Goal replays: a bounded, boundary-keyed buffer of lightweight render
 // snapshots. When a goal goes in the sequence runs in two phases through the
 // normal renderer (same camera): first a brief CELEBRATION -- the scorer
@@ -12,16 +10,16 @@
 // defensively copied because the (Rust) sim mutates ball position/velocity
 // in place in its bounce code.
 //
-// Boundary note (v2/README.md rule 6.7): `MatchState`/`MatchPlayer`/
+// Boundary note (ARCHITECTURE.md §4 rule 6): `MatchState`/`MatchPlayer`/
 // `MatchEvent`/`OutfieldDecisionState`/`OutfieldPressState`/
-// `PossessionTransitionState` are sim shapes (`sim/**` -> Rust
-// `crates/gc-sim`). Only the fields this module reads/copies are declared
-// locally below. `CombatMatchState` is reused from `@gc/presentation`
-// (already a declared dependency of this package) rather than redeclared.
-// `tuning.values.REPLAY_SECONDS`/`REPLAY_SLOWMO` (`sim/tuning.lua`, also
-// Rust-owned even though the knobs themselves are presentation-only replay
-// timing) are exposed here as a mutable `replay.tuning` property instead of
-// a `require("sim.tuning")` -- the same pattern `camera.ts` uses for
+// `PossessionTransitionState` are sim shapes owned by Rust `crates/gc-sim`.
+// Only the fields this module reads/copies are declared locally below.
+// `CombatMatchState` is reused from `@gc/presentation` (already a declared
+// dependency of this package) rather than redeclared.
+// `tuning.values.REPLAY_SECONDS`/`REPLAY_SLOWMO` (also Rust-owned even
+// though the knobs themselves are presentation-only replay timing) are
+// exposed here as a mutable `replay.tuning` property instead of importing
+// the sim tuning module directly -- the same pattern `camera.ts` uses for
 // `perspective_mode`.
 
 import { Vec2 } from "@gc/core";
@@ -141,7 +139,7 @@ export interface Rect {
   readonly h: number;
 }
 
-/** The slice of `MatchPlayer` (`sim/match.lua`) the replay buffer captures. */
+/** The slice of `MatchPlayer` (Rust `crates/gc-sim`) the replay buffer captures. */
 export interface MatchPlayer {
   readonly id: string;
   readonly team: "home" | "away";
@@ -180,7 +178,7 @@ export interface ReplayPlayer extends MatchPlayer {
   readonly pass_target?: number;
 }
 
-/** The slice of `MatchState` (`sim/match.lua`) the replay buffer captures. */
+/** The slice of `MatchState` (Rust `crates/gc-sim`) the replay buffer captures. */
 export interface MatchState {
   readonly field: { readonly w: number; readonly h: number };
   readonly goal_home: Rect;
@@ -269,8 +267,8 @@ const MAX_SECONDS = 8; // ring capacity; playback window length is tunable
 const EXTRAPOLATE = 20;
 
 // Net-catch physics for the synthetic tail (mirrors the sim's loose-ball net
-// handling, which the replay never runs -- see sim/match.lua). Hardcoded
-// like the gravity constant below: this is presentation-only ballistics.
+// handling, which the replay never runs). Hardcoded like the gravity
+// constant below: this is presentation-only ballistics.
 const TAIL_BALL_R = 6; // ball radius (sim BALL_RADIUS)
 const TAIL_GRAVITY = 900; // downward accel on ball_vz (sim GRAVITY)
 const TAIL_NET_DAMP = 0.3; // pace kept when the netting stops the ball (sim NET_DAMP)
@@ -319,9 +317,9 @@ function smooth(raw: number): number {
   return u * u * (3 - 2 * u);
 }
 
-// --- shallow-copy helpers (mirror sim/outfield_decision.lua,
-// sim/outfield_press.lua, sim/possession_transition.lua's `copy_state`
-// functions, and sim/combat.lua's `snapshot`) -------------------------------
+// --- shallow-copy helpers (mirror the sim's outfield-decision,
+// outfield-press, and possession-transition `copy_state` functions, and
+// combat's `snapshot`) -------------------------------------------------
 
 function copyOutfieldDecisionState(s: OutfieldDecisionState): OutfieldDecisionState {
   return {
@@ -667,7 +665,7 @@ function celebrationFrame(): ReplayFrame {
 
 /** Goal replays: a bounded, boundary-keyed buffer of lightweight render snapshots. See file header. */
 export const replay = {
-  /** Presentation-only replay timing, mirroring `sim/tuning.lua`'s `REPLAY_SECONDS`/`REPLAY_SLOWMO` knobs. */
+  /** Presentation-only replay timing, mirroring the sim's `REPLAY_SECONDS`/`REPLAY_SLOWMO` knobs. */
   tuning: { ...REPLAY_TUNING_DEFAULTS } as ReplayTuning,
 
   resetTuning(): void {
@@ -810,9 +808,9 @@ export const replay = {
       activeEndBoundary = undefined;
       return undefined;
     }
-    // `i` keeps the Lua original's 1-based frame-pair numbering (only the
-    // array reads below are shifted by one for `replayWindow`'s 0-based storage),
-    // so `t`/`emitted`'s arithmetic is untouched.
+    // `i` is 1-based (matching `playhead`'s starting value); only the array
+    // reads below are shifted by one for `replayWindow`'s 0-based storage,
+    // so `t`/`emitted`'s arithmetic stays untouched.
     const a = assertDefined(replayWindow[i - 1], "replay window pair missing frame a");
     const b = assertDefined(replayWindow[i], "replay window pair missing frame b");
     const t = playhead - i;

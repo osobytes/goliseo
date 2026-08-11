@@ -1,4 +1,4 @@
-//! Port of `sim/sweep.lua`.
+//! Knob-space sweep and coordinate-ascent search over headless batches.
 //!
 //! Knob-space exploration over headless batches: per-knob sensitivity
 //! sweeps and greedy coordinate ascent toward higher fun scores. Pure — no
@@ -10,19 +10,16 @@
 //! paired difference +/- their standard error, not a comparison of noisy
 //! means.
 //!
-//! ## Tuning is an owned value here too (README §5.1 precedent)
+//! ## Tuning is an owned value here too
 //!
-//! The Lua spec calls `tuning.reset()` before a sweep and asserts
-//! `tuning.is_default(key)` after, to prove the global singleton wasn't left
-//! perturbed. [`crate::tuning::Tuning`]'s port is already an explicit, owned
-//! value (see that module's doc, and `crate::headless`'s restated version of
-//! the same point) — every [`evaluate`] call builds a fresh `Tuning` deep in
-//! `crate::headless::run_match`, so there is no global left to perturb or
-//! restore. The corresponding spec assertions are ported as-code-shaped as
-//! they can be (see `tests/sweep.rs`), with the reset/restore checks noted
-//! rather than translated line for line.
+//! [`crate::tuning::Tuning`] is an explicit, owned value, not a global
+//! singleton (see that module's doc, and `crate::headless`'s restated
+//! version of the same point) — every [`evaluate`] call builds a fresh
+//! `Tuning` deep in `crate::headless::run_match`, so there is no global left
+//! to perturb or restore between configs (see `tests/sweep.rs` for the
+//! coverage of that guarantee).
 //!
-//! ## Private-helper duplication (README §5.1 precedent)
+//! ## Private-helper duplication
 //!
 //! [`crate::tuning::Tuning`]'s knob-line parser and `%.6g` formatter are
 //! private to that module, and this module doesn't own it, so [`parse_blob`]

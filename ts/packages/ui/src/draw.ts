@@ -1,15 +1,15 @@
-// game/ui/draw.lua — impure rendering of pure UI layouts. Screens own state
-// and layout (see hit.ts/focus.ts); this file owns the shared product look
-// and every draw call in non-match UI. It is the one impure module in this
-// package: everything here targets `GraphicsBackend` (graphics_backend.ts)
-// rather than `love.graphics` directly, since no browser implementation of
-// that interface exists yet (see graphics_backend.ts's header comment).
+// Impure rendering of pure UI layouts. Screens own state and layout (see
+// hit.ts/focus.ts); this file owns the shared product look and every draw
+// call in non-match UI. It is the one impure module in this package:
+// everything here targets `GraphicsBackend` (graphics_backend.ts) rather
+// than a concrete rendering engine directly, since no browser implementation
+// of that interface exists yet (see graphics_backend.ts's header comment).
 //
-// The Lua original also detects a headless/stub backend missing
-// push/pop/translate/scale before using them (`can_transform`). That was a
-// defense against partial LÖVE stubs in tests; `GraphicsBackend` is a full
-// contract instead; a test double just needs to implement every method
-// (as no-ops if it likes), so that check is dropped here.
+// An earlier implementation also detected a headless/stub backend missing
+// push/pop/translate/scale before using them. That was a defense against
+// partial stub backends in tests; `GraphicsBackend` is a full contract
+// instead; a test double just needs to implement every method (as no-ops if
+// it likes), so that check is dropped here.
 
 import { invariant } from "./assert.ts";
 import type { GraphicsBackend } from "./graphics_backend.ts";
@@ -24,8 +24,8 @@ const PREVIEW_INSET = 7;
 const PREVIEW_DOT_RADIUS = 4;
 
 // [fractional x, fractional y, kind]. kind 2 stars are bigger and cyan; the
-// same number is reused as both the "is special" flag and the circle radius,
-// exactly as the Lua original does.
+// same number is reused as both the "is special" flag and the circle
+// radius.
 type StarPoint = readonly [x: number, y: number, kind: 1 | 2];
 
 const STAR_POINTS: readonly StarPoint[] = [

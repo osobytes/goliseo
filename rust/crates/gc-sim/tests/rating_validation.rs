@@ -1,8 +1,7 @@
-//! Port of `spec/sim/rating_validation_spec.lua`.
+//! Tests for `gc_sim::rating_validation`.
 //!
-//! The Lua spec monkey-patches `headless.run_match`; this port uses
-//! `rating_validation::run_with`'s injected match-runner instead — see that
-//! module's "Test seam" doc.
+//! This test drives `rating_validation::run_with`'s injected match-runner
+//! instead of a real headless match — see that module's "Test seam" doc.
 
 use gc_sim::headless::{HeadlessBot, MatchResult, Winner};
 use gc_sim::metrics;

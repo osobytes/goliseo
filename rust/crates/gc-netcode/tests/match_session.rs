@@ -1,21 +1,20 @@
-//! Port of `spec/game/online_match_session_spec.lua`.
+//! Match-session tests.
 //!
 //! ## Content-derived manifest tests use a fabricated fixture team
 //!
-//! The Lua spec's fixture (`spec/fixtures/online_match_session.lua`) builds
-//! everything from `game.online.match_manifest.template`, which reads real
-//! `data.teams`/`data.players`/`data.loadouts`/`data.arenas`. `gc-netcode`
-//! itself has no `gc-data` dependency (see `gc_netcode::match_manifest`'s
-//! module doc comment: content is a parameter, not an import), so the
-//! "content-derived online manifest" tests below build an equally-shaped,
-//! entirely fabricated two-team fixture instead (`fixture_team`) and
-//! exercise `match_manifest`'s actual *logic* against it. Every assertion
-//! that only depends on structure (roster shape, digest determinism,
-//! ownership/identity agreement, error branches) survives that substitution
-//! unchanged; assertions that specifically need the string `"nebula"` etc.
-//! are adapted to check the fabricated content's own id instead (still
-//! asserting the real property: "resolve returns the content the manifest
-//! names").
+//! `game.online.match_manifest.template` builds real online-manifest
+//! content from `data.teams`/`data.players`/`data.loadouts`/`data.arenas`.
+//! `gc-netcode` itself has no `gc-data` dependency (see
+//! `gc_netcode::match_manifest`'s module doc comment: content is a
+//! parameter, not an import), so the "content-derived online manifest"
+//! tests below build an equally-shaped, entirely fabricated two-team
+//! fixture instead (`fixture_team`) and exercise `match_manifest`'s actual
+//! *logic* against it. Every assertion that only depends on structure
+//! (roster shape, digest determinism, ownership/identity agreement, error
+//! branches) survives that substitution unchanged; assertions that
+//! specifically need the string `"nebula"` etc. are adapted to check the
+//! fabricated content's own id instead (still asserting the real property:
+//! "resolve returns the content the manifest names").
 //!
 //! ## The "online match request" tests use real `data/`-authored content
 //!
@@ -26,10 +25,9 @@
 //! so any integration test can reach it). `real_team_content` converts the
 //! shipped `nebula`/`orion` teams into `match_manifest::TeamContent`, and
 //! `real_initial_snapshot` builds boundary zero via
-//! `gc_netcode::match_driver_fixture::initial_snapshot` — the same
+//! `gc_netcode::match_driver_fixture::initial_snapshot`, using the
 //! `gc_data::teams::get`/`gc_sim::r#match::new`/`match_snapshot::capture`
-//! recipe the Lua original's own `initial_snapshot` runs, for the same two
-//! fixture teams. That unblocks the three "online match request" tests that
+//! recipe for the same two fixture teams. That unblocks the three "online match request" tests that
 //! read `request.initial_snapshot`. `gc_netcode::match_session::resolve_identity`
 //! still exists as a separate entry point so the fallible-check half of
 //! `request` can be tested with the fabricated fixture, without needing a
@@ -103,9 +101,9 @@ fn fixture_peer_ids(mode: MatchMode) -> Vec<String> {
     ids
 }
 
-/// Mirrors `spec/fixtures/online_match_session.lua`'s `fixture.freeze`,
-/// rebuilt from the same public pieces so this fixture cannot drift from
-/// the real one.
+/// Builds a `Freeze` fixture from the same public `coordinator` pieces
+/// (`plan_assignments`, `slot_sources`, ...) real freeze construction uses,
+/// so this fixture cannot drift from the real one.
 fn fixture_freeze(manifest: &Value, peer_ids: &[String]) -> Freeze {
     let assignments = coordinator::plan_assignments(manifest, peer_ids).unwrap();
     coordinator::slot_sources(manifest, &assignments).unwrap();
@@ -187,8 +185,8 @@ fn gc_data_position(position: gc_data::players::Position) -> PlayerPosition {
 
 /// The shipped `data.teams[team_id]` roster, converted into
 /// `match_manifest::TeamContent` — the same content
-/// `game.online.match_manifest` reads directly from `data/` in Lua, mirrored
-/// here through `gc_data` since `gc_netcode::match_manifest` takes content as
+/// `game.online.match_manifest` reads directly from `data/`, reached here
+/// through `gc_data` since `gc_netcode::match_manifest` takes content as
 /// a parameter rather than importing it (see that module's doc comment).
 fn real_team_content(team_id: &str) -> TeamContent {
     let team = gc_data::teams::get(team_id).expect("known fixture team");
@@ -230,8 +228,7 @@ fn real_team_content(team_id: &str) -> TeamContent {
 }
 
 /// A manifest built from the *real* shipped `nebula`/`orion` teams and
-/// `helios_crown` arena — exactly what `spec/fixtures/online_match_session.lua`'s
-/// `fixture.manifest` builds via `match_manifest.template`, unlike
+/// `helios_crown` arena via `match_manifest.template`, unlike
 /// `fixture_manifest` above which uses fabricated content.
 fn real_manifest(mode: MatchMode) -> Value {
     let home = real_team_content(match_manifest::HOME_TEAM_ID);
@@ -251,10 +248,10 @@ fn real_content(manifest: &Value) -> OnlineMatchContent {
     match_manifest::resolve(manifest, &home, &away, match_manifest::ARENA_ID).unwrap()
 }
 
-/// Boundary zero for `freeze`'s frozen seed/duration, built the same recipe
-/// the Lua original's own (module-private) `initial_snapshot` runs —
-/// `sim.match.new` then `match_snapshot.capture` — for the real `nebula`/
-/// `orion` teams, via the fixture that already ports that exact recipe.
+/// Boundary zero for `freeze`'s frozen seed/duration, built with the
+/// canonical `sim.match.new` then `match_snapshot.capture` recipe, for the
+/// real `nebula`/`orion` teams, via the fixture that already implements
+/// that exact recipe.
 fn real_initial_snapshot(freeze: &Freeze) -> gc_sim::match_snapshot::MatchSnapshot {
     let duration = freeze.duration_ticks as f64 / freeze.tick_rate as f64;
     gc_netcode::match_driver_fixture::initial_snapshot(
@@ -265,9 +262,8 @@ fn real_initial_snapshot(freeze: &Freeze) -> gc_sim::match_snapshot::MatchSnapsh
 }
 
 /// A complete `OnlineMatchRequest` for `peer_index` into `mode`'s real-content
-/// session — mirrors this file's `request_for` helper in the ported Lua spec,
-/// built from real content since [`match_session::finish`] needs a real
-/// `MatchSnapshot`.
+/// session — built from real content since [`match_session::finish`] needs
+/// a real `MatchSnapshot`.
 fn real_request_for(mode: MatchMode, peer_index: usize) -> OnlineMatchRequest {
     let manifest = real_manifest(mode);
     let peer_ids = fixture_peer_ids(mode);
@@ -367,13 +363,14 @@ fn content_derived_online_manifest_mints_deterministic_protocol_shaped_identitie
     );
 }
 
-/// The Lua case monkey-patches `protocol.vocabulary_id` to simulate "the same
-/// three `build_info` constants, but a different commit's control
-/// vocabulary" — Lua can reassign a module function at runtime; Rust's
-/// `protocol::vocabulary_id` is a plain `fn` with no such seam. What
-/// *is* portable is the property the monkey-patch was probing for:
-/// `build_id` is a pure function of its inputs (never a clock, a counter, or
-/// table order), asserted directly below instead.
+/// The original approach to this scenario monkey-patched
+/// `protocol.vocabulary_id` at runtime to simulate "the same three
+/// `build_info` constants, but a different commit's control vocabulary" —
+/// a runtime-reassignment trick with no Rust equivalent: `protocol::vocabulary_id`
+/// is a plain `fn` with no such seam. What *is* portable is the property
+/// that technique was probing for: `build_id` is a pure function of its
+/// inputs (never a clock, a counter, or table order), asserted directly
+/// below instead.
 #[test]
 fn content_derived_online_manifest_build_id_is_a_pure_function_of_its_inputs() {
     let a = BuildIdentity {

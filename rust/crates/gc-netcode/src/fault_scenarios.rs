@@ -1,18 +1,16 @@
-//! Port of `game/online/fault_scenarios.lua`.
-//!
 //! `SCENARIOS` is the data: one row per `(mode x profile x fault)`
-//! combination the campaign claims to cover. The Lua `run` is the
-//! interpreter that turns a row into a driven `FaultHarness` and a report.
+//! combination the campaign claims to cover. [`run`] is the interpreter that
+//! turns a row into a driven `FaultHarness` and a report.
 //! [`crate::fault_harness::FaultHarness`] is now real (construction, the
 //! pre-match lifecycle over a real star, the match itself, and teardown —
 //! see that module's doc comment), so [`run`]/[`inject`]/[`first_guest`] are
-//! ported for real below, following the Lua interpreter's own shape.
-//! `SessionMatchMode` — this file's former local placeholder for
-//! `protocol.lua`'s match-mode alias — is now [`crate::protocol::MatchMode`]
-//! directly: that module's own doc comment named this file's placeholder as
-//! the one to retire "once `protocol.rs` is stable", and building a live
-//! harness needs `protocol::MatchMode` anyway (every
-//! [`crate::fault_harness::FaultHarness`] entry point takes one).
+//! implemented for real below. `SessionMatchMode` — this file's former
+//! local placeholder for a match-mode alias — is now
+//! [`crate::protocol::MatchMode`] directly: that module's own doc comment
+//! named this file's placeholder as the one to retire "once `protocol.rs`
+//! is stable", and building a live harness needs `protocol::MatchMode`
+//! anyway (every [`crate::fault_harness::FaultHarness`] entry point takes
+//! one).
 
 use crate::fault_harness::{self, FaultHarness, FaultHarnessOptions};
 use crate::fault_transport::{
@@ -25,8 +23,7 @@ use crate::protocol;
 use gc_data::network_profiles::NetworkProfileName;
 use gc_sim::input_frame;
 
-/// Which shape of fault one [`FaultScenario`] injects. Mirrors
-/// `FaultInjectionKind`.
+/// Which shape of fault one [`FaultScenario`] injects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FaultInjectionKind {
     /// No injected fault; a pure convergence row.
@@ -57,7 +54,7 @@ pub enum FaultInjectionKind {
     HashDivergence,
 }
 
-/// One declared row of the OMP-3 fault matrix. Mirrors `FaultScenario`.
+/// One declared row of the OMP-3 fault matrix.
 #[derive(Clone, Copy, Debug)]
 pub struct FaultScenario {
     /// Stable row identity.
@@ -110,7 +107,7 @@ use FaultInjectionKind::{
 };
 use protocol::MatchMode::{FourVFour, OneVOne, TwoVTwo};
 
-/// The declared OMP-3 fault matrix. Mirrors `fault_scenarios.SCENARIOS`.
+/// The declared OMP-3 fault matrix.
 pub static SCENARIOS: &[FaultScenario] = &[
     // Convergence across every mode and every documented profile. 1v1 and
     // 2v2 are the rows that can exhibit a live-slot divergence at all.
@@ -486,14 +483,13 @@ pub static SCENARIOS: &[FaultScenario] = &[
     },
 ];
 
-/// Looks up a declared row by id. Mirrors `fault_scenarios.find`.
+/// Looks up a declared row by id.
 #[must_use]
 pub fn find(id: &str) -> Option<&'static FaultScenario> {
     SCENARIOS.iter().find(|scenario| scenario.id == id)
 }
 
-/// The full matrix, or just the bounded CI subset. Mirrors
-/// `fault_scenarios.select`.
+/// The full matrix, or just the bounded CI subset.
 #[must_use]
 pub fn select(smoke_only: bool) -> Vec<&'static FaultScenario> {
     if !smoke_only {
@@ -508,8 +504,7 @@ pub fn select(smoke_only: bool) -> Vec<&'static FaultScenario> {
 
 /// Inputs to [`forged_bundle`]. Bundled into one struct (rather than eight
 /// positional parameters) purely for call-site clarity and to keep the
-/// function under clippy's `too_many_arguments` — the Lua original is a
-/// positional function of the same eight values.
+/// function under clippy's `too_many_arguments`.
 pub struct ForgedBundleRequest<'a> {
     /// See [`input_protocol::Packet::session_id`].
     pub session_id: &'a str,
@@ -531,9 +526,9 @@ pub struct ForgedBundleRequest<'a> {
 }
 
 /// A real, encodable guest bundle that the sender's own driver would never
-/// author. Mirrors `forged_bundle`. Every fault this crate can express is
-/// reached this way rather than by reaching into a driver's internals: a
-/// harness that pokes private state proves the poke works.
+/// author. Every fault this crate can express is reached this way rather
+/// than by reaching into a driver's internals: a harness that pokes private
+/// state proves the poke works.
 ///
 /// # Panics
 ///
@@ -581,7 +576,7 @@ pub fn forged_bundle(request: ForgedBundleRequest<'_>) -> TransportMessage {
 
 /// A slot `guest_peer_id` provably does not own: the frozen partition covers
 /// all eight, so the host's own first owned slot is outside every guest's
-/// set. Mirrors `foreign_slot_index`.
+/// set.
 ///
 /// # Panics
 ///
@@ -603,7 +598,7 @@ pub fn foreign_slot_index(freeze: &CoordinatorFreeze, guest_peer_id: &str) -> i6
 // report.
 // ---------------------------------------------------------------------------
 
-/// A guest-side fault needs at least one guest. Mirrors `first_guest`.
+/// A guest-side fault needs at least one guest.
 ///
 /// # Panics
 ///
@@ -616,10 +611,9 @@ fn first_guest(harness: &FaultHarness) -> &fault_harness::FaultHarnessClient {
     &harness.clients[1]
 }
 
-/// Fires one scenario's declared fault. Mirrors `inject`. Every fault below
-/// is reached the same way the Lua does: over the real wire (a forged
-/// bundle, a declared hold, a transport-level close/shutdown), never by
-/// reaching into a driver's internals.
+/// Fires one scenario's declared fault. Every fault below is reached over
+/// the real wire (a forged bundle, a declared hold, a transport-level
+/// close/shutdown), never by reaching into a driver's internals.
 ///
 /// # Panics
 ///
@@ -763,9 +757,8 @@ fn inject(harness: &mut FaultHarness, scenario: &FaultScenario) {
     }
 }
 
-/// Inputs to [`run`], beyond what the scenario itself declares. Mirrors the
-/// Lua `run`'s second parameter, minus `topology`: only the star topology is
-/// offered (see [`fault_harness::FaultHarnessOptions`]).
+/// Inputs to [`run`], beyond what the scenario itself declares. Only the
+/// star topology is offered (see [`fault_harness::FaultHarnessOptions`]).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RunOptions {
     /// Overrides the scenario's own duration; itself overridden by a
@@ -775,8 +768,7 @@ pub struct RunOptions {
     pub network_seed: Option<f64>,
 }
 
-/// Run one declared row end to end and report on it. Mirrors
-/// `fault_scenarios.run`.
+/// Run one declared row end to end and report on it.
 ///
 /// # Panics
 ///

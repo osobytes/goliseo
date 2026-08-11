@@ -1,5 +1,6 @@
-//! Differential test of `input_tape` against the real Lua implementation
-//! (README rule 5.9, `v2/tools/lua_reference/README.md`). `sim/input_tape.lua`
+//! Differential test of `input_tape` against reference vectors captured from
+//! the Lua implementation this simulation was originally validated against
+//! (ARCHITECTURE.md §3 rule 7, `tools/lua_reference/README.md`). `sim/input_tape.lua`
 //! has no dedicated spec file — it is exercised through
 //! `spec/sim/headless_spec.lua`, `replay_spec.lua`, and
 //! `determinism_evidence_spec.lua` — but it is squarely on the determinism
@@ -181,7 +182,7 @@ fn input_tape_new_matches_the_reference_lua_boundary_hashes_and_frame_wires() {
     }
 
     // The same structural/full-replay validation `sim/replay.lua`'s
-    // `validate_context` performs, confirmed against real Lua's own pass.
+    // `validate_context` performed, confirmed against real Lua's own pass.
     assert_eq!("true", expect(&reference, "validate_structure_ok"));
     assert_eq!("true", expect(&reference, "validate_ok"));
     assert!(input_tape::validate_structure(&tape).is_ok());

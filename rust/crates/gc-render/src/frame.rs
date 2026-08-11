@@ -1,5 +1,3 @@
-//! Port of `render/frame.lua`.
-//!
 //! `build` turns a [`MatchState`] into a flat, engine-free description of ONE
 //! drawable frame. Nothing downstream of it needs to know what a `MatchState`
 //! is, and nothing in it needs an engine.
@@ -308,10 +306,9 @@ pub struct RenderFrameEvents {
     pub on_target: Vec<i64>,
 }
 
-/// The slice of `@gc/presentation`'s `CombatPresentationModel`
-/// (`game/presentation/combat.lua`, TS-owned) this module reads.
-/// `render/frame.lua` carries the whole model through the frame unflattened
-/// (`RenderFrame.combat`) and reads only `combat.players[index]`'s
+/// The slice of `@gc/presentation`'s `CombatPresentationModel` (TS-owned)
+/// this module reads. `RenderFrame.combat` carries the whole model through
+/// the frame unflattened and reads only `combat.players[index]`'s
 /// phase/forced-state fields, to hand [`crate::player_pose::select`] its
 /// `combat` sample; [`crate::frame_buffer`] never encodes any of it (see that
 /// module's own doc, "WHAT IS NOT CARRIED").
@@ -344,13 +341,13 @@ pub struct RenderFrameEvents {
 /// fields, not because the data was out of reach.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FrameCombatModel {
-    /// RESERVED, AND NOT THE SIGNAL ANYTHING READS. Carried for parity with
-    /// `game/presentation/combat.lua`'s `CombatPresentationModel.enabled`,
-    /// which distinguishes an empty-but-present model from a real one
-    /// because Lua has no `Option`. Rust does, and this port uses it:
-    /// [`combat_model`] hardcodes `true` and is only ever called for a match
-    /// that runs combat, so this field carries no information a reader can
-    /// act on.
+    /// RESERVED, AND NOT THE SIGNAL ANYTHING READS. Carried for shape
+    /// parity with `@gc/presentation`'s `CombatPresentationModel.enabled`
+    /// field, which that TypeScript side uses to distinguish an
+    /// empty-but-present model from a real one. Rust has `Option`, and this
+    /// module uses it instead: [`combat_model`] hardcodes `true` and is
+    /// only ever called for a match that runs combat, so this field carries
+    /// no information a reader can act on.
     ///
     /// TODAY'S ACTUAL SIGNAL IS `Option::is_some` on
     /// [`RenderFrameOptions::combat`] / [`RenderFrame::combat`] — that is
@@ -381,9 +378,8 @@ pub struct FrameCombatModel {
 /// copy below is the compiler's own identity, not a hand-written
 /// correspondence that could silently pick the wrong pose.
 ///
-/// Mirrors `game/presentation/combat.lua`'s `presentation.model` for the
-/// three fields it shares with it, including that function's identity
-/// assertions.
+/// Mirrors `@gc/presentation`'s `presentation.model` for the three fields it
+/// shares with it, including that function's identity assertions.
 ///
 /// # Panics
 ///
@@ -476,15 +472,14 @@ pub struct RenderFrame {
     pub combat: Option<FrameCombatModel>,
 }
 
-/// The slice of `@gc/render`'s `CorrectionSmoothingPose`
-/// (`game/render/correction_smoothing.lua`, TS-owned) this module reads:
-/// per-player and ball displayed positions, already smoothed. Declared
-/// locally for the same reason as [`FrameCombatModel`].
+/// The slice of `@gc/render`'s `CorrectionSmoothingPose` (TS-owned) this
+/// module reads: per-player and ball displayed positions, already smoothed.
+/// Declared locally for the same reason as [`FrameCombatModel`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderPose {
     /// Displayed positions, keyed by player id. Sparse: a player absent
     /// here is drawn at its authoritative position. A `Vec` of pairs
-    /// rather than a map (README rule 4); roster size is ~10, so a linear
+    /// rather than a map (ARCHITECTURE.md §3 rule 4); roster size is ~10, so a linear
     /// scan costs nothing.
     pub players: Vec<(String, Vec2)>,
     /// The ball's displayed position.
@@ -725,7 +720,7 @@ fn counterpressing_teams(state: &MatchState) -> ByTeam<bool> {
 
 // A tip is a keeper event that overrides the dive direction for one frame,
 // so it resolves here and the renderer never scans the event batch for it.
-// Later entries win, matching Lua's for-loop overwrite.
+// Later entries win: `rfind` returns the rightmost match.
 fn tip_event_for<'a>(events: &'a [MatchEvent], player_id: &str) -> Option<&'a MatchEvent> {
     events.iter().rfind(|event| {
         event.kind == MatchEventKind::Tip && event.player.as_deref() == Some(player_id)
@@ -879,8 +874,8 @@ fn landing_point(state: &MatchState, ball_x: f64, ball_y: f64) -> (Option<f64>, 
 // is the moment to add the field — and this note is the argument to revisit.
 //
 // The frame's `facing_x`/`facing_y` has exactly two other consumers and
-// neither is harmed: `pitch.ts`/`game/render/pitch.lua` (the draw path this
-// exists for) and `screens/match.ts`'s `onlineState`, which passes it through
+// neither is harmed: `pitch.ts` (the draw path this exists for) and
+// `screens/match.ts`'s `onlineState`, which passes it through
 // `online_match.ts` to `combat.model` as a telegraph direction — inert for a
 // keeper, and asserted so rather than assumed: `combat_snapshot.rs` refuses a
 // keeper a combat loadout and `validate_player` refuses a family without one,
@@ -910,9 +905,9 @@ fn landing_point(state: &MatchState, ball_x: f64, ball_y: f64) -> (Option<f64>, 
 //
 // The precondition is pinned rather than assumed, by
 // `only_a_keeper_ever_carries_a_dive_timer` in `gc-sim`'s own
-// `tests/match.rs` (and its Lua twin in `spec/sim/match_spec.lua`): it sweeps
-// stepped matches and goes red on the first tick an outfield player holds
-// either timer. It lives with the simulation it constrains, next to
+// `tests/match.rs`: it sweeps stepped matches and goes red on the first tick
+// an outfield player holds either timer. It lives with the simulation it
+// constrains, next to
 // `launch_dive`, so the person editing the dive logic meets it — this pointer
 // is the other half of that link. A debug assertion would be
 // WRONG in its place: a hand-built fixture may legitimately put the field on a

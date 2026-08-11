@@ -1,20 +1,15 @@
 # Reference trace captured from the real Lua `game/online/match_driver.lua`,
-# per v2/tools/lua_reference/README.md, driving a scripted sequence that
-# forces a rollback: the star (a real `game/transport/fake_star.lua` pair
-# from `game/online/match_driver_fixture.lua`'s `fixture.session("1v1")`)
-# only pumps every 5 steps, so both peers predict the rows they have not
-# received and correct them in one burst once the pump runs — the same
-# `run_bursty` shape `spec/game/online_match_driver_spec.lua` uses to exercise
-# rollback. Regenerate from a scratch copy of core/, sim/, data/, game/ with a
-# headless conf.lua:
-#
-#   local match_driver = require("game.online.match_driver")
-#   local fixture = require("game.online.match_driver_fixture")
-#   local session = fixture.session("1v1")
-#   -- build host/guest drivers via match_driver.new (hash_interval_ticks=10),
-#   -- advance() each step with a nil sample, pump() the star every 5th step,
-#   -- print match_driver.diagnostics(driver) every step and, every 10th
-#   -- step, match_driver.checkpoints(driver)'s newest hash.
+# driving a scripted sequence that forces a rollback: the star (a real
+# `game/transport/fake_star.lua` pair from
+# `game/online/match_driver_fixture.lua`'s `fixture.session("1v1")`) only
+# pumps every 5 steps, so both peers predict the rows they have not received
+# and correct them in one burst once the pump runs — the same `run_bursty`
+# shape `spec/game/online_match_driver_spec.lua` uses to exercise rollback.
+# This vector is frozen and cannot be regenerated: the Lua implementation it
+# was captured from no longer exists in this repository. A failing
+# differential against it is a finding about the Rust or TypeScript code
+# under test, not a fixture to refresh. See tools/lua_reference/README.md
+# for provenance.
 #
 # `rollback`/`correction` are `RollbackSessionDiagnostics.rollback_count`/
 # `.correction_count` and only move at a pump step, confirming the burst

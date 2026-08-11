@@ -1,9 +1,7 @@
-//! Port of `game/online/protocol_conformance.lua`.
-//!
 //! Golden evidence pinning `crate::protocol_fixture`'s wire, manifest, and
-//! transcript digests, computed by the real Lua implementation. These are
-//! the same numbers `tests/protocol.rs`'s differential fixture is checked
-//! against — see that file and `v2/tools/lua_reference/README.md`.
+//! transcript digests — frozen cross-language determinism evidence (see
+//! `tools/lua_reference/README.md` for provenance). These are the same
+//! numbers `tests/protocol.rs`'s differential fixture is checked against.
 
 use gc_core::fnv1a64;
 
@@ -71,12 +69,12 @@ pub struct Report {
 }
 
 /// `conformance.verify`: checks every pinned golden digest against a fresh
-/// encode of the fixture data, in the same order the Lua original does.
+/// encode of the fixture data.
 ///
 /// # Panics
 ///
 /// Panics (via `assert!`) on any mismatch — this is a conformance gate, not
-/// a caller-recoverable operation, exactly like the Lua original.
+/// a caller-recoverable operation.
 #[must_use]
 pub fn verify() -> Report {
     let vocabulary_id = protocol::vocabulary_id();

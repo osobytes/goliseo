@@ -1,4 +1,4 @@
-//! Port of `sim/species.lua`.
+//! Species-to-match stat translation.
 //!
 //! Pure species-to-match translation. Attribute deltas are the first of the
 //! readability cap's two modifier layers; the arena layer is the reserved

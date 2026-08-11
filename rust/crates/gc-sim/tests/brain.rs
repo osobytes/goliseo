@@ -1,4 +1,4 @@
-//! Port of `spec/sim/brain_spec.lua`.
+//! Tests for `gc_sim::brain`.
 
 use gc_core::rng;
 use gc_sim::brain;

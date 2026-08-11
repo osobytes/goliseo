@@ -1,11 +1,8 @@
-// Ported from game/fake_result.lua.
-//
-// The Lua original reads `data.players` directly and calls
-// `game.match_contract.new_result` (which reads `data.teams` itself). Both
-// tables are Rust-owned (v2/README.md rule 6.7), so `forRequest` takes the
-// slice of `MatchContractContent` it needs -- `players` for the MVP lookup,
-// `teams` because `matchContract.newResult` requires it -- as an explicit
-// parameter.
+// `forRequest` needs `data.players` (for the MVP lookup) and `data.teams`
+// (because `matchContract.newResult` requires it). Both tables are
+// Rust-owned (ARCHITECTURE.md §4 rule 6), so `forRequest` takes the slice of
+// `MatchContractContent` it needs as an explicit parameter rather than
+// reading them directly.
 
 import { matchContract, type ProductMatchRequest, type ProductMatchResult } from "./match_contract.ts";
 import type { MatchContractContent } from "./content.ts";

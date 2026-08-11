@@ -1,44 +1,30 @@
-// The v2 replacement for meshbuilder.lua and shapes.lua.
+// Accumulates flat-shaded triangles and bakes them into a GPU mesh, which is
+// exactly what three.js's `BufferGeometry` already does. Vertices are plain
+// typed fields (position, normal, palette slot, bone index, material id) --
+// there is no hand-packed vertex format to declare, because three.js skins
+// with `skinIndex`/`skinWeight` attributes and a bone matrix texture, not a
+// hand-packed uniform array, and takes multiple materials per mesh via
+// geometry groups rather than a baked per-vertex material id.
 //
-// v2/README.md #7 marks both of those Lua files "replace": their job --
-// accumulating flat-shaded triangles and baking them into a GPU mesh -- is
-// exactly what three.js's `BufferGeometry` already does, and their specific
-// vertex layout (11 floats: position, an unused texcoord, normal, a palette
-// slot, a bone index and a material id, all packed as floats because GLSL ES
-// 1.00 has no integer vertex attributes) existed only to fit LÖVE's
-// hand-written shader inside WebGL1's guaranteed-minimum uniform budget. None
-// of that survives the move: three.js skins with `skinIndex`/`skinWeight`
-// attributes and a bone matrix texture, not a hand-packed uniform array, and
-// takes multiple materials per mesh via geometry groups rather than a baked
-// per-vertex material id.
-//
-// So this file is NOT a line-for-line port of either Lua file. It keeps the
-// two things from them that are genuinely reusable, typed for three.js's
-// eventual consumption rather than LÖVE's:
+// This module keeps two things:
 //
 //   * the flat-shaded triangle/quad accumulation with a computed face normal
-//     (meshbuilder.lua's `Builder`), and
-//   * the procedural shape generators built on top of it (shapes.lua): boxes,
+//     (`Builder`), and
+//   * the procedural shape generators built on top of it: boxes,
 //     spheres-as-lathes, a general profile extrusion/loft, a curved panel and
 //     a disc.
 //
-// What is deliberately NOT here: anything that reaches for `love.graphics`,
-// the old 11-float vertex format and its LÖVE attribute names, and the
-// "merge many part-builders into the one draw call a GLSL-ES-1.00 uniform
-// budget can afford" mechanics. The merged output of `merge()` below is plain
-// typed vertex data (position, normal, a palette slot index, a bone index, a
-// material id) -- everything body.ts/equipment.ts/headgear.ts/face.ts need to
-// describe a character.
+// The merged output of `merge()` below is plain typed vertex data (position,
+// normal, a palette slot index, a bone index, a material id) -- everything
+// body.ts/equipment.ts/headgear.ts/face.ts need to describe a character.
 //
-// `build()` (below, the port of meshbuilder.lua's `Builder:build()`) takes
-// that data the one more mechanical step into a `THREE.BufferGeometry`.
-// `@types/three` is installed in this workspace as of this port (it was not
-// when this file's header previously said otherwise -- see PartBuilder.build's
-// own note), and constructing a `BufferGeometry`/`BufferAttribute` needs no
-// live WebGL context: it is a plain typed-array data container, same as any
-// other object three.js exposes, so it stays testable headless. What stays
-// genuinely out of scope for this milestone (v2/README #1, no live GL
-// context) is a `THREE.SkinnedMesh` bound to a posed `THREE.Skeleton` and
+// `build()` (below) takes that data the one more mechanical step into a
+// `THREE.BufferGeometry`. `@types/three` is installed in this workspace, and
+// constructing a `BufferGeometry`/`BufferAttribute` needs no live WebGL
+// context: it is a plain typed-array data container, same as any other
+// object three.js exposes, so it stays testable headless. What stays
+// genuinely out of scope for this milestone (no live GL context) is a
+// `THREE.SkinnedMesh` bound to a posed `THREE.Skeleton` and
 // actually rendered -- that is `player_renderer_3d.ts`'s job, not this
 // module's, and it builds its own attributes directly from `PartBuilder.verts`
 // today rather than calling `build()` (both are valid consumers of the same
@@ -111,8 +97,7 @@ export class PartBuilder {
 
   // True once this builder is `merge()`'s output. A part builder starts
   // false: it is not a draw call on its own (see `merge`'s doc), and
-  // `build()` below refuses to run against one. Mirrors meshbuilder.lua's
-  // `self.merged`.
+  // `build()` below refuses to run against one.
   merged = false;
 
   // Adds one triangle. `tf` may be null (identity). Vertices are expected
@@ -167,10 +152,9 @@ export class PartBuilder {
     return this.verts.length / 3;
   }
 
-  // Bakes the accumulated triangles into a `THREE.BufferGeometry`. Port of
-  // meshbuilder.lua's `Builder:build()`, which gated `love.graphics.newMesh`
-  // the same way: only a merged builder is a draw call, so building a bare
-  // part directly would render every part on the root bone (#337 slice 2).
+  // Bakes the accumulated triangles into a `THREE.BufferGeometry`. Only a
+  // merged builder is a draw call, so building a bare part directly would
+  // render every part on the root bone (#337 slice 2).
   //
   // Attribute names are this module's own (`paletteSlot`/`boneIndex`/
   // `material`), not a three.js-reserved name like `skinIndex`/`skinWeight`
@@ -265,7 +249,7 @@ export function merge(parts: readonly Part[]): PartBuilder {
 }
 
 // ---------------------------------------------------------------------------
-// Procedural primitive generators (shapes.lua).
+// Procedural primitive generators.
 //
 // Everything visible in the slice -- sword, shield, helmet, every limb -- is
 // built from these functions. The workhorse is `extrude`: a closed 2D

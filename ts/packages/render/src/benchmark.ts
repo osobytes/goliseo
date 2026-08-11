@@ -1,5 +1,3 @@
-// Ported from game/render/benchmark.lua.
-//
 // The #100 ten-player render benchmark.
 //
 // Answers one question with evidence instead of estimate: does the rigged
@@ -8,12 +6,12 @@
 //
 // WHAT THIS MEASURES, AND WHY IT IS NOT WHAT #100 ANTICIPATED
 //
-// #100 was written against a Menori/glTF path doing GPU skinning, so its
-// metric list leads with GLB conversion, joint uploads and skeleton
-// evaluation. That path was never built. The renderer that exists
-// (game/render/rig3d/, now v2/ts/packages/render/src/rig3d/) generates
-// meshes in code and draws one RIGID PART PER BONE with its own model
-// matrix -- there is no skinning, no GLB, and no joint upload at all.
+// #100 was written against a plan of doing GPU skinning off a glTF-style
+// asset pipeline, so its metric list leads with GLB conversion, joint
+// uploads and skeleton evaluation. That path was never built. The renderer
+// that exists (`ts/packages/render/src/rig3d/`) generates meshes in code
+// and draws one RIGID PART PER BONE with its own model matrix -- there is no
+// skinning, no GLB, and no joint upload at all.
 //
 // That inverts the expected bottleneck. Skinned characters cost 1-2 draw
 // calls each; this costs one per part, so ten players is several hundred
@@ -52,20 +50,19 @@
 // renderer has 90% headroom or none, which would make the whole exercise
 // say nothing.
 //
-// Boundary note (v2/README.md rule 6.7 and §1): the Lua original wires
-// together `sim.bot` + `sim.match` + `sim.fixed_clock` + `sim.metrics`
-// (Rust-owned, `crates/gc-sim`), `data.arenas`/`data.teams` (Rust-owned,
-// `crates/gc-data`), and `game.render.bloom`/`pitch`/`player_renderer_3d`
-// (out of this task's scope -- see the top-level task's "do not port" list;
-// `render/frame.lua`'s payload builder is also Rust-owned,
-// `crates/gc-render`). None of that glue exists yet, and v2/README.md §1
-// says not to build it in this milestone ("the glue that makes a playable
-// browser build ... is a separate milestone. Do not build it, and do not
-// block on it."). The class below keeps the Lua original's structure,
-// method names, and (pure) statistics/gate-evaluation logic verbatim, and
-// takes every one of those Lua dependencies as an explicit injected
-// parameter instead of a `require`/`love.*` call -- the same pattern
-// `love.timer.getTime()` becomes an injected `clock()` function. Wiring real
+// Boundary note (ARCHITECTURE.md §4 rule 6): this class needs what a
+// running match provides -- bot behaviour, match stepping, the fixed clock,
+// and metrics (Rust-owned, `crates/gc-sim`), arena/team data (Rust-owned,
+// `crates/gc-data`), and bloom/pitch/player_renderer_3d rendering (out of
+// this task's scope -- see the top-level task's "do not port" list; the
+// render frame's payload builder is also Rust-owned, `crates/gc-render`).
+// None of that glue exists yet, and building it is out of scope for this
+// milestone ("the glue that makes a playable browser build ... is a
+// separate milestone. Do not build it, and do not block on it."). The class
+// below keeps its statistics/gate-evaluation logic pure, and takes every one
+// of those dependencies as an explicit injected parameter instead of
+// reaching for a global or singleton -- the same pattern that turns a raw
+// wall-clock read into an injected `clock()` function. Wiring real
 // implementations of `BenchmarkFixedTimestepDriver`/`BenchmarkRenderer` is
 // for whoever builds that browser-build glue.
 
@@ -162,10 +159,10 @@ function summarise(samples: readonly number[]): BenchmarkSummary {
   };
 }
 
-// Mirrors `sim/fixed_clock.lua`'s `TICK_SECONDS` (`1 / TICK_RATE`, `TICK_RATE`
-// = 60 by default). Not imported -- that module is Rust-owned
+// The fixed-timestep tick length (`1 / TICK_RATE`, `TICK_RATE` = 60 by
+// default). Not imported -- the fixed-clock module is Rust-owned
 // (`crates/gc-sim`) -- so the well-known constant is restated here, the same
-// way other ported presentation modules avoid a `require("sim.fixed_clock")`.
+// way other presentation modules avoid depending on it directly.
 const DT = 1 / 60;
 
 export interface BenchmarkPlayer extends ViewStatePlayer {
@@ -174,8 +171,8 @@ export interface BenchmarkPlayer extends ViewStatePlayer {
 }
 
 /**
- * Everything the Lua original reached via `sim.bot` + `sim.match` +
- * `sim.fixed_clock` + `sim.metrics`, collapsed to the two things this class
+ * Everything a running match provides -- bot behaviour, match stepping, the
+ * fixed clock, and metrics -- collapsed to the two things this class
  * actually needs from a running match: advance one frame, and read the
  * player positions `view_state.update` derives cadence/lean/speed from.
  */
@@ -197,15 +194,15 @@ export interface BenchmarkFrameResult {
   readonly rigged_active: boolean;
 }
 
-/** Replaces `bloom.draw(() => pitch.draw(render_frame.build(...), ...))`, all out of this package's scope. */
+/** One frame's full render step -- `bloom.draw(() => pitch.draw(render_frame.build(...), ...))`, all out of this package's scope. */
 export interface BenchmarkRenderer {
   draw(): BenchmarkFrameResult;
 }
 
 export interface BenchmarkEnvironmentInfo {
-  /** Replaces `love.getVersion()`. */
+  /** The engine/runtime version string. */
   readonly runtime_version: string;
-  /** Replace `love.graphics.getRendererInfo()`'s name/vendor/device. */
+  /** GPU renderer info: name/vendor/device. */
   readonly gpu_name?: string;
   readonly gpu_vendor?: string;
   readonly gpu_device?: string;
@@ -219,11 +216,11 @@ export interface BenchmarkOptions {
   readonly warmup_frames?: number;
   readonly width?: number;
   readonly height?: number;
-  /** Replaces `love.timer.getTime()`. Seconds, monotonic. */
+  /** Seconds, monotonic. */
   readonly clock: () => number;
   readonly simulation: BenchmarkFixedTimestepDriver;
   readonly renderer: BenchmarkRenderer;
-  /** Replaces `collectgarbage("count")`; no standardized TS/browser equivalent exists, so this is optional. */
+  /** JS heap usage sample, in KB; no standardized TS/browser equivalent exists, so this is optional. */
   readonly heapKb?: () => number;
   /** Replaces `match_snapshot.hash(match_snapshot.capture(self.state))`, computed once at `finish()`. */
   readonly finalStateHash: () => string;
@@ -480,8 +477,7 @@ export function evaluate(result: BenchmarkResult): { readonly pass: boolean; rea
 // Evidence goes out as pipe-delimited `GC_BENCH_*` lines rather than JSON,
 // matching the rollback harness. That is not a style choice: a line-oriented
 // format survives crossing into whatever headless console this fixture ends
-// up running inside (matching the Lua original's love.js rationale), while
-// a serialised object does not.
+// up running inside, while a serialised object does not.
 /** @param values seconds */
 function microseconds(values: readonly number[]): string {
   return values.map((v) => String(Math.floor(v * 1e6 + 0.5))).join(",");

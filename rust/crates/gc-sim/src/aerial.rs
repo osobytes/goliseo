@@ -1,36 +1,24 @@
-//! Port of `sim/aerial.lua`.
-//!
 //! Pure aerial-contact geometry and outcome resolution. This module knows no
 //! match state or rendering; `sim.match` gathers candidates and applies
 //! results.
 //!
-//! The Lua original's second half (`aerial.resolve_play` and everything it
-//! calls) reads and mutates a `MatchState`/`MatchPlayer`/`MatchInput` table
-//! whose shape is defined by `sim/match.lua`. This module was ported before
-//! `gc_sim::r#match` landed and, for a while, carried its own local,
-//! 0-based `MatchStateView`/`MatchPlayerView`/`MatchInput`/`MatchEvent`
-//! mirror of that shape, converted at the boundary by an adapter in
-//! `gc_sim::r#match` (README §5.1's "view struct" debt).
-//!
-//! Now that `gc_sim::r#match` (and its canonical
+//! [`resolve_play`] and everything it calls read and mutate
 //! [`crate::match_snapshot::MatchState`]/[`crate::match_snapshot::MatchPlayer`]/
-//! [`crate::match_snapshot::MatchInput`]) has landed, this module adopts
-//! those types directly instead (§5.1 end state 1) — the local view needed
-//! nearly the entire shape anyway, so keeping a fourth duplicate around
-//! bought nothing. The one wrinkle: `match_snapshot` indexes `players` with
-//! **one-based** `controlled`/`owner` fields (`gc_sim::r#match`'s
-//! convention, matching `sim/match.lua`'s `ipairs`), while this module's own
-//! loops walk `MatchState::players` with ordinary Rust `enumerate()` —
-//! zero-based, like any `Vec`. The two never conflict: a `Vec` index and a
-//! "one-based player identity" are different axes, and the *only* place
-//! this module compares one against the other is [`is_human_player`], which
-//! converts explicitly.
+//! [`crate::match_snapshot::MatchInput`] directly, rather than a narrow local
+//! view — the functions here need nearly the entire shape anyway, so a
+//! separate duplicate would buy nothing. The one wrinkle: `match_snapshot`
+//! indexes `players` with **one-based** `controlled`/`owner` fields (this
+//! crate's player-identity convention — see `match_snapshot`'s and
+//! `r#match`'s module docs), while this module's own loops walk
+//! `MatchState::players` with ordinary Rust `enumerate()` — zero-based, like
+//! any `Vec`. The two never conflict: a `Vec` index and a "one-based player
+//! identity" are different axes, and the *only* place this module compares
+//! one against the other is [`is_human_player`], which converts explicitly.
 //!
-//! - `sim/tuning.lua`'s `TUNE` is a shared mutable global the Lua closes
-//!   over; AGENTS.md §3 forbids that outside LÖVE callbacks, and this
-//!   crate's port of `sim/tuning.lua` ([`crate::tuning`]) is accordingly an
-//!   owned value, not a singleton. Every function here that the Lua reads
-//!   `TUNE` from takes an explicit `&Tuning` parameter instead.
+//! - [`crate::tuning::Tuning`] is an explicit owned value, never a shared
+//!   mutable global (AGENTS.md §3 forbids stray global state). Every
+//!   function here that needs a tuning knob takes an explicit `&Tuning`
+//!   parameter.
 //! - `move` is a Rust keyword, so [`crate::match_snapshot::MatchInput::r#move`]
 //!   uses a raw identifier — the same convention `gc_sim::r#match` itself
 //!   uses for the module name (see `lib.rs`).
@@ -456,8 +444,8 @@ pub fn claim_score(
 
 /// A neutral (no input) `MatchInput`, used when a player has no live input
 /// for the frame. `aerial_strike`/`aerial_acrobatic` are explicit
-/// `Some(false)`, matching `sim/aerial.lua`'s local `neutral_input`, which
-/// writes `aerial_strike = false` literally (not `nil`).
+/// `Some(false)` rather than left unset, so a neutral input is
+/// unambiguously "not attempting an aerial strike" rather than "unknown."
 #[must_use]
 fn neutral_input() -> MatchInput {
     MatchInput {

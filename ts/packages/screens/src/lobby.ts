@@ -1,16 +1,15 @@
-// Ported from game/screens/lobby.lua -- the pure screen for the
-// manual-connect online lobby.
+// The pure screen for the manual-connect online lobby.
 //
 // `layout`, `hit`, and `update` touch no graphics, no transport, and no
 // clock, so the whole lobby -- role choice, manual offer/answer exchange,
 // mode choice, ownership, readiness, countdown, and every failure -- runs
-// headlessly, exactly as in the Lua original.
+// headlessly with zero display.
 //
-// One deviation from the simplest screens is deliberate, carried over from
-// the Lua original: a transition may need side effects (open a peer, send a
-// wire, write the clipboard). Those leave as data on `state.effects`, an
-// ordered list the owning screen (`online_lobby.ts`) drains after each
-// update. The transition itself stays pure.
+// One deviation from the simplest screens is deliberate: a transition may
+// need side effects (open a peer, send a wire, write the clipboard). Those
+// leave as data on `state.effects`, an ordered list the owning screen
+// (`online_lobby.ts`) drains after each update. The transition itself stays
+// pure.
 //
 // `lobby_model.ts`'s `LobbyModelPorts` (coordinator/protocol/... -- see its
 // header) is threaded through embedded on `LobbyScreenState`, the same

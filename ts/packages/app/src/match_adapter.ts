@@ -1,11 +1,9 @@
-// Ported from game/match_adapter.lua.
-//
-// The Lua original requires `game.screens.fake_match`, `game.screens.menu`,
-// and `game.screens.real_match`. The first two are ported (`@gc/screens`'s
-// `fakeMatch`/`Menu`); `game.screens.real_match` is not yet ported (see this
-// package's porting report), so `real()` takes a `RealMatchFactory` port
-// instead of importing it -- the same injection shape `bootstrap.ts` and
-// `app.ts` thread through.
+// `real()` takes a `RealMatchFactory` port instead of importing a concrete
+// real-match screen directly -- the same injection shape `bootstrap.ts` and
+// `app.ts` thread through -- because this package cannot depend on the
+// concrete real-match implementation (see package boundaries); `fakeMatch`/
+// `Menu` are imported directly from `@gc/screens` since no such constraint
+// applies to them.
 
 import { Menu, fakeMatch, type Viewport } from "@gc/screens";
 import type { Screen } from "./screen_stack.ts";
@@ -22,12 +20,12 @@ export interface MatchAdapter {
   readonly kind: "fake" | "real";
   // Quoted: `new(...)` inside an interface body parses as a *construct*
   // signature (`new MatchAdapter(...)`), not a regular method named `new`.
-  // Quoting the property name keeps this a plain method, matching the Lua
-  // original's `match_adapter.new`/`.new(...)` call shape.
+  // Quoting the property name keeps this a plain method, matching this
+  // codebase's `.new(...)` factory-method convention.
   "new"(request: ProductMatchRequest, callbacks: MatchAdapterCallbacks, viewport: Viewport): Screen;
 }
 
-/** `game.screens.real_match.new`, injected -- see this file's header. */
+/** A concrete real-match screen constructor, injected -- see this file's header. */
 export type RealMatchFactory = (request: ProductMatchRequest, callbacks: MatchAdapterCallbacks) => Screen;
 
 function fake(content: Pick<MatchContractContent, "players" | "teams">): MatchAdapter {
@@ -53,10 +51,9 @@ function fake(content: Pick<MatchContractContent, "players" | "teams">): MatchAd
         },
       );
       // `Menu.draw(backend: GraphicsBackend)` needs a `@gc/ui` backend this
-      // milestone deliberately does not wire up (v2/README.md §1 -- "do not
-      // build [the browser main loop]"). `Screen.draw` stays call-signature
-      // compatible with the Lua original (`fun(self: Screen)`, no backend
-      // argument) since nothing in this port's test coverage calls `draw`;
+      // milestone deliberately does not wire up ("do not
+      // build [the browser main loop]"). `Screen.draw` takes no backend
+      // argument, and nothing in this package's test coverage calls `draw`;
       // the cast documents that gap rather than hiding it.
       return menu as unknown as Screen;
     },

@@ -1,5 +1,6 @@
 /**
- * Lua's `return nil, err` convention, expressed as a discriminated union.
+ * A discriminated union for an expected, recoverable failure, instead of
+ * throwing.
  *
  * Use this for *expected, recoverable* failures the caller is meant to handle
  * (lookup miss, validation of external input). Programmer errors and broken

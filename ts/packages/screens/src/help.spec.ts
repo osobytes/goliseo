@@ -1,18 +1,15 @@
-// Ported from the "renders the help card from the bindings rather than a
-// literal" case in spec/game/input_bindings_spec.lua.
-//
 // `@gc/input` (bindings.ts's TypeScript home) IS a declared dependency of
 // `@gc/screens` (see package.json), so the real cross-package assertion is
 // not blocked and is not skipped: `MATCH_REFERENCE` below is read straight
 // from `@gc/input`'s `bindings.reference("match")`, not a transcription,
 // and is driven through this file's real `help.layout`. `@gc/input`'s own
-// `bindings.spec.ts` retired its copy of this case in favor of this one
-// (see the comment there) rather than duplicating the assertion.
+// `bindings.spec.ts` leaves this case to this file rather than duplicating
+// the assertion.
 //
-// The second case below is additional coverage this port adds on top of
-// the ported Lua case: it proves the data-driven property directly by
-// swapping in a different row set and checking the rendered card changes
-// with it, which a hard-coded string could never do.
+// The second case below is additional coverage on top of the first: it
+// proves the data-driven property directly by swapping in a different row
+// set and checking the rendered card changes with it, which a hard-coded
+// string could never do.
 
 import { describe, expect, it } from "vitest";
 import { hit } from "@gc/ui";
@@ -23,7 +20,7 @@ import type { ControlReferenceRow } from "./content.ts";
 const VP = { w: 960, h: 540 };
 
 // The REAL match reference, read straight from @gc/input's bindings — not a
-// transcription. This is the whole point of the Lua case this ports: "renders
+// transcription. This is the whole point of the case below: "renders
 // the help card from the bindings rather than a literal". A copied table proves
 // the screen renders what it is handed; it does not prove the screen renders the
 // bindings that actually exist, and it goes stale silently the first time

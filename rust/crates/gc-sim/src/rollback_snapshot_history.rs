@@ -1,18 +1,14 @@
-//! Port of `sim/rollback_snapshot_history.lua`.
-//!
 //! Bounded start-of-tick snapshot storage for rollback sessions. Boundaries
 //! are indexed by the [`crate::input_frame::InputFrame`] tick they will
 //! consume; the ring owns independent canonical snapshots and has no
 //! simulation, transport, or presentation role.
 //!
-//! ## Ring index convention (README rule 5.3)
+//! ## Ring index convention (ARCHITECTURE.md §3 rule 3)
 //!
 //! `_entries` is a fixed-size ring buffer, purely internal indexing, and is
-//! 0-based here even though the Lua original's `ring_index` returned a
-//! 1-based table index (`(tick % capacity) + 1`). [`ring_index`] is the
-//! single conversion point (it simply drops the `+ 1`). `tick` itself is
-//! never converted anywhere in this module: it is a simulation tick used as
-//! a lookup key, not a buffer position.
+//! 0-based here. [`ring_index`] is the single conversion point. `tick`
+//! itself is never converted anywhere in this module: it is a simulation
+//! tick used as a lookup key, not a buffer position.
 //!
 //! ## The one `%`, and why it is safe unconverted
 //!
@@ -22,19 +18,18 @@
 //! `truncate_after`) asserts `tick` is in `0..=input_frame::MAX_TICK` before
 //! calling it, and `capacity` is always `max_rollback_ticks + 1 >= 1` (see
 //! [`new`]'s own assertion). Both operands are therefore always
-//! non-negative, so Rust's truncating `%` agrees with Lua's floored `%`
-//! exactly; no `rem_euclid` is needed here.
+//! non-negative, so Rust's truncating `%` agrees with floored `%` exactly;
+//! no `rem_euclid` is needed here.
 //!
-//! ## `is_integer` — a dropped runtime check
+//! ## No `is_integer` runtime check
 //!
-//! The Lua original's `is_integer` guards against a `tick`/`boundary_tick`
-//! argument that is fractional, `NaN`, or infinite — all only possible
-//! because Lua numbers are untyped. `i64` cannot hold any of those, so the
-//! check is structurally redundant here (README rule 9) and is dropped;
-//! only the range check (`0..=input_frame::MAX_TICK`) survives as the
-//! `Malformed` condition in [`truncate_after`]. The spec's "fractional tick
-//! is malformed" case has no Rust equivalent for the same reason and is
-//! replaced with an out-of-range tick in the port (see
+//! There is no runtime check guarding against a `tick`/`boundary_tick`
+//! argument that is fractional, `NaN`, or infinite: `i64` cannot hold any
+//! of those, so such a check would be structurally redundant here
+//! (ARCHITECTURE.md §3 rule 7); only the range check (`0..=input_frame::MAX_TICK`) survives as
+//! the `Malformed` condition in [`truncate_after`]. A "fractional tick is
+//! malformed" case is not expressible for the same reason and is instead
+//! exercised with an out-of-range tick (see
 //! `tests/rollback_snapshot_history.rs`), which still exercises the
 //! `Malformed` branch.
 
@@ -71,8 +66,8 @@ pub enum RollbackSnapshotHistoryErrorCode {
     Missing,
 }
 
-/// An expected, recoverable [`RollbackSnapshotHistory`] failure (README rule
-/// 5.5): the caller is meant to handle it, not a programmer error.
+/// An expected, recoverable [`RollbackSnapshotHistory`] failure
+/// (ARCHITECTURE.md §3 rule 5): the caller is meant to handle it, not a programmer error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RollbackSnapshotHistoryError {
     /// Machine-readable failure reason.
@@ -123,9 +118,8 @@ pub struct RollbackSnapshotEntry {
 /// Bounded start-of-tick snapshot storage for one rollback client.
 ///
 /// Every field is internal state; use the free functions in this module to
-/// read or mutate it. Fields are `pub` (README rule: everything a test
-/// touches is `pub`), but `entries` is 0-based per the module doc comment
-/// even though the Lua original's equivalent table was 1-based.
+/// read or mutate it. Fields are `pub` (ARCHITECTURE.md §3 rule 6: everything
+/// a test touches is `pub`), but `entries` is 0-based per the module doc comment.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RollbackSnapshotHistory {
     /// Maximum prior input ticks that remain restorable.
@@ -149,7 +143,7 @@ pub struct RollbackSnapshotHistory {
 }
 
 /// Convert a validated, non-negative `tick` into this ring's internal
-/// 0-based slot (README rule 5.3; see the module doc comment for why the
+/// 0-based slot (ARCHITECTURE.md §3 rule 3; see the module doc comment for why the
 /// `%` is safe unconverted).
 fn ring_index(capacity: i64, tick: i64) -> usize {
     (tick % capacity) as usize

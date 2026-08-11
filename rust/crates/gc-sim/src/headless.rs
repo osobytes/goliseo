@@ -1,52 +1,40 @@
-//! Port of `sim/headless.lua`.
-//!
 //! Headless match batches preserve the legacy `MatchInput` fixture by
 //! default. Supplying frames or slot sources opts into fixed-slot input
 //! production. Both paths fold into fun-proxy metrics ([`crate::metrics`]).
-//! Pure — no love, no I/O; [`report`] returns a string and the caller
+//! Pure — no rendering, no I/O; [`report`] returns a string and the caller
 //! decides where it goes.
 //!
-//! ## Adapters this module owns (README §5.1)
+//! ## Adapters this module owns
 //!
-//! [`crate::bot`], [`crate::metrics`], and [`crate::slot_input`] were each
-//! ported before `sim::match` landed. `slot_input` adopted the real
-//! `match_snapshot` types directly and needs no adapter; `bot` and
-//! `metrics` kept their own narrow, differently-shaped views
-//! (`bot::BotMatchView`/`bot::BotPlayerView`,
+//! `slot_input` adopts the real `match_snapshot` types directly and needs
+//! no adapter; `bot` and `metrics` keep their own narrow, differently-shaped
+//! views (`bot::BotMatchView`/`bot::BotPlayerView`,
 //! `metrics::MetricsMatchView`/`metrics::MetricsPlayerView`/
-//! `metrics::MetricsEventView` — renamed from the generic
-//! `MatchStateView`/`MatchPlayerView`/`MatchEventView` every module used
-//! before README §5.1's resolution; `crate::aerial`'s third copy needed
-//! nearly the whole shape and was folded onto `match_snapshot`'s canonical
-//! types instead). This module is the one caller that drives `bot` and
-//! `metrics` against a REAL, constructed `MatchState` every tick — exactly
-//! `sim/headless.lua`'s own job — so the call-boundary adapters
-//! (`to_bot_view`, `to_metrics_view`) belong here. `bot::input` now returns
-//! `match_snapshot::MatchInput` directly (its own local `MatchInput` was
-//! never legitimately narrow — every field was one the real simulation
-//! reads — so it was dropped rather than renamed), which is why there is no
-//! `from_bot_input` any more either.
+//! `metrics::MetricsEventView`). This module is the one caller that drives
+//! `bot` and `metrics` against a REAL, constructed `MatchState` every tick,
+//! so the call-boundary adapters (`to_bot_view`, `to_metrics_view`) belong
+//! here. `bot::input` returns `match_snapshot::MatchInput` directly — its
+//! own local `MatchInput` was never legitimately narrow, since every field
+//! was one the real simulation reads — which is why there is no
+//! `from_bot_input`.
 //!
-//! ## `tuning.lua`'s global becomes a local value, so "restore" is structural
+//! ## Tuning is a fresh local value, so "restore" is structural
 //!
-//! The Lua original saves/restores the global `tuning` singleton around a
-//! `tuning_blob` override so a batch never leaks knob overrides into other
-//! callers. `sim/tuning.lua`'s Rust port ([`crate::tuning::Tuning`]) is
-//! already an explicit, owned value rather than a singleton (AGENTS.md §3;
-//! see that module's doc), so [`run_match`] simply builds a fresh
-//! [`Tuning`] per call and applies `tuning_blob` on top of it — there is no
-//! global left to leak into, so nothing needs restoring afterward.
+//! [`crate::tuning::Tuning`] is an explicit, owned value rather than a
+//! singleton (AGENTS.md §3; see that module's doc), so [`run_match`] simply
+//! builds a fresh [`Tuning`] per call and applies `tuning_blob` on top of
+//! it — there is no global to leak into, so nothing needs restoring
+//! afterward.
 //!
 //! ## Test seams (no function mocking in Rust)
 //!
-//! `spec/sim/headless_spec.lua` monkey-patches `match.new`, `bot.new`, and
-//! `slot_input.new_producer` to observe internal construction decisions
-//! (was a bot built exactly once? did the match land in slot mode?). Rust
-//! has no runtime function replacement, so [`run_match_debug`] exposes the
-//! same observable facts directly — the constructed [`MatchState`] and a
-//! [`HeadlessDebug`] summary — instead. `run_match` itself just discards
-//! them; every assertion the Lua spec made via a mock is preserved as an
-//! assertion against this seam's return value.
+//! `tests/headless.rs` needs to observe internal construction decisions
+//! (was a bot built exactly once? did the match land in slot mode?)
+//! without any runtime function-replacement mechanism, so
+//! [`run_match_debug`] exposes the same observable facts directly — the
+//! constructed [`MatchState`] and a [`HeadlessDebug`] summary — instead.
+//! `run_match` itself just discards them; every assertion is checked
+//! against this seam's return value.
 
 use crate::bot;
 use crate::fixed_clock;
@@ -63,7 +51,7 @@ use gc_data::tactics::TacticData;
 use gc_data::teams::{self, TeamData};
 use indexmap::IndexMap;
 
-const FIELD_W: f64 = 960.0; // the real game's pitch (game/screens/match.lua)
+const FIELD_W: f64 = 960.0; // the real game's pitch
 const FIELD_H: f64 = 540.0;
 const DT: f64 = fixed_clock::TICK_SECONDS;
 const DEFAULT_DURATION: f64 = 120.0;
@@ -146,8 +134,8 @@ pub struct MatchResult {
 }
 
 /// Internal introspection [`run_match_debug`] returns alongside a
-/// [`MatchResult`], standing in for the Lua spec's function-mock
-/// assertions (see the module doc's "Test seams" section).
+/// [`MatchResult`], capturing internal construction facts a test needs to
+/// check directly (see the module doc's "Test seams" section).
 #[derive(Clone, Debug, PartialEq)]
 pub struct HeadlessDebug {
     /// Whether the legacy human-proxy `BotState` was constructed for this
@@ -185,14 +173,13 @@ fn to_bot_player(p: &MatchPlayer) -> bot::BotPlayerView {
 /// The `MatchState` -> [`bot::BotMatchView`] adapter this module drives its
 /// own bot through.
 ///
-/// Public because it is a PORT ARTIFACT with no Lua counterpart, which makes
-/// it load-bearing in a way a private helper would not be: `sim/bot.lua` takes
-/// the raw match state (`bot.input(b, s, DT)`), so nothing on the Lua side
-/// corresponds to this function and nothing can check it except a differential
-/// that drives both languages' bots over a whole match.
-/// `tests/session_ai_driven_differential.rs` is that test. Were this private,
-/// that test would have to build a second copy of the view — and a second copy
-/// is precisely how the thing under test stops being the thing that ships.
+/// Public because there is no unit-level way to check this adapter in
+/// isolation — the only thing that can validate it is a differential test
+/// that drives the bot over a whole match and checks the result bit-exact
+/// against pinned reference vectors. `tests/session_ai_driven_differential.rs`
+/// is that test. Were this private, that test would have to build a second
+/// copy of the view — and a second copy is precisely how the thing under
+/// test stops being the thing that ships.
 #[must_use]
 pub fn to_bot_view(s: &MatchState) -> bot::BotMatchView {
     bot::BotMatchView {
@@ -679,11 +666,10 @@ const REPORT_ROWS: &[&str] = &[
 ];
 
 // A private, display-only duplicate of `metrics.rs`'s (also private)
-// `BAND_*` constants (`sim/metrics.lua`'s public `metrics.bands` table).
-// This module does not own `metrics.rs`, so it cannot make them `pub`
-// there; these values only ever feed formatted report text, never a
-// determinism-path computation, so the duplication is display-layer, not
-// content-layer (AGENTS.md §8 is about game content, not report labels).
+// `BAND_*` constants. `metrics.rs` keeps them private, so these values only
+// ever feed formatted report text here, never a determinism-path
+// computation — the duplication is display-layer, not content-layer
+// (AGENTS.md §8 is about game content, not report labels).
 fn band_for(key: &str) -> Option<[f64; 4]> {
     Some(match key {
         "goals_total" => [0.0, 2.0, 5.0, 8.0],

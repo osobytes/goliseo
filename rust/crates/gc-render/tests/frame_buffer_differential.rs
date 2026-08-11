@@ -1,20 +1,24 @@
-//! Differential test for the RenderFrame wire format, against the real Lua.
+//! Differential test for the `RenderFrame` wire format, against a frozen
+//! reference.
 //!
-//! `render/frame_buffer.lua` is the payload that crosses the wasm boundary: the
+//! `frame_buffer.rs` produces the payload that crosses the wasm boundary: the
 //! TypeScript renderer reads it by offset, so field order, widths and the
 //! version word are a contract between two languages that never share a type.
 //!
 //! The package's other `frame_buffer` tests round-trip `encode` through
 //! `decode`, which proves internal consistency — and a symmetric encoder/decoder
-//! bug round-trips perfectly. Only a comparison against the original can catch
-//! that class of defect, which is why README rule 5.9 requires this.
+//! bug round-trips perfectly. Only a comparison against an independently
+//! produced reference can catch that class of defect, which is why
+//! ARCHITECTURE.md's determinism-path differential-testing rule requires this.
 //!
-//! The reference in `tests/fixtures/frame_buffer_lua_reference.txt` was captured
-//! by running the real `render/frame_buffer.lua` under headless `love` — see
-//! `v2/tools/lua_reference/README.md` for the harness. Its rows are
-//! `label<TAB>word_count<TAB>comma-separated %.17g words`, covering the roster
-//! encoding and three frames: kickoff, and after 37 and 200 stepped ticks, so
-//! both a pristine and a moved-and-eventful state are compared.
+//! The reference in `tests/fixtures/frame_buffer_lua_reference.txt` is a
+//! frozen capture — it cannot be regenerated, so a failure here is a finding
+//! about this code, not a stale fixture to refresh. See
+//! `tools/lua_reference/README.md` for the capture methodology and
+//! provenance. Its rows are `label<TAB>word_count<TAB>comma-separated %.17g
+//! words`, covering the roster encoding and three frames: kickoff, and after
+//! 37 and 200 stepped ticks, so both a pristine and a moved-and-eventful
+//! state are compared.
 //!
 //! The inputs are `slot_input::neutral_match_input()`, not `MatchInput::default()`.
 //! Those differ: the neutral input sets `aerial_strike` and `aerial_acrobatic` to
@@ -34,13 +38,12 @@
 //!
 //! The `s1_t*` rows close that gap. They are a SEPARATE match — same teams,
 //! same field, same `slot_input::neutral_match_input()` stepping, but seed `1`
-//! instead of `17` — chosen empirically (see `v2/tools/lua_reference/
-//! capture_frame_buffer_events.lua`) because it produces a livelier match: 14
-//! distinct `MatchEventKind`s across 3000 ticks, where several other seeds
-//! surveyed (including 17 itself, which stalls after tick ~1083) run the ball
-//! into a corner and stop generating events entirely. Roster is unaffected by
-//! seed (it's derived from team/player data, not RNG), so it is not
-//! re-captured; only new eventful frames are.
+//! instead of `17` — chosen empirically because it produces a livelier
+//! match: 14 distinct `MatchEventKind`s across 3000 ticks, where several
+//! other seeds surveyed (including 17 itself, which stalls after tick
+//! ~1083) run the ball into a corner and stop generating events entirely.
+//! Roster is unaffected by seed (it's derived from team/player data, not
+//! RNG), so it is not re-captured; only new eventful frames are.
 //!
 //! The eight `s1_t*` ticks were hand-picked from that seed's event log — ten
 //! distinct kinds total (`press_commit_cover`, `tackle`, `reception`, `shot`,
@@ -63,7 +66,7 @@
 //! matching the rest of this file); and `on_target = true`, `tip`, `block`,
 //! `bicycle` and `press_commit_box_desperation` were rare or absent across the
 //! 22 seeds x 6000 ticks surveyed and were judged not worth engineering a
-//! scenario for. See this port's task report for the full account.
+//! scenario for.
 
 use gc_data::teams;
 use gc_render::{frame, frame_buffer};
@@ -75,7 +78,8 @@ use gc_sim::tuning::Tuning;
 const FIXTURE: &str = include_str!("fixtures/frame_buffer_lua_reference.txt");
 
 /// Parse the captured `%.17g` words back into `f64`. The format round-trips
-/// binary64 exactly, so this recovers the identical values the Lua held.
+/// binary64 exactly, so this recovers the identical values the reference
+/// held.
 fn reference_row(label: &str) -> Vec<f64> {
     let line = FIXTURE
         .lines()

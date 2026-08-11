@@ -43,18 +43,18 @@
 // another would silently render a scrambled character, so both sides go
 // through `boneIndex` and never count for themselves.
 //
-// MECHANISM VS CONTENT (v2 port note): the skinning maths below -- computing a
-// bone's world transform from its parent and evaluating a posed joint position
-// -- is exactly what three.js's `Skeleton`/`Bone` classes do, and a rendering
-// integration pass can host it there once this lands on stage. What is ported
-// here, faithfully, is the CONTENT: this game's specific bone names, parents,
+// MECHANISM VS CONTENT: the skinning maths below -- computing a bone's world
+// transform from its parent and evaluating a posed joint position -- is
+// exactly what three.js's `Skeleton`/`Bone` classes do, and a rendering
+// integration pass can host it there once this lands on stage. What lives
+// here, deliberately, is the CONTENT: this game's specific bone names, parents,
 // rest offsets and rest rotations, plus the pure pose-evaluation functions the
 // rest of rig3d (action_pose.ts, clips.ts) depend on and which stay exactly as
-// testable without any renderer. Dropped from the Lua original: `boneRows` /
+// testable without any renderer. Deliberately absent: `boneRows` /
 // `ROWS_PER_BONE`, the three-rows-per-bone matrix packing that only existed to
-// fit LÖVE's custom shader inside GLSL ES 1.00's 128 vertex-uniform-vector
-// floor (see rig3d/renderer.lua, itself out of this port's scope and replaced
-// by three.js's own bone-matrix upload path).
+// fit a hand-written shader inside GLSL ES 1.00's 128 vertex-uniform-vector
+// floor -- replaced by three.js's own bone-matrix upload path, which needs no
+// such packing.
 
 import { mat4, quat, type Mat4, type Quat } from "@gc/core";
 

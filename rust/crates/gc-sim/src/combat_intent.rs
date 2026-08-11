@@ -1,5 +1,3 @@
-//! Port of `sim/combat_intent.lua`.
-//!
 //! Retained, serializable combat intent for one AI-driven player.
 //!
 //! The AI has no direct simulation action channel: it can only materialize the
@@ -11,8 +9,8 @@
 //! hiding in a producer closure.
 //!
 //! It is deliberately TINY. Retained state is charged against the bounded
-//! rollback snapshot budget (`data/omp2_rollback_validation.lua`) at ten players
-//! times thirty-one boundaries, so anything derivable is derived instead of
+//! rollback snapshot budget at ten players times thirty-one boundaries, so
+//! anything derivable is derived instead of
 //! stored: the decision cadence is a stateless function of the canonical tick and
 //! the player's scan rate, and the policy's selection seed is a pure function of
 //! the tick and the player index. Only what genuinely cannot be recomputed --

@@ -1,4 +1,4 @@
-//! Port of `spec/sim/lever_metrics_spec.lua`.
+//! Tests for `gc_sim::lever_metrics`.
 
 use gc_data::{tactics, teams, tuning_presets};
 use gc_sim::headless::{BatchOpts, HeadlessBot};

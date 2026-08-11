@@ -1,5 +1,3 @@
-//! Port of `game/online/live_slot.lua`.
-//!
 //! `game::online::coordinator::next_live_slot` is the transition *rule*: it
 //! consumes an already-total `ranked` ordering and intersects it with a
 //! frozen owned set. This module is the other half — the nearest-to-ball
@@ -73,8 +71,7 @@ pub struct LiveTransition {
 ///
 /// # Panics
 ///
-/// Panics if `index` is outside `1..=input_frame::SLOT_COUNT` — mirrors the
-/// Lua original's `assert(SLOT_IDS[index], "canonical slot index is out of range")`.
+/// Panics if `index` is outside `1..=input_frame::SLOT_COUNT`.
 pub fn slot_id(index: i64) -> SlotId {
     input_frame::slot(index)
         .unwrap_or_else(|_| panic!("canonical slot index is out of range"))
@@ -82,8 +79,7 @@ pub fn slot_id(index: i64) -> SlotId {
 }
 
 /// The 1-based canonical slot index for a slot identity. Total: every
-/// [`SlotId`] variant is a canonical slot, so this cannot fail the way the
-/// Lua original's table lookup could.
+/// [`SlotId`] variant is a canonical slot, so this cannot fail.
 pub fn slot_index(slot: SlotId) -> i64 {
     match slot {
         SlotId::Home1 => 1,
@@ -199,8 +195,7 @@ pub fn transition(state: &MatchState, options: &TransitionOptions) -> LiveTransi
 ///
 /// # Panics
 ///
-/// Panics if `sample` is not a valid [`InputSample`] — mirrors the Lua
-/// original's `assert(edge ~= nil, err or ...)`.
+/// Panics if `sample` is not a valid [`InputSample`].
 pub fn switch_edge(sample: &InputSample) -> bool {
     input_frame::has_edge(sample, EdgeAction::Switch).unwrap_or_else(|err| {
         panic!("live-slot switch edge requires a valid sample: {err}");

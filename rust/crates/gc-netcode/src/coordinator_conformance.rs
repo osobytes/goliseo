@@ -1,14 +1,15 @@
-//! Port of `game/online/coordinator_conformance.lua`.
-//!
 //! Pins the coordinator's session-shaped output — transcript identity, wire
-//! trace, and slot ownership — against golden values captured from the real
-//! Lua implementation. Because [`crate::protocol`]'s wire codec is meant to
-//! produce byte-identical output to `protocol.lua`, these golden constants
-//! (copied verbatim from `game/online/coordinator_conformance.lua`) are
+//! trace, and slot ownership — against golden values frozen once from this
+//! game's original implementation before it was retired (see
+//! `tools/lua_reference/README.md` for how this codebase captures and
+//! treats this class of evidence elsewhere). Because [`crate::protocol`]'s
+//! wire codec is meant to produce byte-identical output to that retired
+//! reference, these golden constants (copied verbatim from it) are
 //! themselves a differential check: if this module's [`verify`] reproduces
 //! them, this crate's `coordinator`/`protocol`/`live_slot` combination
-//! agrees with the reference Lua on a full session, not just on unit-level
-//! assertions.
+//! still agrees with that frozen reference on a full session, not just on
+//! unit-level assertions. A disagreement here is a finding about this
+//! crate, not a stale golden value to update.
 
 use crate::coordinator::{self, TerminalReason};
 use crate::coordinator_driver::{self as driver, Driver};
@@ -16,7 +17,8 @@ use crate::protocol;
 use gc_core::fnv1a64;
 use gc_sim::input_frame;
 
-/// Golden values captured from `game/online/coordinator_conformance.lua`.
+/// Golden values captured once from this game's retired original
+/// implementation; see the module doc comment.
 ///
 /// The four transcript ids below digest sessions built on
 /// `protocol_fixture::manifest`, whose `max_goals` #268 took 5 -> 99 (no goal
@@ -187,7 +189,8 @@ pub struct Report {
 ///
 /// Panics on the first golden value that disagrees with a freshly driven
 /// session — meaning `coordinator`, `protocol`, or `live_slot` in this crate
-/// no longer agrees with the reference Lua implementation.
+/// no longer agrees with the frozen reference this module pins against (see
+/// the module doc comment).
 #[must_use]
 pub fn verify() -> Report {
     let full = session(7, None);

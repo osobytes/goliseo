@@ -1,21 +1,19 @@
-// Ported from game/screens/menu.lua — the adapter that drives a pure screen
-// definition (layout/update) as a screen in the stack. All logic stays pure
-// in the screen def; this class only gathers events, routes returned
-// actions, and renders the layout. See AGENTS.md §9.
+// The adapter that drives a pure screen definition (layout/update) as a
+// screen in the stack. All logic stays pure in the screen def; this class
+// only gathers events, routes returned actions, and renders the layout.
+// See AGENTS.md §9.
 //
-// Deviation from the Lua original: `Menu.new(def, viewport, on_action,
-// context)` constructs the screen's initial state itself, by calling
-// `def.new_state(viewport, context)`. Every screen in this package now
-// takes its content (players, teams, formations, ...) as an explicit
-// `newState` parameter beyond `viewport`/`context` (content.ts's header —
-// v2/README.md rule 6.7), so a single uniform `newState(viewport, context)`
-// signature no longer fits every screen. `Menu`'s own stated job — gathering
-// events, routing actions, rendering the layout — never actually needed
-// state *construction*; only `layout`/`update` do. This port therefore
-// takes an already-constructed `initialState` instead of building one, and
-// `ScreenDef` only requires `layout`/`update`. Composing a screen's
-// `newState` with its injected content into that initial state is the same
-// later milestone that wires screens to real content (v2/README.md §1).
+// `Menu`'s own stated job — gathering events, routing actions, rendering
+// the layout — never actually needs state *construction*; only
+// `layout`/`update` do. Every screen in this package takes its content
+// (players, teams, formations, ...) as an explicit `newState` parameter
+// beyond `viewport`/`context` (content.ts's header — ARCHITECTURE.md §4
+// rule 6), so a single uniform `newState(viewport, context)` signature does
+// not fit every screen. `Menu` therefore takes an already-constructed
+// `initialState` instead of building one itself, and `ScreenDef` only
+// requires `layout`/`update`. Composing a screen's `newState` with its
+// injected content into that initial state is the same later milestone
+// that wires screens to real content.
 
 import { draw, motion, type GraphicsBackend, type Layout } from "@gc/ui";
 import type { FocusEvent } from "@gc/ui";

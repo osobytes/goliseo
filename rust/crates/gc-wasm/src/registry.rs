@@ -19,11 +19,9 @@ use gc_sim::tuning::Tuning;
 
 /// One live match's owned state, keyed by its registry handle.
 pub struct Entry {
-    /// The match's current simulation state. Since `crate::session::Session`
-    /// changed to build an ORDINARY match the same way
-    /// `game/screens/match.lua`'s `Match:restart` does (see that module's
-    /// doc), this runs in LEGACY mode (`state.slot_mode == false`, built
-    /// with `input_ownership: None`) — not slot mode, unlike before.
+    /// The match's current simulation state. `crate::session::Session`
+    /// builds an ORDINARY match in LEGACY mode (`state.slot_mode == false`,
+    /// built with `input_ownership: None`), not slot mode.
     pub state: MatchState,
     /// The tuning this session was constructed and must be stepped with.
     pub tune: Tuning,
@@ -31,12 +29,11 @@ pub struct Entry {
     /// (see `gc_render::frame::RenderFrameOptions::roster`'s doc).
     pub roster: RenderFrameRoster,
     /// This session's combat companion, present only when constructed with
-    /// `combat_enabled = true` (`crate::session::Session::new`). Mirrors
-    /// `game/screens/match.lua`'s own `self._combat_state`: built once, at
-    /// construction, via `gc_sim::combat::new_state` (`combat_sim.new_state`
-    /// in the Lua), then threaded through every subsequent step unchanged
-    /// in shape — `None` when the option is off, exactly like an ordinary
-    /// (non-combat) Lua match never builds one either.
+    /// `combat_enabled = true` (`crate::session::Session::new`). Built
+    /// once, at construction, via `gc_sim::combat::new_state`, then
+    /// threaded through every subsequent step unchanged in shape — `None`
+    /// when the option is off, and never rebuilt or cleared mid-match
+    /// either way.
     pub combat: Option<CombatMatchState>,
     /// `Session`'s own local input-tick counter, incremented once per
     /// `crate::session::Session::step` call.

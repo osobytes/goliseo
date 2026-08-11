@@ -1,11 +1,8 @@
-// Ported from spec/screens/formation_spec.lua.
-//
-// Fixture note: `data/formations.lua`'s three formations are transcribed
-// verbatim below (content.ts's header explains why this package receives
-// rather than imports `data/**`). The Lua spec's final case,
-// "only offers formations accepted by the match simulation", drives
-// `sim.match.new({home_formation = id, ...})` directly — `sim/**` is
-// Rust-owned (`crates/gc-sim`).
+// Fixture note: `gc-data`'s three formations are transcribed verbatim below
+// (content.ts's header explains why this package receives rather than
+// imports that content). The final case below,
+// "only offers formations accepted by the match simulation", drives a real
+// `@gc/wasm` session directly — `sim/**` is Rust-owned (`crates/gc-sim`).
 //
 // # Unblocked against the current `@gc/wasm`
 //
@@ -17,8 +14,8 @@
 // flows straight into `sim_match::new`'s own `NewMatchOptions.home_formation`
 // unvalidated (`session.rs`'s own doc: membership in `gc_data::formations::ALL`
 // stays this screen's job, not the constructor's). That is exactly the
-// membership check this case ports: construct a real session for every
-// formation id this screen offers and confirm it resolves to a real,
+// membership check the case below performs: construct a real session for
+// every formation id this screen offers and confirm it resolves to a real,
 // fully-rostered match (10 players -- 5 per side) rather than silently
 // falling back to something else.
 //
@@ -194,8 +191,7 @@ describe("formation screen", () => {
       try {
         // `rosterNumeric()`'s header word 5 is the roster slot count
         // (`gc_render::frame_buffer::encode_roster`'s layout) -- 5 per side
-        // for the fixture teams, matching the Lua original's `#match.players
-        // == 10`.
+        // for the fixture teams, so the total across both sides is 10.
         expect(session.rosterNumeric()[5]).toBe(10);
       } finally {
         session.free();

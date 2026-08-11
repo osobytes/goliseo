@@ -1,5 +1,5 @@
-// game/ui/focus.lua — keyboard/gamepad focus navigation over a layout, built
-// entirely on hit.ts's pure primitives.
+// Keyboard/gamepad focus navigation over a layout, built entirely on
+// hit.ts's pure primitives.
 
 import { hit } from "./hit.ts";
 import type { FocusEvent, Layout, Widget } from "./types.ts";

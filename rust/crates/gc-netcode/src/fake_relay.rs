@@ -1,13 +1,13 @@
-//! Port of `game/transport/fake_relay.lua`.
+//! An in-process fake of a relay-topology transport, alongside
+//! [`crate::fake_star`]'s fake of a direct-host star.
 //!
-//! `game/transport/**` is TypeScript-owned (`v2/README.md` §2), so — exactly
-//! as `crate::fake_star`'s module doc says of its own file — this is not
-//! "the" Rust port in the ordinary sense. It exists so the four
-//! `transport_relay_topology_probe_*` cases in
-//! `crates/gc-netcode/tests/protocol.rs` (deferred from the TypeScript port)
-//! have a real in-process Rust relay to drive `crate::fault_harness`'s
-//! `relay` topology against, the same reason `crate::fake_star::FakeStarTransport`
-//! exists for the `star` one.
+//! `game/transport/**`'s Rust presence is test infrastructure only, not a
+//! shipped module — the shipped transport lives in `ts/packages/transport`
+//! (`ARCHITECTURE.md` §2's directory layout). This exists purely so
+//! `crates/gc-netcode/tests/protocol.rs`'s `transport_relay_topology_probe_*`
+//! cases have a real in-process relay to drive `crate::fault_harness`'s
+//! `relay` topology against — the same reason
+//! `crate::fake_star::FakeStarTransport` exists for the `star` topology.
 //!
 //! # What makes it a relay rather than a star
 //!
@@ -61,17 +61,15 @@
 //!
 //! # Object references, in Rust
 //!
-//! The Lua original stores the room as a shared table every member holds a
-//! reference to (`room.endpoints[peer_id] = self`), and a member reaches
-//! another member only by looking its id up in that shared table. This port
-//! mirrors [`crate::fake_star`]'s approach: each endpoint's state lives
-//! behind `Rc<RefCell<Inner>>`, [`FakeRelayTransport`] is a cheap `Clone`
-//! handle onto it, and the shared room ([`FakeRelayRoom`], itself
-//! `Rc<RefCell<RoomInner>>`) holds a clone of every member's `Inner` handle.
-//! This is a real reference cycle — every member's `Inner` reaches the room,
-//! and the room reaches every member's `Inner` — accepted for the same
-//! reason [`crate::fake_star`]'s host/guest cycle is: this is a bounded-life
-//! test fixture, not a long-running service.
+//! This follows the same approach as [`crate::fake_star`]: each endpoint's
+//! state lives behind `Rc<RefCell<Inner>>`, [`FakeRelayTransport`] is a
+//! cheap `Clone` handle onto it, and the shared room ([`FakeRelayRoom`],
+//! itself `Rc<RefCell<RoomInner>>`) holds a clone of every member's `Inner`
+//! handle, so any member can reach the room and the room can reach any
+//! member. This is a real reference cycle — every member's `Inner` reaches
+//! the room, and the room reaches every member's `Inner` — accepted for the
+//! same reason [`crate::fake_star`]'s host/guest cycle is: this is a
+//! bounded-life test fixture, not a long-running service.
 
 use crate::fault_transport::{
     StarTransportAdapter, TransportAddressedMessage, TransportChannel, TransportChannelDiagnostics,
@@ -85,10 +83,10 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 // ---------------------------------------------------------------------------
-// `game/transport/contract.lua`'s bounds and wire logic, restated (see
-// module doc). Unlike `crate::fake_star`, this file needs the *decode* half
-// too: a relay frame is real bytes between one flush and the next, not a
-// direct method call.
+// The wire contract's (`ts/packages/transport/src/contract.ts`) bounds and
+// wire logic, restated (see module doc). Unlike `crate::fake_star`, this
+// file needs the *decode* half too: a relay frame is real bytes between one
+// flush and the next, not a direct method call.
 // ---------------------------------------------------------------------------
 
 /// Mirrors `contract.VERSION`.
@@ -276,7 +274,7 @@ fn hex_digit(byte: u8) -> Option<u8> {
     }
 }
 
-/// Mirrors `contract.lua`'s local `unescape`. Needed here (unlike
+/// Mirrors `contract.ts`'s local `unescape`. Needed here (unlike
 /// `crate::fake_star`, which never decodes a wire it produced) because a
 /// relay frame is real text between one flush and the next.
 fn unescape(bytes: &[u8]) -> Result<Vec<u8>, (TransportErrorCode, String)> {
@@ -414,9 +412,8 @@ fn encode_addressed(
 
 /// Splits `line` on its first two `|` bytes, leaving everything after the
 /// second exactly as-is (which itself contains further `|`s — the envelope
-/// wire). Mirrors the Lua pattern `"^([^|]*)|([^|]*)|(.*)$"`: `None` when
-/// fewer than two `|` bytes are present, exactly when that pattern fails to
-/// match.
+/// wire), matching the grammar `^([^|]*)|([^|]*)|(.*)$`: `None` when fewer
+/// than two `|` bytes are present, exactly when that grammar fails to match.
 fn split_addressed(line: &[u8]) -> Option<[&[u8]; 3]> {
     let first = line.iter().position(|&b| b == b'|')?;
     let rest = &line[first + 1..];
@@ -476,7 +473,7 @@ fn decode_addressed(
 }
 
 // ---------------------------------------------------------------------------
-// `fake_relay.lua` itself.
+// `FakeRelayTransport` itself.
 // ---------------------------------------------------------------------------
 
 /// Construction options for [`FakeRelayTransport::new`]. Mirrors
@@ -487,7 +484,7 @@ pub struct FakeRelayTransportOptions {
     /// doc: no member is privileged.
     pub role: TransportRole,
     /// Room-unique member identity. Required; [`FakeRelayTransport::new`]
-    /// panics without one, mirroring the Lua `assert`.
+    /// panics without one.
     pub peer_id: Option<String>,
     /// Share one across every member of a single room. `None` mints a
     /// private one, so sharing is an explicit, greppable decision (mirrors
@@ -604,7 +601,6 @@ impl RelayUplink {
 }
 
 /// Forwarding counters a [`FakeRelayRoom`] accumulates across every member.
-/// Mirrors `FakeRelayRoomCounters`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FakeRelayRoomCounters {
     /// Framed downlink messages the room emitted.
@@ -625,9 +621,9 @@ struct RoomInner {
 }
 
 /// A shared, cloneable handle onto one room's membership and forwarding
-/// state. Mirrors `FakeRelayRoom`. Members reach each other only through a
-/// room they were all handed, so two rooms in one process cannot cross-talk —
-/// the same explicitness [`crate::fake_star::FakeStarTransport::new_rendezvous`]
+/// state. Members reach each other only through a room they were all
+/// handed, so two rooms in one process cannot cross-talk — the same
+/// explicitness [`crate::fake_star::FakeStarTransport::new_rendezvous`]
 /// buys for a single logical star.
 #[derive(Clone)]
 pub struct FakeRelayRoom(Rc<RefCell<RoomInner>>);
@@ -845,8 +841,8 @@ fn add_peer(inner: &mut Inner, peer_id: &str) -> i64 {
 }
 
 /// Brings one directed link up on `inner`'s side. Called from both sides of
-/// a join (mirrors `_connect_to`), which is what makes a member's peer table
-/// symmetric without either side being "the" opener.
+/// a join, which is what makes a member's peer table symmetric without
+/// either side being "the" opener.
 fn connect_to(inner: &mut Inner, other_peer_id: &str) {
     if !inner.peers.contains_key(other_peer_id) {
         if inner.order.len() as i64 >= inner.max_peers {
@@ -872,9 +868,9 @@ fn connect_to(inner: &mut Inner, other_peer_id: &str) {
     set_peer_state(inner, other_peer_id, TransportPeerState::Connected);
 }
 
-/// Mirrors `_drop_peer_queues`: drops `inner`'s own inbound backlog *from*
-/// `peer_id`, and removes `peer_id` from every outbound uplink unit's target
-/// list, dropping units left with no destination.
+/// Drops `inner`'s own inbound backlog *from* `peer_id`, and removes
+/// `peer_id` from every outbound uplink unit's target list, dropping units
+/// left with no destination.
 fn drop_peer_queues(inner: &mut Inner, peer_id: &str) {
     let mut dropped_in_total = 0i64;
     if let Some(peer) = inner.peers.get_mut(peer_id) {
@@ -916,7 +912,7 @@ fn drop_peer_queues(inner: &mut Inner, peer_id: &str) {
     }
 }
 
-/// Mirrors `_enqueue`.
+/// Queues one outbound envelope on this endpoint's per-channel uplink.
 fn enqueue(
     inner_rc: &Rc<RefCell<Inner>>,
     channel: TransportChannel,
@@ -963,7 +959,7 @@ fn enqueue(
     Ok(true)
 }
 
-/// Mirrors `_receive`.
+/// Delivers one decoded envelope into `peer_id`'s per-channel inbound queue.
 fn receive(inner: &mut Inner, peer_id: &str, channel: TransportChannel, message: TransportMessage) {
     let idx = channel_index(channel);
     let queue_limit = inner.queue_limit;
@@ -1008,7 +1004,7 @@ fn receive(inner: &mut Inner, peer_id: &str, channel: TransportChannel, message:
 }
 
 /// Splits the frame the room handed down and decodes each line back into an
-/// addressed envelope. Mirrors `_receive_frame`.
+/// addressed envelope.
 fn receive_frame(inner_rc: &Rc<RefCell<Inner>>, frame: &[u8]) {
     let mut inner = inner_rc.borrow_mut();
     inner.downlink_frames += 1;
@@ -1047,9 +1043,8 @@ fn receive_frame(inner_rc: &Rc<RefCell<Inner>>, frame: &[u8]) {
 /// so release order is a property of the contract rather than of the
 /// topology. `cursor`, `slots`, and `channels` are all non-negative by
 /// construction (`cursor` only ever advances modulo a positive value), so
-/// Rust's truncating `%` already agrees with Lua's floored `%` here — no
-/// `rem_euclid` needed, same reasoning as `crate::fake_star::take`. Mirrors
-/// `_take`.
+/// no floor-vs-truncation distinction arises and no `rem_euclid` is needed —
+/// same reasoning as `crate::fake_star::take`.
 fn take(inner: &mut Inner) -> Option<TransportPeerMessage> {
     let slots = inner.order.len() as i64;
     let channels = CHANNEL_ORDER.len() as i64;
@@ -1084,8 +1079,8 @@ fn take(inner: &mut Inner) -> Option<TransportPeerMessage> {
 
 /// Drains one endpoint's single uplink under the same `bufferedAmount` model
 /// `crate::fake_star` uses, with one difference that is the point: the
-/// budget is per *link*, and this endpoint has one link however many members
-/// are listening. Mirrors `_flush`.
+/// budget is per *link*, and this endpoint has one link however many
+/// members are listening.
 fn flush(inner_rc: &Rc<RefCell<Inner>>, room: &FakeRelayRoom) {
     for &channel in &CHANNEL_ORDER {
         let idx = channel_index(channel);
@@ -1171,7 +1166,7 @@ fn flush(inner_rc: &Rc<RefCell<Inner>>, room: &FakeRelayRoom) {
 }
 
 /// Flushes every member's uplink into the room in join order, then lets the
-/// room frame one message per destination. Mirrors `FakeRelayTransport.pump_room`.
+/// room frame one message per destination.
 fn pump_room(room: &FakeRelayRoom) {
     let members = room.0.borrow().members.clone();
     for member_id in &members {
@@ -1185,9 +1180,8 @@ fn pump_room(room: &FakeRelayRoom) {
 
 /// The relay itself: concatenates the opaque lines received for each
 /// destination this pass and hands the destination one frame. It decodes
-/// nothing and never returns a line to its own origin — origin is decided by
-/// which member handed the line up, never by reading it. Mirrors
-/// `FakeRelayTransport.forward_room`.
+/// nothing and never returns a line to its own origin — origin is decided
+/// by which member handed the line up, never by reading it.
 fn forward_room(room: &FakeRelayRoom) {
     let members = room.0.borrow().members.clone();
     for member_id in &members {
@@ -1246,8 +1240,8 @@ fn channel_diagnostics(
 }
 
 /// Encoded envelope wires this endpoint put on its uplink and took off its
-/// downlink, and the framing this port needs to keep separately comparable
-/// with `crate::fake_star`'s figures. Mirrors `FakeRelayWireCounters`.
+/// downlink, and the framing overhead this module keeps separately
+/// comparable with `crate::fake_star`'s figures.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FakeRelayWireCounters {
     /// Envelope wire bytes sent.
@@ -1271,20 +1265,20 @@ pub struct FakeRelayWireCounters {
 
 impl FakeRelayTransport {
     /// One room. Members reach each other only through a room they were all
-    /// handed. Mirrors `FakeRelayTransport.new_room`.
+    /// handed.
     #[must_use]
     pub fn new_room() -> FakeRelayRoom {
         FakeRelayRoom::new()
     }
 
-    /// Builds one member endpoint. Mirrors `FakeRelayTransport.new`.
+    /// Builds one member endpoint.
     ///
     /// # Panics
     ///
-    /// Panics (mirroring the Lua `assert`s, all programmer errors per
-    /// AGENTS.md §7) if `options.peer_id` is absent or not a valid transport
-    /// peer id, or if `queue_limit`, `max_peers`, or `buffered_amount_limit`
-    /// are outside their supported ranges.
+    /// Panics (invariant violations, per AGENTS.md §7) if `options.peer_id`
+    /// is absent or not a valid transport peer id, or if `queue_limit`,
+    /// `max_peers`, or `buffered_amount_limit` are outside their supported
+    /// ranges.
     #[must_use]
     pub fn new(options: FakeRelayTransportOptions) -> Self {
         let queue_limit = options.queue_limit.unwrap_or(DEFAULT_QUEUE_LIMIT);
@@ -1349,23 +1343,20 @@ impl FakeRelayTransport {
     /// Test seam: flushes every member's uplink into the shared room, then
     /// lets the room frame and deliver everything it collected. Because
     /// every member of a room shares the same [`FakeRelayRoom`], calling
-    /// this on any one member pumps the whole room. Mirrors
-    /// `FakeRelayTransport:pump`.
+    /// this on any one member pumps the whole room.
     pub fn pump(&self) {
         let room = self.inner.borrow().room.clone();
         pump_room(&room);
     }
 
-    /// This endpoint's uplink/downlink envelope byte counters. Mirrors
-    /// `FakeRelayTransport:wire_bytes`.
+    /// This endpoint's uplink/downlink envelope byte counters.
     #[must_use]
     pub fn wire_bytes(&self) -> (i64, i64) {
         let inner = self.inner.borrow();
         (inner.uplink_bytes, inner.downlink_bytes)
     }
 
-    /// This endpoint's full wire counters. Mirrors
-    /// `FakeRelayTransport:wire_counters`.
+    /// This endpoint's full wire counters.
     #[must_use]
     pub fn wire_counters(&self) -> FakeRelayWireCounters {
         let inner = self.inner.borrow();
@@ -1386,7 +1377,7 @@ impl StarTransportAdapter for FakeRelayTransport {
     /// Joining the room is the whole handshake. Every member already in the
     /// room gains a link to the newcomer and the newcomer gains one to each
     /// of them, in join order, so slot numbering is a deterministic function
-    /// of arrival and not of any hash order. Mirrors `FakeRelayTransport:initialize`.
+    /// of arrival and not of any hash order.
     fn initialize(&mut self) -> TransportResult<bool> {
         if self.inner.borrow().state == TransportState::Connected {
             return Ok(true);
@@ -1482,7 +1473,7 @@ impl StarTransportAdapter for FakeRelayTransport {
     /// Declaring a member explicitly. A relay has no privileged opener, so
     /// unlike the star this is not host-only: it exists because the adapter
     /// contract names it, and because a caller may want a link before the
-    /// far member has joined. Mirrors `FakeRelayTransport:open_peer`.
+    /// far member has joined.
     fn open_peer(&mut self, peer_id: &str) -> TransportResult<i64> {
         {
             let inner = self.inner.borrow();
@@ -1537,8 +1528,8 @@ impl StarTransportAdapter for FakeRelayTransport {
     }
 
     /// Closes one member link without disturbing the rest of the room. The
-    /// remote member is told, because a relay does know when a client's link
-    /// to it drops. Mirrors `FakeRelayTransport:close_peer`.
+    /// remote member is told, because a relay does know when a client's
+    /// link to it drops.
     fn close_peer(&mut self, peer_id: &str, reason: Option<&str>) -> TransportResult<bool> {
         if !self.inner.borrow().peers.contains_key(peer_id) {
             return Err(TransportError::new(
@@ -1665,7 +1656,7 @@ impl StarTransportAdapter for FakeRelayTransport {
 
     /// Address one member. Any member may address any other: the relay has
     /// no privileged direction, which is precisely what removes the
-    /// sequencer. Mirrors `FakeRelayTransport:send`.
+    /// sequencer.
     fn send(
         &mut self,
         peer_id: &str,
@@ -1733,8 +1724,7 @@ impl StarTransportAdapter for FakeRelayTransport {
 
     /// Fan-out for the price of one upload. Returns how many members the
     /// room will frame this to; per-member failures stay visible through
-    /// events and diagnostics, exactly as on the star. Mirrors
-    /// `FakeRelayTransport:broadcast`.
+    /// events and diagnostics, exactly as on the star.
     fn broadcast(
         &mut self,
         channel: TransportChannel,

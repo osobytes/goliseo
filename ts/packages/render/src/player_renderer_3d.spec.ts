@@ -1,9 +1,7 @@
 // New tests for player_renderer_3d.ts's pure half: pose selection and the
-// metres-per-world-unit conversion. No Lua spec targets
-// game/render/player_renderer_3d.lua directly (it has no `spec/render/`
-// counterpart in the Lua tree). Most of the GPU-adjacent mesh/skeleton/camera
-// half is untested -- see this package's port report -- EXCEPT
-// `renderToSprite`'s and `characterMesh`'s object-graph shape (below), which
+// metres-per-world-unit conversion. Most of the GPU-adjacent mesh/skeleton/
+// camera half is untested EXCEPT `renderToSprite`'s and `characterMesh`'s
+// object-graph shape (below), which
 // need only a stub renderer (or no renderer at all, for `characterMesh`),
 // not a live GL context, to verify (the same boundary scene.spec.ts's
 // `stubRenderer()` and pitch.spec.ts's rigged-compositing suite draw);
@@ -109,7 +107,7 @@ describe("player_renderer_3d.poseFor", () => {
 // THE GAP THIS SUITE USED TO PIN, now closed (#430).
 //
 // #428 made `kick_follow` REACHABLE in a live match (`gc_render::player_pose::
-// select` emits it, and a browser run of `v2/tools/browser_match_harness`
+// select` emits it, and a browser run of `tools/browser_match_harness`
 // observed it on a real roster slot at tick 600) without making it VISIBLE:
 // `POSE_CLIP` mapped it onto the `locomotion` clip and nothing in
 // `action_pose.ts` claimed the id, so the rig drew a follow-through exactly as
@@ -444,7 +442,7 @@ describe("player_renderer_3d.characterCameraParams", () => {
 // off-screen render target, and it restores the renderer's prior
 // target/clear state -- without needing a live GL context. What is NOT
 // verified here (or anywhere in this package) is the actual pixel content
-// the off-screen render produces; see this port's report.
+// the off-screen render produces.
 describe("player_renderer_3d.renderToSprite", () => {
   interface RenderCall {
     readonly scene: THREE.Scene;
@@ -535,7 +533,7 @@ describe("player_renderer_3d.renderToSprite", () => {
     expect(renderer.autoClear).toBe(false);
   });
 
-  // REGRESSION (this port's report): players rendered as solid black
+  // REGRESSION, found live: players rendered as solid black
   // silhouettes with no team-colour distinction in a real browser --
   // invisible to every test above, which never inspects WHAT is inside the
   // scene `renderToSprite` hands a renderer, only how the renderer is
@@ -566,9 +564,8 @@ describe("player_renderer_3d.renderToSprite", () => {
   // The materials stay `MeshStandardMaterial` (a lit, PBR material) rather
   // than switching to an unlit material as a workaround for the missing
   // light above -- see player_renderer_3d.ts's LIGHTING comment for why that
-  // is the correct call given rig3d/renderer.lua's original toon-shaded,
-  // lit-by-a-directional-key-light intent (v2/README.md #7: "replace --
-  // WebGLRenderer, MeshStandardMaterial").
+  // is the correct call given the toon-shaded, lit-by-a-directional-key-light
+  // intent (ARCHITECTURE.md §5: "Rendering and materials -- WebGLRenderer, MeshStandardMaterial.").
   it("shades the character with MeshStandardMaterial, not an unlit material standing in for the missing light", () => {
     const renderer = stubRenderer();
     renderToSprite(renderer, 640, 360, 12, 1280, 720, idleView, baseOptions(), 0);
@@ -587,18 +584,17 @@ describe("player_renderer_3d.renderToSprite", () => {
     }
   });
 
-  // REGRESSION target of THIS port: the toon shading itself (rig3d/renderer.lua's
-  // hand-written GLSL -- bands, bounce, rim, metal specular, emissive-past-white)
-  // had NO port at all before this change; `materialsForTeam` built plain
-  // `MeshStandardMaterial`s with tuned `roughness`/`metalness` numbers and a
-  // fixed emissive accent colour, which is generic PBR, not this game's look.
-  // This suite cannot rasterise a pixel (see file header), so it checks the
-  // one thing it CAN from here: that the ONE material `renderToSprite` puts
-  // into the scene actually has `rig3d/cel_shader.ts`'s
-  // `applyCombinedCelShading` wired onto it (a real, non-default
-  // `onBeforeCompile` and `side === THREE.DoubleSide`, matching
-  // rig3d/renderer.lua's `setMeshCullMode("none")`) rather than being plain,
-  // untouched `MeshStandardMaterial` relying on PBR defaults. See
+  // REGRESSION target: the toon shading itself (hand-written GLSL -- bands,
+  // bounce, rim, metal specular, emissive-past-white) was missing before this
+  // change; `materialsForTeam` built plain `MeshStandardMaterial`s with tuned
+  // `roughness`/`metalness` numbers and a fixed emissive accent colour, which
+  // is generic PBR, not this game's look. This suite cannot rasterise a pixel
+  // (see file header), so it checks the one thing it CAN from here: that the
+  // ONE material `renderToSprite` puts into the scene actually has
+  // `rig3d/cel_shader.ts`'s `applyCombinedCelShading` wired onto it (a real,
+  // non-default `onBeforeCompile` and `side === THREE.DoubleSide`, i.e. no
+  // back-face culling) rather than being plain, untouched
+  // `MeshStandardMaterial` relying on PBR defaults. See
   // rig3d/cel_shader.spec.ts for what the injected shading itself contains.
   //
   // Also pins the DRAW-CALL FIX itself (#save-batch): `mesh.material` is a
@@ -608,7 +604,7 @@ describe("player_renderer_3d.renderToSprite", () => {
   // (`Array.isArray(material)` in `WebGLRenderer.js`'s `projectObject`), so
   // this one assertion is what actually guarantees one draw call per
   // character; nothing else in this headless suite can observe a real GPU
-  // draw-call count (v2/README.md #1, no WebGL context here).
+  // draw-call count (no WebGL context here).
   it("wires rig3d/cel_shader.ts's combined toon shading onto a SINGLE material, not stock MeshStandardMaterial defaults or a per-family array", () => {
     const renderer = stubRenderer();
     renderToSprite(renderer, 640, 360, 12, 1280, 720, idleView, baseOptions(), 0);
@@ -633,7 +629,7 @@ describe("player_renderer_3d.renderToSprite", () => {
   });
 
   // REGRESSION: the offscreen composite's camera frustum alignment was fine
-  // (verified live-GL, see this port's report), but the returned sprite
+  // (verified live-GL), but the returned sprite
   // rendered upside down under `SceneRoot`'s Y-inverted 2D camera --
   // `target.texture.flipY` (the line the code previously pointed at) turned
   // out to be a no-op for render-target textures. The actual fix is
@@ -652,7 +648,7 @@ describe("player_renderer_3d.renderToSprite", () => {
   // flat colour (`materialsForTeam` used to read only `palette[0]`, the
   // "skin" slot, which no theme ever maps to "team" -- see themes.ts's
   // `SLOTS`/`ColorSlot`). Baking a per-vertex colour attribute from each
-  // team's resolved palette (this port's fix) means the two teams' baked
+  // team's resolved palette (the fix for this) means the two teams' baked
   // colour buffers must differ once real team-owned surfaces (cloth, in the
   // medieval theme fixture content) are included.
   it("bakes different per-vertex colours for the home and away team", () => {
@@ -823,14 +819,14 @@ describe("player_renderer_3d.characterMesh / ppmForRadius", () => {
     expect(large).toBeCloseTo(small * 2);
   });
 
-  // DRAW-CALL FIX #1 (this port): `build()` used to write vertices in
+  // DRAW-CALL FIX #1: `build()` used to write vertices in
   // `geometry.merge`'s own order -- one contiguous run per PART, not per
   // shading family. `body.ts`'s buildBody/buildKit/buildLoadout interleave
   // plain/metal/emissive parts (a plain visor next to a metal band next to
   // an emissive seam), so the geometry-group boundary fired on every
   // material TRANSITION rather than once per family: dozens of groups for a
-  // ~28-part character. This is invisible without a live GPU (v2/README.md
-  // #1) -- `THREE.WebGLRenderer.info.render.calls` needs an actual context
+  // ~28-part character. This is invisible without a live GPU --
+  // `THREE.WebGLRenderer.info.render.calls` needs an actual context
   // -- so this test pins the one structural fact a headless suite CAN see:
   // `geometry.groups`, three.js's own record of what would have been drawn
   // per material if this material were ever an array (see the next test for
@@ -868,7 +864,7 @@ describe("player_renderer_3d.characterMesh / ppmForRadius", () => {
     expect(transitions).toBeLessThanOrEqual(2);
   });
 
-  // DRAW-CALL FIX #2 (this port): even 3 contiguous groups is still up to 3
+  // DRAW-CALL FIX #2: even 3 contiguous groups is still up to 3
   // draw calls per character, because three.js only iterates
   // `geometry.groups` -- and therefore only issues more than one draw call
   // for one mesh -- when `.material` is an ARRAY (`Array.isArray(material)`

@@ -1,10 +1,8 @@
 // WebRTC and WebSocket transports.
 //
 // This module is the package's facade: it re-exports the transport
-// contract and every implementation, and provides the same factory
-// functions `game/transport.lua` exposed to the rest of the Lua codebase
-// (`transport.fake()`, `transport.browser_star()`, ...). `game/transport.lua`
-// has no dedicated file of its own in this port — it *is* this facade.
+// contract and every implementation, and provides the factory functions
+// consumers use (`fake()`, `browserStar()`, `fakeStar()`, ...).
 
 export * from "./contract.ts";
 

@@ -1,20 +1,18 @@
-// Ported from game/screens/online_match_model.lua -- the pure flow policy
-// between the OMP-3 driver and the session coordinator.
+// The pure flow policy between the OMP-3 driver and the session coordinator.
 //
-// It owns no simulation and no transport, same as the Lua original: the
-// driver owns the match, the coordinator owns the session, and this module
-// decides which control-plane events a confirmed simulation step justifies,
-// what a terminal driver status reports, when a result may be committed, and
-// how focus loss, a pause request, a lost controller, and an abort are
-// answered.
+// It owns no simulation and no transport: the driver owns the match, the
+// coordinator owns the session, and this module decides which control-plane
+// events a confirmed simulation step justifies, what a terminal driver
+// status reports, when a result may be committed, and how focus loss, a
+// pause request, a lost controller, and an abort are answered.
 //
-// `game.online.coordinator` and `game.online.protocol` are both Rust-owned
-// (`crates/gc-netcode`; v2/README.md §2.1). `@gc/wasm` now binds a real
+// The session coordinator and the wire protocol are both Rust-owned
+// (`crates/gc-netcode`; ARCHITECTURE.md §1.1). `@gc/wasm` now binds a real
 // `Coordinator` (`crates/gc-wasm/src/coordinator_bridge.rs`), but
 // `@gc/screens` has no dependency edge onto `@gc/wasm` (absent from
 // `package.json`) -- and wouldn't take one even if it did, since wiring
 // Rust-owned session state to this screen's pure model is `@gc/app`'s job,
-// not this package's (v2/README.md's directory table). So both stay
+// not this package's (ARCHITECTURE.md's directory table). So both stay
 // injected ports -- `CoordinatorPort`/`ProtocolPort` -- following
 // `@gc/online`'s `match_presentation.ts` precedent
 // (`RollbackEventsPort`/`MatchDriverPort`). `CoordinatorState` stays a
@@ -38,20 +36,20 @@ export interface OnlineMatchNotice {
   readonly remaining: number;
 }
 
-/** `game.online.coordinator`'s `CoordinatorState` -- the fields this module reads. Opaque otherwise. */
+/** The session coordinator's own state shape -- the fields this module reads. Opaque otherwise. */
 export interface CoordinatorStateCore {
   readonly phase: string;
   readonly role: "host" | "guest";
   readonly host_link_id?: string;
 }
 
-/** `game.online.coordinator`'s `CoordinatorTerminal`. */
+/** The session coordinator's terminal-reason shape. */
 export interface CoordinatorTerminal {
   readonly reason: string;
   readonly detail?: string;
 }
 
-/** `game.online.coordinator`'s `CoordinatorAction`. */
+/** The session coordinator's action shape. */
 export interface CoordinatorAction {
   readonly kind: "send" | "close" | "terminate";
   readonly message?: unknown;
@@ -60,43 +58,43 @@ export interface CoordinatorAction {
   readonly terminal?: CoordinatorTerminal;
 }
 
-/** `game.online.coordinator`'s `CoordinatorOutcome`. */
+/** The session coordinator's outcome shape. */
 export interface CoordinatorOutcome {
   readonly accepted: boolean;
   readonly reason?: string;
   readonly actions: readonly CoordinatorAction[];
 }
 
-/** One event `game.online.coordinator.step` accepts. Opaque payload beyond `kind`. */
+/** One event the session coordinator's `step` accepts. Opaque payload beyond `kind`. */
 export interface CoordinatorEvent {
   readonly kind: string;
   readonly [key: string]: unknown;
 }
 
-/** `game.online.coordinator`, injected -- see this module's header. */
+/** The session coordinator, injected -- see this module's header. */
 export interface CoordinatorPort<TState extends CoordinatorStateCore> {
   step(state: TState, event: CoordinatorEvent): readonly [TState, CoordinatorOutcome];
 }
 
-/** `game.online.protocol`'s decoded envelope -- only `kind`/`body` are read here. */
+/** The wire protocol's decoded envelope -- only `kind`/`body` are read here. */
 export interface ProtocolMessage {
   readonly kind: string;
   readonly body?: { readonly [key: string]: unknown };
 }
 
-/** `game.online.protocol`, injected -- see this module's header. */
+/** The wire protocol, injected -- see this module's header. */
 export interface ProtocolPort {
   encode(message: unknown): string | undefined;
   decode(wire: string): ProtocolMessage | undefined;
 }
 
-/** `game.screens.online_match`'s `OnlineMatchRequest` -- the fields this module reads. */
+/** `online_match.ts`'s `OnlineMatchRequest` -- the fields this module reads. */
 export interface OnlineMatchRequestCore {
   readonly role: "host" | "guest";
   readonly first_input_tick: number;
 }
 
-/** `sim.rollback_events`'s `RollbackWrappedEvent`, generic over its opaque payload. */
+/** The rollback event system's wrapped event shape, generic over its opaque payload. */
 export interface RollbackWrappedEvent<TPayload = unknown> {
   readonly id: string;
   readonly tick: number;
@@ -110,7 +108,7 @@ export type LifecyclePayload =
   | { readonly kind: "kickoff" }
   | { readonly kind: "full_time" };
 
-/** `sim.rollback_events`'s `RollbackEventStep` -- only the fields this module reads. */
+/** The rollback event system's per-tick step shape -- only the fields this module reads. */
 export interface RollbackEventStepCore {
   readonly tick: number;
   readonly lifecycle_events: readonly RollbackWrappedEvent<LifecyclePayload>[];
@@ -163,11 +161,11 @@ export type OnlineMatchCommand =
 
 /**
  * A command whose `kind` this module does not recognize -- `command`
- * ignores it (mirroring the Lua original's `if kind == ... elseif ...`
- * chain falling through with no `else`). Kept as a separate type, rather
- * than folded into `OnlineMatchCommand` as a catch-all member, because a
- * catch-all with an open `kind: string` would widen every other member's
- * `kind` to `string` too and defeat the switch's discrimination.
+ * ignores it, falling through its switch with no matching case and no
+ * effect. Kept as a separate type, rather than folded into
+ * `OnlineMatchCommand` as a catch-all member, because a catch-all with an
+ * open `kind: string` would widen every other member's `kind` to `string`
+ * too and defeat the switch's discrimination.
  */
 export type UnknownOnlineMatchCommand = { readonly kind: string; readonly [key: string]: unknown };
 
@@ -273,9 +271,9 @@ function settle<TState extends CoordinatorStateCore, TRequest extends OnlineMatc
   }
   let next: OnlineMatchModel<TState, TRequest> = { ...model, phase: "ended" };
   // `terminal` is set by `absorb` off a coordinator `terminate` action; a
-  // caller-supplied `state.terminal` is not modeled here (opaque `TState`),
-  // so this mirrors the Lua fallback `model.terminal = model.terminal or
-  // state.terminal` only for the half this module can see.
+  // caller-supplied terminal reason living on the coordinator state itself
+  // is not modeled here (opaque `TState`), so this only ever sees the half
+  // of that fallback this module's own `model.terminal` carries.
   if (next.terminal !== undefined && isCompleted(next.terminal)) {
     next = { ...next, result: localResult(state) };
   }
@@ -468,7 +466,7 @@ function absorbControl<TState extends CoordinatorStateCore, TRequest extends Onl
 export interface OnlineMatchModelPorts<TState extends CoordinatorStateCore> {
   readonly coordinator: CoordinatorPort<TState>;
   readonly protocol: ProtocolPort;
-  /** Mirrors the Lua `state.result or state.local_result` fallback -- see `settle`. */
+  /** The session result if one was reached, else this peer's own local result -- see `settle`. */
   readonly localResult: (state: TState) => unknown;
   readonly isCompleted: (terminal: CoordinatorTerminal) => boolean;
 }
@@ -484,9 +482,9 @@ export function command<TState extends CoordinatorStateCore, TRequest extends On
   const { coordinator, protocol } = ports;
   const effects: OnlineMatchEffect[] = [];
   let next = copy(model);
-  // Unknown commands fall through to `default` unchanged, mirroring the Lua
-  // `if/elseif` chain's implicit no-op. The cast reflects that every case
-  // below only runs once `event.kind` has matched a known literal.
+  // Unknown commands fall through to `default` unchanged -- an implicit
+  // no-op. The cast reflects that every case below only runs once
+  // `event.kind` has matched a known literal.
   const event = rawEvent as OnlineMatchCommand;
   switch (event.kind) {
     case "control":

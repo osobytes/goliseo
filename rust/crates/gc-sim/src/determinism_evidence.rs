@@ -1,5 +1,3 @@
-//! Port of `sim/determinism_evidence.lua`.
-//!
 //! OMP-1 full-match determinism recording, verification, and evidence
 //! report. Verification decodes only the checked-in effective
 //! [`InputFrame`]s. Bot policy is never allowed to rewrite the
@@ -7,54 +5,46 @@
 //!
 //! ## Where the fixture data comes from
 //!
-//! The Lua original `require`s `data/omp1_determinism.lua` (14,517 lines).
-//! Its Rust equivalent, [`gc_data::omp1_determinism`], is already ported —
-//! mechanically converted to JSON and embedded, not hand-translated (see
-//! that module's doc). This module reads it through `fixture()`,
-//! `frame_wire_lines()`, and `boundary_hash_lines()` exactly the way
-//! `sim/determinism_evidence.lua` reads the `local fixture =
-//! require("data.omp1_determinism")` table.
+//! [`gc_data::omp1_determinism`] embeds the frozen fixture as JSON (see that
+//! module's doc). This module reads it through `fixture()`,
+//! `frame_wire_lines()`, and `boundary_hash_lines()`.
 //!
 //! `gc_data::omp1_determinism::InputTapeIdentity`/`InputOwnership` are
 //! JSON-shaped (plain `String` team/slot names) rather than
 //! [`crate::input_tape::InputTapeIdentity`]/[`crate::input_frame::InputOwnership`]'s
-//! enum-typed shape. In Lua both are the same duck-typed table; in Rust
-//! [`fixture_identity`] is the explicit adapter that bridges them, parsing
-//! canonical slot order rather than the name strings (the fixture's slots
-//! are already listed in [`input_frame::slot`]'s canonical order, verified
-//! against the checked-in JSON).
+//! enum-typed shape, so [`fixture_identity`] is the explicit adapter that
+//! bridges them, parsing canonical slot order rather than the name strings
+//! (the fixture's slots are already listed in [`input_frame::slot`]'s
+//! canonical order, verified against the checked-in JSON).
 //!
-//! ## `assert` becomes `Result`, matching `input_tape`'s and `replay`'s reasoning
+//! ## `Result`, matching `input_tape`'s and `replay`'s reasoning
 //!
 //! Every failure path here is either (a) evidence disagreeing with the
 //! frozen fixture — precisely "validation of external/frozen input" per
 //! AGENTS.md §7 — or (b) a call into [`crate::input_tape`]/[`crate::replay`],
 //! which are already `Result`-shaped for the same reason (see
 //! `input_tape.rs`'s module doc: this workspace's release profile sets
-//! `panic = "abort"`, so there is no `pcall`/`catch_unwind` escape hatch in
-//! a release build). So this module's public functions return
-//! `Result<T, String>` throughout.
+//! `panic = "abort"`, so there is no unwinding escape hatch in a release
+//! build). So this module's public functions return `Result<T, String>`
+//! throughout.
 //!
-//! ## `tuning.lua`'s global becomes an explicit parameter
+//! ## Tuning is an explicit parameter, never a global
 //!
 //! Matches [`crate::input_tape`] and [`crate::replay`]: every function that
 //! needs to confirm the fixture's recorded tuning identity against the
 //! active configuration takes `&Tuning` explicitly instead of reading a
 //! global.
 //!
-//! ## What did not get ported: `serialize_recording`
+//! ## What this module does not do: regenerate the fixture
 //!
-//! `sim/determinism_evidence.lua`'s `serialize_recording` pretty-prints an
-//! [`Omp1Recording`] back into a **Lua source file** (`%q`-quoted Lua table
-//! literal syntax) for `data/omp1_determinism.lua`, driven only by
-//! `love . --determinism-refresh`. That output format is Lua source code;
-//! there is no Rust analog to regenerate, and `v2/rust`'s copy of this
-//! fixture is sourced from JSON via a one-time conversion script (see
-//! `gc_data::omp1_determinism`'s doc), not from this function. It is not
-//! exercised by `spec/sim/determinism_evidence_spec.lua` either. [`record`]
-//! — the part of the original that replays the frozen frames and folds an
-//! [`Omp1Recording`], independent of how it later gets serialized — is
-//! ported; only the Lua-literal pretty-printer is not.
+//! [`record`] replays the frozen frames and folds the result into an
+//! [`Omp1Recording`], but this module has no function that writes a new
+//! fixture back out — [`gc_data::omp1_determinism`]'s frozen JSON is
+//! sourced by a one-time conversion script (see that module's doc), not by
+//! anything here. Regenerating the fixture from a live match run is not
+//! something this crate can do at all: the implementation this fixture was
+//! originally captured from no longer exists in this repository, so the
+//! checked-in fixture is frozen, permanent evidence, not a value to refresh.
 
 use crate::fixed_clock;
 use crate::input_frame::{
@@ -752,8 +742,8 @@ pub fn verify(tune: &Tuning) -> Result<DeterminismEvidenceResult, String> {
 
 /// Replay the frozen fixture frames from scratch, confirming each one
 /// still encodes canonically, and fold the result into an
-/// [`Omp1Recording`]. See the module doc for why this module does not also
-/// port `serialize_recording`.
+/// [`Omp1Recording`]. See the module doc for why this module has no
+/// function that writes a new fixture back out.
 ///
 /// # Errors
 ///

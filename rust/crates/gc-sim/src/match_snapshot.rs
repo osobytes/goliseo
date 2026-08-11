@@ -1,45 +1,35 @@
-//! Port of `sim/match_snapshot.lua`.
-//!
 //! Canonical start-of-tick snapshots for `sim::match`. The explicit field
 //! lists in this module are both the copy contract and the canonical
-//! serialization order: adding simulation state must fail capture/specs
+//! serialization order: adding simulation state must fail capture/tests
 //! until this module is consciously versioned.
 //!
-//! Design note (README §5.1): this module declares the canonical, fully
-//! typed [`MatchState`] / [`MatchPlayer`] / [`MatchEvent`] shapes — not a
-//! narrow read-only view like `metrics`/`bot`. It has to: this module's
-//! entire job is to capture/restore/hash *all* of `sim/match.lua`'s
-//! `MatchState` shape, so a narrowed view would defeat the module's purpose.
-//! Every field type below is taken from `sim/match.lua`'s own `---@field`
-//! LuaCATS annotations, which are authoritative for the real shape.
-//! Downstream modules in this layer (`combat_snapshot`, `combat_identity`,
-//! `combat_observation`, `combat_policy`, `combat`, `slot_input`) reuse
-//! `MatchState`/`MatchPlayer`/`MatchInput` from here rather than declaring
-//! their own views, which is exactly what §5.1 asks a later module to do
-//! when one already fits. `gc_sim::r#match` (`sim/match.lua`'s port) does
-//! the same (end state 1 in §5.1); so, since it landed, does `gc_sim::aerial`
-//! — its local view needed nearly this entire shape, so it was folded onto
-//! these canonical types directly rather than kept as a fourth duplicate
-//! (see that module's doc). `bot` and `metrics` stay on their own narrow
-//! views (§5.1 end state 2): each touches a small, genuinely different
-//! slice of match state, and giving that slice its own name next to its one
-//! consumer (`bot::BotMatchView`, `metrics::MetricsMatchView`, ...) already
-//! resolves the "three same-named structs" problem now that `aerial`'s
-//! duplicate is gone — a shared module would gain nothing but a longer
-//! import path, since the two shapes share almost no fields.
+//! Design note: this module declares the canonical, fully typed
+//! [`MatchState`] / [`MatchPlayer`] / [`MatchEvent`] shapes — not a narrow
+//! read-only view like `metrics`/`bot`. It has to: this module's entire job
+//! is to capture/restore/hash *all* of `MatchState`'s shape, so a narrowed
+//! view would defeat the module's purpose. Downstream modules in this layer
+//! (`combat_snapshot`, `combat_identity`, `combat_observation`,
+//! `combat_policy`, `combat`, `slot_input`) reuse `MatchState`/`MatchPlayer`/
+//! `MatchInput` from here rather than declaring their own views — as does
+//! `gc_sim::r#match` and `gc_sim::aerial`, whose own local view needed
+//! nearly this entire shape (see that module's doc). `bot` and `metrics`
+//! stay on their own narrow views: each touches a small, genuinely
+//! different slice of match state, and giving that slice its own name next
+//! to its one consumer (`bot::BotMatchView`, `metrics::MetricsMatchView`,
+//! ...) avoids a shared module that would gain nothing but a longer import
+//! path, since the two shapes share almost no fields.
 //!
-//! ## `mark_unsupported` — a deliberate deviation
+//! ## `mark_unsupported` — a deliberate design choice
 //!
-//! The Lua original tracks "this exact `MatchState` table may no longer be
-//! captured without its combat companion" via a table keyed by object
-//! *identity* (`setmetatable({}, { __mode = "k" })`, a weak map). Rust
-//! values have no such identity independent of their content, and
-//! reproducing one would mean smuggling `Rc`/interior mutability into a
-//! crate that otherwise treats sim state as plain, `Clone`-able data. The
-//! natural Rust translation of "this particular value is marked" is a field
-//! **on** the value: [`MatchState::unsupported_reason`]. It is never part of
-//! [`MATCH_FIELD_COUNT`]'s wire contract — [`append_state`] does not touch
-//! it — so it cannot affect a hash or a wire byte.
+//! "This exact `MatchState` value may no longer be captured without its
+//! combat companion" is tracked as a field **on** the value:
+//! [`MatchState::unsupported_reason`], rather than via some out-of-band
+//! identity-keyed table — Rust values have no identity independent of their
+//! content, and faking one would mean smuggling `Rc`/interior mutability
+//! into a crate that otherwise treats sim state as plain, `Clone`-able
+//! data. `unsupported_reason` is never part of [`MATCH_FIELD_COUNT`]'s wire
+//! contract — [`append_state`] does not touch it — so it cannot affect a
+//! hash or a wire byte.
 
 use crate::aerial::{AerialOutcome, AerialStyle};
 use crate::combat_feasibility::Team as FeasibilityTeam;
@@ -83,7 +73,7 @@ impl Team {
     }
 
     /// Map to [`crate::combat_feasibility::Team`], the local team type the
-    /// already-ported combat-feasibility layer duck-types against.
+    /// combat-feasibility layer's own narrow view uses.
     #[must_use]
     pub fn to_feasibility(self) -> FeasibilityTeam {
         match self {
@@ -93,9 +83,9 @@ impl Team {
     }
 }
 
-/// A value paired per fixture side. Lua's `{ home = T, away = T }` shape.
-/// The key set is exactly the two teams, so this small struct replaces a
-/// map (README rule 6) rather than reaching for a banned hash table.
+/// A value paired per fixture side. The key set is exactly the two teams,
+/// so this small struct replaces a map rather than reaching for a banned
+/// hash table.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ByTeam<T> {
     /// The home side's value.
@@ -528,8 +518,8 @@ fn is_finite(value: f64) -> bool {
 /// produced directly by a human/bot input driver. Ephemeral per-tick data —
 /// never part of [`MatchState`]'s serialized/hashed shape, so it lives here
 /// only because every module in this layer that needs the match-shaped
-/// types needs this one too (README §5.1: one shared declaration rather
-/// than a fourth/fifth view).
+/// types needs this one too (one shared declaration rather than a
+/// fourth/fifth view).
 ///
 /// `move` is a Rust keyword, so [`MatchInput::r#move`] uses a raw
 /// identifier — the same convention `gc_sim::r#match` itself uses for the
@@ -559,15 +549,15 @@ pub struct MatchInput {
     /// Hold Space off the ball: slow shadow stance, bonus poke reach on
     /// release.
     pub jockey: bool,
-    /// Abstract first-time strike intent. `None` (Lua `nil`) means "unset":
+    /// Abstract first-time strike intent. `None` means "unset":
     /// [`crate::aerial::strike_requested`] falls back to `jockey || dash`.
     /// `Some` — set deliberately (`sim::bot`) or derived from input bits
     /// (`sim::slot_input`) — is authoritative and skips the fallback. This
-    /// is the one field pair in `MatchInput` where `nil` and `false` are NOT
-    /// interchangeable; every other field is a plain, always-populated
-    /// `bool`.
+    /// is the one field pair in `MatchInput` where `None` and `Some(false)`
+    /// are NOT interchangeable; every other field is a plain,
+    /// always-populated `bool`.
     pub aerial_strike: Option<bool>,
-    /// Abstract bicycle/acrobatic intent. `None` (Lua `nil`) falls back to
+    /// Abstract bicycle/acrobatic intent. `None` falls back to
     /// `lob && strike_requested` — see [`crate::aerial::acrobatic_requested`]
     /// and [`MatchInput::aerial_strike`]'s doc.
     pub aerial_acrobatic: Option<bool>,
@@ -699,8 +689,9 @@ fn number_payload_bytes(number: f64) -> usize {
 /// the combat companion through the same sink.
 ///
 /// In counting mode (`parts: None`) no wire string is ever materialized;
-/// only [`Self::bytes`] accumulates, mirroring the Lua original's dual-mode
-/// encoder used by [`encoded_size_canonical`].
+/// only [`Self::bytes`] accumulates — a dual-mode encoder used by
+/// [`encoded_size_canonical`] to get a byte count without paying for the
+/// full materialized string.
 pub struct Encoder {
     parts: Option<Vec<String>>,
     bytes: usize,
@@ -1496,23 +1487,21 @@ fn validate_transition_liveness(state: &MatchState) {
 }
 
 /// Validate a [`MatchState`]'s structural invariants that no Rust type
-/// alone can express. Shape checks the Lua original performs at runtime
-/// (`assert_fields`, `assert_array`, scalar-kind checks) are dropped as
-/// structurally redundant (README rule 9); the cross-field business
-/// invariants — run legality, press-presser eligibility, transition
-/// liveness, and authored-formation existence — are kept.
+/// alone can express. The cross-field business invariants — run legality,
+/// press-presser eligibility, transition liveness, and authored-formation
+/// existence — are checked; a plain shape/type mismatch cannot happen here
+/// because the Rust type system already rules it out.
 pub fn validate(state: &MatchState) {
     assert_eq!(
         state.players.len(),
         PLAYER_COUNT,
         "state.players has the wrong length"
     );
-    // Sparse for the same reason `marks` is, below: `sim/match_snapshot.lua:706`
-    // copies it with `copy_sparse_indices(..., input_frame.SLOT_COUNT)`, which
-    // only requires present keys to fall in `1..=SLOT_COUNT` and never asserts a
-    // length, while `sim/match.lua:929` starts it empty and fills entries
-    // conditionally — so a non-slot-mode match leaves it short. Requiring
-    // density here made `capture` panic on any non-slot-mode fixture.
+    // Sparse for the same reason `marks` is, below: only present keys need
+    // to fall in `1..=SLOT_COUNT`; a non-slot-mode match legitimately
+    // leaves this short. Requiring density here made `capture` panic on
+    // any non-slot-mode fixture — a real bug this length check must not
+    // reintroduce.
     assert!(
         state.slot_players.len() <= input_frame::SLOT_COUNT as usize,
         "state.slot_players has more entries than slots"
@@ -1522,14 +1511,12 @@ pub fn validate(state: &MatchState) {
         state.players.len(),
         "state.slot_for_player has the wrong length"
     );
-    // `marks` is a *sparse* man-marking table in the Lua: `sim/match.lua` sets
-    // `s.marks[team] = {}` whenever a team has no active assignment, which is
-    // the common case (attacking, loose-ball and build-up all clear it). The
-    // Lua's `copy_sparse_indices` never asserts a length — it only requires
-    // every present key to fall in `1..=#players` — and `append_sparse_indices`
-    // pads the wire to `#players` at encode time. So requiring density here
-    // rejected legitimate states: `match::new` followed immediately by
-    // `capture` panicked. Assert the invariant the Lua actually has.
+    // `marks` is a *sparse* man-marking table: it clears to empty whenever a
+    // team has no active assignment, which is the common case (attacking,
+    // loose-ball and build-up all clear it), and the wire encoding pads it
+    // to `#players` at encode time. Requiring density here rejected
+    // legitimate states: `match::new` followed immediately by `capture`
+    // panicked. Assert the invariant that actually holds instead.
     for team_marks in [&state.marks.home, &state.marks.away] {
         assert!(
             team_marks.len() <= state.players.len(),
@@ -1537,14 +1524,13 @@ pub fn validate(state: &MatchState) {
         );
     }
     let _ = possession_transition::copy_state(&state.transition);
-    // `sim/match_snapshot.lua` runs each player's decision state and each team's
-    // press state through their own validating copy (`:384`, `:765` and `:648`,
-    // `:868-869`). Those copies assert structural coherence — version, and the
-    // mode/presser/reason pairing — which the relational checks below do not:
-    // `validate_run_relations` skips any player whose intent is not a run, and
-    // `validate_press_eligibility` only checks an already-present presser. The
-    // copy is discarded; the assertion inside it is the point, exactly as for
-    // `transition` above.
+    // Each player's decision state and each team's press state get run
+    // through their own validating copy. Those copies assert structural
+    // coherence — version, and the mode/presser/reason pairing — which the
+    // relational checks below do not: `validate_run_relations` skips any
+    // player whose intent is not a run, and `validate_press_eligibility`
+    // only checks an already-present presser. The copy is discarded; the
+    // assertion inside it is the point, exactly as for `transition` above.
     for player in &state.players {
         let _ = outfield_decision::copy_state(&player.outfield_decision);
     }
@@ -1558,11 +1544,11 @@ pub fn validate(state: &MatchState) {
 
 /// Pad a sparse `marks` table out to one entry per player.
 ///
-/// The Lua keeps `marks` sparse in `MatchState` and densifies at encode time
-/// (`append_sparse_indices` always writes `count` scalars, `nil` for absent).
-/// The Rust representation is a dense `Vec<Option<i64>>`, so the padding happens
-/// here instead — on the way into the snapshot, which is the only place the
-/// density is observable.
+/// `MatchState` keeps `marks` sparse and this crate densifies at encode
+/// time (the wire encoding always writes `count` scalars, a sentinel for
+/// absent). The Rust representation is a dense `Vec<Option<i64>>`, so the
+/// padding happens here instead — on the way into the snapshot, which is
+/// the only place the density is observable.
 fn densify_marks(state: &mut MatchState) {
     let count = state.players.len();
     state.marks.home.resize(count, None);
@@ -1577,11 +1563,12 @@ fn densify_marks(state: &mut MatchState) {
 /// Assert that no player with an active run intent is simultaneously committed
 /// in combat.
 ///
-/// Ported from `sim/match_snapshot.lua:717`, where it guards both `capture` and
-/// `restore`. It had no Rust counterpart at all, so a snapshot could carry a
-/// player who was mid-run and mid-commitment — a contradiction the Lua refuses
-/// to hash or restore. `validate_run_relations` does not cover this: it checks
-/// run state against the match, never against the companion combat state.
+/// Guards against a genuinely contradictory state: a player simultaneously
+/// mid-run and mid-commitment in combat. `validate_run_relations` does not
+/// cover this — it only checks run state against the match, never against
+/// the companion combat state — so this assertion is the only thing that
+/// would catch that contradiction before it gets hashed or restored. Guards
+/// both [`capture`] and [`restore`].
 fn assert_combat_run_relations(state: &MatchState, combat_state: &CombatMatchState, path: &str) {
     for (index, player) in state.players.iter().enumerate() {
         if outfield_decision::is_run_intent(player.outfield_decision.intent) {

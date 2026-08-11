@@ -1,5 +1,3 @@
-//! Port of `sim/combat_policy.lua`.
-//!
 //! `gameplay_ai/combat/v1`: the deterministic shipped gameplay combat
 //! policy.
 //!

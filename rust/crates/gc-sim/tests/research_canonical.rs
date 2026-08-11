@@ -1,31 +1,33 @@
-//! Port of `spec/sim/research_canonical_spec.lua`.
+//! Tests for `gc_sim::research_canonical`: pins the serialization version
+//! and digest name, the simulation versions the canonical vectors below
+//! were computed against, and a hand-written sample's wire bytes and
+//! content hash.
 //!
-//! `spec/fixtures/research/canonical_vectors.lua`'s pinned values are
-//! reproduced here as Rust constants (`SAMPLE_BYTES`/`SAMPLE_HASH`,
-//! `SNAPSHOT_VERSION`/`COMBAT_VERSION`, and the register/session/response
-//! hashes) rather than a second shared vector file: they are hand-checked
-//! literals already committed to the Lua tree, not something this port
-//! needs to regenerate from a fresh `love` run.
+//! `SAMPLE_BYTES`/`SAMPLE_HASH`, `SNAPSHOT_VERSION`/`COMBAT_VERSION`, and the
+//! register/session/response hashes below are Rust constants: hand-checked
+//! literals maintained directly in this crate rather than pulled from a
+//! separate shared vector file.
 //!
 //! Two of the five example-package assertions in "pins the example package
 //! content hashes" — `TAPE_CONTENT_HASH`/`TRACE_ID`/
 //! `SIMULATION_IDENTITY_HASH`/`TRACE_MANIFEST_HASH`/`EVENT_STREAM_HASH` —
 //! only exist because `example_package.gameplay()` derives them from a real
 //! rollback timeline and trace manifest (`sim::research_trace`,
-//! `sim::rollback_events`). Both are now ported, but the five values are
-//! still not pinned against the Lua literals in their own case,
+//! `sim::rollback_events`). The five values are still not pinned against
+//! fixed literals in their own case,
 //! `pins_the_example_package_content_hashes_trace_derived`: they are derived
-//! from `sim::r#match`/`sim::input_tape`, and `v2/tools/lua_reference/` has
-//! no vector file proving this port's match engine reproduces the *Lua*
-//! engine's snapshot/boundary-hash bytes for this fixture (only
-//! `diagnostics_schema_vectors.txt` and `research_schema_vectors.txt` exist
-//! there). Copying the Lua literals in would assert something nobody has
-//! verified, so that case asserts internal self-consistency instead — see
-//! its own doc comment, and `tests/research_fixtures/mod.rs`'s module doc
-//! for the identical reasoning applied to `short_match_tape`'s boundary
-//! hashes. The other three (`SESSION_ENVELOPE_HASH`, `RESPONSE_SET_HASH`,
-//! `FEATURE_REGISTRY_HASH`) need only a bare `trace_id` string and are fully
-//! portable — see `pins_the_example_package_content_hashes_hand_built`.
+//! from `sim::r#match`/`sim::input_tape`, and `tools/lua_reference/` has
+//! no vector file proving this crate's match engine reproduces a specific,
+//! externally-verified set of snapshot/boundary-hash bytes for this fixture
+//! (only `diagnostics_schema_vectors.txt` and `research_schema_vectors.txt`
+//! exist there). Hardcoding literal values here would assert something
+//! nobody has verified, so that case asserts internal self-consistency
+//! instead — see its own doc comment, and `tests/research_fixtures/mod.rs`'s
+//! module doc for the identical reasoning applied to `short_match_tape`'s
+//! boundary hashes. The other three (`SESSION_ENVELOPE_HASH`,
+//! `RESPONSE_SET_HASH`, `FEATURE_REGISTRY_HASH`) need only a bare `trace_id`
+//! string and are fully portable — see
+//! `pins_the_example_package_content_hashes_hand_built`.
 
 mod research_fixtures;
 
@@ -37,7 +39,7 @@ use gc_sim::research_session;
 use gc_sim::research_timeline;
 use gc_sim::research_trace;
 
-// spec/fixtures/research/canonical_vectors.lua
+// Canonical vectors, hand-checked against the schema.
 const SERIALIZATION_VERSION: i64 = 1;
 const DIGEST: &str = "fnv1a64/v1";
 const SAMPLE_SHAPE_NAME: &str = "research_canonical_sample/v1";
@@ -47,10 +49,10 @@ const COMBAT_VERSION: i64 = 13;
 const SESSION_ENVELOPE_HASH: &str = "0da43aba0805a72b";
 const RESPONSE_SET_HASH: &str = "04b559ff59cea90e";
 const FEATURE_REGISTRY_HASH: &str = "7a42fe98b1bc784c";
-// canonical_vectors.TRACE_ID: the trace_id `example_package.gameplay()`
-// actually derives. Not computable without `sim::research_trace`, but the
-// session/response hashes below were computed against it, so it is used
-// verbatim as a bare `trace_id` string (not re-derived).
+// TRACE_ID: the trace_id `example_package.gameplay()` actually derives. Not
+// computable without `sim::research_trace`, but the session/response hashes
+// below were computed against it, so it is used verbatim as a bare
+// `trace_id` string (not re-derived).
 const TRACE_ID: &str = "d7491ed5cc4cd10b";
 
 fn record(entries: Vec<(&str, Value)>) -> Value {
@@ -323,11 +325,11 @@ fn pins_the_example_package_content_hashes_hand_built() {
     assert_eq!(research_features::registry_hash(), FEATURE_REGISTRY_HASH);
 }
 
-/// `canonical_vectors.TAPE_CONTENT_HASH` / `.TRACE_ID` /
-/// `.SIMULATION_IDENTITY_HASH` / `.TRACE_MANIFEST_HASH` / `.EVENT_STREAM_HASH`
-/// are NOT asserted against the Lua literals here — see this file's module
-/// doc comment for why. Instead this proves the five values are internally
-/// coherent: the manifest's stored `tape_content_hash`/`trace_id` match
+/// `TAPE_CONTENT_HASH` / `TRACE_ID` / `SIMULATION_IDENTITY_HASH` /
+/// `TRACE_MANIFEST_HASH` / `EVENT_STREAM_HASH` are NOT asserted against
+/// fixed literals here — see this file's module doc comment for why.
+/// Instead this proves the five values are internally coherent: the
+/// manifest's stored `tape_content_hash`/`trace_id` match
 /// what `research_trace::tape_content_hash`/`derive_trace_id` recompute from
 /// the same tape/manifest, `simulation_identity_hash`/`content_hash` produce
 /// canonical `fnv1a64/v1` digests, and the stream's stored `stream_hash`

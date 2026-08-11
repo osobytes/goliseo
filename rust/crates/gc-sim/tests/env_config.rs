@@ -1,9 +1,9 @@
-//! Port of `spec/sim/env_config_spec.lua`.
+//! Tests for `gc_sim::env_config`.
 //!
 //! `env_config` is not itself on the wire/resim path (it validates and
 //! resolves episode identity before a match starts), so no differential
 //! coverage against the reference Lua is required — see
-//! `v2/tools/lua_reference/README.md`'s "When it is worth doing".
+//! `tools/lua_reference/README.md`'s "When it is worth doing".
 
 use gc_sim::env_config::{
     self, EnvConfigErrorCode, EnvObservationProfile, EnvSlotSourceKind, RawEnvConfig, RawFieldSize,
@@ -79,9 +79,9 @@ fn env_config_normalize_copies_rather_than_aliases_the_callers_tables() {
     .unwrap();
     // `normalize` takes `&RawEnvConfig` and builds a fresh owned `EnvConfig`;
     // Rust's ownership model makes aliasing the caller's `sources`/`field`
-    // impossible by construction. Mutating them here after the fact — as the
-    // Lua spec does to prove `normalize` doesn't alias — is therefore a
-    // regression guard against ever changing that shape, not a live risk.
+    // impossible by construction. Mutating them here after the fact, to
+    // prove `normalize` doesn't alias, is therefore a regression guard
+    // against ever changing that shape, not a live risk.
     sources[0].kind = "neutral".to_string();
     assert_eq!(config.slot_sources[0].kind, EnvSlotSourceKind::Policy);
     assert_eq!(config.field.w, 800.0);

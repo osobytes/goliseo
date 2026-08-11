@@ -1,24 +1,16 @@
 //! FNV-1a-64 hashing, used to detect rollback desyncs by hashing canonical
 //! match snapshots.
 //!
-//! Numeric-type note: the Lua source carries the 64-bit hash as two unsigned
-//! 32-bit limbs (`hi`/`lo`) with a hand-written nibble-XOR table, because
-//! LuaJIT/love.js cannot rely on native 64-bit integers and every
-//! intermediate has to stay an exactly representable `f64`. Rust's `u64` is a
-//! real, portable 64-bit unsigned integer with well-defined wraparound
-//! (`wrapping_mul`/`^` implement arithmetic mod 2^64 exactly), so the
-//! two-limb emulation has no counterpart to preserve here — it was working
-//! around a limitation `u64` does not have.
-//!
-//! This is not merely "close enough": `OFFSET_HI`/`OFFSET_LO` from the Lua
-//! source (`3421674724`, `2216829733`) are `0xcbf29ce4` and `0x84222325`, the
-//! two halves of the standard FNV-1a-64 offset basis `0xcbf29ce484222325`,
-//! and `PRIME_LOW = 435` is the low bits of the standard prime
-//! `2^40 + 435 = 0x100000001b3`. Both implementations are exact
-//! realizations of the same published FNV-1a-64 spec, so `u64` arithmetic and
-//! the Lua limb emulation are required to agree on every input — confirmed
-//! against the published test vectors in `tests/fnv1a64.rs`, including
-//! `hash("a") == "af63dc4c8601ec8c"`, a canonical FNV-1a-64 vector.
+//! `OFFSET_BASIS` (`0xcbf29ce484222325`) and `PRIME` (`2^40 + 435`, i.e.
+//! `0x100000001b3`) are the standard FNV-1a-64 offset basis and prime.
+//! Rust's `u64` has well-defined wraparound (`wrapping_mul`/`^` implement
+//! arithmetic mod 2^64 exactly), so this is an exact realization of the
+//! published FNV-1a-64 spec — confirmed against the published test vectors
+//! in `tests/fnv1a64.rs`, including `hash("a") == "af63dc4c8601ec8c"`, a
+//! canonical FNV-1a-64 vector. The TypeScript implementation
+//! (`packages/online/src/diagnostics_schema.ts`) must agree with this one
+//! bit-for-bit: a match snapshot hash mismatch between host and guest is
+//! exactly what desync detection is looking for.
 
 /// The standard FNV-1a-64 offset basis.
 const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -49,7 +41,7 @@ impl Fnv1a64State {
     }
 
     /// Fold a byte slice into the state. Mutates in place and returns `self`
-    /// for chaining, mirroring the Lua source's mutate-and-return `update`.
+    /// for chaining.
     pub fn update(&mut self, bytes: &[u8]) -> &mut Self {
         for &byte in bytes {
             self.update_byte(byte);

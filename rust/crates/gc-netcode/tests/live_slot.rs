@@ -1,4 +1,6 @@
-//! Port of `spec/game/online_live_slot_spec.lua`.
+//! Tests for live-slot ranking, ball-carrier detection, and the live-slot
+//! transition rule (`src/live_slot.rs`), including the determinism
+//! invariants that make cross-peer slot selection reproducible.
 
 use gc_core::vec2::Vec2;
 use gc_data::teams;
@@ -108,22 +110,21 @@ fn is_independent_of_the_order_slots_are_inserted_or_sorted() {
     }
 }
 
-/// `pairs()` over a Lua hash part is the classic cross-peer divergence; the
-/// Lua spec asserts the module's own source never calls it. This Rust port
-/// has no `pairs` to forbid, but the same invariant has a direct Rust
-/// analogue — README rule 5.4 forbids `HashMap`/`HashSet` for exactly the
-/// same reason — so this asserts that instead, scanning the actual shipped
+/// Iterating a hash-based map or set in nondeterministic order is the
+/// classic cross-peer divergence bug for ranking code like this.
+/// ARCHITECTURE.md §3 rule 4 forbids `HashMap`/`HashSet` in the ranking path for exactly that
+/// reason, so this asserts it directly by scanning the actual shipped
 /// source rather than trusting a comment.
 #[test]
 fn never_uses_a_hash_map_or_hash_set_in_the_ranking_path() {
     let source = include_str!("../src/live_slot.rs");
     assert!(
         !source.contains("HashMap"),
-        "live_slot.rs must never use HashMap (README rule 5.4)"
+        "live_slot.rs must never use HashMap (ARCHITECTURE.md §3 rule 4)"
     );
     assert!(
         !source.contains("HashSet"),
-        "live_slot.rs must never use HashSet (README rule 5.4)"
+        "live_slot.rs must never use HashSet (ARCHITECTURE.md §3 rule 4)"
     );
 }
 

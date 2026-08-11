@@ -1,12 +1,9 @@
-//! Port of `spec/render/keeper_pose_spec.lua`.
+//! Tests keeper pose projection: `player_pose::select`, driven directly
+//! below.
 //!
-//! The Lua spec has five `t.it` cases. The first three exercise
-//! `render.player_pose.select` directly and belong here. The last two
-//! ("draws all nine contract poses with distinct procedural geometry" and
-//! "threads the smother boundary and batched tip event through pitch draw")
-//! drive `game/render/player_renderer.lua` and `game/render/pitch.lua`
-//! through a stubbed `love.graphics` — both TypeScript in this port
-//! (`@gc/render`), covered by that package's own spec.
+//! Drawing all nine contract poses with distinct procedural geometry, and
+//! threading the smother boundary and batched tip event through pitch draw,
+//! is TypeScript (`@gc/render`), covered by that package's own spec.
 
 use gc_data::teams;
 use gc_render::player_pose::{self, KeeperPoseContext, PlayerPoseId};

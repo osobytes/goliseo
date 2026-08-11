@@ -1,11 +1,10 @@
-//! Port of `spec/sim/combat_load_fixtures_spec.lua`.
+//! Tests for combat load fixtures via `gc_sim::rollback_validation`.
 //!
 //! `rollback_validation::combat_load_tape(fixture, tune)` is now `pub` (see
-//! that module's doc comment), so every case below can be ported directly
-//! against the real pinned fixtures instead of the `#[ignore]`d stubs this
-//! file used to carry. `rollback_validation::combat_load_covered_for(result,
-//! scenario)` stands in for the Lua spec's `rollback_validation.
-//! combat_load_covered(result, scenario)`.
+//! that module's doc comment), so every case below runs directly against the
+//! real pinned fixtures instead of the `#[ignore]`d stubs this file used to
+//! carry, via `rollback_validation::combat_load_covered_for(result,
+//! scenario)`.
 
 use gc_data::action_families::ActionFamilyId;
 use gc_data::loadouts;
@@ -71,8 +70,7 @@ fn event_count(
 }
 
 /// One real rollback-lab campaign over `scenario`'s pinned tape, run to
-/// completion under the stress profile — matching the Lua spec's own
-/// `run_lab` helper.
+/// completion under the stress profile.
 fn lab_result(scenario: &str, tune: &Tuning) -> RollbackLabResult {
     let tape = tape_for(scenario, tune);
     let mut sources = [RollbackInputSource::Remote; 8];

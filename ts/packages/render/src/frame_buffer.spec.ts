@@ -1,32 +1,35 @@
-// Differential test for the RenderFrame wire format, against the real Lua --
-// per v2/README.md rule 5.9 and this package's task brief, NOT a round trip.
-// This package has no `encode`, so a round trip through this module alone is
-// not even possible; the fixture is the only way to know `decode` agrees
-// with the actual wire `crates/gc-render::frame_buffer::encode`/
-// `encode_roster` produce, which is what a real client receives.
+// Differential test for the RenderFrame wire format, against a pinned
+// reference vector -- per ARCHITECTURE.md §3 rule 7 and this package's task
+// brief, NOT a round trip. This package has no `encode`, so a round trip
+// through this module alone is not even possible; the fixture is the only
+// way to know `decode` agrees with the actual wire
+// `crates/gc-render::frame_buffer::encode`/`encode_roster` produce, which is
+// what a real client receives.
 //
 // The reference data (`./fixtures/frame_buffer_lua_reference.ts`) is a
-// byte-for-byte copy of `v2/rust/crates/gc-render/tests/fixtures/
+// byte-for-byte copy of `rust/crates/gc-render/tests/fixtures/
 // frame_buffer_lua_reference.txt`, embedded as a TS string constant -- see
 // that file's header for why it is not read from disk with `node:fs` -- plus
 // an untouched copy of the original `.txt` at
 // `../tests/fixtures/frame_buffer_lua_reference.txt` for provenance/diffing
-// against the Rust copy. Both were captured by running the real
-// `render/frame_buffer.lua` under headless `love` -- see
-// `v2/tools/lua_reference/README.md`. Its rows are
-// `label<TAB>word_count<TAB>comma-separated %.17g words`, covering the
-// roster encoding and three frames: kickoff, and after 37 and 200 stepped
-// ticks, so both a pristine and a moved state are compared. `%.17g`
-// round-trips a binary64 exactly, so `parseFloat` recovers the identical
-// bits the Lua held -- no `toPrecision`/formatting involved on the way in.
+// against the Rust copy. Both were captured from the original renderer's
+// implementation before it was retired -- see `tools/lua_reference/
+// README.md` for the capture methodology; that implementation no longer
+// exists in this repository, so these vectors are frozen and cannot be
+// regenerated. Its rows are `label<TAB>word_count<TAB>comma-separated %.17g
+// words`, covering the roster encoding and three frames: kickoff, and after
+// 37 and 200 stepped ticks, so both a pristine and a moved state are
+// compared. `%.17g` round-trips a binary64 exactly, so `parseFloat` recovers
+// the identical bits the reference implementation held -- no
+// `toPrecision`/formatting involved on the way in.
 //
 // Expected decoded values below are computed BY HAND from the raw fixture
-// words (offsets and enum numberings copied from `render/frame_buffer.lua`
-// and `crates/gc-render/src/frame_buffer.rs`, independent of this module's
-// own logic) rather than by calling `decode` and asserting round-trip
-// consistency -- the whole point of testing against a vector instead of a
-// round trip is that a symmetric bug in `decode`'s own offset math would
-// round-trip against itself perfectly and prove nothing.
+// words (offsets and enum numberings copied from `crates/gc-render/src/
+// frame_buffer.rs`, independent of this module's own logic) rather than by
+// calling `decode` and asserting round-trip consistency -- the whole point
+// of testing against a vector instead of a round trip is that a symmetric
+// bug in `decode`'s own offset math would round-trip against itself
+// perfectly and prove nothing.
 
 import { describe, expect, it } from "vitest";
 import {
@@ -114,7 +117,7 @@ describe("frame_buffer layout constants", () => {
     expect(ROSTER_FIELD_COUNT).toBe(7);
     // #447. `ROSTER_FIELD_COUNT` (the NUMERIC block) is deliberately
     // unchanged and `LAYOUT_VERSION` is deliberately still 1: the two new
-    // columns are strings and went into the blob, which the Lua reference
+    // columns are strings and went into the blob, which the pinned reference
     // fixture the rest of this file compares against never captured. See
     // `ROSTER_STRING_FIELD_COUNT`'s own doc and the Rust constant it mirrors.
     expect(ROSTER_STRING_FIELD_COUNT).toBe(4);
@@ -398,7 +401,7 @@ describe("decode against the Lua reference vector: t200 (after 200 stepped ticks
 // chosen because it produces a livelier match (seed 17 stalls after tick
 // ~1083 and never generates another event). See
 // `crates/gc-render/tests/frame_buffer_differential.rs`'s module doc and
-// `v2/tools/lua_reference/capture_frame_buffer_events.lua` for the full
+// `tools/lua_reference/capture_frame_buffer_events.lua` for the full
 // account of how these eight ticks were chosen and what they cover.
 describe("decode against the Lua reference vector: the event section (seed-1 match, s1_t*)", () => {
   it("s1_t226: two events on one tick, both kind-only (press_commit_cover, tackle), same actor", () => {

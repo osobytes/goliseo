@@ -1,18 +1,14 @@
-//! Port of `sim/content_validation.lua`.
-//!
 //! Pure validation for authored player, presentation, equipment, and
 //! fixed-loadout content. Invalid authored data is a programmer error, so
 //! this module asserts (AGENTS.md §7) — every failure here is a panic, and
 //! every function that can fail returns normally on success (there is
 //! nothing recoverable to hand back to a caller).
 //!
-//! Many of the Lua original's checks (`assert_fields`, `assert_dense_array`,
-//! enum-membership checks like `FAMILY_IDS[family.id]`) validate that an
-//! untyped Lua table has the shape and closed-set membership a typed
-//! language already guarantees at compile time via `struct`s and `enum`s.
-//! Those checks are dropped here as structurally redundant; the numeric
-//! bound, uniqueness, and cross-reference checks they wrapped around are
-//! kept verbatim.
+//! This module validates only what a `struct`/`enum` type cannot already
+//! guarantee at compile time: numeric bounds, uniqueness, and
+//! cross-reference checks. Shape and closed-set-membership checks are
+//! unnecessary here precisely because the type system already enforces
+//! them.
 
 use gc_data::action_families::{
     ActionActivation, ActionContactKind, ActionFamilyData, ActionFamilyId, CombatOutcomeData,
@@ -69,8 +65,8 @@ pub struct PrototypeContentCatalog {
     /// The four shared combat mechanics families, keyed by id.
     ///
     /// A `Vec` rather than a map: `ActionFamilyId` does not derive `Hash`
-    /// (it lives in `gc-data`, out of this port's scope), and four entries
-    /// make a linear scan free either way.
+    /// (it lives in `gc-data`, a crate this module doesn't own), and four
+    /// entries make a linear scan free either way.
     pub action_families: Vec<(ActionFamilyId, ActionFamilyData)>,
     /// Equipment presentations, keyed by id.
     pub equipment_presentations: IndexMap<&'static str, EquipmentPresentationData>,

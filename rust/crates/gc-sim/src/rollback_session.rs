@@ -1,82 +1,71 @@
-//! Port of `sim/rollback_session.lua`.
-//!
 //! The rollback state machine: it owns the live [`MatchState`]/
 //! [`CombatMatchState`] pair and composes [`crate::rollback_input_history`]
 //! and [`crate::rollback_snapshot_history`] into deterministic predict,
 //! store, and (on a late or corrected input) rewind-and-resimulate.
 //!
-//! ## Value types replace the Lua `copy_*` helpers
+//! ## No manual deep-copy helpers
 //!
-//! The Lua original threads `copy_output`/`copy_input_record`/`copy_events`/
-//! `copy_combat_events`/`copy_comparison`/`copy_last_rollback`/
-//! `copy_difference`/`copy_diagnostic_value` through every read and write to
-//! defend against a caller mutating a table it was merely handed, or two
-//! callers aliasing the same retained table. [`RollbackTickOutput`],
-//! [`RollbackComparison`], [`RollbackReconcileResult`],
+//! [`RollbackTickOutput`], [`RollbackComparison`], [`RollbackReconcileResult`],
 //! [`RollbackSessionLastRollback`], and [`crate::match_snapshot::MatchSnapshotDifference`]
-//! are all owned Rust values with real [`Clone`] impls (and the Rust
+//! are all owned Rust values with real [`Clone`] impls (and
 //! `MatchSnapshotDifference.expected`/`.actual` are already rendered
-//! `String`s, not nested tables — see `crate::match_snapshot`), so a
-//! `.clone()` at a storage or return boundary already gives the independent
-//! copy those helpers exist to fake. No `copy_*` helper has a Rust
-//! equivalent here, matching the precedent in `rollback_input_history` and
+//! `String`s, not nested structures — see `crate::match_snapshot`), so a
+//! `.clone()` at a storage or return boundary already gives an independent
+//! copy. No manual deep-copy helper is needed anywhere in this module,
+//! matching the precedent in `rollback_input_history` and
 //! `rollback_events`.
 //!
 //! ## The measurement hook is not truly reentrant here
 //!
-//! `sim/rollback_session.lua`'s `measured` invokes `session._measure` at
-//! every nesting level (`step`'s `"tick"` wraps `execute_tick`'s own
-//! `"capture"`; `reconcile`'s `"rollback"` wraps `"capture"`, `"restore"`,
-//! and `"resimulation"`, and the last of those itself wraps `execute_tick`'s
-//! `"capture"` again) because Lua closures may be invoked an unbounded
-//! number of times, including while already executing. A `Box<dyn FnMut>`
-//! cannot be called again while a call to it is already on the stack without
-//! `unsafe`, so this port's [`measured`] temporarily removes the hook from
-//! the session for the duration of its own invocation (`Option::take`),
-//! restoring it before returning. A `measured` call nested inside another
-//! therefore runs unobserved rather than through the hook a second time.
+//! `measured` needs to invoke the session's measurement hook at every
+//! nesting level (`step`'s `"tick"` wraps `execute_tick`'s own `"capture"`;
+//! `reconcile`'s `"rollback"` wraps `"capture"`, `"restore"`, and
+//! `"resimulation"`, and the last of those itself wraps `execute_tick`'s
+//! `"capture"` again). A `Box<dyn FnMut>` cannot be called again while a
+//! call to it is already on the stack without `unsafe`, so [`measured`]
+//! temporarily removes the hook from the session for the duration of its
+//! own invocation (`Option::take`), restoring it before returning. A
+//! `measured` call nested inside another therefore runs unobserved rather
+//! than through the hook a second time.
 //!
-//! This is a deliberate, safe simplification, not an oversight: no spec
+//! This is a deliberate, safe simplification, not an oversight: no test
 //! assertion distinguishes "the hook fired for `capture` nested inside
 //! `tick`" from "`capture` ran unmeasured because `tick`'s own hook call was
 //! still on the stack" — every case here only checks the *outermost*
-//! invocation's call count and the real operation's result, both of which
-//! this port reproduces exactly. If a future caller needs true nested
-//! measurement (for example, billing `capture` time separately from `tick`
-//! time inside `resimulation`), that is the seam to revisit, most likely
-//! with a small `unsafe` accessor documented at that single call site rather
-//! than a general reentrant hook.
+//! invocation's call count and the real operation's result. If a future
+//! caller needs true nested measurement (for example, billing `capture`
+//! time separately from `tick` time inside `resimulation`), that is the
+//! seam to revisit, most likely with a small `unsafe` accessor documented
+//! at that single call site rather than a general reentrant hook.
 //!
 //! ## `detailed_diagnostics` is a plain `bool`, not `bool?`
 //!
-//! `sim/rollback_session.lua`'s `reconcile(session, detailed_diagnostics)`
-//! takes an optional boolean defaulting to falsy. Lua's own idiom for that
-//! (`detailed_diagnostics == true`) is exactly a `bool` with `false` as its
-//! natural default, so this port drops the `Option` wrapper; every call site
-//! already passes a literal.
+//! `reconcile(session, detailed_diagnostics)` takes a plain `bool` rather
+//! than an optional one: `false` is already its natural default, and every
+//! call site already passes a literal, so an `Option` wrapper would add
+//! nothing.
 //!
-//! ## Retained-output byte accounting is a diagnostic proxy, not a Lua-parity encoding
+//! ## Retained-output byte accounting is a diagnostic proxy, not an exact encoding
 //!
-//! `rollback_session.accounting`'s Lua original re-derives each retained
-//! output's byte count from a local `canonical_payload` table walk (the same
+//! `accounting` reports each retained output's byte count as a diagnostic —
+//! not on the determinism path (see `tools/lua_reference/README.md`) — and
+//! every test assertion here only checks that two independently-computed
+//! totals agree (an incremental cache versus a full recompute), never a
+//! specific byte count against a reference encoding. [`output_len`]
+//! therefore reuses Rust's derived `Debug` rendering as a stable,
+//! deterministic size proxy instead of reimplementing the
 //! `n`/`b0`/`b1`/`s<len>:`/`d<len>:`/`t<count>:` tagging scheme
-//! `rollback_events::accounting`'s doc comment describes). Per
-//! `v2/tools/lua_reference/README.md`, accounting is diagnostic and
-//! explicitly not on the determinism path, and every spec assertion here
-//! only checks that two independently-computed totals agree (an incremental
-//! cache versus a full recompute) — never a specific byte count matching the
-//! Lua encoding. [`output_len`] therefore reuses Rust's derived `Debug`
-//! rendering as a stable, deterministic size proxy instead of reimplementing
-//! that table-walk scheme a third time (`rollback_events` and
-//! `rollback_input_history` each already carry their own private copy for
-//! their own shapes); no observer depends on the exact number matching Lua.
+//! `rollback_events::accounting`'s doc comment describes a third time
+//! (`rollback_events` and `rollback_input_history` each already carry their
+//! own private copy for their own shapes); no observer depends on the exact
+//! number matching any other encoding.
 //!
 //! ## Dropped runtime shape check
 //!
-//! The Lua original's `assert_session` guards against a caller passing a
-//! malformed table where a `RollbackSession` was expected — structurally
-//! redundant once `session: &RollbackSession` is enforced by the type
-//! system (README rule 9), so it has no port.
+//! There is no runtime check guarding against a caller passing something
+//! other than a well-formed `RollbackSession` — structurally redundant
+//! once `session: &RollbackSession` is enforced by the type system
+//! (ARCHITECTURE.md §3 rule 7).
 
 use crate::combat_snapshot::{CombatEvent, CombatMatchState};
 use crate::fixed_clock;
@@ -116,7 +105,7 @@ pub enum RollbackSessionErrorCode {
     LateInputUnrecoverable,
 }
 
-/// An expected, recoverable [`step`] failure (README rule 5.5): the caller
+/// An expected, recoverable [`step`] failure (ARCHITECTURE.md §3 rule 5): the caller
 /// is meant to handle it, not a programmer error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RollbackSessionError {
@@ -373,7 +362,7 @@ pub struct RollbackSessionAccounting {
     /// The retained input history's own byte accounting.
     pub input: rollback_input_history::RollbackInputHistoryAccounting,
     /// Retained output bytes (see the module doc comment: a diagnostic size
-    /// proxy, not a Lua-parity encoding).
+    /// proxy, not an exact encoding).
     pub output_bytes: i64,
     /// Retained canonical snapshot bytes.
     pub snapshot_bytes: i64,
@@ -383,7 +372,7 @@ pub struct RollbackSessionAccounting {
 
 /// The rollback coordinator for one live match. Every field is internal
 /// state; use the free functions in this module to read or mutate it.
-/// Fields are `pub` (README rule: everything a test touches is `pub`).
+/// Fields are `pub` (ARCHITECTURE.md §3 rule 6: everything a test touches is `pub`).
 pub struct RollbackSession {
     /// The live soccer state.
     pub state: MatchState,
@@ -431,11 +420,10 @@ pub struct RollbackSession {
     pub last_comparison: Option<RollbackComparison>,
     /// Optional wall-time observer; see the module doc comment.
     pub measure: Option<RollbackSessionMeasure>,
-    /// Sim tuning. `sim/rollback_session.lua` reads `sim.tuning`'s module
-    /// singleton implicitly; `crate::r#match::step` takes tuning explicitly
-    /// (AGENTS.md §2: `sim/` carries no ambient global state), so this
-    /// session owns the default registry `sim/tuning.lua`'s singleton would
-    /// have supplied.
+    /// Sim tuning. `crate::r#match::step` takes tuning explicitly (AGENTS.md
+    /// §2: `sim/` carries no ambient global state), so this session owns its
+    /// own default registry rather than reading one off an implicit
+    /// singleton.
     pub tune: Tuning,
 }
 
@@ -622,23 +610,21 @@ fn prune_retained_outputs(session: &mut RollbackSession) {
 /// cannot change logical results (see the module doc comment).
 ///
 /// Restored via [`match_snapshot::restore_owned`], not
-/// [`match_snapshot::restore`]: `sim/rollback_session.lua`'s own
-/// `---@param initial_snapshot MatchSnapshot Canonical slot-mode boundary
-/// zero.` already documents this parameter as a trusted canonical snapshot,
-/// not arbitrary external input, and `restore`'s extra
-/// `match_snapshot::validate` requires `state.marks` sized to the full
-/// roster immediately — a real boundary zero from `crate::r#match::new`
-/// legitimately has empty `marks` until the first tick's marking-assignment
-/// pass runs (`sim/match.lua` leaves it exactly the same way:
-/// `marks = { home = {}, away = {} }`). Every other producer this module
-/// feeds from is already `_owned` (`capture_owned`, `store_owned`), so this
-/// keeps the same trust boundary rather than being the one caller that
+/// [`match_snapshot::restore`]: `initial_snapshot` is documented as a
+/// trusted canonical slot-mode boundary-zero snapshot, not arbitrary
+/// external input, and `restore`'s extra `match_snapshot::validate`
+/// requires `state.marks` sized to the full roster immediately — a real
+/// boundary zero from `crate::r#match::new` legitimately has empty `marks`
+/// (`marks = { home = {}, away = {} }`) until the first tick's
+/// marking-assignment pass runs. Every other producer this module feeds
+/// from is already `_owned` (`capture_owned`, `store_owned`), so this keeps
+/// the same trust boundary rather than being the one caller that
 /// revalidates a snapshot nothing else here treats as untrusted.
 ///
 /// # Panics
 ///
 /// Panics if `initial_snapshot` is not slot-mode, active, boundary-zero
-/// canonical state (a producer invariant, README rule 5.5).
+/// canonical state (a producer invariant, ARCHITECTURE.md §3 rule 5).
 #[must_use]
 pub fn new(
     initial_snapshot: &MatchSnapshot,
@@ -1060,16 +1046,15 @@ pub fn output(session: &RollbackSession, input_tick: i64) -> Option<RollbackTick
 ///
 /// Both sides are hashed and diffed via the *canonical* (non-revalidating)
 /// path — `match_snapshot::hash_canonical`/`first_difference_canonical`,
-/// matching `crate::rollback_snapshot_history::boundary_hash`'s own choice
-/// rather than `sim/rollback_session.lua`'s literal `match_snapshot.hash`
-/// call. `match_snapshot::hash`/`first_difference` restore-then-validate
-/// their input first (`crate::match_snapshot::validate` requires
-/// `state.marks` sized to the full roster immediately), which a live
-/// in-kickoff-hold `MatchState` legitimately fails — marking assignment has
-/// not run yet, exactly as `sim/match.lua` leaves it. `actual` and
-/// `expected` are always already-canonical snapshots here (`current_snapshot`
-/// and every caller's own retained/captured state), so re-validating buys
-/// nothing this module's callers don't already guarantee.
+/// matching `crate::rollback_snapshot_history::boundary_hash`'s own choice.
+/// `match_snapshot::hash`/`first_difference` restore-then-validate their
+/// input first (`crate::match_snapshot::validate` requires `state.marks`
+/// sized to the full roster immediately), which a live in-kickoff-hold
+/// `MatchState` legitimately fails — marking assignment has not run yet.
+/// `actual` and `expected` are always already-canonical snapshots here
+/// (`current_snapshot` and every caller's own retained/captured state), so
+/// re-validating buys nothing this module's callers don't already
+/// guarantee.
 pub fn compare(
     session: &mut RollbackSession,
     expected: &MatchSnapshot,

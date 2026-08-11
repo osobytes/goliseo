@@ -4,16 +4,15 @@
 //! phases ...")`, in that file's own words) and half of
 //! `packages/app/src/rollback_validation.spec.ts`'s one blocked case.
 //!
-//! ## What this is a port of, and why it lives here rather than being reused
+//! ## Why this duplicates a fixture rather than reusing it
 //!
-//! `spec/support/online_combat_phases.lua` pins seven named combat-phase
-//! boundary zeroes (wind-up, guard, contact, projectile flight, stagger,
-//! ball spill, immunity expiry) — one rigged `gc_sim::match_snapshot::MatchSnapshot`
-//! per phase, arranged so a headless run actually reaches that phase, plus
-//! the predicate that recognises it. It already has a real, tested Rust
-//! port: `crates/gc-netcode/tests/support/online_combat_phases.rs`. That
-//! port is **not** reusable from this crate as a dependency, even though it
-//! needs nothing `gc-netcode` itself provides (it only imports `gc-core`,
+//! `crates/gc-netcode/tests/support/online_combat_phases.rs` pins seven
+//! named combat-phase boundary zeroes (wind-up, guard, contact, projectile
+//! flight, stagger, ball spill, immunity expiry) — one rigged
+//! `gc_sim::match_snapshot::MatchSnapshot` per phase, arranged so a headless
+//! run actually reaches that phase, plus the predicate that recognises it.
+//! That module is **not** reusable from this crate as a dependency, even
+//! though it needs nothing `gc-netcode` itself provides (it only imports `gc-core`,
 //! `gc-data`, `gc-sim`, and `indexmap` — all of them already dependencies of
 //! this crate): it lives under `gc-netcode`'s `tests/` directory, which
 //! Cargo never exposes as an importable library item to another crate, only
@@ -29,15 +28,15 @@
 //! therefore a second copy, not a shared module — the same category of
 //! unavoidable, documented duplication [`crate::wasm_transport`]'s own
 //! `MAX_PAYLOAD_BYTES`/`MAX_GUESTS`/`DEFAULT_QUEUE_LIMIT`/`DEFAULT_POLL_BATCH`
-//! already are for `game/transport/contract.lua`'s constants, and unlike
-//! `fnv1a64`/`diagnostics_schema` (v2/README.md §2.2), it sits nowhere near
-//! the determinism path: nothing here runs inside a match tick or produces
-//! a value two peers must agree on bit-for-bit. It only ever builds a
-//! *starting* snapshot and reads one back for a test assertion. Every line
-//! below was cross-checked field-for-field against the existing Rust port
-//! (not re-derived from the Lua original by hand), so this is a transcription
-//! of already-reviewed, already-tested logic, not a third independent
-//! reading of `online_combat_phases.lua`.
+//! already are for `packages/transport/src/contract.ts`'s constants, and
+//! unlike `fnv1a64`/`diagnostics_schema` (ARCHITECTURE.md §1.2), it sits
+//! nowhere near the determinism path: nothing here runs inside a match tick
+//! or produces a value two peers must agree on bit-for-bit. It only ever
+//! builds a *starting* snapshot and reads one back for a test assertion.
+//! Every line below was cross-checked field-for-field against
+//! `crates/gc-netcode/tests/support/online_combat_phases.rs`, so this is a
+//! transcription of already-reviewed, already-tested logic, not an
+//! independent reading of the fixture's intent.
 //!
 //! If `gc-netcode/src/**` is ever back in scope for a future wave, the
 //! correct fix is to delete this module's fixture-building half and import
@@ -58,8 +57,8 @@
 //! [`online_combat_phase_live_sample`], and ask [`online_combat_phase_observed`]
 //! whether a resimulated tick actually passed through the named phase — all
 //! without this crate's TypeScript side ever needing to know a single fact
-//! about combat mechanics itself (README v2/§2.1: reimplementing that here
-//! is exactly what the Rust/TypeScript line forbids).
+//! about combat mechanics itself (ARCHITECTURE.md §1: reimplementing that
+//! here is exactly what the Rust/TypeScript line forbids).
 //!
 //! [`online_combat_phase_boundary_zero`] is also, incidentally, the first
 //! general-purpose "build a `WasmMatchSnapshot` for a specific starting
@@ -77,10 +76,10 @@
 //! that exact state, and is called out as still open in this crate's final
 //! report rather than guessed at here.
 //!
-//! The guard probe (`combat_phases.GUARD_PROBE`/`guard_probe_boundary_zero`
-//! in the Lua original, `GUARD_PROBE`/`guard_probe_boundary_zero` in the
-//! existing Rust port) is evidentiary tooling behind *why* the `guard`
-//! scenario uses the `CanonicalInput` route rather than `Policy` — nothing
+//! The guard probe (`GUARD_PROBE`/`guard_probe_boundary_zero` in
+//! `crates/gc-netcode/tests/support/online_combat_phases.rs`) is evidentiary
+//! tooling behind *why* the `guard` scenario uses the `CanonicalInput` route
+//! rather than `Policy` — nothing
 //! in `match_presentation.spec.ts`'s nine cases calls it, so it is left
 //! unbound here.
 
@@ -282,7 +281,7 @@ const SCENARIOS: [Scenario; 7] = [
 ];
 
 /// Looks up a scenario by id. `Err` (not a panic) for an unknown id —
-/// README rule 5.5: `id` is external JS input.
+/// ARCHITECTURE.md §3 rule 5: `id` is external JS input.
 fn find_scenario(id: &str) -> Result<&'static Scenario, JsValue> {
     SCENARIOS
         .iter()
@@ -679,7 +678,7 @@ mod tests {
     // an exported function's error path returns `JsValue`).
     // `packages/wasm/src/online_combat_phases.spec.ts` covers
     // `onlineCombatPhaseScenarioJson`/`BoundaryZero`/`LiveSample`/`Observed`
-    // rejecting an unrecognized phase id (README rule 5.5: `id` is external
+    // rejecting an unrecognized phase id (ARCHITECTURE.md §3 rule 5: `id` is external
     // JS input, and every one of those four is a recoverable `Result`, not
     // a panic).
 

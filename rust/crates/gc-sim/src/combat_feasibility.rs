@@ -1,5 +1,3 @@
-//! Port of `sim/combat_feasibility.lua`.
-//!
 //! `intervention_candidate/v2` and `family_commit_feasibility/v1`.
 //!
 //! Both are PURE temporal predicates over `combat_sim_observation/v1`. They read
@@ -22,17 +20,16 @@
 //!
 //! ## Local observation types, not `combat_observation`
 //!
-//! The Lua original does not `require("sim.combat_observation")` — it only
-//! duck-types over the `combat_sim_observation/v1` shape in LuaCATS comments.
-//! `sim/combat_observation.lua`, `sim/combat.lua`, `sim/combat_policy.lua`, and
-//! `sim/match.lua` are owned by other agents and are not ported yet, so this
-//! module cannot import a `combat_observation` crate module either. Instead it
-//! defines its own local, narrowed view of the schema: only the fields this
-//! file actually reads, named to match the Lua field names field-for-field
-//! (`observation.self` → [`CombatObservation::own`], `observation.match` →
-//! [`CombatObservation::match_view`], both renamed only because `self` and
-//! `match` are Rust keywords). When `combat_observation` is ported, the
-//! canonical schema type should be able to populate these fields directly.
+//! This module defines its own local, narrowed view of the
+//! `combat_sim_observation/v1` schema — only the fields this file actually
+//! reads ([`CombatObservation::own`], [`CombatObservation::match_view`],
+//! named `own`/`match_view` rather than `self`/`match` only because those
+//! are Rust keywords) — rather than depending on
+//! [`crate::combat_observation`]'s full canonical schema type, keeping this
+//! leaf module's own dependency surface minimal.
+//! [`crate::combat_observation::to_feasibility_view`] is the bridge that
+//! projects the canonical schema down into this narrower shape for callers
+//! that hold the full type.
 
 use crate::fixed_clock;
 use gc_data::action_families::{self, ActionFamilyData, ActionFamilyId};
@@ -64,10 +61,10 @@ const SHOT_RANGE_PX: f64 = 260.0;
 const EPSILON: f64 = 1e-9;
 
 /// One of the five section-4.6 combat purposes a (source, target) pair can
-/// hold. Declared in ascending alphabetical order of the Lua string ids
+/// hold. Declared in ascending alphabetical order of the wire ids
 /// (`"carrier_contest"` < `"carrier_protection"` < `"loose_ball_contest"` <
 /// `"passing_lane_or_shot_denial"` < `"recovery_punish"`) so the derived
-/// [`Ord`] reproduces the Lua `<` string comparison
+/// [`Ord`] reproduces the string-sorted order
 /// [`intervention_candidates`] sorts by. This is deliberately **not** dominance
 /// order — see [`PURPOSE_PRIORITY`] for that.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -85,8 +82,7 @@ pub enum CombatPurposeId {
     RecoveryPunish,
 }
 
-/// Every valid purpose id, in no particular order. Mirrors the Lua module's
-/// `PURPOSES` membership set.
+/// Every valid purpose id, in no particular order — the full membership set.
 pub const PURPOSES: [CombatPurposeId; 5] = [
     CombatPurposeId::CarrierContest,
     CombatPurposeId::CarrierProtection,
@@ -109,8 +105,9 @@ pub const PURPOSE_PRIORITY: [CombatPurposeId; 5] = [
 ];
 
 /// A fixture side. Local to this module for the same reason the observation
-/// types are local: the Lua original never `require("sim.input_frame")`
-/// either, it only names `InputTeam` in a type comment.
+/// types are local: keeping this leaf module's dependency surface minimal
+/// rather than depending on [`crate::input_frame`] for one small closed-set
+/// type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Team {
     /// The home side.
@@ -149,16 +146,14 @@ fn unit_or(x: f64, y: f64, fallback_x: f64, fallback_y: f64) -> (f64, f64) {
     }
 }
 
-/// A body `project` can advance: `self`'s own row or a peer's row. Mirrors
-/// the Lua signature's duck-typed `row: CombatObservationPeer|CombatObservationSelf`.
+/// A body `project` can advance: `self`'s own row or a peer's row.
 pub trait ProjectableRow {
     /// Ticks remaining in an active forced state (stagger/knockback); a
     /// positive value zeroes the body's projected velocity.
     fn forced_ticks(&self) -> i64;
     /// The row's current combat phase.
     fn phase(&self) -> CombatActionPhase;
-    /// The row's currently equipped family, or `None` for the Lua `"none"`
-    /// sentinel (no loadout).
+    /// The row's currently equipped family, or `None` for "no loadout".
     fn family_id(&self) -> Option<ActionFamilyId>;
     /// World-space x velocity, px/s.
     fn vx(&self) -> f64;
@@ -326,8 +321,7 @@ pub struct CombatObservationBall {
     pub y: f64,
     /// Canonical index of the current owner, or `0` when loose.
     pub owner_player_index: i64,
-    /// Fixture side of the current owner, or `None` for the Lua `"none"`
-    /// sentinel (loose ball).
+    /// Fixture side of the current owner, or `None` when loose.
     pub owner_team: Option<Team>,
 }
 
@@ -913,10 +907,10 @@ fn guard_feasibility(
 /// actually equipped and ignores actual cooldown, recovery, commitment,
 /// request acceptance, and hit outcome; those stay separate policy inputs.
 ///
-/// The Lua original asserts the family id is a known `ActionFamilyId`; here
-/// `family_id: ActionFamilyId` makes that state unrepresentable, so the
-/// assertion is dropped as structurally redundant (README rule 9 / the same
-/// principle `input_frame`'s port documents).
+/// `family_id: ActionFamilyId` makes an unknown family id unrepresentable,
+/// so there is no runtime assertion to make here — the type system already
+/// guarantees it (ARCHITECTURE.md §3 rule 7 / the same principle `input_frame`'s
+/// module doc documents).
 #[must_use]
 pub fn family_commit(
     observation: &CombatObservation,
@@ -1296,9 +1290,7 @@ pub struct CombatInterventionPair {
     /// earlier in the search.
     pub family_bitset: CombatFamilyBitset,
     /// Always `false`: `formation_risk_tradeoff` is computed by a caller
-    /// separately, never inside the envelope search itself. Preserved
-    /// verbatim from the Lua original, which never assigns anything else
-    /// here.
+    /// separately, never inside the envelope search itself.
     pub formation_risk: bool,
 }
 

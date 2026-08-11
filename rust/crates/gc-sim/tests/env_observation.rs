@@ -1,39 +1,28 @@
-//! Port of `spec/sim/env_observation_spec.lua`.
+//! Tests for `gc_sim::env_observation`.
 //!
-//! The Lua spec's own `reset()` helper calls `env.reset(env.reference_config(...))`
-//! — `sim/env.lua`, needing `sim/match.lua`'s simulation logic to build a
-//! playable fixture. At the time this port was written `sim/match.lua` was not
-//! yet ported (`src/match.rs` was a placeholder — see `v2/README.md`'s
-//! "match-shaped view structs" note in §5.1), so every test in this file is, by
-//! the letter of its `require` list, in the same boat as
-//! `spec/sim/env_leakage_spec.lua`.
-//!
-//! In practice the two specs differ in what they actually need. Every test
-//! here only calls `env_observation::view`/`build`/`view_for`/`encode` against
-//! a **static** `MatchState` (and, for two tests, a static `CombatMatchState`)
-//! — no tick stepping, no RNG-driven divergence, no rollback. `MatchState`'s
-//! shape is complete and stable (`match_snapshot.rs`, owned by this port's
-//! task as "available and complete"), so this file builds its own minimal,
-//! self-contained kickoff-shaped fixture by hand (`fixture()` below) instead
-//! of routing through `sim::env`/`sim::match`, and ports the specs for real.
-//! `spec/sim/env_leakage_spec.lua`, by contrast, genuinely needs `env.step`'s
+//! Every test here only calls `env_observation::view`/`build`/`view_for`/
+//! `encode` against a **static** `MatchState` (and, for two tests, a static
+//! `CombatMatchState`) — no tick stepping, no RNG-driven divergence, no
+//! rollback. `MatchState`'s shape is complete and stable
+//! (`match_snapshot.rs`), so this file builds its own minimal,
+//! self-contained kickoff-shaped fixture by hand (`fixture()` below)
+//! instead of routing through `gc_sim::env`/`gc_sim::r#match`.
+//! `tests/env_leakage.rs`, by contrast, genuinely needs `env.step`'s
 //! multi-tick simulation (tape-based divergence across many ticks, RNG
-//! advancement) — that is not obtainable from `MatchState`'s shape alone, so
-//! `tests/env_leakage.rs` stubs it. See this crate's porting report for the
-//! full account.
+//! advancement) — that is not obtainable from `MatchState`'s shape alone,
+//! so it drives a real episode instead.
 //!
 //! The fixture's field values are chosen to be *structurally* valid and
 //! internally consistent (positions, team/slot wiring, one keeper per side),
 //! not to reproduce the real kickoff formation's exact numbers — every
-//! assertion ported here only depends on structure (side assignment, counts,
-//! echoed state fields, threshold comparisons), matching what the Lua spec
-//! itself checks.
+//! assertion here only depends on structure (side assignment, counts,
+//! echoed state fields, threshold comparisons).
 //!
-//! One Lua sub-case is not portable at all: `UNKNOWN_PROFILE = "oracle"`
-//! passed to `env_observation.build`. This port's `profile` parameter is
-//! `EnvObservationProfile`, a closed enum, so there is no way to construct an
-//! "unknown" profile value to pass — see `EnvObservationErrorCode::UnknownProfile`'s
-//! doc comment in `src/env_observation.rs`.
+//! One case is not expressible at all: an unknown observation profile
+//! value. The `profile` parameter here is `EnvObservationProfile`, a closed
+//! enum, so there is no way to construct an "unknown" profile value to pass
+//! — see `EnvObservationErrorCode::UnknownProfile`'s doc comment in
+//! `src/env_observation.rs`.
 
 use gc_core::vec2::Vec2;
 use gc_data::action_families::ActionFamilyId;
@@ -288,8 +277,8 @@ fn combat_player(loadout_id: Option<&str>, family_id: Option<ActionFamilyId>) ->
 
 /// A combat companion where the controlling player (`home_out_1`, slot 1)
 /// and every away outfielder carry an equipped `LightMelee` loadout; both
-/// keepers and the other home outfielders stay unequipped, matching the Lua
-/// fixture's "the four opposing outfielders carry visible equipment".
+/// keepers and the other home outfielders stay unequipped — the four
+/// opposing outfielders carry visible equipment.
 fn combat_fixture(state: &MatchState) -> CombatMatchState {
     let mut players = Vec::new();
     players.push(combat_player(
@@ -345,8 +334,8 @@ fn tags_observability_and_human_proxy_validity_per_profile() {
 
 #[test]
 fn rejects_slot_profile_mismatches() {
-    // The `UNKNOWN_PROFILE = "oracle"` sub-case from the Lua spec has no
-    // Rust equivalent — see this file's module doc.
+    // An unknown-profile case has no Rust equivalent — see this file's
+    // module doc.
     let state = fixture();
 
     let mismatch = env_observation::build(
@@ -479,24 +468,21 @@ fn shows_only_the_readiness_a_player_can_see_on_themselves() {
     assert!(!view.own.dash_ready);
     assert!(view.own.dodge_ready);
     assert_eq!(view.own.sprint_meter, 0.5);
-    // Other players expose no remaining timers and no meters at all: the
-    // Lua spec checks this via `field(other, "dash_cooldown_s") == nil` at
-    // runtime; here `EnvObservedPlayer` simply has no such field at all, a
-    // stronger, compile-time version of the same guarantee (see
-    // `player_field_set_matches_the_pinned_field_names` below).
+    // Other players expose no remaining timers and no meters at all:
+    // `EnvObservedPlayer` simply has no such field at all, a compile-time
+    // guarantee (see `player_field_set_matches_the_pinned_field_names`
+    // below).
     assert_eq!(view.opponents.len(), 5);
 }
 
 #[test]
 fn player_field_set_matches_the_pinned_field_names() {
-    // Exhaustive destructure (no `..`): the Lua spec's
-    // "exposes no non-self field without a rendered analogue" test walks
-    // `pairs()` on a live table at runtime and checks every key against
-    // `env_observation.PLAYER_FIELDS`. `EnvObservedPlayer` has a fixed,
-    // compile-time field set, so the equivalent guarantee here is that this
-    // destructure — naming every field once — still compiles: adding a
-    // field to the struct without adding it here (and to
-    // `PLAYER_FIELD_NAMES`) is a compile error, not a runtime scan failure.
+    // Exhaustive destructure (no `..`): `EnvObservedPlayer` has a fixed,
+    // compile-time field set, so "exposes no non-self field without a
+    // rendered analogue" is guaranteed by this destructure — naming every
+    // field once — still compiling: adding a field to the struct without
+    // adding it here (and to `PLAYER_FIELD_NAMES`) is a compile error, not
+    // a runtime scan failure.
     let state = fixture();
     let combat = combat_fixture(&state);
     let view = env_observation::view(
@@ -532,11 +518,11 @@ fn player_field_set_matches_the_pinned_field_names() {
         sliding, diving, airborne, winding_up,
     );
     assert_eq!(env_observation::PLAYER_FIELD_NAMES.len(), 17);
-    // The five states the Lua spec confirms have no rendered analogue for a
-    // non-local player (`charging`, `jockeying`, `tackling`, `dodging`,
-    // `stunned`) are absent from `PLAYER_FIELD_NAMES`, and — because they
-    // are not fields on `EnvObservedPlayer` at all — could not be named in
-    // the destructure above even by mistake.
+    // The five states with no rendered analogue for a non-local player
+    // (`charging`, `jockeying`, `tackling`, `dodging`, `stunned`) are absent
+    // from `PLAYER_FIELD_NAMES`, and — because they are not fields on
+    // `EnvObservedPlayer` at all — could not be named in the destructure
+    // above even by mistake.
     for name in ["charging", "jockeying", "tackling", "dodging", "stunned"] {
         assert!(!env_observation::PLAYER_FIELD_NAMES.contains(&name));
     }
@@ -588,8 +574,8 @@ fn shows_equipment_as_a_telegraph_for_others_and_a_readout_for_self() {
     for opponent in view.opponents.iter().filter_map(|p| p.equipment.as_ref()) {
         assert_eq!(opponent.phase, CombatActionPhase::Ready);
         // `EnvObservedEquipment` has no `cooldown_ticks`/`loadout_id` field
-        // at all — a compile-time version of the Lua spec's
-        // "others expose no private tick counts" runtime check.
+        // at all: others expose no private tick counts, enforced at compile
+        // time.
     }
 }
 

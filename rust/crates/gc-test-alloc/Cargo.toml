@@ -7,7 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 # Deliberately no `[lints] workspace = true` here. The workspace's
-# `unsafe_code = "forbid"` (`v2/rust/Cargo.toml`'s `[workspace.lints.rust]`)
+# `unsafe_code = "forbid"` (`rust/Cargo.toml`'s `[workspace.lints.rust]`)
 # is a per-package Cargo lint, not a workspace-wide one, so a package that
 # does not opt into `workspace = true` does not inherit it. This crate exists
 # solely to hold the one `unsafe impl GlobalAlloc` the allocation-budget

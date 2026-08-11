@@ -1,11 +1,7 @@
-// Replaces game/render/bloom.lua (v2/README.md #7: "bloom.lua -> replace --
-// UnrealBloomPass").
-//
-// The Lua original hand-rolls a threshold-extract + separable-Gaussian-blur
-// pass pair over raw GLSL and manually managed canvases, entirely because
-// LÖVE gives you a GL context and nothing else. `EffectComposer` +
-// `UnrealBloomPass` are exactly that pipeline, built in and GPU-profiled by
-// three.js itself, so none of `ensure()`'s shader/canvas plumbing is ported.
+// The bloom pass is `EffectComposer` + `UnrealBloomPass` (see ARCHITECTURE.md
+// §5): a threshold-extract + separable-Gaussian-blur pass pair, built in and
+// GPU-profiled by three.js itself rather than hand-rolled GLSL over manually
+// managed canvases.
 //
 // WHAT IS KEPT: `bloom.config`'s tunables are content (the game's actual
 // glow look), not mechanism, so `DEFAULT_BLOOM_CONFIG` preserves the exact
@@ -18,18 +14,15 @@
 // -- so it is kept on `BloomConfig` for parity/diagnostics but is not wired
 // to anything; noted here rather than silently dropped.
 //
-// WHAT IS DROPPED ENTIRELY: `bloom.DEPTH_FORMATS` and the depth-canvas
-// fallback ladder. That list exists solely because love.js's WebGL1 backend
-// cannot supply a `depth24stencil8`/`depth24` attachment and, per #360,
-// *aborts the whole runtime* rather than raising a catchable error when
-// asked for an unsupported one -- so the Lua module has to ask
-// `getCanvasFormats()` first and never request a format it has not already
-// been told is safe. A real browser WebGL2 context (three.js's default,
-// `WebGLRenderer`) always provides a depth/stencil renderbuffer through its
-// own render-target management, and a JS exception is always catchable --
-// neither the fallback ladder nor the "ask first" protocol it existed for
-// has anything to check. `bloom.hasDepth()`/`bloom.depthFormat()` are
-// dropped with it.
+// WHY THERE IS NO DEPTH-FORMAT FALLBACK LADDER: an earlier WebGL1-only
+// runtime could not supply a `depth24stencil8`/`depth24` attachment and, per
+// #360, *aborted the whole runtime* rather than raising a catchable error
+// when asked for an unsupported one -- so a caller had to ask which formats
+// were safe before requesting one. A real browser WebGL2 context (three.js's
+// default, `WebGLRenderer`) always provides a depth/stencil renderbuffer
+// through its own render-target management, and a JS exception is always
+// catchable, so neither a fallback ladder nor an "ask first" protocol has
+// anything to check here.
 
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -42,7 +35,7 @@ export interface BloomConfig {
   threshold: number;
   /** additive strength of the glow (`UnrealBloomPass.strength`) */
   intensity: number;
-  /** blur iterations in the Lua original; not wired to `UnrealBloomPass' fixed mip pyramid, kept for parity */
+  /** blur iteration count; not wired to `UnrealBloomPass`'s fixed mip pyramid, kept for parity */
   passes: number;
   /** blur step (`UnrealBloomPass.radius`) */
   radius: number;
@@ -73,7 +66,7 @@ export interface BloomLayer {
   readonly camera: THREE.Camera;
 }
 
-/** Additive bloom post-process, replacing game/render/bloom.lua. See file header. */
+/** Additive bloom post-process. See file header. */
 export class Bloom {
   readonly config: BloomConfig;
   private composer: EffectComposer | undefined;
@@ -116,10 +109,9 @@ export class Bloom {
     // whole frame is rendered into and then blitted to the canvas from. At the
     // default `downscale: 2` that meant drawing the entire game at 480x270 and
     // upscaling it to the display -- reported, accurately, as "it looks like
-    // pixel art". This is a porting slip rather than a style choice:
-    // `game/render/bloom.lua` downscales its bright/blur buffers, and this
-    // config field's own doc comment says "bright/blur buffers at 1/downscale
-    // resolution". The intent was right and the wiring was inverted -- the
+    // pixel art". This was a bug rather than a style choice: this config
+    // field's own doc comment says "bright/blur buffers at 1/downscale
+    // resolution", and an earlier version had the wiring inverted -- the
     // scene got the downscale and `UnrealBloomPass` got the full size.
     //
     // So the composer renders at full DEVICE resolution (`w`/`h` are logical;
@@ -262,8 +254,7 @@ export class Bloom {
    * `SceneRoot.dispose`'s own contract, which is what calls this. Wired up
    * so `SceneRoot.dispose` can actually release this scene's post-processing
    * resources instead of leaking an `EffectComposer` and its render targets
-   * on every teardown -- see scene.ts's `dispose` doc comment (before this
-   * port) for the gap.
+   * on every teardown -- see scene.ts's `dispose` doc comment for the gap.
    */
   dispose(): void {
     this.bloomPass?.dispose();

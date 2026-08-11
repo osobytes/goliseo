@@ -1,10 +1,12 @@
 // Verbatim copy of
-// v2/rust/crates/gc-render/tests/fixtures/frame_buffer_lua_reference.txt,
-// captured by running the real `render/frame_buffer.lua` under headless
-// `love` -- see v2/tools/lua_reference/README.md. Embedded as a TS string
-// (rather than read from disk with `node:fs`) because this workspace's
-// per-package pnpm isolation does not currently expose `@types/node` to
-// `@gc/render` -- see this package's port report for the finding -- and
+// rust/crates/gc-render/tests/fixtures/frame_buffer_lua_reference.txt,
+// captured from the original renderer's `render/frame_buffer.lua`
+// implementation under headless `love` before it was retired -- see
+// tools/lua_reference/README.md for the capture methodology. That
+// implementation no longer exists in this repository, so this data is
+// frozen and cannot be regenerated. Embedded as a TS string (rather than
+// read from disk with `node:fs`) because this workspace's per-package pnpm
+// isolation does not currently expose `@types/node` to `@gc/render`, and
 // this package's task brief forbids touching `package.json` to add it.
 //
 // Rows are `label<TAB>word_count<TAB>comma-separated %.17g words`. Keep

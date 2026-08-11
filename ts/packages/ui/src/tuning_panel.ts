@@ -1,15 +1,16 @@
-// game/ui/tuning_panel.lua — in-match tuning panel (F1): live gameplay-knob
-// editing for playtesting. State transitions are pure and testable headless
-// (see tuning_panel.spec.ts); `draw` is the only place a `GraphicsBackend`
+// In-match tuning panel (F1): live gameplay-knob editing for playtesting.
+// State transitions are pure and testable headless (see
+// tuning_panel.spec.ts); `draw` is the only place a `GraphicsBackend`
 // is touched, and `save`/`load` are the only place a `PanelStorage` is.
 //
-// The Lua original reads and writes `sim/tuning.lua` and
-// `data/tuning_presets.lua` directly. Both are Rust now: tuning knobs are
-// read live by the simulation, and v2/README.md's determinism-line rule is
+// The live gameplay-knob registry and preset list live in Rust
+// (`crates/gc-sim`, `crates/gc-data`) and are read directly there: tuning
+// knobs are read live by the simulation, and ARCHITECTURE.md's
+// determinism-line rule is
 // "can this code change what the simulation computes? If yes it is Rust,
 // even when it feels like presentation." This package cannot import
 // `crates/gc-sim`/`crates/gc-data` directly (TS never imports a Rust
-// crate's source, v2/README.md §9) and, unlike when this note was first
+// crate's source, ARCHITECTURE.md §7) and, unlike when this note was first
 // written, the wasm bridge itself is no longer missing — `@gc/wasm` is real
 // and working (`packages/wasm/src/index.ts`'s `SimHost`: session lifecycle,
 // determinism evidence, the raw per-frame RenderFrame path). What `SimHost`
@@ -19,8 +20,8 @@
 // `Tuning` type threaded through session construction, never as a bound
 // export). So the same pattern as `GraphicsBackend` still applies, for a
 // narrower reason than before: the knob registry and preset list are
-// injected through `TuningSource`/`TuningPreset[]`, and this file ports the
-// panel's own state machine only. Wiring a real `TuningSource` needs a new
+// injected through `TuningSource`/`TuningPreset[]`, and this file implements
+// the panel's own state machine only. Wiring a real `TuningSource` needs a new
 // `gc-wasm` export for the knob registry/presets specifically, not "the
 // bridge" in general — that part already shipped.
 
@@ -39,8 +40,8 @@ export interface Knob {
 
 /**
  * What the panel needs from the live gameplay-knob registry
- * (`sim/tuning.lua` -> Rust `crates/gc-sim`). See this file's header for why
- * it is injected rather than imported.
+ * (Rust `crates/gc-sim`). See this file's header for why it is injected
+ * rather than imported.
  */
 export interface TuningSource {
   categories(): readonly string[];
@@ -53,23 +54,23 @@ export interface TuningSource {
   deserialize(blob: string): void;
 }
 
-/** A named blob of non-default overrides (`data/tuning_presets.lua` -> Rust `crates/gc-data`). */
+/** A named blob of non-default overrides (Rust `crates/gc-data`). */
 export interface TuningPreset {
   readonly id: string;
   readonly name: string;
   readonly blob: string;
 }
 
-/** `love.filesystem` stand-in. Omit it to get the Lua original's "no-op headless" behavior. */
+/** Storage abstraction for save/load. Omit it to get no-op headless behavior. */
 export interface PanelStorage {
   write(filename: string, data: string): void;
-  /** `null` when the file does not exist (mirrors the Lua `getInfo` existence check). */
+  /** `null` when the file does not exist. */
   read(filename: string): string | null;
 }
 
 const SAVE_FILE = "tuning.txt";
 
-/** Best-effort `("%.6g"):format(v)` equivalent, for display only — never on the determinism path. */
+/** Best-effort `%.6g` printf-style formatting, for display only — never on the determinism path. */
 function formatG6(value: number): string {
   if (value === 0) {
     return "0";
@@ -86,9 +87,9 @@ function formatG6(value: number): string {
 
 export class TuningPanel {
   open = false;
-  cat = 0; // 0-based index into tuning.categories() (Lua: 1-based `panel.cat`)
-  row = 0; // 0-based index into the current category's knobs (Lua: 1-based `panel.row`)
-  preset = 0; // 0-based index into presets; 0 = defaults (Lua: 1-based `panel.preset`)
+  cat = 0; // 0-based index into tuning.categories()
+  row = 0; // 0-based index into the current category's knobs
+  preset = 0; // 0-based index into presets; 0 = defaults
   status: string | null = null;
 
   private readonly tuning: TuningSource;

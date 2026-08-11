@@ -1,4 +1,4 @@
-//! Port of `sim/slot_input.lua`.
+//! Fixed-slot input production for `gc_sim`.
 //!
 //! Fixed-slot input production. Producers materialize complete effective
 //! `InputFrame`s before `sim::match` consumes them; the simulation never
@@ -93,8 +93,7 @@ pub struct SlotInputProducerState {
 /// The all-neutral `MatchInput`: no movement, nothing held, no edges.
 /// `aerial_strike`/`aerial_acrobatic` are explicit `Some(false)`, not
 /// `None` — this is a fully materialized "nothing is happening" row, not an
-/// absent/hand-built input, mirroring `sim/slot_input.lua`'s
-/// `neutral_match_input`, which writes `aerial_strike = false` literally.
+/// absent/hand-built input.
 #[must_use]
 pub fn neutral_match_input() -> MatchInput {
     MatchInput {
@@ -130,8 +129,8 @@ pub fn to_match_input(sample: &InputSample) -> MatchInput {
         sprint: held(HeldAction::Sprint),
         jockey: held(HeldAction::Jockey),
         // A dequantized sample always yields a definite bit, never "unset" —
-        // mirrors the Lua original's `== true` coercion (`nil`/`false` on
-        // the sample both become the real boolean `false` here).
+        // an unset or false bit on the sample both become the real boolean
+        // `false` here.
         aerial_strike: Some(held(HeldAction::AerialStrike)),
         aerial_acrobatic: Some(held(HeldAction::AerialAcrobatic)),
         equipment_held: held(HeldAction::Equipment),
@@ -161,9 +160,8 @@ pub fn to_sample(input: &MatchInput) -> InputSample {
     held_bit(input.sprint, HeldAction::Sprint);
     held_bit(input.jockey, HeldAction::Jockey);
     held_bit(input.lob, HeldAction::Lob);
-    // Mirrors the Lua original's `input.aerial_strike == true`: both `None`
-    // (unset) and `Some(false)` (explicit no) quantize to the same "not
-    // held" bit — the nil-vs-false distinction only matters to
+    // Both `None` (unset) and `Some(false)` (explicit no) quantize to the
+    // same "not held" bit — the unset-vs-false distinction only matters to
     // `aerial::strike_requested`'s fallback, not to the wire.
     held_bit(input.aerial_strike == Some(true), HeldAction::AerialStrike);
     held_bit(
@@ -393,9 +391,8 @@ fn bot_input(
             lob: false,
             sprint,
             jockey: false,
-            // Deliberate, always-definite intent (never "unset") — mirrors
-            // `sim/slot_input.lua`'s bot fill, which writes a real boolean
-            // here, not `nil`.
+            // Deliberate, always-definite intent (never "unset") — the bot
+            // fill always writes a real boolean here, never `None`.
             aerial_strike: Some(state.ball_z > 18.0 && player.pos.dist(state.ball) < 72.0),
             aerial_acrobatic: Some(false),
             equipment_held: equipment.is_some_and(|s| s.equipment_held),

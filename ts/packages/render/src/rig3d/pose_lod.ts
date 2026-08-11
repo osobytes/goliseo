@@ -1,28 +1,28 @@
-// Pose level-of-detail policy, ported from `game/render/rig3d/pose_lod.lua` (#394/#400):
-// which characters may reuse last frame's evaluated pose, and when.
+// Pose level-of-detail policy (#394/#400): which characters may reuse last
+// frame's evaluated pose, and when.
 //
-// PORTED BUT DELIBERATELY NOT WIRED IN. Read this before using it.
+// DELIBERATELY NOT WIRED IN. Read this before using it.
 //
-// The Lua original was justified by a profile of the *wasm-hosted Lua 5.1
-// interpreter*: ~88% of per-character draw cost sat in pose evaluation —
+// This policy was justified by a profile of a wasm-hosted Lua 5.1
+// interpreter: ~88% of per-character draw cost sat in pose evaluation —
 // `clips.sample`/`clips.layer`, `skeleton.apply`'s 28 bone world transforms, and
 // the bone-row build — against ~9% in the whole uniform and draw submission.
 // Holding the limb pose every other frame halved the dominant cost, worth
 // ~0.8 ms of browser frame time.
 //
-// That justification does not transfer. In this port skinning is three.js's
+// That justification does not transfer here. Skinning is three.js's
 // `Skeleton` and clip sampling is `AnimationMixer`, both optimised JS over typed
 // arrays rather than an interpreter, so the bottleneck this targets may simply
 // not exist. Holding a pose is not free — it introduces cached state and an
 // invalidation rule — and paying that for an unmeasured win is exactly the
-// premature optimisation the original PR was careful to avoid: it profiled
+// premature optimisation the original design was careful to avoid: it profiled
 // first, and only then optimised.
 //
-// So the policy is ported, with its tests, because it encodes a real design
+// So the policy is kept, with its tests, because it encodes a real design
 // decision worth keeping. Wire it into the render path only after re-measuring
 // per-character cost on this stack.
 //
-// The contract, unchanged from the Lua:
+// The contract:
 //
 //   * DETERMINISTIC IN ITS INPUTS. The schedule is a function of a per-character
 //     draw counter and a stagger index, never the wall clock, so the same draw
@@ -109,8 +109,9 @@ export function interval(opts: PlayerRenderOptions, heightPx: number): number {
  * ten on alternate frames — the mean is the same, the p95 is not.
  *
  * `tick` and `stagger` are both non-negative by construction, so `%` is safe
- * here; Lua's floored modulo and JavaScript's truncated remainder agree on
- * non-negative operands.
+ * here even though JavaScript's `%` is a truncated remainder rather than a
+ * floored modulo: the two agree on non-negative operands, which is the only
+ * case this file needs.
  */
 export function due(tick: number, stagger: number, poseInterval: number): boolean {
   if (poseInterval <= 1) {
@@ -134,10 +135,8 @@ export interface PoseLodEntry {
 /**
  * Owns the per-character cache and the round-robin stagger counter.
  *
- * The Lua kept `next_stagger` as module-level mutable state. AGENTS.md §3
- * forbids stray globals, and this port has consistently turned Lua module state
- * into owned state (`sim/tuning.lua` became a value, `game/audio.lua` became a
- * class), so the counter lives on an instance here.
+ * The counter lives on an instance here, as owned state, rather than as
+ * module-level mutable state -- AGENTS.md §3 forbids stray globals.
  */
 export class PoseLodScheduler {
   private nextStagger = 0;

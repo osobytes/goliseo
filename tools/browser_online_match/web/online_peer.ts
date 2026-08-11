@@ -8,7 +8,7 @@
 // those, and more importantly a minimal page keeps the thing under test
 // narrow: real `RTCPeerConnection`/`RTCDataChannel` timing feeding
 // `MatchDriverBridge` through `@gc/transport`'s `BrowserStarTransport`,
-// nothing else. See v2/tools/browser_online_match's header (this file's
+// nothing else. See tools/browser_online_match's header (this file's
 // sibling) for the full brief.
 //
 // What this page proves, concretely: after a real WebRTC handshake
@@ -40,7 +40,7 @@ import {
 // --- binary-string <-> bytes, mirroring @gc/wasm's binary_string.ts ---
 // (reimplemented locally rather than imported: it is a five-line pure
 // helper and this page must not depend on anything under
-// v2/ts/packages/wasm/src -- only the already-built pkg-web artifact,
+// ts/packages/wasm/src -- only the already-built pkg-web artifact,
 // which this task may read but not edit).
 function byteStringFromBytes(bytes: Uint8Array): string {
   let out = "";

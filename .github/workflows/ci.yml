@@ -15,295 +15,12 @@ concurrency:
     cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-    rollback_scope:
-        name: OMP-2 rollback impact filter
-        runs-on: ubuntu-24.04
-        outputs:
-            fingerprint: ${{ steps.scope.outputs.fingerprint }}
-            impact: ${{ steps.scope.outputs.run }}
-            reuse: ${{ steps.discovery.outputs.reuse }}
-            run: ${{ steps.decision.outputs.run }}
-
-        steps:
-            - name: Check out source history
-              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-              with:
-                  fetch-depth: 0
-                  ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-            - name: Detect rollback-impacting changes
-              id: scope
-              env:
-                  EVENT_NAME: ${{ github.event_name }}
-                  EVENT_BEFORE: ${{ github.event.before }}
-                  PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-              run: |
-                  python3 -B scripts/rollback_ci.py scope \
-                      --event-name "$EVENT_NAME" \
-                      --event-before "$EVENT_BEFORE" \
-                      --pr-base-sha "$PR_BASE_SHA" \
-                      --github-output "$GITHUB_OUTPUT"
-
-            - name: Discover prior complete rollback evidence
-              id: discovery
-              env:
-                  API_URL: ${{ github.api_url }}
-                  BASE_REF: ${{ github.base_ref }}
-                  BASE_REPOSITORY_ID: ${{ github.event.pull_request.base.repo.id }}
-                  BASE_SHA: ${{ github.event.pull_request.base.sha }}
-                  CURRENT_RUN_ID: ${{ github.run_id }}
-                  FINGERPRINT: ${{ steps.scope.outputs.fingerprint }}
-                  GH_TOKEN: ${{ github.token }}
-                  HEAD_BRANCH: ${{ github.head_ref }}
-                  HEAD_REPOSITORY_ID: ${{ github.event.pull_request.head.repo.id }}
-                  IMPACT: ${{ steps.scope.outputs.run }}
-                  PR_NUMBER: ${{ github.event.pull_request.number }}
-                  REPOSITORY: ${{ github.repository }}
-                  REPOSITORY_ID: ${{ github.repository_id }}
-              run: |
-                  python3 -B scripts/rollback_ci.py discover \
-                      --impact "$IMPACT" \
-                      --fingerprint "$FINGERPRINT" \
-                      --repository "$REPOSITORY" \
-                      --repository-id "${REPOSITORY_ID:-0}" \
-                      --pr-number "${PR_NUMBER:-0}" \
-                      --head-branch "$HEAD_BRANCH" \
-                      --head-repository-id "${HEAD_REPOSITORY_ID:-0}" \
-                      --base-repository-id "${BASE_REPOSITORY_ID:-0}" \
-                      --base-ref "$BASE_REF" \
-                      --base-sha "$BASE_SHA" \
-                      --current-run-id "$CURRENT_RUN_ID" \
-                      --token "$GH_TOKEN" \
-                      --api-url "$API_URL" \
-                      --github-output "$GITHUB_OUTPUT"
-
-            - name: Select full campaign or aggregate reuse
-              id: decision
-              env:
-                  IMPACT: ${{ steps.scope.outputs.run }}
-                  REUSE: ${{ steps.discovery.outputs.reuse }}
-              run: |
-                  run="$IMPACT"
-                  if [ "$REUSE" = "true" ]; then
-                      run=false
-                  fi
-                  echo "run=$run" >> "$GITHUB_OUTPUT"
-                  echo "rollback_campaign=$run aggregate_reuse=$REUSE"
-
-    quality:
-        name: Lua quality gate
-        runs-on: ubuntu-24.04
-
-        steps:
-            - name: Check out source
-              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-              with:
-                  ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-            - name: Install pinned toolchain
-              env:
-                  LOVE_VERSION: 11.5
-                  LOVE_SHA256: 65a673406431eff7167a15a032bf7a2e4ba50108e091eb7b176465831f9b5e00
-                  STYLUA_VERSION: 2.5.2
-                  STYLUA_SHA256: bcb0d855e91f102f28a370e850f8566b3b44b79e6274d806ea5246837c0fd5ab
-                  LUALS_VERSION: 3.18.2
-                  LUALS_SHA256: ca71415dd19f19e30aaa35a4915aefca9fdb5fec31b98331cc3d77f778d539c5
-              run: |
-                  tool_dir="$RUNNER_TEMP/goliseo-tools"
-                  mkdir -p "$tool_dir/bin" "$tool_dir/stylua" "$tool_dir/luals" "$tool_dir/love"
-
-                  curl --fail --location --retry 3 --silent --show-error \
-                      --output "$tool_dir/stylua.zip" \
-                      "https://github.com/JohnnyMorganz/StyLua/releases/download/v${STYLUA_VERSION}/stylua-linux-x86_64.zip"
-                  echo "${STYLUA_SHA256}  $tool_dir/stylua.zip" | sha256sum --check --status
-                  unzip -q "$tool_dir/stylua.zip" -d "$tool_dir/stylua"
-
-                  curl --fail --location --retry 3 --silent --show-error \
-                      --output "$tool_dir/luals.tar.gz" \
-                      "https://github.com/LuaLS/lua-language-server/releases/download/${LUALS_VERSION}/lua-language-server-${LUALS_VERSION}-linux-x64.tar.gz"
-                  echo "${LUALS_SHA256}  $tool_dir/luals.tar.gz" | sha256sum --check --status
-                  tar -xzf "$tool_dir/luals.tar.gz" -C "$tool_dir/luals"
-
-                  curl --fail --location --retry 3 --silent --show-error \
-                      --output "$tool_dir/love.AppImage" \
-                      "https://github.com/love2d/love/releases/download/${LOVE_VERSION}/love-${LOVE_VERSION}-x86_64.AppImage"
-                  echo "${LOVE_SHA256}  $tool_dir/love.AppImage" | sha256sum --check --status
-                  chmod +x "$tool_dir/love.AppImage"
-                  (
-                      cd "$tool_dir/love"
-                      "$tool_dir/love.AppImage" --appimage-extract >/dev/null
-                  )
-                  ln -s "$tool_dir/love/squashfs-root/AppRun" "$tool_dir/bin/love"
-
-                  "$tool_dir/stylua/stylua" --version
-                  "$tool_dir/luals/bin/lua-language-server" --version
-                  "$tool_dir/bin/love" --version
-                  printf '%s\n' "$tool_dir/bin" "$tool_dir/stylua" "$tool_dir/luals/bin" >> "$GITHUB_PATH"
-
-            - name: Check formatting
-              run: stylua --check .
-
-            - name: Check Lua types
-              run: lua-language-server --check . --checklevel=Warning
-
-            # The log is kept for the headroom gate below, which reads a marker out of
-            # it rather than paying for a second four-minute suite run. pipefail is set
-            # explicitly: GitHub's default shell is `bash -e`, so without it a failing
-            # suite would be masked by a succeeding `tee`.
-            - name: Run headless test suite
-              run: |
-                  set -o pipefail
-                  love . --test 2>&1 | tee "$RUNNER_TEMP/test.log"
-
-            # #209: warn about the retained-snapshot margin while it can still be spent
-            # deliberately, ahead of the hard gate in the rollback campaign. The
-            # self-test runs first and proves the threshold can fire, including the
-            # shape where the marker is absent entirely.
-            - name: Check the retained snapshot headroom
-              run: |
-                  ./scripts/check_snapshot_headroom.sh --self-test
-                  ./scripts/check_snapshot_headroom.sh --log "$RUNNER_TEMP/test.log"
-
-            - name: Run gameplay tripwire
-              run: love . --tripwire
-
-            # The frozen combat-disabled control #148/#149 measure against. This
-            # job mirrors scripts/check.sh by hand, so a gate that is not listed
-            # here is a gate that never runs.
-            - name: Verify the frozen Outfield AI baseline
-              run: love . --ai-baseline
-
-            - name: Run OMP-1 deterministic replay twice
-              run: |
-                  ./scripts/check_determinism.sh --self-test
-                  ./scripts/check_determinism.sh
-
-            # #391: Firefox's WebGL shader translator emits invalid GLSL for
-            # every LÖVE shader that declares a varying (Bugzilla 2039887), so
-            # the browser bootstrap hoists those declarations above main()
-            # before WebGL sees them. Gated here: the transform, every construct
-            # it must NOT touch, and that the shipped loader actually embeds and
-            # installs it -- a green transform beside a build that never wires
-            # it in is the #279 shape. The self-test proves this step can go
-            # red. It starts NO browser; the headed Chrome and Firefox runs are
-            # evidence recorded in docs/online/browser_compatibility.md.
-            - name: Prove the #391 shader hoist gate detects failure
-              run: ./scripts/check_shader_hoist.sh --self-test
-
-            - name: Check the #391 shader varying hoist (starts no browser)
-              run: ./scripts/check_shader_hoist.sh
-
-            - name: Check OMP-2 rollback orchestration
-              run: ./scripts/check_rollback.sh --self-test
-
-            # Verdict logic only, and the step is named for that. The real #342
-            # measurement needs a built wasm module, a display and a desktop
-            # webview; it is run by hand and recorded in
-            # docs/online/wasm_webview_determinism.md. This step launches no
-            # webview and must never be read as evidence that one passed.
-            - name: Check the wasm webview determinism verdict (launches no webview)
-              run: ./scripts/check_verify_webview.sh
-
-            # Controller logic only: this parses fixture marker strings and
-            # starts no browser. The #341 benchmark itself needs a GPU, a
-            # display and headed Chrome and Firefox, so it cannot run on a CI
-            # runner -- but the refusal that keeps a SwiftShader result out of
-            # the report is pure logic, and #100 published one false negative
-            # for want of it. `--prove-refusal` is the step that starts a real
-            # browser, and it runs on the measuring machine, not here.
-            - name: Check the Babylon bench refusal logic (starts no browser)
-              run: python3 -B scripts/babylon_bench.py --self-test
-
-            # Controller logic only, and the step is named for that. The #328
-            # measurement drives Babylon from the LIVE wasm simulation, so it
-            # needs a built module, a GPU, a display and two real browsers; it is
-            # run by hand and recorded in docs/design/babylon_wasm_spike.md.
-            # What IS gated here is every rule that decides its verdict --
-            # exactly one boundary crossing per rendered frame, rendering not
-            # perturbing the simulation, cross-runtime hash agreement, the frozen
-            # determinism contract, the software-rasteriser refusal, and that a
-            # run with any failure exits non-zero. Sabotage any one of them and
-            # this goes red. It starts no browser and loads no wasm.
-            - name: Check the Babylon wasm-payload verdict logic (starts no browser, loads no wasm)
-              run: python3 -B scripts/babylon_wasm_bench.py --self-test
-
-            # #329, and the same standing as the step above. Measuring a native
-            # shell needs a GPU, a display and a packaged Electron and Tauri
-            # build, so the measurement runs by hand on the measuring machine
-            # and is recorded in docs/design/native_route_decision.md. Gated
-            # here: the software-rasteriser refusal, the WebKit "Apple GPU"
-            # spoof (a renderer string naming a GPU the machine does not have,
-            # which the #341 classifier accepts as hardware), the /proc reader
-            # that must survive the process it reads exiting, and the rule that
-            # a partial matrix cannot land on report.json. This starts no shell
-            # and no browser; a green run here is not shell evidence.
-            - name: Check the native shell bench refusal logic (starts no shell)
-              run: python3 -B scripts/native_shell_bench.py --self-test
-
-            # #360, and the same standing again. Measuring what love.js actually
-            # gives LÖVE needs a GPU, a display and two real browsers, so it runs
-            # by hand on the measuring machine and is recorded in
-            # docs/online/browser_rigged_3d.md. Gated here: the marker
-            # percent-decoding that stops a LÖVE error string splitting a marker,
-            # the terminator rule that stops an aborted runtime reading as a
-            # clean negative, every clause of the per-browser verdict (sabotage
-            # any one and the answer must flip), the cross-browser rollup, the
-            # refusal to publish an unproven GPU or a partial matrix, and the
-            # agreement between the ladder this drives and the ladder
-            # game/render/gl_probe.lua defines. It starts no browser.
-            - name: Check the love.js depth probe verdict logic (starts no browser)
-              run: python3 -B scripts/lovejs_depth_probe.py --self-test
-
-            # #432/#440/#454, and the same standing again. The v2 live-match
-            # harness driver's real output — pixel captures, and the keeper-lean
-            # COUNTS that #449, #450 and #451 turn on — needs a browser and
-            # minutes of software GL, so it runs by hand and a green line here is
-            # not evidence about the renderer. Gated here: the driver's verdict
-            # rules, its virtual-clock arithmetic, its bootstrap invariants, and
-            # above all its ANTI-DRIFT checks. That driver mirrors two TypeScript
-            # files in Python — `frame_buffer.ts`'s per-player column indices and
-            # wire pose ORDER, and `action_pose.ts`'s `lateralSign` formula, its
-            # 1e-6 dead band and the SAVES table — and the self-test re-derives
-            # each from its source. A mirror nothing re-derives silently stops
-            # matching while the counts it produces stay plausible. Starts no
-            # browser.
-            - name: Check the v2 match harness driver logic and its TypeScript mirrors (starts no browser)
-              run: python3 -B scripts/browser_match_harness.py --self-test
-
-            # #343: `render/` was added to the repository and never added to the
-            # wasm host's embed manifest, so the module built clean and then died
-            # at run time before reaching the determinism section it exists to
-            # prove. This gates the MANIFEST invariant only. It does NOT build the
-            # wasm artifact, does not run emcc and does not verify determinism --
-            # that build needs Docker plus emcc and remains evidence run by hand.
-            # The gate compiles build.rs standalone, so it needs rustc and nothing
-            # else; the runner image normally already has one.
-            - name: Install Rust (for the embed manifest gate)
-              run: |
-                  if command -v rustc >/dev/null 2>&1; then
-                      rustc --version
-                  else
-                      curl --fail --location --retry 3 --silent --show-error \
-                          https://sh.rustup.rs \
-                          | sh -s -- -y --profile minimal --default-toolchain stable
-                      printf '%s\n' "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-                  fi
-
-            - name: Prove the wasm embed manifest gate detects failure
-              run: ./scripts/check_wasm_embed_manifest.sh --self-test
-
-            - name: Check the wasm embed manifest
-              run: ./scripts/check_wasm_embed_manifest.sh
-
-    # v2 (Rust + TypeScript, see v2/README.md) is an interim gate: it runs
-    # ALONGSIDE `quality` above, not instead of it, until v2 replaces the Lua
-    # tree entirely. Every step lives in scripts/check_v2.sh, which this job
-    # calls exactly as scripts/check.sh does, so the two cannot drift
-    # (AGENTS.md §9's first rule). Its own job because it needs a completely
-    # different toolchain (Rust + Node + pnpm, no LOVE) and nothing here
-    # blocks or is blocked by the Lua gates.
-    v2_gate:
-        name: v2 (Rust + TypeScript) interim gate
+    # THE project gate. Everything it runs lives in scripts/check.sh, which
+    # this job calls exactly as a contributor would locally, so the two
+    # cannot drift (AGENTS.md §9's first rule: every gate in
+    # scripts/check.sh must also appear here, and vice versa).
+    gate:
+        name: Gate
         runs-on: ubuntu-24.04
         timeout-minutes: 30
 
@@ -313,14 +30,35 @@ jobs:
               with:
                   ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-            # v2/rust/rust-toolchain.toml pins the channel (1.93), the
-            # rustfmt and clippy components, and the wasm32-unknown-unknown
-            # target. rustup reads that file automatically for any
-            # cargo/rustc invocation under v2/rust; `rustup show` below just
-            # forces the download to happen here, as a named step, instead of
-            # silently during the first `cargo fmt` inside check_v2.sh.
-            # ubuntu-24.04 images ship rustup already; this only installs it
-            # if that ever changes.
+            # #432/#440/#454. The live-match harness driver's real output --
+            # pixel captures, and the keeper-lean COUNTS that #449, #450 and
+            # #451 turn on -- needs a browser and minutes of software GL, so
+            # it runs by hand and a green line here is not evidence about the
+            # renderer. Gated here: the driver's verdict rules, its
+            # virtual-clock arithmetic, its bootstrap invariants, and above
+            # all its ANTI-DRIFT checks. That driver mirrors two TypeScript
+            # files in Python -- `frame_buffer.ts`'s per-player column
+            # indices and wire pose ORDER, and `action_pose.ts`'s
+            # `lateralSign` formula, its 1e-6 dead band and the SAVES table
+            # -- and the self-test re-derives each from its source. A mirror
+            # nothing re-derives silently stops matching while the counts it
+            # produces stay plausible. Starts no browser.
+            #
+            # scripts/check.sh does not call this self-test itself, so it
+            # stays its own step here rather than being folded in. If that
+            # ever changes, this step becomes a duplicate and should be
+            # deleted, per AGENTS.md §9.
+            - name: Check the match harness driver logic and its TypeScript mirrors (starts no browser)
+              run: python3 -B scripts/browser_match_harness.py --self-test
+
+            # rust/rust-toolchain.toml pins the channel (1.93), the rustfmt
+            # and clippy components, and the wasm32-unknown-unknown target.
+            # rustup reads that file automatically for any cargo/rustc
+            # invocation under rust/; `rustup show` below just forces the
+            # download to happen here, as a named step, instead of silently
+            # during the first `cargo fmt` inside check.sh. ubuntu-24.04
+            # images ship rustup already; this only installs it if that ever
+            # changes.
             - name: Install rustup if missing
               run: |
                   if ! command -v rustup >/dev/null 2>&1; then
@@ -330,8 +68,8 @@ jobs:
                       printf '%s\n' "$HOME/.cargo/bin" >> "$GITHUB_PATH"
                   fi
 
-            - name: Select the pinned v2/rust toolchain
-              working-directory: v2/rust
+            - name: Select the pinned rust toolchain
+              working-directory: rust
               run: rustup show
 
             # Pinned to exactly the version crates/gc-wasm/Cargo.toml
@@ -340,8 +78,8 @@ jobs:
             # semver, and a mismatch fails opaquely inside wasm-bindgen's own
             # codegen. wasm-bindgen's releases do not publish a checksums
             # file, so this hash was computed by hand from the published
-            # asset and pinned here -- the same way LOVE_SHA256 and
-            # STYLUA_SHA256 above are pinned, for the same reason.
+            # asset -- the same way LOVE_SHA256 and STYLUA_SHA256 were pinned
+            # for the deleted Lua toolchain, for the same reason.
             - name: Install pinned wasm-bindgen-cli
               env:
                   WASM_BINDGEN_VERSION: 0.2.118
@@ -358,8 +96,8 @@ jobs:
                   "$tool_dir/wasm-bindgen" --version
                   printf '%s\n' "$tool_dir" >> "$GITHUB_PATH"
 
-            # v2/ts/package.json "engines" requires >= 22; the redundant
-            # determinism assertion inside check_v2.sh additionally needs
+            # ts/package.json "engines" requires >= 22; the redundant
+            # determinism assertion inside check.sh additionally needs
             # `node --experimental-strip-types`, stable since Node 22.6.
             - name: Install pinned Node.js
               env:
@@ -377,7 +115,7 @@ jobs:
                   printf '%s\n' "$tool_dir/bin" >> "$GITHUB_PATH"
 
             # Standalone binary, not resolved through any package manager:
-            # this job must run exactly the pnpm version v2/ts/package.json
+            # this job must run exactly the pnpm version ts/package.json
             # ("packageManager": "pnpm@11.1.2") pins, not whatever corepack
             # or npm would otherwise resolve.
             - name: Install pinned pnpm
@@ -398,28 +136,30 @@ jobs:
 
             # A gate that cannot fail is worse than no gate (AGENTS.md §9).
             # This sabotages a set of hermetic, throwaway fixtures under
-            # mktemp -- never the real v2/rust or v2/ts trees -- and requires
-            # every one of them to be rejected, pinned to the message each
-            # targets, before the real run below is trusted.
-            - name: Prove the v2 gate detects failure
-              run: ./scripts/check_v2.sh --self-test
+            # mktemp -- never the real rust or ts trees -- and requires every
+            # one of them to be rejected, pinned to the message each targets,
+            # before the real run below is trusted.
+            - name: Prove the gate detects failure
+              run: ./scripts/check.sh --self-test
 
-            - name: Run the v2 (Rust + TypeScript) interim gate
-              run: ./scripts/check_v2.sh
+            - name: Run the project gate
+              run: ./scripts/check.sh
 
-            # The one property no in-process fake can establish: two INDEPENDENT
-            # wasm instances, connected by a real RTCPeerConnection, deriving
-            # identical boundary hashes from real asynchronously-delivered
-            # traffic. Every other online test in this tree runs through fakes
-            # or a single instance, neither of which can observe it.
+            # The one property no in-process fake can establish: two
+            # INDEPENDENT wasm instances, connected by a real
+            # RTCPeerConnection, deriving identical boundary hashes from real
+            # asynchronously-delivered traffic. Every other online test in
+            # this tree runs through fakes or a single instance, neither of
+            # which can observe it.
             #
-            # It also exercises net_inbox.rs's discipline -- JS enqueues, Rust
-            # drains per tick, arrival is a tick event and never a callback
-            # reaching sim state between ticks -- under REAL callback timing.
+            # It also exercises net_inbox.rs's discipline -- JS enqueues,
+            # Rust drains per tick, arrival is a tick event and never a
+            # callback reaching sim state between ticks -- under REAL
+            # callback timing.
             #
-            # Same-engine Chrome only. The cross-engine Chrome/Firefox variant
-            # needs both browser assets and is worth running less often; it
-            # belongs on a schedule rather than on every push.
+            # Same-engine Chrome only. The cross-engine Chrome/Firefox
+            # variant needs both browser assets and is worth running less
+            # often; it belongs on a schedule rather than on every push.
             - name: Install pinned browser evidence dependencies
               run: |
                   python3 -m venv "$RUNNER_TEMP/browser-evidence"
@@ -431,564 +171,12 @@ jobs:
               run: |
                   "$RUNNER_TEMP/browser-evidence/bin/python" -B \
                       scripts/browser_online_peers.py \
-                      --output "$RUNNER_TEMP/v2-online-peers.json"
+                      --output "$RUNNER_TEMP/online-peers.json"
 
             - name: Publish the agreement evidence
               if: always()
               uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
               with:
-                  name: v2-online-peers
-                  path: ${{ runner.temp }}/v2-online-peers.json
+                  name: online-peers
+                  path: ${{ runner.temp }}/online-peers.json
                   if-no-files-found: warn
-
-    # Its own job on purpose: the harness is minutes of CPU, it needs nothing but
-    # LOVE, and nothing else waits on it, so it costs the critical path nothing.
-    # Until #279 no job ran it at all -- the only OMP-3 step in CI was the Python
-    # controller's self-test inside `quality`, which starts no harness process.
-    fault_harness:
-        name: OMP-3 fault harness
-        runs-on: ubuntu-24.04
-        timeout-minutes: 25
-
-        steps:
-            - name: Check out source
-              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-              with:
-                  ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-            - name: Install pinned LÖVE 11.5
-              env:
-                  LOVE_VERSION: 11.5
-                  LOVE_SHA256: 65a673406431eff7167a15a032bf7a2e4ba50108e091eb7b176465831f9b5e00
-              run: |
-                  tool_dir="$RUNNER_TEMP/goliseo-love"
-                  mkdir -p "$tool_dir/bin" "$tool_dir/love"
-                  curl --fail --location --retry 3 --silent --show-error \
-                      --output "$tool_dir/love.AppImage" \
-                      "https://github.com/love2d/love/releases/download/${LOVE_VERSION}/love-${LOVE_VERSION}-x86_64.AppImage"
-                  echo "${LOVE_SHA256}  $tool_dir/love.AppImage" | sha256sum --check --status
-                  chmod +x "$tool_dir/love.AppImage"
-                  (
-                      cd "$tool_dir/love"
-                      "$tool_dir/love.AppImage" --appimage-extract >/dev/null
-                  )
-                  ln -s "$tool_dir/love/squashfs-root/AppRun" "$tool_dir/bin/love"
-                  "$tool_dir/bin/love" --version
-                  printf '%s\n' "$tool_dir/bin" >> "$GITHUB_PATH"
-
-            # A gate that cannot fail is worse than no gate. This drives a fake
-            # harness through every shape the real one could fail in -- including
-            # a run that prints failures and still exits 0.
-            - name: Prove the fault harness gate detects failure
-              run: ./scripts/check_fault_harness.sh --self-test
-
-            - name: Run the real OMP-3 fault harness
-              run: ./scripts/check_fault_harness.sh smoke 1 800
-
-    browser_artifact:
-        name: Browser artifact smoke
-        runs-on: ubuntu-24.04
-
-        steps:
-            - name: Check out source
-              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-              with:
-                  ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-            - name: Build and smoke-test browser artifact
-              run: ./scripts/web_smoke.sh
-
-    browser_determinism:
-        name: OMP-1 browser determinism (${{ matrix.browser }})
-        runs-on: ubuntu-24.04
-        timeout-minutes: 30
-        strategy:
-            fail-fast: false
-            matrix:
-                browser: [chrome, firefox]
-
-        steps:
-            - name: Check out source
-              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-              with:
-                  ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-            - name: Install pinned browser evidence dependencies
-              run: |
-                  python3 -m venv "$RUNNER_TEMP/browser-evidence"
-                  "$RUNNER_TEMP/browser-evidence/bin/pip" install \
-                      --require-hashes \
-                      --requirement scripts/browser_matrix-requirements.txt
-
-            - name: Build the pinned love.js artifact
-              run: |
-                  "$RUNNER_TEMP/browser-evidence/bin/python" -B \
-                      scripts/browser_determinism.py --self-test
-                  ./scripts/web_build.sh "$RUNNER_TEMP/omp1-web"
-
-            - name: Run two fresh determinism campaigns
-              env:
-                  GALLIUM_DRIVER: llvmpipe
-                  LIBGL_ALWAYS_SOFTWARE: "1"
-                  SE_CACHE_PATH: ${{ runner.temp }}/selenium
-              run: |
-                  xvfb-run -a \
-                      -s "-screen 0 1280x720x24 -nolisten tcp +extension GLX +render -noreset" \
-                      "$RUNNER_TEMP/browser-evidence/bin/python" -B scripts/browser_determinism.py \
-                          --artifact "$RUNNER_TEMP/omp1-web" \
-                          --browser "${{ matrix.browser }}" \
-                          --run-concurrency 2 \
-                          --output "$RUNNER_TEMP/omp1-browser-determinism-${{ matrix.browser }}.json"
-
-            - name: Upload browser determinism shard evidence
-              if: always()
-              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-              with:
-                  name: omp1-determinism-${{ matrix.browser }}
-                  path: |
-                      ${{ runner.temp }}/omp1-browser-determinism-${{ matrix.browser }}.json
-                      ${{ runner.temp }}/omp1-browser-determinism-${{ matrix.browser }}-logs
-                  if-no-files-found: error
-                  retention-days: 14
-
-    browser_determinism_gate:
-        name: OMP-1 browser determinism gate
-        needs: browser_determinism
-        if: always()
-        runs-on: ubuntu-24.04
-
-        steps:
-            - name: Check out source
-              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-              with:
-                  ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-            - name: Download browser determinism shard evidence
-              continue-on-error: true
-              env:
-                  GH_TOKEN: ${{ github.token }}
-              run: |
-                  mkdir -p "$RUNNER_TEMP/omp1-determinism-evidence"
-                  gh run download "$GITHUB_RUN_ID" \
-                      --repo "$GITHUB_REPOSITORY" \
-                      --pattern 'omp1-determinism-*' \
-                      --dir "$RUNNER_TEMP/omp1-determinism-evidence" \
-                      || echo "no browser determinism evidence artifacts were available"
-
-            # The rolled-up matrix result is necessary but never sufficient: it
-            # cannot see a shard that was never scheduled. The pinned manifest in
-            # scripts/browser_determinism.py can, so a vanished, skipped, or
-            # cancelled shard fails this gate by name.
-            - name: Require complete browser determinism shard evidence
-              env:
-                  REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
-                  SHARD_RESULT: ${{ needs.browser_determinism.result }}
-              run: |
-                  python3 -B scripts/browser_determinism.py \
-                      --mode aggregate \
-                      --evidence-root "$RUNNER_TEMP/omp1-determinism-evidence" \
-                      --revision "$REVISION" \
-                      --shard-result "$SHARD_RESULT"
-
-    rollback_browser_stress:
-        name: OMP-2 rollback browser stress (${{ matrix.browser }})
-        needs: rollback_scope
-        if: needs.rollback_scope.outputs.impact == 'true'
-        # Read only by scripts/rollback_validation.py, which sanitizes it.
-        env:
-            GC_CAMPAIGN_EVENT: ${{ github.event_name }}
-            GC_CAMPAIGN_SHA: ${{ github.sha }}
-            GC_CAMPAIGN_HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-        runs-on: ubuntu-24.04
-        timeout-minutes: 45
-        strategy:
-            fail-fast: false
-            matrix:
-                browser: [chrome, firefox]
-
-        steps:
-            - name: Check out source
-              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-              with:
-                  ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-            - name: Install pinned browser evidence dependencies
-              run: |
-                  python3 -m venv "$RUNNER_TEMP/browser-evidence"
-                  "$RUNNER_TEMP/browser-evidence/bin/pip" install \
-                      --require-hashes \
-                      --requirement scripts/browser_matrix-requirements.txt
-                  printf '%s\n' "$RUNNER_TEMP/browser-evidence/bin" >> "$GITHUB_PATH"
-
-            - name: Build the pinned love.js artifact
-              run: ./scripts/web_build.sh "$RUNNER_TEMP/omp2-web"
-
-            - name: Run the short stress scenario matrix
-              env:
-                  GALLIUM_DRIVER: llvmpipe
-                  LIBGL_ALWAYS_SOFTWARE: "1"
-                  SE_CACHE_PATH: ${{ runner.temp }}/selenium
-              run: |
-                  xvfb-run -a \
-                      -s "-screen 0 1280x720x24 -nolisten tcp +extension GLX +render -noreset" \
-                      ./scripts/check_rollback.sh \
-                          --browser \
-                          --runtime-browser "${{ matrix.browser }}" \
-                          --campaign stress \
-                          --artifact "$RUNNER_TEMP/omp2-web" \
-                          --output "$RUNNER_TEMP/omp2-rollback-${{ matrix.browser }}-stress.json" \
-                          --timeout-seconds 1800
-
-            - name: Upload browser stress rollback evidence
-              if: always()
-              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-              with:
-                  name: omp2-rollback-${{ matrix.browser }}-stress
-                  path: |
-                      ${{ runner.temp }}/omp2-rollback-${{ matrix.browser }}-stress.json
-                      ${{ runner.temp }}/omp2-rollback-${{ matrix.browser }}-stress-raw
-                  if-no-files-found: error
-                  retention-days: 14
-
-    rollback_native:
-        name: OMP-2 rollback native (${{ matrix.shard }})
-        needs: rollback_scope
-        if: github.event_name != 'pull_request' && needs.rollback_scope.outputs.run == 'true'
-        # Read only by scripts/rollback_validation.py, which sanitizes it.
-        env:
-            GC_CAMPAIGN_EVENT: ${{ github.event_name }}
-            GC_CAMPAIGN_SHA: ${{ github.sha }}
-            GC_CAMPAIGN_HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-        runs-on: ubuntu-24.04
-        timeout-minutes: 60
-        strategy:
-            fail-fast: false
-            matrix:
-                shard: ["2001", "2002", "2003", "tail"]
-
-        steps:
-            - name: Check out source
-              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-              with:
-                  ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-            - name: Install pinned LÖVE 11.5
-              env:
-                  LOVE_VERSION: 11.5
-                  LOVE_SHA256: 65a673406431eff7167a15a032bf7a2e4ba50108e091eb7b176465831f9b5e00
-              run: |
-                  tool_dir="$RUNNER_TEMP/goliseo-love"
-                  mkdir -p "$tool_dir/bin" "$tool_dir/love"
-                  curl --fail --location --retry 3 --silent --show-error \
-                      --output "$tool_dir/love.AppImage" \
-                      "https://github.com/love2d/love/releases/download/${LOVE_VERSION}/love-${LOVE_VERSION}-x86_64.AppImage"
-                  echo "${LOVE_SHA256}  $tool_dir/love.AppImage" | sha256sum --check --status
-                  chmod +x "$tool_dir/love.AppImage"
-                  (
-                      cd "$tool_dir/love"
-                      "$tool_dir/love.AppImage" --appimage-extract >/dev/null
-                  )
-                  ln -s "$tool_dir/love/squashfs-root/AppRun" "$tool_dir/bin/love"
-                  "$tool_dir/bin/love" --version
-                  printf '%s\n' "$tool_dir/bin" >> "$GITHUB_PATH"
-
-            - name: Run the pinned native rollback shard
-              run: |
-                  ./scripts/check_rollback.sh \
-                      --native \
-                      --shard "${{ matrix.shard }}" \
-                      --output "$RUNNER_TEMP/omp2-rollback-native-${{ matrix.shard }}.json" \
-                      --timeout-seconds 2700
-
-            - name: Upload native rollback evidence
-              if: always()
-              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-              with:
-                  name: omp2-rollback-native-${{ matrix.shard }}
-                  path: |
-                      ${{ runner.temp }}/omp2-rollback-native-${{ matrix.shard }}.json
-                      ${{ runner.temp }}/omp2-rollback-native-${{ matrix.shard }}-raw
-                  if-no-files-found: error
-                  retention-days: 14
-
-    rollback_browser_matrix:
-        name: OMP-2 rollback browser matrix (${{ matrix.browser }}, ${{ matrix.shard }})
-        needs: rollback_scope
-        if: github.event_name != 'pull_request' && needs.rollback_scope.outputs.run == 'true'
-        # Read only by scripts/rollback_validation.py, which sanitizes it.
-        env:
-            GC_CAMPAIGN_EVENT: ${{ github.event_name }}
-            GC_CAMPAIGN_SHA: ${{ github.sha }}
-            GC_CAMPAIGN_HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-        runs-on: ubuntu-24.04
-        timeout-minutes: 60
-        strategy:
-            fail-fast: false
-            matrix:
-                browser: [chrome, firefox]
-                shard: ["2001", "2002", "2003"]
-
-        steps:
-            - name: Check out source
-              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-              with:
-                  ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-            - name: Install pinned browser evidence dependencies
-              run: |
-                  python3 -m venv "$RUNNER_TEMP/browser-evidence"
-                  "$RUNNER_TEMP/browser-evidence/bin/pip" install \
-                      --require-hashes \
-                      --requirement scripts/browser_matrix-requirements.txt
-                  printf '%s\n' "$RUNNER_TEMP/browser-evidence/bin" >> "$GITHUB_PATH"
-
-            - name: Build the pinned love.js artifact
-              run: ./scripts/web_build.sh "$RUNNER_TEMP/omp2-web"
-
-            - name: Run complete and stress browser validation
-              env:
-                  GALLIUM_DRIVER: llvmpipe
-                  LIBGL_ALWAYS_SOFTWARE: "1"
-                  SE_CACHE_PATH: ${{ runner.temp }}/selenium
-              run: |
-                  xvfb-run -a \
-                      -s "-screen 0 1280x720x24 -nolisten tcp +extension GLX +render -noreset" \
-                      ./scripts/check_rollback.sh \
-                          --browser \
-                          --runtime-browser "${{ matrix.browser }}" \
-                          --campaign matrix \
-                          --shard "${{ matrix.shard }}" \
-                          --artifact "$RUNNER_TEMP/omp2-web" \
-                          --output "$RUNNER_TEMP/omp2-rollback-${{ matrix.browser }}-matrix-${{ matrix.shard }}.json" \
-                          --timeout-seconds 1800
-
-            - name: Upload browser rollback evidence
-              if: always()
-              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-              with:
-                  name: omp2-rollback-${{ matrix.browser }}-matrix-${{ matrix.shard }}
-                  path: |
-                      ${{ runner.temp }}/omp2-rollback-${{ matrix.browser }}-matrix-${{ matrix.shard }}.json
-                      ${{ runner.temp }}/omp2-rollback-${{ matrix.browser }}-matrix-${{ matrix.shard }}-raw
-                  if-no-files-found: error
-                  retention-days: 14
-
-    rollback_browser_soak:
-        name: OMP-2 rollback browser soak (${{ matrix.browser }})
-        needs: rollback_scope
-        if: github.event_name != 'pull_request' && needs.rollback_scope.outputs.run == 'true'
-        # Read only by scripts/rollback_validation.py, which sanitizes it.
-        env:
-            GC_CAMPAIGN_EVENT: ${{ github.event_name }}
-            GC_CAMPAIGN_SHA: ${{ github.sha }}
-            GC_CAMPAIGN_HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-        runs-on: ubuntu-24.04
-        timeout-minutes: 180
-        strategy:
-            fail-fast: false
-            matrix:
-                browser: [chrome, firefox]
-
-        steps:
-            - name: Check out source
-              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-              with:
-                  ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-            - name: Install pinned browser evidence dependencies
-              run: |
-                  python3 -m venv "$RUNNER_TEMP/browser-evidence"
-                  "$RUNNER_TEMP/browser-evidence/bin/pip" install \
-                      --require-hashes \
-                      --requirement scripts/browser_matrix-requirements.txt
-                  printf '%s\n' "$RUNNER_TEMP/browser-evidence/bin" >> "$GITHUB_PATH"
-
-            - name: Build the pinned love.js artifact
-              run: ./scripts/web_build.sh "$RUNNER_TEMP/omp2-web"
-
-            - name: Run persistent browser memory soak
-              env:
-                  GALLIUM_DRIVER: llvmpipe
-                  LIBGL_ALWAYS_SOFTWARE: "1"
-                  SE_CACHE_PATH: ${{ runner.temp }}/selenium
-              run: |
-                  xvfb-run -a \
-                      -s "-screen 0 1280x720x24 -nolisten tcp +extension GLX +render -noreset" \
-                      ./scripts/check_rollback.sh \
-                          --browser \
-                          --runtime-browser "${{ matrix.browser }}" \
-                          --campaign soak \
-                          --artifact "$RUNNER_TEMP/omp2-web" \
-                          --output "$RUNNER_TEMP/omp2-rollback-${{ matrix.browser }}-soak.json" \
-                          --timeout-seconds 1800
-
-            - name: Upload browser rollback evidence
-              if: always()
-              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-              with:
-                  name: omp2-rollback-${{ matrix.browser }}-soak
-                  path: |
-                      ${{ runner.temp }}/omp2-rollback-${{ matrix.browser }}-soak.json
-                      ${{ runner.temp }}/omp2-rollback-${{ matrix.browser }}-soak-raw
-                  if-no-files-found: error
-                  retention-days: 14
-
-    rollback_gate:
-        name: OMP-2 rollback gate
-        needs:
-            - rollback_scope
-            - rollback_browser_stress
-            - rollback_native
-            - rollback_browser_matrix
-            - rollback_browser_soak
-        if: always()
-        runs-on: ubuntu-24.04
-
-        steps:
-            - name: Require scoped rollback evidence
-              id: require
-              env:
-                  BROWSER_MATRIX_RESULT: ${{ needs.rollback_browser_matrix.result }}
-                  BROWSER_SOAK_RESULT: ${{ needs.rollback_browser_soak.result }}
-                  BROWSER_STRESS_RESULT: ${{ needs.rollback_browser_stress.result }}
-                  EVENT_NAME: ${{ github.event_name }}
-                  IMPACT: ${{ needs.rollback_scope.outputs.impact }}
-                  NATIVE_RESULT: ${{ needs.rollback_native.result }}
-                  RUN_ROLLBACK: ${{ needs.rollback_scope.outputs.run }}
-                  REUSE: ${{ needs.rollback_scope.outputs.reuse }}
-                  SCOPE_RESULT: ${{ needs.rollback_scope.result }}
-              run: |
-                  finish() {
-                      echo "aggregate=$1" >> "$GITHUB_OUTPUT"
-                      exit "$2"
-                  }
-                  if [ "$SCOPE_RESULT" != "success" ]; then
-                      echo "Rollback impact detection did not succeed."
-                      finish false 1
-                  fi
-                  if [ "$IMPACT" = "false" ]; then
-                      echo "No rollback-impacting changes; long evidence jobs were skipped."
-                      finish false 0
-                  fi
-                  if [ "$EVENT_NAME" = "pull_request" ]; then
-                      if [ "$BROWSER_STRESS_RESULT" != "success" ]; then
-                          echo "Pull-request rollback stress evidence failed: stress=$BROWSER_STRESS_RESULT"
-                          finish false 1
-                      fi
-                      echo "Stress evidence passed; the complete campaign runs on the merge commit."
-                      finish false 0
-                  fi
-                  if [ "$REUSE" = "true" ]; then
-                      echo "Exact aggregate rollback evidence was independently revalidated and reused."
-                      finish false 0
-                  fi
-                  if [ "$RUN_ROLLBACK" != "true" ]; then
-                      echo "Rollback campaign decision was inconsistent."
-                      finish false 1
-                  fi
-                  # GitHub rolls every shard of a matrix job up into one result, so
-                  # this catches a failed, cancelled, or wholly skipped matrix but
-                  # cannot see a shard that never existed. The pinned per-shard
-                  # evidence manifest in the aggregate step closes that hole.
-                  if [ "$NATIVE_RESULT" != "success" ] || \
-                      [ "$BROWSER_MATRIX_RESULT" != "success" ] || \
-                      [ "$BROWSER_SOAK_RESULT" != "success" ] || \
-                      [ "$BROWSER_STRESS_RESULT" != "success" ]; then
-                      echo "Rollback evidence failed: native=$NATIVE_RESULT matrix=$BROWSER_MATRIX_RESULT soak=$BROWSER_SOAK_RESULT stress=$BROWSER_STRESS_RESULT"
-                      finish false 1
-                  fi
-                  echo "Every rollback shard job reported success; merging shard evidence."
-                  finish true 0
-
-            - name: Check out source
-              if: steps.require.outputs.aggregate == 'true'
-              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-              with:
-                  ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-            - name: Download every rollback shard artifact
-              if: steps.require.outputs.aggregate == 'true'
-              uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-              with:
-                  path: ${{ runner.temp }}/omp2-rollback-shards
-                  pattern: omp2-rollback-*
-
-            - name: Aggregate sharded rollback evidence
-              if: steps.require.outputs.aggregate == 'true'
-              run: |
-                  ./scripts/check_rollback.sh \
-                      --aggregate \
-                      --evidence-root "$RUNNER_TEMP/omp2-rollback-shards" \
-                      --output "$RUNNER_TEMP/omp2-rollback-aggregate.json"
-
-            - name: Upload aggregate rollback evidence
-              if: steps.require.outputs.aggregate == 'true'
-              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-              with:
-                  name: omp2-aggregate-rollback
-                  path: ${{ runner.temp }}/omp2-rollback-aggregate.json
-                  if-no-files-found: error
-                  retention-days: 14
-
-    campaign_report:
-        name: OMP-2 post-merge campaign report
-        needs:
-            - rollback_scope
-            - rollback_browser_stress
-            - rollback_native
-            - rollback_browser_matrix
-            - rollback_browser_soak
-            - rollback_gate
-        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        runs-on: ubuntu-24.04
-        permissions:
-            actions: read
-            contents: read
-            issues: write
-
-        steps:
-            - name: Check out source
-              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-              with:
-                  ref: ${{ github.sha }}
-
-            - name: Download campaign evidence
-              continue-on-error: true
-              env:
-                  GH_TOKEN: ${{ github.token }}
-              run: |
-                  mkdir -p "$RUNNER_TEMP/campaign-evidence"
-                  gh run download "$GITHUB_RUN_ID" \
-                      --repo "$GITHUB_REPOSITORY" \
-                      --pattern 'omp2-rollback-*' \
-                      --dir "$RUNNER_TEMP/campaign-evidence" \
-                      || echo "no rollback evidence artifacts were available to download"
-
-            - name: Attribute the campaign to its merge commit
-              id: report
-              env:
-                  # Read only by scripts/rollback_ci.py, which sanitizes it.
-                  GC_CAMPAIGN_EVENT: ${{ github.event_name }}
-                  GC_CAMPAIGN_SHA: ${{ github.sha }}
-                  GC_CAMPAIGN_HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-                  NEEDS: ${{ toJSON(needs) }}
-                  RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-              run: |
-                  python3 -B scripts/rollback_ci.py report \
-                      --results "$NEEDS" \
-                      --evidence-root "$RUNNER_TEMP/campaign-evidence" \
-                      --run-url "$RUN_URL" \
-                      --issue-body "$RUNNER_TEMP/campaign-report.md" \
-                      --github-summary "$GITHUB_STEP_SUMMARY" \
-                      --github-output "$GITHUB_OUTPUT"
-
-            - name: Open a campaign failure issue
-              if: steps.report.outputs.failed == 'true'
-              env:
-                  GH_TOKEN: ${{ github.token }}
-                  ISSUE_TITLE: ${{ steps.report.outputs.title }}
-              run: |
-                  gh issue create \
-                      --repo "$GITHUB_REPOSITORY" \
-                      --title "$ISSUE_TITLE" \
-                      --body-file "$RUNNER_TEMP/campaign-report.md"

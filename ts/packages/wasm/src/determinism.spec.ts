@@ -1,6 +1,6 @@
 // THE ACCEPTANCE TEST for this wave: `gc_sim::determinism_evidence::verify`
 // run from inside the compiled wasm module, under node (vitest's default
-// environment — see `v2/ts/vitest.config.ts`), must reproduce exactly the
+// environment — see `ts/vitest.config.ts`), must reproduce exactly the
 // digests JavaScriptCore, V8, SpiderMonkey and node already agreed on for
 // the frozen 7,201-tick OMP-1 fixture
 // (`crates/gc-data/src/omp1_determinism.rs`'s pinned

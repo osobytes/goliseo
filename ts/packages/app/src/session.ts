@@ -1,9 +1,6 @@
-// Ported from game/session.lua.
-//
-// The Lua original reads `data.teams` (specifically `teams.nebula`) at
-// module load time. That table is Rust-owned (v2/README.md rule 6.7), so
-// `newState`/`setStarters`/`buildRequest` take the home team's data as an
-// explicit parameter instead of a bare `require`.
+// Team data (specifically the home team, `teams.nebula`) is Rust-owned
+// (ARCHITECTURE.md §4 rule 6), so `newState`/`setStarters`/`buildRequest` take
+// the home team's data as an explicit parameter instead of importing it.
 
 import type { Result } from "@gc/core";
 import { matchContract, type ProductMatchRequest, type ProductMatchResult } from "./match_contract.ts";

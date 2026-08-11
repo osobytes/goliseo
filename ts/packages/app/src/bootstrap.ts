@@ -1,10 +1,6 @@
-// Ported from game/bootstrap.lua.
-//
-// The Lua original wires `match_adapter.real()` unconditionally. This
-// port's `match_adapter.real()` needs an injected `RealMatchFactory`
-// (`game.screens.real_match.new`, not yet ported to `@gc/screens` -- this
-// package's porting report; `match_adapter.ts`'s header), so `bootstrap.new`
-// takes one too.
+// `bootstrap.new` takes a `RealMatchFactory` because `match_adapter.real()`
+// needs one injected rather than wiring a concrete real-match screen
+// directly -- see `match_adapter.ts`'s header for why.
 
 import { App, type AppContent, type OnlinePorts } from "./app.ts";
 import { matchAdapter, type RealMatchFactory } from "./match_adapter.ts";

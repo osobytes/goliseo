@@ -1,31 +1,29 @@
-//! Port of `spec/sim/combat_observation_spec.lua`.
+//! Tests for `gc_sim::combat_observation`.
 //!
 //! `combat_sim_observation/v1`: schema validity, field ordering, rejection
 //! of malformed/duplicated rows, projectile ids, threat-path publication,
 //! and sentinel discipline.
 //!
-//! Two Lua cases have no direct Rust analogue and are ported as adapted
-//! assertions rather than dropped:
+//! Two cases below are adapted rather than a direct test of the described
+//! failure, because the invalid state in question cannot actually be
+//! constructed against this type system:
 //!
-//! - "rejects a missing declared field" mutates `observation.self.facing_x
-//!   = nil` on an untyped Lua table. [`CombatObservation`]'s rows are typed
-//!   Rust structs (`SelfRow` et al.) where every field is a plain `f64`/
-//!   `bool`/enum — there is no way to construct a `SelfRow` missing a
-//!   field, so the exact case cannot be expressed. The closest surviving
+//! - "rejects a missing declared field": [`CombatObservation`]'s rows are
+//!   typed Rust structs (`SelfRow` et al.) where every field is a plain
+//!   `f64`/`bool`/enum — there is no way to construct a `SelfRow` missing a
+//!   field, so that exact case cannot be expressed. The closest surviving
 //!   invariant `validate` still checks against a value that isn't
 //!   type-constrained to be correct is the `schema` tag itself (a `String`,
-//!   not an enum) going missing/blank, so this is ported as that check
-//!   instead.
-//! - "rejects an undeclared field anywhere in the schema" injects extra
-//!   keys (`loadout_id`, `presentation_id`, `theme`, `rng`, `viewport`)
-//!   onto an untyped Lua table. A typed [`CombatObservation`] has no
-//!   undeclared-field slot to inject into at all (see
-//!   `combat_observation::validate`'s doc comment), so the runtime
-//!   rejection this case exercised no longer exists to run. What survives
-//!   is the documentation of exactly those leakage vectors:
-//!   [`combat_observation::FORBIDDEN_FIELDS`] is the module's own
-//!   still-live denylist, so this is ported as an assertion that it
-//!   actually names every field the Lua sub-cases tried to smuggle in.
+//!   not an enum) going missing/blank, so this test covers that instead.
+//! - "rejects an undeclared field anywhere in the schema": a typed
+//!   [`CombatObservation`] has no undeclared-field slot to inject into at
+//!   all (see `combat_observation::validate`'s doc comment), so there is no
+//!   runtime rejection left to exercise directly. What this test covers
+//!   instead is the documentation of exactly those leakage vectors:
+//!   [`combat_observation::FORBIDDEN_FIELDS`] is the module's own live
+//!   denylist, and this test asserts it actually names every field a
+//!   hostile caller might try to smuggle in (`loadout_id`, `presentation_id`,
+//!   `theme`, `rng`, `viewport`).
 
 use gc_core::vec2::Vec2;
 use gc_data::action_families::ActionFamilyId;
@@ -157,8 +155,8 @@ fn combat_sim_observation_v1_rejects_a_missing_declared_field() {
 
 #[test]
 fn combat_sim_observation_v1_rejects_an_undeclared_field_anywhere_in_the_schema() {
-    // The Lua sub-cases smuggle in exactly these five keys; assert the
-    // module's own denylist still names every one of them.
+    // These are exactly the leakage vectors called out in the module doc;
+    // assert the module's own denylist still names every one of them.
     for field in ["loadout_id", "presentation_id", "theme", "rng", "viewport"] {
         assert!(
             combat_observation::FORBIDDEN_FIELDS.contains(&field),

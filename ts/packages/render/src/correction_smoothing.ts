@@ -1,5 +1,3 @@
-// Ported from game/render/correction_smoothing.lua.
-//
 // Pure render-only reconciliation for corrected player and ball positions.
 // The authoritative MatchState is read, never copied into or mutated by this
 // model. Small corrections preserve the last displayed pose and linearly shed
@@ -12,9 +10,10 @@
 // state; `advance`/`correct`/`reconcile` never mutate their `source` argument
 // (see the purity assertion in correction_smoothing.spec.ts). That is what
 // keeps a snapped rollback correction out of the determinism loop -- see
-// v2/README.md's "Correction smoothing is TS, and strictly one-directional."
+// ARCHITECTURE.md §1.1's "Correction smoothing is TypeScript, and strictly
+// one-directional."
 //
-// Boundary note: `MatchState` is a sim shape (v2/README.md rule 6.7,
+// Boundary note: `MatchState` is a sim shape (ARCHITECTURE.md §4 rule 6,
 // `sim/**` -> Rust `crates/gc-sim`). Only the fields this module reads
 // (`players[].id`, `players[].pos`, `ball`) are declared locally, matching
 // `@gc/presentation`'s `combat.ts`.

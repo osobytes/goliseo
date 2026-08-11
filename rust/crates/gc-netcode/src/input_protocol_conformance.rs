@@ -1,18 +1,13 @@
-//! Port of `game/online/input_protocol_conformance.lua`.
+//! Frozen conformance vectors for the input-protocol wire format.
 //!
 //! The wire literals embed `manifest_id`, a hash over the session manifest,
-//! which carries the snapshot and combat schema versions. The Lua original
-//! therefore checks `match_snapshot.VERSION`/`match_snapshot.COMBAT_VERSION`
+//! which carries the snapshot and combat schema versions. Ideally this
+//! module would check `match_snapshot::VERSION`/`match_snapshot::COMBAT_VERSION`
 //! against [`Golden::snapshot_version`]/[`Golden::combat_version`] before
 //! trusting the golden literals, so a stale golden reports which version it
-//! was built for instead of an opaque byte mismatch.
-//!
-//! `sim/match_snapshot.lua` has not been ported to `gc-sim` yet as of this
-//! writing (`crates/gc-sim/src/match_snapshot.rs` is still the unported
-//! placeholder, owned by a sibling agent) — see the port report. That
-//! specific staleness cross-check is therefore not performed here; the pinned
-//! `snapshot_version`/`combat_version` fields are carried for parity and
-//! documentation but [`verify`] does not compare them against a live value.
+//! was built for instead of an opaque byte mismatch. [`verify`] does not
+//! currently perform that cross-check; the pinned `snapshot_version`/
+//! `combat_version` fields are carried for parity and documentation only.
 //! Everything else — the wire literals, the digests, the maximal packet's
 //! measured size and margin — is fully checked.
 
@@ -83,9 +78,9 @@ pub struct Report {
 ///
 /// # Panics
 ///
-/// Panics if any fixture no longer encodes to its pinned golden — the same
-/// "assert, don't return an error" contract as the Lua original, because a
-/// stale golden is a build-time invariant violation, not caller input.
+/// Panics if any fixture no longer encodes to its pinned golden: a stale
+/// golden is a build-time invariant violation, not caller input, so it
+/// asserts rather than returning an error.
 #[must_use]
 pub fn verify() -> Report {
     let guest = fixture::guest();

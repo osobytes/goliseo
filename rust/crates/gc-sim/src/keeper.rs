@@ -1,5 +1,3 @@
-//! Port of `sim/keeper.lua`.
-//!
 //! Pure keeper positioning, shot-stopping, and chip geometry. Callers own the
 //! world (ball, players, timers) and drive these functions once per tick.
 //!
@@ -7,7 +5,7 @@
 //! [`gc_core::deterministic_math::negative_log_one_minus`], never
 //! `f64::ln`, so every wasm runtime computes identical bits — this module
 //! sits on the determinism path (see the crate root docs and
-//! `v2/tools/lua_reference/README.md`).
+//! `tools/lua_reference/README.md`).
 
 use gc_core::deterministic_math;
 use gc_core::vec2::Vec2;

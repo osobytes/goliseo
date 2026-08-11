@@ -1,9 +1,9 @@
-//! Partial port of `spec/sim/rollback_validation_spec.lua`.
+//! Test coverage for the assertions in `spec/sim/rollback_validation_spec.lua`.
 //!
 //! See `rollback_validation.rs`'s module doc comment: `new_campaign`/
-//! `step_campaign` are complete ports of every suite, but this file only
-//! exercises the cheap, self-contained assertions from the Lua spec's first
-//! case (`config()`, `profile_digest()`) and the full second case
+//! `step_campaign` implement every suite, but this file only exercises the
+//! cheap, self-contained assertions from the Lua spec's first case
+//! (`config()`, `profile_digest()`) and the full second case
 //! (`"late-window"`, which the Lua spec itself keeps to two small cases).
 //! The `"browser-stress"` campaign-construction assertions from the first
 //! Lua case (`#browser.cases == 14`, scenario/fixture coverage) are not

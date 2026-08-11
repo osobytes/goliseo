@@ -1,6 +1,3 @@
-// New tests for arena.ts (no Lua spec targets game/render/arena.lua directly
-// -- see this package's port report).
-
 import { describe, expect, it } from "vitest";
 import { backdropCommands, frameCommands, type ArenaColors, type ArenaThemeColors } from "./arena.ts";
 

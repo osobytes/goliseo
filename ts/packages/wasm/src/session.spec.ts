@@ -1,5 +1,5 @@
 // Exercises the two binding strategies gc-wasm uses (see
-// `v2/rust/crates/gc-wasm/src/lib.rs`'s doc): the wasm-bindgen session
+// `rust/crates/gc-wasm/src/lib.rs`'s doc): the wasm-bindgen session
 // lifecycle, and the raw per-frame render path reading the SAME
 // `WebAssembly.Instance`'s linear memory `Session` lives in.
 //

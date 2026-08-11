@@ -1,24 +1,21 @@
-// Ported from game/rollback_validation.lua.
-//
 // This module cross-checks a reference (never-rolled-back) simulation
 // against an impaired (rollback-corrected) one, replaying the same
 // confirmed event/observer/replay/audio pipeline against both and diffing
 // the results. Every one of its dependencies beyond this package's own
 // `audio.ts`/`match_observer.ts`/`match_contract.ts` is either Rust-owned
 // (`sim.match_snapshot`, `sim.rollback_events` -- `crates/gc-sim`;
-// v2/README.md §2) or not yet ported to `@gc/render`
-// (`game/render/effects.lua`; this package's porting report) or
-// `@gc/presentation` (`combat_feedback`, not a declared dependency here --
-// report per the task brief). All four are injected ports, following the
-// same shape `match_presentation.ts` established for `RollbackEventsPort`.
-// `game/render/replay.lua` *is* ported (`@gc/render`'s `replay.ts`, a
-// declared dependency) but is injected here too rather than imported
-// directly: this module's simulation state (`TState`) is otherwise fully
-// opaque/generic, and `replay.ts`'s `MatchState` requires many concrete
-// sim fields this module never itself reads. Injecting the four operations
-// `replay.ts` provides keeps `TState` narrow (`ObservedMatchState` plus the
-// handful of fields `recordReplaySample` mutates) instead of forcing the
-// whole render `MatchState` shape onto every generic caller.
+// ARCHITECTURE.md §1) or not available to this package (`@gc/render`'s
+// effects module; `@gc/presentation`'s `combat_feedback`, not a declared
+// dependency here). All four are injected ports, following the same shape
+// `match_presentation.ts` established for `RollbackEventsPort`.
+// `@gc/render`'s `replay.ts` (a declared dependency) is injected here too
+// rather than imported directly: this module's simulation state
+// (`TState`) is otherwise fully opaque/generic, and `replay.ts`'s
+// `MatchState` requires many concrete sim fields this module never itself
+// reads. Injecting the four operations `replay.ts` provides keeps
+// `TState` narrow (`ObservedMatchState` plus the handful of fields
+// `recordReplaySample` mutates) instead of forcing the whole render
+// `MatchState` shape onto every generic caller.
 
 import { Vec2, type Result } from "@gc/core";
 import { Audio, type CombatFeedbackPort, type RollbackWrappedEvent as AudioWrappedEvent } from "./audio.ts";
@@ -133,7 +130,7 @@ export interface ReplayBoundarySample {
   readonly score_away: number;
 }
 
-/** `game.render.replay` (`@gc/render`, ported), injected -- see this file's header. */
+/** `game.render.replay` (`@gc/render`'s `replay.ts`), injected -- see this file's header. */
 export interface ReplayPort<TState, TCombatState> {
   reset(): void;
   capacity(): number;

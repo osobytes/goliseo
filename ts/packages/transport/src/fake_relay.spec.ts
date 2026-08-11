@@ -1,20 +1,15 @@
-// Ported from spec/game/transport_relay_spec.lua.
-//
-// That Lua file has two halves that answer different questions. The first
-// -- ported below -- is the adapter: does `fake_relay` satisfy
+// This spec covers the adapter half: does `fake_relay` satisfy
 // `StarTransportAdapter`, and does it differ from `fake_star` in exactly the
 // way the OMP-4 topology decision says it does (one upload per `broadcast`,
 // no privileged member, no manual signaling, a room that forwards opaque
 // bytes without parsing them).
 //
-// The second half ("relay topology probe: no peer is the sequencer") drives
-// `game.online.coordinator`, `game.online.fault_harness`, `game.online.
-// match_driver`, `game.online.input_protocol`, and friends -- the
-// rollback/session layer, not the transport layer. Per v2/README.md section
-// 2.1, that layer is `crates/gc-netcode` in Rust, not
-// this TS package, and those Lua modules do not exist in `@gc/transport`'s
-// dependency graph. That half is left for whichever agent ports
-// `crates/gc-netcode` -- it belongs beside `coordinator.rs` /
+// The other half ("relay topology probe: no peer is the sequencer") drives
+// the coordinator, fault harness, match driver, input protocol, and
+// friends -- the rollback/session layer, not the transport layer. Per
+// ARCHITECTURE.md section 1.1, that layer is `crates/gc-netcode` in Rust, not
+// this TS package, and those modules do not exist in `@gc/transport`'s
+// dependency graph. That half belongs beside `coordinator.rs` /
 // `match_driver.rs` / `fault_harness.rs`, not here.
 
 import { describe, expect, it } from "vitest";

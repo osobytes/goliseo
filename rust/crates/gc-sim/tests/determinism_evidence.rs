@@ -1,24 +1,24 @@
-//! Port of `spec/sim/determinism_evidence_spec.lua`.
+//! Tests for `gc_sim::determinism_evidence`.
 //!
 //! Two structural notes:
 //!
 //! - `gc_data::omp1_determinism::InputTapeIdentity`/`InputOwnership` are
 //!   JSON-shaped, not `gc_sim::input_tape::InputTapeIdentity`-shaped (see
 //!   `determinism_evidence.rs`'s module doc's "Where the fixture data comes
-//!   from" section). `input_tape::copy_identity(fixture.identity)` in the
-//!   Lua spec becomes `input_tape::copy_identity(&fixture_tape_identity())`
-//!   here, where `fixture_tape_identity` reproduces the module's own
+//!   from" section), so `input_tape::copy_identity(&fixture_tape_identity())`
+//!   is used here, where `fixture_tape_identity` reproduces the module's own
 //!   private adapter for test purposes.
-//! - Two `pcall`-guarded negative assertions in "validates a current-input
-//!   migration while changing only snapshot version" — adding an
-//!   `unexpected` field to the identity table, and setting a roster id to
-//!   `false` — check that Lua's duck-typed `assert_fields`/type checks
-//!   reject a malformed table. `InputTapeIdentity` is a proper Rust struct;
-//!   neither malformation is expressible (there is no field to add, and
-//!   `ownership.rosters.home` is `Vec<String>`, so a boolean cannot occupy
-//!   a slot). The compiler enforces both invariants instead of a runtime
-//!   check, which is strictly stronger, not a coverage gap — this mirrors
-//!   `input_frame.rs`'s documented precedent for dropping `assert_fields`.
+//! - A negative-assertion case would want to check that "validates a
+//!   current-input migration while changing only snapshot version" rejects
+//!   a malformed identity table — adding an unexpected field, or setting a
+//!   roster id to a non-string value. `InputTapeIdentity` is a proper Rust
+//!   struct; neither malformation is expressible (there is no field to add,
+//!   and `ownership.rosters.home` is `Vec<String>`, so a boolean cannot
+//!   occupy a slot). The compiler enforces both invariants instead of a
+//!   runtime check, which is strictly stronger, not a coverage gap — this
+//!   mirrors `input_frame.rs`'s documented precedent for dropping runtime
+//!   field-shape checks that the type system already makes impossible to
+//!   violate.
 
 use gc_data::omp1_determinism;
 use gc_sim::input_frame;
@@ -30,7 +30,7 @@ use gc_sim::{determinism_evidence, replay};
 
 /// Reproduces `determinism_evidence.rs`'s own private `fixture_identity`
 /// adapter (JSON-shaped -> `input_tape::InputTapeIdentity`), since that
-/// function is private and the spec needs the same starting value the
+/// function is private and this file needs the same starting value the
 /// module itself uses.
 fn fixture_tape_identity() -> InputTapeIdentity {
     let source = &omp1_determinism::fixture().identity;
@@ -119,8 +119,8 @@ fn determinism_evidence_validates_a_current_input_migration_while_changing_only_
 
     // Rust value semantics make the "different table, independent copy"
     // assertion trivially true by construction (no aliasing exists to
-    // begin with) — ported anyway for spec fidelity, demonstrating the
-    // same observable contract `input_tape::copy_identity` documents.
+    // begin with) — kept anyway, demonstrating the same observable contract
+    // `input_tape::copy_identity` documents.
     let frozen_keeper = migrated.ownership.rosters.home[0].clone();
     prior.ownership.rosters.home[0] = "mutated-after-copy".to_string();
     assert_eq!(migrated.ownership.rosters.home[0], frozen_keeper);
@@ -220,10 +220,10 @@ fn determinism_evidence_publishes_the_frozen_fixture_as_a_validated_materialized
     );
 }
 
-/// Not in the Lua spec, but a natural extension `sim/replay.lua` exists
-/// for: the frozen fixture tape replayed through `replay::run` must
-/// reproduce every boundary hash with zero divergence, the same guarantee
-/// `determinism_evidence::verify` proves through its own path.
+/// A natural extension `gc_sim::replay` exists for: the frozen fixture tape
+/// replayed through `replay::run` must reproduce every boundary hash with
+/// zero divergence, the same guarantee `determinism_evidence::verify`
+/// proves through its own path.
 #[test]
 fn the_frozen_fixture_tape_replays_through_sim_replay_with_no_divergence() {
     let tune = Tuning::new();

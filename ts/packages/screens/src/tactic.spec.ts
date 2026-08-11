@@ -1,10 +1,8 @@
-// Ported from spec/screens/tactic_spec.lua.
-//
-// Fixture note: `data/tactics.lua`'s three tactics are transcribed verbatim
+// Fixture note: `gc-data`'s three tactics are transcribed verbatim
 // (content.ts's header explains why this package receives rather than
-// imports `data/**`), but only the fields `tactic.ts` reads
-// (id/name/strength/risk) — `data/tactics.lua`'s marking/transition/press
-// tuning knobs are sim-only and never reach the screen.
+// imports that content), but only the fields `tactic.ts` reads
+// (id/name/strength/risk) — `gc-data`'s marking/transition/press tuning
+// knobs are sim-only and never reach the screen.
 
 import { describe, expect, it } from "vitest";
 import { hit } from "@gc/ui";

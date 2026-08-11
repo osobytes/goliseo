@@ -2,8 +2,8 @@
 // `./fixtures/input_sample_vector.ts` (a verbatim embedded copy of
 // `../fixtures/input_sample_vector.txt` -- see that file's header for why
 // it is embedded rather than read from disk), generated straight from
-// `gc_sim::input_frame` (v2/rust/crates/gc-sim/tests/input_sample_vector_generator.rs;
-// see that file for the generation command). Per README §2.2, a module
+// `gc_sim::input_frame` (rust/crates/gc-sim/tests/input_sample_vector_generator.rs;
+// see that file for the generation command). Per ARCHITECTURE.md §1.2, a module
 // duplicated into a second language "must be pinned by a shared vector
 // file" -- a round trip against this file's own code would prove nothing
 // about whether it agrees with Rust, only that it agrees with itself.

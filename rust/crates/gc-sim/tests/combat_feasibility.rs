@@ -1,25 +1,23 @@
-//! Port of `spec/sim/combat_feasibility_spec.lua`.
+//! Tests for `gc_sim::combat_feasibility`.
 //!
-//! The Lua spec builds its fixtures through `sim.match`, `sim.combat`, and
-//! `sim.combat_observation` (`bare_match()` + `combat_observation.build`).
-//! None of those are ported yet — `combat_feasibility` itself never
-//! `require`s them either (see `gc_sim::combat_feasibility`'s module doc
-//! comment), so this file cannot build through them. Instead it constructs
+//! `combat_feasibility` itself never depends on `gc_sim::r#match`,
+//! `gc_sim::combat`, or `gc_sim::combat_observation` (see
+//! `gc_sim::combat_feasibility`'s module doc comment), so this file cannot
+//! build fixtures through them. Instead it constructs
 //! [`gc_sim::combat_feasibility::CombatObservation`] fixtures directly, using
-//! the same geometry, roster layout, and per-test mutations the Lua spec
-//! describes (home is 1..5 with 1 the keeper, away is 6..10 with 6 the
-//! keeper; `SOURCE = 2`, `TARGET = 7`, `OTHER_OPPONENT = 8`), plus two real
-//! engine constants a direct fixture still needs: `sim/match.lua`'s
-//! `PLAYER_RADIUS = 12` and its goal rects for a 960×540 field
-//! (`GOAL_DEPTH = 30`, `GOAL_MOUTH = 110`). Every geometric outcome checked
-//! below (in-reach/out-of-reach, in-arc/out-of-arc, blocked/clear lines,
-//! sole-blocker lane denial) follows from those fixed constants and the
-//! positions each test states, not from a specific roster's move speed or
-//! pace — the one test that does exercise locomotion (a 20-tick movement
-//! tape) only needs *some* plausible speed to close a 16px gap in 1/3
-//! second, so a representative move speed (pace 5: `60 + 5*20 = 160px/s`,
-//! `gc_sim::stats::move_speed`) stands in for whichever roster player the
-//! real fixture would have used.
+//! a fixed geometry, roster layout, and per-test mutations (home is 1..5
+//! with 1 the keeper, away is 6..10 with 6 the keeper; `SOURCE = 2`,
+//! `TARGET = 7`, `OTHER_OPPONENT = 8`), plus two real engine constants a
+//! direct fixture still needs: `gc_sim::r#match`'s `PLAYER_RADIUS = 12` and
+//! its goal rects for a 960×540 field (`GOAL_DEPTH = 30`, `GOAL_MOUTH =
+//! 110`). Every geometric outcome checked below (in-reach/out-of-reach,
+//! in-arc/out-of-arc, blocked/clear lines, sole-blocker lane denial) follows
+//! from those fixed constants and the positions each test states, not from
+//! a specific roster's move speed or pace — the one test that does exercise
+//! locomotion (a 20-tick movement tape) only needs *some* plausible speed to
+//! close a 16px gap in 1/3 second, so a representative move speed (pace 5:
+//! `60 + 5*20 = 160px/s`, `gc_sim::stats::move_speed`) stands in for
+//! whichever roster player the real fixture would have used.
 
 use gc_data::action_families::ActionFamilyId;
 use gc_data::players::StatBlock;
@@ -30,7 +28,7 @@ use gc_sim::combat_feasibility::{
 };
 use gc_sim::stats;
 
-/// `sim/match.lua`'s `PLAYER_RADIUS`.
+/// `gc_sim::r#match`'s `PLAYER_RADIUS`.
 const RADIUS: f64 = 12.0;
 /// A representative move speed standing in for a real roster player's pace
 /// (see the module doc comment). Pace 5 is mid-roster, not special-cased by
@@ -51,7 +49,7 @@ fn move_speed() -> f64 {
     stats::move_speed(MOVE_SPEED_STAT_BLOCK)
 }
 
-/// `sim/match.lua`'s goal rects for a 960x540 field (`GOAL_DEPTH = 30`,
+/// `gc_sim::r#match`'s goal rects for a 960x540 field (`GOAL_DEPTH = 30`,
 /// `GOAL_MOUTH = 110`, `mouth_y = field.h / 2 - GOAL_MOUTH / 2`).
 fn match_view() -> CombatObservationMatchView {
     CombatObservationMatchView {
@@ -67,9 +65,8 @@ fn match_view() -> CombatObservationMatchView {
     }
 }
 
-/// One roster player's mutable fixture state, mirroring the fields
-/// `bare_match()` / `combat_observation.build` would have populated from a
-/// real `sim.match` + `sim.combat` state.
+/// One roster player's mutable fixture state, mirroring the fields a real
+/// `gc_sim::r#match` + `gc_sim::combat` state would have populated.
 #[derive(Clone, Copy, Debug)]
 struct PlayerFixture {
     index: i64,
@@ -91,8 +88,8 @@ struct PlayerFixture {
 
 /// A hand-built `combat_sim_observation/v1`-shaped fixture: ten players (home
 /// 1..5, away 6..10, each side's first player the keeper), parked far apart
-/// by default (mirroring the Lua spec's `bare_match()`), a neutral ball, no
-/// anchors, and no projectiles, until a test overrides them.
+/// by default, a neutral ball, no anchors, and no projectiles, until a test
+/// overrides them.
 struct Scenario {
     players: [PlayerFixture; 10],
     ball: CombatObservationBall,

@@ -1,5 +1,3 @@
-//! Port of `sim/env_action.lua`.
-//!
 //! An action is the same abstract intent a human or a #112 bot expresses: a
 //! continuous move vector plus named held actions and one-shot edges. It is
 //! quantized into the canonical [`InputSample`] that `sim::match` already
@@ -15,13 +13,12 @@
 //!
 //! This is on the wire format: [`to_sample`]/[`from_sample`] feed and read
 //! the same [`InputSample`] that crosses the network and rollback resim, so
-//! README rule 5.3's wire exception applies — no index or tag here is
+//! ARCHITECTURE.md §3 rule 3's wire exception applies — no index or tag here is
 //! renumbered for internal convenience.
 //!
 //! [`validate`] is the sole entry point that accepts genuinely untyped
-//! external input (mirroring the Lua original's `@param action any`); every
-//! other function here is typed against the normalized [`EnvSlotAction`],
-//! matching the Lua source's own LuaCATS annotations for those functions.
+//! external input; every other function here is typed against the
+//! normalized [`EnvSlotAction`].
 
 use crate::input_frame::{self, EdgeAction, HeldAction, InputSample, InputSampleOptions};
 use indexmap::IndexMap;
@@ -29,8 +26,7 @@ use indexmap::IndexMap;
 /// The env action module version.
 pub const VERSION: i64 = 1;
 
-/// The eight canonical held actions, in the Lua original's `HELD_ACTIONS`
-/// order.
+/// The eight canonical held actions, in canonical order.
 pub const HELD_ACTIONS: [HeldAction; 8] = [
     HeldAction::Shoot,
     HeldAction::Pass,
@@ -42,8 +38,7 @@ pub const HELD_ACTIONS: [HeldAction; 8] = [
     HeldAction::Equipment,
 ];
 
-/// The seven canonical one-tick edge actions, in the Lua original's
-/// `EDGE_ACTIONS` order.
+/// The seven canonical one-tick edge actions, in canonical order.
 pub const EDGE_ACTIONS: [EdgeAction; 7] = [
     EdgeAction::Shoot,
     EdgeAction::Pass,
@@ -71,7 +66,7 @@ pub enum EnvActionErrorCode {
     UnavailableAction,
 }
 
-/// An expected, recoverable env-action failure (README rule 5.5): actions
+/// An expected, recoverable env-action failure (ARCHITECTURE.md §3 rule 5): actions
 /// come from a policy (external input), so an illegal action is a
 /// recoverable rejection with a machine-readable reason, never a panic.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -114,32 +109,30 @@ fn wrap<T>(code: EnvActionErrorCode, result: input_frame::Result<T>) -> Result<T
 // Raw, not-yet-validated external input.
 //
 // `validate` receives a policy's action before anything about its shape is
-// known — the same guarantee-free boundary `env_action.lua`'s own
-// `@param action any` documents. A typed Rust struct cannot represent "an
-// extra unknown field" or "a value of the wrong type", so this small
-// untyped-table shape stands in for the Lua table at that one boundary.
-// Everything downstream of `validate` works with the fully typed
-// `EnvSlotAction`.
+// known. A typed Rust struct cannot represent "an extra unknown field" or
+// "a value of the wrong type", so this small untyped-table shape stands in
+// for that one boundary. Everything downstream of `validate` works with the
+// fully typed `EnvSlotAction`.
 // ---------------------------------------------------------------------------
 
 /// One field's value in a [`RawAction`]/[`RawTable`], before validation
 /// confirms its type.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RawValue {
-    /// A Lua number (`f64` per README rule 5.1).
+    /// A numeric field (`f64` per ARCHITECTURE.md §3 rule 1).
     Number(f64),
-    /// A Lua boolean.
+    /// A boolean field.
     Bool(bool),
     /// A nested table.
     Table(RawTable),
 }
 
-/// A raw table of named fields, order-independent (Lua's `pairs` iterates
-/// unordered too; nothing here depends on key order).
+/// A raw table of named fields, order-independent — nothing here depends on
+/// key order.
 pub type RawTable = IndexMap<String, RawValue>;
 
 /// The untyped payload offered to [`validate`]: either a table of fields, or
-/// something else entirely (mirrors Lua's `type(value) == "table"` guard).
+/// something else entirely.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RawAction {
     /// A table of fields.
@@ -163,9 +156,7 @@ fn as_bool(value: &RawValue) -> Option<bool> {
 }
 
 /// A numeric field, defaulting to zero when absent. A present-but-wrong-type
-/// value becomes `NaN`, which fails the caller's next `is_finite` check —
-/// mirroring Lua's `is_finite` returning `false` for a non-number value with
-/// the same rejection message the Lua source uses either way.
+/// value becomes `NaN`, which fails the caller's next `is_finite` check.
 fn number_or_zero(value: Option<&RawValue>) -> f64 {
     match value {
         None => 0.0,
@@ -182,11 +173,10 @@ fn number_equals(value: Option<&RawValue>, target: f64) -> bool {
 // Normalized, typed shapes.
 // ---------------------------------------------------------------------------
 
-/// Which observation lens a view or mask was derived from. Mirrors
-/// `sim/env_config.lua`'s `EnvObservationProfile` alias; duplicated locally
-/// because `env_action.lua` has no `sim` requires beyond `input_frame` (a
-/// LuaCATS alias needs no `require` to be referenced), and this port keeps
-/// the same dependency footprint.
+/// Which observation lens a view or mask was derived from. Declared locally
+/// rather than imported from [`crate::env_config`], which declares a
+/// naming-compatible type of the same name — keeping this module's
+/// dependency surface no wider than [`crate::input_frame`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EnvObservationProfile {
     /// One controlled slot restricted to presented, current cues.
@@ -208,8 +198,8 @@ pub struct EnvMove {
 }
 
 /// Continuously held intents for one tick. Named fields rather than a
-/// string-keyed map (README rule 6): the key set is exactly the eight
-/// entries in [`HELD_ACTIONS`].
+/// string-keyed map: the key set is exactly the eight entries in
+/// [`HELD_ACTIONS`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EnvHeldActions {
     /// Shoot held.
@@ -231,8 +221,8 @@ pub struct EnvHeldActions {
 }
 
 /// One-shot intents that fired on this tick only. Named fields rather than a
-/// string-keyed map (README rule 6): the key set is exactly the seven
-/// entries in [`EDGE_ACTIONS`].
+/// string-keyed map: the key set is exactly the seven entries in
+/// [`EDGE_ACTIONS`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EnvEdgeActions {
     /// Shoot pressed this tick.
@@ -498,9 +488,8 @@ pub fn without_edges(action: &EnvSlotAction) -> EnvSlotAction {
     }
 }
 
-/// Re-check a normalized action's version and move vector. Mirrors the
-/// re-validation the Lua original performs at the top of `to_sample` and
-/// `check_mask`: their `EnvSlotAction`-typed parameter can still carry an
+/// Re-check a normalized action's version and move vector. `to_sample` and
+/// `check_mask`'s `EnvSlotAction`-typed parameter can still carry an
 /// out-of-range move vector or a stale version, since neither is enforced by
 /// construction.
 fn validate_normalized(action: &EnvSlotAction) -> Result<()> {
@@ -528,7 +517,7 @@ fn validate_normalized(action: &EnvSlotAction) -> Result<()> {
 
 /// Quantize a normalized action into the canonical [`InputSample`] wire
 /// format. Any index or bit that ends up in the encoded output keeps its
-/// `input_frame` value (README rule 5.3's wire exception).
+/// `input_frame` value (ARCHITECTURE.md §3 rule 3's wire exception).
 pub fn to_sample(action: &EnvSlotAction) -> Result<InputSample> {
     validate_normalized(action)?;
     let (move_x, move_y) = wrap(
@@ -625,8 +614,7 @@ pub struct EnvActionViewBall {
 }
 
 /// The narrow slot projection an action mask needs. It is a strict subset of
-/// the eventual `EnvSlotView` (`sim/env_observation.lua`, not yet ported);
-/// mirrors the Lua original's `EnvActionView`. Only `own` and `ball` are
+/// [`crate::env_observation`]'s `EnvSlotView`. Only `own` and `ball` are
 /// read, so callers on the per-step path can build one of these instead of a
 /// whole observation.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

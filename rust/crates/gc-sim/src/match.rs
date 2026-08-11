@@ -1,6 +1,4 @@
-//! Port of `sim/match.lua`.
-//!
-//! Pure 5v5 match simulation. No love, no drawing, no input gathering.
+//! Pure 5v5 match simulation. No rendering, no input gathering.
 //!
 //! Home attacks right (scores in the right goal); away attacks left. By
 //! default, one home player is `controlled` by the human and everyone else
@@ -9,30 +7,28 @@
 //! (`None` = loose ball). All state lives in [`MatchState`] and [`step`]
 //! advances it deterministically.
 //!
-//! ## Adopting `match_snapshot`'s canonical types (README §5.1)
+//! ## Adopting `match_snapshot`'s canonical types
 //!
 //! This module adopts [`crate::match_snapshot`]'s `MatchState` / `MatchPlayer`
 //! / `MatchInput` / `MatchEvent` directly rather than declaring its own — that
-//! module's entire job was to describe this shape ahead of this port landing.
+//! module's entire job is to describe this shape.
 //!
 //! ## Indexing convention
 //!
 //! Every `player_index` in this module (and threaded through
 //! `match_snapshot`, `combat`, `slot_input`, `outfield_press`,
 //! `possession_transition`, `outfield_decision`, `offball_runs`) is
-//! **1-based**, matching `sim/match.lua`'s `ipairs(s.players)` (home indices
-//! 1..5, away 6..10) and the already-ported downstream modules' own
-//! convention (they `assert(index >= 1)`). Indexing `s.players` therefore
+//! **1-based** (home indices 1..5, away 6..10) — this crate's own
+//! player-identity convention (every downstream consumer of `MatchState`
+//! `assert(index >= 1)` and bakes it in). Indexing `s.players` therefore
 //! always reads `s.players[(index - 1) as usize]`. This is a deliberate
-//! departure from README rule 3's default (1-based -> 0-based) because these
-//! indices are the same "wire identity" the rule's exception already covers:
-//! every downstream consumer of `MatchState` was ported first and already
-//! bakes in the 1-based convention.
+//! departure from ARCHITECTURE.md §3 rule 3's default (1-based -> 0-based) because these
+//! indices are the same "wire identity" the rule's exception already covers.
 //!
 //! `sim::ai`'s helpers (`assign_marks`, `pass_intercept`, `support_spot`,
 //! `separation`, ...) are the one exception: they index the caller-built
 //! slices passed to them, which are ordinary 0-based Rust collections
-//! (README rule 3's default), not `s.players`. Call sites translate between
+//! (ARCHITECTURE.md §3 rule 3's default), not `s.players`. Call sites translate between
 //! the two conventions explicitly.
 
 use crate::aerial;
@@ -806,12 +802,12 @@ fn transition_of(tactic: &TacticData) -> TransitionConfig {
     possession_transition::copy_windows(tactic.transition)
 }
 
-/// Construct a fresh match from fixture options. Ports `match.new`.
+/// Construct a fresh match from fixture options.
 ///
 /// # Panics
 ///
 /// Panics on any invariant violation in the authored content or a supplied
-/// `InputOwnership` (mirrors the Lua original's `assert`s).
+/// `InputOwnership`.
 #[must_use]
 pub fn new(opts: NewMatchOptions<'_>) -> MatchState {
     let field = opts.field;
@@ -1420,8 +1416,8 @@ fn release_pass(
 ///
 /// Does NOT draw from `s.rng` — deterministic, safe to call every frame for
 /// preview.
-/// Exposed for the integration tests in `tests/match.rs`, per README §5 rule 8
-/// ("everything a test touches is `pub`"): crates here are internal, so
+/// Exposed for the integration tests in `tests/match.rs`, per ARCHITECTURE.md
+/// §3 rule 6 ("everything a test touches is `pub`"): crates here are internal, so
 /// visibility is not worth fighting to keep a spec case unportable.
 pub fn select_pass_target(
     s: &MatchState,
@@ -2727,8 +2723,8 @@ fn sanitize_press_states(s: &mut MatchState, combat_state: Option<&CombatMatchSt
 /// (roles needing full-speed precision, exempt from positional calm), and
 /// refreshes `s.marks` for man-marking hysteresis.
 #[allow(clippy::too_many_lines)]
-/// Exposed for the integration tests in `tests/match.rs`, per README §5 rule 8
-/// ("everything a test touches is `pub`"): crates here are internal, so
+/// Exposed for the integration tests in `tests/match.rs`, per ARCHITECTURE.md
+/// §3 rule 6 ("everything a test touches is `pub`"): crates here are internal, so
 /// visibility is not worth fighting to keep a spec case unportable.
 pub fn offball_targets(
     s: &mut MatchState,
@@ -3237,8 +3233,8 @@ fn retain_offball_targets(
 /// through. Each pair pushed apart by its penetration; a sliding player
 /// barges through (takes less of the push) and knocks the other off
 /// balance (stun). O(n^2)=45 pairs, deterministic.
-/// Exposed for the integration tests in `tests/match.rs`, per README §5 rule 8
-/// ("everything a test touches is `pub`"): crates here are internal, so
+/// Exposed for the integration tests in `tests/match.rs`, per ARCHITECTURE.md
+/// §3 rule 6 ("everything a test touches is `pub`"): crates here are internal, so
 /// visibility is not worth fighting to keep a spec case unportable.
 pub fn resolve_collisions(s: &mut MatchState) {
     let field = s.field;
@@ -3915,17 +3911,17 @@ fn move_offball_keeper(
         carrier.is_some() && attacker_in_front && keeper::should_contain(&position_context);
     let advance_eligible = contain_eligible && keeper::should_advance(&position_context);
 
-    // Lua: `(p.team == "home") and s.ball_vel.x < 0 or s.ball_vel.x > 0`.
-    // `and` binds tighter than `or` in Lua, so this parses as
-    // `((p.team == "home") and (s.ball_vel.x < 0)) or (s.ball_vel.x > 0)`,
-    // NOT as a team-conditional ternary. For the away team the first clause
-    // is always false, so this reduces to the intended `ball_vel.x > 0`. But
-    // for the HOME team it reduces to `(ball_vel.x < 0) or (ball_vel.x > 0)`
-    // — true for ANY nonzero ball velocity, not just "moving toward the home
-    // goal". That is the reference's actual behavior (confirmed against a
-    // real Lua run: a home keeper's parry rebound with ball_vel.x > 0 still
-    // reads as `toward_goal = true`), so the port preserves it verbatim
-    // rather than "fixing" it to the seemingly-intended per-team check.
+    // NOT a team-conditional ternary, on purpose. For the away team the
+    // first clause is always false, so this reduces to the intended
+    // `ball_vel.x > 0`. But for the HOME team it reduces to
+    // `(ball_vel.x < 0) or (ball_vel.x > 0)` — true for ANY nonzero ball
+    // velocity, not just "moving toward the home goal" — which is the
+    // simulation's actual, differentially-verified behavior (a home
+    // keeper's parry rebound with ball_vel.x > 0 still reads as
+    // `toward_goal = true`; see `tests/match_differential.rs`). Keep this
+    // expression exactly as written rather than "fixing" it to the
+    // seemingly-intended per-team check — that would move the pinned
+    // determinism evidence.
     let toward_goal = (p.team == Team::Home && s.ball_vel.x < 0.0) || s.ball_vel.x > 0.0;
     if s.owner.is_some() || !toward_goal {
         let pm = &mut s.players[i];
@@ -4447,7 +4443,6 @@ fn launch_dive(s: &mut MatchState, keeper_idx: i64) {
 /// (`dive_delay`) needs no equivalent either: it only fires on an inbound ball,
 /// and a held ball has zero velocity.
 ///
-/// Mirrors `end_dive` in `sim/match.lua`.
 fn end_dive(p: &mut MatchPlayer) {
     p.dive_timer = 0.0;
     p.dive_target = None;
@@ -4489,17 +4484,16 @@ fn attempt_save(s: &mut MatchState, tune: &Tuning) {
         } else {
             s.goal_away
         };
-        // Lua: `(keeper.team == "home") and (s.ball_vel.x < 0) or
-        // (s.ball_vel.x > 0)`. Same `and`/`or` precedence quirk as
-        // `toward_goal`/`inbound` above — for the home team this reduces to
-        // `(ball_vel.x < 0) or (ball_vel.x > 0)`, true for ANY nonzero ball
-        // velocity, not a per-team ternary. Preserved verbatim: see the
-        // `toward_goal` comment in `move_offball_keeper` for the full
-        // derivation. This one matters in practice — a shot that has
-        // already bounced (ball_vel.x flipped positive) by the time
-        // `attempt_save` runs still reads as "toward" the home goal under
-        // Lua's actual semantics, which is what commits the keeper to the
-        // save this function exists to resolve.
+        // Same quirk as `toward_goal`/`inbound` above — for the home team
+        // this reduces to `(ball_vel.x < 0) or (ball_vel.x > 0)`, true for
+        // ANY nonzero ball velocity, not a per-team ternary. Keep this
+        // expression exactly as written: see the `toward_goal` comment in
+        // `move_offball_keeper` for the full derivation. This one matters in
+        // practice — a shot that has already bounced (ball_vel.x flipped
+        // positive) by the time `attempt_save` runs still reads as "toward"
+        // the home goal under this expression's actual semantics, which is
+        // what commits the keeper to the save this function exists to
+        // resolve.
         let toward = (keeper.team == Team::Home && s.ball_vel.x < 0.0) || s.ball_vel.x > 0.0;
         // Time for the ball to reach the keeper's line. Must be ahead of
         // the ball (keeper between ball and goal) and close enough that the
@@ -5358,9 +5352,9 @@ fn ai_combat_evade(
 // ---------------------------------------------------------------------
 //
 // `crate::aerial` now adopts this module's canonical `MatchState`/
-// `MatchPlayer`/`MatchInput`/`MatchEvent` directly (README §5.1 end state
-// 1 — see that module's doc), so no view conversion happens at this
-// boundary any more; [`aerial_resolve_play`] only builds the 0-based input
+// `MatchPlayer`/`MatchInput`/`MatchEvent` directly (see that module's doc),
+// so no view conversion happens at this boundary any more;
+// [`aerial_resolve_play`] only builds the 0-based input
 // slice `aerial::resolve_play` expects and forwards `s` by mutable
 // reference.
 
@@ -5598,10 +5592,9 @@ fn update_ball(
             ai_outfield_decision(s, owner_idx, tune);
         }
 
-        // Keep a possessed ball on the pitch. See the Lua original's long
-        // comment (preserved in the doc above `update_ball` — the clamp
-        // region is the ARENA, not the pitch, and reflects the outward
-        // pace exactly like the loose-ball walls below).
+        // Keep a possessed ball on the pitch. See `update_ball`'s doc
+        // comment above — the clamp region is the ARENA, not the pitch, and
+        // reflects the outward pace exactly like the loose-ball walls below.
         let mut min_x = 0.0;
         let mut max_x = s.field.w;
         if s.ball.x < 0.0 && in_mouth(s.ball, s.goal_home) {
@@ -5982,8 +5975,8 @@ fn check_goal(s: &mut MatchState, prev_x: f64) -> Option<Team> {
 
 /// One tick's input to [`step`]: either a legacy `MatchInput` for the
 /// human-controlled player (non-slot-mode fixtures) or a full `InputFrame`
-/// (slot-mode fixtures). Ports the Lua original's `InputFrame|MatchInput`
-/// union parameter as an explicit enum.
+/// (slot-mode fixtures), as an explicit enum rather than a dynamically
+/// typed union parameter.
 pub enum StepInput<'a> {
     /// Legacy path: one player's `MatchInput`.
     Legacy(MatchInput),
@@ -5991,13 +5984,12 @@ pub enum StepInput<'a> {
     Frame(&'a InputFrame),
 }
 
-/// Advance the match one fixed tick. Ports `match.step`.
+/// Advance the match one fixed tick.
 ///
 /// # Panics
 ///
-/// Panics on any invariant violation the Lua original asserted (a
-/// non-canonical tick under combat/slot mode, a malformed `InputFrame`, a
-/// missing slot mapping).
+/// Panics on any invariant violation (a non-canonical tick under
+/// combat/slot mode, a malformed `InputFrame`, a missing slot mapping).
 #[allow(clippy::too_many_lines)]
 pub fn step(
     s: &mut MatchState,
@@ -6142,12 +6134,10 @@ pub fn step(
                 // inbound (deflected away mid-flight): then the keeper
                 // stays home.
                 //
-                // Lua: `(p.team == "home") and (s.ball_vel.x < 0) or
-                // (s.ball_vel.x > 0)`. Same precedence quirk as
-                // `toward_goal` above (`and` binds tighter than `or`): for
-                // the home team this is `(ball_vel.x < 0) or (ball_vel.x >
-                // 0)`, true for any nonzero velocity, not a per-team
-                // ternary. Preserved verbatim — see the `toward_goal`
+                // Same quirk as `toward_goal` above: for the home team this
+                // is `(ball_vel.x < 0) or (ball_vel.x > 0)`, true for any
+                // nonzero velocity, not a per-team ternary. Keep this
+                // expression exactly as written — see the `toward_goal`
                 // comment for the full derivation.
                 let inbound = (p.team == Team::Home && s.ball_vel.x < 0.0) || s.ball_vel.x > 0.0;
                 if inbound {

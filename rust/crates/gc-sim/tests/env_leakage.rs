@@ -1,5 +1,3 @@
-//! Port of `spec/sim/env_leakage_spec.lua`.
-//!
 //! Information-leakage tests for the learning environment. These are the
 //! point of the representative profile: an observation must not carry a
 //! future tick, an opponent's same-tick input, hidden RNG, a resolver
@@ -8,25 +6,21 @@
 //! that stops proving anything (because the scan broke) fails instead of
 //! passing quietly.
 //!
-//! `sim::r#match` and `sim::env` are both ported now, so — unlike the
+//! `gc_sim::r#match` and `gc_sim::env` both exist now, so — unlike the
 //! placeholder this file replaces — every case below drives a real,
 //! multi-tick episode instead of being stubbed.
 //!
-//! ## Lua's `scan()` becomes a `Debug`-dump search, not a generic walk
+//! ## Leakage scanning: a `Debug`-dump search, not a generic walk
 //!
-//! `spec/sim/env_leakage_spec.lua`'s `scan(root)` recursively walks a
-//! dynamically-typed Lua table (`pairs()`-driven), collecting every string
-//! key it finds, every string leaf value, and every number leaf value, then
-//! checks set membership. Rust has no runtime reflection over an arbitrary
-//! struct tree, so a literal port is not possible without hand-writing a
-//! walker for every observation type (`EnvObservation`, `EnvSlotView`,
-//! `EnvObservedSelf`, `MatchSnapshot`, ...) — a large amount of code whose
-//! only job would be to reproduce what `#[derive(Debug)]` already does.
+//! Rust has no runtime reflection over an arbitrary struct tree, so
+//! hand-writing a walker for every observation type (`EnvObservation`,
+//! `EnvSlotView`, `EnvObservedSelf`, `MatchSnapshot`, ...) would be a large
+//! amount of code whose only job would be to reproduce what
+//! `#[derive(Debug)]` already does.
 //!
 //! Every type on the observation path already derives `Debug`, and derived
 //! `Debug` output is a complete textual dump of every field name and value,
-//! nested exactly the way `scan()`'s table walk would see it. So the tests
-//! below search `format!("{:?}", ...)` instead:
+//! fully nested. So the tests below search `format!("{:?}", ...)` instead:
 //!
 //!   - **String leaves** (the resolver-verdict test's `"catch"`/`"Catch"`):
 //!     plain [`str::contains`] on the `Debug` text. Collision risk is
@@ -45,10 +39,8 @@
 //!     which is presentation-appropriate telegraph data, not a private
 //!     simulation detail.
 //!
-//! This is a pragmatic adaptation, not a byte-identical port of Lua's table
-//! walk — but it exercises the same property (does the specific value/name
-//! appear anywhere in what this profile exposes?) against the same real
-//! data, which is what the spec is actually checking.
+//! This exercises the property directly (does the specific value/name
+//! appear anywhere in what this profile exposes?) against real data.
 
 use gc_sim::env::{self, EnvErrorCode, EnvInstance, ReferenceConfigOverrides};
 use gc_sim::env_action::{RawAction, RawValue};
@@ -95,9 +87,9 @@ const FORBIDDEN_KEYS: &[&str] = &[
 ];
 
 /// Every maximal run of ASCII digits in `text`, as text. See the module
-/// doc's "Lua's `scan()` becomes a `Debug`-dump search" section for why
-/// this — not a bare substring search — is the right translation of Lua's
-/// exact-value number scan.
+/// doc's "Leakage scanning: a `Debug`-dump search" section for why this —
+/// not a bare substring search — is the right way to check for an
+/// exact-value number leak.
 fn numeric_tokens(text: &str) -> BTreeSet<String> {
     let mut tokens = BTreeSet::new();
     let mut current = String::new();

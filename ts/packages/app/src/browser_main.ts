@@ -1,4 +1,4 @@
-// The browser app shell's entry module -- v2/README.md §1's "a running app",
+// The browser app shell's entry module -- "a running app",
 // this batch's primary task. Loads the wasm artifact, constructs the scene
 // root against a real `<canvas>`, wires `bootstrap.ts`/`app.ts`/
 // `screen_stack.ts` together, and runs the frame loop. Everything this file
@@ -19,8 +19,8 @@
 //
 // `bootstrap.new` (not `new App(...)` directly) is what wires
 // `matchAdapter.real(realMatchFactory)` -- see bootstrap.ts's header for why
-// `real()` needs an injected factory rather than importing
-// `game.screens.real_match` itself. Every match this shell plays is
+// `real()` needs an injected factory rather than importing a concrete
+// real-match screen itself. Every match this shell plays is
 // therefore a REAL match, wasm-simulated -- there is no route to the fake
 // adapter from this entry point (it exists purely for tests, see
 // match_adapter.ts's header).
@@ -30,8 +30,7 @@
 // pass, not tuned against a reference -- see that file's header. The
 // rigged-player offscreen composite's frustum alignment and texture flipY
 // orientation (`@gc/render`'s `scene.ts`/`pitch.ts` own "needs a live GL
-// context" notes) are exactly the kind of thing this real canvas CAN check;
-// see this port's report for what was actually verified versus not.
+// context" notes) are exactly the kind of thing this real canvas CAN check.
 
 import * as THREE from "three";
 import { SceneRoot, Stadium, camera, cameraFollow, pitch, viewState } from "@gc/render";
@@ -48,23 +47,22 @@ import { createBrowserSimHost, ensureBrowserSimHostReady } from "./browser_sim_h
 import { APP_CONTENT } from "./browser_content.ts";
 import { buildInfo } from "./build_info.ts";
 
-// `buildInfo.identity` ("goliseo") is this app's `love.filesystem
-// .setIdentity` analog -- see build_info.ts's header. Namespaces every key
-// this shell persists, the same way LÖVE's save identity namespaces a whole
-// save directory.
+// `buildInfo.identity` ("goliseo") namespaces every key this shell persists
+// in `localStorage` -- see build_info.ts's header for why.
 const SETTINGS_STORAGE_KEY = `${buildInfo.identity}:settings`;
 const MAX_FRAME_DT_SECONDS = 0.25; // clamp after a tab switch/stall, mirrors love's own dt clamp intent
 
-// `sim/match.lua`'s `Match.new`'s own defaults (`opts.duration or 120`,
-// `opts.max_goals or match.NO_GOAL_LIMIT` where `match.NO_GOAL_LIMIT == 99`)
-// -- `game/screens/real_match.lua` never overrides either, so the product
-// match screen always runs at these values.
+// `gc-sim`'s `match::new`'s own defaults (`duration` defaults to 120,
+// `max_goals` defaults to `NO_GOAL_LIMIT` == 99) -- `@gc/screens`'s
+// `real_match.ts` never overrides either, so the product match screen
+// always runs at these values.
 const MATCH_DURATION_SECONDS = 120;
 const MATCH_MAX_GOALS = 99;
 
-// Placeholder team colors until `data/arenas.lua`'s per-team presentation
-// palette has a TypeScript-reachable route (v2/README.md rule 6.7 -- see
-// `browser_content.ts`'s header for the same content-pipeline gap).
+// Placeholder team colors until `gc-data`'s arena data's per-team
+// presentation palette has a TypeScript-reachable route (ARCHITECTURE.md §4
+// rule 6 -- see `browser_content.ts`'s header for the same content-pipeline
+// gap).
 const HOME_COLOR: readonly [number, number, number] = [0.35, 0.75, 1.0];
 const AWAY_COLOR: readonly [number, number, number] = [1.0, 0.55, 0.25];
 
@@ -132,8 +130,8 @@ async function main(): Promise<void> {
   // projection at camera_follow.ts's smoothed, ball-tracking focus instead of
   // the whole-pitch centre. It only does anything now that `@gc/screens`'s
   // `match.ts` actually DRIVES `cameraFollow.update` (see that file's
-  // `updateCameraFollow` -- the port had dropped the Lua's call site, leaving
-  // the module inert and this flag unable to change the picture).
+  // `updateCameraFollow` -- an earlier version had dropped this call site,
+  // leaving the module inert and this flag unable to change the picture).
   camera.perspective_mode = true;
   pitch.stadium_mode = true;
   pitch.follow_camera = true;
@@ -177,8 +175,8 @@ async function main(): Promise<void> {
       // clip however fast they are actually crossing the pitch: players slide
       // around fully rendered and completely unanimated.
       //
-      // `@gc/screens`'s `match.ts` is where the Lua drives this, and it does --
-      // but only through `correctionSource()`, which reads the OPTIONAL
+      // `@gc/screens`'s `match.ts` is where this is normally driven from,
+      // and it does drive it -- but only through `correctionSource()`, which reads the OPTIONAL
       // `MatchScreenPorts.matchState` port. `real_match_factory.ts` never wires
       // that port, so `correctionSource()` returns `undefined`,
       // `updateBaseRenderSmoothing` early-returns, and its `viewState.update`
@@ -188,7 +186,7 @@ async function main(): Promise<void> {
       // product does not.
       //
       // So this entry drives them from the decoded render frame, exactly as
-      // `v2/tools/browser_match_harness/web/match_harness.ts` does. The frame
+      // `tools/browser_match_harness/web/match_harness.ts` does. The frame
       // already carries everything both need: `roster.ids` for stable per-player
       // identity, the flat SoA player positions, the ball and the field.
       //
@@ -232,8 +230,7 @@ async function main(): Promise<void> {
         // squad-select/formation/tactic choices never reached the actual
         // simulated match, which always ran the home team's fixed authored
         // roster at "balanced". `awayTactic` is intentionally omitted --
-        // `ProductMatchRequest` carries no away-side tactic field, matching
-        // the Lua original (`game.match_contract`'s own request shape).
+        // `ProductMatchRequest` carries no away-side tactic field at all.
         {
           combatEnabled: request.combat_enabled,
           homeFormation: request.formation_id,

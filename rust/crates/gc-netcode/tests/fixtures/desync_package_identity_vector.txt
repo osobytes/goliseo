@@ -15,7 +15,7 @@
 # package's session agrees with it field by field.
 #
 # `game.online.net_diagnostics` is TypeScript-owned with no Rust port (see
-# v2/README.md §2), so crates/gc-netcode/src/desync_package.rs's `build`
+# ARCHITECTURE.md §1.1), so crates/gc-netcode/src/desync_package.rs's `build`
 # takes an already-exported `Diagnostics` directly (see that module's own
 # doc comment) instead of a recorder -- there is no second `export` call to
 # disagree with in this port, by construction (`session: diagnostics.session`
@@ -28,7 +28,7 @@
 # same fixture.
 #
 # Captured from the real Lua (`love .` against a scratch copy of core/,
-# sim/, data/, game/ -- see v2/tools/lua_reference/README.md for the
+# sim/, data/, game/ -- see tools/lua_reference/README.md for the
 # harness) for the "2v2" fixture:
 #   local manifest = require("game.online.protocol_fixture").manifest("2v2")
 #   local freeze = require("game.online.match_driver_fixture").freeze("2v2")

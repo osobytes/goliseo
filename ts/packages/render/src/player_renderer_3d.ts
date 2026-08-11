@@ -1,5 +1,3 @@
-// Ported from game/render/player_renderer_3d.lua.
-//
 // Rigged 3D player renderer, and since #415 the ONLY one: the procedural 2D
 // billboard this was once "a drop-in alternative to" is deleted, along with
 // every path that could substitute it silently. `sx`, `sy` and `r` still come
@@ -11,8 +9,8 @@
 // PURE AND TESTED: pose selection (`clipFor`/`poseFor`) and the metres-per-
 // world-unit conversion. These are content decisions (which clip plays for
 // which pose id, how gait/stance/whole-body actions layer) with no GPU
-// dependency once `love.timer.getTime()` is threaded through as an
-// explicit `now` parameter instead of a global clock read.
+// dependency now that `now` is threaded through as an explicit parameter
+// instead of read from a global clock.
 //
 // GPU-ADJACENT AND UNTESTED: building the `THREE.SkinnedMesh` (the
 // "deliberately... deferred" step `rig3d/body.ts`'s and `rig3d/geometry.ts`'s
@@ -33,21 +31,14 @@
 // everything else through (arena, HUD, the lot). `draw`/`renderToSprite` are
 // kept, unchanged, for parity/diagnostics -- see their own doc comments.
 //
-// SCOPE NOTE on the character camera. The Lua original renders each rigged
-// character through its OWN small orthographic camera
-// (`rig3d/renderer.lua`'s `characterCamera`), positioned so the character
-// lands at the projection's exact screen coordinates -- a "3D insert into a
-// 2D scene" trick, not a single whole-pitch 3D camera. `rig3d/renderer.lua`
-// is itself mechanism (v2/README.md #7: "replace -- WebGLRenderer,
-// MeshStandardMaterial") and was never ported by anyone in this package (it
-// does not appear in the "already ported" rig3d list), so there is no Lua
-// TypeScript-adjacent source to diff this against line by line. What is
-// ported faithfully below is the CONTENT that came from player_renderer_3d.lua
-// itself: `HEIGHT_IN_RADII`, `ELEVATION`, the metres-per-world-unit formula,
-// and the pose-selection table. The camera placement math
-// (`characterCameraParams`) is new code, written the way three.js expects
-// (an `OrthographicCamera`'s position/target/frustum) rather than a
-// reconstruction of unseen GLSL.
+// SCOPE NOTE on the character camera. `draw`/`renderToSprite` render each
+// rigged character through its OWN small orthographic camera, positioned so
+// the character lands at the projection's exact screen coordinates -- a "3D
+// insert into a 2D scene" trick, not a single whole-pitch 3D camera. The
+// load-bearing values below are `HEIGHT_IN_RADII`, `ELEVATION`, the
+// metres-per-world-unit formula, and the pose-selection table. The camera
+// placement math (`characterCameraParams`) is new code, written the way
+// three.js expects (an `OrthographicCamera`'s position/target/frustum).
 //
 // ANIMATION PLAYBACK (#425). What actually poses a character on pitch.ts's
 // call path is `rig3d/animator.ts`, a `THREE.AnimationMixer` over the same
@@ -72,10 +63,10 @@
 // so everything from `skeleton.apply` downward is untouched. See that file's
 // header for the full argument.
 //
-// Boundary note (v2/README.md rule 6.7): `match.PLAYER_RADIUS` is
-// `sim/match.lua`'s (Rust `crates/gc-sim`). `DEFAULT_PLAYER_RADIUS` mirrors
-// its current value (12) as an injectable default, the same pattern
-// `pitch.ts`'s `DEFAULT_ARENA` uses for Rust-owned content.
+// Boundary note (ARCHITECTURE.md §4 rule 6): `match.PLAYER_RADIUS` comes from
+// Rust `crates/gc-sim`. `DEFAULT_PLAYER_RADIUS` mirrors its current value
+// (12) as an injectable default, the same pattern `pitch.ts`'s
+// `DEFAULT_ARENA` uses for Rust-owned content.
 
 import * as THREE from "three";
 import { quat } from "@gc/core";
@@ -112,43 +103,42 @@ const HEIGHT_IN_RADII = 3.0;
 // rather than by coincidence (see that file's THE SHADING FRAME section).
 export const ELEVATION = celShader.ELEVATION;
 
-// LIGHTING. `rig3d/renderer.lua`'s hand-written GLSL (v2/README.md #7 marks
-// the file "replace -- WebGLRenderer, MeshStandardMaterial", but that verdict
-// covers the mechanism -- the depth pass, the draw call, the WebGL1 bone/
-// palette packing -- not the shading itself; see `rig3d/cel_shader.ts`'s file
-// header for the full argument) drove its toon shading off one directional
-// key light, `light_dir = { -0.42, -0.78, -0.46 }` ("direction the light
-// travels"), plus a soft "cool bounce light from below so shadowed sides do
-// not go dead", three flat quantised bands, a view-dependent rim, and a
+// LIGHTING. Toon shading (ARCHITECTURE.md §5 marks the mechanism itself --
+// the depth pass, the draw call, the WebGL1 bone/palette packing -- as
+// "Rendering and materials -- WebGLRenderer, MeshStandardMaterial.", but that
+// verdict does not cover the shading; see `rig3d/cel_shader.ts`'s file header for the
+// full argument) is driven off one directional key light,
+// `light_dir = { -0.42, -0.78, -0.46 }` ("direction the light travels"),
+// plus a soft "cool bounce light from below so shadowed sides do not go
+// dead", three flat quantised bands, a view-dependent rim, and a
 // metal-only hard specular.
 //
-// That shading is now ported: `rig3d/cel_shader.ts`'s `applyCombinedCelShading`
-// splices it into `materialsForTeam`'s ONE `MeshStandardMaterial` via
+// `rig3d/cel_shader.ts`'s `applyCombinedCelShading` splices that shading
+// into `materialsForTeam`'s ONE `MeshStandardMaterial` via
 // `onBeforeCompile`, reading `LIGHT_DIR` as a hardcoded uniform rather than
-// any `THREE.Light` in the scene -- exactly like the Lua original, which had
-// no scene-graph lights at all, only `renderer.beginPass`'s two hand-sent
-// uniforms. `LIGHT_DIR` itself lives in `cel_shader.ts` (re-exported here) so
-// the toon shading and this file's decorative light share one constant
-// instead of two copies that could drift.
+// any `THREE.Light` in the scene -- there are no scene-graph lights driving
+// it, only this hand-set uniform. `LIGHT_DIR` itself lives in
+// `cel_shader.ts` (re-exported here) so the toon shading and this file's
+// decorative light share one constant instead of two copies that could
+// drift.
 //
 // ONE material, not three (draw-call fix, see `materialsForTeam` and
-// `build()`'s own comments below): `rig3d/renderer.lua`'s shader always read
-// the shading family off a per-vertex `VertexMaterial` attribute and branched
-// on it inside ONE fragment shader -- "branching on a varying in the
-// fragment stage is fine here; only dynamic *array indexing* is forbidden"
-// (that file's own SHADER_SOURCE comment). This port used to reproduce the
+// `build()`'s own comments below): the shading family is read off a
+// per-vertex `VertexMaterial` attribute and branched on inside ONE fragment
+// shader -- "branching on a varying in the fragment stage is fine here;
+// only dynamic *array indexing* is forbidden" (`cel_shader.ts`'s own
+// SHADER_SOURCE comment). An earlier version of this reproduced the
 // FAMILIES (plain/metal/emissive) but not that mechanism: three separate
 // `MeshStandardMaterial`s, one `onBeforeCompile` variant each, selected at
 // mesh-build time via `THREE.BufferGeometry` material groups -- which
-// resurrected the "one draw per material" cost the Lua shader was written
-// specifically to avoid, and worse, `body.ts`'s parts interleave families
-// (a plain visor next to a metal band next to an emissive seam), so groups
-// fired on every material *transition*, not once per family -- tens of
-// draws per character instead of three. `build()` below now bakes the same
-// per-vertex family float `rig3d/renderer.lua` used (`materialFamily`), and
-// `applyCombinedCelShading` branches on it at runtime in one compiled
-// program, matching the Lua mechanism exactly and collapsing the whole
-// character back to ONE draw call.
+// resurrected the "one draw per material" cost this design specifically
+// avoids, and worse, `body.ts`'s parts interleave families (a plain visor
+// next to a metal band next to an emissive seam), so groups fired on every
+// material *transition*, not once per family -- tens of draws per character
+// instead of three. `build()` below bakes a per-vertex family float
+// (`materialFamily`), and `applyCombinedCelShading` branches on it at
+// runtime in one compiled program, collapsing the whole character back to
+// ONE draw call.
 //
 // The two `THREE.Light` instances below therefore no longer drive the
 // character's own shading -- `cel_shading`'s replaced fragment chunk never
@@ -156,9 +146,9 @@ export const ELEVATION = celShader.ELEVATION;
 // for a `SkinnedMesh` using one of `materialsForTeam`'s materials. They stay
 // in place regardless: an earlier fix here was "the private module-level
 // scene had no lights" (a real defect against the *previous*, un-toon-shaded
-// `MeshStandardMaterial` state), and removing them is not part of this
-// port -- see this file's own header note on not undoing that fix. They are
-// harmless dead weight for the character mesh today, not a hazard.
+// `MeshStandardMaterial` state), and removing them now would undo that fix
+// for no benefit. They are harmless dead weight for the character mesh
+// today, not a hazard.
 const { LIGHT_DIR } = celShader;
 const KEY_LIGHT_INTENSITY = 3.2;
 // Vestigial alongside `keyLight` above -- see this comment block.
@@ -166,7 +156,7 @@ const SKY_COLOR = 0xaebfe0;
 const GROUND_COLOR = 0x30251c;
 const FILL_LIGHT_INTENSITY = 0.9;
 
-// Mirrors `sim/match.lua`'s `PLAYER_RADIUS`. See file header.
+// Mirrors Rust `crates/gc-sim`'s `PLAYER_RADIUS`. See file header.
 export const DEFAULT_PLAYER_RADIUS = 12;
 
 // The one rig contract every character uses (see rig3d/proportions.ts's own
@@ -384,7 +374,7 @@ function applyLean(pose: actionPose.MutablePose, lean: number, facing?: actionPo
 
 /**
  * Resolves the pose for one player with the PROCEDURAL sampler. `now`:
- * seconds, replacing `love.timer.getTime()`.
+ * seconds, passed in explicitly rather than read from a global clock.
  *
  * Superseded on pitch.ts's call path by `mixerPoseFor` below; kept as the A/B
  * parity reference the mixer path is pinned against (see this file's
@@ -528,7 +518,7 @@ const PREVIEW_PLAYER_ID = "__preview";
 
 // ---------------------------------------------------------------------------
 // GPU-adjacent: mesh construction, skeleton posing, per-character camera.
-// Untested in this milestone (no WebGL context, v2/README.md #1).
+// Untested in this milestone (no WebGL context).
 // ---------------------------------------------------------------------------
 
 interface BuiltCharacter {
@@ -695,23 +685,23 @@ function sharedMaterial(): THREE.MeshStandardMaterial {
     // palette colour through unmodified (three.js multiplies material colour
     // x vertex colour) -- `rig3d/cel_shader.ts`'s injected shading reads that
     // same `diffuseColor.rgb` for every family, metal and emissive included,
-    // matching rig3d/renderer.lua's PIXEL stage, which shaded ALL three
-    // families from the one `v_slot_color` varying (there was never a fixed
-    // accent colour for emissive -- it multiplies the resolved palette colour
-    // by a facing-dependent brightness boost instead; see `cel_shader.ts`'s
-    // `celShadingChunk`). `roughness`/`metalness` are not set here: the
-    // injected shading never reads three.js's `PhysicalMaterial` struct at
-    // all (see `applyCombinedCelShading`'s doc comment), so they would be
-    // dead uniforms -- the metal/plain/emissive distinction is entirely which
-    // branch `vMaterialFamily` takes at runtime, a per-vertex value baked by
-    // `build()` above, not a material property.
+    // shading ALL three families from the one palette-colour varying (there
+    // is no fixed accent colour for emissive -- it multiplies the resolved
+    // palette colour by a facing-dependent brightness boost instead; see
+    // `cel_shader.ts`'s `celShadingChunk`). `roughness`/`metalness` are not
+    // set here: the injected shading never reads three.js's
+    // `PhysicalMaterial` struct at all (see `applyCombinedCelShading`'s doc
+    // comment), so they would be dead uniforms -- the metal/plain/emissive
+    // distinction is entirely which branch `vMaterialFamily` takes at
+    // runtime, a per-vertex value baked by `build()` above, not a material
+    // property.
     //
     // ONE `MeshStandardMaterial`, not three per character either (draw-call
     // fix #2 -- see this file's LIGHTING header and `build()`'s own comment
     // on the `materialFamily` attribute this material's shading reads).
     // `applyCombinedCelShading` is `cel_shader.ts`'s per-vertex-branching
     // sibling of the per-family `applyCelShading` used elsewhere in that
-    // module's own test suite: same ported GLSL, selected at runtime off
+    // module's own test suite: the same GLSL, selected at runtime off
     // `materialFamily` instead of at TypeScript-build time off which
     // `MeshStandardMaterial` instance this is.
     const material = new THREE.MeshStandardMaterial({ vertexColors: true });
@@ -823,8 +813,7 @@ function build(variant: CharacterVariant = defaultVariant()): BuiltCharacter | u
       }
     }
 
-    // Draw-call fix #2: bake the same per-vertex shading-family float
-    // `rig3d/renderer.lua`'s `VertexMaterial` attribute carried
+    // Draw-call fix #2: bake a per-vertex shading-family float
     // (`geometry.MATERIAL`'s numbering: 0 plain, 1 metal, 2 emissive), so
     // `cel_shader.ts`'s `applyCombinedCelShading` can branch on it at
     // RUNTIME in one compiled program instead of needing a separate
@@ -889,10 +878,9 @@ function build(variant: CharacterVariant = defaultVariant()): BuiltCharacter | u
       // the per-vertex pose this file just wrote and replacing it with the
       // rig's unposed rest transform on every `renderer.render()` call. This
       // was the actual cause of the "characters render mis-shapen/rotated"
-      // symptom this port's report tracked down live -- not the render
-      // target's `flipY` (see `renderToSprite`'s doc comment, which
-      // toggling had zero visible effect on, confirming the bug was here,
-      // upstream of compositing entirely).
+      // symptom -- not the render target's `flipY` (see `renderToSprite`'s
+      // doc comment, which toggling had zero visible effect on, confirming
+      // the bug was here, upstream of compositing entirely).
       bone.matrixAutoUpdate = false;
       bone.matrixWorldAutoUpdate = false;
       return bone;
@@ -901,8 +889,7 @@ function build(variant: CharacterVariant = defaultVariant()): BuiltCharacter | u
 
     // three.js's own SkinnedMesh materials come from the geometry groups
     // above; a per-team palette resolves at draw time (see `draw` below),
-    // so the mesh itself starts colour-free (matching the Lua original's
-    // "one build serves every team" note).
+    // so the mesh itself starts colour-free (one build serves every team).
     const mesh = new THREE.SkinnedMesh(geom, new THREE.MeshStandardMaterial());
     mesh.add(bones[0] ?? new THREE.Bone());
     mesh.bind(skeletonObj);
@@ -926,14 +913,13 @@ function build(variant: CharacterVariant = defaultVariant()): BuiltCharacter | u
   }
 }
 
-// Bakes the Lua shader's per-vertex `u_palette[VertexPaletteSlot]` lookup
-// (rig3d/renderer.lua's GLSL, quoted in this file's LIGHTING comment above)
-// into a `THREE.BufferAttribute("color")` instead: three.js's stock
-// `MeshStandardMaterial` has no dynamic per-vertex uniform-array indexing to
-// port to (only a hand-written shader would, and the README marks that
-// mechanism "replace"), but `vertexColors: true` reproduces the visible
-// result -- every vertex shaded by its OWN resolved palette colour rather
-// than one flat colour for the whole material group. This is what makes
+// Bakes a per-vertex palette-slot colour lookup into a
+// `THREE.BufferAttribute("color")`: three.js's stock `MeshStandardMaterial`
+// has no dynamic per-vertex uniform-array indexing (only a hand-written
+// shader would, and the README marks that mechanism "replace"), but
+// `vertexColors: true` reproduces the visible result -- every vertex shaded
+// by its OWN resolved palette colour rather than one flat colour for the
+// whole material group. This is what makes
 // "skin" read differently from "cloth" (the team's `main` colour) on the
 // SAME `plain`-material surface, and what makes the two teams distinguishable
 // at all: the previous single `palette[0]` ("skin", never team-linked) used
@@ -1251,8 +1237,8 @@ function pooledCharacter(playerId: string, character: BuiltCharacter, variant: C
   const mesh = new THREE.SkinnedMesh(geometryForTeam(character, variant, team), new THREE.MeshStandardMaterial());
   mesh.add(bones[0] ?? new THREE.Bone());
   mesh.bind(skeletonObj);
-  // DETACHED bind mode -- a real defect this port's report documents finding
-  // live (characters rendered nowhere visible, not merely mis-sized): three.js's
+  // DETACHED bind mode -- a real defect found live (characters rendered
+  // nowhere visible, not merely mis-sized): three.js's
   // DEFAULT "attached" bind mode makes `SkinnedMesh.updateMatrixWorld`
   // recompute `bindMatrixInverse = inverse(this.matrixWorld)` on EVERY
   // update, using whatever the mesh's CURRENT world transform happens to be
@@ -1299,9 +1285,9 @@ export function ppmForRadius(r: number): number | undefined {
 /**
  * Impure: returns the posed, coloured, YAWED character mesh for `playerId`,
  * in its own local metre space -- exactly `prepareCharacter`'s
- * `character.mesh` as it existed before this port, minus the per-character
- * camera/scene/render-target work `renderToSprite` layers on top (see this
- * file's header, "THE EXACT SIGNATURE THIS FILE IS WRITTEN TO EXPECT", which
+ * `character.mesh` as it existed before single-pass compositing, minus the
+ * per-character camera/scene/render-target work `renderToSprite` layers on
+ * top (see this file's header, "THE EXACT SIGNATURE THIS FILE IS WRITTEN TO EXPECT", which
  * this function fulfils). Pooled per `playerId` (see `pooledCharacter`
  * above) rather than the shared singleton `draw`/`renderToSprite` still use.
  *
@@ -1389,8 +1375,8 @@ export function characterCameraParams(sx: number, sy: number, ppm: number, vw: n
 }
 
 // A throwaway scene holding just the shared character mesh (plus the two
-// lights below), reused every draw call (matching the Lua original's
-// one-draw-call-per-character shape). `scene.clear()` in `prepareCharacter`
+// lights below), reused every draw call (one draw call per character).
+// `scene.clear()` in `prepareCharacter`
 // removes ALL children each frame, lights included, so the lights are
 // re-added there alongside the mesh rather than added once here -- see that
 // function.
@@ -1471,11 +1457,9 @@ function prepareCharacter(
 }
 
 /**
- * Impure: draws one rigged player, matching the Lua original's
- * `beginPass(cam, palette) / draw(mesh, world, bone_rows) / endPass()`
- * shape -- one immediate `renderer.render()` call per character, into
- * whatever target `renderer` is currently bound to. The caller is
- * responsible for `renderer.autoClear = false` across a frame's players (so
+ * Impure: draws one rigged player -- one immediate `renderer.render()` call
+ * per character, into whatever target `renderer` is currently bound to. The
+ * caller is responsible for `renderer.autoClear = false` across a frame's players (so
  * each character composites onto the same target instead of clearing the
  * others) and for restoring it afterward, exactly as `bloom.ts`'s `draw`
  * resets depth/cull/shader state after its own render pass. Untested -- see
@@ -1556,7 +1540,7 @@ export function draw(
  * rebuild and `SceneRoot.dispose`'s teardown) releases it -- an offscreen
  * target this heavy must not outlive the frame it was built for.
  *
- * VERIFIED WITH A LIVE GL CONTEXT (this port's report): the returned mesh's
+ * VERIFIED WITH A LIVE GL CONTEXT: the returned mesh's
  * `scale.y = -1` (set just before `return`, below) is required for the
  * character to land right-side-up under `SceneRoot`'s shared 2D orthographic
  * camera, which is Y-inverted relative to three.js's own default to match
@@ -1612,7 +1596,7 @@ export function renderToSprite(
     const geometry = new THREE.PlaneGeometry(vw, vh);
     const mesh = new THREE.Mesh(geometry, material);
     mesh.position.set(vw / 2, vh / 2, 0);
-    // VERIFIED WITH A LIVE GL CONTEXT (see this port's report): the character
+    // VERIFIED WITH A LIVE GL CONTEXT: the character
     // itself rendered upright and correctly posed into `target` -- confirmed
     // by reading `target`'s pixels back directly with
     // `renderer.readRenderTargetPixels` and inspecting them independently of

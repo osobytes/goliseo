@@ -1,11 +1,9 @@
-// Ported from game/compatibility_flow.lua.
-//
 // Drives the product flow through the normal input seam (clicks on the
 // current screen's widgets) so a native and a browser build can be exercised
-// identically for the OMP compatibility harness. `game.ui.hit`/
-// `game.ui.viewport` are `@gc/ui`'s -- not a declared dependency of this
-// package (report per the task brief) -- so this module uses `ui_bridge.ts`'s
-// structurally-identical `hit.find`/`viewport.toActual`/`menuLayout`.
+// identically for the OMP compatibility harness. `@gc/ui`'s `hit`/
+// `viewport` are not a declared dependency of this package, so this module
+// uses `ui_bridge.ts`'s structurally-identical `hit.find`/
+// `viewport.toActual`/`menuLayout` instead.
 
 import { hit, menuLayout, viewport, type ViewportTransform } from "./ui_bridge.ts";
 

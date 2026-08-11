@@ -1,7 +1,7 @@
 // Typed loader for the `gc-wasm` build artifact.
 //
 // `gc-wasm` binds the simulation two different ways (see
-// `v2/rust/crates/gc-wasm/src/lib.rs`'s doc):
+// `rust/crates/gc-wasm/src/lib.rs`'s doc):
 //
 // - Session lifecycle, the determinism check, and lobby wire helpers go
 //   through `wasm-bindgen` — ergonomic, generated JS classes/functions,
@@ -118,7 +118,7 @@ export interface SimHost
   /** Constructs a render-driven tick-count planner over
    * `gc_sim::fixed_clock`. See `FixedClock`'s doc — this is the single
    * source of truth for turning a render `dt` into a tick count
-   * (v2/README.md §2.1), so a caller like `@gc/app`'s `sim_host.ts` never
+   * (ARCHITECTURE.md §1.1), so a caller like `@gc/app`'s `sim_host.ts` never
    * has to re-derive that policy in TypeScript. */
   readonly FixedClock: FixedClockConstructor;
   /** Constructs a live `gc_sim::tuning` knob registry, at every knob's
@@ -144,8 +144,10 @@ export interface SimHost
    * match where every player, including the one on the human-input branch,
    * is AI-driven — so it covers shooting, charging, passing, dashing and the
    * lossy input quantisation an idle match never reaches. Compare against the
-   * constants `crates/gc-sim/tests/ai_driven_evidence.rs` derives from the
-   * Lua capture. */
+   * constants `crates/gc-sim/tests/ai_driven_evidence.rs` derives from a
+   * historical capture of the original Lua implementation's output, made
+   * before it was removed from this repository; those constants are frozen
+   * and cannot be regenerated. */
   runAiDrivenEvidence(): AiDrivenEvidence;
   /** `runAiDrivenEvidence`, stopped after `ticks` ticks — for bisecting a
    * sequence-digest divergence to the tick it starts on. */
@@ -157,7 +159,7 @@ export interface SimHost
    * Builds the current render frame for the session named by `handle`
    * (`SimSession.handle`) and returns a zero-copy `Float64Array` view over
    * it — `gc_render::frame_buffer::encode`'s layout
-   * (`v2/rust/crates/gc-render/src/frame_buffer.rs`), decoded field-by-field
+   * (`rust/crates/gc-render/src/frame_buffer.rs`), decoded field-by-field
    * on the JS side per that module's documented header/field-order
    * contract. Returns `null` if `handle` names no live session.
    *

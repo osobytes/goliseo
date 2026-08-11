@@ -1,17 +1,14 @@
-//! Port of `spec/sim/metrics_spec.lua`.
+//! Tests for `gc_sim::metrics`.
 //!
-//! `metrics.lua`'s `---@param s MatchState` never `require`s `sim/match.lua`
-//! (the collector only reads a duck-typed table shape), and the Lua spec
-//! itself hand-builds a "minimal MatchState-shaped table: enough surface for
-//! the collector" rather than a real match — so nothing here is blocked on
-//! the unported `sim::match`. [`fake_state`]/[`frame`] below are that same
-//! minimal surface, typed against [`gc_sim::metrics::MetricsMatchView`].
+//! `metrics::observe` reads a minimal match-shaped view rather than a full
+//! `MatchState`: [`fake_state`]/[`frame`] below build that minimal surface,
+//! typed against [`gc_sim::metrics::MetricsMatchView`] — enough surface for
+//! the collector, not a real match.
 //!
-//! `metrics::observe` additionally takes an explicit `&Tuning` (the Lua
-//! original closes over the global `sim.tuning` singleton, which this port
-//! deliberately does not have — see `crate::tuning`'s doc); every case here
-//! passes a fresh default [`Tuning`], matching the Lua spec's untouched
-//! `TUNE.DRIBBLE_CLOSE` default.
+//! `metrics::observe` takes an explicit `&Tuning` argument instead of
+//! reading a mutable global singleton (see `crate::tuning`'s doc); every
+//! case here passes a fresh default [`Tuning`], so `TUNE.DRIBBLE_CLOSE`
+//! stays at its default throughout.
 
 use gc_core::vec2::Vec2;
 use gc_sim::metrics::{
@@ -42,7 +39,7 @@ fn fake_state() -> MetricsMatchView {
             player("a1", MatchTeam::Away, false),
         ],
         human_controlled: true,
-        controlled: 1, // "h1" (Lua `controlled = 2`, 1-based)
+        controlled: 1, // "h1"
         score: Score::default(),
         owner: None,
         events: Vec::new(),
@@ -61,7 +58,7 @@ fn event(kind: &str, player: Option<&str>) -> MetricsEventView {
 }
 
 /// One observed frame: set the frame's events/owner, then observe `dt`
-/// (default 1 second, matching the Lua fixture's `o.dt or 1`).
+/// (defaults to 1 second).
 struct Frame {
     events: Vec<MetricsEventView>,
     owner: Option<usize>,

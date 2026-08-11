@@ -1,11 +1,9 @@
-//! Port of `sim/combat.lua`.
-//!
 //! The combat tick pipeline: request gating, contact collection and
 //! resolution, forced-state application, and encounter lifecycle
 //! (commit/contact/terminal). Operates on [`crate::match_snapshot::MatchState`]
-//! and [`crate::combat_snapshot::CombatMatchState`] directly (README §5.1 —
-//! see `match_snapshot`'s module doc for why this layer shares one
-//! canonical pair of types instead of a narrow view).
+//! and [`crate::combat_snapshot::CombatMatchState`] directly — see
+//! `match_snapshot`'s module doc for why this layer shares one canonical
+//! pair of types instead of a narrow view.
 
 use crate::combat_feasibility::CombatActionPhase as CombatPhase;
 use crate::combat_intent;
@@ -153,7 +151,7 @@ fn suppress_soccer_actions(input: &mut MatchInput) {
     // Deliberately `Some(false)`, not `None`: this is an explicit "no
     // strike" while soccer actions are suppressed, not an absence of
     // intent, so `aerial::strike_requested`'s jockey/dash fallback must not
-    // fire (mirrors `sim/combat.lua`'s `suppress_soccer_actions`).
+    // fire.
     input.aerial_strike = Some(false);
     input.aerial_acrobatic = Some(false);
 }

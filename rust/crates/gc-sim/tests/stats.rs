@@ -1,4 +1,4 @@
-//! Port of `spec/sim/stats_spec.lua`.
+//! Tests for `gc_sim::stats`.
 
 use gc_data::players::StatBlock;
 use gc_sim::stats;

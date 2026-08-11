@@ -1,16 +1,13 @@
-// Ported from spec/game/runtime_settings_spec.lua.
-//
-// The Lua spec's second case reads back real global state from
-// `game.presentation.combat_feedback` (`combat_feedback.diagnostics(
-// combat_feedback.new())`) to prove `runtime_settings.apply` actually
-// reaches it. That module is `@gc/presentation`'s, not a declared
-// dependency of this package (this file's header; report per the task
-// brief). The assertion is ported here against a recording
-// `CombatFeedbackDefaultsPort` double instead: it proves `runtime_settings`
-// forwards the exact settings object to `configureDefaults`, which is this
-// module's own contribution -- the downstream claim that `@gc/presentation`
-// actually reduces motion/flash from it is that package's own spec's job
-// once this package can depend on it.
+// `runtime_settings.apply` forwards settings to a
+// `CombatFeedbackDefaultsPort`. `@gc/presentation`'s `combat_feedback`
+// (whose `diagnostics` would confirm the downstream effect on motion/flash)
+// is not a declared dependency of this package, so the second case below
+// asserts against a recording `CombatFeedbackDefaultsPort` double instead:
+// it proves `runtime_settings` forwards the exact settings object to
+// `configureDefaults`, which is this module's own contribution -- the
+// downstream claim that `@gc/presentation` actually reduces motion/flash
+// from it belongs to that package's own tests, once this package can
+// depend on it.
 
 import { describe, expect, it } from "vitest";
 import { Audio, type CombatFeedbackPort } from "./audio.ts";

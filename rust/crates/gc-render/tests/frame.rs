@@ -1,9 +1,8 @@
-//! Port of `spec/render/frame_spec.lua`.
-//!
-//! Tier-1 logic tests: no display, no rendering. What they pin is the
-//! payload's SHAPE and the promises the shape makes — that the per-entity
-//! data really is structure-of-arrays, that no engine type leaks through it,
-//! and that building it cannot perturb the simulation.
+//! Tier-1 logic tests for `RenderFrame`'s shape: no display, no rendering.
+//! What they pin is the payload's SHAPE and the promises the shape makes —
+//! that the per-entity data really is structure-of-arrays, that no engine
+//! type leaks through it, and that building it cannot perturb the
+//! simulation.
 
 use gc_core::vec2::Vec2;
 use gc_render::frame::{self as render_frame, RenderChargeKind, RenderFrameOptions, RenderPose};
@@ -48,9 +47,8 @@ fn step(s: &mut MatchState, tune: &Tuning) {
 
 /// An event with every optional field absent, for tests to override with
 /// struct-update syntax. `MatchEvent` has no `Default` (it is a wire-shaped
-/// snapshot type owned by `gc-sim`), so this is the Rust equivalent of the
-/// Lua fixture's inline `{ kind = ..., x = ..., y = ... }` table literals,
-/// which likewise leave every other field `nil`.
+/// snapshot type owned by `gc-sim`), so this fills that gap for tests that
+/// only care about a couple of fields.
 fn bare_event(kind: MatchEventKind, x: f64, y: f64) -> MatchEvent {
     MatchEvent {
         kind,
@@ -75,10 +73,9 @@ fn stamps_the_protocol_version_on_the_frame_and_the_roster() {
     let frame = render_frame::build(&state, &RenderFrameOptions::default());
     assert_eq!(frame.version, render_frame::VERSION);
     assert_eq!(frame.roster.version, render_frame::VERSION);
-    // `VERSION` is a `const` here rather than the Lua runtime value the
-    // original spec checks, so this is a tautology clippy can prove at
-    // compile time; kept (with the lint silenced) as the same documentation
-    // of the contract the Lua spec states explicitly.
+    // `VERSION` is a `const`, so this is a tautology clippy can prove at
+    // compile time; kept (with the lint silenced) as explicit documentation
+    // of the contract.
     #[allow(clippy::assertions_on_constants)]
     {
         assert!(
@@ -130,18 +127,14 @@ fn keeps_per_entity_data_as_parallel_scalar_arrays_one_entry_per_slot() {
 
 #[test]
 fn carries_no_engine_types_across_the_boundary() {
-    // The Lua original walks the whole payload asserting no nested table
-    // carries a metatable ("Vec2 and every class in this codebase carries a
-    // metatable; plain payload data never does"). Rust has no runtime
-    // metatable-equivalent to walk: every field `RenderFrame` (and
-    // everything it owns) can hold is a `String`, a primitive, a `Vec<_>`
-    // of one of those, or a plain `#[derive(Clone, Debug, PartialEq)]`
-    // struct/enum — there is no `love` handle, closure, or trait object a
-    // field could smuggle through. That makes the property this spec checks
-    // at runtime a static guarantee of the type here, checked once at
-    // review time rather than every build. `combat` remains the documented
-    // exception (see `FrameCombatModel`'s doc), matching the Lua original's
-    // own `key ~= "combat"` skip.
+    // Every field `RenderFrame` (and everything it owns) can hold is a
+    // `String`, a primitive, a `Vec<_>` of one of those, or a plain
+    // `#[derive(Clone, Debug, PartialEq)]` struct/enum — there is no engine
+    // handle, closure, or trait object a field could smuggle through. That
+    // makes "no engine types cross the boundary" a static guarantee of the
+    // type here, checked once at review time rather than every build.
+    // `combat` remains the documented exception (see `FrameCombatModel`'s
+    // doc).
     let state = fixture(17.0);
     let frame = render_frame::build(&state, &RenderFrameOptions::default());
     // A real, if weak, runtime witness that nothing opts out of the derived
@@ -157,11 +150,11 @@ fn does_not_perturb_the_simulation() {
     for _ in 0..30 {
         step(&mut state, &tune);
     }
-    // The Lua original proves this via `match_snapshot.hash(match_snapshot
-    // .capture(state))` before/after. `MatchState` derives `PartialEq` here
-    // (`gc_sim::match_snapshot`), so comparing the whole state directly is
-    // available and strictly stronger — no dependence on the snapshot
-    // module's own (unrelated, in-flight) validation and hashing path.
+    // `MatchState` derives `PartialEq` (`gc_sim::match_snapshot`), so
+    // comparing the whole state directly before/after is available and
+    // strictly stronger than a before/after hash comparison would be — no
+    // dependence on the snapshot module's own (unrelated, in-flight)
+    // validation and hashing path.
     let before = state.clone();
     let roster = render_frame::roster(&state);
     for _ in 0..5 {
@@ -192,9 +185,9 @@ fn reuses_a_match_constant_roster_instead_of_rebuilding_it() {
     // Rust's ownership model makes "carried, not copied" structural: `build`
     // moves the supplied roster straight into `frame.roster` rather than
     // calling `roster()` again, so there is no code path left that could
-    // recompute it. Lua could only observe this via table-reference
-    // identity (`frame.roster == roster`); value equality is the closest
-    // Rust analogue and it still catches a producer that mutates fields.
+    // recompute it. The value-equality assertion below is a runtime witness
+    // on top of that structural guarantee — it still catches a producer that
+    // mutates fields.
     assert_eq!(
         frame.roster, expected,
         "a supplied roster must be carried, not copied"
@@ -437,7 +430,7 @@ fn flattens_the_frames_event_batch_into_the_effect_trigger_channel() {
 #[test]
 fn keeps_absent_false_and_true_distinguishable_for_optional_booleans() {
     let state = fixture(17.0);
-    // All three states occur for real: `sim/match.lua` sets `on_target`
+    // All three states occur for real: `gc_sim::r#match` sets `on_target`
     // explicitly on a released shot, and a keeper's distribution kick is
     // also `kind == "shot"` but reports nothing. Kind alone cannot tell
     // them apart, so the payload must.

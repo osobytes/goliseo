@@ -1,4 +1,4 @@
-//! Port of `spec/sim/placement_spec.lua`.
+//! Tests for `gc_sim::placement`.
 
 use gc_data::formations;
 use gc_sim::placement::{self, Field, Side};

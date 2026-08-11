@@ -1,11 +1,9 @@
-// Ported from game/online/diagnostics_schema.lua.
-//
 // Declarative shapes, strict validation, canonical serialization, and content
 // hashing for the OMP-3 network diagnostic contracts.
 //
 // Serialization follows the length-prefixed discipline already used by the
-// research contracts in `sim/research_schema.lua` (Rust-owned; not ported
-// here): every scalar emits its byte length before its bytes, records emit
+// research contracts in `sim/research_schema` (Rust-owned): every scalar
+// emits its byte length before its bytes, records emit
 // declared field order, and maps emit sorted keys. Delimiter-joined or
 // table-order hashing is ambiguous and is forbidden. This module keeps its
 // own header and version rather than reusing the research serializer,
@@ -38,17 +36,16 @@
 //
 // ## Boundary note: fnv1a64
 //
-// `core/fnv1a64.lua` is Rust-owned per v2/README.md's core split (it is one
-// of the four `sim/` dependencies moved wholesale to `crates/gc-core`), but
-// this module -- which the same README assigns to `@gc/online` -- needs it
-// purely to content-address its own export artifact. That digest never has
-// to agree with anything Rust computes and never crosses the determinism
-// line (see this file's own docs above: it hashes *diagnostics*, not
-// simulation state), so reimplementing the algorithm here is the same kind
-// of deliberate, safe duplication as `vec2` existing on both sides -- it is
-// a small, exact, integer-only algorithm (XOR and multiply, no
-// transcendentals), not a content table. See this port's final report for
-// the recommendation to note this in the README's core-split table.
+// fnv1a64 is Rust-owned per ARCHITECTURE.md's core split (it is one of the four
+// `sim/` dependencies moved wholesale to `crates/gc-core`), but this module
+// -- which the same document assigns to `@gc/online` -- needs it purely to
+// content-address its own export artifact. That digest never has to agree
+// with anything Rust computes and never crosses the determinism line (see
+// this file's own docs above: it hashes *diagnostics*, not simulation
+// state), so reimplementing the algorithm here is the same kind of
+// deliberate, safe duplication as `vec2` existing on both sides -- it is a
+// small, exact, integer-only algorithm (XOR and multiply, no
+// transcendentals), not a content table.
 
 import { ok, err, type Result } from "@gc/core";
 
@@ -59,9 +56,9 @@ export function fnv1a64Hash(text: string): string {
   for (let i = 0; i < text.length; i += 1) {
     // Binary-string convention: one UTF-16 code unit is one byte, values
     // 0-255 — the same convention @gc/transport uses for wire payloads. NOT
-    // TextEncoder: Lua strings are raw byte arrays, and UTF-8 encoding a JS
-    // string turns Lua's single byte 0xff into the two bytes c3 bf, which
-    // silently changes the digest.
+    // TextEncoder: the wire and hash treat text as a raw byte array, and
+    // UTF-8 encoding a JS string turns a single byte 0xff into the two bytes
+    // c3 bf, which silently changes the digest.
     hash = (hash ^ BigInt(text.charCodeAt(i) & 0xff)) & mask;
     hash = (hash * prime) & mask;
   }
@@ -69,12 +66,13 @@ export function fnv1a64Hash(text: string): string {
 }
 
 function byteLength(text: string): number {
-  // Binary string: one code unit per byte, matching Lua's `#text`.
+  // Binary string: one code unit per byte, matching this module's own
+  // byte-array convention for text.
   return text.length;
 }
 
 /**
- * Format a number exactly as C's (and therefore Lua's) `%.17g` does.
+ * Format a number exactly as C's `%.17g` does.
  *
  * `toPrecision(17)` is NOT equivalent and must not be substituted: `%g` strips
  * trailing zeros while `toPrecision` pads them, so 480.75 becomes "480.75" here
@@ -83,8 +81,9 @@ function byteLength(text: string): number {
  * difference changes the content digest, and a digest computed in Rust on one
  * peer must equal one computed here on another.
  *
- * Validated against the real Lua across 31 values including 1e-05, 1e+21,
- * subnormals and DBL_MAX.
+ * Validated against the crosslang reference vectors in
+ * `diagnostics_schema_crosslang.spec.ts` across 31 values including 1e-05,
+ * 1e+21, subnormals and DBL_MAX.
  */
 export function formatG17(value: number): string {
   const precision = 17;
@@ -334,10 +333,10 @@ export function redactFreeText(text: unknown, maxBytes: number): string | null {
     return text;
   }
   // Truncate to `maxBytes` bytes (not code units) before appending the
-  // marker, mirroring the Lua original's `#text` byte accounting.
+  // marker, mirroring this module's own `byteLength` byte accounting.
   const budget = Math.max(0, maxBytes - byteLength(TRUNCATED) - 1);
-  // Binary string: slicing code units is slicing bytes, so this matches Lua's
-  // `string.sub` byte accounting exactly.
+  // Binary string: slicing code units is slicing bytes, matching this
+  // module's byte-array convention exactly.
   return text.slice(0, budget) + " " + TRUNCATED;
 }
 
@@ -390,10 +389,9 @@ function assertDomain(
 }
 
 // One scope per anchor subtree, keyed on the *domain transition* into
-// `anchor` rather than on being the outermost call. See the Lua original's
-// comment for the regression this fixes: the scope must be created fresh
-// whenever a domainless container's descendant first declares `anchor`, not
-// only at the root.
+// `anchor` rather than on being the outermost call: the scope must be
+// created fresh whenever a domainless container's descendant first declares
+// `anchor`, not only at the root.
 function assertFieldShape(
   field: DiagnosticsField,
   inherited: DiagnosticsDomain | undefined,

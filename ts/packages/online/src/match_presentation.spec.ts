@@ -1,11 +1,9 @@
-// Ported from spec/game/online_match_presentation_spec.lua.
-//
-// Every assertion in the Lua original is about a claim only a *live*
-// rollback session can make: peers converging through a real correction, a
-// real combat encounter being revoked and replaced by a resimulation, a
-// real driver reaching `completed` at full time. All of that runs through
+// Every assertion here is about a claim only a *live* rollback session can
+// make: peers converging through a real correction, a real combat
+// encounter being revoked and replaced by a resimulation, a real driver
+// reaching `completed` at full time. All of that runs through
 // `game.online.match_driver` and `sim.rollback_events`, both Rust-owned
-// (`crates/gc-sim` / `crates/gc-netcode`; v2/README.md §2.1).
+// (`crates/gc-sim` / `crates/gc-netcode`; ARCHITECTURE.md §1.1).
 //
 // # Re-audited against the current `@gc/wasm` (12 of 13 cases now real)
 //
@@ -15,24 +13,22 @@
 // `rollback_events_bridge.rs`, found blockers 1-4 already stale or fixed,
 // blocker 5 (`RollbackTickOutput` too narrow) real and fixed it, and built a
 // real two-peer `MatchDriverBridge` harness (below) that unblocked four of
-// the 13 cases -- the four that only need
-// `spec/fixtures/online_match_session.lua`'s plain session construction, not
-// `spec/support/online_combat_phases.lua`'s pinned combat geometry. That pass
-// left the remaining nine (`describe("online match presentation combat
-// phases...")` below) skipped: reaching a specific combat phase
-// deterministically needed either a `gc-wasm` export of
-// `online_combat_phases.lua`'s pinned boundary zeroes, or scripting real
+// the 13 cases -- the four that only need a plain session construction, not
+// pinned combat geometry. That pass left the remaining nine
+// (`describe("online match presentation combat phases...")` below) skipped:
+// reaching a specific combat phase deterministically needed either a
+// `gc-wasm` export of pinned per-phase boundary zeroes, or scripting real
 // gameplay input precisely enough to reach each phase from scratch, and
 // neither existed yet on `@gc/wasm`'s surface.
 //
 // That gap is now closed: `crates/gc-wasm/src/online_combat_phases_bridge.rs`
 // (`onlineCombatPhaseIds`/`ScenarioJson`/`BoundaryZero`/`LiveSample`/
 // `Observed`) is exactly the export the previous pass asked for -- a
-// wasm-bindgen port of `online_combat_phases.lua`, cross-checked
-// field-for-field against the existing Rust port
-// (`crates/gc-netcode/tests/support/online_combat_phases.rs`) rather than
-// re-derived from the Lua original by hand, and proven end-to-end by that
-// module's own Rust test seeding a real `MatchDriverBridge` from
+// wasm-bindgen export of the same pinned per-phase fixture data as
+// `crates/gc-netcode/tests/support/online_combat_phases.rs`, cross-checked
+// field-for-field against that Rust module rather than re-derived by hand,
+// and proven end-to-end by that module's own Rust test seeding a real
+// `MatchDriverBridge` from
 // `onlineCombatPhaseBoundaryZero`'s output and stepping it forward. Eight of
 // the nine combat-phase cases run for real below, using
 // `MatchDriverBridge`'s `initialSnapshotOverride` constructor parameter
@@ -48,7 +44,7 @@
 // (`crates/gc-netcode/src/match_driver.rs`'s `default_clock`), which traps
 // under `wasm32-unknown-unknown` -- a real defect in `crates/gc-netcode`/
 // `crates/gc-wasm` (out of this package's ownership), not a gap in this
-// port. See that case's own comment and this file's final report.
+// package. See that case's own comment.
 //
 // A real harness is built and driven below (`describe("online match
 // presentation (real wasm bridges...")`), using
@@ -60,18 +56,18 @@
 // standalone `RollbackEventsTimeline` per peer as `newOnlineMatchPresentation`'s
 // `events`. The combat-phase `describe` block reuses the same harness
 // builder with an `initialSnapshotOverride` factory, and reuses `run` with
-// its `sample`/`onBatch` hooks (mirroring the Lua original's own `run`
-// options) to script phase-specific input and check, tick by tick before the
-// driver evicts it, whether a correction actually resimulated a tick that
-// ran through the named phase.
+// its `sample`/`onBatch` hooks to script phase-specific input and check,
+// tick by tick before the driver evicts it, whether a correction actually
+// resimulated a tick that ran through the named phase.
 //
-// What is *not* ported here, and does not need to be re-litigated: faking
-// `combat_phases.boundary_zero`/`live_sample` well enough to reach a real
-// combat phase would mean reimplementing combat geometry in this package,
-// exactly what v2/README.md §2.1 forbids on this side of the determinism
-// line. `onlineCombatPhaseObserved` is called with opaque snapshot handles
-// and raw JSON, exactly like every other port in this file -- this module
-// never inspects what "windup" or "guard" actually mean.
+// What is deliberately not built here, and does not need to be
+// re-litigated: faking `combat_phases.boundary_zero`/`live_sample` well
+// enough to reach a real combat phase would mean reimplementing combat
+// geometry in this package, exactly what ARCHITECTURE.md §1.1 forbids on this
+// side of the determinism line. `onlineCombatPhaseObserved` is called with
+// opaque snapshot handles and raw JSON, exactly like every other wasm-bridge
+// call in this file -- this module never inspects what "windup" or "guard"
+// actually mean.
 
 import { describe, expect, it } from "vitest";
 import { loadSimHost } from "@gc/wasm";
@@ -296,17 +292,16 @@ function payloadsEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-// Mirrors the Lua spec's own `is_combat`: `sim.rollback_events`' wrapped
-// combat events carry a `domain` starting `combat/` (`combat/<kind>/<n>`,
-// `crates/gc-sim/src/rollback_events.rs`) -- everything else (match,
-// lifecycle) does not.
+// `sim.rollback_events`' wrapped combat events carry a `domain` starting
+// `combat/` (`combat/<kind>/<n>`, `crates/gc-sim/src/rollback_events.rs`)
+// -- everything else (match, lifecycle) does not.
 function isCombat(domain: string): boolean {
   return domain.startsWith("combat/");
 }
 
-// Mirrors the Lua spec's own `record` helper: tracks what each peer's
-// presentation timeline has published, so the assertions below can check
-// "exactly once" and "never a revoked id" for real. The `*Combat` counters
+// Tracks what each peer's presentation timeline has published, so the
+// assertions below can check "exactly once" and "never a revoked id" for
+// real. The `*Combat` counters
 // are the combat-phase cases' own claim -- a correction that merely landed
 // near a phase is not enough; it must have rewritten or introduced combat
 // feedback (see the combat-phase `describe` block below).
@@ -359,15 +354,13 @@ interface RunOptions {
   /** Deliver every `period` steps; omit to deliver every step. */
   readonly period?: number;
   /** Overrides the neutral sample wire per (0-based step, 0-based peer
-   * index). Mirrors the Lua spec's own `run`'s `sample` option -- e.g.
-   * `combat_phases.live_sample`'s TypeScript counterpart,
+   * index) -- e.g. `combat_phases.live_sample`'s TypeScript counterpart,
    * `onlineCombatPhaseLiveSample`. */
   readonly sample?: (step: number, peerIndex: number) => string;
   /** Called once per peer per step, with that step's presentation batch,
-   * before the next step evicts the driver's retained boundaries -- mirrors
-   * the Lua spec's own `run`'s `on_batch` option, which the combat-phase
-   * cases below use to check a correction actually resimulated a tick that
-   * ran through the named phase. */
+   * before the next step evicts the driver's retained boundaries -- used by
+   * the combat-phase cases below to check a correction actually
+   * resimulated a tick that ran through the named phase. */
   readonly onBatch?: (peer: RealPeer, peerIndex: number, batch: RollbackPlayableLabBatch) => void;
 }
 
@@ -407,7 +400,7 @@ function assertPublishedOnce(peers: readonly RealPeer[]): void {
   });
 }
 
-// A real substitute for the Lua original's `match_snapshot.hash` comparison:
+// A real substitute for a `match_snapshot.hash` comparison:
 // `@gc/wasm` never exposes a hash for an arbitrary retained `WasmMatchSnapshot`
 // (confirmed by reading `rollback_events_bridge.rs`'s `WasmMatchSnapshot` --
 // it is opaque with no hash method), but every `advance()` batch's own
@@ -474,39 +467,37 @@ describe("online match presentation (real wasm bridges, no combat-phase fixture 
 // The seven combat correction phases, plus the two cases built on top of
 // them. Unblocked by `crates/gc-wasm/src/online_combat_phases_bridge.rs`
 // (see the file header): `onlineCombatPhaseBoundaryZero` builds exactly the
-// pinned, combat-active `MatchSnapshot` `spec/support/online_combat_phases.lua`
-// pins per phase, as `MatchDriverBridge`'s own `initialSnapshotOverride`
-// constructor parameter; `onlineCombatPhaseLiveSample` scripts the same
-// per-phase input `combat_phases.live_sample` does; `onlineCombatPhaseObserved`
-// is the same `combat_phases.observed` predicate. None of the three need this
-// package to know a single fact about combat mechanics -- they are called
-// with opaque ids/snapshots/JSON, exactly like every other port in this file.
+// pinned, combat-active `MatchSnapshot`
+// `crates/gc-netcode/tests/support/online_combat_phases.rs` pins per phase,
+// as `MatchDriverBridge`'s own `initialSnapshotOverride` constructor
+// parameter; `onlineCombatPhaseLiveSample` scripts the same per-phase input
+// `combat_phases.live_sample` does; `onlineCombatPhaseObserved` is the same
+// `combat_phases.observed` predicate. None of the three need this package to
+// know a single fact about combat mechanics -- they are called with opaque
+// ids/snapshots/JSON, exactly like every other wasm-bridge call in this
+// file.
 //
-// `PHASE_DELIVER_PERIOD` mirrors the Lua spec's own constant verbatim -- see
-// that file's comment for why 12 (long enough to force a real correction,
-// short enough to stay inside the ~30-tick unconfirmed window).
+// `PHASE_DELIVER_PERIOD` is 12: long enough to force a real correction,
+// short enough to stay inside the ~30-tick unconfirmed window.
 //
-// `PHASE_STEPS` does not: the Lua original uses 240 for every phase and its
-// own reference table (that file's comment block) claims that reliably
-// produces at least one corrected `ball_spill` tick. Empirically, against
-// this port's real `MatchDriverBridge`/`WasmStarTransport` rollback timing,
-// it does not -- confirmed deterministically (not flaky; the sim is fully
-// seeded) across repeated runs, and by scanning every combat event this
-// fixture produces over 240 steps directly: exactly one real
-// `CombatEventKind::BallSpill` event occurs in the whole run, and it lands
-// outside any tick range a correction actually resimulates. This is a
-// legitimate consequence of the wasm rollback scheduler's real queue/poll
-// timing differing from the Lua fixture's in-process `pump()` timing (both
-// are faithful ports of the same reducer, but a port's *correction
-// schedule* is a function of transport/queue timing infrastructure, not of
-// the deterministic sim tick stream alone, so it need not land on the same
-// wall-clock-independent schedule as the original to be correct) -- not a
-// bug in `consume`, `RollbackEventsTimeline`, or the combat-phase bridge.
-// 480 (double) was the smallest budget tried that reliably (deterministically)
-// produces a corrected `ball_spill` hit; every other phase already succeeds
-// at 240 and continues to at 480. This is a run-length/test-infrastructure
-// adjustment, not a weakened assertion -- every case's own claim
-// (`phaseTicks > 0`) is exactly as strict as the Lua original's.
+// `PHASE_STEPS` needed more thought: 240 steps was the working assumption
+// for every phase, on the theory that it reliably produces at least one
+// corrected `ball_spill` tick. Empirically, against this package's real
+// `MatchDriverBridge`/`WasmStarTransport` rollback timing, it does not --
+// confirmed deterministically (not flaky; the sim is fully seeded) across
+// repeated runs, and by scanning every combat event this fixture produces
+// over 240 steps directly: exactly one real `CombatEventKind::BallSpill`
+// event occurs in the whole run, and it lands outside any tick range a
+// correction actually resimulates. This is a legitimate consequence of the
+// wasm rollback scheduler's real queue/poll timing: a correction's schedule
+// is a function of transport/queue timing infrastructure, not of the
+// deterministic sim tick stream alone, so it need not land on a fixed
+// schedule -- not a bug in `consume`, `RollbackEventsTimeline`, or the
+// combat-phase bridge. 480 (double) was the smallest budget tried that
+// reliably (deterministically) produces a corrected `ball_spill` hit; every
+// other phase already succeeds at 240 and continues to at 480. This is a
+// run-length/test-infrastructure adjustment, not a weakened assertion --
+// every case's own claim (`phaseTicks > 0`) is exactly as strict as before.
 const PHASE_IDS = [
   "windup",
   "guard",
@@ -521,11 +512,10 @@ type PhaseId = (typeof PHASE_IDS)[number];
 const PHASE_DELIVER_PERIOD = 12;
 const PHASE_STEPS = 480;
 
-// Mirrors the Lua spec's own `run_phase`: bursts delivery while scripting
-// the phase's live input, and -- inside each step, before the driver evicts
-// its retained boundaries -- checks whether a correction actually
-// resimulated a tick that ran through the named phase. Returns, per peer,
-// how many corrected ticks did.
+// Bursts delivery while scripting the phase's live input, and -- inside
+// each step, before the driver evicts its retained boundaries -- checks
+// whether a correction actually resimulated a tick that ran through the
+// named phase. Returns, per peer, how many corrected ticks did.
 function runPhase(host: SimHost, harness: RealHarness, phaseId: PhaseId): number[] {
   const observed = harness.peers.map(() => 0);
   const first = harness.firstInputTick;
@@ -537,8 +527,7 @@ function runPhase(host: SimHost, harness: RealHarness, phaseId: PhaseId): number
       // ordinary forward tick appended on nearly every call; this map lets
       // a correction's tick range be paired back up with its own combat
       // events. A repeated tick would silently overwrite the earlier entry,
-      // so this asserts uniqueness the same way the Lua original does,
-      // rather than let that happen quietly.
+      // so this asserts uniqueness rather than let that happen quietly.
       const byTick = new Map<number, RollbackTickOutput>();
       for (const output of batch.outputs) {
         if (byTick.has(output.tick)) {
@@ -596,10 +585,10 @@ describe("online match presentation combat phases (real wasm bridges + online_co
   }
 
   // Revoking a *combat* cue is the rare half of the contract, and it has to
-  // be sought out rather than waited for -- see the Lua original's own
-  // comment for why the unarmed scrum (`contact`'s fixture) is where it
-  // happens: eight bodies inside one 30px reach of each other, so a
-  // corrected pixel is the difference between a contact and a miss.
+  // be sought out rather than waited for: the unarmed scrum (`contact`'s
+  // fixture) is where it happens, because eight bodies are inside one 30px
+  // reach of each other, so a corrected pixel is the difference between a
+  // contact and a miss.
   it("never publishes a combat cue a correction took away", () => {
     const host = loadSimHost();
     const harness = buildHarness(host, "1v1", 30, () => host.onlineCombatPhaseBoundaryZero("contact"));
@@ -613,8 +602,7 @@ describe("online match presentation combat phases (real wasm bridges + online_co
   // The exactly-once contract has to survive the end of the match, not only
   // hold mid-run -- this takes a combat-active boundary zero (a 4-second
   // match, so the run below reaches full time) all the way through under
-  // bursty delivery. Mirrors the Lua original's own duration/step budget
-  // (`4 * 60 + 90` steps, `period = 6`).
+  // bursty delivery, using a `4 * 60 + 90` step budget with `period = 6`.
   //
   // # Unblocked
   //
@@ -665,12 +653,11 @@ describe("online match presentation combat phases (real wasm bridges + online_co
           restarts += 1;
         }
       }
-      // Mirrors the Lua original's own pinned zero: the unarmed scrum this
-      // boundary zero seeds (eight bodies stacked around the pitch's
-      // midline, fighting rather than advancing, under the fixture's own
-      // no-goal-limit duration) confirms `lifecycle/full_time` exactly once
-      // per peer, and nothing else -- a record, not a requirement (see the
-      // Lua original's own comment): `assertPublishedOnce` below already
+      // The unarmed scrum this boundary zero seeds (eight bodies stacked
+      // around the pitch's midline, fighting rather than advancing, under
+      // the fixture's own no-goal-limit duration) confirms
+      // `lifecycle/full_time` exactly once per peer, and nothing else -- a
+      // record, not a requirement: `assertPublishedOnce` below already
       // holds kickoff/goal rows to exactly once each if they ever appear,
       // so pinning `restarts` at zero means the day this fixture starts
       // scoring, this assertion fails and someone decides what the case now

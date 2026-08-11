@@ -1,16 +1,13 @@
-//! Port of `spec/sim/tuning_spec.lua`.
+//! Tests for `gc_sim::tuning`.
 //!
-//! The Lua spec's last case ("the sim reads live values (a tuned knob
-//! changes behavior)") drives a real `MatchState` via
-//! `sim.match.new`/`match.step`. `sim/match.lua` is another agent's module
-//! and is still an unported placeholder (`gc_sim::r#match`), so that case is
-//! ported as `#[ignore]` below with a note.
+//! The last case below ("the sim reads live values (a tuned knob changes
+//! behavior)") drives a real `MatchState` via `sim_match::new`/
+//! `sim_match::step` to confirm a tuned knob actually changes simulated
+//! behavior.
 //!
-//! The Lua original is a mutable module-level singleton; this port's
-//! `Tuning` is an owned value instead (see `crate::tuning`'s doc), so each
-//! case here starts from `Tuning::new()` in place of the Lua spec's
-//! `tuning.reset()` calls that re-synchronize the shared singleton between
-//! cases.
+//! `Tuning` is an owned value, not a mutable global singleton (see
+//! `crate::tuning`'s doc), so each case here starts from a fresh
+//! `Tuning::new()` instead of resetting a shared instance between cases.
 
 use gc_core::vec2::Vec2;
 use gc_sim::r#match::{self as sim_match, NewMatchOptions, StepInput};

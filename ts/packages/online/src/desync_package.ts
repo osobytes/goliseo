@@ -1,35 +1,35 @@
-// Narrow port of game/online/desync_package.lua.
+// A narrow, TS-local desync-package builder.
 //
 // This file exists for exactly one caller: `net_diagnostics.spec.ts`'s
 // "stops poisoned free text reaching a desync package" case. That case is a
-// privacy claim, not a wire-format claim -- the Lua original's own comment
-// on it says so: "the package embeds runtime events verbatim, so redaction
-// has to have happened on the way in rather than on the way out." The
-// behaviour worth proving is that `net_diagnostics.ts`'s own redaction
-// (`recordEvent` -> `diagnostics_schema.ts`'s `redactFreeText`) is what
-// keeps a desync package clean, not some second sanitising pass here. This
-// file has none -- it embeds `exportArtifact`'s output as-is, on purpose.
+// privacy claim, not a wire-format claim: the package embeds runtime events
+// verbatim, so redaction has to have happened on the way in rather than on
+// the way out. The behaviour worth proving is that `net_diagnostics.ts`'s
+// own redaction (`recordEvent` -> `diagnostics_schema.ts`'s
+// `redactFreeText`) is what keeps a desync package clean, not some second
+// sanitising pass here. This file has none -- it embeds `exportArtifact`'s
+// output as-is, on purpose.
 //
-// Per v2/README.md S2, the wire-format half of `desync_package.lua`
-// (`protocol.lua`-shaped identity, the schema-checked round trip, a shared
+// Per ARCHITECTURE.md §1, the wire-format half of a desync package
+// (protocol-shaped identity, the schema-checked round trip, a shared
 // cross-language digest) is Rust-owned and already lives at
 // `crates/gc-netcode/src/desync_package.rs`, complete and tested against a
 // committed identity vector. This is not that module, and does not
 // duplicate it.
 //
-// ## Deliberately left out of this port, and why
+// ## Deliberately left out, and why
 //
 //   * `input_protocol.decode`-derived `from_input_tick` / `through_input_tick`
-//     / the `"fixture_boundary_zero"` classification. The Lua original
-//     decodes every wire to discover which ticks it actually covers.
-//     `input_protocol` is Rust-owned with no TS (or `@gc/wasm`-bridge)
-//     decode surface this package may depend on -- `net_diagnostics` is TS
-//     *by design* specifically so it never has to reach across the
-//     determinism line (v2/README.md S2). `build` below never claims
-//     `"fixture_boundary_zero"`, the one classification only decoding can
-//     actually prove; it reports `"tape_reference"` when a tape is given
-//     and otherwise the weakest honest claim, `"retained_window"`. A weak
-//     claim that is true beats a strong claim this file cannot check.
+//     / the `"fixture_boundary_zero"` classification. The full
+//     (`crates/gc-netcode`) implementation decodes every wire to discover
+//     which ticks it actually covers. `input_protocol` is Rust-owned with no
+//     TS (or `@gc/wasm`-bridge) decode surface this package may depend on --
+//     `net_diagnostics` is TS *by design* specifically so it never has to
+//     reach across the determinism line (ARCHITECTURE.md §1). `build` below
+//     never claims `"fixture_boundary_zero"`, the one classification only
+//     decoding can actually prove; it reports `"tape_reference"` when a tape
+//     is given and otherwise the weakest honest claim, `"retained_window"`.
+//     A weak claim that is true beats a strong claim this file cannot check.
 //   * `desync_package.SHAPE`, `schema.validate` against it, `digest`,
 //     `rows` (wire -> row decode), and `summary`. No caller of this file
 //     needs schema-checked round-tripping, a content digest over the whole
@@ -40,13 +40,13 @@
 //     length-prefixed encoding.
 //   * `first_difference` (`MatchSnapshotDifference`). Nothing in the one
 //     case this file serves supplies one.
-//   * Per-wire length bounds and the `an input wire must be a string`
-//     shape check the Lua build performs before its schema validation --
-//     dropped along with the schema validation itself.
+//   * Per-wire length bounds and an `an input wire must be a string`
+//     shape check performed before schema validation -- dropped along with
+//     the schema validation itself.
 //
-// If a second caller ever needs more of `desync_package.lua`, port more of
-// it then. This file's job is the one behaviour above, not full parity with
-// the Lua module or with `crates/gc-netcode`'s Rust port.
+// If a second caller ever needs more of this, extend it then. This file's
+// job is the one behaviour above, not full parity with `crates/gc-netcode`'s
+// desync-package implementation.
 
 import { type Result, ok, err } from "@gc/core";
 import * as schema from "./diagnostics_schema.ts";
@@ -79,7 +79,7 @@ export interface DesyncPackageOptions {
 export const VERSION = 1;
 
 // 192 wires at the protocol's 1 KiB envelope bound is a 192 KiB ceiling --
-// same rationale and same value as the Lua original's `MAX_WIRES`.
+// same rationale and same value as `crates/gc-netcode`'s `MAX_WIRES`.
 export const MAX_WIRES = 192;
 
 // Only the parts of `exportArtifact`'s dynamic result this file reads back.
@@ -102,9 +102,9 @@ function isInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && Math.floor(value) === value;
 }
 
-// Assemble a package. Returns `err` on anything malformed, mirroring the
-// Lua original's `nil, err` -- a capture is produced at the worst moment of
-// a session and must never be the thing that throws.
+// Assemble a package. Returns `err` on anything malformed, rather than
+// throwing -- a capture is produced at the worst moment of a session and
+// must never be the thing that throws.
 export function build(options: DesyncPackageOptions): Result<Record<string, unknown>, string> {
   if (!isInteger(options.agreed_boundary_tick) || !isInteger(options.divergence_tick)) {
     return err("a desync package needs finite integer boundary ticks");

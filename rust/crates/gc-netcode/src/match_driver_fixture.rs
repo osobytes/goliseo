@@ -1,37 +1,25 @@
-//! Port of `game/online/match_driver_fixture.lua`.
+//! Fixture builders for a connected, in-process online match session.
 //!
-//! The Lua original builds three things: a pinned slot-mode boundary zero
-//! ([`initial_snapshot`], fully ported below), a frozen `CoordinatorFreeze`
-//! (`fixture.freeze`, [`freeze`]), and a connected in-process star
-//! (`fixture.session`, [`session`]).
-//!
-//! Those two were blocked when this file was first ported: `coordinator.rs`
-//! and `protocol.rs` were `NOT YET PORTED` placeholders, and
-//! `game/transport/fake_star.lua` (permanently TypeScript-owned per
-//! `v2/README.md` §2) had no Rust type at all. Both blockers are now
-//! resolved — `coordinator.rs`/`protocol.rs` are ported, and
-//! [`crate::fake_star`] is a Rust in-process fake star transport written
-//! against [`crate::fault_transport`]'s restated `StarTransportAdapter`
-//! trait — so [`peer_ids`], [`freeze`], and [`session`] are ported for real
-//! below.
+//! This module builds three things: a pinned slot-mode boundary zero
+//! ([`initial_snapshot`]), a frozen `CoordinatorFreeze` ([`freeze`]), and a
+//! connected in-process star ([`session`]), the last built on
+//! [`crate::fake_star`], a Rust in-process fake star transport written
+//! against [`crate::fault_transport`]'s `StarTransportAdapter` trait.
 //!
 //! # Bridging the real and placeholder `CoordinatorFreeze`
 //!
 //! [`freeze`] returns [`crate::coordinator::Freeze`] — the real type, one to
-//! one with what `coordinator.begin_countdown` produces — because that is
-//! what the Lua `fixture.freeze` builds. [`crate::match_driver::MatchDriver`]
-//! itself still stores the narrower `crate::match_driver::CoordinatorFreeze`
-//! placeholder documented in that module (README §5.1: replacing it is
-//! "whoever ports coordinator.lua"'s job, out of scope for this file to
+//! one with what `coordinator::begin_countdown` produces.
+//! [`crate::match_driver::MatchDriver`] itself still stores the narrower
+//! `crate::match_driver::CoordinatorFreeze` placeholder documented in that
+//! module (replacing it with the real type is out of scope for this file to
 //! decide unilaterally). [`to_driver_freeze`]/[`to_driver_manifest`] bridge
 //! the two, and [`DriverRules`] is the real
-//! [`crate::match_driver::MatchDriverRules`] implementation — the thing that
-//! module's doc says "a caller supplies... once `coordinator.rs`/
-//! `live_slot.rs`/`protocol.rs` land" — built by delegating to
-//! [`crate::live_slot`], [`crate::coordinator`], and a real port of
-//! `input_protocol.canonical_host_batch` (omitted from `input_protocol.rs`
-//! for the identical reason `match_driver.rs`'s trait exists at all: it
-//! needs `protocol.lua`, out of scope for that file's own agent).
+//! [`crate::match_driver::MatchDriverRules`] implementation a `MatchDriver`
+//! caller injects — built by delegating to [`crate::live_slot`],
+//! [`crate::coordinator`], and this file's own `canonical_host_batch`, which
+//! needs manifest/assignment context [`crate::input_protocol`] deliberately
+//! does not hold (see that module's own doc comment).
 
 use crate::coordinator;
 use crate::fake_star::{self, FakeStarTransport};
@@ -55,25 +43,24 @@ use gc_sim::r#match::{self, NewMatchOptions};
 use gc_sim::match_snapshot::{self, MatchSnapshot, MatchState, PitchSize};
 use indexmap::IndexMap;
 
-/// Mirrors `fixture.HOST_PEER_ID` (`transport_contract.HOST_PEER_ID` —
-/// duplicated the same way `crate::match_driver` duplicates it).
+/// The fixture host's fixed peer id, duplicated locally the same way
+/// `crate::match_driver` duplicates `transport_contract.HOST_PEER_ID`.
 pub const HOST_PEER_ID: &str = "host";
-/// Mirrors `fixture.COUNTDOWN_ID`.
+/// The fixed countdown id every fixture session freezes under.
 pub const COUNTDOWN_ID: &str = "countdown.1";
-/// Mirrors `fixture.DEFAULT_DURATION`.
+/// This fixture's default match duration, in seconds.
 pub const DEFAULT_DURATION: f64 = 6.0;
-/// Mirrors `fixture.DEFAULT_SEED`.
+/// This fixture's default simulation RNG seed.
 pub const DEFAULT_SEED: f64 = 74.0;
 
-/// Mirrors `fixture.guest_peer_id`.
+/// This fixture's peer id for the guest seated at `index`.
 #[must_use]
 pub fn guest_peer_id(index: i64) -> String {
     format!("guest_{index}")
 }
 
 /// Boundary zero for the pinned combat fixture: two authored fixture teams,
-/// slot mode, and (when `combat_active`) the combat snapshot schema. Mirrors
-/// `fixture.initial_snapshot`.
+/// slot mode, and (when `combat_active`) the combat snapshot schema.
 ///
 /// `seed` overrides the pinned match seed — every peer shares one boundary
 /// zero in a real session, so a differing seed is not a configuration; it is
@@ -118,8 +105,7 @@ pub fn initial_snapshot(
 }
 
 /// The full connected session this fixture assembles: mode, manifest,
-/// frozen ownership, and every endpoint's transport. Mirrors
-/// `MatchDriverFixtureSession`.
+/// frozen ownership, and every endpoint's transport.
 pub struct MatchDriverFixtureSession {
     /// Which match mode this session seats.
     pub mode: protocol::MatchMode,
@@ -139,8 +125,7 @@ pub struct MatchDriverFixtureSession {
 
 /// Every peer id this session seats, host first. `humans` defaults to a
 /// full lobby: a short lobby is the only way a declared bot fill exists at
-/// all, since at full seating every mode covers all eight slots. Mirrors
-/// `fixture.peer_ids`.
+/// all, since at full seating every mode covers all eight slots.
 ///
 /// # Panics
 ///
@@ -163,7 +148,7 @@ pub fn peer_ids(mode: protocol::MatchMode, humans: Option<i64>) -> Vec<String> {
 /// The freeze `coordinator.begin_countdown` produces, rebuilt from the same
 /// public pieces: `plan_assignments` seats the humans, `slot_sources` proves
 /// the seating, `owned_slots` names each owned set, and the opening live
-/// slot is the first owned slot in canonical order. Mirrors `fixture.freeze`.
+/// slot is the first owned slot in canonical order.
 ///
 /// # Panics
 ///
@@ -219,7 +204,7 @@ pub fn freeze(
 
 /// One connected in-process star: a host endpoint plus one guest endpoint
 /// per seated guest, all sharing a rendezvous so they can only reach each
-/// other. Mirrors `fixture.session`.
+/// other.
 ///
 /// # Panics
 ///
@@ -311,23 +296,21 @@ pub fn to_driver_manifest(manifest: &Value) -> SessionManifest {
 
 // ---------------------------------------------------------------------------
 // `DriverRules`: the real `MatchDriverRules`, delegating to `live_slot`,
-// `coordinator`, and a real `input_protocol.canonical_host_batch` port (see
-// module doc).
+// `coordinator`, and this file's own `canonical_host_batch` (see module doc).
 // ---------------------------------------------------------------------------
 
 /// The real [`MatchDriverRules`] implementation: [`Self::carrier`]/
 /// [`Self::transition`]/[`Self::next_live_slot`]/[`Self::slot_drivers`]
 /// delegate directly to [`crate::live_slot`]/[`crate::coordinator`]; only
-/// [`Self::canonical_host_batch`] is new code, because
-/// `input_protocol.canonical_host_batch` needs `protocol.lua` and was
-/// therefore never ported into `input_protocol.rs` (see that module's own
-/// doc comment).
+/// [`Self::canonical_host_batch`] is new code, because it needs manifest and
+/// assignment validation that `input_protocol.rs` deliberately does not hold
+/// (see that module's own doc comment).
 ///
 /// Holds its own copy of the real manifest and freeze — the ones
 /// [`crate::match_driver::MatchDriver`] itself is built from are the
 /// narrower placeholder shapes ([`to_driver_freeze`]/[`to_driver_manifest`]),
-/// which do not carry enough to validate a host batch against
-/// `protocol.lua`'s rules.
+/// which do not carry enough to validate a host batch against the session
+/// protocol's own rules.
 pub struct DriverRules {
     manifest: Value,
     freeze: coordinator::Freeze,
@@ -349,10 +332,9 @@ fn host_batch_error(code: HostBatchErrorCode, message: impl Into<String>) -> Hos
 }
 
 /// A bounded opaque ASCII id: alphanumeric start, then alphanumerics plus
-/// `_`, `.`, `-`. Restates `input_protocol.lua`'s `validate_id` predicate
-/// (that module's own helper is private — see `input_protocol.rs`'s doc for
-/// why this crate duplicates small bound constants rather than importing
-/// them).
+/// `_`, `.`, `-`. Restates `input_protocol.rs`'s private `validate_id`
+/// predicate locally — see that module's doc comment for why this crate
+/// duplicates small bound constants rather than importing them.
 fn valid_ascii_id(value: &str, maximum: usize) -> bool {
     let bytes = value.as_bytes();
     !bytes.is_empty()
@@ -369,11 +351,11 @@ fn row_order(
     a.tick.cmp(&b.tick).then(a.slot_index.cmp(&b.slot_index))
 }
 
-/// Mirrors `input_protocol.canonical_host_batch`'s envelope check
-/// (`input_protocol.validate_envelope`, itself omitted from
-/// `input_protocol.rs` because it needs `TransportMessage` — see that
-/// module's doc comment. This crate now has that type via
-/// [`crate::fault_transport`], so the check is written here instead).
+/// The same envelope check as [`input_protocol::validate_envelope`],
+/// restated locally: `canonical_host_batch` reports failures as
+/// [`HostBatchError`]/[`HostBatchErrorCode`] rather than
+/// [`input_protocol::Error`], so it re-checks here instead of reusing that
+/// function's `Result` type.
 fn validate_envelope(
     packet: &input_protocol::Packet,
     envelope: &TransportMessage,
@@ -512,8 +494,8 @@ impl MatchDriverRules for DriverRules {
                 "host first input tick is invalid",
             ));
         }
-        // Mirrors `transport_contract.MAX_QUEUE_LIMIT` (`game/transport/contract.lua:161`),
-        // duplicated the same way `crate::match_driver` duplicates it.
+        // The transport contract's fixed queue-limit bound, duplicated the
+        // same way `crate::match_driver` duplicates it.
         const TRANSPORT_MAX_QUEUE_LIMIT: i64 = 256;
         if request.arrivals.is_empty() || request.arrivals.len() as i64 > TRANSPORT_MAX_QUEUE_LIMIT
         {

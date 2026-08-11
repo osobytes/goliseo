@@ -1,15 +1,11 @@
-// Ported from the "lobby control framing" describe block of
-// spec/game/online_lobby_flow_spec.lua.
+// This block never touches `game.screens.lobby_model` or `LobbyTestDriver`
+// at all: it drives `lobby_link.frame` / `lobby_link.absorb` directly,
+// pinning the chunking and reassembly invariants of *this* module alone. It
+// belongs here, not in `@gc/screens`' `lobby_flow.spec.ts`, precisely
+// because it has nothing to do with the lobby model.
 //
-// This block is the one part of that spec that never touches
-// `game.screens.lobby_model` or `LobbyTestDriver` at all: it drives
-// `lobby_link.frame` / `lobby_link.absorb` directly, pinning the chunking
-// and reassembly invariants of *this* module alone. It belongs here, not in
-// `@gc/screens`' `lobby_flow.spec.ts`, precisely because it is the half of
-// the original spec that has nothing to do with the lobby model.
-//
-// `game.online.protocol` is Rust-owned (`crates/gc-netcode`; v2/README.md
-// §2.1) with no wasm bridge this milestone, so the one case that builds a
+// `game.online.protocol` is Rust-owned (`crates/gc-netcode`; ARCHITECTURE.md
+// §1.1) with no wasm bridge this milestone, so the one case that builds a
 // real control wire ("carries a real control wire whose body holds
 // delimiters") cannot call the real `protocol.new`/`protocol.encode`/
 // `protocol.decode`. A minimal local stand-in is used instead -- just

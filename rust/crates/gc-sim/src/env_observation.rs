@@ -1,5 +1,3 @@
-//! Port of `sim/env_observation.lua`.
-//!
 //! Versioned learning-environment observations.
 //!
 //! Three explicitly tagged profiles:
@@ -25,40 +23,34 @@
 //! Field-by-field source, unit, visibility, and history rules live in
 //! `docs/design/learning_environment.md`.
 //!
-//! ## Port notes
+//! ## Implementation notes
 //!
-//! `env_observation.lua` never calls `require("sim.env_config")` — it uses
-//! the `EnvObservationProfile` LuaCATS alias directly, needing no `require`.
-//! `env_config.rs` already established the pattern this port follows: each
-//! module that touches the alias declares its own local copy rather than
-//! importing one from another module's port, so the per-module dependency
-//! footprint matches the Lua original's `require` list exactly (see
-//! `env_config.rs`'s module doc for the same note). This module's
-//! `EnvObservationProfile` is therefore its own type, distinct from (but
-//! naming-compatible with) `env_config::EnvObservationProfile`.
+//! `EnvObservationProfile` is declared locally in this module rather than
+//! imported from [`crate::env_config`], even though `env_config` declares a
+//! naming-compatible type of the same name — see `env_config.rs`'s module
+//! doc for why each module that touches this small closed-set alias keeps
+//! its own local copy instead of sharing one. This module's
+//! `EnvObservationProfile` is therefore its own type, distinct from
+//! `env_config::EnvObservationProfile`.
 //!
-//! The Lua `env_observation.encode(observation)` accepts either an
-//! `EnvObservation` or a bare `EnvSlotView` (a LuaCATS union). Rust has no
-//! free-function overloading, so this port exposes two entry points,
-//! [`encode`] and [`encode_view`], sharing the same canonical-encoding
-//! machinery.
+//! An observation can be encoded either as a full `EnvObservation` or a bare
+//! `EnvSlotView`; Rust has no free-function overloading, so this module
+//! exposes two entry points, [`encode`] and [`encode_view`], sharing the
+//! same canonical-encoding machinery.
 //!
 //! `EnvPrivilegedView.snapshot` is canonically encoded as
 //! `match_snapshot::hash(&self.snapshot)` rather than a full field-by-field
-//! walk of `MatchSnapshot`'s own ~50 nested fields. The Lua original's
-//! generic `encode_value` really does recurse into the raw snapshot table,
-//! but reproducing that here would mean re-deriving `match_snapshot.rs`'s
-//! entire canonical-encoding surface a second time, in a different
-//! generic-value shape, as a module this port does not own and must not
-//! edit — a duplication liable to drift the moment that module's shape
-//! changes. Using its own `hash` instead is still deterministic, still
-//! reacts to every field the real encoding would (by that function's own
-//! correctness contract), and is the same mechanism the rest of the
-//! codebase already uses to answer "did this state change" (e.g.
-//! `boundary_hash`). No test this module owns exercises the difference:
-//! `spec/sim/env_leakage_spec.lua`, the spec that stresses privileged-profile
-//! encoding specifically, needs `sim::env`/`sim::match` and is out of scope
-//! here (see `tests/env_leakage.rs`). Flagged in the porting report.
+//! walk of `MatchSnapshot`'s own ~50 nested fields. Re-deriving
+//! `match_snapshot.rs`'s entire canonical-encoding surface a second time, in
+//! a different generic-value shape, would be a duplication liable to drift
+//! the moment that module's shape changes. Using its own `hash` instead is
+//! still deterministic, still reacts to every field the real encoding would
+//! (by that function's own correctness contract), and is the same mechanism
+//! the rest of the codebase already uses to answer "did this state change"
+//! (e.g. `boundary_hash`). No test this module owns exercises the
+//! difference: the privileged-profile encoding stress test needs
+//! `sim::env`/`sim::match` and is out of scope here (see
+//! `tests/env_leakage.rs`).
 
 use crate::combat_feasibility::CombatActionPhase;
 use crate::combat_observation;
@@ -178,19 +170,17 @@ pub enum EnvObservationErrorCode {
     ///
     /// Unreachable through this module's own public API: `profile` is typed
     /// as [`EnvObservationProfile`], a closed enum, so an invalid profile
-    /// cannot be constructed to begin with. The Lua original validates a
-    /// bare profile *string* here (`spec/sim/env_observation_spec.lua`'s
-    /// `UNKNOWN_PROFILE = "oracle"` case); this port pushes that
-    /// string-to-enum validation to whichever layer parses a wire/config
-    /// string (see `env_config::normalize`), and keeps this variant only so
-    /// the error shape still matches the LuaCATS `EnvObservationErrorCode`
-    /// alias.
+    /// cannot be constructed to begin with. Validating a bare profile
+    /// *string* (e.g. an unknown `"oracle"` value) is pushed to whichever
+    /// layer parses a wire/config string instead (see
+    /// `env_config::normalize`), and this variant survives only so the
+    /// error shape still covers that case.
     UnknownProfile,
     /// The observation profile and controlled-slot count disagree.
     ProfileMismatch,
 }
 
-/// An expected, recoverable env-observation failure (README rule 5.5).
+/// An expected, recoverable env-observation failure (ARCHITECTURE.md §3 rule 5).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EnvObservationError {
     /// Machine-readable failure reason.
@@ -294,9 +284,8 @@ pub struct EnvObservedBall {
 
 /// Equipment telegraph for another player: the drawn arc colour, its alpha
 /// phase, and the visible stagger/knockback pose. Remaining phase ticks,
-/// cooldown, and loadout identity are withheld — see
-/// `sim/env_observation.lua`'s `EnvObservedEquipment` doc for the render
-/// citations.
+/// cooldown, and loadout identity are withheld — the presented match does
+/// not show them, so a policy observing this cannot see them either.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EnvObservedEquipment {
     /// Visible equipment silhouette / arc colour.
@@ -339,9 +328,9 @@ pub struct EnvObservedSelfEquipment {
 /// citation. [`PLAYER_FIELD_NAMES`] pins the same set for a canonical-key
 /// audit — see `tests/env_observation.rs`.
 ///
-/// Deliberately absent, per an exhaustive read of `game/render/*.lua` and
-/// `render/player_pose.lua`, which finds no pose, colour, or icon for them
-/// on a non-local player: `charging`, `jockeying`, `tackling`, `dodging`,
+/// Deliberately absent, per an exhaustive read of the renderer, which shows
+/// no pose, colour, or icon for them on a non-local player: `charging`,
+/// `jockeying`, `tackling`, `dodging`,
 /// and `stunned`. The discrete `tackle` `MatchEvent` does have presentation
 /// and reaches an observation through the confirmed-event channel; that is a
 /// separate, legitimate channel and is not the same as a continuous boolean
@@ -569,10 +558,10 @@ pub struct EnvObservationContext {
     /// snapshot never pays for a second capture" is a real, checkable
     /// invariant rather than only a comment. A well-behaved caller that
     /// always donates a snapshot when one exists (as [`crate::env::step`]
-    /// does) should see this stay at zero; `spec/sim/env_budget_spec.lua`'s
-    /// "does not re-capture the boundary for the privileged profile" case
-    /// measured this indirectly, as an allocation-budget ceiling. This is
-    /// the same property recovered as an exact call count instead — see
+    /// does) should see this stay at zero — the "does not re-capture the
+    /// boundary for the privileged profile" case in `tests/env_budget.rs`
+    /// checks this directly, as an exact call count instead of an
+    /// allocation-budget ceiling — see
     /// `crate::env::EnvInstance::snapshot_captures`'s doc, which folds this
     /// counter in after every [`crate::env::step`] call.
     ///
@@ -595,9 +584,9 @@ pub struct EnvSlotView {
     pub slot_id: input_frame::SlotId,
     /// Absolute side of this slot (public fixture fact).
     pub team: input_frame::Team,
-    /// Presented match/score/clock state. Lua field name `match`; `match` is
-    /// a Rust keyword, hence the raw identifier (same convention as
-    /// `gc_sim::r#match`).
+    /// Presented match/score/clock state. Named `r#match` because `match` is
+    /// a Rust keyword — the same convention `gc_sim::r#match` itself uses
+    /// for the module name.
     pub r#match: EnvObservedMatch,
     /// Presented pitch geometry from this slot's side.
     pub geometry: EnvObservedGeometry,
@@ -632,9 +621,9 @@ pub struct EnvObservation {
     pub slots: Vec<i64>,
     /// Per-slot views, indexed by `slot - 1` (canonical slots are one-based
     /// 1..=[`crate::input_frame::SLOT_COUNT`]). `None` where that slot is
-    /// not covered. A `Vec`, not a map (README rule 4/6): the key domain is
-    /// exactly the eight canonical slots, so this is a dense array with
-    /// holes rather than a banned hash table.
+    /// not covered. A `Vec`, not a map (ARCHITECTURE.md §3 rule 4): the key
+    /// domain is exactly the eight canonical slots, so this is a dense array
+    /// with holes rather than a banned hash table.
     pub views: Vec<Option<EnvSlotView>>,
 }
 
@@ -1101,17 +1090,13 @@ pub fn view_for(observation: &EnvObservation, slot: i64) -> Option<&EnvSlotView>
 // Canonical encoding.
 // ---------------------------------------------------------------------------
 
-/// A canonical scalar or nested table — this port's stand-in for the dynamic
-/// value the Lua original's `encode_value` walks via `pairs()`. Building this
-/// tree from typed structs is how a fixed-shape Rust port still reproduces
-/// that walk: each `*_to_canonical` function below lists only the fields
-/// actually present. An absent `Option::None` in Lua is an absent table key
-/// (`pairs` never yields a nil-valued key — a Lua table constructor's
-/// `field = nil` never creates the key at all), not a key paired with a nil
-/// value, so these functions omit a `None` field's key entirely rather than
-/// emitting a null marker for it. Getting this right matters: it is what
-/// keeps the canonical byte count (`t<N>;`) and the sorted key set faithful
-/// to what the Lua encoder would actually produce for the same observation.
+/// A canonical scalar or nested table, built from typed structs: each
+/// `*_to_canonical` function below lists only the fields actually present.
+/// An absent `Option::None` becomes an absent table key, not a key paired
+/// with a null value, so these functions omit a `None` field's key entirely
+/// rather than emitting a null marker for it. Getting this right matters:
+/// it is what keeps the canonical byte count (`t<N>;`) and the sorted key
+/// set correct.
 enum CanonicalValue {
     Bool(bool),
     Number(f64),
@@ -1551,12 +1536,10 @@ fn append_key(parts: &mut String, key: &CanonicalTableKey) {
     }
 }
 
-/// Mirrors the Lua original's generic `encode_value`: numeric and string
-/// keys are collected, sorted independently (numeric group first, matching
-/// `table.sort(numeric)` then `table.sort(strings)`), and the sorted union's
-/// count leads the table's encoding. Lua's default `<` on strings is a byte
-/// comparison, which is exactly what `str`'s `Ord` gives here for the ASCII
-/// field names this module ever produces.
+/// Numeric and string keys are collected, sorted independently (numeric
+/// group first), and the sorted union's count leads the table's encoding.
+/// Key ordering uses `str`'s `Ord`, a byte comparison, for the ASCII field
+/// names this module ever produces.
 fn append_value(parts: &mut String, value: &CanonicalValue) {
     match value {
         CanonicalValue::Bool(b) => parts.push_str(if *b { "b1;" } else { "b0;" }),
@@ -1607,9 +1590,9 @@ pub fn encode(observation: &EnvObservation) -> String {
     parts
 }
 
-/// Canonical byte-exact encoding of a single slot view. See [`encode`]'s doc
-/// for why this port splits the Lua original's single
-/// `encode(EnvObservation|EnvSlotView)` into two entry points.
+/// Canonical byte-exact encoding of a single slot view. See the module doc
+/// for why encoding an `EnvObservation` and a bare `EnvSlotView` are two
+/// entry points rather than one overloaded function.
 #[must_use]
 pub fn encode_view(view: &EnvSlotView) -> String {
     let mut parts = String::new();

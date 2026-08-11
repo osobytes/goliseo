@@ -1,9 +1,6 @@
-// Ported from game/match_contract.lua.
-//
-// The Lua original reads `data.arenas`/`data.formations`/`data.players`/
-// `data.tactics`/`data.teams` at module load time. Those tables are
-// Rust-owned (v2/README.md rule 6.7), so every function here takes a
-// `MatchContractContent` bundle as its first explicit parameter instead.
+// Arena/formation/player/tactic/team data is Rust-owned (ARCHITECTURE.md §4
+// rule 6), so every function here takes a `MatchContractContent` bundle as its
+// first explicit parameter instead of importing those tables.
 
 import { type Result, err, ok } from "@gc/core";
 import type { MatchContractContent, TeamData } from "./content.ts";

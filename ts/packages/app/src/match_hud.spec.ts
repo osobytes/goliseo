@@ -1,21 +1,15 @@
-// Ported from spec/game/match_hud_spec.lua.
-//
-// The Lua spec drives `hud.model` from `render_frame.hud(match_sim.new(...))`
-// -- a real simulation state run through the Rust-owned RenderFrame producer
-// (`render/frame.lua` -> `crates/gc-render`; v2/README.md §2) -- and from
-// `combat_presentation.model`/`combat_feedback` (`@gc/presentation`, not a
-// declared dependency of this package). Neither is available to this port.
-//
-// `hud.model` itself only transforms an already-built `RenderFrameHud` +
-// `MatchHudContext` into a `MatchHudModel`; none of that transformation is
-// simulation math. Every case below is therefore ported against hand-built
-// `RenderFrameHud`/`CombatPlayerPresentation`/`CombatFeedbackNotice`
-// fixtures standing in for what the real Rust/`@gc/presentation` pipeline
-// would have produced -- same technique `@gc/screens`'s `content.ts`-based
-// fixtures use, and the "supplementary unit tests against the ported
-// module's own control flow" the task brief calls for. The specific team
-// names/species/notice text below are chosen to exercise `hud.model`'s
-// branches, not transcribed from the unreachable Lua fixture values.
+// `hud.model` takes an already-built `RenderFrameHud` + `MatchHudContext`
+// and produces a `MatchHudModel`; none of that transformation is simulation
+// math. The full pipeline that would build a real `RenderFrameHud` -- the
+// Rust-owned RenderFrame producer (`crates/gc-render`; ARCHITECTURE.md §1) --
+// and `combat_presentation.model`/`combat_feedback` (`@gc/presentation`)
+// are not declared dependencies of this package, so every case below drives
+// `hud.model` against hand-built `RenderFrameHud`/`CombatPlayerPresentation`/
+// `CombatFeedbackNotice` fixtures standing in for what that pipeline would
+// have produced -- the same technique `@gc/screens`'s `content.ts`-based
+// fixtures use. The specific team names/species/notice text below are
+// chosen to exercise `hud.model`'s branches, not any particular external
+// fixture values.
 
 import { describe, expect, it } from "vitest";
 import { hud, type IdentityPort, type MatchHudContext, type RenderFrameHud } from "./match_hud.ts";

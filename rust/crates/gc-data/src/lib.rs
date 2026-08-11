@@ -1,10 +1,9 @@
 //! Content tables: players, teams, formations, tactics, traits, arenas.
 //!
-//! Every module here is a straight port of a same-named file under `data/` in
-//! the Lua tree (AGENTS.md §8: data is content, code is mechanism). The one
-//! exception is [`omp1_determinism`], a golden determinism-evidence fixture
-//! converted mechanically to JSON rather than hand-translated; see its module
-//! doc for details.
+//! Every module here is data, not logic (AGENTS.md §8: data is content, code
+//! is mechanism). The one exception is [`omp1_determinism`], a golden
+//! determinism-evidence fixture converted mechanically to JSON; see its
+//! module doc for details.
 
 pub mod action_families;
 pub mod arenas;

@@ -1,39 +1,36 @@
-//! Port of `sim/rollback_playable_lab.lua`.
-//!
 //! Pure incremental rollback laboratory for the playable match screen. One
 //! render-owned fixed clock supplies transport ticks; this controller owns
 //! the independent reference, predicted client, network impairment, and
 //! stable presentation-event timeline.
 //!
-//! ## Value types replace the Lua `copy_value` helper
+//! ## No manual deep-copy helpers
 //!
-//! The Lua original threads a generic `copy_value` through every batch and
-//! debug-model read to defend a caller from mutating (or aliasing) a table
-//! this module still owns. Every payload type here
-//! ([`RollbackPlayableLabBatch`], [`RollbackPlayableLabDebugModel`],
+//! Every payload type here ([`RollbackPlayableLabBatch`],
+//! [`RollbackPlayableLabDebugModel`],
 //! [`crate::rollback_session::RollbackTickOutput`],
 //! [`crate::rollback_events::RollbackEventDiff`], ...) is an owned Rust
 //! value with a real [`Clone`] impl, so a `.clone()` at a read boundary
-//! already gives the independent copy `copy_value` exists to fake — matching
-//! the precedent in `rollback_session`, `rollback_input_history`, and
-//! `rollback_events`.
+//! already gives an independent copy — no manual deep-copy helper is
+//! needed, matching the precedent in `rollback_session`,
+//! `rollback_input_history`, and `rollback_events`.
 //!
 //! ## Profile name lookup has no Rust-side string table
 //!
-//! `data/network_profiles.lua` is a string-keyed table
-//! (`"clean"`/`"omp0_parity"`/`"playable"`/`"stress"`); `gc_data::network_profiles`
-//! exposes the same four rows through a closed `NetworkProfileName` enum
-//! with no string lookup. [`profile_by_name`] is this module's own narrow
-//! adapter between the two — a string is still the public surface here
+//! `gc_data::network_profiles` exposes its four rows
+//! (`"clean"`/`"omp0_parity"`/`"playable"`/`"stress"`) through a closed
+//! `NetworkProfileName` enum with no string lookup. [`profile_by_name`] is
+//! this module's own narrow adapter from a name string to that enum — a
+//! string is still the public surface here
 //! (`RollbackPlayableLabOptions.profile_name`) because a caller-supplied
 //! custom `profile` is still named by an arbitrary string for diagnostics.
 //!
-//!
 //! The independent reference state this module steps directly (not through
-//! `RollbackSession`) needs the same `marks` padding
-//! representational gap between a fixed-length Rust `Vec` and Lua's sparse,
-//! implicitly-nil table, not a simulation difference. This module reuses
-//! that helper (`pub(crate)`) rather than keeping a second copy.
+//! `RollbackSession`) needs the same relaxed restore behavior
+//! `rollback_session`'s own doc comment explains: a boundary-zero snapshot's
+//! `marks` legitimately is not sized to the full roster yet, so
+//! `controlled_initial_snapshot` restores it via
+//! [`match_snapshot::restore_owned`] rather than the validating
+//! `match_snapshot::restore`.
 
 use crate::input_frame::{self, InputSample};
 use crate::match_snapshot::{self, MatchSnapshot, MatchSnapshotDifference};
@@ -216,7 +213,7 @@ pub struct RollbackPlayableLabDebugModel {
 
 /// The playable rollback controller for one live match. Every field is
 /// internal state; use the free functions in this module to read or mutate
-/// it. Fields are `pub` (README rule: everything a test touches is `pub`).
+/// it. Fields are `pub` (ARCHITECTURE.md §3 rule 6: everything a test touches is `pub`).
 pub struct RollbackPlayableLab {
     /// The independent reference soccer state.
     pub reference: match_snapshot::MatchState,
@@ -774,7 +771,7 @@ fn finish_settlement_if_ready(lab: &mut RollbackPlayableLab) {
 /// # Panics
 ///
 /// Panics on a malformed `initial_snapshot`, an out-of-range `local_slot`,
-/// or an unknown `profile_name` (producer invariants, README rule 5.5).
+/// or an unknown `profile_name` (producer invariants, ARCHITECTURE.md §3 rule 5).
 #[must_use]
 pub fn new(
     initial_snapshot: &MatchSnapshot,
@@ -852,7 +849,7 @@ pub fn needs_local_sample(lab: &RollbackPlayableLab) -> bool {
 ///
 /// Panics if `transport_tick` is not contiguous, if a local sample is
 /// missing while active, or if one is supplied during settlement
-/// (producer invariants, README rule 5.5).
+/// (producer invariants, ARCHITECTURE.md §3 rule 5).
 pub fn advance(
     lab: &mut RollbackPlayableLab,
     transport_tick: i64,

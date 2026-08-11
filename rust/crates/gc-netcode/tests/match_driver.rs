@@ -1,37 +1,31 @@
-//! Port of `spec/game/online_match_driver_spec.lua`.
+//! Differential and behavioral tests for the online match driver.
 //!
-//! ## `fixture.session` is unblocked
+//! ## `fixture.session` and a real connected session
 //!
-//! Every one of the spec's 53 assertions (46 static `t.it` cases plus one
-//! `t.it` inside a loop over `combat_phases.PHASES`'s 7 named phases) is
-//! built through the spec's own `harness(mode, options)` helper
-//! (`spec/game/online_match_driver_spec.lua:34-82`), which calls
-//! `fixture.session(mode, ...)`. That, in turn, needed `coordinator.lua`
-//! (`plan_assignments`, `slot_sources`), `protocol.lua` (`match_mode`,
-//! `owned_slots`, `manifest_id`, `assignment_id`), `protocol_fixture.lua`,
-//! and `game/transport/fake_star.lua` — all landed now
-//! (`crate::coordinator`, `crate::protocol`, `crate::protocol_fixture`,
-//! `crate::fake_star`), and `crate::match_driver_fixture::session` builds a
-//! real connected host+guest session.
+//! `mod online_match_driver` and the free-standing cases below it are built
+//! through the `harness(mode, options)` helper defined in this file, which
+//! calls `crate::match_driver_fixture::session` (backed by
+//! `crate::coordinator`, `crate::protocol`, `crate::protocol_fixture`, and
+//! `crate::fake_star`) to build a real connected host+guest session.
 //!
 //! `match_driver_differential_matches_the_lua_reference` is the highest-value
-//! case this unblocks: it builds the exact `fixture.session("1v1")` scenario
+//! case in this file: it builds the exact `fixture.session("1v1")` scenario
 //! the committed reference trace
 //! (`tests/fixtures/match_driver_lua_reference.txt`) was captured from —
 //! bursty delivery (the star pumps every 5th step only), 90 steps, neutral
-//! samples — and asserts `diagnostics()`/`checkpoints()` agree with the real
-//! Lua `match_driver.lua` tick for tick, including the boundary hash at every
-//! one of the 9 checkpoints (10, 20, ..., 90).
+//! samples — and asserts `diagnostics()`/`checkpoints()` agree, tick for
+//! tick, with those frozen reference vectors, including the boundary hash at
+//! every one of the 9 checkpoints (10, 20, ..., 90). That reference trace
+//! cannot be regenerated — see `tools/lua_reference/README.md` for how it was
+//! captured — so a failure here is a finding about this driver's behavior,
+//! not a stale fixture to refresh.
 //!
-//! `mod online_match_driver` ports 15 more of the spec's static cases for
-//! real, using this file's own `harness`/`advance`/`run`/`assert_agreement`/
-//! `assert_confirmed_state` (mirroring the spec's own helpers at
-//! `spec/game/online_match_driver_spec.lua:34-172`). The remaining ~38 cases
-//! in `spec/game/online_match_driver_spec.lua` still need individual porting
-//! from the spec file — mostly impaired-delivery/fault-injection scenarios
-//! (`wrap_host_transport`/`wrap_guest_transport`), the settle phase, and the
-//! combat-phase loop; see this crate's report for what is and is not covered
-//! here yet.
+//! `mod online_match_driver` and the cases after it cover the driver with
+//! this file's own `harness`/`advance`/`run`/`assert_agreement`/
+//! `assert_confirmed_state` helpers. Known coverage gaps: impaired-delivery/
+//! fault-injection scenarios (`wrap_host_transport`/`wrap_guest_transport`),
+//! the settle phase, and the combat-phase loop; see this crate's report for
+//! what is and is not covered here yet.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -60,12 +54,13 @@ use gc_sim::rollback_input_history::{RollbackAuthoritativeInput, RollbackInputSo
 use gc_sim::rollback_session;
 
 // ---------------------------------------------------------------------------
-// Port of `spec/game/online_match_driver_spec.lua`'s own `harness`/`advance`/
-// `run`/`assert_agreement` helpers (lines 34-172), now that
-// `crate::match_driver_fixture::session` builds a real connected session.
+// Shared `harness`/`advance`/`run`/`assert_agreement` helpers used by the
+// driver tests below, built on `crate::match_driver_fixture::session`'s real
+// connected session.
 // ---------------------------------------------------------------------------
 
-/// Mirrors `DriverHarness`.
+/// One harness-built match: the underlying session, every driver (host
+/// first, then guests), and the current step count.
 struct DriverHarness {
     session: MatchDriverFixtureSession,
     /// Host first, then guests in seating order — matches `session.guest_peer_ids`.
@@ -74,36 +69,34 @@ struct DriverHarness {
 }
 
 /// A caller-supplied decorator around the host's own transport endpoint.
-/// Mirrors `DriverHarnessOptions.wrap_host_transport`.
 type WrapHostTransport =
     Box<dyn Fn(Box<dyn StarTransportAdapter>) -> Box<dyn StarTransportAdapter>>;
 /// A caller-supplied decorator around one guest's transport endpoint,
 /// keyed by that driver's 1-based position in `DriverHarness.drivers`
-/// (host is always `1`). Mirrors `DriverHarnessOptions.wrap_guest_transport`.
+/// (host is always `1`).
 type WrapGuestTransport =
     Box<dyn Fn(i64, Box<dyn StarTransportAdapter>) -> Box<dyn StarTransportAdapter>>;
 
-/// Mirrors `DriverHarnessOptions` (the subset this file's ported cases use).
+/// Options accepted by [`harness`]; only the subset the cases in this file
+/// actually use.
 #[derive(Default)]
 struct DriverHarnessOptions {
     duration: Option<f64>,
     humans: Option<i64>,
     combat: bool,
-    /// Boundary zero for every peer; overrides `combat` when set. Mirrors
-    /// `DriverHarnessOptions.initial_snapshot`.
+    /// Boundary zero for every peer; overrides `combat` when set.
     initial_snapshot: Option<MatchSnapshot>,
     hash_interval_ticks: Option<i64>,
     max_rollback_ticks: Option<i64>,
     settle_timeout_ticks: Option<i64>,
     settle_timeout_seconds: Option<f64>,
     /// A shared monotonic-seconds counter. Every driver built from this
-    /// harness gets its own closure over the *same* cell, mirroring the Lua
-    /// spec's single shared `clock` upvalue (`spec/game/online_match_driver_spec.lua`'s
-    /// `bounds the settle phase in wall clock...` case): every driver's
-    /// clock read ticks the one counter forward.
+    /// harness gets its own closure over the *same* cell, so a case that
+    /// bounds the settle phase in wall-clock time can share one clock across
+    /// every driver's clock read, ticking the one counter forward.
     clock: Option<Rc<RefCell<f64>>>,
     /// 1-based driver index (host is `1`) whose boundary zero is seeded
-    /// differently. Mirrors `DriverHarnessOptions.divergent_peer`.
+    /// differently.
     divergent_peer: Option<i64>,
     wrap_host_transport: Option<WrapHostTransport>,
     wrap_guest_transport: Option<WrapGuestTransport>,
@@ -147,7 +140,8 @@ fn build_driver(
     })
 }
 
-/// Mirrors the spec's `harness(mode, options)`.
+/// Builds a real connected session for `mode` and one [`match_driver::MatchDriver`]
+/// per seated peer (host first, then guests), applying `options`.
 fn harness(mode: MatchMode, options: DriverHarnessOptions) -> DriverHarness {
     let session = match_driver_fixture::session(mode, None, options.humans);
     let snapshot = options.initial_snapshot.clone().unwrap_or_else(|| {
@@ -219,9 +213,8 @@ fn harness(mode: MatchMode, options: DriverHarnessOptions) -> DriverHarness {
     }
 }
 
-/// Mirrors the spec's `advance(harness_state, samples)`. `samples[i]` is the
-/// sample for `drivers[i]`; `None`/short entries default to neutral, exactly
-/// like the Lua `samples and samples[index] or input_frame.neutral_sample()`.
+/// Advances every driver in `h` by one step. `samples[i]` is the sample for
+/// `drivers[i]`; `None`/short entries default to neutral.
 fn advance(
     h: &mut DriverHarness,
     samples: &[Option<InputSample>],
@@ -236,7 +229,8 @@ fn advance(
     batches
 }
 
-/// Mirrors the spec's `run(harness_state, steps, samples)`.
+/// Calls [`advance`] `steps` times with the same `samples`, returning the
+/// last batch.
 fn run(
     h: &mut DriverHarness,
     steps: i64,
@@ -249,8 +243,8 @@ fn run(
     last
 }
 
-/// Mirrors the spec's `assert_agreement(harness_state)`: every checkpoint two
-/// drivers both hashed must agree, boundary hash and live-slot map alike.
+/// Asserts every checkpoint two drivers both hashed agrees between them,
+/// boundary hash and live-slot map alike.
 fn assert_agreement(h: &DriverHarness) -> i64 {
     let reference = match_driver::checkpoints(&h.drivers[0]);
     let mut compared = 0i64;
@@ -280,9 +274,9 @@ fn assert_agreement(h: &DriverHarness) -> i64 {
     compared
 }
 
-/// Mirrors the spec's `assert_confirmed_state(harness_state)`: the confirmed
-/// (not merely present) boundary is where every peer must agree on state,
-/// since that is where authority is complete rather than predicted.
+/// Asserts every peer agrees on state at the confirmed (not merely present)
+/// boundary, since that is where authority is complete rather than
+/// predicted.
 fn assert_confirmed_state(h: &DriverHarness) {
     let mut boundary: Option<i64> = None;
     for driver in &h.drivers {
@@ -320,14 +314,14 @@ fn switch_sample() -> InputSample {
     .expect("a switch-only sample is always valid")
 }
 
-/// Mirrors the spec's local `sample(sample_options)`.
+/// Builds a valid quantized [`InputSample`] from `options`.
 fn sample(options: input_frame::InputSampleOptions) -> InputSample {
     input_frame::new_sample(options).expect("a valid quantized sample")
 }
 
 /// Impaired delivery: the star only drains every `period` steps, so every
 /// peer predicts the rows it has not received and corrects them in one
-/// burst. Mirrors the spec's `run_bursty(harness_state, steps, period, samples)`.
+/// burst.
 fn run_bursty(h: &mut DriverHarness, steps: i64, period: i64, samples: &[Option<InputSample>]) {
     for step in 1..=steps {
         for (index, driver) in h.drivers.iter_mut().enumerate() {
@@ -342,8 +336,7 @@ fn run_bursty(h: &mut DriverHarness, steps: i64, period: i64, samples: &[Option<
 }
 
 /// Input that changes every step, so a burst opens a real divergence
-/// instead of one prediction repeats for free. Mirrors the spec's
-/// `moving_sample(step, index)`.
+/// instead of one prediction repeats for free.
 fn moving_sample(step: i64, index: i64) -> InputSample {
     let phase = (step * 7 + index * 13) % 8;
     sample(input_frame::InputSampleOptions {
@@ -359,8 +352,7 @@ fn moving_sample(step: i64, index: i64) -> InputSample {
 }
 
 /// Advances every driver once per step, delivering only on the steps
-/// `deliver` allows, and stopping once no driver is still active. Mirrors
-/// the spec's `drive(harness_state, steps, deliver, sample_for)`.
+/// `deliver` allows, and stopping once no driver is still active.
 fn drive(
     h: &mut DriverHarness,
     steps: i64,
@@ -389,12 +381,11 @@ fn drive(
 
 /// A short match, so a burst can straddle full time without the hold itself
 /// outrunning the 30-tick retained window and turning the run into
-/// `late_input`. Mirrors the spec's `SETTLE_DURATION`.
+/// `late_input`.
 const SETTLE_DURATION: f64 = 24.0 / 60.0;
 
 /// Which tick full time lands on is `sim.match`'s countdown to decide, not
-/// arithmetic on the duration. Probed once, lazily, exactly like the spec's
-/// module-load-time `FULL_TIME_BOUNDARY` IIFE.
+/// arithmetic on the duration. Probed once, lazily, and cached.
 fn full_time_boundary_probe() -> i64 {
     static BOUNDARY: OnceLock<i64> = OnceLock::new();
     *BOUNDARY.get_or_init(|| {
@@ -411,14 +402,14 @@ fn full_time_boundary_probe() -> i64 {
 }
 
 /// Driver step `T` simulates input tick `T`, so this is the step that
-/// reaches [`full_time_boundary_probe`]. Mirrors the spec's `FULL_TIME_STEP`.
+/// reaches [`full_time_boundary_probe`].
 fn full_time_step() -> i64 {
     full_time_boundary_probe() - 1
 }
 
-/// Every peer completed through the settle phase, on the same final
+/// Asserts every peer completed through the settle phase, on the same final
 /// boundary, with every tick of the match authoritative and the same hash
-/// captured there. Mirrors the spec's `assert_settled(harness_state, label)`.
+/// captured there.
 fn assert_settled(h: &DriverHarness, label: &str) -> i64 {
     let mut boundary: Option<i64> = None;
     for (index, driver) in h.drivers.iter().enumerate() {
@@ -1140,11 +1131,11 @@ fn parse_fixture(text: &str) -> (Vec<ExpectedStep>, Vec<ExpectedHash>) {
     (steps, hashes)
 }
 
-/// See the module doc: reproduces `fixture.session("1v1")` driven through
-/// `run_bursty(state, 90, 5)` with neutral samples, and asserts the Rust
-/// driver reaches the identical diagnostics and boundary hashes the real Lua
-/// `match_driver.lua` reached, tick for tick, at every one of the 90 steps
-/// and every one of the 9 checkpoints.
+/// See the module doc: reproduces the `fixture.session("1v1")` scenario
+/// driven through `run_bursty(state, 90, 5)` with neutral samples, and
+/// asserts the Rust driver reaches the identical diagnostics and boundary
+/// hashes recorded in the frozen reference vectors, tick for tick, at every
+/// one of the 90 steps and every one of the 9 checkpoints.
 #[test]
 fn match_driver_differential_matches_the_lua_reference() {
     const FIXTURE: &str = include_str!("fixtures/match_driver_lua_reference.txt");
@@ -1260,12 +1251,9 @@ fn match_driver_differential_matches_the_lua_reference() {
     }
 }
 
-/// Named for the spec's own `harness(mode, options)` helper
-/// (`spec/game/online_match_driver_spec.lua:34-172`, ported above as
-/// `mod online_match_driver`'s free functions). Every case below still needs
-/// individual porting from the spec file; `fixture.session` itself is no
-/// longer the blocker (see this file's module doc and `online_match_driver`'s
-/// growing coverage).
+/// The cases below use the `harness`/`advance`/`run`/`assert_agreement`
+/// helpers defined above `mod online_match_driver` (see this file's module
+/// doc and `online_match_driver`'s coverage).
 #[test]
 fn tolerates_one_boundary_disagreement_and_clears_it_on_the_next_agreement() {
     let mut state = harness(MatchMode::FourVFour, DriverHarnessOptions::default());
@@ -1632,15 +1620,12 @@ fn opens_every_combat_phase_scenario_from_a_ready_combat_state() {
     }
 }
 
-/// The spec's `for _, phase_id in ipairs(combat_phases.PHASES) do t.it(...) end`
-/// loop (`spec/game/online_match_driver_spec.lua:867`) produces one case per
-/// named combat correction phase; `crate::fault_harness::declare_contingent`
-/// names the same 7 phases. Ported as 7 distinctly named cases rather than
+/// One case per named combat correction phase; `crate::fault_harness::declare_contingent`
+/// names the same 7 phases. Written as 7 distinctly named cases rather than
 /// one generic loop, so each is independently countable and independently
 /// re-enableable.
 ///
-/// Every one shares the body ported from `spec/game/online_match_driver_spec.lua`'s
-/// combat-phase loop (lines ~865-1013): open on the phase's own boundary zero,
+/// Every one shares the same body: open on the phase's own boundary zero,
 /// drive it 1v1 under impaired delivery, and require that at least one
 /// correction on every peer resimulated a tick that genuinely ran through the
 /// named phase -- and that at least one such tick was resimulated (and
@@ -1911,14 +1896,13 @@ fn finds_no_driver_level_geometry_where_the_policy_guards_often_enough() {
 
 // Retired driver-level case: `still_reconciles_if_a_local_insert_ever_reports_a_divergence`.
 //
-// The Lua forces this by reassigning `rollback_session.reconcile`/
-// `.add_authoritative_batch` at runtime (`spec/game/online_match_driver_spec.lua`
-// around `still reconciles if a local insert ever reports a divergence`).
-// Rust cannot reassign a free function, so the question worth answering first
-// is whether `apply_rows(..., arrival = false)` in `match_driver.rs` — the
-// guest's own-row insert — can ever see `earliest_divergence.is_some()`
-// through the public driver API at all, rather than jumping straight to a
-// mock seam.
+// That case originally forced this path by dynamically reassigning
+// `rollback_session.reconcile`/`.add_authoritative_batch` at runtime to
+// report a divergence unconditionally. Rust cannot reassign a free function,
+// so the question worth answering first is whether `apply_rows(..., arrival
+// = false)` in `match_driver.rs` — the guest's own-row insert — can ever see
+// `earliest_divergence.is_some()` through the public driver API at all,
+// rather than jumping straight to a mock seam.
 //
 // It cannot, for two independent structural reasons:
 //
@@ -1942,7 +1926,7 @@ fn finds_no_driver_level_geometry_where_the_policy_guards_often_enough() {
 //
 // So `accepted.earliest_divergence.is_some()` on the local-insert branch is
 // truly dead by construction, not merely untriggered by the scenarios this
-// suite happens to drive — matching the Lua comment's own claim that real
+// suite happens to drive — matching the retired case's own claim that real
 // traffic never trips it. Forcing it would need a `RollbackOps` trait object
 // in `match_driver`'s per-tick rollback path (production structure serving a
 // test) purely to fake a state the public API cannot reach; that is the
@@ -2023,9 +2007,10 @@ fn reconcile_corrects_a_real_divergence_that_add_authoritative_batch_reports() {
 
 #[test]
 fn costs_no_extra_snapshot_work_when_a_peer_authors_only_its_control_slot() {
-    // The Lua asserts this by replacing `rollback_session.current_snapshot` at
-    // runtime and counting calls. Rust cannot reassign a free function, and the
-    // alternative — a trait object in this module's per-tick path — would put
+    // The original version of this assertion replaced
+    // `rollback_session.current_snapshot` at runtime and counted calls. Rust
+    // cannot reassign a free function, and the alternative — a trait object
+    // in this module's per-tick path — would put
     // production structure in service of a test. `MatchDriver::snapshot_captures`
     // counts the same thing as a real diagnostic, which has the side benefit of
     // being readable on a live session, where a test mock never is.
@@ -2461,14 +2446,14 @@ fn reports_a_stalled_confirmation_at_the_step_it_becomes_permanent() {
 // Retired driver-level case:
 // `maps_a_rejected_over_window_batch_onto_late_input_unreachable_by_design`.
 //
-// The Lua forces this by reassigning `rollback_session.apply_authoritative_batch`
-// to return a fake `outside_window` rejection
-// (`spec/game/online_match_driver_spec.lua`, "maps a rejected over-window
-// batch onto late_input (unreachable by design)"), and its own comment
-// proves the branch is unreachable through legitimate traffic: "a row is
-// only offered to the history when it is above this peer's confirmation, so
-// a row below the floor implies `confirmed + 1 < floor`, which confirmation
-// liveness terminates on at the end of the previous step."
+// The original version of this case forced the branch by reassigning
+// `rollback_session.apply_authoritative_batch` to return a fake
+// `outside_window` rejection (case name: "maps a rejected over-window batch
+// onto late_input (unreachable by design)"), and its own comment proved the
+// branch is unreachable through legitimate traffic: "a row is only offered
+// to the history when it is above this peer's confirmation, so a row below
+// the floor implies `confirmed + 1 < floor`, which confirmation liveness
+// terminates on at the end of the previous step."
 //
 // That proof carries over to Rust unchanged, and two already-passing cases
 // in this file corroborate it directly instead of leaving it as an
@@ -2516,9 +2501,9 @@ fn reports_a_stalled_confirmation_at_the_step_it_becomes_permanent() {
 // module, purely to simulate a state the public API cannot produce; that
 // cost is not worth paying for a branch this thoroughly proven dead, so it
 // is not added. Converting the branch itself to `unreachable!()`/
-// `debug_assert!` was considered and rejected too: the Lua's own comment is
-// explicit that the mapping is "the fallback for a rule this driver does not
-// own," kept intentionally so that if `rollback_input_history`'s window rule
+// `debug_assert!` was considered and rejected too: the original case's own
+// comment is explicit that the mapping is "the fallback for a rule this
+// driver does not own," kept intentionally so that if `rollback_input_history`'s window rule
 // is ever reached by some future call path this driver doesn't yet have, the
 // match still degrades gracefully to `late_input` instead of panicking.
 // Asserting the branch away would trade that graceful degradation for a

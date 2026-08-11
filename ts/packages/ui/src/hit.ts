@@ -1,7 +1,7 @@
-// game/ui/hit.lua — pure hit-testing over a layout. A layout is just an
-// ordered list of widgets; later widgets are "on top", so hit-testing scans
-// back-to-front. This is the core of AGENTS.md §9's pure/impure seam: no
-// DOM, no three.js, no globals, so every screen spec can run headless.
+// Pure hit-testing over a layout. A layout is just an ordered list of
+// widgets; later widgets are "on top", so hit-testing scans back-to-front.
+// This is the core of AGENTS.md §9's pure/impure seam: no DOM, no three.js,
+// no globals, so every screen spec can run headless.
 
 import type { Layout, Rect, Widget } from "./types.ts";
 

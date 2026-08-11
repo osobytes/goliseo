@@ -1,43 +1,37 @@
-//! Port of `game/online/input_protocol.lua`.
+//! `input_protocol` is the wire format for player input.
 //!
-//! **`input_protocol` is the wire format for player input.** Its bytes go on
-//! the network and into rollback re-simulation: if two clients encode
-//! differently by one bit, the match desyncs. [`encode`]/[`decode`] are
-//! therefore differential-tested against the reference Lua implementation
-//! (see `v2/tools/lua_reference/README.md` and
-//! `crates/gc-netcode/tests/input_protocol.rs`).
+//! Its bytes go on the network and into rollback re-simulation: if two
+//! clients encode differently by one bit, the match desyncs. [`encode`]/
+//! [`decode`] are checked byte-for-byte against frozen reference vectors
+//! captured once, before the reference implementation that produced them was
+//! deleted — see `tools/lua_reference/README.md` for full provenance, and
+//! `crates/gc-netcode/tests/input_protocol.rs` for the differential tests
+//! themselves.
 //!
-//! ## What is deliberately not here
+//! ## `canonical_host_batch` lives elsewhere
 //!
-//! The Lua original also defines `input_protocol.validate_envelope` and
-//! `input_protocol.canonical_host_batch`. Both are omitted from this port:
+//! `canonical_host_batch` needs a full `SessionManifest`, a
+//! `SessionSlotProducer` assignment, and manifest/assignment validation —
+//! context this module does not hold. It is implemented instead as
+//! `crate::match_driver_fixture::DriverRules::canonical_host_batch`, which
+//! does have that context; `tests/input_protocol.rs` exercises it through
+//! that path. [`validate_envelope`] below is the one piece of that check
+//! this module can own on its own terms, since it only needs a packet and a
+//! `TransportMessage`.
 //!
-//! - `validate_envelope` needs `TransportMessage` from `game/transport/contract.lua`.
-//!   Per `v2/README.md` §2, `game/transport/**` is TypeScript-owned
-//!   (`packages/transport`); no Rust port of it exists or is planned, so there
-//!   is no type to validate against here.
-//! - `canonical_host_batch` needs `SessionManifest`, `SessionSlotProducer`,
-//!   `protocol.validate_manifest`, `protocol.manifest_id`, and
-//!   `protocol.validate_assignment_manifest` from `game/online/protocol.lua`.
-//!   This agent's brief explicitly excludes `protocol.lua` ("later agents own
-//!   those"), and `crates/gc-netcode/src/protocol.rs` is still the unported
-//!   placeholder, so those types do not exist yet either.
+//! Every constant and every function that does not need session/assignment
+//! context is implemented directly below.
 //!
-//! Every constant and every function that does not need those two modules is
-//! fully ported below. The spec assertions that exercise the two omitted
-//! functions are marked `#[ignore]` in `tests/input_protocol.rs`, naming the
-//! missing module.
-//!
-//! ## Constants duplicated from `protocol.lua`
+//! ## Constants duplicated from `protocol`
 //!
 //! [`packet_id`] and [`validate`] bound `session_id`/`sender_id`/`sequence`
-//! against `protocol.MAX_SESSION_ID_BYTES` (128), `protocol.MAX_PEER_ID_BYTES`
-//! (128), and `protocol.MAX_SEQUENCE` (2147483647) — see
-//! `game/online/protocol.lua:270-273`. Those are plain numeric bounds, not
-//! logic, so they are duplicated here as local constants rather than pulling
-//! in the rest of `protocol.lua`. The same is true of
-//! `transport_contract.MAX_PAYLOAD_BYTES` (1024, `game/transport/contract.lua:162`),
-//! asserted below exactly as the Lua module does at load time.
+//! against `protocol::MAX_SESSION_ID_BYTES` (128), `protocol::MAX_PEER_ID_BYTES`
+//! (128), and `protocol::MAX_SEQUENCE` (2147483647). Those are plain numeric
+//! bounds, not logic, so they are duplicated here as local constants rather
+//! than depending on `crate::protocol` for three integers. The same is true
+//! of the transport contract's fixed payload bound (1024 bytes; `fake_star.rs`
+//! and `fake_relay.rs` duplicate the same value locally), asserted below as a
+//! load-time invariant.
 
 use gc_sim::input_frame;
 
@@ -46,15 +40,15 @@ const HEADER: &[u8] = b"GCIP";
 /// Standard base64 alphabet, index-addressed.
 const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-/// Mirrors `protocol.MAX_SESSION_ID_BYTES` (`game/online/protocol.lua:270`).
-/// See the module-level doc comment for why this is duplicated rather than
-/// imported.
+/// Mirrors `protocol::MAX_SESSION_ID_BYTES`. See the module-level doc
+/// comment for why this is duplicated rather than imported.
 const PROTOCOL_MAX_SESSION_ID_BYTES: usize = 128;
-/// Mirrors `protocol.MAX_PEER_ID_BYTES` (`game/online/protocol.lua:271`).
+/// Mirrors `protocol::MAX_PEER_ID_BYTES`.
 const PROTOCOL_MAX_PEER_ID_BYTES: usize = 128;
-/// Mirrors `protocol.MAX_SEQUENCE` (`game/online/protocol.lua:273`).
+/// Mirrors `protocol::MAX_SEQUENCE`.
 const PROTOCOL_MAX_SEQUENCE: i64 = 2_147_483_647;
-/// Mirrors `transport_contract.MAX_PAYLOAD_BYTES` (`game/transport/contract.lua:162`).
+/// The transport contract's fixed payload bound; `fake_star.rs` and
+/// `fake_relay.rs` duplicate the same value locally.
 const TRANSPORT_MAX_PAYLOAD_BYTES: usize = 1024;
 
 /// Frame protocol version. Bumping this is a breaking wire change.
@@ -68,9 +62,9 @@ pub const FAIRNESS_DELAY_TICKS: i64 = 3;
 /// The largest row count a guest packet may carry.
 pub const MAX_GUEST_ROWS: i64 = RETAINED_ROWS;
 
-/// How many input ticks one host batch carries for every canonical slot. See
-/// `game/online/input_protocol.lua:81-107` for the full sizing rationale
-/// behind this specific value (#243).
+/// How many input ticks one host batch carries for every canonical slot.
+/// #243 sized this specific value against the wire-budget margin checked in
+/// `input_protocol_conformance.rs`.
 pub const HOST_WINDOW_ROWS: i64 = 9;
 /// The largest row count a host batch may carry: one window per canonical slot.
 pub const MAX_HOST_ROWS: i64 = input_frame::SLOT_COUNT * HOST_WINDOW_ROWS;
@@ -135,7 +129,8 @@ pub enum DuplicateDisposition {
     /// Byte-identical to the original: safe to drop.
     Idempotent,
     /// Not safe to accept (always reported via [`Error`] instead of this
-    /// variant in practice; kept for type fidelity with the Lua alias).
+    /// variant in practice; kept so the disposition names both possible
+    /// outcomes even though only one is ever constructed).
     Reject,
 }
 
@@ -179,7 +174,7 @@ pub struct AuthorityRow {
     /// Fixed-simulation tick this row is authority for.
     pub tick: i64,
     /// One-based canonical input slot (wire value, never converted to
-    /// 0-based: this is the exact byte a peer decodes — README rule 5.3).
+    /// 0-based: this is the exact byte a peer decodes — ARCHITECTURE.md §3 rule 3).
     pub slot_index: i64,
     /// The slot's quantized input for this tick.
     pub sample: input_frame::InputSample,
@@ -316,7 +311,8 @@ fn frame_error_to_protocol(error: input_frame::InputFrameError) -> Error {
 }
 
 /// A defensive, re-validated copy of `sample`. Panics if `sample` is not
-/// already valid, mirroring the Lua original's `assert(input_frame.new_sample(sample))`.
+/// already valid: a caller reaching this with an invalid sample is a
+/// programmer error, not external input to handle gracefully.
 fn copy_sample(sample: &input_frame::InputSample) -> input_frame::InputSample {
     input_frame::new_sample((*sample).into()).expect("copy_sample requires an already-valid sample")
 }
@@ -625,9 +621,8 @@ pub fn validate(packet: &Packet) -> Result<()> {
 }
 
 /// Encode a packet to its canonical wire bytes. Wire payloads are raw bytes
-/// (never `String`): a Lua string is a byte array, and the canonical
-/// invariant this function proves is exact-byte reproduction, not text
-/// formatting.
+/// (never `String`): the canonical invariant this function proves is
+/// exact-byte reproduction, not text formatting.
 pub fn encode(packet: &Packet) -> Result<Vec<u8>> {
     validate(packet)?;
     let mut raw_rows = Vec::with_capacity(packet.rows.len() * RECORD_BYTES as usize);
@@ -845,8 +840,9 @@ pub fn new_host(options: PacketOptions) -> Result<Packet> {
 ///
 /// # Panics
 ///
-/// Panics if `packet` is not a valid packet — mirrors the Lua original's
-/// `assert(input_protocol.validate(packet))`.
+/// Panics if `packet` is not a valid packet: reaching this with an
+/// unvalidated packet is a programmer error, not external input to handle
+/// gracefully.
 pub fn confirmed_tick(packet: &Packet) -> i64 {
     validate(packet).unwrap_or_else(|err| panic!("{err}"));
     packet.first_input_tick + packet.confirmed_span - 1
@@ -874,7 +870,8 @@ pub fn copy(packet: &Packet) -> Result<Packet> {
 ///
 /// # Panics
 ///
-/// Panics if `packet` is not valid, mirroring the Lua original.
+/// Panics if `packet` is not valid: reaching this with an unvalidated packet
+/// is a programmer error, not external input to handle gracefully.
 pub fn rows(packet: &Packet) -> Vec<AuthorityRow> {
     validate(packet).unwrap_or_else(|err| panic!("{err}"));
     copy_rows(&packet.rows)
@@ -953,17 +950,16 @@ pub fn supersede_for_backpressure(older: &Packet, newer: &Packet) -> Result<Pack
 
 /// Validate a packet against the transport envelope that carried it.
 ///
-/// Ported from `game/online/input_protocol.lua:840`. `pub` because the Lua spec
-/// calls it directly and README §5 rule 8 says everything a test touches is
-/// `pub`; the only prior implementation was a private helper in
-/// `match_driver_fixture`, which no test could reach.
+/// `pub` because ARCHITECTURE.md §3 rule 6 requires everything a test
+/// touches to be public; the only prior implementation was a private helper in
+/// `match_driver_fixture` that no test could reach.
 ///
-/// That helper also diverged from the Lua in a way worth naming: it skipped the
-/// packet and envelope validation the original does first, and reported every
-/// failure under one generic code. The Lua distinguishes `malformed`,
-/// `tick_mismatch` and `identity_mismatch`, and a peer branches on the code
-/// rather than the message — so collapsing them changes observable behaviour.
-/// This port restores all three, in the Lua's order.
+/// That helper also diverged in a way worth naming: it skipped the packet
+/// and envelope validation this function does first, and reported every
+/// failure under one generic code, where a correct implementation
+/// distinguishes `malformed`, `tick_mismatch` and `identity_mismatch` — a
+/// peer branches on the code, not the message, so collapsing them changes
+/// observable behavior. This restores all three, in canonical order.
 pub fn validate_envelope(
     packet: &Packet,
     envelope: &crate::fault_transport::TransportMessage,

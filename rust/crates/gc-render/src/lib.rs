@@ -1,7 +1,7 @@
 //! RenderFrame producer: the wasm side of the render boundary.
 //!
-//! Every module is declared up front, including unported ones, so agents working
-//! on different parts of `render/` never contend on this file.
+//! Every module is declared up front, so agents working on different parts
+//! of `render/` never contend on this file.
 #![deny(missing_docs)]
 
 pub mod frame;

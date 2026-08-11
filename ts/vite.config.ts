@@ -1,12 +1,12 @@
 import { defineConfig } from "vite";
 
-// The browser app shell's dev/build config -- v2/README.md §1's "a running
+// The browser app shell's dev/build config -- part of the "a running
 // app" milestone. Root is this directory (where index.html lives); the
 // entry module it loads is `packages/app/src/browser_main.ts`.
 //
 // No plugins are needed for the workspace's own `.ts` sources -- Vite's
 // esbuild pipeline resolves explicit `.ts` extension relative imports
-// (`rewriteRelativeImportExtensions`, v2/README.md rule 6.2) natively, and
+// (`rewriteRelativeImportExtensions`, ARCHITECTURE.md §4 rule 2) natively, and
 // every `@gc/*` package resolves through pnpm's workspace symlinks the same
 // way any other npm dependency would.
 //
@@ -18,7 +18,7 @@ import { defineConfig } from "vite";
 export default defineConfig({
   server: {
     fs: {
-      // Serve from the whole v2/ts workspace (pnpm's workspace symlinks
+      // Serve from the whole ts workspace (pnpm's workspace symlinks
       // point at sibling package directories, all under this root).
       allow: [import.meta.dirname],
     },

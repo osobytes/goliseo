@@ -1,5 +1,3 @@
-// Ported from game/settings.lua.
-
 import { type Result, err, ok } from "@gc/core";
 
 export interface GameSettings {
@@ -13,11 +11,10 @@ export interface GameSettings {
 }
 
 /**
- * The browser has no `love.filesystem` equivalent wired up in this
- * milestone (v2/README.md §1 — the asset/persistence pipeline is a later
- * milestone; see this module's header for `settings.load`/`settings.save`
- * accordingly). Callers supply a `SettingsStorage`; there is no default
- * fallback the way `love_storage()` provided one for native LÖVE.
+ * The browser has no filesystem persistence wired up in this milestone --
+ * the asset/persistence pipeline is a later milestone;
+ * see `settings.load`/`settings.save` accordingly. Callers supply a
+ * `SettingsStorage` explicitly; there is no default fallback.
  */
 export interface SettingsStorage {
   read(): string | undefined;

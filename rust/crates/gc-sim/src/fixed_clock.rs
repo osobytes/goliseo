@@ -1,5 +1,3 @@
-//! Port of `sim/fixed_clock.lua`.
-//!
 //! The sole simulation-time authority for render-driven matches. The clock is
 //! deliberately input-shape agnostic: an offline adapter can supply one
 //! legacy `MatchInput` per tick, while a multi-slot refactor can supply an

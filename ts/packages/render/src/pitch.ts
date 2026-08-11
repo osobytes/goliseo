@@ -1,12 +1,10 @@
-// Ported from game/render/pitch.lua.
-//
 // Draws a `RenderFrame` through the camera projection as a perspective pitch
 // with depth-sorted players. This module never sees a
 // `MatchState` -- everything it draws comes off the versioned payload built
-// by `render.frame` (Rust, see below), which is the whole point: the same
-// payload can be handed to a renderer not written in Lua. The only things
-// read from outside it are renderer-owned presentation state (`view_state`
-// gait/lean, the particle systems) and per-match theming.
+// by `render.frame` (Rust, see below), which is the whole point: the payload
+// is decoupled by design from any particular renderer implementation. The
+// only things read from outside it are renderer-owned presentation state
+// (`view_state` gait/lean, the particle systems) and per-match theming.
 //
 // TWO EXPORTS, ONE FRAME. `pitchDrawCommands` is the PURE, tested path: it
 // produces the exact `DrawCommand[]` (draw2d.ts) for everything that is not a
@@ -31,11 +29,11 @@
 // screen-space 2D content at the correct point in the painter's-algorithm
 // depth sort (so a rigged player occludes/is occluded exactly like a flat
 // screen-space entity at the same world position would) is real GPU-integration work: it needs a live
-// `WebGLRenderer` to verify pixel-for-pixel, and v2/README.md #1 scopes "a
-// running app" / the wasm-bindings glue out of this milestone. What follows
+// `WebGLRenderer` to verify pixel-for-pixel, and "a running app" / the
+// wasm-bindings glue is scoped out of this milestone. What follows
 // was nonetheless verified against a live GL context outside this milestone's
-// test harness (screenshots, draw-call counts -- see this port's report);
-// the automated suite still only covers what does not need one (below).
+// test harness (screenshots, draw-call counts); the automated suite still
+// only covers what does not need one (below).
 //
 // `pitch.draw`'s rigged pass CONTRIBUTES TO `group`'s `Object3D` GRAPH rather
 // than rasterizing immediately: each rigged character is a real, posed,
@@ -52,21 +50,20 @@
 // content and every rigged character together, ONE `renderer.render()` call
 // total instead of one per character -- in the right order and with real
 // depth testing between them, rather than N off-screen full-viewport passes
-// each composited as a `depthTest: false` quad (the shape this had before
-// this port; see `player_renderer_3d.ts`'s `renderToSprite`, kept for
+// each composited as a `depthTest: false` quad (the previous shape;
+// see `player_renderer_3d.ts`'s `renderToSprite`, kept for
 // parity/diagnostics but no longer on this call path). `pitchDrawCommands` and
 // `playerAnchors` stay the fully-tested reference for everything that needs no
 // GL context; `pitch.draw`'s rigged branch is -- like the rest of the
 // GPU-adjacent surface in this package -- untested beyond what does not need a
 // live GL context (object-graph shape, ordering, disposal).
 //
-// Boundary note (v2/README.md rule 6.7): `RenderFrame` is the (Rust)
-// `render/frame.lua` producer's output (`render/**` -> Rust
-// `crates/gc-render`) -- only the fields this module reads are declared
-// locally. `ArenaData` (`data/arenas.lua`) is Rust-owned (`crates/gc-data`);
-// `DEFAULT_ARENA` below mirrors its only current entry (`helios_crown`) as
-// the same "no arena supplied" fallback the Lua original had, without
-// importing Rust-owned content.
+// Boundary note (ARCHITECTURE.md §4 rule 6): `RenderFrame` is the (Rust)
+// `render.frame` producer's output (`crates/gc-render`) -- only the fields
+// this module reads are declared locally. `ArenaData` is Rust-owned
+// (`crates/gc-data`); `DEFAULT_ARENA` below mirrors its only current entry
+// (`helios_crown`) as the "no arena supplied" fallback, without importing
+// Rust-owned content.
 //
 // ONE PASS, ONE DEPTH BUFFER -- reconciling 2D screen space with 3D character
 // space. `pitchGroup`'s flat content (this file, arena.ts, effects.ts,
@@ -91,9 +88,9 @@
 //     exactly mirroring how `characterCameraParams` already derives `ppm`
 //     today (see `player_renderer_3d.ts`'s `ppmForRadius`). Z is NOT `ppm`
 //     -- see `CHARACTER_DEPTH_SCALE`'s own comment for why applying the
-//     same pixel-scale factor to Z (a defect this port's report found live)
-//     clips characters against the camera's near plane instead of sizing
-//     them.
+//     same pixel-scale factor to Z (a defect found during live-GL
+//     verification) clips characters against the camera's near plane
+//     instead of sizing them.
 //   - POSITION: `(sx, sy)` (screen pixels) becomes `wrapper.position`'s
 //     world `(x, y)` directly, since the shared camera's frustum already
 //     spans `[0, vw] x [0, vh]` in exactly that space -- no separate
@@ -101,10 +98,9 @@
 //     frustum.
 //   - DEPTH: the world `z` a character/ball is placed at for real depth
 //     testing against everything else in `pitchGroup` -- see `depthToZ` and
-//     the DEPTH ZONES block below. This is genuinely NEW relative to the
-//     Lua: the old per-character camera had no notion of a character's depth
-//     relative to ANOTHER character (see DEPTH ZONES' note on the Lua's own
-//     `beginPass`-clears-depth-every-call behaviour).
+//     the DEPTH ZONES block below. This capability did not exist under the
+//     old per-character camera design: it had no notion of a character's
+//     depth relative to ANOTHER character (see DEPTH ZONES' note on why).
 //   - THE Y-INVERSION: the shared camera's `top=0`/`bottom=h` convention
 //     means world +Y renders toward the BOTTOM of the screen, but a
 //     character's own local +Y is "up" (toward the head). Left alone, a
@@ -185,23 +181,21 @@ const NET_BACK_FRAC = 0.55; // back frame height as a fraction of the crossbar
 // with everything else `SceneRoot` draws -- see scene.ts's class doc comment.
 // That is what lets a rigged `THREE.SkinnedMesh` character depth-test
 // correctly against the ball and against another character: real per-pixel
-// occlusion, not the quad/
-// array-insertion-order painter's algorithm this file used before. Studying
-// `game/render/rig3d/renderer.lua`'s `characterCamera`/`beginPass`/`endPass`
-// for this port surfaced a nuance worth recording, because it changes what
-// "matching the Lua" means here: the Lua's OWN cross-character ordering was
-// ALSO painter's-algorithm, not a shared depth buffer -- `beginPass` clears
-// ONLY the depth buffer on every call (`love.graphics.clear(false, false,
-// true)`), once per character, so a character's depth never persists to the
-// next one, and `renderer.lua`'s own "WHY THERE IS NO BACK-TO-FRONT PART
-// SORTING" comment is about self-occlusion of ONE character's parts, not
-// occlusion BETWEEN characters. What the Lua's real depth buffer bought was
-// exclusively intra-character correctness (an arm in front of a torso). This
-// port intentionally goes further than the Lua did -- a genuine improvement,
-// not a re-derivation -- by giving depth-sorted entities REAL, PERSISTENT z
-// so cross-character/cross-ball occlusion is correct too, per this task's
-// brief. Three zones, all inside `SceneRoot`'s camera frustum (position z=1,
-// near=0.1/far=10 -> visible world z roughly (0.9, -9), see scene.ts):
+// occlusion, not the quad/array-insertion-order painter's algorithm this
+// file used before.
+//
+// Worth recording precisely what changed, because it is easy to overstate:
+// the previous per-character-camera renderer's own cross-character ordering
+// was ALSO painter's-algorithm, not a shared depth buffer -- it cleared only
+// the depth buffer once per character, immediately before rendering that
+// character, so a character's depth never persisted to the next one. Its
+// own depth buffer bought exclusively intra-character correctness (an arm in
+// front of a torso), never occlusion BETWEEN characters. This renderer goes
+// further -- a genuine improvement, not a re-derivation -- by giving
+// depth-sorted entities REAL, PERSISTENT z so cross-character/cross-ball
+// occlusion is correct too, per this task's brief. Three zones, all inside
+// `SceneRoot`'s camera frustum (position z=1, near=0.1/far=10 -> visible
+// world z roughly (0.9, -9), see scene.ts):
 //
 //   BACKDROP_Z (0)     -- arena/floor/markings/goals/chevrons/ball trail/
 //                          combat "under" (`drawPitchBeforeItems`). Always
@@ -238,10 +232,11 @@ const NET_BACK_FRAC = 0.55; // back frame height as a fraction of the crossbar
 // already the design's goal (a real single-pass render instead of N
 // full-viewport passes; see file header). Rigged-character-vs-rigged-
 // character per-pixel occlusion falls out of the SAME mechanism for free --
-// worth naming as a genuine bonus (the Lua original never had it either, see
-// this section's own note above on the Lua's `beginPass`-clears-depth-every-
-// call behaviour), but it was never the thing this change set out to fix,
-// and nothing here was contorted to guarantee it.
+// worth naming as a genuine bonus (the previous per-character-camera design
+// never had it either, for the same reason noted above: its depth buffer
+// only ever persisted within one character's own draw), but it was never
+// the thing this change set out to fix, and nothing here was contorted to
+// guarantee it.
 // Exported for tests (pitch.spec.ts) -- same rationale as
 // `resetStaticSceneCache`/`staticSceneBuildCount` below: a deep-equality
 // check on drawn objects would not catch these invariants drifting.
@@ -267,14 +262,14 @@ export function depthToZ(depth: number, fieldH: number): number {
   return ENTITY_Z_NEAR + t * (ENTITY_Z_FAR - ENTITY_Z_NEAR);
 }
 
-// Mirrors `data/arenas.lua`'s only current entry. See file header.
+// Mirrors Rust `crates/gc-data`'s only current arena entry. See file header.
 const DEFAULT_ARENA: ArenaColors = {
   floor_color: [0.025, 0.16, 0.17],
   rail_color: [0.25, 0.88, 1.0],
   highlight_color: [1.0, 0.66, 0.24],
 };
 
-// Mirrors `game/ui/theme.lua`'s `theme.colors.void`/`text`. See `arena.ts`'s
+// Mirrors `@gc/ui`'s `theme.colors.void`/`text`. See `arena.ts`'s
 // header note on why `@gc/ui` cannot be imported here.
 const DEFAULT_UI_THEME: ArenaThemeColors = {
   void: [0.015, 0.022, 0.055],
@@ -365,7 +360,7 @@ export interface RenderFrameControl {
   readonly controlled: number;
 }
 
-/** The slice of `render/frame.lua`'s `RenderFrame` this module reads. */
+/** The slice of Rust `render.frame`'s `RenderFrame` this module reads. */
 export interface RenderFrame {
   readonly field: RenderFrameField;
   readonly roster: RenderFrameRoster;
@@ -473,12 +468,10 @@ function drawGoal(dl: DrawList, project: Project, field: RenderFrameField, g: Re
   const [bnx, bny, bns] = project(backX, g.y + g.h); // back frame, near
   const backH = bar * NET_BACK_FRAC;
 
-  // The Lua original's screen-space grid shader (a diagonal mesh pattern
-  // texturing the net polygons) is dropped here: it is a shading detail
-  // with no bearing on the net's shape or position, and three.js has no
-  // equivalent to a LÖVE pixel shader stamped over an arbitrary polygon
-  // without a bespoke canvas-texture material. The net panels themselves
-  // (their exact screen-space quads, in the same draw order) are kept.
+  // The net panels are flat fills with no diagonal mesh texture: three.js
+  // has no equivalent to a pixel shader stamped over an arbitrary polygon
+  // without a bespoke canvas-texture material, and the texturing would be a
+  // shading detail with no bearing on the net's shape or position.
   dl.polygon("fill", [lfx, lfy, bfx, bfy, bfx, bfy - backH * bfs, lfx, lfy - bar * lfs], color, { alpha: 0.3 });
   dl.polygon("fill", [lnx, lny, bnx, bny, bnx, bny - backH * bns, lnx, lny - bar * lns], color, { alpha: 0.3 });
   // Back net.
@@ -520,8 +513,8 @@ export interface PlayerAnchor {
  * Every player's anchor for one frame, in the SAME far-to-near order
  * `pitch.draw` adds them to the scene graph (see `depthSortedItems`). Pure:
  * this is the whole sim-to-player-renderer boundary with no three.js in it, so
- * the payload can be asserted against the Lua original headless -- see
- * pitch.spec.ts's differential.
+ * the payload can be asserted against the pinned reference evidence headless
+ * -- see pitch.spec.ts's differential.
  */
 export function playerAnchors(frame: RenderFrame, vp: PitchViewport, opts: PitchDrawOptions): PlayerAnchor[] {
   const project = pitchProject(frame, vp, opts);
@@ -609,24 +602,26 @@ function playerOptions(frame: RenderFrame, index: number): PlayerRenderOptions {
  * backdrop, the floor trapezoid, its glow and hex tiling, the markings, the
  * neon outline and the goals.
  *
- * This split is carried over from the Lua (#398/#393), where re-deriving these
- * every frame cost roughly 2,000 interpreter-side projection calls and ~350
- * draw calls — about 2.3 ms of browser frame time, because love.js ships a plain
- * Lua 5.1 interpreter.
+ * This split traces back to a historical performance investigation
+ * (#398/#393): re-deriving these every frame cost roughly 2,000 projection
+ * calls and ~350 draw calls -- about 2.3 ms of frame time, a meaningful
+ * fraction of a frame's budget.
  *
- * The Lua's *mechanism* — rendering into two LÖVE canvases and blitting them —
- * did not carry over, and should not: caching a projected 3D scene into a 2D
- * bitmap cannot respond to camera movement, which is why that cache had to
- * bypass itself entirely whenever a follow view was active. Under three.js the
- * static scene is persistent geometry and the GPU redraws it, so the scene graph
- * *is* the cache. What carries over is the invariant — build it once — and the
- * membership of the static set, which is not obvious: the arena frame chevrons
- * pulse with the kickoff banner and are therefore dynamic, drawn over this.
+ * The original caching mechanism -- rendering into two off-screen canvases
+ * and blitting them -- did not carry over, and should not: caching a
+ * projected 3D scene into a 2D bitmap cannot respond to camera movement,
+ * which is why that cache had to bypass itself entirely whenever a follow
+ * view was active. Under three.js the static scene is persistent geometry
+ * and the GPU redraws it, so the scene graph *is* the cache. What carries
+ * over is the invariant — build it once — and the membership of the static
+ * set, which is not obvious: the arena frame chevrons pulse with the
+ * kickoff banner and are therefore dynamic, drawn over this.
  *
- * Memoised on one entry, like the Lua's single-key cache. The camera offset is
- * part of the key because it is baked into projected coordinates here; combat
- * shake therefore misses, which is the same trade the Lua made when it bypassed
- * on a follow view, and the common no-shake case still hits.
+ * Memoised on one entry, matching that original single-key cache design.
+ * The camera offset is part of the key because it is baked into projected
+ * coordinates here; combat shake therefore misses, which is the same trade
+ * the original cache made when it bypassed on a follow view, and the common
+ * no-shake case still hits.
  */
 let staticSceneCache: { key: string; commands: readonly DrawCommand[] } | undefined;
 let staticSceneBuilds = 0;
@@ -772,7 +767,7 @@ function drawPitchBeforeItems(dl: DrawList, frame: RenderFrame, vp: PitchViewpor
     // part of the static scene and are issued live over it. They sit at the
     // trapezoid corners, clear of the goals, so emitting them after the goals
     // instead of before the outline is visually identical. This ordering comes
-    // from the Lua's own static/dynamic split (#398) — getting it wrong freezes
+    // from the static/dynamic split above (#398) — getting it wrong freezes
     // the kickoff pulse.
     dl.extend(arenaRender.frameCommands(arena, { ax, ay, bx, by, cx, cy, dx, dy }, opts.arena_pulse));
   }
@@ -847,7 +842,7 @@ function drawPitchAfterItems(dl: DrawList, frame: RenderFrame, opts: PitchDrawOp
     // -- and match.ts converts the identical field with `slot - 1`. Indexing
     // the zero-based SoA arrays directly drew this ring under the NEXT player,
     // or at the world origin for the last slot, and read that player's team
-    // colour too. README rule 5.3: convert one-based to zero-based EXCEPT for
+    // colour too. ARCHITECTURE.md §4 rule 3: convert one-based to zero-based EXCEPT for
     // wire values, and this is a wire value being used as an index.
     const targetIndex = target - 1;
     const tx = players.x[targetIndex] ?? 0;
@@ -904,9 +899,9 @@ function drawPitchAfterItems(dl: DrawList, frame: RenderFrame, opts: PitchDrawOp
  * possible -- and what let a rig-build failure downgrade the visible product
  * silently.
  *
- * Pure, and the fully-tested reference for everything it does cover: the Lua
+ * Pure, and the fully-tested reference for everything it does cover: the
  * differential in pitch.spec.ts compares this output command-for-command
- * against a capture of `game.render.pitch`.
+ * against the pinned reference capture (`LUA_REFERENCE_JSON`).
  *
  * It has no product caller of its own -- `pitch.draw` builds a scene graph,
  * not a command list -- but it is not a parallel implementation either: its
@@ -990,7 +985,7 @@ const CHARACTER_DEPTH_SCALE = 0.05;
  * why that is now loud (AGENTS.md §7) rather than a quiet downgrade.
  *
  * COMPOSITION ORDER, and why it is not arbitrary (verified against a live GL
- * context -- see this port's report for before/after screenshots):
+ * context):
  * `characterMesh` already baked the character's own YAW onto `mesh`'s local
  * quaternion. The elevation tilt is PREMULTIPLIED onto that SAME quaternion
  * -- `mesh.quaternion = tilt * yaw`, i.e. tilt composed after yaw, exactly
@@ -1028,10 +1023,10 @@ function riggedCharacterObject(mesh: THREE.Object3D, sx: number, sy: number, z: 
   // convention), just moved. NOT `WebGLRenderTarget.texture.flipY` territory
   // at all anymore -- there is no render target here.
   //
-  // Z is DELIBERATELY NOT `ppm`, unlike X/Y -- a real defect this port's
-  // report documents finding live: uniform (ppm, -ppm, ppm) was the file
-  // header's original proposal, and it renders characters INVISIBLE (or as
-  // thin near-plane-clipped fragments). `ppm` is calibrated for SCREEN-PIXEL
+  // Z is DELIBERATELY NOT `ppm`, unlike X/Y -- a real defect found during
+  // live-GL verification: uniform (ppm, -ppm, ppm) was the original
+  // proposal, and it renders characters INVISIBLE (or as thin
+  // near-plane-clipped fragments). `ppm` is calibrated for SCREEN-PIXEL
   // sizing (tens to low hundreds of units), but world Z in this scene is a
   // THIN bookkeeping axis, not a real spatial dimension at that scale -- the
   // WHOLE entity depth zone spans only `ENTITY_Z_FAR - ENTITY_Z_NEAR` (0.58
@@ -1041,14 +1036,14 @@ function riggedCharacterObject(mesh: THREE.Object3D, sx: number, sy: number, z: 
   // arm) by a pixel-scale `ppm` (25 for a normal player, over 150 for one
   // framed close/large) spreads its world Z across tens to hundreds of
   // units -- annihilated by the near/far clip almost immediately, which is
-  // exactly the failure mode found live (VERIFIED WITH A LIVE GL CONTEXT --
-  // see this port's report): most players rendered as nothing at all, and a
-  // large centred character rendered as nothing rather than "big". Z instead
-  // gets its own small, fixed scale, keeping a character's own depth extent
-  // a tiny slice of the entity zone -- comfortably inside the frustum, with
-  // enough non-zero thickness left for the SAME intra-character depth
-  // testing (an arm in front of a torso) the Lua original had via its own
-  // depth buffer (see this file's DEPTH ZONES section).
+  // exactly the failure mode found live (VERIFIED WITH A LIVE GL CONTEXT):
+  // most players rendered as nothing at all, and a large centred character
+  // rendered as nothing rather than "big". Z instead gets its own small,
+  // fixed scale, keeping a character's own depth extent a tiny slice of the
+  // entity zone -- comfortably inside the frustum, with enough non-zero
+  // thickness left for the SAME intra-character depth testing (an arm in
+  // front of a torso) real depth buffering makes possible (see this file's
+  // DEPTH ZONES section).
   wrapper.scale.set(ppm, -ppm, CHARACTER_DEPTH_SCALE);
   // POSITION: (sx, sy) screen pixels become this object's world (x, y)
   // directly, since the shared camera's frustum already spans [0, vw] x

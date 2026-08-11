@@ -4,9 +4,9 @@
 // translation between them:
 //
 //   * The simulation describes a player's look as a species SHAPE
-//     (round / broad / angular / cluster) plus a palette. That is what
-//     data/species.lua carries and what game/presentation/identity.lua hands
-//     the renderer.
+//     (round / broad / angular / cluster) plus a palette, which the renderer
+//     receives via `player_render_options.ts`'s `SpeciesShape` (decoded off
+//     the wire by `frame_buffer.ts`).
 //   * The rig describes it as a THEME (shape language, materials, loadout) and
 //     a FIGURE (how stylised the body language is), in rig3d/themes.ts.
 //

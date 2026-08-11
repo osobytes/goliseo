@@ -1,68 +1,60 @@
-//! Port of `spec/sim/env_budget_spec.lua`.
+//! Per-step allocation budgets for the learning environment, measured with a
+//! counting global allocator (see below).
 //!
-//! Per-step allocation budgets for the learning environment, measured in
-//! the Lua original via `collectgarbage("count")` deltas with the JIT
-//! pinned off (`jit.off()`/`jit.flush()`) so the figure is the deterministic
-//! *interpreted* allocation count rather than a bimodal JIT-trace-dependent
-//! one (see that file's own extensive comment on why, referencing #223).
-//!
-//! Rust has no direct equivalent of `collectgarbage("count")`: there is no
-//! GC and no comparable "bytes allocated since I last checked" API in
-//! `std`. The standard substitute is a counting `#[global_allocator]`, which
-//! needs `unsafe impl GlobalAlloc` — and this workspace sets `unsafe_code =
-//! "forbid"` (`v2/rust/Cargo.toml`'s `[workspace.lints.rust]`, inherited by
-//! every crate with `[lints] workspace = true`, including `gc-sim`).
-//! `forbid` is stronger than `deny`: no local `#[allow(unsafe_code)]` can
-//! lift it, and it cannot be overridden per file or per test.
+//! Rust has no GC and no built-in "bytes allocated since I last checked"
+//! API in `std`. The standard substitute is a counting `#[global_allocator]`,
+//! which needs `unsafe impl GlobalAlloc` — and this workspace sets
+//! `unsafe_code = "forbid"` (`rust/Cargo.toml`'s `[workspace.lints.rust]`,
+//! inherited by every crate with `[lints] workspace = true`, including
+//! `gc-sim`). `forbid` is stronger than `deny`: no local
+//! `#[allow(unsafe_code)]` can lift it, and it cannot be overridden per file
+//! or per test.
 //!
 //! `unsafe_code = "forbid"` is a per-*package* Cargo lint, though, not a
-//! workspace-wide one. `crates/gc-test-alloc` is a small new workspace
-//! member that deliberately does not set `[lints] workspace = true`, so it
-//! does not inherit the forbid, and it holds the one `unsafe impl
-//! GlobalAlloc` this measurement needs. `gc-sim` depends on it only via
-//! `[dev-dependencies]` — never a normal dependency, so it never enters a
-//! shipping build — and `gc-sim`'s own `[lints] workspace = true` is
-//! unchanged: `gc-sim`'s own source still forbids unsafe code outright. This
-//! file installs `gc_test_alloc::CountingAllocator` as its
-//! `#[global_allocator]`, which — because every file directly under
-//! `tests/` is its own binary by default — applies to this binary alone,
-//! not to the `gc-sim` library or to any other test binary.
+//! workspace-wide one. `crates/gc-test-alloc` is a small workspace member
+//! that deliberately does not set `[lints] workspace = true`, so it does not
+//! inherit the forbid, and it holds the one `unsafe impl GlobalAlloc` this
+//! measurement needs. `gc-sim` depends on it only via `[dev-dependencies]`
+//! — never a normal dependency, so it never enters a shipping build — and
+//! `gc-sim`'s own `[lints] workspace = true` is unchanged: `gc-sim`'s own
+//! source still forbids unsafe code outright. This file installs
+//! `gc_test_alloc::CountingAllocator` as its `#[global_allocator]`, which —
+//! because every file directly under `tests/` is its own binary by default
+//! — applies to this binary alone, not to the `gc-sim` library or to any
+//! other test binary.
 //!
-//! What each case actually protected split into two kinds on inspection,
-//! and they get different treatment (see `v2/README.md`'s porting
-//! contract on retiring only when a failure mode genuinely cannot occur):
+//! What each case actually protects splits into two kinds, and they get
+//! different treatment (see `README.md`'s precedent on retiring coverage
+//! only when a failure mode genuinely cannot occur):
 //!
 //! - **Call-count claims.** "Builds exactly one observation and one action
 //!   view per slot per step", "masks a slot *without building* an
 //!   observation", and "does not re-capture the boundary for the
 //!   privileged profile" are about how many times something is called, not
-//!   how many bytes it allocates. The Lua proved them by monkey-patching
-//!   `env_observation.build`/`action_view` at runtime — impossible for a
-//!   Rust function — but the same invariants are recoverable exactly with
-//!   `Cell`-based counters on `EnvInstance`
+//!   how many bytes it allocates. These invariants are recovered exactly
+//!   with `Cell`-based counters on `EnvInstance`
 //!   ([`gc_sim::env::EnvInstance::observation_builds`],
 //!   [`gc_sim::env::EnvInstance::action_views`],
 //!   [`gc_sim::env::EnvInstance::snapshot_captures`]) and one on
 //!   `EnvObservationContext`
 //!   ([`gc_sim::env_observation::EnvObservationContext::redundant_captures`]),
 //!   modeled directly on the `MatchDriver::snapshot_captures` precedent in
-//!   `gc-netcode`. These are recovered below, and two of them are stronger
-//!   than the Lua original: an exact call count rather than "allocated
-//!   fewer bytes than a full build would."
+//!   `gc-netcode`. These are exact call counts rather than a weaker
+//!   "allocated fewer bytes than a full build would" proxy.
 //! - **Allocation-size claims.** "Keeps a single-slot observation within
 //!   budget" and "keeps a step within budget" assert absolute per-call byte
-//!   ceilings with no correctness invariant behind them — the Lua's own
-//!   header comment calls the step figures "not asserted directly" tuning
-//!   data. They are measured directly with the counting allocator below
-//!   (see that section's own comment for the measured figures and the
-//!   chosen margin). "Scales with controlled slots rather than exploding"
-//!   *is* recoverable as a count instead: its own comment states the
-//!   protected property as "O(controlled_slots x players) by design", which
-//!   is directly checkable by counting observed-player records in the
-//!   returned observation without any new instrumentation, and is a
-//!   strictly more precise statement of the property than a byte ceiling
-//!   with 1.27x headroom ever was, so it stays a count rather than also
-//!   moving to a byte measurement.
+//!   ceilings with no correctness invariant behind them — the step figures
+//!   are tuning data, not asserted directly against a correctness
+//!   invariant. They are measured directly with the counting allocator
+//!   below (see that section's own comment for the measured figures and
+//!   the chosen margin). "Scales with controlled slots rather than
+//!   exploding" *is* recoverable as a count instead: the protected property
+//!   is "O(controlled_slots x players) by design", which is directly
+//!   checkable by counting observed-player records in the returned
+//!   observation without any new instrumentation, and is a strictly more
+//!   precise statement of the property than a byte ceiling with 1.27x
+//!   headroom ever was, so it stays a count rather than also moving to a
+//!   byte measurement.
 
 use gc_sim::env::{self, EnvInstance, ReferenceConfigOverrides};
 use gc_sim::env_action::{RawAction, RawValue};
@@ -93,20 +85,19 @@ static ALLOC: CountingAllocator = CountingAllocator;
 /// tolerate that noise (or silently depend on every future `cargo test`
 /// invocation happening to pass `--test-threads=1`), every test in this file
 /// takes this lock for its entire body, which serializes this file's tests
-/// against each other regardless of the runner's thread count -- the same
-/// "pin the execution mode instead of measuring around the noise" move the
-/// Lua spec makes with `jit.off()`/`jit.flush()`. Other test binaries are
-/// unaffected: each is its own process with its own copy of `ALLOC`'s static
-/// state, so nothing outside this file can pollute or be polluted by it.
+/// against each other regardless of the runner's thread count -- pinning the
+/// execution mode instead of measuring around the noise. Other test binaries
+/// are unaffected: each is its own process with its own copy of `ALLOC`'s
+/// static state, so nothing outside this file can pollute or be polluted by
+/// it.
 static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Calls `body` once unmeasured (so growable buffers -- `Vec`/`IndexMap`
-/// first-resize, etc. -- absorb their first-touch cost before measurement,
-/// same rationale as the Lua spec's own warm-up call), then calls it
-/// `ROUNDS` further times and returns the minimum bytes the allocator
-/// reported requested on any single round. The minimum, not the mean,
-/// because a round that happens to absorb a one-off resize should not
-/// inflate the figure -- same rationale as the Lua's `per_call_bytes`.
+/// first-resize, etc. -- absorb their first-touch cost before measurement),
+/// then calls it `ROUNDS` further times and returns the minimum bytes the
+/// allocator reported requested on any single round. The minimum, not the
+/// mean, because a round that happens to absorb a one-off resize should not
+/// inflate the figure.
 /// Caller must hold `TEST_LOCK` for the duration -- see its doc comment.
 const ROUNDS: usize = 9;
 
@@ -121,11 +112,10 @@ fn measure_allocations(mut body: impl FnMut()) -> usize {
     best
 }
 
-/// Mirrors the Lua spec's `fresh(slots, profile)`: the `soccer_only`
-/// reference fixture (seed 5, a long duration so no step ends the match),
-/// with the first `slots` canonical slots set to `policy` and the rest
-/// `neutral`, under the given observation profile, with the post-kickoff
-/// hold cleared so a single step is never absorbed by it.
+/// The `soccer_only` reference fixture (seed 5, a long duration so no step
+/// ends the match), with the first `slots` canonical slots set to `policy`
+/// and the rest `neutral`, under the given observation profile, with the
+/// post-kickoff hold cleared so a single step is never absorbed by it.
 fn fresh(slots: i64, profile: &str) -> EnvInstance {
     let mut config = env::reference_config(
         "soccer_only",
@@ -151,8 +141,7 @@ fn fresh(slots: i64, profile: &str) -> EnvInstance {
     instance
 }
 
-/// Mirrors the Lua spec's `actions_for(slots)`: every controlled slot moves
-/// right and sprints.
+/// Every controlled slot moves right and sprints.
 fn actions_for(slots: i64) -> IndexMap<i64, RawAction> {
     let mut actions = IndexMap::new();
     for slot in 1..=slots {
@@ -175,10 +164,10 @@ fn actions_for(slots: i64) -> IndexMap<i64, RawAction> {
 // ---------------------------------------------------------------------------
 
 /// The regression guard for the finding that action masking used to build a
-/// whole observation. Ported from the Lua case of the same name, which
-/// asserted a byte ceiling (`< 6144 B`) and a `masking * 2 < observing`
-/// comparison as a proxy for "masking never builds a full observation";
-/// this asserts that fact directly instead, by call count.
+/// whole observation. Rather than a byte ceiling and an indirect
+/// `masking * 2 < observing` comparison as a proxy for "masking never
+/// builds a full observation", this asserts that fact directly, by call
+/// count.
 #[test]
 fn env_allocation_budgets_masks_a_slot_without_building_an_observation() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -210,12 +199,11 @@ fn env_allocation_budgets_masks_a_slot_without_building_an_observation() {
 }
 
 /// The direct form of the same guard, over a live `env::step`. An
-/// allocation inequality could not prove this on its own in the Lua either,
-/// because a step's total is dominated by snapshot hashing and would still
-/// fit its budget with a second observation build hidden inside it — the
-/// Lua's own comment says as much. Counting calls proves it exactly: one
-/// full observation for the returned result, and one narrow action view per
-/// controlled slot for the masks.
+/// allocation inequality could not prove this on its own, because a step's
+/// total is dominated by snapshot hashing and would still fit its budget
+/// with a second observation build hidden inside it. Counting calls proves
+/// it exactly: one full observation for the returned result, and one narrow
+/// action view per controlled slot for the masks.
 #[test]
 fn env_allocation_budgets_builds_exactly_one_observation_and_one_action_view_per_slot_per_step() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -239,12 +227,11 @@ fn env_allocation_budgets_builds_exactly_one_observation_and_one_action_view_per
 
 /// Pins the snapshot donation: `env::step` already captures the canonical
 /// snapshot for the boundary hash, and the privileged profile reuses it
-/// instead of capturing and hashing the same boundary again. The Lua
-/// measured this as "a privileged step costs roughly 60% more than a
-/// representative one" would indicate a regression; here the two profiles'
-/// `snapshot_captures` deltas are asserted equal outright; a re-capture
-/// regression would show up as the privileged delta being twice the
-/// representative one.
+/// instead of capturing and hashing the same boundary again. Rather than
+/// inferring a regression from "a privileged step costs roughly 60% more
+/// than a representative one", the two profiles' `snapshot_captures` deltas
+/// are asserted equal outright; a re-capture regression would show up as
+/// the privileged delta being twice the representative one.
 #[test]
 fn env_allocation_budgets_does_not_re_capture_the_boundary_for_the_privileged_profile() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -282,10 +269,10 @@ fn env_allocation_budgets_does_not_re_capture_the_boundary_for_the_privileged_pr
 // ordering), not a byte ceiling.
 // ---------------------------------------------------------------------------
 
-/// Ported from the Lua case of the same name. Its own comment states the
-/// protected property precisely: "Observation cost is O(controlled_slots x
-/// players) by design: each slot rebuilds every other player's record so no
-/// view can be shared." That is a count, not a byte figure, and it is
+/// The protected property, precisely: "Observation cost is
+/// O(controlled_slots x players) by design: each slot rebuilds every other
+/// player's record so no view can be shared." That is a count, not a byte
+/// figure, and it is
 /// exactly checkable from the observation `env::step` already returns: each
 /// controlled slot's view must carry a teammate+opponent record for every
 /// other player on the pitch -- no fewer (a dropped player would be a
@@ -357,8 +344,8 @@ fn env_allocation_budgets_scales_with_controlled_slots_rather_than_exploding() {
 //   env::observe (1 slot)   14,958 B   ceiling  20,480 B (20 KiB, 1.37x)
 //   env::step    (1 slot)  174,920 B   ceiling 235,520 B (230 KiB, 1.35x)
 //
-// The margin (roughly the same 1.2x-1.4x range the Lua's own ceilings used)
-// is headroom for the kind of drift that is not a regression: a `rustc` or
+// The margin (roughly a 1.2x-1.4x range) is headroom for the kind of drift
+// that is not a regression: a `rustc` or
 // dependency bump changing an unrelated `Vec`/`IndexMap`/`String` growth
 // curve by a few percent. It is not headroom for "this grew because someone
 // added a second observation build" -- that class of regression is exactly
@@ -369,8 +356,7 @@ fn env_allocation_budgets_scales_with_controlled_slots_rather_than_exploding() {
 //
 // These figures are specific to this measurement's exact conditions -- a
 // different machine, allocator, or Rust toolchain version may read
-// differently (Rust's allocation profile is not Lua's; see the task brief
-// this file was written against). Re-measure and re-derive the ceiling
+// differently. Re-measure and re-derive the ceiling
 // (`cargo test -p gc-sim --test env_budget -- --nocapture` prints the raw
 // figure via the `eprintln!` two lines below each assertion) rather than
 // adjusting the margin to make a new number pass.

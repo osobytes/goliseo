@@ -1,31 +1,28 @@
-//! Port of `sim/rollback_lab.lua`.
-//!
 //! Pure authoritative-reference rollback laboratory. The reference consumes
 //! only already-materialized tape frames; the client receives those same
 //! rows immediately for local slots or through deterministic network
 //! conditions for remote slots.
 //!
-//! ## Value types replace the Lua `copy_*` helpers
+//! ## No manual deep-copy helpers
 //!
 //! As with `rollback_session`/`rollback_playable_lab`, every payload type
 //! here is an owned Rust value with a real [`Clone`] impl, so a `.clone()`
-//! at a read boundary already gives the independent copy the Lua original's
-//! `copy_sample`/`copy_match_event`/etc. helpers exist to fake.
+//! at a read boundary already gives an independent copy — no manual
+//! deep-copy helper is needed.
 //!
 //! ## The runner-owned `measure` hook loses its secondary reference-capture
 //! use
 //!
-//! `sim/rollback_lab.lua`'s `RollbackLabOptions.measure` is one Lua closure
-//! shared by reference in two places: `rollback_session.new` hands it to the
-//! session for its own internal timing, and `advance_frame` separately wraps
-//! the *independent reference's* capture with the same closure. A Rust
-//! `RollbackSessionMeasure` (`Box<dyn FnMut(...)>`) is uniquely owned once
-//! passed to `crate::rollback_session::new`, and changing that already
-//! shipped, differential-tested type to a shareable `Rc<RefCell<...>>` was
-//! judged too large a change to make from this file for a measurement path
-//! that changes no logical result (`sim/rollback_lab.lua`'s own doc comment
-//! on `rollback_lab.run`: "clock values are neither read nor retained here
-//! and cannot enter the logical result"). This port therefore passes
+//! `RollbackLabOptions.measure` needs to be usable in two places:
+//! `rollback_session::new` hands it to the session for its own internal
+//! timing, and `advance_frame` separately wraps the *independent
+//! reference's* capture with the same hook. A Rust `RollbackSessionMeasure`
+//! (`Box<dyn FnMut(...)>`) is uniquely owned once passed to
+//! `crate::rollback_session::new`, and changing that already shipped,
+//! differential-tested type to a shareable `Rc<RefCell<...>>` was judged too
+//! large a change to make from this file for a measurement path that
+//! changes no logical result: clock values are neither read nor retained
+//! here and cannot enter the logical result. This module therefore passes
 //! `options.measure` to the session (the primary, documented use) and does
 //! not additionally wrap the reference capture in `advance_frame`.
 //!
@@ -466,8 +463,8 @@ fn digest_segment(state: &mut Fnv1a64State, value: &str) {
 ///
 /// # Panics
 ///
-/// Panics if `tape`'s frames do not encode (a producer invariant, README
-/// rule 5.5).
+/// Panics if `tape`'s frames do not encode (a producer invariant,
+/// ARCHITECTURE.md §3 rule 5).
 #[must_use]
 pub fn tape_digest(tape: &InputTape) -> String {
     let mut state = Fnv1a64State::new();
@@ -1219,10 +1216,9 @@ fn digest_value_canonical_key(kind: &str, text: &str) -> String {
 
 fn digest_step(state: &mut Fnv1a64State, step: &RollbackEventStep) {
     // A stable, order-independent digest of one confirmed step: every field
-    // folded through `digest_segment`, keyed and sorted the way
-    // `sim/rollback_lab.lua`'s generic `digest_value` walks a Lua table
-    // (canonical key order), specialized to `RollbackEventStep`'s known
-    // shape rather than a dynamic table walk.
+    // folded through `digest_segment`, keyed and sorted in canonical key
+    // order, specialized to `RollbackEventStep`'s known shape rather than a
+    // dynamic table walk.
     digest_segment(state, &match_snapshot::number_bytes(step.tick as f64));
     digest_segment(
         state,
@@ -1306,7 +1302,7 @@ fn copy_sources(supplied: Option<[RollbackInputSource; 8]>) -> [RollbackInputSou
 ///
 /// Panics on a malformed `tape` (unless `options.prevalidated_tape` skips
 /// full replay validation), an unknown profile name, or an out-of-range
-/// corruption tick/slot (producer invariants, README rule 5.5).
+/// corruption tick/slot (producer invariants, ARCHITECTURE.md §3 rule 5).
 #[must_use]
 pub fn new_campaign(tape: InputTape, options: RollbackLabOptions) -> RollbackLabCampaign {
     let tune = Tuning::new();
@@ -1499,7 +1495,7 @@ fn finish_campaign(campaign: &mut RollbackLabCampaign) -> RollbackLabResult {
 /// # Panics
 ///
 /// Panics if `max_ticks` is not positive, or on a frozen recording hash
-/// mismatch (producer invariants, README rule 5.5).
+/// mismatch (producer invariants, ARCHITECTURE.md §3 rule 5).
 pub fn step_campaign(
     campaign: &mut RollbackLabCampaign,
     max_ticks: i64,
@@ -1534,7 +1530,7 @@ pub fn step_campaign(
 /// # Panics
 ///
 /// Panics if `campaign` has no result yet, or its result is not
-/// `LateInputUnrecoverable` (producer invariants, README rule 5.5).
+/// `LateInputUnrecoverable` (producer invariants, ARCHITECTURE.md §3 rule 5).
 pub fn probe_terminal_stability(campaign: &mut RollbackLabCampaign) -> bool {
     {
         let result = campaign

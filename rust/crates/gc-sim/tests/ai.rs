@@ -1,8 +1,8 @@
-//! Port of `spec/sim/ai_spec.lua`.
+//! Tests for `gc_sim::ai`.
 //!
 //! `ai::closest` and `ai::assign_marks` index directly into caller-supplied
-//! slices, so their indices are 0-based Rust collection indices (README rule
-//! 5.3) — the Lua spec's 1-based expectations shift down by one here.
+//! slices, so their indices are 0-based Rust collection indices
+//! (ARCHITECTURE.md §3 rule 3).
 
 use gc_core::vec2::Vec2;
 use gc_sim::ai;

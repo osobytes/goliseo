@@ -1,13 +1,12 @@
 //! Does the pose pipeline actually carry the game's mechanics to the renderer?
 //!
 //! Every link in that chain is unit-tested elsewhere: `player_pose::select`
-//! against `game/presentation/player_pose.lua` (see `keeper_pose.rs` /
-//! `outfield_pose.rs`), the wire encoding against `frame_buffer.rs`'s own
-//! numbering, and the TypeScript side against its Lua counterpart. None of
-//! those notice if the chain is dead END TO END -- which is exactly how this
-//! port shipped browser matches that played 0-0 with zero events while every
-//! individual link passed. `spec/render/frame_spec.lua` has the same blind
-//! spot: it builds ONE frame from a hand-built state.
+//! (see `keeper_pose.rs` / `outfield_pose.rs`), the wire encoding against
+//! `frame_buffer.rs`'s own numbering, and the TypeScript side against its
+//! own spec. None of those notice if the chain is dead END TO END -- which
+//! is exactly how this shipped browser matches that played 0-0 with zero
+//! events while every individual link passed. `tests/frame.rs` has the same
+//! blind spot: it builds ONE frame from a hand-built state.
 //!
 //! So this drives a whole match and asks what the renderer would actually
 //! receive. A stubbed selector, a mis-wired context, or a pose that stops

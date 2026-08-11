@@ -1,16 +1,16 @@
-// Browser keyboard capture. New in this port -- game/input/bindings.lua's
-// header comment (bindings.ts) flags this exact gap: every string in
-// `CONTROLS` is a LÖVE `KeyConstant` ("lshift", "kpenter", "dpup", ...),
-// not a browser `KeyboardEvent.code` ("ShiftLeft", "Enter", ...), and
-// something has to translate between them before real capture works. This
-// file is that translation layer, plus the capture itself.
+// Browser keyboard capture. bindings.ts's header comment flags this exact
+// gap: every string in `CONTROLS` is drawn from this project's canonical
+// control vocabulary ("lshift", "kpenter", "dpup", ...), not a browser
+// `KeyboardEvent.code` ("ShiftLeft", "Enter", ...), and something has to
+// translate between them before real capture works. This file is that
+// translation layer, plus the capture itself.
 //
 // Split into a pure translation table/function (testable with plain
 // strings, no DOM) and a small stateful class that listens for real
 // `keydown`/`keyup`. The class takes its event target as a constructor
 // parameter rather than reaching for the global `window`/`document` --
 // this workspace's vitest config runs specs under `environment: "node"`
-// (v2/ts/vitest.config.ts), so there is no real DOM to reach for during a
+// (ts/vitest.config.ts), so there is no real DOM to reach for during a
 // test, and an injected fake target keeps this file's own tests honest
 // without adding a jsdom/happy-dom dependency (this package's task brief
 // forbids editing package.json / installing anything mid-milestone).
@@ -46,10 +46,11 @@ export interface KeyboardEventTarget {
 }
 
 // Every `KeyboardEvent.code` bindings.ts's CONTROLS table names, mapped to
-// its LÖVE `KeyConstant`. `code` (the physical-key identity) is used
-// rather than `key` (the character produced) so the WASD cluster stays put
-// under non-QWERTY layouts, matching LÖVE's own scancode-based
-// `KeyConstant` semantics closely enough for this game's bindings.
+// its canonical control-vocabulary name. `code` (the physical-key
+// identity) is used rather than `key` (the character produced) so the
+// WASD cluster stays put under non-QWERTY layouts, matching that
+// vocabulary's own scancode-based semantics closely enough for this
+// game's bindings.
 //
 // Deliberately closed: a `code` with no entry here produces no `KeyEvent`
 // at all (see `translateCode`) rather than a guessed/lowercased passthrough
@@ -78,25 +79,25 @@ export const KEY_CODE_MAP: ReadonlyMap<string, string> = new Map([
   ["KeyP", "p"],
   ["F11", "f11"],
   ["KeyM", "m"],
-  // Not in CONTROLS today, but named literally by match.lua's dev-harness
-  // keys (game/screens/match.lua: `evt.key == "r"`/`"b"`/`"f1"`) -- kept
-  // here so a playtest-profile capture layer can recognize them too,
-  // rather than every future consumer growing its own private code->name
-  // entry for exactly these three.
+  // Not in CONTROLS today, but named literally by the match screen's
+  // dev-harness keys (`r`/`b`/`f1`) -- kept here so a playtest-profile
+  // capture layer can recognize them too, rather than every future
+  // consumer growing its own private code->name entry for exactly these
+  // three.
   ["KeyR", "r"],
   ["KeyB", "b"],
   ["F1", "f1"],
 ]);
 
-/** Translate a browser `KeyboardEvent.code` into its LÖVE `KeyConstant` name, or `null` if this game does not bind it. */
+/** Translate a browser `KeyboardEvent.code` into its canonical control-vocabulary name, or `null` if this game does not bind it. */
 export function translateCode(code: string): string | null {
   return KEY_CODE_MAP.get(code) ?? null;
 }
 
 /**
- * Listens for real keyboard events and tracks held keys (by LÖVE
- * `KeyConstant` name) for [`KeyboardState`], queuing a [`KeyEvent`] per
- * translated press/release for a consumer to drain.
+ * Listens for real keyboard events and tracks held keys (by canonical
+ * control-vocabulary name) for [`KeyboardState`], queuing a [`KeyEvent`]
+ * per translated press/release for a consumer to drain.
  *
  * Repeats (OS key-repeat while a key stays down) and already-known
  * up/down transitions are filtered here, so a drained press/release
@@ -144,7 +145,7 @@ export class BrowserKeyboardCapture implements KeyboardState {
     this._target?.removeEventListener("keyup", this._onKeyUp);
   }
 
-  /** Mirrors `love.keyboard.isDown(...)`: true when at least one of `keys` is currently held. */
+  /** True when at least one of `keys` is currently held. */
   isDown(...keys: readonly string[]): boolean {
     return keys.some((key) => this._held.has(key));
   }

@@ -1,5 +1,3 @@
-//! Port of `sim/env_config.lua`.
-//!
 //! A config is the complete, serializable identity of an episode:
 //! build/content provenance, fixture and tuning identity, seed, duration,
 //! per-slot ownership, observation profile, and reward channel selection. It
@@ -8,14 +6,13 @@
 //! state.
 //!
 //! Configs arrive from outside the simulation, so every rejection is a
-//! recoverable [`Result`] rather than a panic (README rule 5.5 / AGENTS.md
-//! §7). [`normalize`] is the entry point that accepts genuinely untyped
-//! external input, mirroring the Lua original's `@param config any`; a typed
-//! Rust struct cannot represent "an extra unknown field" or "the wrong
-//! fundamental type" the way a Lua table can, so [`RawEnvConfig`] and its raw
-//! nested shapes ([`RawFieldSize`], [`RawSlotSource`]) stand in for that one
-//! untyped boundary. Every other function here works with the fully typed
-//! [`EnvConfig`] that [`normalize`] produces.
+//! recoverable [`Result`] rather than a panic (ARCHITECTURE.md §3 rule 5 /
+//! AGENTS.md §7). [`normalize`] is the entry point that accepts genuinely untyped
+//! external input; a typed Rust struct cannot represent "an extra unknown
+//! field" or "the wrong fundamental type" on its own, so [`RawEnvConfig`]
+//! and its raw nested shapes ([`RawFieldSize`], [`RawSlotSource`]) stand in
+//! for that one untyped boundary. Every other function here works with the
+//! fully typed [`EnvConfig`] that [`normalize`] produces.
 
 use crate::env_reward;
 use crate::fixed_clock;
@@ -27,10 +24,10 @@ pub const VERSION: i64 = 1;
 pub const DEFAULT_CONTENT: &str = "showcase-content-v1";
 /// Default match length, in seconds.
 pub const DEFAULT_DURATION: f64 = 30.0;
-/// Default goal cap. 99 is `sim.match.NO_GOAL_LIMIT`, spelled as a literal
-/// here (matching the Lua original) because this module validates configs
-/// and deliberately does not pull in the match engine. See the decision
-/// record in `docs/online/match_flow.md`.
+/// Default goal cap. 99 is `r#match::NO_GOAL_LIMIT`, spelled as a literal
+/// here because this module validates configs and deliberately does not
+/// pull in the match engine. See the decision record in
+/// `docs/online/match_flow.md`.
 pub const DEFAULT_MAX_GOALS: i64 = 99;
 /// Default pitch size.
 pub const DEFAULT_FIELD: EnvFieldSize = EnvFieldSize { w: 960.0, h: 540.0 };
@@ -66,7 +63,7 @@ pub enum EnvConfigErrorCode {
     ProfileMismatch,
 }
 
-/// An expected, recoverable env-config failure (README rule 5.5): a config
+/// An expected, recoverable env-config failure (ARCHITECTURE.md §3 rule 5): a config
 /// comes from outside the simulation, so an illegal config is a recoverable
 /// rejection with a machine-readable reason, never a panic.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,8 +118,7 @@ pub struct RawFieldSize {
     pub w: Option<f64>,
     /// Raw pitch height, when present.
     pub h: Option<f64>,
-    /// True when the caller's table carried a field other than `w`/`h`
-    /// (mirrors Lua's `only_known_fields(field, FIELD_FIELDS)` guard).
+    /// True when the caller's table carried a field other than `w`/`h`.
     pub has_unknown_field: bool,
 }
 
@@ -147,8 +143,7 @@ pub struct RawSlotSource {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RawEnvConfig {
     /// True when the caller's table carried a field other than the ones
-    /// named below (mirrors Lua's `only_known_fields(config, CONFIG_FIELDS)`
-    /// guard).
+    /// named below.
     pub has_unknown_field: bool,
     /// Raw `version` field, when present.
     pub version: Option<i64>,
@@ -182,17 +177,15 @@ pub struct RawEnvConfig {
     pub home_tactic_id: Option<String>,
     /// Raw `away_tactic_id` field, when present.
     pub away_tactic_id: Option<String>,
-    /// Raw `combat` field, when present. Lua's `type(config.combat) ~=
-    /// "boolean"` guard is structurally redundant here (a Rust `bool`
-    /// cannot hold anything else) and is dropped, matching the
+    /// Raw `combat` field, when present. A wrong-type-guard is unnecessary
+    /// here (a Rust `bool` cannot hold anything else), matching the
     /// `content_validation` precedent for checks a typed language already
     /// guarantees.
     pub combat: Option<bool>,
     /// Raw `observation_profile` field, when present.
     pub observation_profile: Option<String>,
     /// Raw `slot_sources` field, when present. `None` means "use
-    /// [`default_slot_sources`]", exactly as Lua's `config.slot_sources or
-    /// env_config.default_slot_sources()`.
+    /// [`default_slot_sources`]".
     pub slot_sources: Option<Vec<RawSlotSource>>,
     /// Raw `reward_team` field, when present.
     pub reward_team: Option<String>,
@@ -219,11 +212,11 @@ fn raw_channel_ids(names: &[String]) -> env_reward::RawChannelIds {
 // Normalized, typed shapes.
 // ---------------------------------------------------------------------------
 
-/// Which observation lens an episode's slot views are built from. Mirrors
-/// the Lua original's `EnvObservationProfile` alias; duplicated in
-/// `env_action.rs` too (see that module's doc comment) because a LuaCATS
-/// alias needs no `require`, and this port keeps the same per-module
-/// dependency footprint the task scope lists.
+/// Which observation lens an episode's slot views are built from. Declared
+/// locally, and duplicated in `env_action.rs` too (see that module's doc
+/// comment), keeping each module's dependency surface minimal rather than
+/// sharing one canonical type across modules that only need this small
+/// closed set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnvObservationProfile {
     /// One controlled slot restricted to presented, current cues.
@@ -321,8 +314,7 @@ pub struct EnvSlotSourceConfig {
 /// The default slot-source configuration: slot one is a policy slot, every
 /// other slot is neutral. Returns the same raw shape [`normalize`] accepts
 /// for `slot_sources`, so a caller can take this, mutate a couple of
-/// entries, and hand it back — exactly how the Lua original's callers use
-/// it.
+/// entries, and hand it back.
 #[must_use]
 pub fn default_slot_sources() -> Vec<RawSlotSource> {
     (1..=input_frame::SLOT_COUNT)
@@ -801,7 +793,7 @@ pub fn resolve(config: &EnvConfig) -> EnvResolvedFixture {
 /// manifest. Two runs that agree on this string plus build/content/tuning/
 /// seed agree on everything the environment can decide.
 ///
-/// Unlike `fnv1a64`/`diagnostics_schema` (README §2.2), this digest is not
+/// Unlike `fnv1a64`/`diagnostics_schema` (ARCHITECTURE.md §1.2), this digest is not
 /// on the list of hashes two independently-implemented clients must agree on
 /// bit-for-bit — it is a Rust-internal manifest string, so it need only be
 /// stable and sensitive to every knob within this engine.

@@ -1,5 +1,3 @@
-// Ported from spec/game/transport_spec.lua.
-
 import { describe, expect, it } from "vitest";
 import * as contract from "./contract.ts";
 import * as transport from "./index.ts";

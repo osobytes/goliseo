@@ -1,5 +1,3 @@
-//! Port of `sim/placement.lua`.
-//!
 //! Converts a formation's normalized anchors into absolute pitch positions.
 //! Home attacks right (anchors used as-is); away attacks left (x mirrored).
 
@@ -27,7 +25,7 @@ pub struct Field {
 /// A candidate used to break ties by index when sorting by distance.
 ///
 /// `idx` is a plain in-memory position (not a wire format), so it converts to
-/// 0-based per README rule 5.3.
+/// 0-based per ARCHITECTURE.md §3 rule 3.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DistanceCandidate {
     /// The candidate's original index.

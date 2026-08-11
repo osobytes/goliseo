@@ -1,5 +1,3 @@
-//! Port of `sim/rollback_input_history.lua`.
-//!
 //! Pure per-tick input history for rollback clients. It records
 //! transport-facing authoritative arrivals and materializes the complete
 //! [`InputFrame`] consumed by the match simulation without knowing about
@@ -7,50 +5,46 @@
 //!
 //! This is the input ring buffer the rollback re-simulation replays from: if
 //! it returns a different input for a tick on two clients, the match
-//! desyncs. See `v2/tools/lua_reference/README.md` and
+//! desyncs. See `tools/lua_reference/README.md` and
 //! `tests/fixtures/rollback_input_history_lua_reference.txt` for the
 //! differential coverage this module gets because of that.
 //!
-//! ## Slot index convention (README rule 5.3)
+//! ## Slot index convention (ARCHITECTURE.md §3 rule 3)
 //!
 //! `slot_index` on this module's public surface stays **1-based**, matching
 //! [`input_frame::slot`]'s own public convention — this is the same
 //! cross-module "canonical input slot" identity, not a wire payload, but
 //! converting one sibling module's copy of it and not the other is exactly
-//! the asymmetric off-by-one rule 5.3 warns about. Every internal
+//! the asymmetric off-by-one rule 3 warns about. Every internal
 //! fixed-size, 8-element buffer this module keeps (`sources`,
 //! `authoritative_ticks`, `anchors`, and each tick's
 //! `[Option<InputSample>; 8]`) is purely internal indexing and is 0-based;
 //! [`slot_idx`] is the single conversion point.
 //!
-//! `tick` values are never converted: they are simulation ticks (already
-//! 0-based in the Lua original) used as sparse keys, not sequential buffer
-//! positions.
+//! `tick` values are never converted: they are already 0-based simulation
+//! ticks used as sparse keys, not sequential buffer positions.
 //!
 //! ## No `%`, and why the two `/` are still safe
 //!
-//! `sim/rollback_input_history.lua` contains no `%` (floored modulo)
-//! anywhere — grepped and confirmed. The only integer division is inside the
-//! two binary-search helpers ([`predecessor_index`], [`insert_tick`]), and in
-//! both, the loop invariant keeps `low` and `high` non-negative for the
-//! entire time a division executes (`low` starts at `0` and only increases;
-//! `high` starts at `length - 1`, and the loop body — where the division
-//! happens — only runs while `low <= high`, which already implies
-//! `high >= low >= 0`). Rust's truncating `/` therefore matches Lua's
-//! `math.floor` exactly for every division this module performs; no
-//! `rem_euclid` is needed anywhere in this file.
+//! This module contains no `%` (floored modulo) anywhere. The only integer
+//! division is inside the two binary-search helpers ([`predecessor_index`],
+//! [`insert_tick`]), and in both, the loop invariant keeps `low` and `high`
+//! non-negative for the entire time a division executes (`low` starts at
+//! `0` and only increases; `high` starts at `length - 1`, and the loop
+//! body — where the division happens — only runs while `low <= high`, which
+//! already implies `high >= low >= 0`). Since both operands are always
+//! non-negative, Rust's truncating `/` matches floor division exactly for
+//! every division this module performs; no `rem_euclid` is needed anywhere
+//! in this file.
 //!
-//! ## Value types replace the Lua `copy_*` helpers
+//! ## No manual deep-copy helpers
 //!
-//! The Lua original threads `copy_sample`/`copy_frame`/`copy_record` through
-//! every read and write to defend against a caller mutating a table it was
-//! merely handed (`spec/sim/rollback_input_history_spec.lua`'s "deep-copies
-//! authoritative, effective, and caller-returned records" case exists
-//! because Lua tables are references). [`InputSample`], [`InputFrame`],
-//! [`RollbackInputSlotRecord`], and [`RollbackInputTickRecord`] are all
-//! `Copy` value types here, so every read already hands back an independent
-//! copy — the defensive-copy helpers have no Rust equivalent because the
-//! bug class they defend against does not exist for `Copy` types.
+//! [`InputSample`], [`InputFrame`], [`RollbackInputSlotRecord`], and
+//! [`RollbackInputTickRecord`] are all `Copy` value types here, so every
+//! read already hands back an independent copy — no manual deep-copy helper
+//! is needed anywhere in this module, because the bug class such a helper
+//! would defend against (a caller mutating a table it was merely handed)
+//! does not exist for `Copy` types.
 
 use crate::input_frame::{self, InputFrame, InputSample};
 use indexmap::IndexMap;
@@ -93,8 +87,8 @@ pub enum RollbackInputHistoryErrorCode {
     PendingDivergence,
 }
 
-/// An expected, recoverable [`RollbackInputHistory`] failure (README rule
-/// 5.5): the caller is meant to handle it, not a programmer error.
+/// An expected, recoverable [`RollbackInputHistory`] failure (ARCHITECTURE.md
+/// §3 rule 5): the caller is meant to handle it, not a programmer error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RollbackInputHistoryError {
     /// Machine-readable failure reason.
@@ -253,11 +247,10 @@ pub struct RollbackInputTruncateResult {
 /// Pure per-tick input history for one rollback client.
 ///
 /// Every field is internal state; use the free functions in this module to
-/// read or mutate it. Fields are `pub` (README rule: everything a test
-/// touches is `pub`; sibling `gc-sim` state structs — [`crate::bot::BotState`],
+/// read or mutate it. Fields are `pub` (ARCHITECTURE.md §3 rule 6: everything
+/// a test touches is `pub`; sibling `gc-sim` state structs — [`crate::bot::BotState`],
 /// [`crate::outfield_decision::OutfieldDecisionState`] — are fully open data
-/// too), but the arrays here are 0-based per the module doc comment even
-/// though the Lua original's equivalent tables were 1-based.
+/// too), but the arrays here are 0-based per the module doc comment.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RollbackInputHistory {
     /// Canonical eight-slot local/remote ownership metadata.
@@ -289,7 +282,7 @@ pub struct RollbackInputHistory {
 }
 
 /// Convert a public 1-based canonical slot index into this module's internal
-/// 0-based buffer index (README rule 5.3). Callers must have already
+/// 0-based buffer index (ARCHITECTURE.md §3 rule 3). Callers must have already
 /// validated `slot_index` is in `1..=input_frame::SLOT_COUNT`.
 fn slot_idx(slot_index: i64) -> usize {
     (slot_index - 1) as usize
@@ -301,16 +294,16 @@ fn filled_count(slots: &[Option<InputSample>; 8]) -> i64 {
 
 /// Index of the greatest element `<= target`, or `None` if every element is
 /// greater than `target` (or `ticks` is empty). Purely internal buffer
-/// indexing (README rule 5.3): 0-based, unlike the Lua original's 1-based
-/// array index (which used `0` for "not found").
+/// indexing (ARCHITECTURE.md §3 rule 3): 0-based, returning `None` for "not found"
+/// rather than a sentinel index.
 fn predecessor_index(ticks: &[i64], target: i64) -> Option<usize> {
     let mut low: isize = 0;
     let mut high: isize = ticks.len() as isize - 1;
     let mut found: Option<usize> = None;
     while low <= high {
         // `low` and `high` are both non-negative whenever this runs (see the
-        // module doc comment), so this truncating division matches Lua's
-        // `math.floor((low + high) / 2)` exactly.
+        // module doc comment), so this truncating division is exactly
+        // `floor((low + high) / 2)`.
         let middle = (low + high) / 2;
         if ticks[middle as usize] <= target {
             found = Some(middle as usize);
@@ -363,10 +356,9 @@ fn latest_authoritative(
 
 /// Construct a fresh history for one match. `sources` names every canonical
 /// slot's local/remote ownership; a `RollbackInputSource` array is always
-/// exactly eight entries, so the Lua original's runtime shape/membership
-/// assertion (`assert_sources`) is dropped as structurally redundant here —
-/// the same principle `input_frame`'s port documents for its own dropped
-/// shape checks.
+/// exactly eight entries, so no runtime shape/membership assertion is
+/// needed here — the same principle `input_frame` documents for its own
+/// dropped shape checks.
 #[must_use]
 pub fn new(sources: [RollbackInputSource; 8]) -> RollbackInputHistory {
     RollbackInputHistory {
@@ -386,8 +378,8 @@ pub fn new(sources: [RollbackInputSource; 8]) -> RollbackInputHistory {
     }
 }
 
-/// This slot's local/remote ownership. `slot_index` is 1-based (README rule
-/// 5.3). Panics (programmer error, README rule 5.5) if `slot_index` is out
+/// This slot's local/remote ownership. `slot_index` is 1-based (ARCHITECTURE.md
+/// §3 rule 3). Panics (programmer error, ARCHITECTURE.md §3 rule 5) if `slot_index` is out
 /// of `1..=8`.
 #[must_use]
 pub fn source(history: &RollbackInputHistory, slot_index: i64) -> RollbackInputSource {
@@ -597,7 +589,7 @@ pub fn add_authoritative_batch(
 /// tick again during resimulation replaces its former used-input record with
 /// a frame derived from the now-current authoritative history.
 ///
-/// Every `assert!` below is a producer invariant (README rule 5.5), not a
+/// Every `assert!` below is a producer invariant (ARCHITECTURE.md §3 rule 5), not a
 /// recoverable failure: a missing local sample, a tick older than the
 /// retained window, or an unconsumed divergence are all programmer/protocol
 /// errors, so this never returns a `Result`.
@@ -681,10 +673,9 @@ pub fn record(history: &RollbackInputHistory, tick: i64) -> Option<RollbackInput
 }
 
 /// The authoritative slot record for `(tick, slot_index)`, if any authority
-/// is retained for it. `slot_index` is 1-based (README rule 5.3); an
-/// out-of-range `slot_index` behaves like the Lua original's table indexing
-/// and simply reports no record, rather than panicking — this accessor never
-/// asserted a bound in the Lua source either.
+/// is retained for it. `slot_index` is 1-based (ARCHITECTURE.md §3 rule 3); an
+/// out-of-range `slot_index` simply reports no record, rather than
+/// panicking — this accessor asserts no bound.
 #[must_use]
 pub fn authoritative_record(
     history: &RollbackInputHistory,

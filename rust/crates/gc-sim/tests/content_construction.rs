@@ -1,4 +1,4 @@
-//! Port of `spec/sim/content_construction_spec.lua`.
+//! Tests for building a `MatchState` from authored player/team content.
 
 use gc_data::players::PlayerData;
 use gc_data::species::SimVerb;

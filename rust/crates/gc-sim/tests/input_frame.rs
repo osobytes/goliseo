@@ -1,10 +1,9 @@
-//! Port of `spec/sim/input_frame_spec.lua`.
-//!
-//! This is the wire format (README §"input_frame.lua is the most important
-//! file you will touch"): its bytes go on the network and into rollback
+//! This is the wire format: its bytes go on the network and into rollback
 //! re-simulation, so two clients must encode identically. Every assertion
-//! from the Lua spec is ported below, plus differential coverage against the
-//! reference Lua implementation in `differential.rs`.
+//! from the original Lua spec (`spec/sim/input_frame_spec.lua`) is carried
+//! below, plus differential coverage against reference vectors captured from
+//! the Lua implementation this simulation was originally validated against,
+//! in `differential.rs`.
 
 use gc_data::players::PlayerData;
 use gc_sim::input_frame::{

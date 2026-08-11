@@ -1,4 +1,5 @@
-//! Port of `spec/core/fnv1a64_spec.lua`.
+//! Tests FNV-1a-64 against published test vectors, incremental byte updates,
+//! and agreement between bulk and byte-at-a-time updates.
 
 use gc_core::fnv1a64::{Fnv1a64State, hash};
 

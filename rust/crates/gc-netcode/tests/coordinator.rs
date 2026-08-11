@@ -1,29 +1,29 @@
-//! Port of `spec/game/online_coordinator_spec.lua`.
+//! Behavioral and differential tests for the coordinator reducer and driver:
+//! peer admission, manifest proposal, slot assignment, readiness, countdown,
+//! mid-match hash-agreement tracking, and the terminal-reason paths those
+//! produce.
 //!
 //! This file also carries the reducer's required differential evidence
-//! (README rule 5.9 / `v2/tools/lua_reference/README.md`): a from-scratch
+//! (ARCHITECTURE.md §3 rule 7 / `tools/lua_reference/README.md`): a from-scratch
 //! event sequence — connect, propose manifest, assign slots, set ready,
 //! begin countdown, several ticks with agreeing hash reports, then a
 //! deliberate three-tick boundary-hash disagreement — driven identically
-//! through the real Lua `game/online/coordinator_driver.lua` and through
-//! this port, comparing phase, terminal reason, and mismatch counters on
-//! *both* peers at every step. See
+//! through the reference implementation this netcode's wire behaviour was
+//! validated against and through this reducer, comparing phase, terminal
+//! reason, and mismatch counters on *both* peers at every step. See
 //! [`coordinator_reducer_reproduces_the_lua_reference_rejection_and_desync_paths`]
 //! for the important part: the happy path (`agree_tick_*`) is not the
 //! interesting evidence here, the desync path is — the host detects the
 //! third disagreement and terminates as `hash_mismatch` while the guest,
 //! racing the announced abort, never reaches its own third count and ends
 //! as `peer_abort` instead. A reducer that agreed only on the happy path
-//! and diverged on this would be exactly the failure this port must not
+//! and diverged on this would be exactly the failure this reducer must not
 //! ship.
 //!
-//! `tests/fixtures/coordinator_desync_lua_reference.txt` is the captured
-//! stdout of running the real Lua `game/online/coordinator_driver.lua` (via
-//! `coordinator.lua`, `coordinator_fixture.lua`, `protocol.lua`,
-//! `protocol_fixture.lua`, and their `sim`/`data`/`core` dependencies) under
-//! headless `love` (no display, no `xvfb`), via a scratch `conf.lua`/
-//! `main.lua` harness per that README (not committed — scratch dirs are
-//! session-local).
+//! `tests/fixtures/coordinator_desync_lua_reference.txt` is the frozen,
+//! non-regenerable captured output of that reference run. See
+//! `tools/lua_reference/README.md` for how it was captured and what
+//! guarantees it as byte-exact evidence.
 
 use gc_netcode::coordinator::{self, Event, Options, PreferenceState, Role, TerminalReason};
 use gc_netcode::coordinator_driver::{self as driver, Driver};
@@ -555,18 +555,17 @@ fn a_terminal_session_refuses_every_event_but_tick() {
 }
 
 // ===========================================================================
-// Below: the remaining `t.it` cases of `spec/game/online_coordinator_spec.lua`
-// not covered by the tests above. See this file's module doc comment for the
-// two large differential/golden tests, which stay untouched; the sixteen
-// named tests above them were already ported before this section and are
-// also untouched. Helpers below mirror the Lua spec's own local helpers
-// (`message`, `handshake`, `deliver`, `assigned_host`, `ready_host`).
+// Below: further coverage of coordinator behavior beyond the two large
+// differential/golden tests documented in this file's module doc comment.
+// The tests and helpers below are grouped and named to track the reference
+// implementation's own test structure and local helpers (`message`,
+// `handshake`, `deliver`, `assigned_host`, `ready_host`).
 // ===========================================================================
 
 use gc_netcode::coordinator::CoordinatorState;
 
 /// The fixture session id every coordinator in this file shares (mirrors the
-/// spec's `SESSION = fixture.manifest().session_id`).
+/// reference implementation's `SESSION = fixture.manifest().session_id`).
 const SESSION: &str = "session_alpha";
 
 /// `message(kind, peer_id, sequence, body)`: `protocol.new` plus an assert.
@@ -609,8 +608,8 @@ fn deliver(
 }
 
 /// A host that has admitted `guest_count` guests, proposed the manifest, seen
-/// every acceptance, and published canonical ownership. Mirrors the spec's
-/// `assigned_host`.
+/// every acceptance, and published canonical ownership. Mirrors the
+/// reference implementation's `assigned_host`.
 fn assigned_host(guest_count: i64) -> (CoordinatorState, Vec<i64>) {
     let mut state = fixture::host(None);
     let mut sequences = vec![0i64; guest_count as usize];
@@ -654,7 +653,7 @@ fn assigned_host(guest_count: i64) -> (CoordinatorState, Vec<i64>) {
 }
 
 /// Every admitted guest sends `ready = true`, then the host's own local
-/// readiness is set. Mirrors the spec's `ready_host`.
+/// readiness is set. Mirrors the reference implementation's `ready_host`.
 fn ready_host(
     mut state: CoordinatorState,
     guest_count: i64,
@@ -693,16 +692,16 @@ fn ready_host(
 fn refuses_malformed_or_contradictory_identities() {
     let runtime = fixture::runtime();
 
-    // `role = "spectator"`: the Lua original runtime-checks a raw string
-    // role field and rejects it as malformed. `Options::role` here is a
-    // Rust `Role` enum with only `Host`/`Guest` variants, so this bad value
-    // is unconstructible in this port — the enum itself stands in for that
-    // check (v2/README.md porting rule 6; precedent: `gc-sim/tests/
-    // possession_transition.rs`, `content_validation.rs`).
+    // `role = "spectator"`: the reference implementation runtime-checks a
+    // raw string role field and rejects it as malformed. `Options::role`
+    // here is a Rust `Role` enum with only `Host`/`Guest` variants, so this
+    // bad value is unconstructible in this codebase — the enum itself
+    // stands in for that check (precedent:
+    // `gc-sim/tests/possession_transition.rs`, `content_validation.rs`).
 
     // A guest without a host link id: malformed. (Already exercised by
     // `new_refuses_a_guest_without_a_host_link`; re-asserted here so this
-    // test stands as a complete port of its Lua original.)
+    // test group fully covers what the reference implementation covers.)
     let result = coordinator::new(Options {
         role: Role::Guest,
         session_id: SESSION.to_string(),
@@ -776,9 +775,9 @@ fn gives_all_eight_canonical_slots_exactly_one_declared_source() {
         let mut ids: Vec<String> = Vec::new();
         for index in 1..=gc_sim::input_frame::SLOT_COUNT {
             let slot = gc_sim::input_frame::slot(index).unwrap();
-            // `slot_sources` returns a slot-id-keyed record (the Lua
-            // original indexes it as `sources[slot.id]`), not the 1-based
-            // array `plan_assignments`/`assignments` returns.
+            // `slot_sources` returns a slot-id-keyed record (the reference
+            // implementation indexes it as `sources[slot.id]`), not the
+            // 1-based array `plan_assignments`/`assignments` returns.
             let producer = sources.get(protocol::slot_wire_id(slot.id)).unwrap();
             assert_eq!(
                 producer.get("slot").and_then(Value::as_str),
@@ -860,11 +859,12 @@ fn never_seats_a_combat_protected_keeper() {
 
     let err = coordinator::slot_sources(&manifest, &assignments).unwrap_err();
     assert!(err.message.contains("keepers"));
-    // The Lua reference (`game/online/coordinator.lua` line 614) returns the
+    // The reference implementation (see `tools/lua_reference/README.md`;
+    // historically at `coordinator.lua` line 614) returns the
     // coordinator-local `"invalid_assignment"` for this exact rule — the
     // same code every other coordinator-local ownership invariant in this
-    // module uses. This port's `slot_sources` (`coordinator.rs` around line
-    // 1319) instead returns `RejectCode::InvalidOwnership`
+    // module uses. This crate's `slot_sources` (`coordinator.rs` around
+    // line 1319) instead returns `RejectCode::InvalidOwnership`
     // ("invalid_ownership"), `protocol.rs`'s own structural-validation code.
     // Expected: `RejectCode::InvalidAssignment`. Actual:
     // `RejectCode::InvalidOwnership`.
@@ -1338,12 +1338,13 @@ fn freezes_ownership_and_names_one_start_boundary() {
         gc_sim::input_frame::SLOT_COUNT
     );
 
-    // Freezing takes a copy: Rust's ownership model makes the Lua original's
-    // "mutate the live table, prove the freeze is untouched" check
-    // structurally impossible to fail here (there is no aliasing to leak
-    // through) — mirrors the way the porting rules treat an
-    // enum-unconstructible bad value. The meaningful residual assertion is
-    // that the frozen slot still names its real owner.
+    // Freezing takes a copy: Rust's ownership model makes the reference
+    // implementation's "mutate the live table, prove the freeze is
+    // untouched" check structurally impossible to fail here (there is no
+    // aliasing to leak through) — the same reasoning applies here as for an
+    // enum-unconstructible bad value elsewhere in this file. The meaningful
+    // residual assertion is that the frozen slot still names its real
+    // owner.
     assert_eq!(
         freeze
             .assignments
@@ -1501,7 +1502,7 @@ fn rejects_a_start_that_misnames_the_frozen_boundary() {
 // ---------------------------------------------------------------------------
 
 /// A host that has reached the running phase with one guest. Mirrors the
-/// spec's local `running_host`.
+/// reference implementation's local `running_host`.
 fn running_host() -> (CoordinatorState, Vec<i64>) {
     let (state, mut sequences) = assigned_host(1);
     let mut state = ready_host(state, 1, &mut sequences);
@@ -1965,17 +1966,17 @@ fn still_ends_the_session_mid_lobby_on_a_kind_this_build_never_heard_of() {
 
 #[test]
 fn refuses_unknown_events_and_post_terminal_traffic() {
-    // The Lua original also sends `{ kind = "teleport" }` against a fresh
-    // host and expects `unknown_message`. `Event` here is a closed Rust enum
-    // matched exhaustively in `step`, so an unrecognized *local event kind*
-    // is unconstructible in this port (the same enum-unconstructible
-    // situation the porting rules call out for a bad wire value; see
-    // `gc-sim/tests/possession_transition.rs`, `content_validation.rs`). The
-    // closest faithful equivalent reachable through the public API is
-    // `receive`'s wire-level unknown *message* kind path, already exercised
-    // by "still ends the session mid-lobby on a kind this build never heard
-    // of" above. This test covers the rest of the Lua case: post-terminal
-    // traffic.
+    // The reference implementation also sends `{ kind = "teleport" }`
+    // against a fresh host and expects `unknown_message`. `Event` here is a
+    // closed Rust enum matched exhaustively in `step`, so an unrecognized
+    // *local event kind* is unconstructible here (the same
+    // enum-unconstructible situation noted elsewhere for a bad wire value;
+    // see `gc-sim/tests/possession_transition.rs`,
+    // `content_validation.rs`). The closest faithful equivalent reachable
+    // through the public API is `receive`'s wire-level unknown *message*
+    // kind path, already exercised by "still ends the session mid-lobby on
+    // a kind this build never heard of" above. This test covers the rest
+    // of that case: post-terminal traffic.
     let state = fixture::host(None);
 
     let (ended, _) = coordinator::step(
@@ -2376,8 +2377,8 @@ fn host_body(kind: protocol::MessageKind, manifest_id: &str) -> Value {
 }
 
 /// One host state per lifecycle phase, built through the real reducer.
-/// Mirrors the spec's local `host_states`. A `Vec` of pairs, not a map
-/// (README rule 5.4: never `HashMap`).
+/// Mirrors the reference implementation's local `host_states`. A `Vec` of
+/// pairs, not a map (ARCHITECTURE.md §3 rule 4: never `HashMap`).
 fn host_states() -> Vec<(protocol::LifecyclePhase, CoordinatorState)> {
     use protocol::LifecyclePhase::{
         Assigned, Countdown, Handshake, Manifest, Ready, Result, Running,
@@ -2469,7 +2470,7 @@ fn host_states() -> Vec<(protocol::LifecyclePhase, CoordinatorState)> {
 }
 
 /// One guest state per lifecycle phase, built through the real reducer.
-/// Mirrors the spec's local `guest_states`.
+/// Mirrors the reference implementation's local `guest_states`.
 fn guest_states() -> Vec<(protocol::LifecyclePhase, CoordinatorState)> {
     use protocol::LifecyclePhase::{
         Assigned, Countdown, Handshake, Manifest, New, Ready, Result, Running,
@@ -2585,7 +2586,7 @@ fn guest_states() -> Vec<(protocol::LifecyclePhase, CoordinatorState)> {
 
 /// The coordinator validates a republished assignment against `assigned`
 /// because ownership changes revoke readiness; the oracle mirrors that one
-/// documented remap and nothing else. Mirrors the spec's
+/// documented remap and nothing else. Mirrors the reference implementation's
 /// `assert_phase_cell`.
 fn assert_phase_cell(
     state: &CoordinatorState,
@@ -2842,8 +2843,8 @@ fn declaring_handshake(
 }
 
 /// A host that has admitted one guest and proposed its manifest, which is
-/// the exact point a skewed guest refuses and goes. Mirrors the spec's local
-/// `proposed`.
+/// the exact point a skewed guest refuses and goes. Mirrors the reference
+/// implementation's local `proposed`.
 fn proposed(host_build: Option<&str>, guest_build: Option<&str>) -> (CoordinatorState, String) {
     let peer_id = fixture::guest_peer_id(1);
     let mut state = host_declaring(host_build);
@@ -3164,9 +3165,10 @@ fn clears_the_reason_once_another_guest_takes_the_seat() {
 
 /// The full `TERMINAL_CODES` table walk, which the previous pass could only
 /// cover for 7 of 14 reasons because `terminal_code` was private. It is `pub`
-/// now, so every reason is asserted directly against
-/// `game/online/coordinator.lua:254-272` rather than being reached through the
-/// handful of events that happen to produce one.
+/// now, so every reason is asserted directly against the reference mapping
+/// (see `tools/lua_reference/README.md`; historically
+/// `coordinator.lua:254-272`) rather than being reached through the handful
+/// of events that happen to produce one.
 #[test]
 fn maps_every_terminal_reason_to_a_closed_protocol_code() {
     use coordinator::TerminalReason::*;

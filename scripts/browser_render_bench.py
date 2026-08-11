@@ -1,53 +1,49 @@
 #!/usr/bin/env python3
-"""Browsers-only benchmark comparing the Lua/love.js build against v2 (wasm +
-three.js) on the #100 ten-player render fixture -- update and draw reported
-SEPARATELY, per the task brief this script was written to satisfy.
+"""Browsers-only benchmark of the #100 ten-player render fixture -- update and
+draw reported SEPARATELY, per the task brief this script was written to
+satisfy.
 
-## Why this exists, and why it does not touch either gate definition
+## Why this exists, and why it does not touch the gate definition
 
-`game/render/benchmark.lua` and `v2/ts/packages/render/src/benchmark.ts` are
-independent ports that already share identical gate thresholds
+`ts/packages/render/src/benchmark.ts` already has its own gate thresholds
 (`update_p95_ms: 8`, `update_max_ms: 33`, `draw_p95_ms: 8`, `draw_max_ms: 33`,
-`slow_frame_ms: 33`, `slow_frames_per_60s: 3`, `stall_frame_ms: 250`), both
+`slow_frame_ms: 33`, `slow_frames_per_60s: 3`, `stall_frame_ms: 250`),
 sourced from `docs/online/omp0_acceptance.md` so the report and the gate
-cannot drift apart -- see either file's `GATES` table. This script drives
-BOTH fixtures inside real browsers and reads back what each one already
-computes; it invents no new metric and re-derives no percentile itself.
+cannot drift apart -- see that file's `GATES` table. This script drives that
+fixture inside a real browser and reads back what it already computes; it
+invents no new metric and re-derives no percentile itself.
 
 ## update vs draw, kept separate on purpose
 
 A combined frame number would be actively misleading: `update` is the honest
-wasm-vs-LuaJIT-under-love.js comparison (the migration's actual premise);
-`draw` compares three.js (real `THREE.SkinnedMesh`, 1-2 draw calls per
-character) against LÖVE's hand-rolled renderer (one rigid mesh part per
-bone, no skinning at all -- `benchmark.lua`'s own header: "ten players is
-several hundred draw calls"). Reporting one number for both would flatter
-three.js for a reason that has nothing to do with simulation cost. This
-script's output keeps them apart end to end.
+simulation-cost measurement; `draw` is the rendering cost (real
+`THREE.SkinnedMesh`, 1-2 draw calls per character -- see `render_bench.ts`'s
+own `computeDrawCallBreakdown`). Reporting one number for both would hide
+which of the two actually owns a slow frame. This script's output keeps them
+apart end to end.
 
-## Mirrors scripts/browser_online_peers.py's structure
+## Shares its launch/teardown plumbing with the other browser harnesses
 
 Same pinned-asset resolution posture, same bounded-teardown import from
-`browser_determinism` (not reimplemented), same build -> serve -> launch ->
-poll -> teardown -> aggregate shape as that script and
-`scripts/browser_matrix.py`'s evidence campaigns -- per this task's brief
-("mirror this structure; do not invent a new one"). The one deliberate
-departure is `launch()`'s browser arguments: this file needs exact,
-verified-working hardware-GL invocations (`--use-gl=angle --use-angle=gl-egl
---ignore-gpu-blocklist` for Chrome) that `browser_determinism.chrome_arguments`
-does not produce, so this file defines its own `launch()` rather than
-importing that one -- see "Software vs hardware GL" below for the full
-rationale and for why Firefox does not get the same treatment.
-`quit_browser_bounded`/`bounded_log_tail` (launch-argument-agnostic process
-teardown) ARE imported from `browser_determinism`, unchanged.
+`scripts/browser_launch.py` (not reimplemented), same build -> serve ->
+launch -> poll -> teardown -> aggregate shape as
+`scripts/browser_online_peers.py` and `scripts/browser_matrix.py`'s evidence
+campaigns. The one deliberate departure is `launch()`'s browser arguments:
+this file needs exact, verified-working hardware-GL invocations
+(`--use-gl=angle --use-angle=gl-egl --ignore-gpu-blocklist` for Chrome) that
+`browser_launch.chrome_arguments` does not produce, so this file defines its
+own `launch()` rather than importing that one -- see "Software vs hardware
+GL" below for the full rationale and for why Firefox does not get the same
+treatment. `quit_browser_bounded`/`bounded_log_tail` (launch-argument-agnostic
+process teardown) ARE imported from `scripts/browser_launch.py`, unchanged.
 
 ## Live match, not an inert one
 
-`v2/tools/browser_render_bench/web/render_bench.ts` reports `liveness`
-(score, time left, final tick) precisely because an earlier session this
-week ran every v2 browser match 0-0 with zero events -- a fixed-content bug
-in a different layer (session slot-bot-fill), now landed. This script does
-not silently trust that it stayed fixed: `run_v2_benchmark` below asserts
+`tools/browser_render_bench/web/render_bench.ts` reports `liveness` (score,
+time left, final tick) precisely because an earlier session this week ran
+every browser match 0-0 with zero events -- a fixed-content bug in a
+different layer (session slot-bot-fill), now landed. This script does not
+silently trust that it stayed fixed: `run_benchmark` below asserts
 `final_tick` actually reached (`warmup + frames`) and that the report is not
 a `status: "error"` page. It does NOT assert a goal was scored (10-15
 simulated seconds is not long enough to guarantee one either build scores),
@@ -127,7 +123,6 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.parse
 from collections.abc import Callable
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -135,16 +130,15 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from browser_determinism import bounded_log_tail, quit_browser_bounded  # noqa: E402
+from browser_launch import bounded_log_tail, quit_browser_bounded  # noqa: E402
 from web_serve import ArtifactHandler  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-V2_TS = ROOT / "v2" / "ts"
-HARNESS_DIR = ROOT / "v2" / "tools" / "browser_render_bench"
+TS = ROOT / "ts"
+HARNESS_DIR = ROOT / "tools" / "browser_render_bench"
 HARNESS_DIST = HARNESS_DIR / "dist"
-WASM_BUILD_SCRIPT = V2_TS / "packages" / "wasm" / "scripts" / "build_web.mjs"
+WASM_BUILD_SCRIPT = TS / "packages" / "wasm" / "scripts" / "build_web.mjs"
 HARNESS_VITE_CONFIG = HARNESS_DIR / "vite.config.ts"
-WEB_BUILD_SCRIPT = ROOT / "scripts" / "web_build.py"
 
 DEFAULT_FRAMES = 1800
 DEFAULT_WARMUP = 180
@@ -180,11 +174,11 @@ def _inherited_env() -> dict[str, str]:
     return dict(os.environ)
 
 
-def build_v2_harness(
+def build_harness(
     skip_wasm_build: bool,
     vite_config: Path = HARNESS_VITE_CONFIG,
     dist: Path = HARNESS_DIST,
-    label: str = "v2 render-bench harness",
+    label: str = "render-bench harness",
 ) -> None:
     """`node packages/wasm/scripts/build_web.mjs` then `pnpm exec vite build`
     against this harness's own vite.config.ts -- exactly the recipe this
@@ -192,42 +186,25 @@ def build_v2_harness(
 
     The three defaulted parameters are this file's own harness, so every
     existing call is unchanged. They exist because the recipe is identical
-    for the sibling harnesses under `v2/tools/` -- only the vite config and
+    for the sibling harnesses under `tools/` -- only the vite config and
     the output directory differ -- and `scripts/browser_match_harness.py`
-    needs exactly this for `v2/tools/browser_match_harness`. Duplicating
+    needs exactly this for `tools/browser_match_harness`. Duplicating
     fifteen lines there would mean the wasm-build step and its
     `--skip-wasm-build` precondition could drift between the two."""
     if not skip_wasm_build:
         print("[browser_render_bench] node packages/wasm/scripts/build_web.mjs")
-        subprocess.run(["node", str(WASM_BUILD_SCRIPT)], cwd=V2_TS, check=True)
-    elif not (V2_TS / "packages" / "wasm" / "dist" / "pkg-web" / "gc_wasm.js").is_file():
+        subprocess.run(["node", str(WASM_BUILD_SCRIPT)], cwd=TS, check=True)
+    elif not (TS / "packages" / "wasm" / "dist" / "pkg-web" / "gc_wasm.js").is_file():
         raise RuntimeError("--skip-wasm-build was given but dist/pkg-web/gc_wasm.js is missing")
     print(f"[browser_render_bench] pnpm exec vite build ({label})")
     subprocess.run(
         ["pnpm", "exec", "vite", "build", "--config", str(vite_config)],
-        cwd=V2_TS,
+        cwd=TS,
         check=True,
         env={"VITE_CONFIG_NATIVE_IGNORE_WARNING": "true", **_inherited_env()},
     )
     if not (dist / "index.html").is_file():
         raise RuntimeError(f"{label} build did not produce {dist / 'index.html'}")
-
-
-def build_lua_web(output_dir: Path, skip: bool) -> None:
-    """`scripts/web_build.py --output DIR` -- the same love.js artifact
-    `docs/online/browser_build.md` documents."""
-    if skip:
-        if not (output_dir / "index.html").is_file():
-            raise RuntimeError(f"--skip-lua-build was given but {output_dir / 'index.html'} is missing")
-        return
-    print(f"[browser_render_bench] scripts/web_build.py --output {output_dir}")
-    subprocess.run(
-        [sys.executable, str(WEB_BUILD_SCRIPT), "--output", str(output_dir)],
-        cwd=ROOT,
-        check=True,
-    )
-    if not (output_dir / "index.html").is_file():
-        raise RuntimeError(f"lua web build did not produce {output_dir / 'index.html'}")
 
 
 def serve_dist(directory: Path) -> tuple[ThreadingHTTPServer, threading.Thread, str]:
@@ -330,14 +307,9 @@ def read_firefox_compositor_backend(moz_log_path: Path) -> str | None:
 
 
 # --------------------------------------------------------------------------
-# GPU renderer/vendor probe -- queries the SAME canvas element the build
-# under test already created (`#canvas` for love.js, `#gl-canvas` for v2),
-# not a fresh throwaway context, so this reads exactly the backend that
-# rendered the measured frames. Independent of whatever the build itself
-# self-reports (Lua's benchmark.lua reports love.graphics.getRendererInfo(),
-# which is not the same call and is not available to this script without
-# editing Lua sources this task does not own) -- uniform methodology across
-# both builds and both browsers.
+# GPU renderer/vendor probe -- queries the SAME canvas element the harness
+# under test already created (`#gl-canvas`), not a fresh throwaway context,
+# so this reads exactly the backend that rendered the measured frames.
 # --------------------------------------------------------------------------
 
 _GPU_PROBE_JS = """
@@ -371,7 +343,7 @@ def probe_gpu(driver: Any, canvas_selector: str) -> dict[str, Any]:
 
 # --------------------------------------------------------------------------
 # Browser launch -- the one piece deliberately NOT imported from
-# browser_determinism.py (see this file's module docstring).
+# scripts/browser_launch.py (see this file's module docstring).
 # --------------------------------------------------------------------------
 
 
@@ -422,7 +394,7 @@ def launch(
         # Same intent as Chrome's swiftshader flags, Firefox's own
         # equivalents -- forces WebRender's software rasterizer path and
         # disables the X11/EGL hardware path, matching
-        # browser_determinism.py's own CI preference set.
+        # scripts/browser_launch.py's own CI preference set.
         options.set_preference("gfx.webrender.software", True)
         options.set_preference("webgl.force-enabled", True)
         options.set_preference("gfx.x11-egl.force-disabled", True)
@@ -453,128 +425,11 @@ def resolve_binary_pair(browser_name: str, args: argparse.Namespace) -> tuple[Pa
 
 
 # --------------------------------------------------------------------------
-# Lua side -- reads window.__GOLISEO__.console_entries, the same mechanism
-# scripts/browser_matrix.py and scripts/browser_determinism.py already use
-# (the loader mirrors every console.* call there; the only channel out of
-# love.js, per benchmark.lua's own header). Uniform across Chrome/Firefox,
-# unlike Selenium's native get_log (Chrome-only via geckodriver here).
+# Reads window.__gcRenderBench (see render_bench.ts).
 # --------------------------------------------------------------------------
 
 
-def lua_state(driver: Any) -> dict[str, Any]:
-    value = driver.execute_script(
-        """
-        const s = window.__GOLISEO__ || {};
-        return {
-          status: s.status || null,
-          entries: (s.console_entries || []).map((e) => String(e.message || ""))
-        };
-        """
-    )
-    if not isinstance(value, dict):
-        raise RuntimeError("lua page returned a malformed compatibility state")
-    return value
-
-
-def parse_pipe_marker(line: str) -> dict[str, str]:
-    parts = line.split("|")
-    fields: dict[str, str] = {}
-    for part in parts[2:]:
-        key, sep, value = part.partition("=")
-        if sep:
-            fields[key] = value
-    return fields
-
-
-def run_lua_benchmark(
-    browser_name: str,
-    binary: Path,
-    driver_path: Path,
-    log: Path,
-    base_url: str,
-    frames: int,
-    warmup: int,
-    gpu_mode: str,
-    moz_log: Path | None,
-) -> dict[str, Any]:
-    love_args = ["--benchmark", str(frames), str(warmup), "rigged"]
-    query = urllib.parse.urlencode({"arg": json.dumps(love_args, separators=(",", ":"))})
-    url = f"{base_url}?{query}"
-    driver = launch(browser_name, binary, driver_path, log, gpu_mode, moz_log)
-    try:
-        driver.set_page_load_timeout(90)
-        driver.get(url)
-
-        found: dict[str, str] = {}
-
-        def check() -> bool:
-            # `os.exit(0)` right after `benchmark.emit(...)` (main.lua's
-            # `--benchmark` mode) throws an "unreachable" trap under love.js
-            # -- that is love.js's own forced-exit mechanism, not a benchmark
-            # failure, and it lands in this SAME console-entries array right
-            # after GC_BENCH_GATE. So: classify every entry first, and return
-            # as soon as the gate marker itself has been seen, BEFORE ever
-            # scanning for error-shaped text -- otherwise a poll that catches
-            # both in one read raises on the benign post-exit trap despite
-            # already having everything this function needs.
-            state = lua_state(driver)
-            entries = state.get("entries", [])
-            for msg in entries:
-                if msg.startswith("GC_BENCH_GATE|"):
-                    found["gate"] = msg
-                elif msg.startswith("GC_BENCH_RESULT|"):
-                    found["result"] = msg
-                elif msg.startswith("GC_BENCH_ENV|"):
-                    found["env"] = msg
-            if "gate" in found:
-                return True
-            for msg in entries:
-                if "error" in msg.lower() and "GC_BENCH" not in msg and "GC_BROWSER" not in msg:
-                    raise RuntimeError(f"{browser_name} lua page reported an error: {msg}")
-            return False
-
-        wait_until(check, RUN_TIMEOUT_SECONDS, f"{browser_name} lua GC_BENCH_GATE marker")
-
-        result_fields = parse_pipe_marker(found["result"])
-        env_fields = parse_pipe_marker(found["env"])
-        gate_fields = parse_pipe_marker(found["gate"])
-        # Queries the SAME <canvas id="canvas"> love.js already rendered
-        # through, independent of what benchmark.lua self-reports (see
-        # `probe_gpu`'s doc).
-        gpu = probe_gpu(driver, "#canvas")
-        firefox_backend = read_firefox_compositor_backend(moz_log) if moz_log is not None else None
-        rigged_active = result_fields.get("rigged_active") == "true"
-        if not rigged_active:
-            # Evidence integrity, per this task's brief: a "rigged" run that
-            # silently fell back to procedural billboards is not a fast
-            # rigged run, it is no measurement at all. benchmark.lua's own
-            # `evaluate()` already fails its `pass` gate on this; failing the
-            # repeat here too makes it impossible to miss.
-            raise RuntimeError(
-                f"{browser_name} lua benchmark requested the rigged renderer but "
-                f"rigged_active=false (fell back to procedural) -- gate: {found.get('gate')}"
-            )
-        return {
-            "browser": browser_name,
-            "browser_version": str(driver.capabilities.get("browserVersion")),
-            "gpu_mode_requested": gpu_mode,
-            "result": result_fields,
-            "env": env_fields,
-            "gate": gate_fields,
-            "rigged_active": rigged_active,
-            "gpu_probe": gpu,
-            "firefox_compositor_backend": firefox_backend,
-        }
-    finally:
-        quit_browser_bounded(driver)
-
-
-# --------------------------------------------------------------------------
-# v2 side -- reads window.__gcRenderBench (see render_bench.ts).
-# --------------------------------------------------------------------------
-
-
-def run_v2_benchmark(
+def run_benchmark(
     browser_name: str,
     binary: Path,
     driver_path: Path,
@@ -599,15 +454,15 @@ def run_v2_benchmark(
             if not isinstance(state, dict):
                 return None
             if state.get("status") == "error":
-                raise RuntimeError(f"{browser_name} v2 page reported an error: {state.get('error')}")
+                raise RuntimeError(f"{browser_name} page reported an error: {state.get('error')}")
             if state.get("status") == "done":
                 return state
             return None
 
-        state = wait_until(check, RUN_TIMEOUT_SECONDS, f"{browser_name} v2 render-bench report")
+        state = wait_until(check, RUN_TIMEOUT_SECONDS, f"{browser_name} render-bench report")
         report = state.get("report")
         if not isinstance(report, dict):
-            raise RuntimeError(f"{browser_name} v2 page finished without a report")
+            raise RuntimeError(f"{browser_name} page finished without a report")
 
         liveness = report.get("liveness", {})
         expected_final_tick = warmup + frames
@@ -617,7 +472,7 @@ def run_v2_benchmark(
         # the full tick count this script asked for.
         if liveness.get("final_tick") != expected_final_tick:
             raise RuntimeError(
-                f"{browser_name} v2 session only reached tick {liveness.get('final_tick')}, "
+                f"{browser_name} session only reached tick {liveness.get('final_tick')}, "
                 f"expected {expected_final_tick} -- match did not run the full measured window"
             )
 
@@ -631,7 +486,7 @@ def run_v2_benchmark(
         rigged_active = bool(result.get("rigged_active"))
         if not rigged_active:
             raise RuntimeError(
-                f"{browser_name} v2 benchmark requested the rigged renderer but "
+                f"{browser_name} benchmark requested the rigged renderer but "
                 f"rigged_active=false (fell back to procedural) -- "
                 f"failures: {report.get('failures')}"
             )
@@ -671,21 +526,7 @@ def summarize_repeats(values: list[float]) -> dict[str, float | int]:
     return out
 
 
-def lua_repeat_metrics(run: dict[str, Any]) -> dict[str, float]:
-    r = run["result"]
-    return {
-        "update_p95_ms": float(r["update_p95"]),
-        "update_max_ms": float(r["update_max"]),
-        "update_mean_ms": float(r["update_mean"]),
-        "draw_p95_ms": float(r["draw_p95"]),
-        "draw_max_ms": float(r["draw_max"]),
-        "draw_mean_ms": float(r["draw_mean"]),
-        "draw_calls_mean": float(r["draw_calls_mean"]),
-        "draw_calls_max": float(r["draw_calls_max"]),
-    }
-
-
-def v2_repeat_metrics(run: dict[str, Any]) -> dict[str, float]:
+def repeat_metrics(run: dict[str, Any]) -> dict[str, float]:
     result = run["report"]["result"]
     return {
         "update_p95_ms": float(result["update"]["p95_ms"]),
@@ -715,22 +556,9 @@ METRIC_KEYS = (
 # engaged, and what GPU/backend actually rendered the frame. Kept separate
 # from METRIC_KEYS (which summarize_repeats reduces to percentiles) because
 # these are facts about the run's validity, not measurements to average --
-# averaging a boolean or a GPU string would hide exactly the disagreement
-# this task exists to catch.
-def lua_repeat_meta(run: dict[str, Any]) -> dict[str, Any]:
-    gpu = run.get("gpu_probe", {})
-    return {
-        "rigged_active": run.get("rigged_active"),
-        "gpu_mode_requested": run.get("gpu_mode_requested"),
-        "gpu_renderer": gpu.get("renderer") or gpu.get("masked_renderer"),
-        "gpu_vendor": gpu.get("vendor"),
-        "gpu_software_guess": gpu.get("software_guess"),
-        "firefox_compositor_backend": run.get("firefox_compositor_backend"),
-        "omp0_gate_pass": run.get("gate", {}).get("pass") == "true",
-    }
-
-
-def v2_repeat_meta(run: dict[str, Any]) -> dict[str, Any]:
+# averaging a boolean or a GPU string would hide a real problem behind a
+# plausible-looking mean.
+def repeat_meta(run: dict[str, Any]) -> dict[str, Any]:
     gpu = run.get("gpu_probe", {})
     report = run.get("report", {})
     return {
@@ -748,27 +576,25 @@ def v2_repeat_meta(run: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def v2_draw_call_breakdown(run: dict[str, Any]) -> dict[str, Any] | None:
+def draw_call_breakdown(run: dict[str, Any]) -> dict[str, Any] | None:
     """`render_bench.ts` computes this once, after the timed loop, from a raw
     (non-composited) re-render of the final captured frame -- see that
     file's `computeDrawCallBreakdown` doc for exactly what "raw" means here
-    and why it is not part of the timed samples. `None` for the Lua build,
-    which has no equivalent breakdown."""
+    and why it is not part of the timed samples. `None` if the report carries
+    no breakdown."""
     breakdown = run.get("report", {}).get("draw_call_breakdown")
     return breakdown if isinstance(breakdown, dict) else None
 
 
 def aggregate(
-    build: str,
     browser: str,
     runs: list[dict[str, Any]],
     per_run_metrics: list[dict[str, float]],
     per_run_meta: list[dict[str, Any]],
 ) -> dict[str, Any]:
     aggregated = {key: summarize_repeats([m[key] for m in per_run_metrics]) for key in METRIC_KEYS}
-    draw_call_breakdowns = [v2_draw_call_breakdown(run) for run in runs] if build == "v2" else []
+    draw_call_breakdowns = [draw_call_breakdown(run) for run in runs]
     return {
-        "build": build,
         "browser": browser,
         "repeats": len(runs),
         "per_run": per_run_metrics,
@@ -792,7 +618,6 @@ def main() -> int:
     parser.add_argument("--width", type=int, default=DEFAULT_WIDTH)
     parser.add_argument("--height", type=int, default=DEFAULT_HEIGHT)
     parser.add_argument("--repeats", type=int, default=DEFAULT_REPEATS)
-    parser.add_argument("--builds", default="lua,v2", help="comma-separated: lua,v2")
     parser.add_argument("--browsers", default="chrome,firefox", help="comma-separated: chrome,firefox")
     parser.add_argument(
         "--gpu-mode",
@@ -808,8 +633,6 @@ def main() -> int:
     )
     parser.add_argument("--skip-wasm-build", action="store_true")
     parser.add_argument("--skip-harness-build", action="store_true")
-    parser.add_argument("--skip-lua-build", action="store_true")
-    parser.add_argument("--lua-build-dir", type=Path, default=ROOT / "build" / "web-bench")
     parser.add_argument("--chrome-binary", default="/usr/bin/google-chrome")
     parser.add_argument("--chromedriver", default=str(Path.home() / ".local" / "bin" / "chromedriver"))
     parser.add_argument("--firefox-binary", default=str(Path.home() / ".local" / "bin" / "firefox"))
@@ -818,110 +641,64 @@ def main() -> int:
     parser.add_argument("--log-dir", type=Path, default=ROOT / "build" / "browser_render_bench-logs")
     args = parser.parse_args()
 
-    builds = [b.strip() for b in args.builds.split(",") if b.strip()]
     browsers = [b.strip() for b in args.browsers.split(",") if b.strip()]
 
-    if "v2" in builds and not args.skip_harness_build:
-        build_v2_harness(args.skip_wasm_build)
-    if "lua" in builds:
-        build_lua_web(args.lua_build_dir, args.skip_lua_build)
+    if not args.skip_harness_build:
+        build_harness(args.skip_wasm_build)
 
     servers: list[tuple[ThreadingHTTPServer, threading.Thread]] = []
-    base_urls: dict[str, str] = {}
-    if "v2" in builds:
-        server, thread, url = serve_dist(HARNESS_DIST)
-        servers.append((server, thread))
-        base_urls["v2"] = url
-    if "lua" in builds:
-        server, thread, url = serve_dist(args.lua_build_dir)
-        servers.append((server, thread))
-        base_urls["lua"] = url
+    server, thread, base_url = serve_dist(HARNESS_DIST)
+    servers.append((server, thread))
 
     results: list[dict[str, Any]] = []
     errors: list[str] = []
 
     try:
-        for build in builds:
-            for browser_name in browsers:
-                binary, driver_path = resolve_binary_pair(browser_name, args)
-                if not binary.is_file():
-                    errors.append(f"{build}/{browser_name}: browser binary not found at {binary}")
-                    continue
-                if not driver_path.is_file():
-                    errors.append(f"{build}/{browser_name}: driver not found at {driver_path}")
-                    continue
-
-                per_run_metrics: list[dict[str, float]] = []
-                per_run_meta: list[dict[str, Any]] = []
-                runs: list[dict[str, Any]] = []
-                for repeat in range(1, args.repeats + 1):
-                    log = args.log_dir / f"{build}-{browser_name}-{repeat}-webdriver.log"
-                    moz_log = (
-                        args.log_dir / f"{build}-{browser_name}-{repeat}-moz.log"
-                        if browser_name == "firefox"
-                        else None
-                    )
-                    print(f"[browser_render_bench] {build}/{browser_name} repeat {repeat}/{args.repeats}")
-                    try:
-                        if build == "lua":
-                            run = run_lua_benchmark(
-                                browser_name, binary, driver_path, log, base_urls["lua"],
-                                args.frames, args.warmup, args.gpu_mode, moz_log,
-                            )
-                            metrics = lua_repeat_metrics(run)
-                            meta = lua_repeat_meta(run)
-                        else:
-                            run = run_v2_benchmark(
-                                browser_name, binary, driver_path, log, base_urls["v2"],
-                                args.frames, args.warmup, args.seed, args.width, args.height,
-                                args.gpu_mode, moz_log,
-                            )
-                            metrics = v2_repeat_metrics(run)
-                            meta = v2_repeat_meta(run)
-                    except Exception as error:
-                        tail = bounded_log_tail(log)
-                        errors.append(f"{build}/{browser_name} repeat {repeat}: {error}\nwebdriver log tail:\n{tail}")
-                        print(f"[browser_render_bench] FAILED {build}/{browser_name} repeat {repeat}: {error}", file=sys.stderr)
-                        continue
-                    runs.append(run)
-                    per_run_metrics.append(metrics)
-                    per_run_meta.append(meta)
-                    print(
-                        f"[browser_render_bench]   update p95={metrics['update_p95_ms']:.3f}ms "
-                        f"max={metrics['update_max_ms']:.3f}ms | draw p95={metrics['draw_p95_ms']:.3f}ms "
-                        f"max={metrics['draw_max_ms']:.3f}ms | draw_calls={metrics['draw_calls_mean']:.1f} "
-                        f"| rigged_active={meta['rigged_active']} | omp0_gate_pass={meta['omp0_gate_pass']} "
-                        f"| gpu={meta['gpu_renderer']} (software_guess={meta['gpu_software_guess']}) "
-                        f"| firefox_compositor={meta['firefox_compositor_backend']}"
-                    )
-
-                if per_run_metrics:
-                    results.append(aggregate(build, browser_name, runs, per_run_metrics, per_run_meta))
-
-        # Cross-build evidence integrity: comparing a rigged v2 draw against a
-        # procedurally-fallen-back Lua draw (or vice versa) is worse than no
-        # measurement at all -- see this task's brief. Each individual run
-        # already asserts its OWN rigged_active is true (run_lua_benchmark /
-        # run_v2_benchmark raise on a false one), so this check exists for
-        # the case that matters most: both builds individually report
-        # rigged_active=true but via different means -- catching a scenario
-        # where the two are not actually comparable even though neither
-        # single-build gate would have caught it.
-        by_browser: dict[str, dict[str, dict[str, Any]]] = {}
-        for entry in results:
-            by_browser.setdefault(entry["browser"], {})[entry["build"]] = entry
-        for browser_name, by_build in by_browser.items():
-            if "lua" not in by_build or "v2" not in by_build:
+        for browser_name in browsers:
+            binary, driver_path = resolve_binary_pair(browser_name, args)
+            if not binary.is_file():
+                errors.append(f"{browser_name}: browser binary not found at {binary}")
                 continue
-            lua_rigged = {m["rigged_active"] for m in by_build["lua"]["per_run_meta"]}
-            v2_rigged = {m["rigged_active"] for m in by_build["v2"]["per_run_meta"]}
-            if lua_rigged != v2_rigged or lua_rigged != {True}:
-                message = (
-                    f"{browser_name}: lua/v2 disagree on rigged_active (lua={sorted(lua_rigged)}, "
-                    f"v2={sorted(v2_rigged)}) -- draw comparison is not valid evidence for this browser"
+            if not driver_path.is_file():
+                errors.append(f"{browser_name}: driver not found at {driver_path}")
+                continue
+
+            per_run_metrics: list[dict[str, float]] = []
+            per_run_meta: list[dict[str, Any]] = []
+            runs: list[dict[str, Any]] = []
+            for repeat in range(1, args.repeats + 1):
+                log = args.log_dir / f"{browser_name}-{repeat}-webdriver.log"
+                moz_log = (
+                    args.log_dir / f"{browser_name}-{repeat}-moz.log" if browser_name == "firefox" else None
                 )
-                errors.append(message)
-                print(f"[browser_render_bench] FAILED integrity check: {message}", file=sys.stderr)
+                print(f"[browser_render_bench] {browser_name} repeat {repeat}/{args.repeats}")
+                try:
+                    run = run_benchmark(
+                        browser_name, binary, driver_path, log, base_url,
+                        args.frames, args.warmup, args.seed, args.width, args.height,
+                        args.gpu_mode, moz_log,
+                    )
+                    metrics = repeat_metrics(run)
+                    meta = repeat_meta(run)
+                except Exception as error:
+                    tail = bounded_log_tail(log)
+                    errors.append(f"{browser_name} repeat {repeat}: {error}\nwebdriver log tail:\n{tail}")
+                    print(f"[browser_render_bench] FAILED {browser_name} repeat {repeat}: {error}", file=sys.stderr)
+                    continue
+                runs.append(run)
+                per_run_metrics.append(metrics)
+                per_run_meta.append(meta)
+                print(
+                    f"[browser_render_bench]   update p95={metrics['update_p95_ms']:.3f}ms "
+                    f"max={metrics['update_max_ms']:.3f}ms | draw p95={metrics['draw_p95_ms']:.3f}ms "
+                    f"max={metrics['draw_max_ms']:.3f}ms | draw_calls={metrics['draw_calls_mean']:.1f} "
+                    f"| rigged_active={meta['rigged_active']} | omp0_gate_pass={meta['omp0_gate_pass']} "
+                    f"| gpu={meta['gpu_renderer']} (software_guess={meta['gpu_software_guess']}) "
+                    f"| firefox_compositor={meta['firefox_compositor_backend']}"
+                )
+
+            if per_run_metrics:
+                results.append(aggregate(browser_name, runs, per_run_metrics, per_run_meta))
     finally:
         for server, thread in servers:
             server.shutdown()
@@ -936,7 +713,6 @@ def main() -> int:
             "width": args.width,
             "height": args.height,
             "repeats": args.repeats,
-            "builds": builds,
             "browsers": browsers,
             "gpu_mode": args.gpu_mode,
         },

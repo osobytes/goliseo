@@ -1,5 +1,3 @@
-// Ported from game/render/camera_follow.lua.
-//
 // Broadcast-style following camera.
 //
 // The fixed whole-pitch view frames the stadium; a soccer game frames the
@@ -28,13 +26,13 @@
 // feeds stays pure in camera.ts, so the view it produces is still
 // unit-testable.
 //
-// Boundary note: `MatchState` is a sim shape (v2/README.md rule 6.7,
-// `sim/**` -> Rust `crates/gc-sim`). Only the fields this module reads are
-// declared locally below, matching `correction_smoothing.ts`. `controlled`
-// is documented in the Lua source as a 1-based index into `players`; the
-// JS<->wasm marshalling boundary that will produce this object is a later
-// milestone (v2/README.md §1), so this port treats it as a plain 0-based
-// index into the `players` array here, the idiomatic JS/TS shape (rule 3).
+// Boundary note: `MatchState` is a sim shape (ARCHITECTURE.md §4 rule 6, comes
+// from Rust `crates/gc-sim`). Only the fields this module reads are declared
+// locally below, matching `correction_smoothing.ts`. `controlled` is a
+// 0-based index into `players`, the idiomatic JS/TS shape (§4 rule 3); the
+// Rust/wasm source uses a 1-based index, and the JS<->wasm marshalling
+// boundary that will produce this object is a later milestone, so this
+// treats it as already converted.
 
 import { camera, type CameraField, type CameraView } from "./camera.ts";
 import type { CorrectionSmoothingPose } from "./correction_smoothing.ts";

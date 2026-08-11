@@ -1,26 +1,27 @@
 // Structural declarations for content this package reads but must not own.
 //
-// v2/README.md rule 6.7: "TypeScript never imports content tables — it
-// receives them." `data/**` (players, teams, formations, tactics) is
-// Rust-owned (`crates/gc-data`); `render/identity.lua`, `game/settings.lua`,
-// `game/build_info.lua`, and `game/input/bindings.lua` are TypeScript-owned
-// but live in packages this one must not depend on yet (`@gc/render`,
-// `@gc/app`, `@gc/input` — none are a declared dependency of `@gc/screens`,
-// and this task may not edit package.json). Every shape below is declared
-// locally, structurally compatible with its Lua/TS original, and threaded
-// through as an explicit parameter to each screen's `newState` — the same
-// pattern `@gc/presentation`'s `combat.ts` uses for `CombatPresentationData`
-// and `@gc/ui`'s `types.ts` uses for `FocusEvent`. Only the fields a screen
-// actually reads are declared, matching `combat.ts`'s `MatchPlayerState`.
+// ARCHITECTURE.md §4 rule 6: "TypeScript never imports content tables — it
+// receives them." Players, teams, formations, and tactics are Rust-owned
+// (`crates/gc-data`); presentation identity (`gc-render`'s `identity.rs`),
+// settings, build info, and input bindings are TypeScript-owned but live in
+// packages this one must not depend on yet (`@gc/render`, `@gc/app`,
+// `@gc/input` — none are a declared dependency of `@gc/screens`, and this
+// task may not edit package.json). Every shape below is declared locally,
+// structurally compatible with the owning crate/package's real shape, and
+// threaded through as an explicit parameter to each screen's `newState` —
+// the same pattern `@gc/presentation`'s `combat.ts` uses for
+// `CombatPresentationData` and `@gc/ui`'s `types.ts` uses for `FocusEvent`.
+// Only the fields a screen actually reads are declared, matching
+// `combat.ts`'s `MatchPlayerState`.
 //
 // Field names stay `snake_case` where they mirror a real cross-language
-// content shape (`data/players.lua`'s `PlayerData`, `ProductMatchResult`,
+// content shape (`gc-data`'s player `PlayerData`, `ProductMatchResult`,
 // `GameSettings`'s on-disk keys) — same rule `combat.ts` follows for
 // `CombatEvent`. UI-only shapes stay `camelCase`.
 
 import type { Anchor, RgbColor } from "@gc/ui";
 
-// --- data/players.lua ------------------------------------------------------
+// --- players (crates/gc-data) ------------------------------------------------------
 
 export type Position = "keeper" | "defender" | "midfielder" | "forward";
 
@@ -32,7 +33,7 @@ export interface StatBlock {
   readonly mental: number;
 }
 
-/** The slice of `data/players.lua`'s `PlayerData` the screens in this package read. */
+/** The slice of `gc-data`'s player `PlayerData` the screens in this package read. */
 export interface PlayerData {
   readonly id: string;
   readonly name: string;
@@ -40,9 +41,9 @@ export interface PlayerData {
   readonly stats: StatBlock;
 }
 
-// --- render/identity.lua ----------------------------------------------------
+// --- presentation identity (gc-render) ----------------------------------------------------
 
-/** `render/identity.lua`'s `PlayerPresentationIdentity` (`identity.for_player`'s return shape). */
+/** `gc-render`'s `identity.rs`'s `PlayerPresentationIdentity` (`for_player`'s return shape). */
 export interface PlayerPresentationIdentity {
   readonly player_id: string;
   readonly name: string;
@@ -52,7 +53,7 @@ export interface PlayerPresentationIdentity {
   readonly palette: RgbColor;
 }
 
-// --- data/formations.lua ----------------------------------------------------
+// --- formations (crates/gc-data) ----------------------------------------------------
 
 export type FormationRole = "def" | "mid" | "wide" | "fwd";
 
@@ -70,7 +71,7 @@ export interface FormationData {
   readonly outfield: readonly OutfieldAnchor[];
 }
 
-// --- data/tactics.lua --------------------------------------------------------
+// --- tactics (crates/gc-data) --------------------------------------------------------
 
 export interface TacticData {
   readonly id: string;
@@ -79,7 +80,7 @@ export interface TacticData {
   readonly risk?: string;
 }
 
-// --- game/match_contract.lua (-> @gc/app; not this package's to own) --------
+// --- @gc/app's match_contract.ts (not this package's to own) --------
 
 export type MatchWinner = "home" | "away" | "draw";
 
@@ -90,7 +91,7 @@ export interface TeamResultStats {
   readonly pass_completion?: number;
 }
 
-/** The slice of `ProductMatchResult` `result.lua` renders. */
+/** The slice of `ProductMatchResult` `result.ts` renders. */
 export interface ProductMatchResult {
   readonly home_score: number;
   readonly away_score: number;
@@ -103,13 +104,13 @@ export interface ProductMatchResult {
   readonly away_stats: TeamResultStats;
 }
 
-/** The slice of `ProductMatchRequest` `fake_match.lua` renders. */
+/** The slice of `ProductMatchRequest` `fake_match.ts` renders. */
 export interface ProductMatchRequest {
   readonly formation_id: string;
   readonly tactic_id: string;
 }
 
-// --- game/settings.lua (-> @gc/app) ------------------------------------------
+// --- @gc/app's settings.ts ------------------------------------------
 
 /** On-disk field names (`settings.serialize`'s keys) — kept verbatim, not camelCased. */
 export interface GameSettings {
@@ -123,18 +124,19 @@ export interface GameSettings {
 }
 
 /**
- * What `settings.lua` needs from `game/settings.lua`'s module. Injected for
- * the same reason `@gc/ui`'s `tuning_panel.ts` injects a `TuningSource`:
- * `game/settings.lua` is `game/` root -> `@gc/app`, a package this one must
- * not depend on. `validate` is only needed once, at `newState` — see
- * settings.ts's header comment for why `update` does not need it again.
+ * What `settings.ts` (this package's screen) needs from `@gc/app`'s
+ * `settings.ts` module. Injected for the same reason `@gc/ui`'s
+ * `tuning_panel.ts` injects a `TuningSource`: `@gc/app` is a package this
+ * one must not depend on. `validate` is only needed once, at `newState` —
+ * see this package's settings.ts's header comment for why `update` does
+ * not need it again.
  */
 export interface SettingsSource {
   defaults(): GameSettings;
   validate(input: Partial<GameSettings> | undefined): GameSettings;
 }
 
-// --- game/build_info.lua (-> @gc/app) -----------------------------------------
+// --- @gc/app's build_info.ts -----------------------------------------
 
 export interface BuildInfo {
   readonly name: string;
@@ -143,23 +145,23 @@ export interface BuildInfo {
   readonly source_url?: string;
 }
 
-// --- data/teams.lua ----------------------------------------------------------
+// --- teams (crates/gc-data) ----------------------------------------------------
 
-/** The slice of `data/teams.lua`'s `TeamData` `real_match.ts`/`match.ts` read. */
+/** The slice of `gc-data`'s `TeamData` `real_match.ts`/`match.ts` read. */
 export interface TeamData {
   readonly id: string;
   readonly name: string;
   /** `{r, g, b}` in 0..1. */
   readonly color: readonly [number, number, number];
-  /** Key into `data/formations.lua`. */
+  /** Key into `gc-data`'s formations. */
   readonly formation: string;
-  /** 5 player ids from `data/players.lua`. */
+  /** 5 player ids from `gc-data`'s players. */
   readonly roster: readonly string[];
   /** Eligible player ids; defaults to `roster` when absent. */
   readonly squad?: readonly string[];
 }
 
-// --- game/input/bindings.lua (-> @gc/input) -----------------------------------
+// --- @gc/input's bindings.ts -----------------------------------
 
 /**
  * Structurally identical to `@gc/input`'s `ControlReferenceRow`

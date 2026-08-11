@@ -1,5 +1,3 @@
-//! Port of `sim/research_features.lua`.
-//!
 //! Derived feature register: expansion, invariants, and lookup.
 //!
 //! The register is authored content (`gc_data::research_features` plus
@@ -24,10 +22,9 @@
 //! is authored content, so a broken registry entry is a code bug (AGENTS.md
 //! §7). [`validate_feature`] is the one place the *same* invariant check
 //! also needs to answer "is this externally supplied feature valid" as a
-//! `Result` — mirroring the Lua original's `pcall(assert_feature_invariants,
-//! ...)`, this wraps the assertion call in [`std::panic::catch_unwind`]
-//! rather than duplicating every invariant into a second, parallel
-//! `Result`-returning implementation.
+//! `Result`. Rather than duplicating every invariant into a second, parallel
+//! `Result`-returning implementation, it wraps the assertion call in
+//! [`std::panic::catch_unwind`].
 
 use crate::research_schema::{
     self, ResearchField, ResearchFieldKind, ResearchShape, Result, TuplePart, Value,

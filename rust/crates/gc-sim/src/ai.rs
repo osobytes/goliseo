@@ -1,11 +1,9 @@
-//! Port of `sim/ai.lua`.
-//!
 //! Pure steering/selection helpers used by the match AI.
 //!
 //! [`closest`] and [`assign_marks`] index directly into the `positions`/
 //! `defenders`/`opponents` slices the caller passes for this call, so those
-//! indices are ordinary Rust collection indices and are 0-based per README
-//! rule 5.3 (the Lua original's 1-based array indices shift down by one).
+//! indices are ordinary 0-based Rust collection indices, not the 1-based
+//! player identity `sim::r#match` uses elsewhere (ARCHITECTURE.md §3 rule 3).
 
 use gc_core::vec2::Vec2;
 use indexmap::IndexMap;

@@ -53,9 +53,9 @@
 //! reader/writer, scoped to exactly the shapes these three reducers need.
 //! `protocol::Value`'s public constructors (`record`/`array`/`str`/`int`/
 //! `bool`/`get`/`set`) and `CoordinatorState`/`Event`/every coordinator
-//! struct's already-`pub` fields (README rule: "enum variant fields are
-//! always as visible as the enum itself" — nothing needed a visibility
-//! change) turned out to be sufficient to build every value this wave binds,
+//! struct's already-`pub` fields (enum variant fields are always as visible
+//! as the enum itself, so nothing needed a visibility change) turned out to
+//! be sufficient to build every value this wave binds,
 //! entirely from *this* crate, without touching `gc-netcode/src/**` at all.
 //! Adding `serde` derives to `CoordinatorState`/`Event` would have meant
 //! either deriving on a type deliberately kept `HashMap`-free/wire-shaped
@@ -74,10 +74,10 @@
 //! as its [`gc_netcode::match_driver::MatchDriverRules`] implementation
 //! rather than writing a new one — that module's own doc says plainly it is
 //! "the real `MatchDriverRules` implementation," delegating to
-//! `live_slot`/`coordinator` and carrying a genuine port of
-//! `input_protocol.canonical_host_batch`, despite living in a file named
-//! `_fixture`. Reimplementing it here would be exactly the duplication
-//! README rule 5.1 warns against.
+//! `live_slot`/`coordinator` and implementing
+//! `input_protocol::canonical_host_batch` itself, despite living in a file
+//! named `_fixture`. Reimplementing it here would be exactly the
+//! duplication AGENTS.md warns against.
 //!
 //! [`match_driver_bridge`] feeds a match driver's own tick outputs into an
 //! internally-owned `gc_sim::rollback_events::RollbackEventTimeline`
@@ -155,16 +155,15 @@
 //! [`online_combat_phases_bridge`] is new: a `#[wasm_bindgen]` surface over
 //! the seven pinned combat-phase boundary zeroes
 //! `crates/gc-netcode/tests/support/online_combat_phases.rs` already proved
-//! out (itself a port of `spec/support/online_combat_phases.lua`) — see that
-//! module's own doc for why this is a second copy rather than a shared one.
+//! out — see that module's own doc for why this is a second copy rather
+//! than a shared one.
 //! [`session::Session::new`] also gained a `home_formation` parameter (it
 //! previously hard-coded `None`, with no way to select a formation at all).
 //!
-//! ## v2 glue: the playable rollback laboratory, and raw `MatchState`
+//! ## Glue: the playable rollback laboratory, and raw `MatchState`
 //!
-//! Two gaps the v2 glue milestone traced precisely (no TypeScript-side
-//! wiring could close either — see each module's own doc for the full
-//! account):
+//! Two gaps traced precisely (no TypeScript-side wiring could close either
+//! — see each module's own doc for the full account):
 //!
 //! [`rollback_playable_lab_bridge`] binds `gc_sim::rollback_playable_lab` —
 //! the single-process, deterministic, network-simulated local rollback
@@ -249,15 +248,15 @@
 //!
 //! [`gc_render::frame_buffer`]'s `RenderFrame::combat` gap
 //! (`packages/screens/src/online_match_flow.spec.ts`'s "online combat
-//! families" skip) was investigated, not built: reading `render/frame_buffer.lua`
-//! directly confirms the Lua original never carries combat on the wire
-//! either — only its own `combat_present` boolean crosses, exactly what
-//! `crates/gc-render/src/frame_buffer.rs` already does. README rule "a port
-//! reproduces behaviour, not intent" therefore forbids adding it here: doing
-//! so would not be porting anything, it would be inventing a feature the Lua
-//! game never had. No wire format, layout version, or differential fixture
-//! changed. That test's real blocker (confirmed by that spec file's own
-//! header comment, already reasoning independently to the same conclusion)
+//! families" skip) was investigated, not built:
+//! `crates/gc-render/src/frame_buffer.rs`'s own doc ("WHAT IS NOT CARRIED")
+//! documents that only a `combat_present` boolean crosses the wire, by
+//! design — the rich combat model stays server-side and never has. Adding
+//! more here would not be filling a gap, it would be inventing a feature
+//! the wire format was never meant to carry. No wire format, layout
+//! version, or differential fixture changed. That test's real blocker
+//! (confirmed by that spec file's own header comment, already reasoning
+//! independently to the same conclusion)
 //! is `sim.combat`'s real readiness/telegraph timing having no wasm-bound
 //! per-tick surface at all — which [`session::Session::combat_events_json`]
 //! (below) is the BASE-path half of, but the online/rollback half this

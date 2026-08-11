@@ -1,30 +1,26 @@
-//! Port of `sim/replay.lua`.
-//!
 //! Pure input-tape replay and first-divergence diagnostics.
 //!
-//! ## `pcall` becomes `?`, not `catch_unwind`
+//! ## Failures are reported via `?`, not a panic/unwind boundary
 //!
-//! `sim/replay.lua`'s `validate_context` wraps `input_tape.copy_identity`
-//! and `input_tape.validate` in `pcall`, converting their `assert`-based
+//! `validate_context` needs to convert [`crate::input_tape`]'s validation
 //! failures into a reported [`ReplayFailure`] rather than a crash — exactly
-//! the boundary AGENTS.md §7 calls "validation of external input". This
-//! crate's Rust port of `sim/input_tape.lua` ([`crate::input_tape`]) makes
-//! that boundary explicit already: its public functions return
-//! `Result<T, String>` instead of panicking (see that module's doc for why
-//! — in short, this workspace's release profile sets `panic = "abort"`, so
-//! `catch_unwind` — the literal `pcall` translation — would not survive a
-//! release build). This module's `validate_context` is therefore just `?`
-//! propagation over [`crate::input_tape`]'s own `Result`s, with no
-//! unwinding involved anywhere.
+//! the boundary AGENTS.md §7 calls "validation of external input".
+//! [`crate::input_tape`] makes that boundary explicit: its public functions
+//! return `Result<T, String>` instead of panicking (see that module's doc
+//! for why — in short, this workspace's release profile sets
+//! `panic = "abort"`, so `catch_unwind` would not survive a release build
+//! even if it were attempted). This module's `validate_context` is
+//! therefore just `?` propagation over [`crate::input_tape`]'s own
+//! `Result`s, with no unwinding involved anywhere.
 //!
-//! ## `tuning.lua`'s global becomes an explicit parameter
+//! ## Tuning is an explicit parameter, not a singleton
 //!
-//! `sim/replay.lua` reads `tuning.serialize()` off the global tuning
-//! singleton to confirm a tape was recorded under the active knob
-//! configuration. `sim/tuning.lua`'s Rust port ([`crate::tuning::Tuning`])
-//! is an owned value, not a singleton (see that module's doc), so [`run`]
-//! and [`compare`] take the caller's active `&Tuning` as an explicit
-//! parameter — the same shape [`crate::input_tape`] already uses.
+//! To confirm a tape was recorded under the active knob configuration,
+//! [`run`] and [`compare`] need the tuning that was active at record time.
+//! [`crate::tuning::Tuning`] is an owned value, not a singleton (see that
+//! module's doc), so both functions take the caller's active `&Tuning` as
+//! an explicit parameter — the same shape [`crate::input_tape`] already
+//! uses.
 
 use crate::combat_snapshot::CombatMatchState;
 use crate::fixed_clock;
@@ -106,7 +102,7 @@ pub enum ReplayFailureCode {
     IdentityMismatch,
 }
 
-/// An expected, recoverable replay failure (README rule 5.5): the caller is
+/// An expected, recoverable replay failure (ARCHITECTURE.md §3 rule 5): the caller is
 /// meant to handle it, not a programmer error.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReplayFailure {

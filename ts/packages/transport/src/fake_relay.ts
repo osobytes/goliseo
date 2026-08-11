@@ -47,8 +47,6 @@
 // counts. On a star a seven-guest `broadcast` is seven uplink copies; here
 // it is one. `frameOverheadBytes` is kept separately so a comparison never
 // has to guess whether framing was folded into the payload figure.
-//
-// Ported from game/transport/fake_relay.lua.
 
 import { ok, err } from "@gc/core";
 import * as contract from "./contract.ts";

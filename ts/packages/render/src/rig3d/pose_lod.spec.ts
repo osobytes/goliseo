@@ -1,9 +1,10 @@
-// Carries the `pose_lod` block of `spec/render/rig3d_spec.lua` (#394/#400).
+// Pose LOD policy tests (#394/#400).
 //
-// The module under test is ported but deliberately unwired — see pose_lod.ts's
-// header for why its justification did not survive the move off the interpreter.
-// The tests come along regardless: the policy encodes real decisions about what
-// may be degraded, and those are worth pinning whether or not it is switched on.
+// The module under test is deliberately unwired — see pose_lod.ts's header
+// for why its performance justification does not necessarily hold on this
+// stack. The tests come along regardless: the policy encodes real decisions
+// about what may be degraded, and those are worth pinning whether or not it
+// is switched on.
 
 import { describe, expect, it } from "vitest";
 import type { PlayerRenderOptions } from "../player_render_options.ts";

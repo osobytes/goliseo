@@ -1,8 +1,8 @@
 //! Cross-language differential test for `sim/research_schema.lua`'s
-//! canonical serializer and fnv1a64 content digest (README §5.9,
-//! `v2/tools/lua_reference/README.md`).
+//! canonical serializer and fnv1a64 content digest (ARCHITECTURE.md §3
+//! rule 7, `tools/lua_reference/README.md`).
 //!
-//! `v2/tools/lua_reference/research_schema_vectors.txt` is the captured
+//! `tools/lua_reference/research_schema_vectors.txt` is the captured
 //! canonical wire encoding and fnv1a64 digest of `sim.research_schema.encode`
 //! / `.content_hash` / `.tuple_hash`, run under headless `love` (no display,
 //! no `xvfb`) against a hand-built shape and payloads chosen to cover the

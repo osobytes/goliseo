@@ -1,18 +1,17 @@
-// Ported from game/screens/online_lobby.lua -- the impure half of the
-// online lobby: it owns the star transport, the clipboard, and the
-// fixed-rate lobby clock, and it draws. Every decision it makes is
-// delegated to the pure screen in `lobby.ts`; this file only translates
-// input, executes effects, and feeds transport facts back in.
+// The impure half of the online lobby: it owns the star transport, the
+// clipboard, and the fixed-rate lobby clock, and it draws. Every decision
+// it makes is delegated to the pure screen in `lobby.ts`; this file only
+// translates input, executes effects, and feeds transport facts back in.
 //
-// `game.online.lobby_link` is `@gc/online`-owned (TypeScript; see
-// v2/README.md's directory table) and `game.transport` is
-// `@gc/transport`-owned, but neither is a declared dependency of this
-// package (only `@gc/core`, `@gc/ui`, `@gc/presentation` are, and this task
-// may not edit package.json). Both are threaded through as injected ports
-// -- `LobbyLinkPort`/`star_factory` -- following the same pattern as every
-// Rust-owned dependency elsewhere in this package. `game.ui.draw` and
-// `game.ui.motion` *are* `@gc/ui`, a declared dependency, so `draw()` and
-// the transition wipe use the real modules.
+// `@gc/online`'s `lobby_link.ts` (see ARCHITECTURE.md's directory table) and
+// the star transport (`@gc/transport`) are both TypeScript-owned, but
+// neither is a declared dependency of this package (only `@gc/core`,
+// `@gc/ui`, `@gc/presentation` are, and this task may not edit
+// package.json). Both are threaded through as injected ports --
+// `LobbyLinkPort`/`starFactory` -- following the same pattern as every
+// Rust-owned dependency elsewhere in this package. `@gc/ui`'s `draw` and
+// `motion` *are* a declared dependency, so `draw()` and the transition wipe
+// use the real modules.
 
 import { draw, motion, type GraphicsBackend } from "@gc/ui";
 import { lobby, type LobbyEffect, type LobbyScreenEvent, type LobbyScreenState } from "./lobby.ts";
@@ -23,7 +22,7 @@ export interface LobbyClipboard {
   write(text: string): void;
 }
 
-/** `game.online.lobby_link`'s `LobbyLink` instance, injected -- see this module's header. */
+/** `@gc/online`'s `lobby_link.ts`'s `LobbyLink` instance, injected -- see this module's header. */
 export interface LobbyLinkInstance<TStar, TEvent extends LobbyCommand> {
   readonly star: TStar;
   send(linkId: string, wire: string): void;

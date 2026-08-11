@@ -1,17 +1,18 @@
-//! Port of `spec/sim/research_trace_spec.lua`.
+//! Tests for `gc_sim::research_trace`.
 //!
-//! One assertion in "rejects participant fields in the manifest and in the
+//! One sub-case of "rejects participant fields in the manifest and in the
 //! tape identity" has no Rust equivalent and is dropped with an inline
-//! comment rather than the whole test: the Lua case injects an extra
-//! `participant_id` field directly onto an `InputTapeIdentity` *table* and
-//! checks that `input_tape.copy_identity` rejects it. `InputTapeIdentity`
-//! here (`gc_sim::input_tape`) is a statically typed Rust `struct` with a
-//! fixed field set — there is no way to attach an extra field to a value of
-//! that type, so the case that assertion exists to catch is a compile-time
+//! comment rather than the whole test: injecting an extra `participant_id`
+//! field directly onto an `InputTapeIdentity` and checking that
+//! `input_tape::copy_identity` rejects it. `InputTapeIdentity` here
+//! (`gc_sim::input_tape`) is a statically typed Rust `struct` with a fixed
+//! field set — there is no way to attach an extra field to a value of that
+//! type, so the case that assertion exists to catch is a compile-time
 //! impossibility rather than a runtime one. The other two assertions in that
 //! same test (an unknown field on the manifest itself, and on
-//! `manifest.simulation`) are fully portable, since a `gameplay_trace_manifest`
-//! is a dynamically-typed `research_schema::Value`, and are ported below.
+//! `manifest.simulation`) are exercised below, since a `gameplay_trace_manifest`
+//! is a dynamically-typed `research_schema::Value` that accepts an injected
+//! field at runtime.
 
 mod research_fixtures;
 
@@ -224,10 +225,9 @@ fn research_metadata_cannot_move_a_simulation_boundary_hash_rejects_participant_
     });
     assert!(research_trace::validate(&simulation_injected).is_err());
 
-    // The Lua case's third assertion — injecting `participant_id` directly
-    // onto an `InputTapeIdentity` *table* and checking that
-    // `input_tape.copy_identity` rejects it — has no Rust port: see this
-    // file's module doc comment.
+    // Injecting `participant_id` directly onto an `InputTapeIdentity` and
+    // checking that `input_tape::copy_identity` rejects it has no Rust
+    // equivalent here: see this file's module doc comment.
 }
 
 #[test]

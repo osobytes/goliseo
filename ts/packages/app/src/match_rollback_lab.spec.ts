@@ -1,17 +1,17 @@
-// Ported from spec/screens/match_rollback_lab_spec.lua's "playable rollback
-// ScreenStack flow (tier 3)" describe block -- left `describe.skip`/
-// `it.skip` in `@gc/screens` (packages/screens/src/match_rollback_lab.spec.ts)
-// because both cases need `ScreenStack` (`@gc/app`'s `screen_stack.ts`)
-// driving a real `MatchScreen`/`RealMatch` pair, and `@gc/screens` cannot
-// depend on `@gc/app` -- the dependency runs the other way (v2/README.md
-// §2/§9). `@gc/app` is the correct side of that edge; this file is where
-// the cases live.
+// Coverage for the "playable rollback ScreenStack flow (tier 3)" describe
+// block below -- left `describe.skip`/`it.skip` in `@gc/screens`
+// (packages/screens/src/match_rollback_lab.spec.ts) because both cases need
+// `ScreenStack` (`@gc/app`'s `screen_stack.ts`) driving a real
+// `MatchScreen`/`RealMatch` pair, and `@gc/screens` cannot depend on
+// `@gc/app` -- the dependency runs the other way (ARCHITECTURE.md §1/§7).
+// `@gc/app` is the correct side of that edge; this file is where the cases
+// live.
 //
 // # Re-checked for this task: the wasm bridge landed
 //
-// The header this replaces said both cases stayed blocked on a missing
-// `@gc/wasm` binding for `sim.rollback_playable_lab`. That binding now
-// exists (`crates/gc-wasm/src/rollback_playable_lab_bridge.rs`, exposed as
+// This case was previously blocked on a missing `@gc/wasm` binding for the
+// rollback playable lab. That binding now exists
+// (`crates/gc-wasm/src/rollback_playable_lab_bridge.rs`, exposed as
 // `RollbackPlayableLab` off `loadSimHost()` -- `packages/wasm/src/types.ts`).
 // `RealRollbackHost` below is a real `RollbackHostPort` (`@gc/screens`'s
 // `match.ts`) implementation wrapping it: a fresh `SimSession` supplies the
@@ -28,7 +28,7 @@
 // convergence verdict (`_rollback_debug.status` reaching `"converged"`,
 // matched snapshot hashes, `rollback_count`/`resimulated_ticks` > 0) --
 // that would mean inventing convergence detection locally and asserting
-// against the invention, exactly the anti-pattern this port must not commit
+// against the invention, exactly the anti-pattern this file must not commit
 // (the same principle `online_match_flow.spec.ts`, this package, names for
 // its own still-skipped cases).
 //
@@ -54,23 +54,22 @@
 //
 // "reconciles a rollback goal through confirmed replay and result
 // completion" additionally needed a HAND-SPECIFIED pinned `initial_snapshot`
-// (`rollback_goal_fixture()` in the Lua original: a `MatchState` with the
-// ball primed mid-flight into the net, `pickup_cd`/`block_grace` pinned so a
-// goal scores almost immediately). A prior pass here found `@gc/wasm` had no
-// snapshot-construction entry point at all -- the same gap
+// (a `MatchState` with the ball primed mid-flight into the net,
+// `pickup_cd`/`block_grace` pinned so a goal scores almost immediately --
+// see `GOAL_FIXTURE_OVERRIDES` below). A prior pass here found `@gc/wasm`
+// had no snapshot-construction entry point at all -- the same gap
 // `rollback_validation.spec.ts`'s own header used to document. That gap is
 // now closed: `crates/gc-wasm/src/match_snapshot_bridge.rs`'s
 // `matchSnapshotBuild` builds exactly this shape from JSON overrides on top
 // of a fresh, ordinary construction (see `RealRollbackHostOptions
-// .overrides_json`'s doc below and `GOAL_FIXTURE_OVERRIDES`, reproducing
-// `rollback_goal_fixture()` field-for-field). Getting the goal itself to
-// score was therefore no longer the blocker; two narrower, different gaps
-// were, both closed in this file (not `@gc/wasm`) -- see this case's own
-// header comment for exactly which: real per-boundary replay-footage
-// recording, and a substituted (but equally real) network profile in place
-// of the Lua fixture's bespoke one. What did NOT get ported -- the
-// `RealMatch`-level result-completion-ordering assertion -- is also
-// documented on that case, not silently dropped.
+// .overrides_json`'s doc below and `GOAL_FIXTURE_OVERRIDES`). Getting the
+// goal itself to score was therefore no longer the blocker; two narrower,
+// different gaps were, both closed in this file (not `@gc/wasm`) -- see
+// this case's own header comment for exactly which: real per-boundary
+// replay-footage recording, and a substituted (but equally real) network
+// profile in place of a bespoke one this fixture originally needed. What
+// is not covered here -- the `RealMatch`-level result-completion-ordering
+// assertion -- is also documented on that case, not silently dropped.
 //
 // # Also fixed for this task: `updateRollback` never called `ReplayPort.step`
 //
@@ -85,8 +84,8 @@
 // use of the same port. This case's own body asserts the now-provable half
 // of that (a real, advancing frame) and keeps documenting, precisely, the
 // half that still does not fit inside this loop's iteration budget (full
-// replay completion, and therefore the Lua original's result-completion-
-// ordering assertion) -- see the case's own comments at each point.
+// replay completion, and therefore the result-completion-ordering
+// assertion described above) -- see the case's own comments at each point.
 
 import { describe, expect, it } from "vitest";
 import { Vec2 } from "@gc/core";
@@ -129,14 +128,13 @@ const NOOP_COMBAT_FEEDBACK: CombatFeedbackPort = {
 };
 
 /**
- * `match_snapshot_bridge.rs`'s `matchSnapshotBuild` `overridesJson`,
- * reproducing `spec/screens/match_rollback_lab_spec.lua`'s
- * `rollback_goal_fixture()` field-for-field: every player pinned motionless
- * at (180, 40), possession cleared, and the ball primed mid-flight
- * (`ball`/`ball_vel`/`ball_z`/`ball_vz`) with `pickup_cd`/`block_grace`
- * pinned long enough that nothing intercepts it before it crosses the goal
- * line -- see the "reconciles a rollback goal..." case's own header note.
- * Cross-checked directly against `match_snapshot_bridge.rs`'s own
+ * `match_snapshot_bridge.rs`'s `matchSnapshotBuild` `overridesJson`: every
+ * player pinned motionless at (180, 40), possession cleared, and the ball
+ * primed mid-flight (`ball`/`ball_vel`/`ball_z`/`ball_vz`) with
+ * `pickup_cd`/`block_grace` pinned long enough that nothing intercepts it
+ * before it crosses the goal line -- see the "reconciles a rollback
+ * goal..." case's own header note. Cross-checked directly against
+ * `match_snapshot_bridge.rs`'s own
  * `overrides_reposition_every_player_and_prime_a_loose_ball_reproducing_the_rollback_goal_fixture`
  * unit test, which builds this exact overrides shape on the Rust side.
  */
@@ -297,10 +295,9 @@ class RealRollbackHost implements RollbackHostPort {
     const lastOutput = batch.outputs[batch.outputs.length - 1];
     // NOT `lastOutput.finished` -- that is the PREDICTED client's own
     // match-clock reaching zero, which happens well before the laboratory
-    // is done: `game/screens/match.lua`'s `match_is_over`/`lab_source.terminal`
-    // define "over" for a rollback-driven match as `status ~= "active" and
-    // status ~= "settling"` (this laboratory's own settlement/convergence
-    // verdict), NOT the client's local finished flag. Using the client's
+    // is done: a rollback-driven match is "over" once `status !== "active"`
+    // and `status !== "settling"` (this laboratory's own settlement/
+    // convergence verdict), NOT the client's local finished flag. Using the client's
     // flag here was this file's own first-draft bug: `MatchScreen.finished`
     // (and this class's own `updateRollback` early return) would go true
     // the moment gameplay ended and PERMANENTLY stop calling `step`/
@@ -418,7 +415,7 @@ interface RealRollbackHostOptions {
   readonly profile_name: string;
   readonly network_seed?: number;
   readonly bot_seed?: number;
-  /** Forwarded to the fresh `SimSession`'s own `durationSeconds` -- mirrors `game/screens/match.lua`'s `Match:restart` passing `rollback_options.duration` straight to `sim_match.new`, NOT to `RollbackPlayableLab`'s own options (that binding has no `duration` field; see `rollback_playable_lab_bridge.rs`'s `decode_options`). Defaults to 120, `sim/match.lua`'s own default. */
+  /** Forwarded to the fresh `SimSession`'s own `durationSeconds`, NOT to `RollbackPlayableLab`'s own options (that binding has no `duration` field; see `rollback_playable_lab_bridge.rs`'s `decode_options`). Defaults to 120, `gc-sim`'s own default. */
   readonly duration?: number;
   readonly max_goals?: number;
   readonly settlement_ticks?: number;
@@ -428,7 +425,7 @@ interface RealRollbackHostOptions {
    * (see that module's doc), applied instead of a plain `new host.Session
    * (...).snapshotHandle()` -- the entry point that unblocks this file's
    * "reconciles a rollback goal..." case's hand-specified pinned fixture
-   * (`rollback_goal_fixture()` in the Lua original). Omitted, the factory
+   * (see `GOAL_FIXTURE_OVERRIDES` above). Omitted, the factory
    * builds its initial snapshot from a fresh `SimSession` exactly as before
    * (the "converges..." case's own path, unchanged).
    */
@@ -566,14 +563,14 @@ describe("playable rollback ScreenStack flow (tier 3)", () => {
     const current = screen.debugRollbackCurrentSnapshot();
     const reference = screen.debugRollbackReferenceSnapshot();
     // Neither snapshot summary carries a combat companion this task (no
-    // `combat_enabled` option) -- the ported spec's own equivalent
-    // assertion (`current.state.input_tick == reference.state.input_tick`,
-    // `match_snapshot.hash(current) == match_snapshot.hash(reference)`)
-    // reads the raw `MatchSnapshot` these summaries deliberately do not
+    // `combat_enabled` option) -- an equivalent assertion comparing
+    // `current.state.input_tick == reference.state.input_tick` and
+    // `match_snapshot.hash(current) == match_snapshot.hash(reference)`
+    // would read the raw `MatchSnapshot` these summaries deliberately do not
     // expose (`RollbackLabSnapshotSummary`'s own doc: "Never the raw
     // MatchSnapshot itself"). `debug.convergence` above -- driven by the
     // SAME snapshot-hash comparison `gc_sim::rollback_playable_lab` performs
-    // internally -- is this port's real analog: `"matched"` IS "the client
+    // internally -- is the real analog used here: `"matched"` IS "the client
     // and reference boundary hashes agree".
     expect(current).toEqual(reference);
     expect(debug.convergence?.actual_hash).toBe(debug.convergence?.expected_hash);
@@ -588,14 +585,14 @@ describe("playable rollback ScreenStack flow (tier 3)", () => {
 
   // # Cleared -- `matchSnapshotBuild` supplies the pinned fixture
   //
-  // `rollback_goal_fixture()` (Lua): all ten players pinned to (180, 40)
-  // with zero `run_vel`, `owner` cleared, `ball`/`ball_vel`/`ball_z`/
-  // `ball_vz` primed for an unstoppable shot on goal, `pickup_cd`/
-  // `block_grace` pinned so nothing intercepts it -- reproduced below
-  // field-for-field as `GOAL_FIXTURE_OVERRIDES`, cross-checked directly
-  // against `match_snapshot_bridge.rs`'s own
+  // The pinned fixture: all ten players pinned to (180, 40) with zero
+  // `run_vel`, `owner` cleared, `ball`/`ball_vel`/`ball_z`/`ball_vz` primed
+  // for an unstoppable shot on goal, `pickup_cd`/`block_grace` pinned so
+  // nothing intercepts it -- reproduced below field-for-field as
+  // `GOAL_FIXTURE_OVERRIDES`, cross-checked directly against
+  // `match_snapshot_bridge.rs`'s own
   // `overrides_reposition_every_player_and_prime_a_loose_ball_reproducing_the_rollback_goal_fixture`
-  // test, which reproduces this exact Lua fixture on the Rust side.
+  // test, which reproduces this exact fixture on the Rust side.
   //
   // Two further gaps this case's own machinery closes, neither of them
   // `@gc/wasm`'s snapshot-construction gap:
@@ -606,34 +603,33 @@ describe("playable rollback ScreenStack flow (tier 3)", () => {
   //   above) -- so this file's own `RealRollbackHost.step` now records it,
   //   using `RollbackPlayableLab.matchStateJsonAt` (a primitive that already
   //   existed; this was a wiring gap in this file, not a missing binding).
-  // - The Lua fixture's `network_profile = fixed_profile(2)` is a bespoke
-  //   `NetworkProfile`, not an authored name -- `rollback_playable_lab_bridge
-  //   .rs`'s own doc confirms `decode_options` only resolves `profile_name`
-  //   against four authored names ("clean"/"omp0_parity"/"playable"/
-  //   "stress") and has no custom-`NetworkProfile` JSON codec yet. That IS a
-  //   real `@gc/wasm` gap, just a different, narrower one than this file's
-  //   header used to describe, and out of this package's ownership to close.
-  //   Substituted with `"playable"` below (`network_seed`/`bot_seed` still
-  //   pin it deterministically) -- the same authored profile the sibling
+  // - This fixture originally called for a bespoke `NetworkProfile`, not an
+  //   authored name -- `rollback_playable_lab_bridge.rs`'s own doc confirms
+  //   `decode_options` only resolves `profile_name` against four authored
+  //   names ("clean"/"omp0_parity"/"playable"/"stress") and has no
+  //   custom-`NetworkProfile` JSON codec yet. That IS a real `@gc/wasm` gap,
+  //   just a different, narrower one than this file's header used to
+  //   describe, and out of this package's ownership to close. Substituted
+  //   with `"playable"` below (`network_seed`/`bot_seed` still pin it
+  //   deterministically) -- the same authored profile the sibling
   //   "converges..." case above already proves reaches real convergence, so
   //   this substitution changes which profile drives the network, not
   //   whether the test's own claims hold.
   //
-  // What did NOT port: the Lua original drives `RealMatch`/`Match.new`
-  // (`game/screens/real_match.lua`), whose `on_finished`/result-completion
-  // ordering (`completed_at > replay_finished_at`) has no rollback-lab
-  // counterpart on this side yet -- `real_match_factory.ts`'s own header:
-  // "`MatchScreenAsRealMatchScreen.rollbackLab` is always `false` (this
-  // milestone's `MatchScreen` has no rollback lab)". This case instead
-  // drives `MatchScreen` directly (this file's own established pattern, the
-  // "converges..." case above), and asserts the presentation-layer claims
-  // that COULD survive that seam: a correction lands, confirmed goal
-  // footage actually plays (`replay.active()`), that footage overlaps
-  // terminal convergence and later finishes, the match reaches full time
-  // with the primed goal counted, and every lifecycle cue fires exactly
-  // once. Building a rollback-lab-aware `RealMatch` wiring to restore the
-  // result-completion-ordering assertion is `@gc/screens`/`real_match_factory
-  // .ts`'s call, not this file's.
+  // What is not covered here: a real `RealMatch`'s `on_finished`/
+  // result-completion ordering (`completed_at > replay_finished_at`) has no
+  // rollback-lab counterpart on this side yet -- `real_match_factory.ts`'s
+  // own header: "`MatchScreenAsRealMatchScreen.rollbackLab` is always
+  // `false` (this milestone's `MatchScreen` has no rollback lab)". This case
+  // instead drives `MatchScreen` directly (this file's own established
+  // pattern, the "converges..." case above), and asserts the
+  // presentation-layer claims that COULD survive that seam: a correction
+  // lands, confirmed goal footage actually plays (`replay.active()`), that
+  // footage overlaps terminal convergence and later finishes, the match
+  // reaches full time with the primed goal counted, and every lifecycle cue
+  // fires exactly once. Building a rollback-lab-aware `RealMatch` wiring to
+  // add a result-completion-ordering assertion is
+  // `@gc/screens`/`real_match_factory.ts`'s call, not this file's.
   it("reconciles a rollback goal through confirmed replay and result completion", () => {
     replay.reset();
     replay.resetTuning();
@@ -642,15 +638,14 @@ describe("playable rollback ScreenStack flow (tier 3)", () => {
     const baseFactory = createRealRollbackHostFactory({
       home_team_id: "nebula",
       away_team_id: "orion",
-      // `rollback_goal_fixture()`'s own `sim_match.new` call names no seed
-      // -- `gc_sim::r#match::new`'s documented default (42) -- and none of
-      // it matters anyway: every player is pinned motionless and the ball's
-      // flight is fully pinned too, so no RNG draw this fixture reaches can
-      // change the outcome.
+      // This fixture names no explicit seed -- `gc_sim::r#match::new`'s
+      // documented default (42) -- and none of it matters anyway: every
+      // player is pinned motionless and the ball's flight is fully pinned
+      // too, so no RNG draw this fixture reaches can change the outcome.
       seed: 42,
       local_slot: 1,
-      // See this case's header note on why "playable" substitutes for the
-      // Lua fixture's bespoke `network_profile`.
+      // See this case's header note on why "playable" substitutes for a
+      // bespoke `network_profile`.
       profile_name: "playable",
       network_seed: 7501,
       bot_seed: 7502,
@@ -747,11 +742,11 @@ describe("playable rollback ScreenStack flow (tier 3)", () => {
       screen.debugReplayState!.players.map((p) => `${p.id}:${p.pos.x.toFixed(3)},${p.pos.y.toFixed(3)}`),
       "the replay frame keeps advancing, not frozen on its first tick",
     ).not.toEqual(firstReplayFrame!.players.map((p) => `${p.id}:${p.pos.x.toFixed(3)},${p.pos.y.toFixed(3)}`));
-    // Still NOT asserted, unlike the Lua original's `saw_terminal_replay`/
-    // `replay_finished_at`/`completed_at > replay_finished_at`: `replay.active()`
-    // is still `true` here even with the fix above -- `REPLAY_SECONDS`/
-    // `REPLAY_SLOWMO` (`sim/tuning.lua`, default 4s at 0.35x) need roughly
-    // 11.4 real seconds (~686 render calls at this loop's `TICK_SECONDS`) of
+    // Still NOT asserted -- a `completed_at > replay_finished_at` ordering
+    // check: `replay.active()` is still `true` here even with the fix above
+    // -- `REPLAY_SECONDS`/`REPLAY_SLOWMO` (`gc-sim`'s `tuning.rs`, default
+    // 4s at 0.35x) need roughly 11.4 real seconds (~686 render calls at
+    // this loop's `TICK_SECONDS`) of
     // `ReplayPort.step` dt to actually finish, and this loop's own stopping
     // condition (laboratory convergence, not replay completion -- see the
     // loop's own comment) breaks it well before that. Empirically confirmed,

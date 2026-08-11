@@ -1,4 +1,4 @@
-//! Port of `spec/sim/env_spec.lua`.
+//! Tests for `gc_sim::env`.
 
 use gc_data::{tactics, teams};
 use gc_sim::env::{self, EnvErrorCode, EnvInstance, ReferenceConfigOverrides};

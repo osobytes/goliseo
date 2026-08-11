@@ -4,19 +4,18 @@
 // structure per that task's brief) for how this page is built and read.
 //
 // WHY A STANDALONE HARNESS PAGE, NOT THE PRODUCT APP SHELL
-// (`v2/ts/packages/app/src/browser_main.ts`)
+// (`ts/packages/app/src/browser_main.ts`)
 //
 // The product shell requires clicking through Title -> Squad -> Formation ->
 // Tactic before a real match exists, and even then drives exactly one input
 // slot from a live keyboard/gamepad capture. This page needs a deterministic,
 // scriptable, no-UI path straight to a running match -- the same reasoning
-// `v2/tools/browser_online_match/web/online_peer.ts`'s header gives for being
+// `tools/browser_online_match/web/online_peer.ts`'s header gives for being
 // "deliberately NOT @gc/app/@gc/screens/@gc/online wired up as a real
 // client". It imports the already-built wasm web artifact by relative path
 // (this task may read `dist/pkg-web`, not edit `packages/wasm/src`) plus
 // `@gc/render`'s public package surface (`SceneRoot`, `frameBuffer`,
-// `viewState`, and the `Benchmark` class ported from `game/render/
-// benchmark.lua` -- see that file for the ported class's own doc, which
+// `viewState`, and the `Benchmark` class -- see that class's own doc, which
 // explicitly says wiring a real driver/renderer is "for whoever builds that
 // browser-build glue"; that is this file).
 //
@@ -33,26 +32,23 @@
 // or the ball moving. `liveness` in this page's report (score/time/tick) is
 // how the driver script confirms that, rather than trusting this comment.
 //
-// UPDATE VS DRAW, KEPT SEPARATE, exactly like the Lua original: `update()`
+// UPDATE VS DRAW, KEPT SEPARATE: `update()`
 // below costs exactly one `Session.step` (the wasm sim tick, nothing else).
 // `draw()` costs building this tick's `RenderFrame` (`render_frame_build` +
-// decode, the same cost `render_frame.build` pays inside Lua's `bloom.draw`
-// call) plus one `SceneRoot.render` (three.js). Both run exactly once per
-// loop iteration, and frames are PINNED (a fixed count), not wall-clock --
-// the file this ports states why: with the browser producing frames far
-// faster than 60 Hz, a wall-clock window would let the two builds simulate a
-// different number of ticks and draw a different match state, so the
-// comparison would not be measuring the same scene.
+// decode) plus one `SceneRoot.render` (three.js). Both run exactly once per
+// loop iteration, and frames are PINNED (a fixed count), not wall-clock:
+// with the browser producing frames far faster than 60 Hz, a wall-clock
+// window would let successive runs simulate a different number of ticks and
+// draw a different match state, so the comparison would not be measuring
+// the same scene.
 //
 // `players()` (feeding `viewState.update`, gait/lean animation state only --
 // it plays no part in either measured gate) reads the PREVIOUS frame's
 // decoded positions rather than issuing a second wasm call during `update()`.
 // That is a deliberate one-tick-stale approximation, called out here because
-// it is a place this harness diverges from the Lua original (which reads
-// live sim state directly, free): materializing a fresh position readout
-// inside `update()` would leak `draw`-side wasm/decode cost into the
-// `update` timing this file exists to keep honest. The approximation cannot
-// affect either measured gate.
+// materializing a fresh position readout inside `update()` would leak
+// `draw`-side wasm/decode cost into the `update` timing this file exists to
+// keep honest. The approximation cannot affect either measured gate.
 
 import init, { Session, __getRawExports } from "../../../ts/packages/wasm/dist/pkg-web/gc_wasm.js";
 import * as THREE from "three";
@@ -312,8 +308,7 @@ async function main(): Promise<void> {
 
     const sceneRoot = new SceneRoot(glRenderer, { viewport: { w: width, h: height } });
 
-    // Long enough that the measured window never runs into full time --
-    // mirrors `benchmark.lua`'s own `(warmup_frames + frames) * DT + 60`.
+    // Long enough that the measured window never runs into full time.
     const DT = 1 / 60;
     const durationSeconds = (warmupFrames + frames) * DT + 60;
     const session = new Session("nebula", "orion", seed, durationSeconds, 99, undefined, undefined, undefined, undefined, undefined);

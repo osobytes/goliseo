@@ -4,11 +4,10 @@ import * as geometry from "./geometry.ts";
 import { PartBuilder } from "./geometry.ts";
 import * as themes from "./themes.ts";
 
-// meshbuilder.lua no longer bakes a literal colour: every vertex carries a
-// slot index instead, and rejects anything that isn't one -- coverage for
-// the invariant the #337 review specifically asked to see exercised. This
-// file is geometry.ts's spec, the v2 replacement for meshbuilder.lua's and
-// shapes.lua's tests -- see geometry.ts's header for what changed and why.
+// Every vertex carries a numeric palette-slot index instead of baking a
+// literal colour, and rejects anything that isn't one -- coverage for the
+// invariant the #337 review specifically asked to see exercised. This file
+// is geometry.ts's spec -- see geometry.ts's header for what changed and why.
 describe("rig3d part builder palette-slot vertices (#337)", () => {
   it("bakes a numeric slot index per vertex instead of a literal colour", () => {
     const mb = new PartBuilder();
@@ -41,22 +40,14 @@ describe("rig3d part builder palette-slot vertices (#337)", () => {
   });
 });
 
-// #337 slice 2's vertex format (position/texcoord/normal/slot/bone/material
-// as 11 LÖVE-attribute floats, declared as a single static `VERTEX_FORMAT`
-// table) is NOT ported as a table: it existed to satisfy
-// `love.graphics.newMesh`'s vertex-format API and GLSL ES 1.00's lack of
-// integer vertex attributes, neither of which apply once geometry becomes a
-// `THREE.BufferGeometry` with typed attributes -- there is no single
-// static format table to iterate any more, so the original two tests below
-// (which did exactly that) cannot be ported as written. What DOES carry
-// over -- bone index and material alongside the palette slot, as named
-// per-vertex data -- is real again now that `PartBuilder.build()` exists
-// (see geometry.ts): it is three.js's own named-attribute mechanism
-// (`BufferGeometry.setAttribute`) instead of a hand-declared format table,
-// so the two tests below assert the equivalent on `build()`'s output rather
-// than on a format table that no longer exists. What survives verbatim,
-// because it is content-relevant rather than LÖVE-specific, is the
-// MATERIAL ordering.
+// #337 slice 2's vertex format -- position/normal/slot/bone/material as
+// named per-vertex data -- has no single static format table to iterate:
+// `THREE.BufferGeometry` exposes them through its own named-attribute
+// mechanism (`BufferGeometry.setAttribute`) once `PartBuilder.build()`
+// exists (see geometry.ts), so the two tests below assert the equivalent on
+// `build()`'s output rather than on a format table. What survives verbatim,
+// because it is content-relevant rather than an artifact of the vertex
+// format, is the MATERIAL ordering.
 describe("rig3d material ids (#337 slice 2)", () => {
   it("carries a bone index and a material alongside the palette slot, as named attributes on the built geometry", () => {
     const a = new PartBuilder();

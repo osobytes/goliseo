@@ -1,4 +1,5 @@
-//! Ported from `spec/data/showcase_species_spec.lua`.
+//! Tests that showcase species author distinct visual identities without
+//! activating mechanics.
 
 use gc_data::species::{Shape, SimVerb};
 use gc_data::{players, showcase_player_compatibility, species};

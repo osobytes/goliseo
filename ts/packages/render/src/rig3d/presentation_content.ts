@@ -19,8 +19,8 @@
 // The renderer speaks (3). The wire carries (1). This module is (2), stated
 // in TypeScript.
 //
-// HAND-MAINTAINED, AND THAT IS NOT AN OVERSIGHT. v2/README.md forbids a
-// TypeScript package importing a Rust crate's source (§9, and rule 6.7's
+// HAND-MAINTAINED, AND THAT IS NOT AN OVERSIGHT. ARCHITECTURE.md forbids a
+// TypeScript package importing a Rust crate's source (§7, and §4 rule 6's
 // "TypeScript never imports content tables -- it receives them"), so these
 // tables cannot be generated from `gc-data` at build time in this milestone.
 // They are therefore a SECOND copy of a mapping `gc-data` already owns, which
@@ -29,7 +29,7 @@
 // is the same one #433 reached for -- an assertion that reads both sources.
 // `scripts/check_presentation_parity.mjs` parses the three Rust tables above
 // and requires them to agree with the three below, key for key and value for
-// value, and `scripts/check_v2.sh` runs it before anything is built.
+// value, and `scripts/check.sh` runs it before anything is built.
 //
 // WHAT THIS DELIBERATELY DOES NOT DO. Two authored presentations share each
 // theme (`medieval_rook_emberguard` and `medieval_bramble_quickstep` both map

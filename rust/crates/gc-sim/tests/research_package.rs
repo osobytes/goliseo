@@ -1,23 +1,20 @@
-//! Port of `spec/sim/research_package_spec.lua`.
+//! Tests for `gc_sim::research_dataset`, `gc_sim::research_trace`,
+//! `gc_sim::research_response`, `gc_sim::research_session`, and
+//! `gc_sim::research_timeline` working together over one packaged research
+//! run.
 //!
 //! Every case here builds its fixtures through
 //! `research_fixtures::gameplay()` (a real rollback timeline and trace
-//! manifest over the checked-in short match tape) and calls into
-//! `gc_sim::research_dataset`, `gc_sim::research_trace`,
-//! `gc_sim::research_response`, `gc_sim::research_session`, and
-//! `gc_sim::research_timeline`. `research_dataset`/`research_trace` are no
-//! longer out of scope (unlike the previous stub version of this file
-//! implied) — both are fully ported and exercised below.
+//! manifest over the checked-in short match tape).
 //!
-//! One test, `research_example_package_rejects_a_session_or_response_set_that_names_a_trace_nobody_holds`,
-//! drops its `research_session.validate_against_traces` assertions (the
+//! One test,
+//! `research_example_package_rejects_a_session_or_response_set_that_names_a_trace_nobody_holds`,
+//! does not exercise `research_session::validate_against_traces` (the
 //! envelope-vs-manifest orphan join, the empty-manifest-list case, and the
-//! seed-mismatch branch): that function does not exist in this port and is
-//! explicitly out of scope for this crate (see `research_session.rs`'s own
-//! doc comment and `v2/README.md`'s porting notes). The
-//! `research_response::validate_against_trace` assertions in that same Lua
-//! test — the function this file's sibling changes added — are fully
-//! ported.
+//! seed-mismatch branch): that function does not exist in this crate and is
+//! explicitly out of scope — see `research_session.rs`'s own doc comment.
+//! The `research_response::validate_against_trace` assertions in that same
+//! test are fully exercised below.
 
 mod research_fixtures;
 
@@ -131,10 +128,9 @@ fn research_example_package_rejects_a_session_or_response_set_that_names_a_trace
     let trace_id = trace_id_of(&gameplay.manifest);
     let envelope = research_fixtures::completed_session(&trace_id);
 
-    // The Lua case's `research_session.validate_against_traces` assertions
-    // (envelope-vs-manifest orphan join, the empty-manifest-list case, and
-    // the seed-mismatch branch) are not ported — see this file's module doc
-    // comment.
+    // `research_session::validate_against_traces` (the envelope-vs-manifest
+    // orphan join, the empty-manifest-list case, and the seed-mismatch
+    // branch) is not exercised here — see this file's module doc comment.
 
     let responses = research_fixtures::enjoyment_responses(Some(&EnjoymentResponsesOverrides {
         trace_id: Some(trace_id.clone()),

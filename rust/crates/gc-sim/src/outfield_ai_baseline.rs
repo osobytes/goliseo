@@ -1,5 +1,3 @@
-//! Port of `sim/outfield_ai_baseline.lua`.
-//!
 //! Frozen combat-disabled Outfield AI common-seed baseline (#59).
 //!
 //! What this is: a checked-in, versioned recording of how the frozen
@@ -40,8 +38,7 @@
 //! type; [`OutfieldAiBaselineRecord`] here is the same shape with owned
 //! `String` fields instead. [`OutfieldAiBaselineRecord::from`] converts the
 //! frozen record into this shape so [`compare`] can treat "the frozen
-//! control" and "what this build just measured" uniformly, exactly as the
-//! Lua original's single duck-typed table shape does for both.
+//! control" and "what this build just measured" uniformly.
 
 use crate::headless::{self, HeadlessBot};
 use crate::match_snapshot::PitchSize;
@@ -536,11 +533,11 @@ pub struct MeasureOpts<'a> {
     /// default, which is what a freeze measures.
     ///
     /// Exposed so a caller can measure a *candidate* tuning against the frozen
-    /// one, which is the tool's natural job and is also how
-    /// `spec/sim/outfield_ai_baseline_spec.lua`'s "detects a real policy change"
-    /// case ports: the Lua assigns to a live knob's `default`, which a `static`
-    /// cannot do, but setting the same knob through the blob changes how the
-    /// match is actually played in exactly the same way.
+    /// one, which is the tool's natural job and is also how the "detects a
+    /// real policy change" test case works: a `static` frozen record can't
+    /// have its knob defaults reassigned at runtime, but setting the same
+    /// knob through the blob changes how the match is actually played in
+    /// exactly the same way.
     pub tuning_blob: Option<&'a str>,
 }
 
@@ -704,6 +701,30 @@ fn identity_field_display(identity: &OutfieldAiBaselineIdentity, field: &str) ->
     }
 }
 
+/// Like [`identity_field_display`], but rendered as a Rust literal (strings
+/// quoted via `Debug`, which is also valid `&'static str` source text) for
+/// [`serialize`].
+fn identity_field_literal(identity: &OutfieldAiBaselineIdentity, field: &str) -> String {
+    match field {
+        "schema" => format!("{:?}", identity.schema),
+        "schema_version" => identity.schema_version.to_string(),
+        "policy_id" => format!("{:?}", identity.policy_id),
+        "fixture" => format!("{:?}", identity.fixture),
+        "config" => format!("{:?}", identity.config),
+        "config_hash" => format!("{:?}", identity.config_hash),
+        "content_hash" => format!("{:?}", identity.content_hash),
+        "tuning_hash" => format!("{:?}", identity.tuning_hash),
+        "snapshot_version" => identity.snapshot_version.to_string(),
+        "input_version" => identity.input_version.to_string(),
+        "tick_rate" => identity.tick_rate.to_string(),
+        "seed_first" => identity.seed_first.to_string(),
+        "seed_count" => identity.seed_count.to_string(),
+        "seed_hash" => format!("{:?}", identity.seed_hash),
+        "fixture_hash" => format!("{:?}", identity.fixture_hash),
+        _ => panic!("unknown outfield AI baseline identity field: {field}"),
+    }
+}
+
 /// Compare a frozen record against a fresh measurement. Exact, per the
 /// module doc's "Comparison is EXACT" section.
 ///
@@ -834,13 +855,13 @@ pub fn report(
             "still plays the frozen control exactly; only the recorded identity is".to_string(),
         );
         lines.push("out of date. Not a failure, but it does owe a drift-log entry in".to_string());
+        lines.push("docs/design/fun_metrics.md naming what moved, then a deliberate".to_string());
         lines.push(
-            "docs/design/fun_metrics.md naming what moved, then a re-freeze with".to_string(),
+            "re-freeze that bumps baseline_version (this repository has no runner".to_string(),
         );
-        lines.push(
-            "`--ai-baseline write --refreeze-ack`. Until then dependent evidence is".to_string(),
-        );
-        lines.push("citing an identity that no longer describes this build.".to_string());
+        lines.push("to drive that automatically -- see the module doc). Until then".to_string());
+        lines.push("dependent evidence is citing an identity that no longer describes".to_string());
+        lines.push("this build.".to_string());
     } else if comparison.ok {
         lines.push("AI BASELINE OK".to_string());
     } else {
@@ -855,71 +876,100 @@ pub fn report(
                 .to_string(),
         );
         lines.push("Confirm the change is intended, record it in the drift log".to_string());
-        lines.push("of docs/design/fun_metrics.md, then re-freeze deliberately with".to_string());
-        lines.push("`--ai-baseline write --refreeze-ack` (bumps baseline_version).".to_string());
+        lines.push("of docs/design/fun_metrics.md, then re-freeze deliberately by".to_string());
+        lines.push(
+            "bumping baseline_version (this repository has no runner to drive that".to_string(),
+        );
+        lines.push("automatically -- see the module doc).".to_string());
     }
     lines.join("\n")
 }
 
-/// Serialize a record as loadable baseline source text, mirroring the
-/// `data::outfield_ai_baseline` file's shape. Numbers are rendered with
-/// Rust's shortest round-trippable `Display` form, which — unlike a fixed
-/// decimal precision — is guaranteed to parse back to the exact same `f64`
-/// bit pattern, so exact comparison after a round trip stays sound.
+/// Render an `f64` as valid Rust float-literal source: Rust's shortest
+/// round-trippable `Display` form, guaranteed to parse back to the exact
+/// same bit pattern, but with a decimal point forced in when `Display`
+/// would otherwise emit a bare integer (`0`, `5`) — which is NOT a valid
+/// `f64` literal in Rust (a bare integer literal does not coerce to `f64`,
+/// even where one is expected) and would make [`serialize`]'s output fail
+/// to compile.
+fn f64_literal(value: f64) -> String {
+    let text = value.to_string();
+    if text.contains(['.', 'e', 'E']) {
+        text
+    } else {
+        format!("{text}.0")
+    }
+}
+
+/// Serialize a record as loadable baseline source text: the exact `//!`
+/// module header, `#![allow(clippy::excessive_precision)]`, and
+/// `pub const RECORD: OutfieldAiBaselineRecord = OutfieldAiBaselineRecord
+/// { ... };` literal that belong in `gc_data::outfield_ai_baseline`
+/// (`rust/crates/gc-data/src/outfield_ai_baseline.rs`), so the output can
+/// be pasted directly over that file's header and const. Numbers are
+/// rendered with Rust's shortest round-trippable `Display` form, which —
+/// unlike a fixed decimal precision — is guaranteed to parse back to the
+/// exact same `f64` bit pattern, so exact comparison after a round trip
+/// stays sound.
 #[must_use]
 pub fn serialize(record: &OutfieldAiBaselineRecord) -> String {
     let mut lines = vec![
-        "-- Frozen combat-disabled Outfield AI baseline (#59). DO NOT hand-edit and".to_string(),
-        "-- DO NOT refresh to silence a failing baseline check: dependent evidence".to_string(),
-        "-- cites this artifact as its control, so a moved baseline is evidence.".to_string(),
-        "--".to_string(),
-        "-- A deliberate re-freeze is:".to_string(),
-        "--   1. confirm the change is intended and record it in the drift log of".to_string(),
-        "--      docs/design/fun_metrics.md;".to_string(),
-        "--   2. re-run with --refreeze-ack (bumps baseline_version).".to_string(),
-        "--".to_string(),
-        "-- See sim::outfield_ai_baseline and docs/design/fun_metrics.md.".to_string(),
+        "//! Frozen combat-disabled Outfield AI baseline (#59). DO NOT hand-edit and".to_string(),
+        "//! DO NOT refresh to silence a failing baseline check: #148/#149 cite".to_string(),
+        "//! this artifact as their control, so a moved baseline is evidence.".to_string(),
+        "//!".to_string(),
+        "//! A deliberate re-freeze is:".to_string(),
+        "//!   1. confirm the change is intended and record it in the drift log of".to_string(),
+        "//!      docs/design/fun_metrics.md;".to_string(),
+        "//!   2. re-run the frozen fixture and bump `baseline_version` -- this".to_string(),
+        "//!      repository does not currently provide a runner that drives that".to_string(),
+        "//!      re-run outside `cargo test`'s own self-reproducibility checks (see".to_string(),
+        "//!      `gc_sim::outfield_ai_baseline` for the record shape and".to_string(),
+        "//!      `serialize`). Regenerating by hand defeats the purpose of a frozen".to_string(),
+        "//!      control, so treat a moved baseline as a finding to investigate".to_string(),
+        "//!      first, not a check to clear.".to_string(),
+        "//!".to_string(),
+        "//! See `sim::outfield_ai_baseline` and docs/design/fun_metrics.md.".to_string(),
+        "//!".to_string(),
+        "//! The recorded means/standard-deviations below are kept at full precision,".to_string(),
+        "//! matching the frozen evidence contract's `%.17g` round-trip requirement".to_string(),
+        "//! (see `gc_sim::outfield_ai_baseline::serialize`). Clippy's".to_string(),
+        "//! `excessive_precision` lint would otherwise ask for a shorter —".to_string(),
+        "//! bit-identical — decimal form; this file keeps the full literal digit".to_string(),
+        "//! sequence instead, so a reviewer diffing a re-frozen version against this".to_string(),
+        "//! one sees every digit.".to_string(),
+        "#![allow(clippy::excessive_precision)]".to_string(),
         String::new(),
-        "return {".to_string(),
-        format!("    baseline_version = {},", record.baseline_version),
-        "    identity = {".to_string(),
+        "/// The frozen baseline recording.".to_string(),
+        "pub const RECORD: OutfieldAiBaselineRecord = OutfieldAiBaselineRecord {".to_string(),
+        format!("    baseline_version: {},", record.baseline_version),
+        "    identity: OutfieldAiBaselineIdentity {".to_string(),
     ];
     let id = &record.identity;
-    lines.push(format!("        schema = {:?},", id.schema));
-    lines.push(format!("        schema_version = {},", id.schema_version));
-    lines.push(format!("        policy_id = {:?},", id.policy_id));
-    lines.push(format!("        fixture = {:?},", id.fixture));
-    lines.push(format!("        fixture_hash = {:?},", id.fixture_hash));
-    lines.push(format!("        config = {:?},", id.config));
-    lines.push(format!("        config_hash = {:?},", id.config_hash));
-    lines.push(format!("        content_hash = {:?},", id.content_hash));
-    lines.push(format!("        tuning_hash = {:?},", id.tuning_hash));
-    lines.push(format!(
-        "        snapshot_version = {},",
-        id.snapshot_version
-    ));
-    lines.push(format!("        input_version = {},", id.input_version));
-    lines.push(format!("        tick_rate = {},", id.tick_rate));
-    lines.push(format!("        seed_first = {},", id.seed_first));
-    lines.push(format!("        seed_count = {},", id.seed_count));
-    lines.push(format!("        seed_hash = {:?},", id.seed_hash));
+    for &field in IDENTITY_FIELDS {
+        lines.push(format!(
+            "        {field}: {},",
+            identity_field_literal(id, field)
+        ));
+    }
     lines.push("    },".to_string());
-    lines.push("    stats = {".to_string());
+    lines.push("    stats: OutfieldAiBaselineStats {".to_string());
     for &key in TRACKED {
         let stat = stat_field(&record.stats, key);
-        // One field per line: a wide inline table would need reformatting
-        // anyway, and this mirrors the checked-in Lua file's own layout.
-        lines.push(format!("        {key} = {{"));
-        lines.push(format!("            n = {},", stat.n));
-        lines.push(format!("            mean = {},", stat.mean));
-        lines.push(format!("            sd = {},", stat.sd));
-        lines.push(format!("            min = {},", stat.min));
-        lines.push(format!("            max = {},", stat.max));
+        // One field per line: a wide inline struct literal would need
+        // reformatting anyway, and this mirrors the checked-in baseline
+        // file's own layout.
+        lines.push(format!("        {key}: OutfieldAiBaselineStat {{"));
+        lines.push(format!("            n: {},", stat.n));
+        lines.push(format!("            mean: {},", f64_literal(stat.mean)));
+        lines.push(format!("            sd: {},", f64_literal(stat.sd)));
+        lines.push(format!("            min: {},", f64_literal(stat.min)));
+        lines.push(format!("            max: {},", f64_literal(stat.max)));
         lines.push("        },".to_string());
     }
     lines.push("    },".to_string());
-    lines.push(format!("    signature = {:?},", record.signature));
-    lines.push("}".to_string());
+    lines.push(format!("    signature: {:?},", record.signature));
+    lines.push("};".to_string());
     lines.push(String::new());
     lines.join("\n")
 }

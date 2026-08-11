@@ -1,23 +1,21 @@
-// Ported from game/screens/help.lua — the "how to play" control reference.
+// The "how to play" control reference screen.
 //
-// The Lua original renders its card from `bindings.reference("match")`
-// (game/input/bindings.lua) rather than a hand-written string, specifically
-// so a rebinding cannot leave this screen lying to the player (see the Lua
-// file's header comment, and spec/game/input_bindings_spec.lua's "renders
-// the help card from the bindings rather than a literal" case). That
-// property is preserved here: `layout` builds the card from
-// `state.matchReference` only — nothing in this file names a key or button.
+// This screen renders its card from `@gc/input`'s `bindings.ts`'s
+// `reference("match")` rather than a hand-written string, specifically so a
+// rebinding cannot leave this screen lying to the player (see
+// `bindings.ts`'s header comment, and help.spec.ts's "renders the help card
+// from the bindings rather than a literal" case). That property is
+// preserved here: `layout` builds the card from `state.matchReference`
+// only — nothing in this file names a key or button.
 //
-// `game/input/bindings.lua` maps to `@gc/input` (v2/README.md's file
-// table), which already exists and already exports a structurally
-// identical `ControlReferenceRow` (see `@gc/input`'s `bindings.ts`) — but
-// `@gc/input` is not a declared dependency of `@gc/screens`, and this task
-// may not edit package.json to add it. `ControlReferenceRow` is therefore
-// declared locally in content.ts (same precedent as `@gc/ui`'s
-// `FocusEvent`), and the already-computed `bindings.reference("match")`
-// rows are injected via `newState` rather than the bindings module itself.
-// See this package's porting report for what unblocks importing the real
-// thing, and help.spec.ts for how this is tested without it.
+// `@gc/input`'s `bindings.ts` already exists and already exports a
+// structurally identical `ControlReferenceRow` — but `@gc/input` is not a
+// declared dependency of `@gc/screens`, and this task may not edit
+// package.json to add it. `ControlReferenceRow` is therefore declared
+// locally in content.ts (same precedent as `@gc/ui`'s `FocusEvent`), and
+// the already-computed `reference("match")` rows are injected via
+// `newState` rather than the bindings module itself. See help.spec.ts for
+// how this is tested without it.
 
 import { focus, type Layout } from "@gc/ui";
 import type { FocusEvent } from "@gc/ui";

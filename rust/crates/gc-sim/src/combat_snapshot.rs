@@ -1,17 +1,13 @@
-//! Port of `sim/combat_snapshot.lua`.
-//!
 //! The versioned, canonical `CombatMatchState` record: its shape, its
 //! validating copy, its append-to-wire contract, and its structural diff.
 //!
-//! Design note (README §5.1-adjacent): [`copy`] takes
-//! `&crate::match_snapshot::MatchState` directly rather than declaring a
-//! narrow local view. Unlike `metrics`/`bot`/`aerial` (ported before
-//! `sim/match.lua` existed even as a duck-typed shape), this crate's
-//! `match_snapshot` module — the very next module in this layer's dependency
-//! order — already *is* the canonical, fully-typed `MatchState`/`MatchPlayer`
-//! record (it is `sim/match_snapshot.lua`'s job to capture/restore/hash
-//! exactly that whole shape). Reusing it here instead of inventing a fifth
-//! view keeps the ledger from growing.
+//! Design note: [`copy`] takes `&crate::match_snapshot::MatchState` directly
+//! rather than declaring a narrow local view. Unlike `metrics`/`bot`/`aerial`,
+//! whose narrow views exist because they only ever need a small slice of
+//! match state, this crate's `match_snapshot` module's entire job is to
+//! capture/restore/hash *all* of `MatchState`'s shape, so it already is the
+//! canonical, fully-typed `MatchState`/`MatchPlayer` record. Reusing it here
+//! instead of inventing another view keeps the ledger from growing.
 
 use crate::combat_feasibility::CombatActionPhase;
 use crate::combat_intent::{self, CombatIntentState};
@@ -108,8 +104,7 @@ pub enum CombatEventKind {
 }
 
 impl CombatEventKind {
-    /// This kind's canonical wire string, matching the Lua source's spelled
-    /// vocabulary exactly.
+    /// This kind's canonical wire string.
     #[must_use]
     pub fn wire_str(self) -> &'static str {
         match self {
@@ -279,11 +274,10 @@ impl CombatEncounterTerminal {
     }
 }
 
-/// This action family's canonical wire id, matching the Lua `data.action_families`
-/// string keys (`"unarmed"`, `"guard"`, `"light_melee"`, `"ranged"`) exactly.
-/// `gc-data`'s [`ActionFamilyId`] carries no such string itself, so this
-/// mapping lives here and is reused by every module in this layer that
-/// serializes a family id onto the wire.
+/// This action family's canonical wire id (`"unarmed"`, `"guard"`,
+/// `"light_melee"`, `"ranged"`). `gc-data`'s [`ActionFamilyId`] carries no
+/// such string itself, so this mapping lives here and is reused by every
+/// module in this layer that serializes a family id onto the wire.
 #[must_use]
 pub fn action_family_wire_id(id: ActionFamilyId) -> &'static str {
     match id {
@@ -523,12 +517,10 @@ fn validate_event(path: &str, event: &CombatEvent, player_count: usize) {
 /// Validate `source` against `match_state`'s fixture and return a
 /// defensively copied, canonical [`CombatMatchState`].
 ///
-/// The Lua original's runtime shape checks (`assert_fields`, `assert_array`,
-/// scalar-kind checks) validate that an untyped Lua table has the shape a
-/// typed language guarantees at compile time; those are dropped here as
-/// structurally redundant (README rule 9 / the same principle
-/// `input_frame`'s port documents). The numeric-bound and cross-field
-/// invariants they wrapped around are kept.
+/// Structural shape checks (field presence, scalar kind) are unnecessary
+/// here — the type system already guarantees them (ARCHITECTURE.md §3 rule 7
+/// / the same principle `input_frame`'s module doc documents). The numeric-bound
+/// and cross-field invariants are kept.
 #[must_use]
 pub fn copy(source: &CombatMatchState, match_state: &MatchState) -> CombatMatchState {
     assert_eq!(source.version, VERSION, "combat.version is unsupported");
@@ -838,7 +830,7 @@ fn difference(
 }
 
 /// The first structural disagreement between two optional combat states, if
-/// any. `same_scalar`'s Lua original also distinguishes `+0.0` from `-0.0`
+/// any. `same_scalar` distinguishes `+0.0` from `-0.0`
 /// (`1 / left == 1 / right` when both compare equal to zero); ordinary
 /// `PartialEq` on `f64` does not, so every numeric comparison below goes
 /// through [`same_f64`] explicitly.

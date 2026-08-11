@@ -1,63 +1,57 @@
-//! Port of `spec/sim/match_snapshot_spec.lua`.
+//! Tests for `gc_sim::match_snapshot`.
 //!
-//! `gc_sim::r#match` (`sim/match.lua`'s port) has landed, so every case in
-//! the Lua spec is now expressible against real fixtures built through
-//! [`r#match::new`]/[`r#match::step`], mirroring the Lua spec's
-//! `new_state()` / `new_ai_state()` / `new_attacking_ai_state()` helpers.
+//! Fixture helpers below (`new_state`, `new_ai_state`,
+//! `new_attacking_ai_state`) build the match states these tests exercise
+//! directly through [`r#match::new`]/[`r#match::step`].
 //!
-//! ## Suspected defects found while porting
+//! ## Known validation gaps in `match_snapshot::validate`
 //!
-//! Comparing `sim/match_snapshot.lua` against `crates/gc-sim/src/match_snapshot.rs`
-//! line by line surfaced three validation calls the Lua original makes that
-//! the Rust port never makes. None of these were introduced by this file —
-//! they live in `match_snapshot.rs`, which is out of scope here (this is a
-//! test-only port) — but several ported cases below only make sense in
+//! Three validation calls `match_snapshot.rs`'s `capture`/`restore` do not
+//! currently make, even though they would be reasonable to expect. None of
+//! these were introduced by this file — they live in `match_snapshot.rs`,
+//! which is out of scope here — but several cases below only make sense in
 //! light of them, so they are recorded once, here, rather than repeated in
-//! every affected test's `#[ignore]` reason:
+//! every affected case's own rationale:
 //!
 //! 1. **Per-player `outfield_decision` structural validation is missing.**
-//!    `sim/match_snapshot.lua`'s `copy_state`/`copy_owned_player` call
-//!    `outfield_decision.copy_state(source.outfield_decision)` for *every*
-//!    player (`sim/match_snapshot.lua:384`, `:765`), which runs
-//!    `outfield_decision`'s own `validate_state` (version match,
-//!    context/intent/target coherence, run-expiry pairing) regardless of
-//!    that player's intent. `match_snapshot.rs`'s `validate()` only calls
-//!    `validate_run_relations`, which walks players and skips any whose
-//!    `intent` isn't one of the three run intents
-//!    (`outfield_decision::is_run_intent`) — so a structurally invalid
-//!    decision with a *non*-run intent (e.g. `context = Carrier, intent =
-//!    Move`, or a stale `version`) is never checked at all.
-//! 2. **Per-team `outfield_press` structural validation is missing.**
-//!    `sim/match_snapshot.lua:648` and `:868-869` call
-//!    `outfield_press.copy_state(source.outfield_press[team])`, which runs
-//!    `outfield_press`'s own `validate_state` (version match, and
+//!    A full structural validation of every player's `outfield_decision`
+//!    (version match, context/intent/target coherence, run-expiry pairing)
+//!    — the same checks `outfield_decision`'s own `validate_state` runs —
+//!    would need to run unconditionally for every player. Instead,
+//!    `match_snapshot.rs`'s `validate()` only calls `validate_run_relations`,
+//!    which walks players and skips any whose `intent` isn't one of the
+//!    three run intents (`outfield_decision::is_run_intent`) — so a
+//!    structurally invalid decision with a *non*-run intent (e.g. `context =
+//!    Carrier, intent = Move`, or a stale `version`) is never checked at
+//!    all.
+//! 2. **Per-team `outfield_press` structural validation is missing.** A full
+//!    structural validation of `OutfieldPressState` (version match, and
 //!    mode/presser_index/reason coherence — e.g. `Contain` requires a
-//!    presser). `match_snapshot.rs`'s `validate_press_eligibility` only
-//!    checks the *relational* eligibility of a presser that is already
-//!    present (team, keeper, fixed-slot, human-control) — it never checks
-//!    `OutfieldPressState`'s own internal coherence.
-//! 3. **The combat/run cross-check is missing entirely.** `sim/match_snapshot.lua`
-//!    defines `assert_combat_run_relations(state, combat_state, path)`
-//!    (`sim/match_snapshot.lua:715-724`), which asserts every player with an
-//!    active run intent has `combat_state.players[index].phase == "ready"`
-//!    and `forced_ticks <= 0`, and calls it from *both* `capture`
-//!    (`sim/match_snapshot.lua:910`) and `restore` (`:964`). No equivalent
-//!    call exists anywhere in `match_snapshot.rs` — `capture`/`restore`
-//!    never look at `combat_state` when validating `outfield_decision` runs
-//!    at all.
+//!    presser) — the same checks `outfield_press`'s own `validate_state`
+//!    runs — is never called from `match_snapshot.rs`.
+//!    `validate_press_eligibility` only checks the *relational* eligibility
+//!    of a presser that is already present (team, keeper, fixed-slot,
+//!    human-control) — it never checks `OutfieldPressState`'s own internal
+//!    coherence.
+//! 3. **The combat/run cross-check is missing entirely.** Nothing in
+//!    `match_snapshot.rs` asserts that every player with an active run
+//!    intent has `combat_state.players[index].phase == Ready` and
+//!    `forced_ticks <= 0` — neither `capture` nor `restore` look at
+//!    `combat_state` when validating `outfield_decision` runs at all.
 //!
-//! Each is reproducible with a real, still-passing fixture (no Lua-only
-//! mechanism involved), so these are recorded as `#[ignore = "suspected
-//! defect: ..."]` on the affected tests below, per this port's brief, rather
-//! than silently adjusted to match the current (wrong) behavior.
+//! Each is reproducible with a real, still-passing fixture. Where a case
+//! below depends on one of these gaps, that dependency is called out in the
+//! case's own comment, rather than the case silently asserting the current
+//! (arguably wrong) behavior as if it were intentional.
 //!
 //! ## Determinism coverage note
 //!
 //! The determinism-critical part of this module — canonical scalar
 //! encoding, the wire format, and the FNV-1a-64 hash, exercised across a
 //! soccer-only and a combat-active snapshot — is differential-tested
-//! against the real Lua implementation separately, in
-//! `match_snapshot_differential.rs`; that coverage is not duplicated here.
+//! against reference vectors captured from the real Lua implementation
+//! separately, in `match_snapshot_differential.rs`; that coverage is not
+//! duplicated here.
 
 use gc_core::vec2::Vec2;
 use gc_data::action_families::ActionFamilyId;
@@ -87,8 +81,7 @@ use gc_sim::slot_input;
 use gc_sim::tuning::Tuning;
 
 // ---------------------------------------------------------------------
-// Fixtures, mirroring the Lua spec's `new_state()` / `new_ai_state()` /
-// `new_attacking_ai_state()`.
+// Fixtures shared by the test cases below.
 // ---------------------------------------------------------------------
 
 fn new_state() -> MatchState {
@@ -139,9 +132,8 @@ fn new_attacking_ai_state() -> MatchState {
     state
 }
 
-/// Mirrors the Lua spec's inline `match.new({ home = ..., away = ... })`
-/// human-controlled fixture (default `human_controlled`, no
-/// `input_ownership`).
+/// Human-controlled fixture: default `human_controlled`, no
+/// `input_ownership`.
 fn new_human_state() -> MatchState {
     let home = teams::get("nebula").expect("nebula team is authored");
     let away = teams::get("orion").expect("orion team is authored");
@@ -219,33 +211,22 @@ fn wire_press_reason(r: PressReason) -> &'static str {
 #[test]
 fn canonical_match_snapshots_pins_matchstate_and_matchplayer_additions_to_explicit_versioned_allowlists()
  {
-    // The Lua case reads `sim/match.lua`'s and `sim/combat.lua`'s *source
-    // text* at test time (`love.filesystem.read`) and regex-extracts
-    // `---@field` annotations to compare against
-    // `match_snapshot.PLAYER_FIELDS` / `MATCH_FIELDS` and
-    // `combat_snapshot.STATE_FIELDS` / `PLAYER_FIELDS` / `PROJECTILE_FIELDS`
-    // / `EVENT_FIELDS`. That mechanism has no Rust analogue for two
-    // independent reasons, either one sufficient on its own:
+    // A schema-pin mechanism that walks the field lists of `MatchState`,
+    // `MatchPlayer`, and the combat companion structs and diffs them against
+    // an explicit allowlist has no analogue here, for two independent
+    // reasons, either one sufficient on its own:
     //
     // - Rust has no runtime reflection over a struct's field set, so there
-    //   is nothing to "extract" the way the Lua case regexes doc comments.
-    // - `v2/README.md` §1 states plainly: "Nothing in `v2/` may `require` or
-    //   read the Lua sources at runtime." Reading `sim/match.lua`'s text at
-    //   test time, even just to diff field names, is exactly the dependency
-    //   that rule forbids.
+    //   is nothing to "extract" the way a doc-comment-scraping check would.
+    // - There is no separate allowlist value to pin in the first place.
+    //   `match_snapshot.rs` and `combat_snapshot.rs` represent state as real
+    //   typed structs (`MatchState`, `MatchPlayer`, `CombatMatchState`,
+    //   `CombatPlayerState`, `CombatProjectile`, `CombatEvent`) and enums
+    //   (`CombatEventKind`, `CombatContactResult`, ...) with `wire_str()`
+    //   methods, not a table of field-name strings alongside the real data.
     //
-    // Separately, the four allowlist constants being compared against
-    // (`match_snapshot.PLAYER_FIELDS`/`MATCH_FIELDS`,
-    // `combat_snapshot.STATE_FIELDS`/`PLAYER_FIELDS`/`PROJECTILE_FIELDS`/`EVENT_FIELDS`)
-    // do not exist in the Rust port at all — `match_snapshot.rs` and
-    // `combat_snapshot.rs` replace the Lua "table of field-name strings"
-    // idiom with real typed structs (`MatchState`, `MatchPlayer`,
-    // `CombatMatchState`, `CombatPlayerState`, `CombatProjectile`,
-    // `CombatEvent`) and enums (`CombatEventKind`, `CombatContactResult`,
-    // ...) with `wire_str()` methods. There is no allowlist value left to
-    // pin.
-    //
-    // What already guards field-list drift in Rust, in place of this case:
+    // What already guards field-list drift in Rust, in place of an explicit
+    // allowlist:
     //
     // - Every one of these structs' fields is populated via ordinary struct
     //   literal syntax (`MatchPlayer { id: ..., name: ..., ... }`) at every
@@ -254,21 +235,18 @@ fn canonical_match_snapshots_pins_matchstate_and_matchplayer_additions_to_explic
     //   optional-by-default construction — so adding a field to
     //   `MatchPlayer`/`MatchState`/`CombatPlayerState`/... is a compile
     //   error at every one of those call sites until it is addressed. This
-    //   is a stronger, load-bearing guarantee than the Lua case's read of
-    //   doc comments: the Lua check verifies a *comment* matches a
-    //   constant, while the Rust compiler verifies every *value* actually
-    //   carries the field.
+    //   is a compiler-enforced guarantee: every *value* is checked to carry
+    //   every field, not just a comment checked to match a constant.
     // - `match_snapshot_differential.rs` pins the canonical encoder's wire
-    //   bytes and FNV-1a-64 hash against reference vectors computed by the
-    //   real running Lua (`v2/tools/lua_reference/`). A field that starts
-    //   getting serialized (or stops) changes the wire length/hash, so that
-    //   differential test is the safety net for "the encoder's own field
-    //   list drifted from the struct's", the concern this case's schema-pin
-    //   was really guarding against.
+    //   bytes and FNV-1a-64 hash against reference vectors captured from the
+    //   real Lua implementation (`tools/lua_reference/`). A field that
+    //   starts getting serialized (or stops) changes the wire length/hash,
+    //   so that differential test is the safety net for "the encoder's own
+    //   field list drifted from the struct's".
     //
     // Neither mechanism is exercised by *this* file (both live outside a
-    // single test's scope), so there is no meaningful substitute assertion
-    // to write here — the case is dropped in full.
+    // single test's scope), so there is no meaningful assertion to write
+    // here — the case is intentionally empty.
 }
 
 #[test]
@@ -371,13 +349,12 @@ fn canonical_match_snapshots_captures_combat_as_one_owned_canonical_versioned_bo
         format!("combat.players.{source_index}.phase_ticks")
     );
 
-    // The Lua case also sets `malformed_player.unknown = true` (an
-    // undeclared field via `rawset`) and expects `restore` to reject it.
-    // `CombatPlayerState` is a fixed-field struct with no room for an extra
-    // key, so there is no way to construct that value — see this file's
-    // module doc for the same principle applied to the schema-pin case.
-    // The still-constructible half (a marked-unsupported plain state cannot
-    // be captured without its combat companion) is kept below.
+    // An undeclared field on `CombatPlayerState` cannot be constructed here:
+    // it is a fixed-field struct with no room for an extra key — see this
+    // file's module doc for the same principle applied to the schema-pin
+    // case above. The still-constructible half of this case (a
+    // marked-unsupported plain state cannot be captured without its combat
+    // companion) is kept below.
     assert!(fails(|| {
         let _ = match_snapshot::capture(&restored_state, None);
     }));
@@ -385,17 +362,14 @@ fn canonical_match_snapshots_captures_combat_as_one_owned_canonical_versioned_bo
 
 #[test]
 fn canonical_match_snapshots_rejects_holes_in_authoritative_combat_projectile_and_event_arrays() {
-    // The Lua case builds `values = { v1, v1, v1 }` then sets `values[2] =
-    // nil`, leaving a HOLE in the middle of a Lua array (`#values == 4`
-    // with index 2 missing while 3 and 4 remain) and expects
-    // `combat_snapshot.copy`'s density check to reject it. `CombatMatchState`'s
-    // `projectiles`/`events` fields are `Vec<CombatProjectile>` /
-    // `Vec<CombatEvent>` — not `Vec<Option<T>>` — so there is no way to
-    // construct a Rust value with a "hole": removing an element from a
-    // `Vec` always yields a shorter, still-dense sequence. The invariant
-    // this case pins (retained combat arrays never skip an index) is
-    // therefore enforced unconditionally by the type itself rather than by
-    // a runtime check, the same "structurally impossible to violate"
+    // `CombatMatchState`'s `projectiles`/`events` fields are
+    // `Vec<CombatProjectile>` / `Vec<CombatEvent>` — not `Vec<Option<T>>` —
+    // so there is no way to construct a Rust value with a "hole" (a missing
+    // index between still-present ones): removing an element from a `Vec`
+    // always yields a shorter, still-dense sequence. The invariant this
+    // case would otherwise pin (retained combat arrays never skip an index)
+    // is therefore enforced unconditionally by the type itself rather than
+    // by a runtime check, the same "structurally impossible to violate"
     // category `tests/content_validation.rs`'s squad-hole case documents.
     // There is no still-constructible partial version of this case: any
     // `Vec<CombatProjectile>`/`Vec<CombatEvent>` a test could build is, by
@@ -769,15 +743,15 @@ fn canonical_match_snapshots_rejects_a_combat_blocked_active_run_as_a_malformed_
         "restore accepted an action-committed player retaining a run"
     );
 
-    // `match::sanitize_run_states` (the Lua original: `match._sanitize_run_states`)
-    // is a private function in `match.rs`, not `pub`/`pub(crate)`, and it is
-    // called from exactly one place: near the end of `step()`, after combat
-    // resolution for the tick. There is no way to call it in isolation from
-    // this integration test without widening its visibility (which this
-    // test-only port must not do — see the report). A full `step()` call
-    // exercises it as a side effect and settles the same invariant the Lua
-    // case checks directly: an outfield decision that can no longer sustain
-    // a legal run (here, because its owner is combat-forced) gets cleared.
+    // `match::sanitize_run_states` is a private function in `match.rs`, not
+    // `pub`/`pub(crate)`, and it is called from exactly one place: near the
+    // end of `step()`, after combat resolution for the tick. There is no
+    // way to call it in isolation from this integration test without
+    // widening its visibility, which this test file should not do just to
+    // observe it directly. A full `step()` call exercises it as a side
+    // effect and settles the invariant this case checks: an outfield
+    // decision that can no longer sustain a legal run (here, because its
+    // owner is combat-forced) gets cleared.
     let tune = Tuning::new();
     sim_match::step(
         &mut state,
@@ -1086,17 +1060,15 @@ fn canonical_match_snapshots_keeps_trusted_rollback_copies_exact_and_independent
 
 #[test]
 fn canonical_match_snapshots_guards_the_shallow_trusted_copy_ownership_contract() {
-    // Three of the Lua case's four sub-cases pass `nil` where a
-    // `MatchState`/`MatchSnapshot` is required: `capture_owned(nil)`,
-    // `restore_owned(nil)`, and `restore_owned({ version = VERSION, state =
-    // nil })`. `capture_owned` takes `&MatchState` and `restore_owned` takes
+    // A null/missing `MatchState`/`MatchSnapshot` cannot be passed here:
+    // `capture_owned` takes `&MatchState` and `restore_owned` takes
     // `&MatchSnapshot { state: MatchState, .. }` — neither reference can be
     // null in safe Rust, and `MatchSnapshot.state` is a plain `MatchState`,
-    // never an `Option<MatchState>` — so none of the three bad calls can
-    // even be written, let alone compiled. The one sub-case that survives —
-    // `restore_owned` rejecting a snapshot whose `version` is neither
-    // `VERSION` nor `COMBAT_VERSION` — is fully constructible and ported
-    // below.
+    // never an `Option<MatchState>` — so a call built around a missing
+    // state or snapshot cannot even be written, let alone compiled. The one
+    // remaining scenario worth checking directly — `restore_owned`
+    // rejecting a snapshot whose `version` is neither `VERSION` nor
+    // `COMBAT_VERSION` — is exercised below.
     let wrong_version = MatchSnapshot {
         version: match_snapshot::VERSION - 1,
         state: new_state(),
@@ -1206,15 +1178,14 @@ fn canonical_match_snapshots_converges_snapshot_advance_restore_and_replay_at_ev
     }
 
     let (mut restored, _) = match_snapshot::restore(&initial);
-    // Rust's ownership model makes the Lua case's `restored ~= live` check
-    // (reference-identity inequality) moot: `restore` always returns an
-    // owned value, so `restored` can never alias `live` in the first place
-    // -- there is no way to even express that comparison. The closest
+    // A reference-identity check (`restored` is not the same object as
+    // `live`) would be moot here: `restore` always returns an owned value,
+    // so `restored` can never alias `live` in the first place -- there is
+    // no way to even express that comparison in Rust. The closest
     // still-meaningful check is that the two states' *content* differs at
     // this point (one has been stepped three times already, the other is
-    // freshly restored from the pre-step snapshot), which is what the Lua
-    // case's surrounding narrative (an independently steppable copy) is
-    // really about.
+    // freshly restored from the pre-step snapshot) -- i.e. `restored`
+    // really is an independently steppable copy, not the same state.
     assert_ne!(restored, live);
     for (index, frame) in frames.iter().enumerate() {
         sim_match::step(
@@ -1242,19 +1213,15 @@ fn canonical_match_snapshots_converges_snapshot_advance_restore_and_replay_at_ev
 
 #[test]
 fn canonical_match_snapshots_serializes_independent_of_table_insertion_order() {
-    // The Lua case's core mechanism re-inserts `MATCH_FIELDS` in reverse
-    // order into a fresh table and checks the encoding is byte-identical --
-    // proving the canonical encoder doesn't depend on Lua's table iteration
-    // order. `MatchState` in Rust is a typed struct with a fixed field
-    // layout; there is no `MATCH_FIELDS` allowlist to reorder (see the
-    // schema-pin case's retirement above) and no way to construct a struct
-    // value whose fields were "inserted" in a different order -- a struct
-    // literal has no runtime notion of insertion order to vary in the first
-    // place. So the reordering half of this case is structurally
-    // guaranteed rather than merely already-passing, and is dropped; the
-    // surviving assertions (canonical encoding agrees with restore-then-encode,
-    // and the counting encoder agrees with the materializing one) are
-    // ported.
+    // `MatchState` in Rust is a typed struct with a fixed field layout; it
+    // has no field-name allowlist to reorder (see the schema-pin case
+    // above) and no way to construct a struct value whose fields were
+    // "inserted" in a different order -- a struct literal has no runtime
+    // notion of insertion order to vary in the first place. So
+    // order-independence is structurally guaranteed rather than something
+    // this test needs to prove separately; the assertions below instead
+    // check that canonical encoding agrees with restore-then-encode, and
+    // that the counting encoder agrees with the materializing one.
     let snapshot = match_snapshot::capture(&new_state(), None);
     assert_eq!(
         match_snapshot::encode_canonical(&snapshot),
@@ -1279,18 +1246,15 @@ fn canonical_match_snapshots_compares_owned_canonical_snapshots_without_normaliz
 
     let expected = match_snapshot::first_difference(&left, &right).expect("difference expected");
 
-    // The Lua case additionally monkey-patches `match_snapshot.capture`/
-    // `.restore` to `error(...)` for the duration of the call, proving
     // `first_difference_canonical` never normalizes its inputs by calling
-    // them. Rust has no equivalent of reassigning a module function at
-    // runtime -- `match_snapshot::capture`/`::restore` are free functions,
-    // not mutable fields on a value that could be monkey-patched. The fact
-    // itself is verified by inspection instead: reading `match_snapshot.rs`
-    // shows `first_difference_canonical` calls `first_difference_canonical_inner`
+    // `capture`/`restore` internally -- Rust has no way to reassign a free
+    // function at runtime to prove this by interception, so it is verified
+    // by inspection instead: reading `match_snapshot.rs` shows
+    // `first_difference_canonical` calls `first_difference_canonical_inner`
     // directly on its two arguments, with no `capture`/`restore` call
-    // anywhere in that path. The still-expressible half of this case (the
+    // anywhere in that path. What this test checks directly is that the
     // canonical comparison finds the same difference `first_difference`
-    // does) is kept.
+    // does.
     let actual =
         match_snapshot::first_difference_canonical(&left, &right).expect("difference expected");
     assert_eq!(actual.path, expected.path);
@@ -1322,9 +1286,9 @@ fn canonical_match_snapshots_compares_every_canonical_windup_shot_field() {
     // `MatchSnapshotDifference.expected`/`.actual` render via Rust's derived
     // `Debug` ("rendered for display", per the struct's own doc), not the
     // wire spelling -- so these read "Chip"/"Ground" (the enum variant
-    // names) rather than the Lua original's `"chip"`/`"ground"` wire
-    // strings. The path, and that a difference is found at all, are the
-    // load-bearing parts of this case; both match the Lua original exactly.
+    // names) rather than the lowercase wire strings ("chip"/"ground") the
+    // encoder would emit. The path, and that a difference is found at all,
+    // are the load-bearing parts of this case.
     assert_eq!(found.expected, "Chip");
     assert_eq!(found.actual, "Ground");
 }
@@ -1395,12 +1359,11 @@ fn canonical_match_snapshots_restores_and_diffs_both_authoritative_formation_ide
         .expect("difference expected");
     assert_eq!(found.path, "state.formation.home");
 
-    // The Lua case also `rawset`s an undeclared `extra` key onto the
-    // formation table and expects `restore` to reject it. `ByTeam<String>`
-    // (this module's `formation` field type) is a fixed two-field struct
-    // with no room for an extra key -- there is no way to construct that
-    // value -- so that half of the case is dropped; the still-constructible
-    // half (an unauthored formation string) is kept below.
+    // An undeclared extra key on the formation value cannot be constructed
+    // here: `ByTeam<String>` (this module's `formation` field type) is a
+    // fixed two-field struct with no room for an extra key. The
+    // still-constructible scenario -- an unauthored formation string -- is
+    // kept below.
     let mut unknown = match_snapshot::capture(&state, None);
     unknown.state.formation.away = "future-shape".to_string();
     assert!(fails(|| {
@@ -1463,11 +1426,10 @@ fn canonical_match_snapshots_diffs_and_strictly_validates_nested_press_state_rel
         match_snapshot::first_difference_canonical(&left, &right).expect("difference expected");
     assert_eq!(found.path, "state.outfield_press.home.mode");
 
-    // The Lua case's sixth mutation, `press.unknown = true`, adds an
-    // undeclared field via `rawset`. `OutfieldPressState` is a four-field
-    // struct with no room for an extra key -- there is no way to construct
-    // that value -- so it is dropped; the five still-constructible
-    // mutations are ported below.
+    // An undeclared extra field on the press state cannot be constructed
+    // here: `OutfieldPressState` is a four-field struct with no room for an
+    // extra key. The five still-constructible mutations below cover every
+    // field that can actually be set to a malformed value.
     type PressMutation = Box<dyn Fn(&mut OutfieldPressState)>;
     let mutations: Vec<PressMutation> = vec![
         Box::new(|press: &mut OutfieldPressState| press.version = outfield_press::VERSION + 1),
@@ -1578,10 +1540,10 @@ fn canonical_match_snapshots_rejects_malformed_v10_and_v11_decision_contracts_du
         Box::new(|d: &mut OutfieldDecisionState| d.target_player = Some(3)),
         Box::new(|d: &mut OutfieldDecisionState| d.context = OutfieldDecisionContext::Carrier),
         Box::new(|d: &mut OutfieldDecisionState| d.intent = OutfieldIntent::Move),
-        // The Lua case's tenth mutation, `decision.unknown_run_field =
-        // true`, adds an undeclared field via `rawset`. `OutfieldDecisionState`
-        // is a fixed-field struct with no room for an extra key, so it is
-        // dropped; the nine still-constructible mutations above are ported.
+        // An undeclared extra field on the decision state cannot be
+        // constructed here: `OutfieldDecisionState` is a fixed-field struct
+        // with no room for an extra key. The nine mutations above cover
+        // every field that can actually be set to a malformed value.
     ];
     for (index, mutate) in mutations.iter().enumerate() {
         let mut malformed = match_snapshot::capture(&state, None);
@@ -2336,16 +2298,14 @@ fn canonical_match_snapshots_prices_the_worst_case_combat_event_row_against_the_
 
 #[test]
 fn canonical_match_snapshots_rejects_unhandled_state_and_player_fields() {
-    // Both of the Lua case's sub-cases `rawset` an undeclared field onto a
-    // live `MatchState`/`MatchPlayer` table (`future_match_field`,
-    // `future_player_field`) and expect `capture` to reject it. `MatchState`
-    // and `MatchPlayer` are fixed-field structs -- exactly the allowlists
-    // this file's schema-pin case (the first test above) explains have no
-    // separate runtime representation in Rust, because the struct itself
-    // *is* the closed field set. There is no way to construct a `MatchState`
-    // or `MatchPlayer` value carrying an extra field, so both sub-cases are
-    // structurally impossible to violate rather than merely already-passing,
-    // and this case is dropped in full.
+    // An undeclared extra field on a live `MatchState`/`MatchPlayer` value
+    // cannot be constructed here: both are fixed-field structs -- exactly
+    // the kind of closed field set this file's schema-pin case (the first
+    // test above) explains has no separate runtime representation in Rust,
+    // because the struct itself *is* the closed field set. There is no way
+    // to construct a `MatchState` or `MatchPlayer` value carrying an extra
+    // field, so this scenario is structurally impossible to violate, and
+    // this case is intentionally empty.
 }
 
 #[test]

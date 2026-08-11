@@ -1,4 +1,4 @@
-// game/ui/motion.lua — small, pure easing helpers for screen transitions.
+// Small, pure easing helpers for screen transitions.
 
 const REVEAL_DURATION = 0.18;
 
@@ -9,7 +9,7 @@ function advance(progress: number, dt: number): number {
   return Math.min(1, progress + dt / REVEAL_DURATION);
 }
 
-/** @returns `[x, remainingWidth]`, matching the Lua original's two return values. */
+/** @returns `[x, remainingWidth]`. */
 function wipe(progress: number, width: number): readonly [x: number, remainingWidth: number] {
   const clamped = Math.max(0, Math.min(1, progress));
   const eased = 1 - (1 - clamped) * (1 - clamped);

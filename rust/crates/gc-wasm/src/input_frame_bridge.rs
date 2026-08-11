@@ -56,7 +56,7 @@ fn edge_bits_json() -> Json {
 
 /// Every [`HeldAction`] wire name and bit, as JSON. Not part of
 /// `InputFramePort`'s declared shape (only `EDGE_BITS` is), but the same
-/// reproduction the Lua/Rust module offers for held actions, at negligible
+/// reproduction `gc_sim::input_frame` offers for held actions, at negligible
 /// extra cost.
 fn held_bits_json() -> Json {
     Json::obj(vec![

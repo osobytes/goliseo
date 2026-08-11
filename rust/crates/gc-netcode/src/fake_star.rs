@@ -1,35 +1,33 @@
-//! Port of `game/transport/fake_star.lua`.
+//! An in-process fake of a direct-host star transport.
 //!
-//! `game/transport/**` is TypeScript-owned (`v2/README.md` §2), so this is
-//! not "the" Rust port of that file — there is no Rust home for it in the
-//! ordinary sense. It exists so `game/online/match_driver_fixture.lua`'s
-//! `fixture.session` (this crate's [`crate::match_driver_fixture::session`])
-//! has a real star transport to build a live host+guest session against: a
-//! Rust in-process fake, faithful to the Lua original's polled/queued
-//! shape — one host endpoint, up to seven independently addressed guest
-//! links, a reliable ordered control channel and a lossy unordered input
-//! channel per link, bounded queues, simulated `bufferedAmount`
-//! backpressure, typed events, and deterministic poll batching. It owns no
-//! simulation authority and never inspects a payload, exactly like the Lua.
+//! `game/transport/**` is test infrastructure only here — the shipped
+//! transport lives in `ts/packages/transport` (`ARCHITECTURE.md` §2's
+//! directory layout), and there is no Rust home for it in the ordinary
+//! sense. This exists so `crate::match_driver_fixture::session` has a real
+//! star transport to build a live host+guest session against: a Rust
+//! in-process fake with a polled/queued shape — one host endpoint, up to
+//! seven independently addressed guest links, a reliable ordered control
+//! channel and a lossy unordered input channel per link, bounded queues,
+//! simulated `bufferedAmount` backpressure, typed events, and deterministic
+//! poll batching. It owns no simulation authority and never inspects a
+//! payload.
 //!
 //! # Object references, in Rust
 //!
-//! The Lua original links two endpoints by storing a direct table reference
-//! on each side (`peer.link = guest`), and `_flush`/`pump` walk that
-//! reference to call methods on the other endpoint directly. Rust has no
-//! shared-mutable-reference equivalent, so each endpoint's state lives
+//! Two endpoints are linked by storing a direct reference on each side
+//! (`peer.link = guest`), and `flush`/`pump` walk that reference to call
+//! methods on the other endpoint directly. Each endpoint's state lives
 //! behind `Rc<RefCell<Inner>>`; a [`FakeStarTransport`] is a cheap `Clone`
-//! handle onto that state (mirroring a Lua table's reference semantics), and
-//! [`FakeStarTransport::link`] stores a clone of the *other* endpoint's
-//! `Rc<RefCell<Inner>>` on each side's peer record, exactly where the Lua
-//! stores the other object.
+//! handle onto that state, and [`FakeStarTransport::link`] stores a clone of
+//! the *other* endpoint's `Rc<RefCell<Inner>>` on each side's peer record.
 //!
-//! `game/transport/contract.lua`'s message-shape validation and wire
-//! encoding are restated locally (never imported: this crate has no Rust
-//! home for that file either — see `crate::fault_transport`'s module doc for
-//! the identical situation), because a *transport* — unlike
-//! `fault_transport.rs`'s decorator, which forwards `send`/`broadcast`
-//! verbatim — is the one place that logic has to actually run.
+//! The transport wire contract's (`ts/packages/transport/src/contract.ts`)
+//! message-shape validation and wire encoding are restated locally (never
+//! imported: this crate has no Rust home for that module either — see
+//! `crate::fault_transport`'s module doc for the identical situation),
+//! because a *transport* — unlike `fault_transport.rs`'s decorator, which
+//! forwards `send`/`broadcast` verbatim — is the one place that logic has to
+//! actually run.
 
 use crate::fault_transport::{
     StarTransportAdapter, TransportAddressedMessage, TransportChannel, TransportChannelDiagnostics,
@@ -43,8 +41,8 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 // ---------------------------------------------------------------------------
-// `game/transport/contract.lua`'s bounds and wire logic, restated (see
-// module doc).
+// The wire contract's (`ts/packages/transport/src/contract.ts`) bounds and
+// wire logic, restated (see module doc).
 // ---------------------------------------------------------------------------
 
 /// Mirrors `contract.VERSION`.
@@ -208,7 +206,7 @@ fn escape(bytes: &[u8]) -> Vec<u8> {
 
 /// Mirrors `contract.encode`: the canonical wire bytes for one envelope.
 /// Only used here to size `bufferedAmount`/backpressure and dropped-byte
-/// counters, exactly as the Lua original does; no caller decodes this wire.
+/// counters; no caller decodes this wire.
 fn encode(message: &TransportMessage) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(message.version.to_string().as_bytes());
@@ -226,7 +224,7 @@ fn encode(message: &TransportMessage) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
-// `fake_star.lua` itself.
+// `FakeStarTransport` itself.
 // ---------------------------------------------------------------------------
 
 /// Construction options for [`FakeStarTransport::new`]. Mirrors
@@ -340,9 +338,9 @@ struct Offer {
     peer_id: String,
 }
 
-/// In-process signaling rendezvous, scoped to one logical star. See
-/// `fake_star.lua`'s module doc: an endpoint constructed without one gets a
-/// private rendezvous, so sharing is an explicit, greppable decision.
+/// In-process signaling rendezvous, scoped to one logical star. See this
+/// module's doc: an endpoint constructed without one gets a private
+/// rendezvous, so sharing is an explicit, greppable decision.
 struct RendezvousInner {
     offers: IndexMap<String, Offer>,
     answers: IndexMap<String, Rc<RefCell<Inner>>>,
@@ -692,7 +690,6 @@ fn receive_on(
 }
 
 /// Drains each channel of one endpoint until its send budget is exhausted.
-/// Mirrors `_flush`.
 fn flush(endpoint: &Rc<RefCell<Inner>>) {
     let order = endpoint.borrow().order.clone();
     for peer_id in &order {
@@ -805,20 +802,19 @@ fn take(inner: &mut Inner) -> Option<TransportPeerMessage> {
 
 impl FakeStarTransport {
     /// Mints a fresh, empty rendezvous, shareable across the endpoints of
-    /// one logical star. Mirrors `FakeStarTransport.new_rendezvous`.
+    /// one logical star.
     #[must_use]
     pub fn new_rendezvous() -> FakeStarRendezvous {
         FakeStarRendezvous::new()
     }
 
-    /// Builds one endpoint. Mirrors `FakeStarTransport.new`.
+    /// Builds one endpoint.
     ///
     /// # Panics
     ///
-    /// Panics (mirroring the Lua `assert`s, all programmer errors per
-    /// AGENTS.md §7) if `queue_limit`, `max_guests`, or
-    /// `buffered_amount_limit` are outside their supported ranges, or if
-    /// `peer_id` is not a valid transport peer id.
+    /// Panics (invariant violations, per AGENTS.md §7) if `queue_limit`,
+    /// `max_guests`, or `buffered_amount_limit` are outside their supported
+    /// ranges, or if `peer_id` is not a valid transport peer id.
     #[must_use]
     pub fn new(options: FakeStarTransportOptions) -> Self {
         let queue_limit = options.queue_limit.unwrap_or(DEFAULT_QUEUE_LIMIT);
@@ -881,7 +877,7 @@ impl FakeStarTransport {
 
     /// Test seam: joins a guest endpoint to an already-opened host slot. The
     /// browser adapter reaches the same state through manual offer/answer
-    /// exchange. Mirrors `FakeStarTransport:link`.
+    /// exchange.
     pub fn link(&self, guest: &FakeStarTransport) -> TransportResult<bool> {
         let self_role = self.inner.borrow().role;
         let guest_role = guest.inner.borrow().role;
@@ -933,7 +929,7 @@ impl FakeStarTransport {
 
     /// Test seam: delivers everything currently buffered on this endpoint
     /// and on every endpoint linked to it, then clears the simulated
-    /// `bufferedAmount`. Mirrors `FakeStarTransport:pump`.
+    /// `bufferedAmount`.
     pub fn pump(&self) {
         let mut endpoints: Vec<Rc<RefCell<Inner>>> = vec![self.inner.clone()];
         {
@@ -951,8 +947,7 @@ impl FakeStarTransport {
         }
     }
 
-    /// This endpoint's uplink/downlink byte counters. Mirrors
-    /// `FakeStarTransport:wire_bytes`.
+    /// This endpoint's uplink/downlink byte counters.
     #[must_use]
     pub fn wire_bytes(&self) -> (i64, i64) {
         let inner = self.inner.borrow();

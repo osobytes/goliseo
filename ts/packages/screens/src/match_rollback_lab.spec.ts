@@ -1,11 +1,7 @@
-// Ported from spec/screens/match_rollback_lab_spec.lua.
-//
-// STATUS (re-checked for this task; see git history for the prior header
-// this replaces): the two blockers that used to block every case here are
-// cleared -- `@gc/render` is now a declared dependency of `@gc/screens`, and
-// `MatchScreen` (match.ts) now has a `rollback_lab` construction option plus
-// a `RollbackHostPort` rollback surface (this file's header used to name
-// both as missing; see match.ts's "THE ROLLBACK LABORATORY" section).
+// Verifies MatchScreen's "THE ROLLBACK LABORATORY" surface: the
+// `rollback_lab` construction option and its `RollbackHostPort` (match.ts).
+// `@gc/render` is a declared dependency of `@gc/screens`, so nothing here is
+// blocked by that.
 //
 // What is still genuinely missing, and is NOT solved by this file: a real
 // `@gc/wasm` binding for `sim.rollback_playable_lab`
@@ -21,53 +17,47 @@
 //
 // So `RollbackHostPort` (match.ts) is this package's OWN design, and every
 // case below drives it with a hand-written `FakeRollbackHost` -- the exact
-// same "TS-glue-observable analog" pattern `match_screen.spec.ts`'s header
+// same "TS-observable analog" pattern `match_screen.spec.ts`'s header
 // already establishes for `SimHostPort`/`FakeSimHost`. The fake's clock
-// mirrors `gc_sim::fixed_clock::advance` (README v2/README.md §2.1 -- see
+// mirrors `gc_sim::fixed_clock::advance` (ARCHITECTURE.md §1.1 -- see
 // `match_screen.spec.ts`'s identical justification for its own fake clock),
 // and its "network profile"/"confirmation"/"correction" bookkeeping is
 // deliberately simple: enough to prove `MatchScreen`'s OWN aggregation/
 // wiring logic (does it record outputs into `debugRollbackOutputs`? clear
 // them on pause? feed `viewState`/`correctionSmoothing`? rebuild cleanly on
 // restart?) -- proving `gc_sim::rollback_events`/`rollback_playable_lab`'s
-// OWN correctness is `crates/gc-sim/tests`' job, already covered by the
-// Rust port those Lua specs became.
+// OWN correctness is `crates/gc-sim/tests`' job, not this file's.
 //
-// "clears smoothing at kickoff, full time, and stack teardown" (tier 2) used
-// to be one bundled `it.skip` for three sub-cases with three different
-// blockers. Split below (in its own nested `describe`, right after "draws
-// only from the cached debug model...") so each is its own case with its own
-// individually re-verified status, rather than one skip whose reason ages
-// out from under two-thirds of what it actually covers the moment only one
+// "clears smoothing at kickoff, full time, and stack teardown" (tier 2) is
+// split below (in its own nested `describe`, right after "draws only from
+// the cached debug model...") into three sub-cases, each with its own
+// individually verified status, rather than one bundled skip whose reason
+// would age out from under two-thirds of what it covers the moment only one
 // sub-case's blocker clears:
 //
 //   - kickoff needs a `kickoff_hold`-equivalent presentation timer. Confirmed
 //     absent end to end: not on `MatchScreen`, not on `RenderFrameHud`, not
-//     produced by `crates/gc-render`'s frame builder -- a genuinely unported
-//     piece of `game/screens/match.lua`. Still `it.skip`.
+//     produced by `crates/gc-render`'s frame builder -- the value exists
+//     only inside `gc-sim`'s snapshot and is never surfaced across the wasm
+//     boundary. Still `it.skip`.
 //   - full time WAS blocked: seeding a real correction on a rollback-mode
-//     `MatchScreen`, marking the host finished, and calling `update(0)` --
-//     the literal translation of the Lua original -- used to leave
-//     `active_smoothing_count` unchanged, not 0. Root cause, fixed in
-//     `match.ts`: `updateRollback` opened with `if (this.finished) { return;
-//     }` -- an unconditional no-op the moment `hud.finished` already read
-//     true going in, before any smoothing bookkeeping ran. The Lua original
-//     never hits an equivalent guard here: `match_is_over(self)`, for a
-//     rollback-mode `Match`, tests `self._source:terminal()` (`lab_source
-//     (lab).terminal`, derived from `rollback_playable_lab.debug_model(lab)
-//     .status`) -- NOT `self.state.finished`. So a clean-profile lab never
-//     reads as `match_is_over`, and execution falls through to the bottom of
-//     `Match:update`, where `lifecycle_reset = ... or self.state.finished or
-//     ...` is still true and drives `update_render_smoothing`'s
-//     `clear_render_smoothing` unconditionally. `updateRollback` now gates
-//     its early return on `rollbackTerminal(rollbackHost.debug().status)`
-//     instead (mirroring `lab_source.terminal` exactly) and separately reads
-//     `hud.finished` at the tail to drive the same smoothing clear the Lua
-//     fallthrough does -- see `match.ts`'s own doc on both. Below, no longer
-//     `it.skip`.
-//   - teardown needs `game.screen_stack`'s TS analog, which lives in
-//     `@gc/app` -- `@gc/screens` cannot depend on `@gc/app` (the dependency
-//     runs the other way, v2/README.md §2/§9). Still `it.skip`.
+//     `MatchScreen`, marking the host finished, and calling `update(0)` used
+//     to leave `active_smoothing_count` unchanged, not 0. Root cause, fixed
+//     in `match.ts`: `updateRollback` opened with `if (this.finished) {
+//     return; }` -- an unconditional no-op the moment `hud.finished` already
+//     read true going in, before any smoothing bookkeeping ran. In rollback
+//     mode, "is this match over" has to be decided from the rollback host's
+//     own terminal status (derived from `rollback_playable_lab`'s debug
+//     model status), not from `hud.finished` -- precisely so a clean-profile
+//     lab never short-circuits before its smoothing-clear tail runs.
+//     `updateRollback` now gates its early return on
+//     `rollbackTerminal(rollbackHost.debug().status)` instead, and
+//     separately reads `hud.finished` at the tail to drive the actual
+//     smoothing clear once the match genuinely is over -- see `match.ts`'s
+//     own doc on both. Below, no longer `it.skip`.
+//   - teardown needs `@gc/app`'s `screen_stack.ts`'s TS analog -- `@gc/screens`
+//     cannot depend on `@gc/app` (the dependency runs the other way,
+//     ARCHITECTURE.md §7). Still `it.skip`.
 //
 // The two tier-3 cases (`ScreenStack` driving a real `RealMatch`/`MatchScreen`
 // pair) moved to `@gc/app` -- see the comment where they used to sit below.
@@ -497,7 +487,7 @@ function fixtureBaseMatchState(getHost: () => FakeBaseSimHost): () => replayType
   };
 }
 
-/** Mirrors the ported spec's `start_actual_goal_replay` helper: build up footage, force a home goal edge, and confirm the replay started but has not displayed a frame yet. */
+/** Builds up footage, forces a home goal edge, and confirms the replay started but has not displayed a frame yet. */
 function startActualGoalReplay(host: FakeBaseSimHost, screen: MatchScreen): void {
   for (let i = 0; i < 40; i += 1) {
     screen.update(BASE_TICK_SECONDS);
@@ -509,7 +499,7 @@ function startActualGoalReplay(host: FakeBaseSimHost, screen: MatchScreen): void
   expect(screen.debugReplayState).toBeUndefined();
 }
 
-/** Mirrors the ported spec's `seed_render_correction` helper: seed a bounded, decaying correction offset so the smoothing-diagnostics assertions below exercise something real. `matchState` is the SAME source function the screen itself was constructed with -- see `MatchScreen.debugSeedRenderCorrection`'s doc for why a "previous" pose is built from it rather than reaching into screen-private state. */
+/** Seeds a bounded, decaying correction offset so the smoothing-diagnostics assertions below exercise something real. `matchState` is the SAME source function the screen itself was constructed with -- see `MatchScreen.debugSeedRenderCorrection`'s doc for why a "previous" pose is built from it rather than reaching into screen-private state. */
 function seedBaseRenderCorrection(screen: MatchScreen, matchState: () => replayTypes.MatchState): void {
   const current = matchState();
   const player = current.players[0]!;
@@ -536,8 +526,7 @@ describe("match screen rollback laboratory (tier 2)", () => {
     const snapshot = screen.debugRollbackCurrentSnapshot();
     expect(snapshot?.combat).toBeDefined();
     // slot 2 -> index 1 -- the combat companion's player_ids align with the
-    // roster by slot, matching the Lua original's `snapshot.combat.player_ids[2]
-    // == screen.state.players[2].id`.
+    // roster by slot (1-based slot, 0-based roster index).
     expect(snapshot?.combat?.player_ids[1]).toBe(ROSTER_IDS[1]);
   });
 
@@ -624,13 +613,12 @@ describe("match screen rollback laboratory (tier 2)", () => {
   // `bindings.isDown("equipment", ...)` and diffing against the previous
   // `sample()` call (its own header: "direct/poll-diffed, no `carrying`
   // check") -- unlike `switch`/`dash`, it has no discrete press/release
-  // EVENT capture, so a tap entirely between two render calls (the Lua
-  // original's exact scenario, driven through `Match:event`) cannot be
-  // reproduced through this port's real capture layer. The TS-glue-
-  // observable analog: hold the bound key ("u") across one render call
-  // (produces the held + pressed edge), release it across the next
-  // (produces the released edge, no longer held) -- same edge/held bits,
-  // spread across the two render calls this capture layer actually needs.
+  // EVENT capture, so a tap entirely between two render calls cannot be
+  // reproduced through this capture layer. The TS-observable analog: hold
+  // the bound key ("u") across one render call (produces the held + pressed
+  // edge), release it across the next (produces the released edge, no
+  // longer held) -- same edge/held bits, spread across the two render calls
+  // this capture layer actually needs.
   it("captures a complete equipment tap before the next render update", () => {
     const down: Record<string, boolean> = {};
     const { factory } = makeRollbackHostFactory({ localSlot: 1, profileName: "clean" });
@@ -736,10 +724,10 @@ describe("match screen rollback laboratory (tier 2)", () => {
     expect(terminal.debugRollbackOutputs.length).toBeGreaterThan(0);
     expect(terminal.debugRollbackDebug()?.active_smoothing_count).toBe(0);
     expect(terminal.debugRollbackDebug()?.correction_magnitude).toBeCloseTo(0);
-    // The Lua original also asserts `terminal:broadcast_phase() == nil` here
-    // -- an online-coordinator concept this port never built (out of scope,
-    // `@gc/online`'s territory). The TS-observable analog: a sync failure
-    // must not read as a finished/full-time match either.
+    // A synchronization failure also must not surface as an online-
+    // coordinator broadcast-phase concept -- out of scope here, `@gc/online`'s
+    // territory. What matters on this side: a sync failure must not read as
+    // a finished/full-time match either.
     expect(terminal.finished, "synchronization failure must not masquerade as full time").toBe(false);
 
     terminal.update(0);
@@ -789,10 +777,10 @@ describe("match screen rollback laboratory (tier 2)", () => {
     consumerBefore.last_scoring_team = "home";
     consumerBefore.kickoff_banner = 0;
 
-    // `Match:event`'s rematch handling only routes to `restart()` once the
-    // match reads as finished (`match_is_over(self)`) -- true in both the
-    // base and rollback branches; the ported spec doesn't set this
-    // explicitly but relies on the same gate.
+    // `MatchScreen.event`'s rematch handling only routes to `restart()` once
+    // the match reads as finished -- true in both the base and rollback
+    // branches; this relies on that same gate rather than setting it
+    // explicitly above.
     oldHost.hud.finished = true;
     screen.event({ kind: "key", key: "r" });
 
@@ -844,35 +832,32 @@ describe("match screen rollback laboratory (tier 2)", () => {
   // and stay cleared here; what follows is each sub-case's OWN, individually
   // re-verified status.
   describe("clears smoothing at kickoff, full time, and stack teardown (split)", () => {
-    // Needs a `kickoff_hold`-equivalent presentation timer. The Lua original
-    // reads `kickoff.state.kickoff_hold > 0` straight off `sim.match`'s own
-    // snapshot field (`crates/gc-sim/src/match_snapshot.rs`'s `kickoff_hold`,
-    // set to `KICKOFF_HOLD` in `match.rs` on a kickoff/restart and ticked
-    // down in `sim_match::step`). Confirmed absent end to end on this side of
-    // the port: no `kickoff_hold` anywhere under `v2/ts/` (grepped the whole
+    // Needs a `kickoff_hold`-equivalent presentation timer, sourced from
+    // `sim.match`'s own snapshot field (`crates/gc-sim/src/match_snapshot.rs`'s
+    // `kickoff_hold`, set to `KICKOFF_HOLD` in `match.rs` on a kickoff/restart
+    // and ticked down in `sim_match::step`). Confirmed absent end to end on
+    // this side: no `kickoff_hold` anywhere under `ts/` (grepped the whole
     // tree), not on `MatchScreen`'s own state, not on `RenderFrameHud`, and
     // not produced by `crates/gc-render`'s frame builder either -- the value
     // exists only inside `gc-sim`'s snapshot and is never surfaced across the
-    // wasm boundary. A genuinely unported piece of `game/screens/match.lua`,
-    // not a dependency-graph or fixture gap this package can work around.
+    // wasm boundary. Not a dependency-graph or fixture gap this package can
+    // work around -- the wasm binding for it simply doesn't exist yet.
     it.skip(
       "kickoff [needs a kickoff_hold-equivalent presentation timer, absent from MatchScreen/RenderFrameHud/crates/gc-render's frame -- not this package's call to add]",
       () => {},
     );
 
-    // Literal translation of the Lua original's `full_time.state.finished =
-    // true; full_time:update(0)`: seed a real, nonzero smoothing correction
-    // on a rollback-mode `MatchScreen` (`screen.debugSeedRenderCorrection`),
-    // confirm `active_smoothing_count > 0`, then set `host.hud.finished =
-    // true` and call `screen.update(0)`.
+    // Seeds a real, nonzero smoothing correction on a rollback-mode
+    // `MatchScreen` (`screen.debugSeedRenderCorrection`), confirms
+    // `active_smoothing_count > 0`, then sets `host.hud.finished = true` and
+    // calls `screen.update(0)`.
     //
     // This used to fail: `updateRollback` opened with `if (this.finished) {
     // return; }`, an unconditional no-op the moment `hud.finished` already
     // read true going in, before any smoothing bookkeeping ran. Fixed in
     // `match.ts` -- see this file's header for the root-cause trace and how
-    // the fix maps onto the Lua original's two separate checks
-    // (`rollbackTerminal`'s early-return gate vs. `updateRollback`'s own
-    // `hudFinished` tail branch).
+    // the fix separates `rollbackTerminal`'s early-return gate from
+    // `updateRollback`'s own `hudFinished` tail branch.
     it("clears smoothing at full time", () => {
       const { factory, hosts } = makeRollbackHostFactory({ localSlot: 1, profileName: "clean" });
       const screen = new MatchScreen(rollbackPorts(factory), {
@@ -895,7 +880,7 @@ describe("match screen rollback laboratory (tier 2)", () => {
     });
 
     // Needs `@gc/app`'s `screen_stack.ts` -- `@gc/screens` cannot depend on
-    // `@gc/app` (v2/README.md §2/§9; confirmed `packages/screens/package.json`
+    // `@gc/app` (ARCHITECTURE.md §7; confirmed `packages/screens/package.json`
     // declares no such dependency, and the direction is structural, not an
     // oversight). Unrelated to either blocker above.
     it.skip(

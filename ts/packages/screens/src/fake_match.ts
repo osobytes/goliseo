@@ -1,18 +1,16 @@
-// Ported from game/screens/fake_match.lua — the "product flow laboratory"
-// stand-in for a real match, used to exercise the squad → formation →
-// tactic → result flow before the real match adapter lands (M9).
+// The "product flow laboratory" stand-in for a real match, used to
+// exercise the squad → formation → tactic → result flow before the real
+// match adapter lands (M9).
 //
-// Deviation from the Lua original: `game/fake_match.lua`'s `new_state`
-// calls `game.fake_result.for_request(context.request)` to synthesize a
-// result from the request (a deterministic hash — see `game/fake_result.lua`).
-// That function is `game/` root -> `@gc/app`, not this package's to own
+// Synthesizing a result from the request (a deterministic hash) is
+// `@gc/app`'s `fake_result.ts`'s `forRequest` — not this package's to own
 // (content.ts's header), and unlike the data lookups the other screens
 // inject, it is a nontrivial *mechanism*, not a data table — injecting it
 // as a callback would just move the same cross-layer dependency one level
 // down. Instead this screen takes the already-computed `result` as part of
 // its context, exactly as result.ts already does: computing the fake
 // result is `@gc/app`'s job when it wires this screen up, not this
-// screen's. See this package's porting report for the full rationale.
+// screen's.
 
 import { focus, type Layout } from "@gc/ui";
 import type { FocusEvent } from "@gc/ui";

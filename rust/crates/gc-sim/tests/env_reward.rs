@@ -1,9 +1,9 @@
-//! Port of `spec/sim/env_reward_spec.lua`.
+//! Tests for `gc_sim::env_reward`.
 //!
-//! `env_reward` is not on the determinism path (README §"When it is worth
-//! doing"): reward shaping doesn't cross the network or feed a resim, so no
-//! differential coverage is required here — the ported spec assertions are
-//! the whole contract.
+//! `env_reward` is not on the determinism path: reward shaping doesn't cross
+//! the network or feed a resim, so no differential coverage is required here
+//! (ARCHITECTURE.md §3 rule 7 only requires it on the determinism path) —
+//! the assertions below are the whole contract.
 
 use gc_sim::env_reward::{
     self, CombatContactResult, EnvRewardChannelId, EnvRewardErrorCode, EnvRewardEvent,

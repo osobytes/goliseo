@@ -1,17 +1,16 @@
-//! Port of `spec/game/online_fault_harness_spec.lua`.
+//! Fault-harness integration tests.
 //!
-//! Three `t.describe` blocks:
+//! Three scenario groups:
 //!
 //! - `"online fault harness"` (12 cases): every case runs a full
-//!   `FaultHarness` end to end, now real (`gc_netcode::fault_harness`'s
-//!   module doc: construction, the pre-match lifecycle over a real star, the
-//!   match itself, and teardown). 11 of the 12 are ported for real, driving
-//!   [`gc_netcode::fault_scenarios::run`] exactly the way
-//!   `spec/game/online_fault_harness_spec.lua`'s own `run` helper drives
-//!   `fault_scenarios.run`. One case —
+//!   `FaultHarness` end to end, over a real star (`gc_netcode::fault_harness`'s
+//!   module doc: construction, the pre-match lifecycle, the match itself,
+//!   and teardown). 11 of the 12 exercise this end-to-end path for real,
+//!   driving [`gc_netcode::fault_scenarios::run`]. One case —
 //!   `publishes_each_confirmed_event_once_and_never_resurrects_a_revoked_one`
-//!   — is *not* a pass/fail port of the Lua original: `game.online.match_presentation`
-//!   has no Rust port (TypeScript-owned, `v2/README.md` §2), so this port's
+//!   — cannot assert pass/fail on presentation behaviour:
+//!   `game.online.match_presentation` has no Rust implementation
+//!   (TypeScript-owned, `ARCHITECTURE.md` §1.1), so this crate's
 //!   `presentation.published_once`/`presentation.no_revoked_survivor`
 //!   findings are declared *skipped*, not measured, and this case asserts
 //!   exactly that — the same "declared contingent, not silently omitted"
@@ -19,22 +18,20 @@
 //!   remaining case,
 //!   `observes_this_processs_own_pairs_order_for_the_campaign_controller`,
 //!   is `#[ignore]`d for a reason that is not "blocked": `game.online.fault_campaign`
-//!   is TypeScript-owned (`v2/README.md` §2, ~163 lines), and the
-//!   per-process `pairs()` hash-order risk it probes for has no Rust analog
-//!   at all — this crate's own rule (README rule 4: no `HashMap`/`HashSet`,
+//!   is TypeScript-owned (`ARCHITECTURE.md` §1.1, ~163 lines), and the
+//!   per-process hash-iteration-order risk it probes for has no Rust analog
+//!   at all — this crate's own rule (ARCHITECTURE.md §3 rule 4: no `HashMap`/`HashSet`,
 //!   `IndexMap` only) already eliminates the failure class that probe
-//!   exists to catch. There is nothing for a Rust port of this case to
-//!   assert.
+//!   exists to catch. There is nothing here for this case to assert.
 //! - `"fault transport"` (6 cases) and `"fault harness input script"`
 //!   (2 cases): neither needs a live `FaultHarness`, just a
 //!   [`gc_netcode::fault_transport::StarTransportAdapter`] to wrap and
-//!   [`gc_netcode::fault_harness::scripted_sample`]. The spec's own helper
-//!   pairs two real `FakeStarTransport` endpoints; since that type does not
-//!   exist here, [`StubHost`]/[`StubGuest`] below are a minimal substitute —
-//!   a shared queue standing in for the star's actual routing — sufficient
-//!   for every assertion these 8 cases make (delivery/drop/withhold counts,
-//!   control-channel treatment, and delegation). These 8 are ported for
-//!   real.
+//!   [`gc_netcode::fault_harness::scripted_sample`]. Since a real star
+//!   transport endpoint pair isn't available here, [`StubHost`]/[`StubGuest`]
+//!   below are a minimal substitute — a shared queue standing in for the
+//!   star's actual routing — sufficient for every assertion these 8 cases
+//!   make (delivery/drop/withhold counts, control-channel treatment, and
+//!   delegation). These 8 cases exercise that path for real.
 
 use gc_data::network_profiles::NetworkProfileName;
 use gc_netcode::fault_harness;
@@ -49,8 +46,8 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 // ---------------------------------------------------------------------------
-// A minimal `StarTransportAdapter` pair, standing in for
-// `game/transport/fake_star.lua`'s real routing (see module doc).
+// A minimal `StarTransportAdapter` pair, standing in for the star
+// transport's real routing (see module doc).
 // ---------------------------------------------------------------------------
 
 type Queue = Rc<RefCell<VecDeque<TransportPeerMessage>>>;
@@ -217,7 +214,7 @@ fn pair(profile: NetworkProfileName) -> (FaultTransport, StubHost) {
 }
 
 // ---------------------------------------------------------------------------
-// "fault transport" — ported for real
+// "fault transport" — exercised for real
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -342,7 +339,7 @@ fn substitutes_for_the_endpoint_it_wraps() {
 }
 
 // ---------------------------------------------------------------------------
-// "fault harness input script" — ported for real
+// "fault harness input script" — exercised for real
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -372,18 +369,16 @@ fn moves_the_live_slot_by_putting_a_real_switch_edge_on_the_stream() {
 }
 
 // ---------------------------------------------------------------------------
-// "online fault harness" — real, driving `fault_scenarios::run` the way
-// `spec/game/online_fault_harness_spec.lua`'s own `run` helper drives
-// `fault_scenarios.run`. See the module doc for the one narrowed case and
-// the one still-ignored case.
+// "online fault harness" — real, driving `fault_scenarios::run` end to end.
+// See the module doc for the one narrowed case and the one still-ignored
+// case.
 // ---------------------------------------------------------------------------
 
 use gc_netcode::fault_harness::FaultHarnessReport;
 use gc_netcode::fault_scenarios::{self, FaultInjectionKind, RunOptions};
 
 /// Short enough to keep the suite quick, long enough to cross several
-/// confirmed checkpoints and at least one correction on every peer. Mirrors
-/// the spec's own `SPEC_DURATION_TICKS`.
+/// confirmed checkpoints and at least one correction on every peer.
 const SPEC_DURATION_TICKS: i64 = 60;
 
 fn run(id: &str) -> gc_netcode::fault_harness::FaultHarnessReport {
@@ -391,9 +386,8 @@ fn run(id: &str) -> gc_netcode::fault_harness::FaultHarnessReport {
 }
 
 /// Runs a declared scenario at [`SPEC_DURATION_TICKS`], with `edit` applied
-/// to a mutable copy first. Mirrors the spec's own `run(id, overrides)`
-/// helper: [`fault_scenarios::FaultScenario`] is `Copy`, so "override a
-/// field" is exactly `edit`.
+/// to a mutable copy first: [`fault_scenarios::FaultScenario`] is `Copy`, so
+/// "override a field" is exactly `edit`.
 fn run_with(
     id: &str,
     edit: impl FnOnce(&mut fault_scenarios::FaultScenario),
@@ -427,8 +421,7 @@ fn assert_all_ok(report: &FaultHarnessReport) {
     }
 }
 
-/// `"checkpoint "`-prefixed markers only, mirrors the spec's own
-/// `checkpoint_markers`.
+/// `"checkpoint "`-prefixed markers only.
 fn checkpoint_markers(report: &FaultHarnessReport) -> Vec<&str> {
     report
         .markers
@@ -519,14 +512,15 @@ fn keeps_confirmed_boundaries_independent_of_arrival_release_order() {
     );
 }
 
-/// `game.online.match_presentation` has no Rust port (TypeScript-owned,
-/// `v2/README.md` §2), so — unlike the Lua original, which asserts these
-/// findings `ok` — this port's `presentation.published_once`/
-/// `presentation.no_revoked_survivor` are declared *skipped*, with an
-/// accurate reason, rather than either measured (impossible: there is no
-/// presentation timeline to fold) or silently omitted (indistinguishable
-/// from "covered"). This case asserts that declaration is present and
-/// honest, which is the meaningful claim this port can make about it.
+/// `game.online.match_presentation` has no Rust implementation
+/// (TypeScript-owned, `ARCHITECTURE.md` §1.1), so — unlike an implementation
+/// with a presentation timeline to measure — this crate's
+/// `presentation.published_once`/`presentation.no_revoked_survivor`
+/// findings are declared *skipped*, with an accurate reason, rather than
+/// either measured (impossible: there is no presentation timeline to fold)
+/// or silently omitted (indistinguishable from "covered"). This case
+/// asserts that declaration is present and honest, which is the meaningful
+/// claim this crate can make about it.
 #[test]
 fn publishes_each_confirmed_event_once_and_never_resurrects_a_revoked_one() {
     let report = run("2v2.clean");
@@ -535,7 +529,7 @@ fn publishes_each_confirmed_event_once_and_never_resurrects_a_revoked_one() {
         "presentation.no_revoked_survivor",
     ] {
         let entry = finding(&report, id);
-        assert!(entry.skipped, "{id} must be declared skipped in this port");
+        assert!(entry.skipped, "{id} must be declared skipped in this crate");
         assert!(
             entry.detail.contains("TypeScript-owned"),
             "{id} must say why: {}",
@@ -647,12 +641,12 @@ fn logs_the_smoke_subset_as_a_subset() {
 }
 
 /// `game.online.fault_campaign` (the module `hash_order_probe`/`PROBE_KEYS`
-/// belong to) is TypeScript-owned (`v2/README.md` §2) and has no Rust port —
-/// see the module doc. Left `#[ignore]`d for that reason, not a blocker:
-/// this crate's own no-`HashMap`/`HashSet` rule (README rule 4, `IndexMap`
-/// only) already eliminates the per-process hash-order-randomization risk
-/// this probe exists to catch, so there is no Rust behaviour for a port of
-/// this case to exercise.
+/// belong to) is TypeScript-owned (`ARCHITECTURE.md` §1.1) and has no Rust
+/// implementation — see the module doc. Left `#[ignore]`d for that reason,
+/// not a blocker: this crate's own no-`HashMap`/`HashSet` rule (ARCHITECTURE.md §3 rule
+/// 4, `IndexMap` only) already eliminates the per-process
+/// hash-iteration-order-randomization risk this probe exists to catch, so
+/// there is no Rust behaviour for this case to exercise.
 #[test]
 #[ignore = "not applicable: game.online.fault_campaign is TypeScript-owned, and this crate's \
     IndexMap-only rule already rules out the pairs()-order risk the probe checks for -- see \

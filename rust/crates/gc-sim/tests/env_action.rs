@@ -1,16 +1,12 @@
-//! Port of `spec/sim/env_action_spec.lua`.
+//! Tests for `gc_sim::env_action`.
 //!
-//! The Lua spec builds its `mask`-family fixtures via `sim.env.reset` /
-//! `sim.env.observe`, which need `sim.match` and `sim.combat` — neither
-//! ported yet (v2/README §1, task scope for this module explicitly excludes
-//! `env.lua`/`env_observation.lua`). `env_action.mask`/`check_mask` only ever
-//! read `view.own`/`view.ball`, so every assertion below is preserved by
-//! constructing an [`EnvActionView`] with exactly the fields the Lua fixture
-//! would have produced, instead of driving a match to produce one. This is
-//! on the wire path (`to_sample`/`from_sample` feed the same `InputSample`
-//! that crosses rollback resim); see `differential.rs` for the required
-//! bit-for-bit comparison against the reference Lua implementation for the
-//! `input_frame` primitives this module builds on.
+//! `env_action.mask`/`check_mask` only ever read `view.own`/`view.ball`, so
+//! every assertion below is covered by constructing an [`EnvActionView`]
+//! directly with exactly the fields a case needs, instead of driving a
+//! full match to produce one. This is on the wire path (`to_sample`/
+//! `from_sample` feed the same `InputSample` that crosses rollback resim);
+//! see `differential.rs` for the required bit-for-bit comparison coverage of
+//! the `input_frame` primitives this module builds on.
 
 use gc_sim::env_action::{
     self, EnvActionErrorCode, EnvActionView, EnvActionViewBall, EnvActionViewEquipment,
@@ -200,8 +196,7 @@ fn env_action_sample_conversion_drops_one_shot_edges_when_an_action_is_held_acro
 }
 
 /// A fresh, unconstrained slot: nothing on cooldown, nothing equipped, ball
-/// grounded. Mirrors the fixture the Lua spec gets from `env.reset` before
-/// any mutation.
+/// grounded — the same state `env.reset` produces before any mutation.
 fn fresh_view() -> EnvActionView {
     EnvActionView {
         profile: EnvObservationProfile::Representative,

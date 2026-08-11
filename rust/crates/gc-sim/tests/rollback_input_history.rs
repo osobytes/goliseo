@@ -1,32 +1,32 @@
-//! Port of `spec/sim/rollback_input_history_spec.lua`.
+//! Tests for `gc_sim::rollback_input_history`.
 //!
-//! Two Lua sub-cases cannot be expressed here and are dropped, not merely
-//! already-passing — both documented again at their specific test below:
+//! Two cases that would need mutable aliasing or a dynamically-typed enum
+//! to express are not written here, not because they are already passing
+//! some other way — both documented again at their specific test below:
 //!
-//! - "uses neutral first-sample prediction and preserves local/remote
-//!   status" mutates its `sources` table after `new()` to prove the
-//!   constructor copies rather than aliases it. `[RollbackInputSource; 8]`
+//! - a case proving a constructor copies its `sources` argument rather than
+//!   aliasing it would need to mutate that argument after the call and
+//!   check the constructed value is unaffected. `[RollbackInputSource; 8]`
 //!   is `Copy` and passed by value, so that aliasing bug class does not
-//!   exist here.
-//! - "fails malformed source configuration loudly and malformed arrivals
-//!   recoverably" sets `malformed_sources[8] = "spectator"` and asserts
-//!   `new` panics. [`rollback_input_history::RollbackInputSource`] is a
-//!   closed two-variant enum, so that state cannot be constructed at all —
-//!   the Lua runtime assertion is a compile-time guarantee here instead.
+//!   exist here — there is nothing to prove.
+//! - a case asserting that an out-of-range source (e.g. a ninth "spectator"
+//!   role) panics at construction has no way to arise:
+//!   [`rollback_input_history::RollbackInputSource`] is a closed
+//!   two-variant enum, so that state cannot be constructed at all — the
+//!   invariant is a compile-time guarantee instead of a runtime assertion.
 //!
 //! "truncates only the obsolete effective tail and preserves earlier
-//! divergence" also adapts one sub-case: the Lua original's second malformed
-//! `truncate_from` tick is a non-integer float (`3.5`); `boundary_tick: i64`
-//! makes that unrepresentable, so an out-of-range integer tick is
-//! substituted, exercising the identical "malformed" branch (see that
-//! test's comment).
+//! divergence" adapts one sub-case: a non-integer tick (e.g. `3.5`) cannot
+//! be constructed at all since `boundary_tick: i64` makes that
+//! unrepresentable, so an out-of-range integer tick is substituted,
+//! exercising the identical "malformed" branch (see that test's comment).
 //!
-//! Every other assertion is ported in full. "deep-copies authoritative,
-//! effective, and caller-returned records" keeps every assertion verbatim:
-//! `InputSample`/`InputFrame`/`RollbackInputTickRecord`/
-//! `RollbackInputSlotRecord` are all `Copy`, so the Lua original's
-//! `copy_sample`/`copy_frame`/`copy_record` defenses have no Rust
-//! equivalent to invoke, but what they protected still holds.
+//! "deep-copies authoritative, effective, and caller-returned records"
+//! keeps every assertion: `InputSample`/`InputFrame`/
+//! `RollbackInputTickRecord`/`RollbackInputSlotRecord` are all `Copy`, so
+//! there is no `copy_sample`/`copy_frame`/`copy_record`-style defensive
+//! copy to invoke here, but what such a defense would protect against
+//! still holds and is checked directly.
 
 use gc_sim::input_frame::{self, EdgeAction, HeldAction, InputSample, InputSampleOptions};
 use gc_sim::rollback_input_history::{
@@ -424,9 +424,9 @@ fn omp2_rollback_input_history_preflights_complete_authority_batches_before_one_
 #[allow(unused_assignments, unused_variables)]
 fn omp2_rollback_input_history_deep_copies_authoritative_effective_and_caller_returned_records() {
     // `InputSample` is `Copy`, so every hand-off below is already an
-    // independent value; the Lua original's `copy_sample`/`copy_frame`/
-    // `copy_record` defenses have no Rust equivalent to invoke, but every
-    // assertion they protected still holds and is kept verbatim.
+    // independent value; there is no `copy_sample`/`copy_frame`/
+    // `copy_record`-style defensive copy to invoke, but every assertion
+    // such a defense would protect still holds and is checked directly.
     let mut history = rollback_input_history::new(sources(None));
     let mut supplied = sample(70, -20, HeldAction::Sprint.bit(), EdgeAction::Dodge.bit());
     rollback_input_history::add_authoritative(&mut history, 0, 1, supplied).unwrap();
@@ -566,14 +566,14 @@ fn omp2_rollback_input_history_truncates_only_the_obsolete_effective_tail_and_pr
         rejected.unwrap_err().code,
         RollbackInputHistoryErrorCode::OutsideWindow
     );
-    // The Lua original's second malformed sub-case passes a non-integer tick
-    // (`3.5`); `boundary_tick: i64` makes that state unrepresentable here
-    // (the same "dropped as structurally redundant" reasoning `input_frame`'s
-    // port documents). An out-of-range integer tick exercises the identical
-    // "malformed" branch instead: the Lua source combines both conditions
-    // (`not is_integer(...)` and the range check) into one `or`-chained
-    // check with the same error code, so this is the same branch, not a
-    // weaker one.
+    // A non-integer tick (e.g. `3.5`) cannot be constructed here at all:
+    // `boundary_tick: i64` makes that state unrepresentable (the same
+    // "dropped as structurally redundant" reasoning `input_frame`'s own
+    // doc comments use for the equivalent case). An out-of-range integer
+    // tick exercises the identical "malformed" branch instead: this crate
+    // combines the non-integer check and the range check into one
+    // condition with the same error code, so this is the same branch, not
+    // a weaker one.
     let rejected = rollback_input_history::truncate_from(&mut bounded, -1);
     assert_eq!(
         rejected.unwrap_err().code,
@@ -588,11 +588,12 @@ fn omp2_rollback_input_history_truncates_only_the_obsolete_effective_tail_and_pr
 #[test]
 fn omp2_rollback_input_history_fails_malformed_source_configuration_loudly_and_malformed_arrivals_recoverably()
  {
-    // The Lua original's first sub-case sets `malformed_sources[8] =
-    // "spectator"` and asserts `new` panics. `[RollbackInputSource; 8]` is a
-    // fixed-size array of a closed two-variant enum, so that state cannot be
-    // constructed at all -- the Lua runtime assertion is a compile-time
-    // guarantee here instead, and there is no runtime call left to make.
+    // A case asserting that an out-of-range source (e.g. a ninth
+    // "spectator" role) panics at construction has no way to arise here:
+    // `[RollbackInputSource; 8]` is a fixed-size array of a closed
+    // two-variant enum, so that state cannot be constructed at all -- the
+    // invariant is a compile-time guarantee instead of a runtime assertion,
+    // and there is no runtime call left to make.
 
     let mut history = rollback_input_history::new(sources(None));
     let accepted = rollback_input_history::add_authoritative(

@@ -2,11 +2,17 @@
 # canonical serializer and fnv1a64 content digest.
 #
 # Generated from the real Lua implementation (`love .` against a scratch copy
-# of core/, sim/, data/, and game/online/diagnostics_schema.lua — see
-# v2/tools/lua_reference/README.md for the harness). Asserted from:
-#   - Rust:       crates/gc-netcode/src/diagnostics_schema.rs (tests::shared_vectors_agree_with_lua)
-#   - TypeScript: v2/ts/packages/online/src/diagnostics_schema.ts is expected to agree;
-#                 see the port report for whether it currently does.
+# of core/, sim/, data/, and game/online/diagnostics_schema.lua). This vector
+# is frozen and cannot be regenerated: the Lua implementation it was
+# captured from no longer exists in this repository. A failing differential
+# against it is a finding about the Rust or TypeScript code under test, not
+# a fixture to refresh. See tools/lua_reference/README.md for provenance.
+# Asserted from:
+#   - Rust: crates/gc-netcode/src/diagnostics_schema.rs (tests::shared_vectors_agree_with_lua),
+#     which reads this file directly.
+#   - TypeScript: the equivalent guarantee for @gc/online's diagnostics_schema.ts
+#     is covered separately by diagnostics_schema_crosslang.spec.ts, which carries
+#     its own separately-captured cases rather than reading this file.
 #
 # Every case validates against one shared shape, defined identically in each
 # language's test (a "test_record" with an `identity` section — id/integer/

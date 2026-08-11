@@ -1,7 +1,3 @@
-// New shared infrastructure, not a port of one Lua file (v2/README.md #7 --
-// the app-shell/glue milestone this file belongs to, not a game/render/*.lua
-// module).
-//
 // Every other file in this package draws content -- pitch.ts assembles arena
 // + players + effects + combat into one `THREE.Group`, match_hud.ts paints
 // the HUD into another -- but nothing owned a `THREE.Scene` or a
@@ -16,7 +12,7 @@
 // its `THREE.WebGLRenderer` via the constructor (dependency injection, the
 // same convention, just one level up the call stack) instead of constructing
 // one itself from a `<canvas>`. Actually building that canvas and renderer is
-// `game/`'s job -- the app-shell glue v2/README.md #1 explicitly scopes out
+// `game/`'s job -- the app-shell glue that is explicitly scoped out
 // of this milestone ("wasm bindings, the JS<->wasm marshalling layer, asset
 // pipeline, bundling, a running app"). From the point a renderer is handed
 // in, `SceneRoot` OWNS its lifecycle: stored once, resized on `resize()`,
@@ -31,7 +27,7 @@
 // context to verify: that pitch.ts's static-scene memoisation still holds
 // across repeated frames through this class (see pitch.ts's own
 // `staticSceneBuildCount`). Its actual pixel output is not -- see
-// scene.spec.ts's header and this port's report.
+// scene.spec.ts's header.
 
 import * as THREE from "three";
 import { pitch, type PitchDrawOptions, type PitchViewport, type RenderFrame } from "./pitch.ts";
@@ -58,7 +54,7 @@ export interface SceneRenderOptions {
   readonly pitch: PitchDrawOptions;
   /** Omit to draw no HUD this frame (e.g. a menu behind the pitch). */
   readonly hud?: SceneHud;
-  /** Seconds, replacing `love.timer.getTime()` -- see pitch.ts/player_renderer_3d.ts. */
+  /** Seconds, monotonic -- see pitch.ts/player_renderer_3d.ts. */
   readonly now?: number;
 }
 

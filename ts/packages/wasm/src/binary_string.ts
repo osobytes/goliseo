@@ -9,9 +9,9 @@
 // declares its return type as (`Result<string, string>`).
 //
 // Never `TextEncoder`/`TextDecoder` (UTF-8): a wire payload is not
-// necessarily valid UTF-8 text (a Lua string, and the protocol byte streams
-// this package binds, are raw byte arrays — see the Rust modules' own
-// docs), and a UTF-8 round trip silently corrupts any byte outside that
+// necessarily valid UTF-8 text (the protocol byte streams this package
+// binds are raw byte arrays — see the Rust modules' own docs), and a UTF-8
+// round trip silently corrupts any byte outside that
 // encoding's rules. `String.fromCharCode`/`charCodeAt` operate on raw
 // UTF-16 code units and never attempt to interpret the bytes as text, so
 // they are the only correct conversion here.

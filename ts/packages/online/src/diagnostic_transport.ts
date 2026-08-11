@@ -1,5 +1,3 @@
-// Ported from game/online/diagnostic_transport.lua.
-//
 // A `StarTransportAdapter` that records what passed through it.
 //
 // The match driver takes its transport by injection, so a diagnostic tap can
@@ -77,7 +75,7 @@ function zeroClock(): number {
   return 0;
 }
 
-/** A `StarTransportAdapter` implementing `game/online/diagnostic_transport.lua`'s tap. */
+/** A `StarTransportAdapter` that taps traffic into a `NetDiagnostics` recorder. */
 export class DiagnosticTransport implements StarTransportAdapter {
   private readonly _transport: StarTransportAdapter;
   private readonly _recorder: NetDiagnostics;

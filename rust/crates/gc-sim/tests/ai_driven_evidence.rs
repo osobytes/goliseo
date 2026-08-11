@@ -14,7 +14,7 @@
 //!                                        |
 //!   native run() --(this test)-----------+
 //!                                        |
-//!   wasm run()   --(packages/wasm/src/ai_driven.spec.ts and check_v2.sh)--+
+//!   wasm run()   --(packages/wasm/src/ai_driven.spec.ts and check.sh)--+
 //!
 //! and "the browser agrees with Lua" is a chain of equalities, each of which
 //! some gate actually checks, rather than an inference.
@@ -35,11 +35,12 @@ const FIELD_COUNT: usize = 11 + 2 * PLAYER_COUNT;
 
 /// THE PINNED DIGESTS. Derived from the Lua fixture by
 /// `digests_match_the_lua_fixture` below — not hand-written, and not copied
-/// from a Rust run. If a change moves these, the question is whether Lua moved
-/// too; if it did not, the port diverged.
+/// from a Rust run. If a change moves these, the question is whether the
+/// pinned fixture moved too; if it did not, this simulation diverged from the
+/// reference it was validated against.
 ///
-/// Mirrored in `v2/ts/packages/wasm/src/ai_driven.spec.ts` and in
-/// `scripts/check_v2.sh`, which assert the COMPILED WASM module reproduces
+/// Mirrored in `ts/packages/wasm/src/ai_driven.spec.ts` and in
+/// `scripts/check.sh`, which assert the COMPILED WASM module reproduces
 /// them.
 /// FNV-1a-64 over the final row, derived from the Lua capture.
 pub const EXPECTED_FINAL_HASH: &str = "628d7fc71238dec6";

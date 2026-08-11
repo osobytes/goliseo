@@ -1,10 +1,7 @@
-//! Port of `spec/render/frame_buffer_spec.lua`.
-//!
-//! Tier-1 logic tests: no display, no wasm, no browser. What they pin is the
-//! WIRE — header field counts, section offsets, enum codes, version stamps —
-//! the same things that would also break a JavaScript reader of this block if
-//! they regressed (the JS reader itself is out of scope for this milestone,
-//! see `v2/README.md` §1).
+//! Tier-1 logic tests for `RenderFrame`'s wire encoding: no display, no
+//! wasm, no browser. What they pin is the WIRE — header field counts,
+//! section offsets, enum codes, version stamps — the same things that would
+//! also break a JavaScript reader of this block if they regressed.
 
 use gc_data::species::Shape;
 use gc_render::frame::{self as render_frame, RenderFrameOptions};
@@ -484,8 +481,8 @@ fn reuses_the_callers_array_and_truncates_it_to_this_frame() {
 fn does_not_perturb_the_simulation() {
     let state = fixture(17.0);
     // Compares the whole `MatchState` directly rather than through
-    // `match_snapshot::hash(match_snapshot::capture(...))` as the Lua
-    // original does — see the equivalent note in `tests/frame.rs`.
+    // `match_snapshot::hash(match_snapshot::capture(...))` — see the
+    // equivalent note in `tests/frame.rs`.
     let before = state.clone();
     let mut words = Vec::new();
     frame_buffer::encode(

@@ -1,30 +1,29 @@
-// Ported from game/render/arena.lua.
-//
 // Screen-space backdrop: starfield, a distant planet, orbital rails and a
-// pulsing frame around the pitch corners. Pure content -- no love.graphics
-// equivalent exists in three.js, so `backdropCommands`/`frameCommands` return
-// a `DrawCommand[]` (see draw2d.ts) that `draw` below paints into a group.
+// pulsing frame around the pitch corners. Pure content -- three.js has no
+// direct equivalent to draw onto, so `backdropCommands`/`frameCommands`
+// return a `DrawCommand[]` (see draw2d.ts) that `draw` below paints into a
+// group.
 //
-// Boundary notes (v2/README.md rule 6.7 and this package's package.json):
-//   - `ArenaData` is `data/arenas.lua` -> Rust `crates/gc-data`. Only the
-//     three color fields this module reads are declared locally.
-//   - `theme.colors.void`/`theme.colors.text` (`game/ui/theme.lua`) would be
-//     `@gc/ui`, but `@gc/render`'s package.json does not depend on `@gc/ui`
-//     (only `@gc/core`/`@gc/presentation`/`three`), so the two colors this
-//     module needs are threaded through as an explicit parameter instead,
-//     the same injection rule 6.7 applies to Rust-owned content.
+// Boundary notes (ARCHITECTURE.md §4 rule 6 and this package's package.json):
+//   - `ArenaData` comes from Rust `crates/gc-data`. Only the three color
+//     fields this module reads are declared locally.
+//   - `theme.colors.void`/`theme.colors.text` would be `@gc/ui`, but
+//     `@gc/render`'s package.json does not depend on `@gc/ui` (only
+//     `@gc/core`/`@gc/presentation`/`three`), so the two colors this module
+//     needs are threaded through as an explicit parameter instead, the same
+//     §4 rule 6 injection pattern applies to Rust-owned content.
 
 import * as THREE from "three";
 import { DrawList, paint, type DrawCommand, type RGB } from "./draw2d.ts";
 
-/** The slice of `data/arenas.lua`'s `ArenaData` this module reads. */
+/** The slice of Rust `crates/gc-data`'s `ArenaData` this module reads. */
 export interface ArenaColors {
   readonly floor_color: RGB;
   readonly rail_color: RGB;
   readonly highlight_color: RGB;
 }
 
-/** The slice of `game/ui/theme.lua`'s `theme.colors` this module reads. */
+/** The slice of `theme.colors` this module reads. */
 export interface ArenaThemeColors {
   readonly void: RGB;
   readonly text: RGB;
@@ -46,7 +45,7 @@ export interface ArenaCorners {
   readonly dy: number;
 }
 
-// A fixed starfield: [xFrac, yFrac, radiusPx], matching the Lua table exactly.
+// A fixed starfield: [xFrac, yFrac, radiusPx].
 const STARS: readonly (readonly [number, number, number])[] = [
   [0.05, 0.09, 1],
   [0.12, 0.18, 2],
@@ -62,7 +61,7 @@ const STARS: readonly (readonly [number, number, number])[] = [
   [0.96, 0.18, 1],
 ];
 
-/** Starfield, planet, orbital rails and ribbon markers, in Lua-original order. */
+/** Starfield, planet, orbital rails and ribbon markers. */
 export function backdropCommands(value: ArenaColors, viewport: ArenaViewport, theme: ArenaThemeColors): DrawCommand[] {
   const dl = new DrawList();
 

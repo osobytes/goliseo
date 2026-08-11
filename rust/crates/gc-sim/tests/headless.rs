@@ -1,19 +1,18 @@
-//! Port of `spec/sim/headless_spec.lua`.
+//! Tests for `gc_sim::headless`.
 //!
-//! The Lua spec observes internal construction decisions by monkey-patching
-//! `match.new`, `bot.new`, and `slot_input.new_producer`. Rust has no
-//! runtime function replacement, so every case that relied on a mock uses
-//! [`gc_sim::headless::run_match_debug`] instead — see `headless.rs`'s
-//! module doc, "Test seams" section, for the reasoning.
+//! Rust has no runtime function replacement, so every case that would
+//! otherwise need to observe internal construction decisions by mocking
+//! `match.new`/`bot.new`/`slot_input.new_producer` instead uses
+//! [`gc_sim::headless::run_match_debug`] — see `headless.rs`'s module doc,
+//! "Test seams" section, for the reasoning.
 //!
-//! The Lua spec's "applies a tuning blob for the run and restores the
-//! knobs after" exercises the global `tuning` singleton's save/restore
-//! dance. `sim/tuning.lua`'s Rust port is an owned value, not a singleton
-//! (see `tuning.rs`'s module doc), so [`gc_sim::headless::run_match`]
-//! simply builds a fresh `Tuning` per call — there is no global left to
-//! leak into. The port below demonstrates the equivalent guarantee
-//! (running with a blob does not perturb a freshly constructed `Tuning`'s
-//! defaults) rather than a literal save/restore, which no longer applies.
+//! `gc_sim::tuning::Tuning` is an owned value, not a singleton (see
+//! `tuning.rs`'s module doc), so [`gc_sim::headless::run_match`] simply
+//! builds a fresh `Tuning` per call — there is no global left to leak into.
+//! The "applies a tuning blob for the run and restores the knobs after"
+//! test below demonstrates the equivalent guarantee (running with a blob
+//! does not perturb a freshly constructed `Tuning`'s defaults) rather than
+//! a literal save/restore.
 
 use gc_data::players::PlayerData;
 use gc_data::tactics;

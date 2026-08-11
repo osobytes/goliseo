@@ -1,17 +1,18 @@
-//! Differential evidence for `gc_netcode::fake_relay` (the Rust port of
-//! `game/transport/fake_relay.lua`) against `tests/fixtures/fake_relay_lua_reference.txt`,
-//! captured from the real Lua per `v2/tools/lua_reference/README.md`. See
-//! that fixture's own header comment for exactly what each scenario proves
-//! and how to regenerate it.
+//! Differential evidence for `gc_netcode::fake_relay` against
+//! `tests/fixtures/fake_relay_lua_reference.txt`, a frozen reference vector
+//! captured from the implementation this transport's wire behaviour was
+//! validated against (see `tools/lua_reference/README.md`). See that
+//! fixture's own header comment for exactly what each scenario proves and
+//! how to regenerate it.
 //!
 //! `crates/gc-netcode/src/fake_relay.rs`'s own `#[cfg(test)]` module already
-//! ports every assertion from `spec/game/transport_relay_spec.lua`'s first
-//! `describe` block one for one — that proves the port satisfies the
-//! assertions someone wrote down. This file is the second, independent
-//! half README rule 9 asks for: real byte/count values computed by the real
-//! Lua, compared against this port's own output for the identical scenario,
-//! so a subtly-wrong port that still happens to pass every ported assertion
-//! cannot hide.
+//! exercises every assertion from the original transport-relay test suite's
+//! first scenario group one for one — that proves this implementation
+//! satisfies the assertions someone wrote down. This file is the second,
+//! independent half ARCHITECTURE.md §3 rule 7 asks for: real byte/count values computed
+//! by the reference implementation, compared against this crate's own
+//! output for the identical scenario, so a subtly-wrong implementation that
+//! still happens to pass every one of those assertions cannot hide.
 
 use gc_netcode::fake_relay::{FakeRelayTransport, FakeRelayTransportOptions};
 use gc_netcode::fake_star::{FakeStarTransport, FakeStarTransportOptions};
@@ -100,9 +101,10 @@ fn input(seq: i64, tick: i64, payload: &[u8]) -> TransportMessage {
 
 /// Splits `wire` (`peer_id|channel|<envelope>`) on its first two `|` bytes
 /// and returns the envelope tail — the same split `contract.decode_addressed`
-/// does, used here only to locate byte offsets in a captured Lua wire, never
-/// to decode it (this crate's own `decode_addressed` is exercised for real
-/// by every other test in this file, through `send`/`pump`/`poll`).
+/// does, used here only to locate byte offsets in a captured reference
+/// wire, never to decode it (this crate's own `decode_addressed` is
+/// exercised for real by every other test in this file, through
+/// `send`/`pump`/`poll`).
 fn envelope_tail(wire: &[u8]) -> &[u8] {
     let first = wire.iter().position(|&b| b == b'|').expect("first pipe");
     let rest = &wire[first + 1..];
@@ -113,14 +115,14 @@ fn envelope_tail(wire: &[u8]) -> &[u8] {
 /// Scenario 1: exact wire bytes for `contract.encode_addressed`, including
 /// percent-escaping a payload that contains every reserved character the
 /// scheme has to handle (space, `|`, `%`, `\n`), cross-checked two ways:
-/// structurally against the captured Lua bytes directly, and numerically
-/// against this port's own `wire_counters()` for the identical message
-/// (`uplink_bytes`/`frame_overhead_bytes` are a direct, public function of
-/// `encode_addressed`'s escaping and prefix construction, even though the
-/// function itself is private). `fake_relay` is the one module in this
-/// crate that ever decodes a wire it produced (see its module doc), so the
-/// round trip through `send`/`pump`/`poll` below is this port's only
-/// real-decode differential coverage.
+/// structurally against the captured reference bytes directly, and
+/// numerically against this crate's own `wire_counters()` for the identical
+/// message (`uplink_bytes`/`frame_overhead_bytes` are a direct, public
+/// function of `encode_addressed`'s escaping and prefix construction, even
+/// though the function itself is private). `fake_relay` is the one module
+/// in this crate that ever decodes a wire it produced (see its module
+/// doc), so the round trip through `send`/`pump`/`poll` below is this
+/// crate's only real-decode differential coverage.
 #[test]
 fn differential_encode_addressed_matches_the_real_lua_byte_for_byte() {
     let expected_control_wire = hex_decode(lua_ref("ENCODE_ADDRESSED_CONTROL_HEX"));
@@ -154,7 +156,7 @@ fn differential_encode_addressed_matches_the_real_lua_byte_for_byte() {
 
     // Numeric cross-check: send the identical message from a real `host`
     // endpoint and compare the resulting uplink/frame-overhead byte counts
-    // against the captured Lua wire's own lengths.
+    // against the captured reference wire's own lengths.
     let (_, mut pair) = build_room(2);
     pair[0]
         .send(
@@ -172,7 +174,7 @@ fn differential_encode_addressed_matches_the_real_lua_byte_for_byte() {
     );
 
     // The round trip: pump and poll the other side, confirming
-    // `decode_addressed` recovers the exact original payload this port's
+    // `decode_addressed` recovers the exact original payload this crate's
     // own `encode_addressed` produced.
     pair[0].pump();
     let received = pair[1].poll_batch(Some(1));
@@ -443,8 +445,8 @@ fn differential_per_node_wire_cost_matches_the_real_lua_exactly() {
 
 /// Scenario 6: one broadcast's exact byte cost, relay versus star — the
 /// headline OMP-4 claim (`hub.uplink_bytes == relay.uplink_bytes * 7`),
-/// confirmed against real Lua-computed integers rather than only against
-/// this port's own star.
+/// confirmed against reference-computed integers rather than only against
+/// this crate's own star.
 #[test]
 fn differential_relay_vs_star_broadcast_cost_matches_the_real_lua() {
     let (_, mut members) = build_room(8);

@@ -1,10 +1,9 @@
-//! Port of `spec/sim/species_spec.lua`.
+//! Tests for `gc_sim::species`.
 //!
-//! The Lua spec's last two cases ("applies the modifier exactly once for
+//! The last two cases below ("applies the modifier exactly once for
 //! controlled and match-AI slots", "makes a pace modifier visible as
-//! distance covered in the same match") build a match via
-//! `sim.match.new`/`match.step`. `sim::match` (`gc_sim::r#match`) is now
-//! fully ported, so both build a real fixture via `sim_match::new`.
+//! distance covered in the same match") build a real match fixture via
+//! `sim_match::new`/`sim_match::step`.
 
 use gc_data::players::{PlayerData, StatBlock};
 use gc_data::showcase_player_compatibility::{self, ShowcasePlayerCompatibilityData};

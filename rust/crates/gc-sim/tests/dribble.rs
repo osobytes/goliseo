@@ -1,4 +1,4 @@
-//! Port of `spec/sim/dribble_spec.lua`.
+//! Tests for dribbling behavior in `gc_sim::r#match`.
 
 use gc_core::vec2::Vec2;
 use gc_sim::r#match::{self as sim_match, NewMatchOptions, StepInput};

@@ -1,5 +1,3 @@
-//! Port of `sim/offball_runs.lua`.
-//!
 //! Pure role-gated off-ball run geometry and bounded team arbitration. Match
 //! owns authoritative player clocks/state; this module derives candidates
 //! from one world boundary and delegates deterministic ranking to
@@ -11,8 +9,7 @@ use crate::outfield_decision;
 use gc_core::vec2::Vec2;
 use gc_data::formations::{self, FormationRole};
 
-/// Schema version of this module's declared surface, from
-/// `sim/offball_runs.lua:44` (`offball_runs.VERSION = 1`).
+/// Schema version of this module's declared surface.
 ///
 /// It is part of the hashed policy identity assembled by
 /// [`crate::outfield_ai_policy`], so bumping it deliberately invalidates the
@@ -89,8 +86,7 @@ pub struct OffballRunContext {
     pub pressure_distance: f64,
     /// Whether the team is inside a counter-attack window
     /// ([`crate::possession_transition`]). Absent and explicitly false are
-    /// equivalent, matching the Lua original's `boolean?` used only in a
-    /// truthy test.
+    /// equivalent — this field is only ever read in a truthy test.
     pub counterattack: bool,
     /// Every outfield player eligible to offer a run.
     pub players: Vec<OffballRunPlayer>,
@@ -348,7 +344,7 @@ fn hold_width_target(
 /// The authored role for a formation's outfield ordinal.
 ///
 /// `outfield_index` is 0-based, indexing directly into
-/// [`gc_data::formations::FormationData::outfield`] (README rule 5.3) —
+/// [`gc_data::formations::FormationData::outfield`] (ARCHITECTURE.md §3 rule 3) —
 /// unlike this module's `player_index` fields, this really is a Rust
 /// collection index, not an opaque wire identity.
 ///

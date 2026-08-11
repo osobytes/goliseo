@@ -1,19 +1,19 @@
 // The real `window.GoliseoStarTransport` bridge `browser_star.ts` calls
-// through its single eval seam. This is a TypeScript port of the
-// love.js-era `scripts/webrtc_star_host.js` (OMP-3's browser host-star
-// transport), adapted for two reasons:
+// through its single eval seam. This reimplements
+// `scripts/webrtc_star_host.js` (OMP-3's browser host-star transport) as a
+// TypeScript module, adapted for two reasons:
 //
 // 1. That file has no v2 counterpart at all — `docs/online/transport_bridge.md`
-//    documents `window.GoliseoStarTransport` as the Lua game's own bridge,
+//    documents `window.GoliseoStarTransport` as that script's own bridge,
 //    embedded into `player.js` by `scripts/web_build.py`; nothing wires it
 //    up for the v2 TypeScript/wasm app. `browser_star.ts`'s own header says
 //    plainly: "That JS side has never been implemented."
 //
-// 2. Porting surfaced a real defect in the love.js-era source, fixed here
-//    rather than reproduced: `scripts/webrtc_star_host.js`'s `escapeField`/
-//    `unescapeField` use `encodeURIComponent`/`decodeURIComponent` (UTF-8
-//    percent-encoding), but `game/transport/contract.lua` and this port's
-//    own `contract.ts` use a *raw-byte* percent-encoding — one `%XX` triplet
+// 2. Reimplementing surfaced a real defect in the original source, fixed
+//    here rather than reproduced: `scripts/webrtc_star_host.js`'s
+//    `escapeField`/`unescapeField` use `encodeURIComponent`/
+//    `decodeURIComponent` (UTF-8 percent-encoding), but this module's own
+//    `contract.ts` uses a *raw-byte* percent-encoding — one `%XX` triplet
 //    per JS UTF-16 code unit (0-255 only), never re-interpreted as UTF-8.
 //    `contract.ts`'s own header names the reason: "the spec exercises a
 //    bare `\255`". A wire payload byte in 0x80-0xFF, once escaped by
@@ -21,15 +21,15 @@
 //    own — `decodeURIComponent("%FF")` throws `URIError: URI malformed`.
 //    The original bridge catches that exception and reports the envelope
 //    as `malformed`, silently rejecting exactly the payload byte range
-//    `contract.ts` explicitly supports. This port's `escapeField`/
+//    `contract.ts` explicitly supports. This module's `escapeField`/
 //    `unescapeField` use the same raw-byte scheme as `contract.ts`'s own
 //    `escape`/`unescape` instead, so a payload byte's escaped form always
 //    round-trips regardless of what other bytes surround it.
 //
 // Every other behaviour (peer/channel lifecycle, manual signaling,
-// deterministic `poll` cursor, backpressure, diagnostics encoding) is a
-// deliberate line-for-line port: this is the transport CONTRACT
-// (`docs/online/transport_bridge.md`), not a redesign.
+// deterministic `poll` cursor, backpressure, diagnostics encoding) is kept
+// a deliberate line-for-line match with the original: this is the
+// transport CONTRACT (`docs/online/transport_bridge.md`), not a redesign.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -307,8 +307,8 @@ export function newGoliseoStarTransportBridge(): GoliseoStarTransportBridge {
       : 0;
   }
 
-  // Envelope parsing mirrors `game/transport/contract.lua`/`contract.ts`.
-  // Payload bytes stay opaque; this bridge never inspects or rewrites them.
+  // Envelope parsing mirrors `contract.ts`. Payload bytes stay opaque;
+  // this bridge never inspects or rewrites them.
   function parseWire(wire: unknown): ParsedWire {
     if (typeof wire !== "string") {
       return { error: "malformed", detail: "wire is not a string" };
@@ -1071,8 +1071,7 @@ declare global {
 /** Installs a real, `RTCPeerConnection`-backed `window.GoliseoStarTransport`
  * — the seam `browser_star.ts`'s `BrowserStarTransport` calls through (its
  * `defaultEval` evaluates `window.GoliseoStarTransport.<method>(...)`
- * textually, mirroring the LÖVE `love.js.eval` hook the Lua source
- * targets). Idempotent: a bridge already installed on `target` is left
+ * textually). Idempotent: a bridge already installed on `target` is left
  * alone, matching the original `window.GoliseoStarTransport =
  * window.GoliseoStarTransport || (...)` guard. */
 export function installGoliseoStarTransport(
@@ -1089,15 +1088,13 @@ export function installGoliseoStarTransport(
  * every command `browser_star.ts` builds
  * (`window.GoliseoStarTransport.<method>(<args>)`) is valid JS source once
  * the bridge is installed, so a real `eval` call is the whole
- * implementation — exactly how `love.js.eval` works for the Lua adapter.
- * `(0, eval)` forces indirect (global) eval so the command cannot see or
- * touch this module's own locals. */
+ * implementation. `(0, eval)` forces indirect (global) eval so the
+ * command cannot see or touch this module's own locals. */
 export function browserStarEval(command: string): readonly [result: string | null, error: string | null] {
   try {
     // Indirect eval (calling through a reference rather than the literal
     // `eval(...)` form) runs in global scope, so the command cannot see or
-    // touch this module's own locals -- exactly like a real `love.js.eval`
-    // call reaching only the page's global `window`.
+    // touch this module's own locals.
     // eslint-disable-next-line no-eval
     const indirectEval: (code: string) => unknown = globalThis.eval;
     const result = indirectEval(command);

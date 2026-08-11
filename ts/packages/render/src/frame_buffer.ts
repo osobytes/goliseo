@@ -1,19 +1,15 @@
-// Port of `render/frame_buffer.lua`'s DECODE half.
+// This module is the DECODE half of the `RenderFrame` wire format.
 //
-// `render/frame.lua` (Rust: `crates/gc-render/src/frame.rs`) produces a
-// `RenderFrame`. `render/frame_buffer.lua` (Rust: `crates/gc-render/src/
+// Rust `render.frame` (`crates/gc-render/src/frame.rs`) produces a
+// `RenderFrame`. Rust `render.frame_buffer` (`crates/gc-render/src/
 // frame_buffer.rs`) flattens it into one contiguous array of doubles so it
-// can cross a boundary in one call instead of one crossing per field per
-// entity per frame. In the Lua original both directions -- `encode` and
-// `decode` -- lived in the same process, because Lua was on both sides of
-// the boundary. In v2 the wire is produced by Rust (`gc_render::frame_buffer
-// ::encode`/`encode_roster`) and consumed by TypeScript, and only the
-// consuming half existed to be written: this module is that half. See
-// `v2/README.md` #1 -- this is a gap in the bridge the milestone scope
-// created, not a stray port.
+// can cross the wasm boundary in one call instead of one crossing per field
+// per entity per frame. The wire is produced by Rust
+// (`gc_render::frame_buffer::encode`/`encode_roster`) and consumed here by
+// TypeScript; this module is the consuming half.
 //
-// FOUR ENCODING RULES this reader relies on (mirrored from the Rust/Lua
-// module headers, which force them from `render/frame.lua`'s shape):
+// FOUR ENCODING RULES this reader relies on (mirrored from the Rust module
+// headers, which force them from `render.frame`'s shape):
 //
 // 1. Enums are small integers, 1-based, and 0 always means absent.
 // 2. Sparse *numbers* (`difficulty`, `keeper_depth`) carry an explicit
@@ -27,17 +23,16 @@
 //    `hud.controlled` / an event's `slot` against the roster's `ids`
 //    (crossed once, via `decodeRoster`).
 //
-// WHAT THIS DECODER DOES DIFFERENTLY FROM THE RUST/LUA `decode`. Both
-// reference implementations deliberately decode to a "raw" shape --
-// `DecodedRenderFrame`/`DecodedRenderFrameRoster` in Rust, a plain
-// `scalars`/`players`/`events` table of numbers in Lua -- keyed by field
-// name but with enum codes left UNRESOLVED, plus a `pose_id`/`event_kind`
-// convenience function a caller invokes per lookup. Both docstrings say why:
-// "a decoded frame has integer roster slots where the payload had id
-// strings, and no `combat`. Typing it as the thing it is keeps a reader from
-// assuming the round trip is lossless." That caution is aimed at Rust's own
-// differential test, which is the only consumer `crates/gc-render`'s decode
-// currently has.
+// WHAT THIS DECODER DOES DIFFERENTLY FROM RUST'S `decode`. Rust's own
+// reference decoder deliberately decodes to a "raw" shape --
+// `DecodedRenderFrame`/`DecodedRenderFrameRoster` -- keyed by field name but
+// with enum codes left UNRESOLVED, plus a `pose_id`/`event_kind` convenience
+// function a caller invokes per lookup. Its docstring says why: "a decoded
+// frame has integer roster slots where the payload had id strings, and no
+// `combat`. Typing it as the thing it is keeps a reader from assuming the
+// round trip is lossless." That caution is aimed at Rust's own differential
+// test, which is the only consumer `crates/gc-render`'s decode currently
+// has.
 //
 // TypeScript's decode has a real consumer instead: `pitch.ts` already
 // declares and consumes a `RenderFrame` shape with enums resolved to strings
@@ -45,8 +40,8 @@
 // undefined)[]`, ...). Per this task's brief, that type is authoritative and
 // is not to be shadowed by a second, code-shaped type -- so `decode` and
 // `decodeRoster` resolve every enum inline instead of leaving that to a
-// per-lookup convenience wrapper. The caution the Rust/Lua types encode
-// still applies and is preserved the only way it can be without inventing a
+// per-lookup convenience wrapper. The caution Rust's raw type encodes still
+// applies and is preserved the only way it can be without inventing a
 // parallel shape: `decode`'s return type omits `roster` and `combat`
 // (neither travels in a per-frame block -- see rule 4 and "WHAT IS NOT
 // CARRIED" below) rather than declaring them and lying about their contents.
@@ -65,15 +60,15 @@
 // VERSIONING. Two numbers are stamped and both are checked here, because
 // they can change independently: `RENDER_FRAME_VERSION` (the payload's
 // meaning) and `LAYOUT_VERSION` (this block's shape). Neither can be
-// imported from the Rust producer -- v2/README.md forbids a TS package
+// imported from the Rust producer -- ARCHITECTURE.md §7 forbids a TS package
 // importing a Rust crate's source -- so both are duplicated constants that
 // must be bumped in lockstep with `crates/gc-render/src/frame_buffer.rs`.
 //
-// Every failure mode below throws, matching the Lua original's exclusive use
-// of `assert` here (never `return nil, err`) and the Rust port's `assert!`/
-// `panic!`: a version mismatch, a corrupted header, an unmapped enum code or
-// a malformed roster string blob are protocol violations between a Rust
-// producer and this reader, not expected, recoverable input (AGENTS.md §7).
+// Every failure mode below throws, matching Rust's own `assert!`/`panic!`
+// here (never a `Result`): a version mismatch, a corrupted header, an
+// unmapped enum code or a malformed roster string blob are protocol
+// violations between a Rust producer and this reader, not expected,
+// recoverable input (AGENTS.md §7).
 
 import type { CombatPresentationModel } from "@gc/presentation";
 import type { RGB } from "./draw2d.ts";
@@ -135,9 +130,9 @@ export const ROSTER_FIELD_COUNT = 7;
  * string columns went into the blob rather than the numeric block, and why
  * `LAYOUT_VERSION` is deliberately NOT bumped for them (the numeric layout
  * it guards is byte-for-byte unchanged, and it is itself pinned word-for-word
- * against a captured Lua fixture).
+ * against a captured reference fixture).
  *
- * Neither side can import the other (v2/README.md forbids a TS package
+ * Neither side can import the other (ARCHITECTURE.md §7 forbids a TS package
  * reading a Rust crate's source), so this is a duplicated constant --
  * exactly the shape that made wire-enum drift invisible before #433. It is
  * pinned against the Rust one by `scripts/check_presentation_parity.mjs`.
@@ -162,7 +157,7 @@ export function frameWords(count: number, eventCount: number): number {
 // `pitch.ts`, which this package does not own this wave.
 // ---------------------------------------------------------------------------
 
-/** Wire-carried closed set. Numbered exactly as `render/player_pose.lua`'s `PlayerPoseId` alias, 1..32. */
+/** Wire-carried closed set. Numbered exactly as Rust `crates/gc-render`'s `PlayerPoseId` enum, 1..32. */
 export type PlayerPoseId =
   | "keeper_grab"
   | "keeper_throw"
@@ -197,19 +192,19 @@ export type PlayerPoseId =
   | "fatigue"
   | "locomotion";
 
-/** Which system selected the shown pose. Mirrors `render/player_pose.lua`'s `PlayerPoseSource` alias. */
+/** Which system selected the shown pose. Mirrors Rust `crates/gc-render`'s `PlayerPoseSource` enum. */
 export type PlayerPoseSource = "soccer" | "combat" | "locomotion";
 
-/** A save's presentation style. Mirrors `sim/keeper.lua`'s `SaveStyle` alias. */
+/** A save's presentation style. Mirrors Rust `crates/gc-sim`'s `SaveStyle` enum. */
 export type SaveStyle = "spread" | "central" | "stretch";
 
-/** A keeper's behavior state at an event. Mirrors `sim/keeper.lua`'s `KeeperBehaviorState` alias. */
+/** A keeper's behavior state at an event. Mirrors Rust `crates/gc-sim`'s `KeeperBehaviorState` enum. */
 export type KeeperBehaviorState = "base" | "advance" | "contain" | "set" | "retreat" | "recover";
 
-/** A keeper-relevant shot's presentation type. Mirrors `sim/keeper.lua`'s `KeeperShotType` alias. */
+/** A keeper-relevant shot's presentation type. Mirrors Rust `crates/gc-sim`'s `KeeperShotType` enum. */
 export type KeeperShotType = "ground" | "chip";
 
-/** Wire-carried closed set. Numbered exactly as `sim/match.lua`'s `MatchEventKind` alias, 1..25. */
+/** Wire-carried closed set. Numbered exactly as Rust `crates/gc-sim`'s `MatchEventKind` enum, 1..25. */
 export type MatchEventKind =
   | "shot"
   | "pass"
@@ -335,8 +330,8 @@ export interface DecodedRenderFrame {
 
 // ---------------------------------------------------------------------------
 // Enum code tables (decode direction only -- this module never encodes).
-// Numbered exactly as `render/frame_buffer.lua`'s tables / `crates/gc-render
-// /src/frame_buffer.rs`'s `*_from_code` functions.
+// Numbered exactly as `crates/gc-render/src/frame_buffer.rs`'s
+// `*_from_code` functions.
 // ---------------------------------------------------------------------------
 
 function teamFromCode(code: number): "home" | "away" | undefined {
@@ -615,8 +610,8 @@ function decodeBool(word: number): boolean {
   throw new Error(`frame_buffer: not a boolean word: ${word}`);
 }
 
-// 0 = not reported, 1 = false, 2 = true. Mirrors `render/frame.lua`'s
-// `tri_state`/its Rust port's inverse.
+// 0 = not reported, 1 = false, 2 = true. The inverse of Rust `render.frame`'s
+// `tri_state` encoding.
 function triState(word: number): boolean | undefined {
   if (word === 0) {
     return undefined;
@@ -676,9 +671,8 @@ function column(words: ArrayLike<number>, at0: number, fieldIndex: number, count
 
 /**
  * Read one frame block back. This is the TypeScript mirror of
- * `crates/gc-render/src/frame_buffer.rs`'s `decode` / `render/frame_buffer
- * .lua`'s `frame_buffer.decode`, with every enum resolved inline (see this
- * module's header for why).
+ * `crates/gc-render/src/frame_buffer.rs`'s `decode`, with every enum
+ * resolved inline (see this module's header for why).
  *
  * `words` is `ArrayLike<number>` rather than `readonly number[]` so a caller
  * holding a zero-copy `Float64Array` VIEW over wasm linear memory (`@gc/app`'s
@@ -850,8 +844,7 @@ export function decode(words: ArrayLike<number>): DecodedRenderFrame {
 /**
  * Read a roster block back, pairing it with the string blob
  * `crates/gc-render`'s `encode_roster` returned alongside it. TypeScript
- * mirror of that module's `decode_roster` / `render/frame_buffer.lua`'s
- * `frame_buffer.decode_roster`.
+ * mirror of that module's `decode_roster`.
  *
  * `words` is `ArrayLike<number>` -- see `decode`'s doc for why (the same
  * zero-copy `Float64Array`-view rationale applies to a roster block).
@@ -888,8 +881,8 @@ export function decodeRoster(words: ArrayLike<number>, strings: string): Decoded
   parts.pop();
   // THIS ASSERTION CARRIES THE BLOB'S ENTIRE SHAPE-VERSIONING BURDEN, because
   // `LAYOUT_VERSION` cannot be bumped for a blob change (it is stamped into
-  // the numeric block, which is pinned word-for-word against a captured Lua
-  // fixture -- see `ROSTER_STRING_FIELD_COUNT`). And it DEGENERATES TO A
+  // the numeric block, which is pinned word-for-word against a captured
+  // reference fixture -- see `ROSTER_STRING_FIELD_COUNT`). And it DEGENERATES TO A
   // NO-OP at `count === 0`: `0 === 0` holds for any field count, so a
   // producer and reader that disagreed would agree vacuously on an empty
   // roster. Harmless today -- a match always fields two teams, and an empty
@@ -975,7 +968,7 @@ function at2(parts: readonly string[], index: number): string {
  * existed on `pitchTypes.RenderFrame`, which is sized for DRAWING only. This
  * is the one canonical frame type both packages import instead of each
  * hand-declaring their own (previously-drifting) slice -- see this
- * decoder's header and README rule 6.7. `pitch.draw` keeps accepting this
+ * decoder's header and ARCHITECTURE.md §4 rule 6. `pitch.draw` keeps accepting this
  * type via ordinary structural typing: it only reads the `PitchRenderFrame`
  * fields it already declared, and this type is a strict superset of those.
  */

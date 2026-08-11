@@ -1,15 +1,16 @@
 //! OMP-1 authoritative fixed-input recording.
 //!
-//! Generated only by `love . --determinism-refresh`. Normal verification
-//! decodes these effective frames and never invokes their source bots.
-//! Refresh preserves effective axes/action masks; schema migration may update headers.
+//! This is a frozen artifact: the capture command that originally generated
+//! it no longer exists, so it cannot be regenerated. Normal verification
+//! decodes these effective frames and never invokes their source bots. A
+//! schema migration may update headers, but the recorded effective
+//! axes/action masks themselves must stay untouched.
 //!
-//! This is a golden determinism-evidence fixture, not authored content: it is
-//! mechanically converted from `data/omp1_determinism.lua` (14,517 lines) to
-//! JSON and embedded verbatim via `include_str!`, rather than hand-translated.
-//! The round trip from Lua to JSON was verified byte-for-byte for the two large
-//! blob strings (`frame_wires`, `boundary_hashes`) and value-for-value for
-//! every other field.
+//! This is a golden determinism-evidence fixture, not authored content: it
+//! was mechanically converted (14,517 source lines) to JSON and embedded
+//! verbatim via `include_str!`, rather than hand-translated. The conversion
+//! was verified byte-for-byte for the two large blob strings (`frame_wires`,
+//! `boundary_hashes`) and value-for-value for every other field.
 
 use std::sync::LazyLock;
 
@@ -144,7 +145,7 @@ pub fn fixture() -> &'static Omp1DeterminismFixture {
     &FIXTURE
 }
 
-/// The recorded effective-frame wire lines, split on `\n`. The Lua source
+/// The recorded effective-frame wire lines, split on `\n`. The fixture
 /// stores this as one blob string (`frame_wires`); this is the equivalent of
 /// what a consumer splitting that string on newlines would see, with the
 /// trailing empty element from the final newline removed.
@@ -173,10 +174,10 @@ pub fn boundary_hash_lines() -> Vec<&'static str> {
 mod tests {
     use super::*;
 
-    /// The JSON fixture parses and matches the header fields transcribed by
-    /// eye from `data/omp1_determinism.lua`, and the two large blob strings
-    /// split into exactly `frame_count`/`boundary_count` lines — corroborating
-    /// the byte-identical round trip already checked by the conversion script.
+    /// The JSON fixture parses and matches its recorded header fields, and
+    /// the two large blob strings split into exactly
+    /// `frame_count`/`boundary_count` lines — corroborating the
+    /// byte-identical round trip already checked by the conversion script.
     #[test]
     fn fixture_matches_the_lua_source_header() {
         let f = fixture();

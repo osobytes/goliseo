@@ -1,10 +1,9 @@
-// New tests for scene.ts (new shared infrastructure, not a port of one Lua
-// file -- see scene.ts's own header).
+// Tests for scene.ts.
 //
 // TESTABILITY BOUNDARY: constructing a real `THREE.WebGLRenderer` needs a
 // live GL context (a real <canvas> in a browser, or a WebGL polyfill), which
 // does not exist in this milestone's headless `vitest` environment ("node",
-// no DOM -- see v2/ts/vitest.config.ts). This suite therefore never
+// no DOM -- see ts/vitest.config.ts). This suite therefore never
 // constructs one. `stubRenderer()` below is NOT a WebGL mock: it is a plain
 // object satisfying the handful of methods `SceneRoot` calls directly on the
 // renderer it was handed (`setPixelRatio`, `setSize`, `autoClear`, `dispose`,
@@ -283,7 +282,7 @@ describe("SceneRoot.populate", () => {
   // into a canvas-texture sprite via `document.createElement("canvas")`
   // (see draw2d.ts's `buildTextSprite`) -- `document` does not exist in
   // this milestone's "node" vitest environment (no DOM, not just no GL; see
-  // v2/ts/vitest.config.ts). This is not new to scene.ts: match_hud.ts's own
+  // ts/vitest.config.ts). This is not new to scene.ts: match_hud.ts's own
   // `drawMatchHud` is already documented "Impure ... Untested -- see
   // draw2d.ts" for exactly this reason. Polyfilling `document` here would be
   // the DOM-flavoured version of "mocking a WebGL context into existence" --

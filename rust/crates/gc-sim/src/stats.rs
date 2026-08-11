@@ -1,4 +1,4 @@
-//! Port of `sim/stats.lua`.
+//! Stat-to-physical-quantity conversions for `gc_sim`.
 //!
 //! Derives concrete physical quantities from a player's effective stat block.
 //! `species::apply` owns the first attribute-modifying readability layer and

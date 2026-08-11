@@ -7,9 +7,9 @@
 //! ## Wire payloads are bytes, never strings
 //!
 //! [`gc_netcode::input_protocol::encode`]/[`gc_netcode::input_protocol::decode`]
-//! operate on `Vec<u8>`/`&[u8]` — a Lua string is a raw byte array, and this
-//! crate's own differential tests hold that codec to exact-byte
-//! reproduction, not text formatting (see `input_protocol.rs`'s own doc).
+//! operate on `Vec<u8>`/`&[u8]`, and this crate's own differential tests
+//! hold that codec to exact-byte reproduction, not text formatting (see
+//! `input_protocol.rs`'s own doc).
 //! [`input_protocol_encode`]/[`input_protocol_decode`] below keep that:
 //! `Vec<u8>`/`&[u8]` cross the wasm boundary as `Uint8Array`, wasm-bindgen's
 //! native (lossless, corruption-free) byte marshalling — never `String`,
@@ -68,11 +68,11 @@
 //! `1..=8`) — `gc_netcode::input_protocol::validate` itself bounds-checks it
 //! against exactly that range, and this module's `row_to_json`/
 //! `row_from_json` pass it straight through with **no** conversion. That is
-//! README rule 5.3's documented exception ("any index that appears in a
-//! serialized payload, a hash input, or a wire format keeps its original
-//! value") applied literally: `slot_index` on this wire is the same
-//! one-based value `gc_sim::input_frame::slot(index)` already takes and the
-//! Lua original always used, not the zero-based Rust enum below it.
+//! ARCHITECTURE.md §3 rule 3's documented exception ("any index that
+//! appears in a serialized payload, a hash input, or a wire format keeps
+//! its original value") applied literally: `slot_index` on this wire is the same
+//! one-based value `gc_sim::input_frame::slot(index)` already takes, not the
+//! zero-based Rust enum below it.
 //!
 //! [`gc_sim::input_frame::SlotId`] — the *identity* a resolved slot index
 //! ultimately names — is an ordinary Rust enum, so its discriminant is

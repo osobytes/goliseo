@@ -1,17 +1,16 @@
-// Ported from spec/screens/flow_spec.lua.
-//
-// The Lua spec's final assertions ("top should be the match screen",
-// `#top.state.players == 10`, `top.state.press.home == 2`) read
-// `game.screens.match`'s state directly. `@gc/screens`'s `match.ts` exists
-// now, but its `RealMatchScreenPort.state` (`real_match.ts`, what a
-// constructed real match screen would actually expose through this port's
-// `MatchScreenFactory`) is deliberately narrowed to `{time_left, score}` --
-// no `players`/`press` fields at all (see `bootstrap.spec.ts`'s identically
-// shaped "applies request roster, formation, tactic, and seed" for the same
-// reason, spelled out there). So this is not a stale "not yet ported"
-// blocker -- the module exists, its published contract just does not carry
-// what these two assertions need, and that stays true (`@gc/screens` is out
-// of this batch's file ownership).
+// The final assertions this test needs ("top should be the match screen",
+// `#top.state.players == 10`, `top.state.press.home == 2`) would require
+// reading `game.screens.match`'s state directly. `@gc/screens`'s
+// `match.ts` exists, but its `RealMatchScreenPort.state` (`real_match.ts`,
+// what a constructed real match screen would actually expose through this
+// port's `MatchScreenFactory`) is deliberately narrowed to
+// `{time_left, score}` -- no `players`/`press` fields at all (see
+// `bootstrap.spec.ts`'s identically shaped "applies request roster,
+// formation, tactic, and seed" for the same reason, spelled out there). So
+// this is not an incomplete implementation -- the module exists, its
+// published contract just does not carry what these two assertions need,
+// and that stays true (`@gc/screens` is out of this batch's file
+// ownership).
 //
 // Re-audited a third time this wave, against current code: `Session::new`'s
 // wasm binding (`crates/gc-wasm/src/session.rs`) now takes `tactic`/
@@ -23,20 +22,20 @@
 // `tactic: "press_high"`, now genuinely produces `press.home == 2`, and
 // given `homeStarterIds`, a ten-player roster reflecting them.
 //
-// What this test proves is therefore shifted one layer down from the Lua
-// original, for the same reason `bootstrap.spec.ts` explains: `Flow.start`'s
-// injected `MatchScreenFactory` is `(choice: FlowChoice) => Screen` -- an
-// opaque `Screen`, by this file's own contract, not a `RealMatchScreenPort`
-// with a `state` this test could read fields off even if that port carried
+// What this test proves is therefore shifted one layer down, for the same
+// reason `bootstrap.spec.ts` explains: `Flow.start`'s injected
+// `MatchScreenFactory` is `(choice: FlowChoice) => Screen` -- an opaque
+// `Screen`, by this file's own contract, not a `RealMatchScreenPort` with a
+// `state` this test could read fields off even if that port carried
 // `players`/`press` (which it doesn't -- see above). So the factory
 // constructs a REAL `createSimHost` session directly, closed over the exact
 // `{formation, tactic}` choice `Flow` hands it (the same choice the working
 // "walks Squad -> Formation -> Tactic -> Match" case above already proves
 // `Flow` computes correctly from the same clicks), and this test reads the
 // session's own `matchStateJson()` -- proving the walk's captured choice
-// really does reach a live simulated match's roster/press, which is what
-// the Lua original's `top.state.players`/`top.state.press` checked, one
-// layer lower than `Screen` itself can express in this port.
+// really does reach a live simulated match's roster/press, the same check
+// `top.state.players`/`top.state.press` would make, one layer lower than
+// `Screen` itself can express in this package.
 
 import { describe, expect, it } from "vitest";
 import { ScreenStack } from "./screen_stack.ts";

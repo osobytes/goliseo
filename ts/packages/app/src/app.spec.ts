@@ -1,34 +1,31 @@
-// Ported from spec/game/app_flow_spec.lua.
-//
 // The one exception is "applies live screen-shake changes to a paused match
-// before resume": it constructs a custom `real`-kind adapter that returns
-// `game.screens.match.new({combat_enabled = true})` directly and reads
-// `combat_feedback.diagnostics(match_screen._combat_feedback)`. As of this
-// batch, `@gc/screens`'s `match.ts` (`MatchScreen`) and `@gc/presentation`
-// (a declared dependency here, per package.json) both exist -- the stated
-// blocker as originally written is stale.
+// before resume": it would construct a custom `real`-kind adapter that
+// returns a `MatchScreen` built with `combat_enabled: true` and reads its
+// combat-feedback diagnostics. As of this batch, `@gc/screens`'s `match.ts`
+// (`MatchScreen`) and `@gc/presentation` (a declared dependency here, per
+// package.json) both exist -- the stated blocker as originally written is
+// stale.
 //
-// Re-audited a fourth time this wave, against the Lua original's actual test
-// body (`spec/game/app_flow_spec.lua`'s "applies live screen-shake changes
-// to a paused match before resume") rather than trusting the previous
-// passes' framing of it. That framing was wrong in a way worth naming
-// plainly: it assumed `combat_feedback.diagnostics(...).reduced_motion`
+// Re-audited a fourth time this wave, against `@gc/presentation`'s
+// `combatFeedback` module directly rather than trusting previous passes'
+// framing of what this case needs. That framing was wrong in a way worth
+// naming plainly: it assumed `combat_feedback.diagnostics(...).reduced_motion`
 // summarizes per-tick combat EVENTS, and therefore that a per-tick combat
 // event surface (`SimSession.combatEventsJson`, which landed this very wave
 // -- `crates/gc-wasm/src/session.rs`, mirrored in
 // `packages/wasm/src/types.ts`, and now threaded through this package's own
 // `sim_host.ts`) was the missing piece.
 //
-// Reading `combat_feedback.lua`/`@gc/presentation`'s ported `combatFeedback`
-// module directly shows that is not what `reduced_motion` is.
-// `reduced_motion` is set by `feedback.configure(state, reduced_motion,
-// ...)`, driven by the `screen_shake` SETTING (`default_reduced_motion =
-// not settings.screen_shake`) -- not by anything event-derived at all. The
-// Lua test never steps the match or feeds it a single combat event; it
-// pauses immediately after kickoff, flips the `screen_shake` settings
-// toggle, and checks that `_combat_feedback.reduced_motion` flipped with
-// it. So `combatEventsJson` is orthogonal to this test's real requirement --
-// consuming it here would not move this case an inch closer to passing.
+// Reading `@gc/presentation`'s `combatFeedback` module directly shows that
+// is not what `reduced_motion` is. `reduced_motion` is set by
+// `feedback.configure(state, reduced_motion, ...)`, driven by the
+// `screen_shake` SETTING (`default_reduced_motion = not settings.screen_shake`)
+// -- not by anything event-derived at all. The intended case never steps
+// the match or feeds it a single combat event; it pauses immediately after
+// kickoff, flips the `screen_shake` settings toggle, and checks that
+// `_combat_feedback.reduced_motion` flipped with it. So `combatEventsJson`
+// is orthogonal to this test's real requirement -- consuming it here would
+// not move this case an inch closer to passing.
 //
 // The actual, current blocker, confirmed by reading `@gc/screens`'s
 // `match.ts` directly: `MatchScreenAsRealMatchScreen.applySettings`/
@@ -45,8 +42,8 @@
 // "the settings-to-presentation wire does not exist yet" one. That is
 // `@gc/screens`'s `match.ts` to build (out of this batch's file ownership;
 // `app.ts`, which would call `applySettings`, is also out of this batch's
-// file ownership). Still genuinely blocked, now for the reason the Lua test
-// actually exercises rather than the one a prior pass's comment guessed at.
+// file ownership). Still genuinely blocked, now for the reason this case
+// actually needs rather than the one a prior pass's comment guessed at.
 // Every other case in this file drives the *fake* match adapter (`App`'s
 // default), which needs neither.
 

@@ -1,7 +1,4 @@
-// New tests for match_hud.ts. No Lua spec targets game/render/match_hud.lua
-// directly with a claimable, self-contained fixture -- see this package's
-// port report and effects.spec.ts's header for the related
-// combat_feedback_spec.lua case this module is also blocked on.
+// Tests for match_hud.ts.
 
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
@@ -131,7 +128,7 @@ describe("match_hud.matchHudCommands", () => {
 // least a venue `dl.text(...)` command, whose default build path
 // (draw2d.ts's `buildTextSprite`) calls `document.createElement("canvas")` --
 // unavailable under this workspace's default `vitest` "node" environment
-// (v2/ts/vitest.config.ts has no per-file environment overrides, and no
+// (ts/vitest.config.ts has no per-file environment overrides, and no
 // jsdom/happy-dom is installed in this workspace to request one via a
 // `// @vitest-environment` docblock).
 //

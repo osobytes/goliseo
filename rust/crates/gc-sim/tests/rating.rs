@@ -1,4 +1,4 @@
-//! Port of `spec/sim/rating_spec.lua`.
+//! Tests for player overall-rating calculations.
 
 use gc_data::players::{PlayerData, Position, StatBlock};
 use indexmap::IndexMap;

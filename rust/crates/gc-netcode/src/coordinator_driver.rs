@@ -1,5 +1,3 @@
-//! Port of `game/online/coordinator_driver.lua`.
-//!
 //! An in-process transport: N [`coordinator::CoordinatorState`]s (one host,
 //! zero or more guests) wired together by fake links, with a fake clock for
 //! latency. Every coordinator is exercised exactly as production code would:

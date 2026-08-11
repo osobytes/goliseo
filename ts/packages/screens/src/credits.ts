@@ -1,6 +1,6 @@
-// Ported from game/screens/credits.lua — the credits & source screen.
-// `game/build_info.lua` (-> `@gc/app`) is injected as a `BuildInfo`
-// parameter; see content.ts's header and squad.ts's for the rationale.
+// The credits & source screen. `@gc/app`'s `build_info.ts` is injected as
+// a `BuildInfo` parameter; see content.ts's header and squad.ts's for the
+// rationale.
 
 import { focus, type Layout } from "@gc/ui";
 import type { FocusEvent } from "@gc/ui";

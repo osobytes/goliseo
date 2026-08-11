@@ -1,5 +1,3 @@
-//! Port of `sim/combat_rules.lua`.
-//!
 //! Shared combat tuning constants used across the combat modules.
 
 /// Maximum ticks a disable effect can hold a player for.

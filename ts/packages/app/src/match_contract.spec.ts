@@ -1,5 +1,3 @@
-// Ported from spec/game/match_contract_spec.lua.
-
 import { describe, expect, it } from "vitest";
 import { matchContract } from "./match_contract.ts";
 import { MATCH_CONTRACT_CONTENT, NEBULA } from "./test_support/fixtures.ts";

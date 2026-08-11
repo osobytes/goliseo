@@ -43,10 +43,9 @@ function expectMatNear(actual: Mat4, expected: Mat4, tol = 1e-9): void {
 
 describe("mat4", () => {
   it("stores translation row-major, in m[3], m[7], m[11]", () => {
-    // Row-major is not cosmetic: it is what the Lua original's LÖVE shader
-    // uniform expects, and this port preserves the layout so quat.toMat4
-    // stays interchangeable. Getting it wrong sends a transposed matrix with
-    // no error.
+    // Row-major is not cosmetic: getting it wrong sends a transposed matrix
+    // with no error, and quat.toMat4 needs this same layout to stay
+    // interchangeable.
     const m = mat4.translation(1, 2, 3);
     expect(m[3]).toBe(1);
     expect(m[7]).toBe(2);

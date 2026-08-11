@@ -1,4 +1,4 @@
-//! Port of `sim/tripwire.lua`.
+//! Fun-signature tripwire.
 //!
 //! Fun-signature tripwire: a fast, deterministic snapshot of the fun-proxy
 //! metrics over a fixed seed set, compared against a checked-in baseline
@@ -93,8 +93,7 @@ pub struct TripwireRow {
 }
 
 /// Compare a measured signature against the baseline table. Keys missing
-/// from either table read as `0.0`, mirroring the Lua original's
-/// `table[key] or 0`.
+/// from either table read as `0.0`.
 #[must_use]
 pub fn compare(baseline: &Signature, current: &Signature) -> (bool, Vec<TripwireRow>) {
     let mut ok = true;
@@ -141,31 +140,43 @@ pub fn report(rows: &[TripwireRow], ok: bool, n: i64) -> String {
     if ok {
         lines.push("TRIPWIRE OK".to_string());
     } else {
-        lines.push("TRIPWIRE DRIFT — if intended: re-run the sim benchmark, log the".to_string());
-        lines
-            .push("shift in docs/design/fun_metrics.md (drift log), then refresh with".to_string());
-        lines.push("`tripwire write`.".to_string());
+        lines.push("TRIPWIRE DRIFT — if intended: log the shift in".to_string());
+        lines.push("docs/design/fun_metrics.md (drift log), then replace".to_string());
+        lines.push("gc-data/src/fun_baseline.rs's header and const with a fresh".to_string());
+        lines.push("`gc_sim::tripwire::serialize` run (this repository has no sweep".to_string());
+        lines.push("runner to drive that automatically).".to_string());
     }
     lines.join("\n")
 }
 
-/// Serialize a signature as loadable baseline source text (mirrors the Lua
-/// `data/fun_baseline.lua` file format). Stable order, regenerable.
+/// Serialize a signature as loadable baseline source text: the exact `//!`
+/// module header and `pub const BASELINE: FunBaseline = FunBaseline { ... };`
+/// literal that belong in `gc_data::fun_baseline`
+/// (`rust/crates/gc-data/src/fun_baseline.rs`), so the output can be pasted
+/// directly over that file's header and const. Stable order (mirrors
+/// [`TRACKED`]), regenerable.
 #[must_use]
 pub fn serialize(current: &Signature, n: i64) -> String {
     let mut lines = vec![
-        "-- Fun-signature tripwire baseline. REGENERATE, don't hand-edit.".to_string(),
-        "-- ...and only after confirming the drift is intended, re-running".to_string(),
-        "-- the sim benchmark, and logging the shift in the drift log of".to_string(),
-        "-- docs/design/fun_metrics.md.".to_string(),
-        "return {".to_string(),
-        format!("    n = {n},"),
+        "//! Fun-signature tripwire baseline. REGENERATE, don't hand-edit.".to_string(),
+        "//!".to_string(),
+        "//! Regenerating this baseline needs a sweep runner -- something that plays".to_string(),
+        "//! a fresh batch of seeded matches and calls `gc_sim::tripwire::measure`/".to_string(),
+        "//! `serialize` -- which this repository does not currently provide.".to_string(),
+        "//! Refreshing it by hand defeats the purpose of the tripwire: confirm the".to_string(),
+        "//! drift is intended, log the shift in the drift log of".to_string(),
+        "//! docs/design/fun_metrics.md, and only then replace this header and const".to_string(),
+        "//! with `gc_sim::tripwire::serialize`'s output.".to_string(),
+        String::new(),
+        "/// The frozen fun-signature tripwire baseline.".to_string(),
+        "pub const BASELINE: FunBaseline = FunBaseline {".to_string(),
+        format!("    n: {n},"),
     ];
     for &key in TRACKED {
         let v = current.get(key).copied().unwrap_or(0.0);
-        lines.push(format!("    {key} = {v:.6},"));
+        lines.push(format!("    {key}: {v:.6},"));
     }
-    lines.push("}".to_string());
+    lines.push("};".to_string());
     lines.push(String::new());
     lines.join("\n")
 }

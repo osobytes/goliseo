@@ -2,8 +2,11 @@
 # serializer and fnv1a64 content digest.
 #
 # Generated from the real Lua implementation (`love .` against a scratch copy
-# of core/, data/, and sim/ — see v2/tools/lua_reference/README.md for the
-# harness). Asserted from:
+# of core/, data/, and sim/). This vector is frozen and cannot be
+# regenerated: the Lua implementation it was captured from no longer exists
+# in this repository. A failing differential against it is a finding about
+# the Rust code under test, not a fixture to refresh. See
+# tools/lua_reference/README.md for provenance. Asserted from:
 #   - Rust: crates/gc-sim/src/research_schema.rs (tests::shared_vectors_agree_with_lua)
 #
 # Every record-shaped case validates against one shared shape, reproduced

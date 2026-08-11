@@ -86,8 +86,9 @@ export interface StadiumOptions {
 }
 
 // Mirrors pitch.ts's own (unexported) `DEFAULT_ARENA`, which in turn mirrors
-// `data/arenas.lua`'s only current entry (`helios_crown`) -- see that file's
-// header for why this package cannot import the Rust-owned table directly.
+// Rust `crates/gc-data`'s only current entry (`helios_crown`) -- see that
+// file's header for why this package cannot import the Rust-owned table
+// directly.
 const DEFAULT_ARENA: ArenaColors = {
   floor_color: [0.025, 0.16, 0.17],
   rail_color: [0.25, 0.88, 1.0],

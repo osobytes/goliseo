@@ -1,16 +1,15 @@
-//! Port of `sim/input_frame.lua`.
-//!
 //! Pure, versioned input records for the multiplayer-shaped simulation. This
 //! module deliberately knows neither render input nor transport delivery.
 //!
 //! This is the wire format: its bytes go on the network *and* into rollback
 //! re-simulation, so two clients must encode identically or the match
-//! desyncs. [`encode`]/[`decode`] are differential-tested against the
-//! reference Lua implementation (see `v2/tools/lua_reference`).
+//! desyncs. [`encode`]/[`decode`] are differential-tested against reference
+//! vectors captured from the Lua implementation this simulation was
+//! originally validated against (see `tools/lua_reference`).
 //!
 //! Many of the Lua original's runtime shape checks (`has_only_fields`,
 //! `is_canonical_array`, `is_integer` on values that are already integers)
-//! validate that an untyped Lua table has the shape a typed language
+//! validated that an untyped Lua table had the shape a typed language
 //! guarantees at compile time. Those checks are dropped here as structurally
 //! redundant; the bound/range/uniqueness checks they wrapped around are kept.
 
@@ -253,7 +252,7 @@ pub enum InputFrameErrorCode {
     WireTooLarge,
 }
 
-/// An expected, recoverable input-frame failure (README rule 5.5): the
+/// An expected, recoverable input-frame failure (ARCHITECTURE.md §3 rule 5): the
 /// caller is meant to handle it, not a programmer error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InputFrameError {

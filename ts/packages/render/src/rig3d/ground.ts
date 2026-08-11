@@ -220,7 +220,7 @@
 // safe.
 //
 // NO LOD EARLY-OUT, and whoever wires one in needs to know. `rig3d/pose_lod.ts`
-// is ported but unwired -- nothing under `v2/ts` calls it -- so there is no
+// exists but is unwired -- nothing under `ts/` calls it -- so there is no
 // interaction today. When #394's LOD is wired, `poseAndGround` will still do a
 // full evaluation and a full scan for every character every frame, including
 // held or distant ones whose pose did not change. The scan result is a pure

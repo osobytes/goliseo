@@ -1,5 +1,3 @@
-// Ported from spec/render/camera_spec.lua.
-
 import { describe, expect, it } from "vitest";
 import { camera, perspectiveRig, type CameraField, type CameraView, type CameraViewport } from "./camera.ts";
 
@@ -78,13 +76,14 @@ describe("camera.view", () => {
 // ============================================================================
 // VIEWPORT INVARIANCE (#414)
 //
-// The specs above this block -- and every projection spec ported from Lua --
-// only ever ran at one viewport, and Lua only ever ran at `vp == field`. That
-// is exactly how a port that translated every module AND every test still
-// shipped a projection whose entity sizes carried no viewport factor: the
-// tests inherited the degenerate case along with the code. These are the
-// properties that were silently false, written so they fail on the old
-// formula at any viewport other than the field's own size.
+// The specs above this block only ever ran at one viewport, matching the
+// single viewport the original renderer ever ran at (`vp == field`). That is
+// exactly how a projection whose entity sizes carried no viewport factor
+// shipped undetected: the tests exercised only the degenerate case, so a
+// viewport-invariance property this projection was supposed to have went
+// completely unchecked. These are the properties that were silently false,
+// written so they fail on the old formula at any viewport other than the
+// field's own size.
 // ============================================================================
 describe("camera.project across viewports", () => {
   // The near (widest) edge of the pitch trapezoid, in screen pixels. This is
@@ -113,7 +112,7 @@ describe("camera.project across viewports", () => {
   }
 
   const SAME_ASPECT: readonly CameraViewport[] = [
-    { w: 960, h: 540 }, // the LÖVE window, and the only case the old specs covered
+    { w: 960, h: 540 }, // the original renderer's only window size, and the only case the old specs covered
     { w: 1280, h: 720 },
     { w: 1920, h: 1080 },
     { w: 2560, h: 1440 },
@@ -352,49 +351,47 @@ describe("camera.perspectiveRig / camera.rigAngleRad", () => {
 });
 
 // ============================================================================
-// LUA DIFFERENTIAL -- see v2/tools/render_reference/README.md (the pitch
-// differential's own tool directory; this capture used the same headless
-// `love .` pattern but needs no love.graphics stub at all, since
-// `camera.project` is pure -- no love.* calls anywhere in camera.lua). This
-// is the leading hypothesis check named in this task's brief: if v2's camera
-// or pixels-per-metre differs from the Lua original, everything on screen
-// moves at the wrong apparent speed/distance even with identical sim state.
+// PINNED REFERENCE VALUES -- see tools/render_reference/README.md (the
+// pitch differential's own tool directory; this capture used the same
+// headless capture pattern, though `camera.project` needed no rendering
+// stub at all, since it is pure -- the reference implementation had no
+// rendering calls anywhere in its own camera projection). This was the
+// leading hypothesis check for a rewrite of this scope: if this camera or
+// its pixels-per-metre differs from the reference implementation, everything
+// on screen moves at the wrong apparent speed/distance even with identical
+// sim state.
 //
-// Captured with a small standalone script (field 960x540, at TWO viewports --
-// see below for why two):
-//
-//   local camera = require("game.render.camera")
-//   local sx, sy, scale = camera.project(wx, wy, field, vp, cfg, view)
-//   print(string.format("%.17g\t%.17g\t%.17g", sx, sy, scale))
-//
-// run for the fixed (default) projection, a fixed projection under a 2x
-// zoomed follow view, and the perspective-mode projection under a 1x follow
-// view -- the three distinct code paths `camera.project` can take.
+// Captured with a small standalone script against the reference
+// implementation (field 960x540, at TWO viewports -- see below for why
+// two), run for the fixed (default) projection, a fixed projection under a
+// 2x zoomed follow view, and the perspective-mode projection under a 1x
+// follow view -- the three distinct code paths `camera.project` can take.
 //
 // TWO VIEWPORTS, AND ONE DELIBERATE DIVERGENCE (#414)
 //
-// 960x540 is the viewport the LÖVE build actually renders at, and the only
-// one it can: conf.lua pins a non-resizable 960x540 window and
-// sim/env_config.lua's DEFAULT_FIELD is 960x540, so `vp == field` in every
-// LÖVE frame ever drawn. (An earlier revision of this comment called 1280x720
-// "the product's own dimensions". It never was.) There, v2 must and does
-// match Lua on all three returned values.
+// 960x540 is the viewport the reference implementation actually rendered
+// at, and the only one it could: it pinned a non-resizable 960x540 window
+// and a 960x540 default field, so `vp == field` in every frame it ever
+// drew. (An earlier revision of this comment called 1280x720 "the
+// product's own dimensions". It never was.) There, this renderer must and
+// does match the reference on all three returned values.
 //
-// 1280x720 is a viewport only v2 can be in, and it is kept because it pins
-// the one place the two builds now differ ON PURPOSE. Lua's projection puts
-// the world-to-pixel factor into screen POSITIONS and leaves the depth
-// `scale` -- the only input to every entity size -- a pure ratio, so a bigger
-// window grew the pitch and left the players the same number of pixels.
-// camera.ts's `projectFixed` folds a single uniform fit factor into both.
-// The consequences, both asserted below:
+// 1280x720 is a viewport only this renderer can be in, and it is kept
+// because it pins the one place the two now differ ON PURPOSE. The
+// reference projection puts the world-to-pixel factor into screen
+// POSITIONS and leaves the depth `scale` -- the only input to every entity
+// size -- a pure ratio, so a bigger window grew the pitch and left the
+// players the same number of pixels. camera.ts's `projectFixed` folds a
+// single uniform fit factor into both. The consequences, both asserted
+// below:
 //
 //   * POSITIONS are unchanged at any viewport with the field's aspect ratio.
 //     This fix reframes nothing; the 1280x720 sx/sy rows below are still
-//     matched exactly, character for character with the Lua capture.
+//     matched exactly, character for character with the reference capture.
 //   * `scale` is multiplied by that fit factor -- 1280/960 == 720/540 == 4/3
-//     here. That IS the fix, and asserting it against the Lua number times
-//     4/3 states the divergence precisely instead of hiding it behind a
-//     re-baselined golden.
+//     here. That IS the fix, and asserting it against the reference number
+//     times 4/3 states the divergence precisely instead of hiding it behind
+//     a re-baselined golden.
 // ============================================================================
 
 interface CameraReferenceRow {
@@ -405,7 +402,7 @@ interface CameraReferenceRow {
   readonly scale: number;
 }
 
-// Viewport 960x540 -- `vp == field`, the LÖVE build's only configuration.
+// Viewport 960x540 -- `vp == field`, the reference implementation's only configuration.
 // prettier-ignore
 const FIXED_REFERENCE_AT_FIELD_SIZE: readonly CameraReferenceRow[] = [
   { wx: 0, wy: 0, sx: 235.19999999999999, sy: 129.59999999999999, scale: 0.51000000000000001 },
@@ -428,9 +425,9 @@ const FIXED_ZOOM_REFERENCE_AT_FIELD_SIZE: readonly CameraReferenceRow[] = [
   { wx: -50, wy: 600, sx: -221.66666666666663, sy: 782, scale: 1.7533333333333334 },
 ];
 
-// Viewport 1280x720 -- a viewport only v2 can be in. See the block comment
-// above: sx/sy must still match Lua exactly, `scale` must be Lua's times the
-// uniform fit factor.
+// Viewport 1280x720 -- a viewport only this renderer can be in. See the
+// block comment above: sx/sy must still match the reference exactly,
+// `scale` must be the reference's times the uniform fit factor.
 // prettier-ignore
 const FIXED_REFERENCE: readonly CameraReferenceRow[] = [
   { wx: 0, wy: 0, sx: 313.60000000000002, sy: 172.79999999999998, scale: 0.51000000000000001 },
@@ -454,21 +451,22 @@ const FIXED_ZOOM_REFERENCE: readonly CameraReferenceRow[] = [
 ];
 
 // PERSPECTIVE REFERENCE (camera.ts's `camera.PERSPECTIVE` doc comment has the
-// full derivation). This table used to be an independent Lua capture, the
-// same way FIXED_REFERENCE/FIXED_ZOOM_REFERENCE still are -- but
-// `camera.PERSPECTIVE` was deliberately retuned away from the Lua original's
-// framing for the true-perspective Strikers camera work, so a byte-for-byte
-// Lua capture at the OLD tuning is no longer a meaningful regression target
-// for the NEW one -- the two cameras are not the same shot on purpose. What
-// still needs pinning is that `projectPerspective`'s MATH (the mat4
-// lookAt/perspective/multiply pipeline, routed through `perspectiveRig` --
-// see camera.ts) keeps producing exactly what that pipeline computes for the
-// current tuning, so a future refactor cannot silently perturb it. These rows
-// are therefore recomputed directly from the pipeline at the current tuning
-// (same sample points, same view, same field/viewport as the Lua capture
-// used) rather than re-captured from Lua; the "camera perspective mode"
-// describe block above is what still protects the CONVERGENCE/
-// FORESHORTENING invariants independent of tuning.
+// full derivation). This table used to be an independent reference capture,
+// the same way FIXED_REFERENCE/FIXED_ZOOM_REFERENCE still are -- but
+// `camera.PERSPECTIVE` was deliberately retuned away from the reference
+// implementation's framing for the true-perspective Strikers camera work,
+// so a byte-for-byte reference capture at the OLD tuning is no longer a
+// meaningful regression target for the NEW one -- the two cameras are not
+// the same shot on purpose. What still needs pinning is that
+// `projectPerspective`'s MATH (the mat4 lookAt/perspective/multiply
+// pipeline, routed through `perspectiveRig` -- see camera.ts) keeps
+// producing exactly what that pipeline computes for the current tuning, so
+// a future refactor cannot silently perturb it. These rows are therefore
+// recomputed directly from the pipeline at the current tuning (same sample
+// points, same view, same field/viewport as the reference capture used)
+// rather than re-captured from the reference implementation; the "camera
+// perspective mode" describe block above is what still protects the
+// CONVERGENCE/FORESHORTENING invariants independent of tuning.
 //
 // Regenerated for the STRIKERS REFRAME (height 660 -> 495, distance
 // 554 -> 495 -- tilt 50 -> 45 degrees, L 862 -> 700; fov 46 unchanged; and
@@ -547,10 +545,10 @@ describe("camera.project differential against the real Lua game.render.camera", 
       for (const row of PERSPECTIVE_REFERENCE) {
         const [sx, sy, scale] = camera.project(row.wx, row.wy, bigField, bigVp, undefined, view);
         // A wider epsilon than the fixed-mode tests: mat4.lookAt/perspective
-        // route through trigonometric functions, which v2/README.md's
+        // route through trigonometric functions, which ARCHITECTURE.md §1's
         // determinism rules explicitly call out as implementation-
         // approximated across runtimes (ECMAScript spec) -- irrelevant to
-        // the sim (this is presentation-only, per that same README section),
+        // the sim (this is presentation-only, per that same section),
         // but real enough to need a looser tolerance than a pure arithmetic
         // path here.
         near(sx, row.sx, 1e-3);

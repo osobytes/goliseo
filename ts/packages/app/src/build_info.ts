@@ -1,18 +1,11 @@
-// Ported from game/build_info.lua.
-//
-// `identity` has no Lua original field -- it mirrors what
-// `love.filesystem.setIdentity("goliseo")` (`conf.lua`, asserted by
-// `spec/game/branding_spec.lua`'s "uses the corrected technical save
-// identity") accomplishes on native LÖVE: naming the namespace persisted
-// game data is saved under, corrected from a prototype-era name. The
-// browser has no `love.filesystem` save-directory equivalent (this
-// package's `settings.ts` header), but it does have an analogous concept --
-// the key namespace persisted data (e.g. `localStorage`) is saved under.
-// `browser_main.ts`'s `localStorageSettings` uses this field for exactly
-// that, so the two "was the prototype name actually replaced" checks (LÖVE's
-// save identity; the browser's storage namespace) stay a single source of
-// truth instead of two hand-typed "goliseo" string literals silently
-// drifting apart.
+// `identity` names the namespace persisted data is saved under, corrected
+// from a prototype-era name. The browser has no filesystem save-directory
+// concept (this package's `settings.ts` header), but it does have an
+// analogous one: the key namespace persisted data (e.g. `localStorage`) is
+// saved under. `browser_main.ts`'s `localStorageSettings` uses this field
+// for exactly that, so the "was the prototype name actually replaced"
+// check has a single source of truth instead of a hand-typed "goliseo"
+// string literal that could drift out of sync.
 
 export interface BuildInfo {
   readonly name: string;

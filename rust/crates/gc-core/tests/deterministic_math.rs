@@ -1,14 +1,12 @@
-//! Port of `spec/core/deterministic_math_spec.lua`.
-//!
-//! The Lua spec pins its regression case through
-//! `sim.match_snapshot.number_bytes`, which lives in `sim/` (→ `gc-sim`, per
-//! `v2/README.md`'s layer table). `gc-core` must not depend on `gc-sim` — the
-//! dependency only ever points the other way — so this test reproduces just
-//! that one canonical-byte-encoding helper locally. It is a direct,
-//! byte-for-byte transcription of `sim/match_snapshot.lua`'s
-//! `number_bytes` (same `frexp`/mantissa-split/rounding steps, same output
-//! format), used here only to keep the pinned-bytes assertion alive without
-//! reaching across the crate boundary.
+//! Regression test pinning `negative_log_one_minus`'s output to exact
+//! binary64 bytes, using the same canonical-byte-encoding scheme
+//! `gc_sim::match_snapshot::number_bytes` uses. `gc-core` must not depend on
+//! `gc-sim` — the dependency only ever points the other way (see
+//! `AGENTS.md` §2) — so this test reproduces just that one
+//! canonical-byte-encoding helper locally: a direct, byte-for-byte
+//! transcription (same `frexp`/mantissa-split/rounding steps, same output
+//! format), kept here only to let the pinned-bytes assertion live in
+//! `gc-core` without reaching across the crate boundary.
 
 use gc_core::deterministic_math::negative_log_one_minus;
 
@@ -40,8 +38,8 @@ fn frexp(x: f64) -> (f64, i32) {
     (mantissa, biased_exponent - 1022)
 }
 
-/// Transcribed from `sim.match_snapshot.number_bytes` in
-/// `sim/match_snapshot.lua`.
+/// Reproduces `gc_sim::match_snapshot::number_bytes`'s canonical byte
+/// encoding (see the module doc above).
 fn number_bytes(number: f64) -> String {
     assert!(number.is_finite(), "canonical numbers must be finite");
     if number == 0.0 {

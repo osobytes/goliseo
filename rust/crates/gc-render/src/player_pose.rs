@@ -1,10 +1,7 @@
-//! Port of `render/player_pose.lua`.
-//!
 //! Selects the pose id shown for a player. This lives on the determinism-free
 //! side of the boundary content-wise (it never changes what the simulation
 //! computes), but it is Rust rather than TypeScript so two clients cannot
-//! disagree about which pose is displayed — see `v2/README.md`'s note on
-//! `player_pose.lua` in the module-owning agent's brief.
+//! disagree about which pose is displayed.
 //!
 //! One authority owns overlap precedence: [`PlayerPoseId::priority`]. Outfield
 //! presentation work extends this ordered contract instead of adding
@@ -21,10 +18,9 @@ use gc_sim::outfield_decision;
 
 /// The closed set of pose ids a renderer can be asked to show.
 ///
-/// Ordered here exactly as `render/player_pose.lua`'s `---@alias
-/// PlayerPoseId` lists them; that ordering carries no meaning of its own
-/// (priority and tie-break both come from dedicated tables/methods below), it
-/// is preserved purely so a reviewer can diff the two files line by line.
+/// Declaration order carries no meaning of its own — priority and tie-break
+/// both come from dedicated tables/methods below, and wire codes are
+/// assigned explicitly and independently in `frame_buffer.rs`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlayerPoseId {
     /// Keeper gathering the ball into the hands.
@@ -94,9 +90,8 @@ pub enum PlayerPoseId {
 }
 
 impl PlayerPoseId {
-    /// This pose's overlap precedence: higher wins. Mirrors
-    /// `render/player_pose.lua`'s `player_pose.PRIORITY` table exactly,
-    /// including the equal `keeper_stretch`/`keeper_dive` values.
+    /// This pose's overlap precedence: higher wins. Note the equal
+    /// `keeper_stretch`/`keeper_dive` values — deliberate, not an oversight.
     #[must_use]
     pub const fn priority(self) -> i64 {
         match self {
@@ -143,10 +138,9 @@ impl PlayerPoseId {
         }
     }
 
-    /// This pose's wire identifier, exactly the Lua alias member's spelling.
-    /// The tie-break rule in [`resolve`] compares this string, matching
-    /// Lua's `candidate.id < best.id` (both operate on the pose's stable
-    /// name — Lua directly as a string, this one through this method).
+    /// This pose's wire identifier. The tie-break rule in [`resolve`]
+    /// compares this string lexicographically to break priority ties
+    /// deterministically.
     #[must_use]
     pub const fn wire_name(self) -> &'static str {
         match self {
@@ -238,8 +232,8 @@ pub struct OutfieldPoseContext {
     pub kick_follow: bool,
 }
 
-/// The slice of `@gc/presentation`'s `CombatPlayerPresentation` (TS-owned:
-/// `game/presentation/combat.lua`) that pose selection reads. Declared
+/// The slice of `@gc/presentation`'s `CombatPlayerPresentation` (TS-owned)
+/// that pose selection reads. Declared
 /// locally rather than imported, because presentation crosses the language
 /// boundary into TypeScript and this module only ever reads three of its
 /// fields.
@@ -290,18 +284,15 @@ fn sprint_spent(player: &MatchPlayer) -> bool {
 /// order. This is [`select`]'s reduction step, factored out and made public
 /// on purpose.
 ///
-/// `render/player_pose.lua`'s own spec for this contract
-/// (`spec/game/combat_presentation_spec.lua`'s "chooses overlapping poses
-/// from declared priority with a stable tie rule") exercises it by mutating
-/// the module-global `PRIORITY` table in place: raise `slide`'s priority
-/// above `soccer_windup`'s, observe the winner flip, then set them equal and
-/// observe the lexical tie-break. Rust has no equivalent of a mutable global
-/// enum-keyed table (README rule 4 rules out the map that would back it, and
-/// a `static` interior-mutable cell would smuggle shared mutable state into
-/// a pure module for one spec's convenience). Constructing the candidate
-/// list directly with the same overridden priorities and calling `resolve`
-/// exercises the identical reduction contract; see
-/// `tests/combat_presentation_spec.rs`.
+/// This contract ("chooses overlapping poses from declared priority with a
+/// stable tie rule") is tested by constructing a candidate list directly
+/// with overridden priorities and calling `resolve` — raising `slide`'s
+/// priority above `soccer_windup`'s to observe the winner flip, then setting
+/// them equal to observe the lexical tie-break — rather than through a
+/// mutable global priority table: ARCHITECTURE.md §3 rule 4 rules out the
+/// map that would back it, and a `static` interior-mutable cell would smuggle shared
+/// mutable state into a pure module for one test's convenience. See
+/// `tests/combat_presentation.rs`.
 ///
 /// # Panics
 ///

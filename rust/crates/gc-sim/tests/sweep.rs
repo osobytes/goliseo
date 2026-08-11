@@ -1,13 +1,11 @@
-//! Port of `spec/sim/sweep_spec.lua`.
+//! Tests for `gc_sim::sweep`.
 //!
-//! Two Lua assertions per sweep test ("restores the defaults after") check
-//! that the global `tuning` singleton was left untouched. `crate::tuning`
-//! has no such singleton in this port — every `sweep::evaluate` call builds
-//! a fresh, owned `Tuning` (see `crate::sweep`'s module doc and
-//! `crate::tuning`'s own doc) — so there is nothing to restore and no
-//! equivalent assertion to make. This is reported rather than silently
-//! dropped: those two lines of each Lua test are the only assertions this
-//! file does not carry over, and the reason is architectural, not a gap.
+//! There is no "restores the defaults after" assertion here: `crate::tuning`
+//! has no mutable global singleton for a sweep to leave dirty — every
+//! `sweep::evaluate` call builds a fresh, owned `Tuning` (see
+//! `crate::sweep`'s module doc and `crate::tuning`'s own doc), so there is
+//! nothing to restore and no equivalent assertion to make. This omission is
+//! architectural, not a gap.
 
 use gc_sim::sweep;
 use gc_sim::tuning;

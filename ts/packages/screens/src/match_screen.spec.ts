@@ -1,27 +1,20 @@
-// Ported from spec/screens/match_screen_spec.lua.
+// Verifies match.ts's MatchScreen against a hand-written fake SimHostPort.
 //
-// The Lua original drives a live `Match.new()` through `sim.match`'s real
-// physics (tackle timers, pass charge, ball flight) via stubbed
-// `love.keyboard`/`love.joystick` polling and a real fixed-clock render
-// loop, then asserts on real `MatchState` fields (`me.jockey_timer`,
-// `m.state.ball_vz`, `m.state.players[...].pass_charge`, ...). That is no
-// longer this package's job: `v2/README.md` draws the determinism line at
-// `sim/**` -> Rust specifically so a TS package never has to reproduce
-// physics to prove its own logic correct. `crates/gc-sim/tests` (Rust) is
-// where "does holding PLAY actually charge the pass" gets proven; this file
-// proves the thing that IS `@gc/screens`' job -- that `match.ts`'s
-// `MatchScreen` computes the right CONTEXTUAL INPUT and drives
-// `SimHostPort`/`RenderPort` correctly -- using a hand-written fake
-// `SimHostPort` (`FakeSimHost` below) in place of a real wasm-compiled
-// `gc-sim`, the same "small hand-written fakes" pattern
-// `combat_feedback_rollback_spec.ts` already uses for `EffectsPort`/
+// The determinism boundary is `sim/**` -> Rust specifically, so this
+// package never has to reproduce physics to prove its own
+// logic correct: `crates/gc-sim/tests` (Rust) is where "does holding PLAY
+// actually charge the pass" gets proven. This file proves the thing that IS
+// `@gc/screens`' job -- that `match.ts`'s `MatchScreen` computes the right
+// CONTEXTUAL INPUT and drives `SimHostPort`/`RenderPort` correctly -- using
+// a hand-written fake `SimHostPort` (`FakeSimHost` below) in place of a real
+// wasm-compiled `gc-sim`, the same "small hand-written fakes" pattern
+// `combat_feedback_rollback.spec.ts` already uses for `EffectsPort`/
 // `AudioPort`/`ReplayPort`.
 //
-// Each `it` below keeps its original title (these are the ported
-// assertions) but its body asserts on the TS-glue-observable analog of the
-// original Lua assertion -- e.g. "K never switches while carrying" now
-// checks `MatchScreen`'s buffered switch state rather than a real
-// `sim.match` never issuing a switch order. The combat construction case
+// Each `it` below asserts on the TS-observable analog of the underlying
+// behavior -- e.g. "K never switches while carrying" checks `MatchScreen`'s
+// buffered switch state rather than a real `sim.match` never issuing a
+// switch order. The combat construction case
 // ("constructs and drives combat only behind the explicit option") used to
 // stay `it.skip` here because `SimHostPort` (the fixed contract this
 // milestone's game loop is built against -- `step`/`planTicks`/
@@ -40,7 +33,7 @@
 // contract shared with `@gc/app`'s `sim_host.ts`, so it could not be widened
 // here -- see match.ts's own doc). That case now drives `@gc/render`'s REAL
 // `replay` module (already pure/real, no wasm involved -- the same
-// "TS-glue-observable analog" pattern `match_rollback_lab.spec.ts` already
+// "TS-observable analog" pattern `match_rollback_lab.spec.ts` already
 // uses for `correctionSmoothing`/`viewState`) against a fake `matchState`
 // source, the same role `FakeSimHost` already plays for `SimHostPort`.
 
@@ -64,7 +57,7 @@ import type {
 // A test-only stand-in for the wasm session's `gc_sim::fixed_clock`-backed
 // `FixedClock` (`crates/gc-wasm/src/session.rs`, bound through `@gc/wasm`).
 // The production accumulator/catch-up/drop algorithm now has exactly one
-// implementation, in Rust (v2/README.md §2.1) -- `FakeSimHost.planTicks`
+// implementation, in Rust (ARCHITECTURE.md §1.1) -- `FakeSimHost.planTicks`
 // below mirrors it purely so this suite can drive `MatchScreen`'s CALLING
 // contract (does it call `step` the right number of times, with the right
 // sample) without a real wasm build, the same role every other `FakeSimHost`
@@ -97,10 +90,9 @@ const noopRenderer: RenderPort = {
 
 /**
  * A hand-written `SimHostPort` fake. `hud.controlled_owns_ball` defaults to
- * `true` -- matching kickoff in the Lua original, where the controlled
- * player carries the ball at the whistle -- and `hud.finished` defaults to
- * `false`. Tests mutate `hud` directly to drive the scenarios the ported
- * spec titles describe.
+ * `true` -- matching kickoff, where the controlled player carries the ball
+ * at the whistle -- and `hud.finished` defaults to `false`. Tests mutate
+ * `hud` directly to drive each scenario below.
  */
 class FakeSimHost implements SimHostPort {
   readonly stepCalls: InputSample[] = [];
@@ -325,10 +317,7 @@ describe("match screen rematch (tier 2)", () => {
     const screen = new MatchScreen({ createHost: factory, renderer: noopRenderer, keyboard: fakeKeyboard({}) });
     nth(hosts, 0).hud.finished = true;
 
-    // Lua's analogous assertion reads `not m._pass` -- a field `Match:event`
-    // never actually sets true on this path (or any path: it is declared
-    // and reset but never assigned in `game/screens/match.lua`). The
-    // meaningful, live analog here is that a K press does not buffer a
+    // The meaningful assertion here is that a K press does not buffer a
     // switch either, and does not resurrect the match.
     screen.event({ kind: "key", key: "k" });
 
@@ -384,9 +373,8 @@ describe("match screen contextual controls (tier 2)", () => {
   //
   // What THIS case does NOT prove, and still cannot: neither `Session` nor
   // `SimHostPort` exposes any getter for combat presence or per-tick combat
-  // events/state (`self._combat_state.players[...].phase` in the Lua
-  // original) -- `sim.combat`'s observable wasm surface is a separate,
-  // out-of-scope binding (v2/README.md §1: not every sim subsystem's bridge
+  // events/state -- `sim.combat`'s observable wasm surface is a separate,
+  // out-of-scope binding (not every sim subsystem's bridge
   // is this task's to add). So "drives" below is the same, narrower claim
   // `match_screen.spec.ts`'s own rollback-lab combat case already settles
   // for: the option is recorded accurately at construction and stays stable
@@ -661,11 +649,10 @@ describe("match screen goal replay (tier 2)", () => {
 
 // The broadcast follow camera (render/camera_follow.ts) is renderer-owned
 // accumulator state: `pitch.follow_camera` only reframes anything if SOMETHING
-// calls `cameraFollow.update` every frame, and the Lua original calls it from
-// `update_render_smoothing`, right beside `view_state.update`.
+// calls `cameraFollow.update` every frame, right beside `viewState.update`.
 //
-// This port originally brought camera_follow.ts across but NOT that call site,
-// so `cameraFollow.update` had no caller anywhere in the workspace: the
+// `camera_follow.ts` was added to this workspace without that call site,
+// so `cameraFollow.update` had no caller anywhere in the tree: the
 // smoothed focus never left `undefined`, `cameraFollow.view` therefore always
 // returned `undefined`, and pitch.ts's `currentView` silently fell back to the
 // whole-pitch view no matter what the flag said. The follow camera was inert

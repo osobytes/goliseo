@@ -1,6 +1,6 @@
-// Ported from game/screens/pause.lua — the in-match pause menu, including
-// the two-press restart confirmation. See AGENTS.md §9 for the pure/impure
-// seam; this screen needs no injected content.
+// The in-match pause menu, including the two-press restart confirmation.
+// See AGENTS.md §9 for the pure/impure seam; this screen needs no injected
+// content.
 
 import { focus, type Layout } from "@gc/ui";
 import type { FocusEvent } from "@gc/ui";

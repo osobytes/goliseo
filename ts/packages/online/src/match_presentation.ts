@@ -1,7 +1,5 @@
 import type { Result } from "@gc/core";
 
-// Ported from game/online/match_presentation.lua.
-//
 // Turns the online driver's raw tick outputs into the stable presentation
 // timeline the match renderer already consumes.
 //
@@ -16,8 +14,7 @@ import type { Result } from "@gc/core";
 //
 // It is pure: no transport, no clock, no DOM. It reads a `MatchDriverBatch`
 // and the driver's snapshot lookups, and returns a batch in exactly the
-// shape `game/screens/match.lua`'s TypeScript successor already knows how
-// to consume.
+// shape `@gc/screens`' `match.ts` already knows how to consume.
 //
 // # Append versus replacement
 //
@@ -34,11 +31,11 @@ import type { Result } from "@gc/core";
 // next predicted output is appended is the difference between a supported
 // correction and a false unconfirmed-window terminal at a long delay.
 //
-// ## Boundary note: this is the file v2/README.md calls out by name
+// ## Boundary note: this is the file ARCHITECTURE.md calls out by name
 //
 // `sim.rollback_events`, `sim.rollback_input_history`, and
 // `game.online.match_driver` are all Rust-owned (`crates/gc-sim` /
-// `crates/gc-netcode`; v2/README.md §2.1) -- this module reads rollback
+// `crates/gc-netcode`; ARCHITECTURE.md §1.1) -- this module reads rollback
 // state to decide what to *show*, which is presentation, but it calls four
 // functions belonging to those modules (`rollback_events.new/apply/confirm
 // /diagnostics` and `match_driver.snapshot/diagnostics`) that this port has
@@ -53,7 +50,7 @@ import type { Result } from "@gc/core";
 // (`match_driver_fixture_bridge.rs` closed the remaining
 // `freezeJson`/`manifestJson` construction gap; see that file's header for
 // which cases it does and does not reach). Rather than duplicate rollback
-// scheduling here -- which the README is explicit is the one thing that
+// scheduling here -- which ARCHITECTURE.md is explicit is the one thing that
 // must never happen on this side of the determinism line -- those four
 // functions are threaded through as `RollbackEventsPort`/`MatchDriverPort`,
 // injected the same way `@gc/ui/src/tuning_panel.ts` injects `TuningSource`.
@@ -221,8 +218,7 @@ export interface RollbackPlayableLabBatch {
 
 /**
  * The presentation timeline's own state. Internal bookkeeping only --
- * mutated exclusively by this module's functions, exactly like the Lua
- * table it replaces (`_events`/`_first`/`_applied`/`_status` there).
+ * mutated exclusively by this module's functions.
  */
 export interface OnlineMatchPresentation<TTimeline> {
   events: TTimeline;

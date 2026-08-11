@@ -1,4 +1,4 @@
-//! Port of `spec/sim/outfield_ai_baseline_spec.lua`.
+//! Tests for `gc_sim::outfield_ai_baseline` against the frozen baseline record.
 
 use gc_data::outfield_ai_baseline as frozen;
 use gc_sim::outfield_ai_baseline as sut;
@@ -273,7 +273,10 @@ fn outfield_ai_baseline_tells_the_reader_not_to_refresh_a_failure_away() {
         report.contains("deletes the evidence"),
         "and the reason not to"
     );
-    assert!(report.contains("--refreeze-ack"), "and the deliberate path");
+    assert!(
+        report.contains("bumping baseline_version"),
+        "and the deliberate path"
+    );
 }
 
 #[test]
@@ -316,10 +319,14 @@ fn outfield_ai_baseline_serializes_a_loadable_record_that_round_trips_exactly() 
     assert_eq!(sut::signature(&loaded), record.signature);
 }
 
-/// A minimal parser for [`sut::serialize`]'s own output shape — this test
-/// file's counterpart to `sim/main.lua`'s `loadstring`, which Rust has no
-/// equivalent of. Good enough to round-trip exactly what `serialize` emits;
-/// not a general Lua-table parser.
+/// A minimal parser for [`sut::serialize`]'s own output shape: the
+/// `pub const RECORD: OutfieldAiBaselineRecord = OutfieldAiBaselineRecord
+/// { ... };` struct-literal text a human would paste over
+/// `gc_data::outfield_ai_baseline`. Good enough to round-trip exactly what
+/// `serialize` emits — and, because every catch-all below panics instead of
+/// silently dropping the field, to prove every emitted field name is real:
+/// an unreal name has no arm to match and falls into the panic. Not a
+/// general Rust-literal parser.
 fn parse_serialized(chunk: &str) -> sut::OutfieldAiBaselineRecord {
     let mut baseline_version = 0i64;
     let mut identity = sut::OutfieldAiBaselineIdentity {
@@ -366,12 +373,13 @@ fn parse_serialized(chunk: &str) -> sut::OutfieldAiBaselineRecord {
     };
     let mut signature = String::new();
 
-    // A small explicit-stack scope tracker: `return { ... }` nests
-    // `identity = { ... }` and `stats = { fun = { ... }, ... }`, and a
-    // bare `fixture_hash`/`fixture` etc. key means something different
-    // depending which scope it's read in (`stats` has no such keys, but
-    // being explicit here means a future field name collision fails loudly
-    // instead of silently reading the wrong scope).
+    // A small explicit-stack scope tracker: `OutfieldAiBaselineRecord {
+    // ... }` nests `identity: OutfieldAiBaselineIdentity { ... }` and
+    // `stats: OutfieldAiBaselineStats { fun: OutfieldAiBaselineStat { ... },
+    // ... }`, and a bare `fixture_hash`/`fixture` etc. key means something
+    // different depending which scope it's read in (`stats` has no such
+    // keys, but being explicit here means a future field name collision
+    // fails loudly instead of silently reading the wrong scope).
     let mut scope: Vec<String> = Vec::new();
     let mut metric_n = 0i64;
     let mut metric_mean = 0.0;
@@ -381,15 +389,22 @@ fn parse_serialized(chunk: &str) -> sut::OutfieldAiBaselineRecord {
 
     for raw_line in chunk.lines() {
         let line = raw_line.trim();
-        if line == "return {" {
+        if line == "pub const RECORD: OutfieldAiBaselineRecord = OutfieldAiBaselineRecord {" {
             scope.push("root".to_string());
             continue;
         }
-        if let Some(key) = line.strip_suffix(" = {") {
+        if scope.is_empty() {
+            // Still in the `//!` module header / doc comment / attribute
+            // preamble that precedes the const -- nothing to parse there.
+            continue;
+        }
+        if let Some(rest) = line.strip_suffix('{')
+            && let Some((key, _ty)) = rest.trim_end().split_once(':')
+        {
             scope.push(key.trim().to_string());
             continue;
         }
-        if line == "}," || line == "}" {
+        if line == "}," || line == "};" {
             if let Some(closed) = scope.pop()
                 && scope.last().map(String::as_str) == Some("stats")
             {
@@ -405,7 +420,7 @@ fn parse_serialized(chunk: &str) -> sut::OutfieldAiBaselineRecord {
             continue;
         }
         let line = line.trim_end_matches(',');
-        let Some((key, value)) = line.split_once(" = ") else {
+        let Some((key, value)) = line.split_once(": ") else {
             continue;
         };
         let key = key.trim();
@@ -450,7 +465,14 @@ fn parse_serialized(chunk: &str) -> sut::OutfieldAiBaselineRecord {
             "sd" if in_metric => metric_sd = value.parse().unwrap(),
             "min" if in_metric => metric_min = value.parse().unwrap(),
             "max" if in_metric => metric_max = value.parse().unwrap(),
-            _ => {}
+            // "Loadable" means every emitted field name is a real field of
+            // the target `gc_data::outfield_ai_baseline` structs, not
+            // merely text shaped like one -- an unreal name (or a real name
+            // in a scope it can't appear in) has no arm above to take, so
+            // it must land here instead of being swallowed.
+            other => {
+                panic!("serialize emitted a field {other:?} in scope {scope:?} that isn't real")
+            }
         }
     }
 
@@ -501,7 +523,10 @@ fn set_stat(
         "ai_dribble_touches_per_min" => stats.ai_dribble_touches_per_min = stat,
         "ai_dribble_heavy_losses_per_min" => stats.ai_dribble_heavy_losses_per_min = stat,
         "ai_jukes" => stats.ai_jukes = stat,
-        _ => {}
+        // Same realness guarantee as the field-name match in
+        // `parse_serialized`: an unreal metric name has no arm here and
+        // falls into the panic instead of being dropped.
+        other => panic!("serialize emitted a metric {other:?} that isn't a real stats field"),
     }
 }
 

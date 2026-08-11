@@ -1,12 +1,11 @@
-//! Port of `game/online/protocol_fixture.lua`.
-//!
 //! The canonical fixture data `protocol_conformance.rs` pins golden wire
 //! digests against, and that `tests/protocol.rs` differential-tests against
-//! the real Lua implementation. See `crate::protocol`'s module doc comment
-//! for why manifests and message bodies here are built as
+//! frozen cross-language reference values (see
+//! `tools/lua_reference/README.md`). See `crate::protocol`'s module doc
+//! comment for why manifests and message bodies here are built as
 //! [`crate::protocol::Value`] rather than typed structs — this fixture
-//! constructs exactly the same dynamically-shaped tables the Lua original's
-//! table literals build.
+//! constructs the same dynamically-shaped values that codec expects, rather
+//! than a fixed struct per message kind.
 
 use crate::protocol::{self, MessageKind, Value};
 

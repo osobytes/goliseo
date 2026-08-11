@@ -1,5 +1,3 @@
-// Ported from spec/game/match_onboarding_spec.lua.
-
 import { describe, expect, it } from "vitest";
 import { onboarding, type OnboardingContext } from "./match_onboarding.ts";
 

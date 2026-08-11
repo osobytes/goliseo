@@ -1,5 +1,3 @@
-//! Port of `game/online/fault_transport.lua`.
-//!
 //! A [`StarTransportAdapter`] decorator that impairs *arrivals* with the
 //! OMP-2 probabilistic network model ([`gc_sim::network_conditions`]).
 //!
@@ -36,18 +34,19 @@
 //! declared, not probabilistic: a burst that must straddle a named boundary
 //! cannot be left to a profile's RNG.
 //!
-//! # `game/transport/contract.lua` has no Rust home
+//! # The transport wire contract has no Rust home
 //!
-//! Per `v2/README.md` §2, all of `game/transport/**` is TypeScript-owned
-//! (`packages/transport`) and no Rust crate ports it. This decorator's whole
-//! job is to wrap *some* [`StarTransportAdapter`], so it needs that
-//! interface's shape to be generic over it and to be unit-testable with a
-//! fake endpoint — the same role `game/transport/fake_star.lua` plays for the
-//! Lua spec. [`StarTransportAdapter`] and its message/event/diagnostics types
-//! below are therefore minimal local restatements of `contract.lua`'s
-//! `---@class` shapes (never its `encode`/`decode`/`validate` *logic*, which
-//! stays out of scope here same as everywhere else in this crate). Every
-//! field is named and typed to match the Lua one for one.
+//! All of `game/transport/**` is TypeScript-owned (`ts/packages/transport`,
+//! `ARCHITECTURE.md` §2's directory layout) and no Rust crate ports it. This
+//! decorator's whole job is to wrap *some* [`StarTransportAdapter`], so it
+//! needs that interface's shape to be generic over it and to be
+//! unit-testable with a fake endpoint — the same role [`crate::fake_star`]
+//! plays for the real thing. [`StarTransportAdapter`] and its
+//! message/event/diagnostics types below are therefore minimal local
+//! restatements of `contract.ts`'s shapes (never its
+//! `encode`/`decode`/`validate` *logic*, which stays out of scope here same
+//! as everywhere else in this crate). Every field is named and typed to
+//! match the TypeScript one for one.
 //!
 //! `crate::match_driver` reuses these same types rather than redeclaring
 //! them, since it decorates the identical interface one layer up.
@@ -58,7 +57,8 @@ use gc_sim::network_conditions::{self, NetworkConditionDiagnostics, NetworkCondi
 use indexmap::IndexMap;
 
 // ---------------------------------------------------------------------------
-// `game/transport/contract.lua`'s shapes, restated (see module doc).
+// The wire contract's (`ts/packages/transport/src/contract.ts`) shapes,
+// restated (see module doc).
 // ---------------------------------------------------------------------------
 
 /// Which logical channel one envelope travels on. Mirrors `TransportChannel`.
@@ -194,7 +194,7 @@ pub enum TransportMessageType {
     State,
 }
 
-/// One wire envelope, already validated against `contract.lua`'s bounds.
+/// One wire envelope, already validated against `contract.ts`'s bounds.
 /// Mirrors `TransportMessage`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransportMessage {
@@ -354,14 +354,13 @@ pub struct TransportStarDiagnostics {
 }
 
 /// The interface every OMP-3 star endpoint implements: a direct-host star
-/// (`game/transport/fake_star.lua`'s eventual Rust/TS analog) or a relay
-/// (`game/transport/fake_relay.lua`'s). Mirrors `StarTransportAdapter`.
+/// ([`crate::fake_star`]'s fake of one) or a relay ([`crate::fake_relay`]'s).
+/// Mirrors `StarTransportAdapter`.
 ///
 /// This crate never implements a *real* endpoint — `game/transport/**` is
 /// TypeScript-owned (see module doc) — but [`FaultTransport`] both wraps one
 /// generically and, by implementing this trait itself, is substitutable for
-/// the endpoint it wraps, exactly like the Lua original's closing
-/// self-check.
+/// the endpoint it wraps.
 pub trait StarTransportAdapter {
     /// Brings the endpoint up. Idempotent-on-success by convention.
     fn initialize(&mut self) -> TransportResult<bool>;
@@ -415,7 +414,7 @@ pub trait StarTransportAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// `fault_transport.lua` itself.
+// `FaultTransport` itself.
 // ---------------------------------------------------------------------------
 
 /// Release order [`FaultTransport::poll_batch`] hands input arrivals to the
@@ -520,7 +519,7 @@ pub struct FaultTransport {
     /// Remote peer id -> impairment source slot (`1..=8`). Insertion order
     /// is `legs`' order; never iterated for anything determinism-sensitive,
     /// but `IndexMap` costs nothing extra here and keeps the type honest
-    /// about being a map (README rule 4: never `HashMap`/`HashSet`).
+    /// about being a map (ARCHITECTURE.md §3 rule 4: never `HashMap`/`HashSet`).
     slots: IndexMap<String, i64>,
     next_input_tick: Vec<i64>,
     /// Slot (index `slot - 1`) -> input tick -> queued envelope, awaiting
@@ -542,9 +541,9 @@ impl FaultTransport {
     ///
     /// # Panics
     ///
-    /// Panics (mirroring the Lua `assert`s, all programmer errors per
-    /// AGENTS.md §7) if `options.legs` exceeds [`MAX_LEGS`], if a leg is
-    /// declared twice, or if `options.seed` is not finite.
+    /// Panics (invariant violations, per AGENTS.md §7) if `options.legs`
+    /// exceeds [`MAX_LEGS`], if a leg is declared twice, or if
+    /// `options.seed` is not finite.
     #[must_use]
     pub fn new(options: FaultTransportOptions) -> Self {
         assert!(
@@ -684,7 +683,7 @@ impl FaultTransport {
         )
         // The impairment model refused to schedule. That is a harness bug,
         // not a transport fault, so it fails loudly rather than quietly
-        // delivering (mirrors the Lua `error(...)`).
+        // delivering.
         .unwrap_or_else(|err| {
             panic!(
                 "the impairment model refused a packet at transport tick {}: {err}",

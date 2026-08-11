@@ -1,18 +1,15 @@
-// Ported from spec/game/real_match_spec.lua's "real match observer" describe
-// block -- the only part of that file about game/match_observer.lua (this
-// package's). The rest of real_match_spec.lua ("real match adapter") drives
-// `game.screens.real_match` and `game.screens.match`, neither of which has a
-// TS port yet (see this package's porting report); left to @gc/screens.
+// Coverage for the "real match observer" describe block below -- the only
+// part of this behavior about `match_observer.ts` (this package's). A "real
+// match adapter" case drives `@gc/screens`'s `real_match.ts`/`match.ts`;
+// left to that package.
 //
-// The Lua spec builds its fixture from `Match.new()` (`game/screens/match.lua`
-// -> `sim/match.lua`, not yet ported/available here). `match_observer`'s
-// `observe`/`observeConfirmed` only read a narrow slice of `MatchState`
-// (players' id/team/is_keeper, events, owner, score) -- see match_observer.ts's
-// `ObservedMatchState`. This fixture transcribes exactly that slice, using
-// `sim/match.lua`'s own default construction rules: ten players (home
-// indices 0-4, away indices 5-9, one keeper per side at index 0 of its
-// team), and `place_kickoff`'s default kicking team ("home") for the owner
-// `Match.new()` leaves in place when a test does not override it.
+// `match_observer`'s `observe`/`observeConfirmed` only read a narrow slice
+// of match state (players' id/team/is_keeper, events, owner, score) -- see
+// match_observer.ts's `ObservedMatchState`. This fixture transcribes
+// exactly that slice, using `gc-sim`'s own default match construction
+// rules: ten players (home indices 0-4, away indices 5-9, one keeper per
+// side at index 0 of its team), and the default kicking team ("home") for
+// the owner a fresh match leaves in place when a test does not override it.
 
 import { describe, expect, it } from "vitest";
 import { matchObserver, type MatchObserver, type ObservedMatchEvent, type ObservedMatchState, type ObservedPlayer } from "./match_observer.ts";

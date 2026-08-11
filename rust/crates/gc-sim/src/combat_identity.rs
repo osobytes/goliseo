@@ -1,5 +1,3 @@
-//! Port of `sim/combat_identity.lua`.
-//!
 //! A stable identity string for the combat build/content a match is running:
 //! the shared combat rule constants plus every catalogued action family's
 //! full definition, plus each fixture player's current loadout/family pair.

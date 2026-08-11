@@ -1,11 +1,9 @@
-# Reference values captured from the real Lua `game/online/protocol.lua`,
-# per v2/tools/lua_reference/README.md. Regenerate by running (from a scratch
-# copy of core/, sim/, data/, game/online/{protocol.lua,protocol_fixture.lua}
-# with a headless conf.lua):
-#
-#   local protocol = require("game.online.protocol")
-#   local fixture = require("game.online.protocol_fixture")
-#   -- print protocol.encode(fixture.messages()[1]) etc., see tests/protocol.rs
+# Reference values captured from the real Lua `game/online/protocol.lua`.
+# This vector is frozen and cannot be regenerated: the Lua implementation it
+# was captured from no longer exists in this repository. A failing
+# differential against it is a finding about the Rust or TypeScript code
+# under test, not a fixture to refresh. See tools/lua_reference/README.md
+# for provenance.
 #
 # `HANDSHAKE_WIRE`/`MIN_WIRE` are asserted byte-for-byte in tests/protocol.rs
 # (not just via hash), including as the base for the non-canonical mutation

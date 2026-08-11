@@ -1,9 +1,7 @@
-//! Port of `spec/game/online_coordinator_driver_spec.lua`.
-//!
-//! Covers all four `describe` blocks: `"online coordinator driver"`,
-//! `"online coordinator retransmission and stale readiness"`,
-//! `"online coordinator adversarial peers"` (constructing malformed peer
-//! messages via `driver:inject`), and `"online coordinator conformance"`.
+//! Coordinator-driver tests, covering four scenario groups: the normal
+//! handshake/manifest/assignment/countdown driver flow, retransmission and
+//! stale-readiness handling, adversarial peers (constructing malformed peer
+//! messages via `driver:inject`), and end-to-end driver conformance.
 
 use gc_netcode::coordinator::{self, Event, Origin, Terminal, TerminalReason};
 use gc_netcode::coordinator_driver::{self as driver, Driver};
@@ -815,7 +813,7 @@ fn mints_a_distinct_generation_even_for_byte_identical_ownership() {
 
 /// Build a driven session paused at `stage`: `"handshake"`, `"manifest"`,
 /// `"assigned"`, `"ready"`, `"countdown"`, or anything else for the running
-/// phase — mirrors the Lua spec's local `staged` helper.
+/// phase.
 fn staged(stage: &str) -> Driver {
     let mut session = Driver::new(driver::Options {
         guest_count: Some(1),
@@ -871,8 +869,7 @@ fn staged(stage: &str) -> Driver {
 }
 
 /// The terminal of `peer_id`, panicking (with `peer_id` in the message) if
-/// the node is unknown or never ended — mirrors the Lua spec's
-/// `terminal_of` helper's assertion messages.
+/// the node is unknown or never ended.
 fn terminal_of(session: &Driver, peer_id: &str) -> Terminal {
     session
         .node(peer_id)

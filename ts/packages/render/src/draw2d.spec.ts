@@ -1,6 +1,4 @@
-// New tests for draw2d.ts's pure half (see that file's header). Not a port
-// of a Lua spec -- this is new shared infrastructure this package's port
-// needed, so there is no Lua original to mirror.
+// Tests for draw2d.ts's pure half (see that file's header).
 //
 // The "PAINT / APPENDCOMMANDS" suite below additionally exercises part of
 // the impure half: every non-text `DrawCommand` kind builds through real
@@ -57,8 +55,8 @@ describe("rotateAround", () => {
   });
 
   it("matches the dive lunge transform's shape: rotate about the feet, then travel along the dive axis", () => {
-    // Mirrors player_renderer.lua's push(); translate(sx + sign*r*travel*amount, gy);
-    // rotate(angle); translate(-sx, -gy) for a keeper_spread dive to the right.
+    // The composition this exercises, for a keeper_spread dive to the right:
+    // translate(sx + sign*r*travel*amount, gy); rotate(angle); translate(-sx, -gy).
     const sx = 100;
     const gy = 200;
     const r = 12;

@@ -1,29 +1,21 @@
-// Ported from spec/game/combat_presentation_spec.lua.
+// This spec covers "combat presentation projection" — the projection
+// implemented in `combat.ts` from simulation state to a presentation view.
+// A related concern, shared player-pose priority, is exercised by
+// `render/player_pose`, which the layer split (ARCHITECTURE.md §1) assigns
+// to Rust (`crates/gc-render`), not
+// `@gc/presentation` — so it is not covered here; it belongs with whoever
+// owns that module.
 //
-// The Lua spec file has two `describe` blocks. Only "combat presentation
-// projection" is ported here — it is the one that actually exercises
-// `game/presentation/combat.lua`. The second block, "shared player pose
-// priority", exercises `render/player_pose.lua`, which the v2 file mapping
-// (v2/README.md §2, the `render/**` row) assigns to Rust (`crates/gc-render`),
-// not `@gc/presentation`. There is no TypeScript home for that module in
-// this milestone, so that block is intentionally left unported here; it
-// belongs with whoever ports `render/player_pose.lua`. See the report back
-// to the orchestrator for the same note.
-//
-// Fixture note: the Lua spec builds its `MatchState`/`CombatMatchState`
-// fixture via `sim.match.new` + `sim.combat.new_state` (both Rust-owned,
-// `crates/gc-sim`), and reads `data.teams`/`data.loadouts`/etc (Rust-owned,
-// `crates/gc-data`). None of that exists in TypeScript. `combat.model` is a
-// pure projection of whatever `MatchState`/`CombatMatchState` it is handed,
-// so the fixture below is a self-consistent synthetic stand-in that
-// exercises the exact same code paths — real `data/action_families.lua` and
-// `data/loadouts.lua`/`data/equipment_presentations.lua` values are used
+// Fixture note: `combat.model` is a pure projection of whatever
+// `MatchState`/`CombatMatchState` it is handed, so the fixture below is a
+// self-consistent synthetic stand-in that exercises the exact same code
+// paths — real `data/action_families` and `data/loadouts`/
+// `data/equipment_presentations` values (`crates/gc-data`) are used
 // verbatim (see those files) so numeric assertions (e.g. projectile range)
-// match the real content. The purity assertion, which used
-// `sim.match_snapshot.hash`, is expressed instead as a structural
-// before/after snapshot of the inputs — there is no TypeScript
-// `match_snapshot` to hash against, but "the inputs are untouched" is
-// exactly what that assertion was checking.
+// match the real content. The purity assertion is expressed as a
+// structural before/after snapshot of the inputs, since there is no
+// TypeScript `match_snapshot` to hash against — "the inputs are untouched"
+// is exactly what that snapshot verifies.
 
 import { describe, expect, it } from "vitest";
 import { Vec2 } from "@gc/core";

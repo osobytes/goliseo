@@ -3,7 +3,7 @@
 // diagnostics_schema is a canonical serializer with a versioned digest
 // (`fnv1a64/v1`). It is consumed here AND by desync_package in Rust, and a
 // desync package is evidence peers exchange — so a digest computed in Rust on
-// one client must equal one computed here on another. See v2/README.md §2.2.
+// one client must equal one computed here on another. See ARCHITECTURE.md §1.2.
 //
 // Both defects these tests pin were real and shipped in the first port:
 //   1. `toPrecision(17)` was used for `%.17g`. It pads trailing zeros where
@@ -16,7 +16,7 @@ import { describe, expect, it } from "vitest";
 import { fnv1a64Hash, formatG17 } from "./diagnostics_schema.ts";
 
 describe("formatG17 reproduces Lua's %.17g", () => {
-  // Captured from the real Lua under headless `love`:
+  // Captured from the original Lua implementation, under headless LÖVE:
   //   print(string.format("%.17g", v))
   const cases: ReadonlyArray<readonly [number, string]> = [
     [0, "0"],
@@ -57,8 +57,9 @@ describe("formatG17 reproduces Lua's %.17g", () => {
 });
 
 describe("fnv1a64Hash treats its input as raw bytes, not UTF-8", () => {
-  // The canonical published FNV-1a-64 vectors, as pinned by
-  // spec/core/fnv1a64_spec.lua and by crates/gc-core/tests/fnv1a64.rs.
+  // The canonical published FNV-1a-64 vectors, originally pinned by the Lua
+  // implementation's spec/core/fnv1a64_spec.lua and still checked by
+  // crates/gc-core/tests/fnv1a64.rs.
   it("matches the published vectors", () => {
     expect(fnv1a64Hash("")).toBe("cbf29ce484222325");
     expect(fnv1a64Hash("a")).toBe("af63dc4c8601ec8c");
@@ -67,7 +68,8 @@ describe("fnv1a64Hash treats its input as raw bytes, not UTF-8", () => {
   });
 
   it("hashes every byte value 0-255 the same as Lua", () => {
-    // spec/core/fnv1a64_spec.lua builds this with string.char(0..255).
+    // The Lua implementation's spec/core/fnv1a64_spec.lua built this the
+    // same way, with string.char(0..255).
     let all = "";
     for (let byte = 0; byte <= 255; byte += 1) {
       all += String.fromCharCode(byte);

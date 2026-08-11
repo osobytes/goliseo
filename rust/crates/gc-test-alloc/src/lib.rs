@@ -14,11 +14,10 @@
 //! allocator** since the last [`CountingAllocator::start`] — every `alloc`
 //! call's `Layout::size`, plus the growth portion of every `realloc` call
 //! that grows. It does **not** subtract bytes freed by `dealloc`, and a
-//! `realloc` that shrinks is not credited back. That is deliberately the
-//! same shape as the Lua original's measurement technique
-//! (`collectgarbage("count")` deltas with the collector stopped, so nothing
-//! is reclaimed mid-measurement, `spec/sim/env_budget_spec.lua`): both count
-//! what was asked for, not net memory pressure at the end.
+//! `realloc` that shrinks is not credited back. That is deliberate: this
+//! counts what was asked for, not net memory pressure at the end, so churn
+//! (allocate-then-free within the measured window) still shows up instead of
+//! netting out to zero.
 //!
 //! # Not thread-scoped
 //!

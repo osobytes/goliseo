@@ -1,4 +1,4 @@
-//! Port of `spec/support/online_combat_phases.lua` (579 lines).
+//! Support fixture for driver-level combat-correction tests.
 //!
 //! Driver-level boundary zeroes for the seven combat correction phases: wind-up,
 //! guard, contact, projectile flight, stagger/knockback, ball spill, and
@@ -29,7 +29,7 @@
 //! a phase the simulation entered on its own, from authority every peer holds.
 //!
 //! Nothing here iterates a hash-keyed table in a way that reaches an output:
-//! this port never reaches for `HashMap`/`HashSet` (denied workspace-wide
+//! this module never reaches for `HashMap`/`HashSet` (denied workspace-wide
 //! anyway), and `pool_for` walks `gc_data::players::ALL` in its authored
 //! order.
 //!
@@ -46,15 +46,15 @@
 //! `live_sample(id, step, index)` is the live slot's input program for the
 //! scenario; it is `input_frame::neutral_sample()` for every `Policy` scenario.
 //!
-//! ## A note on the Lua original's runtime field-growth guard
+//! ## A note on runtime field-growth guards
 //!
-//! The Lua fixture copies `PlayerData` by an explicit field list and asserts
-//! against it, so a new field silently dropped from `data/players.lua` fails
-//! loudly rather than vanishing. Rust does not need the runtime check:
-//! `PlayerData` is a plain `Copy` struct, so `let mut copied = *player;`
-//! carries every field by construction, and the compiler -- not a runtime
-//! assertion -- refuses to compile if the struct shape ever changes in a way
-//! this file does not account for.
+//! Copying a struct by an explicit field list and asserting against it is
+//! one way to make a new field silently dropped from the players content
+//! table fail loudly rather than vanishing. Rust does not need a runtime
+//! check for that: `PlayerData` is a plain `Copy` struct, so
+//! `let mut copied = *player;` carries every field by construction, and the
+//! compiler -- not a runtime assertion -- refuses to compile if the struct
+//! shape ever changes in a way this file does not account for.
 
 use gc_core::vec2::Vec2;
 use gc_data::action_families::ActionFamilyId;
@@ -74,27 +74,23 @@ const HOME_OUTFIELD: [i64; 4] = [2, 3, 4, 5];
 /// See [`HOME_OUTFIELD`].
 const AWAY_OUTFIELD: [i64; 4] = [7, 8, 9, 10];
 
-/// Playable pitch dimensions every scenario shares. Mirrors
-/// `combat_phases.FIELD`.
+/// Playable pitch dimensions every scenario shares.
 const FIELD: PitchSize = PitchSize { w: 960.0, h: 540.0 };
 /// Long enough that no scenario can reach full time and turn a correction
-/// question into a settle question. Mirrors `combat_phases.DURATION_SECONDS`.
+/// question into a settle question.
 const DURATION_SECONDS: f64 = 14.0;
-/// Mirrors `combat_phases.SEED`.
+/// The fixed seed every scenario's boundary zero is captured with.
 const SEED: f64 = 74.0;
-/// The opening lane the two facing lines are laid out along. Mirrors
-/// `LINE_X`.
+/// The opening lane the two facing lines are laid out along.
 const LINE_X: f64 = 400.0;
 
 /// The bar a driver-level guard-probe geometry must clear before `guard`
 /// should move to the [`OnlineCombatPhaseRoute::Policy`] route: every peer
-/// must see at least this many corrected-tick guard observations. Mirrors
-/// `combat_phases.GUARD_POLICY_ROUTE_MINIMUM`; see that constant's Lua doc
-/// comment for the full rationale.
+/// must see at least this many corrected-tick guard observations — see the
+/// guard-probe section below for the full rationale.
 pub const GUARD_POLICY_ROUTE_MINIMUM: i64 = 4;
 
-/// Canonical order, and the order a caller should report results in. Mirrors
-/// `combat_phases.PHASES`.
+/// Canonical order, and the order a caller should report results in.
 pub const PHASES: [&str; 7] = [
     "windup",
     "guard",
@@ -105,8 +101,7 @@ pub const PHASES: [&str; 7] = [
     "immunity_expiry",
 ];
 
-/// How a scenario's named phase is reached. Mirrors
-/// `OnlineCombatPhaseRoute`.
+/// How a scenario's named phase is reached.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OnlineCombatPhaseRoute {
     /// The phase is produced by `gameplay_ai/combat/v1` itself, from nothing
@@ -118,7 +113,7 @@ pub enum OnlineCombatPhaseRoute {
 }
 
 /// Everything [`boundary_zero`] needs to lay out a fixture: who is armed with
-/// what, and how the two lines stand. Mirrors `OnlineCombatFixtureShape`.
+/// what, and how the two lines stand.
 #[derive(Clone, Copy, Debug)]
 pub struct OnlineCombatFixtureShape {
     /// Loadout family every home outfielder carries.
@@ -131,8 +126,7 @@ pub struct OnlineCombatFixtureShape {
     pub row_spacing_px: f64,
 }
 
-/// One named combat phase's driver-level scenario. Mirrors
-/// `OnlineCombatPhaseScenario`.
+/// One named combat phase's driver-level scenario.
 #[derive(Clone, Copy, Debug)]
 pub struct OnlineCombatPhaseScenario {
     /// The phase this scenario reaches (one of [`PHASES`]).
@@ -149,9 +143,9 @@ pub struct OnlineCombatPhaseScenario {
     pub hold_equipment: bool,
 }
 
-/// One loadout per family, matching `spec/sim/combat_ai_match_spec.lua` so a
-/// scenario here and a scenario there mean the same thing by
-/// `light_melee`. Mirrors `LOADOUT_FOR`.
+/// One loadout per family, matching the loadout combat-AI match tests use
+/// elsewhere so a scenario here and a scenario there mean the same thing by
+/// `light_melee`.
 fn loadout_for(family: ActionFamilyId) -> &'static str {
     match family {
         ActionFamilyId::Unarmed => "loadout_spring_gloves",
@@ -161,7 +155,7 @@ fn loadout_for(family: ActionFamilyId) -> &'static str {
     }
 }
 
-/// Mirrors `SCENARIOS`.
+/// The seven declared phase scenarios, one per entry in [`PHASES`].
 const SCENARIOS: [OnlineCombatPhaseScenario; 7] = [
     // Light melee telegraphs the longest melee wind-up (12 ticks), so the
     // policy's own commit leaves a wide window for a burst to land inside.
@@ -182,7 +176,7 @@ const SCENARIOS: [OnlineCombatPhaseScenario; 7] = [
     // hostile path to a purpose target (`combat_feasibility`'s guard
     // witness), which needs the threat readable inside the deciding player's
     // scan cadence. A driver-level scenario cannot re-pin the hostile every
-    // tick the way `spec/sim/combat_ai_match_spec.lua` does, because boundary
+    // tick the way a live per-tick harness could, because boundary
     // zero is the only thing it controls -- see [`GUARD_PROBE`]'s doc for the
     // measured evidence. So the guard here is raised by a live slot's own
     // held equipment, which reaches the resolver through the canonical input
@@ -297,7 +291,7 @@ pub fn scenario(id: &str) -> &'static OnlineCombatPhaseScenario {
 /// Every outfielder on a side carries the same family, so a scenario
 /// exercises exactly one pair of them. Builds both the id-keyed pool
 /// `gc_sim::r#match::new` wants and the plain slice `gc_sim::combat::new_state`
-/// wants, from the one copy. Mirrors `pool_for`.
+/// wants, from the one copy.
 ///
 /// # Panics
 ///
@@ -330,7 +324,7 @@ fn pool_for(
 /// shape and differs only in the families carrying it, how far apart the
 /// lines stand, and how tightly the rows are stacked -- a wide
 /// `row_spacing_px` is four separate duels, a narrow one is a scrum where
-/// every body is inside every reach. Mirrors `pose`.
+/// every body is inside every reach.
 fn pose(state: &mut match_snapshot::MatchState, shape: &OnlineCombatFixtureShape) {
     let spacing = shape.row_spacing_px;
     let top = FIELD.h / 2.0 - spacing * 1.5;
@@ -357,7 +351,7 @@ fn pose(state: &mut match_snapshot::MatchState, shape: &OnlineCombatFixtureShape
     state.kickoff_hold = 0.0;
 }
 
-/// Mirrors `capture_boundary_zero`.
+/// Builds and captures the boundary-zero snapshot for one fixture shape.
 ///
 /// # Panics
 ///
@@ -395,7 +389,7 @@ fn capture_boundary_zero(shape: &OnlineCombatFixtureShape, duration: Option<f64>
 
 /// The shared, combat-active boundary zero for one phase. Every peer in a
 /// session must be given the *same* snapshot: a differing one is a desync
-/// fixture, not a correction fixture. Mirrors `combat_phases.boundary_zero`.
+/// fixture, not a correction fixture.
 ///
 /// `duration` is match seconds; defaults to [`DURATION_SECONDS`].
 ///
@@ -415,8 +409,7 @@ pub fn boundary_zero(id: &str, duration: Option<f64>) -> MatchSnapshot {
 /// Only the `guard` scenario authors anything: it presses equipment once and
 /// then holds it, which is a human raising a shield and keeping it up. The
 /// press edge is re-sent periodically so an interrupted guard is raised again
-/// rather than leaving the rest of the run neutral. Mirrors
-/// `combat_phases.live_sample`.
+/// rather than leaving the rest of the run neutral.
 ///
 /// `step` is the zero-based driver step; `index` is the 1-based driver index.
 ///
@@ -463,7 +456,7 @@ fn any_event(events: &[CombatEvent], kind: CombatEventKind) -> bool {
 /// `events` are the combat events that tick emitted. A caller asks this about
 /// a tick a correction resimulated, so a true answer means the correction
 /// carried the companion through that phase and landed on the state every
-/// peer agrees on. Mirrors `combat_phases.observed`.
+/// peer agrees on.
 ///
 /// # Panics
 ///
@@ -522,8 +515,7 @@ pub fn observed(
 // The route decision is therefore about *rate*, not about possibility, and
 // [`GUARD_POLICY_ROUTE_MINIMUM`] is where that judgement is written down.
 
-/// One driver-level geometry the guard probe measures. Mirrors
-/// `OnlineGuardProbeGeometry`.
+/// One driver-level geometry the guard probe measures.
 #[derive(Clone, Copy, Debug)]
 pub struct OnlineGuardProbeGeometry {
     /// This geometry's stable id.
@@ -537,11 +529,10 @@ pub struct OnlineGuardProbeGeometry {
     pub deliver_period: i64,
 }
 
-/// Mirrors `combat_phases.GUARD_PROBE`.
+/// The four driver-level geometries the guard probe measures.
 pub const GUARD_PROBE: [OnlineGuardProbeGeometry; 4] = [
-    // The widest melee telegraph, one duel per row -- the geometry
-    // `spec/sim/combat_ai_match_spec.lua` guards in when it re-pins the
-    // hostile every tick.
+    // The widest melee telegraph, one duel per row -- the geometry a live
+    // per-tick harness guards in when it re-pins the hostile every tick.
     OnlineGuardProbeGeometry {
         id: "vs_light_melee_duels",
         shape: OnlineCombatFixtureShape {
@@ -597,7 +588,7 @@ pub const GUARD_PROBE: [OnlineGuardProbeGeometry; 4] = [
 
 /// Boundary zero for one guard probe geometry, built exactly like a phase
 /// scenario's so the probe measures the policy rather than a different
-/// fixture. Mirrors `combat_phases.guard_probe_boundary_zero`.
+/// fixture.
 ///
 /// # Panics
 ///

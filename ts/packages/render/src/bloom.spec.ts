@@ -8,7 +8,7 @@
 // `SceneRoot.render`. `dispose()`'s no-op-before-first-`draw` path needs no
 // renderer at all, so that is what this file covers. `dispose()` actually
 // releasing a live composer's render targets is untested here for the same
-// reason `draw` itself is -- see this port's report.
+// reason `draw` itself is.
 
 import { describe, expect, it } from "vitest";
 import { Bloom, DEFAULT_BLOOM_CONFIG } from "./bloom.ts";

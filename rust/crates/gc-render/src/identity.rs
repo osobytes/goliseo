@@ -1,5 +1,3 @@
-//! Port of `render/identity.lua`.
-//!
 //! Resolves a player id to the presentation identity the pitch draws: display
 //! name, species flavour, silhouette and palette.
 //!
@@ -8,8 +6,8 @@
 //! presentation. It is on the Rust side of the boundary only because it is the
 //! producer half of the RenderFrame.
 //!
-//! Note the split the Lua makes and this preserves: a showcase player carries
-//! both a *mechanical* species and an optional *presentation* species. The
+//! Note the split this preserves: a showcase player carries both a
+//! *mechanical* species and an optional *presentation* species. The
 //! presentation one wins here, and only here — swapping how a player looks must
 //! never move their stats.
 
@@ -37,15 +35,15 @@ pub struct PlayerPresentationIdentity {
     pub palette: [f64; 3],
 }
 
-/// The palette used when a species authors none, matching the Lua's literal.
+/// The palette used when a species authors none.
 const DEFAULT_PALETTE: [f64; 3] = [0.55, 0.72, 0.92];
 
 /// Resolve a player id to its presentation identity.
 ///
 /// Returns `None` when the player is unknown, has no showcase compatibility row,
-/// or names a species that does not exist — the same three `nil` returns the Lua
-/// has. Those are lookup misses over content, not broken invariants, so they are
-/// absent values rather than panics (AGENTS.md §7).
+/// or names a species that does not exist — three distinct lookup misses over
+/// content, not broken invariants, so they are absent values rather than
+/// panics (AGENTS.md §7).
 #[must_use]
 pub fn for_player(player_id: &str) -> Option<PlayerPresentationIdentity> {
     let player = gc_data::players::get(player_id)?;

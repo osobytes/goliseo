@@ -1,5 +1,3 @@
-// Ported from game/match_onboarding.lua.
-
 export type OnboardingPromptId = "move" | "equipment" | "possession" | "defending" | "keeper";
 
 export interface OnboardingPrompt {

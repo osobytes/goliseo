@@ -1,4 +1,4 @@
-//! Port of `spec/sim/tripwire_spec.lua`.
+//! Tests for `gc_sim::tripwire`.
 
 use gc_sim::tripwire;
 use indexmap::IndexMap;
@@ -63,7 +63,14 @@ fn tripwire_reports_drift_rows_and_refresh_instructions() {
     let (ok, rows) = tripwire::compare(&signature(None, None), &signature(Some(0.1), Some("fun")));
     let rep = tripwire::report(&rows, ok, 30);
     assert!(rep.contains("DRIFT"), "report names the drift");
-    assert!(rep.contains("tripwire write"), "and how to refresh");
+    assert!(
+        rep.contains("gc_sim::tripwire::serialize"),
+        "and how to refresh"
+    );
+    assert!(
+        rep.contains("fun_baseline.rs"),
+        "names the file the refresh lands in"
+    );
 }
 
 #[test]
@@ -71,22 +78,34 @@ fn tripwire_serializes_a_loadable_baseline_covering_every_tracked_metric() {
     let sig = signature(None, None);
     let chunk = tripwire::serialize(&sig, 30);
 
-    // A tiny loader for the generated Lua-table-literal text: pull out
-    // `key = value,` lines and `n = value,`, matching what `love`'s Lua
-    // parser would see when it loads this file.
+    // A tiny loader for the generated Rust struct-literal text: pull the
+    // `pub const BASELINE: FunBaseline = FunBaseline { ... };` body out of
+    // the emitted module source and read its `field: value,` rows. This is
+    // what a human pasting the output over fun_baseline.rs is trusting to
+    // parse as real Rust.
+    let open = "FunBaseline {";
+    let start = chunk.find(open).expect("emits a FunBaseline literal");
+    let after_open = &chunk[start + open.len()..];
+    let close = after_open.find("};").expect("literal is closed");
+    let body = &after_open[..close];
+
     let mut loaded: IndexMap<String, f64> = IndexMap::new();
     let mut n: Option<i64> = None;
-    for line in chunk.lines() {
+    for line in body.lines() {
         let line = line.trim().trim_end_matches(',');
-        let Some((key, value)) = line.split_once('=') else {
+        if line.is_empty() {
             continue;
-        };
+        }
+        let (key, value) = line.split_once(':').expect("`field: value` row");
         let key = key.trim();
         let value = value.trim();
         if key == "n" {
             n = value.parse::<i64>().ok();
-        } else if let Ok(v) = value.parse::<f64>() {
-            loaded.insert(key.to_string(), v);
+        } else {
+            loaded.insert(
+                key.to_string(),
+                value.parse::<f64>().expect("numeric field"),
+            );
         }
     }
 
@@ -99,4 +118,71 @@ fn tripwire_serializes_a_loadable_baseline_covering_every_tracked_metric() {
             "{k} round-trips: got {got}, want {want}"
         );
     }
+    assert_eq!(
+        loaded.len(),
+        tripwire::TRACKED.len(),
+        "no extra, unrecognized fields snuck in"
+    );
+
+    // "Loadable" means the emitted field names are real fields of
+    // `gc_data::fun_baseline::FunBaseline`, not merely text shaped like
+    // some. Assigning into an actual value through an exhaustive match on
+    // field name is compile-checked realness: a name with no matching real
+    // field has no arm to take, so it falls into the panicking catch-all.
+    let mut baseline = gc_data::fun_baseline::FunBaseline {
+        n: 0,
+        fun: 0.0,
+        goals_total: 0.0,
+        shots_per_goal: 0.0,
+        save_rate: 0.0,
+        pass_completion: 0.0,
+        turnovers_per_min: 0.0,
+        possession_balance: 0.0,
+        longest_drought_s: 0.0,
+        decided_late: 0.0,
+        controlled_dribble_close_share: 0.0,
+        controlled_dribble_sprint_share: 0.0,
+        controlled_dribble_juke_share: 0.0,
+        controlled_dribble_touches_per_min: 0.0,
+        controlled_dribble_heavy_losses_per_min: 0.0,
+        ai_dribble_close_share: 0.0,
+        ai_dribble_sprint_share: 0.0,
+        ai_dribble_juke_share: 0.0,
+        ai_dribble_touches_per_min: 0.0,
+        ai_dribble_heavy_losses_per_min: 0.0,
+    };
+    baseline.n = n.expect("n present");
+    for (key, value) in &loaded {
+        match key.as_str() {
+            "fun" => baseline.fun = *value,
+            "goals_total" => baseline.goals_total = *value,
+            "shots_per_goal" => baseline.shots_per_goal = *value,
+            "save_rate" => baseline.save_rate = *value,
+            "pass_completion" => baseline.pass_completion = *value,
+            "turnovers_per_min" => baseline.turnovers_per_min = *value,
+            "possession_balance" => baseline.possession_balance = *value,
+            "longest_drought_s" => baseline.longest_drought_s = *value,
+            "decided_late" => baseline.decided_late = *value,
+            "controlled_dribble_close_share" => baseline.controlled_dribble_close_share = *value,
+            "controlled_dribble_sprint_share" => {
+                baseline.controlled_dribble_sprint_share = *value;
+            }
+            "controlled_dribble_juke_share" => baseline.controlled_dribble_juke_share = *value,
+            "controlled_dribble_touches_per_min" => {
+                baseline.controlled_dribble_touches_per_min = *value;
+            }
+            "controlled_dribble_heavy_losses_per_min" => {
+                baseline.controlled_dribble_heavy_losses_per_min = *value;
+            }
+            "ai_dribble_close_share" => baseline.ai_dribble_close_share = *value,
+            "ai_dribble_sprint_share" => baseline.ai_dribble_sprint_share = *value,
+            "ai_dribble_juke_share" => baseline.ai_dribble_juke_share = *value,
+            "ai_dribble_touches_per_min" => baseline.ai_dribble_touches_per_min = *value,
+            "ai_dribble_heavy_losses_per_min" => {
+                baseline.ai_dribble_heavy_losses_per_min = *value;
+            }
+            other => panic!("serialize emitted a field {other:?} that isn't real"),
+        }
+    }
+    assert_eq!(baseline.n, 30);
 }

@@ -1,64 +1,55 @@
-//! Port of `sim/rollback_events.lua`.
-//!
 //! Pure stable-event timeline for rollback presentation and confirmed
 //! consumers. Identity is derived from simulation causality and never enters
 //! [`crate::match_snapshot::MatchState`].
 //!
 //! ## `RollbackEventTickOutput` — a narrow adapter, not `RollbackTickOutput`
 //!
-//! `sim/rollback_events.lua` types its step input against
-//! `RollbackTickOutput`, declared in `sim/rollback_session.lua`. That module
-//! is explicitly out of scope for this port (it needs `sim/match.lua`,
-//! itself still a placeholder — see README §5.1). Rather than invent a
-//! duplicate `MatchState`-shaped view for a module this one does not own,
-//! [`RollbackEventTickOutput`] declares only the fields this module actually
-//! reads (`tick`, `start_boundary`, `end_boundary`, `events`,
-//! `combat_events`, `state`, `finished`) — `RollbackTickOutput.input` is part
-//! of the Lua type's shape but is never read by `rollback_events.lua`
-//! itself, so it has no field here.
+//! This module's step input is typed against [`RollbackEventTickOutput`]
+//! rather than [`crate::rollback_session::RollbackTickOutput`] directly.
+//! Rather than take on a dependency on a `MatchState`-shaped type this
+//! module does not own, [`RollbackEventTickOutput`] declares only the
+//! fields this module actually reads (`tick`, `start_boundary`,
+//! `end_boundary`, `events`, `combat_events`, `state`, `finished`) —
+//! `RollbackTickOutput.input` is part of that type's shape but is never
+//! read here, so it has no field in this narrow view.
 //!
 //! ## Deep copies are ambient, not threaded
 //!
-//! The Lua original threads `copy_value`/`copy_wrapped_event`/`copy_step`
-//! through every read and write to defend a caller's table from aliasing a
-//! retained one (and vice versa). Every payload type here
-//! ([`crate::match_snapshot::MatchEvent`], [`crate::combat_snapshot::CombatEvent`],
-//! [`RollbackLifecyclePayload`], ...) is an owned Rust value with a real
-//! [`Clone`] impl, so passing by value or `.clone()`-ing at a storage
-//! boundary already gives the independent copy those helpers exist to fake —
-//! there is no reference aliasing to defend against, so no `copy_*` helper
-//! has a Rust equivalent.
+//! Every payload type here ([`crate::match_snapshot::MatchEvent`],
+//! [`crate::combat_snapshot::CombatEvent`], [`RollbackLifecyclePayload`],
+//! ...) is an owned Rust value with a real [`Clone`] impl, so passing by
+//! value or `.clone()`-ing at a storage boundary already gives an
+//! independent copy — there is no reference aliasing to defend against, so
+//! no manual deep-copy helper is needed anywhere in this module.
 //!
 //! ## Canonical signed-zero equality
 //!
-//! Lua's `equal_value` compares numbers via [`match_snapshot::number_bytes`]
-//! rather than `==`, specifically so `0.0` and `-0.0` compare *unequal* (this
-//! is exercised directly: "uses canonical signed-zero equality for payload
-//! replacement"). Rust's `f64` `==` treats them as equal, so every payload
-//! comparison this module's diffing does goes through a local `same_f64`
-//! that matches the sign of `1.0 / x`, mirroring `match_snapshot`'s own
-//! private helper of the same name (that one is not `pub`, so this module
-//! keeps its own copy rather than reaching across the crate for a private
-//! item).
+//! Every payload comparison this module's diffing does needs `0.0` and
+//! `-0.0` to compare *unequal* (this is exercised directly: "uses canonical
+//! signed-zero equality for payload replacement"), because they are
+//! distinct simulation values here even though Rust's `f64` `==` treats
+//! them as equal. That comparison goes through a local `same_f64` that
+//! matches the sign of `1.0 / x`, the same approach `match_snapshot` uses in
+//! its own private helper of the same name (that one is not `pub`, so this
+//! module keeps its own copy rather than reaching across the crate for a
+//! private item).
 //!
-//! ## No `%`, and the dropped `is_integer`/dense-array checks
+//! ## No `%`, and no `is_integer`/dense-array checks
 //!
-//! This module has no modulo arithmetic. Its Lua original's `is_integer` and
-//! `assert_dense_steps` runtime checks exist only because Lua numbers and
-//! tables are untyped; `i64` cannot be fractional and a Rust `&[T]` slice is
-//! always dense, so both checks are structurally redundant here (README rule
-//! 9) and are dropped.
+//! This module has no modulo arithmetic, and it has no runtime "is this
+//! actually an integer" or "is this array dense" checks: `i64` cannot be
+//! fractional and a Rust `&[T]` slice is always dense, so both classes of
+//! check would be structurally redundant here (ARCHITECTURE.md §3 rule 7).
 //!
 //! ## `accounting` is diagnostic, not differential-tested
 //!
-//! [`accounting`] mirrors the Lua original's `canonical_payload` byte
-//! counter, but it is presentation-facing bookkeeping — not hashed, not
-//! wired, not on the determinism path (`v2/tools/lua_reference/README.md`'s
-//! "not required" list explicitly names diagnostics) — and the ported spec
-//! never exercises it. The port keeps the same tagging scheme (`n`/`b0`/`b1`/
-//! `s<len>:`/`d<len>:`/`t<count>:`) but, since `accounting` only ever reports
-//! a total *byte count*, it only needs to reproduce each contribution's
-//! length, not the concatenation order the way a hash or wire format would.
+//! [`accounting`] is a byte counter, but it is presentation-facing
+//! bookkeeping — not hashed, not wired, not on the determinism path — and
+//! is not covered by differential testing against a reference
+//! implementation. It uses a tagging scheme (`n`/`b0`/`b1`/`s<len>:`/
+//! `d<len>:`/`t<count>:`) but, since `accounting` only ever reports a total
+//! *byte count*, it only needs to reproduce each contribution's length, not
+//! the concatenation order the way a hash or wire format would.
 
 use crate::aerial::{AerialOutcome, AerialStyle};
 use crate::combat_snapshot::{self, CombatEvent, CombatEventKind, CombatMatchState};
@@ -68,9 +59,10 @@ use crate::match_snapshot::{self, ByTeam, MatchEvent, MatchSnapshot, MatchState,
 use indexmap::IndexMap;
 
 /// Free-form event identity namespace: `match/<kind>`, `combat/<kind>/<n>`,
-/// or `lifecycle/goal`\|`lifecycle/kickoff`\|`lifecycle/full_time`. The Lua
-/// alias documents those literals but also allows an arbitrary string, so it
-/// is not a closed set — an `enum` would be lossy; this stays `String`.
+/// or `lifecycle/goal`\|`lifecycle/kickoff`\|`lifecycle/full_time`. Those
+/// literals are the documented cases, but an arbitrary string is also
+/// allowed, so this is not a closed set — an `enum` would be lossy; this
+/// stays `String`.
 pub type RollbackEventDomain = String;
 
 /// The closed lifecycle vocabulary.
@@ -169,8 +161,8 @@ pub enum RollbackEventsErrorCode {
     UnconfirmedWindowExceeded,
 }
 
-/// An expected, recoverable [`RollbackEventTimeline`] failure (README rule
-/// 5.5): the caller is meant to handle it, not a programmer error.
+/// An expected, recoverable [`RollbackEventTimeline`] failure (ARCHITECTURE.md
+/// §3 rule 5): the caller is meant to handle it, not a programmer error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RollbackEventsError {
     /// Machine-readable failure reason.
@@ -227,9 +219,8 @@ pub struct RollbackEventPlayerIdentity {
     pub team: Team,
 }
 
-/// A narrow adapter for the Lua original's `RollbackTickOutput` (declared in
-/// the not-yet-ported `sim/rollback_session.lua`). See the module doc
-/// comment: this carries only the fields `rollback_events.lua` reads.
+/// A narrow adapter for [`crate::rollback_session::RollbackTickOutput`]. See
+/// the module doc comment: this carries only the fields this module reads.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RollbackEventTickOutput {
     /// Causal input tick.
@@ -292,9 +283,9 @@ pub struct RollbackEventStep {
 /// Pure stable-event timeline for one rollback client.
 ///
 /// Every field is internal state; use the free functions in this module to
-/// read or mutate it. Fields are `pub` (README rule: everything a test
-/// touches is `pub`). `steps` is keyed by tick — a sparse key, not a
-/// sequential buffer position (README rule 5.3), so it is an [`IndexMap`]
+/// read or mutate it. Fields are `pub` (ARCHITECTURE.md §3 rule 6: everything
+/// a test touches is `pub`). `steps` is keyed by tick — a sparse key, not a
+/// sequential buffer position (ARCHITECTURE.md §3 rule 3), so it is an [`IndexMap`]
 /// rather than a fixed-size array, matching `rollback_input_history`'s
 /// `authoritative`/`effective`/`records` maps.
 #[derive(Clone, Debug, PartialEq)]
@@ -1061,11 +1052,10 @@ fn array_len(elements: &[i64]) -> i64 {
     1 + digits(elements.len() as i64) + 1 + body
 }
 
-// The Lua original's `MatchEvent` enum-valued fields are wire-mapped by
-// `match_snapshot`'s own private helpers of the same name; those are not
-// `pub`, so `accounting` (diagnostic-only, see the module doc comment) keeps
-// a small local mirror rather than reaching across the crate for a private
-// item.
+// `MatchEvent`'s enum-valued fields are wire-mapped by `match_snapshot`'s
+// own private helpers of the same name; those are not `pub`, so
+// `accounting` (diagnostic-only, see the module doc comment) keeps a small
+// local mirror rather than reaching across the crate for a private item.
 fn save_style_wire(v: SaveStyle) -> &'static str {
     match v {
         SaveStyle::Spread => "spread",

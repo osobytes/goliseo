@@ -1,9 +1,7 @@
-// Ported from spec/game/match_input_adapter_spec.lua.
-//
-// `sim/fixed_clock.lua` is Rust-owned (`sim/**` -> `crates/gc-sim`;
-// v2/README.md §2), and this package must not depend on Rust sources (rule
-// 6.7). The Lua spec drives `match_input_adapter` through
-// `fixed_clock.advance`, which is pure render/tick-cadence bookkeeping with
+// `gc-sim`'s fixed-clock bookkeeping is Rust-owned (`sim/**` ->
+// `crates/gc-sim`; ARCHITECTURE.md §1), and this package must not depend on
+// Rust sources (§4 rule 6). This spec drives `match_input_adapter` through a
+// fixed-clock `advance`, which is pure render/tick-cadence bookkeeping with
 // no simulation math in it -- unlike the transcendental-call determinism
 // concerns the README warns about. Reimplementing just its `new`/`advance`
 // shape as a local, test-only double (not exported, not used by production

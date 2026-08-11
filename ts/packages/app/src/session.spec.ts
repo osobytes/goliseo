@@ -1,5 +1,3 @@
-// Ported from spec/game/session_spec.lua.
-
 import { describe, expect, it } from "vitest";
 import { session } from "./session.ts";
 import { MATCH_CONTRACT_CONTENT, NEBULA } from "./test_support/fixtures.ts";

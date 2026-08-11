@@ -1,5 +1,3 @@
-//! Port of `sim/lever_metrics.lua`.
-//!
 //! Match-grain liveness for manager levers. Each comparison runs fixture A
 //! and fixture B on the same seeds (common random numbers), then reports
 //! effect sizes: home win-rate percentage points and mean shifts normalized
@@ -10,13 +8,12 @@
 //! here means a lever is perceptible, not that it is a decision: a lever is
 //! ships-eligible only after decision_contingency (#0005) passes as well.
 //!
-//! ## Band table duplication (README §5.1 precedent)
+//! ## Band table duplication
 //!
 //! [`crate::headless`]'s `band_for` already duplicates `crate::metrics`'s
-//! private `BAND_*` constants for the same reason documented there: this
-//! module does not own `metrics.rs` and cannot make them `pub`. [`band_width`]
-//! duplicates the same eight good-band widths a second time; both
-//! duplicates are display/analysis-layer reads of authored balance
+//! private `BAND_*` constants, since `metrics.rs` keeps them private.
+//! [`band_width`] duplicates the same eight good-band widths a second time;
+//! both duplicates are display/analysis-layer reads of authored balance
 //! constants, not game content (AGENTS.md §8 is about content, not these).
 
 use crate::headless::{self, BatchOpts, BatchResult, HeadlessBot, Winner};
@@ -34,9 +31,9 @@ pub const WIN_GOOD_HI: f64 = 20.0;
 /// Minimum |band-widths| shift for a metric to count as "moved".
 pub const METRIC_MOVE_MIN: f64 = 0.5;
 
-// Sorted (matches the Lua `table.sort(keys)` over `metrics.bands`'s keys)
-// good-band widths for the eight metrics `sim/metrics.lua` bands. Values are
-// `good_hi - good_lo` from `crate::metrics`'s private `BAND_*` constants.
+// Sorted good-band widths for the eight metrics `crate::metrics` bands.
+// Values are `good_hi - good_lo` from `crate::metrics`'s private `BAND_*`
+// constants.
 const BANDED_KEYS: &[&str] = &[
     "decided_late",
     "goals_total",
@@ -63,8 +60,8 @@ fn band_width(key: &str) -> Option<f64> {
 }
 
 /// Read the observed value for one of [`BANDED_KEYS`] off a finished
-/// match's metrics. `None` mirrors the Lua `nil` a rate metric has when its
-/// denominator did not occur.
+/// match's metrics. `None` is what a rate metric has when its denominator
+/// did not occur.
 fn banded_value(m: &MatchMetrics, key: &str) -> Option<f64> {
     match key {
         "decided_late" => Some(m.decided_late),

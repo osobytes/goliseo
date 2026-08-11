@@ -1,11 +1,11 @@
-// Ported from game/screens/squad.lua — pick the five outfielders (plus the
-// locked keeper) for the showcase team sheet. See AGENTS.md §9: layout/update
-// stay pure, no love.graphics/three.js/DOM.
+// Pick the five outfielders (plus the locked keeper) for the showcase team
+// sheet. See AGENTS.md §9: layout/update stay pure, no three.js/DOM — that
+// purity is what lets this screen's logic run headless, with zero display.
 //
-// The Lua original reads `data.players`, `data.teams`, and
-// `render.identity` at module load time. All three are content this package
-// must not import (v2/README.md rule 6.7 — `data/**` is Rust-owned;
-// `render/identity.lua` is `@gc/render`, not a dependency of this package).
+// This screen needs player data, team data, and presentation identity at
+// state-construction time, but none are content this package may import
+// (ARCHITECTURE.md §4 rule 6 — player/team data is Rust-owned; presentation
+// identity is `@gc/render`, not a dependency of this package).
 // `SquadContentData` threads them through as an explicit `newState`
 // parameter instead; see content.ts's header for the full rationale.
 
@@ -13,11 +13,11 @@ import { focus, invariant, type Layout } from "@gc/ui";
 import type { FocusEvent } from "@gc/ui";
 import type { PlayerData, PlayerPresentationIdentity } from "./content.ts";
 
-/** What `newState` needs from `data.players` / `data.teams` / `render.identity`. */
+/** What `newState` needs: player data, team data, and presentation identity. */
 export interface SquadContentData {
   readonly players: Readonly<Record<string, PlayerData>>;
   readonly identities: Readonly<Record<string, PlayerPresentationIdentity>>;
-  /** `teams.nebula.squad` (falls back to `roster` in the Lua original when absent). */
+  /** `teams.nebula.squad` (falls back to `roster` when absent). */
   readonly squadIds: readonly string[];
   /** `teams.nebula.roster` — the default starting five. */
   readonly defaultStarterIds: readonly string[];

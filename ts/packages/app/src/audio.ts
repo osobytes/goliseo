@@ -1,5 +1,3 @@
-// Ported from game/audio.lua.
-//
 // Synthesized audio for the match screen. All SFX are generated at load
 // time from mathematical waveforms -- no asset files. Each SFX is <= 0.4s at
 // 22050 Hz mono. Offline playback keeps the state-event adapter; rollback
@@ -7,25 +5,22 @@
 // low loop.
 //
 // HEADLESS CONTRACT: there is no browser audio implementation in this
-// milestone (v2/README.md §1 -- wiring a real backend is a later
-// milestone's job, "do not build it, and do not block on it"). Every method
-// on `Audio` must no-op cleanly when constructed without a backend -- the
-// same contract the Lua original keeps for `love.audio`/`love.sound` being
-// nil in test mode. `AudioBackend` is this module's `GraphicsBackend`
-// equivalent (`@gc/ui/src/graphics_backend.ts`): nothing in this package
-// implements it.
+// milestone -- wiring a real backend is a later
+// milestone's job, "do not build it, and do not block on it". Every method
+// on `Audio` must no-op cleanly when constructed without a backend.
+// `AudioBackend` is this module's `GraphicsBackend` equivalent
+// (`@gc/ui/src/graphics_backend.ts`): nothing in this package implements it.
 //
-// The Lua original's "low-level sample builders" only ever call
-// `SoundData:getSample`/`:setSample`/`:getSampleCount`, which is pure
-// synthesis math with no LÖVE dependency beyond the buffer itself. They are
-// ported here as pure functions writing into a plain `Float32Array`, so
-// `AudioBackend` only needs to own actual playback (creating/cloning/
-// playing/stopping a source) -- mirroring how `graphics_backend.ts`
-// abstracts drawing while `draw.ts`'s layout math stays pure.
+// The low-level sample builders below are pure functions writing into a
+// plain `Float32Array` -- pure synthesis math with no backend dependency at
+// all -- so `AudioBackend` only needs to own actual playback
+// (creating/cloning/playing/stopping a source), mirroring how
+// `graphics_backend.ts` abstracts drawing while `draw.ts`'s layout math
+// stays pure.
 //
-// `game/presentation/combat_feedback.lua`'s `link`/`disposition` are
-// `@gc/presentation`'s (not a declared dependency of this package -- report
-// per the task brief), so they are injected as a `CombatFeedbackPort`.
+// `@gc/presentation`'s `combatFeedback` module owns `link`/`disposition`,
+// which is not a declared dependency of this package, so they are injected
+// as a `CombatFeedbackPort`.
 
 export interface AudioSourceHandle {
   readonly id: number;
@@ -33,14 +28,13 @@ export interface AudioSourceHandle {
 
 /**
  * The presentation-agnostic audio playback surface `Audio` renders SFX
- * through, standing in for `love.audio`/`love.sound`. Wiring a real
- * implementation (Web Audio or similar) is out of scope for this milestone
- * -- see this file's header.
+ * through. Wiring a real implementation (Web Audio or similar) is out of
+ * scope for this milestone -- see this file's header.
  */
 export interface AudioBackend {
-  /** `love.sound.newSoundData` + `love.audio.newSource(sd, "static")`, folded into one call. */
+  /** Creates a static, playable audio source from raw samples. */
   newSource(samples: Float32Array, sampleRate: number): AudioSourceHandle;
-  /** `Source:clone()` -- allows overlapping one-shot hits. */
+  /** Clones a source, so an overlapping one-shot hit can play without interrupting the original. */
   clone(handle: AudioSourceHandle): AudioSourceHandle;
   play(handle: AudioSourceHandle): void;
   stop(handle: AudioSourceHandle): void;
@@ -49,7 +43,7 @@ export interface AudioBackend {
   setLooping(handle: AudioSourceHandle, looping: boolean): void;
 }
 
-/** `game.presentation.combat_feedback.link`/`.disposition`, injected -- see this file's header. */
+/** `@gc/presentation`'s `combatFeedback.link`/`.disposition`, injected -- see this file's header. */
 export interface CombatFeedbackPort {
   link(payload: unknown, stableId: string): { readonly disposition: { readonly audio?: string } };
   disposition(event: unknown): { readonly audio?: string };
@@ -61,7 +55,7 @@ export interface GameSettingsAudioSlice {
   readonly muted: boolean;
 }
 
-/** `sim.rollback_events`'s `RollbackWrappedEvent` (Rust-owned; only the fields this module reads). */
+/** `gc-sim`'s `rollback_events.rs`'s `RollbackWrappedEvent` (Rust-owned; only the fields this module reads). */
 export interface RollbackWrappedEvent {
   readonly id: string;
   readonly domain: string;
@@ -72,7 +66,7 @@ export interface CombatEventLike {
   readonly kind?: string;
 }
 
-/** The slice of `sim/match.lua`'s `MatchState` `audio.consume` reads. */
+/** The slice of `gc-sim`'s `match.rs` `MatchState` `audio.consume` reads. */
 export interface AudioMatchState {
   readonly events: readonly { readonly kind: string }[];
   readonly score: { readonly home: number; readonly away: number };
@@ -320,7 +314,7 @@ function buildCrowd(): Float32Array {
 
 // --- public API --------------------------------------------------------------
 
-/** Mutable per-match/per-session audio state -- one instance per screen, like the Lua module-level table it replaces. */
+/** Mutable per-match/per-session audio state -- one instance per screen. */
 export class Audio {
   private readonly backend: AudioBackend | undefined;
   private readonly combatFeedback: CombatFeedbackPort;

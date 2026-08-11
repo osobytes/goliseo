@@ -61,11 +61,11 @@ describe("rig3d skeleton", () => {
 });
 
 // #337 slice 2: bone index contract. `boneRows` / `ROWS_PER_BONE` -- the
-// three-rows-per-bone matrix packing that only existed to fit LÖVE's custom
-// shader inside GLSL ES 1.00's 128 vertex-uniform-vector floor -- are not
-// ported: three.js's own `Skeleton` uploads bone matrices as a `DataTexture`,
-// not a hand-packed uniform array, so that specific budget arithmetic no
-// longer applies. See geometry.ts's header and this package's port report.
+// three-rows-per-bone matrix packing that only existed to fit a hand-written
+// shader inside GLSL ES 1.00's 128 vertex-uniform-vector floor -- do not
+// apply here: three.js's own `Skeleton` uploads bone matrices as a
+// `DataTexture`, not a hand-packed uniform array, so that specific budget
+// arithmetic no longer applies. See geometry.ts's header.
 describe("rig3d bone index contract (#337 slice 2)", () => {
   it("indexes every bone densely from 0", () => {
     const bones = skeleton.bones(RIG);
@@ -86,11 +86,11 @@ describe("rig3d bone index contract (#337 slice 2)", () => {
   it.skip(
     "flattens the posed skeleton into three rows per bone, in index order -- " +
       "dropped: boneRows/ROWS_PER_BONE packed bone matrices into a hand-rolled " +
-      "uniform array to fit LÖVE's GLSL ES 1.00 budget (renderer.lua, out of " +
-      "this port's scope). three.js's Skeleton uploads bone matrices via a " +
+      "uniform array to fit LÖVE's GLSL ES 1.00 budget (renderer.lua, which no " +
+      "longer exists in this repository). three.js's Skeleton uploads bone matrices via a " +
       "DataTexture instead, so this packing scheme has no three.js equivalent.",
     () => {
-      // Intentionally not ported; see skip reason above.
+      // Intentionally skipped; see reason above.
     },
   );
 
@@ -98,7 +98,7 @@ describe("rig3d bone index contract (#337 slice 2)", () => {
     "drops only the fourth row, which is always exactly (0, 0, 0, 1) -- " +
       "dropped for the same reason as the row-packing test above.",
     () => {
-      // Intentionally not ported; see skip reason above.
+      // Intentionally skipped; see reason above.
     },
   );
 
@@ -106,7 +106,7 @@ describe("rig3d bone index contract (#337 slice 2)", () => {
     "refills a reused row buffer rather than reallocating it -- dropped for " +
       "the same reason: boneRows itself was not ported.",
     () => {
-      // Intentionally not ported; see skip reason above.
+      // Intentionally skipped; see reason above.
     },
   );
 });
@@ -115,11 +115,11 @@ describe("rig3d vertex uniform budget (#337 slice 2)", () => {
   it.skip(
     "fits the GLSL ES 1.00 guaranteed floor of 128 vertex uniform vectors -- " +
       "this pinned a constraint specific to LÖVE's hand-written shader " +
-      "(renderer.lua, out of this port's scope, replaced by three.js's " +
+      "(renderer.lua, which no longer exists in this repository, replaced by three.js's " +
       "MeshStandardMaterial / SkinnedMesh pipeline, which does not upload bone " +
       "matrices as vertex-shader uniforms at all).",
     () => {
-      // Intentionally not ported; see skip reason above.
+      // Intentionally skipped; see reason above.
     },
   );
 });

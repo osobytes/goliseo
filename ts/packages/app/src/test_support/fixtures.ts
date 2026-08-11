@@ -1,14 +1,13 @@
-// Test-only fixture data, transcribed verbatim from `data/players.lua`,
-// `data/teams.lua`, `data/formations.lua`, `data/tactics.lua`, and
-// `data/arenas.lua` — the same ids, names, and squads the Lua specs this
-// package ports exercise. Those tables are Rust-owned (v2/README.md rule
-// 6.7), so this package receives content as an explicit parameter rather
-// than importing it; this fixture is the "explicit parameter" a spec
-// supplies. Same approach `@gc/screens`'s `squad_product.spec.ts` takes for
-// `data/players.lua`/`data/teams.lua`.
+// Test-only fixture data, transcribed verbatim from `gc-data/src/players.rs`,
+// `teams.rs`, `formations.rs`, `tactics.rs`, and `arenas.rs` — the same ids,
+// names, and squads this package's specs exercise. Those tables are
+// Rust-owned (ARCHITECTURE.md §4 rule 6), so this package receives content as an
+// explicit parameter rather than importing it; this fixture is the
+// "explicit parameter" a spec supplies. Same approach `@gc/screens`'s
+// `squad_product.spec.ts` takes for `players.rs`/`teams.rs`.
 //
-// Not exported from `src/index.ts` — this is test infrastructure, not a
-// port of production Lua.
+// Not exported from `src/index.ts` — this is test infrastructure, not
+// production content.
 
 import type {
   FormationData,
@@ -228,7 +227,7 @@ export const FULL_TACTICS: Readonly<Record<string, TacticData>> = {
 // `@gc/screens`'s `SquadContentData` needs the full `PlayerData` (with
 // `stats`), unlike this package's own narrower `content.ts` `PlayerData`
 // (match_contract.ts/session.ts only ever read `position`). Values
-// transcribed from `data/players.lua`, same as `squad_product.spec.ts`.
+// transcribed from `gc-data/src/players.rs`, same as `squad_product.spec.ts`.
 const SCREENS_NEBULA_PLAYERS: Readonly<Record<string, ScreensPlayerData>> = {
   ozzo: { id: "ozzo", name: "Ozzo", position: "keeper", stats: { pace: 4, strength: 5, technique: 4, stamina: 8, mental: 8 } },
   brakka: { id: "brakka", name: "Brakka", position: "defender", stats: { pace: 4, strength: 8, technique: 3, stamina: 7, mental: 8 } },

@@ -1,5 +1,3 @@
-//! Port of `game/online/diagnostics_schema.lua`.
-//!
 //! Declarative shapes, strict validation, canonical serialization, and
 //! content hashing for the OMP-3 network diagnostic contracts.
 //!
@@ -35,12 +33,13 @@
 //!
 //! [`DIGEST`] (`"fnv1a64/v1"`) names a versioned content digest that
 //! `desync_package` (this crate) and `net_diagnostics` (TypeScript,
-//! `v2/ts/packages/online/src/diagnostics_schema.ts`) both produce and must
+//! `ts/packages/online/src/diagnostics_schema.ts`) both produce and must
 //! agree on bit-for-bit — a desync package is evidence peers exchange. Per
-//! `v2/README.md` §2.2 this crate does not merely trust the TypeScript port
-//! to match: see `v2/tools/lua_reference/diagnostics_schema_vectors.txt`,
-//! generated from the real Lua, and asserted by `tests::shared_vectors_agree_with_lua`
-//! below.
+//! ARCHITECTURE.md §1.2 this crate does not merely trust the TypeScript
+//! implementation to match: see
+//! `tools/lua_reference/diagnostics_schema_vectors.txt` (frozen
+//! cross-language reference vectors — see that directory's README for
+//! provenance), asserted by `tests::shared_vectors_agree_with_lua` below.
 
 use gc_core::fnv1a64;
 
@@ -88,7 +87,7 @@ pub enum FieldKind {
 }
 
 /// One field in a diagnostics shape tree. Build with [`Field::new`] plus the
-/// builder methods, mirroring the Lua original's option-table literals.
+/// builder methods.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Field {
     /// The field's name. `None` only for a shape's own root record and for
@@ -213,18 +212,18 @@ impl Field {
 pub type Shape = Field;
 
 /// A dynamically-typed value validated and encoded against a [`Field`]
-/// shape. Lua strings are byte arrays, so text-carrying variants hold
-/// `Vec<u8>` rather than `String`: a diagnostic value arriving from a
-/// transport, a driver, or an operator must be able to carry an
-/// invalid-UTF-8 byte through to a graceful validation error rather than
-/// being rejected (or panicking) before validation even runs.
+/// shape. Text-carrying variants hold `Vec<u8>` rather than `String`: a
+/// diagnostic value arriving from a transport, a driver, or an operator must
+/// be able to carry an invalid-UTF-8 byte through to a graceful validation
+/// error rather than being rejected (or panicking) before validation even
+/// runs.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     /// A `Boolean` field's value.
     Boolean(bool),
-    /// An `Integer` or `Number` field's value. Every Lua number is an f64
-    /// (AGENTS.md §5 rule 1); which of the two kinds is intended is a
-    /// property of the [`Field`], not the [`Value`].
+    /// An `Integer` or `Number` field's value, always stored as `f64`:
+    /// which of the two kinds is intended is a property of the [`Field`],
+    /// not the [`Value`].
     Number(f64),
     /// An `Id`/`Str`/`Text`/`Hash`/`Enum` field's value.
     Text(Vec<u8>),
@@ -341,12 +340,12 @@ fn is_integer(value: f64) -> bool {
     is_finite(value) && value == value.floor() && value.abs() <= MAX_SAFE_INTEGER
 }
 
-/// Match one of this module's simplified Lua patterns: a plain substring,
-/// optionally anchored at the start (`^prefix`), the end (`suffix$`), or
-/// both (`^exact$`). Every pattern in [`WALL_CLOCK_WORDS`]/[`SIMULATION_WORDS`]
-/// is one of these four shapes — no other Lua pattern magic character is
-/// used by this schema, so a general Lua-pattern engine would be solving a
-/// problem this module does not have.
+/// Match one of this module's four supported anchor shapes: a plain
+/// substring, optionally anchored at the start (`^prefix`), the end
+/// (`suffix$`), or both (`^exact$`). Every pattern in
+/// [`WALL_CLOCK_WORDS`]/[`SIMULATION_WORDS`] is one of these four shapes, so
+/// a full regex engine would be solving a problem this module does not
+/// have.
 fn pattern_matches(lowered: &str, pattern: &str) -> bool {
     let (anchored_start, rest) = match pattern.strip_prefix('^') {
         Some(rest) => (true, rest),
@@ -530,8 +529,10 @@ fn assert_field_shape(
         );
     }
     // One scope per anchor subtree, keyed on the *domain transition* into
-    // `Anchor` rather than on being the outermost call — see the Lua
-    // original's comment on why keying this on "no scope yet" was wrong.
+    // `Anchor` rather than on "no scope was passed in yet": keying on the
+    // latter would let a second, sibling anchor subtree silently reuse the
+    // first one's scope and pass validation on vocabulary it never named
+    // itself.
     let entering_anchor = domain == Some(Domain::Anchor) && inherited != Some(Domain::Anchor);
     let mut owned_scope = VocabularyScope::default();
     let scope: &mut VocabularyScope = if entering_anchor {
@@ -730,8 +731,7 @@ fn is_ipv4_shaped(bytes: &[u8]) -> bool {
 }
 
 /// Validate `value` against `field`, returning the first violation found
-/// (deepest-first within a container, matching the Lua original's
-/// short-circuit order).
+/// (deepest-first within a container).
 fn validate_field(field: &Field, value: &Value, path: &str) -> std::result::Result<(), String> {
     match field.kind {
         FieldKind::Boolean => match value {
@@ -882,8 +882,7 @@ fn lp(bytes: &[u8], out: &mut Vec<u8>) {
 
 /// Integers print exactly; other numbers print with a fixed 17-significant-digit
 /// format so the preimage cannot depend on locale or platform `f64`-to-text
-/// precision. Mirrors C's (and Lua's `string.format`'s) `%.17g`: see
-/// [`format_g17`].
+/// precision. Mirrors C's `%.17g`: see [`format_g17`].
 fn number_bytes(value: f64) -> Vec<u8> {
     if value == value.floor() && value.abs() <= MAX_SAFE_INTEGER {
         format!("{value:.0}").into_bytes()
@@ -892,10 +891,10 @@ fn number_bytes(value: f64) -> Vec<u8> {
     }
 }
 
-/// A Rust implementation of C's `printf("%.17g", value)` (equivalently,
-/// Lua's `("%.17g"):format(value)`), used wherever this codebase needs an
-/// exact, cross-language-stable text rendering of a non-integer `f64` —
-/// [`number_bytes`] here, and `desync_package::bounded_text`'s numeric branch.
+/// A Rust implementation of C's `printf("%.17g", value)`, used wherever this
+/// codebase needs an exact, cross-language-stable text rendering of a
+/// non-integer `f64` — [`number_bytes`] here, and
+/// `desync_package::bounded_text`'s numeric branch.
 ///
 /// `%g` with precision 17 means: 17 significant decimal digits, rendered in
 /// fixed-point notation when the decimal exponent is in `[-4, 17)` and in
@@ -906,8 +905,9 @@ fn number_bytes(value: f64) -> Vec<u8> {
 /// exactly `precision` significant digits before stripping trailing zeros —
 /// the two coincide only when the exact value happens to need all 17 digits.
 ///
-/// Differential-tested against real Lua output; see
-/// `v2/tools/lua_reference/diagnostics_schema_vectors.txt` and this module's
+/// Differential-tested against frozen cross-language reference vectors; see
+/// `tools/lua_reference/diagnostics_schema_vectors.txt` (provenance:
+/// `tools/lua_reference/README.md`) and this module's
 /// `tests::shared_vectors_agree_with_lua`.
 ///
 /// # Panics
@@ -1161,8 +1161,8 @@ mod tests {
 
     /// The shape every record-shaped vector in
     /// `diagnostics_schema_vectors.txt` validates against — reproduced here
-    /// field-by-field to match the Lua script that generated the vectors
-    /// (see that file's header comment).
+    /// field-by-field to match the shape those vectors were captured
+    /// against (see `tools/lua_reference/README.md` for provenance).
     fn test_shape() -> Shape {
         record(
             "test_record",
@@ -1337,14 +1337,16 @@ mod tests {
         ])
     }
 
-    // Cross-language digest agreement (v2/README.md §2.2): a shared vector
-    // file generated from the real Lua `diagnostics_schema.lua`, checked into
-    // `v2/tools/lua_reference/diagnostics_schema_vectors.txt`. This does not
-    // merely re-hash the pinned bytes (that would only prove `fnv1a64`
-    // agrees, which is already covered by `gc-core`'s own tests): it rebuilds
-    // each case's `Value` tree in Rust and asserts this crate's `encode`
-    // produces byte-identical output to the real Lua's, then that `digest`
-    // matches too.
+    // Cross-language digest agreement (ARCHITECTURE.md §1.2): a shared
+    // vector file of frozen reference bytes and digests, checked into
+    // `tools/lua_reference/diagnostics_schema_vectors.txt` — see that
+    // directory's README for full provenance. This does not merely re-hash
+    // the pinned bytes (that would only prove `fnv1a64` agrees, which is
+    // already covered by `gc-core`'s own tests): it rebuilds each case's
+    // `Value` tree in Rust and asserts this crate's `encode` produces
+    // byte-identical output to the pinned reference, then that `digest`
+    // matches too. A failure here is a finding about this crate's encoding,
+    // not a stale vector to refresh — the vectors cannot be regenerated.
     #[test]
     fn shared_vectors_agree_with_lua() {
         let shape = test_shape();

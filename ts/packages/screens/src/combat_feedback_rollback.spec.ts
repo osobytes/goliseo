@@ -1,35 +1,33 @@
-// Ported from spec/game/combat_feedback_rollback_spec.lua.
+// Verifies the rollback-consumption seam in match.ts.
 //
-// The Lua spec drives a real `Match.new({ rollback_lab = ... })` screen
-// against `game/render/effects.lua`, `game/audio.lua`, and
-// `game/render/replay.lua`. `match.ts` ports only the rollback-consumption
-// seam this milestone (see its header); those three modules do not exist in
-// TypeScript yet (`effects`/`audio`) or are not a declared dependency of
-// this package (`replay` -- `@gc/render`), so `match.ts` takes them as
-// injected `EffectsPort`/`AudioPort`/`ReplayPort`.
+// `match.ts` implements only the rollback-consumption seam (see its
+// header). `effects`/`audio` have no implementation of their own in this
+// package, and `replay` lives in `@gc/render` but is not a declared
+// dependency here, so `match.ts` takes all three as injected
+// `EffectsPort`/`AudioPort`/`ReplayPort`.
 //
-// Every assertion below is ported as a real test against small
-// hand-written fakes for those three ports (mirroring
-// `match_presentation.spec.ts`'s `fakeRollbackEvents`/`fakeMatchDriver`):
-// the fakes track event identity and cue counts, not real particle physics
-// or DSP, which is exactly enough to prove `match.ts`'s own dedup/ledger
-// logic -- the actual subject of this spec -- without reimplementing
-// `effects.lua`/`audio.lua`. `combat_feedback` itself is real
-// (`@gc/presentation`, a declared dependency), so every assertion that
-// reads `combat_feedback.diagnostics(...)`/`combat_feedback.notice(...)`
+// Every assertion below runs against small hand-written fakes for those
+// three ports (the same "small hand-written fakes" pattern
+// `match_presentation.spec.ts`'s `fakeRollbackEvents`/`fakeMatchDriver`
+// uses): the fakes track event identity and cue counts, not real particle
+// physics or DSP, which is exactly enough to prove `match.ts`'s own
+// dedup/ledger logic -- the actual subject of this spec -- without
+// reimplementing a real effects or audio backend. `combat_feedback` itself
+// is real (`@gc/presentation`, a declared dependency), so every assertion
+// that reads `combat_feedback.diagnostics(...)`/`combat_feedback.notice(...)`
 // exercises the genuine module.
 //
-// `combat_feedback_fixture.lua`'s `state`/`combat`/occluder fields need
-// `sim.match`/`sim.combat` (Rust) to build; this spec only ever reads
-// `fixture.events`, five hand-built `RollbackWrappedCombatEvent` literals,
-// which are ported verbatim below with no sim dependency at all.
+// The fixture combat events below need no sim dependency at all: five
+// hand-built `RollbackWrappedCombatEvent` literals standing in for
+// `sim.match`/`sim.combat` (Rust) state, without needing either to build.
 //
-// One adaptation: the Lua spec's last case reads `value.state.controlled`
-// -- the real `Match` screen's own controlled-player index, which comes
-// from `sim.match.new`'s default and has no equivalent on this port's
-// scoped-down state (see match.ts's header). It is replaced with the
-// fixture event's own `source_index`, which is the field `combat_feedback`
-// actually keys a notice on -- see the inline comment at that assertion.
+// One note: the last case below reads a fixture event's own `source_index`
+// rather than a real match's controlled-player index, because that index
+// has no equivalent on `MatchRollbackConsumerState`, which carries only the
+// screen-owned slice this seam mutates and excludes the real match's
+// `controlled` field (see match.ts's header) -- `source_index` is the field
+// `combat_feedback` actually keys a
+// notice on; see the inline comment at that assertion.
 
 import { describe, expect, it } from "vitest";
 import { combatFeedback } from "@gc/presentation";
@@ -49,10 +47,9 @@ import {
   type RollbackWrappedMatchEvent,
 } from "./match.ts";
 
-// --- spec/fixtures/crowded_combat_feedback.lua (-> game/presentation/combat_feedback_fixture.lua) ---
+// --- fixture: a crowded combat sequence (five events, one tick) ---
 //
-// Only `fixture.events` is ported -- see this file's header. `wrapped(id,
-// ordinal, event)` inlined per literal.
+// `wrapped(id, ordinal, event)` inlined per literal below.
 
 function wrapped(id: string, ordinal: number, event: CombatEvent): RollbackWrappedCombatEvent {
   return { id, tick: event.tick, domain: `combat/${event.kind}/${event.source_sequence ?? 0}`, ordinal, payload: event };
@@ -399,11 +396,11 @@ describe("combat feedback rollback presentation", () => {
 
     expect(consumeConfirmedStep(value, ports, confirmedStep(controlled.tick, [controlled, unrelated], []))).toBe(2);
 
-    // Substitutes for the Lua spec's `value.state.controlled` (the real
-    // match's default controlled-player index, unavailable on this port's
-    // scoped-down state -- see this file's header) with the field
-    // `combat_feedback.notice` actually keys on: the commit event's own
-    // `source_index`.
+    // Uses the field `combat_feedback.notice` actually keys on -- the
+    // commit event's own `source_index` -- since `MatchRollbackConsumerState`
+    // (the screen-owned slice this seam mutates) has no field equivalent to
+    // a real match's default controlled-player index; see this file's
+    // header.
     const controlledIndex = controlled.payload.source_index;
     if (controlledIndex === undefined) {
       throw new Error("fixture commit event must carry a source_index");

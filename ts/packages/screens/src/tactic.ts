@@ -1,6 +1,5 @@
-// Ported from game/screens/tactic.lua — choose the team's game plan before
-// kickoff. See squad.ts/formation.ts's headers for the pure/impure seam and
-// content-injection rationale.
+// Choose the team's game plan before kickoff. See squad.ts/formation.ts's
+// headers for the pure/impure seam and content-injection rationale.
 
 import { focus, type Layout } from "@gc/ui";
 import type { FocusEvent } from "@gc/ui";
@@ -23,9 +22,8 @@ export interface TacticScreenState {
   readonly focus: string;
 }
 
-// Both `tacticId` and `tactic` are carried on every transition, mirroring
-// the Lua original (game/screens/tactic.lua); `tactic` is the field
-// spec/screens/tactic_spec.lua reads (`action.tactic`).
+// Both `tacticId` and `tactic` are carried on every transition; `tactic`
+// is the field tactic.spec.ts reads (`action.tactic`).
 export type TacticAction =
   | { readonly go: "formation"; readonly tacticId: string; readonly tactic: string }
   | { readonly go: "match"; readonly tacticId: string; readonly tactic: string };

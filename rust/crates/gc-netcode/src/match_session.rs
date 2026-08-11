@@ -1,7 +1,6 @@
-//! Port of `game/online/match_session.lua`.
-//!
-//! The online match request: everything one peer needs to start playing,
-//! derived only from the frozen manifest and the frozen slot assignment.
+//! `match_session` builds the online match request: everything one peer
+//! needs to start playing, derived only from the frozen manifest and the
+//! frozen slot assignment.
 //! Nothing here is local: two peers holding the same freeze build
 //! byte-identical requests, including boundary zero — the driver's rollback
 //! session is seeded from this snapshot on every peer, so a difference here
@@ -25,26 +24,21 @@
 //!
 //! # `initial_snapshot` is a parameter, not something this module builds
 //!
-//! The Lua original's `initial_snapshot(content, freeze)` calls
-//! `sim.match.new({ home = content.home, away = content.away, ...,
-//! input_ownership = content.ownership })`, where `content.home`/`away` are
-//! `data.teams`-authored `TeamData` and `content.ownership` is a
+//! Building a boundary-zero snapshot means calling `gc_sim::r#match::new({
+//! home, away, ..., input_ownership })`, where `home`/`away` are
+//! `gc-data`-authored `TeamData` and `input_ownership` is a
 //! `gc_sim::input_frame::InputOwnership` built from real `PlayerData`. Per
 //! `crate::match_manifest`'s module doc comment, this crate has no `gc-data`
-//! dependency (this agent's brief lists this file's `gc-sim` needs as
-//! `combat`, `fixed_clock`, `input_frame`, `input_tape`, `r#match`,
-//! `match_snapshot` — `gc-data` deliberately absent), so
-//! `gc_sim::r#match::new` cannot be called from here at all: its
-//! `NewMatchOptions` takes `&gc_data::teams::TeamData` directly, and this
+//! dependency, so `gc_sim::r#match::new` cannot be called from here at all:
+//! its `NewMatchOptions` takes `&gc_data::teams::TeamData` directly, and this
 //! module has no way to even name that type.
 //!
 //! [`request`] therefore takes the already-captured boundary-zero
 //! [`gc_sim::match_snapshot::MatchSnapshot`] as a parameter instead of
 //! building it. The caller — a layer that *does* have `gc-data` — builds it
-//! with exactly the Lua original's own recipe (`r#match::new` with
-//! `input_ownership` set, then `match_snapshot::capture`) and hands it in.
-//! [`request`] still asserts the two invariants the Lua original's
-//! `initial_snapshot` asserted on its own output (`state.slot_mode`,
+//! with `r#match::new` (`input_ownership` set) followed by
+//! `match_snapshot::capture`, and hands it in. [`request`] still asserts the
+//! two invariants that recipe must produce (`state.slot_mode`,
 //! `state.input_tick == 0`), so a caller that gets the recipe wrong still
 //! fails loudly here rather than producing a quietly-wrong match.
 //!
@@ -53,12 +47,12 @@
 //! opening live slot — none of it needs `initial_snapshot` or `content` at
 //! all) and [`finish`] (infallible: attach the caller-supplied snapshot and
 //! content, asserting the two invariants above). [`request`] is the two
-//! composed, matching the Lua original's single entry point for real
-//! callers. The split exists because `tests/match_session.rs` cannot build a
-//! `MatchSnapshot` without `gc-data` (see that file), and
-//! [`resolve_identity`] is where all of this module's actually-interesting,
-//! previously-untested logic lives — gating its test coverage on an
-//! unavailable dependency would be a worse trade than the split.
+//! composed into one entry point for real callers. The split exists because
+//! `tests/match_session.rs` cannot build a `MatchSnapshot` without `gc-data`
+//! (see that file), and [`resolve_identity`] is where all of this module's
+//! actually-interesting, previously-untested logic lives — gating its test
+//! coverage on an unavailable dependency would be a worse trade than the
+//! split.
 
 use gc_sim::input_frame::SlotId;
 use gc_sim::{fixed_clock, input_tape, match_snapshot};
@@ -290,10 +284,9 @@ pub fn resolve_identity(options: RequestOptions) -> std::result::Result<Resolved
 ///
 /// # Panics
 ///
-/// Panics if `initial_snapshot` is not a slot-mode, boundary-zero snapshot —
-/// mirrors the Lua original's own `assert`s on its (there, internally built)
-/// `initial_snapshot`; see the module doc comment for why building it moved
-/// to the caller.
+/// Panics if `initial_snapshot` is not a slot-mode, boundary-zero snapshot;
+/// see the module doc comment for why building it is the caller's job
+/// rather than this module's.
 #[must_use]
 pub fn finish(
     identity: ResolvedIdentity,
@@ -356,8 +349,9 @@ pub fn request(
 ///
 /// # Panics
 ///
-/// Panics if `slot` is unmapped in `state` — mirrors the Lua original's
-/// `assert(state.slot_players[index], "canonical slot is unmapped")`.
+/// Panics if `slot` is unmapped in `state`: every canonical slot must have
+/// a player mapped for a valid boundary snapshot, so an unmapped slot here
+/// is a programmer error, not external input.
 #[must_use]
 pub fn player_index(state: &match_snapshot::MatchState, slot: SlotId) -> i64 {
     let index = live_slot::slot_index(slot);

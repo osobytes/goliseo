@@ -1,5 +1,3 @@
-// Ported from game/compatibility_metrics.lua.
-//
 // Lightweight runtime measurements shared by native and browser runs.
 // Samples are emitted as pipe-delimited console lines so a browser console
 // export and a native stdout capture can be compared without a transport

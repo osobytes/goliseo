@@ -1,8 +1,7 @@
 //! The simulation. Pure, deterministic, no I/O.
 //!
-//! Every module is declared here up front, including ones not yet ported, so
-//! that agents porting different parts of `sim/` in parallel never contend on
-//! this file. A placeholder module is empty; see its own doc comment.
+//! Every module is declared here up front, so contributors adding new
+//! modules in parallel never contend on this file.
 #![deny(missing_docs)]
 
 pub mod aerial;
@@ -31,9 +30,9 @@ pub mod input_frame;
 pub mod input_tape;
 pub mod keeper;
 pub mod lever_metrics;
-// `match` is a Rust keyword, so the module needs a raw identifier. The file
-// stays `match.rs` so it still maps one-to-one onto `sim/match.lua`; refer to it
-// as `gc_sim::r#match` or bring it into scope with `use gc_sim::r#match as sim_match;`.
+// `match` is a Rust keyword, so the module needs a raw identifier. Refer to
+// it as `gc_sim::r#match` or bring it into scope with
+// `use gc_sim::r#match as sim_match;`.
 pub mod r#match;
 pub mod match_snapshot;
 pub mod metrics;

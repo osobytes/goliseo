@@ -1,4 +1,6 @@
-//! Ported from `spec/data/prototype_content_spec.lua`.
+//! Tests prototype content invariants: the accepted budget, the initial
+//! family records, mechanical-identity resolution across themed variants,
+//! and starter/presentation counts.
 
 use gc_data::action_families::{
     self, ActionActivation, ActionContactKind, ActionFamilyId, CombatOutcomeData,

@@ -1,18 +1,15 @@
-// Ported from spec/render/combat_feedback_spec.lua, the assertions that
-// exercise game/render/effects.lua directly (`effects.configure`, `.reset`,
+// Tests exercising effects.ts directly (`effects.configure`, `.reset`,
 // `.apply_event_diff`, `.diagnostics`, `.confirm_event`,
-// `.readability_observation`). The Lua spec also calls `game.match_hud`
-// (the HUD *model*, `game/match_hud.lua` -- a different module this package
-// does not own) via `match_hud.layout(viewport)` for its "preserves ball
-// and HUD clearance at every supported fixture size" case.
+// `.readability_observation`). One related case needs the HUD *model*
+// (`packages/app/src/match_hud.ts`, exported as `hud.layout` -- a different
+// module this package does not own) for its "preserves ball and HUD
+// clearance at every supported fixture size" case.
 //
-// That module HAS since been ported -- to `packages/app/src/match_hud.ts`,
-// exported as `hud.layout` -- but `@gc/app` depends on `@gc/render` (see
-// packages/app/package.json), so `@gc/render` importing `@gc/app`'s
-// `hud.layout` back would be a circular package dependency, not a missing
-// port. That case tests both `effects` (this package) and `hud.layout`
-// (`@gc/app`), so it belongs wherever both are reachable without a cycle --
-// `@gc/app`, not here. It now lives at
+// `@gc/app` depends on `@gc/render` (see packages/app/package.json), so
+// `@gc/render` importing `@gc/app`'s `hud.layout` back would be a circular
+// package dependency. That case tests both `effects` (this package) and
+// `hud.layout` (`@gc/app`), so it belongs wherever both are reachable
+// without a cycle -- `@gc/app`, not here. It lives at
 // packages/app/src/effects_hud_clearance.spec.ts and passes for real
 // against both real modules. See that file's header, and the comment where
 // the case used to sit below, for the detail.

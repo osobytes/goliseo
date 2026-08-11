@@ -108,10 +108,10 @@ describe("input bindings", () => {
     expect(bindings.gamepadDown("modifier", joystick)).toBe(true);
   });
 
-  // The help-card case from spec/game/input_bindings_spec.lua lives in
-  // @gc/screens/src/help.spec.ts now, where the help screen actually is, and it
-  // drives THIS module's `bindings.reference("match")` directly rather than a
-  // transcription — so a rebind here flows through and can fail it. Retired
+  // The help-card case now lives in @gc/screens/src/help.spec.ts, where
+  // the help screen actually is, and it drives THIS module's
+  // `bindings.reference("match")` directly rather than a transcription —
+  // so a rebind here flows through and can fail it. Retired
   // from this file rather than duplicated, because two copies of the same
   // assertion is how one of them goes stale unnoticed.
   it("labels every reference row for both devices", () => {

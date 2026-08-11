@@ -33,9 +33,9 @@
 //! construction identical to `Session::new`'s own), then apply a small,
 //! explicit set of JSON-encoded OVERRIDES on top of it, then capture. The
 //! override set is exactly what both blocked tests need (cross-checked
-//! against `spec/game/rollback_validation_spec.lua`'s
+//! against `packages/app/src/rollback_validation.spec.ts`'s
 //! "derives reference identities from raw campaign step inputs" and
-//! `spec/screens/match_rollback_lab_spec.lua`'s `rollback_goal_fixture`):
+//! `packages/app/src/match_rollback_lab.spec.ts`'s `rollback_goal_fixture`):
 //! `owner` (nullable), `time_left`, `input_tick`, `ball`/`ball_vel`/
 //! `ball_z`/`ball_vz`, `pickup_cd`, `block_grace`, a wholesale `events`
 //! replacement, and per-player `pos`/`run_vel`/`facing`/`vel` overrides
@@ -54,14 +54,13 @@
 //! of that encoder's own documented narrow scope) to let a caller inspect a
 //! snapshot built this way — e.g. to read back a freshly-built player's `id`
 //! or a computed `time_left` before nudging it, exactly the
-//! `match_snapshot.restore(match_snapshot.capture(initial))` round trip the
-//! Lua original performs on a plain table.
+//! `match_snapshot::restore(match_snapshot::capture(initial))` round trip.
 //!
 //! ## What is deliberately out of scope
 //!
 //! No combat companion: [`match_snapshot_build`] always captures with
 //! `combat_state: None`. Neither blocked test needs one (confirmed reading
-//! both Lua fixtures), and threading one through would mean either
+//! both specs), and threading one through would mean either
 //! generalizing this module's override set to `CombatMatchState` fields too
 //! (nothing today asks for that) or silently guessing at defaults for it —
 //! flagged here as follow-up rather than built speculatively.

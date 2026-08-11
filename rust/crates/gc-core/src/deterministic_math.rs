@@ -12,7 +12,7 @@ const MIN_ATANH_TERMS: u32 = 30;
 
 /// Compute `-log(1 - ratio)` with an ordered atanh series.
 ///
-/// The termination test is a literal port of the Lua source: the loop stops
+/// The termination test stops the loop
 /// only once adding the next term no longer changes the running sum in
 /// binary64 (`next_sum == sum`), not via any closed-form log or a fixed
 /// iteration count. Do not replace this with `f64::ln` or similar — that is

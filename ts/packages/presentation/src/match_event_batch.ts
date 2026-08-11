@@ -1,5 +1,3 @@
-// Ported from game/presentation/match_event_batch.lua.
-//
 // Reduces a sequence of rollback event diffs down to the match events that
 // survived every correction, in deterministic (sorted-id) order. Purely a
 // read of already-decided rollback output — it never decides which events

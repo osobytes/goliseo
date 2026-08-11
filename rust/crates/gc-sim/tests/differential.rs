@@ -1,6 +1,7 @@
-//! Differential test against the reference Lua implementation (README rule
-//! 5.9, `v2/tools/lua_reference/README.md`), required for `input_frame` (the
-//! wire format) and `network_conditions` (uses `core.rng`, also on the
+//! Differential test against reference vectors captured from the Lua
+//! implementation this simulation was originally validated against (README
+//! rule 5.9, `tools/lua_reference/README.md`), required for `input_frame`
+//! (the wire format) and `network_conditions` (uses `core.rng`, also on the
 //! determinism path).
 //!
 //! `tests/fixtures/network_input_frame_lua_reference.txt` is the captured

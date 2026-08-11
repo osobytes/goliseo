@@ -1,12 +1,10 @@
-// Ported from spec/screens/result_product_spec.lua.
-//
-// Fixture note: the Lua spec builds its fixtures via `game.match_contract`'s
-// `contract.new_result` (-> `@gc/app`, not this package's to own — see
+// Fixture note: production builds these fixtures via `@gc/app`'s
+// `match_contract.ts`'s `newResult` (not this package's to own — see
 // content.ts's header). `makeResult` below reproduces just the two things
 // that function does that the screen's assertions depend on: filling in
-// `home_name`/`away_name` from `data/teams.lua` (transcribed verbatim) and
+// `home_name`/`away_name` from `gc-data`'s teams (transcribed verbatim) and
 // deriving `winner` from the scores — the same defaulting
-// `game/match_contract.lua`'s `contract.new_result` performs.
+// `match_contract.ts`'s `newResult` performs.
 
 import { describe, expect, it } from "vitest";
 import { hit } from "@gc/ui";

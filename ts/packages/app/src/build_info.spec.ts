@@ -1,12 +1,8 @@
-// Ported from spec/game/branding_spec.lua.
-//
-// "uses the corrected technical save identity" (`love.filesystem.getIdentity()
-// == "goliseo"`) originally had no browser equivalent to assert on -- no
-// persistence backend existed yet (v2/README.md §1). This batch's
-// `browser_main.ts` adds one (`localStorage`, namespaced by
-// `buildInfo.identity` -- see build_info.ts's header for why that field
-// exists), so the analogous check is now expressible: was the persisted-data
-// namespace actually corrected from a prototype-era name.
+// The `buildInfo.identity` field (see build_info.ts's header for why it
+// exists) is this app's persisted-data namespace -- `browser_main.ts`
+// namespaces its `localStorage` usage by it. "uses the corrected technical
+// save identity" verifies that namespace was actually corrected from a
+// prototype-era name, not merely renamed at the display-name level.
 
 import { describe, expect, it } from "vitest";
 import { credits, title } from "@gc/screens";

@@ -5,7 +5,7 @@
 // `memory` are reachable from the SAME `WebAssembly.Instance` the ergonomic
 // wasm-bindgen classes use. See `src/index.ts`'s doc for why one instance,
 // not two, is required: `Session`'s registry handle
-// (`v2/rust/crates/gc-wasm/src/registry.rs`) only means anything against the
+// (`rust/crates/gc-wasm/src/registry.rs`) only means anything against the
 // instance that created it.
 //
 // wasm-bindgen's `--target nodejs` output never re-exports its internal
@@ -63,7 +63,7 @@ source = source.replace(
   '/* @ts-self-types="./gc_wasm.d.cts" */',
 );
 source += `
-// --- Patched by v2/ts/packages/wasm/scripts/build.mjs ---
+// --- Patched by ts/packages/wasm/scripts/build.mjs ---
 // Exposes this module's own WebAssembly.Instance exports (raw ABI: memory,
 // and gc-wasm's render_export.rs raw per-frame functions) alongside the
 // ergonomic wasm-bindgen classes above, so both reach the SAME instance.
@@ -75,7 +75,7 @@ rmSync(jsPath);
 
 let dts = readFileSync(dtsPath, "utf8");
 dts += `
-// --- Patched by v2/ts/packages/wasm/scripts/build.mjs ---
+// --- Patched by ts/packages/wasm/scripts/build.mjs ---
 // Mirrors gc_wasm_bg.wasm.d.ts's raw ABI for exactly the functions
 // src/index.ts's hot render path needs.
 export const __wbg_raw: {

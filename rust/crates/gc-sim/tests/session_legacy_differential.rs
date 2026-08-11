@@ -1,7 +1,7 @@
 //! Differential test of the ACTUAL path `crates/gc-wasm/src/session.rs`'s
 //! `Session` now runs for an ordinary (non-rollback, non-online) browser
-//! match, against real Lua `sim/match.lua`, per
-//! `v2/tools/lua_reference/README.md`.
+//! match, against reference vectors captured from real Lua `sim/match.lua`,
+//! per `tools/lua_reference/README.md`.
 //!
 //! `match_differential.rs` (in this same directory) already proves
 //! `gc_sim::r#match::step`'s legacy branch is bit-exact against Lua for
@@ -27,7 +27,7 @@
 //! This test reproduces `Session::new`/`Session::step`'s LIVE-state
 //! construction and per-tick stepping using `gc-sim`'s own public API
 //! directly (this crate cannot depend on `gc-wasm`, which depends on it --
-//! see v2/README.md's layer rule), so it is a faithful stand-in for what
+//! see README.md's layer rule), so it is a faithful stand-in for what
 //! the wasm binding actually runs, minus the wasm-bindgen marshalling
 //! itself (which carries no simulation logic of its own -- see
 //! `session.rs`'s `Session::step` body, four lines of glue around exactly
@@ -35,9 +35,9 @@
 //!
 //! The fixture (`fixtures/session_legacy_ordinary_lua_reference.txt`) was
 //! captured by running the unmodified Lua tree under headless `love`
-//! (`v2/tools/lua_reference/capture_session_legacy_ordinary_match.lua`, see
+//! (`tools/lua_reference/capture_session_legacy_ordinary_match.lua`, see
 //! that script's own header) for an ORDINARY match exactly as
-//! `game/screens/match.lua`'s `Match:restart` builds one outside the
+//! `game/screens/match.lua`'s `Match:restart` built one outside the
 //! development-only rollback lab: no `input_ownership`, no
 //! `human_controlled` override (so it defaults `true`), teams
 //! nebula/orion, seed 5, a 960x540 field, `match.step`'s default
@@ -52,9 +52,9 @@
 //! the exact field list).
 //!
 //! Every field is compared at every tick, and floats are compared by bit
-//! pattern (`f64::to_bits`) after parsing, not by printed text -- see the
-//! porting README's warning that a divergence which self-corrects a tick
-//! later is still a desync.
+//! pattern (`f64::to_bits`) after parsing, not by printed text -- see
+//! `tools/lua_reference/README.md`'s warning that a divergence which
+//! self-corrects a tick later is still a desync.
 
 use gc_sim::input_frame;
 use gc_sim::r#match::{self as sim_match, NewMatchOptions, StepInput};

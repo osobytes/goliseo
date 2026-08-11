@@ -1,5 +1,3 @@
-// Ported from game/render/camera.lua.
-//
 // Pure 2.5D projection. Maps a point on the flat pitch (world space) to a
 // screen point plus a depth scale, producing a perspective trapezoid: the far
 // edge (world y = 0) is higher and narrower, the near edge (world y = field.h)
@@ -52,7 +50,7 @@ export interface CameraPerspectiveConfig {
   readonly fov: number;
 }
 
-/** `[screenX, screenY, depthScale]`, matching the Lua original's 3 return values. */
+/** `[screenX, screenY, depthScale]`. */
 export type CameraProjection = readonly [number, number, number];
 
 // ---------------------------------------------------------------------------
@@ -137,8 +135,7 @@ function projectPerspective(
 
   // World Y is always 0 on the flat pitch, so the column-1 (world-Y) terms
   // drop out entirely -- only the world-X (wx) and world-Z (wy) columns
-  // contribute. Lua's 1-based m[1], m[3], m[4], ... become 0-based m[0], m[2],
-  // m[3], ... below.
+  // contribute.
   const x = m[0] * wx + m[2] * wy + m[3];
   const y = m[4] * wx + m[6] * wy + m[7];
   const w = m[12] * wx + m[14] * wy + m[15];
@@ -214,8 +211,8 @@ function fitFactor(field: CameraField, vp: CameraViewport): number {
 
 // The fixed whole-pitch projection: world point -> screen point + depth scale.
 //
-// #414. The Lua original -- ported here character for character -- put the
-// world-to-pixel factor in the screen POSITION and nowhere else:
+// #414. An earlier version put the world-to-pixel factor in the screen
+// POSITION and nowhere else:
 //
 //     sx    = vp.w/2 + (wx - field.w/2) * scale * (vp.w / field.w)
 //     sy    = vp.h*horizon_frac + (vp.h*bottom_frac - vp.h*horizon_frac) * t
@@ -225,12 +222,11 @@ function fitFactor(field: CameraField, vp: CameraViewport): number {
 // scale` in pitch.ts, and from there every character, billboard, shadow,
 // reticle, goal frame and ball). So positions carried a viewport factor and
 // sizes did not: grow the viewport and the pitch grows while the players stay
-// the same number of pixels. That is invisible at `vp.w == field.w`, which is
-// the ONLY case LÖVE can ever be in (conf.lua pins a non-resizable 960x540
-// window; sim/env_config.lua's DEFAULT_FIELD is 960x540) -- and the only case
-// the ported specs covered, which is why a port that translated every module
-// and every test carried the defect across intact. A browser canvas is never
-// 960x540, so v2 hit it on every real window.
+// the same number of pixels. That is invisible at `vp.w == field.w`, which
+// was the ONLY case the original fixed-window game could ever be in (a
+// non-resizable 960x540 window, over a 960x540 field) -- and the only case
+// its tests covered, which is why the defect went unnoticed until it met a
+// resizable browser canvas, which is never 960x540, on every real window.
 //
 // The second half of the same defect: `sx` fitted the field to viewport WIDTH
 // while `sy` spanned a fraction of viewport HEIGHT. At 960x540 those two
@@ -240,12 +236,12 @@ function fitFactor(field: CameraField, vp: CameraViewport): number {
 //
 // Both halves go away by construction if the projection is expressed as: build
 // the tuned frame in a REFERENCE viewport exactly the size of the field (where
-// the Lua formula is exactly right, because there the missing factor is 1),
-// then scale that whole frame uniformly about the viewport centre. Positions
-// and sizes then share one factor because there is only one, and `scale` is
-// literally the pixels-per-world-unit at that depth -- so `radius * scale` is
-// a real pixel size instead of a pixel size that happens to be right at one
-// window size.
+// the original formula is exactly right, because there the missing factor is
+// 1), then scale that whole frame uniformly about the viewport centre.
+// Positions and sizes then share one factor because there is only one, and
+// `scale` is literally the pixels-per-world-unit at that depth -- so `radius
+// * scale` is a real pixel size instead of a pixel size that happens to be
+// right at one window size.
 function projectFixed(
   wx: number,
   wy: number,
@@ -286,7 +282,7 @@ export const camera = {
   PERSPECTIVE: {
     // STRIKERS REFRAME. A true-perspective broadcast rig for the coliseum,
     // tuned against Mario Strikers reference stills, on the product's actual
-    // 960x540 field (v2/README.md's own reference dimensions -- see
+    // 960x540 field (ARCHITECTURE.md's own reference dimensions -- see
     // camera.spec.ts's differential fixtures).
     //
     // What "match Strikers" reduces to, measurably: a player reads at

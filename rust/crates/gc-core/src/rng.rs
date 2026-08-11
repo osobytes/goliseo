@@ -2,17 +2,15 @@
 //! same seed, same match — so randomness is explicit state threaded through
 //! `MatchState`, never a global RNG.
 //!
-//! Numeric-type note: the Lua source keeps `state` in an `f64` and relies on
-//! `MULT * MOD < 2^53` so the multiply stays exact in double-precision. Here
-//! `state` is a `u32` (the value is unambiguously a bounded modular integer,
-//! not a continuous quantity) and the multiply happens in `u64` before
-//! reducing back into `u32`. `u64` holds `MULT * (MOD - 1)` (~3.6e13) exactly,
-//! so this integer arithmetic is not an approximation of the Lua computation —
-//! it computes the identical exact integer result the f64 path also computes
-//! exactly, just without any float rounding to reason about. The final sample
-//! conversion `(s - 1) / (MOD - 1)` is kept as genuine `f64` division, in the
-//! same operation order as the Lua source, so its IEEE 754 rounding matches
-//! bit for bit.
+//! Numeric-type note: `state` is a `u32` (the value is unambiguously a bounded
+//! modular integer, not a continuous quantity) and the multiply happens in
+//! `u64` before reducing back into `u32`. `u64` holds `MULT * (MOD - 1)`
+//! (~3.6e13) exactly, so this integer arithmetic computes the exact integer
+//! result with no float rounding to reason about. The final sample conversion
+//! `(s - 1) / (MOD - 1)` is kept as genuine `f64` division, in a fixed
+//! operation order, so its IEEE 754 rounding is reproducible bit for bit —
+//! required for the determinism evidence this module is validated against
+//! (see `tests/rng.rs`).
 
 /// 2^31 - 1, the Mersenne prime modulus of the minstd generator.
 const MOD: u32 = 2_147_483_647;

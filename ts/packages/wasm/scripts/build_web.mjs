@@ -72,7 +72,7 @@ const dtsPath = join(outDir, "gc_wasm.d.ts");
 
 let source = readFileSync(jsPath, "utf8");
 source += `
-// --- Patched by v2/ts/packages/wasm/scripts/build_web.mjs ---
+// --- Patched by ts/packages/wasm/scripts/build_web.mjs ---
 // Exposes this module's own WebAssembly.Instance exports (raw ABI: memory,
 // and gc-wasm's render_export.rs raw per-frame functions) alongside the
 // ergonomic wasm-bindgen classes above, once \`default\`/\`initSync\` has
@@ -86,7 +86,7 @@ writeFileSync(jsPath, source);
 
 let dts = readFileSync(dtsPath, "utf8");
 dts += `
-// --- Patched by v2/ts/packages/wasm/scripts/build_web.mjs ---
+// --- Patched by ts/packages/wasm/scripts/build_web.mjs ---
 // Mirrors gc_wasm_bg.wasm.d.ts's raw ABI for exactly the functions
 // the browser render path needs. Only meaningful to call after \`default\`
 // (init) has resolved -- see this script's header.

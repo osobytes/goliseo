@@ -1,9 +1,8 @@
-// Ported from game/screens/formation.lua — choose the team shape for the
-// selected starting five. See AGENTS.md §9 and squad.ts's header for the
-// pure/impure seam and the content-injection rationale (v2/README.md rule
-// 6.7): `data.formations`, `data.players`, and `render.identity` come in as
-// an explicit `FormationContentData` parameter instead of a module-level
-// `require`.
+// Choose the team shape for the selected starting five. See AGENTS.md §9
+// and squad.ts's header for the pure/impure seam and the content-injection
+// rationale (ARCHITECTURE.md §4 rule 6): formation data, player data, and
+// presentation identity come in as an explicit `FormationContentData`
+// parameter instead of a module-level import.
 
 import { focus, invariant, type Layout } from "@gc/ui";
 import type { FocusEvent, FormationMarkerData } from "@gc/ui";
@@ -11,7 +10,7 @@ import type { FormationData, PlayerPresentationIdentity } from "./content.ts";
 
 export interface FormationContentData {
   readonly formations: Readonly<Record<string, FormationData>>;
-  /** The slice of `data.players` this screen reads: just the display name. */
+  /** The slice of player data this screen reads: just the display name. */
   readonly players: Readonly<Record<string, { readonly name: string }>>;
   readonly identities: Readonly<Record<string, PlayerPresentationIdentity>>;
 }
@@ -29,11 +28,10 @@ export interface FormationScreenState {
   readonly focus: string;
 }
 
-// The Lua original carries the selection as both `formation_id` and
-// `formation` on every transition action (game/screens/formation.lua);
-// `formation` is the field spec/screens/formation_spec.lua actually reads
-// (`action.formation`), so both are kept verbatim rather than collapsed
-// into one name.
+// The selection is carried as both `formationId` and `formation` on every
+// transition action; `formation` is the field formation.spec.ts actually
+// reads (`action.formation`), so both are kept rather than collapsed into
+// one name.
 export type FormationAction =
   | { readonly go: "squad"; readonly formationId: string; readonly formation: string }
   | { readonly go: "tactic"; readonly formationId: string; readonly formation: string };

@@ -9,14 +9,15 @@
 //! steers. See `gc_sim::ai_driven_evidence`.
 //!
 //! WHY THIS EXISTS AS A WASM ENTRY POINT AT ALL. `gc-sim`'s own differential
-//! proves the SOURCE reproduces Lua. On 2026-08-07 that was true all day while
-//! the browser rendered an obviously different game, because the browser was
-//! executing a wasm artifact built before the fix — a build, not a source,
-//! problem, and one no amount of native testing can see. Together with
-//! `scripts/check_v2.sh`'s byte comparison between this module and the one the
-//! app bundle ships, this closes that gap: the digests below are pinned to the
-//! Lua capture, so a green check here means the code in the browser reproduces
-//! Lua, not merely that some code somewhere did.
+//! proves the SOURCE reproduces the frozen reference. On 2026-08-07 that was
+//! true all day while the browser rendered an obviously different game,
+//! because the browser was executing a wasm artifact built before the fix —
+//! a build, not a source, problem, and one no amount of native testing can
+//! see. Together with `scripts/check.sh`'s byte comparison between this
+//! module and the one the app bundle ships, this closes that gap: the
+//! digests below are pinned to the frozen reference capture, so a green
+//! check here means the code in the browser reproduces it, not merely that
+//! some code somewhere did.
 //!
 //! Control-surface binding, called once rather than per frame, so it uses
 //! `wasm-bindgen` rather than [`crate::render_export`]'s raw pointer
@@ -58,8 +59,9 @@ pub struct AiDrivenEvidence {
 /// digests.
 ///
 /// The caller compares `final_hash` and `sequence_digest` against the
-/// constants `gc-sim`'s `tests/ai_driven_evidence.rs` derives from the Lua
-/// capture — this function makes no claim about what they should be, exactly
+/// constants `gc-sim`'s `tests/ai_driven_evidence.rs` derives from the
+/// frozen reference capture — this function makes no claim about what they
+/// should be, exactly
 /// as [`crate::determinism::run_determinism_evidence`] makes none about the
 /// OMP-1 pair.
 #[wasm_bindgen(js_name = runAiDrivenEvidence)]

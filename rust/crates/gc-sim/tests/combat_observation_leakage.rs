@@ -1,4 +1,5 @@
-//! Port of `spec/sim/combat_observation_leakage_spec.lua`.
+//! Tests that `gc_sim::combat_observation::CombatObservation` leaks nothing
+//! outside its declared contract.
 //!
 //! Section 4.7 of `docs/design/combat_fun_evidence_contract.md` excludes
 //! pixels, cue visibility, render timing, theme, presentation identity,
@@ -9,13 +10,11 @@
 //! stopped scanning would then pass the negative test and fail the
 //! control, instead of passing quietly.
 //!
-//! The Lua original's `scan` walks an untyped table recursively for string
-//! keys and string values. [`CombatObservation`] is a typed struct tree
-//! with a closed, `pub`-documented field set, so this port scans the
-//! `{:?}` `Debug` rendering instead: a forbidden field can only appear in
-//! that text if some type in the tree actually declares it (as `name: `)
-//! or actually holds it as a string value (as `"value"`), which is exactly
-//! what the Lua scan checked at runtime.
+//! [`CombatObservation`] is a typed struct tree with a closed,
+//! `pub`-documented field set, so the scan below walks the `{:?}` `Debug`
+//! rendering: a forbidden field can only appear in that text if some type
+//! in the tree actually declares it (as `name: `) or actually holds it as a
+//! string value (as `"value"`).
 
 use gc_data::action_families::ActionFamilyId;
 use gc_data::players::PlayerData;

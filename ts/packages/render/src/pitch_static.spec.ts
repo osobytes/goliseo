@@ -1,15 +1,15 @@
-// Carries `spec/render/pitch_static_spec.lua` (#398/#393) into the three.js port.
+// This spec pins the static-pitch-scene caching invariant from #398/#393.
 //
-// The Lua PR cached the static pitch scene into LÖVE canvases, worth ~2.3 ms of
-// browser frame time because love.js ships a plain Lua 5.1 interpreter. That
-// mechanism did NOT carry over — a projected 3D scene cached into a 2D bitmap
-// cannot respond to camera movement, which is exactly why the Lua cache bypassed
-// itself whenever a follow view was active. Under three.js the static scene is
-// persistent geometry, so the scene graph is the cache.
+// An earlier implementation cached the static pitch scene into 2D canvases,
+// worth ~2.3 ms of frame time under a plain interpreter with no JIT. That
+// mechanism does not apply here — a projected 3D scene cached into a 2D
+// bitmap cannot respond to camera movement, which is exactly why that cache
+// had to bypass itself whenever a follow view was active. Under three.js the
+// static scene is persistent geometry, so the scene graph is the cache.
 //
 // What carries over is the invariant (build it once) and, less obviously, the
 // membership of the static set. The arena frame chevrons pulse with the kickoff
-// banner, so they are dynamic and must stay outside — the Lua PR moved them to
+// banner, so they are dynamic and must stay outside — #398/#393 moved them to
 // draw *after* the goals for exactly this reason. `pulseIsNotCached` below is
 // the regression that pins it: over-caching freezes the kickoff pulse, which no
 // type checker would catch.
@@ -164,7 +164,7 @@ describe("the arena frame chevrons are dynamic, not static", () => {
   });
 
   it("are emitted after the goals, matching the Lua's static/dynamic order", () => {
-    // The Lua PR moved draw_frame after the goals when it extracted the cache,
+    // #398/#393 moved this draw after the goals when the cache was extracted,
     // noting the chevrons sit at the trapezoid corners clear of the goals so the
     // reorder is visually identical. Keep that order here.
     const commands = pitchDrawCommands(frame(), VIEWPORT, options({ arena_pulse: 1 }), 0);

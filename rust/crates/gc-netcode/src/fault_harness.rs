@@ -1,53 +1,22 @@
-//! Port of `game/online/fault_harness.lua`.
+//! The fault-injection integration harness for OMP-3 online play: one
+//! `FaultHarness` drives N fully isolated clients (one host plus up to seven
+//! guests) through the complete session lifecycle — handshake, match, and
+//! teardown — over a real in-process star or relay transport, injecting
+//! configurable network impairment along the way.
 //!
-//! The Lua original owns one `FaultHarness`: N fully isolated clients (one
-//! host plus up to seven guests) driven through the complete OMP-3 session
-//! lifecycle over a real in-process star. AGENTS.md §9's closing
-//! subsection — *"A harness self-test is not a harness run"* — is about the
-//! exact code this file ports: a defect that broke every online match once
-//! passed nine green checks because a harness printed failures and exited
-//! 0 (`docs/online/fault_harness.md`, issue #279). Everything below is
-//! written with that incident in mind (see "Making a failure impossible to
-//! miss").
-//!
-//! # What this crate already had, and what this pass added
-//!
-//! `fault_harness.lua` wires together nine other modules
-//! (`game/online/fault_harness.lua:50-67`):
-//!
-//! | Module | Status in this crate |
-//! | --- | --- |
-//! | `coordinator`, `protocol`, `protocol_fixture`, `match_manifest`, `match_session` | **ported** (`crate::coordinator`, `crate::protocol`, `crate::protocol_fixture`, `crate::match_manifest`, `crate::match_session`) |
-//! | `FakeStarTransport` | **ported** (`crate::fake_star`) — a real in-process Rust star |
-//! | `FakeRelayTransport` | **ported** (`crate::fake_relay`) — a real in-process Rust relay, no sequencer |
-//! | `DiagnosticTransport`, `lobby_link`, `match_presentation`, `net_diagnostics`, `online_match_model` | TypeScript-owned (`v2/README.md` §2); no Rust type exists or is planned |
-//! | `fault_transport`, `match_driver`, `match_driver_fixture`, `input_frame`, `match_snapshot`, `rollback_input_history` | **available**, used below |
-//!
-//! Two prior passes over this file left the same note: the hard blockers —
-//! no coordinator, no protocol, no star — were gone, but building
-//! [`FaultHarness`] itself (construction, the pre-match lifecycle, the match,
-//! teardown) was real, bounded work neither pass reached, and each said so
-//! explicitly rather than claiming a blocker that no longer existed. This
-//! pass is the one that reached it — see "The live harness, and exactly what
-//! it proves" below for what got built and how it was verified, and "What
-//! still is not built, and why" for what remains out of reach and stays
-//! that way (TypeScript-owned dependencies this crate does not port).
-//!
-//! [`scripted_sample`], every constant, the resource gates ([`Gates`]), and
-//! the comparison logic ([`compare_checkpoints`]/[`compare_status`]) needed
-//! no live harness and were real before this pass; [`FaultHarness::report`]
-//! now calls them over the live clients it drives instead of the minimal
-//! per-client views ([`ClientCheckpoints`]/[`ClientStatus`]) those functions
-//! were originally exercised through in isolation — both are still real,
-//! tested surfaces of this module, not superseded.
+//! AGENTS.md §9's closing subsection — *"A harness self-test is not a
+//! harness run"* — describes a real incident: a defect that broke every
+//! online match once passed nine green checks because this harness printed
+//! failures and exited 0 (`docs/online/fault_harness.md`, issue #279).
+//! Everything below is written with that incident in mind (see "Making a
+//! failure impossible to miss").
 //!
 //! # Making a failure impossible to miss
 //!
-//! The Lua `fault_harness.report(harness, expect_completed)` returns a
-//! plain table with an `ok: boolean` field. Nothing in the Lua *forces* a
-//! caller to read it — `report.ok` is exactly the kind of signal AGENTS.md
-//! §9 warns about: a harness that computes a correct verdict but never
-//! makes a caller act on it is one dropped `if` away from #279 again.
+//! A plain `ok: boolean` field alone doesn't force a caller to read it —
+//! that is exactly the kind of signal AGENTS.md §9 warns about: a harness
+//! that computes a correct verdict but never makes a caller act on it is one
+//! dropped `if` away from #279 again.
 //!
 //! [`FaultHarnessReport`] is `#[must_use]`, so a caller that discards the
 //! return value of [`report`] gets a compiler warning — but a struct field
@@ -67,19 +36,17 @@
 //!
 //! [`FaultHarness::new`]/[`FaultHarness::reach_start`]/
 //! [`FaultHarness::start_match`]/[`FaultHarness::advance`]/
-//! [`FaultHarness::report`]/[`FaultHarness::teardown`] are now real: N
-//! independent [`coordinator::CoordinatorState`]s are driven through
+//! [`FaultHarness::report`]/[`FaultHarness::teardown`] drive N independent
+//! [`coordinator::CoordinatorState`]s through
 //! handshake/manifest/assignment/ready/countdown over real
 //! [`crate::fake_star::FakeStarTransport`] links, each wrapped in its own
-//! [`crate::fault_transport::FaultTransport`] for impairment, exactly the
-//! design this doc previously described as future work. The event sequence
-//! in [`FaultHarness::reach_start`] is the same order
+//! [`crate::fault_transport::FaultTransport`] for impairment. The event
+//! sequence in [`FaultHarness::reach_start`] is the same order
 //! `crate::coordinator_driver::Driver::reach_start` uses (that type predates
-//! this one and is the proof the sequence itself is correct against real
-//! Lua-equivalent coordinator behaviour — see
-//! `crates/gc-netcode/tests/coordinator_driver.rs`); what changed here is
-//! *how* a message crosses from one client to another: not an internal fake
-//! packet queue, but `coordinator::Action::Send`'s `targets`/`message`
+//! this one and already proves the sequence itself is correct — see
+//! `crates/gc-netcode/tests/coordinator_driver.rs`); what this harness adds
+//! is *how* a message crosses from one client to another: not an internal
+//! fake packet queue, but `coordinator::Action::Send`'s `targets`/`message`
 //! encoded via [`crate::protocol::encode`] into a real
 //! [`crate::fault_transport::TransportMessage`] on the transport's
 //! `Control` channel, polled back out and fed to [`coordinator::receive`] on
@@ -87,8 +54,7 @@
 //! between this module's own control-channel pump and the
 //! `Box<dyn StarTransportAdapter>` [`FaultHarness::start_match`] hands to
 //! [`crate::match_driver::new`] once that client's freeze lands (via
-//! [`SharedFaultTransport`], a thin delegating wrapper) — the design this
-//! doc's git history recorded before the harness itself existed.
+//! [`SharedFaultTransport`], a thin delegating wrapper).
 //!
 //! Concretely, [`FaultHarness::reach_start`] returning `true` means: every
 //! client's coordinator independently processed a real encoded
@@ -104,35 +70,25 @@
 //!
 //! # What still is not built, and why
 //!
-//! Everything downstream of `game/online/lobby_link.lua`,
-//! `game/online/net_diagnostics.lua`, `game/online/match_presentation.lua`,
-//! and `game/screens/online_match_model.lua` stays out of reach —
-//! TypeScript-owned per `v2/README.md` §2, same as before. Concretely:
+//! Everything downstream of the TypeScript-owned `net_diagnostics`,
+//! `match_presentation`, and online-match-model modules stays out of reach
+//! (`ARCHITECTURE.md` §1.1). Concretely:
 //!
-//! - **No message chunking.** The real `lobby_link.lua` exists because a
-//!   WebRTC data channel has a message-size ceiling a canonical control
-//!   message can exceed, so it frames/reassembles. This crate's
-//!   [`crate::fake_star::FakeStarTransport`] has no such ceiling on one
-//!   [`crate::fault_transport::TransportMessage`], so [`FaultHarness`] sends
-//!   one whole encoded control message as one transport envelope. This is a
-//!   real simplification, not a hidden one: it means this harness cannot
-//!   exercise `lobby_link`'s reassembly logic at all, only the coordinator
-//!   underneath it.
-//! - **No presentation timeline.** `match_presentation.lua`'s add/revoke/
-//!   confirm bookkeeping has no Rust port, so [`FaultHarness::report`]
+//! - **No presentation timeline.** `match_presentation`'s add/revoke/
+//!   confirm bookkeeping has no Rust equivalent, so [`FaultHarness::report`]
 //!   declares `presentation.published_once`/`presentation.no_revoked_survivor`
 //!   *skipped*, the same pattern [`declare_contingent`] already uses for the
 //!   combat-phase and browser-multi-context rows, rather than either
 //!   omitting them or reimplementing the timeline to force a green check.
-//! - **No acknowledged-result exchange.** `online_match_model.lua`'s
-//!   `command`/`result` handling has no Rust port, so
+//! - **No acknowledged-result exchange.** The online match model's
+//!   `command`/`result` handling has no Rust equivalent, so
 //!   [`FaultHarness::report`] compares only the boundary hash
 //!   (`converge.final_hash`, computed for real from
 //!   [`crate::match_driver::current_snapshot`]) and declares
 //!   `converge.result` skipped rather than inventing an "acknowledged
-//!   result" concept this port cannot produce.
-//! - **No resource recorder.** `net_diagnostics.lua`'s folded running peaks
-//!   have no Rust port. Where the underlying data is real and directly
+//!   result" concept this harness cannot produce.
+//! - **No resource recorder.** `net_diagnostics`'s folded running peaks
+//!   have no Rust equivalent. Where the underlying data is real and directly
 //!   readable — [`crate::match_driver::diagnostics`]'s rollback/correction
 //!   counters, and [`crate::fault_transport::StarTransportAdapter::diagnostics`]'s
 //!   cumulative overflow/backpressure counters and per-channel depths —
@@ -153,35 +109,34 @@
 //!   the same shape from the other direction (a peer that finished first
 //!   stops reading mail a still-active peer keeps sending). Reading
 //!   diagnostics *after* `shutdown` instead does not fix this either, for a
-//!   different reason: `game/transport/fake_star.lua`'s `shutdown` drains
-//!   each peer's queues to zero in place and marks it `"closed"`, matching
-//!   what `game/online/diagnostic_transport.lua:180-201`'s `shutdown` reads
-//!   back — `crate::fake_star::FakeStarTransport::shutdown` instead clears
-//!   the whole peer table, so a post-shutdown reading would report zero
-//!   unconditionally, the exact "gate that structurally cannot fail" this
-//!   document elsewhere calls worse than no gate. Neither timing gives this
-//!   port a residual-queue reading that means what `net_diagnostics`'s
-//!   `runtime.teardown.residual_*` means, so it is named contingent instead
-//!   of quietly measuring the wrong thing.
-//! - **Boundary zero comes from the fixture, not from `match_session.lua`
-//!   end to end.** [`crate::match_driver_fixture::initial_snapshot`] (pinned
-//!   `nebula`/`orion` fixture teams, already differential-tested against the
-//!   real Lua via `crates/gc-netcode/tests/match_driver.rs`) builds each
-//!   client's boundary-zero snapshot, not
+//!   different reason: `crate::fake_star::FakeStarTransport::shutdown`
+//!   clears the whole peer table in place rather than draining each peer's
+//!   queues to zero and marking it `"closed"`, so a post-shutdown reading
+//!   would report zero unconditionally — the exact "gate that structurally
+//!   cannot fail" this document elsewhere calls worse than no gate. Neither
+//!   timing gives a residual-queue reading that means what
+//!   `net_diagnostics`'s `runtime.teardown.residual_*` means, so it is named
+//!   contingent instead of quietly measuring the wrong thing.
+//! - **Boundary zero comes from the fixture, not from
 //!   [`crate::match_session::request`]/[`crate::match_manifest::resolve`]'s
-//!   full content-resolution path. Both would produce a valid slot-mode
-//!   boundary zero the freeze agrees with; the fixture path is the one this
-//!   crate has already proven byte-exact, so it is the lower-risk choice for
-//!   a module whose entire purpose is catching subtle divergence, not
-//!   introducing an unverified one. `crate::match_session::request` still
-//!   has real Rust unit-test coverage of its own (`tests/match_session.rs`)
-//!   — it is unused *here*, not unported.
+//!   full content-resolution path, end to end.**
+//!   [`crate::match_driver_fixture::initial_snapshot`] (pinned
+//!   `nebula`/`orion` fixture teams, already differential-tested against the
+//!   frozen reference vectors via `crates/gc-netcode/tests/match_driver.rs`)
+//!   builds each client's boundary-zero snapshot instead. Both would produce
+//!   a valid slot-mode boundary zero the freeze agrees with; the fixture
+//!   path is the one this crate has already proven byte-exact, so it is the
+//!   lower-risk choice for a module whose entire purpose is catching subtle
+//!   divergence, not introducing an unverified one.
+//!   `crate::match_session::request` still has real Rust unit-test coverage
+//!   of its own (`tests/match_session.rs`) — it is unused *here*, not
+//!   missing.
 //!
-//! [`FaultHarness::finished`] mirrors `fault_harness.all_drivers_terminal`
-//! only, not `all_drivers_terminal and all_ended` — `all_ended` reads
-//! `online_match_model.ended`, which does not exist here. A driver reaching
-//! a terminal status is the strictly-necessary half of that conjunction this
-//! port can observe, and [`FaultHarness::report`]'s
+//! [`FaultHarness::finished`] mirrors [`FaultHarness::all_drivers_terminal`]
+//! only, not a conjunction with the online match model's own `ended` flag,
+//! which has no Rust equivalent here. A driver reaching a terminal status is
+//! the strictly-necessary half of that conjunction this harness can
+//! observe, and [`FaultHarness::report`]'s
 //! `lifecycle.ended` finding says exactly that in its own detail string
 //! rather than silently narrowing what "ended" means.
 
@@ -208,8 +163,7 @@ use crate::match_driver_fixture;
 use crate::protocol::{self, Value};
 use crate::protocol_fixture;
 
-/// Which shape the wire has beneath an unchanged session stack. Mirrors
-/// `FaultHarnessTopology`.
+/// Which shape the wire has beneath an unchanged session stack.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FaultHarnessTopology {
     /// The shipped OMP-3 direct-host star.
@@ -219,8 +173,7 @@ pub enum FaultHarnessTopology {
 }
 
 impl FaultHarnessTopology {
-    /// The exact Lua wire string (`harness.topology`'s own value, used
-    /// verbatim in `fault_harness.lua`'s marker lines).
+    /// The literal wire string embedded in this harness's report markers.
     #[must_use]
     fn wire_str(self) -> &'static str {
         match self {
@@ -231,10 +184,9 @@ impl FaultHarnessTopology {
 }
 
 /// One seated client's own transport endpoint: either shape
-/// [`StarTransportAdapter`] admits. Mirrors the Lua `---@alias
-/// FaultHarnessEndpoint FakeStarTransport|FakeRelayTransport` — Lua's duck
-/// typing has no equivalent in Rust, so this crate needs an explicit sum type
-/// where the Lua original needed none. Every method below delegates to
+/// [`StarTransportAdapter`] admits. An explicit sum type rather than a trait
+/// object, since [`FaultHarness::new`] also needs each variant's
+/// concrete-type-specific construction path. Every method below delegates to
 /// whichever concrete endpoint this client actually holds; the topology
 /// itself is decided once, in [`FaultHarness::new`].
 #[derive(Clone)]
@@ -396,24 +348,23 @@ impl StarTransportAdapter for FaultHarnessEndpoint {
     }
 }
 
-/// Mirrors `fault_harness.HOST_PEER_ID` (`transport_contract.HOST_PEER_ID`,
-/// duplicated the same way `crate::match_driver` duplicates it).
+/// The host's fixed peer id on the transport link, duplicated the same way
+/// `crate::match_driver` duplicates it.
 pub const HOST_PEER_ID: &str = "host";
-/// Mirrors `fault_harness.COUNTDOWN_ID`.
+/// This harness's fixed countdown identifier.
 pub const COUNTDOWN_ID: &str = "countdown.1";
-/// Mirrors `fault_harness.DEFAULT_DURATION_TICKS`.
+/// Default simulated match duration, in ticks.
 pub const DEFAULT_DURATION_TICKS: i64 = 150;
-/// Mirrors `fault_harness.DEFAULT_NETWORK_SEED`.
+/// Default impairment seed, never the match seed.
 pub const DEFAULT_NETWORK_SEED: f64 = 4703.0;
-/// Mirrors `fault_harness.DEFAULT_COUNTDOWN_TICKS`.
+/// Default countdown length, in ticks, before a match starts.
 pub const DEFAULT_COUNTDOWN_TICKS: i64 = 2;
-/// One 60 Hz frame, in milliseconds. Mirrors `fault_harness.CLOCK_STEP_MS`.
+/// One 60 Hz frame, in milliseconds.
 pub const CLOCK_STEP_MS: f64 = 1000.0 / 60.0;
 /// Control rounds the pre-match lifecycle is allowed for one exchange.
-/// Mirrors `fault_harness.MAX_CONTROL_ROUNDS`.
 pub const MAX_CONTROL_ROUNDS: i64 = 24;
 
-/// Mirrors `fault_harness.guest_peer_id`.
+/// This guest's peer id at 1-based seating `index`.
 #[must_use]
 pub fn guest_peer_id(index: i64) -> String {
     format!("guest_{index}")
@@ -423,16 +374,15 @@ pub fn guest_peer_id(index: i64) -> String {
 // Deterministic scripted input
 // ---------------------------------------------------------------------------
 
-/// A pure function of `(client index, driver step)` only. Mirrors
-/// `fault_harness.scripted_sample`. No clock, no RNG, no simulation read:
-/// two runs of the same matrix produce byte-identical authority, which is
-/// the precondition for comparing deterministic markers at all.
+/// A pure function of `(client index, driver step)` only. No clock, no RNG,
+/// no simulation read: two runs of the same matrix produce byte-identical
+/// authority, which is the precondition for comparing deterministic markers
+/// at all.
 ///
-/// Rule 5.2 (README): both `step` (a driver step counter) and `index` (a
+/// Both `step` (a driver step counter) and `index` (a
 /// 1-based client index) are always non-negative in every caller this crate
 /// has, so `(step + index * 11) % 47`, `phase % 13`, and `phase % 7` never
-/// see a negative operand — Rust's truncating `%` already agrees with
-/// Lua's floored `%` here and no `rem_euclid` is needed.
+/// see a negative operand, so no `rem_euclid` is needed.
 ///
 /// # Panics
 ///
@@ -462,7 +412,7 @@ pub fn scripted_sample(index: i64, step: i64) -> InputSample {
 // Comparison and the deterministic marker set
 // ---------------------------------------------------------------------------
 
-/// One comparison's pass/fail/skip outcome. Mirrors `FaultHarnessFinding`.
+/// One comparison's pass/fail/skip outcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FaultHarnessFinding {
     /// Stable finding id (`"converge.checkpoint_hash"`, ...).
@@ -493,7 +443,7 @@ fn skipped(findings: &mut Vec<FaultHarnessFinding>, id: &str, detail: String) {
     });
 }
 
-/// A full campaign run's verdict. Mirrors `FaultHarnessReport`.
+/// A full campaign run's verdict.
 ///
 /// `#[must_use]`: see the module doc's "Making a failure impossible to
 /// miss". Prefer [`FaultHarnessReport::into_outcome`] over reading `ok`
@@ -535,7 +485,7 @@ impl FaultHarnessReport {
 }
 
 /// Declared resource gates. A run that exceeds one produces a blocking
-/// finding rather than a warning. Mirrors `fault_harness.GATES`.
+/// finding rather than a warning.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Gates {
     /// Worst observed rollback depth must not exceed this.
@@ -550,9 +500,9 @@ pub struct Gates {
     pub max_overflow: i64,
 }
 
-/// Mirrors `fault_harness.GATES`'s values exactly
-/// (`rollback_input_history.ROLLBACK_WINDOW_TICKS` and
-/// `transport_contract.MAX_QUEUE_LIMIT`, the latter duplicated the same way
+/// The gate values this harness enforces
+/// (`rollback_input_history::ROLLBACK_WINDOW_TICKS` and
+/// `transport_contract::MAX_QUEUE_LIMIT`, the latter duplicated the same way
 /// `crate::match_driver` duplicates it).
 pub const GATES: Gates = Gates {
     max_rollback_depth: rollback_input_history::ROLLBACK_WINDOW_TICKS,
@@ -583,15 +533,15 @@ pub struct ClientCheckpoints {
     pub checkpoints: Vec<MatchDriverCheckpoint>,
 }
 
-/// Pairwise checkpoint comparison. Mirrors `compare_checkpoints`. Two
-/// clients are compared only at boundaries *both* hashed: a peer that has
-/// not reached a checkpoint has not disagreed about it.
+/// Pairwise checkpoint comparison. Two clients are compared only at
+/// boundaries *both* hashed: a peer that has not reached a checkpoint has
+/// not disagreed about it.
 ///
-/// `is_4v4` mirrors the Lua's `harness.mode == "4v4"` special case: 4v4
-/// cannot exhibit a live-slot divergence at all (singleton owned sets make
-/// every branch of `next_live_slot` return the slot already live), so the
-/// live-slot check is declared inert there rather than counted as coverage
-/// it does not provide.
+/// `is_4v4` special-cases 4v4 mode: 4v4 cannot exhibit a live-slot
+/// divergence at all (singleton owned sets make every branch of
+/// `next_live_slot` return the slot already live), so the live-slot check
+/// is declared inert there rather than counted as coverage it does not
+/// provide.
 pub fn compare_checkpoints(
     clients: &[ClientCheckpoints],
     is_4v4: bool,
@@ -671,10 +621,9 @@ pub struct ClientStatus {
     pub status: Option<MatchDriverStatus>,
 }
 
-/// The exact Lua wire string for a driver status (`"unstarted"` for `None`,
-/// mirroring `client.driver and match_driver.status(client.driver) or
-/// "unstarted"`). `pub` so `crate::fault_scenarios::run` and this crate's
-/// integration tests can name a declared terminal's finding id the same way.
+/// The literal wire string for a driver status (`"unstarted"` for `None`).
+/// `pub` so `crate::fault_scenarios::run` and this crate's integration
+/// tests can name a declared terminal's finding id the same way.
 #[must_use]
 pub fn status_label(status: Option<MatchDriverStatus>) -> &'static str {
     match status {
@@ -692,9 +641,9 @@ pub fn status_label(status: Option<MatchDriverStatus>) -> &'static str {
     }
 }
 
-/// Mirrors `compare_status`. A false `settle_timeout` on a healthy match is
-/// the #237 defect inverted, so it is asserted separately from "everyone
-/// completed" and only on scenarios that expect a clean completion.
+/// A false `settle_timeout` on a healthy match is the #237 defect inverted,
+/// so it is asserted separately from "everyone completed" and only on
+/// scenarios that expect a clean completion.
 pub fn compare_status(
     clients: &[ClientStatus],
     expect_completed: bool,
@@ -748,7 +697,7 @@ pub fn compare_status(
 
 /// The contingent rows: declared and skipped with a reason rather than
 /// omitted, so an absent row reads as "not applicable" and a silent pass
-/// never reads as "covered". Mirrors `declare_contingent`.
+/// never reads as "covered".
 pub fn declare_contingent(findings: &mut Vec<FaultHarnessFinding>) {
     for phase in [
         "wind_up",
@@ -787,7 +736,7 @@ pub fn declare_contingent(findings: &mut Vec<FaultHarnessFinding>) {
 // harness, and exactly what it proves" / "What still is not built, and why".
 // ---------------------------------------------------------------------------
 
-/// Inputs to [`FaultHarness::new`]. Mirrors `FaultHarnessOptions`.
+/// Inputs to [`FaultHarness::new`].
 #[derive(Clone, Debug, Default)]
 pub struct FaultHarnessOptions {
     /// Wire shape; defaults to the shipped [`FaultHarnessTopology::Star`].
@@ -924,15 +873,14 @@ fn expectation_for(manifest: &Value) -> coordinator::ManifestExpectation {
 // ---------------------------------------------------------------------------
 // Minimal control-channel chunking.
 //
-// `game/online/lobby_link.lua` exists to frame/reassemble one canonical
+// The TypeScript `lobby_link` module frames/reassembles one canonical
 // control message across a real WebRTC channel's payload ceiling
 // (`crate::fake_star::FakeStarTransport` restates the identical
 // `transport_contract.MAX_PAYLOAD_BYTES` = 1024 bound). A whole encoded
 // `ManifestProposal` regularly exceeds it, so sending one control message as
-// one transport envelope (as the module doc's "no message chunking"
-// deviation originally proposed) does not merely lose a feature — it cannot
-// deliver the handshake at all. This is the smallest framing that fixes
-// that without porting `lobby_link.lua`'s own reassembly buffers: a 2-byte
+// one transport envelope does not merely lose a feature — it cannot deliver
+// the handshake at all. This is the smallest framing that fixes that
+// without reimplementing `lobby_link`'s own reassembly buffers: a 2-byte
 // header (`chunk index`, `chunk count`) per envelope, safe here because
 // every client sends its chunks for one message synchronously and in full
 // before starting the next (see `FaultHarnessClient::apply_outcome`), and
@@ -947,9 +895,9 @@ fn expectation_for(manifest: &Value) -> coordinator::ManifestExpectation {
 const CONTROL_CHUNK_PAYLOAD_BYTES: usize = 1022;
 
 /// Splits `wire` into at most 255 header-prefixed chunks, each within the
-/// transport's payload ceiling. Mirrors the sending half of
-/// `lobby_link.lua`'s framing, narrowed to what this harness's synchronous
-/// send pattern needs (see the section doc above).
+/// transport's payload ceiling — the sending half of the chunking scheme
+/// described above, narrowed to what this harness's synchronous send
+/// pattern needs.
 ///
 /// # Panics
 ///
@@ -979,7 +927,8 @@ fn chunk_control_wire(wire: &[u8]) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// The exact Lua wire string [`gc_data::network_profiles`] declares.
+/// The literal wire string [`gc_data::network_profiles`] declares for
+/// `profile`.
 #[must_use]
 fn profile_wire_str(profile: NetworkProfileName) -> &'static str {
     match profile {
@@ -992,8 +941,8 @@ fn profile_wire_str(profile: NetworkProfileName) -> &'static str {
 
 /// One isolated client: its own coordinator, its own transport, and — once
 /// [`FaultHarness::start_match`] has run — its own [`match_driver::MatchDriver`].
-/// Mirrors `FaultHarnessClient`, narrowed to the fields this port can
-/// populate (see the module doc's "What still is not built, and why").
+/// Narrowed to the fields this harness can populate (see the module doc's
+/// "What still is not built, and why").
 pub struct FaultHarnessClient {
     /// 1-based seating order; the host is always `1`.
     pub index: i64,
@@ -1158,8 +1107,8 @@ impl FaultHarnessClient {
 
 /// N fully isolated clients driven over a real in-process direct-host star:
 /// handshake through the frozen start boundary, the match itself, and
-/// teardown. Mirrors `FaultHarness`. See the module doc for exactly what
-/// this proves and what it does not.
+/// teardown. See the module doc for exactly what this proves and what it
+/// does not.
 pub struct FaultHarness {
     /// Which wire shape this run seated over — see [`FaultHarnessOptions::topology`].
     pub topology: FaultHarnessTopology,
@@ -1230,9 +1179,8 @@ impl FaultHarness {
 
         let topology = options.topology.unwrap_or(FaultHarnessTopology::Star);
         // A star needs a shared signaling rendezvous; a relay needs a shared
-        // room. Only one is ever used, but both are cheap to mint (mirrors
-        // `fault_harness.lua`'s `rendezvous`/`room` locals, which the Lua
-        // original also builds unconditionally).
+        // room. Only one is ever used, but both are cheap to mint, so both
+        // are always built unconditionally.
         let star_rendezvous = FakeStarTransport::new_rendezvous();
         let relay_room = FakeRelayTransport::new_room();
 
@@ -1465,7 +1413,7 @@ impl FaultHarness {
     /// One control round: advance every impairment clock, let every client
     /// read its mail, then flush the star. Keeps going while anything is
     /// still queued (a backpressure scenario clamps the send buffer on
-    /// purpose), up to [`MAX_CONTROL_ROUNDS`]. Mirrors `fault_harness.pump_control`.
+    /// purpose), up to [`MAX_CONTROL_ROUNDS`].
     pub fn pump_control(&mut self, rounds: Option<i64>) {
         let minimum = rounds.unwrap_or(2);
         for round in 1..=MAX_CONTROL_ROUNDS {
@@ -1510,8 +1458,7 @@ impl FaultHarness {
     }
 
     /// Handshake through the frozen start boundary, using the same event
-    /// vocabulary and canonical wires production code uses. Mirrors
-    /// `fault_harness.reach_start`.
+    /// vocabulary and canonical wires production code uses.
     ///
     /// # Panics
     ///
@@ -1569,8 +1516,7 @@ impl FaultHarness {
     /// Turn every frozen session into a running one: one
     /// [`match_driver::MatchDriver`] per client, each built from that
     /// client's own independently-derived freeze (see the module doc's
-    /// "Isolation" note in `docs/online/fault_harness.md`). Mirrors
-    /// `fault_harness.start_match`.
+    /// "Isolation" note in `docs/online/fault_harness.md`).
     ///
     /// # Panics
     ///
@@ -1626,8 +1572,7 @@ impl FaultHarness {
     }
 
     /// One fixed 60 Hz step for every client: impair, advance, fold the
-    /// terminal boundary hash once reached, flush the star. Mirrors
-    /// `fault_harness.advance`.
+    /// terminal boundary hash once reached, flush the star.
     ///
     /// # Panics
     ///
@@ -1672,8 +1617,7 @@ impl FaultHarness {
         batches
     }
 
-    /// Every client's driver has left [`MatchDriverStatus::Active`]. Mirrors
-    /// `fault_harness.all_drivers_terminal`.
+    /// Every client's driver has left [`MatchDriverStatus::Active`].
     #[must_use]
     pub fn all_drivers_terminal(&self) -> bool {
         self.clients.iter().all(|client| match &client.driver {
@@ -1682,15 +1626,15 @@ impl FaultHarness {
         })
     }
 
-    /// See the module doc: mirrors `fault_harness.all_drivers_terminal` only,
-    /// not the Lua's `all_drivers_terminal and all_ended` — `all_ended` reads
-    /// `online_match_model.ended`, which has no Rust port.
+    /// See the module doc: this mirrors [`FaultHarness::all_drivers_terminal`]
+    /// only, not a conjunction with the online match model's own `ended`
+    /// flag, which has no Rust equivalent here.
     #[must_use]
     pub fn finished(&self) -> bool {
         self.all_drivers_terminal()
     }
 
-    /// Shuts every client's transport down. Mirrors `fault_harness.teardown`.
+    /// Shuts every client's transport down.
     /// [`FaultHarness::report`] reads the cumulative overflow/backpressure
     /// counters `shutdown` does not reset; see the module doc for why a
     /// residual-queue reading, before or after this call, is not measured
@@ -1703,9 +1647,8 @@ impl FaultHarness {
 
     /// Build the full report. `expect_completed` is `false` for scenarios
     /// that inject a deliberately terminal fault, where "nobody completed"
-    /// is the expected outcome rather than a failure. Mirrors
-    /// `fault_harness.report`; see the module doc for exactly which findings
-    /// are real versus declared skipped in this port.
+    /// is the expected outcome rather than a failure. See the module doc
+    /// for exactly which findings are real versus declared skipped here.
     pub fn report(&self, expect_completed: bool) -> FaultHarnessReport {
         let mut findings = Vec::new();
         let mut markers = Vec::new();
@@ -1788,7 +1731,7 @@ impl FaultHarness {
             "lifecycle.ended",
             self.all_drivers_terminal(),
             "every client's driver reached a terminal status (no session-model check: \
-             online_match_model is TypeScript-owned in this port)"
+             online_match_model is TypeScript-owned)"
                 .to_string(),
         );
 
@@ -1833,7 +1776,7 @@ impl FaultHarness {
             skipped(
                 &mut findings,
                 "converge.result",
-                "game.screens.online_match_model is TypeScript-owned in this port; only the \
+                "game.screens.online_match_model is TypeScript-owned; only the \
                  boundary hash is compared, not an acknowledged result"
                     .to_string(),
             );
@@ -1853,14 +1796,14 @@ impl FaultHarness {
         skipped(
             &mut findings,
             "presentation.published_once",
-            "game.online.match_presentation is TypeScript-owned in this port; no presentation \
+            "game.online.match_presentation is TypeScript-owned; no presentation \
              timeline is folded here"
                 .to_string(),
         );
         skipped(
             &mut findings,
             "presentation.no_revoked_survivor",
-            "game.online.match_presentation is TypeScript-owned in this port; no presentation \
+            "game.online.match_presentation is TypeScript-owned; no presentation \
              timeline is folded here"
                 .to_string(),
         );
@@ -1950,7 +1893,7 @@ impl FaultHarness {
         skipped(
             &mut findings,
             "teardown.clean",
-            "neither timing this port could read a residual-queue snapshot at (before or after \
+            "neither timing this crate could read a residual-queue snapshot at (before or after \
              crate::fake_star::FakeStarTransport::shutdown) means what \
              net_diagnostics.runtime.teardown.residual_* means here; see the module doc's \
              'No resource recorder' section for the investigation"

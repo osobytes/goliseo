@@ -1,5 +1,3 @@
-//! Port of `game/online/match_manifest.lua`.
-//!
 //! Content-derived session manifest for the online match flow: every
 //! identity is derived from shipped content and `sim.tuning`, so two peers
 //! running the same build compute the same manifest byte for byte.
@@ -8,15 +6,12 @@
 //!
 //! ## Content is a parameter, not an import
 //!
-//! The Lua original reaches directly into `data.arenas`, `data.loadouts`,
-//! `data.players`, `data.teams`, and `game.build_info`. This agent's brief
-//! places `crates/gc-netcode` on `gc-core`/`gc-sim` only ("Add no crate
-//! dependencies" — no `gc-data`, which every one of those tables lives in),
-//! and lists this file's `gc-sim` needs as exactly `combat_policy`,
-//! `fixed_clock`, `input_frame`, `r#match`, `tuning` — `gc-data` deliberately
-//! absent. So content this module cannot look up itself, it takes as an
-//! explicit parameter instead: [`TeamContent`], [`BuildIdentity`]. This is
-//! the same shape README rule 6.7 prescribes for TypeScript ("TypeScript
+//! `crates/gc-netcode` depends on `gc-core`/`gc-sim` only — no `gc-data`,
+//! which is where team, player, loadout, and arena content tables live, and
+//! build identity is `ts/packages/app/src/build_info.ts`'s to own. So
+//! content this module cannot look up itself, it takes as an explicit
+//! parameter instead: [`TeamContent`], [`BuildIdentity`]. This is the same
+//! shape ARCHITECTURE.md §4 rule 6 prescribes for TypeScript ("TypeScript
 //! never imports content tables — it receives them") for the identical
 //! reason — a package with no content-table dependency has to receive
 //! content rather than look it up — applied here to a Rust crate under the
@@ -30,12 +25,10 @@
 //! content-free — walk each side's outfield roster order (roster minus its
 //! first, keeper, entry) onto the eight canonical slots in
 //! `input_frame::slot(1..=8)` order — so it is reproduced locally rather than
-//! left unported; see `canonical_ownership`'s doc comment.
+//! shared; see `canonical_ownership`'s doc comment.
 //!
-//! No dedicated Lua spec exists for this module
-//! (`spec/game/online_match_manifest_spec.lua` is absent), so there is no
-//! spec to port here; its ids and shapes are exercised indirectly wherever a
-//! caller builds a manifest.
+//! This module has no dedicated test file of its own; its ids and shapes are
+//! exercised indirectly wherever a caller builds a manifest.
 
 use gc_core::fnv1a64;
 use gc_sim::{combat_policy, fixed_clock, input_frame, r#match as sim_match, tuning};
@@ -87,7 +80,8 @@ pub enum PlayerPosition {
 }
 
 impl PlayerPosition {
-    /// The exact Lua wire string, matching `protocol`'s `POSITIONS` set.
+    /// The wire string this position serializes to, matching `protocol`'s
+    /// `POSITIONS` set.
     #[must_use]
     pub fn wire_str(self) -> &'static str {
         match self {
@@ -122,8 +116,8 @@ pub struct RosterPlayerContent {
 
 /// One team's content-derived identity: `data.teams[id]` plus its resolved
 /// roster. `roster` is authored keeper-first, four outfielders after — the
-/// same order `data/teams.lua` ships and `team_manifest`/`canonical_ownership`
-/// both rely on.
+/// same order `gc-data`'s team content ships and `team_manifest`/
+/// `canonical_ownership` both rely on.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TeamContent {
     /// `TeamData.id`.
@@ -137,9 +131,8 @@ pub struct TeamContent {
 }
 
 /// The parts of `build_info` a manifest's `build_id` digests. See the module
-/// doc comment: `game/build_info.lua` is a `game/` root file
-/// (TypeScript-owned per `v2/README.md` §2's table), so this module receives
-/// it rather than importing it.
+/// doc comment: `ts/packages/app/src/build_info.ts` is TypeScript-owned, so
+/// this module receives the identity rather than importing it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuildIdentity {
     /// `build_info.name`.
@@ -214,9 +207,10 @@ pub fn tuning_id() -> String {
 
 /// `match_manifest.build_id`: folds `protocol::vocabulary_id()` into the
 /// build identity so "same `build_id`" implies "same control vocabulary" —
-/// see the Lua original's doc comment for why a vocabulary mismatch has to
-/// surface at the manifest check rather than mid-lobby as a generic
-/// `protocol_violation`.
+/// a vocabulary mismatch therefore surfaces here, at manifest agreement, as
+/// a build identity disagreement, rather than mid-lobby as a generic
+/// `protocol_violation` once some message the two builds encode differently
+/// finally fails to parse.
 #[must_use]
 pub fn build_id(identity: &BuildIdentity) -> String {
     let joined = [
@@ -231,11 +225,9 @@ pub fn build_id(identity: &BuildIdentity) -> String {
 
 /// # Panics
 ///
-/// Panics if a non-keeper carries no `loadout_id`/`loadout_family_id` —
-/// mirrors the Lua original's `assert(player.loadout_id, "an online
-/// outfielder needs a fixed loadout: " .. id)`: authored content, not
-/// external input, so a broken invariant here is a programmer error
-/// (AGENTS.md §7).
+/// Panics if a non-keeper carries no `loadout_id`/`loadout_family_id`: this
+/// is authored content, not external input, so a broken invariant here is a
+/// programmer error (AGENTS.md §7).
 fn roster_player_value(player: &RosterPlayerContent) -> Value {
     if player.position == PlayerPosition::Keeper {
         Value::record(vec![

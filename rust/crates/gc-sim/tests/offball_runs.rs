@@ -1,4 +1,4 @@
-//! Port of `spec/sim/offball_runs_spec.lua`.
+//! Tests for `gc_sim::offball_runs`.
 
 use gc_core::vec2::Vec2;
 use gc_data::formations::FormationRole;

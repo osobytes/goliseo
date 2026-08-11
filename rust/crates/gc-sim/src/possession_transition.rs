@@ -1,5 +1,3 @@
-//! Port of `sim/possession_transition.lua`.
-//!
 //! Serializable possession-transition state and the pure helpers that turn
 //! it into per-team phases. Match owns the fixed clock, world eligibility,
 //! and the resulting steering; this module owns the compact versioned value
@@ -21,9 +19,8 @@
 //! the simulation-side owner of the rule.
 //!
 //! [`PossessionTransitionState::clear`], [`PossessionTransitionState::advance`],
-//! and [`PossessionTransitionState::observe`] are the Lua original's
-//! mutate-and-return functions (README rule 7), ported as `&mut self`
-//! methods.
+//! and [`PossessionTransitionState::observe`] follow the mutate-and-return
+//! convention, implemented here as `&mut self` methods.
 
 use crate::brain;
 use gc_data::formations::FormationRole;
@@ -212,10 +209,9 @@ pub fn copy_windows(source: TransitionConfig) -> TransitionConfig {
     source
 }
 
-/// Per-team possession-transition windows, keyed by team. The Lua original
-/// takes a `table<TransitionTeam, TransitionConfig>`; the key set here is
-/// exactly the two teams, so a small struct replaces the map (README rule
-/// 6) rather than reaching for a banned hash table.
+/// Per-team possession-transition windows, keyed by team. The key set is
+/// exactly the two teams, so a small struct replaces a map rather than
+/// reaching for a banned hash table.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TransitionWindows {
     /// The home side's windows.
@@ -278,8 +274,8 @@ pub fn select_pressers(candidates: &[TransitionPresserCandidate], limit: u32) ->
 }
 
 /// Role-shaped counter-attack support depth. Every [`FormationRole`] is
-/// authored explicitly; the Lua original's fallback for an unknown role
-/// string has no analogue once the role is a closed Rust enum.
+/// authored explicitly; there is no fallback case, since the role is a
+/// closed Rust enum and every variant is matched.
 #[must_use]
 pub fn support_push(role: FormationRole) -> f64 {
     match role {

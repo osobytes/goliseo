@@ -1,37 +1,34 @@
-//! Port of `spec/sim/possession_transition_spec.lua`.
+//! Tests for `gc_sim::possession_transition`.
 //!
-//! Two Lua sub-cases inside "rejects malformed, unsupported, and leaked
-//! state" cannot be expressed here and are dropped, not merely
-//! already-passing:
+//! Two sub-cases of "rejects malformed, unsupported, and leaked state" are
+//! not expressible here and are dropped, not merely already-passing:
 //!
-//! - `rawset(bad_team, "last_team", "neutral")` and the `"middle"` team
-//!   passed to `observe`/`phase` inject a string outside the closed
-//!   `"home"|"away"` alias. [`transitions::TransitionTeam`] is a Rust `enum`
-//!   with exactly those two variants, so there is no value that could be
-//!   constructed to exercise the rejection — the invariant is enforced by
-//!   the type system instead of a runtime check.
-//! - `{ counterpress = 1 }` (a table missing `counterattack`) and
-//!   `select_pressers({}, -1)` (a negative limit) rely on Lua's tables being
-//!   duck-typed and its numbers being signed. [`transitions::TransitionConfig`]
-//!   requires both fields at construction (a compile error, not a runtime
-//!   one) and `select_pressers`'s `limit` is `u32`, so neither malformed
-//!   value can exist to hand the function.
+//! - An out-of-alias team string (`"neutral"`/`"middle"`) passed to
+//!   `observe`/`phase`. [`transitions::TransitionTeam`] is a Rust `enum`
+//!   with exactly the `Home`/`Away` variants, so there is no value that
+//!   could be constructed to exercise the rejection — the invariant is
+//!   enforced by the type system instead of a runtime check.
+//! - A `TransitionConfig` missing `counterattack`, and a negative
+//!   `select_pressers` limit. [`transitions::TransitionConfig`] requires
+//!   both fields at construction (a compile error, not a runtime one) and
+//!   `select_pressers`'s `limit` is `u32`, so neither malformed value can
+//!   exist to hand the function.
 //!
 //! Every other case, including the still-constructible malformed states
 //! (wrong version, leaked elapsed, unheld/overheld hold, an orphaned or
 //! detached turnover, negative deltas, negative window seconds, and
-//! duplicate presser indices), is ported using `catch_unwind` the way
+//! duplicate presser indices), uses `catch_unwind` the way
 //! `tests/content_validation.rs` documents: `validate_state`'s `assert!`s
-//! are the Rust analogue of the Lua original's `assert`, so a Lua `pcall`
-//! failure becomes a Rust panic caught the same way.
+//! panic on an invariant violation, and `catch_unwind` observes that panic
+//! the way a caller expecting a `Result` would observe an error.
 //!
-//! `sim::possession_transition`'s Lua `support_push` falls back to the
-//! ordinary push (`1`) for a role string the tactic system never authors.
+//! `gc_sim::possession_transition`'s `support_push` falls back to the
+//! ordinary push (`1`) for a role the tactic system never authors.
 //! [`gc_data::formations::FormationRole`] is a closed enum with no
 //! "unauthored" variant to construct, so that one assertion inside "pushes
 //! forwards hardest and defenders not at all on a counter-attack" has no
 //! Rust analogue and is omitted; the rest of that test (the authored-role
-//! ordering) is ported in full.
+//! ordering) is exercised in full.
 
 use gc_data::formations::FormationRole;
 use gc_data::tactics;
@@ -75,9 +72,10 @@ fn establish(state: &mut transitions::PossessionTransitionState, owner_team: Tra
 
 #[test]
 // `PossessionTransitionState` is `Copy`, so `copy_state` is structurally
-// independent of `state` already; the Lua original's post-copy mutation
-// (proving the copy is not an alias of a mutable table) is kept for
-// fidelity with the spec, which is why these assignments go unread.
+// independent of `state` already. The mutations below (proving the copy is
+// not an alias of an original that later changes) are kept anyway as a
+// regression guard on that invariant, which is why these assignments go
+// unread.
 #[allow(unused_assignments)]
 fn possession_transition_state_starts_idle_and_copies_defensively() {
     let mut state = transitions::new_state();
@@ -512,9 +510,9 @@ fn possession_transition_state_pushes_forwards_hardest_and_defenders_not_at_all_
             > transitions::support_push(FormationRole::Def)
     );
     assert_eq!(transitions::support_push(FormationRole::Def), 1.0);
-    // The Lua original also checks an unauthored role string ("keeper")
-    // keeps the ordinary push of 1 — see the module doc comment for why
-    // that sub-case has no Rust analogue with a closed `FormationRole`.
+    // An unauthored role string ("keeper") also keeps the ordinary push of
+    // 1, but that sub-case has no Rust analogue with a closed
+    // `FormationRole` — see the module doc comment.
 }
 
 #[test]
@@ -596,10 +594,3 @@ fn possession_transition_state_rejects_malformed_unsupported_and_leaked_state() 
         );
     }));
 }
-
-// The module-level doc comment records why two more Lua sub-cases in this
-// same "rejects malformed, unsupported, and leaked state" spec case are not
-// ported here: an out-of-alias team string (`"neutral"`/`"middle"`), a
-// `TransitionConfig` missing a field, and a negative `select_pressers` limit
-// are all rejected by the Rust type system before any function body runs, so
-// there is no runtime `assert!` for `catch_unwind` to observe.

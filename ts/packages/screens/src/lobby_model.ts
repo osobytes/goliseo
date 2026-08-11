@@ -1,5 +1,4 @@
-// Ported from game/screens/lobby_model.lua -- the pure lobby model for the
-// manual-connect online session.
+// The pure lobby model for the manual-connect online session.
 //
 // It owns no truth of its own. The session coordinator decides admission,
 // the manifest, ownership, readiness, the countdown, and the terminal
@@ -13,18 +12,18 @@
 //
 // # Cross-boundary ports
 //
-// `game.online.coordinator`, `game.online.protocol`, and
-// `game.online.protocol_fixture` are Rust-owned (`crates/gc-netcode`;
-// v2/README.md §2.1) with no wasm bridge this milestone. `core.fnv1a64`
-// (`crates/gc-core`) needs a shared-vector pin across languages before a
-// second implementation is safe to write (v2/README.md §2.2), and is not
-// this port's file to add. `game.transport.contract` is TS-owned
-// (`packages/transport`) but not a declared dependency of this package.
-// All four are threaded through as `LobbyModelPorts`, following
-// `@gc/online`'s `match_presentation.ts` precedent
-// (`RollbackEventsPort`/`MatchDriverPort`). `sim.input_frame` is likewise
-// Rust-owned; only the two constants this module reads
-// (`SLOT_COUNT`/`slot`) are ported through the same port bundle.
+// `CoordinatorPort`, `ProtocolPort`, and `ProtocolFixturePort` wrap
+// Rust-owned implementations (`crates/gc-netcode`; ARCHITECTURE.md §1.1) with
+// no wasm bridge this milestone. `Fnv1a64Port` wraps a Rust-owned hash
+// (`crates/gc-core`) that needs a shared-vector pin across languages before
+// a second implementation is safe to write (ARCHITECTURE.md §1.2), and adding
+// one is not this module's job. `TransportContractPort` wraps a TS-owned
+// implementation (`packages/transport`) that is not a declared dependency
+// of this package. All four are threaded through as `LobbyModelPorts`,
+// following `@gc/online`'s `match_presentation.ts` precedent
+// (`RollbackEventsPort`/`MatchDriverPort`). `InputFramePort` likewise wraps
+// Rust-owned state; only the two constants this module reads
+// (`SLOT_COUNT`/`slot`) are threaded through the same port bundle.
 //
 // `CoordinatorState` and the session/protocol shapes it carries
 // (`SessionManifest`, `SessionSlotProducer`, ...) are given concrete
@@ -135,9 +134,10 @@ export interface SessionSlotProducer {
 }
 
 // The real coordinator's `preference` field genuinely holds "pending"
-// between a request and its verdict (`coordinator.lua:1703`,
-// `handle_prefer_pair`'s guest branch) -- this union used to omit it and
-// callers worked around the gap with a local cast/widening (see
+// between a request and its verdict (the guest branch of pair-preference
+// handling in the Rust-owned coordinator, `crates/gc-netcode`) -- this
+// union used to omit it and callers worked around the gap with a local
+// cast/widening (see
 // `lobby_flow.spec.ts`'s former `FakePreference.status` comment). "pending"
 // never appears in a `pair_preference_result` wire message (only the host's
 // verdict does), so this addition is purely about representing the
@@ -239,7 +239,7 @@ export type CoordinatorEvent = { readonly kind: string; readonly [key: string]: 
 
 /** `game.online.coordinator`, injected -- see this module's header. */
 export interface CoordinatorPort {
-  /** Mirrors `coordinator.new`; renamed because `new` is a reserved word. */
+  /** Named `create` rather than `new` because `new` is a reserved word. */
   create(options: CoordinatorNewHostOptions | CoordinatorNewGuestOptions): CoordinatorState;
   step(state: CoordinatorState, event: CoordinatorEvent): readonly [CoordinatorState, CoordinatorOutcome];
   planAssignments(manifest: SessionManifest, seating: readonly string[]): readonly SessionSlotProducer[] | undefined;

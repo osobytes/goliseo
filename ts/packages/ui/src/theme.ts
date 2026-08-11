@@ -1,4 +1,4 @@
-// game/ui/theme.lua — the shared product look. Pure data, no logic.
+// The shared product look. Pure data, no logic.
 
 import type { RgbColor } from "./types.ts";
 

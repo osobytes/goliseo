@@ -1,23 +1,20 @@
-// New shared infrastructure, not a port of one Lua file.
+// Shared infrastructure used by every rendering module (pitch, arena,
+// match_hud, player_renderer, combat, effects).
 //
-// Every Lua module under game/render/ (pitch, arena, match_hud, player_renderer,
-// combat, effects) draws by issuing `love.graphics.*` calls directly: an
-// immediate-mode API with no equivalent in three.js, which is a retained-mode
-// scene graph. Rather than hand-translate each call site into ad hoc
-// `THREE.Object3D` mutation (which cannot be unit-tested without a renderer),
-// every one of those modules is split here into:
+// None of those modules mutates a `THREE.Object3D` scene graph directly --
+// three.js is retained-mode, and ad hoc mutation at each call site cannot be
+// unit-tested without a renderer. Instead, every one of those modules is
+// split here into:
 //
 //   1. a PURE function that produces a `DrawCommand[]` -- the exact sequence
-//      of shapes, colors, positions and text the Lua original would have
-//      issued, in the same order. This is the content, and it is what the
-//      ported specs assert against (mirroring how the Lua test suite itself
-//      stubs `love.graphics` and records calls -- see
-//      spec/render/combat_presentation_spec.lua's `RecordedGeometryCall`).
+//      of shapes, colors, positions and text to draw, in order. This is the
+//      content, and it is what specs assert against (mirroring how each
+//      module's own spec records calls -- see this file's `DrawList`).
 //   2. a THIN, impure interpreter (`paint` below) that walks a `DrawCommand[]`
 //      and builds/updates three.js objects in a provided `THREE.Group`. This
 //      is mechanism -- three.js already has `Line`, `Mesh`, `Sprite` -- so it
 //      stays intentionally dumb and is not unit-tested (no WebGL context in
-//      this milestone; see v2/README.md #1 and this package's port report).
+//      this milestone).
 //
 // Coordinates are screen/pixel space (the output of `camera.project`), so the
 // natural three.js host is an orthographic scene sized to the viewport -- see
@@ -26,13 +23,13 @@
 import * as THREE from "three";
 import type { CameraProjection } from "./camera.ts";
 
-/** An RGB triple in [0, 1], LÖVE's color convention. */
+/** An RGB triple in [0, 1]. */
 export type RGB = readonly [number, number, number];
 
 /**
- * A world-to-screen projection, matching every Lua drawing function's
- * `project(wx, wy) -> sx, sy, scale` parameter (`camera.project`, or a
- * closure over it that adds a camera-shake offset -- see `pitch.ts`).
+ * A world-to-screen projection, matching `camera.project`'s
+ * `(wx, wy) -> sx, sy, scale` signature (or a closure over it that adds a
+ * camera-shake offset -- see `pitch.ts`).
  */
 export type Project = (wx: number, wy: number) => CameraProjection;
 
@@ -77,7 +74,7 @@ export interface EllipseCommand extends CommandBase {
   readonly lineWidth?: number;
 }
 
-/** A closed polygon, flat `[x0, y0, x1, y1, ...]` pairs (LÖVE's own convention). */
+/** A closed polygon, flat `[x0, y0, x1, y1, ...]` pairs. */
 export interface PolygonCommand extends CommandBase {
   readonly kind: "polygon";
   readonly mode: DrawMode;
@@ -126,13 +123,11 @@ export type DrawCommand =
   | TextCommand;
 
 /**
- * A rotate-then-offset transform around a pivot, matching the composed
- * effect of the Lua originals' `push(); translate(A); rotate(B);
- * translate(-P); ...; pop()` pattern (dive lunges, aerial rotations, combat
- * knockback/stagger, stumble): every point drawn while the block is active is
- * `Rotate(B) * (p - P) + A`, where `A = P + offset`. Kept as a pure
- * coordinate transform (not a graphics-state stack) so the callers stay
- * ordinary functions returning `DrawCommand[]`.
+ * A rotate-then-offset transform around a pivot, used for dive lunges, aerial
+ * rotations, combat knockback/stagger, and stumble: every point drawn while
+ * the transform is active is `Rotate(B) * (p - P) + A`, where `A = P +
+ * offset`. Kept as a pure coordinate transform (not a graphics-state stack)
+ * so the callers stay ordinary functions returning `DrawCommand[]`.
  */
 export interface PivotTransform {
   readonly pivotX: number;
@@ -171,10 +166,9 @@ function transformPoints(t: PivotTransform | undefined, points: readonly number[
 }
 
 /**
- * Accumulates `DrawCommand`s in the order they are issued, exactly mirroring
- * a sequence of `love.graphics.*` calls. Every method optionally applies a
- * `PivotTransform` (see above), which is how a ported call site represents
- * the Lua original's rotated push/pop blocks without a graphics-state stack.
+ * Accumulates `DrawCommand`s in the order they are issued. Every method
+ * optionally applies a `PivotTransform` (see above), which is how a call site
+ * represents a rotated figure pose without a graphics-state stack.
  */
 export class DrawList {
   readonly commands: DrawCommand[] = [];
@@ -355,7 +349,7 @@ export class DrawList {
 
 // ---------------------------------------------------------------------------
 // Impure: DrawCommand[] -> three.js objects. GPU-adjacent; no WebGL context
-// exists in this milestone, so this half is untested (v2/README.md #1). Kept
+// exists in this milestone, so this half is untested. Kept
 // deliberately dumb: it interprets the command vocabulary generically rather
 // than special-casing content, so the tested half above is where the game's
 // actual look lives.
@@ -812,7 +806,7 @@ function buildOne(c: DrawCommand, opts?: PaintOptions): THREE.Object3D {
  * today is `text`: `buildTextSprite` calls `document.createElement("canvas")`,
  * which needs a real DOM (a browser, or a jsdom/happy-dom-scoped spec) and
  * does not exist under this workspace's default `vitest` "node" environment
- * (v2/ts/vitest.config.ts). Passing `buildText` lets a "node" spec exercise
+ * (ts/vitest.config.ts). Passing `buildText` lets a "node" spec exercise
  * everything else `paint`/`appendCommands` do -- clearing, rebuilding,
  * disposal, non-text object construction -- without a DOM polyfill. See
  * match_hud.spec.ts's population suite for why this was chosen over a
@@ -856,7 +850,7 @@ export interface PaintOptions {
    * one `THREE.LineSegments` each, instead of one `THREE.Line` per command.
    *
    * OFF by default, and deliberately so: `pitch.spec.ts`'s differential
-   * against the recorded Lua draw stream inspects `group.children` per
+   * against a recorded reference draw stream inspects `group.children` per
    * command, and batching is exactly the transformation that would make that
    * comparison meaningless. Callers that want the draw-call win opt in.
    *
@@ -1013,9 +1007,9 @@ function applyDepthPlacement(obj: THREE.Object3D, opts?: PaintOptions): void {
  * `camera.project`'s output already lives in, so nothing here re-derives a
  * projection.
  *
- * Rebuilding every call is the simplest correct thing (matching the Lua
- * original's fully-immediate-mode redraw each frame) and OBJECTS and
- * GEOMETRIES are still rebuilt that way: measured, that costs ~0.3 ms/frame
+ * Rebuilding every call is the simplest correct thing (a fully-immediate-mode
+ * redraw each frame) and OBJECTS and GEOMETRIES are still rebuilt that way:
+ * measured, that costs ~0.3 ms/frame
  * (177 `bufferData` + 177 buffer create/delete + 88 VAO create/delete), which
  * is not what #403 was.
  *

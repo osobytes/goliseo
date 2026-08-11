@@ -1,5 +1,6 @@
-//! Differential test against the reference Lua implementation (README rule
-//! 5.9, `v2/tools/lua_reference/README.md`), required for
+//! Differential test against reference vectors captured from the Lua
+//! implementation this simulation was originally validated against (README
+//! rule 5.9, `tools/lua_reference/README.md`), required for
 //! `rollback_input_history`: it is the input ring buffer the rollback
 //! re-simulation replays from, and a divergence here is a desync, not a
 //! cosmetic difference.

@@ -1,30 +1,27 @@
-//! Port of `spec/sim/rollback_lab_spec.lua`.
-//!
-//! `sim/rollback_lab.lua`'s spec covers sixteen scenarios. Fourteen are
-//! ported below, several built on hand-built `varying_tape`/`combat_tape`/
-//! `early_finish_tape` fixtures mirroring the Lua spec's own helpers, plus
+//! Tests for `gc_sim::rollback_lab`, built on hand-built `varying_tape`/
+//! `combat_tape`/`early_finish_tape` fixtures, plus
 //! `determinism_evidence::fixture_tape` for the one case that pins the live
 //! soccer tape's digest.
 //!
-//! **Two cases are partially unported** (report these as open coverage
-//! gaps, not fully passing):
+//! **Two coverage gaps are deliberate** (report these as open gaps, not
+//! missing tests):
 //! - "reports causal hashes and the first state path for intentional
-//!   corruption" drops one assertion (`rollback_lab.summary(result):match(...)`)
-//!   — `rollback_lab::summary` has no port in `rollback_lab.rs`. Every other
-//!   assertion in that case is ported.
+//!   corruption" does not assert against a human-readable report string
+//!   — this crate has no `rollback_lab::summary` function to call. Every
+//!   other assertion in that case is exercised directly against
+//!   `divergence` instead, which is `summary`'s own data source.
 //! - "uses collision-safe strings and exact tape/profile identity in
-//!   markers" drops three of six assertions — `rollback_lab.logical_marker`
-//!   has no port in `rollback_lab.rs`, and those three are specifically
-//!   about that function's own string-joining collision safety, which has
+//!   markers" does not assert three string-joining-collision checks — this
+//!   crate has no `rollback_lab::logical_marker` function, and those checks
+//!   are specifically about that function's own collision safety, which has
 //!   no equivalent to assert against without it.
 //!
-//! Two other Lua cases ("keeps timing observers outside repeatable logical
+//! Two other cases ("keeps timing observers outside repeatable logical
 //! evidence", "uses one logical result for incremental and synchronous
-//! execution") also reference the missing `logical_marker`, but their
-//! marker-equality assertions are ported here as whole-`RollbackLabResult`
-//! equality instead — see the comment on the first of those tests below for
-//! why that is a legitimate, strictly stronger stand-in rather than a
-//! weakened one.
+//! execution") also touch the missing `logical_marker`, but assert
+//! whole-`RollbackLabResult` equality instead — see the comment on the
+//! first of those tests below for why that is a legitimate, strictly
+//! stronger stand-in rather than a weakened one.
 
 use gc_core::vec2::Vec2;
 use gc_sim::combat;
@@ -158,9 +155,8 @@ fn frame_count(tape: &InputTape) -> i64 {
     tape.frames.len() as i64
 }
 
-/// Ports `combat_tape()`: an 80-tick fixture with a `CombatMatchState`
-/// companion, driving one tick of equipment-pressed, twenty ticks of
-/// equipment-held, then release.
+/// An 80-tick fixture with a `CombatMatchState` companion, driving one tick
+/// of equipment-pressed, twenty ticks of equipment-held, then release.
 fn combat_tape() -> InputTape {
     let mut state = new_state(20.0, 99);
     state.kickoff_hold = 0.0;
@@ -218,9 +214,9 @@ fn combat_tape() -> InputTape {
         .expect("hand-built combat tape is always well formed")
 }
 
-/// Ports `preventable_goal_initial()`: a snapshot one tick from a scored
-/// goal, so a defender's dash (see [`early_finish_tape`]) can prevent it and
-/// force the match past its predicted early finish.
+/// A snapshot one tick from a scored goal, so a defender's dash (see
+/// [`early_finish_tape`]) can prevent it and force the match past its
+/// predicted early finish.
 fn preventable_goal_initial() -> match_snapshot::MatchSnapshot {
     let mut state = new_state(4.0, 1);
     let carrier_index = state.slot_players[0].expect("slot 1 has a player");
@@ -264,10 +260,10 @@ fn preventable_goal_initial() -> match_snapshot::MatchSnapshot {
     match_snapshot::capture(&state, None)
 }
 
-/// Ports `early_finish_tape()`: steps [`preventable_goal_initial`] forward
-/// with a real slot-mode `sim_match::step` loop (slot 5 dashes on tick 0 to
-/// deny the preventable goal) until the match reaches full time, recording
-/// every effective frame along the way.
+/// Steps [`preventable_goal_initial`] forward with a real slot-mode
+/// `sim_match::step` loop (slot 5 dashes on tick 0 to deny the preventable
+/// goal) until the match reaches full time, recording every effective frame
+/// along the way.
 fn early_finish_tape() -> InputTape {
     let initial = preventable_goal_initial();
     let tune = Tuning::new();
@@ -303,10 +299,8 @@ fn early_finish_tape() -> InputTape {
 }
 
 /// Run `f`, catching a panic and returning its message instead of letting it
-/// abort the test. Rust has no `pcall`; this is the idiomatic stand-in the
-/// Lua spec's `pcall(...)`/`assert(ok, hidden)` pairs port to whenever the
-/// assertion under test is "this call panics with message X" rather than
-/// "this call returns an error".
+/// abort the test — the stand-in for asserting "this call panics with
+/// message X" rather than "this call returns an error".
 fn catch_panic_message<F: FnOnce() + std::panic::UnwindSafe>(f: F) -> Option<String> {
     match std::panic::catch_unwind(f) {
         Ok(()) => None,
@@ -487,11 +481,10 @@ fn derives_over_window_terminal_stability_from_the_blocked_session_seam() {
     );
 }
 
-/// The Lua original reuses one tape value across two `rollback_lab.run`
-/// calls (Lua tables are references, and `run` never mutates its `tape`
-/// argument). `InputTape` here is an owned value consumed by `run`
-/// (`RollbackLabCampaign` owns it for the campaign's lifetime), so this
-/// port clones where the Lua spec reused.
+/// `InputTape` is an owned value consumed by `run` (`RollbackLabCampaign`
+/// owns it for the campaign's lifetime), so a test that wants to run the
+/// same starting tape through two calls needs an explicit clone rather than
+/// sharing one value.
 fn clone_tape(tape: &InputTape) -> InputTape {
     InputTape {
         version: tape.version,
@@ -501,10 +494,6 @@ fn clone_tape(tape: &InputTape) -> InputTape {
         boundary_hashes: tape.boundary_hashes.clone(),
     }
 }
-
-// ---------------------------------------------------------------------------
-// The remaining ten cases from `spec/sim/rollback_lab_spec.lua`.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn pins_the_live_soccer_tape_digest_without_a_synthetic_combat_segment() {
@@ -663,12 +652,11 @@ fn reports_causal_hashes_and_the_first_state_path_for_intentional_corruption() {
         .as_ref()
         .expect("a diverged run reports its first structural disagreement");
     assert!(!first_difference.path.is_empty());
-    // `rollback_lab::summary` (the Lua original's human-readable report
-    // string) has no port in this crate — see this module's own doc
-    // comment. The Lua spec's last assertion,
-    // `summary(result):match("causal_tick=2")`, is therefore unported;
-    // every other assertion in that case is ported above against
-    // `divergence` directly, which is `summary`'s own data source.
+    // This crate has no `rollback_lab::summary` function (a human-readable
+    // report string) — see this module's own doc comment — so there is
+    // nothing to assert a "causal_tick=2" substring against. Every other
+    // check in this case is asserted above against `divergence` directly,
+    // which is `summary`'s own data source.
 }
 
 #[test]
@@ -734,17 +722,16 @@ fn keeps_timing_observers_outside_repeatable_logical_evidence() {
 
     assert!(calls_a.get() > 0);
     assert!(calls_b.get() > calls_a.get());
-    // `rollback_lab::logical_marker` (the Lua original's canonical string
-    // encoding for cross-run comparison) has no port in this crate — see
-    // this module's own doc comment. `RollbackLabResult` derives
-    // `PartialEq` and carries no wall-clock/timing field at all (the module
-    // doc explains why: "clock values are neither read nor retained here
-    // and cannot enter the logical result"), so whole-struct equality is a
-    // strictly stronger stand-in for the Lua assertion that two runs whose
-    // `measure` observers behave completely differently still produce the
-    // same logical result — and, having no such field, it also trivially
-    // satisfies the Lua spec's `logical_marker(first):match("timing") ==
-    // nil`.
+    // This crate has no `rollback_lab::logical_marker` function (a
+    // canonical string encoding for cross-run comparison) — see this
+    // module's own doc comment. `RollbackLabResult` derives `PartialEq` and
+    // carries no wall-clock/timing field at all (the module doc explains
+    // why: "clock values are neither read nor retained here and cannot
+    // enter the logical result"), so whole-struct equality is a strictly
+    // stronger check that two runs whose `measure` observers behave
+    // completely differently still produce the same logical result — and,
+    // having no timing field, it trivially also confirms that nothing
+    // timing-related has leaked into that result.
     assert_eq!(first, second);
 
     let missing_call = catch_panic_message(std::panic::AssertUnwindSafe(|| {
@@ -808,18 +795,17 @@ fn uses_collision_safe_strings_and_exact_tape_profile_identity_in_markers() {
     assert_eq!(injected.profile, "custom");
     assert_ne!(injected.profile_parameters, adjacent.profile_parameters);
     assert_ne!(injected.tape_digest, adjacent.tape_digest);
-    // `rollback_lab::logical_marker` has no port in this crate (see this
+    // This crate has no `rollback_lab::logical_marker` function (see this
     // module's own doc comment and the "keeps timing observers..." test
-    // above). The Lua spec's remaining three assertions here are all about
-    // that function's own string-joining collision safety — whether a
-    // caller-controlled fixture name or profile name containing the
-    // marker's own delimiter (`|`, `=`) can forge what looks like another
-    // field in the rendered marker. There is no equivalent to test without
-    // `logical_marker` itself: this crate's `RollbackLabResult` fields
-    // (asserted above) are typed and independently readable, so the
-    // injection failure mode a joined string encoding invites does not
-    // arise for them, but that is a different, weaker guarantee than the
-    // Lua test actually pins.
+    // above), so there is no string-joining collision safety to assert
+    // here — whether a caller-controlled fixture name or profile name
+    // containing a delimiter character (`|`, `=`) can forge what looks like
+    // another field in a rendered marker string. This crate's
+    // `RollbackLabResult` fields (asserted above) are typed and
+    // independently readable, so the injection failure mode a joined
+    // string encoding invites does not arise for them — a different,
+    // weaker guarantee than a `logical_marker` collision-safety check would
+    // pin, but the strongest one available without that function.
 }
 
 #[test]
@@ -851,11 +837,10 @@ fn bounds_retained_resources_and_never_passes_with_unconfirmed_authority() {
         bounded.metrics.peaks.network_pending_record_references
             > bounded.network_diagnostics.pending_record_references
     );
-    // The Lua original's `rawget(bounded.drain, "deliveries") == nil` checks
-    // that the drain summary table never grew a stray field.
     // `RollbackLabDrainSummary` has no `deliveries` field in its
-    // compile-time definition at all, so the same guarantee holds
-    // structurally, with nothing left to assert at runtime.
+    // compile-time definition at all, so the guarantee that the drain
+    // summary never grows a stray field holds structurally, with nothing
+    // left to assert at runtime.
 
     let unconfirmed = rollback_lab::run(
         varying_tape(10, "unconfirmed"),
@@ -891,8 +876,8 @@ fn uses_one_logical_result_for_incremental_and_synchronous_execution() {
             break result.clone();
         }
     };
-    // See "keeps timing observers..." above: whole-struct equality is this
-    // port's stand-in for `logical_marker` comparison.
+    // See "keeps timing observers..." above: whole-struct equality is the
+    // stand-in used here in place of a `logical_marker` comparison.
     assert_eq!(incremental, synchronous);
     assert_eq!(
         incremental.event_metrics.reference_digest,
@@ -905,20 +890,16 @@ fn uses_one_logical_result_for_incremental_and_synchronous_execution() {
     assert_eq!(accounting.input.effective_frame_bytes, 2315);
     assert_eq!(accounting.input.input_record_bytes, 6131);
     assert_eq!(accounting.input.total_bytes, 11867);
-    // The Lua spec pins `accounting.output_bytes` and
-    // `metrics.peaks.output_bytes` to exact constants (37008, 37026)
-    // derived from `rollback_session.accounting`'s Lua encoding of retained
-    // outputs. `rollback_session.rs`'s own module doc comment ("Retained-
-    // output byte accounting is a diagnostic proxy, not a Lua-parity
-    // encoding") documents that this port deliberately reuses Rust's
-    // derived `Debug` rendering as its size proxy instead of reimplementing
-    // the Lua table-walk encoding a third time, and that "no observer
-    // depends on the exact number matching Lua" — confirmed empirically
-    // here: this run's `output_bytes` is 32756, not 37008. The two
-    // constants are therefore not portable; what the module doc says *is*
-    // guaranteed — that independently-computed totals agree — is what
-    // `assert_eq!(incremental, synchronous)` above already exercises for
-    // this exact fixture.
+    // `accounting.output_bytes` and `metrics.peaks.output_bytes` are not
+    // pinned to exact constants here. `rollback_session.rs`'s own module
+    // doc comment ("Retained-output byte accounting is a diagnostic proxy")
+    // documents that this crate deliberately uses Rust's derived `Debug`
+    // rendering as its size proxy, and that "no observer depends on the
+    // exact number" — this run's `output_bytes` is 32756, an incidental
+    // value of that encoding rather than a guaranteed one. What the module
+    // doc does guarantee — that independently-computed totals agree — is
+    // what `assert_eq!(incremental, synchronous)` above already exercises
+    // for this exact fixture.
     assert!(accounting.output_bytes > 0);
     assert_eq!(accounting.event_bytes, 0);
     assert_eq!(incremental.metrics.peaks.input_bytes, 11867);

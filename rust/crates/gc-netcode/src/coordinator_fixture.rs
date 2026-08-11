@@ -1,5 +1,3 @@
-//! Port of `game/online/coordinator_fixture.lua`.
-//!
 //! Shared fixtures for coordinator-focused specs: a host/guest peer id
 //! scheme, a runtime and manifest borrowed from [`crate::protocol_fixture`],
 //! and constructors for host/guest [`coordinator::CoordinatorState`]s.

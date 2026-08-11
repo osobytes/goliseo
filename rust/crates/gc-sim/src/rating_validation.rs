@@ -1,5 +1,3 @@
-//! Port of `sim/rating_validation.lua`.
-//!
 //! Deterministic validation harness for the frozen squad rating. Every
 //! unordered squad pair plays both home orientations on common seeds. The
 //! home side gets the human-proxy bot in each leg, so each squad receives
@@ -8,15 +6,14 @@
 //!
 //! ## Test seam (no function mocking in Rust)
 //!
-//! `spec/sim/rating_validation_spec.lua` monkey-patches `headless.run_match`
-//! to observe every call and return a scripted, rank-based winner instead of
-//! playing a real match — the same seam problem [`crate::headless`]'s own
-//! module doc names (see "Test seams" there). Rust has no runtime function
-//! replacement, so [`run_with`] takes the match-runner as a parameter;
-//! [`run`] is just `run_with` closed over the real
-//! [`crate::headless::run_match`]. The spec's assertions about call order,
-//! seed pairing and side-swap are preserved by asserting on the calls a
-//! fake passed to `run_with` observed, instead of a mocked global.
+//! Tests need to observe every call to the match runner and return a
+//! scripted, rank-based winner instead of playing a real match — the same
+//! seam problem [`crate::headless`]'s own module doc names (see "Test seams"
+//! there). Rust has no runtime function replacement, so [`run_with`] takes
+//! the match-runner as a parameter; [`run`] is just `run_with` closed over
+//! the real [`crate::headless::run_match`]. Assertions about call order,
+//! seed pairing and side-swap are made against the calls a fake passed to
+//! `run_with` observed, instead of a mocked global.
 
 use crate::headless::{self, HeadlessBot, HeadlessOpts, MatchResult, Winner};
 use gc_data::players::PlayerData;
@@ -173,9 +170,9 @@ pub fn run(seeds_per_leg: i64) -> RatingValidationResult {
 }
 
 /// [`run`] with the match runner as a parameter — see the module doc's
-/// "Test seam" section. `run_match` is called exactly where the Lua
-/// original calls `headless.run_match`, in the same order and with the
-/// same options, so a fake can assert on it exactly as the spec's mock did.
+/// "Test seam" section. `run_match` is called in the same order and with
+/// the same options every time, so a fake passed in place of the real
+/// runner can assert on call order and arguments precisely.
 ///
 /// # Panics
 ///

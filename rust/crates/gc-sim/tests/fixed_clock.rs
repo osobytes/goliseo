@@ -1,9 +1,8 @@
-//! Port of `spec/sim/fixed_clock_spec.lua`.
+//! Tests for `gc_sim::fixed_clock`.
 //!
-//! The Lua spec's "keeps gameplay state equivalent across 30/60/120 Hz and
-//! irregular render cadences" case drives a real `MatchState` via
-//! `sim.match.new`/`match.step`. `sim::match` (`gc_sim::r#match`) is now
-//! fully ported, so that case builds a real fixture too.
+//! The "keeps gameplay state equivalent across 30/60/120 Hz and irregular
+//! render cadences" case drives a real `MatchState` via `sim_match::new`/
+//! `sim_match::step`.
 
 use gc_sim::fixed_clock;
 use gc_sim::r#match::{self as sim_match, NewMatchOptions, StepInput};
@@ -11,8 +10,7 @@ use gc_sim::match_snapshot::{MatchInput, MatchState, PitchSize};
 use gc_sim::tuning::Tuning;
 
 /// Drive the clock with a render-cadence pattern, recording every consumed
-/// tick's provided input (which the Lua fixture arranges to equal the tick
-/// number itself).
+/// tick's provided input (arranged to equal the tick number itself).
 fn drive(pattern: &[f64]) -> (fixed_clock::FixedClockState, Vec<u64>) {
     let mut clock = fixed_clock::new();
     let mut consumed = Vec::new();

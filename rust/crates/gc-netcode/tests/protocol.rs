@@ -1,12 +1,14 @@
-//! Port of `spec/game/online_protocol_spec.lua`.
+//! Unit and differential tests for the wire protocol (`protocol.rs`):
+//! encode/decode round-tripping, malformed-input rejection, and exact-byte
+//! validation against a frozen reference.
 //!
 //! Also carries this crate's required differential evidence for
-//! `protocol.rs` (README §"Why `protocol` is the highest-stakes file left"):
-//! `tests/fixtures/protocol_lua_reference.txt` holds wire bytes and digests
-//! captured from the real Lua `game/online/protocol.lua`
-//! (`v2/tools/lua_reference/README.md`'s method), and the tests in the
-//! `differential` module below assert against those bytes directly rather
-//! than merely round-tripping Rust-produced values through themselves.
+//! `protocol.rs`: `tests/fixtures/protocol_lua_reference.txt` holds wire bytes and digests
+//! captured from the original protocol implementation before it was retired
+//! (see `tools/lua_reference/README.md` for capture provenance), and the
+//! tests in the `differential` module below assert against those bytes
+//! directly rather than merely round-tripping Rust-produced values through
+//! themselves.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -46,9 +48,9 @@ fn bounded_id(prefix: &str, length: usize) -> String {
 
 /// A raw, non-validating canonical-ish encoder used only by tests to build
 /// deliberately non-canonical (e.g. sparse-keyed) wires that
-/// `protocol::encode`'s own validation would refuse to produce. Mirrors the
-/// Lua spec's own local `encode_raw_test_value`/`encode_raw_test_wire`
-/// helpers, which exist in the Lua source for the identical reason: testing
+/// `protocol::encode`'s own validation would refuse to produce. Named after,
+/// and serving the same purpose as, the reference test suite's own local
+/// `encode_raw_test_value`/`encode_raw_test_wire` helpers: testing
 /// `decode`'s defenses needs wires `encode` itself cannot be asked to emit.
 fn encode_raw_value(value: &Value) -> String {
     match value {
@@ -117,7 +119,7 @@ fn replace_manifest_player_id(
         .to_string();
     // `Value::set` only supports string keys, so the roster array is rebuilt
     // rather than mutated in place (mirrors the immutable-update style
-    // README rule 6.8 asks for in pure code).
+    // ARCHITECTURE.md §4 rule 7 asks for in pure code).
     let mut new_roster_items = Vec::new();
     for index in 1..=roster.len() as i64 {
         if index == roster_index {
@@ -386,12 +388,12 @@ fn omp3_online_protocol_rejects_sparse_arrays_without_relying_on_luas_undefined_
         result.is_ok(),
         "a two-message transcript with contiguous sequences 0,1 is valid"
     );
-    // The Lua case specifically feeds a *sparse-keyed table* (`{[1]=a,[3]=b}`),
-    // which has no Rust equivalent for a `&[ControlMessage]` slice (Rust
-    // slices cannot be sparse) — seeàupdatethe module doc comment. What *is*
-    // portable and is asserted directly below: `transcript_id` panics on a
-    // non-monotonic per-peer sequence, the same invariant the Lua assertion
-    // guards.
+    // The original test suite fed a *sparse-keyed table* (`{[1]=a,[3]=b}`)
+    // for this case, which has no Rust equivalent for a `&[ControlMessage]`
+    // slice (Rust slices cannot be sparse) — see the module doc comment.
+    // What *is* portable and is asserted directly below: `transcript_id`
+    // panics on a non-monotonic per-peer sequence, the same invariant the
+    // original assertion guards.
     let mut non_monotonic = vec![messages[0].clone(), messages[0].clone()];
     non_monotonic[1].sequence = 0;
     non_monotonic[1].message_id =
@@ -1308,11 +1310,11 @@ fn handshake_build_declaration_refuses_a_build_declaration_that_is_not_an_opaque
         let err = handshake(Some(&bad)).unwrap_err();
         assert_eq!(err.code, ErrorCode::Malformed, "{bad}");
     }
-    // Lua also exercises non-string build declarations (`17`, `true`) —
-    // structurally impossible here: `handshake`'s `build_id` parameter is
-    // `Option<&str>`, so a non-string value cannot be constructed at all.
-    // The malformed-type outcome those cases proved is instead guaranteed by
-    // the type system, which is strictly stronger.
+    // The reference test suite also exercised non-string build declarations
+    // (`17`, `true`) — structurally impossible here: `handshake`'s `build_id`
+    // parameter is `Option<&str>`, so a non-string value cannot be
+    // constructed at all. The malformed-type outcome those cases proved is
+    // instead guaranteed by the type system, which is strictly stronger.
 }
 
 #[test]
@@ -1342,10 +1344,12 @@ fn handshake_build_declaration_counts_the_declaration_as_part_of_the_vocabulary_
 }
 
 // ---------------------------------------------------------------------------
-// Differential tests against the real Lua `protocol.lua`
-// (`tests/fixtures/protocol_lua_reference.txt`, captured per
-// `v2/tools/lua_reference/README.md`). These assert exact bytes, not merely
-// that Rust's own encode/decode round-trip through themselves.
+// Differential tests against the pinned reference vectors captured from the
+// implementation this netcode's wire behaviour was validated against
+// (`tests/fixtures/protocol_lua_reference.txt`; see
+// `tools/lua_reference/README.md` for capture provenance). These assert
+// exact bytes, not merely that Rust's own encode/decode round-trip through
+// themselves.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1382,10 +1386,10 @@ fn differential_minimum_size_message_matches_the_real_lua_byte_for_byte() {
 }
 
 /// The maximum-size payload this protocol allows: every applicable field is
-/// bounded_id'd out to its maximum, matching
-/// spec/game/online_protocol_spec.lua's "keeps an all-applicable-max
-/// proposal within the 8 KiB record bound", but checked against real
-/// Lua-produced bytes rather than only a length.
+/// bounded_id'd out to its maximum, matching the reference test suite's
+/// "keeps an all-applicable-max proposal within the 8 KiB record bound",
+/// but checked against the pinned reference bytes rather than only a
+/// length.
 #[test]
 fn differential_maximum_size_payload_matches_the_real_lua_byte_for_byte() {
     let mut manifest = fixture::manifest(None);
@@ -1561,9 +1565,9 @@ fn differential_vocabulary_manifest_and_transcript_ids_match_the_real_lua() {
     );
 }
 
-/// Every non-canonical mutation applied directly to real Lua-produced bytes
-/// (`HANDSHAKE_WIRE`), not to a Rust re-encode — the same base wire
-/// `spec/game/online_protocol_spec.lua`'s `gsub` mutations operate on.
+/// Every non-canonical mutation applied directly to the pinned reference
+/// bytes (`HANDSHAKE_WIRE`), not to a Rust re-encode — the same base wire
+/// the reference test suite's own `gsub` mutations operated on.
 #[test]
 fn differential_non_canonical_mutations_of_the_real_lua_wire_are_rejected() {
     let wire = lua_ref("HANDSHAKE_WIRE");
@@ -1609,15 +1613,16 @@ fn differential_non_canonical_mutations_of_the_real_lua_wire_are_rejected() {
 }
 
 // ---------------------------------------------------------------------------
-// spec/game/transport_relay_spec.lua — second `describe` block ("relay
-// topology probe: no peer is the sequencer"), deferred to this crate from
-// the TypeScript port (per this agent's brief). `coordinator.rs` and
-// `match_driver.rs` landed first, so the two findings that never touched
-// `game.transport.fake_relay` were ported for real early. `gc_netcode::fake_relay`
-// (a Rust port of `game/transport/fake_relay.lua`) and a `relay` topology
-// option on `gc_netcode::fault_harness::FaultHarnessOptions` have since
-// landed too, so the remaining four findings below are now real, running
-// tests rather than `#[ignore]`d stubs.
+// The relay-topology probe scenario ("relay topology probe: no peer is the
+// sequencer", originally the second `describe` block of the transport relay
+// test suite), deferred to this crate from the TypeScript port (per this
+// agent's brief). `coordinator.rs` and `match_driver.rs` landed first, so
+// the two findings that never touched `game.transport.fake_relay` were
+// ported for real early. `gc_netcode::fake_relay` (a Rust implementation of
+// the fake relay transport) and a `relay` topology option on
+// `gc_netcode::fault_harness::FaultHarnessOptions` have since landed too,
+// so the remaining four findings below are now real, running tests rather
+// than `#[ignore]`d stubs.
 // ---------------------------------------------------------------------------
 
 /// The 8 peer ids an 8-human `4v4` fixture manifest seats: the host plus
@@ -1663,14 +1668,15 @@ fn slot_assignments(assignments_value: &Value) -> [SlotAssignment; 8] {
 /// Finding 2. `input_protocol.canonical_host_batch`'s ownership check is
 /// bound to the *transport's* attributed origin, not merely to the packet's
 /// self-declared `sender_id` — the property a relay's per-line origin
-/// tagging depends on staying true (see the Lua spec's own comment: "a relay
-/// that concatenated blobs without keeping origin ... takes this check with
-/// it"). `input_protocol.canonical_host_batch` itself was never ported as a
-/// free function (needs `protocol.lua`'s `SessionManifest`/
-/// `SessionSlotProducer`, see `input_protocol.rs`'s module doc), but the real
-/// port lives on `match_driver_fixture::DriverRules` — driven directly here,
-/// exactly as the Lua original drives `input_protocol.canonical_host_batch`
-/// directly rather than through a live driver.
+/// tagging depends on staying true (see the original test suite's own
+/// comment: "a relay that concatenated blobs without keeping origin ...
+/// takes this check with it"). `input_protocol.canonical_host_batch` itself
+/// was never carried over as a free function (needs the protocol module's
+/// `SessionManifest`/`SessionSlotProducer`, see `input_protocol.rs`'s module
+/// doc), but the real equivalent lives on `match_driver_fixture::DriverRules`
+/// — driven directly here, exactly as the original test suite drives
+/// `input_protocol.canonical_host_batch` directly rather than through a live
+/// driver.
 #[test]
 fn transport_relay_topology_probe_keeps_ownership_validation_bound_to_the_transport_origin() {
     let manifest = fixture::manifest(Some(MatchMode::FourVFour));
@@ -1801,7 +1807,8 @@ fn transport_relay_topology_probe_keeps_ownership_validation_bound_to_the_transp
 /// Finding 4. The session lifecycle is host-authoritative in `coordinator`,
 /// independently of the wire — moving input distribution to a relay does not
 /// touch any of these role checks, so this exercises `coordinator::step`
-/// directly exactly as the Lua original does, with no transport at all.
+/// directly exactly as the original test suite does, with no transport at
+/// all.
 #[test]
 fn transport_relay_topology_probe_keeps_the_session_lifecycle_host_authoritative() {
     let manifest = coordinator_fixture::manifest(Some(MatchMode::TwoVTwo));
@@ -1849,8 +1856,8 @@ fn transport_relay_topology_probe_keeps_the_session_lifecycle_host_authoritative
 /// nothing else, so a client that receives another client's own bundle —
 /// which is all a framing relay can ever deliver — kills the match. Drives
 /// `fault_harness::FaultHarness::new` with `topology:
-/// Some(FaultHarnessTopology::Relay)`, exactly as the Lua case drives
-/// `fault_harness.new({ topology = "relay", ... })`.
+/// Some(FaultHarnessTopology::Relay)`, exactly as the original test suite's
+/// analogous case drives `fault_harness.new({ topology = "relay", ... })`.
 #[test]
 fn transport_relay_topology_probe_terminates_a_guest_that_receives_a_peers_own_bundle() {
     let mut harness = FaultHarness::new(FaultHarnessOptions {
@@ -1987,11 +1994,11 @@ fn transport_relay_topology_probe_gives_declared_bot_fills_no_author_but_the_hos
 /// Finding 5. The settle phase's host relay wait is host-only by
 /// construction. It exists because a player-host that stops relaying strands
 /// everyone else's tail; a relay that is not a player cannot leave, so this
-/// is one piece of complexity the topology genuinely deletes. See the Lua
-/// spec's own comment (`#243`/`#255`): guests report their own confirmation
-/// in the bundles they already re-publish, so under clean delivery the host
-/// leaves within two settle steps rather than the four-plus a quiet-count
-/// heuristic used to cost.
+/// is one piece of complexity the topology genuinely deletes. See the
+/// original test suite's own comment (`#243`/`#255`): guests report their
+/// own confirmation in the bundles they already re-publish, so under clean
+/// delivery the host leaves within two settle steps rather than the
+/// four-plus a quiet-count heuristic used to cost.
 #[test]
 fn transport_relay_topology_probe_scopes_the_settle_relay_wait_to_the_host_alone() {
     let mut harness = FaultHarness::new(FaultHarnessOptions {
@@ -2047,10 +2054,10 @@ fn transport_relay_topology_probe_scopes_the_settle_relay_wait_to_the_host_alone
 /// Finding 6. The per-node wire cost of the shape the decision actually
 /// proposes: every member publishes only its own bundle and receives the
 /// other seven, concatenated into one frame. Drives
-/// `gc_netcode::fake_relay::FakeRelayTransport` directly (mirrors the Lua
-/// spec's own `build_room`/`broadcast`/`wire_counters`), not through
-/// `fault_harness`: this finding measures the adapter's own byte accounting,
-/// which does not need a running match.
+/// `gc_netcode::fake_relay::FakeRelayTransport` directly (mirrors the
+/// original test suite's own `build_room`/`broadcast`/`wire_counters`), not
+/// through `fault_harness`: this finding measures the adapter's own byte
+/// accounting, which does not need a running match.
 #[test]
 fn transport_relay_topology_probe_measures_sequencer_less_per_node_wire_cost() {
     use gc_netcode::fake_relay::{FakeRelayTransport, FakeRelayTransportOptions};
@@ -2163,7 +2170,7 @@ fn transport_relay_topology_probe_measures_sequencer_less_per_node_wire_cost() {
             "framed {framed:.1} must exceed the envelope figure {down:.1}"
         );
         // Carries one `confirmed_span` header field per input packet, same
-        // as the Lua spec's pinned bracket.
+        // as the original test suite's pinned bracket.
         assert!(
             framed > 1450.0 && framed < 1475.0,
             "framed downlink {framed:.1} B/tick"

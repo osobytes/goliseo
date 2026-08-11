@@ -60,7 +60,7 @@
 //! `local_slot`/`profile_name`/`max_rollback_ticks`/`settlement_ticks`,
 //! `advance`'s `transport_tick`/`sample_wire`) is validated BEFORE it
 //! reaches `gc_sim::rollback_playable_lab`, which itself uses `assert!`/
-//! `panic!` for these exact preconditions (README rule 5.5: "producer
+//! `panic!` for these exact preconditions (ARCHITECTURE.md §3 rule 5: "producer
 //! invariants" — see that module's own `# Panics` doc comments). A trap
 //! crossing the wasm boundary poisons the whole instance, so this module
 //! never lets malformed JS input reach one of those asserts; every rejected
@@ -82,9 +82,9 @@
 //!
 //! `gc_sim::rollback_playable_lab::RollbackPlayableLabOptions.profile` lets
 //! a caller supply an arbitrary `NetworkProfile` instead of an authored
-//! name. No test this wave needs that (`match_rollback_lab.spec.ts` and its
-//! Lua ancestor both only ever name authored profiles — `"playable"` for the
-//! pinned-seed convergence case), and a `NetworkProfile` JSON codec is a
+//! name. No test this wave needs that (`match_rollback_lab.spec.ts` only
+//! ever names authored profiles — `"playable"` for the pinned-seed
+//! convergence case), and a `NetworkProfile` JSON codec is a
 //! straightforward, independent follow-up if a future caller needs one.
 //! [`decode_options`] therefore only resolves `profile_name` against the
 //! four authored names `gc_sim::rollback_playable_lab`'s own (private)
@@ -168,7 +168,7 @@ fn decode_options(options_json: &str) -> Result<RollbackPlayableLabOptions, Stri
 /// Validates a [`RollbackPlayableLab::advance`] call BEFORE it reaches
 /// `gc_sim::rollback_playable_lab::advance`, which documents every one of
 /// these as a `panic!`-worthy producer invariant rather than a `Result`
-/// (README rule 5.5) — see the module doc's "external input never panics"
+/// (ARCHITECTURE.md §3 rule 5) — see the module doc's "external input never panics"
 /// section. A plain `Result<(), String>`, not `Result<(), JsValue>|`, so it
 /// is unit-testable from a native `#[test]`: `wasm_bindgen::JsValue`
 /// construction aborts off the wasm32 target (this crate's established
@@ -614,7 +614,7 @@ impl RollbackPlayableLab {
 
     /// This laboratory's retained-state shape, as JSON — see
     /// [`debug_model_json`] for the exact fields (mirrors
-    /// `gc_sim::rollback_playable_lab::debug_model`/the Lua original's
+    /// `gc_sim::rollback_playable_lab::debug_model`'s
     /// `RollbackPlayableLabDebugModel`).
     #[wasm_bindgen(js_name = debugModelJson)]
     #[must_use]

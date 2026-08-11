@@ -1,4 +1,6 @@
-//! Port of `spec/core/rng_spec.lua`.
+//! Property tests for the deterministic PRNG: reproducibility from a fixed
+//! seed, range and non-degeneracy of samples, rough uniformity, and seed
+//! normalization for degenerate inputs.
 
 use gc_core::rng;
 

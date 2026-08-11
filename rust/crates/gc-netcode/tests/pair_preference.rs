@@ -1,17 +1,18 @@
-//! Port of `spec/game/online_pair_preference_spec.lua`.
+//! Pair-preference coordinator logic tests.
 //!
-//! Covers all seven `describe` blocks: `"pair preference wire"`, `"pair
-//! preference rules"`, `"pair preference inertness"`, `"pair preference
-//! generations"`, `"pair claims across a roster change"`, `"pair preference
-//! sessions"`, and `"pair preference keeper protection"`.
+//! Covers seven scenario groups: pair preference wire behavior, pair
+//! preference rules, pair preference inertness, pair preference
+//! generations, pair claims across a roster change, pair preference
+//! sessions, and pair preference keeper protection.
 //!
 //! `tests/coordinator.rs`'s
 //! `prefer_pair_is_inert_in_4v4_and_unchanged_for_the_slot_already_owned` is
 //! adjacent to this file's inertness cases (same mode, same "nothing to
 //! grant" property) but drives a `Driver` through a single 4v4/no-guest
-//! event rather than sweeping the request space, and is not itself a port of
-//! any of the 34 `t.it` cases below — none of them construct that exact
-//! zero-guest scenario. Every one of the 34 is still ported here by name.
+//! event rather than sweeping the request space, and does not duplicate any
+//! of the 34 cases below — none of them construct that exact zero-guest
+//! scenario. All 34 of the original behavioral test cases are represented
+//! here by name.
 
 use gc_netcode::coordinator::{self, CoordinatorState, Event, PreferenceState, TerminalReason};
 use gc_netcode::coordinator_driver::{self as driver, Driver};
@@ -26,8 +27,7 @@ const HOST: &str = fixture::HOST_PEER_ID;
 
 /// `fixture.manifest().session_id`: every match mode shares the one fixture
 /// session id (see `protocol_fixture::manifest`), so this is safe to pin as
-/// a constant exactly like the Lua spec's own `local SESSION =
-/// fixture.manifest().session_id`.
+/// a single constant.
 const SESSION: &str = "session_alpha";
 
 fn message(

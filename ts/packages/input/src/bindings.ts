@@ -1,12 +1,11 @@
-// game/input/bindings.lua — every physical input the game reads, declared
-// exactly once.
+// Every physical input the game reads, declared exactly once.
 //
 // Two consumers sit on top of this table and must never grow a private
 // keymap:
 //   * `actions.ts` turns key and button EDGES into ActionEvents, which
 //     menus and the global toggles consume.
-//   * the (not-yet-ported) match screen POLLS held state every render frame
-//     and derives the charge holds and release edges a MatchInput needs.
+//   * the match screen POLLS held state every render frame and derives
+//     the charge holds and release edges a MatchInput needs.
 // `docs/controls.md` and the help screen both render `bindings.reference`,
 // so a binding cannot drift from what the game tells the player it is.
 //
@@ -19,20 +18,20 @@
 //      middle (K), the most independent same-hand pair. On gamepad it is a
 //      trigger, never a face button, because one thumb cannot hold two.
 //   3. Movement-adjacent taps (juke) stay off the movement hand.
-//   4. No EDGE action sits on a gamepad trigger. LÖVE reports triggers as
-//      axes, so `love.gamepadpressed` never fires for one; triggers carry
-//      holds only.
+//   4. No EDGE action sits on a gamepad trigger. This codebase's control
+//      abstraction treats a trigger as an axis read, never a button edge,
+//      so it can never fire one; triggers carry holds only.
 //
 // KEY-NAME DIVERGENCE (read before wiring real browser input): every string
-// below is a LÖVE `KeyConstant`/`GamepadButton` name ("lshift", "kpenter",
-// "dpup", ...), not a browser `KeyboardEvent.code` ("ShiftLeft", "Enter",
-// ...). They are kept as the canonical internal identifiers on purpose —
-// spec/game/input_bindings_spec.lua (ported as bindings.spec.ts) asserts on
-// these exact strings, e.g. `control("modifier").keys[0] === "j"`. A later
-// milestone needs a translation layer from `KeyboardEvent.code`/Gamepad API
-// button indices into these names before real capture can be wired up; see
-// this package's porting report for the full list of what that milestone
-// still owes.
+// below is drawn from this project's canonical control vocabulary
+// ("lshift", "kpenter", "dpup", ...), not a browser `KeyboardEvent.code`
+// ("ShiftLeft", "Enter", ...). They are kept as the canonical internal
+// identifiers on purpose — bindings.spec.ts asserts on these exact
+// strings, e.g. `control("modifier").keys[0] === "j"`. A later milestone
+// needs a translation layer from `KeyboardEvent.code`/Gamepad API button
+// indices into these names before real capture can be wired up; see
+// `capture_keyboard.ts` and `capture_frame.ts` for the current state of
+// that translation layer.
 
 import { invariant } from "./assert.ts";
 import type { ActionName } from "./actions.ts";
@@ -58,11 +57,11 @@ export interface ControlBinding {
   readonly id: ControlId;
   /** Edge action this control dispatches to screens. */
   readonly action: ActionName;
-  /** LÖVE KeyConstant names. */
+  /** Canonical control-vocabulary key names. */
   readonly keys: readonly string[];
-  /** LÖVE GamepadButton names, edge-capable. */
+  /** Canonical control-vocabulary gamepad button names, edge-capable. */
   readonly buttons: readonly string[];
-  /** LÖVE GamepadAxis names read as a held trigger, hold-only. */
+  /** Canonical control-vocabulary gamepad axis names read as a held trigger, hold-only. */
   readonly axes: readonly string[];
   /** A consumer reads this control's press or release, not just its held state. */
   readonly edge: boolean;
@@ -77,8 +76,8 @@ export const TRIGGER_THRESHOLD = 0.5;
 // held. `layoutProblems` then enforces that such a control always has a key
 // or button to deliver that edge from, because an axis physically cannot.
 //
-// Mutable (not `readonly`), matching the Lua original: bindings.spec.ts's
-// "rejects an edge control that only an axis could deliver" test pushes a
+// Mutable (not `readonly`): bindings.spec.ts's "rejects an edge control
+// that only an axis could deliver" test pushes a
 // synthetic entry onto this array and pops it back off to probe
 // `layoutProblems`.
 export const CONTROLS: ControlBinding[] = [
@@ -167,8 +166,8 @@ export const CONTROLS: ControlBinding[] = [
   { id: "toggle_mute", action: "toggle_mute", keys: ["m"], buttons: [], axes: [], edge: true },
 ];
 
-// Built once from the initial CONTROLS, matching the Lua original — a test
-// that mutates CONTROLS later does not (and should not) retarget these.
+// Built once from the initial CONTROLS — a test that mutates CONTROLS
+// later does not (and should not) retarget these.
 const BY_ID = new Map<ControlId, ControlBinding>();
 for (const entry of CONTROLS) {
   BY_ID.set(entry.id, entry);
@@ -203,9 +202,9 @@ function layoutProblems(): readonly string[] {
   }
 
   for (const entry of CONTROLS) {
-    // Rule 4: LÖVE reports a trigger as an axis, so `love.gamepadpressed`
-    // never fires for one. A control whose edge is read needs a key or a
-    // button to deliver it.
+    // Rule 4: a trigger is modeled as an axis read only, so it can never
+    // deliver a button edge. A control whose edge is read needs a key or
+    // a button to deliver it.
     if (entry.edge && entry.keys.length === 0 && entry.buttons.length === 0) {
       problems.push(`${entry.id} reads an edge but is bound only to an axis, which cannot fire one`);
     }
@@ -247,10 +246,9 @@ function gamepadMap(): ReadonlyMap<string, ActionName> {
   return map;
 }
 
-// Built once (matching the Lua original's KEY_CONTROLS): which role a raw
-// key belongs to. The match screen uses this on the direct-mount path,
-// where it sees unnormalized key events, so that path cannot drift from
-// the polled one.
+// Built once: which role a raw key belongs to. The match screen uses this
+// on the direct-mount path, where it sees unnormalized key events, so
+// that path cannot drift from the polled one.
 const KEY_CONTROLS = new Map<string, ControlId>();
 for (const entry of CONTROLS) {
   for (const key of entry.keys) {
@@ -262,12 +260,12 @@ function controlForKey(key: string): ControlId | null {
   return KEY_CONTROLS.get(key) ?? null;
 }
 
-/** Mirrors `love.keyboard.isDown(...)`: true when at least one of `keys` is held. */
+/** True when at least one of `keys` is held. */
 export interface KeyboardState {
   isDown(...keys: readonly string[]): boolean;
 }
 
-/** Mirrors `love.Joystick`'s gamepad surface closely enough for `gamepadDown`. */
+/** The gamepad surface needed for `gamepadDown`. */
 export interface GamepadState {
   isGamepadDown(button: string): boolean;
   getGamepadAxis(axis: string): number;
@@ -300,11 +298,9 @@ function gamepadDown(id: ControlId, gamepad?: GamepadState): boolean {
 }
 
 // The one question the match asks of a control: is a human holding it
-// right now, on either device? Unlike the Lua original (`is_down(id,
-// joystick)`), this also takes `keyboard` explicitly — LÖVE exposes a
-// global `love.keyboard`, but there is no browser equivalent to poll
-// synchronously, so keyboard state has to be injected too. See this
-// package's porting report.
+// right now, on either device? This takes `keyboard` explicitly because
+// there is no browser global exposing synchronous keyboard state to
+// poll, so keyboard state has to be injected too.
 function isDown(id: ControlId, keyboard?: KeyboardState, gamepad?: GamepadState): boolean {
   return keyboardDown(id, keyboard) || gamepadDown(id, gamepad);
 }

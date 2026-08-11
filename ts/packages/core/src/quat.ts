@@ -21,7 +21,7 @@
 // THE FIX, AND WHY IT IS CHEAP
 //
 // Author in Euler, bake to quaternions once at load, interpolate and blend as
-// quaternions, convert to a matrix at the end. Nothing in clips.lua has to
+// quaternions, convert to a matrix at the end. Nothing in clips.ts has to
 // change for a human. This is the same split every production pipeline uses:
 // Blender authors Euler curves, glTF stores quaternions.
 //

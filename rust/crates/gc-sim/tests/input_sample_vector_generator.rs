@@ -1,14 +1,15 @@
 //! Generates the cross-language vector that pins `@gc/input`'s TypeScript
 //! port of `input_frame`'s quantization and bit-packing rules
-//! (`v2/ts/packages/input/fixtures/input_sample_vector.txt`).
+//! (`ts/packages/input/fixtures/input_sample_vector.txt`).
 //!
 //! `gc_sim::input_frame` is the canonical, already-differential-tested
 //! implementation (see `input_frame.rs`/`differential.rs` in this
-//! directory), so unlike `v2/tools/lua_reference` (which captures reference
-//! values FROM the still-running Lua), this generator captures reference
-//! values from Rust directly -- Rust is the source of truth this vector
-//! pins TypeScript against, per README §2.2's rule that a module duplicated
-//! into a second language "must be pinned by a shared vector file".
+//! directory), so unlike `tools/lua_reference` (whose vectors were captured
+//! by running the Lua implementation this simulation was originally
+//! validated against), this generator captures reference values from Rust
+//! directly -- Rust is the source of truth this vector pins TypeScript
+//! against, per ARCHITECTURE.md §1.2's rule that a module duplicated into a
+//! second language must be pinned by a shared vector file.
 //!
 //! Not a CI-asserted test: it PRINTS the vector to stdout for a human to
 //! capture into the committed fixture, same workflow as the Lua-capture

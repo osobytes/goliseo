@@ -1,5 +1,6 @@
-//! Differential test of `brain` and `keeper` against the real Lua
-//! implementation (README rule 5.9, `v2/tools/lua_reference/README.md`).
+//! Differential test of `brain` and `keeper` against reference vectors
+//! captured from the Lua implementation this simulation was originally
+//! validated against (ARCHITECTURE.md §3 rule 7, `tools/lua_reference/README.md`).
 //!
 //! `tests/fixtures/brain_keeper_lua_reference.txt` is the captured stdout of
 //! running the real Lua `sim/brain.lua` and `sim/keeper.lua` under headless
@@ -13,7 +14,8 @@
 //!
 //! Coverage, and why: `brain::select_scored_option` and
 //! `brain::decide_carrier` are this crate's only RNG consumers among the
-//! seven modules ported alongside this file, so every RNG-consuming branch
+//! seven modules this differential-test suite covers, so every RNG-consuming
+//! branch
 //! is exercised — zero temperature (exact argmax, no roll), infinite
 //! temperature (uniform, one roll), and ordinary finite temperature softmax
 //! (`exp`, weighted sum, `sample * total`, cumulative selection) — across

@@ -7,15 +7,15 @@ import * as themes from "./themes.ts";
 
 const RIG = RIG_MEDIUM;
 
-// #337 slice 2: rigid GPU skinning, ported as "rigid CPU-side skinning data":
-// every part of a character is folded into ONE geometry; the bone that
-// drives a vertex and the material that shades it travel IN the vertex
-// instead of in a per-part uniform. All of this is pure TypeScript up to the
-// point a `THREE.BufferGeometry`/`SkinnedMesh` would be constructed (deferred
-// -- see geometry.ts's header), so the accumulation -- bone assignment,
-// material assignment, attach baking, the merge itself -- is fully covered
-// headless here, same as the Lua original's coverage up to its one
-// `love.graphics.newMesh` call.
+// #337 slice 2: rigid GPU skinning, expressed here as "rigid CPU-side
+// skinning data": every part of a character is folded into ONE geometry; the
+// bone that drives a vertex and the material that shades it travel IN the
+// vertex instead of in a per-part uniform. All of this is pure TypeScript up
+// to the point a `THREE.BufferGeometry`/`SkinnedMesh` would be constructed
+// (deferred -- see geometry.ts's header), so the accumulation -- bone
+// assignment, material assignment, attach baking, the merge itself -- is
+// fully covered headless here, up to but not including that one deferred
+// construction call.
 describe("rig3d character accumulation (#337 slice 2)", () => {
   const THEME = themes.LIST[0];
   const FIGURE = themes.FIGURES[0];

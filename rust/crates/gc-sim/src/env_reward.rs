@@ -1,5 +1,3 @@
-//! Port of `sim/env_reward.lua`.
-//!
 //! Named learning-environment reward channels.
 //!
 //! There is no implicit scalar reward. Every channel is registered with an
@@ -10,13 +8,11 @@
 //! metric family is a diagnostic channel: selecting it as an objective or
 //! shaping term is a validation error, and no channel may be named `fun`.
 //!
-//! This module has no `sim` dependencies of its own (mirroring the Lua
-//! original, which never `require`s another `sim` module): the fixture side
-//! ([`EnvSide`]) and confirmed combat verdict ([`CombatContactResult`]) types
-//! it references are small closed sets duplicated locally rather than
-//! imported from `input_frame`/`combat`, exactly as the Lua source
-//! references `InputTeam`/`CombatContactResult` by LuaCATS alias name
-//! without a `require`.
+//! This module has no `sim` dependencies of its own: the fixture side
+//! ([`EnvSide`]) and confirmed combat verdict ([`CombatContactResult`])
+//! types it references are small closed sets duplicated locally rather than
+//! imported from `input_frame`/`combat`, keeping this module's dependency
+//! surface minimal.
 
 use indexmap::IndexMap;
 
@@ -38,10 +34,9 @@ pub const DEFAULT_OBJECTIVES: [EnvRewardChannelId; 1] = [EnvRewardChannelId::Mat
 
 const SHOT_EVENT_KINDS: [&str; 4] = ["shot", "header", "volley", "bicycle"];
 
-/// A fixture side. Mirrors `sim/input_frame.lua`'s `InputTeam` alias;
-/// duplicated here because `env_reward.lua` has no `sim` dependencies of its
-/// own — it checks side membership with a bare string comparison rather than
-/// requiring `input_frame`.
+/// A fixture side. Declared locally rather than reusing
+/// [`crate::input_frame::Team`], keeping this module's dependency surface
+/// minimal — it checks side membership without needing `input_frame`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EnvSide {
     /// Home side.
@@ -50,9 +45,9 @@ pub enum EnvSide {
     Away,
 }
 
-/// A confirmed combat contact verdict. Mirrors `sim/combat.lua`'s
-/// `CombatContactResult` alias; duplicated here because `sim/combat.lua` has
-/// not been ported yet and this module has no `sim` dependencies of its own.
+/// A confirmed combat contact verdict. Declared locally rather than reusing
+/// [`crate::combat_snapshot::CombatContactResult`], keeping this module's
+/// dependency surface minimal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CombatContactResult {
     /// Landed cleanly.
@@ -158,7 +153,7 @@ pub struct EnvRewardChannel {
     pub description: &'static str,
 }
 
-/// Every registered reward channel, in the Lua original's `CHANNELS` order.
+/// Every registered reward channel, in canonical order.
 pub const CHANNELS: [EnvRewardChannel; 8] = [
     EnvRewardChannel {
         id: EnvRewardChannelId::MatchOutcome,
@@ -240,7 +235,7 @@ pub enum EnvRewardErrorCode {
     DuplicateChannel,
 }
 
-/// An expected, recoverable env-reward failure (README rule 5.5): a channel
+/// An expected, recoverable env-reward failure (ARCHITECTURE.md §3 rule 5): a channel
 /// selection comes from a run config (external input), so a bad selection is
 /// a recoverable rejection with a machine-readable reason, never a panic.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -279,8 +274,8 @@ fn failure<T>(code: EnvRewardErrorCode, message: impl Into<String>) -> Result<T>
 // Raw, not-yet-validated external input.
 //
 // A channel selection arrives from a run config, so `validate_selection` and
-// `validate` accept the same guarantee-free shape the Lua originals'
-// `@param ids any` / `@param selection any` document.
+// `validate` accept a genuinely untyped shape rather than assuming it is
+// already well-formed.
 // ---------------------------------------------------------------------------
 
 /// One raw, not-yet-validated channel id entry.
@@ -288,7 +283,7 @@ fn failure<T>(code: EnvRewardErrorCode, message: impl Into<String>) -> Result<T>
 pub enum RawChannelIdEntry {
     /// A string id — the only legal shape.
     Str(String),
-    /// Anything else (mirrors Lua's `type(id) ~= "string"` guard).
+    /// Anything else.
     Other,
 }
 
@@ -297,8 +292,7 @@ pub enum RawChannelIdEntry {
 pub enum RawChannelIds {
     /// An ordered list of raw ids.
     List(Vec<RawChannelIdEntry>),
-    /// Anything that is not a list (mirrors Lua's `type(ids) ~= "table"`
-    /// guard).
+    /// Anything that is not a list.
     Other,
 }
 
@@ -362,8 +356,7 @@ pub fn validate_selection(
 pub enum RawSelection {
     /// A table naming only `objectives`/`shaping`.
     Table(RawSelectionTable),
-    /// Anything that is not a table (mirrors Lua's `type(selection) ~=
-    /// "table"` guard).
+    /// Anything that is not a table.
     Other,
 }
 
@@ -375,8 +368,7 @@ pub struct RawSelectionTable {
     /// The raw `shaping` field, when present.
     pub shaping: Option<RawChannelIds>,
     /// True when the caller's table carried a field other than the two
-    /// above (mirrors Lua's `only_known_fields` guard over `{objectives,
-    /// shaping}`).
+    /// above.
     pub has_unknown_field: bool,
 }
 
@@ -437,9 +429,10 @@ pub struct EnvRewardScore {
 /// One confirmed match/combat event, as far as reward evaluation needs it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EnvRewardEvent {
-    /// `MatchEventKind` or `CombatEventKind`, as a bare string: neither
-    /// enum has been ported yet, and the Lua original itself types this
-    /// field as a plain `string` for the same reason.
+    /// `MatchEventKind` or `CombatEventKind`, as a bare string: this field
+    /// can hold either kind depending on the event's source, and a plain
+    /// `String` avoids inventing a third enum that is just a union of the
+    /// other two.
     pub kind: String,
     /// Acting side, when the event has an identified actor.
     pub team: Option<EnvSide>,
@@ -579,12 +572,11 @@ fn evaluate_channel(id: EnvRewardChannelId, transition: &EnvRewardTransition) ->
 /// separately so an ablation report can drop the shaping column without
 /// re-running the episode.
 ///
-/// `transition` and `selection` are already-typed values (the Lua original's
-/// own `@param` annotations for `evaluate` are `EnvRewardTransition` and
-/// `EnvRewardSelection`, not `any`); a `selection` naming an unregistered or
-/// wrong-role channel is a programmer error caught by `assert` (AGENTS.md
-/// §7), not a recoverable rejection — [`validate_selection`] is what
-/// external callers must run first.
+/// `transition` and `selection` are already-typed values, not raw external
+/// input; a `selection` naming an unregistered or wrong-role channel is a
+/// programmer error caught by `assert` (AGENTS.md §7), not a recoverable
+/// rejection — [`validate_selection`] is what external callers must run
+/// first.
 #[must_use]
 pub fn evaluate(
     transition: &EnvRewardTransition,

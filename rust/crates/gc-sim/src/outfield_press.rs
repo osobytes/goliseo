@@ -1,5 +1,3 @@
-//! Port of `sim/outfield_press.lua`.
-//!
 //! Serializable team-owned presser state and pure pressing geometry. Match
 //! owns world eligibility and trigger inputs; this module owns stable
 //! arbitration, conservative tuning, and the compact versioned value

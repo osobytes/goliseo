@@ -1,5 +1,3 @@
-// Ported from game/render/release_follow.lua.
-//
 // Presentation-only follow-through window for outfield ball releases.
 //
 // A pass/cross/shot is a one-tick `MatchEvent`; the striking leg needs to
@@ -13,12 +11,12 @@
 // offline), so an event revoked before it reaches presentation never opens
 // one. A window opened by an event that is revoked afterwards ages out on
 // its own within `DURATION`, exactly like an already-spawned particle in
-// `game/render/effects.lua`.
+// effects.ts.
 //
 // A cancelled wind-up emits no release event, so it never shows
 // follow-through.
 //
-// Boundary note: `MatchEvent` is a sim shape (v2/README.md rule 6.7,
+// Boundary note: `MatchEvent` is a sim shape (ARCHITECTURE.md §4 rule 6,
 // `sim/**` -> Rust `crates/gc-sim`). Only the fields this module reads
 // (`kind`, `player`) are declared locally.
 
@@ -91,7 +89,7 @@ export const releaseFollow = {
   // roster it caches per match. The mask is that scalar.
   //
   // Slots past 32 are dropped rather than silently aliasing onto low bits.
-  // No roster in this game comes near that (`sim/match.lua`: five a side),
+  // No roster in this game comes near that (the sim fields five a side),
   // and a follow-through that fails to show is a missing beat of
   // presentation, not a wrong one.
   slotMask(rosterIds: readonly string[]): number {

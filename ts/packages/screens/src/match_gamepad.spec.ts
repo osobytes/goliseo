@@ -1,14 +1,14 @@
-// Ported from spec/screens/match_gamepad_spec.lua.
+// Verifies MatchScreen's gamepad input handling.
 //
 // Same reframing `match_screen.spec.ts`'s header already establishes for
-// this milestone's `MatchScreen`: `SimHostPort` (step/planTicks/
-// cancelPlannedTicks/frame/roster/tick/dispose) has no way to read back
-// real per-player kinematics or shot-charge accumulation (that lives in
-// `sim.match`, Rust, proven by `crates/gc-sim/tests`), so a case that
-// depended on real physics is ported against the TS-glue-observable
-// analog -- the `InputSample` this screen actually built and would have
-// sent to `SimHostPort.step` -- using the same hand-written `FakeSimHost`/
-// fake `GamepadState` pattern `match_screen.spec.ts` already uses.
+// `MatchScreen`: `SimHostPort` (step/planTicks/cancelPlannedTicks/frame/
+// roster/tick/dispose) has no way to read back real per-player kinematics
+// or shot-charge accumulation (that lives in `sim.match`, Rust, proven by
+// `crates/gc-sim/tests`), so a case that depends on real physics is
+// verified against the TS-observable analog -- the `InputSample` this
+// screen actually built and would have sent to `SimHostPort.step` -- using
+// the same hand-written `FakeSimHost`/fake `GamepadState` pattern
+// `match_screen.spec.ts` already uses.
 
 import { describe, expect, it } from "vitest";
 import { bindings, inputSample } from "@gc/input";
@@ -30,7 +30,7 @@ function fakeKeyboard(down: Record<string, boolean> = {}): KeyboardState {
   };
 }
 
-/** Mirrors the ported spec's `with_pad` fake `love.joystick` -- `held` names the gamepad buttons that are down, `pull` names the trigger/stick axes. */
+/** A fake `GamepadState` -- `held` names the gamepad buttons that are down, `pull` names the trigger/stick axes. */
 function fakeGamepad(held: Record<string, boolean> = {}, pull: Record<string, number> = {}): GamepadState {
   return {
     isGamepadDown: (button: string): boolean => held[button] === true,

@@ -1,5 +1,3 @@
-//! Port of `sim/env.lua`.
-//!
 //! The pure Rust learning-environment core.
 //!
 //! `reset`/`observe`/`step` over the canonical fixed tick, built entirely
@@ -18,72 +16,65 @@
 //! [`crate::env_observation`]; the design record is
 //! `docs/design/learning_environment.md`.
 //!
-//! ## `EnvInstance` fields are `pub`, not `_`-prefixed
+//! ## `EnvInstance` fields are `pub`
 //!
-//! The Lua original names its internal fields `_state`, `_combat`,
-//! `_producer`, `_metrics`, `_clock`, `_initial`, `_tape_frames`,
-//! `_final_metrics`, `_fault` — a naming convention, not real privacy (Lua
-//! has none). `spec/sim/env_spec.lua` and `spec/sim/env_leakage_spec.lua`
-//! both reach through that convention directly (`instance._state.rng`,
-//! `instance._state.slot_players[3] = nil`, `instance._combat`), so README
-//! rule 8 ("everything a test touches is `pub`") applies: this port drops
-//! the underscore and makes every field genuinely `pub` — [`EnvInstance::state`],
-//! [`EnvInstance::combat`], [`EnvInstance::producer`], [`EnvInstance::metrics`],
-//! [`EnvInstance::clock`], [`EnvInstance::initial`], [`EnvInstance::tape_frames`],
-//! [`EnvInstance::final_metrics`], [`EnvInstance::fault`]. A real caller has no
-//! more access than the Lua original gave it; only the spelling changed.
+//! `tests/env.rs` and `tests/env_leakage.rs` both reach directly into
+//! `EnvInstance`'s internals (`instance.state.rng`,
+//! `instance.state.slot_players[3] = None`, `instance.combat`), so
+//! ARCHITECTURE.md §3 rule 6 ("everything a test touches is `pub`") applies: every field is
+//! genuinely `pub` — [`EnvInstance::state`], [`EnvInstance::combat`],
+//! [`EnvInstance::producer`], [`EnvInstance::metrics`],
+//! [`EnvInstance::clock`], [`EnvInstance::initial`],
+//! [`EnvInstance::tape_frames`], [`EnvInstance::final_metrics`],
+//! [`EnvInstance::fault`]. A real caller outside the test suite is expected
+//! to treat these as read-only bookkeeping, not to mutate them.
 //!
 //! ## Three duplicate `EnvObservationProfile`s meet here
 //!
 //! [`crate::env_config`], [`crate::env_action`], and [`crate::env_observation`]
-//! each declare their own `EnvObservationProfile` (README §5.1: a LuaCATS
-//! alias needs no `require`, so each module kept the same dependency
-//! footprint the Lua original had). This module is the one place all three
+//! each declare their own `EnvObservationProfile`, keeping each module's
+//! dependency surface minimal. This module is the one place all three
 //! meet — a config's profile drives an observation build, whose profile then
 //! drives an action mask — so it owns the small conversions between them
 //! ([`to_observation_profile`], [`to_action_profile`]).
 //!
 //! ## `metrics::MetricsMatchView` adapter
 //!
-//! [`crate::metrics`] was ported before [`crate::r#match`] existed (README
-//! §5.1), so it reads a narrow [`crate::metrics::MetricsMatchView`] rather
-//! than the real `MatchState`. [`crate::headless`] already owns one
+//! [`crate::metrics`] reads a narrow [`crate::metrics::MetricsMatchView`]
+//! rather than the real `MatchState`. [`crate::headless`] already owns one
 //! `MatchState -> MetricsMatchView` adapter for its own call site; this
 //! module drives `metrics::observe`/`metrics::finish` from a different call
 //! site (inside the per-tick `fixed_clock::step` closure, not a headless
 //! batch loop) and needs its own copy of that adapter for the same reason
 //! `headless.rs`'s module doc gives for not sharing one: the adapter isn't
 //! `pub` there, and duplicating ~20 lines of field mapping is cheaper than
-//! inventing a shared adapter module this porting pass doesn't own.
+//! inventing a shared adapter module neither call site owns.
 //!
-//! ## `pcall(advance_tick, ...)` becomes `catch_unwind`, not `Result`
+//! ## Simulation faults become `catch_unwind`, not `Result`
 //!
-//! Unlike [`crate::input_tape`] and [`crate::replay`] (whose `pcall`s wrap
-//! *validation of external input* and become `Result`-returning functions,
-//! per those modules' own doc comments), `sim/env.lua`'s
-//! `pcall(advance_tick, ...)` wraps [`crate::r#match::step`] and
+//! Unlike [`crate::input_tape`] and [`crate::replay`] (which validate
+//! *external input* and are `Result`-returning throughout, per those
+//! modules' own doc comments), [`step`] wraps [`crate::r#match::step`] and
 //! [`crate::slot_input::materialize`] themselves — functions that `assert!`/
 //! `.expect()` on genuine simulation invariants (a non-canonical tick, an
-//! incomplete slot mapping). The point of that `pcall`, per the Lua
-//! original's own comment, is "an invariant violation anywhere between
-//! materialization and the boundary is a fault the caller must be able to
-//! reproduce, not a crash that takes the trainer down with it" — i.e. it is
-//! deliberately catching a *bug*, not validating untrusted input, so there
-//! is no `Result` to thread through those functions instead (they are not
-//! this module's to change regardless).
+//! incomplete slot mapping). The intent: an invariant violation anywhere
+//! between materialization and the boundary is a fault the caller must be
+//! able to reproduce, not a crash that takes the trainer down with it — i.e.
+//! this is deliberately catching a *bug*, not validating untrusted input, so
+//! there is no `Result` to thread through those functions instead (they are
+//! not this module's to change regardless).
 //!
-//! [`std::panic::catch_unwind`] is the literal translation, and [`step`]
-//! uses it. But this workspace's `[profile.release]` sets `panic = "abort"`
-//! (`v2/rust/Cargo.toml`), under which `catch_unwind` does not run — a panic
-//! aborts the process. Under the default `dev`/`test` profile (unwind
-//! enabled, no override in `Cargo.toml`), `catch_unwind` works exactly like
-//! `pcall` and every `spec/sim/env_spec.lua` "surfaces a simulation fault as
-//! a reproducible diagnostic" assertion holds under `cargo test`. In a
-//! release build a simulation fault aborts the process instead of returning
-//! [`EnvErrorCode::SimFault`] — a known, pre-existing limitation of this
-//! workspace's panic strategy (see `input_tape.rs`'s module doc for the same
-//! point made about a different boundary), not something introduced or
-//! fixable by this module.
+//! [`std::panic::catch_unwind`] is what [`step`] uses to catch it. But this
+//! workspace's `[profile.release]` sets `panic = "abort"` (`rust/Cargo.toml`),
+//! under which `catch_unwind` does not run — a panic aborts the process.
+//! Under the default `dev`/`test` profile (unwind enabled, no override in
+//! `Cargo.toml`), `catch_unwind` works as intended and every "surfaces a
+//! simulation fault as a reproducible diagnostic" assertion in
+//! `tests/env.rs` holds under `cargo test`. In a release build a simulation
+//! fault aborts the process instead of returning [`EnvErrorCode::SimFault`]
+//! — a known, pre-existing limitation of this workspace's panic strategy
+//! (see `input_tape.rs`'s module doc for the same point made about a
+//! different boundary), not something introduced or fixable by this module.
 
 use crate::combat;
 use crate::combat_identity;
@@ -150,7 +141,7 @@ pub enum EnvErrorCode {
     Faulted,
 }
 
-/// An expected, recoverable env failure (README rule 5.5).
+/// An expected, recoverable env failure (ARCHITECTURE.md §3 rule 5).
 #[derive(Clone, Debug, PartialEq)]
 pub struct EnvError {
     /// Machine-readable failure reason.
@@ -228,12 +219,11 @@ fn reference_fixture_from_name(id: &str) -> Option<ReferenceFixture> {
 }
 
 /// Overrides [`reference_config`] applies on top of its declared defaults.
-/// A narrow, typed stand-in for the Lua original's `table<string, any>`
-/// overrides table: every override any spec actually uses is one of these
-/// four scalar fields (`grep`-verified across every `spec/sim/env*_spec.lua`
-/// call site). A future caller needing a different field can extend this
-/// struct; that is a smaller, more honest change than accepting an untyped
-/// bag of "any field, any value" the way Lua's `pairs(overrides)` loop did.
+/// A narrow, typed struct rather than an untyped bag of "any field, any
+/// value": every override any test actually uses is one of these four
+/// scalar fields. A future caller needing a different field can extend this
+/// struct; that is a smaller, more honest change than widening this to
+/// accept an arbitrary field/value pair.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ReferenceConfigOverrides {
     /// Overrides the fixture's default seed.
@@ -568,28 +558,22 @@ pub struct EnvInstance {
     /// The caller-supplied recorded rows for tape-driven slots. `pub`, not
     /// `_tape_frames`.
     pub tape_frames: Vec<InputFrame>,
-    /// The episode-end #128 metrics, computed once and cached. `pub`, not
-    /// `_final_metrics`.
+    /// The episode-end #128 metrics, computed once and cached.
     pub final_metrics: Option<metrics::MatchMetrics>,
     /// The fault message, once [`step`] has caught a simulation panic.
-    /// `pub`, not `_fault`.
     pub fault: Option<String>,
-    /// The tuning knobs this episode plays with. Not present on the Lua
-    /// original's `EnvInstance` (which reads the global `tuning` singleton)
-    /// — see `crate::tuning`'s module doc for why this port keeps an owned
-    /// value instead. A config has no field to override it, so this is
-    /// always a fresh, default registry (`Tuning::new()`, which serializes
-    /// to `""`), matching what `sim/env.lua`'s `tuning.serialize()` call
-    /// reads absent an active F1-panel override.
+    /// The tuning knobs this episode plays with, as an owned value rather
+    /// than a shared global (see `crate::tuning`'s module doc). A config has
+    /// no field to override it, so this is always a fresh, default registry
+    /// (`Tuning::new()`, which serializes to `""`), i.e. no active
+    /// tuning-panel override.
     pub tune: Tuning,
     /// Diagnostic: how many times [`env_observation::build`] has been
     /// called for this instance, across [`observe`] and [`step`]. Never
     /// affects a hash — modeled on `MatchDriver::snapshot_captures` in
-    /// `gc-netcode`. `spec/sim/env_budget_spec.lua`'s "builds exactly one
-    /// observation ... per slot per step" case proved this by
-    /// monkey-patching `env_observation.build` at runtime, which a Rust
-    /// function cannot be; this counter recovers the same call-count
-    /// invariant directly instead.
+    /// `gc-netcode`. `tests/env_budget.rs`'s "builds exactly one
+    /// observation ... per slot per step" case checks this counter directly
+    /// against the expected call count.
     ///
     /// `Cell` because [`observe`] only takes `&EnvInstance`; making it
     /// `&mut` would cascade through call sites that have no other reason to
@@ -606,11 +590,10 @@ pub struct EnvInstance {
     /// [`snapshot`] function, plus any fallback capture
     /// [`env_observation::EnvObservationContext::redundant_captures`]
     /// records when the privileged profile could not reuse a donated
-    /// snapshot. Never affects a hash. `spec/sim/env_budget_spec.lua`'s
-    /// "does not re-capture the boundary for the privileged profile" case
-    /// measured this indirectly as an allocation-budget ceiling; this
-    /// counter recovers it as an exact call count: a step's delta on this
-    /// field is `ticks_simulated` regardless of observation profile.
+    /// snapshot. Never affects a hash. `tests/env_budget.rs`'s "does not
+    /// re-capture the boundary for the privileged profile" case checks this
+    /// counter as an exact call count: a step's delta on this field is
+    /// `ticks_simulated` regardless of observation profile.
     pub snapshot_captures: std::cell::Cell<i64>,
 }
 

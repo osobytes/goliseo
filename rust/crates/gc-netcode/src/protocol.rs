@@ -1,54 +1,50 @@
-//! Port of `game/online/protocol.lua`.
+//! The session control wire format.
 //!
 //! **`protocol` is the session control wire format.** Every message peers
 //! exchange outside the input stream — handshake, manifest negotiation, slot
 //! ownership, countdown, match phase, hash reports, results, aborts — is
 //! encoded and decoded here. Two peers that encode this differently cannot
 //! agree on anything, so [`encode`]/[`decode`] are differential-tested
-//! against the reference Lua implementation; see
-//! `v2/tools/lua_reference/README.md` and `crates/gc-netcode/tests/protocol.rs`.
+//! against the pinned reference vectors; see
+//! `tools/lua_reference/README.md` and `crates/gc-netcode/tests/protocol.rs`.
 //!
 //! ## Design: a generic canonical [`Value`], not one struct per message
 //!
-//! The Lua original's wire codec (`encode_value`/`decode_value`) is already
-//! fully generic over `any` Lua value — it recurses over dynamically shaped
-//! tables, sorts their keys, and tags each scalar (`z`/`b`/`i`/`s`/`t`). The
-//! *validation* layer (`protocol.validate`, `protocol.validate_manifest`, ...)
-//! is what gives that generic data its shape, entirely at runtime: Lua has no
-//! static type check backing the `---@class` annotations, and the test suite
-//! exploits exactly that — it constructs sparse arrays, injects unknown
-//! fields, and mutates closed-set string fields to values outside their
-//! domain, all to prove `validate` (not the type checker) is what rejects
-//! them.
+//! The wire codec (`encode`/`decode`) is fully generic over an untyped
+//! value — it recurses over dynamically shaped data, sorts keys, and tags
+//! each scalar (`z`/`b`/`i`/`s`/`t`). The *validation* layer
+//! (`protocol::validate`, `protocol::validate_manifest`, ...) is what gives
+//! that generic data its shape, entirely at runtime, which is what lets the
+//! test suite construct sparse arrays, inject unknown fields, and mutate
+//! closed-set string fields to values outside their domain, all to prove
+//! `validate` — not a static type — is what rejects them.
 //!
-//! A Rust port that turned every `---@class` into a `struct` with enum fields
+//! A design that turned every wire shape into a `struct` with enum fields
 //! would make most of those tests *inexpressible*: you cannot set a `Role`
-//! enum to `"captain"`, or add an unknown key to a closed `struct`. So this
-//! module keeps the same shape as the Lua source: [`Value`] is the generic,
-//! recursive, dynamically-shaped wire value (the direct analogue of a Lua
-//! table), and every validator in this file operates on `&Value` — exactly
-//! mirroring `protocol.lua`'s own architecture rather than deviating from it.
+//! enum to `"captain"`, or add an unknown key to a closed `struct`. So
+//! [`Value`] is the generic, recursive, dynamically-shaped wire value, and
+//! every validator in this file operates on `&Value`.
 //! [`ControlMessage`] is a thin typed wrapper (`version`/`kind`/`session_id`/
 //! `peer_id`/`sequence`/`message_id`/`body: Value`) for ergonomic
 //! construction and for the closed, wire-relevant `kind`; its `body` stays a
 //! [`Value`] because body shape varies per kind and the malformed-body tests
-//! need to mutate it dynamically, precisely as the Lua tests do.
+//! need to mutate it dynamically.
 //!
-//! This is a deliberate exception to AGENTS.md/README rule 5.6 ("a Lua table
-//! used as a record becomes a struct"), justified by the same rule's spirit:
-//! the *mechanical* translation of an already-generic codec is a generic
-//! codec, not sixteen bespoke structs bolted on top of it.
+//! This is a deliberate exception to AGENTS.md ("a record
+//! becomes a struct"), justified by the same rule's spirit: the natural shape
+//! of an already-generic codec is a generic codec, not sixteen bespoke
+//! structs bolted on top of it.
 //!
-//! ## Rule 5.3 (wire values keep their Lua value)
+//! ## ARCHITECTURE.md §3 rule 3 (wire values keep their canonical form)
 //!
 //! - OMP-1 canonical slot indices (1..=8, `input_frame::SLOT_COUNT`) are
-//!   never converted: `manifest.slots[index]` in Lua walks 1-based, and this
-//!   port's canonical-order loops walk `1..=input_frame::SLOT_COUNT` for the
-//!   same reason — the index is compared against `input_frame::slot(index)`,
-//!   a wire-adjacent identity, not a Rust-local offset.
+//!   never converted: the wire format is 1-based, and this module's
+//!   canonical-order loops walk `1..=input_frame::SLOT_COUNT` for the same
+//!   reason — the index is compared against `input_frame::slot(index)`, a
+//!   wire-adjacent identity, not a Rust-local offset.
 //! - Canonical outfield slot ids (`"home_1"` .. `"away_4"`) are wire strings.
 //!   `gc_sim::input_frame::SlotId` has no string form of its own, so
-//!   [`slot_wire_id`]/[`slot_id_from_wire`] hold the exact Lua strings —
+//!   [`slot_wire_id`]/[`slot_id_from_wire`] hold the exact wire strings —
 //!   never renumbered, never renamed.
 //! - `Team` wire strings (`"home"`/`"away"`) are likewise preserved exactly.
 //! - Everything else in this module (decoder cursor position, Rust `Vec`
@@ -61,20 +57,19 @@
 //! (`is_integer`) and required to match a canonical decimal-digit regex at
 //! decode time; the wire format has no room for a non-integer. Representing
 //! [`Value::Int`] as `i64` rather than `f64` is therefore not a deviation
-//! from README rule 5.1 ("every Lua number is an f64") but the case the same
-//! rule carves out: this is unambiguously a bounded integer domain (every
-//! bound in this module — `MAX_SEQUENCE`, `MAX_SEED`, `MAX_TICK`, ... — is
-//! comfortably inside `i64`), and `f64` would only invite silent precision
-//! loss the Lua original goes out of its way (the canonical-integer regex)
-//! to forbid.
+//! from ARCHITECTURE.md §3 rule 1 ("numeric fields default to `f64`") but the case the
+//! same rule carves out: this is unambiguously a bounded integer domain
+//! (every bound in this module — `MAX_SEQUENCE`, `MAX_SEED`, `MAX_TICK`, ...
+//! — is comfortably inside `i64`), and `f64` would only invite silent
+//! precision loss that the canonical-integer regex goes out of its way to
+//! forbid.
 //!
 //! ## What is deliberately not here
 //!
-//! `game/online/match_manifest.lua` and `game/online/match_session.lua`
+//! `match_manifest` and `match_session`
 //! (`crates/gc-netcode/src/match_manifest.rs`,
-//! `crates/gc-netcode/src/match_session.rs`) are separate files in this same
-//! agent's scope; see their module docs for what they build on top of this
-//! one.
+//! `crates/gc-netcode/src/match_session.rs`) are separate modules in this
+//! same crate; see their module docs for what they build on top of this one.
 
 use gc_core::fnv1a64;
 use gc_sim::{fixed_clock, input_frame, input_tape, match_snapshot};
@@ -83,33 +78,32 @@ use gc_sim::{fixed_clock, input_frame, input_tape, match_snapshot};
 // Generic canonical value
 // ---------------------------------------------------------------------------
 
-/// A generic, recursive, dynamically-shaped protocol value: the Rust
-/// analogue of the Lua tables `protocol.lua`'s `encode_value`/`decode_value`
-/// operate on. See the module doc comment for why this module uses `Value`
-/// instead of one struct per message/manifest shape.
+/// A generic, recursive, dynamically-shaped protocol value: what
+/// `encode`/`decode` operate on. See the module doc comment for why this
+/// module uses `Value` instead of one struct per message/manifest shape.
 ///
 /// `Table` is a `Vec` of key/value pairs rather than a map: never
-/// `HashMap`/`HashSet` (README rule 5.4), and the canonical wire form always
+/// `HashMap`/`HashSet` (ARCHITECTURE.md §3 rule 4), and the canonical wire form always
 /// sorts keys before emitting them, so insertion order carries no meaning.
-/// [`Value::set`] overwrites an existing key exactly like a Lua table
+/// [`Value::set`] overwrites an existing key exactly like a normal table
 /// assignment, so a `Table` never holds a duplicate key.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
-    /// Lua's `nil` / an absent field.
+    /// `nil` / an absent field.
     Nil,
-    /// A Lua boolean.
+    /// A boolean.
     Bool(bool),
-    /// A Lua integer-valued number. See the module doc comment for why this
+    /// An integer-valued number. See the module doc comment for why this
     /// is `i64` rather than `f64`.
     Int(i64),
-    /// A Lua string. Protocol strings are opaque bounded ASCII by
+    /// A string. Protocol strings are opaque bounded ASCII by
     /// construction (ids, hex hashes, closed-set keywords), so `String`
     /// (valid UTF-8) loses nothing a *canonical* wire can carry; malformed
     /// input containing non-UTF-8 bytes is rejected during decode instead of
-    /// represented, which still lands on the same `malformed` outcome the
-    /// Lua original reaches once such bytes fail its ASCII id/hash regexes.
+    /// represented, which still lands on the same `malformed` outcome that
+    /// bytes failing the ASCII id/hash regexes reach.
     Str(String),
-    /// A Lua table, used as either a string-keyed record or a 1-based
+    /// A table, used as either a string-keyed record or a 1-based
     /// contiguous array — the distinction is enforced by validators
     /// ([`has_only_fields`]/[`is_array_value`]), not by this type.
     Table(Vec<(Value, Value)>),
@@ -137,13 +131,13 @@ impl Value {
     /// A string-keyed record, built from `(field name, value)` pairs in the
     /// order given (canonical wire order sorts them regardless).
     ///
-    /// A pair whose value is [`Value::Nil`] is dropped rather than stored,
-    /// exactly like a Lua table constructor: `{ build_id = nil }` never
-    /// creates a `build_id` key in the first place (Lua has no way to
-    /// represent "key present, value nil" — assigning nil deletes). A
-    /// literal `Value::Nil` entry could therefore never come from real Lua
-    /// data, and keeping one would make an optional field's absence encode
-    /// differently (and wrongly) from the Lua original's wire.
+    /// A pair whose value is [`Value::Nil`] is dropped rather than stored:
+    /// `record([("build_id", Value::Nil)])` never creates a `build_id` key in
+    /// the first place, because the wire format has no way to represent "key
+    /// present, value nil" — assigning nil deletes. A literal `Value::Nil`
+    /// entry could therefore never come from real wire data, and keeping one
+    /// would make an optional field's absence encode differently (and
+    /// wrongly) from the canonical wire form.
     #[must_use]
     pub fn record(fields: Vec<(&str, Value)>) -> Value {
         Value::Table(
@@ -227,10 +221,9 @@ impl Value {
             .map(|(_, value)| value)
     }
 
-    /// Sets a string-keyed field, overwriting any existing entry for `key` —
-    /// exactly like a Lua table assignment. Setting [`Value::Nil`] *removes*
-    /// the field instead of storing it present-with-nil, exactly like Lua's
-    /// `t[key] = nil` — see [`Value::record`]'s doc comment for why a
+    /// Sets a string-keyed field, overwriting any existing entry for `key`.
+    /// Setting [`Value::Nil`] *removes* the field instead of storing it
+    /// present-with-nil — see [`Value::record`]'s doc comment for why a
     /// present-nil entry must never exist.
     pub fn set(&mut self, key: &str, value: Value) {
         if let Value::Table(entries) = self {
@@ -268,8 +261,8 @@ impl Value {
 }
 
 /// A string-keyed field is present in `allowed` and nowhere else, and no key
-/// is anything but a string (mirrors `protocol.lua`'s `has_only_fields`,
-/// which specifically excludes integer keys from a record's field set).
+/// is anything but a string — integer keys are specifically excluded from a
+/// record's field set.
 fn has_only_fields(value: &Value, allowed: &[&str]) -> bool {
     match value.as_table() {
         Some(entries) => entries
@@ -280,7 +273,7 @@ fn has_only_fields(value: &Value, allowed: &[&str]) -> bool {
 }
 
 /// A 1-based contiguous array with no gaps, optionally an exact `count` or a
-/// `maximum` length (mirrors `protocol.lua`'s `is_array`).
+/// `maximum` length.
 fn is_array_value(value: &Value, count: Option<i64>, maximum: Option<i64>) -> bool {
     let entries = match value.as_table() {
         Some(entries) => entries,
@@ -430,7 +423,7 @@ const WIRE_HEADER_PREFIX: &str = "GCOP;";
 const MAX_TABLE_ITEMS: i64 = 256;
 const MAX_NESTING_DEPTH: i64 = 12;
 
-/// `protocol.COMBAT_SCHEMA_VERSION`: `combat_snapshot.VERSION`.
+/// Mirrors `gc_sim::combat_snapshot::VERSION`.
 pub const COMBAT_SCHEMA_VERSION: i64 = gc_sim::combat_snapshot::VERSION;
 
 /// The versions this build's frozen manifest is pinned to
@@ -459,11 +452,11 @@ pub const CURRENT_VERSIONS: CurrentVersions = CurrentVersions {
 };
 
 // ---------------------------------------------------------------------------
-// Slot / team wire identities (rule 5.3: preserved exactly)
+// Slot / team wire identities (ARCHITECTURE.md §3 rule 3: preserved exactly)
 // ---------------------------------------------------------------------------
 
-/// The exact Lua wire string for a canonical outfield slot id
-/// (`sim/input_frame.lua`'s `SLOT_ORDER[index].id`). `gc_sim::input_frame`
+/// The exact wire string for a canonical outfield slot id
+/// (`gc_sim::input_frame::SLOT_ORDER[index].id`). `gc_sim::input_frame`
 /// has no string form of `SlotId` of its own; this is the one place that
 /// gap is bridged, and the strings are never renumbered or renamed.
 #[must_use]
@@ -498,7 +491,7 @@ pub fn slot_id_from_wire(value: &str) -> Option<input_frame::SlotId> {
     })
 }
 
-/// The exact Lua wire string for a fixture side.
+/// The exact wire string for a fixture side.
 #[must_use]
 pub fn team_wire_str(team: input_frame::Team) -> &'static str {
     match team {
@@ -519,7 +512,7 @@ pub fn team_from_wire_str(value: &str) -> Option<input_frame::Team> {
 
 /// The OMP-1 canonical index (1..=8, `input_frame::SLOT_COUNT`) of a
 /// canonical outfield slot wire id, or `None` when the id names no canonical
-/// slot (a keeper has none, in every mode). Rule 5.3: this index is the exact
+/// slot (a keeper has none, in every mode). ARCHITECTURE.md §3 rule 3: this index is the exact
 /// wire-adjacent identity `input_frame::slot(index)` uses, never renumbered.
 #[must_use]
 pub fn slot_index(slot: &str) -> Option<i64> {
@@ -545,7 +538,7 @@ pub enum MatchMode {
 }
 
 impl MatchMode {
-    /// The exact Lua wire string (`"1v1"`, `"2v2"`, `"4v4"`).
+    /// The exact wire string (`"1v1"`, `"2v2"`, `"4v4"`).
     #[must_use]
     pub fn wire_str(self) -> &'static str {
         match self {
@@ -607,9 +600,9 @@ pub fn match_mode_shape(mode: MatchMode) -> MatchModeShape {
     }
 }
 
-/// The one place an unsupported size is refused: `mode` is a [`Value`] (as
-/// in the Lua original, `manifest.match_mode` is dynamically typed until
-/// this validates it) naming a supported match mode, or an error. `"3v3"`
+/// The one place an unsupported size is refused: `mode` is a [`Value`]
+/// (`manifest.match_mode` is dynamically typed until this validates it)
+/// naming a supported match mode, or an error. `"3v3"`
 /// fails here exactly like `"5v5"` or a misspelling, because
 /// [`match_mode_shape`]'s closed set — not a special case — is what defines
 /// the supported shapes.
@@ -747,12 +740,11 @@ pub fn message_id(session_id: &str, peer_id: &str, sequence: i64) -> Result<Stri
     Ok(id)
 }
 
-/// `protocol.manifest_id`: the deterministic identity of a valid manifest.
+/// The deterministic identity of a valid manifest.
 ///
 /// # Panics
 ///
-/// Panics if `manifest` is not already a valid manifest — mirrors the Lua
-/// original's `assert(protocol.validate_manifest(manifest))`, a programmer
+/// Panics if `manifest` is not already a valid manifest — a programmer
 /// error (AGENTS.md §7): callers are expected to have validated first.
 #[must_use]
 pub fn manifest_id(manifest: &Value) -> String {
@@ -1390,12 +1382,12 @@ fn difference(path: impl Into<String>, expected: &Value, actual: &Value) -> Diff
     }
 }
 
-/// `protocol.runtime_difference`.
+/// The field-by-field difference between two runtime identities.
 ///
 /// # Panics
 ///
-/// Panics if either runtime is invalid (mirrors the Lua original's
-/// `assert(protocol.validate_runtime(...))`).
+/// Panics if either runtime is invalid (AGENTS.md §7: a programmer error,
+/// not an expected failure — callers are expected to have validated first).
 #[must_use]
 pub fn runtime_difference(expected: &Value, actual: &Value) -> Option<Difference> {
     validate_runtime(expected).expect("runtime_difference requires a valid expected runtime");
@@ -1430,12 +1422,12 @@ pub fn runtime_difference(expected: &Value, actual: &Value) -> Option<Difference
     None
 }
 
-/// `protocol.manifest_difference`.
+/// The field-by-field difference between two manifests.
 ///
 /// # Panics
 ///
-/// Panics if either manifest is invalid (mirrors the Lua original's
-/// `assert(protocol.validate_manifest(...))`).
+/// Panics if either manifest is invalid (AGENTS.md §7: a programmer error,
+/// not an expected failure — callers are expected to have validated first).
 #[must_use]
 pub fn manifest_difference(expected: &Value, actual: &Value) -> Option<Difference> {
     validate_manifest(expected).expect("manifest_difference requires a valid expected manifest");
@@ -1543,8 +1535,7 @@ struct ProducerOwnership {
 
 /// Slot ownership is a function from the eight canonical slots onto
 /// producers: every slot names exactly one declared source, but one human
-/// source may cover several slots. See `game/online/protocol.lua`'s
-/// `collect_slot_assignments` doc comment for the invariants this enforces.
+/// source may cover several slots.
 fn collect_slot_assignments(assignments: &Value) -> Result<Vec<(String, ProducerOwnership)>> {
     if !is_array_value(assignments, Some(input_frame::SLOT_COUNT), None) {
         return failure(
@@ -1687,12 +1678,12 @@ pub fn validate_assignment_manifest(manifest: &Value, assignments: &Value) -> Re
     Ok(())
 }
 
-/// `protocol.owned_slots`: the owned set of one producer, in OMP-1 order.
+/// The owned set of one producer, in OMP-1 order.
 ///
 /// # Panics
 ///
-/// Panics if `assignments` is not a valid slot-assignment array (mirrors the
-/// Lua original's `assert(validate_slot_assignments(assignments))`).
+/// Panics if `assignments` is not a valid slot-assignment array (AGENTS.md
+/// §7: a programmer error — callers are expected to have validated first).
 #[must_use]
 pub fn owned_slots(assignments: &Value, producer_id: &str) -> Vec<String> {
     validate_slot_assignments(assignments).expect("owned_slots requires valid slot assignments");
@@ -1784,8 +1775,8 @@ pub enum MessageKind {
     Disconnect,
 }
 
-/// Every message kind, in the same order `protocol.lua`'s `BODY_FIELDS` and
-/// `ALLOWED_PHASES` declare them.
+/// Every message kind, in the same order `MessageKind::allowed_body_fields`
+/// and `MessageKind::allowed_phases` declare them.
 pub const ALL_MESSAGE_KINDS: &[MessageKind] = &[
     MessageKind::Handshake,
     MessageKind::ManifestProposal,
@@ -1805,7 +1796,7 @@ pub const ALL_MESSAGE_KINDS: &[MessageKind] = &[
 ];
 
 impl MessageKind {
-    /// The exact Lua wire string.
+    /// The exact wire string.
     #[must_use]
     pub fn wire_str(self) -> &'static str {
         match self {
@@ -2017,16 +2008,15 @@ fn vocabulary_lookup<'a>(vocabulary: &'a Vocabulary, kind: &str) -> &'a [String]
         .map_or(&[], |(_, fields)| fields.as_slice())
 }
 
-/// `protocol.vocabulary_digest`: digests everything a peer has to agree with
-/// before a control message is acceptable — which kinds exist, which fields
-/// each body carries, and which lifecycle phases each kind is legal in.
-/// Sorted throughout, so it never depends on construction order.
+/// Digests everything a peer has to agree with before a control message is
+/// acceptable — which kinds exist, which fields each body carries, and
+/// which lifecycle phases each kind is legal in. Sorted throughout, so it
+/// never depends on construction order.
 ///
 /// # Panics
 ///
 /// Panics if `kinds` and `phases` do not name exactly the same set of kinds
-/// (mirrors the Lua original's `assert`s — a programmer error, not an
-/// external-input failure).
+/// (AGENTS.md §7: a programmer error, not an external-input failure).
 #[must_use]
 pub fn vocabulary_digest(kinds: &Vocabulary, phases: &Vocabulary) -> String {
     let ordered = vocabulary_sorted_kinds(kinds);
@@ -2137,9 +2127,7 @@ pub struct ControlMessage {
 impl ControlMessage {
     /// The canonical [`Value`] this message encodes to. `pub` so tests can
     /// build raw, deliberately non-canonical wires from a mutated copy
-    /// (README rule 5.8: "everything a test touches is pub") — mirrors the
-    /// Lua spec's own local `encode_raw_test_value` helper, which exists for
-    /// exactly this reason.
+    /// (ARCHITECTURE.md §3 rule 6: "everything a test touches is pub").
     #[must_use]
     pub fn to_value(&self) -> Value {
         Value::record(vec![
@@ -2619,12 +2607,13 @@ pub enum DuplicateDisposition {
     /// Byte-identical to the original: safe to drop.
     Idempotent,
     /// Not safe to accept (in practice always reported via [`Error`] instead
-    /// of this variant; kept for type fidelity with the Lua alias, as
-    /// `input_protocol::DuplicateDisposition` does).
+    /// of this variant; kept for type fidelity with `input_protocol`'s own
+    /// `DuplicateDisposition`, which has the same variant).
     Reject,
 }
 
-/// `protocol.classify_duplicate`.
+/// Whether `incoming` is a byte-identical retransmission of `previous`, or a
+/// conflicting reuse of the same message id.
 pub fn classify_duplicate(
     previous: &ControlMessage,
     incoming: &ControlMessage,
@@ -2646,13 +2635,13 @@ pub fn classify_duplicate(
     )
 }
 
-/// `protocol.transcript_id`.
+/// The deterministic identity of an ordered transcript of messages.
 ///
 /// # Panics
 ///
 /// Panics if a peer's sequence numbers are not strictly monotonic across
 /// `messages`, or if encoding any message fails — both programmer errors per
-/// AGENTS.md §7 (mirrors the Lua original's `assert`s).
+/// AGENTS.md §7.
 #[must_use]
 pub fn transcript_id(messages: &[ControlMessage]) -> String {
     let mut state = fnv1a64::Fnv1a64State::new();

@@ -1,17 +1,12 @@
-// Ported from game/screens/real_match.lua -- the product fixture wrapper
-// around the match screen: run it to full time, then commit a result.
+// RealMatch: the product fixture wrapper around the match screen -- run it
+// to full time, then commit a result.
 //
-// The Lua original builds its own `MatchState` (`data.teams` lookups plus
-// `sim.match`/`game.screens.match.new`) and calls straight into
-// `game.match_contract.new_result` / `game.match_observer` -- three "game/"
-// root modules (`match_contract.lua`, `match_observer.lua`; -> `@gc/app`,
-// v2/README.md rule 6.7's content.ts header) plus this package's own
-// `match.ts`. `match.ts` itself only ports the rollback-consumption seam
-// this milestone (see its header): there is no working, self-constructing
-// `Match` class to call `Match.new` on here. So this port goes one step
-// further than the other injected-port screens and takes the constructed
+// `match.ts` only implements the rollback-consumption seam this milestone
+// (see its header): there is no working, self-constructing match class to
+// build a `MatchState` and call here. So this screen takes the constructed
 // match screen itself as a parameter, alongside `MatchContractPort` and
-// `MatchObserverPort` -- the same pattern `@gc/online`'s
+// `MatchObserverPort` -- corresponding to `@gc/app`'s `match_contract.ts`/
+// `match_observer.ts` -- the same pattern `@gc/online`'s
 // `match_presentation.ts` uses for `MatchDriverPort`, scaled to a third
 // dependency. `RealMatch` becomes a thin, testable state machine over three
 // injected collaborators rather than a constructor that reaches into
@@ -24,8 +19,9 @@ const FULL_TIME_HOLD = 0.9;
 const FULL_TIME_SKIP_DELAY = 0.25;
 
 /**
- * `game.match_contract`'s full `ProductMatchRequest` (`contract.new_request`'s
- * return shape) -- not `content.ts`'s `ProductMatchRequest`, which is
+ * `@gc/app`'s `match_contract.ts`'s full `ProductMatchRequest`
+ * (`contract.new_request`'s return shape) -- not `content.ts`'s
+ * `ProductMatchRequest`, which is
  * deliberately narrowed to the two fields `fake_match.ts` renders. This
  * screen needs the whole request to build a result.
  */
@@ -41,7 +37,7 @@ export interface RealMatchRequest {
   readonly seed?: number;
 }
 
-/** `game.match_contract.new_result`'s options (`ProductMatchResultOptions`). */
+/** `@gc/app`'s `match_contract.ts`'s `new_result` options (`ProductMatchResultOptions`). */
 export interface MatchContractResultOptions {
   readonly home_team_id: string;
   readonly away_team_id: string;
@@ -54,12 +50,12 @@ export interface MatchContractResultOptions {
   readonly seed?: number;
 }
 
-/** `game.match_contract`, injected -- see this module's header. */
+/** `@gc/app`'s `match_contract.ts`, injected -- see this module's header. */
 export interface MatchContractPort {
   newResult(opts: MatchContractResultOptions): Result<ProductMatchResult, string>;
 }
 
-/** `game.match_observer`'s `ObservedMatchSummary`. */
+/** `@gc/app`'s `match_observer.ts`'s `ObservedMatchSummary`. */
 export interface ObservedMatchSummary {
   readonly home_stats: TeamResultStats;
   readonly away_stats: TeamResultStats;
@@ -67,9 +63,9 @@ export interface ObservedMatchSummary {
   readonly mvp_summary?: string;
 }
 
-/** `game.match_observer`, injected -- see this module's header. `TState`/`TStep` stay opaque. */
+/** `@gc/app`'s `match_observer.ts`, injected -- see this module's header. `TState`/`TStep` stay opaque. */
 export interface MatchObserverPort<TObserver, TState, TStep> {
-  /** Mirrors `match_observer.new`; renamed because `new` is a reserved word. */
+  /** Corresponds to `@gc/app`'s `match_observer.ts`'s constructor; renamed because `new` is a reserved word. */
   create(state: TState): TObserver;
   observe(observer: TObserver, state: TState, dt: number, events?: readonly unknown[]): void;
   observeConfirmed(observer: TObserver, step: TStep): boolean;
@@ -79,9 +75,9 @@ export interface MatchObserverPort<TObserver, TState, TStep> {
 export type RealMatchTeam = "home" | "away";
 
 /**
- * Match-constant per-player identity `game.match_observer`'s `observe`
- * needs for shot/save/pass attribution (`MatchObserver.team_of`/`.keeper`
- * in the Lua original) -- id, fixture side, keeper status. Named `roster`,
+ * Match-constant per-player identity `@gc/app`'s `match_observer.ts`'s
+ * `observe` needs for shot/save/pass attribution -- id, fixture side,
+ * keeper status. Named `roster`,
  * not `players`, on {@link RealMatchState}: `online_match.ts`'s
  * `OnlineMatchState` (which `extends RealMatchState`) already declares its
  * own `players` field for a DIFFERENT shape (live `pos`/`facing`, no
@@ -95,8 +91,8 @@ export interface RealMatchRosterEntry {
 }
 
 /**
- * `game.match_observer`'s event-kind vocabulary (`ObservedEventKind` in
- * `@gc/app`'s `match_observer.ts`), restated here rather than imported --
+ * `@gc/app`'s `match_observer.ts`'s event-kind vocabulary (`ObservedEventKind`),
+ * restated here rather than imported --
  * this module deliberately does not depend on `@gc/app` (see this file's
  * header: `@gc/screens` cannot depend on `@gc/app`, the dependency runs the
  * other way). {@link RealMatchScreenPort.frameEvents}'s element type stays
@@ -123,8 +119,9 @@ export type RealMatchEventKind =
  *
  * `kind` is a plain `string`, deliberately NOT narrowed to
  * {@link RealMatchEventKind}: the wire carries about twenty-five event kinds
- * and `match_observer.lua`'s `observe` iterates the whole raw list, switching
- * on `kind` and ignoring what it does not recognise. Every producer here
+ * and `@gc/app`'s `match_observer.ts`'s `observe` iterates the whole raw
+ * list, switching on `kind` and ignoring what it does not recognise. Every
+ * producer here
  * forwards the batch unfiltered for exactly that reason (see
  * `MatchScreen.appendObservedFrameEvents` and `@gc/app`'s
  * `real_match_factory.ts`, which both say so in their own comments), so
@@ -154,18 +151,17 @@ export interface RealMatchState {
   /**
    * 0-based index into `roster` of whoever currently carries the ball --
    * `RenderFramePossession.owner` (the wire's one-based roster slot) minus
-   * one, mirroring `game.match_observer`'s own `state.players[state.owner]`
-   * lookup. Absent when the ball is loose. Optional for the same reason as
+   * one. Absent when the ball is loose. Optional for the same reason as
    * `roster`; already declared, identically, on `online_match.ts`'s
    * `OnlineMatchState`, so redeclaring it here is a no-op for that type.
    */
   readonly owner?: number;
 }
 
-/** The slice of `MatchScreen` (`match.ts`) `real_match.lua` drives -- see this module's header. */
+/** The slice of `MatchScreen` (`match.ts`) this module's `RealMatch` drives -- see this module's header. */
 export interface RealMatchScreenPort<TState extends RealMatchState, TStep> {
   readonly state: TState;
-  /** Truthy exactly when this match is running a rollback lab (`self.match._rollback_lab`). */
+  /** Truthy exactly when this match is running a rollback lab. */
   readonly rollbackLab: unknown;
   readonly rollbackConfirmedSteps: readonly TStep[];
   readonly frameEvents: readonly unknown[];

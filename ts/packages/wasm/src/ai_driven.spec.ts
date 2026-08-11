@@ -1,4 +1,5 @@
-// Does the COMPILED WASM MODULE reproduce the Lua reference match?
+// Does the COMPILED WASM MODULE reproduce the frozen AI-driven reference
+// match?
 //
 // `determinism.spec.ts` beside this asks the same question for the OMP-1
 // campaign -- an IDLE match, where the local player never presses anything.
@@ -8,22 +9,25 @@
 // input-frame quantisation that is lossless until someone actually steers.
 //
 // The two digests below are NOT copied from a Rust run. `crates/gc-sim/tests/
-// ai_driven_evidence.rs` derives them from the captured output of real Lua
-// (`session_ai_driven_lua_reference.txt`) and asserts that the native Rust
-// replay reproduces them; this file asserts the same of the wasm build. So a
-// green result here means the code a browser executes reproduces LUA, which is
-// the only claim worth making.
+// ai_driven_evidence.rs` derives them from `session_ai_driven_lua_reference.txt`,
+// a capture of the original Lua implementation's output made before that
+// implementation was removed from this repository, and asserts that the
+// native Rust replay reproduces them; this file asserts the same of the
+// wasm build. So a green result here means the code a browser executes
+// reproduces that frozen reference, which is the only claim worth making.
 //
 // Both digest assertions currently sit behind `it.fails` -- the wasm build does
-// NOT reproduce Lua on this scenario. See the block above them for the
-// measurements, the bisection and issue #405.
+// NOT reproduce that frozen reference on this scenario. See the block above
+// them for the measurements, the bisection and issue #405.
 
 import { describe, expect, it } from "vitest";
 import { loadSimHost } from "./index.ts";
 
 const runAiDrivenEvidence = () => loadSimHost().runAiDrivenEvidence();
 
-/** Derived from the Lua capture -- see `crates/gc-sim/tests/ai_driven_evidence.rs`. */
+/** Derived from a historical capture of the original Lua implementation's
+ * output, made before it was removed from this repository -- frozen, and
+ * cannot be regenerated. See `crates/gc-sim/tests/ai_driven_evidence.rs`. */
 const LUA_FINAL_HASH = "628d7fc71238dec6";
 const LUA_SEQUENCE_DIGEST = "29bbbc0f32b78dfa";
 
@@ -76,7 +80,7 @@ describe("the compiled wasm module against the AI-driven Lua reference", () => {
   // changed at full time is only that the tick-96 perturbation no longer
   // happens to reconverge before the whistle. Both builds still finish 0-1.
   //
-  // This is exactly the shape `v2/tools/lua_reference/README.md` warns about:
+  // This is exactly the shape `tools/lua_reference/README.md` warns about:
   // "a divergence which self-corrects a tick later is still a desync". For an
   // offline match it costs a few frames of different-looking play. For an
   // online one it is a desync, because two peers on different builds would

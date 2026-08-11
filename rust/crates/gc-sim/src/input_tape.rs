@@ -1,5 +1,3 @@
-//! Port of `sim/input_tape.lua`.
-//!
 //! Immutable-by-construction recorded input tapes.
 //!
 //! A tape owns deep copies of its initial start-of-tick snapshot, materialized
@@ -7,38 +5,27 @@
 //! bot policy or producer RNG: those have already been materialized into
 //! frames.
 //!
-//! ## `assert` becomes `Result` here, and the Lua original disagrees on purpose
+//! ## Why validation returns `Result`, not `assert!`
 //!
-//! `sim/input_tape.lua` validates everything with `assert(cond, msg)` — every
-//! failure path in that file is a hard Lua error, never a `return nil, err`.
-//! Taken alone, README rule 5.5 says that is `assert!`.
+//! This module's entire job is validating a tape that arrived from outside
+//! the current process — a recording loaded from disk, replayed from a
+//! fixture, or received from a peer — and AGENTS.md §7 is explicit that
+//! "validation of external input" is exactly the `return Err` case, not the
+//! programmer-invariant case that would call for `assert!`.
 //!
-//! But this module's entire job is validating a tape that arrived from
-//! outside the current process — a recording loaded from disk, replayed from
-//! a fixture, or received from a peer — and AGENTS.md §7 is explicit that
-//! "validation of external input" is exactly the `return nil, err` case, not
-//! the programmer-invariant case. `sim/replay.lua`'s `validate_context`
-//! independently confirms this reading: it wraps every one of these calls in
-//! `pcall`, specifically so a malformed tape becomes a reported failure
-//! rather than a crash. Lua's `assert`+`pcall` pair is exactly Rust's
-//! `Result`, spelled with the tools a dynamically typed language has.
+//! In Rust that reading has a sharper, additional reason: this workspace's
+//! release profile sets `panic = "abort"` (`rust/Cargo.toml`), so
+//! `catch_unwind` does not survive a release build. There is no escape
+//! hatch here; `Result` is not a stylistic choice, it is the only mechanism
+//! that still works. Every public function below that validates tape-shaped
+//! data returns `Result<T, String>` accordingly, matching
+//! [`crate::input_frame`]'s own precedent.
 //!
-//! In Rust that reading has a second, sharper reason: this workspace's
-//! release profile sets `panic = "abort"` (`v2/rust/Cargo.toml`), so
-//! `catch_unwind` — the literal `pcall` translation — does not survive a
-//! release build. There is no escape hatch here; `Result` is not a stylistic
-//! choice, it is the only mechanism that still works. Every public function
-//! below that validates tape-shaped data returns `Result<T, String>`
-//! accordingly, matching `sim/input_frame.lua`'s own precedent (that file
-//! *does* use `return nil, err`, and its Rust port already returns
-//! `Result`).
-//!
-//! Many of the Lua original's shape checks (`assert_fields`,
-//! `assert_array`'s "is this a canonical array" half) validate that an
-//! untyped Lua table has the shape a typed language guarantees at compile
-//! time. Those checks are dropped here as structurally redundant, exactly as
-//! `sim/input_frame.rs`'s module doc describes; the bound/range/uniqueness/
-//! routing checks they wrapped around are kept.
+//! Structural shape checks that a typed language's compiler already
+//! guarantees (field presence, "is this a canonical array") are dropped
+//! here as redundant, exactly as [`crate::input_frame`]'s module doc
+//! describes; the bound/range/uniqueness/routing checks they wrapped around
+//! are kept.
 
 use crate::combat_identity;
 use crate::combat_snapshot::CombatMatchState;
@@ -51,19 +38,16 @@ use indexmap::IndexMap;
 
 /// Pre-check for a second, unrelated upstream boundary: `match_snapshot::
 /// restore` (`crates/gc-sim/src/match_snapshot.rs`) validates a
-/// snapshot's version with `assert!`, not `Result` — a reasonable choice
-/// for a function whose Lua original ALSO asserts, except that every
-/// caller here is validating a tape that may have arrived from outside the
-/// process (a loaded recording, a network peer), exactly the "expected
-/// recoverable failure" case AGENTS.md §7 describes, and exactly the case
-/// `sim/replay.lua`'s `pcall`-wrapped `input_tape.validate` was written to
-/// catch. This crate's release profile sets `panic = "abort"`, so there is
-/// no `pcall`/`catch_unwind` left to catch it with (see this module's own
-/// doc for the fuller version of this same reasoning about `assert` vs
-/// `Result` in this file). Duplicating `match_snapshot::restore`'s own
-/// version check here — not fixing `match_snapshot.rs`, which is not this
-/// module's to change — turns that panic into a reported `Err` before
-/// `restore` is ever called.
+/// snapshot's version with `assert!`, not `Result` — reasonable there,
+/// except that every caller here is validating a tape that may have
+/// arrived from outside the process (a loaded recording, a network peer),
+/// exactly the "expected recoverable failure" case AGENTS.md §7 describes.
+/// This crate's release profile sets `panic = "abort"`, so there is no
+/// unwinding left to catch a panic with (see this module's own doc for the
+/// fuller version of this same reasoning about `assert` vs `Result` in this
+/// file). Duplicating `match_snapshot::restore`'s own version check here,
+/// rather than changing that function's own validation, turns that panic
+/// into a reported `Err` before `restore` is ever called.
 fn checked_snapshot_version(snapshot: &MatchSnapshot) -> Result<(), String> {
     if snapshot.version != match_snapshot::VERSION
         && snapshot.version != match_snapshot::COMBAT_VERSION
@@ -119,8 +103,8 @@ pub struct InputTapeIdentity {
     pub config: String,
     /// Fixture identity string.
     pub fixture: String,
-    /// Recording RNG seed. Stored as `f64` (README rule 1: every Lua number
-    /// is `f64`) but must hold a finite integral value.
+    /// Recording RNG seed. Stored as `f64` (ARCHITECTURE.md §3 rule 1:
+    /// numeric fields default to `f64`) but must hold a finite integral value.
     pub seed: f64,
     /// Recording tick rate, in Hz. Must equal `fixed_clock::TICK_RATE`.
     pub tick_rate: i64,
@@ -172,8 +156,7 @@ fn make_difference(
 
 /// A validated, defensively copied [`InputOwnership`]. Structural
 /// shape/type checks are dropped (the Rust type already guarantees them);
-/// the length bounds `sim/input_tape.lua`'s `assert_array` enforced at
-/// runtime are kept.
+/// the length bounds are still checked at runtime.
 fn copy_ownership(ownership: &InputOwnership, path: &str) -> Result<InputOwnership, String> {
     if ownership.version != input_frame::VERSION {
         return Err(format!("{path} version is unsupported"));

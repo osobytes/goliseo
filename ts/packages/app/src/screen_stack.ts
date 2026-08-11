@@ -1,5 +1,3 @@
-// Ported from game/screen_stack.lua.
-//
 // A minimal screen stack. The topmost screen receives update/event/draw.
 // Screens are duck-typed: any of update/event/draw/teardown/applySettings
 // may be absent.

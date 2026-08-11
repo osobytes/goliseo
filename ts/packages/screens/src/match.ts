@@ -1,31 +1,30 @@
-// Ported from game/screens/match.lua -- the playable 5v5 match screen.
+// MatchScreen: the playable 5v5 match screen.
 //
 // # Scope this milestone
 //
-// The full Lua screen is a `love`-driven game loop: it gathers real-time
-// keyboard/gamepad input, steps `sim.match` (Rust; no wasm bridge exists
-// this milestone -- v2/README.md §1), and draws through
-// `game/render/**` (three.js's `@gc/render`, not a declared dependency of
-// this package). None of that can run in this milestone regardless of how
-// it is ported, and `match_screen_spec.lua`/`match_gamepad_spec.lua`/
-// `match_rollback_lab_spec.lua` all drive exactly that loop end to end
-// (stubbed `love.keyboard`/`love.joystick`, a real `sim.match` stepping
-// real physics) -- see this package's porting report. They are ported as
+// A fully interactive game loop needs real-time keyboard/gamepad input,
+// stepping `sim.match` (Rust; no wasm bridge exists this milestone),
+// and drawing through `@gc/render` (three.js), not a
+// declared dependency of this package. None of that
+// can run in this milestone, and `match_screen.spec.ts`/
+// `match_gamepad.spec.ts`/`match_rollback_lab.spec.ts` all drive exactly
+// that loop end to end (a real `sim.match` stepping real physics) --
+// see each spec file's own header for what unblocks it. Those cases are
 // `it.skip` in their own spec files, one unblocker per file header.
 //
-// What *is* in scope, and genuinely portable, is the rollback-consumption
-// seam this task was scoped to: `consume_rollback_event_diff`,
+// What *is* in scope, and fully implemented, is the rollback-consumption
+// seam this module is built around: `consume_rollback_event_diff`,
 // `consume_confirmed_step`, and `consume_confirmed_lifecycle`. Those three
 // methods are pure translations of an already-decided rollback batch into
 // presentation state -- they read `RollbackEventDiff`/`RollbackEventStep`
 // records and call into `effects`/`audio`/`replay`/`combat_feedback`, never
-// into the sim. `combat_feedback` and `match_event_batch` are already
-// real, ported modules (`@gc/presentation`, a declared dependency) and are
-// used directly. `game/render/effects.lua` and `game/audio.lua` do not
-// exist in TypeScript yet; `game/render/replay.lua` exists in `@gc/render`
-// but that package is not a declared dependency of this one. All three are
-// therefore injected ports (`EffectsPort`/`AudioPort`/`ReplayPort`),
-// following the pattern set by `@gc/online`'s `match_presentation.ts`.
+// into the sim. `combat_feedback` and `match_event_batch` are real modules
+// (`@gc/presentation`, a declared dependency) and are used directly.
+// Effects and audio have no implementation of their own in this package;
+// replay exists in `@gc/render` but that package is not a declared
+// dependency of this one. All three are therefore injected ports
+// (`EffectsPort`/`AudioPort`/`ReplayPort`), following the same
+// dependency-injection pattern `@gc/online`'s `match_presentation.ts` uses.
 // `combat_feedback_rollback_spec.ts` exercises this module for real against
 // small hand-written fakes for those three ports -- see its header.
 
@@ -84,7 +83,7 @@ export interface RollbackEventStep {
   readonly lifecycle_events: readonly RollbackWrappedLifecycleEvent[];
 }
 
-/** `game/render/effects.lua`, injected -- see this module's header. */
+/** Visual match effects (goal celebrations, trail resets, event-driven cues), injected -- see this module's header. */
 export interface EffectsPort {
   reset(): void;
   resetVisuals(): void;
@@ -94,7 +93,7 @@ export interface EffectsPort {
   confirmEvent(event: RollbackWrappedMatchEvent | RollbackWrappedCombatEvent, replayOwnsScreen: boolean): void;
 }
 
-/** `game/audio.lua`, injected -- see this module's header. */
+/** Match sound effects for confirmed events, injected -- see this module's header. */
 export interface AudioPort {
   /** @returns whether this event id was newly consumed (dedup), regardless of whether it audibly played. */
   consumeConfirmed(
@@ -104,7 +103,7 @@ export interface AudioPort {
 }
 
 /**
- * `game/render/replay.lua`, injected -- see this module's header.
+ * Goal-replay capture and playback, injected -- see this module's header.
  *
  * `record`/`start`/`step`/`stop` are the BASE (non-rollback) goal-replay
  * seam -- `@gc/render`'s real `replay` module already implements all four
@@ -123,7 +122,7 @@ export interface ReplayPort {
   resetVisuals?(): void;
   /** `replay.reset()` -- discards any buffered footage/active sequence. Optional so existing fakes (e.g. `combat_feedback_rollback.spec.ts`'s) need not grow it; only the rollback laboratory's restart path calls it. */
   reset?(): void;
-  /** Record one live pre-step frame under this port's own private, contiguous boundary sequence -- `replay.record`. Called once per simulated tick, before `SimHostPort.step`, so a goal's flight remains in the buffer (matches `game/screens/match.lua`'s own ordering). */
+  /** Record one live pre-step frame under this port's own private, contiguous boundary sequence -- `replay.record`. Called once per simulated tick, before `SimHostPort.step`, so a goal's flight remains in the buffer. */
   record?(state: replayTypes.MatchState): void;
   /** Begin a sequence at the newest recorded frame -- `replay.start`. Returns whether enough footage was buffered to start (matches `replay.start`'s own "refuses to start without enough footage" contract). */
   start?(team: "home" | "away"): boolean;
@@ -141,10 +140,10 @@ export interface MatchRollbackConsumerPorts {
 
 /**
  * The screen-owned slice of `MatchScreen` this seam mutates: the confirmed
- * lifecycle ledger, the combat feedback state, and the small booleans the
- * Lua original keeps as `self._*` fields. Everything else on the real
- * screen (`self.state`, `self._source`, `self._render_smoothing`, ...) is
- * out of scope this milestone -- see this module's header.
+ * lifecycle ledger, the combat feedback state, and a handful of small
+ * internal booleans. Everything else on the real screen (`state`,
+ * `host`/`rollbackHost`/`onlineHost`, `renderSmoothing`, ...) is out of
+ * scope this milestone -- see this module's header.
  */
 export interface MatchRollbackConsumerState {
   readonly combat_feedback: CombatFeedbackState;
@@ -285,9 +284,9 @@ export function consumeRollbackPresentation(
 
 // =============================================================================
 // THE GAME LOOP -- gather input, step the fixed simulation clock, hand frames
-// to the renderer. This is the part of `game/screens/match.lua` this
-// package's original scope note (this module's header) said could not be
-// built without a wasm bridge. That bridge (`crates/gc-wasm`, `@gc/wasm`) now
+// to the renderer. This is the part of the match screen this package's
+// original scope note (this module's header) said could not be built
+// without a wasm bridge. That bridge (`crates/gc-wasm`, `@gc/wasm`) now
 // exists, so this section builds it.
 //
 // ## `SimHostPort` -- not this module's free design
@@ -304,10 +303,9 @@ export function consumeRollbackPresentation(
 // -- a slice sized for DRAWING (`field`/`roster`/`players`/`ball`/`control`)
 // that omitted `hud`/`possession`. This module's job is different from
 // drawing: it has to decide whether the match is over (`hud.finished`) and
-// whether the controlled player has the ball (`hud.controlled_owns_ball`,
-// the direct analog of `game/screens/match.lua`'s `self.state.owner ==
-// self.state.controlled`) before it can compute a single contextual input
-// field, or expose `hud.home_score`/`away_score`/`time_left` to
+// whether the controlled player has the ball (`hud.controlled_owns_ball`)
+// before it can compute a single contextual input field, or expose
+// `hud.home_score`/`away_score`/`time_left` to
 // [`MatchScreenAsRealMatchScreen`]'s `state` (`real_match.ts`'s
 // `RealMatchScreenPort`). `@gc/render`'s real `frame_buffer.ts` decoder
 // always produced all of these -- the gap was that `sim_host.ts` used to
@@ -317,14 +315,14 @@ export function consumeRollbackPresentation(
 // `decode`/`decodeRoster`/`toRenderFrame` and its `RenderFrame` is that
 // module's complete wire type -- see that file's header. `RenderFrameHud`
 // below only declares the fields THIS module's own game-loop logic reads
-// (README rule 6.7): the wire carries more (`possession_team`,
+// (ARCHITECTURE.md §4 rule 6): the wire carries more (`possession_team`,
 // `controlled_stamina`, ...), but nothing here inspects them.
 //
 // `field`/`players`/`ball`/`control`/`events`/`roster`'s per-player arrays
 // are NOT declared here: this module never reads them, only forwards
 // whatever `SimHostPort.frame()`/`.roster()` produced to [`RenderPort.draw`]
 // untouched (the same "only the fields this module reads are declared
-// locally" rule `pitch.ts` documents for its own slice, README rule 6.7).
+// locally" rule `pitch.ts` documents for its own slice, ARCHITECTURE.md §4 rule 6).
 // =============================================================================
 
 /** `gc_sim::input_frame::InputSample` (`@gc/input`'s TS mirror; see `input_sample.ts`'s header). Re-exported so a `SimHostPort` implementation need not also import `@gc/input` merely to name this type. */
@@ -333,7 +331,7 @@ export type InputSample = inputSampleTypes.InputSample;
 /** `crates/gc-render/src/frame.rs`'s `RenderFrameHud` (mirrored via `@gc/render`'s `frame_buffer.ts`'s `RenderFrameHud`, field-for-field) -- only the fields this module's own game-loop logic reads. See this section's header. */
 export interface RenderFrameHud {
   readonly finished: boolean;
-  /** `self.state.owner == self.state.controlled` in `game/screens/match.lua` -- "carrying". */
+  /** Whether the controlled roster slot currently owns the ball -- "carrying". */
   readonly controlled_owns_ball: boolean;
   /** Read by [`MatchScreenAsRealMatchScreen`]'s `state` (`real_match.ts`'s `RealMatchState.score.home`). */
   readonly home_score: number;
@@ -357,8 +355,8 @@ export interface RenderFrameHud {
  * `crates/gc-render/src/frame.rs`'s `RenderFramePossession`. `owner` is now
  * read in BASE/ROLLBACK mode too -- see [`MatchScreen.matchObservationState`]
  * -- to populate [`real_match.ts`'s `RealMatchState.owner`] for
- * `game.match_observer`'s possession stat; carrying (`self.state.owner ==
- * self.state.controlled`) still comes off `hud.controlled_owns_ball`, a
+ * `@gc/app`'s `match_observer.ts`'s possession stat; carrying (whether the controlled
+ * roster slot owns the ball) still comes off `hud.controlled_owns_ball`, a
  * separate concern from this getter.
  */
 export interface RenderFramePossession {
@@ -369,7 +367,7 @@ export interface RenderFramePossession {
 /**
  * The minimal slice of `crates/gc-render/src/frame.rs`'s `RenderFrameEvents`
  * this module's BASE/ROLLBACK game loop reads, to populate
- * [`MatchScreenAsRealMatchScreen.frameEvents`] for `game.match_observer`'s
+ * [`MatchScreenAsRealMatchScreen.frameEvents`] for `@gc/app`'s `match_observer.ts`'s
  * shot/save/pass attribution. Structure-of-arrays, one entry per event this
  * tick, mirroring the real wire shape's own SoA layout (`@gc/render`'s
  * `frame_buffer.ts`'s `RenderFrameEvents`) narrowed to the two fields that
@@ -383,7 +381,7 @@ export interface RealMatchRenderFrameEvents {
   readonly count: number;
   /** Plain strings, not {@link RealMatchEventKind}: this is the HOST's wire
    * vocabulary (~25 kinds), of which that alias names only the subset
-   * `game.match_observer` acts on -- see {@link RealMatchEvent}. */
+   * `@gc/app`'s `match_observer.ts` acts on -- see {@link RealMatchEvent}. */
   readonly kind: readonly string[];
   readonly slot: readonly (number | undefined)[];
 }
@@ -454,7 +452,7 @@ export interface RenderFrame {
  * ([`MatchScreen.onlineState`]) to build {@link OnlineMatchState.players};
  * `ids`/`teams`/`is_keeper` are now ALSO read, narrowly, by BASE/ROLLBACK
  * mode ([`MatchScreen.matchObservationState`]) to build
- * [`real_match.ts`'s `RealMatchState.roster`] for `game.match_observer`'s
+ * [`real_match.ts`'s `RealMatchState.roster`] for `@gc/app`'s `match_observer.ts`'s
  * attribution. Every field stays optional so a `Readonly<Record<string,
  * unknown>>` roster (every existing fake) remains a valid
  * `RenderFrameRoster`.
@@ -475,10 +473,10 @@ export interface SimHostPort {
    * Plan how many fixed ticks this render update should simulate, given
    * `dt` seconds elapsed since the last call -- delegates to
    * `gc_sim::fixed_clock`'s accumulator/catch-up/drop policy
-   * (v2/README.md §2.1) via the wasm session, so this decision has exactly
+   * (ARCHITECTURE.md §1.1) via the wasm session, so this decision has exactly
    * one implementation, in Rust: this screen used to hand-copy that
    * algorithm (see this class's own history/[`MatchScreen.update`]'s doc),
-   * which is exactly the kind of drift README §2.1 warns changing
+   * which is exactly the kind of drift ARCHITECTURE.md §1.1 warns changing
    * `MAX_TICKS_PER_UPDATE` in Rust alone would silently produce. Call once
    * per render update, then call `step` up to that many times, in order.
    */
@@ -506,19 +504,17 @@ export interface SimHostPort {
 /**
  * Constructs a fresh {@link SimHostPort} with a match's pre-match choices
  * (teams, formation, tactic, seed, ...) already baked in by the caller's
- * closure. `MatchScreen.restart` (the `game/screens/match.lua` rematch path)
- * calls this again rather than owning any notion of "the same choices"
- * itself -- see `Match.new`'s `_opts` field, which this factory pattern
- * replaces: the options live in whoever builds the factory, not in this
- * screen.
+ * closure. `MatchScreen.restart` (the rematch path) calls this again rather
+ * than owning any notion of "the same choices" itself -- see
+ * `MatchScreenOptions`, which this factory pattern replaces: the options
+ * live in whoever builds the factory, not in this screen.
  */
 export type SimHostFactory = () => SimHostPort;
 
 /**
- * `game/render/pitch.lua`'s successor (`@gc/render`, three.js), injected --
- * `@gc/render` is not currently a declared dependency of `@gc/screens` (see
- * this package's porting report: this is a needed-dependency gap to report,
- * not this file's package.json to edit). `frame`/`roster` are exactly
+ * The pitch renderer (`@gc/render`, three.js), injected -- `@gc/render` is
+ * not currently a declared dependency of `@gc/screens` (a needed-dependency
+ * gap, not this file's `package.json` to edit). `frame`/`roster` are exactly
  * `SimHostPort.frame()`/`.roster()`'s return values, forwarded untouched;
  * this module never reads them itself past `frame.hud`.
  */
@@ -528,25 +524,22 @@ export interface RenderPort {
 
 // -----------------------------------------------------------------------
 // THE CONTEXTUAL INPUT STATE MACHINE -- shoot vs jockey, pass vs switch, the
-// lob latch, aerial strike/acrobatic. Ported faithfully from
-// `game/screens/match.lua`'s `Match:update` (the `frame_input` block,
-// roughly lines 833-877) and `Match:event` (the `pass_switch`/`juke`
-// branches, roughly lines 654-734). `@gc/input`'s `capture_frame.ts`
+// lob latch, aerial strike/acrobatic. `@gc/input`'s `capture_frame.ts`
 // deliberately leaves these out of `InputSampleCapture.sample` -- its own
 // header names this file, `packages/screens`, as the one that computes them
 // from live match state and passes them in via `ContextualInputFields`.
 //
 // Pure and independently testable: given this frame's raw control polls and
 // whether the controlled player is carrying the ball, [`stepMatchControlLatches`]
-// mutates the small set of frame-to-frame latches `Match:update` keeps as
-// `self._shoot_held_prev`/`self._pass_held_prev`/`self._action_held_prev`/
-// `self._lob_latch` and returns exactly the fields
-// `InputSampleCapture.sample` needs, `switchPlayer` excepted (see below).
+// mutates the small set of frame-to-frame latches this screen keeps --
+// whether SHOOT/PASS/ACTION were held last frame, and the lob latch -- and
+// returns exactly the fields `InputSampleCapture.sample` needs,
+// `switchPlayer` excepted (see below).
 // -----------------------------------------------------------------------
 
 type ContextualInputFields = captureFrameTypes.ContextualInputFields;
 
-/** Mirrors `Match`'s `self._shoot_held_prev`/`self._pass_held_prev`/`self._action_held_prev`/`self._lob_latch` fields. */
+/** The frame-to-frame SHOOT/PASS/ACTION-held and lob-latch state this screen tracks across render frames. */
 export interface MatchControlLatches {
   shootHeldPrev: boolean;
   passHeldPrev: boolean;
@@ -555,12 +548,12 @@ export interface MatchControlLatches {
   lobLatch: boolean;
 }
 
-/** A fresh set of latches, matching `Match.new`'s initial `self._shoot_held_prev = false` etc. */
+/** A fresh, all-false set of latches. */
 export function newMatchControlLatches(): MatchControlLatches {
   return { shootHeldPrev: false, passHeldPrev: false, actionHeldPrev: false, lobLatch: false };
 }
 
-/** This frame's raw, context-free control polls -- `control_down("action"/"play"/"modifier")` in `game/screens/match.lua`. */
+/** This frame's raw, context-free control polls -- whether ACTION/PLAY/MODIFIER are currently held. */
 export interface MatchControlPoll {
   readonly actionDown: boolean;
   readonly playDown: boolean;
@@ -571,21 +564,20 @@ export interface MatchContextualStep {
   /** Everything `InputSampleCapture.sample` needs except `switchPlayer` -- see [`applySwitchEdge`]'s doc for why that field is computed separately, off the discrete event stream rather than a poll. */
   readonly contextual: ContextualInputFields;
   /**
-   * `self._dash = true` (`Match:update`'s jockey-release branch). Not part
-   * of `ContextualInputFields` -- `capture_frame.ts`'s own header explains
-   * `dash` needs both a previous- and current-frame contextual value, so it
-   * is not expressible as a single neutral-by-default parameter the way the
-   * other contextual fields are. The caller ORs this into the built
-   * `InputSample`'s `edges` bitmask directly, via `inputSample.packEdges`.
+   * The jockey-release dash edge. Not part of `ContextualInputFields` --
+   * `capture_frame.ts`'s own header explains `dash` needs both a
+   * previous- and current-frame contextual value, so it is not expressible
+   * as a single neutral-by-default parameter the way the other contextual
+   * fields are. The caller ORs this into the built `InputSample`'s `edges`
+   * bitmask directly, via `inputSample.packEdges`.
    */
   readonly dashEdge: boolean;
 }
 
 /**
- * One render frame's worth of `Match:update`'s `frame_input` block. Mutates
- * `latches` in place (mirroring the Lua original's `self._*` mutation) and
- * returns this frame's contextual fields plus the `dash` edge
- * `ContextualInputFields` cannot carry.
+ * One render frame's worth of contextual-input computation. Mutates
+ * `latches` in place and returns this frame's contextual fields plus the
+ * `dash` edge `ContextualInputFields` cannot carry.
  */
 export function stepMatchControlLatches(
   latches: MatchControlLatches,
@@ -648,13 +640,13 @@ const NOOP_VIEWPORT_MAPPER: ViewportMapper = { toVirtual: () => null };
 
 // -----------------------------------------------------------------------
 // THE FIXED SIMULATION CLOCK. This used to be a from-scratch, hand-copied
-// mirror of `sim/fixed_clock.lua` / `crates/gc-sim/src/fixed_clock.rs`'s
-// `advance` -- `gc_sim::fixed_clock` had no TS binding, and `SimHostPort`
+// mirror of `crates/gc-sim/src/fixed_clock.rs`'s `advance` -- `gc_sim::fixed_clock`
+// had no TS binding, and `SimHostPort`
 // exposed only a one-fixed-tick `step`, not a batched `advance`. That was a
 // determinism-relevant algorithm (tick COUNT changes what the simulation
 // computes) with two implementations and no way to keep them honest against
 // each other: change `MAX_TICKS_PER_UPDATE` in Rust and this copy would
-// silently keep the old behavior (v2/README.md §2.1).
+// silently keep the old behavior (ARCHITECTURE.md §1.1).
 //
 // `SimHostPort.planTicks` (`crates/gc-wasm/src/session.rs`'s `FixedClock`,
 // bound through `@gc/wasm`) removes the second implementation instead of
@@ -666,11 +658,11 @@ const NOOP_VIEWPORT_MAPPER: ViewportMapper = { toVirtual: () => null };
 export type MatchScreenProfile = "product" | "playtest" | "online";
 
 // =============================================================================
-// THE ROLLBACK LABORATORY -- `Match.new({rollback_lab = {...}})`'s
-// development-only slot-mode option, `sim.rollback_playable_lab`
-// (`crates/gc-sim/src/rollback_playable_lab.rs`) ported to `game/screens/
-// match.lua`'s companion state machine. See `match_rollback_lab.spec.ts`'s
-// header for the two blockers this section clears (no construction option,
+// THE ROLLBACK LABORATORY -- this screen's development-only slot-mode
+// option (`MatchScreenOptions.rollback_lab`), a companion state machine
+// over `sim.rollback_playable_lab` (`crates/gc-sim/src/rollback_playable_lab.rs`).
+// See `match_rollback_lab.spec.ts`'s header for the two blockers this
+// section clears (no construction option,
 // no rollback surface on the host contract) and the one it does NOT (no
 // `@gc/wasm` binding for `rollback_playable_lab` itself -- `MatchDriverBridge`
 // is an OMP-3 two-peer online driver, not this single-process dev harness,
@@ -683,12 +675,12 @@ export type MatchScreenProfile = "product" | "playtest" | "online";
 // pattern `match_screen.spec.ts`'s own header already establishes for
 // `SimHostPort`/`FakeSimHost`. A real implementation (over two loopback
 // `@gc/wasm` `MatchDriverBridge`s, or a new direct `rollback_playable_lab`
-// binding) is future work this port does not attempt.
+// binding) is future work not yet attempted.
 // =============================================================================
 
 /**
  * `sim.rollback_playable_lab`'s convergence/sync status, surfaced on
- * `_rollback_debug.status`. `"diverged"`/`"late_input_unrecoverable"`/
+ * {@link RollbackLabDebug}'s `status`. `"diverged"`/`"late_input_unrecoverable"`/
  * `"comparison_history_missing"`/`"drain_incomplete"` are real
  * `gc_sim::rollback_playable_lab::advance` outcomes (see `@gc/wasm`'s
  * `RollbackPlayableLab.advance` doc) a real `RollbackHostPort`
@@ -708,12 +700,10 @@ export type RollbackLabStatus =
   | "drain_incomplete";
 
 /**
- * `lab_source(lab).terminal` (`game/screens/match.lua`): `status ~= "active"
- * and status ~= "settling"`. Derived from the host's own reported status --
- * matching how the Lua source computes it off
- * `rollback_playable_lab.debug_model(lab).status` -- rather than a separate
- * `RollbackHostPort` method. This is `match_is_over(self)`'s rollback-mode
- * branch (`self._source:terminal()`), which is NOT the same signal as
+ * This screen's rollback-mode "is the match over" check: `status !==
+ * "active" && status !== "settling"`. Derived from the host's own reported
+ * status -- `rollback_playable_lab.debug_model(lab).status` -- rather than
+ * a separate `RollbackHostPort` method. This is NOT the same signal as
  * `hud.finished`: a rollback source can keep reporting `hud.finished` false
  * for a snapshot-restored `state.finished` field's own long settlement
  * window, or vice versa read `hud.finished` true well before the source
@@ -724,7 +714,7 @@ function rollbackTerminal(status: RollbackLabStatus): boolean {
   return status !== "active" && status !== "settling";
 }
 
-/** Mirrors the Lua `NetworkProfile` shape (`fixed_profile` in the ported spec). */
+/** The network-condition profile applied to the rollback lab's simulated link (`fixed_profile` in `match_rollback_lab.spec.ts`). */
 export interface RollbackLabNetworkProfile {
   readonly base_delay_ticks: number;
   readonly jitter_min_ticks?: number;
@@ -735,7 +725,7 @@ export interface RollbackLabNetworkProfile {
   readonly burst_length_ticks?: number;
 }
 
-/** `Match.new`'s `opts.rollback_lab` table. */
+/** This screen's `rollback_lab` construction option -- see {@link MatchScreenOptions.rollback_lab}. */
 export interface RollbackLabOptions {
   /** One-based canonical input slot this screen's local player drives. */
   readonly local_slot: number;
@@ -755,7 +745,7 @@ export interface RollbackLabSnapshotSummary {
   readonly combat?: { readonly player_ids: readonly string[] };
 }
 
-/** `_rollback_debug`'s host-reported half. `active_smoothing_count`/`correction_magnitude` are NOT here -- those are computed screen-side from `correctionSmoothing.diagnostics` over this screen's own `_render_smoothing`, matching the Lua original's own split (the panel reads both a driver-reported status and a render-owned smoothing diagnostic). See {@link RollbackLabDebug}. */
+/** {@link RollbackLabDebug}'s host-reported half. `active_smoothing_count`/`correction_magnitude` are NOT here -- those are computed screen-side from `correctionSmoothing.diagnostics` over this screen's own `renderSmoothing` field: the panel reads both a driver-reported status and a render-owned smoothing diagnostic. See {@link RollbackLabDebug}. */
 export interface RollbackLabHostDebug {
   readonly profile: string;
   readonly local_slot: number;
@@ -785,13 +775,13 @@ export interface RollbackLabHostDebug {
   };
 }
 
-/** `_rollback_debug`, as read by a caller of {@link MatchScreen.debugRollbackDebug} -- the host's own status plus this screen's render-owned smoothing diagnostics. */
+/** As read by a caller of {@link MatchScreen.debugRollbackDebug} -- the host's own status plus this screen's render-owned smoothing diagnostics. */
 export interface RollbackLabDebug extends RollbackLabHostDebug {
   readonly active_smoothing_count: number;
   readonly correction_magnitude: number;
 }
 
-/** `_clock`'s rollback-mode counterpart -- the same fixed-clock accumulator fields the base game loop's `SimHostPort.planTicks` hides behind a single tick count, exposed here because the ported spec asserts on `dropped_ticks`/`overloads`/`accumulator` directly. */
+/** The rollback-mode counterpart to the base game loop's fixed-clock tick count -- the same accumulator fields `SimHostPort.planTicks` hides behind a single tick count, exposed here because `match_rollback_lab.spec.ts` asserts on `dropped_ticks`/`overloads`/`accumulator` directly. */
 export interface RollbackLabClockDebug {
   readonly tick: number;
   readonly dropped_ticks: number;
@@ -939,22 +929,20 @@ export interface OnlineHostPort extends Pick<SimHostPort, "frame" | "roster" | "
 }
 
 export interface MatchScreenOptions {
-  /** Mirrors `Match.new`'s `opts.profile`; defaults to `"playtest"`, matching the Lua original's `self._opts.profile or "playtest"`. */
+  /** Defaults to `"playtest"` when omitted. */
   readonly profile?: MatchScreenProfile;
   /**
-   * Mirrors `Match.new`'s `opts.combat_enabled`. For a rollback-lab
-   * construction, this still gates the construction-time validation against
-   * the supplied `initial_snapshot`'s `CombatMatchState` companion (per
-   * `rollback_playable_lab`'s own invariant) -- see `validateRollbackCombatCompanion`.
+   * For a rollback-lab construction, this gates the construction-time
+   * validation against the supplied `initial_snapshot`'s `CombatMatchState`
+   * companion (per `rollback_playable_lab`'s own invariant) -- see
+   * `validateRollbackCombatCompanion`.
    *
-   * For the BASE, non-rollback game loop, this is a "separate construction
-   * option" in the sense `v2/README.md`'s porting rules use the phrase
-   * (deliberately NOT part of `SimHostPort` -- see that interface's own doc
-   * on why it is a fixed contract shared with `@gc/app`'s `sim_host.ts`, not
-   * this file's to widen): `crates/gc-wasm/src/session.rs`'s `Session::new`
-   * now accepts a `combat_enabled` parameter and threads it through every
-   * `Session::step` call, mirroring `Match:restart`'s own
-   * `combat_sim.new_state(initial)` -- but that choice is baked into the
+   * For the BASE, non-rollback game loop, this is a construction-time-only
+   * option, deliberately NOT part of `SimHostPort` -- see that interface's
+   * own doc on why it is a fixed contract shared with `@gc/app`'s
+   * `sim_host.ts`, not this file's to widen: `crates/gc-wasm/src/session.rs`'s
+   * `Session::new` accepts a `combat_enabled` parameter and threads it
+   * through every `Session::step` call -- but that choice is baked into the
    * `SimHostFactory` closure at construction time (the same way team ids,
    * seed, and formation already are; see `SimHostFactory`'s own doc), not
    * passed through this option. This option is therefore purely a record of
@@ -966,7 +954,7 @@ export interface MatchScreenOptions {
    * describe block for exactly what that leaves provable).
    */
   readonly combat_enabled?: boolean;
-  /** Mirrors `Match.new`'s `opts.rollback_lab`. See this section's header. */
+  /** The rollback-lab construction option. See this section's header. */
   readonly rollback_lab?: RollbackLabOptions;
   /**
    * The already-constructed OMP-3 online host/source -- see "THE
@@ -991,7 +979,7 @@ export interface MatchScreenPorts {
   readonly effects?: EffectsPort;
   readonly audio?: AudioPort;
   readonly replay?: ReplayPort;
-  /** `game.ui.tuning_panel`'s `.open` flag, injected -- pausing the panel pauses the rollback laboratory's clock. Omit to never pause. */
+  /** `@gc/ui`'s `tuning_panel.ts`'s `.open` flag, injected -- pausing the panel pauses the rollback laboratory's clock. Omit to never pause. */
   readonly tuningPause?: { readonly open: boolean };
   /**
    * Raw `MatchState`, read live off whatever is actually simulating this
@@ -1015,30 +1003,26 @@ export interface MatchScreenPorts {
 /**
  * The playable match screen: gathers input, drives the fixed simulation
  * clock through an injected {@link SimHostPort}, and hands frames to an
- * injected {@link RenderPort}. Ported from `game/screens/match.lua`'s
- * `Match` class, scoped to what a `step`/`frame`/`roster`/`tick`/`dispose`
- * host can support this milestone -- see this file's header and this
- * package's porting report for what is deliberately left out (combat,
+ * injected {@link RenderPort}. Scoped to what a
+ * `step`/`frame`/`roster`/`tick`/`dispose` host can support this milestone
+ * -- see this file's header for what is deliberately left out (combat,
  * goal-replay slow-mo, the rollback laboratory) and why.
  *
- * KNOWN SIMPLIFICATION -- input buffering across ticks. `Match:update`
- * samples `frame_input` once per render call and hands it to
- * `game/match_input_adapter.lua` (`@gc/app`'s `match_input_adapter.ts`,
- * README's `game/` root-file row), which buffers one-shot edges across a
- * zero-tick render update and holds continuous state across a catch-up
- * render update that runs more than one tick. That adapter operates on the
- * LEGACY `MatchInput` shape, not the new wire-format `InputSample`
- * `SimHostPort.step` takes, and no equivalent exists for `InputSample` yet
- * (`@gc/screens` cannot depend on `@gc/app` to reach the legacy one
- * regardless). This class instead samples one `InputSample` per render call
- * and feeds that SAME sample to every tick a catch-up batch runs, and drops
- * it entirely on a zero-tick render call. At a healthy frame rate this is
- * unobservable (one tick per render call, always). Under sustained overload
+ * KNOWN SIMPLIFICATION -- input buffering across ticks. `@gc/app`'s
+ * `match_input_adapter.ts` buffers one-shot edges across a zero-tick render
+ * update and holds continuous state across a catch-up render update that
+ * runs more than one tick. That adapter operates on the LEGACY `MatchInput`
+ * shape, not the new wire-format `InputSample` `SimHostPort.step` takes,
+ * and no equivalent exists for `InputSample` yet (`@gc/screens` cannot
+ * depend on `@gc/app` to reach the legacy one regardless). This class
+ * instead samples one `InputSample` per render call and feeds that SAME
+ * sample to every tick a catch-up batch runs, and drops it entirely on a
+ * zero-tick render call. At a healthy frame rate this is unobservable (one
+ * tick per render call, always). Under sustained overload
  * (`MAX_TICKS_PER_UPDATE` catch-up, or a render call fast enough to produce
  * zero ticks) a one-shot edge can fire more than once, or be dropped,
- * instead of firing exactly once on its owning tick. Flagged in this
- * package's porting report as a real behavioral gap, not silently patched
- * over.
+ * instead of firing exactly once on its owning tick -- a real, disclosed
+ * behavioral gap, not silently patched over.
  */
 export class MatchScreen {
   private readonly ports: MatchScreenPorts;
@@ -1206,7 +1190,7 @@ export class MatchScreen {
     return host;
   }
 
-  /** `self.state.finished`, read live off the host every call (never cached) -- matches the Lua original always reading current state, not a stale snapshot. */
+  /** Read live off the host every call (never cached), so it always reflects current state rather than a stale snapshot. */
   get finished(): boolean {
     return this.activeHost().frame().hud.finished;
   }
@@ -1219,7 +1203,7 @@ export class MatchScreen {
   /**
    * `real_match.ts`'s `RealMatchState.roster`/`.owner`, read live off the
    * active host -- used by [`MatchScreenAsRealMatchScreen`]'s `state` for
-   * `game.match_observer`'s shot/save/possession/pass-completion
+   * `@gc/app`'s `match_observer.ts`'s shot/save/possession/pass-completion
    * attribution. Built from [`SimHostPort.roster`] (`ids`/`teams`/
    * `is_keeper`, match-constant) and `frame().possession.owner` (this
    * frame's one-based carrier slot), the same "roster + possession" pair
@@ -1254,14 +1238,14 @@ export class MatchScreen {
    * This render call's BASE-mode discrete match events -- see
    * `observedFrameEvents`'s own doc. Used by
    * [`MatchScreenAsRealMatchScreen.frameEvents`]; always empty outside BASE
-   * mode (rollback/online drive `game.match_observer` through a different
+   * mode (rollback/online drive `@gc/app`'s `match_observer.ts` through a different
    * seam -- see this getter's callers).
    */
   get matchObservationEvents(): readonly RealMatchEvent[] {
     return this.observedFrameEvents;
   }
 
-  /** `self._clock.tick` -- delegated straight to the host, which is this screen's only tick authority. */
+  /** This screen's tick count -- delegated straight to the host, which is this screen's only tick authority. */
   get tick(): number {
     return this.activeHost().tick();
   }
@@ -1333,7 +1317,7 @@ export class MatchScreen {
       pos: new Vec2(players.x[index] ?? 0, players.y[index] ?? 0),
       facing: new Vec2(players.facing_x[index] ?? 0, players.facing_y[index] ?? 0),
     }));
-    // `hud.controlled` is one-based (README rule 3's wire-identity
+    // `hud.controlled` is one-based (ARCHITECTURE.md §3 rule 3's wire-identity
     // exception); `state.controlled` is a 0-based array index into
     // `players[]`, matching every other index this file uses.
     const fallbackControlled = (frame.hud.controlled ?? 1) - 1;
@@ -1349,7 +1333,7 @@ export class MatchScreen {
     return { ...withFallback, controlled };
   }
 
-  /** The `InputSample` this screen last sent to `SimHostPort.step`, if any. Exposed for tests, mirroring how the ported spec reads `Match`'s own `self._switch`/`self._pass` fields directly. */
+  /** The `InputSample` this screen last sent to `SimHostPort.step`, if any. Exposed for tests to inspect internal state directly. */
   get debugLastSample(): InputSample | undefined {
     return this.lastStepSample;
   }
@@ -1359,18 +1343,17 @@ export class MatchScreen {
     return this.switchPending;
   }
 
-  /** Whether this screen was constructed with a `rollback_lab` option -- `self._rollback_lab ~= nil` / `self.state.slot_mode`. */
+  /** Whether this screen was constructed with a `rollback_lab` option. */
   get debugRollbackActive(): boolean {
     return this.rollbackHost !== undefined;
   }
 
   /**
-   * `self._opts.combat_enabled == true` -- this screen's own record of the
-   * caller's combat opt-in, fixed at construction and never recomputed
-   * (mirrors `Match:restart` rebuilding `_combat_state` fresh but always
-   * consistent with `_opts.combat_enabled`; see [`restart`]). Exposed for
-   * tests, and for [`MatchScreenAsRealMatchScreen`]'s own
-   * `debugCombatEnabled`. See {@link MatchScreenOptions.combat_enabled}'s
+   * This screen's own record of the caller's combat opt-in, fixed at
+   * construction and never recomputed (see [`restart`], which always
+   * rebuilds the rollback combat state fresh but consistent with this
+   * option). Exposed for tests, and for [`MatchScreenAsRealMatchScreen`]'s
+   * own `debugCombatEnabled`. See {@link MatchScreenOptions.combat_enabled}'s
    * doc for exactly what this option does and does not prove in the BASE
    * (non-rollback) game loop this milestone.
    */
@@ -1378,7 +1361,7 @@ export class MatchScreen {
     return this.combatEnabled;
   }
 
-  /** `_rollback_debug` -- `undefined` outside rollback mode. See {@link RollbackLabDebug}'s doc for the host/screen split. */
+  /** `undefined` outside rollback mode. See {@link RollbackLabDebug}'s doc for the host/screen split. */
   debugRollbackDebug(): RollbackLabDebug | undefined {
     if (this.rollbackHost === undefined) {
       return undefined;
@@ -1395,65 +1378,64 @@ export class MatchScreen {
     };
   }
 
-  /** `_clock` -- `undefined` outside rollback mode. */
+  /** This screen's rollback-mode fixed-clock debug info -- `undefined` outside rollback mode. */
   debugRollbackClock(): RollbackLabClockDebug | undefined {
     return this.rollbackHost?.clockDebug();
   }
 
-  /** `_rollback_outputs` -- this render call's raw per-tick output records, one per tick actually stepped. Cleared at the top of every `update()` call in rollback mode. */
+  /** This render call's raw per-tick output records, one per tick actually stepped. Cleared at the top of every `update()` call in rollback mode. */
   get debugRollbackOutputs(): readonly RollbackLabOutput[] {
     return this.rollbackOutputs;
   }
 
-  /** `_rollback_event_diffs`. */
+  /** This render call's confirmed rollback event diffs. */
   get debugRollbackEventDiffs(): readonly RollbackEventDiff[] {
     return this.rollbackEventDiffs;
   }
 
-  /** `_rollback_confirmed_steps`. */
+  /** This render call's confirmed rollback steps. */
   get debugRollbackConfirmedSteps(): readonly RollbackEventStep[] {
     return this.rollbackConfirmedSteps;
   }
 
-  /** `_rollback_corrections` -- this render call's correction sources, retained across every simulated tick (not just the last). */
+  /** This render call's correction sources, retained across every simulated tick (not just the last). */
   get debugRollbackCorrections(): readonly RollbackLabCorrectionSample[] {
     return this.rollbackCorrections;
   }
 
-  /** `_frame_events` -- always empty in rollback mode (the legacy speculative frame-event consumer has nothing to read; see `updateRollback`'s doc). */
+  /** Always empty in rollback mode (the legacy speculative frame-event consumer has nothing to read; see `updateRollback`'s doc). */
   get debugRollbackFrameEvents(): readonly MatchEvent[] {
     return this.rollbackFrameEvents;
   }
 
-  /** `rollback_playable_lab.current_snapshot(self._rollback_lab)`'s combat-companion presence -- `undefined` outside rollback mode. */
+  /** This rollback host's current combat-companion snapshot presence -- `undefined` outside rollback mode. */
   debugRollbackCurrentSnapshot(): RollbackLabSnapshotSummary | undefined {
     return this.rollbackHost?.currentSnapshot();
   }
 
-  /** `rollback_playable_lab.reference_snapshot(self._rollback_lab)`'s combat-companion presence -- `undefined` outside rollback mode. */
+  /** This rollback host's reference combat-companion snapshot presence -- `undefined` outside rollback mode. */
   debugRollbackReferenceSnapshot(): RollbackLabSnapshotSummary | undefined {
     return this.rollbackHost?.referenceSnapshot();
   }
 
-  /** The screen-owned rollback-consumption ledger (`_last_scoring_team`/`_kickoff_banner`/...) -- `undefined` outside rollback mode. Exposed for tests; mirrors how the ported spec pokes `Match`'s own `_last_*` fields directly. */
+  /** The screen-owned rollback-consumption ledger (scoring-team/kickoff-banner tracking, ...) -- `undefined` outside rollback mode. Exposed for tests to inspect internal state directly. */
   debugRollbackConsumerState(): MatchRollbackConsumerState | undefined {
     return this.rollbackHost !== undefined ? this.rollbackConsumer : undefined;
   }
 
   /**
-   * `_replay_state` -- the frame currently displayed by the BASE (non-
-   * rollback) legacy goal replay, or `undefined` outside an active
-   * sequence. Exposed for tests, mirroring the ported spec's own
-   * `screen._replay_state` field peek. Rollback-mode confirmed replay
-   * shares the same {@link MatchScreenPorts.replay} port but this screen
-   * does not itself track a displayed frame for it this milestone -- see
+   * The frame currently displayed by the BASE (non-rollback) goal replay,
+   * or `undefined` outside an active sequence. Exposed for tests to inspect
+   * internal state directly. Rollback-mode confirmed replay shares the same
+   * {@link MatchScreenPorts.replay} port but this screen does not itself
+   * track a displayed frame for it this milestone -- see
    * `consumeConfirmedLifecycle`'s doc.
    */
   get debugReplayState(): replayTypes.ReplayFrame | undefined {
     return this.replayState;
   }
 
-  /** Whether the injected {@link ReplayPort} currently reports an active goal-replay sequence -- `replay.active()` in the ported original. `false` whenever no `ReplayPort` was supplied. */
+  /** Whether the injected {@link ReplayPort} currently reports an active goal-replay sequence. `false` whenever no `ReplayPort` was supplied. */
   get replayActive(): boolean {
     return this.ports.replay?.active() === true;
   }
@@ -1464,12 +1446,11 @@ export class MatchScreen {
   }
 
   /**
-   * Seeds a synthetic previous-frame render correction, for tests only --
-   * mirrors the ported spec's `seed_render_correction` helper, which pokes
-   * `Match`'s own `_render_smoothing` field directly. A no-op if this
-   * screen currently has no correction source (base mode without
-   * {@link MatchScreenPorts.matchState}, or rollback mode before the first
-   * `step`).
+   * Seeds a synthetic previous-frame render correction, for tests only, by
+   * writing directly to this screen's internal render-smoothing state. A
+   * no-op if this screen currently has no correction source (base mode
+   * without {@link MatchScreenPorts.matchState}, or rollback mode before
+   * the first `step`).
    */
   debugSeedRenderCorrection(previous: correctionSmoothingTypes.CorrectionSmoothingSource): void {
     const current = this.correctionSource();
@@ -1492,9 +1473,9 @@ export class MatchScreen {
   }
 
   /**
-   * `self.state.owner == self.state.controlled`. ONLINE mode cannot read
-   * this off the raw host's `hud.controlled_owns_ball` the way base/
-   * rollback do -- that flag is computed against the RAW sim's own
+   * Whether the controlled player currently owns the ball. ONLINE mode
+   * cannot read this off the raw host's `hud.controlled_owns_ball` the way
+   * base/rollback do -- that flag is computed against the RAW sim's own
    * `controlled` slot, not the driver-corrected one this screen actually
    * reports (see [`onlineState`]) -- so it recomputes the same comparison
    * against the corrected `owner`/`controlled` pair instead.
@@ -1507,7 +1488,7 @@ export class MatchScreen {
     return this.activeHost().frame().hud.controlled_owns_ball;
   }
 
-  /** `self:restart()` -- dispose the current host and build a fresh one from the same factory, resetting every frame-to-frame latch and (in rollback mode) every rollback/presentation-owned field. Never reached in ONLINE mode -- `handleRematchEvent` only fires for `profile === "playtest"`, and construction forces `profile = "online"` whenever {@link MatchScreenOptions.online} is set (see that option's doc). */
+  /** Dispose the current host and build a fresh one from the same factory, resetting every frame-to-frame latch and (in rollback mode) every rollback/presentation-owned field. Never reached in ONLINE mode -- `handleRematchEvent` only fires for `profile === "playtest"`, and construction forces `profile = "online"` whenever {@link MatchScreenOptions.online} is set (see that option's doc). */
   private restart(): void {
     if (this.onlineHost !== undefined) {
       throw new Error("match screen: restart() is not supported in online mode (unreachable -- see this method's doc)");
@@ -1559,16 +1540,16 @@ export class MatchScreen {
   }
 
   /**
-   * `Match:event`. Discrete key/gamepad/action events -- the rematch keys
+   * Discrete key/gamepad/action events -- the rematch keys
    * once the match is over, and (mid-match) the `pass_switch` edge plus
    * whatever `@gc/input`'s `InputSampleCapture` needs queued for its own
    * `dodge` detection.
    */
   event(evt: ControllerInputEvent): void {
     // A confirmed goal replay (base or rollback) remains skippable
-    // regardless of match/finished state -- mirrors `Match:event`'s own
-    // `replay.active()` check, which runs before both the ACTION-kind and
-    // KEY-kind bodies check anything else, including `match_is_over`.
+    // regardless of match/finished state -- this check runs before
+    // anything else in this handler, including the finished/rematch check
+    // below.
     if (this.ports.replay?.active() === true) {
       if (this.isReplaySkipEvent(evt)) {
         this.finishReplay();
@@ -1587,7 +1568,7 @@ export class MatchScreen {
     this.applySwitchEdge(evt);
   }
 
-  // `Match:event`'s `replay.active()` skip branches: ACTION-kind allows
+  // The replay-skip event set: ACTION-kind allows
   // `confirm`/`pass_switch`; KEY-kind allows `space`/`return`/`k`.
   private isReplaySkipEvent(evt: ControllerInputEvent): boolean {
     if (evt.kind === "action") {
@@ -1599,17 +1580,17 @@ export class MatchScreen {
     return false;
   }
 
-  // `finish_replay(self)`: stop the sequence, clear the displayed replay
+  // Stop the sequence, clear the displayed replay
   // frame, and settle render-owned smoothing/view state back onto whatever
   // this screen is currently authoritative for.
   private finishReplay(): void {
     this.ports.replay?.stop?.();
     this.replayState = undefined;
     const source = this.correctionSource();
-    // `clear_render_smoothing`'s own unconditional `view_state.reset()`
-    // (`reset_view` defaults true) -- discards the replay's motion before
-    // reseeding baselines below, so the render-live players' gait/lean read
-    // back at rest rather than carrying over the replay's last pose.
+    // An unconditional `viewState.reset()` -- discards the replay's motion
+    // before reseeding baselines below, so the render-live players'
+    // gait/lean read back at rest rather than carrying over the replay's
+    // last pose.
     viewState.reset();
     cameraFollow.reset();
     releaseFollow.reset();
@@ -1624,11 +1605,14 @@ export class MatchScreen {
     viewState.update(source.players, 0);
   }
 
-  // `Match:event`'s `match_is_over(self)` branch:
-  //   if self._profile == "playtest" and evt.action == "confirm" then ... -- ACTION-kind, no `pressed` check (reproduced faithfully, not "fixed" -- see this package's porting rules).
-  //   if self._profile == "playtest" and (evt.key == "r" or control_id == "confirm") then ... -- KEY-kind. `control_id` is `bindings.control_for_key`,
-  //     which resolves "space" to the `action` control (id "action"), NOT "confirm" -- only literal `return`/`kpenter` (the `confirm` control's own
-  //     keys) satisfy `control_id == "confirm"` on this path, even though `action`'s own ActionName is also "confirm".
+  // The rematch-confirmation handler, active only for `profile ===
+  // "playtest"`. ACTION-kind: `evt.action === "confirm"` restarts with no
+  // `pressed` check -- a deliberate quirk, not a bug to "fix". KEY-kind:
+  // `evt.key === "r"` or `bindings.controlForKey(evt.key) === "confirm"`.
+  // `controlForKey` resolves "space" to the `action` control (id
+  // "action"), NOT "confirm" -- only literal `return`/`kpenter` (the
+  // `confirm` control's own keys) satisfy `confirm` on this path, even
+  // though `action`'s own ActionName is also "confirm".
   private handleRematchEvent(evt: ControllerInputEvent): void {
     if (this.profile !== "playtest") {
       return;
@@ -1647,13 +1631,11 @@ export class MatchScreen {
     }
   }
 
-  // `Match:event`'s `pass_switch` branches (both the ACTION-kind and
-  // KEY-kind bodies reduce to the same rule): off the ball, PLAY's press
-  // buffers a switch. Read off the discrete event stream via
-  // `controller.normalize` -- the same primitive `capture_frame.ts`'s own
-  // `consumeDodgeEdge` uses for `juke` -- rather than a per-frame poll,
-  // because that is what the Lua original does (`Match:event`, not
-  // `Match:update`'s `control_down` polling).
+  // The `pass_switch` rule: off the ball, PLAY's press buffers a switch.
+  // Read off the discrete event stream via `controller.normalize` -- the
+  // same primitive `capture_frame.ts`'s own `consumeDodgeEdge` uses for
+  // `juke` -- rather than a per-frame poll, because a switch should latch
+  // on the press EDGE, not on "was PLAY held this frame".
   private applySwitchEdge(evt: ControllerInputEvent): void {
     const normalized = controller.normalize(evt, NOOP_TRANSFORM, NOOP_VIEWPORT_MAPPER);
     if (
@@ -1667,12 +1649,12 @@ export class MatchScreen {
   }
 
   /**
-   * `Match:update(dt)`. Samples this frame's input once and drives the
+   * Samples this frame's input once and drives the
    * fixed clock (`SimHostPort.planTicks`/`step`/`cancelPlannedTicks` -- see
    * this section's header; the accumulator algorithm itself lives only in
-   * Rust now). A no-op once the match is finished -- `Match:update`'s own
-   * `match_is_over(self)` early return, minus the rollback-replay/
-   * onboarding bookkeeping this milestone does not implement.
+   * Rust now). A no-op once the match is finished, minus the
+   * rollback-replay/onboarding bookkeeping this milestone does not
+   * implement.
    *
    * Drawing is NOT done here -- see [`MatchScreen.draw`]: this class follows
    * the model/view seam every other screen in this codebase uses
@@ -1690,9 +1672,8 @@ export class MatchScreen {
       return;
     }
     // Slow-motion goal replay: the sim freezes while the buffer plays back.
-    // Checked before `finished` -- matches `Match:update`'s own ordering
-    // (`replay.active()` is checked first; a replay may still be finishing
-    // up on the same render call the match itself reads as over).
+    // Checked before `finished` -- a replay may still be finishing up on
+    // the same render call the match itself reads as over.
     if (this.ports.replay?.step !== undefined && this.ports.replay.active()) {
       this.updateLegacyReplay(dt);
       return;
@@ -1736,15 +1717,13 @@ export class MatchScreen {
       // batch (`ticks > 1`) must accumulate per tick, immediately after
       // each `step`, or every tick but the last would be silently dropped.
       this.appendObservedFrameEvents(host.frame().events, rosterIds);
-      // `fixed_clock.advance`'s `step` callback returns `not
-      // self.state.finished and not scored` to stop a catch-up batch as
-      // soon as the match ends or a goal starts a replay. Telling the host
-      // to cancel the remaining planned ticks is what makes that match
-      // what a `false` step_fn return does to the accumulator on the Rust
-      // side (see `SimHostPort.cancelPlannedTicks`'s doc). Falls through to
-      // the shared post-batch bookkeeping below either way -- the Lua
-      // original's own goal/lifecycle detection runs unconditionally after
-      // its `fixed_clock.advance` call, not only on a full batch.
+      // Breaking out of the tick loop here (`host.cancelPlannedTicks()`) is
+      // the TS-side analog of what a `false` step_fn return does to the
+      // accumulator on the Rust side (see `SimHostPort.cancelPlannedTicks`'s
+      // doc): stop a catch-up batch as soon as the match ends. Falls
+      // through to the shared post-batch bookkeeping below either way --
+      // goal/lifecycle detection must run unconditionally after every
+      // tick, not only when a full batch completes.
       if (host.frame().hud.finished) {
         host.cancelPlannedTicks();
         break;
@@ -1756,8 +1735,8 @@ export class MatchScreen {
   // Translate one tick's `RenderFrame.events` into `observedFrameEvents`
   // entries, recovering each event's actor id from its one-based roster
   // slot -- see `RealMatchRenderFrameEvents`'s doc. Every wire event kind is
-  // forwarded, not just the twelve `game.match_observer` reacts to: the Lua
-  // original's `MatchObserver.observe` iterates `state.events` (ALL kinds
+  // forwarded, not just the twelve `@gc/app`'s `match_observer.ts` reacts
+  // to: its `MatchObserver.observe` iterates `state.events` (ALL kinds
   // emitted that tick) and switches on `event.kind` itself, so filtering
   // here would diverge from what that function actually receives, not
   // merely from what it acts on.
@@ -1789,9 +1768,10 @@ export class MatchScreen {
     }
   }
 
-  // The tail of `Match:update`'s base branch: render-owned smoothing/view
-  // state, then the live goal edge that starts a fresh replay sequence
-  // (`self._last_score`/`self._last_home` in the Lua original).
+  // This screen's post-tick bookkeeping for the BASE (non-rollback) game
+  // loop: render-owned smoothing/view state, then the live goal edge
+  // (tracked via `lastScore`/`lastHome`) that starts a fresh replay
+  // sequence.
   private finishBaseUpdate(dt: number, scoreBefore: number): void {
     const host = this.host!;
     const hud = host.frame().hud;
@@ -1848,43 +1828,36 @@ export class MatchScreen {
           ? correctionSmoothing.advance(this.renderSmoothing, source, dt)
           : correctionSmoothing.new(source);
     }
-    // Unconditional relative to the branch above -- matches
-    // `update_render_smoothing`'s own "if update_view then view_state.update(...)
-    // end", which reseeds immediately even on a lifecycle reset rather than
-    // waiting for the next render call.
+    // Unconditional relative to the branch above -- reseeds immediately
+    // even on a lifecycle reset rather than waiting for the next render
+    // call.
     viewState.update(source.players, dt);
     this.updateCameraFollow(dt);
   }
 
   /**
-   * `update_render_smoothing`'s `camera_follow.update(self.state, dt,
-   * self._render_pose)` -- the driver for render/camera_follow.ts's
-   * broadcast-following camera.
+   * The driver for render/camera_follow.ts's broadcast-following camera.
    *
-   * This call site was DROPPED by the original port, which brought
-   * camera_follow.ts across but nothing that ever ran it: `cameraFollow
-   * .update` had no caller anywhere in the workspace, so the smoothed focus
-   * never left its initial `undefined`, `cameraFollow.view` always returned
-   * `undefined`, and every projection silently fell back to the whole-pitch
-   * view (pitch.ts's `currentView`) no matter what `pitch.follow_camera`
-   * said. The follow camera was inert ported code, and the flag that selects
-   * it could not do anything -- which is why the product shot read as a
-   * fixed establishing view of the stadium rather than a camera watching the
-   * match.
+   * This call site used to be entirely missing: `camera_follow.ts` existed
+   * in the workspace, but `cameraFollow.update` had no caller anywhere, so
+   * the smoothed focus never left its initial `undefined`, `cameraFollow
+   * .view` always returned `undefined`, and every projection silently fell
+   * back to the whole-pitch view (`pitch.ts`'s `currentView`) no matter what
+   * `pitch.follow_camera` said. The follow camera was inert, and the flag
+   * that selects it could not do anything -- which is why the product shot
+   * read as a fixed establishing view of the stadium rather than a camera
+   * watching the match.
    *
    * Takes the FULL `MatchState` (`this.ports.matchState`), not
    * {@link correctionSource}'s slice: `cameraFollow.update` reads `field`
    * (to scale its deadzone/keep boxes and clamp the focus inside the
    * touchlines) and `controlled` (its `ball_weight` blend against the
-   * steered player), neither of which that slice carries. Matches the Lua
-   * original, which passes `self.state` here for the same reason.
+   * steered player), neither of which that slice carries.
    *
-   * The Lua's third argument (`self._render_pose`) has no counterpart in
-   * this port -- nothing threads a `correctionSmoothing.pose` through, so
-   * `viewState.update` above already omits it identically. That makes the
-   * follow camera track the authoritative ball rather than the smoothed
-   * displayed one; the difference is a sub-frame correction offset, and
-   * wiring the pose through both call sites together is its own change.
+   * No `correctionSmoothing.pose` is threaded through to this call, so it
+   * tracks the authoritative ball rather than the smoothed displayed one;
+   * the difference is a sub-frame correction offset, and wiring a pose
+   * through both call sites together is its own change.
    */
   private updateCameraFollow(dt: number): void {
     const state = this.ports.matchState?.();
@@ -1893,8 +1866,9 @@ export class MatchScreen {
     }
   }
 
-  // `Match:update`'s legacy-replay branch: the sim is frozen (no `host.step`
-  // this call) while the buffered footage plays back through view state.
+  // The legacy (BASE, non-rollback) replay branch: the sim is frozen (no
+  // `host.step` this call) while the buffered footage plays back through
+  // view state.
   private updateLegacyReplay(dt: number): void {
     const frame = this.ports.replay!.step!(dt);
     this.replayState = frame;
@@ -1915,17 +1889,12 @@ export class MatchScreen {
    * a replay sequence (`consumeConfirmedLifecycle`'s `ports.replay.startAt`)
    * but nothing ever advanced it afterward, so it played its first frame
    * forever and `ReplayPort.active()` never reported `false` again. Called
-   * both from `updateRollback`'s `match_is_over`-equivalent early return
-   * (mirroring `advance_rollback_replay`'s use there) and unconditionally
-   * near the end of its normal path (mirroring the Lua tail's own
-   * unconditional call) -- a no-op either place when no replay is wired or
-   * none is active.
+   * both from `updateRollback`'s early-return branch when the rollback
+   * source is terminal, and unconditionally near the end of its normal path
+   * -- a no-op either place when no replay is wired or none is active.
    *
    * @returns whether a replay was active and this call is standing in for
-   * the caller's own render-only positional work -- mirrors
-   * `advance_rollback_replay`'s own `was_active` return (`self._source ==
-   * nil` never applies here since this method is only ever called from
-   * rollback mode).
+   * the caller's own render-only positional work.
    */
   private advanceRollbackReplay(dt: number): boolean {
     const replay = this.ports.replay;
@@ -1946,14 +1915,13 @@ export class MatchScreen {
   }
 
   /**
-   * `clear_render_smoothing(self)`'s call site inside `match_is_over`'s
-   * early return in `updateRollback` -- resets render smoothing to a fresh,
-   * offset-free state built from the rollback client's current displayed
-   * positions, and resets view state. The caller only reaches this after
+   * Resets render smoothing to a fresh, offset-free state built from the
+   * rollback client's current displayed positions, and resets view state.
+   * Called from `updateRollback`'s early-return branch when the rollback
+   * source is terminal. The caller only reaches this after
    * {@link advanceRollbackReplay} already reported no active replay to fall
-   * back to (mirrors `if not advance_rollback_replay(self, dt) then
-   * clear_render_smoothing(self) end`), so unlike {@link finishReplay} this
-   * never touches `this.replayState`/`ReplayPort`.
+   * back to, so unlike {@link finishReplay} this never touches
+   * `this.replayState`/`ReplayPort`.
    */
   private clearRollbackRenderSmoothing(): void {
     viewState.reset();
@@ -1971,31 +1939,32 @@ export class MatchScreen {
   }
 
   /**
-   * `Match:update(dt)`'s rollback branch. Unlike the base branch above,
-   * this one does NOT sample input unconditionally: a zero-tick render call
-   * touches neither `this.latches` nor `this.switchPending`/`capture`, so a
-   * one-shot edge queued just before a zero-tick call survives to the next
-   * render call that actually steps -- see `match_rollback_lab.spec.ts`'s
-   * "retains a zero-tick edge and consumes it exactly once" (the base
-   * branch's own KNOWN SIMPLIFICATION deliberately does the opposite; the
-   * rollback branch is held to the Lua original's real `_input_adapter`
-   * behavior instead).
+   * This screen's rollback-mode game-loop branch. Unlike the base branch
+   * above, this one does NOT sample input unconditionally: a zero-tick
+   * render call touches neither `this.latches` nor
+   * `this.switchPending`/`capture`, so a one-shot edge queued just before a
+   * zero-tick call survives to the next render call that actually steps --
+   * see `match_rollback_lab.spec.ts`'s "retains a zero-tick edge and
+   * consumes it exactly once" (the base branch's own KNOWN SIMPLIFICATION
+   * deliberately does the opposite; the rollback branch preserves the real
+   * input-adapter behavior instead).
    *
-   * `_rollback_outputs`/`_rollback_event_diffs`/`_rollback_confirmed_steps`/
-   * `_rollback_corrections`/`_frame_events` are this render call's batch
+   * `rollbackOutputs`/`rollbackEventDiffs`/`rollbackConfirmedSteps`/
+   * `rollbackCorrections`/`rollbackFrameEvents` are this render call's batch
    * ONLY -- cleared up front, never accumulated across calls.
    *
-   * The early-return gate below is `match_is_over(self)`'s rollback-mode
-   * branch, {@link rollbackTerminal} over the host's own reported status --
-   * NOT `this.finished`/`hud.finished`. Those two ARE different signals
-   * here: `hud.finished` is a snapshot-restored field that can read `true`
-   * for a long settlement window before the rollback source itself goes
-   * terminal (or, depending on the host, briefly the other way around), and
-   * the Lua original keeps ticking/reconciling through that window --  only
-   * once the source reports terminal does `Match:update` stop calling it at
-   * all. `hud.finished` still matters, just further down: it feeds this
-   * method's own `lifecycle_reset` fallthrough (see the tail below), which
-   * clears render smoothing on THAT read, independently of this gate.
+   * The early-return gate below is this screen's rollback-mode "is the
+   * match over" check, {@link rollbackTerminal} over the host's own
+   * reported status -- NOT `this.finished`/`hud.finished`. Those two ARE
+   * different signals here: `hud.finished` is a snapshot-restored field
+   * that can read `true` for a long settlement window before the rollback
+   * source itself goes terminal (or, depending on the host, briefly the
+   * other way around), and this screen keeps ticking/reconciling through
+   * that window -- only once the source reports terminal does this method
+   * stop calling it at all. `hud.finished` still matters, just further
+   * down: it feeds this method's own lifecycle-reset fallthrough (see the
+   * tail below), which clears render smoothing on THAT read, independently
+   * of this gate.
    */
   private updateRollback(dt: number): void {
     const rollbackHost = this.rollbackHost!;
@@ -2026,11 +1995,9 @@ export class MatchScreen {
     // A zero-tick render call touches neither `this.latches` nor
     // `this.switchPending`/`capture` (see this method's doc), but the
     // render-only settling below (smoothing decay, view state, presentation
-    // consumption) is NOT gated on ticks having run this call -- matches
-    // `Match:update`'s own `update_render_smoothing`/`consume_rollback_presentation`
-    // calls, which sit OUTSIDE (after) `fixed_clock.advance`'s tick loop and
-    // therefore always run, whether or not that loop produced any ticks
-    // this render call. Skipping them at `ticks === 0` used to mean a
+    // consumption) is NOT gated on ticks having run this call -- it must
+    // run unconditionally, whether or not this render call produced any
+    // ticks. Skipping them at `ticks === 0` used to mean a
     // sub-frame render call (e.g. the settling step right after a
     // correction lands) could never decay `correction_magnitude` at all.
     if (ticks > 0) {
@@ -2090,16 +2057,16 @@ export class MatchScreen {
     this.rollbackConfirmedSteps = confirmed;
     this.rollbackCorrections = corrections;
 
-    // `update_render_smoothing`'s rollback-mode counterpart. `hudFinished`
-    // mirrors the Lua tail's own `lifecycle_reset`'s `... or self.state.finished
-    // ...` term for this mode -- score-edge/kickoff have no rollback-mode
-    // presentation counterpart yet (this file's own kickoff `it.skip`), and a
-    // mid-batch sync failure already returned above (the
-    // `unconfirmed_window_exceeded` branch inside the loop), so it can never
-    // reach here. THIS is the fallthrough the top-of-method `rollbackTerminal`
-    // gate cannot substitute for -- see this method's own doc: a rollback
-    // source can read `hud.finished` true well before it goes terminal, and
-    // the Lua original clears render smoothing on THIS read, not that one.
+    // This method's rollback-mode render-smoothing fallthrough.
+    // `hudFinished` is this mode's lifecycle-reset trigger -- score-edge/
+    // kickoff have no rollback-mode presentation counterpart yet (this
+    // file's own kickoff `it.skip`), and a mid-batch sync failure already
+    // returned above (the `unconfirmed_window_exceeded` branch inside the
+    // loop), so it can never reach here. THIS is the fallthrough the
+    // top-of-method `rollbackTerminal` gate cannot substitute for -- see
+    // this method's own doc: a rollback source can read `hud.finished` true
+    // well before it goes terminal, and render smoothing must clear on
+    // THIS read, not that one.
     const positions = rollbackHost.displayedPositions();
     const hudFinished = rollbackHost.frame().hud.finished;
     const drawingRollbackReplay = this.ports.replay?.active() === true;
@@ -2125,15 +2092,12 @@ export class MatchScreen {
 
     // Live view state (gait/lean), from the displayed rollback client --
     // skipped while a confirmed rollback replay is drawing the screen
-    // instead (`advanceRollbackReplay` below owns view state then), matching
-    // `drawing_rollback_replay`'s own gate on `update_render_smoothing`'s
-    // `update_view` parameter.
+    // instead (`advanceRollbackReplay` below owns view state then).
     if (!drawingRollbackReplay) {
       viewState.update(positions.players, dt);
-      // Same `update_view` gate, same pairing as the base path's own
-      // `viewState.update`/`updateCameraFollow` -- the Lua drives both from
-      // the ONE `update_render_smoothing` this port split in two, so the
-      // follow camera has to be driven from both halves or it stalls in
+      // Same gate, same pairing as the base path's own
+      // `viewState.update`/`updateCameraFollow` -- the follow camera has to
+      // be driven alongside view state in both modes or it stalls in
       // whichever mode was missed. A no-op in rollback configurations that
       // wire no `matchState` port (see {@link updateCameraFollow}), which is
       // why it is safe to call unconditionally here.
@@ -2160,8 +2124,8 @@ export class MatchScreen {
   }
 
   /**
-   * `Match:update(dt)`'s ONLINE branch -- see "THE ONLINE-DRIVEN MATCH
-   * SCREEN" section's header. Samples this render call's input once (the
+   * This screen's ONLINE-mode game-loop branch -- see "THE ONLINE-DRIVEN
+   * MATCH SCREEN" section's header. Samples this render call's input once (the
    * same latch/contextual pipeline base/rollback use) and drives
    * `onlineHost.advance` in a bounded loop, gated by `needsLocalSample()`
    * every iteration (not just once) so the driver's own readiness --
@@ -2296,8 +2260,8 @@ export class MatchScreen {
 // so `RealMatchScreen` (real_match.ts) can actually drive the real match
 // screen wave 2 built. This is "one shape, not two" the way the codebase
 // elsewhere handles a genuine vocabulary gap between two packages that must
-// not depend on each other (`@gc/online`'s `match_presentation.ts`'s ported
-// types), not a redesign of either existing contract -- `real_match.ts` is
+// not depend on each other (`@gc/online`'s `match_presentation.ts`'s own
+// translated types), not a redesign of either existing contract -- `real_match.ts` is
 // unchanged, and `MatchScreen`'s own `event`/`update`/`draw`/`dispose` keep
 // their existing, stricter types for every other caller.
 // =============================================================================
@@ -2378,8 +2342,7 @@ export class MatchScreenAsRealMatchScreen implements RealMatchScreenPort<RealMat
    * `unknown[]` here (this module's own `RealMatchScreenPort.frameEvents`
    * contract), but each entry is really a `RealMatchEvent`
    * (`{kind, player?}`) -- a `MatchObserverPort` implementation reads it as
-   * such, the same way `game.match_observer`'s Lua original reads
-   * `state.events`.
+   * such, the same way `@gc/app`'s `match_observer.ts` reads `state.events`.
    */
   get frameEvents(): readonly unknown[] {
     return this.screen.matchObservationEvents;
@@ -2412,7 +2375,7 @@ export class MatchScreenAsRealMatchScreen implements RealMatchScreenPort<RealMat
 
   /**
    * Settings (audio/graphics volume, ...) are not wired into `MatchScreen`
-   * this milestone -- no ported module owns them yet (this file's header).
+   * this milestone -- no module owns them yet (this file's header).
    * A no-op, not a lie: nothing in this milestone's `MatchScreen` reads a
    * setting, so there is nothing to apply.
    */

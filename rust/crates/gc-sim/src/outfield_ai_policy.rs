@@ -1,5 +1,3 @@
-//! Port of `sim/outfield_ai_policy.lua`.
-//!
 //! Versioned identity for the combat-disabled gameplay-AI policy.
 //!
 //! #59's orchestrator refresh requires a policy id that #112/#148/#149 can cite
@@ -27,18 +25,15 @@
 //!
 //! Pure module: no I/O.
 //!
-//! ## Port notes
+//! ## Declared surface, not reflection
 //!
-//! The Lua original is dynamic: [`SURFACE`] declares `(module, field)` pairs
-//! and `descriptor()` walks them, looking each field up on the live module
-//! table by name (`module_table[field]`). Rust has no such runtime
-//! reflection over a module's items, so this port inverts that: [`descriptor`]
-//! is a hand-written list of the same rows in the same order, and [`SURFACE`]
-//! survives as the declared checklist the test suite audits [`descriptor`]
-//! against (see `tests/outfield_ai_policy.rs`) — the shape check the Lua
-//! version got for free from reflection, this port gets from a test.
+//! Rust has no runtime reflection over a module's items, so [`descriptor`]
+//! is a hand-written list of rows in a fixed order, and [`SURFACE`] is the
+//! declared checklist the test suite audits [`descriptor`] against (see
+//! `tests/outfield_ai_policy.rs`) — the shape check that keeps the two in
+//! sync, since nothing enforces it automatically.
 //!
-//! `outfield_ai_policy.lua` itself never calls into `ai`, `outfield_decision`,
+//! This module itself never calls into `ai`, `outfield_decision`,
 //! `offball_runs`, `outfield_press`, or `possession_transition` — it only reads
 //! their declared constants (`VERSION` and the named tuning fields) to hash
 //! them. There is no RNG draw, no decision call, and nothing on the
@@ -71,15 +66,13 @@ pub const COMBAT_MODE: &str = "disabled";
 /// invalidates the baseline without pretending the decision policy changed.
 pub const KNOB_CATEGORY: &str = "AI";
 
-// `offball_runs::VERSION` was missing from the Rust port when this module was
-// written — `sim/offball_runs.lua:44` declares it and every sibling in this
-// surface exports one, so it was a dropped constant rather than a design
-// choice. It now exists; this alias keeps the local numeric type the canonical
-// encoder wants.
+// `offball_runs::VERSION` was missing when this module was first written —
+// every sibling in this surface exports one, so it was a dropped constant
+// rather than a design choice. It now exists; this alias keeps the local
+// numeric type the canonical encoder wants.
 const OFFBALL_RUNS_VERSION: f64 = crate::offball_runs::VERSION as f64;
 
-/// One named module in the hashed policy surface, mirroring the Lua
-/// `OutfieldAiPolicyGroup` shape.
+/// One named module in the hashed policy surface.
 ///
 /// Ordered; the order is part of the hashed form. Append to a group's field
 /// list rather than reordering it when the surface grows.
@@ -141,11 +134,10 @@ pub static SURFACE: &[OutfieldAiPolicyGroup] = &[
     },
 ];
 
-/// A policy-surface scalar: number or string, matching the Lua
-/// `number|string` union.
+/// A policy-surface scalar: number or string.
 #[derive(Clone, Debug, PartialEq)]
 pub enum OutfieldAiPolicyValue {
-    /// A numeric field. Every Lua number is `f64` (README rule 5.1).
+    /// A numeric field. Numeric fields are `f64` (ARCHITECTURE.md §3 rule 1).
     Number(f64),
     /// A string field (schema name, combat mode).
     Text(String),
@@ -211,8 +203,8 @@ fn append_value(parts: &mut String, value: &OutfieldAiPolicyValue) {
 /// The declared surface, resolved against the live modules, in hash order.
 ///
 /// See the module doc: Rust has no runtime reflection to drive this from
-/// [`SURFACE`] the way the Lua original does, so the rows are assembled by
-/// hand in the same order [`SURFACE`] declares.
+/// [`SURFACE`] automatically, so the rows are assembled by hand in the same
+/// order [`SURFACE`] declares.
 #[must_use]
 pub fn descriptor() -> Vec<OutfieldAiPolicyRow> {
     let mut rows = vec![
@@ -293,8 +285,8 @@ pub fn descriptor() -> Vec<OutfieldAiPolicyRow> {
     // The DEFAULT, not a live value: the policy is the shipped balance, so
     // an in-session tuning-panel nudge is not a new policy. `tuning::KNOBS`
     // is the static registry of defaults (see `tuning.rs`'s module doc for
-    // why this port keeps live values in an owned `Tuning`, separate from
-    // this static list); `descriptor` never takes a `Tuning` at all, so a
+    // why live values are kept in an owned `Tuning`, separate from this
+    // static list); `descriptor` never takes a `Tuning` at all, so a
     // live nudge structurally cannot reach this function.
     for knob in tuning::KNOBS {
         if knob.cat == KNOB_CATEGORY {
@@ -312,17 +304,17 @@ pub fn canonical() -> String {
 
 /// Canonical bytes for an arbitrary declared surface.
 ///
-/// `canonical()` is this applied to [`descriptor()`]. It is separate because the
-/// Lua spec proves the identity reacts to a changed constant by assigning to a
-/// live module field — `ai.LANE_WIDTH = ...` — and watching `id()` move. Rust
-/// constants are not assignable, and the reflex is to retire those cases as
-/// inexpressible. They are not: the property under test is "a different declared
-/// surface hashes differently", and that is testable directly by perturbing a
-/// row here rather than by mutating the module the row was read from.
+/// `canonical()` is this applied to [`descriptor()`]. It is separate because
+/// the property that needs proving is "a different declared constant moves
+/// the identity" — and Rust constants are not assignable at runtime, so that
+/// can't be tested by mutating a live module field the way a dynamic
+/// language could. The property under test is really "a different declared
+/// surface hashes differently", and that is testable directly by perturbing
+/// a row here rather than by mutating the module the row was read from.
 ///
-/// This is a stronger test than the Lua's, not a weaker substitute: it also
-/// covers a row being *added* or *removed*, which runtime assignment cannot
-/// express at all.
+/// This is a stronger test than reassigning a field would be, not a weaker
+/// substitute: it also covers a row being *added* or *removed*, which
+/// runtime field assignment cannot express at all.
 #[must_use]
 pub fn canonical_of(rows: &[OutfieldAiPolicyRow]) -> String {
     let mut parts = String::new();

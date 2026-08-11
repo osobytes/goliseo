@@ -1,22 +1,20 @@
 // A Canvas2D implementation of `@gc/ui`'s `GraphicsBackend` -- the interface
-// `game/ui/draw.lua`'s port (`draw.ts`) was written against but that
-// package's own header says nothing implements yet ("wiring one... is
-// deliberately out of scope for this milestone"): this batch's task IS that
-// milestone (the app shell -- "the thing that makes all of this actually
-// run in a browser"), so this is that implementation. Every menu screen
-// (title, squad, formation, tactic, pause, settings, credits, help, result,
-// the fake match fixture) draws through `@gc/ui`'s `draw.layout`, which
-// draws through nothing but this interface -- without an implementation,
-// none of those screens produce a single pixel.
+// `draw.ts` declares but does not itself implement (that package's own
+// header notes wiring one up is out of scope for it): this file is that
+// implementation, the thing that makes the app shell actually render in a
+// browser. Every menu screen (title, squad, formation, tactic, pause,
+// settings, credits, help, result, the fake match fixture) draws through
+// `@gc/ui`'s `draw.layout`, which draws through nothing but this interface
+// -- without an implementation, none of those screens produce a single
+// pixel.
 //
 // Scope: a straightforward, readable mapping onto `CanvasRenderingContext2D`.
-// Not pixel-tuned against the (nonexistent) LÖVE reference build -- there is
-// no baseline to diff against this milestone (v2/README.md §1 scopes the
-// asset/font pipeline out) -- so font family is a generic system stack and
-// `printf`'s word-wrap is a plain greedy line-break, not LÖVE's exact
-// metrics. Colors, layout rects, and draw order all come straight from
-// `@gc/ui`'s pure `layout()`/`draw.ts`, which this file does not
-// reinterpret.
+// Not pixel-tuned against any reference build -- there is no baseline to
+// diff against (the asset/font pipeline is out of this milestone's scope) -- so
+// font family is a generic system stack and `printf`'s word-wrap is a plain
+// greedy line-break, not exact per-glyph metrics. Colors, layout rects, and
+// draw order all come straight from `@gc/ui`'s pure `layout()`/`draw.ts`,
+// which this file does not reinterpret.
 
 import type { Dimensions, DrawMode, GraphicsBackend, TextAlign } from "@gc/ui";
 import { theme, type FontKind } from "@gc/ui";

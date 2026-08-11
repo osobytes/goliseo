@@ -1,6 +1,5 @@
-// Ported from game/screens/title.lua — the main title/menu screen. See
-// AGENTS.md §9 for the pure/impure seam; this screen needs no injected
-// content.
+// The main title/menu screen. See AGENTS.md §9 for the pure/impure seam;
+// this screen needs no injected content.
 
 import { focus, type Layout } from "@gc/ui";
 import type { FocusEvent } from "@gc/ui";

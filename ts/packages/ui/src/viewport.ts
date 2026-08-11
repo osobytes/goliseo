@@ -1,5 +1,5 @@
-// game/ui/viewport.lua — letterboxing an actual window into a fixed virtual
-// canvas, and mapping points between the two spaces.
+// Letterboxing an actual window into a fixed virtual canvas, and mapping
+// points between the two spaces.
 
 import { invariant } from "./assert.ts";
 

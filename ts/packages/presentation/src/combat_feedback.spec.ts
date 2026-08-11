@@ -1,23 +1,16 @@
-// Ported from spec/game/combat_feedback_spec.lua.
+// Fixture note: `combat_feedback`'s functions never take a `MatchState`/
+// `CombatMatchState` as an argument in the first place — they operate only
+// on detached `CombatEvent` records and this module's own
+// `CombatFeedbackState`. So "never mutates simulation truth" is checked
+// with an explicit structural before/after snapshot of a synthetic
+// sim-shaped fixture, rather than a hash comparison.
 //
-// Fixture note: as in combat.spec.ts, the Lua spec builds `MatchState`/
-// `CombatMatchState` through `sim.match.new`/`sim.combat.new_state` and
-// hashes them with `sim.match_snapshot` (all Rust-owned, no TypeScript
-// equivalent in this milestone). `combat_feedback`'s functions never take a
-// `MatchState`/`CombatMatchState` as an argument in the first place — they
-// operate only on detached `CombatEvent` records and this module's own
-// `CombatFeedbackState` — so "never mutates simulation truth" is
-// substituted here with an explicit structural before/after snapshot of a
-// synthetic sim-shaped fixture, which is what the hash comparison was
-// actually checking.
-//
-// The "same-family presentation swap" test also used to mutate a shared
-// `data.loadouts` entry in place and restore it afterwards. Since
-// `combat.model` takes its data tables as an explicit parameter (see
-// combat.ts's boundary note) rather than a captured global, the idiomatic
-// TypeScript equivalent is to pass two different data objects instead of
-// mutating one in place — same assertions, and it makes "a cosmetic swap
-// cannot touch sim state" true by construction rather than by convention.
+// The "same-family presentation swap" test passes two different data
+// objects rather than mutating one `CombatPresentationData` in place and
+// restoring it afterward. Since `combat.model` takes its data tables as an
+// explicit parameter (see combat.ts's boundary note) rather than a
+// captured global, this makes "a cosmetic swap cannot touch sim state" true
+// by construction rather than by convention.
 
 import { describe, expect, it } from "vitest";
 import { Vec2 } from "@gc/core";
@@ -38,13 +31,10 @@ function event(kind: CombatEventKind, result?: CombatContactResult): CombatEvent
     tick: 12,
     family_id: kind === "guard_recoil" ? "guard" : "light_melee",
     source_index: 2,
-    // The Lua fixture computes `target_index` with an `or`/`and` chain that,
-    // for `kind == "commit"`, actually evaluates to the boolean `true` (a
-    // quirk of Lua's short-circuit `or` — the first operand `kind ==
-    // "commit"` is truthy and `or` returns it unevaluated further). No
-    // assertion in this spec reads `target_index` for "commit" or
-    // "projectile_spawn", so this port uses the clearly-intended value
-    // (absent) rather than reproducing a boolean in a `number?` field.
+    // `target_index` is intentionally omitted here for "commit" and
+    // "projectile_spawn": no assertion in this spec reads it for those
+    // kinds, so this fixture uses the clearly-intended value (absent)
+    // rather than a stray placeholder in a `number?` field.
     ...(kind !== "commit" && kind !== "projectile_spawn" ? { target_index: 7 } : {}),
     source_sequence: 4,
     ...(result !== undefined ? { result } : {}),
@@ -133,8 +123,8 @@ describe("combat feedback presentation contract", () => {
 
   it("never mutates simulation truth while projecting feedback", () => {
     // See file header: this module's functions never take sim state as an
-    // argument, so a structural snapshot substitutes for the Lua original's
-    // `sim.match_snapshot.hash` comparison.
+    // argument, so a structural snapshot substitutes for a hash comparison
+    // here.
     const state: MatchState = {
       players: [{ id: "home_mid_1", pos: new Vec2(100, 200), facing: new Vec2(1, 0) }],
     };

@@ -1,28 +1,27 @@
-//! Port of `spec/sim/outfield_ai_policy_spec.lua`.
+//! Test coverage for `spec/sim/outfield_ai_policy_spec.lua`'s assertions.
 //!
 //! `outfield_ai_policy::id()` uses `gc_core::fnv1a64` over a canonical string
 //! built from `match_snapshot::number_bytes`, and the resulting id is a
 //! cross-process, cross-language contract: `data/outfield_ai_baseline.lua`
-//! (ported to `gc_data::outfield_ai_baseline::RECORD`) freezes the id the real
-//! Lua build computed, and #148/#149 cite it as a control value. That makes
-//! this determinism-path, not merely a spec to satisfy (README rule 5.9 /
-//! `v2/tools/lua_reference/README.md`), so this file differential-tests the
-//! canonical byte string against a reference captured from the real Lua
+//! (carried into `gc_data::outfield_ai_baseline::RECORD`) freezes the id the
+//! real Lua build computed, and #148/#149 cite it as a control value. That
+//! makes this determinism-path, not merely a spec to satisfy (ARCHITECTURE.md
+//! §3 rule 7 / `tools/lua_reference/README.md`), so this file differential-tests
+//! the canonical byte string against a reference captured from the real Lua
 //! (`tests/fixtures/outfield_ai_policy_canonical.txt`, captured with
-//! `love .` per `v2/tools/lua_reference/README.md`), in addition to the
-//! frozen-baseline id comparison the ported spec already provides.
+//! `love .` per `tools/lua_reference/README.md`), in addition to the
+//! frozen-baseline id comparison the spec-derived unit tests already
+//! provide.
 //!
 //! Several of the original spec's cases rely on Lua's live, mutable module
 //! tables: they monkey-patch a "constant" at runtime (`ai.LANE_WIDTH = ...`,
 //! `outfield_decision.BASE_TEMPERATURE = nil`, a `Knob.default` field, an
 //! injected scratch field) and check that `outfield_ai_policy.id()` reacts.
-//! `outfield_decision::BASE_TEMPERATURE` and friends are ported as `pub
-//! const`s (and `tuning::KNOBS` as a `static` array of `Knob` value structs) —
-//! genuinely immutable at runtime, not merely conventionally so — so those
-//! specific mutations cannot be expressed in the port. Each is kept as an
-//! `#[ignore]`d test naming the Lua case it replaces and why, per
-//! `v2/README.md` §4 ("Every assertion must survive... port it as `#[ignore]`
-//! ... and report it").
+//! `outfield_decision::BASE_TEMPERATURE` and friends are declared in Rust as
+//! `pub const`s (and `tuning::KNOBS` as a `static` array of `Knob` value
+//! structs) — genuinely immutable at runtime, not merely conventionally so —
+//! so those specific mutations cannot be expressed in Rust. Each is kept as
+//! an `#[ignore]`d test naming the Lua case it replaces and why.
 
 use gc_sim::outfield_ai_policy;
 
@@ -64,7 +63,7 @@ fn names_its_schema_version_and_combat_mode_in_the_id() {
 
 #[test]
 fn matches_the_id_recorded_in_the_frozen_baseline_artifact() {
-    // data/outfield_ai_baseline.lua (ported to gc_data::outfield_ai_baseline)
+    // data/outfield_ai_baseline.lua (carried into gc_data::outfield_ai_baseline)
     // was written by a separate process, so this is cross-process stability,
     // not just in-process memoization.
     assert_eq!(
@@ -76,13 +75,13 @@ fn matches_the_id_recorded_in_the_frozen_baseline_artifact() {
 
 #[test]
 fn matches_the_canonical_bytes_captured_from_the_real_lua_build() {
-    // Differential test per v2/tools/lua_reference/README.md: captured with
+    // Differential test per tools/lua_reference/README.md: captured with
     // `love .` over sim/outfield_ai_policy.lua's canonical()/id(), copied
     // into tests/fixtures/outfield_ai_policy_canonical.txt. A byte-exact
     // match here, not just an id match, pins the row order and every
     // `number_bytes` encoding along the way — including the
-    // `offball_runs.VERSION` fallback this port had to supply (see
-    // src/outfield_ai_policy.rs's module doc).
+    // `offball_runs.VERSION` fallback this Rust implementation had to
+    // supply (see src/outfield_ai_policy.rs's module doc).
     assert_eq!(
         outfield_ai_policy::canonical(),
         REFERENCE_CANONICAL.trim_end()

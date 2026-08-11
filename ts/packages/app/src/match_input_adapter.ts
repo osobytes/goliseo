@@ -1,5 +1,3 @@
-// Ported from game/match_input_adapter.lua.
-//
 // Offline input sampling is render-rate driven, but legacy MatchInput
 // records are consumed only by the fixed simulation clock. Pending edges
 // survive a zero-tick render update and are emitted once on the next
@@ -36,7 +34,7 @@ export interface MatchInputAdapterState {
   readonly equipment_transitioned: boolean;
 }
 
-/** The one legacy `MatchInput` record produced per simulated tick (`sim/match.lua`'s input shape). */
+/** The one legacy `MatchInput` record produced per simulated tick (`gc-sim`'s `match.rs` input shape). */
 export interface MatchInput {
   readonly move: Vec2;
   readonly shoot: boolean;

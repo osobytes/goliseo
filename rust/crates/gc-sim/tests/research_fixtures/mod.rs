@@ -1,5 +1,8 @@
-//! Shared test-support module: ports of `spec/fixtures/short_match_tape.lua`
-//! and `spec/fixtures/research/example_package.lua`.
+//! Shared test-support module: fixture builders and helpers for
+//! research-schema tests — a checked-in short match tape, a real rollback
+//! event sequence, gameplay traces (tape plus confirmed event stream plus
+//! trace manifest), session envelopes, response sets, and dataset
+//! packaging.
 //!
 //! Cargo does not compile `tests/<dir>/mod.rs` as its own test binary — only
 //! direct `tests/*.rs` files — so this module is `mod research_fixtures;`
@@ -12,21 +15,19 @@
 //! `#![allow(dead_code)]` keeps an unused-in-this-binary `pub fn` from
 //! failing `-D warnings` under `cargo clippy --workspace --all-targets`.
 //!
-//! ## `short_match_tape`'s pinned Lua boundary hashes are NOT reused here
+//! ## `short_match_tape`'s boundary hashes are not pinned against a reference
 //!
-//! `spec/fixtures/short_match_tape.lua` asserts its tape's boundary hashes
-//! against `EXPECTED_BOUNDARY_HASHES`, four hex strings computed by the
-//! *Lua* `sim/match.lua` engine. `v2/tools/lua_reference/` has no vector
-//! file for `match`/`input_tape` (only `diagnostics_schema_vectors.txt` and
-//! `research_schema_vectors.txt` exist there), so there is no differential
-//! harness proving the Rust port of `sim::r#match` produces byte-identical
-//! boundary hashes for this fixture. Copying the Lua literals in would
-//! therefore be asserting something nobody has verified. [`short_match_tape`]
-//! instead builds the same *shape* (same teams, same three frames, same
-//! identity fields) and lets the Rust engine compute its own hashes,
-//! checked only for internal self-consistency (`boundary_hashes.len() ==
-//! frames.len() + 1`) — see `tests/research_trace.rs` for the case that
-//! exercises this.
+//! `tools/lua_reference/` holds frozen output vectors used to check this
+//! crate's behavior against known-good values (only
+//! `diagnostics_schema_vectors.txt` and `research_schema_vectors.txt` exist
+//! there today), but it carries no vector file for `match`/`input_tape`. So
+//! there is no reference proving `sim::r#match` produces a specific set of
+//! boundary hashes for this fixture, and hardcoding hash literals here would
+//! be asserting something nobody has verified. [`short_match_tape`] instead
+//! builds a fixed *shape* (same teams, same three frames, same identity
+//! fields) and lets the engine compute its own hashes, checked only for
+//! internal self-consistency (`boundary_hashes.len() == frames.len() + 1`)
+//! — see `tests/research_trace.rs` for the case that exercises this.
 
 #![allow(dead_code)]
 
@@ -45,12 +46,12 @@ use gc_sim::rollback_events;
 use gc_sim::tuning::Tuning;
 
 // ---------------------------------------------------------------------
-// spec/fixtures/short_match_tape.lua
+// short match tape
 // ---------------------------------------------------------------------
 
 /// Build the checked-in short match tape: `nebula` vs `orion`, seed 38, a
 /// 2.5-tick match duration, three frames (the second drives `home_1`
-/// forward). Ported from `short_match_tape.make`.
+/// forward).
 #[must_use]
 pub fn short_match_tape() -> InputTape {
     let home = teams::get("nebula").expect("nebula is authored");
@@ -119,26 +120,17 @@ pub fn short_match_tape() -> InputTape {
 }
 
 // ---------------------------------------------------------------------
-// spec/fixtures/research/example_package.lua
+// example package fixtures
 // ---------------------------------------------------------------------
 
-/// `example_package.PARTICIPANT_ID`.
 pub const PARTICIPANT_ID: &str = "p-7f3a9c21b8e45d06";
-/// `example_package.SECOND_PARTICIPANT_ID`.
 pub const SECOND_PARTICIPANT_ID: &str = "p-2b8e45d067f3a9c1";
-/// `example_package.THIRD_PARTICIPANT_ID`.
 pub const THIRD_PARTICIPANT_ID: &str = "p-45d067f3a9c12b8e";
-/// `example_package.SESSION_ID`.
 pub const SESSION_ID: &str = "s-1c9d4f7a3b6e2058";
-/// `example_package.SECOND_SESSION_ID`.
 pub const SECOND_SESSION_ID: &str = "s-6e2058f7a3b91c9d";
-/// `example_package.THIRD_SESSION_ID`.
 pub const THIRD_SESSION_ID: &str = "s-a3b91c9d6e2058f7";
-/// `example_package.WITHDRAWN_SESSION_ID`.
 pub const WITHDRAWN_SESSION_ID: &str = "s-58f7a3b6e20591c9";
-/// `example_package.INTERRUPTED_SESSION_ID`.
 pub const INTERRUPTED_SESSION_ID: &str = "s-91c9d4f7a3b6e205";
-/// `example_package.GAME_INSTANCE_ID`.
 pub const GAME_INSTANCE_ID: &str = "gi-0001";
 
 fn record(entries: Vec<(&str, Value)>) -> Value {
@@ -184,8 +176,8 @@ fn minimal_event(kind: MatchEventKind, x: f64, y: f64) -> MatchEvent {
     }
 }
 
-/// Ported from `example_package`'s local `next_snapshot`: restore, advance
-/// the input tick, replace the discrete events, and tick down the clock.
+/// Restores a snapshot, advances the input tick, replaces the discrete
+/// events, and ticks down the clock.
 fn next_snapshot(before: &MatchSnapshot, events: Vec<MatchEvent>) -> MatchSnapshot {
     let (mut state, combat) = match_snapshot::restore(before);
     state.input_tick += 1;
@@ -194,10 +186,10 @@ fn next_snapshot(before: &MatchSnapshot, events: Vec<MatchEvent>) -> MatchSnapsh
     match_snapshot::capture(&state, combat.as_ref())
 }
 
-/// Ported from `example_package`'s local `step_input`. `RollbackEventTickOutput`
-/// carries no `input` field in this port (see `rollback_events.rs`'s module
-/// doc: it is part of the Lua shape but never read), so the Lua original's
-/// `input_record` helper has no Rust equivalent here.
+/// Builds the rollback-event step input for one already-captured snapshot.
+/// `RollbackEventTickOutput` carries no `input` field (see
+/// `rollback_events.rs`'s module doc for why it's unused), so there is no
+/// separate input-record step here.
 fn step_input(snapshot: &MatchSnapshot) -> rollback_events::RollbackEventStepInput {
     let (state, _combat) = match_snapshot::restore(snapshot);
     let tick = state.input_tick - 1;
@@ -260,10 +252,10 @@ fn convert_step(step: &rollback_events::RollbackEventStep) -> research_timeline:
     }
 }
 
-/// Ported from `example_package.rollback_sequence`: a real rollback
-/// sequence over the short match tape — tick 0 confirmed as a touch, tick 1
-/// first predicted as a tackle and then corrected to a pass. The tackle is
-/// therefore an event that presentation saw and research must never see.
+/// A real rollback sequence over the short match tape — tick 0 confirmed as
+/// a touch, tick 1 first predicted as a tackle and then corrected to a
+/// pass. The tackle is therefore an event that presentation saw and
+/// research must never see.
 pub struct RollbackSequence {
     /// The tape the sequence replays.
     pub tape: InputTape,
@@ -279,7 +271,6 @@ pub struct RollbackSequence {
     pub revoked_rollback_event_id: String,
 }
 
-/// Ported from `example_package.rollback_sequence`.
 #[must_use]
 pub fn rollback_sequence() -> RollbackSequence {
     let tape = short_match_tape();
@@ -325,7 +316,6 @@ pub fn rollback_sequence() -> RollbackSequence {
     }
 }
 
-/// Ported from `example_package.trace_manifest`.
 pub fn trace_manifest(
     tape: &InputTape,
     confirmed_event_stream_hash: &str,
@@ -378,9 +368,9 @@ pub fn trace_manifest(
     research_trace::from_tape(tape, &options)
 }
 
-/// The gameplay half of the package, ported from `example_package.gameplay`:
-/// a real tape, a real confirmed event stream whose second tick was
-/// corrected by rollback, and a trace manifest that references both.
+/// The gameplay half of the fixture package: a real tape, a real confirmed
+/// event stream whose second tick was corrected by rollback, and a trace
+/// manifest that references both.
 pub struct Gameplay {
     /// The underlying tape.
     pub tape: InputTape,
@@ -392,7 +382,6 @@ pub struct Gameplay {
     pub revoked_rollback_event_id: String,
 }
 
-/// Ported from `example_package.gameplay`.
 #[must_use]
 pub fn gameplay(completion: Option<&str>) -> Gameplay {
     let sequence = rollback_sequence();
@@ -455,7 +444,6 @@ pub struct EnvelopeOverrides {
     pub model_use_covered: Option<bool>,
 }
 
-/// Ported from `example_package`'s local `base_envelope`.
 fn base_envelope(trace_id: &str, overrides: Option<&EnvelopeOverrides>) -> Value {
     let session_id = overrides
         .and_then(|o| o.session_id.clone())
@@ -583,10 +571,9 @@ pub struct DatasetSessionsOverrides {
     pub third_model_use_covered: Option<bool>,
 }
 
-/// Ported from `example_package.dataset_sessions`: the session envelopes
-/// that back [`dataset`]. Source rows are derived from these, so a dataset
-/// can never claim an agreement or a model-use permission that no envelope
-/// actually recorded.
+/// The session envelopes that back [`dataset`]. Source rows are derived
+/// from these, so a dataset can never claim an agreement or a model-use
+/// permission that no envelope actually recorded.
 #[must_use]
 pub fn dataset_sessions(
     manifest: &Value,
@@ -627,8 +614,7 @@ pub fn dataset_sessions(
     ]
 }
 
-/// Ported from `example_package`'s local `source_row`: one dataset source
-/// row derived from the session envelope it came from.
+/// One dataset source row derived from the session envelope it came from.
 fn source_row(envelope: &Value, trace_manifest_hash: &str) -> Value {
     let entries = envelope.as_record().expect("envelope is a record");
     let trace_links = Value::record_get(entries, "trace_links")
@@ -704,13 +690,13 @@ fn source_row(envelope: &Value, trace_manifest_hash: &str) -> Value {
     ])
 }
 
-/// Ported from `example_package.completed_session`.
+/// A completed session envelope fixture.
 #[must_use]
 pub fn completed_session(trace_id: &str) -> Value {
     base_envelope(trace_id, None)
 }
 
-/// Ported from `example_package.interrupted_session`.
+/// An interrupted session envelope fixture.
 #[must_use]
 pub fn interrupted_session(trace_id: &str) -> Value {
     let base = base_envelope(trace_id, None);
@@ -743,7 +729,7 @@ pub fn interrupted_session(trace_id: &str) -> Value {
     Value::Record(entries)
 }
 
-/// Ported from `example_package.withdrawn_session`.
+/// A withdrawn session envelope fixture.
 #[must_use]
 pub fn withdrawn_session() -> Value {
     let base = base_envelope("0000000000000000", None);
@@ -767,7 +753,7 @@ pub fn withdrawn_session() -> Value {
     Value::Record(entries)
 }
 
-/// Ported from `example_package.withdrawal_tombstone`.
+/// A withdrawal tombstone fixture pairing a withdrawn session.
 #[must_use]
 pub fn withdrawal_tombstone(revoked_payload_hashes: Option<Vec<String>>) -> Value {
     let hashes = revoked_payload_hashes.unwrap_or_else(|| vec!["1111111111111111".to_string()]);
@@ -801,7 +787,7 @@ pub struct EnjoymentResponsesOverrides {
     pub missing_item: Option<String>,
 }
 
-/// Ported from `example_package.enjoyment_responses`.
+/// Builds an enjoyment response-set fixture, optionally overridden.
 #[must_use]
 pub fn enjoyment_responses(overrides: Option<&EnjoymentResponsesOverrides>) -> Value {
     let mut responses = vec![
@@ -893,7 +879,7 @@ pub fn enjoyment_responses(overrides: Option<&EnjoymentResponsesOverrides>) -> V
     ])
 }
 
-/// Ported from `example_package.participant_annotations`.
+/// A participant annotation-set fixture.
 #[must_use]
 pub fn participant_annotations(run_scope_id: &str, event_id: Option<&str>) -> Value {
     let mut annotation_entries = vec![
@@ -928,7 +914,7 @@ pub fn participant_annotations(run_scope_id: &str, event_id: Option<&str>) -> Va
     ])
 }
 
-/// Ported from `example_package.researcher_annotations`.
+/// A researcher annotation-set fixture.
 #[must_use]
 pub fn researcher_annotations(run_scope_id: &str) -> Value {
     record(vec![
@@ -1049,8 +1035,8 @@ pub struct DatasetOverrides {
     pub parent_dataset_hash: Option<String>,
     /// Overrides `purpose`.
     pub purpose: Option<String>,
-    /// Overrides `usage.model_use_covered` (Lua: `overrides.model_use_covered
-    /// ~= false`, i.e. anything but an explicit `false` means covered).
+    /// Overrides `usage.model_use_covered`. Unset means covered — only an
+    /// explicit `false` marks it uncovered.
     pub model_use_covered: Option<bool>,
     /// Overrides `feature_versions`.
     pub feature_versions: Option<Vec<Value>>,
@@ -1062,7 +1048,6 @@ pub struct DatasetOverrides {
     pub third_model_use_covered: Option<bool>,
 }
 
-/// Ported from `example_package.dataset`.
 pub fn dataset(
     manifest: &Value,
     overrides: Option<&DatasetOverrides>,

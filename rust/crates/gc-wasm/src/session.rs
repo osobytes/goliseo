@@ -24,51 +24,45 @@
 //! that with their own producers, downstream of the snapshot this module
 //! hands them.
 //!
-//! ## Combat is opt-in, mirroring the Lua exactly
+//! ## Combat is opt-in
 //!
-//! [`Session::new`]'s `combat_enabled` parameter is this surface's version
-//! of `game/screens/match.lua`'s own `_opts.combat_enabled`: `false`/absent
-//! (the default) never builds a combat companion, exactly like an ordinary
-//! Lua match; `true` builds one once, at construction, via
-//! `gc_sim::combat::new_state` (`combat_sim.new_state(initial)` in the
-//! Lua — see `Match:restart`), and [`Session::step`] threads it through
-//! every subsequent `gc_sim::r#match::step` call unchanged in shape
-//! (`Some`/`None` never flips after construction) — this reproduces the
-//! Lua's *behavior*, not a new policy: `Match:restart` builds
-//! `self._combat_state` exactly once and never rebuilds or clears it
-//! mid-match either.
+//! [`Session::new`]'s `combat_enabled` parameter: `false`/absent (the
+//! default) never builds a combat companion; `true` builds one once, at
+//! construction, via `gc_sim::combat::new_state`, and [`Session::step`]
+//! threads it through every subsequent `gc_sim::r#match::step` call
+//! unchanged in shape (`Some`/`None` never flips after construction). This
+//! is a deliberate, permanent invariant of `Session`, not an implementation
+//! shortcut — combat state is built exactly once and never rebuilt or
+//! cleared mid-match.
 //!
-//! ## An ordinary session is LEGACY mode, mirroring `Match:restart` exactly
+//! ## An ordinary session is LEGACY mode
 //!
-//! `game/screens/match.lua`'s `Match:restart` only builds an
-//! `InputOwnership` (entering slot mode) when `rollback_options` (a
-//! development-only lab) is set. An ordinary match — the only kind the
-//! product build ever plays — stays on the legacy path: `sim_match.new` is
-//! called with no `input_ownership`, so `sim.match.step` takes the "Legacy"
-//! branch, applying the ONE local player's `MatchInput` to whichever player
-//! index `MatchState.controlled` currently names, while every other player
-//! runs the inline AI branch built into `sim::match::step` itself. This is
-//! also the exact path `crates/gc-sim/tests/match_differential.rs` proves
-//! bit-exact against real Lua for 7,201 ticks and all ten players — see
-//! that test's own module doc.
+//! An ordinary match — the only kind the product build ever plays — stays
+//! on the legacy path: `sim_match.new` is called with no `input_ownership`,
+//! so `sim.match.step` takes the "Legacy" branch, applying the ONE local
+//! player's `MatchInput` to whichever player index `MatchState.controlled`
+//! currently names, while every other player runs the inline AI branch
+//! built into `sim::match::step` itself. This is also the exact path
+//! `crates/gc-sim/tests/match_differential.rs` proves bit-exact against a
+//! frozen reference for 7,201 ticks and all ten players — see that test's
+//! own module doc.
 //!
-//! [`Session::new`] now builds its LIVE, steppable `MatchState`
+//! [`Session::new`] builds its LIVE, steppable `MatchState`
 //! (`crate::registry::Entry::state`) the same way: `input_ownership: None`.
 //! [`Session::step`] decodes the wire it receives (still the full
 //! eight-slot canonical `input_frame` format — see this module's "Why input
 //! crosses as wire text" section above, unchanged), reads ONLY the single
 //! canonical `home_1` slot (`gc_sim::input_frame::slot`'s index 1 —
-//! [`LOCAL_SLOT_ZERO_INDEX`], the same "this session's browser player's
-//! slot" convention this module already used before this change), and
-//! dequantizes that one sample into a `MatchInput` via the existing
-//! [`gc_sim::slot_input::to_match_input`] dequantizer — the very same
-//! function `gc_sim::slot_input::materialize`'s `Frame` sources already use
-//! internally — before stepping via `StepInput::Legacy`. Every other
-//! canonical slot in the wire is simply never read: there is no bot fill to
-//! materialize, because legacy mode's inline AI is not a producer-level
-//! concept the way slot mode's declared bot sources are — it lives inside
-//! `sim::match::step` itself, unconditionally, for every player that is not
-//! `MatchState.controlled`.
+//! [`LOCAL_SLOT_ZERO_INDEX`], the "this session's browser player's slot"
+//! convention), and dequantizes that one sample into a `MatchInput` via the
+//! existing [`gc_sim::slot_input::to_match_input`] dequantizer — the very
+//! same function `gc_sim::slot_input::materialize`'s `Frame` sources
+//! already use internally — before stepping via `StepInput::Legacy`. Every
+//! other canonical slot in the wire is simply never read: there is no bot
+//! fill to materialize, because legacy mode's inline AI is not a
+//! producer-level concept the way slot mode's declared bot sources are — it
+//! lives inside `sim::match::step` itself, unconditionally, for every
+//! player that is not `MatchState.controlled`.
 //!
 //! This REPLACES this module's prior design (every session forced into
 //! slot mode, with seven canonical slots filled by a declared
@@ -76,14 +70,13 @@
 //! That design was deterministic, and it did fix the wave-prior bug where
 //! an unfilled slot mode session played out scoreless with zero events (see
 //! `slot_wiring_tests` below) — but it was a different computational path
-//! from what an ordinary Lua match runs: different RNG streams, different
-//! seeding, materialized through a producer at all, none of which
-//! `game/screens/match.lua`'s own `Match:restart` does outside the
-//! development-only rollback lab. A path can be fully deterministic and
-//! still not be bit-identical to Lua; only [`Session::capture_snapshot`]'s
-//! `rollback_boundary` (see [`crate::registry::Entry::rollback_boundary`]'s
-//! doc) still needs slot mode now, because it seeds online/rollback play,
-//! which genuinely is slot mode in both Lua and here.
+//! from the ordinary legacy path: different RNG streams, different
+//! seeding, materialized through a producer at all. A path can be fully
+//! deterministic and still not be bit-identical to the frozen reference;
+//! only [`Session::capture_snapshot`]'s `rollback_boundary` (see
+//! [`crate::registry::Entry::rollback_boundary`]'s doc) still needs slot
+//! mode now, because it seeds online/rollback play, which genuinely is slot
+//! mode.
 //!
 //! Online/rollback callers (`crate::match_driver_bridge`,
 //! `crate::rollback_playable_lab_bridge`, `crate::coordinator_bridge`) are
@@ -232,7 +225,7 @@ fn resolve_tactic(id: Option<&str>, field: &str) -> Result<Option<&'static Tacti
 /// player cannot belong to both fixture sides" — violating it would reach
 /// `sim_match::new`'s `.expect("valid input ownership")` and panic).
 /// `sim_match::new` and [`ownership`] panic on a malformed roster rather
-/// than returning a `Result` (README rule 5.5 is specifically about
+/// than returning a `Result` (ARCHITECTURE.md §3 rule 5 is specifically about
 /// JavaScript-originated input) — this validates the exact shape they
 /// assume BEFORE either ever runs, so a bad caller-supplied starting XI
 /// surfaces as a typed error here instead of a wasm panic downstream.
@@ -345,10 +338,9 @@ impl Session {
     /// before ever offering an id here, not something this constructor
     /// silently re-derives.
     ///
-    /// `combat_enabled` (`None`/omitted defaults to `false`) mirrors
-    /// `game/screens/match.lua`'s own `_opts.combat_enabled` — see this
-    /// module's doc's "Combat is opt-in, mirroring the Lua exactly" section.
-    /// `false` (the default) reproduces the pre-existing behavior exactly:
+    /// `combat_enabled` (`None`/omitted defaults to `false`) — see this
+    /// module's doc's "Combat is opt-in" section. `false` (the default)
+    /// reproduces the pre-existing behavior exactly:
     /// no combat companion is ever built, and every [`Session::step`] call
     /// passes `combat_state: None`, byte for byte what this constructor did
     /// before this parameter existed.
@@ -436,9 +428,8 @@ impl Session {
 
         let tune = Tuning::new();
         // The LIVE, steppable state -- LEGACY mode (`input_ownership:
-        // None`), mirroring `game/screens/match.lua`'s `Match:restart` for
-        // an ordinary (non-rollback-lab) match exactly. See this module's
-        // doc, "An ordinary session is LEGACY mode".
+        // None`). See this module's doc, "An ordinary session is LEGACY
+        // mode".
         let mut state = sim_match::new(sim_match::NewMatchOptions {
             home: &home_effective,
             away,
@@ -538,12 +529,11 @@ impl Session {
     /// neutral input is therefore showing a match with one broken player in
     /// it, which is worse than useless for judging feel.
     ///
-    /// `sim/bot.lua` is what the Lua build uses for exactly this, in
-    /// `sim/headless.lua` and in `game/render/benchmark.lua`'s windowed
-    /// ten-player benchmark. This is the same bot (`gc_sim::bot`, differential-
-    /// tested against it by `gc-sim`'s `session_ai_driven_differential`), made
-    /// reachable from the browser so a v2 harness can be the counterpart of
-    /// that Lua one rather than an almost-counterpart.
+    /// `gc_sim::bot` is the same bot `gc-sim`'s `headless` module and
+    /// `packages/render`'s windowed ten-player benchmark already use for
+    /// exactly this (differential-tested against a frozen reference by
+    /// `gc-sim`'s `session_ai_driven_differential`), made reachable from the
+    /// browser too.
     ///
     /// Deterministic: the bot seeds its OWN stream (`seed * 7919 + 17`) and
     /// never touches the match's, so a given `seed` replays identically.
@@ -894,7 +884,7 @@ pub(crate) fn frame_options(entry: &Entry, kick_follow_slots: u32) -> RenderFram
 
 /// A wasm-bound `gc_sim::fixed_clock::FixedClockState`: the render-driven
 /// tick-count decision for one match, planned once per render update from a
-/// `dt`. See v2/README.md §2.1 -- tick COUNT changes what the simulation
+/// `dt`. See ARCHITECTURE.md §1 -- tick COUNT changes what the simulation
 /// computes (it decides how many [`Session::step`] calls run), so the policy
 /// that turns a render `dt` into a tick count must be computed here, not
 /// re-derived in TypeScript. That is exactly what happened before this type
@@ -1050,8 +1040,9 @@ mod slot_wiring_tests {
     /// different fix for the same class of symptom. This test still holds:
     /// with the local player idle, `sim::match::step`'s inline AI branch
     /// drives every one of the other nine players unconditionally (proven
-    /// bit-exact against Lua by `crates/gc-sim/tests/match_differential.rs`,
-    /// which is exactly this scenario at the `sim::match::step` layer), so
+    /// bit-exact against a frozen reference by
+    /// `crates/gc-sim/tests/match_differential.rs`, which is exactly this
+    /// scenario at the `sim::match::step` layer), so
     /// the match must still be live regardless of what the local player
     /// does — just via legacy mode's inline AI now, not a slot-mode bot
     /// producer.

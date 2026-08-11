@@ -7,10 +7,9 @@
 //     m[12] m[13] m[14] m[15]     <- row 3
 // so a translation lives in m[3], m[7], m[11].
 //
-// The Lua original is 1-based (m[4], m[8], m[12] for translation) and is what
-// LÖVE's Shader:send expects for a row-major `mat4` uniform — that constraint
-// does not carry over to this presentation-only TS port, but the row-major
-// layout itself is preserved so quat.toMat4 stays interchangeable.
+// mat4 is presentation-only (not on the determinism path), but the row-major
+// layout is still a real constraint: it's preserved so quat.toMat4 stays
+// interchangeable with it.
 
 /**
  * A 4x4 matrix, stored flat and row-major. Fixed-length so element access
@@ -44,10 +43,9 @@ function identity(): Mat4 {
 }
 
 // Returns a * b, i.e. "apply b first, then a" when acting on a column vector.
-// The Lua version loops (row, col, k); here the 4x4 case is unrolled so every
-// term uses a literal index, which is what keeps this free of `| undefined`
-// without asserting. Each output element's sum is written in the same
-// left-to-right, k = 0..3 order as the Lua accumulation loop.
+// The 4x4 case is unrolled so every term uses a literal index, which is what
+// keeps this free of `| undefined` without asserting. Each output element's
+// sum is written in left-to-right, k = 0..3 order.
 function multiply(a: Mat4, b: Mat4): Mat4 {
   return [
     a[0] * b[0] + a[1] * b[4] + a[2] * b[8] + a[3] * b[12],
@@ -73,8 +71,8 @@ function multiply(a: Mat4, b: Mat4): Mat4 {
 }
 
 // Convenience for the common "parent * child * local" chains. Requires at
-// least one matrix (the Lua version accepts a call with none and blows up
-// later inside `multiply`; the type signature makes that state unreachable).
+// least one matrix; the type signature makes the empty-call state
+// unreachable.
 function chain(first: Mat4, ...rest: readonly Mat4[]): Mat4 {
   let out = first;
   for (const m of rest) {

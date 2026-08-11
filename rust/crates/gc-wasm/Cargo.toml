@@ -40,7 +40,7 @@ wasm-bindgen = "=0.2.118"
 js-sys = "0.3"
 
 # Deliberately NOT `[lints] workspace = true`. The workspace's
-# `unsafe_code = "forbid"` (`v2/rust/Cargo.toml`'s `[workspace.lints.rust]`)
+# `unsafe_code = "forbid"` (`rust/Cargo.toml`'s `[workspace.lints.rust]`)
 # is a per-package Cargo lint, not a workspace-wide one, so a package that
 # does not opt into `workspace = true` does not inherit it -- the same
 # mechanism `crates/gc-test-alloc/Cargo.toml` documents and uses.

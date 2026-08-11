@@ -1,5 +1,3 @@
-//! Port of `sim/research_schema.lua`.
-//!
 //! Declarative shapes, strict validation, canonical serialization, and
 //! content hashing for the versioned human-playtest research contracts.
 //!
@@ -26,16 +24,17 @@
 //! exactly, not `diagnostics_schema`'s `GCND` format.
 //!
 //! Numbers route through [`crate::match_snapshot::number_bytes`] for the
-//! `number` field kind, exactly as the Lua original calls
+//! `number` field kind, exactly as the Lua original called
 //! `match_snapshot.number_bytes` — never a reimplementation, and never a
 //! `%.17g`-style text format, which was the source of a real cross-language
-//! digest defect earlier in this port.
+//! digest defect during the original migration to Rust.
 //!
 //! ## Cross-language digest agreement
 //!
-//! Per `v2/README.md` §2.2, this module's canonical encoding and digest are
-//! pinned by a shared vector file generated from the real Lua implementation:
-//! `v2/tools/lua_reference/research_schema_vectors.txt`, asserted by
+//! Per `README.md` §2.2, this module's canonical encoding and digest are
+//! pinned by a shared vector file captured from the Lua implementation this
+//! simulation was originally validated against:
+//! `tools/lua_reference/research_schema_vectors.txt`, asserted by
 //! `tests::shared_vectors_agree_with_lua` below.
 
 use crate::match_snapshot;

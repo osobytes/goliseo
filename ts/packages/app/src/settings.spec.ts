@@ -1,8 +1,6 @@
-// Ported from spec/game/foundations_spec.lua's "settings" describe block —
-// the only block in that file about game/settings.lua (this package's).
-// The rest of foundations_spec.lua (input actions, viewport transform, menu
-// focus) is about game/input/** and game/ui/**, owned by @gc/input and
-// @gc/ui respectively; left to those packages' porting agents.
+// Coverage for `settings.ts` only. Input actions, viewport transform, and
+// menu focus are owned by `@gc/input` and `@gc/ui` respectively and covered
+// in those packages.
 
 import { describe, expect, it } from "vitest";
 import { ok, type Result } from "@gc/core";

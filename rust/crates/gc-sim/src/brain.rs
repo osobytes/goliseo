@@ -1,5 +1,3 @@
-//! Port of `sim/brain.lua`.
-//!
 //! Pure outfield decision and assignment helpers. Callers own all clocks,
 //! state, candidate construction, and action execution; this module only
 //! resolves serializable values.

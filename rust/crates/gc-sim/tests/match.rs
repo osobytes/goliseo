@@ -1,8 +1,5 @@
-//! Port of `spec/sim/match_spec.lua`.
-//!
-//! All 145 `t.it` cases from the Lua spec are ported here, in the same
-//! `describe`-block order as the original, either passing or `#[ignore]`d
-//! with a reason. See the porting agent's final report for the breakdown.
+//! Tests for `gc_sim::r#match`, organized into sections. Each case either
+//! passes or is `#[ignore]`d with a reason given inline.
 
 use gc_core::vec2::Vec2;
 use gc_data::tactics::MarkingScheme;
@@ -55,15 +52,14 @@ fn new_match_opts(
     )
 }
 
-/// Match seeded with a specific RNG seed; human_controlled defaults to true,
-/// same as the Lua `match.new({ ..., seed = seed })` fixtures.
+/// Match seeded with a specific RNG seed; human_controlled defaults to true.
 fn new_match_seeded(seed: f64) -> MatchState {
     new_match_with(Some(seed), None, None)
 }
 
 // ---------------------------------------------------------------------
-// Shared test scaffolding — several Lua `describe` blocks redefine the same
-// local helper (`keeper_of`, `has_event`, ...); consolidated here once.
+// Shared test scaffolding, consolidated here once rather than redefined
+// per section.
 // ---------------------------------------------------------------------
 
 fn has_event(s: &MatchState, kind: MatchEventKind) -> bool {
@@ -100,8 +96,8 @@ fn home_outfielders(s: &MatchState) -> Vec<i64> {
     out
 }
 
-/// `sim::keeper` was ported before `match_snapshot` and declares its own
-/// `Team`/`Rect` (README §5.1's "view struct" debt) rather than reusing
+/// `gc_sim::keeper` predates `match_snapshot` and declares its own
+/// `Team`/`Rect` (a known "view struct" duplication debt) rather than reusing
 /// `match_snapshot`'s canonical ones. Small conversions so tests exercising
 /// `keeper::*` free functions can pass `MatchState`-flavoured values in.
 fn keeper_team(t: Team) -> gc_sim::keeper::Team {
@@ -929,12 +925,11 @@ fn distributes_to_a_teammate_instead_of_hoofing_it() {
 //
 // Every case below drives `match::offball_targets` directly (a pure
 // function of the top-of-tick snapshot) to inspect steering targets without
-// running a full step. It is now `pub` (README §5 rule 8), so these port
-// directly against it, matching the Lua spec's own local helpers.
+// running a full step. It is `pub` (ARCHITECTURE.md §3 rule 6), so these test
+// directly against it.
 // ---------------------------------------------------------------------
 
-/// Positions of every player, in canonical order — mirrors the Lua spec's
-/// own `pos_of(s)`.
+/// Positions of every player, in canonical order.
 fn pos_of(s: &MatchState) -> Vec<Vec2> {
     s.players.iter().map(|p| p.pos).collect()
 }
@@ -3638,22 +3633,20 @@ fn an_ai_pass_never_moves_the_humans_control() {
 // This test found a real bug (now fixed): `aerial::strike_requested`
 // (crates/gc-sim/src/aerial.rs) checks `if let Some(v) = input.aerial_strike
 // { return v; }` before falling back to `input.jockey || input.dash` —
-// mirroring the Lua original's `if input.aerial_strike ~= nil then return
-// input.aerial_strike end` (`nil` means "unset", so the fallback fires).
+// `None` means "unset", so the fallback only fires then.
 //
 // But `match_snapshot::MatchInput::aerial_strike` was typed as a plain
 // `bool` (always `false` unless a caller set it, never "unset"), and
 // `match.rs`'s now-deleted `aerial_match_input` adapter wrapped it as
 // `Some(input.aerial_strike)` unconditionally. So this call site always
 // observed `Some(false)`, `strike_requested` returned `false` immediately,
-// and the `jockey`/`dash` fallback the Lua depended on could never fire
-// through this path.
+// and the `jockey`/`dash` fallback could never fire through this path.
 //
 // Fixed by typing `MatchInput::aerial_strike`/`aerial_acrobatic` as
-// `Option<bool>` (matching `sim/match.lua`'s `---@field aerial_strike
-// boolean?`), and by folding `crate::aerial` onto `match_snapshot`'s
-// canonical types directly (README §5.1 end state 1) so there is no longer
-// an adapter to lose the nil-vs-false distinction at all: `aerial_strike`
+// `Option<bool>`, and by folding `crate::aerial` onto `match_snapshot`'s
+// canonical types directly (completing the move off the duplicated "view
+// struct" types) so there is no longer an adapter to lose the
+// unset-vs-false distinction at all: `aerial_strike`
 // left unset by `input()` below (`InputOpts` has no `aerial_strike` field,
 // so it falls through to `MatchInput::default()`'s `None`) now reaches
 // `aerial::strike_requested` as `None` and correctly falls back to
@@ -5127,7 +5120,7 @@ fn start_accel_scales_the_push_off_from_rest() {
 /// actually needs pinning is the SIMULATION's behaviour, so this sweeps real
 /// stepped matches. Introduce an outfield dive and it goes red, which is the
 /// signal to go re-read `drawn_facing`'s precondition note in
-/// `v2/rust/crates/gc-render/src/frame.rs`.
+/// `rust/crates/gc-render/src/frame.rs`.
 #[test]
 fn only_a_keeper_ever_carries_a_dive_timer() {
     let tune = Tuning::new();

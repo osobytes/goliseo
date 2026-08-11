@@ -95,9 +95,9 @@ const observerPort: MatchObserverPort<MatchObserver, RealMatchState, never> = {
       //
       // Forwarded unfiltered, and the cast is why: the wire carries about
       // twenty-five event kinds while `ObservedEventKind` names only the
-      // subset the observer acts on. `match_observer.lua`'s own `observe`
+      // subset the observer acts on. `match_observer.ts`'s own `observe`
       // iterates the whole raw list and switches on `kind`, ignoring the
-      // rest, so handing it everything is what the Lua actually receives.
+      // rest, so handing it everything is what it actually receives.
       // Filtering first would be behaviourally identical today and would
       // quietly diverge the moment the observer starts counting what it was
       // given rather than only what it recognises.

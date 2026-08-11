@@ -1,10 +1,8 @@
-//! Port of `sim/research_timeline.lua`.
-//!
 //! Canonical confirmed-event stream and annotation timeline for research
 //! exports.
 //!
 //! Rollback makes "the events that happened" a function of confirmation,
-//! not of presentation. `sim/rollback_events.lua` already separates a
+//! not of presentation. `crate::rollback_events` already separates a
 //! speculative window from confirmed steps and reports revocations; this
 //! module is the research-facing projection of that fact:
 //!
@@ -16,23 +14,22 @@
 //!     canonical boundary with the mapping error retained, never silently
 //!     snapped.
 //!
-//! ## The `rollback_events` view types (README §5.1)
+//! ## The `rollback_events` view types
 //!
 //! This module reads `RollbackWrappedEvent`/`RollbackEventDiff`/
 //! `RollbackEventStep`-shaped data (only their field *shapes*, via
 //! `event.id`/`event.domain`/`event.tick`/`event.ordinal`, `diff.added`/
 //! `.replaced`/`.revoked`, `step.tick`/`.start_boundary`/`.end_boundary`/
-//! `.match_events`/`.combat_events`/`.lifecycle_events` in the Lua
-//! original), never anything from `rollback_events`'s own resim/replay
-//! logic. `sim::rollback_events` (`sim/rollback_events.lua`) is a separate,
-//! concurrently-ported module this crate does not depend on here, so
-//! [`RollbackEvent`], [`RollbackEventReplacement`], [`RollbackEventDiff`],
-//! and [`RollbackEventStep`] below are narrow local views, exactly the
-//! precedent the README documents for `metrics`/`bot`/`aerial`'s
-//! `MatchStateView` structs. Whoever stabilizes `sim::rollback_events`
-//! resolves this the same way §5.1 asks for `sim::match`: either this
-//! module switches to the real types, or the views survive as deliberately
-//! narrow read interfaces declared once in a shared module.
+//! `.match_events`/`.combat_events`/`.lifecycle_events`), never anything
+//! from `rollback_events`'s own resim/replay logic. This module does not
+//! depend on `crate::rollback_events` directly, so [`RollbackEvent`],
+//! [`RollbackEventReplacement`], [`RollbackEventDiff`], and
+//! [`RollbackEventStep`] below are narrow local views, the same pattern
+//! `metrics`/`bot`/`aerial`'s `MatchStateView` structs already use. Whoever
+//! unifies these resolves it the same way `sim::match` eventually did:
+//! either this module switches to the real `crate::rollback_events` types,
+//! or the views survive as deliberately narrow read interfaces declared
+//! once in a shared module.
 
 use crate::fixed_clock;
 use crate::input_frame;
@@ -76,8 +73,8 @@ pub fn domains() -> Vec<String> {
 // `rollback_events` view types (module doc comment).
 // ---------------------------------------------------------------------
 
-/// A local view of `rollback_events.lua`'s `RollbackWrappedEvent`. See the
-/// module doc comment.
+/// A local view of `crate::rollback_events`'s `RollbackWrappedEvent`. See
+/// the module doc comment.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RollbackEvent {
     /// Rollback-assigned event id.
@@ -90,7 +87,7 @@ pub struct RollbackEvent {
     pub ordinal: i64,
 }
 
-/// A local view of `rollback_events.lua`'s replacement entry (`{ before,
+/// A local view of `crate::rollback_events`'s replacement entry (`{ before,
 /// after }`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct RollbackEventReplacement {
@@ -100,7 +97,7 @@ pub struct RollbackEventReplacement {
     pub after: RollbackEvent,
 }
 
-/// A local view of `rollback_events.lua`'s `RollbackEventDiff`.
+/// A local view of `crate::rollback_events`'s `RollbackEventDiff`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RollbackEventDiff {
     /// Newly speculative events.
@@ -111,7 +108,7 @@ pub struct RollbackEventDiff {
     pub revoked: Vec<RollbackEvent>,
 }
 
-/// A local view of `rollback_events.lua`'s `RollbackEventStep`.
+/// A local view of `crate::rollback_events`'s `RollbackEventStep`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RollbackEventStep {
     /// The confirmed tick this step covers.
@@ -123,7 +120,7 @@ pub struct RollbackEventStep {
     /// Soccer-domain events confirmed this tick.
     pub match_events: Vec<RollbackEvent>,
     /// Combat-domain events confirmed this tick (empty when combat is
-    /// inactive — mirrors the Lua original's `step.combat_events or {}`).
+    /// inactive).
     pub combat_events: Vec<RollbackEvent>,
     /// Lifecycle-domain events confirmed this tick.
     pub lifecycle_events: Vec<RollbackEvent>,
@@ -445,8 +442,8 @@ pub struct ResearchTimeline {
     pub confirmed_boundary: i64,
     /// Accumulated confirmed rows, unsorted and unvalidated — [`export`]
     /// produces the canonical, validated, sorted view. `pub` so a test can
-    /// exercise the "duplicate total key" failure path directly, mirroring
-    /// the Lua spec's `timeline._rows[#timeline._rows + 1] = ...`.
+    /// exercise the "duplicate total key" failure path directly by pushing
+    /// a row straight onto this field.
     pub rows: Vec<Value>,
     /// Ids of events already promoted to confirmed rows.
     pub confirmed: Vec<String>,
@@ -788,8 +785,7 @@ pub fn validate_stream(stream: &Value) -> Result<()> {
     Ok(())
 }
 
-/// A wall clock's mapping onto the canonical tick space, replicated from
-/// `ResearchBoundaryClock`'s LuaCATS annotation.
+/// A wall clock's mapping onto the canonical tick space.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ResearchBoundaryClock {
     /// Wall-clock time of `first_boundary_tick`, in milliseconds.

@@ -1,17 +1,13 @@
-//! Port of `sim/tuning.lua`.
-//!
 //! Runtime-tunable gameplay knobs, for the in-match tuning panel (F1). The
 //! sim reads live values through a [`Tuning`] instance; defaults here ARE the
 //! shipped balance, so a fresh match plays identically to the constants they
 //! replaced. Pure module: no I/O — (de)serialization is string-based and the
 //! game layer decides where bytes go.
 //!
-//! The Lua original keeps this as a single mutable module-level singleton
-//! (`tuning.values`), which every other `sim/` module reads through a shared
-//! global. AGENTS.md §3 forbids stray global mutable state outside LÖVE
-//! callbacks, so this port makes the registry an explicit value,
-//! [`Tuning`], that callers thread through instead of importing a singleton.
-//! The knob data, defaults, and behavior are otherwise a mechanical port.
+//! AGENTS.md §3 forbids stray global mutable state,
+//! so the registry is an explicit value, [`Tuning`], that callers thread
+//! through instead of a shared mutable global — every other `sim` module
+//! reads live values through the instance it's given.
 
 use indexmap::IndexMap;
 
@@ -415,8 +411,8 @@ pub static KNOBS: &[Knob] = &[
 
 /// A live registry of tuning knob values.
 ///
-/// Mirrors the Lua `tuning.values`/`tuning.by_key` pair, but as an owned
-/// value rather than a module-level singleton (see the module doc).
+/// An owned value rather than a module-level singleton (see the module
+/// doc).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tuning {
     values: IndexMap<&'static str, f64>,
@@ -537,8 +533,7 @@ impl Tuning {
     }
 }
 
-/// Parse one `KEY=value` line under the same grammar as the Lua pattern
-/// `^([%w_]+)=([%-%d%.eE]+)$`: the key is alphanumeric/underscore, the value
+/// Parse one `KEY=value` line: the key is alphanumeric/underscore, the value
 /// is restricted to digits, `-`, `.`, `e`, and `E`. Returns `None` if the
 /// line does not match.
 fn parse_knob_line(line: &str) -> Option<(&str, &str)> {

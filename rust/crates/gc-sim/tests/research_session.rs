@@ -1,10 +1,10 @@
-//! Port of `spec/sim/research_session_spec.lua`.
+//! Tests for `gc_sim::research_session`.
 //!
-//! `example_package.lua`'s `completed_session`/`withdrawn_session`/
-//! `withdrawal_tombstone` fixtures are reproduced locally: this spec never
-//! calls the trace/rollback-derived fixture functions, only the
-//! envelope/tombstone builders (which take a bare `trace_id` string, not a
-//! real trace manifest).
+//! The `completed_session`/`withdrawn_session`/`withdrawal_tombstone`
+//! fixtures are reproduced locally: this file never calls the
+//! trace/rollback-derived fixture functions, only the envelope/tombstone
+//! builders (which take a bare `trace_id` string, not a real trace
+//! manifest).
 
 use gc_sim::research_schema::Value;
 use gc_sim::research_session;
@@ -40,7 +40,7 @@ fn field<'a>(value: &'a Value, name: &str) -> &'a Value {
     Value::record_get(value.as_record().expect("record value"), name).expect("field present")
 }
 
-/// Mirrors `spec/fixtures/research/example_package.lua`'s `base_envelope`.
+/// Builds the base session envelope fixture used across this file's tests.
 fn base_envelope(trace_id: &str) -> Value {
     record(vec![
         ("schema_version", Value::Number(1.0)),

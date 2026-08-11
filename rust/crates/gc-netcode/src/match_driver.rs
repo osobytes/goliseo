@@ -1,5 +1,3 @@
-//! Port of `game/online/match_driver.lua`.
-//!
 //! One [`MatchDriver`] drives one peer's match: it polls the star transport,
 //! authors the rows it owns, sequences host authority, feeds real arrivals
 //! into the OMP-2 rollback session ([`gc_sim::rollback_session`]), advances
@@ -7,55 +5,50 @@
 //! boundary hashes, and ends with one typed terminal status
 //! ([`MatchDriverStatus`]).
 //!
-//! # Clocks (see the Lua original's full account)
+//! # Clocks
 //!
 //! Three clocks are distinct: the **driver step** `T` (one per [`advance`]
 //! call), the **transport tick** `T + DELAY_TICKS`, and the **input tick**
 //! `first_input_tick + T`. A sample taken during driver step `T` is
 //! authority for input tick `first_input_tick + T + DELAY_TICKS`.
 //!
-//! # Why this file is a partial port, and how it stays honest about that
+//! # Local placeholders and duplicated logic
 //!
-//! `match_driver.lua` requires five modules this file cannot import:
-//! `game.online.coordinator`, `game.online.protocol`, `game.online.live_slot`
-//! (all `NOT YET PORTED` placeholders in this crate, owned by concurrent
-//! agents — see `crate::coordinator`, `crate::protocol`), and
-//! `game.transport.contract` (permanently TypeScript-owned per
-//! `v2/README.md` §2; see `crate::fault_transport`'s module doc for why its
-//! shapes are restated there instead).
+//! This file predates `crate::coordinator`, `crate::live_slot`, and
+//! `crate::protocol`, and has not been updated to depend on them directly,
+//! so several pieces of it still restate logic those modules now own
+//! outright:
 //!
-//! Per this file's brief: *"code against the Lua's contract; if one is
-//! still a placeholder when you need it, stub the affected assertions
-//! `#[ignore]`d naming the module."* Two things follow from that here:
-//!
-//! 1. **Trivial 1:1 wrappers stay local.** `live_slot.slot_id`/`slot_index`/
-//!    `switch_edge` are exactly [`gc_sim::input_frame`]'s own `SlotId`/
-//!    `slot`/`has_edge` under a different name (verified by reading
-//!    `game/online/live_slot.lua:73-90,165-171` — no ranking, no carrier
-//!    derivation). [`slot_id_of`]/[`slot_index_of`]/[`switch_edge`] restate
-//!    them directly, the same duplication precedent `input_protocol.rs` sets
-//!    for `protocol.lua`'s bound constants. Likewise `protocol.owned_slots`
-//!    is a pure filter over assignment data this file already defines a
-//!    placeholder shape for ([`owned_slots`]).
+//! 1. **Trivial 1:1 restatements.** [`slot_id_of`]/[`slot_index_of`]/
+//!    [`switch_edge`] restate `crate::live_slot::slot_id`/`slot_index`/
+//!    `switch_edge` exactly — no ranking, no carrier derivation, just the
+//!    same lookup under a different name, the same duplication precedent
+//!    `input_protocol.rs` sets for the rest of the wire's bound constants.
+//!    [`owned_slots`] is likewise a pure filter over the assignment shape
+//!    this file defines its own placeholder for.
 //! 2. **Everything else is injected, not duplicated.** The nearest-to-ball
-//!    ranking and carrier derivation (`live_slot.carrier`/`rank`), the live
-//!    slot transition rule (`coordinator.next_live_slot`), the host's
-//!    authority canonicalization (`input_protocol.canonical_host_batch` —
-//!    itself omitted from `input_protocol.rs` for the identical reason, see
-//!    that file's module doc), and the coordinator's slot-driver view
-//!    (`coordinator.slot_drivers`) are genuine business logic this crate
-//!    must not reimplement. [`MatchDriverRules`] states their contract as a
-//!    trait so every other function in this file — tick bookkeeping,
-//!    batching, redundancy, checkpoint policy, the settle phase — is real,
-//!    tested code today. A caller supplies the real implementation once
-//!    `coordinator.rs`/`live_slot.rs`/`protocol.rs` land; until then, tests
-//!    inject a fake. This mirrors README §5.1's "Match-shaped view structs"
-//!    precedent for a module ported ahead of its dependency.
+//!    ranking and carrier derivation (`crate::live_slot::carrier`/`rank`),
+//!    the live slot transition rule (`crate::coordinator::next_live_slot`),
+//!    the host's authority canonicalization
+//!    (`input_protocol::canonical_host_batch`), and the coordinator's
+//!    slot-driver view (`crate::coordinator::slot_drivers`) are genuine
+//!    business logic this file must not reimplement. [`MatchDriverRules`]
+//!    states their contract as a trait instead of a direct dependency, so
+//!    every other function in this file — tick bookkeeping, batching,
+//!    redundancy, checkpoint policy, the settle phase — stays testable
+//!    against a fake without pulling in the coordinator's full session
+//!    state machine. `crate::match_driver_fixture::DriverRules` supplies
+//!    the real implementation, delegating to `crate::live_slot`,
+//!    `crate::coordinator`, and `input_protocol`.
 //!
 //! [`CoordinatorFreeze`], [`SessionManifest`], and [`SlotAssignment`] are
-//! likewise narrow local placeholders for shapes `protocol.lua`/
-//! `coordinator.lua` really own; whoever ports those files should replace
-//! them with the real types (README §5.1).
+//! likewise narrow local placeholders for shapes `crate::coordinator`/
+//! `crate::protocol` define directly (`coordinator::Freeze` and a
+//! `protocol::Value`-encoded manifest). TODO: whoever wires `MatchDriver` to
+//! depend on those modules directly should replace these placeholders with
+//! the real types instead of converting between them, the way
+//! `crate::match_driver_fixture::to_driver_freeze`/`to_driver_manifest`
+//! currently do.
 
 use crate::fault_transport::{
     StarTransportAdapter, TransportChannel, TransportError, TransportErrorCode, TransportMessage,
@@ -75,14 +68,15 @@ use gc_sim::slot_input::{self, MatchSlotSource, MatchSlotSourceKind, SlotInputPr
 use indexmap::{IndexMap, IndexSet};
 
 // ---------------------------------------------------------------------------
-// `transport_contract.lua` constants this file needs (see module doc: the
-// full contract has no Rust home; only the small bounds are duplicated,
-// exactly as `input_protocol.rs` already does for the rest of it).
+// TypeScript-owned `transport_contract` constants this file needs (see
+// module doc: the full contract has no Rust home; only the small bounds are
+// duplicated, exactly as `input_protocol.rs` already does for the rest of
+// it).
 // ---------------------------------------------------------------------------
 
-/// Mirrors `transport_contract.MAX_QUEUE_LIMIT` (`game/transport/contract.lua:161`).
+/// The transport's bounded per-channel queue limit.
 const TRANSPORT_MAX_QUEUE_LIMIT: i64 = 256;
-/// Mirrors `transport_contract.HOST_PEER_ID` (`game/transport/contract.lua:166`).
+/// The host's fixed peer id on the transport link.
 const HOST_PEER_ID: &str = "host";
 
 // ---------------------------------------------------------------------------
@@ -90,13 +84,13 @@ const HOST_PEER_ID: &str = "host";
 // ---------------------------------------------------------------------------
 
 /// Fixed tick delay between a local input sample and its earliest legal
-/// send. Mirrors `match_driver.DELAY_TICKS`.
+/// send.
 pub const DELAY_TICKS: i64 = input_protocol::FAIRNESS_DELAY_TICKS;
 /// Default driver steps between published boundary hashes.
 pub const DEFAULT_HASH_INTERVAL_TICKS: i64 = 30;
 /// Consecutive disagreeing checkpoints before a `hash_mismatch` terminal.
 pub const MAX_HASH_MISMATCHES: i64 = 3;
-/// One transport poll's row budget. Mirrors `transport_contract.MAX_QUEUE_LIMIT`.
+/// One transport poll's row budget.
 pub const POLL_BATCH_LIMIT: i64 = TRANSPORT_MAX_QUEUE_LIMIT;
 /// How many contiguous input ticks one targeted host repair covers.
 pub const REPAIR_SPAN_TICKS: i64 = 4;
@@ -109,7 +103,7 @@ pub const SETTLE_TIMEOUT_SECONDS: f64 = 2.0;
 // Terminal status
 // ---------------------------------------------------------------------------
 
-/// A [`MatchDriver`]'s lifecycle status. Mirrors `MatchDriverStatus`.
+/// A [`MatchDriver`]'s lifecycle status.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MatchDriverStatus {
     /// Accepting further [`advance`] calls.
@@ -136,9 +130,8 @@ pub enum MatchDriverStatus {
 }
 
 /// Which family of failure to report into the session coordinator, if any.
-/// Mirrors `CoordinatorNetcodeFailure` (three literals actually used by
-/// `match_driver.lua`'s `terminate` call sites: `desync`, `input_channel`,
-/// `late_input`).
+/// Three literals actually used at this file's `terminate` call sites:
+/// `desync`, `input_channel`, `late_input`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CoordinatorNetcodeFailure {
     /// Peers disagreed on a boundary they both hashed.
@@ -150,7 +143,7 @@ pub enum CoordinatorNetcodeFailure {
 }
 
 /// A driver's terminal outcome, present exactly once [`status`] leaves
-/// [`MatchDriverStatus::Active`]. Mirrors `MatchDriverTerminal`.
+/// [`MatchDriverStatus::Active`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct MatchDriverTerminal {
     /// The terminal status reached.
@@ -163,8 +156,7 @@ pub struct MatchDriverTerminal {
     pub tick: Option<i64>,
 }
 
-/// One confirmed boundary's published hash and live-slot map. Mirrors
-/// `MatchDriverCheckpoint`.
+/// One confirmed boundary's published hash and live-slot map.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MatchDriverCheckpoint {
     /// Confirmed boundary tick, in input-tick space.
@@ -176,12 +168,12 @@ pub struct MatchDriverCheckpoint {
 }
 
 // ---------------------------------------------------------------------------
-// Local placeholders for `coordinator.lua`/`protocol.lua` shapes (see module
-// doc, and README §5.1's "Match-shaped view structs" precedent).
+// Local placeholders for `crate::coordinator`/`crate::protocol` shapes (see
+// module doc).
 // ---------------------------------------------------------------------------
 
 /// Which kind of producer authors one canonical slot. Mirrors the
-/// `producer_kind` field of `coordinator.lua`'s assignment shape.
+/// `producer_kind` field of `crate::coordinator`'s assignment shape.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProducerKind {
     /// A connected peer (human).
@@ -191,7 +183,7 @@ pub enum ProducerKind {
 }
 
 /// One canonical slot's frozen producer assignment. A narrow placeholder for
-/// `coordinator.lua`'s real assignment shape — see the module doc.
+/// `crate::coordinator`'s real assignment shape — see the module doc.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SlotAssignment {
     /// Which kind of producer this is.
@@ -204,8 +196,8 @@ pub struct SlotAssignment {
 }
 
 /// The frozen session state a [`MatchDriver`] is constructed from. A narrow
-/// placeholder for `coordinator.lua`'s `CoordinatorFreeze` — see the module
-/// doc. Every field here is one `match_driver.lua` actually reads.
+/// placeholder for `crate::coordinator::Freeze` — see the module doc. Every
+/// field here is one this file actually reads.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CoordinatorFreeze {
     /// Hash identifying the frozen session manifest.
@@ -222,8 +214,8 @@ pub struct CoordinatorFreeze {
     pub live: IndexMap<String, SlotId>,
 }
 
-/// The frozen session manifest. A narrow placeholder for `protocol.lua`'s
-/// `SessionManifest` — see the module doc. `match_driver.lua` reads only
+/// The frozen session manifest. A narrow placeholder for the manifest
+/// `crate::protocol` defines — see the module doc. This file reads only
 /// `session_id` off it directly (everything else routes through
 /// [`CoordinatorFreeze`], which already carries the frozen `manifest_id`).
 #[derive(Clone, Debug, PartialEq)]
@@ -232,7 +224,7 @@ pub struct SessionManifest {
     pub session_id: String,
 }
 
-/// Which side of the session one driver is. Mirrors `SessionRole`.
+/// Which side of the session one driver is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DriverRole {
     /// The sequencing peer.
@@ -241,10 +233,11 @@ pub enum DriverRole {
     Guest,
 }
 
-/// `protocol.owned_slots(assignments, peer_id)`: every slot `peer_id` owns,
-/// in canonical order. A pure filter over data this file already defines
-/// the shape of (see module doc point 1); not `protocol.lua`'s canonical
-/// identity/hashing logic.
+/// A local restatement of `crate::protocol::owned_slots`, over this file's
+/// own placeholder [`SlotAssignment`] shape rather than `crate::protocol`'s
+/// own: every slot `peer_id` owns, in canonical order. A pure filter over
+/// data this file already defines the shape of (see module doc point 1);
+/// not `crate::protocol`'s canonical identity/hashing logic.
 #[must_use]
 pub fn owned_slots(assignments: &[SlotAssignment; 8], peer_id: &str) -> Vec<SlotId> {
     let mut result = Vec::new();
@@ -257,9 +250,9 @@ pub fn owned_slots(assignments: &[SlotAssignment; 8], peer_id: &str) -> Vec<Slot
     result
 }
 
-/// `live_slot.slot_id(index)`: the canonical slot identity at 1-based
-/// `index`. Mechanical restatement of [`gc_sim::input_frame::slot`] (see
-/// module doc point 1).
+/// `crate::live_slot::slot_id(index)`: the canonical slot identity at
+/// 1-based `index`. Mechanical restatement of [`gc_sim::input_frame::slot`]
+/// (see module doc point 1).
 ///
 /// # Panics
 ///
@@ -271,9 +264,9 @@ pub fn slot_id_of(index: i64) -> SlotId {
         .id
 }
 
-/// `live_slot.slot_index(slot)`: the 1-based canonical index for `slot`.
-/// Mechanical restatement of [`gc_sim::input_frame::slot`]'s own table (see
-/// module doc point 1).
+/// `crate::live_slot::slot_index(slot)`: the 1-based canonical index for
+/// `slot`. Mechanical restatement of [`gc_sim::input_frame::slot`]'s own
+/// table (see module doc point 1).
 #[must_use]
 pub fn slot_index_of(slot: SlotId) -> i64 {
     match slot {
@@ -288,7 +281,7 @@ pub fn slot_index_of(slot: SlotId) -> i64 {
     }
 }
 
-/// `live_slot.switch_edge(sample)`: whether the `switch` edge fired.
+/// `crate::live_slot::switch_edge(sample)`: whether the `switch` edge fired.
 /// Mechanical restatement of [`gc_sim::input_frame::has_edge`] (see module
 /// doc point 1).
 ///
@@ -302,12 +295,12 @@ pub fn switch_edge(sample: &InputSample) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// The injected environment: `live_slot.lua`'s ranking/carrier logic,
-// `coordinator.lua`'s transition rule and slot-driver view, and
-// `input_protocol.canonical_host_batch` (see module doc point 2).
+// The injected environment: `crate::live_slot`'s ranking/carrier logic,
+// `crate::coordinator`'s transition rule and slot-driver view, and
+// `input_protocol::canonical_host_batch` (see module doc point 2).
 // ---------------------------------------------------------------------------
 
-/// One ranked candidate for a live-slot handoff. Mirrors `LiveSlotRankEntry`.
+/// One ranked candidate for a live-slot handoff.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LiveSlotRankEntry {
     /// The candidate slot.
@@ -318,8 +311,7 @@ pub struct LiveSlotRankEntry {
     pub distance_sq: f64,
 }
 
-/// Inputs to [`MatchDriverRules::transition`]. Mirrors
-/// `LiveSlotTransitionOptions`.
+/// Inputs to [`MatchDriverRules::transition`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LiveSlotTransitionOptions {
     /// The canonical `switch` edge of the live slot's row.
@@ -330,8 +322,8 @@ pub struct LiveSlotTransitionOptions {
     pub previous_carrier: Option<SlotId>,
 }
 
-/// The outcome of one live-slot transition. Mirrors the table
-/// `live_slot.transition` returns.
+/// The outcome of one live-slot transition, mirroring the shape
+/// `crate::live_slot::transition` returns.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LiveSlotTransition {
     /// The canonical `switch` edge, restated.
@@ -344,10 +336,9 @@ pub struct LiveSlotTransition {
     pub ranked: Vec<LiveSlotRankEntry>,
 }
 
-/// Opaque placeholder for `CoordinatorSlotDriver`. Its real shape is defined
-/// in `game/online/coordinator.lua`, which this file does not read (out of
-/// scope — see module doc); replace with the real type once `coordinator.rs`
-/// lands.
+/// Opaque placeholder for `crate::coordinator::SlotDriver`. This file does
+/// not depend on `crate::coordinator` directly (see module doc); replace
+/// with the real type if `MatchDriver` is ever wired to depend on it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CoordinatorSlotDriver {
     /// The producer id driving this slot right now, if any is known.
@@ -355,8 +346,8 @@ pub struct CoordinatorSlotDriver {
 }
 
 /// Machine-readable reason [`MatchDriverRules::canonical_host_batch`]
-/// refused a batch. Mirrors the `code` `input_protocol.canonical_host_batch`
-/// returns.
+/// refused a batch. Mirrors the `code`
+/// `crate::match_driver_fixture::DriverRules::canonical_host_batch` returns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HostBatchErrorCode {
     /// A row named a slot its sender does not own.
@@ -379,8 +370,7 @@ pub struct HostBatchError {
     pub message: String,
 }
 
-/// One [`MatchDriverRules::canonical_host_batch`] request. Mirrors the
-/// options table `input_protocol.canonical_host_batch` takes.
+/// One [`MatchDriverRules::canonical_host_batch`] request.
 pub struct HostBatchRequest<'a> {
     /// The frozen session manifest.
     pub manifest: &'a SessionManifest,
@@ -402,44 +392,44 @@ pub struct HostBatchRequest<'a> {
     pub arrivals: &'a [InputPacketArrival],
 }
 
-/// The narrow slice of `game/online/live_slot.lua`,
-/// `game/online/coordinator.lua`, and `input_protocol.canonical_host_batch`
-/// that [`MatchDriver`] needs but this crate cannot yet import — see the
-/// module doc for why. A caller supplies the real implementation once those
-/// modules land; a test supplies a fake today.
+/// The narrow slice of `crate::live_slot`, `crate::coordinator`, and
+/// `crate::match_driver_fixture::DriverRules::canonical_host_batch` that
+/// [`MatchDriver`] needs without depending on those modules directly — see
+/// the module doc for why. `crate::match_driver_fixture::DriverRules`
+/// supplies the real implementation; a test supplies a fake.
 ///
 /// **Do not add gameplay/ranking/hashing logic to an implementation of this
-/// trait inside this crate.** That is exactly the work `live_slot.rs`,
-/// `coordinator.rs`, and `protocol.rs` own; an implementation here should
-/// only ever delegate to them once they exist.
+/// trait inside this crate.** That is exactly the work `crate::live_slot`,
+/// `crate::coordinator`, and `crate::protocol` own; an implementation here
+/// should only ever delegate to them.
 pub trait MatchDriverRules {
-    /// Mirrors `live_slot.carrier` (`game/online/live_slot.lua:129`).
+    /// Mirrors `crate::live_slot::carrier`.
     fn carrier(&self, state: &MatchState) -> Option<SlotId>;
-    /// Mirrors `live_slot.transition` (`game/online/live_slot.lua:149`).
+    /// Mirrors `crate::live_slot::transition`.
     fn transition(
         &self,
         state: &MatchState,
         options: LiveSlotTransitionOptions,
     ) -> LiveSlotTransition;
-    /// Mirrors `coordinator.next_live_slot`.
+    /// Mirrors `crate::coordinator::next_live_slot`.
     fn next_live_slot(
         &self,
         owned: &[SlotId],
         current: SlotId,
         transition: &LiveSlotTransition,
     ) -> SlotId;
-    /// Mirrors `coordinator.slot_drivers(freeze, live)`.
+    /// Mirrors `crate::coordinator::slot_drivers(freeze, live)`.
     fn slot_drivers(
         &self,
         freeze: &CoordinatorFreeze,
         live: &IndexMap<String, SlotId>,
     ) -> Vec<(SlotId, CoordinatorSlotDriver)>;
-    /// Mirrors `input_protocol.canonical_host_batch(options, arrivals)`.
+    /// Mirrors `crate::match_driver_fixture::DriverRules::canonical_host_batch(options, arrivals)`.
     ///
     /// # Errors
     ///
-    /// Returns a [`HostBatchError`] the same way the Lua's `nil, err, code`
-    /// does: a caller must handle it, not treat it as a panic.
+    /// Returns a [`HostBatchError`] that the caller must handle, not treat
+    /// as a panic.
     fn canonical_host_batch(
         &self,
         request: HostBatchRequest<'_>,
@@ -450,7 +440,7 @@ pub trait MatchDriverRules {
 // Driver shapes
 // ---------------------------------------------------------------------------
 
-/// Construction options for [`new`]. Mirrors `MatchDriverOptions`.
+/// Construction options for [`new`].
 pub struct MatchDriverOptions {
     /// Which side of the session this driver runs.
     pub role: DriverRole,
@@ -480,7 +470,7 @@ pub struct MatchDriverOptions {
     pub rules: Box<dyn MatchDriverRules>,
 }
 
-/// One [`advance`] call's outputs. Mirrors `MatchDriverBatch`.
+/// One [`advance`] call's outputs.
 pub struct MatchDriverBatch {
     /// Driver step that produced this batch.
     pub step: i64,
@@ -508,8 +498,7 @@ pub struct MatchDriverBatch {
     pub status: MatchDriverStatus,
 }
 
-/// A pending, delayed host-local collector entry. Mirrors
-/// `MatchDriverPending`.
+/// A pending, delayed host-local collector entry.
 #[derive(Clone)]
 pub struct MatchDriverPending {
     /// Driver step on which the collector may read this packet.
@@ -522,8 +511,7 @@ pub struct MatchDriverPending {
     pub producer_id: String,
 }
 
-/// One arrived input packet, still to be validated/applied. Mirrors
-/// `InputPacketArrival`.
+/// One arrived input packet, still to be validated/applied.
 #[derive(Clone)]
 pub struct InputPacketArrival {
     /// The decoded packet.
@@ -537,8 +525,7 @@ pub struct InputPacketArrival {
     pub transport_peer_id: String,
 }
 
-/// A full read of [`MatchDriver`]'s observable state. Mirrors
-/// `MatchDriverDiagnostics`.
+/// A full read of [`MatchDriver`]'s observable state.
 pub struct MatchDriverDiagnostics {
     /// Present-boundary captures so far. See [`MatchDriver::snapshot_captures`].
     pub snapshot_captures: i64,
@@ -604,11 +591,11 @@ pub struct MatchDriver {
     ///
     /// A diagnostic, not simulation state — it never affects a hash. It exists
     /// because "authoring only your own control slot costs no extra snapshot
-    /// work" is a real invariant with no other observable: the Lua spec asserts
-    /// it by replacing `rollback_session.current_snapshot` at runtime, which
-    /// Rust cannot do without putting a trait object in this module's per-tick
-    /// path. A counter is the smaller change, and unlike a test mock it is also
-    /// readable on a live session.
+    /// work" is a real invariant with no other observable: the original test
+    /// suite asserted it by replacing `rollback_session.current_snapshot` at
+    /// runtime, a technique Rust cannot do without putting a trait object in
+    /// this module's per-tick path. A counter is the smaller change, and
+    /// unlike a test mock it is also readable on a live session.
     ///
     /// `Cell` because the capture happens behind `&MatchDriver`; making it `&mut`
     /// would cascade through call sites that have no other reason to need one.
@@ -711,10 +698,9 @@ pub struct MatchDriver {
 // Small helpers
 // ---------------------------------------------------------------------------
 
-/// Monotonic seconds for the settle phase's wall-clock bound. Mirrors
-/// `default_clock`; LÖVE's timer has no Rust equivalent here, so this uses
-/// wall-clock seconds since the Unix epoch. Nothing simulated reads this: it
-/// can only end a settle phase early, never change a tick.
+/// Monotonic seconds for the settle phase's wall-clock bound: wall-clock
+/// seconds since the Unix epoch. Nothing simulated reads this: it can only
+/// end a settle phase early, never change a tick.
 #[must_use]
 pub fn default_clock() -> f64 {
     std::time::SystemTime::now()
@@ -727,10 +713,9 @@ pub fn default_clock() -> f64 {
 /// seed, derived from the frozen match seed so every peer can name it
 /// without negotiation. Park-Miller states are `1..=2^31-2`.
 ///
-/// Rule 5.2 (README): Lua's `%` is floored; both operands here are always
-/// non-negative (`seed` is a frozen non-negative match seed and
-/// `slot_index * 7919` is non-negative for every canonical `slot_index`), so
-/// Rust's truncating `%` already agrees and no `rem_euclid` is needed.
+/// Both operands here are always non-negative (`seed` is
+/// a frozen non-negative match seed and `slot_index * 7919` is non-negative
+/// for every canonical `slot_index`), so no `rem_euclid` is needed.
 #[must_use]
 pub fn derived_ai_seed(seed: i64, slot_index: i64) -> i64 {
     let mixed = (seed % 2_147_483_629) * 31 + slot_index * 7919;
@@ -903,7 +888,7 @@ fn prune_live(driver: &mut MatchDriver, floor: i64) {
 }
 
 /// The slot that carries a human's authored bits at `input_tick`: the live
-/// slot from [`DELAY_TICKS`] earlier. Mirrors `match_driver.control_slot`.
+/// slot from [`DELAY_TICKS`] earlier.
 ///
 /// # Panics
 ///
@@ -922,7 +907,6 @@ pub fn control_slot(driver: &MatchDriver, producer_id: &str, input_tick: i64) ->
 }
 
 /// Live slot per human at `input_tick` (the current live tick when `None`).
-/// Mirrors `match_driver.live`.
 ///
 /// # Panics
 ///
@@ -1802,7 +1786,7 @@ fn publish_checkpoints(driver: &mut MatchDriver, batch: &mut MatchDriverBatch) {
     }
 }
 
-/// Compare a peer's published checkpoint. Mirrors `match_driver.observe_checkpoint`.
+/// Compare a peer's published checkpoint.
 ///
 /// Returns `false` exactly when the boundary was hashed by this peer and
 /// disagreed.
@@ -1828,7 +1812,7 @@ pub fn observe_checkpoint(driver: &mut MatchDriver, tick: i64, hash: &str) -> bo
     false
 }
 
-/// Every checkpoint published so far. Mirrors `match_driver.checkpoints`.
+/// Every checkpoint published so far.
 #[must_use]
 pub fn checkpoints(driver: &MatchDriver) -> Vec<MatchDriverCheckpoint> {
     driver.checkpoints.clone()
@@ -2012,14 +1996,13 @@ fn settle(driver: &mut MatchDriver) {
     );
 }
 
-/// True once the final boundary was confirmed. Mirrors `match_driver.settled`.
+/// True once the final boundary was confirmed.
 #[must_use]
 pub fn settled(driver: &MatchDriver) -> bool {
     driver.settled
 }
 
 /// The final boundary, in input-tick space, once full time is reached.
-/// Mirrors `match_driver.full_time_boundary`.
 #[must_use]
 pub fn full_time_boundary(driver: &MatchDriver) -> Option<i64> {
     driver.full_time_boundary
@@ -2059,13 +2042,13 @@ fn prime(driver: &mut MatchDriver) {
     }
 }
 
-/// Constructs a [`MatchDriver`]. Mirrors `match_driver.new`.
+/// Constructs a [`MatchDriver`].
 ///
 /// # Panics
 ///
-/// Panics on every producer invariant the Lua `assert`s (README rule 5.5):
-/// an empty peer id, an out-of-range hash interval/settle window/rollback
-/// window, or a freeze with an unassigned slot.
+/// Panics on every producer invariant this constructor asserts (ARCHITECTURE.md
+/// §3 rule 5): an empty peer id, an out-of-range hash interval/settle
+/// window/rollback window, or a freeze with an unassigned slot.
 #[must_use]
 pub fn new(options: MatchDriverOptions) -> MatchDriver {
     let freeze = options.freeze;
@@ -2350,7 +2333,7 @@ fn step_to(driver: &mut MatchDriver, batch: &mut MatchDriverBatch, input_tick: i
     }
 }
 
-/// One fixed 60 Hz driver step. Mirrors `match_driver.advance`.
+/// One fixed 60 Hz driver step.
 #[must_use]
 pub fn advance(driver: &mut MatchDriver, sample: Option<InputSample>) -> MatchDriverBatch {
     let input_tick = driver.first + driver.step;
@@ -2436,35 +2419,33 @@ pub fn advance(driver: &mut MatchDriver, sample: Option<InputSample>) -> MatchDr
 // Pure diagnostics
 // ---------------------------------------------------------------------------
 
-/// Current lifecycle status. Mirrors `match_driver.status`.
+/// Current lifecycle status.
 #[must_use]
 pub fn status(driver: &MatchDriver) -> MatchDriverStatus {
     driver.status
 }
 
-/// The terminal outcome, once reached. Mirrors `match_driver.terminal`.
+/// The terminal outcome, once reached.
 #[must_use]
 pub fn terminal(driver: &MatchDriver) -> Option<MatchDriverTerminal> {
     driver.terminal.clone()
 }
 
-/// An independent capture of the driver's current live boundary. Mirrors
-/// `match_driver.current_snapshot`.
+/// An independent capture of the driver's current live boundary.
 #[must_use]
 pub fn current_snapshot(driver: &MatchDriver) -> MatchSnapshot {
     rollback_session::current_snapshot(&driver.session)
 }
 
-/// An owned copy of a retained boundary. Mirrors `match_driver.snapshot`.
+/// An owned copy of a retained boundary.
 #[must_use]
 pub fn snapshot(driver: &MatchDriver, boundary: i64) -> RollbackSnapshotLookup {
     rollback_session::snapshot(&driver.session, session_tick(driver, boundary))
 }
 
-/// The coordinator's slot-driver view at the current live tick. Mirrors
-/// `match_driver.slot_drivers`. Delegates to the injected
-/// [`MatchDriverRules::slot_drivers`] (see module doc: `coordinator.lua` is
-/// out of scope here).
+/// The coordinator's slot-driver view at the current live tick. Delegates to
+/// the injected [`MatchDriverRules::slot_drivers`] (see module doc: this
+/// file does not depend on `crate::coordinator` directly).
 #[must_use]
 pub fn slot_drivers(driver: &MatchDriver) -> Vec<(SlotId, CoordinatorSlotDriver)> {
     let entry = driver
@@ -2475,8 +2456,7 @@ pub fn slot_drivers(driver: &MatchDriver) -> Vec<(SlotId, CoordinatorSlotDriver)
     driver.rules.slot_drivers(&driver.freeze, &entry)
 }
 
-/// A full read of this driver's observable state. Mirrors
-/// `match_driver.diagnostics`.
+/// A full read of this driver's observable state.
 #[must_use]
 pub fn diagnostics(driver: &MatchDriver) -> MatchDriverDiagnostics {
     let session = rollback_session::diagnostics(&driver.session);
