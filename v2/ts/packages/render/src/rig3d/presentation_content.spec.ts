@@ -31,10 +31,14 @@ import * as skeleton from "./skeleton.ts";
 import * as themes from "./themes.ts";
 
 const RIG = RIG_MEDIUM;
-const FIGURE = themes.FIGURES[0];
-if (FIGURE === undefined) {
+// Narrowed into its own non-optional const rather than relying on the guard:
+// `noUncheckedIndexedAccess` makes `FIGURES[0]` optional, and a module-level
+// narrowing does not follow the binding into the function bodies below.
+const FIGURE_OR_UNDEFINED = themes.FIGURES[0];
+if (FIGURE_OR_UNDEFINED === undefined) {
   throw new Error("presentation_content.spec.ts: themes.FIGURES must not be empty");
 }
+const FIGURE: themes.Figure = FIGURE_OR_UNDEFINED;
 
 const BONE_ORDER = skeleton.bones(RIG).map((b) => b.name);
 
