@@ -230,13 +230,56 @@ MIN_PRESENTATION_MAPPINGS=19
 # Comfortably below the counts when this gate was written: eslint reported on
 # 265 files, and prettier's own getFileInfo API says 288 of the 289 tracked
 # formattable files under ts/ are covered (pnpm-lock.yaml is the one ignored).
+#
+# LOWERING EITHER OF THESE IS A REVIEW EVENT. A static floor can always be
+# lowered in the same commit as the narrowing it was meant to catch -- that is
+# inherent to floors, not specific to this one. Lower them only when the
+# covered set legitimately shrank (a package left the workspace, a file type
+# stopped existing), and say which in the commit message. "The gate started
+# failing" is not that reason.
 MIN_TS_LINT_FILES=240
 MIN_TS_FORMAT_FILES=240
 
-# The file gate 7b asks `eslint --print-config` about. Deliberately one under
-# packages/render/src/rig3d/: #471 names that directory as where an unawaited
-# promise reaches a frame, so it is the place the rule most needs to be on.
+# The file gate 7b asks `eslint --print-config` about, over the CLI.
+# Deliberately one under packages/render/src/rig3d/: #471 names that directory
+# as where an unawaited promise reaches a frame, so it is the place the rule
+# most needs to be on.
+#
+# This is a CANARY, not the guarantee -- see check_eslint_rules_enabled(), and
+# read ESLINT_REQUIRED_RULES below first. A single probed file was the WHOLE
+# check when this gate was first written, and it was bypassable: an override
+# switching a rule off everywhere EXCEPT this directory left the file count
+# unchanged, this probe answering "ok", and the rule dead for 221 of 259
+# files. It is kept because it exercises eslint's CLI, a genuinely different
+# entry point from the API the exhaustive probe uses (AGENTS.md §9: never
+# trust one signal), not because one file is enough.
 ESLINT_RULE_PROBE_FILE="packages/render/src/rig3d/skeleton.ts"
+
+# The rules gate 7b requires at ERROR severity for EVERY file the lint run
+# reported on -- not for one file, not for one file per package.
+#
+# These three are what #471 was opened for, and none of them is relaxed
+# anywhere in ts/eslint.config.mjs: the documented spec/benchmark relaxations
+# cover the `no-unsafe-*` family, `unbound-method` and `no-console` only. So a
+# uniform, exhaustive assertion is the honest one, and it needs no per-package
+# table that a newly added package could be created outside of.
+ESLINT_REQUIRED_RULES="@typescript-eslint/no-floating-promises,@typescript-eslint/no-explicit-any,@typescript-eslint/no-unused-vars"
+
+# The peer range typescript-eslint declared when ts/tools/lint/ was written --
+# the workaround's whole justification, restated here so it expires by itself.
+#
+# ts/tools/lint/ exists only because this range excludes the `typescript@7`
+# the workspace builds with (TypeScript 7 is the native tsgo port and ships no
+# JS compiler API at all; see that package's tseslint.mjs). The day upstream
+# widens this range, the workaround is deletable -- and nothing would otherwise
+# tell us, because everything keeps working. So gate 7b reads the range back
+# from the installed package and fails when it changes.
+#
+# This cannot flake: it compares two strings, one of them from a
+# lockfile-pinned package.json, so it moves only when someone deliberately
+# bumps typescript-eslint. The failure is a prompt to re-read
+# ts/tools/lint/tseslint.mjs and delete it, not a defect report.
+EXPECTED_TSESLINT_TYPESCRIPT_PEER=">=4.8.4 <6.1.0"
 
 # ---------------------------------------------------------------------------
 # Small helpers
@@ -596,16 +639,211 @@ console.log(
 ' "$report"
 }
 
-# The second, independent guard on gate 7b, and the one that matters most.
+# THE guard on gate 7b, and the one that matters most.
 #
 # A type-aware lint run that has quietly lost its type information does not
 # fail -- `no-floating-promises` simply stops finding anything, and the gate
-# goes green over a codebase nobody is checking. So do not infer that the rules
-# are on from a clean run: ask eslint what configuration it will actually apply
-# to a real renderer source file, and require the three rules #471 names to be
-# at severity 2 (error). `--print-config` is eslint's own answer, resolved
-# through the same config cascade the run uses.
+# goes green over a codebase nobody is checking. Nor does a run whose config
+# switched the rule off: no errors is exactly what "no rule" looks like. So the
+# gate does not infer that the rules are on from a clean run. It asks ESLint
+# which configuration it resolves for EVERY file the run reported on, and
+# requires all of ESLINT_REQUIRED_RULES at severity 2 on every one of them.
+#
+# EVERY file, not a sample, because a sample was tried and was bypassable. The
+# first version of this gate probed one file (see ESLINT_RULE_PROBE_FILE) and
+# an override of the form
+#
+#     { files: ["**/*.ts"], ignores: ["packages/render/src/rig3d/**"],
+#       rules: { "@typescript-eslint/no-floating-promises": "off" } }
+#
+# left the file count unchanged, the probe answering "ok", the gate green --
+# and the rule dead for 221 of 259 files, including a real unawaited promise
+# planted in packages/app/src/app.ts. Sampling one file per package has the
+# same hole one level down (a subdirectory override, or a package created after
+# the list was written); an exhaustive check has no such list to fall behind.
+# It costs about half a second for the whole tree, because it resolves
+# configuration only and lints nothing. See self_test()'s
+# ts_lint_narrowing_scenario.
+#
+# Reports which PACKAGE lost which rule, not just that something did: with the
+# override above the detail reads `packages/app:no-floating-promises=54;...`.
+#
+# $1 is the eslint JSON report gate_ts_lint has already produced -- its file
+# list is the set to probe, so the two can never disagree about what was
+# covered.
 check_eslint_rules_enabled() {
+    local report="$1"
+    local failures=0
+
+    # (1) The CLI canary. Independent implementation from (2) below -- eslint's
+    #     command line rather than its Node API -- so a defect in either path
+    #     cannot silence both.
+    check_eslint_rules_cli_canary || failures=1
+
+    # (2) The exhaustive check.
+    local files=()
+    mapfile -t files < <(node --input-type=module -e '
+import { readFileSync } from "node:fs";
+for (const result of JSON.parse(readFileSync(process.argv[1], "utf8"))) {
+  console.log(result.filePath);
+}
+' "$report" 2>/dev/null)
+
+    if [ "${#files[@]}" -eq 0 ]; then
+        fail_msg "could not read any file paths out of the eslint report -- a rule probe that iterates zero files is not a pass"
+        return 1
+    fi
+
+    local terminator
+    terminator="$(probe_eslint_rule_severity "$ts_dir" "${files[@]}")"
+    check_eslint_rules_terminator "$terminator" || failures=1
+
+    return "$failures"
+}
+
+# Asks ESLint's own API which configuration it resolves for each given file and
+# prints exactly one terminator line:
+#
+#   GC_ESLINT_RULES_ALL|probed=N|off=M[|detail=pkg:rule=count;...]
+#   GC_ESLINT_RULES_ALL|error=<message>
+#
+# $1 is the directory ESLint resolves its configuration from -- the real ts/
+# tree for the gate, a throwaway fixture for the self-test, which is what lets
+# the self-test drive THIS function rather than a hand-mirrored copy of it.
+# node itself always runs in ts/ so that the bare `eslint` import resolves.
+probe_eslint_rule_severity() {
+    local config_cwd="$1"
+    shift
+    export GC_ESLINT_REQUIRED_RULES="$ESLINT_REQUIRED_RULES"
+    run_in "$ts_dir" node --input-type=module -e '
+import { ESLint } from "eslint";
+import path from "node:path";
+
+const required = process.env["GC_ESLINT_REQUIRED_RULES"].split(",");
+const configCwd = process.argv[1];
+const files = process.argv.slice(2);
+
+// Group by the package a file belongs to, so the failure names a place
+// somebody can go and look rather than a count.
+const owner = (file) => {
+  const rel = path.relative(configCwd, file);
+  const parts = rel.split(path.sep);
+  if (parts[0] === "packages" && parts.length > 1) {
+    return `packages/${parts[1]}`;
+  }
+  return parts.length > 1 ? parts[0] : "(root)";
+};
+
+const eslint = new ESLint({ cwd: configCwd });
+const off = new Map();
+for (const file of files) {
+  let config;
+  try {
+    config = await eslint.calculateConfigForFile(file);
+  } catch (cause) {
+    console.log(`GC_ESLINT_RULES_ALL|error=cannot resolve config for ${file}: ${String(cause)}`);
+    process.exit(0);
+  }
+  // `calculateConfigForFile` returns undefined for a file no config matches --
+  // which is itself a rule that applies to nothing, so it counts as off.
+  const rules = config?.rules ?? {};
+  for (const name of required) {
+    const entry = rules[name];
+    const severity = Array.isArray(entry) ? entry[0] : entry;
+    if (severity !== 2 && severity !== "error") {
+      const key = `${owner(file)}:${name.replace("@typescript-eslint/", "")}`;
+      off.set(key, (off.get(key) ?? 0) + 1);
+    }
+  }
+}
+
+const total = [...off.values()].reduce((sum, n) => sum + n, 0);
+const detail = [...off.entries()]
+  .sort()
+  .slice(0, 12)
+  .map(([key, count]) => `${key}=${count}`)
+  .join(";");
+console.log(
+  `GC_ESLINT_RULES_ALL|probed=${files.length}|off=${total}` +
+    (detail === "" ? "" : `|detail=${detail}`),
+);
+' "$config_cwd" "$@"
+}
+
+# Pure logic, no eslint involved -- shared by the gate and by self_test(), so
+# the check the gate performs and the check the self-test proves can go red are
+# the same code rather than two copies that could drift (AGENTS.md §9).
+check_eslint_rules_terminator() {
+    local terminator="$1"
+
+    if [ -z "$terminator" ]; then
+        fail_msg "the exhaustive rule probe produced no GC_ESLINT_RULES_ALL terminator -- absent evidence is not a pass"
+        return 1
+    fi
+    case "$terminator" in
+        *"|error="*)
+            fail_msg "the exhaustive rule probe failed: ${terminator#*|error=}"
+            return 1
+            ;;
+    esac
+
+    local probed off detail
+    probed="$(printf '%s' "$terminator" | grep -o 'probed=[^|]*' | cut -d= -f2)"
+    off="$(printf '%s' "$terminator" | grep -o 'off=[^|]*' | cut -d= -f2)"
+    detail="$(printf '%s' "$terminator" | grep -o 'detail=.*' | cut -d= -f2-)"
+
+    if [ -z "$off" ]; then
+        fail_msg "the exhaustive rule probe's terminator is malformed: '$terminator'"
+        return 1
+    fi
+    if [ "$off" -ne 0 ]; then
+        fail_msg "$off file/rule pair(s) have one of #471's rules below error severity -- the rule is off where nobody is looking, which is the whole failure this gate exists to prevent"
+        echo "      by package: $detail"
+        echo "      (rules asserted: $ESLINT_REQUIRED_RULES)"
+        return 1
+    fi
+    # A probe that iterated nothing would report off=0 too.
+    check_min_count "eslint rule probe" "files probed for rule severity" "$probed" "$MIN_TS_LINT_FILES" || return 1
+    echo "    every one of them has no-floating-promises, no-explicit-any and no-unused-vars at error severity"
+    return 0
+}
+
+# The expiry tripwire for ts/tools/lint/. See
+# EXPECTED_TSESLINT_TYPESCRIPT_PEER, and that package's tseslint.mjs for what
+# the workaround is and why it exists.
+check_tseslint_peer() {
+    local manifest="$ts_dir/tools/lint/node_modules/typescript-eslint/package.json"
+    if [ ! -f "$manifest" ]; then
+        fail_msg "ts/tools/lint/node_modules/typescript-eslint is not installed; the lint gate cannot be running the compiler API it claims to"
+        return 1
+    fi
+
+    local declared
+    declared="$(node --input-type=module -e '
+import { readFileSync } from "node:fs";
+const manifest = JSON.parse(readFileSync(process.argv[1], "utf8"));
+console.log(manifest.peerDependencies?.typescript ?? "");
+' "$manifest" 2>/dev/null)"
+
+    if [ -z "$declared" ]; then
+        fail_msg "could not read typescript-eslint's declared typescript peer range"
+        return 1
+    fi
+    if [ "$declared" != "$EXPECTED_TSESLINT_TYPESCRIPT_PEER" ]; then
+        fail_msg "typescript-eslint's typescript peer range changed: '$declared' (was '$EXPECTED_TSESLINT_TYPESCRIPT_PEER')"
+        echo "      ts/tools/lint/ exists ONLY because that range excluded the typescript@7"
+        echo "      this workspace builds with. Re-read ts/tools/lint/tseslint.mjs: if the new"
+        echo "      range admits 7.x, DELETE that package and import typescript-eslint"
+        echo "      directly in ts/eslint.config.mjs. If it does not, update"
+        echo "      EXPECTED_TSESLINT_TYPESCRIPT_PEER here and say why in the commit."
+        echo "      Upstream: https://github.com/typescript-eslint/typescript-eslint/issues/10940"
+        return 1
+    fi
+    echo "    typescript-eslint still declares 'typescript $declared', so ts/tools/lint/'s separate typescript@6 is still required"
+    return 0
+}
+
+check_eslint_rules_cli_canary() {
     local probe="$ts_dir/$ESLINT_RULE_PROBE_FILE"
     if [ ! -f "$probe" ]; then
         fail_msg "$ESLINT_RULE_PROBE_FILE is missing; gate 7b cannot confirm its rules are enabled"
@@ -622,12 +860,9 @@ check_eslint_rules_enabled() {
     fi
 
     local verdict
+    export GC_ESLINT_REQUIRED_RULES="$ESLINT_REQUIRED_RULES"
     verdict="$(printf '%s' "$printed" | node --input-type=module -e '
-const required = [
-  "@typescript-eslint/no-floating-promises",
-  "@typescript-eslint/no-explicit-any",
-  "@typescript-eslint/no-unused-vars",
-];
+const required = process.env["GC_ESLINT_REQUIRED_RULES"].split(",");
 let raw = "";
 process.stdin.setEncoding("utf8");
 for await (const chunk of process.stdin) {
@@ -677,22 +912,32 @@ gate_ts_lint() {
 
     local rendered terminator
     rendered="$(render_eslint_report "$report")"
-    rm -f "$report"
     printf '%s\n' "$rendered"
     terminator="$(printf '%s' "$rendered" | grep -o 'GC_ESLINT|.*' | tail -n 1)"
 
     local failures=0
-    # The exit code is checked, but it is the weakest of the three signals
-    # here: it is also 0 for a run that linted nothing.
+    # The exit code is checked, but it is the weakest of the signals here: it
+    # is also 0 for a run that linted nothing, and 0 for a run whose config
+    # switched the rules off.
     if [ "$status" -ne 0 ]; then
         fail_msg "pnpm exec eslint . --max-warnings 0 exited $status"
         failures=1
     fi
     check_eslint_terminator "$terminator" || failures=1
-    check_eslint_rules_enabled || failures=1
+    # Deliberately after the report has been read and BEFORE it is deleted:
+    # its file list is the exact set the rule probe walks.
+    check_eslint_rules_enabled "$report" || failures=1
+    rm -f "$report"
+    check_tseslint_peer || failures=1
 
     if [ "$failures" -ne 0 ]; then
-        echo "    fix with: (cd ts && pnpm exec eslint . --fix), then fix the rest by hand"
+        # Only suggest --fix when eslint actually reported something to fix.
+        # It is the wrong advice, and an expensive detour, for a gate that
+        # failed because the RULES were switched off rather than because the
+        # code broke them.
+        if [ "$status" -ne 0 ]; then
+            echo "    fix with: (cd ts && pnpm exec eslint . --fix), then fix the rest by hand"
+        fi
         return 1
     fi
     return 0
@@ -1577,6 +1822,187 @@ EOF
     return "$failures"
 }
 
+# Scenario: the bypass a REVIEWER found in the first version of gate 7b, which
+# nothing in this suite modelled because every scenario here modelled a config
+# being DISABLED and none modelled one being NARROWED.
+#
+# The sabotage is one config block:
+#
+#     { files: ["**/*.ts"], ignores: ["<the one probed directory>/**"],
+#       rules: { "@typescript-eslint/no-floating-promises": "off" } }
+#
+# Everything the gate looked at stayed green. The number of files linted did
+# not move -- eslint still lints them, it just has no rule to apply. The
+# single-file `--print-config` probe still answered "ok", because its file is
+# the one place the rule survives. And a genuine unawaited promise anywhere
+# else went unreported.
+#
+# So this scenario builds exactly that shape hermetically, and asserts all
+# three halves of it: the bypass really does hide a floating promise, the
+# single-file canary really is fooled by it, and the exhaustive probe really
+# does catch it AND name the directory. Asserting the canary's blindness is
+# the point -- it is what stops someone "simplifying" the exhaustive probe back
+# down to a sample.
+ts_lint_narrowing_scenario() {
+    local dir="$1"
+    local failures=0
+
+    local eslint_bin="$ts_dir/node_modules/.bin/eslint"
+    ensure_ts_dependencies "$eslint_bin" || return 1
+
+    mkdir -p "$dir/probed" "$dir/elsewhere"
+    cat >"$dir/tsconfig.json" <<'EOF'
+{
+  "compilerOptions": {
+    "strict": true,
+    "target": "es2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["es2023"],
+    "noEmit": true
+  },
+  "include": ["probed/*.ts", "elsewhere/*.ts"]
+}
+EOF
+
+    # The same defect in both directories. Only the config differs between them.
+    local source='async function load(): Promise<number> {
+  return 1;
+}
+
+export function run(): void {
+  load();
+}
+'
+    printf '%s' "$source" >"$dir/probed/a.ts"
+    printf '%s' "$source" >"$dir/elsewhere/b.ts"
+
+    cat >"$dir/eslint.config.mjs" <<EOF
+import tseslint from "$ts_dir/tools/lint/tseslint.mjs";
+
+export default tseslint.config(
+  tseslint.configs.base,
+  {
+    files: ["**/*.ts"],
+    languageOptions: {
+      parserOptions: { projectService: true, tsconfigRootDir: "$dir" },
+    },
+    // All three, so the ONLY difference the probe can report is the narrowing
+    // below -- not the fixture being under-configured to begin with.
+    rules: {
+      "@typescript-eslint/no-floating-promises": "error",
+      "@typescript-eslint/no-explicit-any": "error",
+      "@typescript-eslint/no-unused-vars": "error",
+    },
+  },
+  // THE SABOTAGE: on everywhere except the one directory the canary probes.
+  {
+    files: ["**/*.ts"],
+    ignores: ["probed/**"],
+    rules: { "@typescript-eslint/no-floating-promises": "off" },
+  },
+);
+EOF
+
+    local log
+    log="$(mktemp)"
+
+    # (a) The bypass works: eslint is GREEN over a real floating promise.
+    if (cd "$dir" && "$eslint_bin" --config eslint.config.mjs elsewhere/b.ts) >"$log" 2>&1; then
+        echo "ok  the narrowed config hides a real floating promise (eslint exits 0) -- the bypass is reproduced"
+    else
+        echo "SELF-TEST FAIL: the narrowing fixture did NOT hide its floating promise; the scenario no longer reproduces the bypass and needs a new construction:"
+        sed 's/^/      /' "$log" | tail -20
+        failures=1
+    fi
+
+    # (b) A single-file probe is fooled by it. This is the assertion that keeps
+    #     the exhaustive check from being reduced back to a sample.
+    local canary
+    canary="$(cd "$dir" && "$eslint_bin" --config eslint.config.mjs --print-config probed/a.ts 2>/dev/null |
+        node --input-type=module -e '
+let raw = "";
+process.stdin.setEncoding("utf8");
+for await (const chunk of process.stdin) {
+  raw += chunk;
+}
+const entry = (JSON.parse(raw).rules ?? {})["@typescript-eslint/no-floating-promises"];
+console.log(Array.isArray(entry) ? entry[0] : entry);
+')"
+    if [ "$canary" = "2" ]; then
+        echo "ok  a single-file probe of the still-covered directory answers \"enabled\" -- i.e. one probed file CANNOT be the guarantee"
+    else
+        echo "SELF-TEST FAIL: the single-file probe reported '$canary' for the one directory the sabotage spares; the scenario is not reproducing the hole it exists for"
+        failures=1
+    fi
+
+    # (c) The exhaustive probe -- the real function the gate calls, not a copy.
+    local terminator
+    terminator="$(probe_eslint_rule_severity "$dir" "$dir/probed/a.ts" "$dir/elsewhere/b.ts")"
+    if expect_fail "the exhaustive probe rejects a rule narrowed away from one directory" \
+        check_eslint_rules_terminator "$terminator"; then
+        # Exactly one pair, named: `elsewhere` lost no-floating-promises and
+        # `probed` lost nothing. Pinned to the whole terminator rather than a
+        # substring, because a probe that reported EVERYTHING as off would also
+        # contain that substring and would be a different, broken check.
+        if [ "$terminator" = "GC_ESLINT_RULES_ALL|probed=2|off=1|detail=elsewhere:no-floating-promises=1" ]; then
+            echo "ok  and it names exactly which directory lost exactly which rule ($terminator)"
+        else
+            echo "SELF-TEST FAIL: the exhaustive probe rejected the fixture, but not with the one expected file/rule pair: $terminator"
+            failures=1
+        fi
+    else
+        failures=1
+    fi
+
+    # (d) And it accepts the same tree once the sabotage is removed, so a probe
+    #     that simply rejects everything cannot masquerade as this one.
+    cat >"$dir/eslint.config.mjs" <<EOF
+import tseslint from "$ts_dir/tools/lint/tseslint.mjs";
+
+export default tseslint.config(tseslint.configs.base, {
+  files: ["**/*.ts"],
+  languageOptions: {
+    parserOptions: { projectService: true, tsconfigRootDir: "$dir" },
+  },
+  rules: {
+    "@typescript-eslint/no-floating-promises": "error",
+    "@typescript-eslint/no-explicit-any": "error",
+    "@typescript-eslint/no-unused-vars": "error",
+  },
+});
+EOF
+    terminator="$(probe_eslint_rule_severity "$dir" "$dir/probed/a.ts" "$dir/elsewhere/b.ts")"
+    case "$terminator" in
+        "GC_ESLINT_RULES_ALL|probed=2|off=0")
+            echo "ok  the same two files are accepted once the narrowing block is removed"
+            ;;
+        *)
+            echo "SELF-TEST FAIL: an un-sabotaged fixture was not reported clean: $terminator"
+            failures=1
+            ;;
+    esac
+
+    # (e) The terminator logic itself, fed fabricated lines -- no eslint.
+    #     A probe that walked zero files reports off=0 just as a healthy one
+    #     does, which is the same defect one level up.
+    expect_fail "a probe that iterated no files is rejected, not read as clean" \
+        check_eslint_rules_terminator "GC_ESLINT_RULES_ALL|probed=0|off=0" \
+        || failures=1
+    expect_fail "a probe that could not resolve a file's config is rejected" \
+        check_eslint_rules_terminator "GC_ESLINT_RULES_ALL|error=cannot resolve config for x.ts: boom" \
+        || failures=1
+    expect_fail "an absent terminator is rejected" \
+        check_eslint_rules_terminator "" \
+        || failures=1
+    expect_pass "a clean, whole-tree probe is accepted" \
+        check_eslint_rules_terminator "GC_ESLINT_RULES_ALL|probed=$MIN_TS_LINT_FILES|off=0" \
+        || failures=1
+
+    rm -f "$log"
+    return "$failures"
+}
+
 # Scenario: gate 5b (#471). Same construction, and the second half is the
 # specific hole this gate would otherwise have: prettier prints "All matched
 # files use Prettier code style!" and exits 0 when every file it was handed was
@@ -1672,6 +2098,10 @@ self_test() {
     echo "==> self-test: type-aware eslint, floating promise (gate 7b)"
     mkdir -p "$work/ts_lint"
     ts_lint_scenario "$work/ts_lint" || failures=1
+
+    echo "==> self-test: a rule NARROWED away from everywhere but the probed directory (gate 7b)"
+    mkdir -p "$work/ts_lint_narrowing"
+    ts_lint_narrowing_scenario "$work/ts_lint_narrowing" || failures=1
 
     echo "==> self-test: vitest summary extraction (gate 8)"
     vitest_summary_scenario || failures=1

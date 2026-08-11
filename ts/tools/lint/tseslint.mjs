@@ -10,9 +10,11 @@
 // `ts.TypeChecker`, the works.
 //
 // This repository pins `typescript@7.0.2` (ts/package.json), and TypeScript 7
-// is the native port. Its npm package deliberately ships no JS compiler API --
-// its whole `exports["."]` is `lib/version.cjs`, which exports exactly two
-// things:
+// is the native `tsgo` port -- a from-scratch reimplementation in Go, not a
+// newer release of the JavaScript compiler. The `tsc` it installs is a
+// statically linked Go binary. Its npm package therefore deliberately ships no
+// JS compiler API: its whole `exports["."]` is `lib/version.cjs`, which exports
+// exactly two things:
 //
 //     $ node -e "import('typescript').then(m => console.log(Object.keys(m)))"
 //     [ 'default', 'version', 'versionMajorMinor' ]
@@ -36,8 +38,39 @@
 // own. It imports this file by relative path instead, and the bare specifier
 // below resolves from here.
 //
-// WHEN TO DELETE THIS. The moment typescript-eslint supports the TypeScript 7
-// API (tracked upstream as the tsgo/`@typescript/api` work), delete this
-// package, drop `typescript` from it, and import `typescript-eslint` directly
-// in eslint.config.mjs. Nothing else in the tree depends on this seam.
+// THE LIMIT OF THIS ARRANGEMENT, and it is the most important caveat about the
+// whole gate, so do not over-read a green run.
+//
+// The linter and the compiler are two different implementations, so they can
+// disagree. `tsc --build --force` catches such a disagreement only when it
+// also produces a real TYPE ERROR -- which is exactly what happened at
+// packages/transport/src/fake_relay.ts, where typescript@6 called an assertion
+// unnecessary and typescript@7 then failed with TS18048. That is a good
+// backstop and it fired for real.
+//
+// It cannot catch a disagreement about whether an expression is Promise-like,
+// because `tsc` has no opinion on floating promises at all -- that is the
+// entire reason this gate exists. If the two compilers ever diverged there,
+// the lint would silently under-report and nothing downstream would notice.
+// This is still strictly better than the zero detection that preceded #471;
+// it is simply not a proof.
+//
+// WHEN TO DELETE THIS. The moment typescript-eslint can read type information
+// from TypeScript 7, delete this package, drop `typescript` from it, and
+// import `typescript-eslint` directly in eslint.config.mjs. Nothing else in
+// the tree depends on this seam.
+//
+// Upstream tracking issue, checked 2026-08-11 and open, labelled "blocked by
+// external API":
+//   https://github.com/typescript-eslint/typescript-eslint/issues/10940
+//   ("Enhancement: Use TS 7 (tsgo / typescript-go) for type information")
+// The incompatibility itself is confirmed in issue 12518 ("TypeScript 7.0.2
+// Support", closed as not planned), which records the same peer range quoted
+// above and the "Cannot read properties of undefined" crash you get by forcing
+// the install anyway.
+//
+// scripts/check.sh does not take that on faith either: `check_tseslint_peer()`
+// reads the installed package's declared peer range on every gate run and
+// fails the moment it stops being the one this workaround was written against,
+// so nobody has to remember to come back and check.
 export { default } from "typescript-eslint";
