@@ -80,7 +80,7 @@
 import { describe, expect, it } from "vitest";
 import { Vec2 } from "@gc/core";
 import type { RollbackEventDiff } from "@gc/presentation";
-import { replay, viewState } from "@gc/render";
+import { player3dVariantBuildCount, replay, viewState } from "@gc/render";
 import type { replayTypes } from "@gc/render";
 import { MatchScreen } from "./match.ts";
 import type {
@@ -987,3 +987,85 @@ describe("match screen rollback laboratory (tier 2)", () => {
 // was necessary but not sufficient; see that file's header for the
 // still-missing `sim.rollback_playable_lab` wasm bridge underneath. Do not
 // re-add them here.
+
+// ---------------------------------------------------------------------------
+// CHARACTER PRE-WARM, IN THE LABORATORY TOO (#447 follow-up)
+// ---------------------------------------------------------------------------
+//
+// `MatchScreen.prewarmCharacters` briefly skipped this mode, on the stated
+// grounds that `RollbackHostPort` had no `roster()` at all. That was simply
+// wrong: `RollbackHostPort` declares `roster()` beside its `frame()`, exactly
+// as `SimHostPort` and `OnlineHostPort` do, so the exclusion was designed
+// around a constraint that did not exist. The laboratory now goes through the
+// same call as every other mode.
+//
+// What that call currently DOES here is nothing, and that is worth pinning
+// rather than assuming: every `RollbackHostPort` in the tree (this file's
+// `FakeRollbackHost`, and `@gc/app`'s `RealRollbackHost` over the real wasm
+// `RollbackPlayableLab`) returns `{}` from `roster()`, which the pre-warm
+// treats as "no content to warm". The point of the test is that the path is
+// WIRED, so the day a laboratory roster carries real ids it is warmed for
+// free instead of needing someone to remember an exclusion.
+describe("match screen rollback laboratory: character pre-warm (#447)", () => {
+  /**
+   * The laboratory's own host, with a roster that carries real content ids.
+   *
+   * Every `RollbackHostPort` in the tree returns `{}` from `roster()` today,
+   * which would make "the laboratory is pre-warmed" a VACUOUS claim: the
+   * excluded and the wired implementations both build nothing from an empty
+   * roster, so a test over the real fake would pass either way and pin
+   * nothing. Overriding just `roster()` is what makes the assertion able to
+   * go red -- and it is the shape a laboratory over a real match would have
+   * anyway.
+   */
+  function labHostWithContent(inner: RollbackHostPort): RollbackHostPort {
+    return {
+      ...inner,
+      planTicks: (dt: number) => inner.planTicks(dt),
+      step: (sample) => inner.step(sample),
+      cancelPlannedTicks: () => { inner.cancelPlannedTicks(); },
+      debug: () => inner.debug(),
+      clockDebug: () => inner.clockDebug(),
+      frame: () => inner.frame(),
+      tick: () => inner.tick(),
+      displayedPositions: () => inner.displayedPositions(),
+      currentSnapshot: () => inner.currentSnapshot(),
+      referenceSnapshot: () => inner.referenceSnapshot(),
+      dispose: () => { inner.dispose(); },
+      roster: () => ({
+        ids: ["ozzo", "brakka"],
+        teams: ["home", "away"] as const,
+        is_keeper: [true, false],
+        presentation_ids: ["scifi_axi", "medieval_rook_emberguard"],
+        loadout_ids: [undefined, "loadout_emberguard_shield"],
+      }),
+    };
+  }
+
+  it("pre-warms a laboratory roster through the same call as every other mode", () => {
+    const { factory } = makeRollbackHostFactory({ localSlot: 2, profileName: "clean" });
+    const before = player3dVariantBuildCount();
+    const screen = new MatchScreen(rollbackPorts(() => labHostWithContent(factory())), {
+      rollback_lab: labOptions({ local_slot: 2, profile_name: "clean" }),
+    });
+
+    expect(screen.debugRollbackActive).toBe(true);
+    // NON-VACUOUS: two players, two distinct variants, both built at
+    // construction. Restore the old `onlineHost ?? host` resolution -- which
+    // skipped this mode -- and this is 0.
+    expect(player3dVariantBuildCount() - before, "the laboratory's own roster is warmed like any other").toBe(2);
+  });
+
+  it("builds nothing for the empty roster every real laboratory host returns today", () => {
+    const { factory } = makeRollbackHostFactory({ localSlot: 2, profileName: "clean" });
+    const before = player3dVariantBuildCount();
+    new MatchScreen(rollbackPorts(factory), {
+      rollback_lab: labOptions({ local_slot: 2, profile_name: "clean" }),
+    });
+    // `FakeRollbackHost.roster()` -- and `@gc/app`'s `RealRollbackHost` over
+    // the real wasm lab -- both return `{}`. Warming it is a no-op, which is
+    // why wiring the mode in costs nothing today and why it is worth wiring
+    // rather than excluding: the day one carries real ids, it is covered.
+    expect(player3dVariantBuildCount()).toBe(before);
+  });
+});

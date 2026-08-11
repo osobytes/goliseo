@@ -1143,13 +1143,24 @@ export class MatchScreen {
    * nothing outside a real match.
    */
   private prewarmCharacters(): void {
-    const host: Pick<SimHostPort, "roster"> | undefined = this.onlineHost ?? this.host;
+    // ALL THREE HOST KINDS, with no exclusion to justify. `SimHostPort`,
+    // `OnlineHostPort` and `RollbackHostPort` each declare `roster()`, so
+    // this needs no special case -- and an earlier revision of this method
+    // asserted, wrongly, that `RollbackHostPort` had no such method and
+    // skipped the laboratory on that basis. It declares `roster()` beside its
+    // `frame()`, exactly as the other two ports do.
+    //
+    // The laboratory's roster IS degenerate today: every `RollbackHostPort`
+    // implementation in the tree -- this package's own fakes and `@gc/app`'s
+    // `RealRollbackHost` over the real wasm `RollbackPlayableLab` -- returns
+    // `{}`, which `prewarmCharacters` treats as "nothing to warm". So this
+    // call does nothing there right now. It is made anyway rather than
+    // guarded: an empty roster is already a documented no-op, and the day the
+    // laboratory grows a real one it gets warmed for free instead of needing
+    // somebody to remember an exclusion.
+    const host: Pick<SimHostPort, "roster"> | undefined = this.onlineHost ?? this.host ?? this.rollbackHost;
     if (host === undefined) {
-      // ROLLBACK-LAB ONLY. That mode drives `rollbackHost`, which has no
-      // `roster()` at all, so its characters go through the ordinary lazy
-      // path. It is a development harness rather than the product path, so
-      // the stutter it keeps is one nobody ships.
-      return;
+      throw new Error("match screen: constructed with no host to pre-warm (unreachable -- construction builds exactly one)");
     }
     player3dPrewarmCharacters(host.roster());
   }
@@ -1516,14 +1527,16 @@ export class MatchScreen {
       this.host = this.ports.createHost();
       this.lastScore = 0;
       this.lastHome = 0;
-      // A restart builds a NEW host and therefore a new roster decode, so the
-      // pre-warm runs again (#447). Idempotent when the roster is unchanged --
-      // every variant is already cached and this builds nothing -- and
-      // correct when it is not, which is the case that matters: a rematch
-      // with different teams would otherwise rediscover its geometry inside
-      // the first drawn frame, exactly as a cold start used to.
-      this.prewarmCharacters();
     }
+    // A restart builds a NEW host and therefore a new roster decode, so the
+    // pre-warm runs again (#447) -- outside the branch, so the rollback
+    // laboratory is covered on the same terms as everything else (see
+    // `prewarmCharacters`). Idempotent when the roster is unchanged: every
+    // variant is already cached and this builds nothing. The case that
+    // matters is when it is NOT unchanged -- a rematch with different teams
+    // would otherwise rediscover its geometry inside the first drawn frame,
+    // exactly as a cold start used to.
+    this.prewarmCharacters();
     this.replayState = undefined;
     this.renderSmoothing = undefined;
     viewState.reset();
