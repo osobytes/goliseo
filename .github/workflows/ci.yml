@@ -180,3 +180,81 @@ jobs:
                   name: online-peers
                   path: ${{ runner.temp }}/online-peers.json
                   if-no-files-found: warn
+
+    # #469. The COMPLETE OMP-2 native rollback validation matrix (66 cases:
+    # 24 from four network profiles x three seeds x {complete fixture,
+    # combat}, plus 42 from three seeds x fourteen scenario/combat-load
+    # cases) and the ten-case soak matrix. No browser, no GPU, no display --
+    # pure CPU inside `cargo test`.
+    #
+    # WHY THIS IS A SEPARATE JOB AND NOT PART OF `gate`. Measured in a debug
+    # build on one local machine: 325.9s for the native matrix's 66 cases, of
+    # which the twelve complete-fixture cases are 310.2s; 140.7s more for the
+    # soak matrix. The remaining 54 native cases cost 11.2s and therefore DO
+    # run on every PR, as ordinary un-ignored tests inside
+    # `cargo test --workspace` in scripts/check.sh -- the 42-case scenario
+    # layer (every authored game moment, the combat fixture and the four
+    # combat-load fixtures, at the stress profile, on all three seeds), plus
+    # the 12 `combat-{profile}-{seed}` cases that run the combat fixture
+    # under every authored network profile. This job exists only for the
+    # twelve complete-fixture cases and the ten soak cases.
+    #
+    # That 54/12 split is COMPUTED and asserted by the native test itself,
+    # not merely restated in comments like this one. An earlier draft here
+    # said the native matrix added "twelve" cases, when its first loop pushes
+    # TWO per (profile, seed) and so adds 24 -- an undercount that silently
+    # left nine combat cases, at `clean`, `omp0_parity` and `playable`,
+    # running only when a human pressed this button.
+    #
+    # The soak matrix here is NOT soak evidence: it takes no memory
+    # measurement at all (see the test's doc comment). It runs so that the
+    # suite is not a construct-only entry point; the memory-growth property
+    # is #472's.
+    #
+    # ON DEMAND, NOT NIGHTLY, DELIBERATELY. There is no `schedule:` trigger
+    # anywhere in .github/workflows/ today; creating one is #472's, which
+    # owns the browser rollback stress/matrix/soak evidence and is blocked on
+    # exactly that gap. Pointing this at a nightly that does not exist would
+    # be the shape AGENTS.md §9 forbids -- a heading naming a run that never
+    # happens. When #472 adds the scheduled workflow, this job should move
+    # onto it.
+    #
+    # This job and the documented local invocation call the SAME script, so
+    # they cannot drift (AGENTS.md §9's "prefer a shared scripts/check_*.sh
+    # over hand-mirrored steps").
+    rollback-native-matrix:
+        name: Native rollback matrix (on demand)
+        if: github.event_name == 'workflow_dispatch'
+        runs-on: ubuntu-24.04
+        timeout-minutes: 45
+
+        steps:
+            - name: Check out source
+              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+              with:
+                  ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+            - name: Install rustup if missing
+              run: |
+                  if ! command -v rustup >/dev/null 2>&1; then
+                      curl --fail --location --retry 3 --silent --show-error \
+                          https://sh.rustup.rs \
+                          | sh -s -- -y --profile minimal --default-toolchain none
+                      printf '%s\n' "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+                  fi
+
+            - name: Select the pinned rust toolchain
+              working-directory: rust
+              run: rustup show
+
+            # A gate that cannot fail is worse than no gate (AGENTS.md §9).
+            # `cargo test -- --exact a_renamed_test` exits 0 having run
+            # nothing, which is how this job could stay green while executing
+            # none of the matrix -- #469's own defect, one layer down. This
+            # proves the script's verdict logic rejects that and every other
+            # shape of absent evidence. Seconds; runs no cargo.
+            - name: Prove the native rollback gate detects failure
+              run: ./scripts/check_rollback_native.sh --self-test
+
+            - name: Run the complete native and soak rollback matrices
+              run: ./scripts/check_rollback_native.sh
