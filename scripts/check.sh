@@ -50,6 +50,22 @@
 #      catch it drifting. Numbered 0b rather than renumbering every step
 #      below, which this file and its scenarios refer to by name. See that
 #      script's header and self_test()'s presentation_parity_scenario. (#447)
+#   0c. node scripts/check_network_profile_parity.mjs
+#      -- the third parity check of the same shape, for SCRIPTED NETWORK
+#      IMPAIRMENT, and it runs beside 0 and 0b for the same reason: no
+#      toolchain, no build, seconds. gc-data authors four network profiles
+#      (clean, omp0_parity, playable, stress); the native rollback matrix
+#      drives them through gc-sim's network_conditions and browser evidence
+#      drives the same profiles through packages/transport's impairment
+#      decorator. A drifted loss rate, a different RNG multiplier, or a
+#      diverged jitter rule throws NOTHING in either language -- the two
+#      suites simply measure different networks while both stay green, which
+#      is #279's shape exactly. This compares the profile values field for
+#      field, the generator's constants, the five-scenario impairment
+#      transcript both languages assert byte for byte, and that the transcript
+#      still records loss, bursts, duplication and reordering at all. See that
+#      script's header and self_test()'s network_profile_parity_scenario.
+#      (#472)
 #   1. cargo fmt --all --check                                      (rust)
 #   2. cargo clippy --workspace --all-targets -- -D warnings
 #   3. cargo test --workspace
@@ -265,6 +281,15 @@ MIN_WIRE_ENUMS=11
 # is fail-loud about a parse that matched nothing, so this floor guards
 # against a narrowed or silenced comparison, not against content growing.
 MIN_PRESENTATION_MAPPINGS=19
+
+# The same shape of floor for gate 0c (#472). Sixty comparisons are made
+# today: four authored network profiles times seven tuning fields, the three
+# profile-name orderings, the impairment generator's two constants, the shared
+# transcript literal, five differential scenarios times five fields, and the
+# assertion that the transcript still records impairment at all. The checker is
+# fail-loud about a parse that matched nothing, so this floor guards against a
+# narrowed or silenced comparison, not against the profile set growing.
+MIN_NETWORK_PROFILE_COMPARISONS=45
 
 # The same shape of floor for gates 5b and 7b (#471), and the reason they are
 # not just "run the tool and read its exit code".
@@ -484,6 +509,48 @@ gate_presentation_parity() {
         return 1
     fi
     echo "    $counted content mappings agree across gc-data and the rig3d renderer"
+    return 0
+}
+
+# Gate 0c. Cross-language parity for SCRIPTED NETWORK IMPAIRMENT (#472). Same
+# cost and same shape as gates 0 and 0b, so it runs beside them.
+#
+# gc-data authors four network profiles; the native rollback matrix drives
+# them through gc-sim's network_conditions, and browser evidence now drives
+# the same profiles through packages/transport's impairment decorator. If the
+# two impair traffic differently NOTHING THROWS ANYWHERE -- the browser suite
+# and the native suite simply measure different networks while both stay
+# green, which is the exact failure shape AGENTS.md §9 was written about. The
+# checker compares the profile values, the generator's constants, and the
+# byte-identical impairment transcript both languages assert.
+gate_network_profile_parity() {
+    step "network profile parity (gc-data authored profiles <-> browser impairment)"
+    local log
+    log="$(mktemp)"
+    run_in "$project_root" node scripts/check_network_profile_parity.mjs 2>&1 | tee "$log"
+    local status=$?
+
+    # NEVER TRUST ONE SIGNAL, same reasoning as gates 0 and 0b: a checker
+    # whose parse matched nothing would find no disagreement and exit 0. The
+    # script is fail-loud about that internally; this reads its summary line
+    # back independently and requires a floor on the count.
+    local counted
+    counted="$(strip_ansi <"$log" | sed -n 's/^network profile parity: OK (\([0-9]\+\) comparisons)$/\1/p' | tail -n 1)"
+    rm -f "$log"
+
+    if [ "$status" -ne 0 ]; then
+        fail_msg "network profile parity check exited $status"
+        return 1
+    fi
+    if [ -z "$counted" ]; then
+        fail_msg "network profile parity exited 0 but printed no 'network profile parity: OK (N comparisons)' summary -- treating that as a failure, not a pass"
+        return 1
+    fi
+    if [ "$counted" -lt "$MIN_NETWORK_PROFILE_COMPARISONS" ]; then
+        fail_msg "network profile parity compared only $counted value(s) (want >= $MIN_NETWORK_PROFILE_COMPARISONS) -- the check has been narrowed or silenced"
+        return 1
+    fi
+    echo "    $counted impairment values agree across gc-data, gc-sim and the browser transport"
     return 0
 }
 
@@ -1763,6 +1830,73 @@ presentation_parity_scenario() {
     return "$failures"
 }
 
+# The same two-track demonstration for gate 0c (#472): the checker's own
+# in-memory red demonstration, then the REAL check driven through --repo over
+# mutated file COPIES, so the on-disk path the gate actually uses is the one
+# proved able to go red.
+#
+# The on-disk scenario is deliberately THE SILENT ONE. gc-data's `stress`
+# profile drops three packets in a hundred; the fixture drops thirty. Nothing
+# throws in either language, every test in both trees still passes, and the
+# browser soak simply measures a network nobody authored -- reporting a clean
+# hour over a link the native matrix never ran. Only a cross-language read
+# sees it.
+network_profile_parity_scenario() {
+    local dir="$1"
+    local failures=0
+    local checker="$project_root/scripts/check_network_profile_parity.mjs"
+    local log
+    log="$(mktemp)"
+
+    if node "$checker" --self-test >"$log" 2>&1; then
+        sed 's/^/      /' "$log"
+        echo "ok  the network profile parity checker's own self-test passes (it goes red on every drift shape it claims to catch)"
+    else
+        echo "SELF-TEST FAIL: node scripts/check_network_profile_parity.mjs --self-test failed:"
+        sed 's/^/      /' "$log"
+        failures=1
+    fi
+
+    local rel
+    while IFS= read -r rel; do
+        mkdir -p "$dir/$(dirname "$rel")"
+        cp "$project_root/$rel" "$dir/$rel"
+    done < <(node "$checker" --list-sources)
+
+    if [ ! -f "$dir/ts/packages/transport/src/network_profiles.ts" ]; then
+        echo "SELF-TEST FAIL: --list-sources did not name the browser's profile table; the fixture copy is empty"
+        rm -f "$log"
+        return 1
+    fi
+
+    if node "$checker" --repo "$dir" >"$log" 2>&1; then
+        echo "ok  an untouched copy of the real sources is accepted"
+    else
+        echo "SELF-TEST FAIL: an untouched COPY of the real sources was REJECTED:"
+        sed 's/^/      /' "$log"
+        failures=1
+    fi
+
+    local ts_copy="$dir/ts/packages/transport/src/network_profiles.ts"
+    sed -i 's/    independent_loss_rate: 0\.03,/    independent_loss_rate: 0.003,/' "$ts_copy"
+    if ! grep -q 'independent_loss_rate: 0\.003,' "$ts_copy"; then
+        echo "SELF-TEST FAIL: could not change the stress loss rate in the fixture copy; the scenario no longer reproduces profile drift"
+        failures=1
+    elif node "$checker" --repo "$dir" >"$log" 2>&1; then
+        echo "SELF-TEST FAIL: a browser 'stress' profile losing a TENTH of the authored packets was ACCEPTED -- browser evidence would measure a network nobody authored, and the gate would not catch it"
+        failures=1
+    elif grep -q "network profile 'stress': gc-data authors independent_loss_rate=0.03" "$log"; then
+        echo "ok  a drifted loss rate is rejected (the failure mode that throws nothing anywhere)"
+    else
+        echo "SELF-TEST FAIL: the drifted-profile fixture was rejected, but not for the drift:"
+        sed 's/^/      /' "$log"
+        failures=1
+    fi
+
+    rm -f "$log"
+    return "$failures"
+}
+
 # Both #471 scenarios need real eslint/prettier binaries, and `--self-test`
 # deliberately runs BEFORE the gate -- so on a fresh clone or a CI runner
 # nothing has installed them yet. Same reasoning, and same frozen-lockfile
@@ -2248,6 +2382,10 @@ self_test() {
     mkdir -p "$work/presentation_parity"
     presentation_parity_scenario "$work/presentation_parity" || failures=1
 
+    echo "==> self-test: network profile parity, gc-data <-> browser impairment (gate 0c)"
+    mkdir -p "$work/network_profile_parity"
+    network_profile_parity_scenario "$work/network_profile_parity" || failures=1
+
     echo "==> self-test: determinism digest comparison logic"
     digest_drift_scenario || failures=1
 
@@ -2314,6 +2452,9 @@ main() {
     # Gate 0b, beside it: same cost, same failure shape, different vocabulary
     # (#447).
     gate_presentation_parity || fail=1
+    # Gate 0c, beside both: the same failure shape again, for the impairment
+    # profiles browser and native evidence must share (#472).
+    gate_network_profile_parity || fail=1
 
     gate_rust_fmt || fail=1
     gate_rust_clippy_workspace || fail=1
