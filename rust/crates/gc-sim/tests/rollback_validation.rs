@@ -179,6 +179,12 @@ fn pins_the_required_scenario_and_runtime_matrix_config_only() {
     // The one place the retained-storage gates are spelled as literals.
     // #209 raised both a 128-KiB step; the 256-KiB gap between them is
     // deliberate and pinned.
+    //
+    // These four assertions pin the authored values against transcription
+    // error. They are *not* the gate, and must never be mistaken for one:
+    // they compare data to its own literals (#470). What measures a real
+    // retained window against these budgets is
+    // `tests/snapshot_headroom.rs`.
     assert_eq!(config.budgets.snapshot_bytes, 896 * 1024);
     assert_eq!(config.budgets.history_bytes, 1152 * 1024);
     assert_eq!(

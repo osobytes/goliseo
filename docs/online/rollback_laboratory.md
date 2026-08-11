@@ -160,9 +160,20 @@ report.
 
 The OMP-2 exit campaign, acceptance gates, browser matrix, and OMP-3 decisions
 are recorded in
-[`omp2_rollback_validation.md`](omp2_rollback_validation.md). Run the complete
-campaign with `./scripts/check_rollback.sh --full`; use `--self-test` for the
-fast harness-only check included in the ordinary project validation.
+[`omp2_rollback_validation.md`](omp2_rollback_validation.md). The campaign
+runner that produced that evidence, `scripts/check_rollback.sh`, was deleted
+with the LÖVE tree in
+[#467](https://github.com/osobytes/goliseo/pull/467) and has no replacement
+yet; restoring the stress, matrix and soak evidence is owned by
+[#472](https://github.com/osobytes/goliseo/issues/472). Until then the
+rollback coverage that actually runs on every `./scripts/check.sh` is the
+`gc-sim` test suite: `tests/rollback_lab.rs`,
+`tests/rollback_playable_lab.rs`, `tests/rollback_session.rs`,
+`tests/combat_load_fixtures.rs` (the four pinned combat load campaigns
+against their retained-storage budgets), and `tests/snapshot_headroom.rs`
+(the two-band retained-storage reading described in
+[`omp2_rollback_validation.md`](omp2_rollback_validation.md) under "The
+warning that arrives first").
 
 Intentional corruption changes one client-only input sample. The reference
 continues to consume the original tape. The failed result names the causal
