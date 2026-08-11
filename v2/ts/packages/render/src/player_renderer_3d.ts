@@ -89,6 +89,7 @@ import * as masks from "./rig3d/masks.ts";
 import * as actionPose from "./rig3d/action_pose.ts";
 import * as animator from "./rig3d/animator.ts";
 import * as themes from "./rig3d/themes.ts";
+import * as presentationContent from "./rig3d/presentation_content.ts";
 import * as body from "./rig3d/body.ts";
 import * as geometry from "./rig3d/geometry.ts";
 import * as ground from "./rig3d/ground.ts";
@@ -546,14 +547,166 @@ interface BuiltCharacter {
 }
 
 interface TeamMaterials {
-  // ONE material for the whole character -- see `materialsForTeam`'s doc
-  // comment and this file's LIGHTING header for why that used to be three.
+  // ONE material for the whole character, and since #447 one for every
+  // character too -- see `sharedMaterial` and this file's LIGHTING header for
+  // why this used to be three per character, then two per process, and is now
+  // one.
   readonly material: THREE.MeshStandardMaterial;
   readonly color: THREE.BufferAttribute;
 }
 
+// ---------------------------------------------------------------------------
+// CHARACTER VARIANTS (#447)
+// ---------------------------------------------------------------------------
+//
+// WHAT WAS WRONG. `build()` took no arguments, read `themes.LIST[0]` and
+// `themes.FIGURES[0]`, and memoised the result in a module-level `built`. One
+// geometry, for the whole process, for every player -- so `characterMesh`
+// could not vary a character no matter what the per-frame path handed it.
+// Medieval Fantasy's authored loadout is `{ right: "tournament_sword", left:
+// "heater_shield" }`, so EVERY player on the pitch carried a sword and a
+// shield, keepers included, while `gc-data` said in a comment AND enforced in
+// a test that keepers carry nothing.
+//
+// WHAT REPLACES IT. A cache keyed by the VISUAL VARIANT -- `(theme, figure,
+// loadout)` -- built lazily, on demand, one entry per distinct combination
+// the roster actually contains. Nothing is built eagerly: a match that fields
+// no toybox player never builds toybox geometry.
+//
+// EACH VARIANT NEEDS ITS OWN GROUND PROBES, and that is not incidental.
+// `rig3d/ground.ts`'s probes are derived FROM the vertices (`probesFrom`
+// groups every vertex by bone with no filtering), so a variant carrying a
+// shield has probes that include the shield and a variant carrying nothing
+// does not. Sharing one probe set across variants would ground a keeper
+// against equipment they are not rendering -- which is #446's measurement
+// taken over the wrong figure, and the precise reason `ground_contact.spec.ts`
+// keeps `body` and `props` as separate columns.
+//
+// THE SKELETON STAYS SHARED, because the content says so: all six authored
+// presentations are `RigId::RigMedium`, and `themes.ts`'s own figure note
+// says the skeleton is "byte-identical across all three -- same bone names,
+// same bone lengths, and the same clips drive all of them". So every variant
+// is built from `RIG_PROPORTIONS`, every variant's bone list comes from
+// `skeleton.bones(RIG_PROPORTIONS)`, and `rig3d/clips.ts` and
+// `rig3d/animator.ts` are untouched by any of this.
+//
+// COST, STATED RATHER THAN ASSUMED. Across the thirteen authored players
+// there are twelve distinct variants; across the ten who take the pitch in
+// the two fixture teams, nine. So this trades one geometry for up to nine
+// live ones -- see the PR for the measured per-variant vertex count and build
+// time. `presentation_content.spec.ts` pins the count so it cannot grow
+// silently.
+
+/** One distinct character geometry: a theme, a figure, and a loadout. */
+interface CharacterVariant {
+  /** `theme|figure|loadout`, the cache key. */
+  readonly key: string;
+  readonly theme: themes.Theme;
+  readonly figure: themes.Figure;
+  readonly loadout: themes.Loadout;
+}
+
+/**
+ * The variant a `PlayerRenderOptions` asks for.
+ *
+ * THE PREVIEW DEFAULT IS NAMED, NOT INFERRED. With no `presentation_id` the
+ * caller is not on the product path at all -- `draw`/`renderToSprite`, a
+ * fixture, a bench -- and gets `themes.LIST[0]` carrying its OWN authored
+ * loadout, which is exactly what every caller got before #447. That keeps the
+ * diagnostic entry points and this package's own suites rendering the
+ * character they were written against.
+ *
+ * WITH a `presentation_id` the authored content decides everything, and an
+ * absent `loadout_id` means the empty loadout -- the keeper rule. The two
+ * cases are separated on `presentation_id` precisely so a keeper (authored to
+ * carry nothing) can never be confused with an unwired caller (nothing
+ * authored at all); collapsing them is how the defect would come back.
+ */
+function variantFor(opts: PlayerRenderOptions): CharacterVariant {
+  const figure = themes.FIGURES[0];
+  if (figure === undefined) {
+    throw new Error("player_renderer_3d.ts: no rig3d figure content available");
+  }
+  const presentationId = opts.presentation_id;
+  const theme = presentationId === undefined ? themes.LIST[0] : presentationContent.themeFor(presentationId);
+  if (theme === undefined) {
+    throw new Error("player_renderer_3d.ts: no rig3d theme content available");
+  }
+  const loadout = presentationId === undefined ? theme.loadout : presentationContent.loadoutFor(opts.loadout_id);
+  return {
+    key: `${theme.key}|${figure.key}|${presentationContent.loadoutKey(loadout)}`,
+    theme,
+    figure,
+    loadout,
+  };
+}
+
+// The variant `available()`, `ppmForRadius` and anything else with no player
+// in hand resolves to. Built from an empty `PlayerRenderOptions`, so it is
+// the same preview default `variantFor` documents above rather than a second
+// definition of it.
+function defaultVariant(): CharacterVariant {
+  return variantFor({ is_keeper: false, controlled: false });
+}
+
+// Keyed `${variant.key}|${team}`: the baked `color` attribute depends on the
+// variant's own vertex count AND on the team's resolved palette, so one entry
+// per pair. See `materialsForTeam`.
 const materialsByTeam = new Map<string, TeamMaterials>();
-let built: BuiltCharacter | undefined;
+
+// ONE `MeshStandardMaterial` FOR EVERY CHARACTER, not one per team and not
+// one per variant (#447).
+//
+// It used to be one per team, which was already one more than necessary: both
+// were `new MeshStandardMaterial({ vertexColors: true })` with the same
+// `applyCombinedCelShading` hook and no other property set, because
+// everything that differs between two characters -- palette, shading family,
+// theme -- lives in per-vertex attributes rather than on the material (see
+// `materialsForTeam` and `build()`'s `materialFamily` note). Keying the
+// materials cache by variant as well as team would have turned two instances
+// into up to eighteen, all still identical, purely as a side effect of a
+// change about GEOMETRY. Hoisting the material out instead makes the count
+// one and independent of how many variants a match fields.
+//
+// Lazily created rather than constructed at module load, matching every other
+// GPU-adjacent object here: constructing three.js materials at import time
+// runs in every test file that transitively imports this module.
+let sharedMaterialInstance: THREE.MeshStandardMaterial | undefined;
+
+function sharedMaterial(): THREE.MeshStandardMaterial {
+  if (sharedMaterialInstance === undefined) {
+    // Base `.color` stays white so `vertexColors` passes the baked-per-vertex
+    // palette colour through unmodified (three.js multiplies material colour
+    // x vertex colour) -- `rig3d/cel_shader.ts`'s injected shading reads that
+    // same `diffuseColor.rgb` for every family, metal and emissive included,
+    // matching rig3d/renderer.lua's PIXEL stage, which shaded ALL three
+    // families from the one `v_slot_color` varying (there was never a fixed
+    // accent colour for emissive -- it multiplies the resolved palette colour
+    // by a facing-dependent brightness boost instead; see `cel_shader.ts`'s
+    // `celShadingChunk`). `roughness`/`metalness` are not set here: the
+    // injected shading never reads three.js's `PhysicalMaterial` struct at
+    // all (see `applyCombinedCelShading`'s doc comment), so they would be
+    // dead uniforms -- the metal/plain/emissive distinction is entirely which
+    // branch `vMaterialFamily` takes at runtime, a per-vertex value baked by
+    // `build()` above, not a material property.
+    //
+    // ONE `MeshStandardMaterial`, not three per character either (draw-call
+    // fix #2 -- see this file's LIGHTING header and `build()`'s own comment
+    // on the `materialFamily` attribute this material's shading reads).
+    // `applyCombinedCelShading` is `cel_shader.ts`'s per-vertex-branching
+    // sibling of the per-family `applyCelShading` used elsewhere in that
+    // module's own test suite: same ported GLSL, selected at runtime off
+    // `materialFamily` instead of at TypeScript-build time off which
+    // `MeshStandardMaterial` instance this is.
+    const material = new THREE.MeshStandardMaterial({ vertexColors: true });
+    celShader.applyCombinedCelShading(material);
+    sharedMaterialInstance = material;
+  }
+  return sharedMaterialInstance;
+}
+// Keyed by `CharacterVariant.key`. Never cleared, matching the singleton it
+// replaces -- see `characterPool`'s note on lifetime.
+const builtByVariant = new Map<string, BuiltCharacter>();
 let failed = false;
 
 function mat4ToThree(m: Mat4): THREE.Matrix4 {
@@ -564,22 +717,20 @@ function mat4ToThree(m: Mat4): THREE.Matrix4 {
   return out;
 }
 
-// Builds the shared rig, the ONE shared character mesh (colour-free), and
-// the per-material-id `MeshStandardMaterial`s a team's resolved palette
-// produces. Called once, lazily.
-function build(): BuiltCharacter | undefined {
-  if (built !== undefined || failed) {
-    return built;
+// Builds the shared rig and ONE colour-free character mesh for ONE VARIANT
+// (#447 -- see the CHARACTER VARIANTS section above). Called lazily, once per
+// distinct `(theme, figure, loadout)` the roster actually asks for.
+function build(variant: CharacterVariant = defaultVariant()): BuiltCharacter | undefined {
+  const cached = builtByVariant.get(variant.key);
+  if (cached !== undefined || failed) {
+    return cached;
   }
   try {
     const rigProportions = RIG_PROPORTIONS;
     const height = proportions.height(rigProportions);
-    const theme = themes.LIST[0];
-    const figure = themes.FIGURES[0];
-    if (theme === undefined || figure === undefined) {
-      throw new Error("player_renderer_3d.ts: no rig3d theme/figure content available");
-    }
-    const [partBuilder] = body.accumulate(rigProportions, theme, figure);
+    const theme = variant.theme;
+    const figure = variant.figure;
+    const [partBuilder] = body.accumulate(rigProportions, theme, figure, variant.loadout);
 
     // GROUND CONTACT (#446), resolved before the rig this file poses exists.
     // `skeleton.bones(style)` IS the bone index order the vertices were baked
@@ -719,7 +870,7 @@ function build(): BuiltCharacter | undefined {
     mesh.add(bones[0] ?? new THREE.Bone());
     mesh.bind(skeletonObj);
 
-    built = {
+    const character: BuiltCharacter = {
       rig,
       bones,
       mesh,
@@ -727,11 +878,12 @@ function build(): BuiltCharacter | undefined {
       paletteSlots,
       groundProbes,
     };
-    return built;
+    builtByVariant.set(variant.key, character);
+    return character;
   } catch (error) {
     failed = true;
     // eslint-disable-next-line no-console
-    console.warn(`rigged 3D players disabled (build failed): ${String(error)}`);
+    console.warn(`rigged 3D players disabled (build failed, variant ${variant.key}): ${String(error)}`);
     return undefined;
   }
 }
@@ -752,16 +904,26 @@ function build(): BuiltCharacter | undefined {
 // `character` is passed in (not read from module state) because
 // `paletteSlots` -- needed to bake the attribute -- lives on `BuiltCharacter`,
 // produced by `build()`.
-function materialsForTeam(character: BuiltCharacter, team: "home" | "away"): TeamMaterials {
-  const key = team;
+//
+// KEYED BY VARIANT AS WELL AS TEAM SINCE #447, for two independent reasons,
+// either of which alone would require it: the baked buffer is one colour per
+// VERTEX and variants have different vertex counts, and the palette is
+// resolved against the VARIANT'S OWN THEME (`themes.resolvedPalette(theme,
+// team)`), which is what makes a sci-fi player read as sci-fi rather than as
+// a medieval one wearing the same colours. This function used to read
+// `themes.LIST[0]` directly -- a second hardcoded theme reference beside
+// `build()`'s, and one that would have kept every character medieval even
+// after `build()` learned to vary.
+function materialsForTeam(character: BuiltCharacter, variant: CharacterVariant, team: "home" | "away"): TeamMaterials {
+  const key = `${variant.key}|${team}`;
   const cached = materialsByTeam.get(key);
   if (cached !== undefined) {
     return cached;
   }
-  const theme = themes.LIST[0];
+  const theme = variant.theme;
   const teamData = themes.TEAMS[team === "away" ? 1 : 0];
-  if (theme === undefined || teamData === undefined) {
-    throw new Error("player_renderer_3d.ts: no rig3d theme/team content available");
+  if (teamData === undefined) {
+    throw new Error("player_renderer_3d.ts: no rig3d team content available");
   }
   const palette = themes.resolvedPalette(theme, teamData);
 
@@ -776,37 +938,21 @@ function materialsForTeam(character: BuiltCharacter, team: "home" | "away"): Tea
   }
   const color = new THREE.BufferAttribute(colors, 3);
 
-  // Base `.color` stays white so `vertexColors` passes the baked-per-vertex
-  // palette colour through unmodified (three.js multiplies material colour x
-  // vertex colour) -- `rig3d/cel_shader.ts`'s injected shading reads that
-  // same `diffuseColor.rgb` for every family, metal and emissive included,
-  // matching rig3d/renderer.lua's PIXEL stage, which shaded ALL three
-  // families from the one `v_slot_color` varying (there was never a fixed
-  // accent colour for emissive -- it multiplies the resolved palette colour
-  // by a facing-dependent brightness boost instead; see `cel_shader.ts`'s
-  // `celShadingChunk`). `roughness`/`metalness` are not set here: the
-  // injected shading never reads three.js's `PhysicalMaterial` struct at all
-  // (see `applyCombinedCelShading`'s doc comment), so they would be dead
-  // uniforms -- the metal/plain/emissive distinction is entirely which
-  // branch `vMaterialFamily` takes at runtime, a per-vertex value baked by
-  // `build()` above, not a material property.
-  //
-  // ONE `MeshStandardMaterial`, not three (draw-call fix #2 -- see this
-  // file's LIGHTING header and `build()`'s own comment on the
-  // `materialFamily` attribute this material's shading reads).
-  // `applyCombinedCelShading` is `cel_shader.ts`'s per-vertex-branching
-  // sibling of the per-family `applyCelShading` used elsewhere in that
-  // module's own test suite: same ported GLSL, selected at runtime off
-  // `materialFamily` instead of at TypeScript-build time off which
-  // `MeshStandardMaterial` instance this is.
-  const material = new THREE.MeshStandardMaterial({ vertexColors: true });
-  celShader.applyCombinedCelShading(material);
-  const materials: TeamMaterials = { material, color };
+  // The COLOUR is per (variant, team); the MATERIAL is not per anything --
+  // see `sharedMaterial` for what used to be constructed here and why it
+  // moved.
+  const materials: TeamMaterials = { material: sharedMaterial(), color };
   materialsByTeam.set(key, materials);
   return materials;
 }
 
-/** True when a rigged player can actually be drawn this frame. */
+/**
+ * True when a rigged player can actually be drawn this frame.
+ *
+ * Answered against the preview default variant (see `variantFor`): the
+ * question is whether the rigged pass works at all, and every variant shares
+ * the rig, the clips and the geometry builder, so one build answers it.
+ */
 export function available(): boolean {
   return build() !== undefined;
 }
@@ -832,12 +978,20 @@ export function available(): boolean {
 // normal/skinIndex/skinWeight and the material groups are genuinely shared
 // (referenced, not copied -- they never change after `build()`), and only
 // the `color` attribute differs, so this is one small wrapper object per
-// team, not a deep clone of the mesh. Built lazily, cached forever (there are
-// only two teams), mirroring `materialsByTeam`'s own cache lifetime.
-const teamGeometry = new Map<"home" | "away", THREE.BufferGeometry>();
+// team, not a deep clone of the mesh. Built lazily, cached forever, mirroring
+// `materialsByTeam`'s own cache lifetime.
+//
+// KEYED `${variant.key}|${team}` SINCE #447: the shared attributes it
+// references belong to ONE variant's geometry, so a single per-team entry
+// would hand a sci-fi player the medieval positions of whichever variant got
+// there first. The cache is now bounded by (variants on the pitch x 2)
+// instead of by 2 -- nine and eighteen respectively for the two fixture
+// teams.
+const teamGeometry = new Map<string, THREE.BufferGeometry>();
 
-function geometryForTeam(character: BuiltCharacter, team: "home" | "away"): THREE.BufferGeometry {
-  const cached = teamGeometry.get(team);
+function geometryForTeam(character: BuiltCharacter, variant: CharacterVariant, team: "home" | "away"): THREE.BufferGeometry {
+  const cacheKey = `${variant.key}|${team}`;
+  const cached = teamGeometry.get(cacheKey);
   if (cached !== undefined) {
     return cached;
   }
@@ -867,8 +1021,8 @@ function geometryForTeam(character: BuiltCharacter, team: "home" | "away"): THRE
   for (const g of base.groups) {
     geom.addGroup(g.start, g.count, g.materialIndex ?? 0);
   }
-  geom.setAttribute("color", materialsForTeam(character, team).color);
-  teamGeometry.set(team, geom);
+  geom.setAttribute("color", materialsForTeam(character, variant, team).color);
+  teamGeometry.set(cacheKey, geom);
   return geom;
 }
 
@@ -914,16 +1068,26 @@ interface PooledCharacter {
 // roster whose player ids churn heavily across matches (unlikely in this
 // game -- ids are stable roster slots) would leak pooled entries; not
 // addressed here, no different from the module's existing singletons.
+//
+// KEYED `${playerId}|${variant.key}` SINCE #447, not by `playerId` alone. The
+// pooled `SkinnedMesh` wraps ONE variant's geometry, so a player id that ever
+// resolved to two variants would keep being handed the first one's mesh --
+// which is the original defect in miniature. A player's variant is constant
+// for a match in practice (presentation and loadout are authored, not
+// per-frame), so this adds a cache entry only where something really did
+// change; the cost of getting it wrong is a character silently frozen in the
+// wrong kit, which is not a cost worth taking to save a map entry.
 const characterPool = new Map<string, PooledCharacter>();
 
-function pooledCharacter(playerId: string, character: BuiltCharacter, team: "home" | "away"): PooledCharacter {
-  const cached = characterPool.get(playerId);
+function pooledCharacter(playerId: string, character: BuiltCharacter, variant: CharacterVariant, team: "home" | "away"): PooledCharacter {
+  const poolKey = `${playerId}|${variant.key}`;
+  const cached = characterPool.get(poolKey);
   if (cached !== undefined) {
     return cached;
   }
   const bones = buildCharacterBones();
   const skeletonObj = new THREE.Skeleton(bones);
-  const mesh = new THREE.SkinnedMesh(geometryForTeam(character, team), new THREE.MeshStandardMaterial());
+  const mesh = new THREE.SkinnedMesh(geometryForTeam(character, variant, team), new THREE.MeshStandardMaterial());
   mesh.add(bones[0] ?? new THREE.Bone());
   mesh.bind(skeletonObj);
   // DETACHED bind mode -- a real defect this port's report documents finding
@@ -950,7 +1114,7 @@ function pooledCharacter(playerId: string, character: BuiltCharacter, team: "hom
   // the only one that ever applies.
   mesh.bindMode = "detached";
   const pooled: PooledCharacter = { bones, mesh };
-  characterPool.set(playerId, pooled);
+  characterPool.set(poolKey, pooled);
   return pooled;
 }
 
@@ -999,12 +1163,13 @@ export function characterMesh(
   opts: PlayerRenderOptions,
   now: number,
 ): THREE.Object3D | undefined {
-  const character = build();
+  const variant = variantFor(opts);
+  const character = build(variant);
   if (character === undefined) {
     return undefined;
   }
   const team = opts.team ?? "home";
-  const pooled = pooledCharacter(playerId, character, team);
+  const pooled = pooledCharacter(playerId, character, variant, team);
 
   const pose = mixerPoseFor(playerId, view, opts, now);
   // `ground.poseAndGround` rather than `skeleton.apply`: same evaluation, plus
@@ -1027,13 +1192,13 @@ export function characterMesh(
   // per-frame choice), but re-checked every frame rather than cached on the
   // pooled entry -- both `geometryForTeam` and `materialsForTeam` are
   // memoised maps, so this costs a lookup, not a rebuild.
-  const geometry = geometryForTeam(character, team);
+  const geometry = geometryForTeam(character, variant, team);
   if (pooled.mesh.geometry !== geometry) {
     pooled.mesh.geometry = geometry;
   }
   // A single Material (not an array) -- see `materialsForTeam`'s doc comment
   // on why that is what makes this one draw call instead of up to three.
-  const teamMaterials = materialsForTeam(character, team);
+  const teamMaterials = materialsForTeam(character, variant, team);
   pooled.mesh.material = teamMaterials.material;
 
   return pooled.mesh;
@@ -1101,7 +1266,8 @@ function prepareCharacter(
   opts: PlayerRenderOptions,
   now: number,
 ): PreparedCharacter | undefined {
-  const character = build();
+  const variant = variantFor(opts);
+  const character = build(variant);
   if (character === undefined) {
     return undefined;
   }
@@ -1122,12 +1288,12 @@ function prepareCharacter(
   const yaw = facing !== undefined ? Math.atan2(facing.x, facing.y) : 0;
   character.mesh.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
 
-  const teamMaterials = materialsForTeam(character, opts.team ?? "home");
+  const teamMaterials = materialsForTeam(character, variant, opts.team ?? "home");
   character.mesh.material = teamMaterials.material;
-  // The `color` attribute is swapped per draw call, same shared geometry
-  // (see `TeamMaterials`'s doc comment) -- there is exactly one character
-  // mesh in flight at a time (`scene.clear()` above), so this cannot race
-  // between two teams' colours within a frame.
+  // The `color` attribute is swapped per draw call, on this VARIANT's own
+  // geometry (see `TeamMaterials`'s doc comment) -- there is exactly one
+  // character mesh in flight at a time (`scene.clear()` above), so this
+  // cannot race between two teams' colours within a frame.
   character.mesh.geometry.setAttribute("color", teamMaterials.color);
 
   const ppm = (r * HEIGHT_IN_RADII * 2) / character.height;

@@ -35,7 +35,7 @@ import type { HeadGeometry } from "./headgear.ts";
 import type { RigForm, RigProportions } from "./proportions.ts";
 import * as skeleton from "./skeleton.ts";
 import * as themes from "./themes.ts";
-import type { Figure, SlotIndex, Theme } from "./themes.ts";
+import type { Figure, Loadout, SlotIndex, Theme } from "./themes.ts";
 
 type AddFn = (bone: string, builder: PartBuilder, attach?: Mat4, material?: string) => void;
 
@@ -47,7 +47,13 @@ const SIDES: readonly { readonly name: "R" | "L"; readonly sign: number }[] = [
 // Where each item hangs. The three light_melee items deliberately share one
 // entry: same bone, same transform, different geometry. That is the reskin
 // test.
-const SOCKETS: Readonly<Record<string, string>> = {
+//
+// Exported since #447 so `presentation_content.spec.ts` can assert that every
+// equipment id `gc-data` can name actually has somewhere to hang -- a
+// mapping table that resolves to an item with no socket throws at mesh-build
+// time, inside a `try` that disables rigged players entirely, which is the
+// least diagnosable place for it to happen.
+export const SOCKETS: Readonly<Record<string, string>> = {
   tournament_sword: "hand_r",
   vector_blade: "hand_r",
   foam_champion: "hand_r",
@@ -500,14 +506,19 @@ function socketTransform(socket: string, rig: RigProportions): readonly [string,
   throw new Error(`unknown socket: ${socket}`);
 }
 
-function buildLoadout(add: AddFn, rig: RigProportions, theme: Theme, figure: Figure, c: SlotIndex): void {
+// HEADGEAR IS NOT LOADOUT, EVEN THOUGH IT IS BUILT HERE. `theme.head` is
+// part of what a theme's character IS -- a great helm, a visor helm, a
+// moulded figure helm -- so it is built from the theme unconditionally and
+// is NOT affected by `loadout`. Only the carried items are. A keeper with an
+// empty loadout still wears their helmet (#447).
+function buildLoadout(add: AddFn, rig: RigProportions, theme: Theme, figure: Figure, c: SlotIndex, loadout: Loadout): void {
   const [solid, glow] = headgear.build(theme.head, c, headGeometry(rig, figure));
   add("head", solid, undefined, "metal");
   if (glow) {
     add("head", glow, undefined, "emissive");
   }
 
-  const ids = Object.values(theme.loadout).filter((id): id is string => id !== undefined);
+  const ids = Object.values(loadout).filter((id): id is string => id !== undefined);
   for (const id of ids) {
     const socket = SOCKETS[id];
     if (!socket) {
@@ -548,7 +559,20 @@ export interface AccumulatedPart {
 // `themes.resolvedPalette`). That is what makes this build reusable across
 // every team -- and every future cosmetic palette -- without rebuilding a
 // single mesh.
-export function accumulate(rig: RigProportions, theme: Theme, figure: Figure): readonly [PartBuilder, readonly AccumulatedPart[]] {
+//
+// `loadout` (#447) OVERRIDES `theme.loadout`, and defaults to it. The theme's
+// own authored loadout is what a character carries when nobody says
+// otherwise -- a standalone preview, a diagnostic render, this package's own
+// fixtures. On the product path the caller passes the player's AUTHORED
+// loadout instead, resolved from their `loadout_id`, and an empty `{}` for a
+// player who carries nothing. That is the whole of the keeper fix at this
+// layer: no `is_keeper` branch, just the data the player already has.
+export function accumulate(
+  rig: RigProportions,
+  theme: Theme,
+  figure: Figure,
+  loadout: Loadout = theme.loadout,
+): readonly [PartBuilder, readonly AccumulatedPart[]] {
   const c = themes.SLOT_INDEX;
   const boneIndex = skeleton.boneIndex(rig);
   const parts: AccumulatedPart[] = [];
@@ -565,7 +589,7 @@ export function accumulate(rig: RigProportions, theme: Theme, figure: Figure): r
 
   buildBody(add, rig, theme, figure, c);
   buildKit(add, rig, theme, c);
-  buildLoadout(add, rig, theme, figure, c);
+  buildLoadout(add, rig, theme, figure, c, loadout);
 
   const mergeParts: geometry.Part[] = parts.map((p) => ({
     builder: p.builder,
