@@ -311,6 +311,21 @@ notes are the checklist.
    later milestone. Parameter injection is what makes this milestone finishable
    without pre-empting that design.
 
+   **One carve-out, and it is gated rather than trusted (#447).**
+   `packages/render/src/rig3d/presentation_content.ts` *does* restate two
+   `gc-data` mappings — `character_presentations`' theme column and
+   `loadouts`' equipment column — because the renderer resolves them per
+   player inside `characterMesh`, which is reached from `pitch.draw` and has
+   no parameter to inject a content table through without threading one down
+   every render call. The prohibition above still stands everywhere else, and
+   it stands here in substance: the duplicate is not trusted, it is
+   **asserted** against the Rust source by
+   `scripts/check_presentation_parity.mjs`, run as gate 0b of
+   `check_v2.sh` — see §8.1. That is the same answer #433 reached for the wire
+   enums, which are duplicated for the same reason and guarded the same way.
+   A second carve-out must be argued on the same terms — a cross-language
+   assertion, wired into the gate, landing with the duplicate — or not taken.
+
 8. **Prefer `readonly` and immutable updates** in pure code. Mirror Lua's
    in-place mutation only where the Lua deliberately mutates.
 

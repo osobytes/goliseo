@@ -372,6 +372,24 @@ fn refuses_a_roster_string_it_could_not_parse_back() {
         "a newline in a roster string would make the blob unparseable"
     );
 
+    // EVERY string column, not just the ones a change happened to touch. The
+    // `id` guard is as real as the `name` one and had no direct test of its
+    // own, which is exactly how a guard ends up deleted by someone who
+    // checked whether anything covered it.
+    let mut roster = render_frame::roster(&state);
+    roster.ids[0] = "bad\nid".to_string();
+    assert!(
+        std::panic::catch_unwind(|| frame_buffer::encode_roster(&roster)).is_err(),
+        "a newline in a roster id would make the blob unparseable"
+    );
+
+    let mut roster = render_frame::roster(&state);
+    roster.presentation_ids[0] = "bad\npresentation".to_string();
+    assert!(
+        std::panic::catch_unwind(|| frame_buffer::encode_roster(&roster)).is_err(),
+        "and so would one in a presentation id"
+    );
+
     let mut roster = render_frame::roster(&state);
     roster.loadout_ids[0] = Some("bad\nloadout".to_string());
     assert!(

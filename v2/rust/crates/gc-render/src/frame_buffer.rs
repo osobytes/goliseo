@@ -1098,6 +1098,17 @@ pub fn decode_roster(words: &[f64], strings: &str) -> DecodedRenderFrameRoster {
     blob.push('\n');
     let mut parts: Vec<&str> = blob.split('\n').collect();
     parts.pop();
+    // THIS ASSERTION CARRIES THE BLOB'S ENTIRE SHAPE-VERSIONING BURDEN,
+    // because [`LAYOUT_VERSION`] cannot be bumped for a blob change (it is
+    // stamped into the numeric block, which is pinned word-for-word against a
+    // captured Lua fixture — see [`ROSTER_STRING_FIELD_COUNT`]). And it
+    // DEGENERATES TO A NO-OP at `count == 0`: `0 == 0` holds for any field
+    // count, so a producer and a reader that disagreed would agree vacuously
+    // on an empty roster. Harmless today — a match always fields two teams,
+    // and an empty roster draws nothing whatever it decoded — but recorded
+    // rather than left to be rediscovered, because the day something
+    // legitimately decodes an empty roster is the day this stops guarding
+    // anything.
     let expected_parts = count * ROSTER_STRING_FIELD_COUNT;
     assert!(
         parts.len() == expected_parts,
