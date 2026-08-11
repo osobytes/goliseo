@@ -90,7 +90,21 @@ import type { Pose } from "./skeleton.ts";
 
 const RIG = proportions.RIG_MEDIUM;
 
-/** Hip-to-sole reach with the leg straight, in metres. */
+/**
+ * Hip-to-ANKLE reach with the leg straight, in metres: `upperleg + lowerleg`,
+ * which is where the bone chain ends. NOT hip-to-sole -- the boot hangs below
+ * the ankle and is nowhere in this sum.
+ *
+ * Hip-to-ankle is nonetheless the right quantity to fold against, and the
+ * reason is the third angle. The fold's three local rotations sum to zero, so
+ * the `foot` bone comes back to its REST ORIENTATION and the sole keeps its
+ * exact offset from the ankle -- an unrotated rigid attachment. The sole then
+ * translates by whatever the ankle translates by, and the boot's own depth
+ * cancels out of the arithmetic rather than being neglected by it. Drop the
+ * ankle's compensation and that stops holding at once: the sole would swing
+ * about the ankle instead of riding it, and the toe would dig in by tens of
+ * millimetres (measured: 40 mm at the deepest crouch).
+ */
 const LEG_REACH = RIG.seg.upperleg + RIG.seg.lowerleg;
 
 /** The rig's `move` -> world scale, the same one `skeleton.apply` applies. */

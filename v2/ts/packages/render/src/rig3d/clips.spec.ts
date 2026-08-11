@@ -155,6 +155,74 @@ describe("rig3d clips", () => {
     );
   });
 
+  // THE INVARIANT `compose`'s EXACTNESS RESTS ON, and which nothing else
+  // enforces (#445).
+  //
+  // `compose` pre-multiplies, and `quat.fromEuler` composes as `Ry * Rx * Rz`.
+  // So `Rx(-c) * (Rx(rx) * Rz(rz))` collapses to `Rx(rx - c) * Rz(rz)` -- the
+  // fold lands exactly in the authored x angle -- ONLY while the leg keys carry
+  // no y. Put a twist in the chain and `Rx(-c) * (Ry(ry) * Rx(rx) * Rz(rz))`
+  // does not collapse: it is still a fold about the hip's flexion axis, but no
+  // longer the one `crouch.angleFor` sized, so the fold and the drop stop
+  // cancelling and the soles drift off the turf by an amount nobody measured.
+  //
+  // Every locomotion and action clip in the tree happens to key the legs in x
+  // and z alone. This is what turns "happens to" into "has to": author a thigh
+  // twist and you get a failing test naming the reason, rather than a subtly
+  // wrong crouch.
+  //
+  // ENUMERATED FROM THE MODULE'S OWN EXPORTS rather than from a list written
+  // here, so a clip added tomorrow is covered without being remembered.
+  it("keys no y rotation on the bones a crouch folds, which is what makes compose exact", () => {
+    const CROUCH_BONES = ["thigh.L", "thigh.R", "shin.L", "shin.R", "foot.L", "foot.R"];
+    const all = Object.values(clips as unknown as Record<string, unknown>).filter(
+      (v): v is clips.Clip =>
+        typeof v === "object" && v !== null && Array.isArray((v as clips.Clip).keys) && "rotBones" in v,
+    );
+    expect(all.length, "every clip the module exports, or this proves nothing").toBeGreaterThanOrEqual(8);
+
+    let checked = 0;
+    for (const clip of all) {
+      for (const key of clip.keys) {
+        for (const bone of CROUCH_BONES) {
+          const q = key.q[bone];
+          if (q === undefined) {
+            continue;
+          }
+          checked += 1;
+          // Recover the x and z halves on the assumption there is no y, rebuild,
+          // and require the rebuild to be the original: a y-twist survives the
+          // round trip as a mismatch. Well conditioned because no leg key comes
+          // near 180 degrees -- asserted, so a future key that did would fail
+          // here loudly instead of being waved through by a degenerate atan2.
+          expect(comp(q, 3), `${clip.name}/${bone}: a leg key past 180 degrees`).toBeGreaterThan(0.1);
+          const rx = 2 * Math.atan2(comp(q, 0), comp(q, 3));
+          const rz = 2 * Math.atan2(comp(q, 2), comp(q, 3));
+          const rebuilt = quat.fromEuler(rx, 0, rz);
+          for (let i = 0; i < 4; i++) {
+            expect(comp(rebuilt, i), `${clip.name} keys y on ${bone}`).toBeCloseTo(comp(q, i), 12);
+          }
+        }
+      }
+    }
+    // NON-VACUOUS: the clips really do pose these bones, so "no y on them" is a
+    // claim about keys that exist rather than about an empty scan.
+    expect(checked, "the leg bones really are keyed, in many clips").toBeGreaterThan(20);
+
+    // AND THE CHECK ITSELF CATCHES ONE, so a broken round trip cannot pass
+    // silently: the same reconstruction applied to a deliberately y-keyed
+    // rotation must NOT come back equal.
+    const twisted = quat.fromEuler(0.3, 0.4, 0.2);
+    const rxT = 2 * Math.atan2(comp(twisted, 0), comp(twisted, 3));
+    const rzT = 2 * Math.atan2(comp(twisted, 2), comp(twisted, 3));
+    const rebuiltT = quat.fromEuler(rxT, 0, rzT);
+    let worst = 0;
+    for (let i = 0; i < 4; i++) {
+      worst = Math.max(worst, Math.abs(comp(rebuiltT, i) - comp(twisted, i)));
+    }
+    expect(worst, "a y-twist must fail the round trip, or the sweep above is blind").toBeGreaterThan(0.01);
+  });
+
   it("masks include the sockets attached to the hands they cover", () => {
     // A socket left out of the mask keeps the base layer's transform while
     // the arm follows the overlay, and the weapon detaches from the fist.

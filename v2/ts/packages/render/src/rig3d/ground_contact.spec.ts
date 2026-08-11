@@ -635,6 +635,101 @@ describe("ground contact: the crouch is limb work (#445)", () => {
     expect(lifted, "a crouching keeper never needs the pitch to move for them").toBe(0);
   });
 
+  // THE SAME PROPERTY FOR THE TWO CROUCHES THAT ALSO LEAN, which the block
+  // above deliberately cannot cover: `contain` and `fatigue` carry a root tilt,
+  // and a tilt DOES need a few millimetres of lift at a standstill -- 4 mm and
+  // 2 mm, pinned by `RESIDUAL_MM` below, and not this fix's doing.
+  //
+  // A MOVING one needs none, and that is the claim worth having, because a
+  // containing defender is a moving player and `contain` is the commonest pose
+  // in the table. If the crouch ever started costing them a per-frame
+  // correction, it would arrive as a wobble at stride frequency on the pose
+  // that shows up most.
+  it("costs a moving contain or fatigue no per-frame lift either", () => {
+    const rig = groundedRig();
+    let lifted = 0;
+    let samples = 0;
+    for (const id of ["contain", "fatigue"] as const) {
+      for (const frame of frames()) {
+        if (frame.speed === 0) {
+          continue;
+        }
+        samples += 1;
+        if (groundedOnRig(rig, id, frame).lift > 0) {
+          lifted += 1;
+        }
+      }
+    }
+    expect(samples, "48 moving frames each of two poses").toBe(96);
+    expect(lifted, "a moving lean-and-crouch never needs the pitch to move either").toBe(0);
+  });
+
+  // PARTIAL DEPTH, ON THE REAL MESH. Everything else in this file -- including
+  // the ~7000-assertion sweep -- samples a character on their FIRST observed
+  // frame, because every helper here uses a fresh player id and the animator
+  // commits to its crouch outright on that frame. So every one of those
+  // measurements is taken at FULL depth, and the ease-in is measured nowhere on
+  // real geometry.
+  //
+  // Mid-transition is precisely where a weight-blended implementation sinks the
+  // feet: a fold of `w * c` raises the foot by `L * (1 - cos(w * c))`, which is
+  // QUADRATIC in `w`, while `w * drop` lowers it linearly, so any partial weight
+  // under such a scheme puts the soles through the turf and the deficit peaks
+  // near the middle of the ramp. `clips.compose` takes no weight and
+  // `crouch.poseFor` re-derives the angle from the ramped DEPTH for exactly this
+  // reason -- which is an argument until something measures it.
+  //
+  // Driven through one persistent player id at 60 fps, which is the only way to
+  // reach a partial depth at all, and measured at a STANDSTILL: a moving figure
+  // floats tens of millimetres clear (pinned at the top of this file) and would
+  // absorb the failure this is looking for.
+  // MEASURED AGAINST THE SAME INSTANT, NOT AGAINST THE REST POSE, and the first
+  // version of this test got that wrong in a way worth recording: the idle clip
+  // writes its own weight shift to `move.root`, so once `now` advances the
+  // standing figure is no longer at rest height either. Comparing a crouch at
+  // t = 0.33 s against a rest pose at t = 0 folds half a millimetre of idle bob
+  // into a measurement whose whole subject is a tenth of one. The baseline has
+  // to be the same character, at the same instant, not crouching.
+  it("keeps the soles on the turf at every depth the ease-in passes through", () => {
+    const rig = skeleton.newRig(RIG);
+    const tallRig = skeleton.newRig(RIG);
+    const base = rest();
+    const authored = actionPose.attitudeDrop({ pose: { id: "keeper_ready_low" } });
+    const player = "gc_ramp";
+    // One frame of plain locomotion first, so the crouch has somewhere to ease
+    // FROM. Without it the animator's first-frame commit skips the ramp
+    // entirely and this measures the same full depth as everything else.
+    animator.poseFor(player, { speed: 0, gait: 0 }, {}, 0);
+
+    let partialSamples = 0;
+    let deepest = 0;
+    for (let i = 1; i <= 20; i += 1) {
+      const now = i / 60;
+      const pose = animator.poseFor(player, { speed: 0, gait: 0 }, { pose: { id: "keeper_ready_low" } }, now);
+      const tall = animator.poseFor(`gc_tall_${String(i)}`, { speed: 0, gait: 0 }, {}, now);
+      const depth = (tall.move["root"]?.[1] ?? 0) - (pose.move["root"]?.[1] ?? 0);
+      skeleton.apply(rig, pose);
+      skeleton.apply(tallRig, tall);
+      const sole = lowestRendered(rig).y;
+      const tallSole = lowestRendered(tallRig).y;
+      const at = `${(1000 * depth).toFixed(1)} mm of ${(1000 * authored).toFixed(1)} mm`;
+      expect(sole, `at ${at}, a sole is below where standing puts it`).toBeGreaterThanOrEqual(tallSole);
+      expect(sole - tallSole, `at ${at}, a sole has lifted off`).toBeLessThan(0.2 * MM);
+      // And in absolute terms, against the pitch itself.
+      expect(sole, `at ${at}, a sole is through the turf`).toBeGreaterThanOrEqual(base.sole);
+      // A sample genuinely in the middle of the ramp, where the quadratic
+      // deficit a weight blend would produce is largest.
+      if (depth > 0.2 * authored && depth < 0.8 * authored) {
+        partialSamples += 1;
+      }
+      deepest = Math.max(deepest, depth);
+    }
+    // NON-VACUOUS IN BOTH DIRECTIONS: the ramp really passed through the middle
+    // rather than snapping, and it really did arrive.
+    expect(partialSamples, "the ease-in must actually be sampled part-way down").toBeGreaterThan(2);
+    expect(deepest, "and must reach the authored depth by the end of it").toBeCloseTo(authored, 9);
+  });
+
   // THE ONE PLACE IT DOES COST SOMETHING, disclosed with its size rather than
   // left to be found. A crouch lowers the WHOLE body, including anything a
   // player is carrying, and an outfielder's held weapon swings low at one phase
@@ -645,24 +740,54 @@ describe("ground contact: the crouch is limb work (#445)", () => {
   // It is bounded and it is small: 13 mm at its worst, on a 1.5676 m figure
   // drawn ~26 px tall at match camera, which is 0.22 px. The BODY is nowhere
   // near the plane at that phase, so nothing anatomical is being corrected.
-  // Stated as a ceiling so that a change which made it worse fails here rather
-  // than being absorbed.
-  it("dips a held weapon at one phase of a settling walk, by a fifth of a pixel", () => {
-    const sword = body.accumulate(RIG, THEME, FIGURE, presentationContent.loadoutFor("loadout_tournament_sword"))[0];
-    if (sword === undefined) {
-      throw new Error("ground_contact.spec.ts: the sword loadout must build a figure");
+  //
+  // OVER EVERY LOADOUT, NOT THE ONE THAT HAPPENS TO DIP. Measured, only
+  // `loadout_tournament_sword` reaches the turf at all -- `loadout_vector_blade`
+  // is a nearly identical length (0.82 m against 0.84 m) and never touches it.
+  // So a single hardcoded id would pin the ceiling against the one item that
+  // exercises it and hold by luck for the rest: a longer polearm authored
+  // tomorrow could sail past 13 mm with nothing to catch it. The loop is over
+  // `LOADOUT_EQUIPMENT` itself, so a new loadout is under the ceiling by
+  // construction rather than by somebody remembering. That matters more since
+  // #460 made loadouts per-player.
+  it("keeps every loadout's held item within a fifth of a pixel of the turf while settling", () => {
+    const ids = Object.keys(presentationContent.LOADOUT_EQUIPMENT);
+    expect(ids.length, "every authored loadout, or this sweep means nothing").toBeGreaterThanOrEqual(6);
+
+    let deepestDip = 0;
+    let dippingLoadouts = 0;
+    for (const loadoutId of ids) {
+      const figure = body.accumulate(RIG, THEME, FIGURE, presentationContent.loadoutFor(loadoutId))[0];
+      if (figure === undefined) {
+        throw new Error(`ground_contact.spec.ts: ${loadoutId} must build a figure`);
+      }
+      const probes = ground.probesFrom(RIG, figure.verts, BONE_ORDER);
+      const rig = skeleton.raised(skeleton.newRig(RIG), probes.restLift);
+      let maxLift = 0;
+      let bodyLowest = Infinity;
+      for (const frame of frames()) {
+        maxLift = Math.max(maxLift, groundedOnRig(rig, "settle", frame, undefined, probes).lift);
+        bodyLowest = Math.min(bodyLowest, lowestRendered(rig, PROP, figure.verts).y);
+      }
+      expect(
+        maxLift,
+        `${loadoutId}: a fifth of a pixel at match camera, not a boot's depth`,
+      ).toBeLessThan(15 * MM);
+      expect(
+        bodyLowest,
+        `${loadoutId}: the player's own body is never what is being lifted`,
+      ).toBeGreaterThan(-TOLERANCE);
+      if (maxLift > 0) {
+        dippingLoadouts += 1;
+      }
+      deepestDip = Math.max(deepestDip, maxLift);
     }
-    const probes = ground.probesFrom(RIG, sword.verts, BONE_ORDER);
-    const rig = skeleton.raised(skeleton.newRig(RIG), probes.restLift);
-    let maxLift = 0;
-    let bodyLowest = Infinity;
-    for (const frame of frames()) {
-      maxLift = Math.max(maxLift, groundedOnRig(rig, "settle", frame, undefined, probes).lift);
-      bodyLowest = Math.min(bodyLowest, lowestRendered(rig, PROP, sword.verts).y);
-    }
-    expect(maxLift, "a settling walk really does dip the weapon, so this is not vacuous").toBeGreaterThan(5 * MM);
-    expect(maxLift, "and by a fifth of a pixel at match camera, not by a boot's depth").toBeLessThan(15 * MM);
-    expect(bodyLowest, "the player's own body is never what is being lifted").toBeGreaterThan(-TOLERANCE);
+
+    // NON-VACUOUS, and this is what a ceiling on its own cannot give: at least
+    // one loadout has to actually reach the turf, or every bound above passes
+    // on a sweep that is measuring nothing. The sword is that one today.
+    expect(dippingLoadouts, "at least one authored loadout really does dip").toBeGreaterThan(0);
+    expect(deepestDip, "and by millimetres, so the ceiling is a bound and not a formality").toBeGreaterThan(5 * MM);
   });
 });
 
