@@ -94,6 +94,7 @@ use gc_render::frame::{self as render_frame, RenderFrameOptions, RenderFrameRost
 use gc_render::frame_buffer;
 use gc_sim::input_frame::{self, SlotId};
 use gc_sim::match_snapshot::MatchSnapshot;
+use gc_sim::retained_history;
 use gc_sim::rollback_events::{self, RollbackEventTimeline};
 use gc_sim::rollback_session::RollbackTickOutput;
 use gc_sim::rollback_snapshot_history::RollbackSnapshotLookupStatus;
@@ -485,6 +486,73 @@ fn safe_confirm(timeline: &mut RollbackEventTimeline, confirmed_output_tick: i64
     rollback_events::confirm(timeline, confirmed_output_tick);
 }
 
+/// One [`gc_sim::retained_history::RetainedHistorySample`], as JSON.
+///
+/// ## Why `history_bytes` is the combined figure
+///
+/// `history_bytes` is `session.total_bytes + events.total_bytes`, which is
+/// what that name means everywhere else in this tree —
+/// `gc_sim::rollback_lab`'s peak, `gc-sim`'s
+/// `tests/combat_load_fixtures.rs`, and the band
+/// `tests/snapshot_headroom.rs` compares to
+/// `gc_data::omp2_rollback_validation::Omp2RollbackBudgets::history_bytes`.
+/// Reporting only the session half would omit the retained speculative
+/// event window, which this very bridge retains per peer (see the module
+/// doc's `rollback_events` section) — real browser-side memory that would
+/// then grow unobserved.
+///
+/// ## Why the counts travel with the bytes
+///
+/// `retained_boundary_count`/`retained_step_count`/`retained_event_count`
+/// are what let a caller reject a sample that has stopped measuring. A
+/// speculative window of 30 steps holding zero events still reports a
+/// plausible nonzero byte total in which no per-event encoder was ever
+/// entered (`gc-sim`'s `tests/retained_history.rs` builds exactly that
+/// window on purpose). A soak that gated on bytes alone would pass on it.
+///
+/// Optional ticks are OMITTED rather than nulled, the same rule
+/// [`diagnostics_to_json`] follows and for the same reason.
+fn retained_history_to_json(sample: &retained_history::RetainedHistorySample) -> Json {
+    Json::obj_omit_null(vec![
+        ("history_bytes", Json::int(sample.history_bytes)),
+        (
+            "session",
+            Json::obj(vec![
+                ("input_bytes", Json::int(sample.session.input.total_bytes)),
+                ("output_bytes", Json::int(sample.session.output_bytes)),
+                ("snapshot_bytes", Json::int(sample.session.snapshot_bytes)),
+                ("total_bytes", Json::int(sample.session.total_bytes)),
+            ]),
+        ),
+        (
+            "events",
+            rollback_events_bridge::accounting_to_json(&sample.events),
+        ),
+        (
+            "retained_boundary_count",
+            Json::int(sample.retained_boundary_count),
+        ),
+        (
+            "peak_retained_boundary_count",
+            Json::int(sample.peak_retained_boundary_count),
+        ),
+        ("peak_snapshot_bytes", Json::int(sample.peak_snapshot_bytes)),
+        (
+            "oldest_boundary_tick",
+            Json::opt_int(sample.oldest_boundary_tick),
+        ),
+        (
+            "latest_boundary_tick",
+            Json::opt_int(sample.latest_boundary_tick),
+        ),
+        ("retained_step_count", Json::int(sample.retained_step_count)),
+        (
+            "retained_event_count",
+            Json::int(sample.retained_event_count),
+        ),
+    ])
+}
+
 fn snapshot_lookup_status_str(status: RollbackSnapshotLookupStatus) -> &'static str {
     match status {
         RollbackSnapshotLookupStatus::Present => "present",
@@ -498,13 +566,17 @@ fn snapshot_lookup_status_str(status: RollbackSnapshotLookupStatus) -> &'static 
 /// type — `packages/online/src/match_presentation.ts`'s
 /// `SnapshotLookup<TSnapshot>` (`TSnapshot` = [`WasmMatchSnapshot`]):
 /// `status` (`"present"`/`"retained"`/`"missing"`/`"outside_window"`),
-/// `tick`, and `snapshot` (present exactly when `status` is `"present"` or
-/// `"retained"`).
+/// `tick`, `snapshot` (present exactly when `status` is `"present"` or
+/// `"retained"`) and `canonicalBytes` (that snapshot's own exact canonical
+/// wire size, the per-boundary figure the ring sums into
+/// [`MatchDriverBridge::retained_history_accounting_json`]'s
+/// `session.snapshot_bytes`).
 #[wasm_bindgen]
 pub struct SnapshotLookup {
     status: &'static str,
     tick: i64,
     snapshot: Option<MatchSnapshot>,
+    canonical_bytes: Option<i64>,
 }
 
 #[wasm_bindgen]
@@ -529,6 +601,22 @@ impl SnapshotLookup {
     #[must_use]
     pub fn snapshot(&self) -> Option<WasmMatchSnapshot> {
         self.snapshot.clone().map(WasmMatchSnapshot::new)
+    }
+
+    /// This boundary's exact canonical wire byte count
+    /// (`gc_sim::match_snapshot::encoded_size_canonical`, computed once when
+    /// the ring stored it), present exactly when [`Self::snapshot`] is.
+    ///
+    /// Exposed because it is the only way a JS caller can re-derive
+    /// [`MatchDriverBridge::retained_history_accounting_json`]'s
+    /// `session.snapshot_bytes` independently: that field is the ring's own
+    /// incrementally-maintained sum, and summing this getter across every
+    /// retained boundary must reproduce it exactly. A retained-byte figure
+    /// nothing outside the engine can check is a figure taken on trust.
+    #[wasm_bindgen(getter, js_name = canonicalBytes)]
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Option<f64> {
+        self.canonical_bytes.map(|bytes| bytes as f64)
     }
 }
 
@@ -990,6 +1078,7 @@ impl MatchDriverBridge {
             status: snapshot_lookup_status_str(lookup.status),
             tick: lookup.tick,
             snapshot: lookup.snapshot,
+            canonical_bytes: lookup.canonical_bytes,
         }
     }
 
@@ -1048,11 +1137,54 @@ impl MatchDriverBridge {
     }
 
     /// The rollback-event timeline's retained byte accounting, as JSON.
+    ///
+    /// This is one HALF of what this peer retains. For the figure a
+    /// retention budget is written against, use
+    /// [`Self::retained_history_accounting_json`].
     #[wasm_bindgen(js_name = rollbackAccountingJson)]
     #[must_use]
     pub fn rollback_accounting_json(&self) -> String {
         rollback_events_bridge::accounting_to_json(&rollback_events::accounting(&self.timeline))
             .to_json_string()
+    }
+
+    /// **Everything this peer retains**, as JSON — the combined
+    /// `history_bytes` figure plus the components and occupancy counts
+    /// behind it ([`retained_history_to_json`]'s shape, from
+    /// `gc_sim::retained_history::sample`).
+    ///
+    /// This is the seam a long-duration soak samples. Before it existed,
+    /// nothing on this bridge could report the session half at all
+    /// ([`Self::rollback_accounting_json`] is the event timeline only), so a
+    /// browser peer had no honest way to observe its own retained-history
+    /// growth: the snapshot ring, the input history and the retained
+    /// outputs — together the large majority of the number — were invisible
+    /// from JS. Sampling `performance.memory` instead is not an
+    /// alternative; it excludes wasm linear memory entirely, and wasm linear
+    /// memory never shrinks, so a whole-instance figure could not attribute
+    /// growth to retention even if it were visible.
+    ///
+    /// Cost: O(retained input rows + retained outputs + retained events),
+    /// with the snapshot component read from a counter the ring maintains
+    /// incrementally (no snapshot is re-encoded). Measured at ~0.27 ms per
+    /// call in a native release build on a full 31-boundary ring with a full
+    /// 30-step speculative window (`gc-sim`'s `tests/retained_history.rs`
+    /// prints it), and ~0.37 ms through this bridge under node
+    /// (`packages/wasm/src/retained_history.spec.ts` prints that one).
+    /// Cheap enough to sample every tick for hours; still not something to
+    /// call per entity.
+    ///
+    /// Takes `&mut self` because `gc_sim::rollback_session::accounting` does
+    /// (it re-derives retained output bytes through the session's own
+    /// counted-output cache). Nothing observable about this driver changes.
+    #[wasm_bindgen(js_name = retainedHistoryAccountingJson)]
+    #[must_use]
+    pub fn retained_history_accounting_json(&mut self) -> String {
+        retained_history_to_json(&retained_history::sample(
+            &mut self.driver.session,
+            &self.timeline,
+        ))
+        .to_json_string()
     }
 
     /// Every currently retained (unconfirmed) speculative step, as JSON, in
@@ -1223,6 +1355,7 @@ mod tests {
     use gc_render::player_pose::PlayerPoseId;
     use gc_sim::combat_feasibility::CombatActionPhase;
     use gc_sim::combat_snapshot::CombatForcedState;
+    use gc_sim::rollback_session;
 
     use crate::coordinator_bridge::{freeze_to_json, value_to_json};
 
@@ -1363,6 +1496,151 @@ mod tests {
                 .unwrap()
                 .as_array()
                 .is_some()
+        );
+        assert!(Json::parse(&bridge.retained_history_accounting_json()).is_ok());
+    }
+
+    /// Steps a fixture host bridge far enough to fill its 31-boundary
+    /// snapshot ring and its 30-step speculative event window, so the
+    /// retained reading below is a steady-state one.
+    ///
+    /// This lone-host fixture stops confirming once its silent guest's
+    /// input falls below the retained floor (`status` becomes
+    /// `"confirmation_stalled"` around step 31) — which is exactly the
+    /// retention shape a soak has to be able to see: a full ring and a full
+    /// unconfirmed window, held.
+    fn stepped_host_bridge() -> MatchDriverBridge {
+        let mut bridge = new_host_bridge();
+        for _ in 0..40 {
+            bridge.advance(None).expect("a fixture host step");
+        }
+        bridge
+    }
+
+    #[test]
+    fn retained_history_accounting_reports_the_combined_total_not_the_event_half() {
+        let mut bridge = stepped_host_bridge();
+        let json = Json::parse(&bridge.retained_history_accounting_json()).unwrap();
+
+        // The anti-regression this whole surface exists for: the number
+        // that crosses must be `rollback_session::accounting().total_bytes`
+        // PLUS `rollback_events::accounting().total_bytes`, read from this
+        // bridge's own live driver. Exposing either half alone is a
+        // plausible, nonzero, budget-comparable figure that silently omits
+        // most of what the peer retains.
+        let session_total = rollback_session::accounting(&mut bridge.driver.session).total_bytes;
+        let event_total = rollback_events::accounting(&bridge.timeline).total_bytes;
+        assert!(session_total > 0 && event_total > 0, "both halves are live");
+        assert_eq!(
+            json.field_i64("history_bytes"),
+            Some(session_total + event_total),
+            "history_bytes must be the engine's own combined figure"
+        );
+        assert_eq!(
+            json.get("session").and_then(|s| s.field_i64("total_bytes")),
+            Some(session_total)
+        );
+        assert_eq!(
+            json.get("events").and_then(|e| e.field_i64("total_bytes")),
+            Some(event_total)
+        );
+        // Stated as a comparison rather than a pinned constant so an
+        // encoder change moves it without breaking this test: the session
+        // half is the large majority, so a reading that had quietly become
+        // the event half alone would be off by an order of magnitude.
+        assert!(
+            json.field_i64("history_bytes").unwrap() > event_total * 10,
+            "the session half dominates; a reading close to the event half is the event half"
+        );
+
+        // The session half's own components must add up, so a mis-wired
+        // field is visible rather than merely plausible.
+        let session = json.get("session").unwrap();
+        assert_eq!(
+            session.field_i64("input_bytes").unwrap()
+                + session.field_i64("output_bytes").unwrap()
+                + session.field_i64("snapshot_bytes").unwrap(),
+            session_total
+        );
+    }
+
+    #[test]
+    fn retained_history_snapshot_bytes_equal_the_sum_of_the_retained_boundaries() {
+        // An independent re-derivation of the dominant component: the ring
+        // maintains `snapshot_bytes` incrementally, while
+        // `SnapshotLookup::canonicalBytes` reports each boundary's own
+        // stored size. Summing the latter across every retained boundary
+        // must reproduce the former exactly — the same check
+        // `packages/wasm/src/retained_history.spec.ts` performs from JS, so
+        // the figure a browser peer samples is one it can verify rather
+        // than take on trust.
+        let mut bridge = stepped_host_bridge();
+        let json = Json::parse(&bridge.retained_history_accounting_json()).unwrap();
+        let oldest = json.field_i64("oldest_boundary_tick").unwrap();
+        let latest = json.field_i64("latest_boundary_tick").unwrap();
+        let retained = json.field_i64("retained_boundary_count").unwrap();
+        assert_eq!(
+            latest - oldest + 1,
+            retained,
+            "the retained boundaries are contiguous"
+        );
+
+        let mut summed = 0;
+        let mut counted = 0;
+        for tick in oldest..=latest {
+            let lookup = bridge.snapshot_lookup(tick as f64);
+            let bytes = lookup
+                .canonical_bytes()
+                .expect("a retained boundary reports its canonical size");
+            assert!(bytes > 0.0);
+            summed += bytes as i64;
+            counted += 1;
+        }
+        assert_eq!(counted, retained);
+        assert_eq!(
+            summed,
+            json.get("session")
+                .and_then(|s| s.field_i64("snapshot_bytes"))
+                .unwrap(),
+            "per-boundary canonical sizes must sum to the ring's own reported total"
+        );
+    }
+
+    #[test]
+    fn retained_history_reports_the_occupancy_that_says_whether_the_bytes_mean_anything() {
+        let mut bridge = stepped_host_bridge();
+        let json = Json::parse(&bridge.retained_history_accounting_json()).unwrap();
+
+        // A full ring and a full unconfirmed window: a partially-warmed
+        // reading would understate retention while looking comfortable.
+        assert_eq!(json.field_i64("retained_boundary_count"), Some(31));
+        assert_eq!(json.field_i64("peak_retained_boundary_count"), Some(31));
+        assert_eq!(json.field_i64("retained_step_count"), Some(30));
+        // And real events inside it. Thirty retained steps holding zero
+        // events would still report a plausible byte total in which no
+        // per-event encoder was ever entered — `gc-sim`'s
+        // `tests/retained_history.rs` builds exactly that window and shows
+        // the bytes cannot tell the difference, while this count can.
+        assert!(
+            json.field_i64("retained_event_count").unwrap() > 0,
+            "the retained window must hold real events, not just step wrappers"
+        );
+        assert!(json.field_i64("peak_snapshot_bytes").unwrap() > 0);
+    }
+
+    #[test]
+    fn retained_history_accounting_is_a_read_not_a_step() {
+        // A soak samples this repeatedly; it must not perturb the driver it
+        // measures.
+        let mut bridge = stepped_host_bridge();
+        let before = bridge.diagnostics_json();
+        let first = bridge.retained_history_accounting_json();
+        let second = bridge.retained_history_accounting_json();
+        assert_eq!(first, second, "sampling twice must read the same window");
+        assert_eq!(
+            before,
+            bridge.diagnostics_json(),
+            "sampling must not advance or otherwise disturb the driver"
         );
     }
 
