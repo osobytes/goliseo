@@ -511,7 +511,7 @@ fn pins_the_live_soccer_tape_digest_without_a_synthetic_combat_segment() {
     let tune = Tuning::new();
     let tape = determinism_evidence::fixture_tape(&tune)
         .expect("the live soccer fixture tape is always well formed");
-    assert_eq!(rollback_lab::tape_digest(&tape), "93bed4e168228a07");
+    assert_eq!(rollback_lab::tape_digest(&tape), "9375affb2dcd5588");
 }
 
 #[test]

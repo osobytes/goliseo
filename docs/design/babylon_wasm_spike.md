@@ -411,6 +411,15 @@ is judged by exactly the rule #327 and #342 were judged by, including its
 both browsers, which is recorded per run as `fixture_live_at_start=yes` rather
 than inferred from both having been started.
 
+**The sequence digest in both rows is the contract as it stood when this ran.**
+[#450](https://github.com/osobytes/goliseo/issues/450) changed the simulation on
+2026-08-10 and regenerated the fixture, moving the sequence digest to
+`0bfd0ed355f87322`; the final hash `bfbb106aea5480f8` did not move. The values
+recorded here are left as the browsers printed them — a measurement rewritten to
+a number no run produced is not a measurement. Nothing this section concludes
+depends on the digest's value, only on both browsers agreeing with the contract
+of the day and with each other.
+
 ### 3. Cross-runtime agreement
 
 Chrome, Firefox and a node control that has no renderer in the process at all

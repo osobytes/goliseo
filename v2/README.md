@@ -414,7 +414,7 @@ It is stricter than the commands above in ways that matter:
   nothing downstream can see.
 - it asserts, twice and independently, that the freshly built module's
   `runDeterminismEvidence()` returns exactly
-  `final_hash=bfbb106aea5480f8` / `sequence_digest=a190b60058a64e63` — once
+  `final_hash=bfbb106aea5480f8` / `sequence_digest=0bfd0ed355f87322` — once
   through `packages/wasm/src/determinism.spec.ts`'s own vitest assertions,
   and again by loading the same module directly (bypassing vitest) and
   comparing in plain bash. This is the single most important assertion in

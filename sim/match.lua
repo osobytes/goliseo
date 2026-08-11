@@ -1750,6 +1750,48 @@ local function keeper_hold_pos(s, keeper)
     return Vec2.new(hold_x, keeper.pos.y)
 end
 
+-- End a dive and hand the keeper to its get-up recovery.
+--
+-- THE ONLY DIVE-END TRANSITION, and the only place keeper_get_up_timer is
+-- armed — render/frame.lua's drawn_facing rests on that, so keep it true. Two
+-- things reach it, and a dive reaches exactly one of them because this zeroes
+-- dive_timer: the lunge window running out (the timer sweep in `step`), and the
+-- keeper taking the ball.
+--
+-- THE SECOND CALLER IS THE POINT (#450). dive_timer used to outlive the catch
+-- that ended the dive, and the gap was not cosmetic. For as long as it ran, the
+-- off-ball keeper dive branch owned the keeper's pos and facing on every tick
+-- the keeper was not the owner — so the instant it released the ball, a dive
+-- from BEFORE the save dragged it back toward a stale dive_target and pointed
+-- facing along the way. select_throw_target defaults its aim cone to facing, so
+-- which teammate received the NEXT distribution was decided by a dive that had
+-- already been caught. A keeper who has caught the ball is not diving any more;
+-- ending the dive at the moment of possession cuts that coupling in the state
+-- machine rather than at either of its symptoms.
+--
+-- Every site that hands a keeper the ball calls it — the completed catch, the
+-- smother, the loose-ball gather — each guarded by `dive_timer > 0`, so a
+-- keeper that was not diving is never handed a get-up window it did not earn.
+-- A kickoff resets the whole field outright and needs no call. A QUEUED dive
+-- (dive_delay) needs no equivalent either: it only fires on an inbound ball,
+-- and a held ball has zero velocity.
+--
+-- Mirrors end_dive in v2/rust/crates/gc-sim/src/match.rs, where it is a plain
+-- private fn. It hangs off the module table here, `_`-prefixed per AGENTS.md
+-- §4 and absent from the module's public surface, because this file sits
+-- exactly on Lua 5.1's ceiling of 200 locals in a main chunk: one more
+-- top-level `local` is a syntax error, not a style choice.
+---@param p MatchPlayer
+function match._end_dive(p)
+    p.dive_timer = 0
+    p.dive_target = nil
+    p.save_style = nil
+    p.save_tip_emitted = false
+    -- The lunge is over: the keeper is on the floor and pushes back up before
+    -- any ready posture reads as truthful again.
+    p.keeper_get_up_timer = KEEPER_GET_UP_POSE
+end
+
 -- Knock the ball loose when a challenger reaches THE BALL — not the carrier's
 -- body. The ball sticks a step ahead of the carrier's feet, so a carrier who
 -- turns their body between the challenger and the ball SHIELDS it: challenges
@@ -1797,6 +1839,9 @@ local function attempt_steals(s, combat_state)
             p.grab_timer = KEEPER_GRAB_POSE
             p.hold_timer = KEEPER_HOLD
             p.feet_ball = false
+            if p.dive_timer > 0 then
+                match._end_dive(p) -- possession ends the dive (#450)
+            end
             return
         end
     end
@@ -3937,6 +3982,9 @@ local function resolve_pending_save(s, dt)
                     keeper.grab_timer = KEEPER_GRAB_POSE
                     keeper.hold_timer = KEEPER_HOLD
                     keeper.feet_ball = false
+                    if keeper.dive_timer > 0 then
+                        match._end_dive(keeper) -- possession ends the dive (#450)
+                    end
                     return "catch"
                 end
                 -- Parry from the actual contact point: punch it clear — out AND
@@ -4878,6 +4926,9 @@ local function update_ball(s, dt, inputs, combat_state)
             s.owner = best
             s.ball_vel = Vec2.new(0, 0)
             s.ball_spin = 0
+            if bp.dive_timer > 0 then
+                match._end_dive(bp) -- possession ends the dive (#450)
+            end
             -- Auto-switch: the human takes over whichever home outfielder wins the
             -- ball (like FIFA / Mario Strikers). Keepers stay AI.
             if
@@ -5020,14 +5071,10 @@ function match.step(s, dt, input, combat_state)
         if p.dive_timer > 0 then
             p.dive_timer = math.max(0, p.dive_timer - dt)
             if p.dive_timer == 0 then
-                p.dive_target = nil
-                p.save_style = nil
-                p.save_tip_emitted = false
-                -- The lunge just finished: the keeper is on the floor and pushes
-                -- back up before any ready posture reads as truthful again. This
-                -- is the ONLY place the get-up window is armed, so it is exactly
-                -- one dive-end transition per dive under the fixed timestep.
-                p.keeper_get_up_timer = KEEPER_GET_UP_POSE
+                -- The lunge window ran out. _end_dive is the one dive-end
+                -- transition; the other way in is possession, and a dive
+                -- reaches exactly one of them because both zero dive_timer.
+                match._end_dive(p)
             end
         end
         if p.dive_delay > 0 then

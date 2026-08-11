@@ -25,7 +25,7 @@ WHAT THIS RUNNER IS ACCOUNTABLE FOR, beyond collecting numbers:
          the same `match_snapshot.hash`;
        * the frozen 7201-tick determinism contract, run in a worker WHILE the
          main thread renders, must still print `bfbb106aea5480f8` /
-         `a190b60058a64e63` -- judged by `verify_common.check`, the same rule
+         `0bfd0ed355f87322` -- judged by `verify_common.check`, the same rule
          #327 and #342 are judged by;
        * every runtime -- Chrome, Firefox and a node control that renders
          nothing at all -- must agree on the rendered hash.

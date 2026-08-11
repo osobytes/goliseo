@@ -13,6 +13,10 @@
 // replay reproduces them; this file asserts the same of the wasm build. So a
 // green result here means the code a browser executes reproduces LUA, which is
 // the only claim worth making.
+//
+// Both digest assertions currently sit behind `it.fails` -- the wasm build does
+// NOT reproduce Lua on this scenario. See the block above them for the
+// measurements, the bisection and issue #405.
 
 import { describe, expect, it } from "vitest";
 import { loadSimHost } from "./index.ts";
@@ -20,8 +24,8 @@ import { loadSimHost } from "./index.ts";
 const runAiDrivenEvidence = () => loadSimHost().runAiDrivenEvidence();
 
 /** Derived from the Lua capture -- see `crates/gc-sim/tests/ai_driven_evidence.rs`. */
-const LUA_FINAL_HASH = "5254dcc8efde305b";
-const LUA_SEQUENCE_DIGEST = "5278f4a48da4800a";
+const LUA_FINAL_HASH = "628d7fc71238dec6";
+const LUA_SEQUENCE_DIGEST = "29bbbc0f32b78dfa";
 
 describe("the compiled wasm module against the AI-driven Lua reference", () => {
   it("replays the scenario it claims to, and plays it", () => {
@@ -35,28 +39,42 @@ describe("the compiled wasm module against the AI-driven Lua reference", () => {
     expect(evidence.score_home + evidence.score_away).toBeGreaterThan(0);
   });
 
-  it("ends the match in exactly the state Lua ends it in", () => {
-    // This one PASSES. The final state agrees to the bit -- which is what
-    // makes the failure below so easy to miss, and why a sequence digest
-    // exists at all.
-    expect(runAiDrivenEvidence().final_hash).toBe(LUA_FINAL_HASH);
-  });
-
   // ---------------------------------------------------------------------
-  // KNOWN DIVERGENCE -- wasm vs native, first observed 2026-08-07.
+  // KNOWN DIVERGENCE -- wasm vs native/Lua. Issue #405. First observed
+  // 2026-08-07; re-measured 2026-08-10 under #450.
   //
-  // The wasm build's tick SEQUENCE does not match Lua's, while its final
-  // state does. Measured, and reproducible:
+  // The wasm build takes a different path from tick 96 of this scenario. The
+  // SOURCE is identical and native Rust agrees with Lua bit for bit
+  // (`crates/gc-sim/tests/session_ai_driven_differential.rs`), so this is the
+  // same source compiled for a different target -- stable across repeated
+  // runs, so not nondeterminism.
+  //
+  // 2026-08-07, before #450:
   //
   //   Lua fixture   final 5254dcc8efde305b   sequence 5278f4a48da4800a
   //   native Rust   final 5254dcc8efde305b   sequence 5278f4a48da4800a
   //   wasm          final 5254dcc8efde305b   sequence 17998dc0e72d8510
   //
-  // The wasm result is stable across repeated runs, so this is not
-  // nondeterminism -- it is the same source compiled for a different target
-  // taking a different path and reconverging. Bisecting prefix digests
-  // (`runAiDrivenEvidenceTo`) puts the FIRST divergent tick at 96: ticks 1-95
-  // agree exactly, tick 96 does not.
+  // The final states happened to AGREE then, which is what made the sequence
+  // failure so easy to miss. #450 changed the simulation, and the coincidence
+  // expired. 2026-08-10, on this tree:
+  //
+  //   Lua fixture   final 628d7fc71238dec6   sequence 29bbbc0f32b78dfa
+  //   native Rust   final 628d7fc71238dec6   sequence 29bbbc0f32b78dfa
+  //   wasm          final 20ff634062e96578   sequence d7b87ee152cf2ce8
+  //
+  // THE DEFECT DID NOT MOVE, AND #450 DID NOT CAUSE IT. Bisecting prefix
+  // digests (`runAiDrivenEvidenceTo`) puts the first divergent tick at 96, the
+  // same tick as before, with the same self-correcting shape:
+  //
+  //   to 95    wasm 0ce5b1fafb0f40e5   native 0ce5b1fafb0f40e5   agree
+  //   to 96    wasm 95a53203fce97fec   native eb150bcf724c0406   DIVERGE
+  //   to 97    wasm 531f22a8c957a5a4   native 531f22a8c957a5a4   reconverged
+  //   to 100   wasm b8630c1136c7b0cf   native b8630c1136c7b0cf   agree
+  //
+  // #450's first behavioural change is at tick 3099, 3,003 ticks later. What
+  // changed at full time is only that the tick-96 perturbation no longer
+  // happens to reconverge before the whistle. Both builds still finish 0-1.
   //
   // This is exactly the shape `v2/tools/lua_reference/README.md` warns about:
   // "a divergence which self-corrects a tick later is still a desync". For an
@@ -64,11 +82,17 @@ describe("the compiled wasm module against the AI-driven Lua reference", () => {
   // online one it is a desync, because two peers on different builds would
   // not agree -- which is the entire premise the netcode rests on.
   //
-  // Pinned as `it.fails` rather than deleted or loosened: this flips green the
-  // moment the divergence is fixed, and fails loudly if someone "fixes" it by
-  // changing the expected digests instead. The OMP-1 idle campaign never
-  // caught this because an idle match does not reach the code paths involved.
+  // Both are pinned as `it.fails` rather than deleted or loosened: each flips
+  // green the moment #405 is fixed, and each fails loudly if someone "fixes"
+  // it by changing the expected digests instead. The OMP-1 idle campaign never
+  // caught this because an idle match does not reach the code paths involved --
+  // and OMP-1 still passes in wasm, on the refreshed #450 contract, which is
+  // why the divergence is specific to this scenario rather than general.
   // ---------------------------------------------------------------------
+  it.fails("ends the match in exactly the state Lua ends it in", () => {
+    expect(runAiDrivenEvidence().final_hash).toBe(LUA_FINAL_HASH);
+  });
+
   it.fails("matches Lua tick for tick, not merely at the final whistle", () => {
     expect(runAiDrivenEvidence().sequence_digest).toBe(LUA_SEQUENCE_DIGEST);
   });

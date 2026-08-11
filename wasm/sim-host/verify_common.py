@@ -28,7 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 EXPECTED_HASH = "bfbb106aea5480f8"
-EXPECTED_DIGEST = "a190b60058a64e63"
+EXPECTED_DIGEST = "0bfd0ed355f87322"
 
 #: Artifacts a staged directory must contain before anything is worth running.
 REQUIRED_ARTIFACTS = ("simhost.js", "simhost.wasm")

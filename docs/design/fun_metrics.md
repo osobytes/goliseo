@@ -411,6 +411,39 @@ Sim changes move the baseline; re-run `love . --sim 100` after touching
 `sim/match.lua` and log meaningful shifts here (this is the manual tripwire
 until phase 4 automates it).
 
+- **2026-08-10 — a keeper's dive ends when it takes possession (#450).**
+  `dive_timer` used to outlive the catch, so on the tick a keeper released the
+  ball the off-ball dive branch took it back over: it was dragged toward a
+  `dive_target` computed for a shot it had already caught, and `facing` — which
+  `select_throw_target` uses as its aim cone — was written by that dive. In the
+  pinned reference match this makes the keeper chase and re-catch its own throw
+  three ticks after releasing it. Possession now ends the dive.
+
+  The 30-seed tripwire moved fun 0.442 -> 0.508, goals 2.100 -> 2.400,
+  shots_per_goal 23.725 -> 20.837, controlled_dribble_sprint_share
+  0.274 -> 0.293, controlled_dribble_touches 85.19 -> 92.95,
+  controlled_dribble_heavy_losses 0.450 -> 1.373 and ai_dribble_heavy_losses
+  0.839 -> 0.532.
+
+  **The 100-match validation says essentially all of that is small-sample
+  noise.** Paired runs on the same tree, `love . --sim 100` before and after:
+  fun 0.491 -> 0.481, goals 2.220 -> 2.160, shots_per_goal 23.147 -> 21.794,
+  save_rate 0.856 -> 0.864, pass_completion 0.577 -> 0.578, turnovers
+  4.054 -> 4.009, possession_balance 0.402 -> 0.396, longest_drought
+  11.311 -> 11.223, decided_late 0.516 -> 0.493, ai_dribble_heavy_losses
+  0.985 -> 1.013. Every one of those is inside a fraction of its own standard
+  error; note in particular that `ai_dribble_heavy_losses`, which the 30 seeds
+  showed *falling* by a third, does not move at all on 100. The largest
+  survivor is `controlled_dribble_heavy_losses` 0.888 -> 1.316 (sd 2.2 / 2.7,
+  so roughly 1.7 SE) — suggestive at most, and consistent with the ball
+  reaching outfield play slightly more often now that a keeper's distribution
+  is not intercepted by the keeper itself (`passes` 67.4 -> 68.3).
+
+  So this refresh is the 30 pinned seeds playing out differently rather than
+  the shape of the game moving. No band collapsed and no desirability changed
+  materially; the known scoring-scarcity and keeper-wall weaknesses are
+  unchanged in kind.
+
 - **2026-07-31 — possessed ball kept inside the arena.** The touchline walls
   only ran on the loose-ball path, so a ball that ended up outside while owned
   was never pulled back: it stranded, the carrier could not walk out to it

@@ -49,7 +49,7 @@
  *      agree. This is the direct test, and it is the one that can fail.
  *   2. A second module instance in a Web Worker runs the frozen 7201-tick
  *      determinism contract WHILE this thread renders, and must still produce
- *      `bfbb106aea5480f8` / `a190b60058a64e63`.
+ *      `bfbb106aea5480f8` / `0bfd0ed355f87322`.
  *   3. Both hashes are compared across Chrome and Firefox, and against a node
  *      control, by the Python runner.
  */
@@ -508,7 +508,7 @@
      * The frozen determinism contract, in a worker, WHILE this thread renders.
      *
      * `worker.js` is `verify_common.WORKER` verbatim — the same page-and-worker
-     * pair #327 and #342 use to assert `bfbb106aea5480f8` / `a190b60058a64e63`.
+     * pair #327 and #342 use to assert `bfbb106aea5480f8` / `0bfd0ed355f87322`.
      * It is not re-implemented here, because a fixture that differed by so much
      * as a flag could not be compared with the runs already recorded.
      *

@@ -18,8 +18,8 @@ The current campaign freezes a mixed artifact matrix at 60 Hz:
 
 - every case uses InputFrame v2 and network-profile digest `5fbf1e0d51a6f4d5`;
 - soccer cases use InputTape v1 / MatchSnapshot v11, final hash
-  `bfbb106aea5480f8`, sequence digest `a190b60058a64e63`, and live tape digest
-  `93bed4e168228a07`;
+  `bfbb106aea5480f8`, sequence digest `0bfd0ed355f87322`, and live tape digest
+  `9375affb2dcd5588`;
 - combat cases use InputTape v2 / MatchSnapshot v12, initial hash
   `0f7c7c66b5a6bbf6`, final hash `32ffe60cbec9d83a`, and tape digest
   `f4140ca5b3b9d2fc`; and
@@ -31,13 +31,21 @@ versions. Any merge that changes simulation, gameplay data or tuning,
 input/snapshot/event schemas, a pinned fixture, or network profiles invalidates
 the current evidence.
 
-The soccer figures above were re-pinned for the possessed-ball touchline fix,
-which changed simulation behaviour and so regenerated `data/omp1_determinism.lua`
-under this rule. The identity is the refreshed fixture's, and the native,
-browser-stress and soak rollback jobs re-run against it in CI. The measured
-byte, memory and CPU numbers further down were NOT re-measured, so they remain
-pre-refresh evidence for the same reason the issue-57 figures below do. The historical artifact remains an archive rather than
-silently becoming evidence for the changed contract.
+The soccer figures above were re-pinned twice, each time because a merge changed
+simulation behaviour and so regenerated `data/omp1_determinism.lua` under this
+rule: first for the possessed-ball touchline fix, and again for
+[#450](https://github.com/osobytes/goliseo/issues/450), which ends a keeper's
+dive at the moment it takes possession instead of letting `dive_timer` run out
+underneath the catch. The #450 refresh moved 26 of the 7,202 boundary hashes
+(1693–1718) and with them the sequence and tape digests; the final hash,
+`frame_wires`, the identity, the event counts, the windows and the 1-0 score are
+byte-identical across it, because the only fields that moved are one keeper's
+`dive_timer`, `dive_target` and `keeper_get_up_timer`. The identity is the
+refreshed fixture's, and the native, browser-stress and soak rollback jobs
+re-run against it in CI. The measured byte, memory and CPU numbers further down
+were NOT re-measured, so they remain pre-refresh evidence for the same reason
+the issue-57 figures below do. The historical artifact remains an archive rather
+than silently becoming evidence for the changed contract.
 
 ## Required matrix
 

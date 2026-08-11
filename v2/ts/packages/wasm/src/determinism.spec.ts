@@ -18,7 +18,7 @@ import { describe, expect, it } from "vitest";
 import { loadSimHost } from "./index.ts";
 
 const EXPECTED_FINAL_HASH = "bfbb106aea5480f8";
-const EXPECTED_SEQUENCE_DIGEST = "a190b60058a64e63";
+const EXPECTED_SEQUENCE_DIGEST = "0bfd0ed355f87322";
 
 describe("determinism evidence, run inside the compiled wasm module", () => {
   it(

@@ -435,8 +435,12 @@ Ordered so that each step is independently landable and the game keeps running:
 - AGENTS.md §2's layering. #336 already generalised it to forbid rendering
   engines by category rather than by naming `love`, so the rules survive without
   further edits.
-- The frozen determinism contract `bfbb106aea5480f8` / `a190b60058a64e63`, which
-  #328 verified holds in a worker while the page renders, in both browsers.
+- The frozen determinism contract, which #328 verified holds in a worker while
+  the page renders, in both browsers. It read `bfbb106aea5480f8` /
+  `a190b60058a64e63` when #328 measured it; #450 later moved the sequence digest
+  to `0bfd0ed355f87322`. What must survive the migration is the contract, not
+  either literal — the current values live in `data/omp1_determinism.lua` and
+  are asserted by `scripts/check_v2.sh`.
 - #325 (bot-driven hash divergence between Lua VMs) stays open either way; the
   wasm host is the PUC Lua 5.1 arm of it.
 
