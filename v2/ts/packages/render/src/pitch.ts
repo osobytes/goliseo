@@ -305,6 +305,24 @@ export interface RenderFrameRoster {
   readonly species_shape: readonly SpeciesShape[];
   readonly species_color: readonly RGB[];
   readonly ids: readonly string[];
+  /**
+   * The authored `gc-data` character presentation id per slot (#447). What
+   * decides which theme's geometry the player renderer builds this player
+   * from -- before this existed, every player on the pitch was drawn from
+   * `themes.LIST[0]`.
+   */
+  readonly presentation_ids: readonly string[];
+  /**
+   * The authored `gc-data` loadout id per slot, `undefined` where the player
+   * carries nothing (#447).
+   *
+   * `undefined` IS THE KEEPER RULE, not a missing value. `gc-data` states it
+   * and its own tests enforce it in both directions; a slot with no loadout
+   * must reach the renderer as an absence rather than being defaulted into
+   * whatever the theme happens to carry, which is exactly the defect #447
+   * records -- keepers diving with a shield.
+   */
+  readonly loadout_ids: readonly (string | undefined)[];
 }
 
 export interface RenderFramePlayers {
@@ -558,6 +576,16 @@ function playerOptions(frame: RenderFrame, index: number): PlayerRenderOptions {
     ...(roster.species_shape[index] !== undefined ? { species_shape: roster.species_shape[index] } : {}),
     ...(roster.species_color[index] !== undefined ? { species_color: roster.species_color[index] } : {}),
     ...(roster.teams[index] !== undefined ? { team: roster.teams[index] } : {}),
+    // #447. Both are match-constant roster columns rather than per-frame
+    // state, and both reach `player_renderer_3d.characterMesh` through
+    // exactly this payload -- it is the only channel between the wire and
+    // the mesh builder, which is why neither could be honoured before.
+    // An EMPTY presentation id is dropped rather than forwarded: the
+    // renderer treats "no presentation" as "not on the product path" and
+    // falls back to its preview default, so passing `""` through would turn
+    // a wiring failure into a silently plausible character.
+    ...(roster.presentation_ids[index] ? { presentation_id: roster.presentation_ids[index] } : {}),
+    ...(roster.loadout_ids[index] !== undefined ? { loadout_id: roster.loadout_ids[index] } : {}),
     ...(combatModel !== undefined && combatModel.players[index] !== undefined ? { combat: combatModel.players[index] } : {}),
     pose: {
       ...(players.pose_id[index] !== undefined ? { id: players.pose_id[index] } : {}),

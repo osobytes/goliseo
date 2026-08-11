@@ -129,6 +129,12 @@ function frame(playerCount: 0 | 1 | 2 = 2): RenderFrame {
       species_shape: ids.map(() => "round"),
       species_color: ids.map(() => [1, 1, 1] as const),
       ids,
+      // #447: alternate the three themes across the fixture roster so this
+      // suite renders a genuinely mixed pitch rather than one repeated
+      // character, and give every other slot no loadout so the
+      // carries-nothing path is exercised here too.
+      presentation_ids: ids.map((_, i) => ["medieval_rook_emberguard", "scifi_axi", "toy_tock"][i % 3] ?? "scifi_axi"),
+      loadout_ids: ids.map((_, i) => (i % 2 === 0 ? "loadout_pulse_blaster" : undefined)),
     },
     players: {
       count: ids.length,

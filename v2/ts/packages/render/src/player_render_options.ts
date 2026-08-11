@@ -64,6 +64,30 @@ export interface PlayerRenderOptions {
   readonly species_shape?: SpeciesShape;
   readonly species_color?: RGB;
   readonly team?: "home" | "away";
+  /**
+   * The authored `gc-data` character presentation id (#447) -- which of the
+   * six authored presentations this player is, and therefore which theme's
+   * geometry the renderer builds them from.
+   *
+   * ABSENT MEANS "NOT ON THE PRODUCT PATH". Every roster slot carries one
+   * (`crates/gc-render`'s `encode_roster` asserts it non-empty), so a
+   * `PlayerRenderOptions` without one is a preview, a diagnostic entry point
+   * or a test fixture. `player_renderer_3d.ts` answers that with an explicit
+   * named default variant rather than guessing -- see `variantFor` there.
+   */
+  readonly presentation_id?: string;
+  /**
+   * The authored `gc-data` loadout id (#447), or absent where the player
+   * carries nothing.
+   *
+   * ABSENT MEANS TWO DIFFERENT THINGS, AND `presentation_id` DISAMBIGUATES
+   * THEM. Alongside a `presentation_id` it is the keeper rule: this player is
+   * authored to carry nothing, so they render with an empty loadout. Without
+   * one, nothing was wired at all and the renderer's preview default applies.
+   * Collapsing the two is exactly how a keeper ended up holding a shield, so
+   * they are kept distinct.
+   */
+  readonly loadout_id?: string;
   readonly combat?: CombatPlayerPresentation;
   readonly pose?: PlayerPoseSelection;
 }

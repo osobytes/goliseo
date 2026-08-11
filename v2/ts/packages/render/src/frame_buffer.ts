@@ -126,6 +126,24 @@ export const ROSTER_HEADER_WORDS = 7;
 /** Per-slot field count for a roster block (structure-of-arrays, field-major). */
 export const ROSTER_FIELD_COUNT = 7;
 
+/**
+ * Per-slot string count in the roster's newline-joined blob, in the order
+ * `encode_roster` writes them: `id`, `name`, `presentation_id`, `loadout_id`.
+ *
+ * Mirrors `crates/gc-render/src/frame_buffer.rs`'s
+ * `ROSTER_STRING_FIELD_COUNT`; see that constant for why #447's two new
+ * string columns went into the blob rather than the numeric block, and why
+ * `LAYOUT_VERSION` is deliberately NOT bumped for them (the numeric layout
+ * it guards is byte-for-byte unchanged, and it is itself pinned word-for-word
+ * against a captured Lua fixture).
+ *
+ * Neither side can import the other (v2/README.md forbids a TS package
+ * reading a Rust crate's source), so this is a duplicated constant --
+ * exactly the shape that made wire-enum drift invisible before #433. It is
+ * pinned against the Rust one by `scripts/check_presentation_parity.mjs`.
+ */
+export const ROSTER_STRING_FIELD_COUNT = 4;
+
 /** Exact word count of a frame block, given its player and event counts. */
 export function frameWords(count: number, eventCount: number): number {
   return HEADER_WORDS + SCALAR_FIELD_COUNT + PLAYER_FIELD_COUNT * count + EVENT_FIELD_COUNT * eventCount;
@@ -840,8 +858,8 @@ export function decode(words: ArrayLike<number>): DecodedRenderFrame {
  *
  * @throws On a bad magic word, a layout/version mismatch, a field count that
  *   disagrees with `ROSTER_FIELD_COUNT`, an unrecognised enum code, or a
- *   string blob that does not hold exactly `2 * count` newline-delimited
- *   parts.
+ *   string blob that does not hold exactly
+ *   `ROSTER_STRING_FIELD_COUNT * count` newline-delimited parts.
  */
 export function decodeRoster(words: ArrayLike<number>, strings: string): DecodedRenderFrameRoster {
   if (at(words, 0) !== ROSTER_MAGIC) {
@@ -859,23 +877,34 @@ export function decodeRoster(words: ArrayLike<number>, strings: string): Decoded
 
   const count = at(words, 5);
 
-  // `strings` is `id\nname\nid\nname\n...\nid\nname` (no trailing newline).
-  // Appending one and splitting on it, then dropping the trailing empty
-  // element `split` always yields past the last delimiter, recovers exactly
-  // the `count * 2` parts `encode_roster` joined -- matches
-  // `crates/gc-render/src/frame_buffer.rs`'s `decode_roster` exactly.
+  // `strings` is `id\nname\npresentation_id\nloadout_id\n...` (no trailing
+  // newline). Appending one and splitting on it, then dropping the trailing
+  // empty element `split` always yields past the last delimiter, recovers
+  // exactly the `count * ROSTER_STRING_FIELD_COUNT` parts `encode_roster`
+  // joined -- matches `crates/gc-render/src/frame_buffer.rs`'s
+  // `decode_roster` exactly.
   const blob = `${strings}\n`;
   const parts = blob.split("\n");
   parts.pop();
-  if (parts.length !== count * 2) {
-    throw new Error(`frame_buffer: roster blob holds ${parts.length} strings; expected ${count * 2}`);
+  const expectedParts = count * ROSTER_STRING_FIELD_COUNT;
+  if (parts.length !== expectedParts) {
+    throw new Error(`frame_buffer: roster blob holds ${parts.length} strings; expected ${expectedParts}`);
   }
 
   const ids: string[] = [];
   const names: string[] = [];
+  const presentationIds: string[] = [];
+  // `undefined`, not `""`: a keeper carries nothing, and the empty part the
+  // producer writes for that IS the absence -- see `encode_roster`'s doc on
+  // why absence is spelt this way and why it applies to `loadout_id` alone.
+  const loadoutIds: (string | undefined)[] = [];
   for (let index = 0; index < count; index += 1) {
-    ids.push(at2(parts, index * 2));
-    names.push(at2(parts, index * 2 + 1));
+    const at = index * ROSTER_STRING_FIELD_COUNT;
+    ids.push(at2(parts, at));
+    names.push(at2(parts, at + 1));
+    presentationIds.push(at2(parts, at + 2));
+    const loadout = at2(parts, at + 3);
+    loadoutIds.push(loadout === "" ? undefined : loadout);
   }
 
   const at0 = ROSTER_HEADER_WORDS;
@@ -894,6 +923,8 @@ export function decodeRoster(words: ArrayLike<number>, strings: string): Decoded
     count,
     ids,
     names,
+    presentation_ids: presentationIds,
+    loadout_ids: loadoutIds,
     teams: column(words, at0, 0, count).map((code) => requireDecode(code, teamFromCode, "team")),
     is_keeper: rawIsKeeper.map(decodeBool),
     radius: column(words, at0, 2, count),

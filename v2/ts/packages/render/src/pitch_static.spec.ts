@@ -70,6 +70,11 @@ function frame(overrides: Partial<RenderFrame> = {}): RenderFrame {
         [0, 0, 1],
       ],
       ids: ["a", "b"],
+      // #447. This suite only draws the STATIC pitch, which has no players
+      // in it, so these are present to satisfy the roster shape rather than
+      // to be read.
+      presentation_ids: ["medieval_rook_emberguard", "toy_tock"],
+      loadout_ids: ["loadout_tournament_sword", undefined],
     },
     players: emptyPlayers(2),
     ball: { x: 480, y: 270, z: 0, visible: true },

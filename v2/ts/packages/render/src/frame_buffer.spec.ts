@@ -44,6 +44,7 @@ import {
   ROSTER_FIELD_COUNT,
   ROSTER_HEADER_WORDS,
   ROSTER_MAGIC,
+  ROSTER_STRING_FIELD_COUNT,
   SCALAR_FIELD_COUNT,
 } from "./frame_buffer.ts";
 import { FRAME_BUFFER_LUA_REFERENCE } from "./fixtures/frame_buffer_lua_reference.ts";
@@ -79,17 +80,22 @@ function row(label: string): readonly number[] {
   return words;
 }
 
-// Builds a synthetic id/name blob matching `count * 2` newline-delimited
-// parts, in the shape `decode_roster` expects. The reference fixture never
-// captured the string blob (the Rust differential test discards it too --
-// `encode_roster`'s second return is `_digest`-ignored there), so this
-// module's roster-string handling is exercised structurally rather than
-// against a vector; the NUMERIC roster fields below are checked against the
-// fixture.
+// Builds a synthetic string blob matching `count * ROSTER_STRING_FIELD_COUNT`
+// newline-delimited parts, in the shape `decode_roster` expects. The
+// reference fixture never captured the string blob (the Rust differential
+// test discards it too -- `encode_roster`'s second return is
+// `_digest`-ignored there), so this module's roster-string handling is
+// exercised structurally rather than against a vector; the NUMERIC roster
+// fields below are checked against the fixture.
+//
+// #447 grew this from two parts per slot to four (`id`, `name`,
+// `presentation_id`, `loadout_id`). EVERY OTHER SLOT IS GIVEN NO LOADOUT so
+// the absence encoding -- an empty part decoding back to `undefined` -- is
+// exercised alongside the present case rather than only in passing.
 function syntheticRosterBlob(count: number): string {
   const parts: string[] = [];
   for (let i = 0; i < count; i += 1) {
-    parts.push(`player_${i}`, `Player ${i}`);
+    parts.push(`player_${i}`, `Player ${i}`, `presentation_${i}`, i % 2 === 0 ? `loadout_${i}` : "");
   }
   return parts.join("\n");
 }
@@ -106,6 +112,12 @@ describe("frame_buffer layout constants", () => {
     expect(EVENT_FIELD_COUNT).toBe(15);
     expect(ROSTER_HEADER_WORDS).toBe(7);
     expect(ROSTER_FIELD_COUNT).toBe(7);
+    // #447. `ROSTER_FIELD_COUNT` (the NUMERIC block) is deliberately
+    // unchanged and `LAYOUT_VERSION` is deliberately still 1: the two new
+    // columns are strings and went into the blob, which the Lua reference
+    // fixture the rest of this file compares against never captured. See
+    // `ROSTER_STRING_FIELD_COUNT`'s own doc and the Rust constant it mirrors.
+    expect(ROSTER_STRING_FIELD_COUNT).toBe(4);
   });
 
   it("frameWords matches the fixture's declared total_words", () => {
@@ -173,6 +185,20 @@ describe("decodeRoster against the Lua reference vector", () => {
   it("round-trips the synthetic id/name blob structurally", () => {
     expect(decoded.ids).toEqual(["player_0", "player_1", "player_2", "player_3", "player_4", "player_5", "player_6", "player_7", "player_8", "player_9"]);
     expect(decoded.names[3]).toBe("Player 3");
+  });
+
+  // #447. The two new string columns, and specifically the difference
+  // between them: a presentation is always present, a loadout may genuinely
+  // be absent, and the absence must arrive as `undefined` rather than as the
+  // empty string it travelled as. Both branches are asserted, so neither can
+  // pass by never occurring.
+  it("recovers presentation ids, and a missing loadout as an absence rather than an empty string", () => {
+    expect(decoded.presentation_ids).toEqual(["presentation_0", "presentation_1", "presentation_2", "presentation_3", "presentation_4", "presentation_5", "presentation_6", "presentation_7", "presentation_8", "presentation_9"]);
+    expect(decoded.loadout_ids[0]).toBe("loadout_0");
+    expect(decoded.loadout_ids[1]).toBeUndefined();
+    expect(decoded.loadout_ids.filter((id) => id !== undefined)).toHaveLength(5);
+    expect(decoded.loadout_ids.filter((id) => id === undefined)).toHaveLength(5);
+    expect(decoded.loadout_ids).not.toContain("");
   });
 
   it("rejects a bad magic word", () => {

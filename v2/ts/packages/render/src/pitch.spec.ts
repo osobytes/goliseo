@@ -52,6 +52,11 @@ function frame(overrides: Partial<RenderFrame> = {}): RenderFrame {
         [1, 1, 1],
       ],
       ids: ["home-1", "away-1"],
+      // #447: real authored content ids, so this fixture drives the same
+      // path a live roster does -- an outfielder carrying a loadout and a
+      // player carrying none.
+      presentation_ids: ["medieval_rook_emberguard", "scifi_axi"],
+      loadout_ids: ["loadout_emberguard_shield", undefined],
     },
     players: emptyPlayers(2),
     ball: { x: 480, y: 270, z: 0, visible: true },
@@ -613,6 +618,16 @@ function luaDifferentialFrame(): RenderFrame {
         [0.9, 0.5, 0.2],
       ],
       ids: ["home-1", "away-kp", "home-2"],
+      // EMPTY / ABSENT ON PURPOSE (#447). This frame must stay the one the
+      // Lua capture consumed, and `render/frame.lua`'s roster has no
+      // presentation or loadout columns at all -- that divergence is the
+      // whole point of #447 being v2-only. Empty ids and absent loadouts are
+      // what `playerOptions` reads as "not wired", so it emits neither key
+      // and the per-player payload compared below is byte-identical to the
+      // one the Lua produced. Putting real content ids here would be
+      // comparing TypeScript against a Lua run that never saw them.
+      presentation_ids: ["", "", ""],
+      loadout_ids: [undefined, undefined, undefined],
     },
     players: {
       count: 3,
