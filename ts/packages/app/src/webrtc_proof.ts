@@ -106,14 +106,22 @@ function maximum(values: readonly number[]): number | undefined {
   return result;
 }
 
-export function newHandshake(role: unknown, buildId: unknown): Result<WebRTCHandshake, WebRTCProofFailure> {
+export function newHandshake(
+  role: unknown,
+  buildId: unknown,
+): Result<WebRTCHandshake, WebRTCProofFailure> {
   if (typeof role !== "string" || !ROLES.has(role)) {
     return failure("role_mismatch", "WebRTC proof role must be host or guest");
   }
   if (typeof buildId !== "string" || buildId === "") {
     return failure("malformed", "WebRTC proof build_id must be a non-empty string");
   }
-  return ok({ kind: "handshake", version: VERSION, build_id: buildId, role: role as WebRTCProofRole });
+  return ok({
+    kind: "handshake",
+    version: VERSION,
+    build_id: buildId,
+    role: role as WebRTCProofRole,
+  });
 }
 
 export function validateHandshake(
@@ -122,7 +130,11 @@ export function validateHandshake(
   expectedBuildId?: string,
   expectedPeerRole?: WebRTCProofRole,
 ): Result<true, WebRTCProofFailure> {
-  if (typeof message !== "object" || message === null || (message as { kind?: unknown }).kind !== "handshake") {
+  if (
+    typeof message !== "object" ||
+    message === null ||
+    (message as { kind?: unknown }).kind !== "handshake"
+  ) {
     return failure("malformed", "WebRTC proof handshake is malformed");
   }
   const handshake = message as Record<string, unknown>;
@@ -154,7 +166,10 @@ export function newInput(
   history?: unknown,
 ): Result<WebRTCInput, WebRTCProofFailure> {
   if (!isInteger(seq) || seq < 0 || !isInteger(tick) || tick < 0) {
-    return failure("malformed", "WebRTC proof input sequence and tick must be non-negative integers");
+    return failure(
+      "malformed",
+      "WebRTC proof input sequence and tick must be non-negative integers",
+    );
   }
   if (typeof payload !== "string") {
     return failure("malformed", "WebRTC proof input payload must be a string");
@@ -171,11 +186,22 @@ export function newInput(
       return failure("malformed", "WebRTC proof input history must contain earlier ticks");
     }
   }
-  return ok({ kind: "input", version: VERSION, seq, tick, payload, history: resolvedHistory as number[] });
+  return ok({
+    kind: "input",
+    version: VERSION,
+    seq,
+    tick,
+    payload,
+    history: resolvedHistory as number[],
+  });
 }
 
 export function validateInput(message: unknown): Result<true, WebRTCProofFailure> {
-  if (typeof message !== "object" || message === null || (message as { kind?: unknown }).kind !== "input") {
+  if (
+    typeof message !== "object" ||
+    message === null ||
+    (message as { kind?: unknown }).kind !== "input"
+  ) {
     return failure("malformed", "WebRTC proof input is malformed");
   }
   const input = message as Record<string, unknown>;
@@ -207,13 +233,21 @@ export function newDiagnostics(now: number): WebRTCProofDiagnostics {
   };
 }
 
-export function recordSent(diagnostics: WebRTCProofDiagnostics, _now: number, queueDepth: number): void {
+export function recordSent(
+  diagnostics: WebRTCProofDiagnostics,
+  _now: number,
+  queueDepth: number,
+): void {
   diagnostics.sent += 1;
   diagnostics.queueDepth = queueDepth;
   diagnostics.maxQueueDepth = Math.max(diagnostics.maxQueueDepth, queueDepth);
 }
 
-export function recordReceived(diagnostics: WebRTCProofDiagnostics, _now: number, input: WebRTCInput): void {
+export function recordReceived(
+  diagnostics: WebRTCProofDiagnostics,
+  _now: number,
+  input: WebRTCInput,
+): void {
   diagnostics.received += 1;
   if (diagnostics.lastReceivedSeq !== undefined) {
     if (input.seq > diagnostics.lastReceivedSeq + 1) {

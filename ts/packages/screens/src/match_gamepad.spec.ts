@@ -14,7 +14,14 @@ import { describe, expect, it } from "vitest";
 import { bindings, inputSample } from "@gc/input";
 import type { GamepadState, KeyboardState } from "@gc/input";
 import { MatchScreen } from "./match.ts";
-import type { InputSample, RenderFrame, RenderFrameRoster, RenderPort, SimHostFactory, SimHostPort } from "./match.ts";
+import type {
+  InputSample,
+  RenderFrame,
+  RenderFrameRoster,
+  RenderPort,
+  SimHostFactory,
+  SimHostPort,
+} from "./match.ts";
 
 function first<T>(items: readonly T[]): T {
   const value = items[0];
@@ -31,7 +38,10 @@ function fakeKeyboard(down: Record<string, boolean> = {}): KeyboardState {
 }
 
 /** A fake `GamepadState` -- `held` names the gamepad buttons that are down, `pull` names the trigger/stick axes. */
-function fakeGamepad(held: Record<string, boolean> = {}, pull: Record<string, number> = {}): GamepadState {
+function fakeGamepad(
+  held: Record<string, boolean> = {},
+  pull: Record<string, number> = {},
+): GamepadState {
   return {
     isGamepadDown: (button: string): boolean => held[button] === true,
     getGamepadAxis: (axis: string): number => pull[axis] ?? 0,
@@ -43,7 +53,13 @@ const noopRenderer: RenderPort = { draw: (): void => {} };
 /** Same `FakeSimHost` role `match_screen.spec.ts` documents -- a hand-written `SimHostPort` standing in for a real wasm-compiled `gc-sim`. `hud.controlled_owns_ball` defaults to `true` (carrying at kickoff). */
 class FakeSimHost implements SimHostPort {
   readonly stepCalls: InputSample[] = [];
-  readonly hud: { finished: boolean; controlled_owns_ball: boolean; home_score: number; away_score: number; time_left: number } = {
+  readonly hud: {
+    finished: boolean;
+    controlled_owns_ball: boolean;
+    home_score: number;
+    away_score: number;
+    time_left: number;
+  } = {
     finished: false,
     controlled_owns_ball: true,
     home_score: 0,
@@ -90,7 +106,12 @@ describe("match screen gamepad input", () => {
   it("polls the left stick and contextual action button", () => {
     const { factory, hosts } = makeHostFactory(); // default host: carrying at kickoff
     const gamepad = fakeGamepad({ a: true }, { leftx: 1 });
-    const screen = new MatchScreen({ createHost: factory, renderer: noopRenderer, keyboard: fakeKeyboard(), gamepad });
+    const screen = new MatchScreen({
+      createHost: factory,
+      renderer: noopRenderer,
+      keyboard: fakeKeyboard(),
+      gamepad,
+    });
 
     screen.update(1 / 60);
 
@@ -105,7 +126,11 @@ describe("match screen gamepad input", () => {
 
   it("accepts abstract gamepad actions for off-ball switching", () => {
     const { factory, hosts } = makeHostFactory();
-    const screen = new MatchScreen({ createHost: factory, renderer: noopRenderer, keyboard: fakeKeyboard() });
+    const screen = new MatchScreen({
+      createHost: factory,
+      renderer: noopRenderer,
+      keyboard: fakeKeyboard(),
+    });
     hosts[0]!.hud.controlled_owns_ball = false;
 
     screen.event({ kind: "action", action: "pass_switch", pressed: true });
@@ -126,13 +151,19 @@ describe("match screen gamepad input", () => {
     {
       const { factory, hosts } = makeHostFactory();
       const gamepad = fakeGamepad({ [actionButton]: true });
-      const screen = new MatchScreen({ createHost: factory, renderer: noopRenderer, keyboard: fakeKeyboard(), gamepad });
+      const screen = new MatchScreen({
+        createHost: factory,
+        renderer: noopRenderer,
+        keyboard: fakeKeyboard(),
+        gamepad,
+      });
       hosts[0]!.hud.controlled_owns_ball = false;
       screen.update(1 / 60);
       const held = hosts[0]?.stepCalls[0]?.held ?? 0;
-      expect((held & inputSample.packHeld(["aerial_strike"])) !== 0, "ACTION off the ball should request a strike").toBe(
-        true,
-      );
+      expect(
+        (held & inputSample.packHeld(["aerial_strike"])) !== 0,
+        "ACTION off the ball should request a strike",
+      ).toBe(true);
       expect(
         (held & inputSample.packHeld(["aerial_acrobatic"])) !== 0,
         "without the modifier it is not acrobatic",
@@ -142,8 +173,16 @@ describe("match screen gamepad input", () => {
     // ...and the same press with the trigger pulled is the acrobatic one.
     {
       const { factory, hosts } = makeHostFactory();
-      const gamepad = fakeGamepad({ [actionButton]: true }, { [modifierAxis]: bindings.TRIGGER_THRESHOLD });
-      const screen = new MatchScreen({ createHost: factory, renderer: noopRenderer, keyboard: fakeKeyboard(), gamepad });
+      const gamepad = fakeGamepad(
+        { [actionButton]: true },
+        { [modifierAxis]: bindings.TRIGGER_THRESHOLD },
+      );
+      const screen = new MatchScreen({
+        createHost: factory,
+        renderer: noopRenderer,
+        keyboard: fakeKeyboard(),
+        gamepad,
+      });
       hosts[0]!.hud.controlled_owns_ball = false;
       screen.update(1 / 60);
       const held = hosts[0]?.stepCalls[0]?.held ?? 0;
@@ -151,15 +190,26 @@ describe("match screen gamepad input", () => {
         (held & inputSample.packHeld(["aerial_acrobatic"])) !== 0,
         "MODIFIER + ACTION should request a bicycle",
       ).toBe(true);
-      expect((held & inputSample.packHeld(["jockey"])) !== 0, "and it is still an off-ball hold").toBe(true);
+      expect(
+        (held & inputSample.packHeld(["jockey"])) !== 0,
+        "and it is still an off-ball hold",
+      ).toBe(true);
     }
 
     // A trigger short of the threshold must not arm it, or the chord would
     // fire on an idle stick's resting noise.
     {
       const { factory, hosts } = makeHostFactory();
-      const gamepad = fakeGamepad({ [actionButton]: true }, { [modifierAxis]: bindings.TRIGGER_THRESHOLD - 0.01 });
-      const screen = new MatchScreen({ createHost: factory, renderer: noopRenderer, keyboard: fakeKeyboard(), gamepad });
+      const gamepad = fakeGamepad(
+        { [actionButton]: true },
+        { [modifierAxis]: bindings.TRIGGER_THRESHOLD - 0.01 },
+      );
+      const screen = new MatchScreen({
+        createHost: factory,
+        renderer: noopRenderer,
+        keyboard: fakeKeyboard(),
+        gamepad,
+      });
       hosts[0]!.hud.controlled_owns_ball = false;
       screen.update(1 / 60);
       const held = hosts[0]?.stepCalls[0]?.held ?? 0;

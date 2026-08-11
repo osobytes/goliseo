@@ -21,7 +21,13 @@ import * as THREE from "three";
 import type { Prng } from "./stadium_prng.ts";
 
 /** A point on an ellipse centred at `(cx, cz)` with radii `(rx, rz)`, in the XZ ground plane. */
-export function ellipsePoint(cx: number, cz: number, rx: number, rz: number, angle: number): readonly [number, number] {
+export function ellipsePoint(
+  cx: number,
+  cz: number,
+  rx: number,
+  rz: number,
+  angle: number,
+): readonly [number, number] {
   return [cx + rx * Math.cos(angle), cz + rz * Math.sin(angle)];
 }
 
@@ -64,7 +70,11 @@ export interface RevolvedRingOptions {
   readonly rng: Prng;
 }
 
-function jitteredColor(base: readonly [number, number, number], tint: number, rng: Prng): readonly [number, number, number] {
+function jitteredColor(
+  base: readonly [number, number, number],
+  tint: number,
+  rng: Prng,
+): readonly [number, number, number] {
   if (tint <= 0) {
     return base;
   }

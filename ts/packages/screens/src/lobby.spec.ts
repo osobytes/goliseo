@@ -216,7 +216,10 @@ function fakeCoordinatorPort(): CoordinatorPort {
         peers: [{ peer_id: options.peer_id, ready: false }],
       };
     },
-    step(state: CoordinatorState, event: CoordinatorEvent): readonly [CoordinatorState, CoordinatorOutcome] {
+    step(
+      state: CoordinatorState,
+      event: CoordinatorEvent,
+    ): readonly [CoordinatorState, CoordinatorOutcome] {
       switch (event["kind"]) {
         case "propose_manifest": {
           const manifest = event["manifest"] as SessionManifest;
@@ -226,14 +229,20 @@ function fakeCoordinatorPort(): CoordinatorPort {
               phase: "manifest",
               manifest,
               manifest_id: "manifest-fixture",
-              peers: state.peers.map((peer) => ({ ...peer, accepted_manifest_id: "manifest-fixture" })),
+              peers: state.peers.map((peer) => ({
+                ...peer,
+                accepted_manifest_id: "manifest-fixture",
+              })),
             },
             { accepted: true, actions: [] },
           ];
         }
         case "assign_slots": {
           const assignments = event["assignments"] as readonly SessionSlotProducer[];
-          return [{ ...state, phase: "assigned", assignments }, { accepted: true, actions: [] }];
+          return [
+            { ...state, phase: "assigned", assignments },
+            { accepted: true, actions: [] },
+          ];
         }
         case "set_ready": {
           const ready = event["ready"] as boolean;
@@ -244,19 +253,35 @@ function fakeCoordinatorPort(): CoordinatorPort {
         }
         case "begin_countdown": {
           const action: CoordinatorAction = { kind: "start_match", freeze: {} };
-          return [{ ...state, phase: "countdown", countdown_remaining: event["remaining_ticks"] as number }, { accepted: true, actions: [action] }];
+          return [
+            {
+              ...state,
+              phase: "countdown",
+              countdown_remaining: event["remaining_ticks"] as number,
+            },
+            { accepted: true, actions: [action] },
+          ];
         }
         case "abort": {
-          return [{ ...state, phase: "terminal", terminal: { reason: "local_abort" } }, { accepted: true, actions: [] }];
+          return [
+            { ...state, phase: "terminal", terminal: { reason: "local_abort" } },
+            { accepted: true, actions: [] },
+          ];
         }
         case "leave": {
-          return [{ ...state, phase: "terminal", terminal: { reason: "guest_left" } }, { accepted: true, actions: [] }];
+          return [
+            { ...state, phase: "terminal", terminal: { reason: "guest_left" } },
+            { accepted: true, actions: [] },
+          ];
         }
         default:
           return [state, { accepted: true, actions: [] }];
       }
     },
-    planAssignments(manifest: SessionManifest, seating: readonly string[]): readonly SessionSlotProducer[] | undefined {
+    planAssignments(
+      manifest: SessionManifest,
+      seating: readonly string[],
+    ): readonly SessionSlotProducer[] | undefined {
       // Not a faithful port of the real assignment algorithm -- see this
       // file's header. Seats every slot, humans first from `seating`, the
       // rest to a shared bot producer; enough to keep `lock` from stalling.
@@ -305,12 +330,19 @@ function ports(): LobbyModelPorts {
   };
 }
 
-function clickOn(currentLayout: Layout, id: string): { readonly kind: "click"; readonly x: number; readonly y: number } {
+function clickOn(
+  currentLayout: Layout,
+  id: string,
+): { readonly kind: "click"; readonly x: number; readonly y: number } {
   const widget = hit.find(currentLayout, id);
   if (!widget?.rect) {
     throw new Error(`missing widget ${id}`);
   }
-  return { kind: "click", x: widget.rect.x + widget.rect.w / 2, y: widget.rect.y + widget.rect.h / 2 };
+  return {
+    kind: "click",
+    x: widget.rect.x + widget.rect.w / 2,
+    y: widget.rect.y + widget.rect.h / 2,
+  };
 }
 
 function click(state: LobbyScreenState, id: string): LobbyScreenState {
@@ -422,7 +454,16 @@ function realManifest(mode: SessionMatchMode): SessionManifest {
     player("krag", "midfielder", "loadout_vector_blade", "light_melee"),
     player("tox_vren", "forward", "loadout_prism_launcher", "ranged"),
   ];
-  const outfieldIds = ["zyro_vex", "mika_olu", "rok_tann", "sela_dwin", "drell", "morv", "krag", "tox_vren"];
+  const outfieldIds = [
+    "zyro_vex",
+    "mika_olu",
+    "rok_tann",
+    "sela_dwin",
+    "drell",
+    "morv",
+    "krag",
+    "tox_vren",
+  ];
   const slots = outfieldIds.map((playerId, index) => {
     const entry = SLOT_ORDER[index];
     if (entry === undefined) {
@@ -475,10 +516,12 @@ function realProtocolFixture(): ProtocolFixturePort {
 function realPlanAssignments(
   protocol: ProtocolPort,
   manifest: SessionManifest,
-  seating: readonly string[]
+  seating: readonly string[],
 ): readonly SessionSlotProducer[] {
   if (seating.length > 1) {
-    throw new Error("realPlanAssignments only covers a single connected peer -- see this file's header");
+    throw new Error(
+      "realPlanAssignments only covers a single connected peer -- see this file's header",
+    );
   }
   const shape = protocol.matchModes[manifest.match_mode];
   const humanPeer = seating[0];
@@ -489,7 +532,13 @@ function realPlanAssignments(
     }
     const owned = humanPeer !== undefined && index < shape.slots_per_human;
     const raw = owned
-      ? { producer_kind: "peer", producer_id: humanPeer, team: entry.team, slot: entry.id, player_id: manifestSlot.player_id }
+      ? {
+          producer_kind: "peer",
+          producer_id: humanPeer,
+          team: entry.team,
+          slot: entry.id,
+          player_id: manifestSlot.player_id,
+        }
       : {
           producer_kind: "bot",
           producer_id: `bot_${entry.id}`,
@@ -548,7 +597,11 @@ function handleOf(state: CoordinatorState): Coordinator {
 function mapAction(raw: Record<string, unknown>): CoordinatorAction {
   const kind = raw["kind"];
   if (kind === "send") {
-    return { kind: "send", message: raw["wire"], targets: raw["targets"] } as unknown as CoordinatorAction;
+    return {
+      kind: "send",
+      message: raw["wire"],
+      targets: raw["targets"],
+    } as unknown as CoordinatorAction;
   }
   if (kind === "close") {
     return { kind: "close", link_id: raw["link_id"] } as unknown as CoordinatorAction;
@@ -602,7 +655,7 @@ function realCoordinatorPort(): CoordinatorPort {
               options.host_link_id,
               JSON.stringify(options.runtime),
               options.build_id,
-              JSON.stringify(options.expectation)
+              JSON.stringify(options.expectation),
             )
           : new host.Coordinator(
               "host",
@@ -612,7 +665,7 @@ function realCoordinatorPort(): CoordinatorPort {
               undefined,
               JSON.stringify(options.runtime),
               options.build_id,
-              undefined
+              undefined,
             );
       return stateFromHandle(handle);
     },
@@ -624,7 +677,10 @@ function realCoordinatorPort(): CoordinatorPort {
           json = handle.proposeManifest(JSON.stringify(event["manifest"]));
           break;
         case "assign_slots":
-          json = handle.assignSlots(JSON.stringify(event["assignments"]), Boolean(event["preserve_claims"]));
+          json = handle.assignSlots(
+            JSON.stringify(event["assignments"]),
+            Boolean(event["preserve_claims"]),
+          );
           break;
         case "prefer_pair":
           json = handle.preferPair(event["slots"] as string[]);
@@ -634,7 +690,7 @@ function realCoordinatorPort(): CoordinatorPort {
           break;
         default:
           throw new Error(
-            `realCoordinatorPort: unhandled event kind '${String(event["kind"])}' -- this fixture only wires what the real-coordinator lobby cases exercise`
+            `realCoordinatorPort: unhandled event kind '${String(event["kind"])}' -- this fixture only wires what the real-coordinator lobby cases exercise`,
           );
       }
       return [stateFromHandle(handle), batchOutcome(json)];
@@ -734,7 +790,16 @@ describe("online lobby screen", () => {
   it("shows all eight canonical slots and both protected keepers", () => {
     const state = hosting();
     const currentLayout = lobbyLayout(state);
-    for (const slot of ["home_1", "home_2", "home_3", "home_4", "away_1", "away_2", "away_3", "away_4"]) {
+    for (const slot of [
+      "home_1",
+      "home_2",
+      "home_3",
+      "home_4",
+      "away_1",
+      "away_2",
+      "away_3",
+      "away_4",
+    ]) {
       expect(hit.find(currentLayout, `slot_${slot}`)).not.toBeNull();
     }
     const homeKeeper = hit.find(currentLayout, "keeper_home");
@@ -744,7 +809,10 @@ describe("online lobby screen", () => {
 
   it("never renders a pasted or exported signaling blob", () => {
     let state = hosting();
-    state = dispatch(state, { kind: "lobby", command: { kind: "paste", text: "SDPSECRET".repeat(40) } });
+    state = dispatch(state, {
+      kind: "lobby",
+      command: { kind: "paste", text: "SDPSECRET".repeat(40) },
+    });
     for (const widget of lobbyLayout(state)) {
       if (widget.text) {
         expect(widget.text.includes("SDPSECRET")).toBe(false);
@@ -754,7 +822,10 @@ describe("online lobby screen", () => {
 
   it("keeps only a digest of a signaling blob it has handed over", () => {
     let state = hosting();
-    state = dispatch(state, { kind: "lobby", command: { kind: "signal", peer_id: "guest_1", signal: "offer:blob" } });
+    state = dispatch(state, {
+      kind: "lobby",
+      command: { kind: "signal", peer_id: "guest_1", signal: "offer:blob" },
+    });
     expect(view(state).has_outgoing).toBe(true);
     const nextState = dispatch(state, { kind: "lobby", command: { kind: "copy" } });
     const clipboard = nextState.effects.find((effect) => effect.kind === "clipboard");
@@ -777,7 +848,9 @@ describe("online lobby screen", () => {
     let state = hosting();
     state = click(state, "mode_1v1");
     const nextState = click(state, "invite");
-    expect(nextState.effects.map((effect) => effect.kind).join(",")).toBe("open_peer,request_offer");
+    expect(nextState.effects.map((effect) => effect.kind).join(",")).toBe(
+      "open_peer,request_offer",
+    );
   });
 
   it("disables controls that the current phase forbids", () => {
@@ -794,9 +867,9 @@ describe("online lobby screen", () => {
   it("leaves on back and on the leave control", () => {
     const state = hosting();
     const [, action] = lobbyUpdate(state, { kind: "action", action: "back" });
-    expect((action)?.go).toBe("main_menu");
+    expect(action?.go).toBe("main_menu");
     const [, clicked] = lobbyUpdate(state, clickOn(lobbyLayout(state), "leave"));
-    expect((clicked)?.go).toBe("main_menu");
+    expect(clicked?.go).toBe("main_menu");
   });
 
   it("moves focus with directional actions", () => {
@@ -829,10 +902,10 @@ describe("online lobby screen", () => {
   it("renders every state without touching a real display", () => {
     const roleState = newState(VP, ports());
     const hostState = hosting();
-    const locked = dispatch(
-      dispatch(hosting(), { kind: "lobby", command: { kind: "bot_fill" } }),
-      { kind: "lobby", command: { kind: "lock" } },
-    );
+    const locked = dispatch(dispatch(hosting(), { kind: "lobby", command: { kind: "bot_fill" } }), {
+      kind: "lobby",
+      command: { kind: "lock" },
+    });
     const backend = fakeGraphicsBackend();
     for (const state of [roleState, hostState, locked]) {
       expect(() => draw.layout(backend, lobbyLayout(state), VP)).not.toThrow();
@@ -940,7 +1013,16 @@ describe("online lobby screen", () => {
       const state = lockedRealHost(mode);
       expect(view(state).error).toBeUndefined();
       const currentLayout = lobbyLayout(state);
-      for (const slot of ["home_1", "home_2", "home_3", "home_4", "away_1", "away_2", "away_3", "away_4"]) {
+      for (const slot of [
+        "home_1",
+        "home_2",
+        "home_3",
+        "home_4",
+        "away_1",
+        "away_2",
+        "away_3",
+        "away_4",
+      ]) {
         expect(hit.find(currentLayout, `prefer_${slot}`)).toBeNull();
       }
     }

@@ -126,18 +126,20 @@ describe("desync_package", () => {
     const withoutTape = build(baseOptions());
     expect(withoutTape.ok).toBe(true);
     if (withoutTape.ok) {
-      expect((withoutTape.value.reproduction as { reproducible_from: string }).reproducible_from).toBe(
-        "retained_window"
-      );
+      expect(
+        (withoutTape.value.reproduction as { reproducible_from: string }).reproducible_from,
+      ).toBe("retained_window");
     }
 
     const withTape = build(
-      baseOptions({ tape: { tape_id: "tape_1", tape_digest: "0011223344556677", tape_version: 1 } })
+      baseOptions({
+        tape: { tape_id: "tape_1", tape_digest: "0011223344556677", tape_version: 1 },
+      }),
     );
     expect(withTape.ok).toBe(true);
     if (withTape.ok) {
       expect((withTape.value.reproduction as { reproducible_from: string }).reproducible_from).toBe(
-        "tape_reference"
+        "tape_reference",
       );
     }
   });
@@ -151,7 +153,7 @@ describe("desync_package", () => {
         monotonic_ms: 12,
         peer_id: "guest_1",
         detail: poison,
-      }).ok
+      }).ok,
     ).toBe(true);
 
     const result = build(baseOptions({ recorder }));

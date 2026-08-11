@@ -335,7 +335,12 @@ export interface RollbackEventsTimeline {
    * thrown. Throws (a string) if `outputsJson`/`snapshots` are malformed or
    * mismatched in length.
    */
-  apply(replacedFromTick: number, replacedThroughTick: number, outputsJson: string, snapshots: WasmMatchSnapshot[]): string;
+  apply(
+    replacedFromTick: number,
+    replacedThroughTick: number,
+    outputsJson: string,
+    snapshots: WasmMatchSnapshot[],
+  ): string;
   /** Mirrors `gc_sim::rollback_events::confirm`. Returns the confirmed
    * steps as a JSON array, in causal order. */
   confirm(confirmedOutputTick: number): string;
@@ -896,7 +901,10 @@ export interface InputProtocolBridge {
   /** `gc_netcode::input_protocol::supersede_for_backpressure`. Throws (a
    * string, a `backpressure_gap`) if `newer` does not cover every row of
    * unsent authority `older` carried. */
-  inputProtocolSupersedeForBackpressure(older: WasmInputPacket, newer: WasmInputPacket): WasmInputPacket;
+  inputProtocolSupersedeForBackpressure(
+    older: WasmInputPacket,
+    newer: WasmInputPacket,
+  ): WasmInputPacket;
 }
 
 // ---------------------------------------------------------------------------
@@ -1219,7 +1227,8 @@ export interface PlayerPoseBridge {
 
 /** The shape of `dist/pkg/gc_wasm.cjs`'s module exports. */
 export interface GcWasmModule
-  extends InputFrameBridge,
+  extends
+    InputFrameBridge,
     InputProtocolBridge,
     MatchDriverFixtureBridge,
     MatchSnapshotBridge,

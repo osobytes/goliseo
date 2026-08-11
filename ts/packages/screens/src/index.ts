@@ -21,7 +21,12 @@ export type {
 } from "./content.ts";
 
 export { squad } from "./squad.ts";
-export type { SquadAction, SquadContentData, SquadScreenContext, SquadScreenState } from "./squad.ts";
+export type {
+  SquadAction,
+  SquadContentData,
+  SquadScreenContext,
+  SquadScreenState,
+} from "./squad.ts";
 
 export { formation } from "./formation.ts";
 export type {
@@ -32,16 +37,30 @@ export type {
 } from "./formation.ts";
 
 export { tactic } from "./tactic.ts";
-export type { TacticAction, TacticContentData, TacticScreenContext, TacticScreenState } from "./tactic.ts";
+export type {
+  TacticAction,
+  TacticContentData,
+  TacticScreenContext,
+  TacticScreenState,
+} from "./tactic.ts";
 
 export { result } from "./result.ts";
-export type { ResultAction, ResultContentData, ResultScreenContext, ResultScreenState } from "./result.ts";
+export type {
+  ResultAction,
+  ResultContentData,
+  ResultScreenContext,
+  ResultScreenState,
+} from "./result.ts";
 
 export { settings } from "./settings.ts";
 export type { SettingsAction, SettingsScreenContext, SettingsScreenState } from "./settings.ts";
 
 export { fakeMatch } from "./fake_match.ts";
-export type { FakeMatchAction, FakeMatchScreenContext, FakeMatchScreenState } from "./fake_match.ts";
+export type {
+  FakeMatchAction,
+  FakeMatchScreenContext,
+  FakeMatchScreenState,
+} from "./fake_match.ts";
 
 export { help } from "./help.ts";
 export type { HelpAction, HelpScreenState } from "./help.ts";
@@ -122,11 +141,26 @@ export type {
   TransportContractPort,
 } from "./lobby_model.ts";
 
-export { lobby, newState as newLobbyScreenState, layout as lobbyScreenLayout, update as lobbyScreenUpdate } from "./lobby.ts";
-export type { LobbyAction, LobbyScreenContext, LobbyScreenEvent, LobbyScreenState } from "./lobby.ts";
+export {
+  lobby,
+  newState as newLobbyScreenState,
+  layout as lobbyScreenLayout,
+  update as lobbyScreenUpdate,
+} from "./lobby.ts";
+export type {
+  LobbyAction,
+  LobbyScreenContext,
+  LobbyScreenEvent,
+  LobbyScreenState,
+} from "./lobby.ts";
 
 export { OnlineLobby } from "./online_lobby.ts";
-export type { LobbyClipboard, LobbyLinkInstance, OnlineLobbyAction, OnlineLobbyOptions } from "./online_lobby.ts";
+export type {
+  LobbyClipboard,
+  LobbyLinkInstance,
+  OnlineLobbyAction,
+  OnlineLobbyOptions,
+} from "./online_lobby.ts";
 
 export {
   command as onlineMatchModelCommand,

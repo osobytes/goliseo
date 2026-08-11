@@ -167,10 +167,22 @@ import * as arenaRender from "./arena.ts";
 import type { ArenaColors, ArenaThemeColors } from "./arena.ts";
 import * as combatRender from "./combat.ts";
 import * as effectsModule from "./effects.ts";
-import type { AerialOutcome, AerialStyle, PlayerRenderOptions, SpeciesShape } from "./player_render_options.ts";
+import type {
+  AerialOutcome,
+  AerialStyle,
+  PlayerRenderOptions,
+  SpeciesShape,
+} from "./player_render_options.ts";
 import * as playerRenderer3d from "./player_renderer_3d.ts";
 import { viewState } from "./view_state.ts";
-import { DrawList, appendCommands, paint, type DrawCommand, type Project, type RGB } from "./draw2d.ts";
+import {
+  DrawList,
+  appendCommands,
+  paint,
+  type DrawCommand,
+  type Project,
+  type RGB,
+} from "./draw2d.ts";
 
 const HEX_RADIUS = 26; // world units, centre to corner
 const NET_BACK_FRAC = 0.55; // back frame height as a fraction of the crossbar
@@ -384,7 +396,13 @@ export interface PitchDrawOptions {
   readonly ui_theme?: ArenaThemeColors;
 }
 
-function projectedCircle(project: Project, cx: number, cy: number, r: number, segs: number): number[] {
+function projectedCircle(
+  project: Project,
+  cx: number,
+  cy: number,
+  r: number,
+  segs: number,
+): number[] {
   const pts: number[] = [];
   for (let i = 0; i <= segs; i += 1) {
     const ang = (i / segs) * 2 * Math.PI;
@@ -409,7 +427,10 @@ function drawMarkings(dl: DrawList, project: Project, field: RenderFrameField): 
   const [x2, y2] = project(field.w / 2, field.h);
   dl.line([x1, y1, x2, y2], markingColor, { alpha: 0.85, lineWidth: 2 });
 
-  dl.polygon("line", projectedCircle(project, field.w / 2, field.h / 2, 70, 36), markingColor, { alpha: 0.85, lineWidth: 2 });
+  dl.polygon("line", projectedCircle(project, field.w / 2, field.h / 2, 70, 36), markingColor, {
+    alpha: 0.85,
+    lineWidth: 2,
+  });
 
   const [sx, sy] = project(field.w / 2, field.h / 2);
   dl.circle("fill", sx, sy, 3, markingColor, { alpha: 0.85 });
@@ -423,7 +444,10 @@ function drawMarkings(dl: DrawList, project: Project, field: RenderFrameField): 
     const [p2x, p2y] = project(xb, top);
     const [p3x, p3y] = project(xb, bot);
     const [p4x, p4y] = project(xa, bot);
-    dl.polygon("line", [p1x, p1y, p2x, p2y, p3x, p3y, p4x, p4y], markingColor, { alpha: 0.85, lineWidth: 2 });
+    dl.polygon("line", [p1x, p1y, p2x, p2y, p3x, p3y, p4x, p4y], markingColor, {
+      alpha: 0.85,
+      lineWidth: 2,
+    });
   };
   box(0, depth);
   box(field.w - depth, field.w);
@@ -460,7 +484,15 @@ function drawHexFloor(dl: DrawList, project: Project, field: RenderFrameField): 
   }
 }
 
-function drawGoal(dl: DrawList, project: Project, field: RenderFrameField, g: Rect, color: RGB, lineX: number, backX: number): void {
+function drawGoal(
+  dl: DrawList,
+  project: Project,
+  field: RenderFrameField,
+  g: Rect,
+  color: RGB,
+  lineX: number,
+  backX: number,
+): void {
   const bar = field.crossbar_h;
   const [lfx, lfy, lfs] = project(lineX, g.y); // far post base (on the line)
   const [lnx, lny, lns] = project(lineX, g.y + g.h); // near post base
@@ -472,12 +504,23 @@ function drawGoal(dl: DrawList, project: Project, field: RenderFrameField, g: Re
   // has no equivalent to a pixel shader stamped over an arbitrary polygon
   // without a bespoke canvas-texture material, and the texturing would be a
   // shading detail with no bearing on the net's shape or position.
-  dl.polygon("fill", [lfx, lfy, bfx, bfy, bfx, bfy - backH * bfs, lfx, lfy - bar * lfs], color, { alpha: 0.3 });
-  dl.polygon("fill", [lnx, lny, bnx, bny, bnx, bny - backH * bns, lnx, lny - bar * lns], color, { alpha: 0.3 });
+  dl.polygon("fill", [lfx, lfy, bfx, bfy, bfx, bfy - backH * bfs, lfx, lfy - bar * lfs], color, {
+    alpha: 0.3,
+  });
+  dl.polygon("fill", [lnx, lny, bnx, bny, bnx, bny - backH * bns, lnx, lny - bar * lns], color, {
+    alpha: 0.3,
+  });
   // Back net.
-  dl.polygon("fill", [bfx, bfy, bnx, bny, bnx, bny - backH * bns, bfx, bfy - backH * bfs], color, { alpha: 0.3 });
+  dl.polygon("fill", [bfx, bfy, bnx, bny, bnx, bny - backH * bns, bfx, bfy - backH * bfs], color, {
+    alpha: 0.3,
+  });
   // Roof net: crossbar down to the back frame.
-  dl.polygon("fill", [lfx, lfy - bar * lfs, lnx, lny - bar * lns, bnx, bny - backH * bns, bfx, bfy - backH * bfs], color, { alpha: 0.22 });
+  dl.polygon(
+    "fill",
+    [lfx, lfy - bar * lfs, lnx, lny - bar * lns, bnx, bny - backH * bns, bfx, bfy - backH * bfs],
+    color,
+    { alpha: 0.22 },
+  );
 
   // The frame: two posts + crossbar, bright so the bloom pass lights it.
   const frameColor: RGB = [0.92, 0.97, 1.0];
@@ -488,7 +531,10 @@ function drawGoal(dl: DrawList, project: Project, field: RenderFrameField, g: Re
   const backFrameColor: RGB = [0.7, 0.85, 1.0];
   dl.line([bfx, bfy, bfx, bfy - backH * bfs], backFrameColor, { alpha: 0.5, lineWidth: 1 });
   dl.line([bnx, bny, bnx, bny - backH * bns], backFrameColor, { alpha: 0.5, lineWidth: 1 });
-  dl.line([bfx, bfy - backH * bfs, bnx, bny - backH * bns], backFrameColor, { alpha: 0.5, lineWidth: 1 });
+  dl.line([bfx, bfy - backH * bfs, bnx, bny - backH * bns], backFrameColor, {
+    alpha: 0.5,
+    lineWidth: 1,
+  });
 }
 
 /**
@@ -516,7 +562,11 @@ export interface PlayerAnchor {
  * the payload can be asserted against the pinned reference evidence headless
  * -- see pitch.spec.ts's differential.
  */
-export function playerAnchors(frame: RenderFrame, vp: PitchViewport, opts: PitchDrawOptions): PlayerAnchor[] {
+export function playerAnchors(
+  frame: RenderFrame,
+  vp: PitchViewport,
+  opts: PitchDrawOptions,
+): PlayerAnchor[] {
   const project = pitchProject(frame, vp, opts);
   const anchors: PlayerAnchor[] = [];
   for (const item of depthSortedItems(frame.players, frame.ball)) {
@@ -557,17 +607,29 @@ function playerOptions(frame: RenderFrame, index: number): PlayerRenderOptions {
     controlled: players.controlled[index] ?? false,
     ...(players.dashing[index] !== undefined ? { dashing: players.dashing[index] } : {}),
     ...(players.dive[index] !== undefined ? { dive: players.dive[index] } : {}),
-    ...(diveDirX !== undefined && diveDirY !== undefined ? { dive_dir: new Vec2(diveDirX, diveDirY) } : {}),
+    ...(diveDirX !== undefined && diveDirY !== undefined
+      ? { dive_dir: new Vec2(diveDirX, diveDirY) }
+      : {}),
     ...(players.holding[index] !== undefined ? { holding: players.holding[index] } : {}),
     ...(players.grab[index] !== undefined ? { grab: players.grab[index] } : {}),
     ...(players.throw[index] !== undefined ? { throw: players.throw[index] } : {}),
     ...(players.windup[index] !== undefined ? { windup: players.windup[index] } : {}),
     ...(players.aerial[index] !== undefined ? { aerial: players.aerial[index] } : {}),
-    ...(players.aerial_style[index] !== undefined ? { aerial_style: players.aerial_style[index] } : {}),
-    ...(players.aerial_outcome[index] !== undefined ? { aerial_outcome: players.aerial_outcome[index] } : {}),
-    ...(players.aerial_jump[index] !== undefined ? { aerial_jump: players.aerial_jump[index] } : {}),
-    ...(roster.species_shape[index] !== undefined ? { species_shape: roster.species_shape[index] } : {}),
-    ...(roster.species_color[index] !== undefined ? { species_color: roster.species_color[index] } : {}),
+    ...(players.aerial_style[index] !== undefined
+      ? { aerial_style: players.aerial_style[index] }
+      : {}),
+    ...(players.aerial_outcome[index] !== undefined
+      ? { aerial_outcome: players.aerial_outcome[index] }
+      : {}),
+    ...(players.aerial_jump[index] !== undefined
+      ? { aerial_jump: players.aerial_jump[index] }
+      : {}),
+    ...(roster.species_shape[index] !== undefined
+      ? { species_shape: roster.species_shape[index] }
+      : {}),
+    ...(roster.species_color[index] !== undefined
+      ? { species_color: roster.species_color[index] }
+      : {}),
     ...(roster.teams[index] !== undefined ? { team: roster.teams[index] } : {}),
     // #447. Both are match-constant roster columns rather than per-frame
     // state, and both reach `player_renderer_3d.characterMesh` through
@@ -586,12 +648,18 @@ function playerOptions(frame: RenderFrame, index: number): PlayerRenderOptions {
     // what lets it. `decodeRoster` refuses it a step earlier and
     // `encode_roster` a step before that, so this is one of three
     // independent checks rather than the only one.
-    ...(roster.presentation_ids[index] !== undefined ? { presentation_id: roster.presentation_ids[index] } : {}),
+    ...(roster.presentation_ids[index] !== undefined
+      ? { presentation_id: roster.presentation_ids[index] }
+      : {}),
     ...(roster.loadout_ids[index] !== undefined ? { loadout_id: roster.loadout_ids[index] } : {}),
-    ...(combatModel !== undefined && combatModel.players[index] !== undefined ? { combat: combatModel.players[index] } : {}),
+    ...(combatModel !== undefined && combatModel.players[index] !== undefined
+      ? { combat: combatModel.players[index] }
+      : {}),
     pose: {
       ...(players.pose_id[index] !== undefined ? { id: players.pose_id[index] } : {}),
-      ...(players.pose_priority[index] !== undefined ? { priority: players.pose_priority[index] } : {}),
+      ...(players.pose_priority[index] !== undefined
+        ? { priority: players.pose_priority[index] }
+        : {}),
       ...(players.pose_source[index] !== undefined ? { source: players.pose_source[index] } : {}),
     },
   };
@@ -668,7 +736,10 @@ function staticSceneCommands(
   drawMarkings(dl, project, field);
 
   // Pitch outline (bright neon border).
-  dl.polygon("line", [ax, ay, bx, by, cx, cy, dx, dy], arena.rail_color, { alpha: 0.9, lineWidth: 2 });
+  dl.polygon("line", [ax, ay, bx, by, cx, cy, dx, dy], arena.rail_color, {
+    alpha: 0.9,
+    lineWidth: 2,
+  });
 
   // Real goals standing behind the goal line, outside the field.
   const goalHome = field.goal_home;
@@ -747,7 +818,13 @@ function pitchProject(frame: RenderFrame, vp: PitchViewport, opts: PitchDrawOpti
 // target. Stadium mode simply stops painting a second, redundant backdrop
 // over a target that is already correctly cleared and already has real
 // stadium geometry behind it.
-function drawPitchBeforeItems(dl: DrawList, frame: RenderFrame, vp: PitchViewport, opts: PitchDrawOptions, project: Project): void {
+function drawPitchBeforeItems(
+  dl: DrawList,
+  frame: RenderFrame,
+  vp: PitchViewport,
+  opts: PitchDrawOptions,
+  project: Project,
+): void {
   const field = frame.field;
 
   if (!pitch.stadium_mode) {
@@ -769,7 +846,9 @@ function drawPitchBeforeItems(dl: DrawList, frame: RenderFrame, vp: PitchViewpor
     // instead of before the outline is visually identical. This ordering comes
     // from the static/dynamic split above (#398) — getting it wrong freezes
     // the kickoff pulse.
-    dl.extend(arenaRender.frameCommands(arena, { ax, ay, bx, by, cx, cy, dx, dy }, opts.arena_pulse));
+    dl.extend(
+      arenaRender.frameCommands(arena, { ax, ay, bx, by, cx, cy, dx, dy }, opts.arena_pulse),
+    );
   }
 
   // Ball trail sits on the ground, under the entities. Kept in BOTH modes:
@@ -815,7 +894,13 @@ function drawLooseBallCommands(dl: DrawList, project: Project, ball: RenderFrame
 // layer, the landing reticle, the pass-target preview, the charge meter and
 // the effects "over" layer (flashes/sparks). Shared for the same reason
 // `drawPitchBeforeItems` is.
-function drawPitchAfterItems(dl: DrawList, frame: RenderFrame, opts: PitchDrawOptions, project: Project, now: number): void {
+function drawPitchAfterItems(
+  dl: DrawList,
+  frame: RenderFrame,
+  opts: PitchDrawOptions,
+  project: Project,
+  now: number,
+): void {
   const players = frame.players;
   const roster = frame.roster;
   const ball = frame.ball;
@@ -829,8 +914,14 @@ function drawPitchAfterItems(dl: DrawList, frame: RenderFrame, opts: PitchDrawOp
   if (landingX !== undefined && landingY !== undefined) {
     const [sx, sy, scale] = project(landingX, landingY);
     const pulse = 0.6 + 0.4 * Math.abs(Math.sin(now * 6));
-    dl.circle("line", sx, sy, 12 * scale * pulse, [1, 0.85, 0.35], { alpha: 0.85 * pulse, lineWidth: Math.max(1, 1.5 * scale) });
-    dl.circle("line", sx, sy, 7 * scale, [1, 0.85, 0.35], { alpha: 0.4, lineWidth: Math.max(1, 1.5 * scale) });
+    dl.circle("line", sx, sy, 12 * scale * pulse, [1, 0.85, 0.35], {
+      alpha: 0.85 * pulse,
+      lineWidth: Math.max(1, 1.5 * scale),
+    });
+    dl.circle("line", sx, sy, 7 * scale, [1, 0.85, 0.35], {
+      alpha: 0.4,
+      lineWidth: Math.max(1, 1.5 * scale),
+    });
   }
 
   // Pass-target preview: a small pulsing double-ring at the intended
@@ -850,8 +941,14 @@ function drawPitchAfterItems(dl: DrawList, frame: RenderFrame, opts: PitchDrawOp
     const [tsx, tsy, tscale] = project(tx, ty);
     const pulse = 0.65 + 0.35 * Math.abs(Math.sin(now * 5));
     const teamColor = roster.teams[targetIndex] === "home" ? opts.home_color : opts.away_color;
-    dl.circle("line", tsx, tsy, 10 * tscale * pulse, teamColor, { alpha: 0.85 * pulse, lineWidth: Math.max(1, 1.5 * tscale) });
-    dl.circle("line", tsx, tsy, 16 * tscale * pulse, teamColor, { alpha: 0.45 * pulse, lineWidth: Math.max(1, 1.5 * tscale) });
+    dl.circle("line", tsx, tsy, 10 * tscale * pulse, teamColor, {
+      alpha: 0.85 * pulse,
+      lineWidth: Math.max(1, 1.5 * tscale),
+    });
+    dl.circle("line", tsx, tsy, 16 * tscale * pulse, teamColor, {
+      alpha: 0.45 * pulse,
+      lineWidth: Math.max(1, 1.5 * tscale),
+    });
   }
 
   // Charge meter under the controlled player (soccer-game power bar): warm
@@ -910,7 +1007,12 @@ function drawPitchAfterItems(dl: DrawList, frame: RenderFrame, opts: PitchDrawOp
  * order. That is what makes asserting on this output an assertion about the
  * frame the product actually draws.
  */
-export function pitchDrawCommands(frame: RenderFrame, vp: PitchViewport, opts: PitchDrawOptions, now = 0): DrawCommand[] {
+export function pitchDrawCommands(
+  frame: RenderFrame,
+  vp: PitchViewport,
+  opts: PitchDrawOptions,
+  now = 0,
+): DrawCommand[] {
   const dl = new DrawList();
   const ball = frame.ball;
   const project = pitchProject(frame, vp, opts);
@@ -934,7 +1036,10 @@ export function pitchDrawCommands(frame: RenderFrame, vp: PitchViewport, opts: P
 // shared camera's local X axis (== world X here, since the camera has no
 // roll/pitch of its own -- see scene.ts's `SceneRoot`), matching
 // `player_renderer_3d.ts`'s exported `ELEVATION` constant.
-const ELEVATION_TILT = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), playerRenderer3d.ELEVATION);
+const ELEVATION_TILT = new THREE.Quaternion().setFromAxisAngle(
+  new THREE.Vector3(1, 0, 0),
+  playerRenderer3d.ELEVATION,
+);
 
 // CHARACTER TILT COHERENCE. `ELEVATION_TILT` above approximates the fixed
 // trapezoid's implied viewing angle -- there is no REAL camera behind that
@@ -1007,10 +1112,19 @@ const CHARACTER_DEPTH_SCALE = 0.05;
  * comment. Passed in rather than read from a module constant here so the
  * caller computes it ONCE per `pitch.draw` call, not once per character.
  */
-function riggedCharacterObject(mesh: THREE.Object3D, sx: number, sy: number, z: number, r: number, tilt: THREE.Quaternion): THREE.Group {
+function riggedCharacterObject(
+  mesh: THREE.Object3D,
+  sx: number,
+  sy: number,
+  z: number,
+  r: number,
+  tilt: THREE.Quaternion,
+): THREE.Group {
   const ppm = playerRenderer3d.ppmForRadius(r);
   if (ppm === undefined) {
-    throw new Error("pitch.ts: player_renderer_3d.ppmForRadius() declined -- the rigged character build failed; see the preceding 'rigged 3D players disabled (build failed)' warning for the cause");
+    throw new Error(
+      "pitch.ts: player_renderer_3d.ppmForRadius() declined -- the rigged character build failed; see the preceding 'rigged 3D players disabled (build failed)' warning for the cause",
+    );
   }
   mesh.quaternion.premultiply(tilt);
 
@@ -1108,7 +1222,13 @@ export const pitch = {
    * below. Untested beyond object-graph shape/ordering -- see file header's
    * scope note.
    */
-  draw(group: THREE.Group, frame: RenderFrame, vp: PitchViewport, opts: PitchDrawOptions, now = 0): void {
+  draw(
+    group: THREE.Group,
+    frame: RenderFrame,
+    vp: PitchViewport,
+    opts: PitchDrawOptions,
+    now = 0,
+  ): void {
     const players = frame.players;
     const ball = frame.ball;
     const project = pitchProject(frame, vp, opts);
@@ -1175,7 +1295,9 @@ export const pitch = {
         // the player and stops the frame instead. `build()`'s own
         // `console.warn` (see that module) still carries the underlying cause.
         if (mesh === undefined) {
-          throw new Error(`pitch.ts: no rigged character for player "${anchor.player_id}" (roster index ${String(index)}) -- player_renderer_3d.build() failed; see the preceding 'rigged 3D players disabled (build failed)' warning for the cause`);
+          throw new Error(
+            `pitch.ts: no rigged character for player "${anchor.player_id}" (roster index ${String(index)}) -- player_renderer_3d.build() failed; see the preceding 'rigged 3D players disabled (build failed)' warning for the cause`,
+          );
         }
         group.add(riggedCharacterObject(mesh, anchor.sx, anchor.sy, z, anchor.r, tilt));
       } else if (ball.visible) {

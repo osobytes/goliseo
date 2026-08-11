@@ -48,11 +48,7 @@ import {
 } from "@gc/screens";
 import type { GamepadState, KeyboardState } from "@gc/input";
 import { matchContract } from "./match_contract.ts";
-import {
-  matchObserver,
-  type MatchObserver,
-  type ObservedMatchEvent,
-} from "./match_observer.ts";
+import { matchObserver, type MatchObserver, type ObservedMatchEvent } from "./match_observer.ts";
 import type { RealMatchFactory } from "./match_adapter.ts";
 import type { ProductMatchRequest } from "./match_contract.ts";
 import type { MatchContractContent } from "./content.ts";

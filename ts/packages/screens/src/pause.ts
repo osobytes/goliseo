@@ -46,15 +46,25 @@ function layout(state: PauseScreenState): Layout {
   return widgets;
 }
 
-function update(state: PauseScreenState, event: FocusEvent): readonly [PauseScreenState, PauseAction | undefined] {
+function update(
+  state: PauseScreenState,
+  event: FocusEvent,
+): readonly [PauseScreenState, PauseAction | undefined] {
   const currentLayout = layout(state);
   const nextFocus = focus.navigate(currentLayout, state.focus, event) ?? state.focus;
   const confirmation = state.confirmRestart && nextFocus === "restart";
   if (event.kind === "action" && (event.action === "back" || event.action === "pause")) {
-    return [{ viewport: state.viewport, focus: nextFocus, confirmRestart: false }, { go: "resume" }];
+    return [
+      { viewport: state.viewport, focus: nextFocus, confirmRestart: false },
+      { go: "resume" },
+    ];
   }
   const id = focus.activated(currentLayout, nextFocus, event);
-  let next: PauseScreenState = { viewport: state.viewport, focus: id ?? nextFocus, confirmRestart: confirmation };
+  let next: PauseScreenState = {
+    viewport: state.viewport,
+    focus: id ?? nextFocus,
+    confirmRestart: confirmation,
+  };
   if (id === "restart" && !state.confirmRestart) {
     next = { ...next, confirmRestart: true };
     return [next, undefined];

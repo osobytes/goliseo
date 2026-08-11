@@ -4,7 +4,13 @@
   "private": true,
   "type": "module",
   "description": "Presentation identity: cosmetics, themes, branding.",
-  "exports": { ".": "./src/index.ts" },
-  "scripts": { "typecheck": "tsgo --noEmit -p tsconfig.json" },
-  "dependencies": {"@gc/core":"workspace:*"}
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@gc/core": "workspace:*"
+  }
 }

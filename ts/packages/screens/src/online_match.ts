@@ -25,7 +25,13 @@ import { combat, type CombatPresentationData, type CombatMatchState } from "@gc/
 import { theme } from "@gc/ui";
 import type { Vec2 } from "@gc/core";
 import type { GameSettings, ProductMatchResult, TeamData } from "./content.ts";
-import type { MatchContractPort, ObservedMatchSummary, RealMatchInputEvent, RealMatchScreenPort, RealMatchState } from "./real_match.ts";
+import type {
+  MatchContractPort,
+  ObservedMatchSummary,
+  RealMatchInputEvent,
+  RealMatchScreenPort,
+  RealMatchState,
+} from "./real_match.ts";
 import type { OnlineHostPort, RenderFrame, RenderFrameRoster } from "./match.ts";
 
 /**
@@ -40,7 +46,12 @@ import type { OnlineHostPort, RenderFrame, RenderFrameRoster } from "./match.ts"
 export interface OnlineMatchState extends RealMatchState {
   readonly controlled: number;
   readonly owner?: number;
-  readonly players: readonly { readonly id: string; readonly team: "home" | "away"; readonly pos: Vec2; readonly facing: Vec2 }[];
+  readonly players: readonly {
+    readonly id: string;
+    readonly team: "home" | "away";
+    readonly pos: Vec2;
+    readonly facing: Vec2;
+  }[];
 }
 
 export interface OnlineMatchRequest {
@@ -75,7 +86,9 @@ export interface MatchDriverPort<TDriver, TBatch, TSnapshot, TCheckpoint> {
   advance(driver: TDriver, sample: unknown): TBatch;
   currentSnapshot(driver: TDriver): TSnapshot;
   snapshot(driver: TDriver, boundary: number): unknown;
-  terminal(driver: TDriver): { readonly status: string; readonly failure?: string; readonly detail?: string } | undefined;
+  terminal(
+    driver: TDriver,
+  ): { readonly status: string; readonly failure?: string; readonly detail?: string } | undefined;
   settled(driver: TDriver): boolean;
   diagnostics(driver: TDriver): {
     readonly transport_tick: number;
@@ -123,8 +136,13 @@ export interface MatchSessionPort<TState> {
 /** `game.online.lobby_link`'s `LobbyLink`, as used by the match screen (control + star polling). */
 export interface MatchLobbyLinkPort {
   readonly star: {
-    pollBatch(): readonly { readonly channel: string; readonly peer_id: string; readonly message: { readonly payload: string } }[];
-    pollEvent(): { readonly kind: string; readonly peer_id?: string; readonly state?: string } | undefined;
+    pollBatch(): readonly {
+      readonly channel: string;
+      readonly peer_id: string;
+      readonly message: { readonly payload: string };
+    }[];
+    pollEvent():
+      { readonly kind: string; readonly peer_id?: string; readonly state?: string } | undefined;
   };
   send(linkId: string, wire: string): void;
   apply(effect: { readonly kind: string; readonly link_id?: string }): void;
@@ -137,10 +155,21 @@ export interface LobbyFrameBuffer {
 /** `game.online.lobby_link.new_buffer`/`.absorb`, injected. */
 export interface LobbyFramingPort {
   newBuffer(): LobbyFrameBuffer;
-  absorb(buffer: LobbyFrameBuffer, payload: string): readonly [string | undefined, string | undefined];
+  absorb(
+    buffer: LobbyFrameBuffer,
+    payload: string,
+  ): readonly [string | undefined, string | undefined];
 }
 
-export interface OnlineMatchOptions<TDriver, TBatch, TSnapshot, TCheckpoint, TPresentation, TPresented, TCoordinator> {
+export interface OnlineMatchOptions<
+  TDriver,
+  TBatch,
+  TSnapshot,
+  TCheckpoint,
+  TPresentation,
+  TPresented,
+  TCoordinator,
+> {
   readonly request: OnlineMatchRequest;
   readonly coordinator: TCoordinator;
   readonly link: MatchLobbyLinkPort;
@@ -181,7 +210,10 @@ export interface OnlineMatchDispatchEvent {
 
 /** `online_match_model.ts`'s `command`, injected as a black box here -- this module only routes its effects. */
 export interface OnlineMatchModelPort<TModel> {
-  command(model: TModel, event: OnlineMatchDispatchEvent): readonly [TModel, readonly OnlineMatchEffect[]];
+  command(
+    model: TModel,
+    event: OnlineMatchDispatchEvent,
+  ): readonly [TModel, readonly OnlineMatchEffect[]];
   ended(model: TModel): boolean;
   exitRoute(model: TModel): "result" | "terminal";
   readonly ABORT_PROMPT: string;
@@ -194,12 +226,30 @@ export type OnlineMatchEffect =
 
 const TICK_SECONDS = 1 / 60;
 
-export class OnlineMatch<TDriver, TBatch, TSnapshot, TCheckpoint, TPresentation, TPresented, TCoordinator, TModel> {
-  private readonly ports: OnlineMatchOptions<TDriver, TBatch, TSnapshot, TCheckpoint, TPresentation, TPresented, TCoordinator>;
+export class OnlineMatch<
+  TDriver,
+  TBatch,
+  TSnapshot,
+  TCheckpoint,
+  TPresentation,
+  TPresented,
+  TCoordinator,
+  TModel,
+> {
+  private readonly ports: OnlineMatchOptions<
+    TDriver,
+    TBatch,
+    TSnapshot,
+    TCheckpoint,
+    TPresentation,
+    TPresented,
+    TCoordinator
+  >;
   private readonly modelPort: OnlineMatchModelPort<TModel>;
   private readonly request: OnlineMatchRequest;
   private readonly link: MatchLobbyLinkPort;
-  private readonly onAction: ((action: { readonly go: string; readonly [key: string]: unknown }) => void) | undefined;
+  private readonly onAction:
+    ((action: { readonly go: string; readonly [key: string]: unknown }) => void) | undefined;
   private driver!: TDriver;
   private presentation!: TPresentation;
   model: TModel;
@@ -207,7 +257,11 @@ export class OnlineMatch<TDriver, TBatch, TSnapshot, TCheckpoint, TPresentation,
   private observerValue: unknown;
   private live: Record<string, string>;
   private buffers = new Map<string, LobbyFrameBuffer>();
-  private control: { readonly channel: string; readonly peer_id: string; readonly message: { readonly payload: string } }[] = [];
+  private control: {
+    readonly channel: string;
+    readonly peer_id: string;
+    readonly message: { readonly payload: string };
+  }[] = [];
   private checkpoints: TCheckpoint[] = [];
   // The most recent boundary hash this peer's own driver has observed, if
   // any -- `TCheckpoint` is opaque to this class (see `MatchDriverPort`'s
@@ -226,9 +280,17 @@ export class OnlineMatch<TDriver, TBatch, TSnapshot, TCheckpoint, TPresentation,
   private routed = false;
 
   constructor(
-    ports: OnlineMatchOptions<TDriver, TBatch, TSnapshot, TCheckpoint, TPresentation, TPresented, TCoordinator>,
+    ports: OnlineMatchOptions<
+      TDriver,
+      TBatch,
+      TSnapshot,
+      TCheckpoint,
+      TPresentation,
+      TPresented,
+      TCoordinator
+    >,
     modelPort: OnlineMatchModelPort<TModel>,
-    newModel: (request: OnlineMatchRequest, coordinator: TCoordinator) => TModel
+    newModel: (request: OnlineMatchRequest, coordinator: TCoordinator) => TModel,
   ) {
     this.ports = ports;
     this.modelPort = modelPort;
@@ -244,7 +306,10 @@ export class OnlineMatch<TDriver, TBatch, TSnapshot, TCheckpoint, TPresentation,
       transport: this.link.star,
       initial_snapshot: this.request.initial_snapshot,
     });
-    this.presentation = ports.matchPresentation.create(this.request.initial_snapshot, this.request.first_input_tick);
+    this.presentation = ports.matchPresentation.create(
+      this.request.initial_snapshot,
+      this.request.first_input_tick,
+    );
     this.model = newModel(this.request, ports.coordinator);
     this.match = ports.newMatch({
       home: this.request.home,
@@ -280,14 +345,19 @@ export class OnlineMatch<TDriver, TBatch, TSnapshot, TCheckpoint, TPresentation,
           }
         }
         this.live = { ...this.ports.matchDriver.batchLive(batch) };
-        const presented = this.ports.matchPresentation.consume(this.presentation, this.driver, batch);
+        const presented = this.ports.matchPresentation.consume(
+          this.presentation,
+          this.driver,
+          batch,
+        );
         for (const step of this.ports.matchPresentation.presentedConfirmedSteps(presented)) {
           this.confirmed.push(step);
         }
         return presented;
       },
       currentSnapshot: () => this.ports.matchDriver.currentSnapshot(this.driver),
-      snapshot: (boundary: number) => this.ports.matchDriver.snapshot(this.driver, boundary + this.request.first_input_tick),
+      snapshot: (boundary: number) =>
+        this.ports.matchDriver.snapshot(this.driver, boundary + this.request.first_input_tick),
       terminal: () => this.ports.matchDriver.status(this.driver) !== "active",
       failed: () => {
         const status = this.ports.matchDriver.status(this.driver);
@@ -338,7 +408,11 @@ export class OnlineMatch<TDriver, TBatch, TSnapshot, TCheckpoint, TPresentation,
       }
       let event = this.link.star.pollEvent();
       while (event) {
-        if (event.kind === "peer_state" && event.peer_id !== undefined && (event.state === "closed" || event.state === "error" || event.state === "disconnected")) {
+        if (
+          event.kind === "peer_state" &&
+          event.peer_id !== undefined &&
+          (event.state === "closed" || event.state === "error" || event.state === "disconnected")
+        ) {
           this.dispatch({ kind: "link_lost", link_id: event.peer_id });
         }
         event = this.link.star.pollEvent();
@@ -401,7 +475,12 @@ export class OnlineMatch<TDriver, TBatch, TSnapshot, TCheckpoint, TPresentation,
       });
       return;
     }
-    this.dispatch({ kind: "failure", status: terminal.status, failure: terminal.failure, detail: terminal.detail });
+    this.dispatch({
+      kind: "failure",
+      status: terminal.status,
+      failure: terminal.failure,
+      detail: terminal.detail,
+    });
   }
 
   private result(): ProductMatchResult | undefined {
@@ -450,7 +529,11 @@ export class OnlineMatch<TDriver, TBatch, TSnapshot, TCheckpoint, TPresentation,
       }
     }
     const model = this.model as { readonly terminal?: unknown; readonly error?: string };
-    this.onAction({ go: "online_ended", terminal: model.terminal, detail: model.terminal ?? model.error });
+    this.onAction({
+      go: "online_ended",
+      terminal: model.terminal,
+      detail: model.terminal ?? model.error,
+    });
   }
 
   update(dt: number): void {
@@ -503,7 +586,11 @@ export class OnlineMatch<TDriver, TBatch, TSnapshot, TCheckpoint, TPresentation,
     const diagnostics = this.ports.matchDriver.diagnostics(this.driver);
     const state = this.match.state;
     const liveSlot = this.live[this.request.peer_id] ?? this.request.live;
-    const combatModel = combat.model(state, (this.match as unknown as { _combat_state: CombatMatchState | null })._combat_state, combatData);
+    const combatModel = combat.model(
+      state,
+      (this.match as unknown as { _combat_state: CombatMatchState | null })._combat_state,
+      combatData,
+    );
     const controlled = combatModel.players[state.controlled];
     const player = state.players[state.controlled];
     const lines = [

@@ -131,23 +131,31 @@ describe("rig3d clips", () => {
     // mentions are sent to rest -- the stride on `thigh.R` is gone.
     const layered = clips.layer(base, overlay, masks.LOWER_BODY, 1);
     for (let i = 0; i < 4; i++) {
-      expect(comp(layered.rot["thigh.R"] ?? restQ, i), "layer sends an unmentioned masked bone to rest").toBeCloseTo(
-        comp(restQ, i),
-        9,
-      );
+      expect(
+        comp(layered.rot["thigh.R"] ?? restQ, i),
+        "layer sends an unmentioned masked bone to rest",
+      ).toBeCloseTo(comp(restQ, i), 9);
     }
 
     // Composed, the same overlay leaves it exactly as the walk resolved it.
     const composed = clips.compose(base, overlay);
     // Non-vacuous: the walk really does pose that bone, so "untouched" is a
     // claim about something rather than about an absent key.
-    expect(base.rot["thigh.R"], "the walk poses the thigh, or neither half means anything").toBeDefined();
-    expect(composed.rot["thigh.R"], "compose leaves an unnamed bone untouched").toBe(base.rot["thigh.R"]);
+    expect(
+      base.rot["thigh.R"],
+      "the walk poses the thigh, or neither half means anything",
+    ).toBeDefined();
+    expect(composed.rot["thigh.R"], "compose leaves an unnamed bone untouched").toBe(
+      base.rot["thigh.R"],
+    );
 
     // And where it DOES speak, it adds rather than replaces -- both channels.
     const expected = quat.multiply(overlay.rot["shin.R"], base.rot["shin.R"] ?? restQ);
     for (let i = 0; i < 4; i++) {
-      expect(comp(composed.rot["shin.R"] ?? restQ, i), "compose pre-multiplies").toBeCloseTo(comp(expected, i), 9);
+      expect(comp(composed.rot["shin.R"] ?? restQ, i), "compose pre-multiplies").toBeCloseTo(
+        comp(expected, i),
+        9,
+      );
     }
     expect(composed.move["root"]?.[1] ?? 0, "and sums translations").toBeCloseTo(
       (base.move["root"]?.[1] ?? 0) - 0.05,
@@ -177,9 +185,15 @@ describe("rig3d clips", () => {
     const CROUCH_BONES = ["thigh.L", "thigh.R", "shin.L", "shin.R", "foot.L", "foot.R"];
     const all = Object.values(clips as unknown as Record<string, unknown>).filter(
       (v): v is clips.Clip =>
-        typeof v === "object" && v !== null && Array.isArray((v as clips.Clip).keys) && "rotBones" in v,
+        typeof v === "object" &&
+        v !== null &&
+        Array.isArray((v as clips.Clip).keys) &&
+        "rotBones" in v,
     );
-    expect(all.length, "every clip the module exports, or this proves nothing").toBeGreaterThanOrEqual(8);
+    expect(
+      all.length,
+      "every clip the module exports, or this proves nothing",
+    ).toBeGreaterThanOrEqual(8);
 
     let checked = 0;
     for (const clip of all) {
@@ -195,7 +209,9 @@ describe("rig3d clips", () => {
           // round trip as a mismatch. Well conditioned because no leg key comes
           // near 180 degrees -- asserted, so a future key that did would fail
           // here loudly instead of being waved through by a degenerate atan2.
-          expect(comp(q, 3), `${clip.name}/${bone}: a leg key past 180 degrees`).toBeGreaterThan(0.1);
+          expect(comp(q, 3), `${clip.name}/${bone}: a leg key past 180 degrees`).toBeGreaterThan(
+            0.1,
+          );
           const rx = 2 * Math.atan2(comp(q, 0), comp(q, 3));
           const rz = 2 * Math.atan2(comp(q, 2), comp(q, 3));
           const rebuilt = quat.fromEuler(rx, 0, rz);
@@ -220,15 +236,24 @@ describe("rig3d clips", () => {
     for (let i = 0; i < 4; i++) {
       worst = Math.max(worst, Math.abs(comp(rebuiltT, i) - comp(twisted, i)));
     }
-    expect(worst, "a y-twist must fail the round trip, or the sweep above is blind").toBeGreaterThan(0.01);
+    expect(
+      worst,
+      "a y-twist must fail the round trip, or the sweep above is blind",
+    ).toBeGreaterThan(0.01);
   });
 
   it("masks include the sockets attached to the hands they cover", () => {
     // A socket left out of the mask keeps the base layer's transform while
     // the arm follows the overlay, and the weapon detaches from the fist.
     for (const mask of [masks.UPPER_BODY, masks.ARMS]) {
-      expect(mask.has("hand.R") && mask.has("socket_hand.R"), "socket must accompany its hand").toBe(true);
-      expect(mask.has("hand.L") && mask.has("socket_hand.L"), "socket must accompany its hand").toBe(true);
+      expect(
+        mask.has("hand.R") && mask.has("socket_hand.R"),
+        "socket must accompany its hand",
+      ).toBe(true);
+      expect(
+        mask.has("hand.L") && mask.has("socket_hand.L"),
+        "socket must accompany its hand",
+      ).toBe(true);
     }
   });
 });

@@ -51,7 +51,8 @@ export interface LobbyScreenState {
   readonly effects: readonly LobbyEffect[];
 }
 
-export type LobbyAction = { readonly go: "online_match"; readonly freeze: unknown } | { readonly go: "main_menu" };
+export type LobbyAction =
+  { readonly go: "online_match"; readonly freeze: unknown } | { readonly go: "main_menu" };
 
 const LEFT_X = 24;
 const LEFT_W = 248;
@@ -63,7 +64,11 @@ const ROW_TOP = 68;
 const ROW_STEP = 34;
 const ROW_H = 30;
 
-export function newState(viewport: { readonly w: number; readonly h: number }, ports: LobbyModelPorts, context?: LobbyScreenContext): LobbyScreenState {
+export function newState(
+  viewport: { readonly w: number; readonly h: number },
+  ports: LobbyModelPorts,
+  context?: LobbyScreenContext,
+): LobbyScreenState {
   return {
     viewport,
     ports,
@@ -156,7 +161,11 @@ export function layout(state: LobbyScreenState): Layout {
     left("role_host", "HOST A SESSION", 40);
     left("identity", `JOIN AS  ${view.peer_id.toUpperCase()}`, ROW_H);
     left("role_guest", "JOIN WITH AN OFFER", 40);
-    left("hint", "MANUAL SIGNALING: BLOBS ARE EXCHANGED BY HAND.", 34, { kind: "label", tone: "muted", focusable: false });
+    left("hint", "MANUAL SIGNALING: BLOBS ARE EXCHANGED BY HAND.", 34, {
+      kind: "label",
+      tone: "muted",
+      focusable: false,
+    });
   } else if (view.role === "host") {
     const modeW = 76;
     MODES.forEach((mode, index) => {
@@ -168,10 +177,15 @@ export function layout(state: LobbyScreenState): Layout {
         inline: index < MODES.length - 1,
       });
     });
-    left("bot_fill", view.bot_fill ? "AI FILLS EMPTY SEATS: ON" : "AI FILLS EMPTY SEATS: OFF", ROW_H, {
-      selected: view.bot_fill,
-      disabled: view.mode_locked,
-    });
+    left(
+      "bot_fill",
+      view.bot_fill ? "AI FILLS EMPTY SEATS: ON" : "AI FILLS EMPTY SEATS: OFF",
+      ROW_H,
+      {
+        selected: view.bot_fill,
+        disabled: view.mode_locked,
+      },
+    );
     left("invite", "INVITE A PEER", ROW_H, { disabled: !view.can_invite });
     left("lock", "LOCK CONFIGURATION", ROW_H, { disabled: !view.can_lock });
   } else {
@@ -184,16 +198,36 @@ export function layout(state: LobbyScreenState): Layout {
 
   if (view.role) {
     const half = (LEFT_W - 10) / 2;
-    left("copy_signal", "COPY SIGNAL", ROW_H, { w: half, inline: true, disabled: !view.has_outgoing });
+    left("copy_signal", "COPY SIGNAL", ROW_H, {
+      w: half,
+      inline: true,
+      disabled: !view.has_outgoing,
+    });
     left("paste_signal", "PASTE SIGNAL", ROW_H, { x: LEFT_X + half + 10, w: half });
-    left("signal_out", signalText(view.exported, "NO LOCAL SIGNAL"), 20, { kind: "label", tone: "muted", focusable: false });
-    left("signal_in", signalText(view.imported, "NO IMPORTED SIGNAL"), 20, { kind: "label", tone: "muted", focusable: false });
-    left("peer_count", `PEERS  ${view.connected} / ${view.mode_known ? String(view.required) : "?"}`, 20, {
+    left("signal_out", signalText(view.exported, "NO LOCAL SIGNAL"), 20, {
       kind: "label",
+      tone: "muted",
       focusable: false,
     });
+    left("signal_in", signalText(view.imported, "NO IMPORTED SIGNAL"), 20, {
+      kind: "label",
+      tone: "muted",
+      focusable: false,
+    });
+    left(
+      "peer_count",
+      `PEERS  ${view.connected} / ${view.mode_known ? String(view.required) : "?"}`,
+      20,
+      {
+        kind: "label",
+        focusable: false,
+      },
+    );
     if (view.countdown !== undefined) {
-      left("countdown", `COUNTDOWN  ${view.countdown} TICKS`, 20, { kind: "label", focusable: false });
+      left("countdown", `COUNTDOWN  ${view.countdown} TICKS`, 20, {
+        kind: "label",
+        focusable: false,
+      });
     }
     if (view.started) {
       left("started", "START BOUNDARY REACHED", 20, { kind: "label", focusable: false });
@@ -389,13 +423,22 @@ function actionFor(effects: readonly LobbyEffect[]): LobbyAction | undefined {
   return undefined;
 }
 
-function advance(state: LobbyScreenState, model: LobbyModel, nextFocus: string, effects: readonly LobbyEffect[]): LobbyScreenState {
+function advance(
+  state: LobbyScreenState,
+  model: LobbyModel,
+  nextFocus: string,
+  effects: readonly LobbyEffect[],
+): LobbyScreenState {
   return { viewport: state.viewport, ports: state.ports, model, focus: nextFocus, effects };
 }
 
-export type LobbyScreenEvent = FocusEvent | { readonly kind: "lobby"; readonly command: LobbyCommand };
+export type LobbyScreenEvent =
+  FocusEvent | { readonly kind: "lobby"; readonly command: LobbyCommand };
 
-export function update(state: LobbyScreenState, event: LobbyScreenEvent): readonly [LobbyScreenState, LobbyAction | undefined] {
+export function update(
+  state: LobbyScreenState,
+  event: LobbyScreenEvent,
+): readonly [LobbyScreenState, LobbyAction | undefined] {
   if (event.kind === "lobby") {
     const [model, effects] = lobbyCommand(state.model, state.ports, event.command);
     return [advance(state, model, state.focus, effects), actionFor(effects)];

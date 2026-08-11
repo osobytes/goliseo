@@ -50,12 +50,19 @@ const BOUNCE_VERTEX_CHUNK = /* glsl */ `
   transformed.y += bounce;
 `;
 
-function injectBounceShader(material: THREE.Material, uTime: NumberUniform, uExcitement: NumberUniform, layout: StadiumLayout): void {
+function injectBounceShader(
+  material: THREE.Material,
+  uTime: NumberUniform,
+  uExcitement: NumberUniform,
+  layout: StadiumLayout,
+): void {
   material.onBeforeCompile = (shader: THREE.WebGLProgramParametersWithUniforms) => {
     shader.uniforms["uTime"] = uTime;
     shader.uniforms["uExcitement"] = uExcitement;
     shader.uniforms["uCenter"] = { value: new THREE.Vector2(layout.cx, layout.cz) };
-    shader.uniforms["uRadii"] = { value: new THREE.Vector2(layout.bowlOuterRx, layout.bowlOuterRz) };
+    shader.uniforms["uRadii"] = {
+      value: new THREE.Vector2(layout.bowlOuterRx, layout.bowlOuterRz),
+    };
     shader.vertexShader = shader.vertexShader
       .replace(
         "#include <common>",
@@ -103,7 +110,11 @@ function seatColor(rng: Prng, home: RGB, away: RGB): THREE.Color {
 // back across the inner boundary (and therefore never into the pitch rect,
 // which sits entirely inside that boundary -- see stadium_layout.ts), and the
 // explicit clamp below is the belt-and-suspenders check against the outer rim.
-function placeSeat(layout: StadiumLayout, tierIndex: number, rng: Prng): { readonly x: number; readonly y: number; readonly z: number } {
+function placeSeat(
+  layout: StadiumLayout,
+  tierIndex: number,
+  rng: Prng,
+): { readonly x: number; readonly y: number; readonly z: number } {
   const rxInner = layout.tierInnerRx[tierIndex] ?? layout.bowlInnerRx;
   const rzInner = layout.tierInnerRz[tierIndex] ?? layout.bowlInnerRz;
   const baseY = layout.tierBaseY[tierIndex] ?? 0;
@@ -128,7 +139,15 @@ function placeSeat(layout: StadiumLayout, tierIndex: number, rng: Prng): { reado
   return { x, y, z };
 }
 
-function populateMesh(mesh: THREE.InstancedMesh, count: number, tiers: readonly number[], layout: StadiumLayout, home: RGB, away: RGB, rng: Prng): void {
+function populateMesh(
+  mesh: THREE.InstancedMesh,
+  count: number,
+  tiers: readonly number[],
+  layout: StadiumLayout,
+  home: RGB,
+  away: RGB,
+  rng: Prng,
+): void {
   const dummy = new THREE.Object3D();
   for (let i = 0; i < count; i += 1) {
     const tierIndex = tiers[i % tiers.length] ?? 0;
@@ -153,7 +172,13 @@ function buildBlobGeometry(capSegments: number, radialSegments: number): THREE.B
 }
 
 /** Builds the "crowd" sub-group. See file header for the animation/testability design. */
-export function buildCrowd(layout: StadiumLayout, homeColor: RGB, awayColor: RGB, quality: StadiumQuality, rng: Prng): CrowdBuild {
+export function buildCrowd(
+  layout: StadiumLayout,
+  homeColor: RGB,
+  awayColor: RGB,
+  quality: StadiumQuality,
+  rng: Prng,
+): CrowdBuild {
   const group = new THREE.Group();
   group.name = "crowd";
 

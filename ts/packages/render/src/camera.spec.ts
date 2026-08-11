@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { camera, perspectiveRig, type CameraField, type CameraView, type CameraViewport } from "./camera.ts";
+import {
+  camera,
+  perspectiveRig,
+  type CameraField,
+  type CameraView,
+  type CameraViewport,
+} from "./camera.ts";
 
 function near(actual: number, expected: number, eps = 1e-6): void {
   expect(Math.abs(actual - expected)).toBeLessThanOrEqual(eps);
@@ -228,7 +234,8 @@ describe("camera perspective mode", () => {
   it("scales linearly with viewport height, so a character grows with the window", () => {
     withPerspective(() => {
       const v = camera.view(480, 270, field, 1);
-      const at = (h: number): number => camera.project(480, 270, field, { w: (h * 16) / 9, h }, undefined, v)[2];
+      const at = (h: number): number =>
+        camera.project(480, 270, field, { w: (h * 16) / 9, h }, undefined, v)[2];
       const base = at(540);
       near(at(1080), base * 2, 1e-9);
       near(at(1350), base * 2.5, 1e-9);
@@ -239,7 +246,9 @@ describe("camera perspective mode", () => {
     withPerspective(() => {
       const v = camera.view(480, 270, field, 1);
       const frac = (w: number, h: number): number =>
-        (PLAYER_FRAME_FRACTION_NUMERATOR * camera.project(480, 270, field, { w, h }, undefined, v)[2]) / h;
+        (PLAYER_FRAME_FRACTION_NUMERATOR *
+          camera.project(480, 270, field, { w, h }, undefined, v)[2]) /
+        h;
       // The whole point of deriving the scale rather than calibrating it: the
       // fraction is a property of the RIG (see camera.PERSPECTIVE's step 3),
       // so it must not move with the window at all.
@@ -321,9 +330,18 @@ describe("camera.perspectiveRig / camera.rigAngleRad", () => {
   it("pulls the eye toward the focus as zoom increases, without changing the tilt angle", () => {
     const zoomedOut = perspectiveRig(field, { x: 480, y: 270, zoom: 1 });
     const zoomedIn = perspectiveRig(field, { x: 480, y: 270, zoom: 2 });
-    const distanceTo = (rig: ReturnType<typeof perspectiveRig>): number => Math.hypot(rig.eye[0] - rig.target[0], rig.eye[1] - rig.target[1], rig.eye[2] - rig.target[2]);
+    const distanceTo = (rig: ReturnType<typeof perspectiveRig>): number =>
+      Math.hypot(
+        rig.eye[0] - rig.target[0],
+        rig.eye[1] - rig.target[1],
+        rig.eye[2] - rig.target[2],
+      );
     expect(distanceTo(zoomedIn)).toBeLessThan(distanceTo(zoomedOut));
-    near(camera.rigAngleRad(field, { x: 480, y: 270, zoom: 1 }), camera.rigAngleRad(field, { x: 480, y: 270, zoom: 2 }), 1e-9);
+    near(
+      camera.rigAngleRad(field, { x: 480, y: 270, zoom: 1 }),
+      camera.rigAngleRad(field, { x: 480, y: 270, zoom: 2 }),
+      1e-9,
+    );
   });
 
   it("carries fov/near/far from camera.PERSPECTIVE, not from any viewport (aspect is applied at use time, not baked into the rig)", () => {
@@ -511,7 +529,14 @@ describe("camera.project differential against the real Lua game.render.camera", 
   it("matches the Lua reference exactly at vp == field under a 2x zoomed follow view", () => {
     const view = camera.view(300, 200, bigField, 2);
     for (const row of FIXED_ZOOM_REFERENCE_AT_FIELD_SIZE) {
-      const [sx, sy, scale] = camera.project(row.wx, row.wy, bigField, fieldSizedVp, undefined, view);
+      const [sx, sy, scale] = camera.project(
+        row.wx,
+        row.wy,
+        bigField,
+        fieldSizedVp,
+        undefined,
+        view,
+      );
       near(sx, row.sx, 1e-6);
       near(sy, row.sy, 1e-6);
       near(scale, row.scale, 1e-9);

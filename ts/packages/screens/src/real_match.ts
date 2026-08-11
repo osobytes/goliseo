@@ -206,7 +206,7 @@ export class RealMatchScreen<TState extends RealMatchState, TStep, TObserver> {
     request: RealMatchRequest,
     callbacks: RealMatchCallbacks,
     contract: MatchContractPort,
-    observerPort: MatchObserverPort<TObserver, TState, TStep>
+    observerPort: MatchObserverPort<TObserver, TState, TStep>,
   ) {
     this.match = match;
     this.request = request;
@@ -282,7 +282,11 @@ export class RealMatchScreen<TState extends RealMatchState, TStep, TObserver> {
         this.match.event(evt);
         return;
       }
-      if (this.fullTimeElapsed >= FULL_TIME_SKIP_DELAY && evt.kind === "action" && evt.action === "confirm") {
+      if (
+        this.fullTimeElapsed >= FULL_TIME_SKIP_DELAY &&
+        evt.kind === "action" &&
+        evt.action === "confirm"
+      ) {
         this.complete();
       }
       return;

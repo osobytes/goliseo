@@ -78,7 +78,13 @@
 // `enqueueInbound` (forged bundles), or `setPeerDisconnected` directly.
 
 import { describe, expect, it } from "vitest";
-import { newMessage, fakeStar, type TransportChannelDiagnostics, type TransportPeerMessage, type TransportStarDiagnostics } from "@gc/transport";
+import {
+  newMessage,
+  fakeStar,
+  type TransportChannelDiagnostics,
+  type TransportPeerMessage,
+  type TransportStarDiagnostics,
+} from "@gc/transport";
 import { loadSimHost } from "@gc/wasm";
 import type { MatchDriverBridge as WasmMatchDriverBridge, SimHost, SimSession } from "@gc/wasm";
 import * as schema from "./diagnostics_schema.ts";
@@ -176,7 +182,9 @@ function newTestRecorder(overrides: Partial<NetDiagnosticsOptions> = {}): NetDia
   });
 }
 
-function testDriverDiagnostics(overrides: Partial<MatchDriverDiagnostics> = {}): MatchDriverDiagnostics {
+function testDriverDiagnostics(
+  overrides: Partial<MatchDriverDiagnostics> = {},
+): MatchDriverDiagnostics {
   return {
     status: "active",
     present_input_tick: 0,
@@ -221,7 +229,9 @@ function channelDiagnostics(): TransportChannelDiagnostics {
   };
 }
 
-function starDiagnostics(overrides: Partial<TransportStarDiagnostics> = {}): TransportStarDiagnostics {
+function starDiagnostics(
+  overrides: Partial<TransportStarDiagnostics> = {},
+): TransportStarDiagnostics {
   return {
     role: "host",
     state: "connected",
@@ -285,7 +295,11 @@ interface TestArtifact {
       readonly retained_floor_tick: number;
       readonly late_input_tick?: number;
     };
-    readonly checkpoints: readonly { readonly tick: number; readonly hash: string; readonly live: Readonly<Record<string, string>> }[];
+    readonly checkpoints: readonly {
+      readonly tick: number;
+      readonly hash: string;
+      readonly live: Readonly<Record<string, string>>;
+    }[];
     readonly mismatches: readonly {
       readonly tick: number;
       readonly peer_id: string;
@@ -363,9 +377,23 @@ interface TestArtifact {
       };
       readonly last_error?: string;
     }[];
-    readonly events: readonly { readonly ordinal: number; readonly detail?: string; readonly code?: string }[];
-    readonly signals: readonly { readonly content: string; readonly byte_length: number; readonly direction: string }[];
-    readonly teardown: { readonly requested: boolean; readonly complete: boolean; readonly orphaned_peers: readonly string[] } | undefined;
+    readonly events: readonly {
+      readonly ordinal: number;
+      readonly detail?: string;
+      readonly code?: string;
+    }[];
+    readonly signals: readonly {
+      readonly content: string;
+      readonly byte_length: number;
+      readonly direction: string;
+    }[];
+    readonly teardown:
+      | {
+          readonly requested: boolean;
+          readonly complete: boolean;
+          readonly orphaned_peers: readonly string[];
+        }
+      | undefined;
     readonly latency: readonly {
       readonly peer_id: string;
       readonly sample_count: number;
@@ -435,7 +463,11 @@ function decodeControlMessageReal(host: SimHost): ProtocolDecoder {
   return (payload) => {
     try {
       const header = host.decodeControlMessageHeader(payload);
-      return { kind: header.kind as SessionMessageKind, sequence: header.sequence, message_id: header.message_id };
+      return {
+        kind: header.kind as SessionMessageKind,
+        sequence: header.sequence,
+        message_id: header.message_id,
+      };
     } catch {
       return null;
     }
@@ -470,7 +502,11 @@ interface RealNetHarness {
   clock_ms: number;
 }
 
-function buildRealHarness(host: SimHost, mode: MatchMode, hashIntervalTicks: number): RealNetHarness {
+function buildRealHarness(
+  host: SimHost,
+  mode: MatchMode,
+  hashIntervalTicks: number,
+): RealNetHarness {
   const freezeJson = host.matchDriverFixtureFreezeJson(mode);
   const manifestJson = host.matchDriverFixtureManifestJson(mode);
   const freeze = JSON.parse(freezeJson) as CoordinatorFreeze;
@@ -481,7 +517,14 @@ function buildRealHarness(host: SimHost, mode: MatchMode, hashIntervalTicks: num
   const peers: RealNetPeer[] = peerIds.map((peerId, index) => {
     const role: SessionRole = index === 0 ? "host" : "guest";
     const session = newSession(host);
-    const driver = new host.MatchDriverBridge(session, role, peerId, freezeJson, manifestJson, undefined);
+    const driver = new host.MatchDriverBridge(
+      session,
+      role,
+      peerId,
+      freezeJson,
+      manifestJson,
+      undefined,
+    );
     driver.initializeTransport();
     const recorder = newNetDiagnostics({
       role,
@@ -524,12 +567,25 @@ function buildRealHarness(host: SimHost, mode: MatchMode, hashIntervalTicks: num
     // packet rows at this harness's own queue/drain seam instead of through a
     // `DiagnosticTransport` wrapper. `monotonic_ms: 0` matches `clock_ms`'s
     // own starting value (this runs before `runReal` advances it).
-    const others = role === "host" ? peerIds.filter((candidate) => candidate !== peerId) : [peerIds[0] as string];
+    const others =
+      role === "host"
+        ? peerIds.filter((candidate) => candidate !== peerId)
+        : [peerIds[0] as string];
     for (const other of others) {
       driver.openPeer(other);
-      recordEvent(recorder, { kind: "peer_state", peer_id: other, monotonic_ms: 0, state: "opened" });
+      recordEvent(recorder, {
+        kind: "peer_state",
+        peer_id: other,
+        monotonic_ms: 0,
+        state: "opened",
+      });
       driver.setPeerConnected(other);
-      recordEvent(recorder, { kind: "peer_state", peer_id: other, monotonic_ms: 0, state: "connected" });
+      recordEvent(recorder, {
+        kind: "peer_state",
+        peer_id: other,
+        monotonic_ms: 0,
+        state: "connected",
+      });
     }
     return { peerId, role, driver, session, recorder, pendingArrivals: [] };
   });
@@ -564,7 +620,7 @@ function recordEnvelopeReal(
   disposition: "sent" | "arrived",
   firstInputTick: number,
   fairnessDelayTicks: number,
-  arrivalTransportTick?: number
+  arrivalTransportTick?: number,
 ): void {
   const tick = message.tick;
   if (typeof tick !== "number") {
@@ -608,7 +664,9 @@ function deliverAllReal(host: SimHost, harness: RealNetHarness): void {
     JSON.parse(host.inputProtocolConstantsJson()) as { readonly fairness_delay_ticks: number }
   ).fairness_delay_ticks;
   const peers = harness.peers;
-  const drained = peers.map((peer) => JSON.parse(peer.driver.drainOutboundJson()) as WasmOutboundEnvelope[]);
+  const drained = peers.map(
+    (peer) => JSON.parse(peer.driver.drainOutboundJson()) as WasmOutboundEnvelope[],
+  );
   peers.forEach((sender, senderIndex) => {
     for (const envelope of drained[senderIndex] ?? []) {
       recordEnvelopeReal(
@@ -617,7 +675,7 @@ function deliverAllReal(host: SimHost, harness: RealNetHarness): void {
         envelope.message,
         "sent",
         harness.freeze.first_input_tick,
-        fairnessDelayTicks
+        fairnessDelayTicks,
       );
       const receiver = peers.find((candidate) => candidate.peerId === envelope.peer_id);
       if (receiver === undefined) {
@@ -630,7 +688,7 @@ function deliverAllReal(host: SimHost, harness: RealNetHarness): void {
         envelope.message.kind,
         envelope.message.seq,
         envelope.message.tick ?? undefined,
-        new Uint8Array(envelope.message.payload_bytes)
+        new Uint8Array(envelope.message.payload_bytes),
       );
     }
   });
@@ -639,7 +697,10 @@ function deliverAllReal(host: SimHost, harness: RealNetHarness): void {
 // Mirrors `net_diagnostics_fixture.ts`'s own `quality`: synthetic and a
 // function of the step, not a real transport measurement -- see that
 // module's doc for why that is still a legitimate runtime sample.
-function realQuality(step: number, rttBiasMs: number): { readonly rtt_ms: number; readonly jitter_ms: number } {
+function realQuality(
+  step: number,
+  rttBiasMs: number,
+): { readonly rtt_ms: number; readonly jitter_ms: number } {
   const phase = step % 5;
   return { rtt_ms: 18 + phase * 2 + rttBiasMs, jitter_ms: phase * 0.5 };
 }
@@ -695,7 +756,12 @@ interface RunRealOptions {
   readonly stopDeliveryAfterStep?: number;
 }
 
-function runReal(host: SimHost, harness: RealNetHarness, steps: number, options: RunRealOptions = {}): void {
+function runReal(
+  host: SimHost,
+  harness: RealNetHarness,
+  steps: number,
+  options: RunRealOptions = {},
+): void {
   const neutral = host.inputFrameNeutralSample();
   const clockStepMs = options.clockStepMs ?? REAL_CLOCK_STEP_MS;
   const anchorInterval = options.anchorInterval ?? REAL_ANCHOR_INTERVAL;
@@ -720,7 +786,7 @@ function runReal(host: SimHost, harness: RealNetHarness, steps: number, options:
             "arrived",
             harness.freeze.first_input_tick,
             fairnessDelayTicks,
-            arrivalTransportTick
+            arrivalTransportTick,
           );
         }
         peer.pendingArrivals = [];
@@ -740,13 +806,18 @@ function runReal(host: SimHost, harness: RealNetHarness, steps: number, options:
       if (options.recordTransportDiagnostics === true) {
         recordTransport(
           peer.recorder,
-          JSON.parse(peer.driver.transportDiagnosticsJson()) as TransportStarDiagnostics
+          JSON.parse(peer.driver.transportDiagnosticsJson()) as TransportStarDiagnostics,
         );
       }
       const { rtt_ms, jitter_ms } = realQuality(harness.step, options.rttBiasMs ?? 0);
       for (const other of harness.peers) {
         if (other.peerId !== peer.peerId) {
-          recordRuntimeSample(peer.recorder, { peer_id: other.peerId, monotonic_ms: harness.clock_ms, rtt_ms, jitter_ms });
+          recordRuntimeSample(peer.recorder, {
+            peer_id: other.peerId,
+            monotonic_ms: harness.clock_ms,
+            rtt_ms,
+            jitter_ms,
+          });
         }
       }
       if (anchorInterval > 0 && harness.step % anchorInterval === 0) {
@@ -791,10 +862,13 @@ function forgeBundleReal(
   slotIndex: number,
   sequence: number,
   transportTick: number,
-  edges: number
+  edges: number,
 ): { readonly seq: number; readonly tick: number; readonly bytes: Uint8Array } {
-  const constants = JSON.parse(host.inputProtocolConstantsJson()) as { readonly history_rows: number };
-  const rows: { readonly tick: number; readonly slot_index: number; readonly sample: string }[] = [];
+  const constants = JSON.parse(host.inputProtocolConstantsJson()) as {
+    readonly history_rows: number;
+  };
+  const rows: { readonly tick: number; readonly slot_index: number; readonly sample: string }[] =
+    [];
   for (let tick = 0; tick <= constants.history_rows; tick += 1) {
     const sample = host.inputFrameNewSample(0, 0, 0, tick === constants.history_rows ? edges : 0);
     rows.push({ tick, slot_index: slotIndex, sample });
@@ -807,7 +881,7 @@ function forgeBundleReal(
     transportTick,
     harness.freeze.first_input_tick,
     undefined,
-    JSON.stringify(rows)
+    JSON.stringify(rows),
   );
   const bytes = host.inputProtocolEncode(packet);
   return { seq: packet.sequence, tick: packet.transport_tick, bytes };
@@ -819,7 +893,7 @@ describe("diagnostics schema", () => {
       schema.record("bad", "canonical", [
         { name: "confirmed_tick", kind: "integer" },
         { name: "rtt_ms", kind: "number" },
-      ])
+      ]),
     ).toThrow();
   });
 
@@ -828,7 +902,7 @@ describe("diagnostics schema", () => {
       schema.record("bad", "runtime", [
         { name: "monotonic_ms", kind: "number" },
         { name: "confirmed_tick", kind: "integer" },
-      ])
+      ]),
     ).toThrow();
   });
 
@@ -837,7 +911,7 @@ describe("diagnostics schema", () => {
       schema.record("bad_anchor", "anchor", [
         { name: "input_tick", kind: "integer" },
         { name: "monotonic_ms", kind: "number" },
-      ])
+      ]),
     ).toThrow();
 
     const good = schema.record("good_anchor", "anchor", [
@@ -865,7 +939,12 @@ describe("diagnostics schema", () => {
     function builds(fields: schema.DiagnosticsField[]): boolean {
       try {
         schema.record("nested_probe", undefined, [
-          { name: "session", kind: "record", domain: "identity", fields: [{ name: "peer_id", kind: "id" }] },
+          {
+            name: "session",
+            kind: "record",
+            domain: "identity",
+            fields: [{ name: "peer_id", kind: "id" }],
+          },
           { name: "anchors", kind: "array", domain: "anchor", element: { kind: "record", fields } },
         ]);
         return true;
@@ -879,21 +958,21 @@ describe("diagnostics schema", () => {
         { name: "input_tick", kind: "integer" },
         { name: "monotonic_ms", kind: "number" },
       ]),
-      "a nested anchor without a mapping error was accepted"
+      "a nested anchor without a mapping error was accepted",
     ).toBe(false);
     expect(
       builds([
         { name: "monotonic_ms", kind: "number" },
         { name: "mapping_error_ms", kind: "number" },
       ]),
-      "a nested anchor naming no simulation tick was accepted"
+      "a nested anchor naming no simulation tick was accepted",
     ).toBe(false);
     expect(
       builds([
         { name: "input_tick", kind: "integer" },
         { name: "mapping_error_ms", kind: "number" },
       ]),
-      "a nested anchor whose only wall-clock word is its own error term is still a binding"
+      "a nested anchor whose only wall-clock word is its own error term is still a binding",
     ).toBe(true);
     expect(
       builds([
@@ -901,7 +980,7 @@ describe("diagnostics schema", () => {
         { name: "monotonic_ms", kind: "number" },
         { name: "mapping_error_ms", kind: "number" },
       ]),
-      "a well-formed nested anchor was rejected"
+      "a well-formed nested anchor was rejected",
     ).toBe(true);
   });
 
@@ -911,15 +990,25 @@ describe("diagnostics schema", () => {
   it("does not let sibling sections satisfy an anchor's completeness", () => {
     expect(() =>
       schema.record("sibling_probe", undefined, [
-        { name: "canonical", kind: "record", domain: "canonical", fields: [{ name: "confirmed_tick", kind: "integer" }] },
-        { name: "runtime", kind: "record", domain: "runtime", fields: [{ name: "mapping_error_ms", kind: "number" }] },
+        {
+          name: "canonical",
+          kind: "record",
+          domain: "canonical",
+          fields: [{ name: "confirmed_tick", kind: "integer" }],
+        },
+        {
+          name: "runtime",
+          kind: "record",
+          domain: "runtime",
+          fields: [{ name: "mapping_error_ms", kind: "number" }],
+        },
         {
           name: "anchors",
           kind: "array",
           domain: "anchor",
           element: { kind: "record", fields: [{ name: "monotonic_ms", kind: "number" }] },
         },
-      ])
+      ]),
     ).toThrow();
   });
 
@@ -935,13 +1024,13 @@ describe("diagnostics schema", () => {
         canonical += 1;
         expect(
           schema.isWallClockName(name),
-          `${path} is deterministic evidence but reads as a wall-clock measurement`
+          `${path} is deterministic evidence but reads as a wall-clock measurement`,
         ).toBe(false);
       } else if (domain === "runtime") {
         runtime += 1;
         expect(
           schema.isSimulationName(name),
-          `${path} is a runtime observation but reads as simulation truth`
+          `${path} is a runtime observation but reads as simulation truth`,
         ).toBe(false);
       } else if (domain === "anchor") {
         anchor += 1;
@@ -960,7 +1049,10 @@ describe("diagnostics schema", () => {
       "192.168.1.14",
       "[fe80::1]",
     ]) {
-      expect(schema.validate(shape, { peer_id: bad }).ok, `${bad} was accepted as a pseudonymous id`).toBe(false);
+      expect(
+        schema.validate(shape, { peer_id: bad }).ok,
+        `${bad} was accepted as a pseudonymous id`,
+      ).toBe(false);
     }
     expect(schema.validate(shape, { peer_id: "guest_1" }).ok).toBe(true);
   });
@@ -978,7 +1070,9 @@ describe("diagnostics schema", () => {
   });
 
   it("encodes maps in sorted key order, not table order", () => {
-    const shape = schema.record("m", "canonical", [{ name: "live", kind: "map", element: { kind: "id" } }]);
+    const shape = schema.record("m", "canonical", [
+      { name: "live", kind: "map", element: { kind: "id" } },
+    ]);
     const first = schema.encode(shape, { live: { host: "home_1", guest_1: "home_2" } });
     const second = schema.encode(shape, { live: { guest_1: "home_2", host: "home_1" } });
     expect(first.ok && second.ok && first.value).toBe(second.ok && second.value);
@@ -1133,7 +1227,7 @@ describe("net diagnostics collection", () => {
         expect(
           (artifact.runtime.events[index] as { readonly ordinal: number }).ordinal >
             (artifact.runtime.events[index - 1] as { readonly ordinal: number }).ordinal,
-          "runtime event ordinals are not monotonic"
+          "runtime event ordinals are not monotonic",
         ).toBe(true);
       }
     });
@@ -1150,7 +1244,7 @@ describe("net diagnostics collection", () => {
       for (const packet of artifact.canonical.delivery.packets) {
         expect(
           packet.authority_input_tick,
-          "authority tick did not follow the stated delay policy"
+          "authority tick did not follow the stated delay policy",
         ).toBe(harness.freeze.first_input_tick + packet.send_transport_tick);
         expect(packet.sample_step).toBe(packet.send_transport_tick - fairnessDelayTicks);
         if (packet.disposition === "arrived") {
@@ -1159,7 +1253,7 @@ describe("net diagnostics collection", () => {
           expect(packet.apply_input_tick, "an arrival was never attributed a step").toBeDefined();
           expect(
             packet.authority_input_tick > (packet.apply_input_tick as number),
-            "authority landed at or behind the tick already simulated"
+            "authority landed at or behind the tick already simulated",
           ).toBe(true);
         }
       }
@@ -1193,12 +1287,16 @@ describe("net diagnostics collection", () => {
 
       const events = artifact.canonical.events;
       expect(events.added > 0, "no tick was ever emitted for the first time").toBe(true);
-      expect(events.resimulated_tick_count).toBe(events.unchanged + events.replaced + events.revoked);
+      expect(events.resimulated_tick_count).toBe(
+        events.unchanged + events.replaced + events.revoked,
+      );
 
       // Two peers' exports must agree on every confirmed boundary both
       // hashed, and on the live slot each human held there.
       const other = exportOf(realPeer(harness, "guest_1").recorder);
-      const byTick = new Map(other.canonical.checkpoints.map((checkpoint) => [checkpoint.tick, checkpoint] as const));
+      const byTick = new Map(
+        other.canonical.checkpoints.map((checkpoint) => [checkpoint.tick, checkpoint] as const),
+      );
       let compared = 0;
       for (const checkpoint of artifact.canonical.checkpoints) {
         const mine = byTick.get(checkpoint.tick);
@@ -1217,7 +1315,12 @@ describe("net diagnostics collection", () => {
       const host = loadSimHost();
       function build(rttBiasMs: number, clockStepMs: number): RealNetHarness {
         const harness = buildRealHarness(host, "2v2", 6);
-        runReal(host, harness, 45, { period: 5, rttBiasMs, clockStepMs, samples: { 0: host.inputFrameNewSample(45, 0) } });
+        runReal(host, harness, 45, {
+          period: 5,
+          rttBiasMs,
+          clockStepMs,
+          samples: { 0: host.inputFrameNewSample(45, 0) },
+        });
         return harness;
       }
 
@@ -1232,7 +1335,7 @@ describe("net diagnostics collection", () => {
       expect(referenceBytes.ok && otherBytes.ok).toBe(true);
       expect(
         referenceBytes.ok && otherBytes.ok && otherBytes.value,
-        "canonical evidence changed when only the clock changed"
+        "canonical evidence changed when only the clock changed",
       ).toBe(referenceBytes.ok && referenceBytes.value);
 
       const referenceDigest = recorderDigest(referenceRecorder);
@@ -1240,7 +1343,7 @@ describe("net diagnostics collection", () => {
       expect(referenceDigest.ok && otherDigest.ok).toBe(true);
       expect(
         referenceDigest.ok && otherDigest.ok && referenceDigest.value !== otherDigest.value,
-        "the full export claimed byte-identity across two different clocks"
+        "the full export claimed byte-identity across two different clocks",
       ).toBe(true);
 
       const a = exportOf(referenceRecorder);
@@ -1249,10 +1352,14 @@ describe("net diagnostics collection", () => {
       a.runtime.latency.forEach((mine, index) => {
         const other = b.runtime.latency[index];
         expect(other?.peer_id).toBe(mine.peer_id);
-        expect(other?.sample_count, "sample counts are a schedule, not a clock").toBe(mine.sample_count);
+        expect(other?.sample_count, "sample counts are a schedule, not a clock").toBe(
+          mine.sample_count,
+        );
         expect(
-          other?.rtt_ms_min !== undefined && mine.rtt_ms_min !== undefined && other.rtt_ms_min > mine.rtt_ms_min,
-          "the bias did not move rtt"
+          other?.rtt_ms_min !== undefined &&
+            mine.rtt_ms_min !== undefined &&
+            other.rtt_ms_min > mine.rtt_ms_min,
+          "the bias did not move rtt",
         ).toBe(true);
       });
     });
@@ -1315,7 +1422,9 @@ describe("net diagnostics privacy", () => {
       "fingerprint",
       "v=0",
     ]) {
-      expect(text.includes(forbidden), `${forbidden} survived into the diagnostic export`).toBe(false);
+      expect(text.includes(forbidden), `${forbidden} survived into the diagnostic export`).toBe(
+        false,
+      );
     }
   });
 
@@ -1350,8 +1459,8 @@ describe("net diagnostics privacy", () => {
                 last_error: poison,
               },
             ],
-          })
-        ).ok
+          }),
+        ).ok,
       ).toBe(true);
       const artifact = exportOf(recorder);
       expect(artifact.runtime.star?.last_error).toBe(schema.REDACTED);
@@ -1370,11 +1479,13 @@ describe("net diagnostics privacy", () => {
           peer_id: "guest_1",
           code: "signal_error",
           detail: poison,
-        }).ok
+        }).ok,
       ).toBe(true);
     }
     const artifact = exportOf(recorder);
-    const redacted = artifact.runtime.events.filter((event) => event.detail === schema.REDACTED).length;
+    const redacted = artifact.runtime.events.filter(
+      (event) => event.detail === schema.REDACTED,
+    ).length;
     expect(redacted, "a poisoned event detail survived unredacted").toBe(POISON.length);
     for (const poison of POISON) {
       assertAbsent(artifact, poison);
@@ -1389,7 +1500,7 @@ describe("net diagnostics privacy", () => {
         monotonic_ms: 5,
         code: "overflow",
         detail: "outbound queue reached its limit of 64 messages",
-      }).ok
+      }).ok,
     ).toBe(true);
     const artifact = exportOf(recorder);
     const last = artifact.runtime.events[artifact.runtime.events.length - 1];
@@ -1415,7 +1526,7 @@ describe("net diagnostics privacy", () => {
           monotonic_ms: index * 10,
           peer_id: "guest_1",
           detail: poison,
-        }).ok
+        }).ok,
       ).toBe(true);
     }
     const built = desyncPackageBuild({
@@ -1453,8 +1564,20 @@ describe("net diagnostics privacy", () => {
     const paths = schema.domains(EXPORT);
     for (const path of Object.keys(paths)) {
       const lowered = path.toLowerCase();
-      for (const forbidden of ["participant", "consent", "research", "clipboard", "address", "sdp", "candidate", "email"]) {
-        expect(lowered.includes(forbidden), `${path} names a field this schema must never carry`).toBe(false);
+      for (const forbidden of [
+        "participant",
+        "consent",
+        "research",
+        "clipboard",
+        "address",
+        "sdp",
+        "candidate",
+        "email",
+      ]) {
+        expect(
+          lowered.includes(forbidden),
+          `${path} names a field this schema must never carry`,
+        ).toBe(false);
       }
     }
   });
@@ -1480,7 +1603,11 @@ describe("net diagnostics bounds", () => {
     // actually exercised rather than vacuously true at zero.
     recordStep(recorder, testDriverDiagnostics({ checkpoint_count: 6 }), testDriverBatch());
     for (let index = 0; index < 6; index += 1) {
-      recordCheckpoint(recorder, { tick: index, hash: (16 + index).toString(16).padStart(16, "0"), live: {} });
+      recordCheckpoint(recorder, {
+        tick: index,
+        hash: (16 + index).toString(16).padStart(16, "0"),
+        live: {},
+      });
     }
     for (let index = 0; index < 10; index += 1) {
       recordPacket(recorder, {
@@ -1505,10 +1632,15 @@ describe("net diagnostics bounds", () => {
     expect(artifact.anchors.length <= limits.anchors).toBe(true);
     // The count of published checkpoints is not the count retained, and the
     // artifact says both rather than quietly conflating them.
-    expect(artifact.canonical.simulation.checkpoint_count >= artifact.canonical.checkpoints.length).toBe(true);
+    expect(
+      artifact.canonical.simulation.checkpoint_count >= artifact.canonical.checkpoints.length,
+    ).toBe(true);
 
     const lines = summary(recorder);
-    expect(lines.some((line) => line.includes("truncated")), "a truncated ring did not show up in the human summary").toBe(true);
+    expect(
+      lines.some((line) => line.includes("truncated")),
+      "a truncated ring did not show up in the human summary",
+    ).toBe(true);
   });
 
   it("keeps the oldest mismatches and the newest packets", () => {
@@ -1542,9 +1674,15 @@ describe("net diagnostics bounds", () => {
 
   it("counts rejected values instead of storing them", () => {
     const recorder = newTestRecorder();
-    expect(recordAnchor(recorder, { input_tick: 0, monotonic_ms: 0 / 0, mapping_error_ms: 1 }).ok).toBe(false);
-    expect(recordAnchor(recorder, { input_tick: 0, monotonic_ms: 10, mapping_error_ms: -1 }).ok).toBe(false);
-    expect(recordRuntimeSample(recorder, { peer_id: "guest_1", monotonic_ms: 10, rtt_ms: Infinity }).ok).toBe(false);
+    expect(
+      recordAnchor(recorder, { input_tick: 0, monotonic_ms: 0 / 0, mapping_error_ms: 1 }).ok,
+    ).toBe(false);
+    expect(
+      recordAnchor(recorder, { input_tick: 0, monotonic_ms: 10, mapping_error_ms: -1 }).ok,
+    ).toBe(false);
+    expect(
+      recordRuntimeSample(recorder, { peer_id: "guest_1", monotonic_ms: 10, rtt_ms: Infinity }).ok,
+    ).toBe(false);
     const artifact = exportOf(recorder);
     expect(artifact.collection.rejected_values).toBe(3);
   });
@@ -1587,7 +1725,7 @@ describe("net diagnostics failure fixtures", () => {
             local_hash: target.hash,
             remote_hash: remoteHash,
             first_difference_path: "state.ball.pos.x",
-          }).ok
+          }).ok,
         ).toBe(true);
         status = JSON.parse(hostPeer.driver.statusJson()) as string;
       }
@@ -1622,8 +1760,18 @@ describe("net diagnostics failure fixtures", () => {
       // and produced no violation at all.
       const guestId = (harness.peers[1] as RealNetPeer).peerId;
       const hostDriver = realPeer(harness, "host").driver;
-      const transportTick = (JSON.parse(hostDriver.diagnosticsJson()) as { readonly transport_tick: number }).transport_tick;
-      const forged = forgeBundleReal(host, harness, guestId, 5 /* away_1 */, 9000, transportTick, 0);
+      const transportTick = (
+        JSON.parse(hostDriver.diagnosticsJson()) as { readonly transport_tick: number }
+      ).transport_tick;
+      const forged = forgeBundleReal(
+        host,
+        harness,
+        guestId,
+        5 /* away_1 */,
+        9000,
+        transportTick,
+        0,
+      );
       hostDriver.enqueueInbound(guestId, "input", "input", forged.seq, forged.tick, forged.bytes);
       runReal(host, harness, 1);
 
@@ -1641,10 +1789,21 @@ describe("net diagnostics failure fixtures", () => {
       const guestId = (harness.peers[1] as RealNetPeer).peerId;
       const hostDriver = realPeer(harness, "host").driver;
       const slotIndex = 3; // home_3 (1-based wire slot index), one of guest_1's own owned slots.
-      const dashBits = (JSON.parse(host.inputFrameEdgeBitsJson()) as Record<string, number>).dash as number;
+      const dashBits = (JSON.parse(host.inputFrameEdgeBitsJson()) as Record<string, number>)
+        .dash as number;
       const send = (edges: number): void => {
-        const transportTick = (JSON.parse(hostDriver.diagnosticsJson()) as { readonly transport_tick: number }).transport_tick;
-        const forged = forgeBundleReal(host, harness, guestId, slotIndex, 4242, transportTick, edges);
+        const transportTick = (
+          JSON.parse(hostDriver.diagnosticsJson()) as { readonly transport_tick: number }
+        ).transport_tick;
+        const forged = forgeBundleReal(
+          host,
+          harness,
+          guestId,
+          slotIndex,
+          4242,
+          transportTick,
+          edges,
+        );
         hostDriver.enqueueInbound(guestId, "input", "input", forged.seq, forged.tick, forged.bytes);
       };
 
@@ -1653,7 +1812,9 @@ describe("net diagnostics failure fixtures", () => {
       send(0);
       send(0);
       runReal(host, harness, 1);
-      expect(exportOf(realPeer(harness, "host").recorder).canonical.simulation.status).toBe("active");
+      expect(exportOf(realPeer(harness, "host").recorder).canonical.simulation.status).toBe(
+        "active",
+      );
 
       // The same identity with different bytes conflicts with what history
       // already holds.
@@ -1684,9 +1845,10 @@ describe("net diagnostics failure fixtures", () => {
           expect(simulation.terminal_failure).toBe("late_input");
           expect(simulation.terminal_tick).toBeDefined();
           expect(simulation.late_input_tick).toBeDefined();
-          expect((simulation.late_input_tick as number) < simulation.retained_floor_tick + 1, "a late input was attributed above the retained floor").toBe(
-            true
-          );
+          expect(
+            (simulation.late_input_tick as number) < simulation.retained_floor_tick + 1,
+            "a late input was attributed above the retained floor",
+          ).toBe(true);
         }
       }
       expect(terminal > 0, "an over-window burst terminated nobody").toBe(true);
@@ -1699,7 +1861,9 @@ describe("net diagnostics failure fixtures", () => {
       const guestId = (harness.peers[1] as RealNetPeer).peerId;
       realPeer(harness, "host").driver.setPeerDisconnected(guestId, "peer_left");
       runReal(host, harness, 1);
-      expect(exportOf(realPeer(harness, "host").recorder).canonical.simulation.status).toBe("transport_lost");
+      expect(exportOf(realPeer(harness, "host").recorder).canonical.simulation.status).toBe(
+        "transport_lost",
+      );
 
       const other = buildRealHarness(host, "2v2", 6);
       runReal(host, other, 8);
@@ -1765,12 +1929,20 @@ describe("net diagnostics failure fixtures", () => {
       if (kind === undefined || sequence === undefined || messageId === undefined) {
         return null;
       }
-      const message: ProtocolControlMessage = { kind: kind as ProtocolControlMessage["kind"], sequence: Number(sequence), message_id: messageId };
+      const message: ProtocolControlMessage = {
+        kind: kind as ProtocolControlMessage["kind"],
+        sequence: Number(sequence),
+        message_id: messageId,
+      };
       return message;
     };
     const recorder = newTestRecorder({ decodeControlMessage: decode });
     for (let index = 1; index <= 3; index += 1) {
-      const envelope = newMessage({ type: "event", seq: index, payload: `hash_report|${index}|msg_${index}` });
+      const envelope = newMessage({
+        type: "event",
+        seq: index,
+        payload: `hash_report|${index}|msg_${index}`,
+      });
       if (!envelope.ok) {
         throw new Error(envelope.error.message);
       }
@@ -1787,7 +1959,10 @@ describe("net diagnostics failure fixtures", () => {
     for (let index = 1; index < 3; index += 1) {
       const current = artifact.canonical.control[index];
       const previous = artifact.canonical.control[index - 1];
-      expect(current !== undefined && previous !== undefined && current.ordinal > previous.ordinal, "control ordinals are not monotonic").toBe(true);
+      expect(
+        current !== undefined && previous !== undefined && current.ordinal > previous.ordinal,
+        "control ordinals are not monotonic",
+      ).toBe(true);
       expect(current?.kind).toBe("hash_report");
     }
   });

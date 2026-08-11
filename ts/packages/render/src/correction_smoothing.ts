@@ -146,7 +146,10 @@ export const correctionSmoothing = {
   DEFAULT_DURATION,
   DEFAULT_HARD_SNAP_DISTANCE,
 
-  new(source: CorrectionSmoothingSource, options?: CorrectionSmoothingOptions): CorrectionSmoothingState {
+  new(
+    source: CorrectionSmoothingSource,
+    options?: CorrectionSmoothingOptions,
+  ): CorrectionSmoothingState {
     const duration = options?.duration ?? DEFAULT_DURATION;
     const hardSnapDistance = options?.hard_snap_distance ?? DEFAULT_HARD_SNAP_DISTANCE;
     assertNonnegativeFinite(duration, "correction smoothing duration");
@@ -165,7 +168,10 @@ export const correctionSmoothing = {
 
   // Start a correction without advancing presentation time. Every smoothed
   // drawable therefore begins exactly at its pose from the preceding render.
-  correct(state: CorrectionSmoothingState, source: CorrectionSmoothingSource): CorrectionSmoothingState {
+  correct(
+    state: CorrectionSmoothingState,
+    source: CorrectionSmoothingSource,
+  ): CorrectionSmoothingState {
     const authoritative = authoritativePose(source);
     const offsets: Record<string, CorrectionSmoothingOffset> = {};
     const displayedPlayers: Record<string, CorrectionSmoothingPoint> = {};
@@ -220,7 +226,9 @@ export const correctionSmoothing = {
       displayedPlayers[id] = displayedPoint(point, offset);
     }
     const ballOffset =
-      state.ball_offset !== undefined ? decayedOffset(copyOffset(state.ball_offset), dt) : undefined;
+      state.ball_offset !== undefined
+        ? decayedOffset(copyOffset(state.ball_offset), dt)
+        : undefined;
     return {
       duration: state.duration,
       hard_snap_distance: state.hard_snap_distance,
@@ -247,7 +255,10 @@ export const correctionSmoothing = {
 
   // Clear offsets at a scene discontinuity while preserving configured
   // tuning.
-  clear(state: CorrectionSmoothingState, source: CorrectionSmoothingSource): CorrectionSmoothingState {
+  clear(
+    state: CorrectionSmoothingState,
+    source: CorrectionSmoothingSource,
+  ): CorrectionSmoothingState {
     return correctionSmoothing.new(source, {
       duration: state.duration,
       hard_snap_distance: state.hard_snap_distance,
@@ -263,13 +274,18 @@ export const correctionSmoothing = {
     let maximumMagnitude = 0;
     for (const offset of Object.values(state.player_offsets)) {
       activeCount += 1;
-      maximumMagnitude = Math.max(maximumMagnitude, Math.sqrt(offset.x * offset.x + offset.y * offset.y));
+      maximumMagnitude = Math.max(
+        maximumMagnitude,
+        Math.sqrt(offset.x * offset.x + offset.y * offset.y),
+      );
     }
     if (state.ball_offset !== undefined) {
       activeCount += 1;
       maximumMagnitude = Math.max(
         maximumMagnitude,
-        Math.sqrt(state.ball_offset.x * state.ball_offset.x + state.ball_offset.y * state.ball_offset.y),
+        Math.sqrt(
+          state.ball_offset.x * state.ball_offset.x + state.ball_offset.y * state.ball_offset.y,
+        ),
       );
     }
     return { maximum_magnitude: maximumMagnitude, active_count: activeCount };

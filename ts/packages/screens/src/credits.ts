@@ -14,7 +14,10 @@ export interface CreditsScreenState {
 
 export type CreditsAction = { readonly go: "back" };
 
-function newState(viewport: { readonly w: number; readonly h: number }, buildInfo: BuildInfo): CreditsScreenState {
+function newState(
+  viewport: { readonly w: number; readonly h: number },
+  buildInfo: BuildInfo,
+): CreditsScreenState {
   return { viewport, buildInfo, focus: "back" };
 }
 
@@ -64,7 +67,10 @@ function layout(state: CreditsScreenState): Layout {
   ];
 }
 
-function update(state: CreditsScreenState, event: FocusEvent): readonly [CreditsScreenState, CreditsAction | undefined] {
+function update(
+  state: CreditsScreenState,
+  event: FocusEvent,
+): readonly [CreditsScreenState, CreditsAction | undefined] {
   if (event.kind === "action" && event.action === "back") {
     return [state, { go: "back" }];
   }

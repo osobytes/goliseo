@@ -63,7 +63,11 @@ describe("audio (headless contract)", () => {
 
   it("resolves combat/ domain cues through the injected CombatFeedbackPort", () => {
     const audio = new Audio(NOOP_COMBAT_FEEDBACK);
-    const consumed = audio.consumeConfirmed({ id: "c1", domain: "combat/hit", payload: { audio: "combat_hit" } });
+    const consumed = audio.consumeConfirmed({
+      id: "c1",
+      domain: "combat/hit",
+      payload: { audio: "combat_hit" },
+    });
     expect(consumed).toBe(true);
     expect(audio.confirmedCueCounts()).toEqual({ combat_hit: 1 });
   });
@@ -89,7 +93,9 @@ describe("audio (headless contract)", () => {
 
   it("consumes a batch of combat feedback events without a backend", () => {
     const audio = new Audio(NOOP_COMBAT_FEEDBACK);
-    expect(() => audio.consumeCombat([{ audio: "combat_commit" } as unknown as { kind?: string }])).not.toThrow();
+    expect(() =>
+      audio.consumeCombat([{ audio: "combat_commit" } as unknown as { kind?: string }]),
+    ).not.toThrow();
   });
 
   it("resets confirmed-id, cue, and score-edge bookkeeping for a new match", () => {

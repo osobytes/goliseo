@@ -7,8 +7,7 @@
  * invariants should still throw — see AGENTS.md §7.
  */
 export type Result<T, E = string> =
-  | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: E };
+  { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: E };
 
 /** Wrap a success value. */
 export function ok<T>(value: T): Result<T, never> {

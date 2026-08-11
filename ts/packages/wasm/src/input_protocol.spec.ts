@@ -23,7 +23,11 @@ const SESSION_ID = "session_1";
 const MANIFEST_ID = "0123456789abcdef";
 const SENDER_ID = "guest_1";
 
-function guestRowsJson(host: ReturnType<typeof loadSimHost>, slotIndex: number, finalEdges: number): string {
+function guestRowsJson(
+  host: ReturnType<typeof loadSimHost>,
+  slotIndex: number,
+  finalEdges: number,
+): string {
   const historyRows = JSON.parse(host.inputProtocolConstantsJson()).history_rows as number;
   const rows = [];
   for (let tick = 0; tick <= historyRows; tick += 1) {
@@ -39,7 +43,13 @@ function guestRowsJson(host: ReturnType<typeof loadSimHost>, slotIndex: number, 
 
 function newGuestPacket(
   host: ReturnType<typeof loadSimHost>,
-  overrides: { slotIndex?: number; sequence?: number; transportTick?: number; firstInputTick?: number; edges?: number } = {},
+  overrides: {
+    slotIndex?: number;
+    sequence?: number;
+    transportTick?: number;
+    firstInputTick?: number;
+    edges?: number;
+  } = {},
 ): WasmInputPacket {
   const slotIndex = overrides.slotIndex ?? 3;
   const sequence = overrides.sequence ?? 0;
@@ -122,7 +132,16 @@ describe("inputProtocol bridge", () => {
       });
     }
     expect(() =>
-      host.inputProtocolNewGuest(SESSION_ID, MANIFEST_ID, SENDER_ID, 0, 6, 0, undefined, JSON.stringify(rows)),
+      host.inputProtocolNewGuest(
+        SESSION_ID,
+        MANIFEST_ID,
+        SENDER_ID,
+        0,
+        6,
+        0,
+        undefined,
+        JSON.stringify(rows),
+      ),
     ).toThrow();
   });
 
@@ -130,7 +149,16 @@ describe("inputProtocol bridge", () => {
     const host = loadSimHost();
     const rows = [{ tick: 5, slot_index: 3, sample: host.inputFrameNeutralSample() }];
     expect(() =>
-      host.inputProtocolNewGuest(SESSION_ID, MANIFEST_ID, SENDER_ID, 0, 6, 0, undefined, JSON.stringify(rows)),
+      host.inputProtocolNewGuest(
+        SESSION_ID,
+        MANIFEST_ID,
+        SENDER_ID,
+        0,
+        6,
+        0,
+        undefined,
+        JSON.stringify(rows),
+      ),
     ).toThrow();
   });
 

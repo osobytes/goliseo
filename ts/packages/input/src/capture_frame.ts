@@ -39,7 +39,12 @@
 
 import { bindings } from "./bindings.ts";
 import type { GamepadState, KeyboardState } from "./bindings.ts";
-import { buildInputSample, type EdgeActionName, type HeldActionName, type InputSample } from "./input_sample.ts";
+import {
+  buildInputSample,
+  type EdgeActionName,
+  type HeldActionName,
+  type InputSample,
+} from "./input_sample.ts";
 import { controller } from "./controller.ts";
 import type { ControllerInputEvent, ViewportMapper, ViewportTransform } from "./controller.ts";
 
@@ -80,7 +85,10 @@ const NOOP_VIEWPORT_MAPPER: ViewportMapper = { toVirtual: () => null };
 export const STICK_DEADZONE = 0.2;
 
 /** WASD/D-pad plus the raw left stick, context-free. */
-export function readMoveAxis(keyboard: KeyboardState, gamepad?: GamepadState): readonly [x: number, y: number] {
+export function readMoveAxis(
+  keyboard: KeyboardState,
+  gamepad?: GamepadState,
+): readonly [x: number, y: number] {
   let x = 0;
   let y = 0;
   if (bindings.isDown("move_left", keyboard, gamepad)) {
@@ -236,7 +244,11 @@ export class InputSampleCapture {
     let dodge = false;
     for (const event of [...this.drainKeyEvents(), ...this.drainGamepadEvents()]) {
       const normalized = controller.normalize(event, NOOP_TRANSFORM, NOOP_VIEWPORT_MAPPER);
-      if (normalized?.kind === "action" && normalized.action === "juke" && normalized.pressed === true) {
+      if (
+        normalized?.kind === "action" &&
+        normalized.action === "juke" &&
+        normalized.pressed === true
+      ) {
         dodge = true;
       }
     }

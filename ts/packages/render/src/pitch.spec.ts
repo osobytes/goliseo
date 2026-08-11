@@ -2,7 +2,19 @@
 
 import { describe, expect, it, afterEach, vi } from "vitest";
 import * as THREE from "three";
-import { pitchDrawCommands, playerAnchors, pitch, depthToZ, BACKDROP_Z, ENTITY_Z_NEAR, ENTITY_Z_FAR, OVERLAY_RENDER_ORDER, type PitchDrawOptions, type PitchViewport, type RenderFrame } from "./pitch.ts";
+import {
+  pitchDrawCommands,
+  playerAnchors,
+  pitch,
+  depthToZ,
+  BACKDROP_Z,
+  ENTITY_Z_NEAR,
+  ENTITY_Z_FAR,
+  OVERLAY_RENDER_ORDER,
+  type PitchDrawOptions,
+  type PitchViewport,
+  type RenderFrame,
+} from "./pitch.ts";
 import { camera } from "./camera.ts";
 import * as playerRenderer3d from "./player_renderer_3d.ts";
 import type { DrawCommand } from "./draw2d.ts";
@@ -35,7 +47,15 @@ function emptyPlayers(count: number) {
 
 function frame(overrides: Partial<RenderFrame> = {}): RenderFrame {
   return {
-    field: { w: 960, h: 540, penalty_box_depth: 90, penalty_box_h: 240, crossbar_h: 70, goal_home: { x: -6, y: 235, w: 6, h: 70 }, goal_away: { x: 960, y: 235, w: 6, h: 70 } },
+    field: {
+      w: 960,
+      h: 540,
+      penalty_box_depth: 90,
+      penalty_box_h: 240,
+      crossbar_h: 70,
+      goal_home: { x: -6, y: 235, w: 6, h: 70 },
+      goal_away: { x: 960, y: 235, w: 6, h: 70 },
+    },
     roster: {
       radius: [12, 12],
       teams: ["home", "away"],
@@ -65,7 +85,9 @@ const opts: PitchDrawOptions = { home_color: [0.2, 0.6, 1], away_color: [1, 0.4,
 describe("pitch.pitchDrawCommands", () => {
   it("draws the arena backdrop before the pitch surface", () => {
     const commands = pitchDrawCommands(frame(), viewport, opts);
-    const backdropFill = commands.findIndex((c) => c.kind === "rect" && c.w === viewport.w && c.h === viewport.h);
+    const backdropFill = commands.findIndex(
+      (c) => c.kind === "rect" && c.w === viewport.w && c.h === viewport.h,
+    );
     const pitchFill = commands.findIndex((c) => c.kind === "polygon" && c.mode === "fill");
     expect(backdropFill).toBeGreaterThanOrEqual(0);
     expect(pitchFill).toBeGreaterThan(backdropFill);
@@ -83,24 +105,60 @@ describe("pitch.pitchDrawCommands", () => {
 
   it("skips the loose ball draw when it is not visible (e.g. held by a keeper)", () => {
     const visible = pitchDrawCommands(frame(), viewport, opts);
-    const hidden = pitchDrawCommands(frame({ ball: { x: 480, y: 270, z: 0, visible: false } }), viewport, opts);
-    const ballCircle = (cs: typeof visible) => cs.some((c) => c.kind === "circle" && c.color[0] === 1 && c.color[1] === 0.95 && c.color[2] === 0.7);
+    const hidden = pitchDrawCommands(
+      frame({ ball: { x: 480, y: 270, z: 0, visible: false } }),
+      viewport,
+      opts,
+    );
+    const ballCircle = (cs: typeof visible) =>
+      cs.some(
+        (c) => c.kind === "circle" && c.color[0] === 1 && c.color[1] === 0.95 && c.color[2] === 0.7,
+      );
     expect(ballCircle(visible)).toBe(true);
     expect(ballCircle(hidden)).toBe(false);
   });
 
   it("draws a landing reticle only when the payload names a landing spot", () => {
     const without = pitchDrawCommands(frame(), viewport, opts);
-    const withLanding = pitchDrawCommands(frame({ ball: { x: 480, y: 270, z: 40, visible: true, landing_x: 600, landing_y: 300 } }), viewport, opts, 0.25);
-    const reticle = (cs: typeof without) => cs.some((c) => c.kind === "circle" && c.mode === "line" && c.color[0] === 1 && c.color[1] === 0.85 && c.color[2] === 0.35);
+    const withLanding = pitchDrawCommands(
+      frame({ ball: { x: 480, y: 270, z: 40, visible: true, landing_x: 600, landing_y: 300 } }),
+      viewport,
+      opts,
+      0.25,
+    );
+    const reticle = (cs: typeof without) =>
+      cs.some(
+        (c) =>
+          c.kind === "circle" &&
+          c.mode === "line" &&
+          c.color[0] === 1 &&
+          c.color[1] === 0.85 &&
+          c.color[2] === 0.35,
+      );
     expect(reticle(without)).toBe(false);
     expect(reticle(withLanding)).toBe(true);
   });
 
   it("draws a charge meter under the controlled player, colored by charge kind", () => {
-    const shot = pitchDrawCommands(frame({ control: { charge: 0.6, charge_kind: "shot", controlled: 0 } }), viewport, opts);
-    const pass = pitchDrawCommands(frame({ control: { charge: 0.6, charge_kind: "pass", controlled: 0 } }), viewport, opts);
-    const meter = (cs: typeof shot, color: readonly [number, number, number]) => cs.some((c) => c.kind === "rect" && c.mode === "fill" && c.color[0] === color[0] && c.color[1] === color[1] && c.color[2] === color[2]);
+    const shot = pitchDrawCommands(
+      frame({ control: { charge: 0.6, charge_kind: "shot", controlled: 0 } }),
+      viewport,
+      opts,
+    );
+    const pass = pitchDrawCommands(
+      frame({ control: { charge: 0.6, charge_kind: "pass", controlled: 0 } }),
+      viewport,
+      opts,
+    );
+    const meter = (cs: typeof shot, color: readonly [number, number, number]) =>
+      cs.some(
+        (c) =>
+          c.kind === "rect" &&
+          c.mode === "fill" &&
+          c.color[0] === color[0] &&
+          c.color[1] === color[1] &&
+          c.color[2] === color[2],
+      );
     expect(meter(shot, [1, 0.72, 0.3])).toBe(true);
     expect(meter(pass, [0.45, 0.85, 1])).toBe(true);
   });
@@ -156,8 +214,12 @@ describe("pitch.stadium_mode", () => {
     pitch.stadium_mode = true;
     const on = pitchDrawCommands(frame(), viewport, opts);
 
-    const hasBackdropRect = (cs: readonly DrawCommand[]) => cs.some((c) => c.kind === "rect" && c.mode === "fill" && c.w === viewport.w && c.h === viewport.h);
-    const hasFloorPolygon = (cs: readonly DrawCommand[]) => cs.some((c) => c.kind === "polygon" && c.mode === "fill" && colorEq(c.color, FLOOR_COLOR));
+    const hasBackdropRect = (cs: readonly DrawCommand[]) =>
+      cs.some(
+        (c) => c.kind === "rect" && c.mode === "fill" && c.w === viewport.w && c.h === viewport.h,
+      );
+    const hasFloorPolygon = (cs: readonly DrawCommand[]) =>
+      cs.some((c) => c.kind === "polygon" && c.mode === "fill" && colorEq(c.color, FLOOR_COLOR));
 
     expect(hasBackdropRect(off)).toBe(true);
     expect(hasBackdropRect(on)).toBe(false);
@@ -180,11 +242,22 @@ describe("pitch.stadium_mode", () => {
 
   it("keeps the ball trail/entities/overlay: the loose ball still draws its shadow+lit circle, and the landing reticle still appears", () => {
     pitch.stadium_mode = true;
-    const withLanding = pitchDrawCommands(frame({ ball: { x: 480, y: 270, z: 40, visible: true, landing_x: 600, landing_y: 300 } }), viewport, opts, 0.25);
+    const withLanding = pitchDrawCommands(
+      frame({ ball: { x: 480, y: 270, z: 40, visible: true, landing_x: 600, landing_y: 300 } }),
+      viewport,
+      opts,
+      0.25,
+    );
 
-    const hasBallShadow = withLanding.some((c) => c.kind === "ellipse" && c.mode === "fill" && colorEq(c.color, BALL_SHADOW_COLOR));
-    const hasBallLit = withLanding.some((c) => c.kind === "circle" && c.mode === "fill" && colorEq(c.color, BALL_LIT_COLOR));
-    const hasReticle = withLanding.some((c) => c.kind === "circle" && c.mode === "line" && colorEq(c.color, [1, 0.85, 0.35]));
+    const hasBallShadow = withLanding.some(
+      (c) => c.kind === "ellipse" && c.mode === "fill" && colorEq(c.color, BALL_SHADOW_COLOR),
+    );
+    const hasBallLit = withLanding.some(
+      (c) => c.kind === "circle" && c.mode === "fill" && colorEq(c.color, BALL_LIT_COLOR),
+    );
+    const hasReticle = withLanding.some(
+      (c) => c.kind === "circle" && c.mode === "line" && colorEq(c.color, [1, 0.85, 0.35]),
+    );
 
     expect(hasBallShadow).toBe(true);
     expect(hasBallLit).toBe(true);
@@ -193,8 +266,14 @@ describe("pitch.stadium_mode", () => {
 
   it("keeps the charge meter overlay (an entity-anchored, non-arena command)", () => {
     pitch.stadium_mode = true;
-    const commands = pitchDrawCommands(frame({ control: { charge: 0.6, charge_kind: "shot", controlled: 0 } }), viewport, opts);
-    const hasMeter = commands.some((c) => c.kind === "rect" && c.mode === "fill" && colorEq(c.color, [1, 0.72, 0.3]));
+    const commands = pitchDrawCommands(
+      frame({ control: { charge: 0.6, charge_kind: "shot", controlled: 0 } }),
+      viewport,
+      opts,
+    );
+    const hasMeter = commands.some(
+      (c) => c.kind === "rect" && c.mode === "fill" && colorEq(c.color, [1, 0.72, 0.3]),
+    );
     expect(hasMeter).toBe(true);
   });
 });
@@ -217,7 +296,9 @@ describe("pitch.draw character tilt coherence with camera.perspective_mode", () 
     // #415 dropped `pitch.draw`'s renderer parameter -- it rasterizes nothing.
     pitch.draw(group, f, viewport, opts);
     const wrapper = group.children.find((c) => c.userData["riggedCharacter"] === true);
-    const mesh = wrapper?.children.find((c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh);
+    const mesh = wrapper?.children.find(
+      (c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh,
+    );
     return mesh?.quaternion.clone();
   }
 
@@ -315,7 +396,9 @@ describe("pitch.draw (rigged compositing)", () => {
     const wrappers = riggedWrappers(group.children);
     expect(wrappers.length).toBeGreaterThan(0);
     for (const wrapper of wrappers) {
-      const mesh = wrapper.children.find((c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh);
+      const mesh = wrapper.children.find(
+        (c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh,
+      );
       expect(mesh).toBeDefined();
     }
   });
@@ -336,11 +419,15 @@ describe("pitch.draw (rigged compositing)", () => {
     const f = frame();
     const groupA = new THREE.Group();
     pitch.draw(groupA, f, viewport, opts);
-    const meshA = riggedWrappers(groupA.children)[0]?.children.find((c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh);
+    const meshA = riggedWrappers(groupA.children)[0]?.children.find(
+      (c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh,
+    );
 
     const groupB = new THREE.Group();
     pitch.draw(groupB, f, viewport, opts);
-    const meshB = riggedWrappers(groupB.children)[0]?.children.find((c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh);
+    const meshB = riggedWrappers(groupB.children)[0]?.children.find(
+      (c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh,
+    );
 
     expect(meshA).toBeDefined();
     expect(meshA).toBe(meshB);
@@ -357,7 +444,9 @@ describe("pitch.draw (rigged compositing)", () => {
     pitch.draw(group, f, viewport, opts);
 
     const children = group.children;
-    const wrapperIndices = children.map((c, i) => (c.userData["riggedCharacter"] === true ? i : -1)).filter((i) => i >= 0);
+    const wrapperIndices = children
+      .map((c, i) => (c.userData["riggedCharacter"] === true ? i : -1))
+      .filter((i) => i >= 0);
     expect(wrapperIndices).toHaveLength(2);
     const [farIndex, nearIndex] = wrapperIndices;
     if (farIndex === undefined || nearIndex === undefined) {
@@ -433,7 +522,9 @@ describe("pitch.draw (rigged compositing)", () => {
 
       // The pitch surface trapezoid: the first filled ShapeGeometry mesh in
       // the child list, drawn well before any depth-sorted entity.
-      const floor = group.children.find((c) => c instanceof THREE.Mesh && c.geometry instanceof THREE.ShapeGeometry);
+      const floor = group.children.find(
+        (c) => c instanceof THREE.Mesh && c.geometry instanceof THREE.ShapeGeometry,
+      );
       expect(floor).toBeDefined();
       expect(floor?.position.z).toBe(BACKDROP_Z);
     });
@@ -467,7 +558,9 @@ describe("pitch.draw (rigged compositing)", () => {
       // this exercises the overlay layer without needing buildTextSprite's
       // document.createElement -- unavailable under this workspace's
       // DOM-less "node" vitest environment (see draw2d.ts's header).
-      const f = frame({ ball: { x: 480, y: 270, z: 40, visible: true, landing_x: 600, landing_y: 300 } });
+      const f = frame({
+        ball: { x: 480, y: 270, z: 40, visible: true, landing_x: 600, landing_y: 300 },
+      });
       const group = new THREE.Group();
       pitch.draw(group, f, viewport, opts);
 
@@ -486,7 +579,6 @@ describe("pitch.draw (rigged compositing)", () => {
     });
   });
 });
-
 
 // ============================================================================
 // PINNED REFERENCE DIFFERENTIAL -- tools/render_reference/. See that
@@ -603,7 +695,15 @@ const LUA_PLAYER_RECORDS: readonly LuaPlayerRecord[] = LUA_RECORDS.filter(isLuaP
 // consumed the same input.
 function luaDifferentialFrame(): RenderFrame {
   return {
-    field: { w: 200, h: 120, penalty_box_depth: 20, penalty_box_h: 60, crossbar_h: 16, goal_home: { x: -2, y: 52, w: 2, h: 16 }, goal_away: { x: 200, y: 52, w: 2, h: 16 } },
+    field: {
+      w: 200,
+      h: 120,
+      penalty_box_depth: 20,
+      penalty_box_h: 60,
+      crossbar_h: 16,
+      goal_home: { x: -2, y: 52, w: 2, h: 16 },
+      goal_away: { x: 200, y: 52, w: 2, h: 16 },
+    },
     roster: {
       radius: [2.5, 2.7, 2.5],
       teams: ["home", "away", "home"],
@@ -705,7 +805,10 @@ function luaDifferentialFrame(): RenderFrame {
 //     viewport" block below, which is reference-independent and asserts the
 //     invariant across five viewports including non-16:9 ones.
 const LUA_DIFFERENTIAL_VIEWPORT: PitchViewport = { w: 200, h: 120 };
-const LUA_DIFFERENTIAL_OPTS: PitchDrawOptions = { home_color: [0.35, 0.75, 1.0], away_color: [1.0, 0.55, 0.25] };
+const LUA_DIFFERENTIAL_OPTS: PitchDrawOptions = {
+  home_color: [0.35, 0.75, 1.0],
+  away_color: [1.0, 0.55, 0.25],
+};
 
 function round(n: number): number {
   return Math.round(n * 1e6) / 1e6;
@@ -786,8 +889,15 @@ function sortedNormalized(list: readonly unknown[]): Record<string, unknown>[] {
 const RETICLE_COLOR = [1, 0.85, 0.35] as const;
 const HEX_FLOOR_COLOR = [0.16, 0.5, 0.6] as const;
 
-function colorCloseTo(color: readonly number[], target: readonly [number, number, number]): boolean {
-  return Math.abs((color[0] ?? NaN) - target[0]) < 1e-6 && Math.abs((color[1] ?? NaN) - target[1]) < 1e-6 && Math.abs((color[2] ?? NaN) - target[2]) < 1e-6;
+function colorCloseTo(
+  color: readonly number[],
+  target: readonly [number, number, number],
+): boolean {
+  return (
+    Math.abs((color[0] ?? NaN) - target[0]) < 1e-6 &&
+    Math.abs((color[1] ?? NaN) - target[1]) < 1e-6 &&
+    Math.abs((color[2] ?? NaN) - target[2]) < 1e-6
+  );
 }
 
 interface RecordLike {
@@ -810,7 +920,9 @@ function isHexFloorTile(r: RecordLike): boolean {
 function overlayStart(records: readonly RecordLike[]): number {
   const idx = records.findIndex(isReticleRing);
   if (idx < 0) {
-    throw new Error("expected to find the landing-reticle ring (the overlay section's first entry) in this fixture's output");
+    throw new Error(
+      "expected to find the landing-reticle ring (the overlay section's first entry) in this fixture's output",
+    );
   }
   return idx;
 }
@@ -820,12 +932,19 @@ describe("pitch.pitchDrawCommands differential against the real Lua game.render.
   // a plain call. It used to mock `playerDrawCommands` to `[]` to get the same
   // list, which is why every comparison below is unaffected by the removal.
   function drawWithoutPlayers(): DrawCommand[] {
-    return pitchDrawCommands(luaDifferentialFrame(), LUA_DIFFERENTIAL_VIEWPORT, LUA_DIFFERENTIAL_OPTS, 0);
+    return pitchDrawCommands(
+      luaDifferentialFrame(),
+      LUA_DIFFERENTIAL_VIEWPORT,
+      LUA_DIFFERENTIAL_OPTS,
+      0,
+    );
   }
 
   it("matches the Lua capture's static arena/pitch scene and the loose ball -- backdrop, floor, markings, goal nets/frames, outline, chevrons, ball shadow+lift (content-equal; see sortedNormalized's comment for why this is order-insensitive). The hex floor's line width is excluded here -- see the dedicated KNOWN BUG test below.", () => {
     const commands = drawWithoutPlayers();
-    const luaBefore = LUA_GEOM_RECORDS.slice(0, overlayStart(LUA_GEOM_RECORDS)).filter((r) => !isHexFloorTile(r));
+    const luaBefore = LUA_GEOM_RECORDS.slice(0, overlayStart(LUA_GEOM_RECORDS)).filter(
+      (r) => !isHexFloorTile(r),
+    );
     const tsBefore = commands.slice(0, overlayStart(commands)).filter((r) => !isHexFloorTile(r));
 
     expect(sortedNormalized(tsBefore)).toEqual(sortedNormalized(luaBefore));
@@ -865,17 +984,24 @@ describe("pitch.pitchDrawCommands differential against the real Lua game.render.
   // Reproducing this needs `Math.max(2, vp.h / 180)` threaded into
   // `drawHexFloor`'s own `dl.polygon(..., { lineWidth: ... })` call --
   // outside this task's file ownership (`pitch.ts`), so pinned here instead.
-  it.fails("hex floor tiles render at the Lua original's actual (leaked, viewport-dependent) line width, not the DrawList default", () => {
-    const commands = drawWithoutPlayers();
-    const luaHex = LUA_GEOM_RECORDS.filter(isHexFloorTile);
-    const tsHex = commands.filter(isHexFloorTile);
+  it.fails(
+    "hex floor tiles render at the Lua original's actual (leaked, viewport-dependent) line width, not the DrawList default",
+    () => {
+      const commands = drawWithoutPlayers();
+      const luaHex = LUA_GEOM_RECORDS.filter(isHexFloorTile);
+      const tsHex = commands.filter(isHexFloorTile);
 
-    expect(tsHex.length).toBeGreaterThan(0);
-    expect(tsHex.map(normalizeGeom)).toEqual(luaHex.map(normalizeGeom));
-  });
+      expect(tsHex.length).toBeGreaterThan(0);
+      expect(tsHex.map(normalizeGeom)).toEqual(luaHex.map(normalizeGeom));
+    },
+  );
 
   it("derives the exact same per-player anchor (sx, sy, r) and PlayerRenderOptions payload the Lua original computes, in the same depth-sorted order", () => {
-    const captured = playerAnchors(luaDifferentialFrame(), LUA_DIFFERENTIAL_VIEWPORT, LUA_DIFFERENTIAL_OPTS);
+    const captured = playerAnchors(
+      luaDifferentialFrame(),
+      LUA_DIFFERENTIAL_VIEWPORT,
+      LUA_DIFFERENTIAL_OPTS,
+    );
 
     expect(captured).toHaveLength(LUA_PLAYER_RECORDS.length);
     for (const [i, luaPlayer] of LUA_PLAYER_RECORDS.entries()) {
@@ -888,7 +1014,9 @@ describe("pitch.pitchDrawCommands differential against the real Lua game.render.
       expect(round(ts.r)).toBeCloseTo(round(luaPlayer.r), 4);
 
       const o = ts.options;
-      expect(o.facing !== undefined ? [o.facing.x, o.facing.y] : undefined).toEqual(luaPlayer.opts.facing);
+      expect(o.facing !== undefined ? [o.facing.x, o.facing.y] : undefined).toEqual(
+        luaPlayer.opts.facing,
+      );
       expect(o.is_keeper).toBe(luaPlayer.opts.is_keeper);
       expect(o.controlled).toBe(luaPlayer.opts.controlled);
       expect(o.dashing).toBe(luaPlayer.opts.dashing);
@@ -902,7 +1030,9 @@ describe("pitch.pitchDrawCommands differential against the real Lua game.render.
       expect(o.aerial_outcome).toBe(luaPlayer.opts.aerial_outcome);
       expect(o.aerial_jump).toBe(luaPlayer.opts.aerial_jump);
       expect(o.species_shape).toBe(luaPlayer.opts.species_shape);
-      expect(o.species_color !== undefined ? [...o.species_color] : undefined).toEqual(luaPlayer.opts.species_color);
+      expect(o.species_color !== undefined ? [...o.species_color] : undefined).toEqual(
+        luaPlayer.opts.species_color,
+      );
       expect(o.team).toBe(luaPlayer.opts.team);
       expect(o.pose?.id).toBe(luaPlayer.opts.pose_id);
       expect(o.pose?.priority).toBe(luaPlayer.opts.pose_priority);
@@ -925,7 +1055,9 @@ describe("pitch.pitchDrawCommands differential against the real Lua game.render.
       // branches on the KEY'S PRESENCE or on the component VALUES.
       if (luaPlayer.opts.dive_dir !== undefined && luaPlayer.opts.dive_dir.length === 2) {
         expect(o.dive_dir).toBeDefined();
-        expect(o.dive_dir !== undefined ? [o.dive_dir.x, o.dive_dir.y] : undefined).toEqual(luaPlayer.opts.dive_dir);
+        expect(o.dive_dir !== undefined ? [o.dive_dir.x, o.dive_dir.y] : undefined).toEqual(
+          luaPlayer.opts.dive_dir,
+        );
       }
     }
   });
@@ -953,7 +1085,12 @@ describe("pitch.pitchDrawCommands differential against the real Lua game.render.
 // fix landed -- the transition from expected-fail to pass IS the proof.
 describe("pitch.ts converts frame.control.controlled/pass_target from one-based to zero-based", () => {
   it("charge meter renders under the CORRECT (one-based-adjusted) controlled player, matching the Lua reference", () => {
-    const commands = pitchDrawCommands(luaDifferentialFrame(), LUA_DIFFERENTIAL_VIEWPORT, LUA_DIFFERENTIAL_OPTS, 0);
+    const commands = pitchDrawCommands(
+      luaDifferentialFrame(),
+      LUA_DIFFERENTIAL_VIEWPORT,
+      LUA_DIFFERENTIAL_OPTS,
+      0,
+    );
     // The reference's charge-meter bar fill (color = home_color, the "shot"
     // charge color multiplied through -- see the captured reference) sits at
     // x=93.232 (home-1, roster slot 1 == TS array index 0). The current
@@ -964,13 +1101,25 @@ describe("pitch.ts converts frame.control.controlled/pass_target from one-based 
     // LUA_DIFFERENTIAL_VIEWPORT. Same reference, same bug, same player --
     // only the pixel scale of the whole capture changed.)
     const expectedX = 93.232;
-    const meterFill = commands.find((c) => c.kind === "rect" && c.mode === "fill" && Math.abs(c.color[0] - 1) < 1e-6 && Math.abs(c.color[1] - 0.72) < 1e-6 && Math.abs(c.color[2] - 0.3) < 1e-6);
+    const meterFill = commands.find(
+      (c) =>
+        c.kind === "rect" &&
+        c.mode === "fill" &&
+        Math.abs(c.color[0] - 1) < 1e-6 &&
+        Math.abs(c.color[1] - 0.72) < 1e-6 &&
+        Math.abs(c.color[2] - 0.3) < 1e-6,
+    );
     expect(meterFill).toBeDefined();
     expect(meterFill?.kind === "rect" ? round(meterFill.x) : undefined).toBeCloseTo(expectedX, 2);
   });
 
   it("pass-target preview renders at the CORRECT (one-based-adjusted) target player's position, matching the Lua reference", () => {
-    const commands = pitchDrawCommands(luaDifferentialFrame(), LUA_DIFFERENTIAL_VIEWPORT, LUA_DIFFERENTIAL_OPTS, 0);
+    const commands = pitchDrawCommands(
+      luaDifferentialFrame(),
+      LUA_DIFFERENTIAL_VIEWPORT,
+      LUA_DIFFERENTIAL_OPTS,
+      0,
+    );
     // The reference's pass-target rings (home_color, since roster slot 3 /
     // "home-2" is on the home team) sit at (130.4175, 64) -- that player's own projected
     // anchor. The current (buggy) pitch.ts reads players.x[3]/players.y[3],
@@ -980,7 +1129,14 @@ describe("pitch.ts converts frame.control.controlled/pass_target from one-based 
     // LUA_DIFFERENTIAL_VIEWPORT for why the capture now runs at field size.)
     const expectedX = 130.4175;
     const expectedY = 64;
-    const ring = commands.find((c) => c.kind === "circle" && c.mode === "line" && Math.abs(c.color[0] - 0.35) < 1e-6 && Math.abs(c.color[1] - 0.75) < 1e-6 && Math.abs(c.color[2] - 1) < 1e-6);
+    const ring = commands.find(
+      (c) =>
+        c.kind === "circle" &&
+        c.mode === "line" &&
+        Math.abs(c.color[0] - 0.35) < 1e-6 &&
+        Math.abs(c.color[1] - 0.75) < 1e-6 &&
+        Math.abs(c.color[2] - 1) < 1e-6,
+    );
     expect(ring).toBeDefined();
     expect(ring?.kind === "circle" ? round(ring.x) : undefined).toBeCloseTo(expectedX, 2);
     expect(ring?.kind === "circle" ? round(ring.y) : undefined).toBeCloseTo(expectedY, 2);
@@ -1045,7 +1201,10 @@ describe("pitch entity sizes stay in proportion to the pitch at any viewport", (
 
   /** Height of a goal post: `crossbar_h * scale`. */
   function goalPostHeight(commands: readonly DrawCommand[]): number {
-    const post = commands.find((c) => c.kind === "line" && colorCloseTo(c.color, GOAL_FRAME_COLOR) && c.points[0] === c.points[2]);
+    const post = commands.find(
+      (c) =>
+        c.kind === "line" && colorCloseTo(c.color, GOAL_FRAME_COLOR) && c.points[0] === c.points[2],
+    );
     if (post === undefined || post.kind !== "line") {
       throw new Error("expected an upright goal post in the goal frame colour");
     }
@@ -1054,7 +1213,9 @@ describe("pitch entity sizes stay in proportion to the pitch at any viewport", (
 
   /** The loose ball's drawn radius: `5 * scale`. */
   function ballRadius(commands: readonly DrawCommand[]): number {
-    const ball = commands.find((c) => c.kind === "circle" && c.mode === "fill" && colorCloseTo(c.color, BALL_COLOR));
+    const ball = commands.find(
+      (c) => c.kind === "circle" && c.mode === "fill" && colorCloseTo(c.color, BALL_COLOR),
+    );
     if (ball === undefined || ball.kind !== "circle") {
       throw new Error("expected the loose ball fill");
     }

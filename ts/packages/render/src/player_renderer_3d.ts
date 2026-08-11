@@ -337,7 +337,10 @@ const CHEST_LEAN_DEGREES = 7;
  *
  * Returns `undefined` when there is no meaningful lean to apply.
  */
-export function leanTilt(lean: number, facing?: actionPose.XY): { readonly x: number; readonly z: number } | undefined {
+export function leanTilt(
+  lean: number,
+  facing?: actionPose.XY,
+): { readonly x: number; readonly z: number } | undefined {
   if (!Number.isFinite(lean) || Math.abs(lean) < 1e-4) {
     return undefined;
   }
@@ -356,7 +359,11 @@ export function leanTilt(lean: number, facing?: actionPose.XY): { readonly x: nu
 
 // Composes `leanTilt`'s tilt onto the torso chain, mutating and returning the
 // pose. See the LEAN section above for the mapping and the bone choice.
-function applyLean(pose: actionPose.MutablePose, lean: number, facing?: actionPose.XY): actionPose.MutablePose {
+function applyLean(
+  pose: actionPose.MutablePose,
+  lean: number,
+  facing?: actionPose.XY,
+): actionPose.MutablePose {
   const tilt = leanTilt(lean, facing);
   if (tilt === undefined) {
     return pose;
@@ -385,7 +392,11 @@ function applyLean(pose: actionPose.MutablePose, lean: number, facing?: actionPo
  * `"swing"`, so that code had never run; `rig3d/pose_table.ts` is where the
  * SWING clip finally gets a caller.
  */
-export function poseFor(view: PlayerView | undefined, opts: PlayerRenderOptions, now: number): actionPose.MutablePose {
+export function poseFor(
+  view: PlayerView | undefined,
+  opts: PlayerRenderOptions,
+  now: number,
+): actionPose.MutablePose {
   const speed = view?.speed ?? 0;
   const idle = clips.ORDER[0];
   const walk = clips.ORDER[1];
@@ -397,13 +408,21 @@ export function poseFor(view: PlayerView | undefined, opts: PlayerRenderOptions,
   // A run is not a fast walk, so the two are separate clips blended by speed
   // rather than one clip played quicker.
   const walkMix = Math.min(speed / viewState.WALK_SPEED, 1);
-  const runMix = Math.max(0, Math.min((speed - viewState.WALK_SPEED) / (viewState.RUN_SPEED - viewState.WALK_SPEED), 1));
+  const runMix = Math.max(
+    0,
+    Math.min((speed - viewState.WALK_SPEED) / (viewState.RUN_SPEED - viewState.WALK_SPEED), 1),
+  );
 
   // Both cycles are two steps with contacts at 0 and 0.5, so one normalised
   // phase drives both and they stay in step through the blend.
   const cycles = view?.gait ?? 0;
 
-  let pose: actionPose.MutablePose = clips.layer(clips.sample(idle, now * 0.35), clips.sample(walk, cycles * walk.duration), masks.FULL_BODY, walkMix);
+  let pose: actionPose.MutablePose = clips.layer(
+    clips.sample(idle, now * 0.35),
+    clips.sample(walk, cycles * walk.duration),
+    masks.FULL_BODY,
+    walkMix,
+  );
   if (runMix > 0) {
     pose = clips.layer(pose, clips.sample(run, cycles * run.duration), masks.FULL_BODY, runMix);
   }
@@ -414,7 +433,12 @@ export function poseFor(view: PlayerView | undefined, opts: PlayerRenderOptions,
   } else if (selected === "charge") {
     // The charge is a held pose, so it only needs a phase to breathe on;
     // tying it to the stride keeps the sway in step with the legs.
-    pose = clips.layer(pose, clips.sample(clips.CHARGE, cycles * clips.CHARGE.duration), masks.UPPER_BODY, 1);
+    pose = clips.layer(
+      pose,
+      clips.sample(clips.CHARGE, cycles * clips.CHARGE.duration),
+      masks.UPPER_BODY,
+      1,
+    );
   }
 
   // The keeper's hands follow possession, not the pose id: arms wrapped
@@ -423,7 +447,12 @@ export function poseFor(view: PlayerView | undefined, opts: PlayerRenderOptions,
   if (throwAmount > 0) {
     // throw_timer counts DOWN, so 1 is the moment of commitment.
     const sling = clips.KEEPER_SLING;
-    pose = clips.layer(pose, clips.sample(sling, (1 - Math.min(throwAmount, 1)) * sling.duration), masks.UPPER_BODY, 1);
+    pose = clips.layer(
+      pose,
+      clips.sample(sling, (1 - Math.min(throwAmount, 1)) * sling.duration),
+      masks.UPPER_BODY,
+      1,
+    );
   } else if (opts.holding === true) {
     pose = clips.layer(pose, clips.sample(clips.KEEPER_GATHER, now), masks.UPPER_BODY, 1);
   }
@@ -645,11 +674,13 @@ function variantFor(opts: PlayerRenderOptions): CharacterVariant {
         "unwired caller, and must not resolve to the preview default's sword and shield (#447)",
     );
   }
-  const theme = presentationId === undefined ? themes.LIST[0] : presentationContent.themeFor(presentationId);
+  const theme =
+    presentationId === undefined ? themes.LIST[0] : presentationContent.themeFor(presentationId);
   if (theme === undefined) {
     throw new Error("player_renderer_3d.ts: no rig3d theme content available");
   }
-  const loadout = presentationId === undefined ? theme.loadout : presentationContent.loadoutFor(opts.loadout_id);
+  const loadout =
+    presentationId === undefined ? theme.loadout : presentationContent.loadoutFor(opts.loadout_id);
   return {
     key: `${theme.key}|${figure.key}|${presentationContent.loadoutKey(loadout)}`,
     theme,
@@ -751,7 +782,24 @@ function mat4ToThree(m: Mat4): THREE.Matrix4 {
   const out = new THREE.Matrix4();
   // `.set()` takes row-major arguments; `Mat4` is stored row-major (see
   // @gc/core/mat4.ts), so this is a direct copy, not a transpose.
-  out.set(m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
+  out.set(
+    m[0],
+    m[1],
+    m[2],
+    m[3],
+    m[4],
+    m[5],
+    m[6],
+    m[7],
+    m[8],
+    m[9],
+    m[10],
+    m[11],
+    m[12],
+    m[13],
+    m[14],
+    m[15],
+  );
   return out;
 }
 
@@ -811,7 +859,11 @@ function build(variant: CharacterVariant = defaultVariant()): BuiltCharacter | u
     // emissive, each preserving its own original relative order) rather than
     // a comparator sort, so this is deterministic regardless of engine sort
     // stability.
-    const MATERIAL_ORDER = [geometry.MATERIAL.plain, geometry.MATERIAL.metal, geometry.MATERIAL.emissive] as const;
+    const MATERIAL_ORDER = [
+      geometry.MATERIAL.plain,
+      geometry.MATERIAL.metal,
+      geometry.MATERIAL.emissive,
+    ] as const;
     const order: number[] = [];
     const groupCounts: [number, number, number] = [0, 0, 0];
     for (const wanted of MATERIAL_ORDER) {
@@ -918,8 +970,10 @@ function build(variant: CharacterVariant = defaultVariant()): BuiltCharacter | u
     return character;
   } catch (error) {
     failed = true;
-     
-    console.warn(`rigged 3D players disabled (build failed, variant ${variant.key}): ${String(error)}`);
+
+    console.warn(
+      `rigged 3D players disabled (build failed, variant ${variant.key}): ${String(error)}`,
+    );
     return undefined;
   }
 }
@@ -949,7 +1003,11 @@ function build(variant: CharacterVariant = defaultVariant()): BuiltCharacter | u
 // `themes.LIST[0]` directly -- a second hardcoded theme reference beside
 // `build()`'s, and one that would have kept every character medieval even
 // after `build()` learned to vary.
-function materialsForTeam(character: BuiltCharacter, variant: CharacterVariant, team: "home" | "away"): TeamMaterials {
+function materialsForTeam(
+  character: BuiltCharacter,
+  variant: CharacterVariant,
+  team: "home" | "away",
+): TeamMaterials {
   const key = `${variant.key}|${team}`;
   const cached = materialsByTeam.get(key);
   if (cached !== undefined) {
@@ -1152,7 +1210,11 @@ export function prewarmCharacters(roster: PrewarmRoster): PrewarmResult {
 // teams.
 const teamGeometry = new Map<string, THREE.BufferGeometry>();
 
-function geometryForTeam(character: BuiltCharacter, variant: CharacterVariant, team: "home" | "away"): THREE.BufferGeometry {
+function geometryForTeam(
+  character: BuiltCharacter,
+  variant: CharacterVariant,
+  team: "home" | "away",
+): THREE.BufferGeometry {
   const cacheKey = `${variant.key}|${team}`;
   const cached = teamGeometry.get(cacheKey);
   if (cached !== undefined) {
@@ -1164,8 +1226,16 @@ function geometryForTeam(character: BuiltCharacter, variant: CharacterVariant, t
   const skinIndex = base.getAttribute("skinIndex");
   const skinWeight = base.getAttribute("skinWeight");
   const materialFamily = base.getAttribute("materialFamily");
-  if (position === undefined || normal === undefined || skinIndex === undefined || skinWeight === undefined || materialFamily === undefined) {
-    throw new Error("player_renderer_3d.ts: shared character geometry is missing a required attribute");
+  if (
+    position === undefined ||
+    normal === undefined ||
+    skinIndex === undefined ||
+    skinWeight === undefined ||
+    materialFamily === undefined
+  ) {
+    throw new Error(
+      "player_renderer_3d.ts: shared character geometry is missing a required attribute",
+    );
   }
   const geom = new THREE.BufferGeometry();
   geom.setAttribute("position", position);
@@ -1242,7 +1312,12 @@ interface PooledCharacter {
 // wrong kit, which is not a cost worth taking to save a map entry.
 const characterPool = new Map<string, PooledCharacter>();
 
-function pooledCharacter(playerId: string, character: BuiltCharacter, variant: CharacterVariant, team: "home" | "away"): PooledCharacter {
+function pooledCharacter(
+  playerId: string,
+  character: BuiltCharacter,
+  variant: CharacterVariant,
+  team: "home" | "away",
+): PooledCharacter {
   const poolKey = `${playerId}|${variant.key}`;
   const cached = characterPool.get(poolKey);
   if (cached !== undefined) {
@@ -1250,7 +1325,10 @@ function pooledCharacter(playerId: string, character: BuiltCharacter, variant: C
   }
   const bones = buildCharacterBones();
   const skeletonObj = new THREE.Skeleton(bones);
-  const mesh = new THREE.SkinnedMesh(geometryForTeam(character, variant, team), new THREE.MeshStandardMaterial());
+  const mesh = new THREE.SkinnedMesh(
+    geometryForTeam(character, variant, team),
+    new THREE.MeshStandardMaterial(),
+  );
   mesh.add(bones[0] ?? new THREE.Bone());
   mesh.bind(skeletonObj);
   // DETACHED bind mode -- a real defect found live (characters rendered
@@ -1372,13 +1450,25 @@ export function characterMesh(
  * character so it lands at `(sx, sy)` on screen at `ppm` pixels-per-metre.
  * See this file's header scope note -- new code, not a port of unseen GLSL.
  */
-export function characterCameraParams(sx: number, sy: number, ppm: number, vw: number, vh: number, elevation: number, height: number) {
+export function characterCameraParams(
+  sx: number,
+  sy: number,
+  ppm: number,
+  vw: number,
+  vh: number,
+  elevation: number,
+  height: number,
+) {
   const halfHeightMetres = height / 2;
   return {
     // Looks down at `elevation` from slightly above and behind the
     // character's mid-height, along -Z (the character's own facing is
     // applied to the mesh's world transform instead of the camera).
-    eye: [0, halfHeightMetres + Math.sin(elevation) * height, Math.cos(elevation) * height] as const,
+    eye: [
+      0,
+      halfHeightMetres + Math.sin(elevation) * height,
+      Math.cos(elevation) * height,
+    ] as const,
     target: [0, halfHeightMetres, 0] as const,
     ppm,
     // Orthographic frustum in metres, centred so the character lands at
@@ -1462,7 +1552,14 @@ function prepareCharacter(
   const ppm = (r * HEIGHT_IN_RADII * 2) / character.height;
   const far = character.height * 4 + 10;
   const params = characterCameraParams(sx, sy, ppm, vw, vh, ELEVATION, character.height);
-  const cam = new THREE.OrthographicCamera(params.left, params.right, params.top, params.bottom, 0.01, far);
+  const cam = new THREE.OrthographicCamera(
+    params.left,
+    params.right,
+    params.top,
+    params.bottom,
+    0.01,
+    far,
+  );
   cam.position.set(...params.eye);
   cam.lookAt(...params.target);
   cam.updateProjectionMatrix();
@@ -1512,7 +1609,7 @@ export function draw(
     renderer.render(scene, prepared.cam);
   } catch (error) {
     failed = true;
-     
+
     console.warn(`rigged 3D players disabled (draw failed): ${String(error)}`);
   }
 }
@@ -1641,7 +1738,7 @@ export function renderToSprite(
     return mesh;
   } catch (error) {
     failed = true;
-     
+
     console.warn(`rigged 3D players disabled (renderToSprite failed): ${String(error)}`);
     return undefined;
   }

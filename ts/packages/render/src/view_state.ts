@@ -75,7 +75,14 @@ export const viewState = {
       const effectivePos = pos ?? p.pos;
       const v = state.get(p.id);
       if (v === undefined) {
-        state.set(p.id, { px: effectivePos.x, py: effectivePos.y, speed: 0, phase: 0, gait: 0, lean: 0 });
+        state.set(p.id, {
+          px: effectivePos.x,
+          py: effectivePos.y,
+          speed: 0,
+          phase: 0,
+          gait: 0,
+          lean: 0,
+        });
       } else if (dt > 0) {
         const vx = (effectivePos.x - v.px) / dt;
         const vy = (effectivePos.y - v.py) / dt;
@@ -101,7 +108,8 @@ export const viewState = {
           0,
           1,
         );
-        const stride = viewState.WALK_STRIDE + (viewState.RUN_STRIDE - viewState.WALK_STRIDE) * runMix;
+        const stride =
+          viewState.WALK_STRIDE + (viewState.RUN_STRIDE - viewState.WALK_STRIDE) * runMix;
         v.gait = (v.gait + (sp * dt) / stride) % 1;
         const targetLean = clamp(vx / 120, -1, 1);
         v.lean = v.lean + (targetLean - v.lean) * clamp(dt * 10, 0, 1);

@@ -12,7 +12,13 @@
 // the owner a fresh match leaves in place when a test does not override it.
 
 import { describe, expect, it } from "vitest";
-import { matchObserver, type MatchObserver, type ObservedMatchEvent, type ObservedMatchState, type ObservedPlayer } from "./match_observer.ts";
+import {
+  matchObserver,
+  type MatchObserver,
+  type ObservedMatchEvent,
+  type ObservedMatchState,
+  type ObservedPlayer,
+} from "./match_observer.ts";
 import { MatchScreen, MatchScreenAsRealMatchScreen, RealMatchScreen } from "@gc/screens";
 import type {
   MatchContractPort,
@@ -178,7 +184,13 @@ class ScriptedSimHost implements SimHostPort {
     home_score: number;
     away_score: number;
     time_left: number;
-  } = { finished: false, controlled_owns_ball: false, home_score: 0, away_score: 0, time_left: 300 };
+  } = {
+    finished: false,
+    controlled_owns_ball: false,
+    home_score: 0,
+    away_score: 0,
+    time_left: 300,
+  };
   private possession: { owner?: number; owner_team?: "home" | "away" } = {};
   private eventsThisTick: {
     count: number;
@@ -269,7 +281,11 @@ const noopKeyboard: KeyboardState = { isDown: (): boolean => false };
  */
 function realObserverPort(): MatchObserverPort<MatchObserver, RealMatchState, never> {
   const toObservedState = (state: RealMatchState): ObservedMatchState => ({
-    players: (state.roster ?? []).map((entry) => ({ id: entry.id, team: entry.team, is_keeper: entry.is_keeper })),
+    players: (state.roster ?? []).map((entry) => ({
+      id: entry.id,
+      team: entry.team,
+      is_keeper: entry.is_keeper,
+    })),
     events: [],
     ...(state.owner !== undefined ? { owner: state.owner } : {}),
     score: { home: state.score.home, away: state.score.away },
@@ -277,7 +293,12 @@ function realObserverPort(): MatchObserverPort<MatchObserver, RealMatchState, ne
   return {
     create: (state) => matchObserver.new(toObservedState(state)),
     observe: (observer, state, dt, events) =>
-      matchObserver.observe(observer, toObservedState(state), dt, (events ?? []) as readonly ObservedMatchEvent[]),
+      matchObserver.observe(
+        observer,
+        toObservedState(state),
+        dt,
+        (events ?? []) as readonly ObservedMatchEvent[],
+      ),
     observeConfirmed: () => false,
     finish: (observer) => matchObserver.finish(observer),
   };
@@ -291,7 +312,12 @@ const fakeContractPort: MatchContractPort = {
       away_score: opts.away_score,
       home_name: "Home",
       away_name: "Away",
-      winner: opts.home_score === opts.away_score ? "draw" : opts.home_score > opts.away_score ? "home" : "away",
+      winner:
+        opts.home_score === opts.away_score
+          ? "draw"
+          : opts.home_score > opts.away_score
+            ? "home"
+            : "away",
       ...(opts.mvp_player_id !== undefined ? { mvp_player_id: opts.mvp_player_id } : {}),
       ...(opts.mvp_summary !== undefined ? { mvp_summary: opts.mvp_summary } : {}),
       home_stats: opts.home_stats,
@@ -329,7 +355,11 @@ describe("real match screen port, widened", () => {
     const host = new ScriptedSimHost(roster, script);
     const createHost: SimHostFactory = (): SimHostPort => host;
 
-    const matchScreen = new MatchScreen({ createHost, renderer: noopRenderer, keyboard: noopKeyboard });
+    const matchScreen = new MatchScreen({
+      createHost,
+      renderer: noopRenderer,
+      keyboard: noopKeyboard,
+    });
     const port = new MatchScreenAsRealMatchScreen(matchScreen);
 
     let finishedResult: ProductMatchResult | undefined;
@@ -368,10 +398,16 @@ describe("real match screen port, widened", () => {
 
   it("reports MatchScreenAsRealMatchScreen.state.roster/.owner and .frameEvents live off the host, not just at completion", () => {
     const roster = scriptedRoster();
-    const script: ScriptedTick[] = [{ events: [{ kind: "tackle", player: "home_4" }], ownerSlot: 4 }];
+    const script: ScriptedTick[] = [
+      { events: [{ kind: "tackle", player: "home_4" }], ownerSlot: 4 },
+    ];
     const host = new ScriptedSimHost(roster, script);
     const createHost: SimHostFactory = (): SimHostPort => host;
-    const matchScreen = new MatchScreen({ createHost, renderer: noopRenderer, keyboard: noopKeyboard });
+    const matchScreen = new MatchScreen({
+      createHost,
+      renderer: noopRenderer,
+      keyboard: noopKeyboard,
+    });
     const port = new MatchScreenAsRealMatchScreen(matchScreen);
 
     // Before any tick has run, the host's own roster/possession are already

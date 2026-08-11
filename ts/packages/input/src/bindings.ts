@@ -193,7 +193,12 @@ function layoutProblems(): readonly string[] {
   const seenButtons = new Map<string, ControlId>();
   const seenAxes = new Map<string, ControlId>();
 
-  function claim(pool: Map<string, ControlId>, name: string, kind: string, entryId: ControlId): void {
+  function claim(
+    pool: Map<string, ControlId>,
+    name: string,
+    kind: string,
+    entryId: ControlId,
+  ): void {
     const existing = pool.get(name);
     if (existing !== undefined) {
       problems.push(`${kind} ${name} is bound to both ${existing} and ${entryId}`);
@@ -206,7 +211,9 @@ function layoutProblems(): readonly string[] {
     // deliver a button edge. A control whose edge is read needs a key or
     // a button to deliver it.
     if (entry.edge && entry.keys.length === 0 && entry.buttons.length === 0) {
-      problems.push(`${entry.id} reads an edge but is bound only to an axis, which cannot fire one`);
+      problems.push(
+        `${entry.id} reads an edge but is bound only to an axis, which cannot fire one`,
+      );
     }
     // A control readable on the pad at all, whose edge is read, needs that
     // edge deliverable on the pad specifically.

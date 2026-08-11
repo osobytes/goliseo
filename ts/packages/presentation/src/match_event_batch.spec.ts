@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { matchEventBatch, type RollbackEventDiff, type RollbackWrappedEvent } from "./match_event_batch.ts";
+import {
+  matchEventBatch,
+  type RollbackEventDiff,
+  type RollbackWrappedEvent,
+} from "./match_event_batch.ts";
 
 interface TipEvent {
   readonly kind: "tip";

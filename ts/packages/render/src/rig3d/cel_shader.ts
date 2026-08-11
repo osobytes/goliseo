@@ -96,7 +96,11 @@ export const SHADING_EYE_DISTANCE = 24;
 // `eye = dir * SHADING_EYE_DISTANCE`. In the character's own Y-up frame
 // (which is what `shadingFrameVertexChunk` rebuilds), so it needs no camera
 // state at all.
-export const SHADING_EYE = new THREE.Vector3(0, Math.sin(ELEVATION), Math.cos(ELEVATION)).multiplyScalar(SHADING_EYE_DISTANCE);
+export const SHADING_EYE = new THREE.Vector3(
+  0,
+  Math.sin(ELEVATION),
+  Math.cos(ELEVATION),
+).multiplyScalar(SHADING_EYE_DISTANCE);
 
 // One constant per named quantity in the shading, in the fragment stage.
 // Exported (not inlined as bare numbers in the template
@@ -150,7 +154,12 @@ export const EMISSIVE_FACING_SCALE = 0.55;
 // material, matching the original renderer's own lighting model: no
 // scene-graph lights at all, only two hand-sent uniforms (`u_light_dir`,
 // `u_cam_pos`), which is what this module hardcodes instead.
-export const CEL_SHADING_TARGET_INCLUDES: readonly string[] = ["#include <lights_physical_fragment>", "#include <lights_fragment_begin>", "#include <lights_fragment_maps>", "#include <lights_fragment_end>"];
+export const CEL_SHADING_TARGET_INCLUDES: readonly string[] = [
+  "#include <lights_physical_fragment>",
+  "#include <lights_fragment_begin>",
+  "#include <lights_fragment_maps>",
+  "#include <lights_fragment_end>",
+];
 
 // GLSL requires an explicit decimal point on float literals -- there is no
 // implicit int-to-float conversion, so `pow(x, 3)` fails to link ("no
@@ -271,7 +280,10 @@ export function shadingFrameVertexChunk(elevation: number = ELEVATION): string {
 
 function withShadingFrameVertex(vertexShader: string, elevation: number): string {
   const declared = `varying vec3 ${SHADING_NORMAL_VARYING};\nvarying vec3 ${SHADING_WORLD_VARYING};\n${vertexShader}`;
-  return declared.replace("#include <project_vertex>", `#include <project_vertex>\n${shadingFrameVertexBody(elevation)}`);
+  return declared.replace(
+    "#include <project_vertex>",
+    `#include <project_vertex>\n${shadingFrameVertexBody(elevation)}`,
+  );
 }
 
 function shadingFrameFragmentDeclarations(): string {
@@ -397,13 +409,20 @@ function celShadingChunk(family: CelFamily): string {
  * not a material property or a per-vertex value). Without this, three.js
  * could hand one family's compiled program to another's draw call.
  */
-export function applyCelShading(material: THREE.MeshStandardMaterial, family: CelFamily, elevation: number = ELEVATION): void {
+export function applyCelShading(
+  material: THREE.MeshStandardMaterial,
+  family: CelFamily,
+  elevation: number = ELEVATION,
+): void {
   material.side = THREE.DoubleSide;
   material.customProgramCacheKey = () => family;
   material.onBeforeCompile = (shader) => {
     shader.vertexShader = withShadingFrameVertex(shader.vertexShader, elevation);
     let fragmentShader = shadingFrameFragmentDeclarations() + shader.fragmentShader;
-    fragmentShader = fragmentShader.replace("#include <lights_physical_fragment>", celShadingChunk(family));
+    fragmentShader = fragmentShader.replace(
+      "#include <lights_physical_fragment>",
+      celShadingChunk(family),
+    );
     for (const include of CEL_SHADING_TARGET_INCLUDES.slice(1)) {
       fragmentShader = fragmentShader.replace(include, "");
     }
@@ -498,7 +517,10 @@ function combinedCelShadingChunk(): string {
  * doc comment for why THAT function needs a per-family key and this one
  * does not.
  */
-export function applyCombinedCelShading(material: THREE.MeshStandardMaterial, elevation: number = ELEVATION): void {
+export function applyCombinedCelShading(
+  material: THREE.MeshStandardMaterial,
+  elevation: number = ELEVATION,
+): void {
   material.side = THREE.DoubleSide;
   material.customProgramCacheKey = () => "combined";
   material.onBeforeCompile = (shader) => {
@@ -509,11 +531,17 @@ export function applyCombinedCelShading(material: THREE.MeshStandardMaterial, el
     // ...) runs after it, though nothing downstream in the VERTEX stage
     // actually depends on it; only the fragment stage below reads
     // `vMaterialFamily`.
-    vertexShader = vertexShader.replace("void main() {", "void main() {\n\n\tvMaterialFamily = materialFamily;\n");
+    vertexShader = vertexShader.replace(
+      "void main() {",
+      "void main() {\n\n\tvMaterialFamily = materialFamily;\n",
+    );
     shader.vertexShader = vertexShader;
 
     let fragmentShader = `varying float vMaterialFamily;\n${shadingFrameFragmentDeclarations()}${shader.fragmentShader}`;
-    fragmentShader = fragmentShader.replace("#include <lights_physical_fragment>", combinedCelShadingChunk());
+    fragmentShader = fragmentShader.replace(
+      "#include <lights_physical_fragment>",
+      combinedCelShadingChunk(),
+    );
     for (const include of CEL_SHADING_TARGET_INCLUDES.slice(1)) {
       fragmentShader = fragmentShader.replace(include, "");
     }

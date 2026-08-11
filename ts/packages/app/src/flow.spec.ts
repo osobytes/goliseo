@@ -42,7 +42,13 @@ import { ScreenStack } from "./screen_stack.ts";
 import { Flow, type FlowChoice } from "./flow.ts";
 import { hit, menuLayout } from "./ui_bridge.ts";
 import { createSimHost } from "./sim_host.ts";
-import { FORMATION_CONTENT, NEBULA, ORION, SQUAD_CONTENT, TACTIC_CONTENT } from "./test_support/fixtures.ts";
+import {
+  FORMATION_CONTENT,
+  NEBULA,
+  ORION,
+  SQUAD_CONTENT,
+  TACTIC_CONTENT,
+} from "./test_support/fixtures.ts";
 
 const VP = { w: 960, h: 540 };
 
@@ -55,17 +61,27 @@ function click(stack: ScreenStack<unknown, unknown>, id: string): void {
   if (!widget?.rect) {
     throw new Error(`missing widget ${id}`);
   }
-  stack.event({ kind: "click", x: widget.rect.x + widget.rect.w / 2, y: widget.rect.y + widget.rect.h / 2, button: 1 });
+  stack.event({
+    kind: "click",
+    x: widget.rect.x + widget.rect.w / 2,
+    y: widget.rect.y + widget.rect.h / 2,
+    button: 1,
+  });
 }
 
 describe("pre-match flow (tier 3)", () => {
   it("walks Squad -> Formation -> Tactic -> Match, carrying choices", () => {
     const stack = new ScreenStack<unknown, unknown>();
     let received: FlowChoice | undefined;
-    Flow.start(stack, VP, { squad: SQUAD_CONTENT, formation: FORMATION_CONTENT, tactic: TACTIC_CONTENT }, (choice) => {
-      received = choice;
-      return { update: () => {}, event: () => {}, draw: () => {} };
-    });
+    Flow.start(
+      stack,
+      VP,
+      { squad: SQUAD_CONTENT, formation: FORMATION_CONTENT, tactic: TACTIC_CONTENT },
+      (choice) => {
+        received = choice;
+        return { update: () => {}, event: () => {}, draw: () => {} };
+      },
+    );
 
     click(stack, "next"); // squad -> formation
     click(stack, "formation_1-1-2"); // choose formation
@@ -81,18 +97,23 @@ describe("pre-match flow (tier 3)", () => {
     const stack = new ScreenStack<unknown, unknown>();
     let capturedHost: ReturnType<typeof createSimHost> | undefined;
 
-    Flow.start(stack, VP, { squad: SQUAD_CONTENT, formation: FORMATION_CONTENT, tactic: TACTIC_CONTENT }, (choice: FlowChoice) => {
-      // The real production seam: a wasm-backed `createSimHost`, closed
-      // over exactly the `{formation, tactic}` `Flow` computed from the
-      // clicks below -- the same shape `real_match_factory.ts`'s injected
-      // `createHost` closure builds one from a `ProductMatchRequest`.
-      capturedHost = createSimHost(NEBULA.id, ORION.id, 13, 20, 3, {
-        homeFormation: choice.formation,
-        tactic: choice.tactic,
-        homeStarterIds: NEBULA.roster,
-      });
-      return { update: () => {}, event: () => {}, draw: () => {} };
-    });
+    Flow.start(
+      stack,
+      VP,
+      { squad: SQUAD_CONTENT, formation: FORMATION_CONTENT, tactic: TACTIC_CONTENT },
+      (choice: FlowChoice) => {
+        // The real production seam: a wasm-backed `createSimHost`, closed
+        // over exactly the `{formation, tactic}` `Flow` computed from the
+        // clicks below -- the same shape `real_match_factory.ts`'s injected
+        // `createHost` closure builds one from a `ProductMatchRequest`.
+        capturedHost = createSimHost(NEBULA.id, ORION.id, 13, 20, 3, {
+          homeFormation: choice.formation,
+          tactic: choice.tactic,
+          homeStarterIds: NEBULA.roster,
+        });
+        return { update: () => {}, event: () => {}, draw: () => {} };
+      },
+    );
 
     click(stack, "next"); // squad -> formation
     click(stack, "formation_1-1-2"); // choose formation
@@ -109,7 +130,10 @@ describe("pre-match flow (tier 3)", () => {
       if (raw === undefined) {
         throw new Error("expected matchStateJson() on a WasmSimHost");
       }
-      const state = JSON.parse(raw) as { readonly players: readonly unknown[]; readonly press: { readonly home: number } };
+      const state = JSON.parse(raw) as {
+        readonly players: readonly unknown[];
+        readonly press: { readonly home: number };
+      };
       expect(state.players.length).toBe(10);
       expect(state.press.home).toBe(2); // press_high
     } finally {

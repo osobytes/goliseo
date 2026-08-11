@@ -235,7 +235,10 @@ export class LobbyLink {
       // immediately can discard it. The close is therefore deferred by one
       // pump, which every adapter has to complete anyway.
       const typed = effect as { link_id: string; detail?: string };
-      this._closing.push({ link_id: typed.link_id, ...(typed.detail !== undefined ? { detail: typed.detail } : {}) });
+      this._closing.push({
+        link_id: typed.link_id,
+        ...(typed.detail !== undefined ? { detail: typed.detail } : {}),
+      });
       return ok(true);
     } else if (kind === "shutdown") {
       const result = this.star.shutdown();
@@ -262,7 +265,11 @@ export class LobbyLink {
       if (event.kind === "peer_state" && event.peer_id !== undefined) {
         if (event.state === "connected") {
           events.push({ kind: "peer_connected", peer_id: event.peer_id });
-        } else if (event.state === "error" || event.state === "closed" || event.state === "disconnected") {
+        } else if (
+          event.state === "error" ||
+          event.state === "closed" ||
+          event.state === "disconnected"
+        ) {
           events.push({
             kind: "link_lost",
             link_id: event.peer_id,

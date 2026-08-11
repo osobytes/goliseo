@@ -329,7 +329,10 @@ const ROOT = "root";
  * `clearanceMetres` is a parameter only so the spec can exercise the
  * conversion with a non-zero budget; every caller uses the rig's own.
  */
-export function groundedRootY(y: number, clearanceMetres: number = GROUND_CLEARANCE_METRES): number {
+export function groundedRootY(
+  y: number,
+  clearanceMetres: number = GROUND_CLEARANCE_METRES,
+): number {
   if (y >= 0) {
     return y;
   }
@@ -486,7 +489,9 @@ function save(poseId: string | undefined, opts: ActionPoseOptions): RootPose | n
 // other styles are a lift with the limbs posed by their own clip.
 function aerial(poseId: string | undefined, opts: ActionPoseOptions): RootPose | null {
   const isAerial =
-    poseId === "aerial_bicycle" || poseId === "aerial_action" || (poseId === undefined && (opts.aerial ?? 0) > 0);
+    poseId === "aerial_bicycle" ||
+    poseId === "aerial_action" ||
+    (poseId === undefined && (opts.aerial ?? 0) > 0);
   if (!(isAerial && opts.aerial_style)) {
     return null;
   }
@@ -784,7 +789,11 @@ export function apply(pose: MutablePose, opts: ActionPoseOptions): MutablePose {
   const action = forOptions(opts);
   if (action) {
     for (const [bone, r] of Object.entries(action.rot)) {
-      pose.rot[bone] = quat.fromEuler((r[0] * Math.PI) / 180, (r[1] * Math.PI) / 180, (r[2] * Math.PI) / 180);
+      pose.rot[bone] = quat.fromEuler(
+        (r[0] * Math.PI) / 180,
+        (r[1] * Math.PI) / 180,
+        (r[2] * Math.PI) / 180,
+      );
     }
     for (const [bone, m] of Object.entries(action.move)) {
       pose.move[bone] = bone === ROOT ? [m[0], groundedRootY(m[1]), m[2]] : m;
@@ -797,7 +806,11 @@ export function apply(pose: MutablePose, opts: ActionPoseOptions): MutablePose {
     return pose;
   }
   for (const [bone, r] of Object.entries(held.rot)) {
-    const q = quat.fromEuler((r[0] * Math.PI) / 180, (r[1] * Math.PI) / 180, (r[2] * Math.PI) / 180);
+    const q = quat.fromEuler(
+      (r[0] * Math.PI) / 180,
+      (r[1] * Math.PI) / 180,
+      (r[2] * Math.PI) / 180,
+    );
     const existing = pose.rot[bone];
     // Pre-multiplied, matching `player_renderer_3d.ts`'s `applyLean`: the
     // attitude is applied in the PARENT's frame, so it tips the whole rig
@@ -810,7 +823,11 @@ export function apply(pose: MutablePose, opts: ActionPoseOptions): MutablePose {
     // BEFORE it is added: the gait's bob is the clip's business and survives
     // untouched, exactly as composition (rather than assignment) intends.
     const dy = bone === ROOT ? groundedRootY(m[1]) : m[1];
-    pose.move[bone] = [(existing[0] ?? 0) + m[0], (existing[1] ?? 0) + dy, (existing[2] ?? 0) + m[2]];
+    pose.move[bone] = [
+      (existing[0] ?? 0) + m[0],
+      (existing[1] ?? 0) + dy,
+      (existing[2] ?? 0) + m[2],
+    ];
   }
   return pose;
 }

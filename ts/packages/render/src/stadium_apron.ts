@@ -74,9 +74,21 @@ const APRON_FRAGMENT = /* glsl */ `
 
 function buildGateFrameGeometry(width: number, height: number): THREE.BufferGeometry {
   const pillarWidth = 8;
-  const pillarL = new THREE.BoxGeometry(pillarWidth, height, pillarWidth).translate(-width / 2, height / 2, 0);
-  const pillarR = new THREE.BoxGeometry(pillarWidth, height, pillarWidth).translate(width / 2, height / 2, 0);
-  const lintel = new THREE.BoxGeometry(width + pillarWidth, height * 0.22, pillarWidth).translate(0, height + height * 0.11, 0);
+  const pillarL = new THREE.BoxGeometry(pillarWidth, height, pillarWidth).translate(
+    -width / 2,
+    height / 2,
+    0,
+  );
+  const pillarR = new THREE.BoxGeometry(pillarWidth, height, pillarWidth).translate(
+    width / 2,
+    height / 2,
+    0,
+  );
+  const lintel = new THREE.BoxGeometry(width + pillarWidth, height * 0.22, pillarWidth).translate(
+    0,
+    height + height * 0.11,
+    0,
+  );
   const merged = mergeGeometries([pillarL, pillarR, lintel], false);
   pillarL.dispose();
   pillarR.dispose();
@@ -169,8 +181,16 @@ export function buildApron(layout: StadiumLayout, arena: ArenaColors, rng: Prng)
       uTime,
       uCenter: { value: new THREE.Vector2(layout.cx, layout.cz) },
       uOuterRadii: { value: new THREE.Vector2(layout.apronOuterRx, layout.apronOuterRz) },
-      uRailColor: { value: new THREE.Color(arena.rail_color[0], arena.rail_color[1], arena.rail_color[2]) },
-      uHighlightColor: { value: new THREE.Color(arena.highlight_color[0], arena.highlight_color[1], arena.highlight_color[2]) },
+      uRailColor: {
+        value: new THREE.Color(arena.rail_color[0], arena.rail_color[1], arena.rail_color[2]),
+      },
+      uHighlightColor: {
+        value: new THREE.Color(
+          arena.highlight_color[0],
+          arena.highlight_color[1],
+          arena.highlight_color[2],
+        ),
+      },
     },
     vertexShader: APRON_VERTEX,
     fragmentShader: APRON_FRAGMENT,
@@ -182,9 +202,17 @@ export function buildApron(layout: StadiumLayout, arena: ArenaColors, rng: Prng)
   const endAngles = layout.gateAngles.filter((a) => isEndGateAngle(a));
   const sideAngles = layout.gateAngles.filter((a) => !isEndGateAngle(a));
 
-  const gateFrameMaterial = new THREE.MeshStandardMaterial({ color: 0x1a1712, roughness: 0.95, metalness: 0.05 });
+  const gateFrameMaterial = new THREE.MeshStandardMaterial({
+    color: 0x1a1712,
+    roughness: 0.95,
+    metalness: 0.05,
+  });
   const gateFrameGeometry = buildGateFrameGeometry(layout.gateWidth, layout.gateHeight);
-  const gateFrames = new THREE.InstancedMesh(gateFrameGeometry, gateFrameMaterial, Math.max(1, endAngles.length));
+  const gateFrames = new THREE.InstancedMesh(
+    gateFrameGeometry,
+    gateFrameMaterial,
+    Math.max(1, endAngles.length),
+  );
   gateFrames.name = "apron_gate_frames";
 
   // A dim ember interior, not a beacon: at 1.4 the interior plane rendered as
@@ -192,21 +220,38 @@ export function buildApron(layout: StadiumLayout, arena: ArenaColors, rng: Prng)
   // stadium screenshot). 0.38 keeps it under the bloom threshold (0.55) --
   // warm depth behind the arch, no glow halo -- and the darker multiply on
   // the base color keeps the lit face from reading as flat paint.
-  const glowColor = new THREE.Color(arena.highlight_color[0], arena.highlight_color[1], arena.highlight_color[2]);
+  const glowColor = new THREE.Color(
+    arena.highlight_color[0],
+    arena.highlight_color[1],
+    arena.highlight_color[2],
+  );
   const gateGlowMaterial = new THREE.MeshStandardMaterial({
     color: glowColor.clone().multiplyScalar(0.35),
     emissive: glowColor,
     emissiveIntensity: 0.38,
     roughness: 0.5,
   });
-  const gateGlowGeometry = new THREE.PlaneGeometry(layout.gateWidth - 12, layout.gateHeight * 0.85).translate(0, (layout.gateHeight * 0.85) / 2, 0.1);
-  const gateGlows = new THREE.InstancedMesh(gateGlowGeometry, gateGlowMaterial, Math.max(1, endAngles.length));
+  const gateGlowGeometry = new THREE.PlaneGeometry(
+    layout.gateWidth - 12,
+    layout.gateHeight * 0.85,
+  ).translate(0, (layout.gateHeight * 0.85) / 2, 0.1);
+  const gateGlows = new THREE.InstancedMesh(
+    gateGlowGeometry,
+    gateGlowMaterial,
+    Math.max(1, endAngles.length),
+  );
   gateGlows.name = "apron_gate_glow";
 
   const dummy = new THREE.Object3D();
   for (let i = 0; i < endAngles.length; i += 1) {
     const angle = endAngles[i] ?? 0;
-    const [x, z] = ellipsePoint(layout.cx, layout.cz, layout.apronOuterRx, layout.apronOuterRz, angle);
+    const [x, z] = ellipsePoint(
+      layout.cx,
+      layout.cz,
+      layout.apronOuterRx,
+      layout.apronOuterRz,
+      angle,
+    );
     const yaw = ellipseYawFacingCenter(angle, layout.apronOuterRx, layout.apronOuterRz);
     dummy.position.set(x, 0, z);
     dummy.rotation.set(0, yaw, 0);
@@ -226,9 +271,17 @@ export function buildApron(layout: StadiumLayout, arena: ArenaColors, rng: Prng)
   // stay on one clock.
   const boardWidth = layout.gateWidth * 0.85;
   const boardHeight = layout.gateHeight * 0.9;
-  const bezelMaterial = new THREE.MeshStandardMaterial({ color: 0x0a0c10, roughness: 0.6, metalness: 0.2 });
+  const bezelMaterial = new THREE.MeshStandardMaterial({
+    color: 0x0a0c10,
+    roughness: 0.6,
+    metalness: 0.2,
+  });
   const bezelGeometry = buildScoreboardBezelGeometry(boardWidth + 10, boardHeight + 10);
-  const bezels = new THREE.InstancedMesh(bezelGeometry, bezelMaterial, Math.max(1, sideAngles.length));
+  const bezels = new THREE.InstancedMesh(
+    bezelGeometry,
+    bezelMaterial,
+    Math.max(1, sideAngles.length),
+  );
   bezels.name = "apron_scoreboard_bezels";
 
   const faceMaterial = new THREE.ShaderMaterial({
@@ -242,7 +295,13 @@ export function buildApron(layout: StadiumLayout, arena: ArenaColors, rng: Prng)
 
   for (let i = 0; i < sideAngles.length; i += 1) {
     const angle = sideAngles[i] ?? 0;
-    const [x, z] = ellipsePoint(layout.cx, layout.cz, layout.apronOuterRx, layout.apronOuterRz, angle);
+    const [x, z] = ellipsePoint(
+      layout.cx,
+      layout.cz,
+      layout.apronOuterRx,
+      layout.apronOuterRz,
+      angle,
+    );
     const yaw = ellipseYawFacingCenter(angle, layout.apronOuterRx, layout.apronOuterRz);
     dummy.position.set(x, 0, z);
     dummy.quaternion.copy(scoreboardQuaternion(yaw, SCOREBOARD_TILT));

@@ -191,7 +191,14 @@ describe("combat feedback presentation contract", () => {
             reach_px: 30,
             front_arc_degrees: 100,
           },
-          guard: { id: "guard", name: "Guard", windup_ticks: 6, recovery_ticks: 9, cooldown_ticks: 0, front_arc_degrees: 120 },
+          guard: {
+            id: "guard",
+            name: "Guard",
+            windup_ticks: 6,
+            recovery_ticks: 9,
+            cooldown_ticks: 0,
+            front_arc_degrees: 120,
+          },
           light_melee: {
             id: "light_melee",
             name: "Light Melee",
@@ -215,7 +222,12 @@ describe("combat feedback presentation contract", () => {
           },
         },
         equipment_presentations: {
-          toy_foam_sword: { id: "toy_foam_sword", name: "Foam Champion", family_id: "light_melee", attachment: "right_hand" },
+          toy_foam_sword: {
+            id: "toy_foam_sword",
+            name: "Foam Champion",
+            family_id: "light_melee",
+            attachment: "right_hand",
+          },
           scifi_energy_blade: {
             id: "scifi_energy_blade",
             name: "Vector Blade",
@@ -233,9 +245,11 @@ describe("combat feedback presentation contract", () => {
       };
     }
 
-    const beforeName = combat.model(state, combatState, dataWith("toy_foam_sword")).players[0]?.equipment_name;
+    const beforeName = combat.model(state, combatState, dataWith("toy_foam_sword")).players[0]
+      ?.equipment_name;
     expect(beforeName).toBeDefined();
-    const swappedName = combat.model(state, combatState, dataWith("scifi_energy_blade")).players[0]?.equipment_name;
+    const swappedName = combat.model(state, combatState, dataWith("scifi_energy_blade")).players[0]
+      ?.equipment_name;
     expect(swappedName).toBeDefined();
 
     const after = JSON.stringify({ state, combatState });

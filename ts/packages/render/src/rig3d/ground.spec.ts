@@ -70,7 +70,12 @@ function bruteForceLowest(rig: skeleton.Rig): number {
     if (world === undefined) {
       throw new Error(`ground.spec.ts: vertex on unknown bone index ${String(vertex.bone)}`);
     }
-    const p = mat4.transformPoint(world, vertex.position[0], vertex.position[1], vertex.position[2]);
+    const p = mat4.transformPoint(
+      world,
+      vertex.position[0],
+      vertex.position[1],
+      vertex.position[2],
+    );
     if (p[1] < lowest) {
       lowest = p[1];
     }
@@ -79,9 +84,19 @@ function bruteForceLowest(rig: skeleton.Rig): number {
 }
 
 let seq = 0;
-function posed(rig: skeleton.Rig, id: string | undefined, extra: Partial<actionPose.ActionPoseOptions>, now: number, speed: number, gait: number) {
+function posed(
+  rig: skeleton.Rig,
+  id: string | undefined,
+  extra: Partial<actionPose.ActionPoseOptions>,
+  now: number,
+  speed: number,
+  gait: number,
+) {
   seq += 1;
-  const opts = id === undefined ? {} : { pose: { id }, dive_dir: { x: 1, y: 0 }, facing: { x: 0, y: 1 }, ...extra };
+  const opts =
+    id === undefined
+      ? {}
+      : { pose: { id }, dive_dir: { x: 1, y: 0 }, facing: { x: 0, y: 1 }, ...extra };
   const pose = animator.poseFor(`g_${String(seq)}`, { speed, gait }, opts, now);
   skeleton.apply(rig, pose);
   return pose;
@@ -100,7 +115,14 @@ describe("rig3d/ground: the pruned scan is exact", () => {
       for (const dive of [0, 0.5, 1]) {
         for (const speed of [0, 150, 400]) {
           for (let i = 0; i < 8; i += 1) {
-            posed(rig, id, { dive, aerial: dive, aerial_style: "bicycle", aerial_jump: dive }, i * 0.037, speed, i / 8);
+            posed(
+              rig,
+              id,
+              { dive, aerial: dive, aerial_style: "bicycle", aerial_jump: dive },
+              i * 0.037,
+              speed,
+              i / 8,
+            );
             expect(
               ground.lowestPoint(rig, PROBES),
               `${id ?? "(no pose)"} dive ${String(dive)} speed ${String(speed)} phase ${String(i)}`,
@@ -152,7 +174,13 @@ describe("rig3d/ground: probesFrom", () => {
   // silently here would hide a part from the ground scan -- the one place
   // where "renders fine, measures fine, hangs through the pitch" is possible.
   it("refuses a vertex on a bone the skeleton does not have", () => {
-    const stray = { position: [0, 0, 0] as const, normal: [0, 1, 0] as const, paletteSlot: 0, bone: BONE_ORDER.length, material: "plain" };
+    const stray = {
+      position: [0, 0, 0] as const,
+      normal: [0, 1, 0] as const,
+      paletteSlot: 0,
+      bone: BONE_ORDER.length,
+      material: "plain",
+    };
     expect(() => {
       ground.probesFrom(RIG, [stray as unknown as (typeof MESH.verts)[number]], BONE_ORDER);
     }).toThrow(/unknown bone index/);
@@ -173,9 +201,18 @@ describe("rig3d/ground: how many times poseAndGround evaluates the skeleton", ()
   // pass by measuring nothing.
   const raised = (): skeleton.Rig => skeleton.raised(skeleton.newRig(RIG), PROBES.restLift);
 
-  function appliesFor(rig: skeleton.Rig, id: string | undefined, extra: Partial<actionPose.ActionPoseOptions>, speed: number, gait: number) {
+  function appliesFor(
+    rig: skeleton.Rig,
+    id: string | undefined,
+    extra: Partial<actionPose.ActionPoseOptions>,
+    speed: number,
+    gait: number,
+  ) {
     seq += 1;
-    const opts = id === undefined ? {} : { pose: { id }, dive_dir: { x: 1, y: 0 }, facing: { x: 0, y: 1 }, ...extra };
+    const opts =
+      id === undefined
+        ? {}
+        : { pose: { id }, dive_dir: { x: 1, y: 0 }, facing: { x: 0, y: 1 }, ...extra };
     const pose = animator.poseFor(`c_${String(seq)}`, { speed, gait }, opts, 0);
     applies.count = 0;
     const lift = ground.poseAndGround(rig, pose, PROBES);
@@ -204,7 +241,12 @@ describe("rig3d/ground: how many times poseAndGround evaluates the skeleton", ()
 
   it("evaluates twice for a character whose pose is genuinely penetrating", () => {
     const rig = raised();
-    for (const [id, dive] of [["keeper_dive", 1], ["keeper_tip", 1], ["contain", 0], ["combat_stagger", 0]] as const) {
+    for (const [id, dive] of [
+      ["keeper_dive", 1],
+      ["keeper_tip", 1],
+      ["contain", 0],
+      ["combat_stagger", 0],
+    ] as const) {
       const r = appliesFor(rig, id, { dive }, 0, 0);
       expect(r.applies, `${id} penetrates, so it costs the correction`).toBe(2);
       expect(r.lift, `${id} really is lifted`).toBeGreaterThan(0);

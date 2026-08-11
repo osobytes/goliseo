@@ -33,7 +33,13 @@ function near(actual: number, expected: number, eps = 1e-9): void {
 
 describe("rotateAround", () => {
   it("leaves the pivot itself fixed under any rotation", () => {
-    const t: PivotTransform = { pivotX: 10, pivotY: 20, angle: Math.PI / 3, offsetX: 0, offsetY: 0 };
+    const t: PivotTransform = {
+      pivotX: 10,
+      pivotY: 20,
+      angle: Math.PI / 3,
+      offsetX: 0,
+      offsetY: 0,
+    };
     const [x, y] = rotateAround(t, 10, 20);
     near(x, 10);
     near(y, 20);
@@ -64,7 +70,13 @@ describe("rotateAround", () => {
     const travel = 0.65;
     const amount = 1;
     const angle = ((28 * Math.PI) / 180) * amount;
-    const t: PivotTransform = { pivotX: sx, pivotY: gy, angle, offsetX: sign * r * travel * amount, offsetY: 0 };
+    const t: PivotTransform = {
+      pivotX: sx,
+      pivotY: gy,
+      angle,
+      offsetX: sign * r * travel * amount,
+      offsetY: 0,
+    };
     // A point directly "above" the feet (head, at -r on y) should end up
     // rotated toward the dive direction and translated along it.
     const [x, y] = rotateAround(t, sx, gy - r);
@@ -330,7 +342,11 @@ describe("draw2d material cache (#403)", () => {
     resetMaterialCache();
   });
 
-  const fill = (color: readonly [number, number, number], alpha?: number, blend?: "add"): DrawCommand => ({
+  const fill = (
+    color: readonly [number, number, number],
+    alpha?: number,
+    blend?: "add",
+  ): DrawCommand => ({
     kind: "rect",
     mode: "fill",
     x: 0,

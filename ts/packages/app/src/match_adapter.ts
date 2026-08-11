@@ -26,7 +26,10 @@ export interface MatchAdapter {
 }
 
 /** A concrete real-match screen constructor, injected -- see this file's header. */
-export type RealMatchFactory = (request: ProductMatchRequest, callbacks: MatchAdapterCallbacks) => Screen;
+export type RealMatchFactory = (
+  request: ProductMatchRequest,
+  callbacks: MatchAdapterCallbacks,
+) => Screen;
 
 function fake(content: Pick<MatchContractContent, "players" | "teams">): MatchAdapter {
   return {

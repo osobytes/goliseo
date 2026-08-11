@@ -126,7 +126,10 @@ const DATA: CombatPresentationData = {
   loadouts: LOADOUTS,
 };
 
-function defaultRuntime(familyId: ActionFamilyId | undefined, loadoutId: string | undefined): CombatPlayerState {
+function defaultRuntime(
+  familyId: ActionFamilyId | undefined,
+  loadoutId: string | undefined,
+): CombatPlayerState {
   return {
     phase: "ready",
     phase_ticks: 0,
@@ -182,7 +185,7 @@ function fixture(): { state: MatchState; combatState: CombatMatchState } {
     tick: 0,
     player_ids: ids,
     players: families.map((familyId) =>
-      defaultRuntime(familyId, familyId !== undefined ? loadoutByFamily[familyId] : undefined)
+      defaultRuntime(familyId, familyId !== undefined ? loadoutByFamily[familyId] : undefined),
     ),
     projectiles: [],
   };
@@ -270,7 +273,9 @@ describe("combat presentation projection", () => {
     const second = combat.model(state, combatState, DATA);
     const after = JSON.stringify({ state, combatState });
     expect(after).toBe(before);
-    expect(first.players[1]?.equipment_presentation_id).toBe(second.players[1]?.equipment_presentation_id);
+    expect(first.players[1]?.equipment_presentation_id).toBe(
+      second.players[1]?.equipment_presentation_id,
+    );
     expect(combat.model(state, null, DATA).enabled).toBe(false);
   });
 
@@ -287,7 +292,7 @@ describe("combat presentation projection", () => {
         x: 300,
         y: 240,
       },
-      "combat/8/4/contact"
+      "combat/8/4/contact",
     );
     expect(contact.semantic_id).toBe("combat.contact.guarded");
     expect(contact.stable_id).toBe("combat/8/4/contact");

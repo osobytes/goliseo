@@ -104,7 +104,11 @@ export interface RollbackWrappedEvent<TPayload = unknown> {
 }
 
 export type LifecyclePayload =
-  | { readonly kind: "goal"; readonly team: "home" | "away"; readonly score: { readonly home: number; readonly away: number } }
+  | {
+      readonly kind: "goal";
+      readonly team: "home" | "away";
+      readonly score: { readonly home: number; readonly away: number };
+    }
   | { readonly kind: "kickoff" }
   | { readonly kind: "full_time" };
 
@@ -114,7 +118,10 @@ export interface RollbackEventStepCore {
   readonly lifecycle_events: readonly RollbackWrappedEvent<LifecyclePayload>[];
 }
 
-export interface OnlineMatchModel<TState extends CoordinatorStateCore, TRequest extends OnlineMatchRequestCore> {
+export interface OnlineMatchModel<
+  TState extends CoordinatorStateCore,
+  TRequest extends OnlineMatchRequestCore,
+> {
   readonly request: TRequest;
   readonly coordinator: TState;
   readonly phase: OnlineMatchPhase;
@@ -134,16 +141,21 @@ export const NOTICE_SECONDS = 3.5;
 // playing -> full_time, plus the opening step from nothing.
 const MATCH_PHASE_CHAIN = ["kickoff", "playing", "goal_stoppage", "full_time"] as const;
 
-export const PAUSE_NOTICE = "Online match: pausing would stall every peer. Press Escape again to abort.";
+export const PAUSE_NOTICE =
+  "Online match: pausing would stall every peer. Press Escape again to abort.";
 export const FOCUS_NOTICE = "Window lost focus — the online match kept running.";
 export const CONTROLLER_NOTICE = "Controller disconnected — keyboard input still works.";
-export const ABORT_PROMPT = "Abort the session for every peer? Escape confirms, any other key resumes.";
+export const ABORT_PROMPT =
+  "Abort the session for every peer? Escape confirms, any other key resumes.";
 
 export type OnlineMatchCommand =
   | { readonly kind: "control"; readonly link_id: string; readonly wire: string }
   | { readonly kind: "tick"; readonly dt?: number }
   | { readonly kind: "confirmed"; readonly steps?: readonly RollbackEventStepCore[] }
-  | { readonly kind: "checkpoints"; readonly checkpoints?: readonly { readonly tick: number; readonly hash: string }[] }
+  | {
+      readonly kind: "checkpoints";
+      readonly checkpoints?: readonly { readonly tick: number; readonly hash: string }[];
+    }
   | {
       readonly kind: "full_time";
       readonly home_score: number;
@@ -170,7 +182,7 @@ export type OnlineMatchCommand =
 export type UnknownOnlineMatchCommand = { readonly kind: string; readonly [key: string]: unknown };
 
 function copy<TState extends CoordinatorStateCore, TRequest extends OnlineMatchRequestCore>(
-  model: OnlineMatchModel<TState, TRequest>
+  model: OnlineMatchModel<TState, TRequest>,
 ): OnlineMatchModel<TState, TRequest> {
   return {
     request: model.request,
@@ -180,17 +192,19 @@ function copy<TState extends CoordinatorStateCore, TRequest extends OnlineMatchR
     tick: model.tick,
     abort_prompt: model.abort_prompt,
     ...(model.published !== undefined ? { published: model.published } : {}),
-    ...(model.notice !== undefined ? { notice: { text: model.notice.text, remaining: model.notice.remaining } } : {}),
+    ...(model.notice !== undefined
+      ? { notice: { text: model.notice.text, remaining: model.notice.remaining } }
+      : {}),
     ...(model.result !== undefined ? { result: model.result } : {}),
     ...(model.terminal !== undefined ? { terminal: model.terminal } : {}),
     ...(model.error !== undefined ? { error: model.error } : {}),
   };
 }
 
-export function newOnlineMatchModel<TState extends CoordinatorStateCore, TRequest extends OnlineMatchRequestCore>(
-  request: TRequest,
-  state: TState
-): OnlineMatchModel<TState, TRequest> {
+export function newOnlineMatchModel<
+  TState extends CoordinatorStateCore,
+  TRequest extends OnlineMatchRequestCore,
+>(request: TRequest, state: TState): OnlineMatchModel<TState, TRequest> {
   return {
     request,
     coordinator: state,
@@ -203,7 +217,7 @@ export function newOnlineMatchModel<TState extends CoordinatorStateCore, TReques
 
 function notify<TState extends CoordinatorStateCore, TRequest extends OnlineMatchRequestCore>(
   model: OnlineMatchModel<TState, TRequest>,
-  text: string
+  text: string,
 ): OnlineMatchModel<TState, TRequest> {
   return { ...model, notice: { text, remaining: NOTICE_SECONDS } };
 }
@@ -212,7 +226,7 @@ function absorb<TState extends CoordinatorStateCore, TRequest extends OnlineMatc
   model: OnlineMatchModel<TState, TRequest>,
   outcome: CoordinatorOutcome,
   protocol: ProtocolPort,
-  effects: OnlineMatchEffect[]
+  effects: OnlineMatchEffect[],
 ): OnlineMatchModel<TState, TRequest> {
   let next = model;
   if (!outcome.accepted && outcome.reason) {
@@ -248,7 +262,7 @@ function step<TState extends CoordinatorStateCore, TRequest extends OnlineMatchR
   coordinator: CoordinatorPort<TState>,
   protocol: ProtocolPort,
   event: CoordinatorEvent,
-  effects: OnlineMatchEffect[]
+  effects: OnlineMatchEffect[],
 ): OnlineMatchModel<TState, TRequest> {
   const state = model.coordinator;
   // A session that already ended keeps its reason. Late traffic after a
@@ -263,7 +277,7 @@ function step<TState extends CoordinatorStateCore, TRequest extends OnlineMatchR
 function settle<TState extends CoordinatorStateCore, TRequest extends OnlineMatchRequestCore>(
   model: OnlineMatchModel<TState, TRequest>,
   isCompleted: (terminal: CoordinatorTerminal) => boolean,
-  localResult: (state: TState) => unknown
+  localResult: (state: TState) => unknown,
 ): OnlineMatchModel<TState, TRequest> {
   const state = model.coordinator;
   if (state.phase !== "terminal") {
@@ -285,14 +299,20 @@ function publishPhase<TState extends CoordinatorStateCore, TRequest extends Onli
   coordinator: CoordinatorPort<TState>,
   protocol: ProtocolPort,
   phase: string,
-  effects: OnlineMatchEffect[]
+  effects: OnlineMatchEffect[],
 ): OnlineMatchModel<TState, TRequest> {
   const next = step(
     model,
     coordinator,
     protocol,
-    { kind: "match_phase", phase, tick: model.tick, home_score: model.score.home, away_score: model.score.away },
-    effects
+    {
+      kind: "match_phase",
+      phase,
+      tick: model.tick,
+      home_score: model.score.home,
+      away_score: model.score.away,
+    },
+    effects,
   );
   return { ...next, published: phase };
 }
@@ -308,7 +328,7 @@ function advanceTo<TState extends CoordinatorStateCore, TRequest extends OnlineM
   coordinator: CoordinatorPort<TState>,
   protocol: ProtocolPort,
   target: string,
-  effects: OnlineMatchEffect[]
+  effects: OnlineMatchEffect[],
 ): OnlineMatchModel<TState, TRequest> {
   let next = model;
   for (let i = 0; i < MATCH_PHASE_CHAIN.length; i += 1) {
@@ -343,7 +363,7 @@ function publishSteps<TState extends CoordinatorStateCore, TRequest extends Onli
   coordinator: CoordinatorPort<TState>,
   protocol: ProtocolPort,
   steps: readonly RollbackEventStepCore[],
-  effects: OnlineMatchEffect[]
+  effects: OnlineMatchEffect[],
 ): OnlineMatchModel<TState, TRequest> {
   if (model.request.role !== "host") {
     return model;
@@ -367,12 +387,20 @@ function publishSteps<TState extends CoordinatorStateCore, TRequest extends Onli
   return next;
 }
 
-function reachFullTime<TState extends CoordinatorStateCore, TRequest extends OnlineMatchRequestCore>(
+function reachFullTime<
+  TState extends CoordinatorStateCore,
+  TRequest extends OnlineMatchRequestCore,
+>(
   model: OnlineMatchModel<TState, TRequest>,
   coordinator: CoordinatorPort<TState>,
   protocol: ProtocolPort,
-  event: { readonly home_score: number; readonly away_score: number; readonly final_tick: number; readonly final_hash: string },
-  effects: OnlineMatchEffect[]
+  event: {
+    readonly home_score: number;
+    readonly away_score: number;
+    readonly final_tick: number;
+    readonly final_hash: string;
+  },
+  effects: OnlineMatchEffect[],
 ): OnlineMatchModel<TState, TRequest> {
   if (model.phase !== "playing") {
     return model;
@@ -401,24 +429,31 @@ function reachFullTime<TState extends CoordinatorStateCore, TRequest extends Onl
       away_score: next.score.away,
       final_hash: event.final_hash,
     },
-    effects
+    effects,
   );
 }
 
-function reportFailure<TState extends CoordinatorStateCore, TRequest extends OnlineMatchRequestCore>(
+function reportFailure<
+  TState extends CoordinatorStateCore,
+  TRequest extends OnlineMatchRequestCore,
+>(
   model: OnlineMatchModel<TState, TRequest>,
   coordinator: CoordinatorPort<TState>,
   protocol: ProtocolPort,
   event: { readonly failure?: string; readonly detail?: string },
-  effects: OnlineMatchEffect[]
+  effects: OnlineMatchEffect[],
 ): OnlineMatchModel<TState, TRequest> {
   if (event.failure) {
     return step(
       model,
       coordinator,
       protocol,
-      { kind: "netcode_failure", failure: event.failure, ...(event.detail !== undefined ? { detail: event.detail } : {}) },
-      effects
+      {
+        kind: "netcode_failure",
+        failure: event.failure,
+        ...(event.detail !== undefined ? { detail: event.detail } : {}),
+      },
+      effects,
     );
   }
   // A lost star has no failure class of its own. A guest knows exactly which
@@ -432,25 +467,32 @@ function reportFailure<TState extends CoordinatorStateCore, TRequest extends Onl
       coordinator,
       protocol,
       { kind: "link_lost", link_id: state.host_link_id, code: "transport_lost" },
-      effects
+      effects,
     );
   }
   return step(
     model,
     coordinator,
     protocol,
-    { kind: "abort", code: "peer_disconnect", detail: event.detail ?? "the star transport was lost" },
-    effects
+    {
+      kind: "abort",
+      code: "peer_disconnect",
+      detail: event.detail ?? "the star transport was lost",
+    },
+    effects,
   );
 }
 
-function absorbControl<TState extends CoordinatorStateCore, TRequest extends OnlineMatchRequestCore>(
+function absorbControl<
+  TState extends CoordinatorStateCore,
+  TRequest extends OnlineMatchRequestCore,
+>(
   model: OnlineMatchModel<TState, TRequest>,
   coordinator: CoordinatorPort<TState>,
   protocol: ProtocolPort,
   linkId: string,
   wire: string,
-  effects: OnlineMatchEffect[]
+  effects: OnlineMatchEffect[],
 ): OnlineMatchModel<TState, TRequest> {
   const message = protocol.decode(wire);
   // A peer's boundary hash is the driver's business as well as the session's:
@@ -474,10 +516,13 @@ export interface OnlineMatchModelPorts<TState extends CoordinatorStateCore> {
 // One flow event. `event` is abstracted the same way a screen event is: the
 // caller translates transport traffic, driver batches, and raw input into
 // these shapes and executes the returned effects.
-export function command<TState extends CoordinatorStateCore, TRequest extends OnlineMatchRequestCore>(
+export function command<
+  TState extends CoordinatorStateCore,
+  TRequest extends OnlineMatchRequestCore,
+>(
   model: OnlineMatchModel<TState, TRequest>,
   ports: OnlineMatchModelPorts<TState>,
-  rawEvent: OnlineMatchCommand | UnknownOnlineMatchCommand
+  rawEvent: OnlineMatchCommand | UnknownOnlineMatchCommand,
 ): readonly [OnlineMatchModel<TState, TRequest>, readonly OnlineMatchEffect[]] {
   const { coordinator, protocol } = ports;
   const effects: OnlineMatchEffect[] = [];
@@ -494,7 +539,10 @@ export function command<TState extends CoordinatorStateCore, TRequest extends On
       next = step(next, coordinator, protocol, { kind: "tick" }, effects);
       if (next.notice) {
         const remaining = next.notice.remaining - (event.dt ?? 0);
-        next = remaining > 0 ? { ...next, notice: { text: next.notice.text, remaining } } : withoutNotice(next);
+        next =
+          remaining > 0
+            ? { ...next, notice: { text: next.notice.text, remaining } }
+            : withoutNotice(next);
       }
       break;
     }
@@ -508,7 +556,7 @@ export function command<TState extends CoordinatorStateCore, TRequest extends On
           coordinator,
           protocol,
           { kind: "hash_report", tick: checkpoint.tick, boundary_hash: checkpoint.hash },
-          effects
+          effects,
         );
       }
       break;
@@ -524,7 +572,7 @@ export function command<TState extends CoordinatorStateCore, TRequest extends On
         coordinator,
         protocol,
         { kind: "link_lost", link_id: event.link_id, code: event.code ?? "transport_lost" },
-        effects
+        effects,
       );
       break;
     case "pause_request":
@@ -536,7 +584,7 @@ export function command<TState extends CoordinatorStateCore, TRequest extends On
           coordinator,
           protocol,
           { kind: "abort", code: "host_abort", detail: "a peer aborted the online match" },
-          effects
+          effects,
         );
       } else {
         next = notify({ ...next, abort_prompt: true }, PAUSE_NOTICE);
@@ -556,8 +604,12 @@ export function command<TState extends CoordinatorStateCore, TRequest extends On
         next,
         coordinator,
         protocol,
-        { kind: "abort", code: "host_abort", detail: event.detail ?? "a peer aborted the online match" },
-        effects
+        {
+          kind: "abort",
+          code: "host_abort",
+          detail: event.detail ?? "a peer aborted the online match",
+        },
+        effects,
       );
       break;
     default:
@@ -567,15 +619,16 @@ export function command<TState extends CoordinatorStateCore, TRequest extends On
   return [next, effects];
 }
 
-function withoutNotice<TState extends CoordinatorStateCore, TRequest extends OnlineMatchRequestCore>(
-  model: OnlineMatchModel<TState, TRequest>
-): OnlineMatchModel<TState, TRequest> {
+function withoutNotice<
+  TState extends CoordinatorStateCore,
+  TRequest extends OnlineMatchRequestCore,
+>(model: OnlineMatchModel<TState, TRequest>): OnlineMatchModel<TState, TRequest> {
   const { notice: _notice, ...rest } = model;
   return rest;
 }
 
 export function ended<TState extends CoordinatorStateCore, TRequest extends OnlineMatchRequestCore>(
-  model: OnlineMatchModel<TState, TRequest>
+  model: OnlineMatchModel<TState, TRequest>,
 ): boolean {
   return model.phase === "ended";
 }
@@ -584,8 +637,9 @@ export function ended<TState extends CoordinatorStateCore, TRequest extends Onli
 // an acknowledged result to show; anything else leaves with its terminal
 // reason and no score, because a session that failed has no half-agreed
 // outcome to display.
-export function exitRoute<TState extends CoordinatorStateCore, TRequest extends OnlineMatchRequestCore>(
-  model: OnlineMatchModel<TState, TRequest>
-): "result" | "terminal" {
+export function exitRoute<
+  TState extends CoordinatorStateCore,
+  TRequest extends OnlineMatchRequestCore,
+>(model: OnlineMatchModel<TState, TRequest>): "result" | "terminal" {
   return model.result !== undefined ? "result" : "terminal";
 }

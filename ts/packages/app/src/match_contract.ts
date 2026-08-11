@@ -175,7 +175,12 @@ export function newResult(
   if (!home || !away) {
     return err("match result references an unknown team");
   }
-  if (!validCount(opts.home_score) || opts.home_score === undefined || !validCount(opts.away_score) || opts.away_score === undefined) {
+  if (
+    !validCount(opts.home_score) ||
+    opts.home_score === undefined ||
+    !validCount(opts.away_score) ||
+    opts.away_score === undefined
+  ) {
     return err("scores must be non-negative integers");
   }
 

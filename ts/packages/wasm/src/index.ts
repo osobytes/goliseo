@@ -87,7 +87,8 @@ const artifactPath = join(here, "..", "dist", "pkg", "gc_wasm.cjs");
  * lobby wire helpers, and the raw per-frame render path in one typed
  * surface. */
 export interface SimHost
-  extends InputFrameBridge,
+  extends
+    InputFrameBridge,
     InputProtocolBridge,
     MatchDriverFixtureBridge,
     MatchSnapshotBridge,

@@ -41,7 +41,11 @@ function toVirtual(
   return [vx, vy];
 }
 
-function toActual(transform: ViewportTransform, x: number, y: number): readonly [x: number, y: number] {
+function toActual(
+  transform: ViewportTransform,
+  x: number,
+  y: number,
+): readonly [x: number, y: number] {
   return [transform.offsetX + x * transform.scale, transform.offsetY + y * transform.scale];
 }
 

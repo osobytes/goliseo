@@ -87,7 +87,10 @@ export interface StadiumLayout {
   readonly skyRadius: number;
 }
 
-export function computeStadiumLayout(field: RenderFrameField, quality: StadiumQuality): StadiumLayout {
+export function computeStadiumLayout(
+  field: RenderFrameField,
+  quality: StadiumQuality,
+): StadiumLayout {
   const cx = field.w / 2;
   const cz = field.h / 2;
 

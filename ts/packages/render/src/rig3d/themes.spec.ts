@@ -83,7 +83,10 @@ describe("rig3d palette slots (#337)", () => {
   it("resolves a literal colour slot to exactly the authored value", () => {
     const theme = themes.byKey("scifi");
     const expected = theme.color.plate_dark;
-    expect(Array.isArray(expected), "fixture assumption: plate_dark is a literal, not a sentinel").toBe(true);
+    expect(
+      Array.isArray(expected),
+      "fixture assumption: plate_dark is a literal, not a sentinel",
+    ).toBe(true);
     const team = themes.TEAMS[0];
     expect(team).toBeDefined();
     if (!team || !Array.isArray(expected)) return;

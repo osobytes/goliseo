@@ -95,8 +95,14 @@ function localStorageSettings(): SettingsStorage {
 
 async function main(): Promise<void> {
   const root = required(document.getElementById("app-root"), "browser_main: #app-root is missing");
-  const glCanvas = required(document.getElementById("gl-canvas"), "browser_main: #gl-canvas is missing") as HTMLCanvasElement;
-  const menuCanvas = required(document.getElementById("menu-canvas"), "browser_main: #menu-canvas is missing") as HTMLCanvasElement;
+  const glCanvas = required(
+    document.getElementById("gl-canvas"),
+    "browser_main: #gl-canvas is missing",
+  ) as HTMLCanvasElement;
+  const menuCanvas = required(
+    document.getElementById("menu-canvas"),
+    "browser_main: #menu-canvas is missing",
+  ) as HTMLCanvasElement;
   const bootStatus = document.getElementById("boot-status");
 
   const menuCtx = required(menuCanvas.getContext("2d"), "browser_main: 2D context unavailable");
@@ -201,7 +207,11 @@ async function main(): Promise<void> {
       }));
       viewState.update(players, lastFrameDtSeconds);
       cameraFollow.update(
-        { field: renderFrame.field, ball: { x: renderFrame.ball.x, y: renderFrame.ball.y }, players },
+        {
+          field: renderFrame.field,
+          ball: { x: renderFrame.ball.x, y: renderFrame.ball.y },
+          players,
+        },
         lastFrameDtSeconds,
       );
 
@@ -286,7 +296,11 @@ async function main(): Promise<void> {
       if (!widget?.rect) {
         return false;
       }
-      const [x, y] = viewport.toActual(app.transform, widget.rect.x + widget.rect.w / 2, widget.rect.y + widget.rect.h / 2);
+      const [x, y] = viewport.toActual(
+        app.transform,
+        widget.rect.x + widget.rect.w / 2,
+        widget.rect.y + widget.rect.h / 2,
+      );
       app.event({ kind: "click", x, y, button: 1 });
       return true;
     };
@@ -369,14 +383,16 @@ async function main(): Promise<void> {
   const frameSamples: FrameSample[] = [];
   const MAX_FRAME_SAMPLES = 20000;
   if (import.meta.env.DEV) {
-    (window as unknown as { __gcFrames?: () => readonly FrameSample[] }).__gcFrames = () => frameSamples;
+    (window as unknown as { __gcFrames?: () => readonly FrameSample[] }).__gcFrames = () =>
+      frameSamples;
     // Long tasks are the other half: a >50ms task blocks the frame loop
     // outright, and its ATTRIBUTION (script URL) is often the fastest route
     // to the cause. Wrapped because `longtask` is not observable in every
     // engine and an unsupported entry type throws.
     try {
       const longTasks: { t: number; duration: number; name: string }[] = [];
-      (window as unknown as { __gcLongTasks?: () => readonly unknown[] }).__gcLongTasks = () => longTasks;
+      (window as unknown as { __gcLongTasks?: () => readonly unknown[] }).__gcLongTasks = () =>
+        longTasks;
       new PerformanceObserver((list) => {
         for (const entry of list.getEntries()) {
           longTasks.push({ t: entry.startTime, duration: entry.duration, name: entry.name });
@@ -423,7 +439,9 @@ async function main(): Promise<void> {
         delta,
         update: tDraw - tUpdate,
         draw: tEnd - tDraw,
-        heap: (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0,
+        heap:
+          (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
+            ?.usedJSHeapSize ?? 0,
         inMatch: layout === undefined,
         programs: glRenderer.info.programs?.length ?? 0,
         geometries: glRenderer.info.memory.geometries,

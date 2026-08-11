@@ -86,7 +86,12 @@ export class Bloom {
   // `camera` object references, plus count), never the wrapping array's own
   // identity -- a new array every call is fine as long as what is inside it
   // is the same.
-  private ensureComposer(renderer: THREE.WebGLRenderer, layers: ReadonlyArray<BloomLayer>, w: number, h: number): EffectComposer {
+  private ensureComposer(
+    renderer: THREE.WebGLRenderer,
+    layers: ReadonlyArray<BloomLayer>,
+    w: number,
+    h: number,
+  ): EffectComposer {
     // The pixel ratio belongs in the cache key: the composer's target is sized
     // in DEVICE pixels below, so a ratio change must rebuild it even when the
     // logical viewport is unchanged. The layer list joins it for the same
@@ -96,7 +101,13 @@ export class Bloom {
     // needs a different set of passes, not just different uniforms on the
     // existing ones.
     const ratio = renderer.getPixelRatio();
-    if (this.composer !== undefined && this.w === w && this.h === h && this.ratio === ratio && this.sameLayers(layers)) {
+    if (
+      this.composer !== undefined &&
+      this.w === w &&
+      this.h === h &&
+      this.ratio === ratio &&
+      this.sameLayers(layers)
+    ) {
       return this.composer;
     }
     this.w = w;
@@ -152,7 +163,10 @@ export class Bloom {
       composer.addPass(pass);
     });
     const bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(Math.max(w / this.config.downscale, 1), Math.max(h / this.config.downscale, 1)),
+      new THREE.Vector2(
+        Math.max(w / this.config.downscale, 1),
+        Math.max(h / this.config.downscale, 1),
+      ),
       this.config.intensity,
       this.config.radius,
       this.config.threshold,
@@ -175,7 +189,13 @@ export class Bloom {
   }
 
   /** Render `scene`/`camera` with bloom applied (or plain, if disabled). Untested -- see draw2d.ts. */
-  draw(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera, w: number, h: number): void {
+  draw(
+    renderer: THREE.WebGLRenderer,
+    scene: THREE.Scene,
+    camera: THREE.Camera,
+    w: number,
+    h: number,
+  ): void {
     if (!this.config.enabled) {
       renderer.render(scene, camera);
       return;
@@ -216,7 +236,12 @@ export class Bloom {
    * full `THREE.WebGLRenderer` surface no stub in this milestone's headless
    * suite can stand in for.
    */
-  draw_layers(renderer: THREE.WebGLRenderer, layers: ReadonlyArray<BloomLayer>, w: number, h: number): void {
+  draw_layers(
+    renderer: THREE.WebGLRenderer,
+    layers: ReadonlyArray<BloomLayer>,
+    w: number,
+    h: number,
+  ): void {
     if (!this.config.enabled) {
       const wasAutoClear = renderer.autoClear;
       try {

@@ -48,7 +48,18 @@ const idleView: PlayerView = { px: 0, py: 0, speed: 0, phase: 0, gait: 0, lean: 
  * and `drell` are the one shared pair.
  */
 const STARTERS = {
-  ids: ["ozzo", "brakka", "veil_nyx", "rok_tann", "zyro_vex", "gax_oru", "drell", "morv", "krag", "tox_vren"],
+  ids: [
+    "ozzo",
+    "brakka",
+    "veil_nyx",
+    "rok_tann",
+    "zyro_vex",
+    "gax_oru",
+    "drell",
+    "morv",
+    "krag",
+    "tox_vren",
+  ],
   presentation_ids: [
     "scifi_axi", // ozzo, keeper
     "medieval_rook_emberguard", // brakka
@@ -117,10 +128,21 @@ describe("character pre-warm (#447): a match's geometry is built before its firs
     // NON-VACUOUS, and this is the assertion the next test rests on: if the
     // pre-warm built nothing, "the draw loop builds nothing" would be true
     // and would mean nothing.
-    expect(result.built, "the two fixture teams field nine distinct variants across ten players").toBe(9);
-    expect(result.variants, "nine variants, but ten (variant, team) pairs -- brakka and drell share a variant across opposite teams").toBe(10);
-    expect(result.pooled, "and one pooled mesh per named player, which is the OTHER thing the first frame used to allocate").toBe(10);
-    expect(variantBuildCount() - before, "and the counter agrees with what the call reported").toBe(9);
+    expect(
+      result.built,
+      "the two fixture teams field nine distinct variants across ten players",
+    ).toBe(9);
+    expect(
+      result.variants,
+      "nine variants, but ten (variant, team) pairs -- brakka and drell share a variant across opposite teams",
+    ).toBe(10);
+    expect(
+      result.pooled,
+      "and one pooled mesh per named player, which is the OTHER thing the first frame used to allocate",
+    ).toBe(10);
+    expect(variantBuildCount() - before, "and the counter agrees with what the call reported").toBe(
+      9,
+    );
   });
 
   it("is idempotent: warming the same roster again builds nothing", () => {
@@ -143,7 +165,10 @@ describe("character pre-warm (#447): a match's geometry is built before its firs
     for (const mesh of meshes) {
       expect(mesh).toBeInstanceOf(THREE.SkinnedMesh);
     }
-    expect(variantBuildCount() - before, "a drawn frame must build no character geometry once the roster is known").toBe(0);
+    expect(
+      variantBuildCount() - before,
+      "a drawn frame must build no character geometry once the roster is known",
+    ).toBe(0);
   });
 
   it("draws every subsequent frame without building either", () => {
@@ -171,7 +196,10 @@ describe("character pre-warm (#447): a match's geometry is built before its firs
     };
     const before = variantBuildCount();
     expect(characterMesh("mika_olu", idleView, sub, 0)).toBeInstanceOf(THREE.SkinnedMesh);
-    expect(variantBuildCount() - before, "the backstop works, and it costs a build inside the draw loop").toBe(1);
+    expect(
+      variantBuildCount() - before,
+      "the backstop works, and it costs a build inside the draw loop",
+    ).toBe(1);
 
     // And having paid it once, it is not paid again -- so the cost is a
     // one-off stutter rather than a permanent one, and pre-warming the wider
@@ -194,13 +222,18 @@ describe("character pre-warm (#447): a match's geometry is built before its firs
     };
     expect(prewarmCharacters(roster).built, "a genuinely new variant").toBe(1);
     const before = variantBuildCount();
-    const mesh = characterMesh("late-sub", idleView, {
-      is_keeper: false,
-      controlled: false,
-      team: "away",
-      presentation_id: "scifi_nova_quell",
-      loadout_id: "loadout_foam_champion",
-    }, 0);
+    const mesh = characterMesh(
+      "late-sub",
+      idleView,
+      {
+        is_keeper: false,
+        controlled: false,
+        team: "away",
+        presentation_id: "scifi_nova_quell",
+        loadout_id: "loadout_foam_champion",
+      },
+      0,
+    );
     expect(mesh).toBeInstanceOf(THREE.SkinnedMesh);
     expect(variantBuildCount() - before, "warmed in advance, the first sighting is free").toBe(0);
   });
@@ -216,8 +249,12 @@ describe("character pre-warm (#447): a match's geometry is built before its firs
   });
 
   it("fails at pre-warm time, not mid-match, on content the renderer does not know", () => {
-    expect(() => prewarmCharacters({ presentation_ids: ["no_such_presentation"] })).toThrow(/no theme for presentation id/);
-    expect(() => prewarmCharacters({ presentation_ids: ["scifi_axi"], loadout_ids: ["no_such_loadout"] })).toThrow(/no equipment for loadout id/);
+    expect(() => prewarmCharacters({ presentation_ids: ["no_such_presentation"] })).toThrow(
+      /no theme for presentation id/,
+    );
+    expect(() =>
+      prewarmCharacters({ presentation_ids: ["scifi_axi"], loadout_ids: ["no_such_loadout"] }),
+    ).toThrow(/no equipment for loadout id/);
   });
 
   // The silent-substitution guard, at the last layer before the geometry.
@@ -227,7 +264,12 @@ describe("character pre-warm (#447): a match's geometry is built before its firs
   // and hand back `themes.LIST[0]`, sword and shield included.
   it("refuses an empty presentation id rather than resolving it to the preview default", () => {
     expect(() =>
-      characterMesh("broken", idleView, { is_keeper: true, controlled: false, presentation_id: "" }, 0),
+      characterMesh(
+        "broken",
+        idleView,
+        { is_keeper: true, controlled: false, presentation_id: "" },
+        0,
+      ),
     ).toThrow(/empty presentation_id/);
     expect(() => prewarmCharacters({ presentation_ids: [""] })).toThrow(/empty presentation_id/);
   });

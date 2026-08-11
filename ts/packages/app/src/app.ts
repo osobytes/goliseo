@@ -77,7 +77,8 @@ export interface OnlinePorts {
     readonly peerId: unknown;
     readonly manifest: unknown;
     readonly freeze: unknown;
-  }): { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string };
+  }):
+    { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string };
   newLobbyScreen(onAction: (action: AppAction) => void, options: unknown): OnlineLobbyScreen;
   newOnlineMatchScreen(options: {
     readonly request: unknown;
@@ -149,7 +150,9 @@ export class App {
     this.online = opts.online;
     this.session = session.new(content.homeTeam);
     this.settingsStorage = opts.settingsStorage;
-    this.settings = opts.settings ? settingsModule.validate(opts.settings) : settingsModule.load(opts.settingsStorage);
+    this.settings = opts.settings
+      ? settingsModule.validate(opts.settings)
+      : settingsModule.load(opts.settingsStorage);
     this.transform = viewport.create(opts.actualW ?? 960, opts.actualH ?? 540);
     this.adapter = opts.matchAdapter ?? matchAdapter.fake(content.matchContract);
     this.applySettingsCallback = opts.applySettings;
@@ -240,7 +243,11 @@ export class App {
     }
     const menu = new Menu(
       result,
-      result.newState(this.viewport, { players: this.content.matchContract.players }, { result: lastResult }),
+      result.newState(
+        this.viewport,
+        { players: this.content.matchContract.players },
+        { result: lastResult },
+      ),
       this.onAction(),
     );
     this.replaceRoute("result", asMenu(menu));
@@ -253,14 +260,22 @@ export class App {
     this.onlineError = undefined;
     const menu = new Menu(
       result,
-      result.newState(this.viewport, { players: this.content.matchContract.players }, { result: matchResult }),
+      result.newState(
+        this.viewport,
+        { players: this.content.matchContract.players },
+        { result: matchResult },
+      ),
       this.onAction(),
     );
     this.replaceRoute("online_result", asMenu(menu));
   }
 
   startMatch(): void {
-    const requested = session.buildRequest(this.content.matchContract, this.session, this.session.matchNumber + 1);
+    const requested = session.buildRequest(
+      this.content.matchContract,
+      this.session,
+      this.session.matchNumber + 1,
+    );
     if (!requested.ok) {
       throw new Error(requested.error);
     }
@@ -288,7 +303,10 @@ export class App {
       throw new Error("no online ports were injected into this App");
     }
     const modelOptions = options?.modelOptions ?? {};
-    const resolved = { ...modelOptions, template: modelOptions.template ?? this.online.matchManifestTemplate };
+    const resolved = {
+      ...modelOptions,
+      template: modelOptions.template ?? this.online.matchManifestTemplate,
+    };
     const screen = this.online.newLobbyScreen(this.onAction(), resolved);
     this.pushRoute("lobby", screen);
   }
@@ -378,7 +396,8 @@ export class App {
       this.showOnlineResult(action.result as ProductMatchResult);
     } else if (route === "online_match" && action.go === "online_ended") {
       const terminal = action.terminal as { readonly reason?: string } | undefined;
-      this.onlineError = (action.detail as string | undefined) ?? terminal?.reason ?? "the online session ended";
+      this.onlineError =
+        (action.detail as string | undefined) ?? terminal?.reason ?? "the online session ended";
       this.showTitle();
     } else if (
       route === "online_result" &&
@@ -387,10 +406,18 @@ export class App {
       this.showTitle();
       this.showLobby();
     } else if (route === "title" && action.go === "help") {
-      const menu = new Menu(help, help.newState(this.viewport, bindings.reference("match")), this.onAction());
+      const menu = new Menu(
+        help,
+        help.newState(this.viewport, bindings.reference("match")),
+        this.onAction(),
+      );
       this.pushRoute("help", asMenu(menu));
     } else if (route === "title" && action.go === "credits") {
-      const menu = new Menu(credits, credits.newState(this.viewport, this.content.buildInfo), this.onAction());
+      const menu = new Menu(
+        credits,
+        credits.newState(this.viewport, this.content.buildInfo),
+        this.onAction(),
+      );
       this.pushRoute("credits", asMenu(menu));
     } else if (action.go === "settings") {
       const menu = new Menu(
@@ -446,7 +473,11 @@ export class App {
     } else if (route === "pause" && action.go === "resume") {
       this.popRoute();
     } else if (route === "pause" && action.go === "controls") {
-      const menu = new Menu(help, help.newState(this.viewport, bindings.reference("match")), this.onAction());
+      const menu = new Menu(
+        help,
+        help.newState(this.viewport, bindings.reference("match")),
+        this.onAction(),
+      );
       this.pushRoute("help", asMenu(menu));
     } else if (route === "pause" && action.go === "restart") {
       this.startMatch();

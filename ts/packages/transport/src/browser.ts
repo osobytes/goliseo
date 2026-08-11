@@ -49,7 +49,10 @@ function splitFields(value: string): string[] {
   }
 }
 
-function parseState(result: string): { readonly state: TransportState | null; readonly error?: string } {
+function parseState(result: string): {
+  readonly state: TransportState | null;
+  readonly error?: string;
+} {
   const fields = splitFields(result);
   const tag = fields[0];
   const rawState = fields[1];
@@ -76,7 +79,11 @@ function parseResult(result: string): ParsedResult {
   const tag = fields[0];
   const code = fields[1];
   if (tag !== "error" || code === undefined) {
-    return { ok: false, code: "bridge_error", detail: "browser bridge returned an invalid operation response" };
+    return {
+      ok: false,
+      code: "bridge_error",
+      detail: "browser bridge returned an invalid operation response",
+    };
   }
   return { ok: false, code: code as TransportErrorCode, detail: fields[2] ?? code };
 }
@@ -109,7 +116,9 @@ export class BrowserTransport implements TransportAdapter {
     this._eval = options.eval ?? BrowserTransport._defaultEval;
   }
 
-  private static _defaultEval(_command: string): readonly [result: string | null, error: string | null] {
+  private static _defaultEval(
+    _command: string,
+  ): readonly [result: string | null, error: string | null] {
     // The real DOM bridge (`window.GoliseoTransportBridge`) is wired up by
     // the app shell at runtime; this package implements transport behavior
     // only, not those bindings, so the default seam has nothing to call.
@@ -127,7 +136,10 @@ export class BrowserTransport implements TransportAdapter {
     }
   }
 
-  private _call(name: string, argument?: string): { readonly result: string | null; readonly error?: string } {
+  private _call(
+    name: string,
+    argument?: string,
+  ): { readonly result: string | null; readonly error?: string } {
     const command = `window.GoliseoTransportBridge.${name}(${argument ?? ""})`;
     const [result, evalError] = this._eval(command);
     if (result === null) {
@@ -210,7 +222,10 @@ export class BrowserTransport implements TransportAdapter {
     }
     const { result, error: callError } = this._call("enqueue", `'${wireResult.value}'`);
     if (result === null) {
-      return err({ message: callError ?? "browser bridge returned no result", code: "bridge_error" });
+      return err({
+        message: callError ?? "browser bridge returned no result",
+        code: "bridge_error",
+      });
     }
     const parsed = parseResult(result);
     if (!parsed.ok) {
@@ -237,7 +252,10 @@ export class BrowserTransport implements TransportAdapter {
     }
     const { result, error: callError } = this._call("poll");
     if (result === null) {
-      return err({ message: callError ?? "browser bridge returned no result", code: "bridge_error" });
+      return err({
+        message: callError ?? "browser bridge returned no result",
+        code: "bridge_error",
+      });
     }
     if (result === "") {
       return ok(null);

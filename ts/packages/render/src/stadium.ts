@@ -113,7 +113,11 @@ function buildLighting(field: RenderFrameField): THREE.Group {
   // metal, crowd) sitting right next to them. Dimmer than before (0.8 -> 0.55)
   // so the directional key/rim pair below reads as the dominant contrast,
   // not the flat ambient wash.
-  const hemisphere = new THREE.HemisphereLight(new THREE.Color(0.24, 0.22, 0.42), new THREE.Color(0.08, 0.07, 0.17), 0.55);
+  const hemisphere = new THREE.HemisphereLight(
+    new THREE.Color(0.24, 0.22, 0.42),
+    new THREE.Color(0.08, 0.07, 0.17),
+    0.55,
+  );
   hemisphere.name = "hemisphere";
   group.add(hemisphere);
 

@@ -95,7 +95,10 @@ function layout(state: HelpScreenState): Layout {
   ];
 }
 
-function update(state: HelpScreenState, event: FocusEvent): readonly [HelpScreenState, HelpAction | undefined] {
+function update(
+  state: HelpScreenState,
+  event: FocusEvent,
+): readonly [HelpScreenState, HelpAction | undefined] {
   if (event.kind === "action" && event.action === "back") {
     return [state, { go: "back" }];
   }

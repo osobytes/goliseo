@@ -147,14 +147,11 @@ export class FakeStarTransport implements StarTransportAdapter {
       throw new Error("fake star transport queue_limit is outside the supported range");
     }
     const maxGuests = options.max_guests ?? contract.MAX_GUESTS;
-    if (
-      maxGuests !== Math.floor(maxGuests) ||
-      maxGuests <= 0 ||
-      maxGuests > contract.MAX_GUESTS
-    ) {
+    if (maxGuests !== Math.floor(maxGuests) || maxGuests <= 0 || maxGuests > contract.MAX_GUESTS) {
       throw new Error("fake star transport max_guests is outside the supported range");
     }
-    const bufferedAmountLimit = options.buffered_amount_limit ?? contract.DEFAULT_BUFFERED_AMOUNT_LIMIT;
+    const bufferedAmountLimit =
+      options.buffered_amount_limit ?? contract.DEFAULT_BUFFERED_AMOUNT_LIMIT;
     if (
       bufferedAmountLimit !== Math.floor(bufferedAmountLimit) ||
       bufferedAmountLimit <= 0 ||
@@ -189,7 +186,7 @@ export class FakeStarTransport implements StarTransportAdapter {
     code: TransportErrorCode,
     message: string,
     peer?: FakeStarPeer,
-    channel?: TransportChannel
+    channel?: TransportChannel,
   ): void {
     this._lastError = message;
     if (code === "malformed" || code === "payload_too_large" || code === "channel_mismatch") {
@@ -520,7 +517,7 @@ export class FakeStarTransport implements StarTransportAdapter {
   private _enqueue(
     peer: FakeStarPeer,
     channelName: TransportChannel,
-    message: TransportMessage
+    message: TransportMessage,
   ): TransportResult<true> {
     const validated = contract.validateChannelMessage(channelName, message);
     if (!validated.ok) {
@@ -566,7 +563,11 @@ export class FakeStarTransport implements StarTransportAdapter {
   }
 
   /** Host: address one guest. Guest: the only legal target is the host link. */
-  send(peerId: string, channel: TransportChannel, message: TransportMessage): TransportResult<true> {
+  send(
+    peerId: string,
+    channel: TransportChannel,
+    message: TransportMessage,
+  ): TransportResult<true> {
     const connected = this._requireConnected();
     if (!connected.ok) {
       return connected;
@@ -627,7 +628,7 @@ export class FakeStarTransport implements StarTransportAdapter {
     peer: FakeStarPeer,
     channelName: TransportChannel,
     addressed: TransportAddressedMessage,
-    wireBytes?: number
+    wireBytes?: number,
   ): void {
     const channel = peer.channels[channelName];
     this._downlinkFrames += 1;
@@ -723,7 +724,7 @@ export class FakeStarTransport implements StarTransportAdapter {
                 "backpressure",
                 "star peer channel send buffer is full",
                 peer,
-                channelName
+                channelName,
               );
             }
             break;

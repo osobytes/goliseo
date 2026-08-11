@@ -262,7 +262,13 @@ export function newGoliseoStarTransportBridge(): GoliseoStarTransportBridge {
     peer.last_error = star.last_error;
     countError(code, peer);
     pushEvent(
-      "peer_error|" + peer.id + "|" + (channelName ?? "") + "|" + code + "|" +
+      "peer_error|" +
+        peer.id +
+        "|" +
+        (channelName ?? "") +
+        "|" +
+        code +
+        "|" +
         escapeField(star.last_error),
     );
     return "error|" + code + "|" + escapeField(star.last_error);
@@ -358,7 +364,8 @@ export function newGoliseoStarTransportBridge(): GoliseoStarTransportBridge {
     if (!config[parsed.type as string]) {
       return {
         error: "channel_mismatch",
-        detail: "the " + channelName + " channel does not carry " + String(parsed.type) + " messages",
+        detail:
+          "the " + channelName + " channel does not carry " + String(parsed.type) + " messages",
       };
     }
     return null;
@@ -490,7 +497,12 @@ export function newGoliseoStarTransportBridge(): GoliseoStarTransportBridge {
       } catch (error) {
         star.last_error = String(error);
       }
-      peerError(peer, channelName, "channel_mismatch", "duplicate " + channelName + " data channel refused");
+      peerError(
+        peer,
+        channelName,
+        "channel_mismatch",
+        "duplicate " + channelName + " data channel refused",
+      );
       return;
     }
     channel.handle = handle;
@@ -660,7 +672,13 @@ export function newGoliseoStarTransportBridge(): GoliseoStarTransportBridge {
       channel.outbound = [];
       channel.inbound = [];
       if (channel.handle) {
-        detach(channel.handle, ["onopen", "onclose", "onerror", "onmessage", "onbufferedamountlow"]);
+        detach(channel.handle, [
+          "onopen",
+          "onclose",
+          "onerror",
+          "onmessage",
+          "onbufferedamountlow",
+        ]);
         try {
           channel.handle.close();
         } catch (error) {
@@ -994,7 +1012,10 @@ export function newGoliseoStarTransportBridge(): GoliseoStarTransportBridge {
       let delivered = 0;
       for (const id of star.order) {
         const peer = star.peers[id] as PeerState;
-        if (peer.state === "connected" && enqueue(peer, channelName as ChannelName, wire) === "ok") {
+        if (
+          peer.state === "connected" &&
+          enqueue(peer, channelName as ChannelName, wire) === "ok"
+        ) {
           delivered += 1;
         }
       }
@@ -1057,8 +1078,16 @@ export function newGoliseoStarTransportBridge(): GoliseoStarTransportBridge {
       ];
       for (const id of star.order) {
         const peer = star.peers[id] as PeerState;
-        let fields: (string | number)[] = ["peer", peer.id, peer.slot, peer.state, escapeField(peer.ice_state)];
-        fields = fields.concat(channelRecord(peer.channels.control)).concat(channelRecord(peer.channels.input));
+        let fields: (string | number)[] = [
+          "peer",
+          peer.id,
+          peer.slot,
+          peer.state,
+          escapeField(peer.ice_state),
+        ];
+        fields = fields
+          .concat(channelRecord(peer.channels.control))
+          .concat(channelRecord(peer.channels.input));
         fields.push(peer.sequence_gaps);
         fields.push(peer.backpressure);
         fields.push(peer.malformed);
@@ -1098,7 +1127,9 @@ export function installGoliseoStarTransport(
  * the bridge is installed, so a real `eval` call is the whole
  * implementation. `(0, eval)` forces indirect (global) eval so the
  * command cannot see or touch this module's own locals. */
-export function browserStarEval(command: string): readonly [result: string | null, error: string | null] {
+export function browserStarEval(
+  command: string,
+): readonly [result: string | null, error: string | null] {
   try {
     // Indirect eval (calling through a reference rather than the literal
     // `eval(...)` form) runs in global scope, so the command cannot see or

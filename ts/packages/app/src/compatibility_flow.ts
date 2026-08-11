@@ -12,7 +12,12 @@ export interface CompatibilityFlowApp {
   readonly adapter: { readonly kind: string };
   readonly stack: { current(): unknown };
   currentRoute(): string;
-  event(evt: { readonly kind: "click"; readonly x: number; readonly y: number; readonly button: number }): void;
+  event(evt: {
+    readonly kind: "click";
+    readonly x: number;
+    readonly y: number;
+    readonly button: number;
+  }): void;
 }
 
 const ROUTE_WIDGETS: Readonly<Record<string, string>> = {
@@ -32,7 +37,11 @@ function clickWidget(app: CompatibilityFlowApp, id: string, beforeClick?: () => 
   if (!widget?.rect) {
     return false;
   }
-  const [x, y] = viewport.toActual(app.transform, widget.rect.x + widget.rect.w / 2, widget.rect.y + widget.rect.h / 2);
+  const [x, y] = viewport.toActual(
+    app.transform,
+    widget.rect.x + widget.rect.w / 2,
+    widget.rect.y + widget.rect.h / 2,
+  );
   if (beforeClick) {
     beforeClick();
   }

@@ -5,7 +5,12 @@
 // can flow back into the sim. See ARCHITECTURE.md §1.1 and the task's rollback
 // note: correction smoothing is presentation, strictly one-directional.
 
-import { combat, type ActionFamilyId, type CombatContactResult, type CombatEvent } from "./combat.ts";
+import {
+  combat,
+  type ActionFamilyId,
+  type CombatContactResult,
+  type CombatEvent,
+} from "./combat.ts";
 import type { CombatPresentationEventId, CombatRequestRejectionReason } from "./combat.ts";
 
 export type CombatFeedbackLinkKind = "accepted_encounter" | "rejected_request" | "missing_feedback";
@@ -117,7 +122,9 @@ let defaultReducedMotion = false;
 let defaultReducedFlash = false;
 
 /** Drops keys whose value is `undefined`, honestly typed as `Partial<T>`. */
-function definedFields<T extends object>(fields: { [K in keyof T]?: T[K] | undefined }): Partial<T> {
+function definedFields<T extends object>(fields: {
+  [K in keyof T]?: T[K] | undefined;
+}): Partial<T> {
   const result: Partial<T> = {};
   for (const key of Object.keys(fields) as (keyof T)[]) {
     const value = fields[key];
@@ -278,7 +285,7 @@ const REJECTION_DISPOSITIONS = Object.fromEntries(
   (Object.keys(REJECTION_LABELS) as CombatRequestRejectionReason[]).map((reason) => [
     `combat.request.rejected.${reason}`,
     rejectedDisposition(reason),
-  ])
+  ]),
 ) as Record<`combat.request.rejected.${CombatRequestRejectionReason}`, CombatFeedbackDisposition>;
 
 const DISPOSITIONS: Readonly<Record<CombatPresentationEventId, CombatFeedbackDisposition>> = {
@@ -339,7 +346,7 @@ function rejectedRequest(
   stableId: string,
   tick: number,
   playerIndex: number,
-  reason: CombatRequestRejectionReason
+  reason: CombatRequestRejectionReason,
 ): CombatFeedbackLink {
   if (stableId === "") {
     throw new Error("rejected request id is required");
@@ -379,7 +386,7 @@ function missingFeedback(
   requestId: string,
   tick: number,
   playerIndex: number,
-  reason: CombatRequestRejectionReason
+  reason: CombatRequestRejectionReason,
 ): CombatFeedbackLink {
   if (requestId === "") {
     throw new Error("missing feedback request id is required");
@@ -412,7 +419,11 @@ function configureDefaults(settings: CombatFeedbackSettings): void {
   defaultReducedFlash = !settings.bloom;
 }
 
-function configure(state: CombatFeedbackState, reducedMotion: boolean, reducedFlash: boolean): void {
+function configure(
+  state: CombatFeedbackState,
+  reducedMotion: boolean,
+  reducedFlash: boolean,
+): void {
   state.reduced_motion = reducedMotion;
   state.reduced_flash = reducedFlash;
   if (reducedMotion) {
@@ -519,7 +530,7 @@ function notice(state: CombatFeedbackState, controlledIndex: number): CombatFeed
 function observation(
   state: CombatFeedbackState,
   feedbackLink: CombatFeedbackLink,
-  cueState: CombatFeedbackCueState
+  cueState: CombatFeedbackCueState,
 ): CombatFeedbackObservation {
   return {
     stable_id: feedbackLink.stable_id,

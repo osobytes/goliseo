@@ -47,14 +47,26 @@ export const ORION_PLAYERS: Readonly<Record<string, PlayerData>> = {
   tox_vren: { id: "tox_vren", name: "Tox Vren", position: "forward" },
 };
 
-export const PLAYERS: Readonly<Record<string, PlayerData>> = { ...NEBULA_PLAYERS, ...ORION_PLAYERS };
+export const PLAYERS: Readonly<Record<string, PlayerData>> = {
+  ...NEBULA_PLAYERS,
+  ...ORION_PLAYERS,
+};
 
 export const NEBULA: TeamData = {
   id: "nebula",
   name: "Nebula FC",
   formation: "2-1-1",
   roster: ["ozzo", "brakka", "veil_nyx", "rok_tann", "zyro_vex"],
-  squad: ["ozzo", "brakka", "veil_nyx", "rok_tann", "zyro_vex", "mika_olu", "sela_dwin", "tib_quell"],
+  squad: [
+    "ozzo",
+    "brakka",
+    "veil_nyx",
+    "rok_tann",
+    "zyro_vex",
+    "mika_olu",
+    "sela_dwin",
+    "tib_quell",
+  ],
 };
 
 export const ORION: TeamData = {
@@ -229,14 +241,54 @@ export const FULL_TACTICS: Readonly<Record<string, TacticData>> = {
 // (match_contract.ts/session.ts only ever read `position`). Values
 // transcribed from `gc-data/src/players.rs`, same as `squad_product.spec.ts`.
 const SCREENS_NEBULA_PLAYERS: Readonly<Record<string, ScreensPlayerData>> = {
-  ozzo: { id: "ozzo", name: "Ozzo", position: "keeper", stats: { pace: 4, strength: 5, technique: 4, stamina: 8, mental: 8 } },
-  brakka: { id: "brakka", name: "Brakka", position: "defender", stats: { pace: 4, strength: 8, technique: 3, stamina: 7, mental: 8 } },
-  veil_nyx: { id: "veil_nyx", name: "Veil Nyx", position: "defender", stats: { pace: 5, strength: 6, technique: 4, stamina: 6, mental: 7 } },
-  rok_tann: { id: "rok_tann", name: "Rok Tann", position: "midfielder", stats: { pace: 5, strength: 7, technique: 6, stamina: 7, mental: 5 } },
-  zyro_vex: { id: "zyro_vex", name: "Zyro Vex", position: "forward", stats: { pace: 8, strength: 6, technique: 7, stamina: 5, mental: 2 } },
-  mika_olu: { id: "mika_olu", name: "Mika Olu", position: "forward", stats: { pace: 7, strength: 5, technique: 8, stamina: 6, mental: 3 } },
-  sela_dwin: { id: "sela_dwin", name: "Sela Dwin", position: "midfielder", stats: { pace: 6, strength: 4, technique: 7, stamina: 6, mental: 6 } },
-  tib_quell: { id: "tib_quell", name: "Tib Quell", position: "midfielder", stats: { pace: 6, strength: 6, technique: 6, stamina: 5, mental: 5 } },
+  ozzo: {
+    id: "ozzo",
+    name: "Ozzo",
+    position: "keeper",
+    stats: { pace: 4, strength: 5, technique: 4, stamina: 8, mental: 8 },
+  },
+  brakka: {
+    id: "brakka",
+    name: "Brakka",
+    position: "defender",
+    stats: { pace: 4, strength: 8, technique: 3, stamina: 7, mental: 8 },
+  },
+  veil_nyx: {
+    id: "veil_nyx",
+    name: "Veil Nyx",
+    position: "defender",
+    stats: { pace: 5, strength: 6, technique: 4, stamina: 6, mental: 7 },
+  },
+  rok_tann: {
+    id: "rok_tann",
+    name: "Rok Tann",
+    position: "midfielder",
+    stats: { pace: 5, strength: 7, technique: 6, stamina: 7, mental: 5 },
+  },
+  zyro_vex: {
+    id: "zyro_vex",
+    name: "Zyro Vex",
+    position: "forward",
+    stats: { pace: 8, strength: 6, technique: 7, stamina: 5, mental: 2 },
+  },
+  mika_olu: {
+    id: "mika_olu",
+    name: "Mika Olu",
+    position: "forward",
+    stats: { pace: 7, strength: 5, technique: 8, stamina: 6, mental: 3 },
+  },
+  sela_dwin: {
+    id: "sela_dwin",
+    name: "Sela Dwin",
+    position: "midfielder",
+    stats: { pace: 6, strength: 4, technique: 7, stamina: 6, mental: 6 },
+  },
+  tib_quell: {
+    id: "tib_quell",
+    name: "Tib Quell",
+    position: "midfielder",
+    stats: { pace: 6, strength: 6, technique: 6, stamina: 5, mental: 5 },
+  },
 };
 
 export const SQUAD_CONTENT: SquadContentData = {
@@ -336,7 +388,10 @@ export class FakeSimHost implements SimHostPort {
 }
 
 /** One {@link FakeSimHost} per constructed match, so a test can reach into whichever one is currently live. */
-export function fakeHostFactory(): { readonly createHost: () => SimHostFactory; readonly hosts: FakeSimHost[] } {
+export function fakeHostFactory(): {
+  readonly createHost: () => SimHostFactory;
+  readonly hosts: FakeSimHost[];
+} {
   const hosts: FakeSimHost[] = [];
   return {
     createHost: () => (): SimHostPort => {

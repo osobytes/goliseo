@@ -148,7 +148,10 @@ export function rotateAround(t: PivotTransform, x: number, y: number): readonly 
   return [t.pivotX + t.offsetX + rx, t.pivotY + t.offsetY + ry];
 }
 
-function transformPoints(t: PivotTransform | undefined, points: readonly number[]): readonly number[] {
+function transformPoints(
+  t: PivotTransform | undefined,
+  points: readonly number[],
+): readonly number[] {
   if (t === undefined) {
     return points;
   }
@@ -742,7 +745,10 @@ function buildOne(c: DrawCommand, opts?: PaintOptions): THREE.Object3D {
         new THREE.Vector3(c.x, c.y + c.h, 0),
         new THREE.Vector3(c.x, c.y, 0),
       ];
-      return new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), lineMaterial(c, opts));
+      return new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(points),
+        lineMaterial(c, opts),
+      );
     }
     case "circle": {
       if (c.mode === "fill") {
@@ -754,7 +760,9 @@ function buildOne(c: DrawCommand, opts?: PaintOptions): THREE.Object3D {
       return new THREE.LineLoop(
         new THREE.BufferGeometry().setFromPoints(ringPoints(0, 0, c.r)),
         lineMaterial(c, opts),
-      ).translateX(c.x).translateY(c.y);
+      )
+        .translateX(c.x)
+        .translateY(c.y);
     }
     case "ellipse": {
       const curve = new THREE.EllipseCurve(0, 0, c.rx, c.ry, 0, 2 * Math.PI, false, 0);
@@ -765,7 +773,10 @@ function buildOne(c: DrawCommand, opts?: PaintOptions): THREE.Object3D {
         mesh.position.set(c.x, c.y, 0);
         return mesh;
       }
-      const line = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(points), lineMaterial(c, opts));
+      const line = new THREE.LineLoop(
+        new THREE.BufferGeometry().setFromPoints(points),
+        lineMaterial(c, opts),
+      );
       line.position.set(c.x, c.y, 0);
       return line;
     }
@@ -773,26 +784,44 @@ function buildOne(c: DrawCommand, opts?: PaintOptions): THREE.Object3D {
       const points = polylinePoints(c.points);
       if (c.mode === "fill") {
         const shapePoints = points.map((p) => new THREE.Vector2(p.x, p.y));
-        const mesh = new THREE.Mesh(new THREE.ShapeGeometry(new THREE.Shape(shapePoints)), fillMaterial(c, opts));
+        const mesh = new THREE.Mesh(
+          new THREE.ShapeGeometry(new THREE.Shape(shapePoints)),
+          fillMaterial(c, opts),
+        );
         return mesh;
       }
       const closed = [...points, points[0]].filter((p): p is THREE.Vector3 => p !== undefined);
-      return new THREE.Line(new THREE.BufferGeometry().setFromPoints(closed), lineMaterial(c, opts));
+      return new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(closed),
+        lineMaterial(c, opts),
+      );
     }
     case "line": {
       const points = polylinePoints(c.points);
-      return new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), lineMaterial(c, opts));
+      return new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(points),
+        lineMaterial(c, opts),
+      );
     }
     case "arc": {
       const curve = new THREE.EllipseCurve(0, 0, c.r, c.r, c.angle1, c.angle2, false, 0);
       const points = curve.getPoints(CIRCLE_SEGMENTS).map((p) => new THREE.Vector3(p.x, p.y, 0));
       if (c.mode === "fill") {
-        const shapePoints = [new THREE.Vector2(0, 0), ...points.map((p) => new THREE.Vector2(p.x, p.y))];
-        const mesh = new THREE.Mesh(new THREE.ShapeGeometry(new THREE.Shape(shapePoints)), fillMaterial(c, opts));
+        const shapePoints = [
+          new THREE.Vector2(0, 0),
+          ...points.map((p) => new THREE.Vector2(p.x, p.y)),
+        ];
+        const mesh = new THREE.Mesh(
+          new THREE.ShapeGeometry(new THREE.Shape(shapePoints)),
+          fillMaterial(c, opts),
+        );
         mesh.position.set(c.x, c.y, 0);
         return mesh;
       }
-      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), lineMaterial(c, opts));
+      const line = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(points),
+        lineMaterial(c, opts),
+      );
       line.position.set(c.x, c.y, 0);
       return line;
     }
@@ -922,7 +951,11 @@ function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
  * world-depth, not as one `paint()` replacing everything and a second
  * wiping it out.
  */
-export function appendCommands(group: THREE.Group, commands: readonly DrawCommand[], opts?: PaintOptions): void {
+export function appendCommands(
+  group: THREE.Group,
+  commands: readonly DrawCommand[],
+  opts?: PaintOptions,
+): void {
   if (opts?.batchStrokes !== true) {
     for (const c of commands) {
       const obj = buildOne(c, opts);
@@ -989,9 +1022,13 @@ function applyDepthPlacement(obj: THREE.Object3D, opts?: PaintOptions): void {
     // Annotated for the same reason as `disposeObject` above: the `instanceof`
     // narrowing of three.js's generic classes is `any` in its type arguments.
     const materialOwner: THREE.Mesh | THREE.Line | THREE.Sprite | undefined =
-      obj instanceof THREE.Mesh || obj instanceof THREE.Line || obj instanceof THREE.Sprite ? obj : undefined;
+      obj instanceof THREE.Mesh || obj instanceof THREE.Line || obj instanceof THREE.Sprite
+        ? obj
+        : undefined;
     if (materialOwner !== undefined) {
-      const materials = Array.isArray(materialOwner.material) ? materialOwner.material : [materialOwner.material];
+      const materials = Array.isArray(materialOwner.material)
+        ? materialOwner.material
+        : [materialOwner.material];
       for (const m of materials) {
         // A cached material was already CONSTRUCTED with this `depthTest`
         // (it is part of `materialCache`'s key -- see `depthTestOf`), so
@@ -1029,7 +1066,11 @@ function applyDepthPlacement(obj: THREE.Object3D, opts?: PaintOptions): void {
  * re-validated, for ~7.8 ms of a 13.33 ms frame budget. See the SHARED
  * MATERIALS section above for the measurement and the mechanism.
  */
-export function paint(group: THREE.Group, commands: readonly DrawCommand[], opts?: PaintOptions): void {
+export function paint(
+  group: THREE.Group,
+  commands: readonly DrawCommand[],
+  opts?: PaintOptions,
+): void {
   for (const child of [...group.children]) {
     group.remove(child);
     disposeObject(child);

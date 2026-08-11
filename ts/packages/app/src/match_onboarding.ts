@@ -84,7 +84,11 @@ function newState(enabled: boolean, combatEnabled?: boolean): MatchOnboardingSta
   };
 }
 
-function update(state: MatchOnboardingState, context: OnboardingContext, dt: number): MatchOnboardingState {
+function update(
+  state: MatchOnboardingState,
+  context: OnboardingContext,
+  dt: number,
+): MatchOnboardingState {
   if (!state.enabled) {
     return state;
   }

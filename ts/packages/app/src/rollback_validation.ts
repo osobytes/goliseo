@@ -18,7 +18,11 @@
 // `MatchState` shape onto every generic caller.
 
 import { Vec2, type Result } from "@gc/core";
-import { Audio, type CombatFeedbackPort, type RollbackWrappedEvent as AudioWrappedEvent } from "./audio.ts";
+import {
+  Audio,
+  type CombatFeedbackPort,
+  type RollbackWrappedEvent as AudioWrappedEvent,
+} from "./audio.ts";
 import { matchContract, type ProductMatchResult } from "./match_contract.ts";
 import {
   matchObserver,
@@ -29,14 +33,7 @@ import {
 } from "./match_observer.ts";
 
 export type RollbackValidationScenario =
-  | "possession"
-  | "tackle"
-  | "shot"
-  | "goal"
-  | "kickoff"
-  | "aerial"
-  | "keeper"
-  | "full_time";
+  "possession" | "tackle" | "shot" | "goal" | "kickoff" | "aerial" | "keeper" | "full_time";
 
 export type MatchTeam = "home" | "away";
 
@@ -204,8 +201,12 @@ export interface RollbackValidationReport {
 export interface RollbackValidationFinishOptions<_TState> {
   readonly home_team_id: string;
   readonly away_team_id: string;
-  readonly reference_final_state?: { readonly score: { readonly home: number; readonly away: number } };
-  readonly impaired_final_state?: { readonly score: { readonly home: number; readonly away: number } };
+  readonly reference_final_state?: {
+    readonly score: { readonly home: number; readonly away: number };
+  };
+  readonly impaired_final_state?: {
+    readonly score: { readonly home: number; readonly away: number };
+  };
   readonly reference_final_score?: { readonly home: number; readonly away: number };
   readonly impaired_final_score?: { readonly home: number; readonly away: number };
   readonly seed?: number;
@@ -319,11 +320,26 @@ function stableValue(value: unknown, numberBytes: (value: number) => string): st
   return parts.join("");
 }
 
-function eventSignature(event: RollbackWrappedEvent, numberBytes: (value: number) => string): string {
-  return stableValue({ id: event.id, tick: event.tick, domain: event.domain, ordinal: event.ordinal, payload: event.payload }, numberBytes);
+function eventSignature(
+  event: RollbackWrappedEvent,
+  numberBytes: (value: number) => string,
+): string {
+  return stableValue(
+    {
+      id: event.id,
+      tick: event.tick,
+      domain: event.domain,
+      ordinal: event.ordinal,
+      payload: event.payload,
+    },
+    numberBytes,
+  );
 }
 
-function countScenario(counts: Record<RollbackValidationScenario, number>, scenario: RollbackValidationScenario): void {
+function countScenario(
+  counts: Record<RollbackValidationScenario, number>,
+  scenario: RollbackValidationScenario,
+): void {
   counts[scenario] += 1;
 }
 
@@ -332,7 +348,10 @@ function eventKind(event: RollbackWrappedEvent): string | undefined {
   return payload?.kind;
 }
 
-function classifyEvent(counts: Record<RollbackValidationScenario, number>, event: RollbackWrappedEvent): void {
+function classifyEvent(
+  counts: Record<RollbackValidationScenario, number>,
+  event: RollbackWrappedEvent,
+): void {
   if (event.domain.startsWith("match/")) {
     const kind = eventKind(event);
     if (kind === "tackle") {
@@ -371,7 +390,10 @@ function classifyStep<TState, TTimeline, TSnapshot>(
   }
 }
 
-function audioCue(event: RollbackWrappedEvent, combatFeedback: CombatFeedbackPort): string | undefined {
+function audioCue(
+  event: RollbackWrappedEvent,
+  combatFeedback: CombatFeedbackPort,
+): string | undefined {
   if (event.domain.startsWith("match/")) {
     const kind = eventKind(event);
     return kind !== undefined && AUDIO_KINDS.has(kind) ? kind : undefined;
@@ -400,7 +422,12 @@ function newScenarioCounts(): Record<RollbackValidationScenario, number> {
   return counts;
 }
 
-export function newAudit<TState extends ObservedMatchState & ReplaySampleState, TCombatState, TSnapshot, TTimeline>(
+export function newAudit<
+  TState extends ObservedMatchState & ReplaySampleState,
+  TCombatState,
+  TSnapshot,
+  TTimeline,
+>(
   ports: RollbackValidationPorts<TState, TCombatState, TSnapshot, TTimeline>,
   initialState: TState,
   initialCombatState: TCombatState | undefined,
@@ -419,7 +446,9 @@ export function newAudit<TState extends ObservedMatchState & ReplaySampleState, 
     impairedIds: new Map(),
     speculativeIds: new Map(),
     scenarioCounts: newScenarioCounts(),
-    ...(initialOwner !== undefined ? { referenceLastOwner: initialOwner, impairedLastOwner: initialOwner } : {}),
+    ...(initialOwner !== undefined
+      ? { referenceLastOwner: initialOwner, impairedLastOwner: initialOwner }
+      : {}),
     referenceScore: { home: initialState.score.home, away: initialState.score.away },
     impairedScore: { home: initialState.score.home, away: initialState.score.away },
     events: {
@@ -443,7 +472,9 @@ export function newAudit<TState extends ObservedMatchState & ReplaySampleState, 
     impairedObserverSteps: 0,
     replayRecordCount: 0,
     replayTruncateCount: 0,
-    replayState: ports.matchSnapshot.restore(ports.matchSnapshot.capture(initialState, initialCombatState)),
+    replayState: ports.matchSnapshot.restore(
+      ports.matchSnapshot.capture(initialState, initialCombatState),
+    ),
   };
 }
 
@@ -463,12 +494,20 @@ function asObservedStep(step: RollbackEventStep): ObservedConfirmedStep {
   return step as unknown as ObservedConfirmedStep;
 }
 
-export function observeReferenceStep<TState extends ObservedMatchState & ReplaySampleState, TTimeline, TSnapshot>(
+export function observeReferenceStep<
+  TState extends ObservedMatchState & ReplaySampleState,
+  TTimeline,
+  TSnapshot,
+>(
   numberBytes: (value: number) => string,
   audit: RollbackValidationAudit<TState, TTimeline, TSnapshot>,
   step: RollbackEventStep,
 ): void {
-  const observed = matchObserver.observeConfirmed(audit.referenceObserver, asObservedStep(step), TICK_SECONDS);
+  const observed = matchObserver.observeConfirmed(
+    audit.referenceObserver,
+    asObservedStep(step),
+    TICK_SECONDS,
+  );
   if (observed) {
     audit.referenceObserverSteps += 1;
     classifyStep(audit, step, true);
@@ -536,12 +575,20 @@ export interface ObserveImpairedStepPorts {
   readonly audio: Audio;
 }
 
-export function observeImpairedStep<TState extends ObservedMatchState & ReplaySampleState, TTimeline, TSnapshot>(
+export function observeImpairedStep<
+  TState extends ObservedMatchState & ReplaySampleState,
+  TTimeline,
+  TSnapshot,
+>(
   ports: ObserveImpairedStepPorts,
   audit: RollbackValidationAudit<TState, TTimeline, TSnapshot>,
   step: RollbackEventStep,
 ): void {
-  const observed = matchObserver.observeConfirmed(audit.impairedObserver, asObservedStep(step), TICK_SECONDS);
+  const observed = matchObserver.observeConfirmed(
+    audit.impairedObserver,
+    asObservedStep(step),
+    TICK_SECONDS,
+  );
   if (observed) {
     audit.impairedObserverSteps += 1;
     classifyStep(audit, step, false);
@@ -650,7 +697,10 @@ function sumCounts(values: Readonly<Record<string, number>>): number {
   return Object.values(values).reduce((total, value) => total + value, 0);
 }
 
-function observerDigest(summary: ObservedMatchSummary, numberBytes: (value: number) => string): string {
+function observerDigest(
+  summary: ObservedMatchSummary,
+  numberBytes: (value: number) => string,
+): string {
   return stableValue(summary, numberBytes);
 }
 
@@ -695,7 +745,12 @@ function requireCondition(errors: string[], condition: boolean, message: string)
   }
 }
 
-export function finish<TState extends ObservedMatchState & ReplaySampleState, TCombatState, TSnapshot, TTimeline>(
+export function finish<
+  TState extends ObservedMatchState & ReplaySampleState,
+  TCombatState,
+  TSnapshot,
+  TTimeline,
+>(
   ports: RollbackValidationPorts<TState, TCombatState, TSnapshot, TTimeline>,
   audit: RollbackValidationAudit<TState, TTimeline, TSnapshot>,
   options: RollbackValidationFinishOptions<TState>,
@@ -723,8 +778,16 @@ export function finish<TState extends ObservedMatchState & ReplaySampleState, TC
   const referenceObserverDigest = observerDigest(referenceSummary, ports.matchSnapshot.numberBytes);
   const impairedObserverDigest = observerDigest(impairedSummary, ports.matchSnapshot.numberBytes);
   const observersMatch = referenceObserverDigest === impairedObserverDigest;
-  const referenceScore = finalScore(options.reference_final_score, options.reference_final_state, audit.referenceScore);
-  const impairedScore = finalScore(options.impaired_final_score, options.impaired_final_state, audit.impairedScore);
+  const referenceScore = finalScore(
+    options.reference_final_score,
+    options.reference_final_state,
+    audit.referenceScore,
+  );
+  const impairedScore = finalScore(
+    options.impaired_final_score,
+    options.impaired_final_state,
+    audit.impairedScore,
+  );
 
   const referenceResult = matchContract.newResult(
     { teams: buildTeamsForDigest(options.home_team_id, options.away_team_id) },
@@ -733,8 +796,12 @@ export function finish<TState extends ObservedMatchState & ReplaySampleState, TC
       away_team_id: options.away_team_id,
       home_score: referenceScore.home,
       away_score: referenceScore.away,
-      ...(referenceSummary.mvp_player_id !== undefined ? { mvp_player_id: referenceSummary.mvp_player_id } : {}),
-      ...(referenceSummary.mvp_summary !== undefined ? { mvp_summary: referenceSummary.mvp_summary } : {}),
+      ...(referenceSummary.mvp_player_id !== undefined
+        ? { mvp_player_id: referenceSummary.mvp_player_id }
+        : {}),
+      ...(referenceSummary.mvp_summary !== undefined
+        ? { mvp_summary: referenceSummary.mvp_summary }
+        : {}),
       home_stats: referenceSummary.home_stats,
       away_stats: referenceSummary.away_stats,
       ...(options.seed !== undefined ? { seed: options.seed } : {}),
@@ -747,8 +814,12 @@ export function finish<TState extends ObservedMatchState & ReplaySampleState, TC
       away_team_id: options.away_team_id,
       home_score: impairedScore.home,
       away_score: impairedScore.away,
-      ...(impairedSummary.mvp_player_id !== undefined ? { mvp_player_id: impairedSummary.mvp_player_id } : {}),
-      ...(impairedSummary.mvp_summary !== undefined ? { mvp_summary: impairedSummary.mvp_summary } : {}),
+      ...(impairedSummary.mvp_player_id !== undefined
+        ? { mvp_player_id: impairedSummary.mvp_player_id }
+        : {}),
+      ...(impairedSummary.mvp_summary !== undefined
+        ? { mvp_summary: impairedSummary.mvp_summary }
+        : {}),
       home_stats: impairedSummary.home_stats,
       away_stats: impairedSummary.away_stats,
       ...(options.seed !== undefined ? { seed: options.seed } : {}),
@@ -757,7 +828,10 @@ export function finish<TState extends ObservedMatchState & ReplaySampleState, TC
   if (!referenceResult.ok || !impairedResult.ok) {
     throw new Error("rollback validation result construction failed");
   }
-  const referenceResultDigest = resultDigest(referenceResult.value, ports.matchSnapshot.numberBytes);
+  const referenceResultDigest = resultDigest(
+    referenceResult.value,
+    ports.matchSnapshot.numberBytes,
+  );
   const impairedResultDigest = resultDigest(impairedResult.value, ports.matchSnapshot.numberBytes);
   const resultsMatch = referenceResultDigest === impairedResultDigest;
 
@@ -772,8 +846,16 @@ export function finish<TState extends ObservedMatchState & ReplaySampleState, TC
   const expectedCues = expectedAudioCues(audit, ports.combatFeedback);
 
   requireCondition(errors, audit.events.missing_confirmed === 0, "confirmed events are missing");
-  requireCondition(errors, audit.events.unexpected_confirmed === 0, "unexpected confirmed events were presented");
-  requireCondition(errors, audit.events.mismatched_confirmed === 0, "stable confirmed event IDs changed payload");
+  requireCondition(
+    errors,
+    audit.events.unexpected_confirmed === 0,
+    "unexpected confirmed events were presented",
+  );
+  requireCondition(
+    errors,
+    audit.events.mismatched_confirmed === 0,
+    "stable confirmed event IDs changed payload",
+  );
   requireCondition(
     errors,
     audit.events.confirmed_without_speculation === 0,
@@ -801,7 +883,8 @@ export function finish<TState extends ObservedMatchState & ReplaySampleState, TC
   );
   requireCondition(
     errors,
-    stableValue(actualAudioCues, ports.matchSnapshot.numberBytes) === stableValue(expectedCues, ports.matchSnapshot.numberBytes),
+    stableValue(actualAudioCues, ports.matchSnapshot.numberBytes) ===
+      stableValue(expectedCues, ports.matchSnapshot.numberBytes),
     "confirmed audio cue counts differ from authority",
   );
   requireCondition(
@@ -813,7 +896,11 @@ export function finish<TState extends ObservedMatchState & ReplaySampleState, TC
   requireCondition(errors, resultsMatch, "product result differs from authority");
   requireCondition(errors, replayMatched, "replay boundaries differ from the expected timeline");
   for (const scenario of options.required_scenarios ?? []) {
-    requireCondition(errors, audit.scenarioCounts[scenario] > 0, `required rollback scenario is missing: ${scenario}`);
+    requireCondition(
+      errors,
+      audit.scenarioCounts[scenario] > 0,
+      `required rollback scenario is missing: ${scenario}`,
+    );
   }
 
   return {
@@ -858,7 +945,11 @@ function buildTeamsForDigest(
   };
 }
 
-function observeRawReferenceStep<TState extends ObservedMatchState & ReplaySampleState, TTimeline, TSnapshot>(
+function observeRawReferenceStep<
+  TState extends ObservedMatchState & ReplaySampleState,
+  TTimeline,
+  TSnapshot,
+>(
   rollbackEvents: RollbackEventsPort<TTimeline, TSnapshot>,
   numberBytes: (value: number) => string,
   audit: RollbackValidationAudit<TState, TTimeline, TSnapshot>,
@@ -880,16 +971,28 @@ function observeRawReferenceStep<TState extends ObservedMatchState & ReplaySampl
   observeReferenceStep(numberBytes, audit, first);
 }
 
-export function run<TState extends ObservedMatchState & ReplaySampleState, TCombatState, TSnapshot, TTimeline>(
+export function run<
+  TState extends ObservedMatchState & ReplaySampleState,
+  TCombatState,
+  TSnapshot,
+  TTimeline,
+>(
   ports: RollbackValidationPorts<TState, TCombatState, TSnapshot, TTimeline>,
   initialState: TState,
   trace: readonly RollbackValidationTraceRow<TState, TSnapshot>[],
-  finishOptions: RollbackValidationFinishOptions<TState> & { readonly initial_combat_state?: TCombatState },
+  finishOptions: RollbackValidationFinishOptions<TState> & {
+    readonly initial_combat_state?: TCombatState;
+  },
 ): RollbackValidationReport {
   const audit = newAudit(ports, initialState, finishOptions.initial_combat_state);
   for (const row of trace) {
     if (row.kind === "reference_step") {
-      observeRawReferenceStep(ports.rollbackEvents, ports.matchSnapshot.numberBytes, audit, row.step as RollbackEventStepInput<TSnapshot>);
+      observeRawReferenceStep(
+        ports.rollbackEvents,
+        ports.matchSnapshot.numberBytes,
+        audit,
+        row.step as RollbackEventStepInput<TSnapshot>,
+      );
     } else if (row.kind === "reference_confirmed") {
       observeReferenceStep(ports.matchSnapshot.numberBytes, audit, row.step as RollbackEventStep);
     } else if (row.kind === "impaired_diff") {
@@ -899,7 +1002,11 @@ export function run<TState extends ObservedMatchState & ReplaySampleState, TComb
       applyImpairedDiff(ports.effects, audit, row.diff, ports.matchSnapshot.numberBytes);
     } else if (row.kind === "confirmed" || row.kind === "impaired_confirmed") {
       observeImpairedStep(
-        { numberBytes: ports.matchSnapshot.numberBytes, effects: ports.effects, audio: ports.audio },
+        {
+          numberBytes: ports.matchSnapshot.numberBytes,
+          effects: ports.effects,
+          audio: ports.audio,
+        },
         audit,
         row.step as RollbackEventStep,
       );
@@ -915,14 +1022,18 @@ export function run<TState extends ObservedMatchState & ReplaySampleState, TComb
       if (row.replaySample) {
         recordReplaySample(ports.replay, audit, row.boundary, row.replaySample);
       } else {
-        const state = row.state ?? (row.snapshot !== undefined ? ports.matchSnapshot.restore(row.snapshot) : undefined);
+        const state =
+          row.state ??
+          (row.snapshot !== undefined ? ports.matchSnapshot.restore(row.snapshot) : undefined);
         if (state === undefined) {
           throw new Error("replay validation boundary is missing its snapshot");
         }
         recordReplayBoundary(ports.replay, audit, row.boundary, state);
       }
     } else {
-      throw new Error(`unknown rollback validation trace row: ${String((row as { kind: string }).kind)}`);
+      throw new Error(
+        `unknown rollback validation trace row: ${String((row as { kind: string }).kind)}`,
+      );
     }
   }
   return finish(ports, audit, finishOptions);

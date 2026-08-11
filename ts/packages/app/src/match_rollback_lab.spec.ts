@@ -275,7 +275,9 @@ class RealRollbackHost implements RollbackHostPort {
     if (this.replayPort !== undefined) {
       for (const raw of batch.outputs) {
         try {
-          const state = JSON.parse(this.lab.matchStateJsonAt(raw.end_boundary)) as replayTypes.MatchState;
+          const state = JSON.parse(
+            this.lab.matchStateJsonAt(raw.end_boundary),
+          ) as replayTypes.MatchState;
           this.replayPort.recordBoundary(raw.end_boundary, toReplayMatchState(state));
         } catch {
           // Not currently retained (already evicted past the laboratory's
@@ -349,7 +351,8 @@ class RealRollbackHost implements RollbackHostPort {
       hud: {
         finished: this.finished,
         controlled_owns_ball:
-          this.currentState.owner !== undefined && this.currentState.owner === this.currentState.controlled,
+          this.currentState.owner !== undefined &&
+          this.currentState.owner === this.currentState.controlled,
         home_score: this.currentState.score.home,
         away_score: this.currentState.score.away,
         time_left: this.currentState.time_left,
@@ -470,8 +473,12 @@ function createRealRollbackHostFactory(options: RealRollbackHostOptions): Rollba
       profile_name: options.profile_name,
       ...(options.network_seed !== undefined ? { network_seed: options.network_seed } : {}),
       ...(options.bot_seed !== undefined ? { bot_seed: options.bot_seed } : {}),
-      ...(options.max_rollback_ticks !== undefined ? { max_rollback_ticks: options.max_rollback_ticks } : {}),
-      ...(options.settlement_ticks !== undefined ? { settlement_ticks: options.settlement_ticks } : {}),
+      ...(options.max_rollback_ticks !== undefined
+        ? { max_rollback_ticks: options.max_rollback_ticks }
+        : {}),
+      ...(options.settlement_ticks !== undefined
+        ? { settlement_ticks: options.settlement_ticks }
+        : {}),
     });
     const lab = host.RollbackPlayableLab.create(initialSnapshot, optionsJson);
     initialSnapshot.free();
@@ -536,7 +543,11 @@ describe("playable rollback ScreenStack flow (tier 3)", () => {
       stack.update(TICK_SECONDS);
       sawCorrection = sawCorrection || screen.debugRollbackCorrections.length > 0;
       const frameDebug = screen.debugRollbackDebug()!;
-      if (!sawSmoothing && screen.debugRollbackCorrections.length > 0 && frameDebug.active_smoothing_count > 0) {
+      if (
+        !sawSmoothing &&
+        screen.debugRollbackCorrections.length > 0 &&
+        frameDebug.active_smoothing_count > 0
+      ) {
         sawSmoothing = true;
         const magnitudeBefore = frameDebug.correction_magnitude;
         stack.update(TICK_SECONDS / 4);
@@ -552,9 +563,13 @@ describe("playable rollback ScreenStack flow (tier 3)", () => {
     }
 
     const debug = screen.debugRollbackDebug()!;
-    expect(sawCorrection, "the client and reference must diverge and correct at least once").toBe(true);
+    expect(sawCorrection, "the client and reference must diverge and correct at least once").toBe(
+      true,
+    );
     expect(sawSmoothing, "a landed correction must produce active render smoothing").toBe(true);
-    expect(sawSettling, "render-only settling must observably decay the correction magnitude").toBe(true);
+    expect(sawSettling, "render-only settling must observably decay the correction magnitude").toBe(
+      true,
+    );
     expect(debug.rollback_count).toBeGreaterThan(0);
     expect(debug.resimulated_ticks ?? 0).toBeGreaterThan(0);
     expect(debug.status).toBe("converged");
@@ -719,7 +734,9 @@ describe("playable rollback ScreenStack flow (tier 3)", () => {
       throw new Error("createRollbackHost was never called");
     }
 
-    expect(sawCorrection, "the client and reference must diverge and correct at least once").toBe(true);
+    expect(sawCorrection, "the client and reference must diverge and correct at least once").toBe(
+      true,
+    );
     expect(sawGoalPresentation, "confirmed goal starts real replay footage").toBe(true);
     expect(sawTerminalReplay, "confirmed replay overlaps terminal convergence").toBe(true);
     expect(debug.status).toBe("converged");
@@ -737,11 +754,18 @@ describe("playable rollback ScreenStack flow (tier 3)", () => {
     // frame is reported at all, and the player positions in it keep moving
     // as the celebration animation plays forward.
     expect(firstReplayFrame, "a confirmed rollback replay reports a displayed frame").toBeDefined();
-    expect(screen.debugReplayState, "the replay frame is still being reported at the end of the loop").toBeDefined();
     expect(
-      screen.debugReplayState!.players.map((p) => `${p.id}:${p.pos.x.toFixed(3)},${p.pos.y.toFixed(3)}`),
+      screen.debugReplayState,
+      "the replay frame is still being reported at the end of the loop",
+    ).toBeDefined();
+    expect(
+      screen.debugReplayState!.players.map(
+        (p) => `${p.id}:${p.pos.x.toFixed(3)},${p.pos.y.toFixed(3)}`,
+      ),
       "the replay frame keeps advancing, not frozen on its first tick",
-    ).not.toEqual(firstReplayFrame!.players.map((p) => `${p.id}:${p.pos.x.toFixed(3)},${p.pos.y.toFixed(3)}`));
+    ).not.toEqual(
+      firstReplayFrame!.players.map((p) => `${p.id}:${p.pos.x.toFixed(3)},${p.pos.y.toFixed(3)}`),
+    );
     // Still NOT asserted -- a `completed_at > replay_finished_at` ordering
     // check: `replay.active()` is still `true` here even with the fix above
     // -- `REPLAY_SECONDS`/`REPLAY_SLOWMO` (`gc-sim`'s `tuning.rs`, default

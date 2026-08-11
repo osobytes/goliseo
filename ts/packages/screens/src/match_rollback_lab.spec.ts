@@ -168,7 +168,13 @@ class FakeRollbackHost implements RollbackHostPort {
   readonly clock = new FakeFixedClock();
   readonly stepCalls: InputSample[] = [];
   disposeCalls = 0;
-  readonly hud = { finished: false, controlled_owns_ball: true, home_score: 0, away_score: 0, time_left: 300 };
+  readonly hud = {
+    finished: false,
+    controlled_owns_ball: true,
+    home_score: 0,
+    away_score: 0,
+    time_left: 300,
+  };
   private readonly config: FakeRollbackHostConfig;
   private tickCount = 0;
   private status: RollbackLabStatus = "active";
@@ -209,7 +215,10 @@ class FakeRollbackHost implements RollbackHostPort {
 
     const controlledId = ROSTER_IDS[this.config.localSlot - 1] ?? ROSTER_IDS[0]!;
     const previous = this.playerPos.get(controlledId)!;
-    this.playerPos.set(controlledId, { x: previous.x + sample.move_x / 20, y: previous.y + sample.move_y / 20 });
+    this.playerPos.set(controlledId, {
+      x: previous.x + sample.move_x / 20,
+      y: previous.y + sample.move_y / 20,
+    });
     this.ball = { x: this.ball.x + sample.move_x / 40, y: this.ball.y + sample.move_y / 40 };
 
     const output: RollbackLabOutput = { tick: tickIndex, input: { slots: [{ sample }] } };
@@ -246,7 +255,10 @@ class FakeRollbackHost implements RollbackHostPort {
       ];
       correction = {
         tick: confirmedEntry.tick,
-        source: { players: [...this.playerPos.entries()].map(([id, pos]) => ({ id, pos })), ball: this.ball },
+        source: {
+          players: [...this.playerPos.entries()].map(([id, pos]) => ({ id, pos })),
+          ball: this.ball,
+        },
       };
       this.status = "active";
     }
@@ -287,11 +299,16 @@ class FakeRollbackHost implements RollbackHostPort {
   }
 
   displayedPositions(): RollbackLabDisplayedPositions {
-    return { players: [...this.playerPos.entries()].map(([id, pos]) => ({ id, pos })), ball: this.ball };
+    return {
+      players: [...this.playerPos.entries()].map(([id, pos]) => ({ id, pos })),
+      ball: this.ball,
+    };
   }
 
   currentSnapshot(): RollbackLabSnapshotSummary {
-    return this.config.combatPlayerIds !== undefined ? { combat: { player_ids: this.config.combatPlayerIds } } : {};
+    return this.config.combatPlayerIds !== undefined
+      ? { combat: { player_ids: this.config.combatPlayerIds } }
+      : {};
   }
 
   referenceSnapshot(): RollbackLabSnapshotSummary {
@@ -303,9 +320,10 @@ class FakeRollbackHost implements RollbackHostPort {
   }
 }
 
-function makeRollbackHostFactory(
-  config: FakeRollbackHostConfig,
-): { readonly factory: RollbackHostFactory; readonly hosts: FakeRollbackHost[] } {
+function makeRollbackHostFactory(config: FakeRollbackHostConfig): {
+  readonly factory: RollbackHostFactory;
+  readonly hosts: FakeRollbackHost[];
+} {
   const hosts: FakeRollbackHost[] = [];
   const factory: RollbackHostFactory = (): RollbackHostPort => {
     const host = new FakeRollbackHost(config);
@@ -351,7 +369,10 @@ class FakeReplay implements ReplayPort {
 
 const noopRenderer: RenderPort = { draw: (): void => {} };
 
-function rollbackPorts(factory: RollbackHostFactory, tuningPause?: { open: boolean }): MatchScreenPorts {
+function rollbackPorts(
+  factory: RollbackHostFactory,
+  tuningPause?: { open: boolean },
+): MatchScreenPorts {
   return {
     createHost: () => {
       throw new Error("base createHost should not be called for a rollback-lab screen");
@@ -366,7 +387,9 @@ function rollbackPorts(factory: RollbackHostFactory, tuningPause?: { open: boole
   };
 }
 
-function labOptions(overrides: Partial<RollbackLabOptions> & Pick<RollbackLabOptions, "local_slot" | "profile_name">): RollbackLabOptions {
+function labOptions(
+  overrides: Partial<RollbackLabOptions> & Pick<RollbackLabOptions, "local_slot" | "profile_name">,
+): RollbackLabOptions {
   return overrides;
 }
 
@@ -382,7 +405,13 @@ function labOptions(overrides: Partial<RollbackLabOptions> & Pick<RollbackLabOpt
 const BASE_TICK_SECONDS = 1 / 60;
 
 class FakeBaseSimHost implements SimHostPort {
-  readonly hud = { finished: false, controlled_owns_ball: true, home_score: 0, away_score: 0, time_left: 300 };
+  readonly hud = {
+    finished: false,
+    controlled_owns_ball: true,
+    home_score: 0,
+    away_score: 0,
+    time_left: 300,
+  };
   private accumulator = 0;
   private tickCount = 0;
 
@@ -419,7 +448,10 @@ class FakeBaseSimHost implements SimHostPort {
   dispose(): void {}
 }
 
-function makeBaseHostFactory(): { readonly factory: SimHostFactory; readonly hosts: FakeBaseSimHost[] } {
+function makeBaseHostFactory(): {
+  readonly factory: SimHostFactory;
+  readonly hosts: FakeBaseSimHost[];
+} {
   const hosts: FakeBaseSimHost[] = [];
   const factory: SimHostFactory = (): SimHostPort => {
     const host = new FakeBaseSimHost();
@@ -445,7 +477,14 @@ function fixtureBasePlayer(id: string, pos: Vec2): replayTypes.MatchPlayer {
     stun_timer: 0,
     settle_timer: 0,
     sprinting: false,
-    outfield_decision: { version: 1, generation: 0, rng_state: 1, remaining: 0, context: "offball", intent: "none" },
+    outfield_decision: {
+      version: 1,
+      generation: 0,
+      rng_state: 1,
+      remaining: 0,
+      context: "offball",
+      intent: "none",
+    },
     dive_timer: 0,
     dive_dir: new Vec2(0, 0),
     keeper_get_up_timer: 0,
@@ -476,7 +515,10 @@ function fixtureBaseMatchState(getHost: () => FakeBaseSimHost): () => replayType
         away: { version: 1, mode: "inactive", reason: "no_trigger" },
       },
       transition: { version: 1, hold: 0, elapsed: 0 },
-      transition_windows: { home: { counterpress: 0, counterattack: 0 }, away: { counterpress: 0, counterattack: 0 } },
+      transition_windows: {
+        home: { counterpress: 0, counterattack: 0 },
+        away: { counterpress: 0, counterattack: 0 },
+      },
       ball: new Vec2(ballX, 270),
       ball_vel: new Vec2(180, 0),
       ball_z: 0,
@@ -500,7 +542,10 @@ function startActualGoalReplay(host: FakeBaseSimHost, screen: MatchScreen): void
 }
 
 /** Seeds a bounded, decaying correction offset so the smoothing-diagnostics assertions below exercise something real. `matchState` is the SAME source function the screen itself was constructed with -- see `MatchScreen.debugSeedRenderCorrection`'s doc for why a "previous" pose is built from it rather than reaching into screen-private state. */
-function seedBaseRenderCorrection(screen: MatchScreen, matchState: () => replayTypes.MatchState): void {
+function seedBaseRenderCorrection(
+  screen: MatchScreen,
+  matchState: () => replayTypes.MatchState,
+): void {
   const current = matchState();
   const player = current.players[0]!;
   screen.debugSeedRenderCorrection({
@@ -556,7 +601,10 @@ describe("match screen rollback laboratory (tier 2)", () => {
         }),
     ).not.toThrow();
 
-    const { factory: soccerFactory } = makeRollbackHostFactory({ localSlot: 1, profileName: "clean" });
+    const { factory: soccerFactory } = makeRollbackHostFactory({
+      localSlot: 1,
+      profileName: "clean",
+    });
     expect(
       () =>
         new MatchScreen(rollbackPorts(soccerFactory), {
@@ -567,7 +615,10 @@ describe("match screen rollback laboratory (tier 2)", () => {
   });
 
   it("is an explicit development-only slot-mode option", () => {
-    const { factory: productFactory } = makeRollbackHostFactory({ localSlot: 1, profileName: "clean" });
+    const { factory: productFactory } = makeRollbackHostFactory({
+      localSlot: 1,
+      profileName: "clean",
+    });
     expect(
       () =>
         new MatchScreen(rollbackPorts(productFactory), {
@@ -622,10 +673,15 @@ describe("match screen rollback laboratory (tier 2)", () => {
   it("captures a complete equipment tap before the next render update", () => {
     const down: Record<string, boolean> = {};
     const { factory } = makeRollbackHostFactory({ localSlot: 1, profileName: "clean" });
-    const keyboard = { isDown: (...keys: readonly string[]): boolean => keys.some((k) => down[k] === true) };
-    const screen = new MatchScreen({ ...rollbackPorts(factory), keyboard }, {
-      rollback_lab: labOptions({ local_slot: 1, profile_name: "clean" }),
-    });
+    const keyboard = {
+      isDown: (...keys: readonly string[]): boolean => keys.some((k) => down[k] === true),
+    };
+    const screen = new MatchScreen(
+      { ...rollbackPorts(factory), keyboard },
+      {
+        rollback_lab: labOptions({ local_slot: 1, profile_name: "clean" }),
+      },
+    );
 
     down.u = true;
     screen.update(TICK_SECONDS);
@@ -647,9 +703,12 @@ describe("match screen rollback laboratory (tier 2)", () => {
       delayTicks: 2,
     });
     const keyboard = { isDown: (...keys: readonly string[]): boolean => keys.includes("lshift") };
-    const screen = new MatchScreen({ ...rollbackPorts(factory), keyboard }, {
-      rollback_lab: labOptions({ local_slot: 1, profile_name: "two_tick" }),
-    });
+    const screen = new MatchScreen(
+      { ...rollbackPorts(factory), keyboard },
+      {
+        rollback_lab: labOptions({ local_slot: 1, profile_name: "two_tick" }),
+      },
+    );
     hosts[0]!.hud.controlled_owns_ball = false;
     screen.event({ kind: "key", key: "k" });
 
@@ -668,25 +727,37 @@ describe("match screen rollback laboratory (tier 2)", () => {
       screen.debugRollbackCorrections.length,
       "the render update must retain corrections from every simulated tick",
     ).toBeGreaterThan(0);
-    expect(screen.debugRollbackEventDiffs.length).toBeGreaterThanOrEqual(screen.debugRollbackOutputs.length);
-    expect(screen.debugRollbackFrameEvents.length, "legacy speculative consumers receive no events").toBe(0);
+    expect(screen.debugRollbackEventDiffs.length).toBeGreaterThanOrEqual(
+      screen.debugRollbackOutputs.length,
+    );
+    expect(
+      screen.debugRollbackFrameEvents.length,
+      "legacy speculative consumers receive no events",
+    ).toBe(0);
   });
 
   it("updates live player view state from the displayed rollback client", async () => {
     const { viewState } = await import("@gc/render");
     const { factory } = makeRollbackHostFactory({ localSlot: 1, profileName: "clean" });
     const keyboard = {
-      isDown: (...keys: readonly string[]): boolean => keys.includes("right") || keys.includes("lshift"),
+      isDown: (...keys: readonly string[]): boolean =>
+        keys.includes("right") || keys.includes("lshift"),
     };
-    const screen = new MatchScreen({ ...rollbackPorts(factory), keyboard }, {
-      rollback_lab: labOptions({ local_slot: 1, profile_name: "clean" }),
-    });
+    const screen = new MatchScreen(
+      { ...rollbackPorts(factory), keyboard },
+      {
+        rollback_lab: labOptions({ local_slot: 1, profile_name: "clean" }),
+      },
+    );
     screen.update(TICK_SECONDS);
     screen.update(TICK_SECONDS);
 
     const view = viewState.get(ROSTER_IDS[0]!);
     expect(view, "a moving lab player must produce live gait speed").toBeDefined();
-    expect(view!.speed > 0 || view!.phase > 0, "a moving lab player must advance gait speed/phase").toBe(true);
+    expect(
+      view!.speed > 0 || view!.phase > 0,
+      "a moving lab player must advance gait speed/phase",
+    ).toBe(true);
     viewState.reset();
   });
 
@@ -728,7 +799,9 @@ describe("match screen rollback laboratory (tier 2)", () => {
     // coordinator broadcast-phase concept -- out of scope here, `@gc/online`'s
     // territory. What matters on this side: a sync failure must not read as
     // a finished/full-time match either.
-    expect(terminal.finished, "synchronization failure must not masquerade as full time").toBe(false);
+    expect(terminal.finished, "synchronization failure must not masquerade as full time").toBe(
+      false,
+    );
 
     terminal.update(0);
     expect(terminal.debugRollbackOutputs.length).toBe(0);
@@ -842,10 +915,7 @@ describe("match screen rollback laboratory (tier 2)", () => {
     // exists only inside `gc-sim`'s snapshot and is never surfaced across the
     // wasm boundary. Not a dependency-graph or fixture gap this package can
     // work around -- the wasm binding for it simply doesn't exist yet.
-    it.skip(
-      "kickoff [needs a kickoff_hold-equivalent presentation timer, absent from MatchScreen/RenderFrameHud/crates/gc-render's frame -- not this package's call to add]",
-      () => {},
-    );
+    it.skip("kickoff [needs a kickoff_hold-equivalent presentation timer, absent from MatchScreen/RenderFrameHud/crates/gc-render's frame -- not this package's call to add]", () => {});
 
     // Seeds a real, nonzero smoothing correction on a rollback-mode
     // `MatchScreen` (`screen.debugSeedRenderCorrection`), confirms
@@ -883,10 +953,7 @@ describe("match screen rollback laboratory (tier 2)", () => {
     // `@gc/app` (ARCHITECTURE.md §7; confirmed `packages/screens/package.json`
     // declares no such dependency, and the direction is structural, not an
     // oversight). Unrelated to either blocker above.
-    it.skip(
-      "stack teardown [needs @gc/app's screen_stack.ts, a reverse dependency @gc/screens structurally cannot take]",
-      () => {},
-    );
+    it.skip("stack teardown [needs @gc/app's screen_stack.ts, a reverse dependency @gc/screens structurally cannot take]", () => {});
   });
 
   it("keeps actual goal replay gait coherent and clears smoothing on both exits", () => {
@@ -1008,7 +1075,9 @@ describe("match screen rollback laboratory: character pre-warm (#447)", () => {
       ...inner,
       planTicks: (dt: number) => inner.planTicks(dt),
       step: (sample) => inner.step(sample),
-      cancelPlannedTicks: () => { inner.cancelPlannedTicks(); },
+      cancelPlannedTicks: () => {
+        inner.cancelPlannedTicks();
+      },
       debug: () => inner.debug(),
       clockDebug: () => inner.clockDebug(),
       frame: () => inner.frame(),
@@ -1016,7 +1085,9 @@ describe("match screen rollback laboratory: character pre-warm (#447)", () => {
       displayedPositions: () => inner.displayedPositions(),
       currentSnapshot: () => inner.currentSnapshot(),
       referenceSnapshot: () => inner.referenceSnapshot(),
-      dispose: () => { inner.dispose(); },
+      dispose: () => {
+        inner.dispose();
+      },
       roster: () => ({
         ids: ["ozzo", "brakka"],
         teams: ["home", "away"] as const,
@@ -1030,15 +1101,21 @@ describe("match screen rollback laboratory: character pre-warm (#447)", () => {
   it("pre-warms a laboratory roster through the same call as every other mode", () => {
     const { factory } = makeRollbackHostFactory({ localSlot: 2, profileName: "clean" });
     const before = player3dVariantBuildCount();
-    const screen = new MatchScreen(rollbackPorts(() => labHostWithContent(factory())), {
-      rollback_lab: labOptions({ local_slot: 2, profile_name: "clean" }),
-    });
+    const screen = new MatchScreen(
+      rollbackPorts(() => labHostWithContent(factory())),
+      {
+        rollback_lab: labOptions({ local_slot: 2, profile_name: "clean" }),
+      },
+    );
 
     expect(screen.debugRollbackActive).toBe(true);
     // NON-VACUOUS: two players, two distinct variants, both built at
     // construction. Restore the old `onlineHost ?? host` resolution -- which
     // skipped this mode -- and this is 0.
-    expect(player3dVariantBuildCount() - before, "the laboratory's own roster is warmed like any other").toBe(2);
+    expect(
+      player3dVariantBuildCount() - before,
+      "the laboratory's own roster is warmed like any other",
+    ).toBe(2);
   });
 
   it("builds nothing for the empty roster every real laboratory host returns today", () => {

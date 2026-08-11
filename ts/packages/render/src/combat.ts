@@ -64,7 +64,12 @@ function telegraphAlpha(sample: CombatPlayerPresentation): number {
   return 0.35 + sample.phase_progress * 0.35;
 }
 
-function drawArc(dl: DrawList, project: Project, sample: CombatPlayerPresentation, position: { x: number; y: number }): void {
+function drawArc(
+  dl: DrawList,
+  project: Project,
+  sample: CombatPlayerPresentation,
+  position: { x: number; y: number },
+): void {
   const color = familyColor(sample.family_id);
   const [directionX, directionY] = unit(sample.direction);
   const heading = Math.atan2(directionY, directionX);
@@ -106,34 +111,56 @@ function drawArc(dl: DrawList, project: Project, sample: CombatPlayerPresentatio
     let innerPriorY: number | undefined;
     for (let index = 0; index <= 10; index += 1) {
       const angle = heading - halfArc + (2 * halfArc * index) / 10;
-      const [screenX, screenY] = project(position.x + Math.cos(angle) * radius * 0.7, position.y + Math.sin(angle) * radius * 0.7);
+      const [screenX, screenY] = project(
+        position.x + Math.cos(angle) * radius * 0.7,
+        position.y + Math.sin(angle) * radius * 0.7,
+      );
       if (innerPriorX !== undefined && innerPriorY !== undefined) {
         dl.line([innerPriorX, innerPriorY, screenX, screenY], color, { alpha, lineWidth });
       }
       innerPriorX = screenX;
       innerPriorY = screenY;
     }
-    if (firstX === undefined || firstY === undefined || lastX === undefined || lastY === undefined) {
+    if (
+      firstX === undefined ||
+      firstY === undefined ||
+      lastX === undefined ||
+      lastY === undefined
+    ) {
       throw new Error("combat.ts: draw_arc guard fan requires at least one arc sample");
     }
     dl.line([centerX, centerY, firstX, firstY], color, { alpha, lineWidth });
     dl.line([centerX, centerY, lastX, lastY], color, { alpha, lineWidth });
   } else {
-    const [tipX, tipY] = project(position.x + directionX * radius, position.y + directionY * radius);
+    const [tipX, tipY] = project(
+      position.x + directionX * radius,
+      position.y + directionY * radius,
+    );
     dl.line([centerX, centerY, tipX, tipY], color, { alpha, lineWidth });
     if (sample.family_id === "unarmed") {
       dl.circle("line", tipX, tipY, 4, color, { alpha, lineWidth });
     } else {
       const normalX = -directionY;
       const normalY = directionX;
-      const [leftX, leftY] = project(position.x + directionX * radius + normalX * 7, position.y + directionY * radius + normalY * 7);
-      const [rightX, rightY] = project(position.x + directionX * radius - normalX * 7, position.y + directionY * radius - normalY * 7);
+      const [leftX, leftY] = project(
+        position.x + directionX * radius + normalX * 7,
+        position.y + directionY * radius + normalY * 7,
+      );
+      const [rightX, rightY] = project(
+        position.x + directionX * radius - normalX * 7,
+        position.y + directionY * radius - normalY * 7,
+      );
       dl.line([leftX, leftY, rightX, rightY], color, { alpha, lineWidth });
     }
   }
 }
 
-function drawLine(dl: DrawList, project: Project, sample: CombatPlayerPresentation, position: { x: number; y: number }): void {
+function drawLine(
+  dl: DrawList,
+  project: Project,
+  sample: CombatPlayerPresentation,
+  position: { x: number; y: number },
+): void {
   const color = familyColor("ranged");
   const [directionX, directionY] = unit(sample.direction);
   const range = sample.projectile_range_px ?? 300;
@@ -147,8 +174,14 @@ function drawLine(dl: DrawList, project: Project, sample: CombatPlayerPresentati
   const normalY = directionX;
   for (let step = 1; step <= 4; step += 1) {
     const distance = (range * step) / 5;
-    const [leftX, leftY] = project(position.x + directionX * distance + normalX * 5, position.y + directionY * distance + normalY * 5);
-    const [rightX, rightY] = project(position.x + directionX * distance - normalX * 5, position.y + directionY * distance - normalY * 5);
+    const [leftX, leftY] = project(
+      position.x + directionX * distance + normalX * 5,
+      position.y + directionY * distance + normalY * 5,
+    );
+    const [rightX, rightY] = project(
+      position.x + directionX * distance - normalX * 5,
+      position.y + directionY * distance - normalY * 5,
+    );
     dl.line([leftX, leftY, rightX, rightY], color, { alpha, lineWidth });
   }
 }
@@ -186,11 +219,19 @@ export function drawOverCommands(frame: CombatDrawFrame, project: Project): Draw
   }
   for (const projectile of model.projectiles) {
     const [directionX, directionY] = unit(projectile.direction);
-    const [tailX, tailY] = project(projectile.position.x - directionX * 18, projectile.position.y - directionY * 18);
+    const [tailX, tailY] = project(
+      projectile.position.x - directionX * 18,
+      projectile.position.y - directionY * 18,
+    );
     const [x, y, scale] = project(projectile.position.x, projectile.position.y);
     const radius = Math.max(3, 5 * scale);
-    dl.line([tailX, tailY, x, y], [1, 0.45, 0.78], { alpha: 0.58, lineWidth: Math.max(1, 3 * scale) });
-    dl.polygon("fill", [x, y - radius, x + radius, y, x, y + radius, x - radius, y], [1, 0.9, 1], { alpha: 0.98 });
+    dl.line([tailX, tailY, x, y], [1, 0.45, 0.78], {
+      alpha: 0.58,
+      lineWidth: Math.max(1, 3 * scale),
+    });
+    dl.polygon("fill", [x, y - radius, x + radius, y, x, y + radius, x - radius, y], [1, 0.9, 1], {
+      alpha: 0.98,
+    });
     dl.circle("fill", x, y, radius * 0.32, [0.15, 0.03, 0.18], { alpha: 0.9 });
   }
   return dl.commands;

@@ -68,7 +68,9 @@ function bonesOfMergedVertices(theme: themes.Theme, loadout: themes.Loadout): Se
   for (const vertex of merged.verts) {
     const name = BONE_ORDER[vertex.bone];
     if (name === undefined) {
-      throw new Error(`presentation_content.spec.ts: vertex on unknown bone index ${String(vertex.bone)}`);
+      throw new Error(
+        `presentation_content.spec.ts: vertex on unknown bone index ${String(vertex.bone)}`,
+      );
     }
     bones.add(name);
   }
@@ -98,7 +100,10 @@ describe("presentation_content: every mapped id resolves to real rig3d content",
       // `body.accumulate` -- inside `build()`'s `try`, which disables rigged
       // players for the whole process and logs a warning. Checked here
       // instead, where the message names the id.
-      expect(() => equipment.build(equipmentId, themes.SLOT_INDEX), `${equipmentId} has a builder`).not.toThrow();
+      expect(
+        () => equipment.build(equipmentId, themes.SLOT_INDEX),
+        `${equipmentId} has a builder`,
+      ).not.toThrow();
       expect(body.SOCKETS[equipmentId], `${equipmentId} has a socket`).toBeDefined();
     }
   });
@@ -155,10 +160,14 @@ describe("presentation_content: a player who carries nothing renders nothing on 
   // one does not.
   it("puts vertices on exactly the socket the loadout names, for an outfielder", () => {
     const shield = bonesOfMergedVertices(medieval, loadoutFor("loadout_emberguard_shield"));
-    expect([...shield].filter(isSocketBone), "the shield rides socket_shield.L").toEqual(["socket_shield.L"]);
+    expect([...shield].filter(isSocketBone), "the shield rides socket_shield.L").toEqual([
+      "socket_shield.L",
+    ]);
 
     const sword = bonesOfMergedVertices(medieval, loadoutFor("loadout_tournament_sword"));
-    expect([...sword].filter(isSocketBone), "the sword rides socket_hand.R").toEqual(["socket_hand.R"]);
+    expect([...sword].filter(isSocketBone), "the sword rides socket_hand.R").toEqual([
+      "socket_hand.R",
+    ]);
 
     // The theme's OWN authored loadout still carries both -- that is what
     // every preview and diagnostic entry point renders, and it is what made
@@ -176,7 +185,9 @@ describe("presentation_content: a player who carries nothing renders nothing on 
     const scifi = themes.byKey("scifi");
     const withBlaster = body.accumulate(RIG, scifi, FIGURE, loadoutFor("loadout_pulse_blaster"))[1];
     const empty = body.accumulate(RIG, scifi, FIGURE, loadoutFor(undefined))[1];
-    expect(withBlaster.filter((p) => p.bone_name === "hips").length).toBeGreaterThan(empty.filter((p) => p.bone_name === "hips").length);
+    expect(withBlaster.filter((p) => p.bone_name === "hips").length).toBeGreaterThan(
+      empty.filter((p) => p.bone_name === "hips").length,
+    );
     expect(withBlaster.length).toBeGreaterThan(empty.length);
   });
 
@@ -203,7 +214,10 @@ describe("presentation_content: geometry actually varies", () => {
       }
     }
     expect(counts.size).toBe(9);
-    expect(new Set(counts.values()).size, "nine distinct (theme, loadout) pairs, nine distinct meshes").toBe(9);
+    expect(
+      new Set(counts.values()).size,
+      "nine distinct (theme, loadout) pairs, nine distinct meshes",
+    ).toBe(9);
   });
 
   // THE COST, PINNED RATHER THAN DESCRIBED (#447's performance note). Before
@@ -230,9 +244,15 @@ describe("presentation_content: geometry actually varies", () => {
       ["scifi_nova_quell", "loadout_spring_gloves"], // tox_vren
     ];
     const variants = new Set(
-      pitch.map(([presentationId, loadoutId]) => `${themeFor(presentationId).key}|${FIGURE.key}|${loadoutKey(loadoutFor(loadoutId))}`),
+      pitch.map(
+        ([presentationId, loadoutId]) =>
+          `${themeFor(presentationId).key}|${FIGURE.key}|${loadoutKey(loadoutFor(loadoutId))}`,
+      ),
     );
     expect(pitch).toHaveLength(10);
-    expect(variants.size, "ten players collapse to nine geometries -- brakka and drell share one").toBe(9);
+    expect(
+      variants.size,
+      "ten players collapse to nine geometries -- brakka and drell share one",
+    ).toBe(9);
   });
 });

@@ -179,14 +179,7 @@ export interface CoordinatorTerminal {
 }
 
 export type SessionLifecyclePhase =
-  | "handshake"
-  | "manifest"
-  | "assigned"
-  | "ready"
-  | "countdown"
-  | "running"
-  | "result"
-  | "terminal";
+  "handshake" | "manifest" | "assigned" | "ready" | "countdown" | "running" | "result" | "terminal";
 
 export interface CoordinatorState {
   readonly role: LobbyRole;
@@ -241,11 +234,19 @@ export type CoordinatorEvent = { readonly kind: string; readonly [key: string]: 
 export interface CoordinatorPort {
   /** Named `create` rather than `new` because `new` is a reserved word. */
   create(options: CoordinatorNewHostOptions | CoordinatorNewGuestOptions): CoordinatorState;
-  step(state: CoordinatorState, event: CoordinatorEvent): readonly [CoordinatorState, CoordinatorOutcome];
-  planAssignments(manifest: SessionManifest, seating: readonly string[]): readonly SessionSlotProducer[] | undefined;
+  step(
+    state: CoordinatorState,
+    event: CoordinatorEvent,
+  ): readonly [CoordinatorState, CoordinatorOutcome];
+  planAssignments(
+    manifest: SessionManifest,
+    seating: readonly string[],
+  ): readonly SessionSlotProducer[] | undefined;
   ownedSlots(state: CoordinatorState, peerId: string): readonly InputSlotId[];
   /** The opening live slot per human owner, keyed by producer id. */
-  previewLive(assignments: readonly SessionSlotProducer[] | undefined): Readonly<Record<string, InputSlotId>>;
+  previewLive(
+    assignments: readonly SessionSlotProducer[] | undefined,
+  ): Readonly<Record<string, InputSlotId>>;
   ownershipSeatsRoster(state: CoordinatorState): boolean;
 }
 
@@ -495,7 +496,12 @@ function refreshSeating(ports: LobbyModelPorts, model: LobbyModel): LobbyModel {
   return { ...model, seating };
 }
 
-function absorb(model: LobbyModel, ports: LobbyModelPorts, outcome: CoordinatorOutcome, effects: LobbyEffect[]): LobbyModel {
+function absorb(
+  model: LobbyModel,
+  ports: LobbyModelPorts,
+  outcome: CoordinatorOutcome,
+  effects: LobbyEffect[],
+): LobbyModel {
   let next = model;
   if (!outcome.accepted && outcome.reason) {
     next = { ...next, error: outcome.reason };
@@ -527,7 +533,7 @@ function step(
   model: LobbyModel,
   ports: LobbyModelPorts,
   event: CoordinatorEvent,
-  effects: LobbyEffect[]
+  effects: LobbyEffect[],
 ): readonly [LobbyModel, CoordinatorOutcome | undefined] {
   const state = model.coordinator;
   if (!state) {
@@ -545,7 +551,10 @@ function step(
   return [next, outcome];
 }
 
-function plannedAssignments(ports: LobbyModelPorts, model: LobbyModel): readonly SessionSlotProducer[] | undefined {
+function plannedAssignments(
+  ports: LobbyModelPorts,
+  model: LobbyModel,
+): readonly SessionSlotProducer[] | undefined {
   const state = model.coordinator;
   if (!state || state.role !== "host" || !state.manifest) {
     return undefined;
@@ -561,7 +570,7 @@ function publishAssignments(
   model: LobbyModel,
   ports: LobbyModelPorts,
   effects: LobbyEffect[],
-  force?: boolean
+  force?: boolean,
 ): LobbyModel {
   const state = model.coordinator;
   if (!state || state.role !== "host") {
@@ -598,7 +607,7 @@ function publishAssignments(
       // order overrules them all.
       preserve_claims: !force,
     },
-    effects
+    effects,
   );
   return next;
 }
@@ -608,10 +617,20 @@ function configurable(model: LobbyModel): boolean {
   if (!state) {
     return false;
   }
-  return state.phase !== "countdown" && state.phase !== "running" && state.phase !== "result" && state.phase !== "terminal";
+  return (
+    state.phase !== "countdown" &&
+    state.phase !== "running" &&
+    state.phase !== "result" &&
+    state.phase !== "terminal"
+  );
 }
 
-function chooseRole(model: LobbyModel, ports: LobbyModelPorts, role: LobbyRole, effects: LobbyEffect[]): LobbyModel {
+function chooseRole(
+  model: LobbyModel,
+  ports: LobbyModelPorts,
+  role: LobbyRole,
+  effects: LobbyEffect[],
+): LobbyModel {
   if (model.coordinator) {
     return { ...model, error: "the session role is already chosen" };
   }
@@ -691,7 +710,10 @@ function invite(model: LobbyModel, ports: LobbyModelPorts, effects: LobbyEffect[
     return { ...model, error: "finish the pending invitation first" };
   }
   if (model.guests >= requiredHumans(ports, model) - 1) {
-    return { ...model, error: `${effectiveMode(model)} seats ${requiredHumans(ports, model)} humans` };
+    return {
+      ...model,
+      error: `${effectiveMode(model)} seats ${requiredHumans(ports, model)} humans`,
+    };
   }
   if (model.guests >= ports.transportContract.maxGuests) {
     return { ...model, error: "the star transport is at guest capacity" };
@@ -714,7 +736,12 @@ function exportSignal(model: LobbyModel, effects: LobbyEffect[]): LobbyModel {
   return { ...rest, status: "Signal copied. Send it to your peer." };
 }
 
-function importSignal(model: LobbyModel, ports: LobbyModelPorts, text: unknown, effects: LobbyEffect[]): LobbyModel {
+function importSignal(
+  model: LobbyModel,
+  ports: LobbyModelPorts,
+  text: unknown,
+  effects: LobbyEffect[],
+): LobbyModel {
   if (typeof text !== "string" || text.length === 0) {
     return { ...model, error: "the pasted signal is empty" };
   }
@@ -748,7 +775,11 @@ function importSignal(model: LobbyModel, ports: LobbyModelPorts, text: unknown, 
   return next;
 }
 
-function lockSession(model: LobbyModel, ports: LobbyModelPorts, effects: LobbyEffect[]): LobbyModel {
+function lockSession(
+  model: LobbyModel,
+  ports: LobbyModelPorts,
+  effects: LobbyEffect[],
+): LobbyModel {
   if (model.role !== "host") {
     return { ...model, error: "only the host proposes the manifest" };
   }
@@ -766,7 +797,12 @@ function lockSession(model: LobbyModel, ports: LobbyModelPorts, effects: LobbyEf
       error: `${effectiveMode(model)} needs ${required} humans; ${state.peers.length} are connected`,
     };
   }
-  const [stepped, outcome] = step(model, ports, { kind: "propose_manifest", manifest: manifestFor(model, model.mode) }, effects);
+  const [stepped, outcome] = step(
+    model,
+    ports,
+    { kind: "propose_manifest", manifest: manifestFor(model, model.mode) },
+    effects,
+  );
   let next = stepped;
   if (outcome?.accepted) {
     next = { ...next, status: "Manifest proposed. Waiting for peers to accept." };
@@ -774,7 +810,12 @@ function lockSession(model: LobbyModel, ports: LobbyModelPorts, effects: LobbyEf
   return publishAssignments(next, ports, effects);
 }
 
-function swapSeats(model: LobbyModel, ports: LobbyModelPorts, index: unknown, effects: LobbyEffect[]): LobbyModel {
+function swapSeats(
+  model: LobbyModel,
+  ports: LobbyModelPorts,
+  index: unknown,
+  effects: LobbyEffect[],
+): LobbyModel {
   if (model.role !== "host") {
     return { ...model, error: "only the host reassigns ownership" };
   }
@@ -792,7 +833,11 @@ function swapSeats(model: LobbyModel, ports: LobbyModelPorts, index: unknown, ef
   }
   seating[index - 1] = b;
   seating[index] = a;
-  const next: LobbyModel = { ...model, seating, status: "Ownership republished; readiness cleared." };
+  const next: LobbyModel = {
+    ...model,
+    seating,
+    status: "Ownership republished; readiness cleared.",
+  };
   // The host reasserting its own seating order overrides every pair a guest
   // was granted, and the coordinator drops their claims with it.
   return publishAssignments(next, ports, effects, true);
@@ -807,7 +852,11 @@ function swapSeats(model: LobbyModel, ports: LobbyModelPorts, index: unknown, ef
 // An owned set with nothing to trade -- a single slot in `4v4`, a whole
 // outfield line in `1v1` -- yields nothing here, so those modes offer no
 // control at all. No mode is named to make that true.
-function pairRequest(model: LobbyModel, ports: LobbyModelPorts, slot: InputSlotId): readonly InputSlotId[] | undefined {
+function pairRequest(
+  model: LobbyModel,
+  ports: LobbyModelPorts,
+  slot: InputSlotId,
+): readonly InputSlotId[] | undefined {
   const state = model.coordinator;
   if (!state) {
     return undefined;
@@ -841,7 +890,12 @@ function pairRequest(model: LobbyModel, ports: LobbyModelPorts, slot: InputSlotI
   return request;
 }
 
-function requestPair(model: LobbyModel, ports: LobbyModelPorts, slot: unknown, effects: LobbyEffect[]): LobbyModel {
+function requestPair(
+  model: LobbyModel,
+  ports: LobbyModelPorts,
+  slot: unknown,
+  effects: LobbyEffect[],
+): LobbyModel {
   if (!model.coordinator) {
     return model;
   }
@@ -856,7 +910,12 @@ function requestPair(model: LobbyModel, ports: LobbyModelPorts, slot: unknown, e
   return next;
 }
 
-function setReady(model: LobbyModel, ports: LobbyModelPorts, ready: unknown, effects: LobbyEffect[]): LobbyModel {
+function setReady(
+  model: LobbyModel,
+  ports: LobbyModelPorts,
+  ready: unknown,
+  effects: LobbyEffect[],
+): LobbyModel {
   if (typeof ready !== "boolean") {
     return { ...model, error: "readiness must be a boolean" };
   }
@@ -864,15 +923,24 @@ function setReady(model: LobbyModel, ports: LobbyModelPorts, ready: unknown, eff
   return next;
 }
 
-function beginCountdown(model: LobbyModel, ports: LobbyModelPorts, effects: LobbyEffect[]): LobbyModel {
+function beginCountdown(
+  model: LobbyModel,
+  ports: LobbyModelPorts,
+  effects: LobbyEffect[],
+): LobbyModel {
   if (model.role !== "host") {
     return { ...model, error: "only the host starts the countdown" };
   }
   const [next, outcome] = step(
     model,
     ports,
-    { kind: "begin_countdown", countdown_id: COUNTDOWN_ID, remaining_ticks: COUNTDOWN_TICKS, first_input_tick: FIRST_INPUT_TICK },
-    effects
+    {
+      kind: "begin_countdown",
+      countdown_id: COUNTDOWN_ID,
+      remaining_ticks: COUNTDOWN_TICKS,
+      first_input_tick: FIRST_INPUT_TICK,
+    },
+    effects,
   );
   if (outcome?.accepted) {
     return { ...next, status: "Countdown started. Configuration is frozen." };
@@ -887,7 +955,12 @@ function leave(model: LobbyModel, ports: LobbyModelPorts, effects: LobbyEffect[]
     if (state.role === "guest") {
       [next] = step(next, ports, { kind: "leave" }, effects);
     } else {
-      [next] = step(next, ports, { kind: "abort", code: "host_abort", detail: "host left the lobby" }, effects);
+      [next] = step(
+        next,
+        ports,
+        { kind: "abort", code: "host_abort", detail: "host left the lobby" },
+        effects,
+      );
     }
   }
   // The departure notice is still queued on the transport, so the link is
@@ -897,7 +970,11 @@ function leave(model: LobbyModel, ports: LobbyModelPorts, effects: LobbyEffect[]
   return next;
 }
 
-function onSignal(model: LobbyModel, ports: LobbyModelPorts, command: { readonly peer_id: string; readonly signal: string }): LobbyModel {
+function onSignal(
+  model: LobbyModel,
+  ports: LobbyModelPorts,
+  command: { readonly peer_id: string; readonly signal: string },
+): LobbyModel {
   const direction: LobbySignalDirection = model.role === "host" ? "offer" : "answer";
   const exported: LobbySignalRecord = {
     direction,
@@ -909,16 +986,29 @@ function onSignal(model: LobbyModel, ports: LobbyModelPorts, command: { readonly
     ...model,
     outgoing: command.signal,
     exported,
-    status: direction === "offer" ? "Offer ready. Copy it to your peer." : "Answer ready. Copy it back to the host.",
+    status:
+      direction === "offer"
+        ? "Offer ready. Copy it to your peer."
+        : "Answer ready. Copy it back to the host.",
   };
 }
 
-function onPeerConnected(model: LobbyModel, ports: LobbyModelPorts, command: { readonly peer_id: string }, effects: LobbyEffect[]): LobbyModel {
+function onPeerConnected(
+  model: LobbyModel,
+  ports: LobbyModelPorts,
+  command: { readonly peer_id: string },
+  effects: LobbyEffect[],
+): LobbyModel {
   if (model.role === "host") {
     const next = model.pending_link === command.peer_id ? withoutPendingLink(model) : model;
     return { ...next, status: `${command.peer_id} connected.` };
   }
-  const [next] = step({ ...model, status: "Connected to the host." }, ports, { kind: "connect" }, effects);
+  const [next] = step(
+    { ...model, status: "Connected to the host." },
+    ports,
+    { kind: "connect" },
+    effects,
+  );
   return next;
 }
 
@@ -953,7 +1043,11 @@ export type LobbyCommand =
 
 // The single pure entry point. Unknown commands are ignored rather than
 // fatal so a future screen control cannot crash a live session.
-export function command(model: LobbyModel, ports: LobbyModelPorts, cmd: LobbyCommand): readonly [LobbyModel, readonly LobbyEffect[]] {
+export function command(
+  model: LobbyModel,
+  ports: LobbyModelPorts,
+  cmd: LobbyCommand,
+): readonly [LobbyModel, readonly LobbyEffect[]] {
   const effects: LobbyEffect[] = [];
   const { error: _clearedError, ...withoutError } = copy(model);
   let next: LobbyModel = withoutError;
@@ -972,7 +1066,11 @@ export function command(model: LobbyModel, ports: LobbyModelPorts, cmd: LobbyCom
       const match = /^guest_(\d+)$/.exec(next.peer_id);
       let index = match?.[1] !== undefined ? Number(match[1]) : 1;
       index = (index % ports.transportContract.maxGuests) + 1;
-      next = { ...next, peer_id: `${GUEST_LINK_PREFIX}${index}`, status: `Joining as ${GUEST_LINK_PREFIX}${index}.` };
+      next = {
+        ...next,
+        peer_id: `${GUEST_LINK_PREFIX}${index}`,
+        status: `Joining as ${GUEST_LINK_PREFIX}${index}.`,
+      };
       break;
     }
     case "bot_fill": {
@@ -984,7 +1082,9 @@ export function command(model: LobbyModel, ports: LobbyModelPorts, cmd: LobbyCom
       next = {
         ...next,
         bot_fill: botFill,
-        status: botFill ? "Empty seats will be filled with AI." : "Every seat must be a connected human.",
+        status: botFill
+          ? "Empty seats will be filled with AI."
+          : "Every seat must be a connected human.",
       };
       break;
     }
@@ -1029,7 +1129,12 @@ export function command(model: LobbyModel, ports: LobbyModelPorts, cmd: LobbyCom
       break;
     case "control":
       next = (() => {
-        const [stepped] = step(next, ports, { kind: "control", link_id: cmd.link_id, wire: cmd.wire }, effects);
+        const [stepped] = step(
+          next,
+          ports,
+          { kind: "control", link_id: cmd.link_id, wire: cmd.wire },
+          effects,
+        );
         return publishAssignments(stepped, ports, effects);
       })();
       break;
@@ -1130,7 +1235,10 @@ export interface LobbyView {
   readonly started: boolean;
 }
 
-function visibleAssignments(ports: LobbyModelPorts, model: LobbyModel): readonly SessionSlotProducer[] | undefined {
+function visibleAssignments(
+  ports: LobbyModelPorts,
+  model: LobbyModel,
+): readonly SessionSlotProducer[] | undefined {
   const state = model.coordinator;
   if (state?.assignments) {
     return state.assignments;
@@ -1147,7 +1255,10 @@ function visibleManifest(model: LobbyModel): SessionManifest {
 }
 
 // The team a peer is seated on, or undefined while it owns nothing.
-function teamOf(assignments: readonly SessionSlotProducer[] | undefined, peerId: string): InputTeam | undefined {
+function teamOf(
+  assignments: readonly SessionSlotProducer[] | undefined,
+  peerId: string,
+): InputTeam | undefined {
   for (const producer of assignments ?? []) {
     if (producer.producer_kind === "peer" && producer.producer_id === peerId) {
       return producer.team;
@@ -1161,7 +1272,8 @@ function preferenceView(model: LobbyModel): LobbyPreferenceView | undefined {
   if (!preference) {
     return undefined;
   }
-  const key: string = preference.status === "rejected" && preference.reason ? preference.reason : preference.status;
+  const key: string =
+    preference.status === "rejected" && preference.reason ? preference.reason : preference.status;
   return {
     slots: preference.slots,
     status: preference.status,
@@ -1170,14 +1282,18 @@ function preferenceView(model: LobbyModel): LobbyPreferenceView | undefined {
   };
 }
 
-function rosterView(ports: LobbyModelPorts, model: LobbyModel): readonly [readonly LobbySlotView[], readonly LobbyKeeperView[]] {
+function rosterView(
+  ports: LobbyModelPorts,
+  model: LobbyModel,
+): readonly [readonly LobbySlotView[], readonly LobbyKeeperView[]] {
   const manifest = visibleManifest(model);
   const assignments = visibleAssignments(ports, model);
   // The opening live slot is the coordinator's rule, not the lobby's; the
   // freeze records the same table for the same assignments.
   const live = ports.coordinator.previewLive(assignments);
   const state = model.coordinator;
-  const configurableOwnership = state !== undefined && (state.phase === "assigned" || state.phase === "ready");
+  const configurableOwnership =
+    state !== undefined && (state.phase === "assigned" || state.phase === "ready");
   const slots: LobbySlotView[] = [];
   for (let index = 1; index <= ports.inputFrame.slotCount; index += 1) {
     const slot = ports.inputFrame.slot(index);
@@ -1186,8 +1302,14 @@ function rosterView(ports: LobbyModelPorts, model: LobbyModel): readonly [readon
     }
     const entry = manifest.slots[index - 1];
     const producer = assignments?.[index - 1];
-    const isLive = producer !== undefined && producer.producer_kind === "peer" && live[producer.producer_id] === producer.slot;
-    const sameTeam = producer !== undefined && assignments !== undefined && producer.team === teamOf(assignments, model.peer_id);
+    const isLive =
+      producer !== undefined &&
+      producer.producer_kind === "peer" &&
+      live[producer.producer_id] === producer.slot;
+    const sameTeam =
+      producer !== undefined &&
+      assignments !== undefined &&
+      producer.team === teamOf(assignments, model.peer_id);
     slots.push({
       slot: slot.id,
       team: slot.team,
@@ -1196,8 +1318,12 @@ function rosterView(ports: LobbyModelPorts, model: LobbyModel): readonly [readon
       ...(producer?.producer_kind !== undefined ? { owner_kind: producer.producer_kind } : {}),
       driver: producer ? (isLive ? "human" : "ai") : "pending",
       live: isLive,
-      local_owner: producer !== undefined && producer.producer_kind === "peer" && producer.producer_id === model.peer_id,
-      can_prefer: configurableOwnership && sameTeam && pairRequest(model, ports, slot.id) !== undefined,
+      local_owner:
+        producer !== undefined &&
+        producer.producer_kind === "peer" &&
+        producer.producer_id === model.peer_id,
+      can_prefer:
+        configurableOwnership && sameTeam && pairRequest(model, ports, slot.id) !== undefined,
     });
   }
   const keepers: LobbyKeeperView[] = [];
@@ -1217,7 +1343,8 @@ function seatsView(ports: LobbyModelPorts, model: LobbyModel): readonly LobbySea
     return [];
   }
   const assignments = visibleAssignments(ports, model);
-  const order: string[] = state.role === "host" ? [...model.seating] : state.peers.map((peer) => peer.peer_id);
+  const order: string[] =
+    state.role === "host" ? [...model.seating] : state.peers.map((peer) => peer.peer_id);
   const seats: LobbySeatView[] = [];
   order.forEach((peerId, index) => {
     const owned: InputSlotId[] = [];
@@ -1232,7 +1359,13 @@ function seatsView(ports: LobbyModelPorts, model: LobbyModel): readonly LobbySea
         ready = peer.ready;
       }
     }
-    seats.push({ index: index + 1, peer_id: peerId, is_local: peerId === state.peer_id, ready, slots: owned });
+    seats.push({
+      index: index + 1,
+      peer_id: peerId,
+      is_local: peerId === state.peer_id,
+      ready,
+      slots: owned,
+    });
   });
   return seats;
 }
@@ -1242,7 +1375,10 @@ function identityView(model: LobbyModel): readonly LobbyIdentityRow[] {
   const state = model.coordinator;
   return [
     { label: "MODE", value: manifest.match_mode },
-    { label: "MANIFEST", value: state?.manifest_id ? state.manifest_id.slice(0, 12) : "unproposed" },
+    {
+      label: "MANIFEST",
+      value: state?.manifest_id ? state.manifest_id.slice(0, 12) : "unproposed",
+    },
     { label: "BUILD", value: manifest.build_id },
     { label: "CONTENT", value: manifest.content_id },
     { label: "TUNING", value: manifest.tuning_id },
@@ -1298,8 +1434,13 @@ export function view(ports: LobbyModelPorts, model: LobbyModel): LobbyView {
     has_outgoing: model.outgoing !== undefined,
     status: model.status,
     ...(model.error !== undefined ? { error: model.error } : {}),
-    can_invite: model.role === "host" && phase === "handshake" && model.pending_link === undefined && connected < required,
-    can_lock: model.role === "host" && phase === "handshake" && (connected >= required || model.bot_fill),
+    can_invite:
+      model.role === "host" &&
+      phase === "handshake" &&
+      model.pending_link === undefined &&
+      connected < required,
+    can_lock:
+      model.role === "host" && phase === "handshake" && (connected >= required || model.bot_fill),
     can_configure: model.role === "host" && configurable(model),
     can_ready: phase === "assigned" || phase === "ready",
     ready,

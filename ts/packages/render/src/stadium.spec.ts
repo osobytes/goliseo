@@ -133,7 +133,8 @@ describe("Stadium crowd", () => {
         const nx = (position.x - layout.cx) / layout.bowlOuterRx;
         const nz = (position.z - layout.cz) / layout.bowlOuterRz;
         expect(nx * nx + nz * nz).toBeLessThanOrEqual(1.0001);
-        const insideRect = position.x >= 0 && position.x <= FIELD.w && position.z >= 0 && position.z <= FIELD.h;
+        const insideRect =
+          position.x >= 0 && position.x <= FIELD.w && position.z >= 0 && position.z <= FIELD.h;
         expect(insideRect).toBe(false);
         checked += 1;
       }
@@ -146,7 +147,11 @@ describe("Stadium pitch surface", () => {
   it("mirrors the field's own w/h/penalty-box values in its marking uniforms, and pins the circle radius constant", () => {
     const stadium = new Stadium(baseOptions());
     const quad = findByName(stadium.group, "pitch_surface_quad");
-    if (!(quad instanceof THREE.Mesh) || Array.isArray(quad.material) || !(quad.material instanceof THREE.ShaderMaterial)) {
+    if (
+      !(quad instanceof THREE.Mesh) ||
+      Array.isArray(quad.material) ||
+      !(quad.material instanceof THREE.ShaderMaterial)
+    ) {
       throw new Error("expected the pitch surface quad to be a ShaderMaterial mesh");
     }
     const uniforms = quad.material.uniforms;
@@ -292,7 +297,9 @@ describe("Stadium determinism", () => {
       if (meshA === undefined || meshB === undefined) {
         throw new Error("mismatched mesh list");
       }
-      expect(Array.from(meshA.instanceMatrix.array)).toEqual(Array.from(meshB.instanceMatrix.array));
+      expect(Array.from(meshA.instanceMatrix.array)).toEqual(
+        Array.from(meshB.instanceMatrix.array),
+      );
     }
   });
 });

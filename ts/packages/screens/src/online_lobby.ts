@@ -55,7 +55,7 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
   constructor(
     viewport: { readonly w: number; readonly h: number },
     onAction: ((action: OnlineLobbyAction) => void) | undefined,
-    options: OnlineLobbyOptions<TStar, TEvent>
+    options: OnlineLobbyOptions<TStar, TEvent>,
   ) {
     this.state = lobby.newState(viewport, options.modelPorts, {
       ...(options.modelOptions !== undefined ? { options: options.modelOptions } : {}),

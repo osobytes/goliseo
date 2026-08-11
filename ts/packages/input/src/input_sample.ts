@@ -62,13 +62,7 @@ export type HeldActionName =
 
 /** Mirrors `gc_sim::input_frame::EdgeAction`. */
 export type EdgeActionName =
-  | "shoot"
-  | "pass"
-  | "switch"
-  | "dash"
-  | "dodge"
-  | "equipment_pressed"
-  | "equipment_released";
+  "shoot" | "pass" | "switch" | "dash" | "dodge" | "equipment_pressed" | "equipment_released";
 
 /** Mirrors each `HeldAction::bit()` value. */
 const HELD_BITS: Readonly<Record<HeldActionName, number>> = {

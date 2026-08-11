@@ -70,7 +70,14 @@ const GOAL_HOME: Rect = { x: -12, y: 210, w: 12, h: 120 };
 const GOAL_AWAY: Rect = { x: 960, y: 210, w: 12, h: 120 };
 
 function outfieldDecision(): OutfieldDecisionState {
-  return { version: 1, generation: 0, rng_state: 1, remaining: 0, context: "offball", intent: "none" };
+  return {
+    version: 1,
+    generation: 0,
+    rng_state: 1,
+    remaining: 0,
+    context: "offball",
+    intent: "none",
+  };
 }
 
 function pressState(): OutfieldPressState {
@@ -351,7 +358,10 @@ describe("goal replay buffer", () => {
         };
         expect(selection.id.length > 0, "unknown replay pose").toBe(true);
         expect(typeof selection.priority).toBe("number");
-        expect(["soccer", "combat", "locomotion"].includes(selection.source), "unknown pose source").toBe(true);
+        expect(
+          ["soccer", "combat", "locomotion"].includes(selection.source),
+          "unknown pose source",
+        ).toBe(true);
         if (p.is_keeper && selection.id === "keeper_get_up") {
           getUpFrames += 1;
         }

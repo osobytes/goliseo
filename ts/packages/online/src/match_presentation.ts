@@ -184,7 +184,7 @@ export interface RollbackEventsPort<TTimeline, TSnapshot> {
     timeline: TTimeline,
     replacedFromTick: number,
     replacedThroughTick: number,
-    steps: readonly RollbackEventStepInput<TSnapshot>[]
+    steps: readonly RollbackEventStepInput<TSnapshot>[],
   ): RollbackApplyResult;
   confirm(timeline: TTimeline, confirmedOutputTick: number): readonly RollbackEventStep[];
   diagnostics(timeline: TTimeline): RollbackEventsDiagnostics;
@@ -236,7 +236,7 @@ export function newOnlineMatchPresentation<TTimeline, TSnapshot>(
   rollbackEvents: RollbackEventsPort<TTimeline, TSnapshot>,
   initialSnapshot: TSnapshot,
   firstInputTick: number,
-  maxUnconfirmedTicks: number
+  maxUnconfirmedTicks: number,
 ): OnlineMatchPresentation<TTimeline> {
   return {
     events: rollbackEvents.create(initialSnapshot, maxUnconfirmedTicks),
@@ -250,7 +250,7 @@ function eventStep<TDriver, TSnapshot>(
   presentation: OnlineMatchPresentation<unknown>,
   matchDriver: MatchDriverPort<TDriver, TSnapshot>,
   driver: TDriver,
-  output: RollbackTickOutput
+  output: RollbackTickOutput,
 ): RollbackEventStepInput<TSnapshot> {
   const lookup = matchDriver.snapshot(driver, output.end_boundary + presentation.first);
   if (lookup.status !== "present" && lookup.status !== "retained") {
@@ -268,7 +268,7 @@ function applySteps<TTimeline, TSnapshot>(
   batch: RollbackPlayableLabBatch,
   from: number,
   through: number,
-  steps: readonly RollbackEventStepInput<TSnapshot>[]
+  steps: readonly RollbackEventStepInput<TSnapshot>[],
 ): boolean {
   const applied = rollbackEvents.apply(presentation.events, from, through, steps);
   if (!applied.ok) {
@@ -286,7 +286,7 @@ function publishConfirmation<TTimeline, TSnapshot>(
   presentation: OnlineMatchPresentation<TTimeline>,
   rollbackEvents: RollbackEventsPort<TTimeline, TSnapshot>,
   batch: RollbackPlayableLabBatch,
-  confirmedOutputTick: number
+  confirmedOutputTick: number,
 ): boolean {
   if (rollbackEvents.diagnostics(presentation.events).status !== "active") {
     presentation.status = "unconfirmed_window_exceeded";
@@ -314,7 +314,7 @@ export function consume<TTimeline, TSnapshot, TDriver>(
   presentation: OnlineMatchPresentation<TTimeline>,
   ports: MatchPresentationPorts<TTimeline, TSnapshot, TDriver>,
   driver: TDriver,
-  driverBatch: MatchDriverBatch
+  driverBatch: MatchDriverBatch,
 ): RollbackPlayableLabBatch {
   const { rollbackEvents, matchDriver } = ports;
   const batch = newBatch();
@@ -402,11 +402,13 @@ export function consume<TTimeline, TSnapshot, TDriver>(
 
 export function diagnostics<TTimeline, TSnapshot>(
   presentation: OnlineMatchPresentation<TTimeline>,
-  rollbackEvents: RollbackEventsPort<TTimeline, TSnapshot>
+  rollbackEvents: RollbackEventsPort<TTimeline, TSnapshot>,
 ): RollbackEventsDiagnostics {
   return rollbackEvents.diagnostics(presentation.events);
 }
 
-export function status<TTimeline>(presentation: OnlineMatchPresentation<TTimeline>): RollbackPlayableLabStatus {
+export function status<TTimeline>(
+  presentation: OnlineMatchPresentation<TTimeline>,
+): RollbackPlayableLabStatus {
   return presentation.status;
 }

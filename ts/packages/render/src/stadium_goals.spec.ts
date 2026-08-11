@@ -89,7 +89,11 @@ describe("buildGoal", () => {
     const red: RGB = [0.9, 0.1, 0.1];
     const goal = buildGoal(HOME_RECT, CROSSBAR_H, 0, red);
     const trim = findByName(goal, "goal_trim");
-    if (!(trim instanceof THREE.Mesh) || Array.isArray(trim.material) || !(trim.material instanceof THREE.MeshStandardMaterial)) {
+    if (
+      !(trim instanceof THREE.Mesh) ||
+      Array.isArray(trim.material) ||
+      !(trim.material instanceof THREE.MeshStandardMaterial)
+    ) {
       throw new Error("expected goal_trim to be a MeshStandardMaterial mesh");
     }
     expect(trim.material.color.r).toBeCloseTo(red[0], 5);
@@ -98,7 +102,11 @@ describe("buildGoal", () => {
     expect(trim.material.emissiveIntensity).toBeGreaterThan(0.7);
 
     const net = findByName(goal, "goal_net");
-    if (!(net instanceof THREE.Mesh) || Array.isArray(net.material) || !(net.material instanceof THREE.ShaderMaterial)) {
+    if (
+      !(net instanceof THREE.Mesh) ||
+      Array.isArray(net.material) ||
+      !(net.material instanceof THREE.ShaderMaterial)
+    ) {
       throw new Error("expected goal_net to be a ShaderMaterial mesh");
     }
     const teamColorUniform = net.material.uniforms["uTeamColor"]?.value;

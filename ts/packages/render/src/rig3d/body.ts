@@ -67,7 +67,14 @@ export const SOCKETS: Readonly<Record<string, string>> = {
 // ---------------------------------------------------------------------------
 
 // A limb: a tube from the joint down -Y with rounded ends.
-function limb(mb: PartBuilder, f: RigForm, r0: number, r1: number, length: number, color: number): void {
+function limb(
+  mb: PartBuilder,
+  f: RigForm,
+  r0: number,
+  r1: number,
+  length: number,
+  color: number,
+): void {
   const c0 = r0 * f.cap * 0.42;
   const c1 = r1 * f.cap * 0.42;
   geometry.extrude(
@@ -88,7 +95,15 @@ function limb(mb: PartBuilder, f: RigForm, r0: number, r1: number, length: numbe
 
 // An armour sleeve standing proud of a limb, flared into a lip at both ends,
 // with straps biting into the gap.
-function sleeve(mb: PartBuilder, rig: RigProportions, limbR: number, y0: number, y1: number, color: number, strap: number): void {
+function sleeve(
+  mb: PartBuilder,
+  rig: RigProportions,
+  limbR: number,
+  y0: number,
+  y1: number,
+  color: number,
+  strap: number,
+): void {
   const f = rig.form;
   const r = limbR * rig.gear.over;
   const lip = Math.min((y1 - y0) * 0.16, r * 0.3);
@@ -121,7 +136,14 @@ function sleeve(mb: PartBuilder, rig: RigProportions, limbR: number, y0: number,
 }
 
 // A thin ring. Emissive seams and plate ridges are both this shape.
-function band(mb: PartBuilder, f: RigForm, r: number, y: number, halfH: number, color: number): void {
+function band(
+  mb: PartBuilder,
+  f: RigForm,
+  r: number,
+  y: number,
+  halfH: number,
+  color: number,
+): void {
   geometry.extrude(
     mb,
     null,
@@ -145,7 +167,12 @@ function headForm(
   figure: Figure,
   hr: number,
   baseY: number,
-): { sections: geometry.Section[]; profile: geometry.Profile; hh: number; frontAt: (y: number) => number } {
+): {
+  sections: geometry.Section[];
+  profile: geometry.Profile;
+  hh: number;
+  frontAt: (y: number) => number;
+} {
   const hh = hr * figure.head_h;
   let sections: geometry.Section[] = [];
   let profile: geometry.Profile;
@@ -205,7 +232,14 @@ function clampHand(mb: PartBuilder, r: number, color: number): void {
   const steps = 10;
   for (let i = 0; i <= steps; i++) {
     const a = Math.PI * 0.5 + 0.62 + (i / steps) * (Math.PI * 2 - 1.24);
-    geometry.sphere(mb, mat4.translation(r * Math.cos(a), -r * 1.1, r * Math.sin(a)), tube, 4, 8, color);
+    geometry.sphere(
+      mb,
+      mat4.translation(r * Math.cos(a), -r * 1.1, r * Math.sin(a)),
+      tube,
+      4,
+      8,
+      color,
+    );
   }
 }
 
@@ -218,7 +252,13 @@ function headGeometry(rig: RigProportions, figure: Figure): HeadGeometry {
   return { hr, base, hh, eye: base + hh * f.eye_y };
 }
 
-function buildBody(add: AddFn, rig: RigProportions, theme: Theme, figure: Figure, c: SlotIndex): void {
+function buildBody(
+  add: AddFn,
+  rig: RigProportions,
+  theme: Theme,
+  figure: Figure,
+  c: SlotIndex,
+): void {
   const s = rig.seg;
   const f = rig.form;
   const shape = theme.shape;
@@ -369,8 +409,22 @@ function buildKit(add: AddFn, rig: RigProportions, theme: Theme, c: SlotIndex): 
     );
   }
   if (shape.heraldic_block) {
-    geometry.box(cuirass, mat4.translation(0, s.chest * 0.66, cr * 0.7), cr * 0.6, s.chest * 0.48, 0.03, c.cloth);
-    geometry.box(cuirass, mat4.translation(0, s.chest * 0.66, cr * 0.72), cr * 0.18, s.chest * 0.48, 0.03, c.accent);
+    geometry.box(
+      cuirass,
+      mat4.translation(0, s.chest * 0.66, cr * 0.7),
+      cr * 0.6,
+      s.chest * 0.48,
+      0.03,
+      c.cloth,
+    );
+    geometry.box(
+      cuirass,
+      mat4.translation(0, s.chest * 0.66, cr * 0.72),
+      cr * 0.18,
+      s.chest * 0.48,
+      0.03,
+      c.accent,
+    );
   }
   add("chest", cuirass, undefined, "metal");
 
@@ -387,7 +441,14 @@ function buildKit(add: AddFn, rig: RigProportions, theme: Theme, c: SlotIndex): 
       ],
       c.seam,
     );
-    geometry.box(seam, mat4.translation(0, s.chest * 0.82, cr * 0.72), cr * 0.14, s.chest * 0.28, 0.022, c.seam);
+    geometry.box(
+      seam,
+      mat4.translation(0, s.chest * 0.82, cr * 0.72),
+      cr * 0.14,
+      s.chest * 0.28,
+      0.022,
+      c.seam,
+    );
     add("chest", seam, undefined, "emissive");
   }
 
@@ -416,16 +477,39 @@ function buildKit(add: AddFn, rig: RigProportions, theme: Theme, c: SlotIndex): 
     add(`shoulder.${n}`, pauldron, undefined, "metal");
 
     const bracer = new PartBuilder();
-    sleeve(bracer, rig, f.arm_r * f.arm_taper, -s.lowerarm * 0.88, -s.lowerarm * 0.3, c.accent, c.strap);
+    sleeve(
+      bracer,
+      rig,
+      f.arm_r * f.arm_taper,
+      -s.lowerarm * 0.88,
+      -s.lowerarm * 0.3,
+      c.accent,
+      c.strap,
+    );
     add(`forearm.${n}`, bracer, undefined, "metal");
 
     const greave = new PartBuilder();
-    sleeve(greave, rig, f.leg_r * f.leg_taper, -s.lowerleg * 0.86, -s.lowerleg * 0.16, c.plate, c.strap);
+    sleeve(
+      greave,
+      rig,
+      f.leg_r * f.leg_taper,
+      -s.lowerleg * 0.86,
+      -s.lowerleg * 0.16,
+      c.plate,
+      c.strap,
+    );
     add(`shin.${n}`, greave, undefined, "metal");
 
     if (shape.seams) {
       const seam = new PartBuilder();
-      band(seam, f, f.leg_r * f.leg_taper * over * 1.02, -s.lowerleg * 0.42, s.lowerleg * 0.02, c.seam);
+      band(
+        seam,
+        f,
+        f.leg_r * f.leg_taper * over * 1.02,
+        -s.lowerleg * 0.42,
+        s.lowerleg * 0.02,
+        c.seam,
+      );
       add(`shin.${n}`, seam, undefined, "emissive");
     }
 
@@ -511,7 +595,14 @@ function socketTransform(socket: string, rig: RigProportions): readonly [string,
 // moulded figure helm -- so it is built from the theme unconditionally and
 // is NOT affected by `loadout`. Only the carried items are. A keeper with an
 // empty loadout still wears their helmet (#447).
-function buildLoadout(add: AddFn, rig: RigProportions, theme: Theme, figure: Figure, c: SlotIndex, loadout: Loadout): void {
+function buildLoadout(
+  add: AddFn,
+  rig: RigProportions,
+  theme: Theme,
+  figure: Figure,
+  c: SlotIndex,
+  loadout: Loadout,
+): void {
   const [solid, glow] = headgear.build(theme.head, c, headGeometry(rig, figure));
   add("head", solid, undefined, "metal");
   if (glow) {

@@ -27,7 +27,7 @@ function message(seq: number, tick?: number, payload = ""): TransportMessage {
       seq,
       ...(tick !== undefined ? { tick } : {}),
       payload,
-    })
+    }),
   );
 }
 

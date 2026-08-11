@@ -138,7 +138,11 @@ export function formatClock(seconds: number): string {
 // pitch draws from, never a `MatchState`. Only authored match metadata (team
 // names, arena, tactic, onboarding) comes in as context: none of it is
 // simulation state.
-function model(identity: IdentityPort, scoreboard: RenderFrameHud, context: MatchHudContext): MatchHudModel {
+function model(
+  identity: IdentityPort,
+  scoreboard: RenderFrameHud,
+  context: MatchHudContext,
+): MatchHudModel {
   const presentation = identity.forPlayer(scoreboard.controlled_id);
   if (!presentation) {
     throw new Error(`missing presentation identity for ${scoreboard.controlled_id}`);
@@ -206,7 +210,8 @@ function model(identity: IdentityPort, scoreboard: RenderFrameHud, context: Matc
     clock: formatClock(scoreboard.time_left),
     venue: `${context.arena_name} · ${context.arena_location}`.toUpperCase(),
     possession: possession.toUpperCase(),
-    possession_marker: ownerTeam !== undefined && ownerTeam === scoreboard.controlled_team ? "filled" : "outline",
+    possession_marker:
+      ownerTeam !== undefined && ownerTeam === scoreboard.controlled_team ? "filled" : "outline",
     player_name: presentation.name.toUpperCase(),
     player_detail: `${presentation.species_name} ${presentation.position}`.toUpperCase(),
     player_state: playerState,
@@ -226,7 +231,15 @@ function model(identity: IdentityPort, scoreboard: RenderFrameHud, context: Matc
   };
 }
 
-function rectAt(ox: number, oy: number, scale: number, x: number, y: number, w: number, h: number): Rect {
+function rectAt(
+  ox: number,
+  oy: number,
+  scale: number,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): Rect {
   return { x: ox + x * scale, y: oy + y * scale, w: w * scale, h: h * scale };
 }
 
@@ -234,7 +247,8 @@ function layout(viewport: { readonly w: number; readonly h: number }): MatchHudL
   const scale = Math.min(viewport.w / 960, viewport.h / 540);
   const ox = (viewport.w - 960 * scale) / 2;
   const oy = (viewport.h - 540 * scale) / 2;
-  const rect = (x: number, y: number, w: number, h: number): Rect => rectAt(ox, oy, scale, x, y, w, h);
+  const rect = (x: number, y: number, w: number, h: number): Rect =>
+    rectAt(ox, oy, scale, x, y, w, h);
   return {
     venue: rect(230, 7, 500, 14),
     scorebug: rect(230, 24, 500, 48),

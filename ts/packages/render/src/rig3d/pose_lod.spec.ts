@@ -19,7 +19,10 @@ import {
 
 const SMALL = FULL_RATE_HEIGHT_PX - 1;
 
-function optsFor(id: string | undefined, extra: Partial<PlayerRenderOptions> = {}): PlayerRenderOptions {
+function optsFor(
+  id: string | undefined,
+  extra: Partial<PlayerRenderOptions> = {},
+): PlayerRenderOptions {
   return {
     is_keeper: false,
     controlled: false,
@@ -32,9 +35,15 @@ describe("pose_lod.interval", () => {
   it("holds every id in the gait family, and the set is exhaustive", () => {
     // Pinning the set exhaustively is the point: a dropped or mistyped entry
     // silently stops degrading a pose, or starts degrading one it should not.
-    expect([...RELAXED_POSE].sort()).toEqual(
-      ["contain", "fatigue", "keeper_shuffle", "kick_follow", "locomotion", "run_telegraph", "settle"],
-    );
+    expect([...RELAXED_POSE].sort()).toEqual([
+      "contain",
+      "fatigue",
+      "keeper_shuffle",
+      "kick_follow",
+      "locomotion",
+      "run_telegraph",
+      "settle",
+    ]);
     for (const id of RELAXED_POSE) {
       expect(interval(optsFor(id), SMALL)).toBe(REDUCED_INTERVAL);
     }

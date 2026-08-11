@@ -69,7 +69,9 @@ function combatEvent(
 // either, at every supported viewport.
 const EVENTS: readonly RollbackWrappedEvent<CombatEvent>[] = [
   combatEvent("combat/clearance/a", EVENTS_CENTER.x - 20, EVENTS_CENTER.y - 10),
-  combatEvent("combat/clearance/b", EVENTS_CENTER.x + 15, EVENTS_CENTER.y + 20, { result: "guarded" }),
+  combatEvent("combat/clearance/b", EVENTS_CENTER.x + 15, EVENTS_CENTER.y + 20, {
+    result: "guarded",
+  }),
 ];
 // Far from the event cluster and from `hud.layout`'s corner/edge rects --
 // see the comment above.

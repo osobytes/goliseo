@@ -48,7 +48,11 @@ import {
 
 interface FakeCoordinatorState extends CoordinatorStateCore {
   readonly session_id: string;
-  readonly local_result?: { readonly home_score: number; readonly away_score: number; readonly final_hash: string };
+  readonly local_result?: {
+    readonly home_score: number;
+    readonly away_score: number;
+    readonly final_hash: string;
+  };
 }
 
 function fakeCoordinator(role: "host" | "guest", hostLinkId?: string): FakeCoordinatorState {
@@ -104,7 +108,13 @@ function fakeCoordinatorPort(): CoordinatorPort<FakeCoordinatorState> {
         case "match_phase": {
           const outcome: CoordinatorOutcome = {
             accepted: true,
-            actions: [{ kind: "send", message: { kind: "match_phase", body: { phase: event["phase"] } }, targets: ["peer"] }],
+            actions: [
+              {
+                kind: "send",
+                message: { kind: "match_phase", body: { phase: event["phase"] } },
+                targets: ["peer"],
+              },
+            ],
           };
           return [state, outcome];
         }
@@ -114,7 +124,10 @@ function fakeCoordinatorPort(): CoordinatorPort<FakeCoordinatorState> {
             actions: [
               {
                 kind: "send",
-                message: { kind: "hash_report", body: { tick: event["tick"], boundary_hash: event["boundary_hash"] } },
+                message: {
+                  kind: "hash_report",
+                  body: { tick: event["tick"], boundary_hash: event["boundary_hash"] },
+                },
                 targets: ["peer"],
               },
             ],
@@ -143,7 +156,10 @@ function fakeCoordinatorPort(): CoordinatorPort<FakeCoordinatorState> {
             away_score: event["away_score"] as number,
             final_hash: event["final_hash"] as string,
           };
-          return [{ ...state, local_result: localResult }, { accepted: true, actions: [] }];
+          return [
+            { ...state, local_result: localResult },
+            { accepted: true, actions: [] },
+          ];
         }
         default:
           return [state, { accepted: true, actions: [] }];
@@ -181,17 +197,27 @@ interface FixtureRequest extends OnlineMatchRequestCore {
 }
 
 function harness() {
-  const request = (role: "host" | "guest"): FixtureRequest => ({ role, peer_id: role, first_input_tick: 0 });
+  const request = (role: "host" | "guest"): FixtureRequest => ({
+    role,
+    peer_id: role,
+    first_input_tick: 0,
+  });
   return {
-    host: newOnlineMatchModel<FakeCoordinatorState, FixtureRequest>(request("host"), fakeCoordinator("host")),
+    host: newOnlineMatchModel<FakeCoordinatorState, FixtureRequest>(
+      request("host"),
+      fakeCoordinator("host"),
+    ),
     guest: newOnlineMatchModel<FakeCoordinatorState, FixtureRequest>(
       request("guest"),
-      fakeCoordinator("guest", "host_link")
+      fakeCoordinator("guest", "host_link"),
     ),
   };
 }
 
-function step(tick: number, lifecycle?: readonly RollbackWrappedEvent<LifecyclePayload>[]): RollbackEventStepCore {
+function step(
+  tick: number,
+  lifecycle?: readonly RollbackWrappedEvent<LifecyclePayload>[],
+): RollbackEventStepCore {
   return { tick, lifecycle_events: lifecycle ?? [] };
 }
 
@@ -199,7 +225,7 @@ function lifecycle(
   kind: "goal" | "kickoff" | "full_time",
   home: number,
   away: number,
-  team?: "home" | "away"
+  team?: "home" | "away",
 ): RollbackWrappedEvent<LifecyclePayload> {
   const payload: LifecyclePayload =
     kind === "goal"
@@ -224,7 +250,9 @@ function publishedPhases(effects: readonly OnlineMatchEffect[]): string[] {
 }
 
 function sent(effects: readonly OnlineMatchEffect[], kind: string): boolean {
-  return effects.some((effect) => effect.kind === "send" && fakeProtocolPort().decode(effect.wire)?.kind === kind);
+  return effects.some(
+    (effect) => effect.kind === "send" && fakeProtocolPort().decode(effect.wire)?.kind === kind,
+  );
 }
 
 describe("online match model purity", () => {
@@ -360,7 +388,10 @@ describe("online match model confirmed publication", () => {
 
   it("surfaces a peer's boundary hash to the driver as well as the session", () => {
     const model = harness().host;
-    const wire = fakeProtocolPort().encode({ kind: "hash_report", body: { tick: 30, boundary_hash: "0123456789abcdef" } });
+    const wire = fakeProtocolPort().encode({
+      kind: "hash_report",
+      body: { tick: 30, boundary_hash: "0123456789abcdef" },
+    });
     const [, effects] = command(model, ports(), { kind: "control", link_id: "guest_1", wire });
     const observed = effects.find((effect) => effect.kind === "observe_hash");
     expect(observed?.kind === "observe_hash" ? observed.tick : undefined).toBe(30);

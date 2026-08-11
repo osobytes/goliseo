@@ -85,7 +85,9 @@ describe("rig3d species palette", () => {
       expect(palette.length, `${shape}: every slot must resolve`).toBe(themes.SLOT_COUNT);
     }
     const fallback = speciesPresentation.palette(undefined, RED, HOME, false);
-    expect(fallback.length, "an uncast shape must still resolve every slot").toBe(themes.SLOT_COUNT);
+    expect(fallback.length, "an uncast shape must still resolve every slot").toBe(
+      themes.SLOT_COUNT,
+    );
   });
 
   it("paints the species colour onto the accent surface", () => {

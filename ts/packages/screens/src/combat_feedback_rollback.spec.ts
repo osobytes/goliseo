@@ -52,7 +52,13 @@ import {
 // `wrapped(id, ordinal, event)` inlined per literal below.
 
 function wrapped(id: string, ordinal: number, event: CombatEvent): RollbackWrappedCombatEvent {
-  return { id, tick: event.tick, domain: `combat/${event.kind}/${event.source_sequence ?? 0}`, ordinal, payload: event };
+  return {
+    id,
+    tick: event.tick,
+    domain: `combat/${event.kind}/${event.source_sequence ?? 0}`,
+    ordinal,
+    payload: event,
+  };
 }
 
 const FIXTURE_BALL = { x: 480, y: 270 };
@@ -153,7 +159,11 @@ class FakeEffects implements EffectsPort {
     this.speculative.delete(event.id);
     this.confirmed.add(event.id);
   }
-  diagnostics(): { readonly particle_count: number; readonly speculative_ids: readonly string[]; readonly confirmed_ids: readonly string[] } {
+  diagnostics(): {
+    readonly particle_count: number;
+    readonly speculative_ids: readonly string[];
+    readonly confirmed_ids: readonly string[];
+  } {
     return {
       particle_count: this.particleCount,
       speculative_ids: [...this.speculative.keys()].sort(),
@@ -173,8 +183,10 @@ class FakeAudio implements AudioPort {
     this.suppressedCounts.clear();
   }
 
-  private cueFor(event: RollbackWrappedMatchEvent | RollbackWrappedCombatEvent | RollbackWrappedLifecycleEvent): string {
-    const kind = (event.payload).kind;
+  private cueFor(
+    event: RollbackWrappedMatchEvent | RollbackWrappedCombatEvent | RollbackWrappedLifecycleEvent,
+  ): string {
+    const kind = event.payload.kind;
     if (kind === "goal" || kind === "kickoff" || kind === "full_time") {
       return kind;
     }
@@ -184,7 +196,7 @@ class FakeAudio implements AudioPort {
 
   consumeConfirmed(
     event: RollbackWrappedMatchEvent | RollbackWrappedCombatEvent | RollbackWrappedLifecycleEvent,
-    replayOwnsScreen?: boolean
+    replayOwnsScreen?: boolean,
   ): boolean {
     if (this.seen.has(event.id)) {
       return false;
@@ -242,7 +254,7 @@ function step(event: RollbackWrappedCombatEvent): RollbackEventStep {
 function confirmedStep(
   tick: number,
   combatEvents: readonly RollbackWrappedCombatEvent[],
-  lifecycleEvents: readonly RollbackWrappedLifecycleEvent[]
+  lifecycleEvents: readonly RollbackWrappedLifecycleEvent[],
 ): RollbackEventStep {
   return {
     tick,
@@ -278,10 +290,20 @@ describe("combat feedback rollback presentation", () => {
       throw new Error("fixture missing events");
     }
 
-    expect(consumeRollbackEventDiff(value, ports, true, { added: [predicted], revoked: [], replaced: [] })).toBe(true);
+    expect(
+      consumeRollbackEventDiff(value, ports, true, {
+        added: [predicted],
+        revoked: [],
+        replaced: [],
+      }),
+    ).toBe(true);
     expect(effects.diagnostics().particle_count).toBeGreaterThan(0);
     expect(
-      consumeRollbackEventDiff(value, ports, true, { added: [], revoked: [], replaced: [{ before: predicted, after: corrected }] })
+      consumeRollbackEventDiff(value, ports, true, {
+        added: [],
+        revoked: [],
+        replaced: [{ before: predicted, after: corrected }],
+      }),
     ).toBe(true);
     const correctedCount = effects.diagnostics().particle_count;
     expect(correctedCount).toBeGreaterThan(0);
@@ -312,7 +334,9 @@ describe("combat feedback rollback presentation", () => {
     if (live === undefined) {
       throw new Error("fixture missing events");
     }
-    expect(consumeRollbackEventDiff(value, ports, true, { added: [live], revoked: [], replaced: [] })).toBe(false);
+    expect(
+      consumeRollbackEventDiff(value, ports, true, { added: [live], revoked: [], replaced: [] }),
+    ).toBe(false);
     expect(effects.diagnostics().particle_count).toBe(0);
     expect(consumeConfirmedStep(value, ports, step(live))).toBe(1);
     expect(effects.diagnostics().particle_count).toBe(0);
@@ -335,7 +359,9 @@ describe("combat feedback rollback presentation", () => {
     if (live === undefined) {
       throw new Error("fixture missing events");
     }
-    expect(consumeRollbackEventDiff(value, ports, true, { added: [live], revoked: [], replaced: [] })).toBe(true);
+    expect(
+      consumeRollbackEventDiff(value, ports, true, { added: [live], revoked: [], replaced: [] }),
+    ).toBe(true);
     expect(effects.diagnostics().particle_count).toBeGreaterThan(0);
     expect(effects.diagnostics().speculative_ids[0]).toBe(live.id);
 
@@ -394,7 +420,13 @@ describe("combat feedback rollback presentation", () => {
       throw new Error("fixture missing events");
     }
 
-    expect(consumeConfirmedStep(value, ports, confirmedStep(controlled.tick, [controlled, unrelated], []))).toBe(2);
+    expect(
+      consumeConfirmedStep(
+        value,
+        ports,
+        confirmedStep(controlled.tick, [controlled, unrelated], []),
+      ),
+    ).toBe(2);
 
     // Uses the field `combat_feedback.notice` actually keys on -- the
     // commit event's own `source_index` -- since `MatchRollbackConsumerState`

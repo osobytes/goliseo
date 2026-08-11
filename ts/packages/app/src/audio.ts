@@ -584,7 +584,10 @@ export class Audio {
       if (this.muted) {
         this.backend.setVolume(this.crowdSource, 0);
       } else {
-        this.backend.setVolume(this.crowdSource, this.crowdSwellT > 0 ? this.goalSwellVolume() : this.crowdVolume());
+        this.backend.setVolume(
+          this.crowdSource,
+          this.crowdSwellT > 0 ? this.goalSwellVolume() : this.crowdVolume(),
+        );
         if (!this.backend.isPlaying(this.crowdSource)) {
           this.backend.play(this.crowdSource);
         }

@@ -160,7 +160,9 @@ describe("createSimHost", () => {
       if (raw === undefined) {
         throw new Error("expected matchStateJson() on a WasmSimHost");
       }
-      const state = JSON.parse(raw) as { readonly press: { readonly home: number; readonly away: number } };
+      const state = JSON.parse(raw) as {
+        readonly press: { readonly home: number; readonly away: number };
+      };
       // Omitted tactic/awayTactic reproduce the exact prior behavior:
       // "balanced" on both sides.
       expect(state.press.home).toBe(1);
@@ -195,7 +197,11 @@ describe("createSimHost", () => {
 
   it("rejects an unknown tactic id and a malformed starting XI, without disturbing later construction", () => {
     expect(() => createSimHost(HOME, AWAY, 7, 20, 3, { tactic: "no-such-tactic" })).toThrow();
-    expect(() => createSimHost(HOME, AWAY, 7, 20, 3, { homeStarterIds: ["not-a-keeper", "veil_nyx", "rok_tann", "mika_olu", "sela_dwin"] })).toThrow();
+    expect(() =>
+      createSimHost(HOME, AWAY, 7, 20, 3, {
+        homeStarterIds: ["not-a-keeper", "veil_nyx", "rok_tann", "mika_olu", "sela_dwin"],
+      }),
+    ).toThrow();
     expect(() =>
       createSimHost(HOME, AWAY, 7, 20, 3, {
         // A duplicate id.

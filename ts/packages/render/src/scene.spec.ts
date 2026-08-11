@@ -34,7 +34,12 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as THREE from "three";
-import { resetStaticSceneCache, staticSceneBuildCount, type PitchDrawOptions, type RenderFrame } from "./pitch.ts";
+import {
+  resetStaticSceneCache,
+  staticSceneBuildCount,
+  type PitchDrawOptions,
+  type RenderFrame,
+} from "./pitch.ts";
 import { camera, perspectiveRig } from "./camera.ts";
 import { SceneRoot, type WorldLayer } from "./scene.ts";
 import { materialCacheSize, resetMaterialCache } from "./draw2d.ts";
@@ -132,7 +137,9 @@ function frame(playerCount: 0 | 1 | 2 = 2): RenderFrame {
       // suite renders a genuinely mixed pitch rather than one repeated
       // character, and give every other slot no loadout so the
       // carries-nothing path is exercised here too.
-      presentation_ids: ids.map((_, i) => ["medieval_rook_emberguard", "scifi_axi", "toy_tock"][i % 3] ?? "scifi_axi"),
+      presentation_ids: ids.map(
+        (_, i) => ["medieval_rook_emberguard", "scifi_axi", "toy_tock"][i % 3] ?? "scifi_axi",
+      ),
       loadout_ids: ids.map((_, i) => (i % 2 === 0 ? "loadout_pulse_blaster" : undefined)),
     },
     players: {
@@ -477,7 +484,11 @@ describe("SceneRoot.dispose", () => {
     for (const child of scene.pitchGroup.children) {
       const owner = child as Partial<THREE.Mesh>;
       const material = owner.material;
-      if (material !== undefined && !Array.isArray(material) && material.userData["draw2dSharedMaterial"] === true) {
+      if (
+        material !== undefined &&
+        !Array.isArray(material) &&
+        material.userData["draw2dSharedMaterial"] === true
+      ) {
         shared.add(material);
         flaggedChildren += 1;
       }

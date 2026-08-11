@@ -14,8 +14,13 @@ import type { MatchWinner, ProductMatchResult, TeamResultStats } from "./content
 const VP = { w: 960, h: 540 };
 const CONTENT: ResultContentData = { players: {} };
 
-function makeResult(homeScore: number, awayScore: number, stats?: TeamResultStats): ProductMatchResult {
-  const winner: MatchWinner = homeScore > awayScore ? "home" : awayScore > homeScore ? "away" : "draw";
+function makeResult(
+  homeScore: number,
+  awayScore: number,
+  stats?: TeamResultStats,
+): ProductMatchResult {
+  const winner: MatchWinner =
+    homeScore > awayScore ? "home" : awayScore > homeScore ? "away" : "draw";
   return {
     home_name: "Nebula FC",
     away_name: "Orion Miners",
@@ -42,9 +47,7 @@ describe("product result screen", () => {
   });
 
   it("degrades missing metrics and zero-event fixtures without inventing values", () => {
-    const missing = result.layout(
-      result.newState(VP, CONTENT, { result: makeResult(0, 0) }),
-    );
+    const missing = result.layout(result.newState(VP, CONTENT, { result: makeResult(0, 0) }));
     const missingStats = hit.find(missing, "stats");
     expect(missingStats?.text).toContain("—");
 

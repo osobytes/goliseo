@@ -93,7 +93,12 @@ const FREE: Readonly<Record<string, EulerTriple>> = {
 // Arm pose for a locomotion key. Arms counter-swing against the legs, and the
 // elbow bends further the faster you go: reference walks sit near 30 degrees
 // of elbow, runs near 90.
-function arms(fwdL: number, elbowL: number, fwdR: number, elbowR: number): Record<string, EulerTriple> {
+function arms(
+  fwdL: number,
+  elbowL: number,
+  fwdR: number,
+  elbowR: number,
+): Record<string, EulerTriple> {
   return {
     "upper_arm.L": [fwdL, 0, 9],
     "forearm.L": [-elbowL, 0, 0],
@@ -554,7 +559,11 @@ function prepare(raw: RawClip): Clip {
   const keys: PreparedKeyframe[] = raw.keys.map((key) => {
     const q: Record<string, Quat> = {};
     for (const [name, e] of Object.entries(key.rot ?? {})) {
-      q[name] = quat.fromEuler((e[0] * Math.PI) / 180, (e[1] * Math.PI) / 180, (e[2] * Math.PI) / 180);
+      q[name] = quat.fromEuler(
+        (e[0] * Math.PI) / 180,
+        (e[1] * Math.PI) / 180,
+        (e[2] * Math.PI) / 180,
+      );
       rotBones.add(name);
     }
     for (const name of Object.keys(key.move ?? {})) {

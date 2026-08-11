@@ -36,7 +36,10 @@ function injectFlutterShader(material: THREE.Material, uTime: NumberUniform): vo
   material.onBeforeCompile = (shader: THREE.WebGLProgramParametersWithUniforms) => {
     shader.uniforms["uTime"] = uTime;
     shader.vertexShader = shader.vertexShader
-      .replace("#include <common>", "#include <common>\nuniform float uTime;\nattribute float aPhase;")
+      .replace(
+        "#include <common>",
+        "#include <common>\nuniform float uTime;\nattribute float aPhase;",
+      )
       .replace("#include <begin_vertex>", `#include <begin_vertex>\n${FLUTTER_VERTEX_CHUNK}`)
       // Per-instance emissive tint: `vColor` already carries the instance
       // colour (three defines USE_INSTANCING_COLOR/USE_COLOR automatically
@@ -44,11 +47,18 @@ function injectFlutterShader(material: THREE.Material, uTime: NumberUniform): vo
       // file header for the same mechanism), so the cloth's OWN emissive glow
       // reads as the same team colour as its diffuse tint instead of a flat
       // uniform warmth.
-      .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\ntotalEmissiveRadiance *= vColor;");
+      .replace(
+        "#include <emissivemap_fragment>",
+        "#include <emissivemap_fragment>\ntotalEmissiveRadiance *= vColor;",
+      );
   };
 }
 
-function buildHangingPlane(width: number, height: number, heightSegments: number): THREE.BufferGeometry {
+function buildHangingPlane(
+  width: number,
+  height: number,
+  heightSegments: number,
+): THREE.BufferGeometry {
   return new THREE.PlaneGeometry(width, height, 1, heightSegments).translate(0, -height / 2, 0);
 }
 
@@ -60,7 +70,12 @@ function bannerColor(rng: Prng, home: RGB, away: RGB, isHome: boolean): THREE.Co
 }
 
 /** Builds the "banners" sub-group. See file header for the shared flutter shader. */
-export function buildBanners(layout: StadiumLayout, homeColor: RGB, awayColor: RGB, rng: Prng): BannersBuild {
+export function buildBanners(
+  layout: StadiumLayout,
+  homeColor: RGB,
+  awayColor: RGB,
+  rng: Prng,
+): BannersBuild {
   const group = new THREE.Group();
   group.name = "banners";
 
@@ -117,7 +132,13 @@ export function buildBanners(layout: StadiumLayout, homeColor: RGB, awayColor: R
   gates.name = "banners_gates";
   for (let i = 0; i < layout.gateAngles.length; i += 1) {
     const angle = layout.gateAngles[i] ?? 0;
-    const [x, z] = ellipsePoint(layout.cx, layout.cz, layout.apronOuterRx, layout.apronOuterRz, angle);
+    const [x, z] = ellipsePoint(
+      layout.cx,
+      layout.cz,
+      layout.apronOuterRx,
+      layout.apronOuterRz,
+      angle,
+    );
     const yaw = ellipseYawFacingCenter(angle, layout.apronOuterRx, layout.apronOuterRz);
     dummy.position.set(x, layout.gateHeight + 12, z);
     dummy.rotation.set(0, yaw, 0);

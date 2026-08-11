@@ -138,12 +138,7 @@ describe("the static pitch scene is built once", () => {
   it("rebuilds when the team colours change, because the goals carry them", () => {
     const f = frame();
     const red = pitchDrawCommands(f, VIEWPORT, options(), 0);
-    const green = pitchDrawCommands(
-      f,
-      VIEWPORT,
-      options({ home_color: [0, 1, 0] }),
-      0,
-    );
+    const green = pitchDrawCommands(f, VIEWPORT, options({ home_color: [0, 1, 0] }), 0);
     expect(red).not.toEqual(green);
   });
 });

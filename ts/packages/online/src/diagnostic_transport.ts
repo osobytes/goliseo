@@ -127,7 +127,10 @@ export class DiagnosticTransport implements StarTransportAdapter {
   // The delay policy, applied to an envelope tick. Control messages carry no
   // tick, so they are never routed through here.
   private policyTicks(transportTick: number): { authorityInputTick: number; sampleStep: number } {
-    return { authorityInputTick: this._first + transportTick, sampleStep: transportTick - this._delay };
+    return {
+      authorityInputTick: this._first + transportTick,
+      sampleStep: transportTick - this._delay,
+    };
   }
 
   // `send_transport_tick` always comes from the envelope, because that is
@@ -140,14 +143,15 @@ export class DiagnosticTransport implements StarTransportAdapter {
     senderId: string,
     message: TransportMessage,
     disposition: NetDiagnosticsPacketDisposition,
-    inbound: boolean
+    inbound: boolean,
   ): void {
     const tick = message.tick;
     if (typeof tick !== "number") {
       return;
     }
     const { authorityInputTick, sampleStep } = this.policyTicks(tick);
-    const arrival = inbound && this._transportTick !== undefined ? this._transportTick() : undefined;
+    const arrival =
+      inbound && this._transportTick !== undefined ? this._transportTick() : undefined;
     recordPacket(this._recorder, {
       sender_id: senderId,
       disposition,
@@ -300,7 +304,11 @@ export class DiagnosticTransport implements StarTransportAdapter {
   // Traffic
   // -------------------------------------------------------------------------
 
-  send(peerId: string, channel: TransportChannel, message: TransportMessage): TransportResult<true> {
+  send(
+    peerId: string,
+    channel: TransportChannel,
+    message: TransportMessage,
+  ): TransportResult<true> {
     const result = this._transport.send(peerId, channel, message);
     if (channel === "input") {
       this.recordEnvelope(this._peerId, message, result.ok ? "sent" : "rejected", false);

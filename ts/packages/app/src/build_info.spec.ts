@@ -18,10 +18,16 @@ describe("GOLISEO branding", () => {
     const titleWidget = hit.find(title.layout(title.newState(VIEWPORT)), "title");
     expect(titleWidget?.text).toBe("GOLISEO");
 
-    const creditsWidget = hit.find(credits.layout(credits.newState(VIEWPORT, buildInfo)), "credits");
-    expect(typeof creditsWidget?.text === "string" && creditsWidget.text.includes("GOLISEO")).toBe(true);
+    const creditsWidget = hit.find(
+      credits.layout(credits.newState(VIEWPORT, buildInfo)),
+      "credits",
+    );
+    expect(typeof creditsWidget?.text === "string" && creditsWidget.text.includes("GOLISEO")).toBe(
+      true,
+    );
     expect(
-      typeof creditsWidget?.text === "string" && creditsWidget.text.includes("GOLISEO contributors"),
+      typeof creditsWidget?.text === "string" &&
+        creditsWidget.text.includes("GOLISEO contributors"),
     ).toBe(true);
   });
 
@@ -31,7 +37,10 @@ describe("GOLISEO branding", () => {
 
   it("retains no prototype product name in the player-facing shell", () => {
     const titleWidget = hit.find(title.layout(title.newState(VIEWPORT)), "title");
-    const creditsWidget = hit.find(credits.layout(credits.newState(VIEWPORT, buildInfo)), "credits");
+    const creditsWidget = hit.find(
+      credits.layout(credits.newState(VIEWPORT, buildInfo)),
+      "credits",
+    );
     const texts = [buildInfo.name, titleWidget?.text, creditsWidget?.text];
     for (const text of texts) {
       expect(typeof text === "string" && text.toLowerCase().includes("galactic")).toBe(false);

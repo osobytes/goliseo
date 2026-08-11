@@ -39,7 +39,11 @@ export class Menu<State extends HasViewport, Action> {
   private state: State;
   private transition = 0;
 
-  constructor(def: ScreenDef<State, Action>, initialState: State, onAction?: (action: Action) => void) {
+  constructor(
+    def: ScreenDef<State, Action>,
+    initialState: State,
+    onAction?: (action: Action) => void,
+  ) {
     this.def = def;
     this.onAction = onAction;
     this.state = initialState;

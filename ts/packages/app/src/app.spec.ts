@@ -64,7 +64,11 @@ function clickWidget(app: App, id: string): void {
   if (!widget?.rect) {
     throw new Error(`missing widget ${id}`);
   }
-  const [x, y] = viewport.toActual(app.transform, widget.rect.x + widget.rect.w / 2, widget.rect.y + widget.rect.h / 2);
+  const [x, y] = viewport.toActual(
+    app.transform,
+    widget.rect.x + widget.rect.w / 2,
+    widget.rect.y + widget.rect.h / 2,
+  );
   app.event({ kind: "click", x, y, button: 1 });
 }
 

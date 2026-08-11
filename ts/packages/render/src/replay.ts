@@ -54,12 +54,7 @@ export interface OutfieldDecisionState {
 
 export type StablePressMode = "inactive" | "contain" | "commit";
 export type PressReason =
-  | "heavy_touch"
-  | "exposed_ball"
-  | "cover"
-  | "box_desperation"
-  | "low_discipline"
-  | "no_trigger";
+  "heavy_touch" | "exposed_ball" | "cover" | "box_desperation" | "low_discipline" | "no_trigger";
 
 export interface OutfieldPressState {
   readonly version: number;
@@ -370,7 +365,11 @@ function cloneCombatMatchState(s: CombatMatchState): CombatMatchState {
 }
 
 /** @param s the source MatchState */
-function captureFrame(s: MatchState, boundary: number, combatState: CombatMatchState | undefined): ReplayFrame {
+function captureFrame(
+  s: MatchState,
+  boundary: number,
+  combatState: CombatMatchState | undefined,
+): ReplayFrame {
   const players: ReplayPlayer[] = s.players.map((p) => ({
     id: p.id,
     team: p.team,
@@ -461,7 +460,11 @@ function boundaryIndex(boundary: number): readonly [number | undefined, boolean]
 // back to the scoring-team outfielder nearest the ball (deflections/own
 // goals).
 /** @param endIndex 0-based index into `buf` of the goal-moment snapshot */
-function findScorer(scoringTeam: TransitionTeam, last: ReplayFrame, endIndex: number): string | undefined {
+function findScorer(
+  scoringTeam: TransitionTeam,
+  last: ReplayFrame,
+  endIndex: number,
+): string | undefined {
   const teamOf = new Map<string, TransitionTeam>();
   for (const p of last.players) {
     teamOf.set(p.id, p.team);
@@ -471,7 +474,11 @@ function findScorer(scoringTeam: TransitionTeam, last: ReplayFrame, endIndex: nu
     if (fr !== undefined) {
       for (let i = fr.events.length - 1; i >= 0; i -= 1) {
         const e = assertDefined(fr.events[i], "replay event index out of range");
-        if (STRIKE[e.kind] === true && e.player !== undefined && teamOf.get(e.player) === scoringTeam) {
+        if (
+          STRIKE[e.kind] === true &&
+          e.player !== undefined &&
+          teamOf.get(e.player) === scoringTeam
+        ) {
           return e.player;
         }
       }
@@ -530,7 +537,10 @@ function buildCelebration(scoringTeam: TransitionTeam, endIndex: number): boolea
   celTargets = targets;
   // Ball rests in the net behind the line it crossed.
   const g = scoringTeam === "home" ? base.goal_away : base.goal_home;
-  celBall = new Vec2(scoringTeam === "home" ? field.w + 12 : -12, clamp(base.ball.y, g.y + 10, g.y + g.h - 10));
+  celBall = new Vec2(
+    scoringTeam === "home" ? field.w + 12 : -12,
+    clamp(base.ball.y, g.y + 10, g.y + g.h - 10),
+  );
   celElapsed = 0;
   return true;
 }

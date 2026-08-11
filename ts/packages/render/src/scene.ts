@@ -34,7 +34,13 @@ import { pitch, type PitchDrawOptions, type PitchViewport, type RenderFrame } fr
 import { Bloom, type BloomConfig } from "./bloom.ts";
 import { camera, perspectiveRig, type CameraField } from "./camera.ts";
 import { cameraFollow } from "./camera_follow.ts";
-import { drawMatchHud, type MatchHudLayout, type MatchHudModel, type MatchHudTheme, type MatchHudViewport } from "./match_hud.ts";
+import {
+  drawMatchHud,
+  type MatchHudLayout,
+  type MatchHudModel,
+  type MatchHudTheme,
+  type MatchHudViewport,
+} from "./match_hud.ts";
 import { disposeObject, resetMaterialCache } from "./draw2d.ts";
 
 /** `{w, h}` in pixels. Shared shape with `pitch.ts`'s `PitchViewport`. */
@@ -218,7 +224,14 @@ export class SceneRoot {
     this.hudGroup.renderOrder = HUD_RENDER_ORDER;
     this.scene.add(this.pitchGroup, this.hudGroup);
 
-    this.camera = new THREE.OrthographicCamera(0, options.viewport.w, 0, options.viewport.h, CAMERA_NEAR, CAMERA_FAR);
+    this.camera = new THREE.OrthographicCamera(
+      0,
+      options.viewport.w,
+      0,
+      options.viewport.h,
+      CAMERA_NEAR,
+      CAMERA_FAR,
+    );
     this.camera.position.set(0, 0, 1);
     this.camera.lookAt(0, 0, 0);
 
@@ -229,7 +242,12 @@ export class SceneRoot {
     // own defaults so this camera is never left in a nonsensical state
     // before the first `populate()` call re-syncs it properly.
     this.worldScene = new THREE.Scene();
-    this.worldCamera = new THREE.PerspectiveCamera(camera.PERSPECTIVE.fov, options.viewport.w / options.viewport.h, 1, 8000);
+    this.worldCamera = new THREE.PerspectiveCamera(
+      camera.PERSPECTIVE.fov,
+      options.viewport.w / options.viewport.h,
+      1,
+      8000,
+    );
 
     this.bloomPass = new Bloom(options.bloom ?? {});
 
@@ -347,7 +365,13 @@ export class SceneRoot {
 
     if (options.hud !== undefined) {
       const hudViewport: MatchHudViewport = this.viewport;
-      drawMatchHud(this.hudGroup, options.hud.model, options.hud.layout, options.hud.theme, hudViewport);
+      drawMatchHud(
+        this.hudGroup,
+        options.hud.model,
+        options.hud.layout,
+        options.hud.theme,
+        hudViewport,
+      );
     } else {
       this.clearGroup(this.hudGroup);
     }

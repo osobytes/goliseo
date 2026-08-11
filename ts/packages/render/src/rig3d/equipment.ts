@@ -28,7 +28,14 @@ const BLADE_PROFILE: geometry.Profile = [
 
 // Grip + pommel shared by every melee item, so they all sit in the fist the
 // same way regardless of theme.
-function hilt(mb: PartBuilder, gripR: number, gripTop: number, pommelR: number, gripColor: number, metal: number): void {
+function hilt(
+  mb: PartBuilder,
+  gripR: number,
+  gripTop: number,
+  pommelR: number,
+  gripColor: number,
+  metal: number,
+): void {
   geometry.sphere(mb, mat4.translation(0, -gripTop - pommelR * 0.6, 0), pommelR, 6, 10, metal);
   geometry.extrude(
     mb,
@@ -94,7 +101,8 @@ function heaterShield(c: SlotIndex): readonly [PartBuilder, PartBuilder | null] 
   const topW = 0.62;
   const thickness = 0.03;
 
-  const widthAt = (t: number): number => topW * (0.16 + 0.84 * Math.sin(t * Math.PI * 0.62) ** 0.55);
+  const widthAt = (t: number): number =>
+    topW * (0.16 + 0.84 * Math.sin(t * Math.PI * 0.62) ** 0.55);
 
   let prev: geometry.Point3[] | null = null;
   for (let i = 0; i <= rows; i++) {
@@ -129,7 +137,15 @@ function heaterShield(c: SlotIndex): readonly [PartBuilder, PartBuilder | null] 
   }
 
   // Boss and the enarmes on the back.
-  geometry.sphere(mb, mat4.multiply(mat4.translation(0, 0.02, thickness), mat4.rotationX(Math.PI / 2)), 0.07, 5, 12, c.accent, 0.55);
+  geometry.sphere(
+    mb,
+    mat4.multiply(mat4.translation(0, 0.02, thickness), mat4.rotationX(Math.PI / 2)),
+    0.07,
+    5,
+    12,
+    c.accent,
+    0.55,
+  );
   for (const y of [-0.07, 0.09]) {
     geometry.box(mb, mat4.translation(0, y, -0.045), 0.2, 0.035, 0.03, c.strap);
   }
@@ -308,7 +324,9 @@ function springGlove(c: SlotIndex): readonly [PartBuilder, PartBuilder | null] {
 
 // ---------------------------------------------------------------------------
 
-const BUILDERS: Readonly<Record<string, (c: SlotIndex) => readonly [PartBuilder, PartBuilder | null]>> = {
+const BUILDERS: Readonly<
+  Record<string, (c: SlotIndex) => readonly [PartBuilder, PartBuilder | null]>
+> = {
   tournament_sword: tournamentSword,
   heater_shield: heaterShield,
   vector_blade: vectorBlade,

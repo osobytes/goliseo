@@ -29,8 +29,7 @@ export interface FakeMatchScreenState {
 }
 
 export type FakeMatchAction =
-  | { readonly go: "cancel" }
-  | { readonly go: "complete"; readonly result: ProductMatchResult };
+  { readonly go: "cancel" } | { readonly go: "complete"; readonly result: ProductMatchResult };
 
 function newState(
   viewport: { readonly w: number; readonly h: number },

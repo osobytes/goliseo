@@ -187,7 +187,12 @@ export function bones(rig: RigLike): readonly BoneDef[] {
     { name: "neck", parent: "chest", offset: [0, s.neck, 0] },
     { name: "head", parent: "neck", offset: [0, s.head, 0] },
   ];
-  for (const group of [arm(s, f, "R", RIGHT), arm(s, f, "L", LEFT), leg(s, f, "R", RIGHT), leg(s, f, "L", LEFT)]) {
+  for (const group of [
+    arm(s, f, "R", RIGHT),
+    arm(s, f, "L", LEFT),
+    leg(s, f, "R", RIGHT),
+    leg(s, f, "L", LEFT),
+  ]) {
     out.push(...group);
   }
 
@@ -242,7 +247,11 @@ export function newRig(rig: RigLike): Rig {
       throw new Error(`parent must precede child: ${def.name}`);
     }
     const r = def.rest ?? [0, 0, 0];
-    const q_rest = quat.fromEuler((r[0] * Math.PI) / 180, (r[1] * Math.PI) / 180, (r[2] * Math.PI) / 180);
+    const q_rest = quat.fromEuler(
+      (r[0] * Math.PI) / 180,
+      (r[1] * Math.PI) / 180,
+      (r[2] * Math.PI) / 180,
+    );
     const withRest: PreparedBoneDef = { ...def, q_rest };
     byName[def.name] = withRest;
     prepared.push(withRest);
@@ -283,7 +292,9 @@ export function newRig(rig: RigLike): Rig {
  */
 export function raised(rig: Rig, metres: number): Rig {
   const defs = rig.defs.map((def) =>
-    def.parent === null ? { ...def, offset: [def.offset[0], def.offset[1] + metres, def.offset[2]] as Offset } : def,
+    def.parent === null
+      ? { ...def, offset: [def.offset[0], def.offset[1] + metres, def.offset[2]] as Offset }
+      : def,
   );
   const byName: Record<string, PreparedBoneDef> = {};
   for (const def of defs) {
