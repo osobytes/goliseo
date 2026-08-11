@@ -110,8 +110,11 @@ identity.
 boundaries, so a field costing *k* bytes per snapshot costs 31*k* against the gated
 retained-snapshot budget. The worked example from
 [#57](https://github.com/osobytes/goliseo/issues/57) is ~278 bytes per snapshot and
-~8,618 against the budget, for one field. `scripts/check_snapshot_headroom.sh` warns
-when the remaining margin falls below 32 KiB; the full cost model, the current margin,
+~8,618 against the budget, for one field. `rust/crates/gc-sim/tests/snapshot_headroom.rs`
+measures a real retained window against that budget on every run of `./scripts/check.sh`:
+it warns when the remaining margin falls below 32 KiB and fails above the budget.
+(`scripts/check_snapshot_headroom.sh` used to do this and was deleted with the LÖVE tree
+in #467.) The full cost model, the current margin,
 and the levers for when it runs out are in
 [`docs/online/omp2_rollback_validation.md`](online/omp2_rollback_validation.md) under
 "The retained-storage cost model". Per-event fields are priced separately there — a
