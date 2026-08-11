@@ -83,6 +83,11 @@ export type PhaseSource = "clock" | "gait" | "throw_timer" | "windup";
  *   differently around the balance lean. The limbs keep whatever the
  *   locomotion blend resolved, which is correct -- a keeper diving mid-stride
  *   keeps the stride, and a defender containing mid-stride keeps the stride.
+ *   ONE EXCEPTION, and it is limb work by necessity: an attitude that authors a
+ *   CROUCH also drives `rig3d/crouch.ts`'s knee bend, because a root
+ *   translation cannot lower a body without taking the feet with it (#445).
+ *   That is composed onto the stride rather than replacing it, so the sentence
+ *   above still holds.
  * * `locomotion_base` -- this pose is SUPPOSED to look like ordinary
  *   locomotion, and has no reading of its own that is missing. A keeper
  *   shuffling along the line is walking; that is the whole pose.
@@ -215,11 +220,13 @@ export const POSE_ACTIONS: Readonly<Record<PlayerPoseId, PoseActionEntry>> = {
   //
   // Both are ALSO `action_pose.ATTITUDES` entries, which is not a conflict:
   // this table's action is the braced arms over the upper body, and the
-  // attitude is the crouch under them. `action_pose.apply` composes the root
-  // drop onto whatever the stance layer resolved, so the two halves of the
-  // billboard's reading add up instead of competing. `keeper_ready_low` is
-  // LOW because of the attitude -- without it the two stances differed only in
-  // crossfade duration.
+  // attitude is the crouch under them, delivered by `rig3d/crouch.ts`'s knee
+  // bend on the animator's fourth layer. That layer is driven off the POSE ID
+  // rather than through this table precisely so it does not compete for the one
+  // `action` slot these two entries have already spent on `guard_stance`, and
+  // so the two halves of the billboard's reading add up instead. `keeper_ready_low`
+  // is LOW because of the attitude -- without it the two stances differ only in
+  // crossfade duration, which is what they did between #444 and #445.
   // -------------------------------------------------------------------------
   keeper_set: stance(
     "guard_stance",
@@ -312,17 +319,17 @@ export const POSE_ACTIONS: Readonly<Record<PlayerPoseId, PoseActionEntry>> = {
   // cue. Both now apply, which is the point of keeping attitudes out of
   // `forOptions` -- see `action_pose.ts`.
   kick_follow: noAction("root_overlay", "action_pose.ATTITUDES.kick_follow (0.28r forward, the follow-through)"),
-  settle: noAction("root_overlay", "action_pose.ATTITUDES.settle (0.3r crouch: a first touch taken low)"),
+  settle: noAction("root_overlay", "action_pose.ATTITUDES.settle (0.3r crouch: a first touch taken low, knee-bent by rig3d/crouch.ts)"),
   run_telegraph: noAction("root_overlay", "action_pose.ATTITUDES.run_telegraph (0.5r forward: the body commits before the feet)"),
   // The negative lean is the whole instruction: contain shepherds, it does not
   // commit. A forward guard stance would have read as an attacking challenge.
-  contain: noAction("root_overlay", "action_pose.ATTITUDES.contain (weight back 0.3r + 0.26r crouch)"),
+  contain: noAction("root_overlay", "action_pose.ATTITUDES.contain (weight back 0.3r as a root tilt + 0.26r crouch as a knee bend)"),
   // `POSE_CLIP` mapped this to `"idle"`, which reached no branch in `poseFor`
   // at all -- so on the rigged path it rendered exactly as `locomotion` did,
   // from before #418 until #430. The billboard's extra `slump` (0.24r on the
   // shoulders and head, hips unmoved) is a rounded spine rather than a root
   // transform and is NOT recovered here; see `ATTITUDES`' own note.
-  fatigue: noAction("root_overlay", "action_pose.ATTITUDES.fatigue (sag 0.12r back + 0.16r crouch)"),
+  fatigue: noAction("root_overlay", "action_pose.ATTITUDES.fatigue (sag 0.12r back as a root tilt + 0.16r crouch as a knee bend)"),
   locomotion: noAction("locomotion_base", "the fallback every player always has"),
 };
 

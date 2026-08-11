@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { quat } from "@gc/core";
 import * as clips from "./clips.ts";
 import * as masks from "./masks.ts";
 
@@ -106,6 +107,52 @@ describe("rig3d clips", () => {
         }
       }
     }
+  });
+
+  // `compose` against `layer`, on the same base pose, because the difference
+  // between them is the whole reason both exist (#445). `layer` OVERRIDES
+  // through a mask, so a bone the mask owns and the overlay is silent about
+  // goes to REST -- which is what would delete a stride if a sparse crouch were
+  // masked over the legs. `compose` ADDS, and touches nothing the overlay does
+  // not name.
+  it("compose adds where layer overrides, and leaves unnamed bones alone", () => {
+    const walk = clips.ORDER[1];
+    expect(walk).toBeDefined();
+    if (!walk) return;
+    const base = clips.sample(walk, 0.3);
+    // A sparse overlay: one leg bone and a root translation, nothing else.
+    const overlay = {
+      rot: { "shin.R": quat.fromEuler(Math.PI / 6, 0, 0) },
+      move: { root: [0, -0.05, 0] as const },
+    };
+    const restQ = quat.identity();
+
+    // Layered through a mask that OWNS the legs, the bones the overlay never
+    // mentions are sent to rest -- the stride on `thigh.R` is gone.
+    const layered = clips.layer(base, overlay, masks.LOWER_BODY, 1);
+    for (let i = 0; i < 4; i++) {
+      expect(comp(layered.rot["thigh.R"] ?? restQ, i), "layer sends an unmentioned masked bone to rest").toBeCloseTo(
+        comp(restQ, i),
+        9,
+      );
+    }
+
+    // Composed, the same overlay leaves it exactly as the walk resolved it.
+    const composed = clips.compose(base, overlay);
+    // Non-vacuous: the walk really does pose that bone, so "untouched" is a
+    // claim about something rather than about an absent key.
+    expect(base.rot["thigh.R"], "the walk poses the thigh, or neither half means anything").toBeDefined();
+    expect(composed.rot["thigh.R"], "compose leaves an unnamed bone untouched").toBe(base.rot["thigh.R"]);
+
+    // And where it DOES speak, it adds rather than replaces -- both channels.
+    const expected = quat.multiply(overlay.rot["shin.R"], base.rot["shin.R"] ?? restQ);
+    for (let i = 0; i < 4; i++) {
+      expect(comp(composed.rot["shin.R"] ?? restQ, i), "compose pre-multiplies").toBeCloseTo(comp(expected, i), 9);
+    }
+    expect(composed.move["root"]?.[1] ?? 0, "and sums translations").toBeCloseTo(
+      (base.move["root"]?.[1] ?? 0) - 0.05,
+      12,
+    );
   });
 
   it("masks include the sockets attached to the hands they cover", () => {

@@ -366,23 +366,18 @@ describe("player_renderer_3d mixer/procedural parity", () => {
       // ...and the attitude itself is there, so the above is not vacuous.
       // This suite's `delta` spans `move` as well as `rot`.
       //
-      // `settle` is the exception, and it is a deliberate one (#439). Its
-      // whole reading WAS a root translation -- a 6.9 cm drop on a rig with no
-      // IK and no ground clearance, which is 6.9 cm of the character's ankles
-      // under the turf and not a crouch at all. `action_pose.apply` grounds
-      // it, so `settle` now resolves exactly as plain locomotion does, and
-      // asserting a difference here would be asserting the defect. What this
-      // case still proves is the thing the gate is about: the balance lean
-      // survives, above. The crouch's own constants stay pinned in
-      // `action_pose.spec.ts` and the ground contact in
-      // `rig3d/ground_contact.spec.ts`.
+      // `settle` USED TO BE THE EXCEPTION HERE, and the history is the reason
+      // this comment is longer than the assertion. Its whole reading is a root
+      // translation -- a 6.9 cm drop on a rig with no IK and no ground
+      // clearance, which is 6.9 cm of the character's ankles under the turf and
+      // not a crouch at all -- so #439/#444 grounded it and this line asserted
+      // `toBe(0)`: a `settle` that resolved bit-identically to plain
+      // locomotion, with the disclosure written down rather than hidden.
+      // #445 pays for the drop with a knee bend (`rig3d/crouch.ts`), so the
+      // special case is gone and every id here clears the same floor.
       const plain = baseOptions({ pose: { id: "locomotion" }, facing: new Vec2(0.6, 0.8) });
       const fromPlain = delta(poseFor(leaning, opts, 7.5), poseFor(leaning, plain, 7.5));
-      if (id === "settle") {
-        expect(fromPlain, "a grounded drop-only attitude is plain locomotion").toBe(0);
-      } else {
-        expect(fromPlain).toBeGreaterThan(0.01);
-      }
+      expect(fromPlain, `${id} must differ from plain locomotion`).toBeGreaterThan(0.01);
     },
   );
 

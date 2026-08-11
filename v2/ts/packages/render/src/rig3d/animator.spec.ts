@@ -1,5 +1,5 @@
 // Tier-2 tests for the character animator: the composition of the three
-// mixer layers, the crossfade, and the user-facing claim #425's
+// mixer layers and #445's crouch layer, the crossfade, and the user-facing claim #425's
 // asset-agnostic slice makes -- that a set of poses which used to render as a
 // plain jog now have their own silhouette.
 //
@@ -161,33 +161,101 @@ describe("rig3d/animator.poseFor", () => {
     expect(delta(plain, posed), `${id}: lean`).toBeGreaterThan(0.01);
   });
 
-  // THE CROUCH HALF, AND WHY IT NOW ASSERTS ZERO (#439).
+  // THE CROUCH HALF, AND WHY IT ASSERTS THE WHOLE DROP AGAIN (#445).
   //
-  // This used to be the same `it.each` as the lean above, `settle` included,
-  // asserting `rootDrop > 0.01` for every id that crouches. It passed while
-  // those crouches drove the character's ankles under the turf: the rig plants
-  // exactly on the pitch plane and has no IK, so a root drop is penetration
-  // and nothing else (`action_pose.ts`'s GROUND CONTACT section, and
-  // `ground_contact.spec.ts`, which measures it on real geometry).
-  // `action_pose.apply` now floors it, so the honest pin is that a crouch
-  // reaches the resolved pose as ZERO.
+  // This assertion has been round the loop twice, and both turns belong in
+  // front of a reader.
   //
-  // The coverage does not leave with the behaviour. The authored magnitudes
-  // and their ordering are still pinned one layer down, on `attitudeFor` --
-  // `action_pose.spec.ts`'s "crouches rather than rises, and keeps the
-  // billboard's ordering" -- so shrinking or deleting a `drop` still fails.
-  // What this asserts is the seam: the table still says crouch, and the rig
-  // still stands on the pitch.
+  // It began as the same `it.each` as the lean above, asserting `rootDrop >
+  // 0.01` for every id that crouches. It passed while those crouches drove the
+  // character's ankles under the turf: the rig plants exactly on the pitch
+  // plane and has no IK, so a root drop ON ITS OWN is penetration and nothing
+  // else (`action_pose.ts`'s GROUND CONTACT section, and
+  // `ground_contact.spec.ts`, which measures it on real geometry). #444 floored
+  // the overlay's drop, and this became `toBe(0)` -- the honest pin for a rig
+  // that could not absorb a crouch.
+  //
+  // #445 gave it one. `rig3d/crouch.ts` folds the thigh, knee and ankle so the
+  // feet rise by the drop before it is spent, and writes the drop itself.
+  // That translation is NOT floored, and does not need to be, for the same
+  // reason `clips.SWING`'s own 32 mm root drop never was: its limbs pay for it
+  // (see `ground_contact.spec.ts`'s "leaves a clip's own root motion alone").
+  //
+  // WHAT KEEPS THIS FROM BEING A ROUND TRIP BACK TO THE DEFECT is the second
+  // half. A drop with no fold under it is #439 exactly, so the knee has to be
+  // bent here too -- and `ground_contact.spec.ts` measures on the real geometry
+  // that the two cancel at the sole to a fraction of a millimetre.
   it.each(["settle", "contain", "fatigue", "keeper_set", "keeper_ready_low"])(
-    "grounds %s's crouch instead of sinking the character into the pitch",
+    "gives %s its authored crouch, with a knee bend under it",
     (id) => {
-      const authored = actionPose.attitudeFor({ pose: { id } })?.move.root?.[1] ?? 0;
-      expect(authored, `${id}: the table must still author a crouch`).toBeLessThan(0);
+      const authored = actionPose.attitudeDrop({ pose: { id } });
+      expect(authored, `${id}: the table must still author a crouch`).toBeGreaterThan(0.03);
       const plain = poseFor(freshId(), RUNNING, withPose("locomotion"), 4);
       const posed = poseFor(freshId(), RUNNING, withPose(id), 4);
-      expect(rootDrop(plain, posed), `${id}: the crouch must not reach the root`).toBe(0);
+      expect(rootDrop(plain, posed), `${id}: the crouch reaches the root in full`).toBeCloseTo(authored, 12);
+      // The limbs that pay for it. Negative x swings a thigh FORWARD and a knee
+      // only bends backward, so the two move in opposite directions -- the sign
+      // convention `clips.ts` documents and SWING's own lunge keys follow.
+      for (const side of ["L", "R"]) {
+        expect(posed.rot[`thigh.${side}`]?.[0] ?? 0, `${id}: thigh.${side} folds forward`).toBeLessThan(
+          plain.rot[`thigh.${side}`]?.[0] ?? 0,
+        );
+        expect(posed.rot[`shin.${side}`]?.[0] ?? 0, `${id}: shin.${side} bends backward`).toBeGreaterThan(
+          plain.rot[`shin.${side}`]?.[0] ?? 0,
+        );
+      }
     },
   );
+
+  // A pose that authors no crouch must not acquire one, which is what stops
+  // the layer above from being "every character is now slightly bent".
+  it.each(["locomotion", "kick_follow", "run_telegraph", "keeper_ready_tall"])(
+    "leaves %s standing at full height",
+    (id) => {
+      expect(actionPose.attitudeDrop({ pose: { id } }), `${id} authors no crouch`).toBe(0);
+      const plain = poseFor(freshId(), RUNNING, withPose("locomotion"), 4);
+      const posed = poseFor(freshId(), RUNNING, withPose(id), 4);
+      expect(rootDrop(plain, posed), `${id}: nothing settles`).toBe(0);
+      expect(posed.rot["thigh.L"], `${id}: no fold`).toEqual(plain.rot["thigh.L"]);
+    },
+  );
+
+  // The crouch EASES in rather than snapping, because it is a held posture
+  // rather than a committed action -- the same argument `pose_table.ts` makes
+  // for a stance's crossfade. A character's FIRST observed frame still commits
+  // outright, for the reason the stance crossfade does: easing every player
+  // down at kickoff, and again after every rollback re-seed, would be a visible
+  // tic bought with nothing.
+  it("eases a crouch in over a stance's crossfade, after committing on the first frame", () => {
+    const authored = actionPose.attitudeDrop({ pose: { id: "keeper_ready_low" } });
+    // The comparison has to be taken at the SAME instant: the idle clip writes
+    // its own weight shift to `move.root`, so a baseline sampled at t = 0 would
+    // fold that shift into every later reading.
+    const tall = (t: number) => poseFor(freshId(), STANDING, withPose("locomotion"), t);
+    const first = freshId();
+    expect(
+      rootDrop(tall(0), poseFor(first, STANDING, withPose("keeper_ready_low"), 0)),
+      "a character's first frame commits to its crouch",
+    ).toBeCloseTo(authored, 12);
+
+    // A character already standing tall, then asked to crouch: partway there
+    // after one frame, all the way there once the fade has run.
+    const second = freshId();
+    poseFor(second, STANDING, withPose("locomotion"), 0);
+    const partial = rootDrop(tall(0.02), poseFor(second, STANDING, withPose("keeper_ready_low"), 0.02));
+    expect(partial, "not there yet").toBeLessThan(authored);
+    expect(partial, "but on the way").toBeGreaterThan(0);
+    // Stepped at 20 ms rather than jumped: `MAX_FRAME_DT` deliberately refuses
+    // to integrate more than a 10 fps frame in one go, so a single leap to
+    // t = 0.4 would measure the clamp instead of the ramp.
+    let settled = 0;
+    let t = 0.02;
+    for (let i = 0; i < 20; i += 1) {
+      t += 0.02;
+      settled = rootDrop(tall(t), poseFor(second, STANDING, withPose("keeper_ready_low"), t));
+    }
+    expect(settled, "and fully settled once the fade has run").toBeCloseTo(authored, 12);
+  });
 
   it("leans a follow-through and a telegraph forward, and a contain and a fatigue back", () => {
     const plain = poseFor(freshId(), RUNNING, withPose("locomotion"), 4);
@@ -210,18 +278,23 @@ describe("rig3d/animator.poseFor", () => {
     expect(at("contain")).toBeGreaterThan(at("fatigue"));
   });
 
-  // The ordering these two pairs used to assert on the RESOLVED pose is now
-  // unobservable there -- every crouch resolves to the same grounded zero --
-  // so it is asserted where it is still a live quantity, on the authored
-  // table. Same claim, same pairs, one layer down; `action_pose.spec.ts` pins
-  // the full five-deep chain and the exact fatigue/contain ratio.
+  // The ordering, asserted on the RESOLVED pose again (#445). Between #444 and
+  // #445 it was unobservable there -- every crouch resolved to the same
+  // grounded zero -- and was pinned on the authored table instead. It is a live
+  // quantity once more, so both are asserted: the table orders the two, and the
+  // rig shows the order. `action_pose.spec.ts` pins the full five-deep chain
+  // and the exact fatigue/contain ratio.
   it.each([
     ["settle", "contain"],
     ["keeper_ready_low", "keeper_set"],
-  ])("still authors %s as a deeper crouch than %s", (deeper, shallower) => {
+  ])("settles %s deeper than %s, on the table and on the rig", (deeper, shallower) => {
     const drop = (id: string) => -(actionPose.attitudeFor({ pose: { id } })?.move.root?.[1] ?? 0);
     expect(drop(deeper)).toBeGreaterThan(drop(shallower));
     expect(drop(shallower)).toBeGreaterThan(0);
+
+    const tall = poseFor(freshId(), STANDING, withPose("locomotion"), 4);
+    const resolved = (id: string) => rootDrop(tall, poseFor(freshId(), STANDING, withPose(id), 4));
+    expect(resolved(deeper), `${deeper} renders lower than ${shallower}`).toBeGreaterThan(resolved(shallower));
   });
 
   // The attitude COMPOSES onto the run's vertical bob rather than replacing
