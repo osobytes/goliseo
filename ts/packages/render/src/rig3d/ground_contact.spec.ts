@@ -118,9 +118,19 @@ const BODY_ONLY_PROBES = ground.probesFrom(
 //                     `draw`/`renderToSprite` and this file's non-#447 blocks
 //                     render, and the figure every ungrounded number in the
 //                     #439 blocks was measured against.
-const KEEPER_MESH = body.accumulate(RIG, THEME, FIGURE, presentationContent.loadoutFor(undefined))[0];
+const KEEPER_MESH = body.accumulate(
+  RIG,
+  THEME,
+  FIGURE,
+  presentationContent.loadoutFor(undefined),
+)[0];
 const KEEPER_PROBES = ground.probesFrom(RIG, KEEPER_MESH.verts, BONE_ORDER);
-const SHIELD_MESH = body.accumulate(RIG, THEME, FIGURE, presentationContent.loadoutFor("loadout_emberguard_shield"))[0];
+const SHIELD_MESH = body.accumulate(
+  RIG,
+  THEME,
+  FIGURE,
+  presentationContent.loadoutFor("loadout_emberguard_shield"),
+)[0];
 const SHIELD_PROBES = ground.probesFrom(RIG, SHIELD_MESH.verts, BONE_ORDER);
 
 /**
@@ -138,7 +148,10 @@ const SHIELD_PROBES = ground.probesFrom(RIG, SHIELD_MESH.verts, BONE_ORDER);
 function lowestRendered(
   rig: skeleton.Rig,
   skip?: (bone: string) => boolean,
-  verts: readonly { readonly bone: number; readonly position: readonly [number, number, number] }[] = MESH.verts,
+  verts: readonly {
+    readonly bone: number;
+    readonly position: readonly [number, number, number];
+  }[] = MESH.verts,
 ): { y: number; bone: string } {
   let y = Infinity;
   let bone = "";
@@ -151,7 +164,12 @@ function lowestRendered(
     if (world === undefined) {
       throw new Error(`ground_contact.spec.ts: vertex on unknown bone index ${vertex.bone}`);
     }
-    const p = mat4.transformPoint(world, vertex.position[0], vertex.position[1], vertex.position[2]);
+    const p = mat4.transformPoint(
+      world,
+      vertex.position[0],
+      vertex.position[1],
+      vertex.position[2],
+    );
     if (p[1] < y) {
       y = p[1];
       bone = name ?? "";
@@ -203,8 +221,15 @@ function poseOnRig(
 ): actionPose.MutablePose {
   poseSeq += 1;
   const opts =
-    id === undefined ? {} : { pose: { id }, dive_dir: { x: 1, y: 0 }, facing: { x: 0, y: 1 }, ...extra };
-  const pose = animator.poseFor(`gc_${String(poseSeq)}`, { speed: frame.speed, gait: frame.gait }, opts, frame.now);
+    id === undefined
+      ? {}
+      : { pose: { id }, dive_dir: { x: 1, y: 0 }, facing: { x: 0, y: 1 }, ...extra };
+  const pose = animator.poseFor(
+    `gc_${String(poseSeq)}`,
+    { speed: frame.speed, gait: frame.gait },
+    opts,
+    frame.now,
+  );
   skeleton.apply(rig, pose);
   return pose;
 }
@@ -233,8 +258,15 @@ function groundedOnRig(
 ): { pose: actionPose.MutablePose; lift: number } {
   poseSeq += 1;
   const opts =
-    id === undefined ? {} : { pose: { id }, dive_dir: { x: 1, y: 0 }, facing: { x: 0, y: 1 }, ...extra };
-  const pose = animator.poseFor(`gc_${String(poseSeq)}`, { speed: frame.speed, gait: frame.gait }, opts, frame.now);
+    id === undefined
+      ? {}
+      : { pose: { id }, dive_dir: { x: 1, y: 0 }, facing: { x: 0, y: 1 }, ...extra };
+  const pose = animator.poseFor(
+    `gc_${String(poseSeq)}`,
+    { speed: frame.speed, gait: frame.gait },
+    opts,
+    frame.now,
+  );
   const lift = ground.poseAndGround(rig, pose, probes);
   return { pose, lift };
 }
@@ -279,9 +311,13 @@ describe("ground contact: the rig's own clearance", () => {
   it("plants a standing character on the plane, with no clearance to spend", () => {
     const rig = skeleton.newRig(RIG);
     const lowest = lowestRendered(rig);
-    expect(lowest.bone, "the lowest point of a standing character is a boot").toMatch(/^(foot|toe)\./);
+    expect(lowest.bone, "the lowest point of a standing character is a boot").toMatch(
+      /^(foot|toe)\./,
+    );
     expect(lowest.y, "the rig is authored to plant, not to hover").toBeLessThanOrEqual(0);
-    expect(lowest.y, "and it plants within a millimetre or two of the plane").toBeGreaterThan(-2 * MM);
+    expect(lowest.y, "and it plants within a millimetre or two of the plane").toBeGreaterThan(
+      -2 * MM,
+    );
   });
 
   // `action_pose.apply` floors the OVERLAY's downward component rather than the
@@ -316,7 +352,9 @@ describe("ground contact: the rig's own clearance", () => {
     }
     expect(peak["idle"]?.min, "a standing figure is on the plane").toBeGreaterThan(-2 * MM);
     expect(peak["idle"]?.max, "and stays there").toBeLessThan(5 * MM);
-    expect(peak["walk"]?.min, "a walk never brings the boots back to the turf").toBeGreaterThan(10 * MM);
+    expect(peak["walk"]?.min, "a walk never brings the boots back to the turf").toBeGreaterThan(
+      10 * MM,
+    );
     expect(peak["run"]?.min, "nor does a run").toBeGreaterThan(15 * MM);
     expect(peak["run"]?.max, "and a run peaks a hand's width up").toBeGreaterThan(100 * MM);
   });
@@ -420,11 +458,13 @@ describe("ground contact: downward root translations (#439)", () => {
     // pose a release ago. The whole upper body carries it, so the head parts by
     // the same amount rather than the difference being a detail of the legs.
     expect(lowHips, "the LOW ready stance is the lower of the two").toBeLessThan(setHips);
-    expect(setHips - lowHips, "and by tens of millimetres, not by a micron").toBeGreaterThan(30 * MM);
-    expect(setHead - lowHead, "the head drops with the pelvis, so the silhouette differs").toBeCloseTo(
-      setHips - lowHips,
-      9,
+    expect(setHips - lowHips, "and by tens of millimetres, not by a micron").toBeGreaterThan(
+      30 * MM,
     );
+    expect(
+      setHead - lowHead,
+      "the head drops with the pelvis, so the silhouette differs",
+    ).toBeCloseTo(setHips - lowHips, 9);
 
     // The separation is exactly what the table authors, not an artefact of the
     // fold: `crouch.ts` derives its angle FROM `attitudeDrop`, so a re-tune of
@@ -433,11 +473,15 @@ describe("ground contact: downward root translations (#439)", () => {
       (actionPose.attitudeDrop({ pose: { id: "keeper_ready_low" } }) -
         actionPose.attitudeDrop({ pose: { id: "keeper_set" } })) *
       RIG.motion_scale;
-    expect(setHips - lowHips, "and it is the authored gap, in world metres").toBeCloseTo(authoredGap, 9);
+    expect(setHips - lowHips, "and it is the authored gap, in world metres").toBeCloseTo(
+      authoredGap,
+      9,
+    );
 
     // Not a claim that the difference is the RIG's: it is the table's, and it
     // was the table's throughout the release in which nothing showed it.
-    const authored = actionPose.attitudeFor({ pose: { id: "keeper_ready_low" } })?.move.root?.[1] ?? 0;
+    const authored =
+      actionPose.attitudeFor({ pose: { id: "keeper_ready_low" } })?.move.root?.[1] ?? 0;
     const authoredSet = actionPose.attitudeFor({ pose: { id: "keeper_set" } })?.move.root?.[1] ?? 0;
     expect(authored, "ATTITUDES still authors the deeper crouch").toBeLessThan(authoredSet);
   });
@@ -448,7 +492,10 @@ describe("ground contact: downward root translations (#439)", () => {
   it("leaves every upward and lateral root translation exactly as authored", () => {
     const cases: { id: string; extra?: Partial<actionPose.ActionPoseOptions> }[] = [
       { id: "aerial_bicycle", extra: { aerial: 1, aerial_style: "bicycle", aerial_jump: 1 } },
-      { id: "aerial_action", extra: { aerial: 1, aerial_style: "chest_control", aerial_jump: 0.4 } },
+      {
+        id: "aerial_action",
+        extra: { aerial: 1, aerial_style: "chest_control", aerial_jump: 0.4 },
+      },
       { id: "combat_knockback" },
       { id: "stumble" },
       { id: "keeper_dive", extra: { dive: 1 } },
@@ -484,8 +531,12 @@ describe("ground contact: downward root translations (#439)", () => {
     expect(deepestKey, "SWING really does translate the root downward").toBeLessThan(-20 * MM);
     // The authored key and the world travel it becomes, both measured, so the
     // two numbers in the comments above cannot drift apart from each other.
-    expect(deepestKey * RIG.motion_scale, "and 32 mm authored is 28 mm travelled").toBeGreaterThan(-30 * MM);
-    expect(deepestKey * RIG.motion_scale, "and 32 mm authored is 28 mm travelled").toBeLessThan(-26 * MM);
+    expect(deepestKey * RIG.motion_scale, "and 32 mm authored is 28 mm travelled").toBeGreaterThan(
+      -30 * MM,
+    );
+    expect(deepestKey * RIG.motion_scale, "and 32 mm authored is 28 mm travelled").toBeLessThan(
+      -26 * MM,
+    );
 
     let lowest = Infinity;
     for (let i = 0; i <= 40; i += 1) {
@@ -557,8 +608,13 @@ describe("ground contact: the crouch is limb work (#445)", () => {
       // from the drop rather than tuned against it, so the residue is the 2
       // degree rest roll on the thigh that the closed form does not model --
       // 0.06% of the drop, and in the direction of clearance.
-      expect(sole.y, `${id} must not push a sole below where standing puts it`).toBeGreaterThanOrEqual(base.sole);
-      expect(sole.y - base.sole, `${id}'s residue is a fraction of a millimetre`).toBeLessThan(0.2 * MM);
+      expect(
+        sole.y,
+        `${id} must not push a sole below where standing puts it`,
+      ).toBeGreaterThanOrEqual(base.sole);
+      expect(sole.y - base.sole, `${id}'s residue is a fraction of a millimetre`).toBeLessThan(
+        0.2 * MM,
+      );
     }
   });
 
@@ -705,7 +761,12 @@ describe("ground contact: the crouch is limb work (#445)", () => {
     let deepest = 0;
     for (let i = 1; i <= 20; i += 1) {
       const now = i / 60;
-      const pose = animator.poseFor(player, { speed: 0, gait: 0 }, { pose: { id: "keeper_ready_low" } }, now);
+      const pose = animator.poseFor(
+        player,
+        { speed: 0, gait: 0 },
+        { pose: { id: "keeper_ready_low" } },
+        now,
+      );
       const tall = animator.poseFor(`gc_tall_${String(i)}`, { speed: 0, gait: 0 }, {}, now);
       const depth = (tall.move["root"]?.[1] ?? 0) - (pose.move["root"]?.[1] ?? 0);
       skeleton.apply(rig, pose);
@@ -713,7 +774,9 @@ describe("ground contact: the crouch is limb work (#445)", () => {
       const sole = lowestRendered(rig).y;
       const tallSole = lowestRendered(tallRig).y;
       const at = `${(1000 * depth).toFixed(1)} mm of ${(1000 * authored).toFixed(1)} mm`;
-      expect(sole, `at ${at}, a sole is below where standing puts it`).toBeGreaterThanOrEqual(tallSole);
+      expect(sole, `at ${at}, a sole is below where standing puts it`).toBeGreaterThanOrEqual(
+        tallSole,
+      );
       expect(sole - tallSole, `at ${at}, a sole has lifted off`).toBeLessThan(0.2 * MM);
       // And in absolute terms, against the pitch itself.
       expect(sole, `at ${at}, a sole is through the turf`).toBeGreaterThanOrEqual(base.sole);
@@ -752,12 +815,20 @@ describe("ground contact: the crouch is limb work (#445)", () => {
   // #460 made loadouts per-player.
   it("keeps every loadout's held item within a fifth of a pixel of the turf while settling", () => {
     const ids = Object.keys(presentationContent.LOADOUT_EQUIPMENT);
-    expect(ids.length, "every authored loadout, or this sweep means nothing").toBeGreaterThanOrEqual(6);
+    expect(
+      ids.length,
+      "every authored loadout, or this sweep means nothing",
+    ).toBeGreaterThanOrEqual(6);
 
     let deepestDip = 0;
     let dippingLoadouts = 0;
     for (const loadoutId of ids) {
-      const figure = body.accumulate(RIG, THEME, FIGURE, presentationContent.loadoutFor(loadoutId))[0];
+      const figure = body.accumulate(
+        RIG,
+        THEME,
+        FIGURE,
+        presentationContent.loadoutFor(loadoutId),
+      )[0];
       if (figure === undefined) {
         throw new Error(`ground_contact.spec.ts: ${loadoutId} must build a figure`);
       }
@@ -787,7 +858,10 @@ describe("ground contact: the crouch is limb work (#445)", () => {
     // one loadout has to actually reach the turf, or every bound above passes
     // on a sweep that is measuring nothing. The sword is that one today.
     expect(dippingLoadouts, "at least one authored loadout really does dip").toBeGreaterThan(0);
-    expect(deepestDip, "and by millimetres, so the ceiling is a bound and not a formality").toBeGreaterThan(5 * MM);
+    expect(
+      deepestDip,
+      "and by millimetres, so the ceiling is a bound and not a formality",
+    ).toBeGreaterThan(5 * MM);
   });
 });
 
@@ -842,16 +916,21 @@ describe("ground contact: root rotations, grounded (#446)", () => {
       poseOnRig(flat, id, standing);
       const ungrounded = lowestRendered(flat).y;
       expect(ungrounded, `${id}'s rotation must not be deepening`).toBeGreaterThan(-mm * MM);
-      expect(ungrounded, `${id}'s tilt is still authored, so the residual is still there`).toBeLessThan(0);
+      expect(
+        ungrounded,
+        `${id}'s tilt is still authored, so the residual is still there`,
+      ).toBeLessThan(0);
 
       const { lift } = groundedOnRig(rig, id, standing);
       const lowest = lowestRendered(rig).y;
       expect(lowest, `${id} must not stand in a hole`).toBeGreaterThan(-TOLERANCE);
-      expect(lowest, `${id} must not hover either -- the lift is exact, not generous`).toBeLessThan(TOLERANCE);
-      expect(lift, `${id}'s lift is the depth the rig's own rest correction does not cover`).toBeCloseTo(
-        perFrameLiftFor(ungrounded),
-        9,
+      expect(lowest, `${id} must not hover either -- the lift is exact, not generous`).toBeLessThan(
+        TOLERANCE,
       );
+      expect(
+        lift,
+        `${id}'s lift is the depth the rig's own rest correction does not cover`,
+      ).toBeCloseTo(perFrameLiftFor(ungrounded), 9);
     });
   }
 
@@ -924,27 +1003,44 @@ describe("ground contact: root rotations, grounded (#446)", () => {
       poseOnRig(flat, row.id, standing, { dive: row.dive });
       const ungroundedBody = lowestRendered(flat, PROP, KEEPER_MESH.verts).y;
       const ungroundedAll = lowestRendered(flat, undefined, KEEPER_MESH.verts).y;
-      expect(ungroundedBody, `${row.id}'s body residual must not be deepening`).toBeGreaterThan(-row.body * MM);
-      expect(ungroundedAll, `${row.id}'s residual including props must not be deepening`).toBeGreaterThan(-row.props * MM);
-      expect(ungroundedAll, `${row.id} at dive ${String(row.dive)} is a rotation, so it does not vanish`).toBeLessThan(-2 * MM);
+      expect(ungroundedBody, `${row.id}'s body residual must not be deepening`).toBeGreaterThan(
+        -row.body * MM,
+      );
+      expect(
+        ungroundedAll,
+        `${row.id}'s residual including props must not be deepening`,
+      ).toBeGreaterThan(-row.props * MM);
+      expect(
+        ungroundedAll,
+        `${row.id} at dive ${String(row.dive)} is a rotation, so it does not vanish`,
+      ).toBeLessThan(-2 * MM);
       // THE #447 CLAIM ITSELF, per row rather than in prose: for a keeper the
       // two columns are one measurement, because there is no prop to be the
       // deeper of the two. Non-vacuous by the `-2 mm` floor just above -- a
       // pose that stopped happening would fail there, not pass here.
-      expect(ungroundedAll, `${row.id}: a keeper renders no props, so body and props are the same depth`).toBe(
-        ungroundedBody,
-      );
+      expect(
+        ungroundedAll,
+        `${row.id}: a keeper renders no props, so body and props are the same depth`,
+      ).toBe(ungroundedBody);
 
       const { lift } = groundedOnRig(rig, row.id, standing, { dive: row.dive }, KEEPER_PROBES);
-      expect(lowestRendered(rig, undefined, KEEPER_MESH.verts).y, `${row.id} must not reach through the pitch`).toBeGreaterThan(-TOLERANCE);
-      expect(lowestRendered(rig, undefined, KEEPER_MESH.verts).y, `${row.id} must not hover above it`).toBeLessThan(TOLERANCE);
+      expect(
+        lowestRendered(rig, undefined, KEEPER_MESH.verts).y,
+        `${row.id} must not reach through the pitch`,
+      ).toBeGreaterThan(-TOLERANCE);
+      expect(
+        lowestRendered(rig, undefined, KEEPER_MESH.verts).y,
+        `${row.id} must not hover above it`,
+      ).toBeLessThan(TOLERANCE);
       expect(lift, `${row.id}'s lift is exactly what it would otherwise sink`).toBeCloseTo(
         perFrameLiftFor(ungroundedAll),
         9,
       );
       // The lift is genuinely large: it is the missing vertical of a dive, not
       // a rounding correction.
-      expect(lift, `${row.id}'s lift is worth tens of millimetres at least`).toBeGreaterThan(50 * MM);
+      expect(lift, `${row.id}'s lift is worth tens of millimetres at least`).toBeGreaterThan(
+        50 * MM,
+      );
     });
   }
 
@@ -982,13 +1078,14 @@ describe("ground contact: root rotations, grounded (#446)", () => {
   // #447 fixed it in the right file. A keeper's mesh has no props, so the
   // `props` column here is the `body` column too, and the hover it caused is
   // gone with it. Every `body` figure is unchanged.
-  const BODY_SAVE_RESIDUALS: readonly { id: string; dive: number; body: number; props: number }[] = [
-    { id: "keeper_spread", dive: 1, body: 74, props: 74 },
-    { id: "keeper_central", dive: 1, body: 118, props: 118 },
-    { id: "keeper_dive", dive: 1, body: 153, props: 153 },
-    // The recovery from one, on the same axis and at its own shallower tilt.
-    { id: "keeper_get_up", dive: 0, body: 42, props: 42 },
-  ];
+  const BODY_SAVE_RESIDUALS: readonly { id: string; dive: number; body: number; props: number }[] =
+    [
+      { id: "keeper_spread", dive: 1, body: 74, props: 74 },
+      { id: "keeper_central", dive: 1, body: 118, props: 118 },
+      { id: "keeper_dive", dive: 1, body: 153, props: 153 },
+      // The recovery from one, on the same axis and at its own shallower tilt.
+      { id: "keeper_get_up", dive: 0, body: 42, props: 42 },
+    ];
 
   for (const row of BODY_SAVE_RESIDUALS) {
     it(`${row.id} taken at the body: a forward pitch is lifted clear too`, () => {
@@ -996,21 +1093,34 @@ describe("ground contact: root rotations, grounded (#446)", () => {
       poseOnRig(flat, row.id, standing, straight);
       const ungroundedBody = lowestRendered(flat, PROP, KEEPER_MESH.verts).y;
       const ungroundedAll = lowestRendered(flat, undefined, KEEPER_MESH.verts).y;
-      expect(ungroundedBody, `${row.id}'s body residual must not be deepening`).toBeGreaterThan(-row.body * MM);
-      expect(ungroundedAll, `${row.id}'s residual including props must not be deepening`).toBeGreaterThan(
-        -row.props * MM,
+      expect(ungroundedBody, `${row.id}'s body residual must not be deepening`).toBeGreaterThan(
+        -row.body * MM,
       );
+      expect(
+        ungroundedAll,
+        `${row.id}'s residual including props must not be deepening`,
+      ).toBeGreaterThan(-row.props * MM);
       // Non-vacuous: the pitch is a real rotation, so it really does reach
       // below the plane. Without this the floors above would pass on a
       // standing rig, which is the mistake the lateral table records.
-      expect(ungroundedAll, `${row.id} at the body is a rotation, so it does not vanish`).toBeLessThan(-2 * MM);
-      expect(ungroundedAll, `${row.id}: a keeper renders no props, so body and props are the same depth`).toBe(
-        ungroundedBody,
-      );
+      expect(
+        ungroundedAll,
+        `${row.id} at the body is a rotation, so it does not vanish`,
+      ).toBeLessThan(-2 * MM);
+      expect(
+        ungroundedAll,
+        `${row.id}: a keeper renders no props, so body and props are the same depth`,
+      ).toBe(ungroundedBody);
 
       const { lift } = groundedOnRig(rig, row.id, standing, straight, KEEPER_PROBES);
-      expect(lowestRendered(rig, undefined, KEEPER_MESH.verts).y, `${row.id} must not reach through the pitch`).toBeGreaterThan(-TOLERANCE);
-      expect(lowestRendered(rig, undefined, KEEPER_MESH.verts).y, `${row.id} must not hover above it`).toBeLessThan(TOLERANCE);
+      expect(
+        lowestRendered(rig, undefined, KEEPER_MESH.verts).y,
+        `${row.id} must not reach through the pitch`,
+      ).toBeGreaterThan(-TOLERANCE);
+      expect(
+        lowestRendered(rig, undefined, KEEPER_MESH.verts).y,
+        `${row.id} must not hover above it`,
+      ).toBeLessThan(TOLERANCE);
       expect(lift, `${row.id}'s lift is exactly what it would otherwise sink`).toBeCloseTo(
         perFrameLiftFor(ungroundedAll),
         9,
@@ -1033,10 +1143,15 @@ describe("ground contact: root rotations, grounded (#446)", () => {
       // sails through while proving nothing. The floor is the same `-2 mm`
       // guard the row loop above uses, and it is what makes this a statement
       // about the body save rather than about its absence.
-      expect(straight, `${id} at the body must be a real rotation, not a standing rig`).toBeLessThan(-2 * MM);
+      expect(
+        straight,
+        `${id} at the body must be a real rotation, not a standing rig`,
+      ).toBeLessThan(-2 * MM);
       poseOnRig(flat, id, standing, { dive: 1 });
       const lateral = lowestRendered(flat, PROP).y;
-      expect(straight, `${id} at the body must not sink past the lateral dive`).toBeGreaterThan(lateral);
+      expect(straight, `${id} at the body must not sink past the lateral dive`).toBeGreaterThan(
+        lateral,
+      );
     }
   });
 
@@ -1057,24 +1172,38 @@ describe("ground contact: root rotations, grounded (#446)", () => {
     const baseline = lowestRendered(flatRig(), undefined, keeperVerts).y;
     for (const id of ["keeper_dive", "keeper_spread", "keeper_central"]) {
       poseOnRig(flat, id, standing, { dive: 0 });
-      expect(lowestRendered(flat, undefined, keeperVerts).y, `${id} with no dive amount is just a standing character`).toBeCloseTo(baseline, 6);
+      expect(
+        lowestRendered(flat, undefined, keeperVerts).y,
+        `${id} with no dive amount is just a standing character`,
+      ).toBeCloseTo(baseline, 6);
       // Exactly zero, not "small": a standing character is what the rig's own
       // rest correction already covers, so the per-frame lift has nothing left
       // to do and the second skeleton evaluation is not paid.
-      expect(groundedOnRig(rig, id, standing, { dive: 0 }, KEEPER_PROBES).lift, `${id} with no dive amount needs no lift`).toBe(0);
+      expect(
+        groundedOnRig(rig, id, standing, { dive: 0 }, KEEPER_PROBES).lift,
+        `${id} with no dive amount needs no lift`,
+      ).toBe(0);
 
       poseOnRig(flat, id, standing, { dive: 1 });
-      expect(lowestRendered(flat, undefined, keeperVerts).y, `${id} at full dive must be far past standing`).toBeLessThan(baseline - 50 * MM);
-      expect(groundedOnRig(rig, id, standing, { dive: 1 }, KEEPER_PROBES).lift, `${id} at full dive must be lifted far`).toBeGreaterThan(
-        50 * MM,
-      );
+      expect(
+        lowestRendered(flat, undefined, keeperVerts).y,
+        `${id} at full dive must be far past standing`,
+      ).toBeLessThan(baseline - 50 * MM);
+      expect(
+        groundedOnRig(rig, id, standing, { dive: 1 }, KEEPER_PROBES).lift,
+        `${id} at full dive must be lifted far`,
+      ).toBeGreaterThan(50 * MM);
     }
     for (const id of ["keeper_stretch", "keeper_tip"]) {
       poseOnRig(flat, id, standing, { dive: 0 });
-      expect(lowestRendered(flat, undefined, keeperVerts).y, `${id} is fixed or floored, so it is deep with no amount`).toBeLessThan(baseline - 50 * MM);
-      expect(groundedOnRig(rig, id, standing, { dive: 0 }, KEEPER_PROBES).lift, `${id} is lifted with no amount too`).toBeGreaterThan(
-        50 * MM,
-      );
+      expect(
+        lowestRendered(flat, undefined, keeperVerts).y,
+        `${id} is fixed or floored, so it is deep with no amount`,
+      ).toBeLessThan(baseline - 50 * MM);
+      expect(
+        groundedOnRig(rig, id, standing, { dive: 0 }, KEEPER_PROBES).lift,
+        `${id} is lifted with no amount too`,
+      ).toBeGreaterThan(50 * MM);
     }
   });
 
@@ -1120,15 +1249,20 @@ describe("ground contact: what the lift is, exactly", () => {
   // pass every "no longer 411 mm" assertion anyone would think to write.
   it("writes the lift in `move` units, not world metres", () => {
     const rig = groundedRig();
-    const before = animator.poseFor("gc_scale", { speed: 0, gait: 0 }, { pose: { id: "keeper_tip" }, dive_dir: { x: 1, y: 0 }, facing: { x: 0, y: 1 }, dive: 1 }, 0);
+    const before = animator.poseFor(
+      "gc_scale",
+      { speed: 0, gait: 0 },
+      { pose: { id: "keeper_tip" }, dive_dir: { x: 1, y: 0 }, facing: { x: 0, y: 1 }, dive: 1 },
+      0,
+    );
     const beforeY = before.move["root"]?.[1] ?? 0;
     const lift = ground.poseAndGround(rig, before, PROBES);
     const afterY = before.move["root"]?.[1] ?? 0;
     expect(lift, "keeper_tip is the deepest pose in the game").toBeGreaterThan(500 * MM);
-    expect((afterY - beforeY) * RIG.motion_scale, "the authored delta times motion_scale IS the world lift").toBeCloseTo(
-      lift,
-      12,
-    );
+    expect(
+      (afterY - beforeY) * RIG.motion_scale,
+      "the authored delta times motion_scale IS the world lift",
+    ).toBeCloseTo(lift, 12);
     // Stated the other way too, so the direction of the division cannot be
     // read backwards: the number written down is LARGER than the world lift.
     expect(afterY - beforeY, "0.88 metres of travel per metre authored").toBeGreaterThan(lift);
@@ -1142,7 +1276,10 @@ describe("ground contact: what the lift is, exactly", () => {
     const rig = groundedRig();
     const { pose, lift } = groundedOnRig(rig, "keeper_dive", standing, { dive: 1 });
     expect(lift).toBeGreaterThan(50 * MM);
-    expect(ground.poseAndGround(rig, pose, PROBES), "an already-grounded rig is already grounded").toBe(0);
+    expect(
+      ground.poseAndGround(rig, pose, PROBES),
+      "an already-grounded rig is already grounded",
+    ).toBe(0);
   });
 
   // THE RIG'S OWN MILLIMETRE, AND WHERE IT IS PAID.
@@ -1175,11 +1312,14 @@ describe("ground contact: what the lift is, exactly", () => {
     const authored = flatRig();
     const authoredY = lowestRendered(authored).y;
     expect(authoredY, "the authored rig plants a millimetre under").toBeLessThan(0);
-    expect(PROBES.restLift, "and `restLift` is exactly that, measured through the same scan").toBeCloseTo(
-      -authoredY,
-      12,
-    );
-    expect(PROBES.restLift, "which is the millimetre the first test in this file measures").toBeLessThan(2 * MM);
+    expect(
+      PROBES.restLift,
+      "and `restLift` is exactly that, measured through the same scan",
+    ).toBeCloseTo(-authoredY, 12);
+    expect(
+      PROBES.restLift,
+      "which is the millimetre the first test in this file measures",
+    ).toBeLessThan(2 * MM);
     expect(PROBES.restLift, "and it is real, not zero").toBeGreaterThan(MM);
 
     // Raised, the rest pose is ON the plane -- not below it. The residue is
@@ -1187,7 +1327,10 @@ describe("ground contact: what the lift is, exactly", () => {
     // would mean the early-out stops firing and every idle character pays a
     // second evaluation again.
     const raised = groundedRig();
-    expect(lowestRendered(raised).y, "and raised by it, the rig plants on the plane").toBeGreaterThanOrEqual(0);
+    expect(
+      lowestRendered(raised).y,
+      "and raised by it, the rig plants on the plane",
+    ).toBeGreaterThanOrEqual(0);
     expect(lowestRendered(raised).y, "to within double precision").toBeLessThan(TOLERANCE);
   });
 
@@ -1228,7 +1371,11 @@ describe("ground contact: what the lift is, exactly", () => {
     const rig = groundedRig();
     let maxLift = 0;
     for (let i = 0; i <= 40; i += 1) {
-      const { lift } = groundedOnRig(rig, "combat_active", { speed: 0, gait: 0, now: (i / 40) * clips.SWING.duration });
+      const { lift } = groundedOnRig(rig, "combat_active", {
+        speed: 0,
+        gait: 0,
+        now: (i / 40) * clips.SWING.duration,
+      });
       maxLift = Math.max(maxLift, lift);
     }
     // Exactly zero: SWING's 32 mm root drop is paid for by its own thigh and
@@ -1288,18 +1435,28 @@ describe("ground contact: #444's floor and #446's lift compose", () => {
     // on the overlay -- `rig3d/crouch.ts` is what delivers it, with the limbs
     // paying for it first.
     const authoredDrop = actionPose.attitudeFor({ pose: { id: "settle" } })?.move.root?.[1] ?? 0;
-    expect(authoredDrop, "settle authors a real drop for the floor to remove").toBeLessThan(-50 * MM);
+    expect(authoredDrop, "settle authors a real drop for the floor to remove").toBeLessThan(
+      -50 * MM,
+    );
 
     let flooredMax = 0;
     let unflooredMin = Infinity;
     let unflooredMax = 0;
     for (const frame of frames()) {
-      flooredMax = Math.max(flooredMax, groundedOnRig(rig, "settle", frame, undefined, KEEPER_PROBES).lift);
+      flooredMax = Math.max(
+        flooredMax,
+        groundedOnRig(rig, "settle", frame, undefined, KEEPER_PROBES).lift,
+      );
 
       // The same frame with the floor undone: the authored drop added back on
       // top of the crouch that has already spent it, which is the second,
       // unpaid copy the floor exists to refuse.
-      const pose = animator.poseFor(`gc_unfloored_${String(frame.speed)}_${String(frame.gait)}`, { speed: frame.speed, gait: frame.gait }, { pose: { id: "settle" } }, frame.now);
+      const pose = animator.poseFor(
+        `gc_unfloored_${String(frame.speed)}_${String(frame.gait)}`,
+        { speed: frame.speed, gait: frame.gait },
+        { pose: { id: "settle" } },
+        frame.now,
+      );
       const root = pose.move["root"] ?? [0, 0, 0];
       pose.move["root"] = [root[0] ?? 0, (root[1] ?? 0) + authoredDrop, root[2] ?? 0];
       const lift = ground.poseAndGround(rig, pose, KEEPER_PROBES);
@@ -1307,7 +1464,10 @@ describe("ground contact: #444's floor and #446's lift compose", () => {
       unflooredMax = Math.max(unflooredMax, lift);
     }
 
-    expect(flooredMax, "with the floor, a settling character never needs a lift at all").toBeLessThan(TOLERANCE);
+    expect(
+      flooredMax,
+      "with the floor, a settling character never needs a lift at all",
+    ).toBeLessThan(TOLERANCE);
     expect(
       unflooredMax - unflooredMin,
       "without it, the lift swings by tens of millimetres across the gait -- a wobble, not a posture",
@@ -1323,7 +1483,12 @@ describe("ground contact: #444's floor and #446's lift compose", () => {
     for (const id of [...DROP_POSES, "keeper_dive", "keeper_tip", "combat_knockback"]) {
       for (const frame of frames()) {
         n += 1;
-        const before = animator.poseFor(`gc_dir_${String(n)}`, { speed: frame.speed, gait: frame.gait }, { pose: { id }, dive_dir: { x: 1, y: 0 }, facing: { x: 0, y: 1 }, dive: 1 }, frame.now);
+        const before = animator.poseFor(
+          `gc_dir_${String(n)}`,
+          { speed: frame.speed, gait: frame.gait },
+          { pose: { id }, dive_dir: { x: 1, y: 0 }, facing: { x: 0, y: 1 }, dive: 1 },
+          frame.now,
+        );
         const beforeY = before.move["root"]?.[1] ?? 0;
         ground.poseAndGround(rig, before, PROBES);
         const afterY = before.move["root"]?.[1] ?? 0;
@@ -1370,7 +1535,9 @@ describe("ground contact: equipment (#447)", () => {
     const withProps = lowestRendered(flat, undefined, SHIELD_MESH.verts);
     expect(bodyOnly.y, "body-only, this pose looks entirely fine").toBeGreaterThan(40 * MM);
     expect(withProps.y, "and it is not: the shield is through the turf").toBeLessThan(0);
-    expect(withProps.y, "though only just -- this is a small margin, not a gouge").toBeGreaterThan(-10 * MM);
+    expect(withProps.y, "though only just -- this is a small margin, not a gouge").toBeGreaterThan(
+      -10 * MM,
+    );
     expect(withProps.bone, "and it is the shield that does it").toBe("socket_shield.L");
 
     const rig = groundedRig();
@@ -1379,7 +1546,10 @@ describe("ground contact: equipment (#447)", () => {
       -(withProps.y + SHIELD_PROBES.restLift),
       9,
     );
-    expect(lowestRendered(rig, undefined, SHIELD_MESH.verts).y, "and nothing is left below the plane").toBeGreaterThan(-TOLERANCE);
+    expect(
+      lowestRendered(rig, undefined, SHIELD_MESH.verts).y,
+      "and nothing is left below the plane",
+    ).toBeGreaterThan(-TOLERANCE);
   });
 
   // THE KEEPER RULE AT THE MESH, which is the assertion #447 asks for and the
@@ -1390,14 +1560,18 @@ describe("ground contact: equipment (#447)", () => {
   // table said.
   it("renders a keeper with no equipment vertices at all, and an outfielder with some", () => {
     const keeperSockets = new Set(
-      KEEPER_MESH.verts.map((v) => BONE_ORDER[v.bone]).filter((name): name is string => name !== undefined && PROP(name)),
+      KEEPER_MESH.verts
+        .map((v) => BONE_ORDER[v.bone])
+        .filter((name): name is string => name !== undefined && PROP(name)),
     );
     expect([...keeperSockets], "a keeper's mesh carries nothing on a socket bone").toEqual([]);
     // NON-VACUOUS, and this is the half that matters: the same scan over an
     // outfielder's mesh must find the shield, or the assertion above would
     // pass on a broken scan, a renamed bone convention, or an empty mesh.
     const shieldSockets = new Set(
-      SHIELD_MESH.verts.map((v) => BONE_ORDER[v.bone]).filter((name): name is string => name !== undefined && PROP(name)),
+      SHIELD_MESH.verts
+        .map((v) => BONE_ORDER[v.bone])
+        .filter((name): name is string => name !== undefined && PROP(name)),
     );
     expect([...shieldSockets], "an emberguard defender still has one").toEqual(["socket_shield.L"]);
     expect(KEEPER_MESH.verts.length).toBeLessThan(SHIELD_MESH.verts.length);
@@ -1417,29 +1591,50 @@ describe("ground contact: equipment (#447)", () => {
     // Both probe sets measure the same rest pose -- the lowest point of a
     // standing character is a BOOT, not a prop -- so the rig this poses is
     // correctly raised for either, and #447 did not move the rest correction.
-    expect(BODY_ONLY_PROBES.restLift, "the rest pose's lowest point is a boot, with or without kit").toBe(
-      PROBES.restLift,
-    );
+    expect(
+      BODY_ONLY_PROBES.restLift,
+      "the rest pose's lowest point is a boot, with or without kit",
+    ).toBe(PROBES.restLift);
     // And the keeper's OWN mesh agrees with the filtered one to the bit,
     // which is what makes `BODY_ONLY_PROBES` -- written before the fix as a
     // projection -- a legitimate stand-in for the real thing throughout this
     // file.
-    expect(KEEPER_PROBES.restLift, "building with an empty loadout is the same figure as filtering the props out").toBe(
-      BODY_ONLY_PROBES.restLift,
-    );
+    expect(
+      KEEPER_PROBES.restLift,
+      "building with an empty loadout is the same figure as filtering the props out",
+    ).toBe(BODY_ONLY_PROBES.restLift);
 
     const rig = groundedRig();
-    const asKeeperRendersNow = groundedOnRig(rig, "keeper_dive", standing, { dive: 1 }, KEEPER_PROBES).lift;
-    const asKeeperUsedToRender = groundedOnRig(rig, "keeper_dive", standing, { dive: 1 }, PROBES).lift;
-    expect(asKeeperUsedToRender, "the old figure was lifted by the shield it should not have had").toBeGreaterThan(400 * MM);
-    expect(asKeeperRendersNow, "a keeper's own deepest point is the hand, at roughly half that").toBeGreaterThan(180 * MM);
+    const asKeeperRendersNow = groundedOnRig(
+      rig,
+      "keeper_dive",
+      standing,
+      { dive: 1 },
+      KEEPER_PROBES,
+    ).lift;
+    const asKeeperUsedToRender = groundedOnRig(
+      rig,
+      "keeper_dive",
+      standing,
+      { dive: 1 },
+      PROBES,
+    ).lift;
+    expect(
+      asKeeperUsedToRender,
+      "the old figure was lifted by the shield it should not have had",
+    ).toBeGreaterThan(400 * MM);
+    expect(
+      asKeeperRendersNow,
+      "a keeper's own deepest point is the hand, at roughly half that",
+    ).toBeGreaterThan(180 * MM);
     expect(asKeeperRendersNow, "roughly half that").toBeLessThan(200 * MM);
     // The visible consequence, stated as a number rather than left for
     // somebody to notice on screen: before #447 a diving keeper's own body
     // cleared the turf by the difference, because the shield was what was
     // touching it. That hover is what this change removes.
-    expect(asKeeperUsedToRender - asKeeperRendersNow, "the hover the shield's extra reach used to cause").toBeGreaterThan(
-      200 * MM,
-    );
+    expect(
+      asKeeperUsedToRender - asKeeperRendersNow,
+      "the hover the shield's extra reach used to cause",
+    ).toBeGreaterThan(200 * MM);
   });
 });

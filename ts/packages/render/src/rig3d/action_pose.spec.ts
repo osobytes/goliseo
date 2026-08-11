@@ -95,7 +95,13 @@ describe("rigged whole-body action poses", () => {
   // renderer has been told there is no lateral component, not told nothing.
   // The keeper takes that one at the body, and the overlay must survive.
   it("takes a save with no lateral component at the body rather than skipping it", () => {
-    for (const id of ["keeper_spread", "keeper_central", "keeper_stretch", "keeper_dive", "keeper_tip"]) {
+    for (const id of [
+      "keeper_spread",
+      "keeper_central",
+      "keeper_stretch",
+      "keeper_dive",
+      "keeper_tip",
+    ]) {
       const pose = actionPose.forOptions(opts(id, { dive: 1, dive_dir: STRAIGHT }));
       expect(pose, id).not.toBeNull();
       if (!pose) continue;
@@ -118,8 +124,16 @@ describe("rigged whole-body action poses", () => {
     const straight = (id: string) =>
       actionPose.forOptions(opts(id, { dive: 1, dive_dir: STRAIGHT }))?.rot.root?.[0] ?? Number.NaN;
     const lateral = (id: string) =>
-      Math.abs(actionPose.forOptions(opts(id, { dive: 1, dive_dir: LEFT }))?.rot.root?.[2] ?? Number.NaN);
-    for (const id of ["keeper_spread", "keeper_central", "keeper_stretch", "keeper_dive", "keeper_tip"]) {
+      Math.abs(
+        actionPose.forOptions(opts(id, { dive: 1, dive_dir: LEFT }))?.rot.root?.[2] ?? Number.NaN,
+      );
+    for (const id of [
+      "keeper_spread",
+      "keeper_central",
+      "keeper_stretch",
+      "keeper_dive",
+      "keeper_tip",
+    ]) {
       expect(straight(id), id).toBeCloseTo(lateral(id), 12);
     }
     expect(straight("keeper_spread")).toBeLessThan(straight("keeper_central"));
@@ -143,11 +157,16 @@ describe("rigged whole-body action poses", () => {
     // `keeper_central` carries no floor, so the whole ramp is visible on it.
     const early = actionPose.forOptions(opts("keeper_central", { dive: 0.25, dive_dir: STRAIGHT }));
     const late = actionPose.forOptions(opts("keeper_central", { dive: 1, dive_dir: STRAIGHT }));
-    expect(early?.rot.root?.[0] ?? Number.NaN).toBeCloseTo((late?.rot.root?.[0] ?? Number.NaN) * 0.25, 12);
+    expect(early?.rot.root?.[0] ?? Number.NaN).toBeCloseTo(
+      (late?.rot.root?.[0] ?? Number.NaN) * 0.25,
+      12,
+    );
   });
 
   it("takes a bicycle kick over backwards and off the ground", () => {
-    const pose = actionPose.forOptions(opts("aerial_bicycle", { aerial: 1, aerial_style: "bicycle", aerial_jump: 1 }));
+    const pose = actionPose.forOptions(
+      opts("aerial_bicycle", { aerial: 1, aerial_style: "bicycle", aerial_jump: 1 }),
+    );
     expect(pose).not.toBeNull();
     if (!pose) return;
     // Negative x pitches the head behind the hips. Positive would be a dive
@@ -157,7 +176,9 @@ describe("rigged whole-body action poses", () => {
   });
 
   it("lifts a non-bicycle aerial without rotating it", () => {
-    const pose = actionPose.forOptions(opts("aerial_action", { aerial: 1, aerial_style: "chest_control", aerial_jump: 1 }));
+    const pose = actionPose.forOptions(
+      opts("aerial_action", { aerial: 1, aerial_style: "chest_control", aerial_jump: 1 }),
+    );
     expect(pose).not.toBeNull();
     if (!pose) return;
     expect(pose.rot.root).toBeUndefined();
@@ -166,7 +187,9 @@ describe("rigged whole-body action poses", () => {
 
   it("lifts further off a jump than off a standing reach", () => {
     function lift(jump: number): number {
-      const pose = actionPose.forOptions(opts("aerial_action", { aerial: 1, aerial_style: "leg_control", aerial_jump: jump }));
+      const pose = actionPose.forOptions(
+        opts("aerial_action", { aerial: 1, aerial_style: "leg_control", aerial_jump: jump }),
+      );
       expect(pose).not.toBeNull();
       return pose?.move.root?.[1] ?? Number.NaN;
     }
@@ -275,7 +298,9 @@ describe("root translations in metres", () => {
   });
 
   it("lifts a bicycle kick 2r off the turf, which is a third of the figure", () => {
-    const pose = actionPose.forOptions(opts("aerial_bicycle", { aerial: 1, aerial_style: "bicycle", aerial_jump: 1 }));
+    const pose = actionPose.forOptions(
+      opts("aerial_bicycle", { aerial: 1, aerial_style: "bicycle", aerial_jump: 1 }),
+    );
     const lift = pose?.move.root?.[1] ?? Number.NaN;
     // 0.35 + 1.65 * jump, at jump = 1.
     expect(lift).toBeCloseTo(actionPose.metres(2.0), 12);
@@ -387,7 +412,8 @@ describe("held body attitudes", () => {
   // being wrong at once, which is exactly what #436 was; the absolute pins in
   // "root translations in metres" above are there for that half.
   it("keeps fatigue's magnitude tied to contain's, so a shrunk sag cannot pass on the crouch's coat-tails", () => {
-    const sinLean = (id: string) => Math.sin(((actionPose.attitudeFor(opts(id))?.rot.root?.[0] ?? 0) * Math.PI) / 180);
+    const sinLean = (id: string) =>
+      Math.sin(((actionPose.attitudeFor(opts(id))?.rot.root?.[0] ?? 0) * Math.PI) / 180);
     const drop = (id: string) => -(actionPose.attitudeFor(opts(id))?.move.root?.[1] ?? 0);
     // Billboard: fatigue -0.12r against contain -0.3r, and 0.16r against 0.26r.
     expect(sinLean("fatigue") / sinLean("contain")).toBeCloseTo(0.12 / 0.3, 12);
@@ -416,7 +442,10 @@ describe("held body attitudes", () => {
     const pose = actionPose.apply({ rot: {}, move: { root: [0, bob, 0] } }, opts("settle"));
     const drop = actionPose.attitudeFor(opts("settle"))?.move.root?.[1] ?? 0;
     expect(drop, "the table still authors a crouch").toBeLessThan(0);
-    expect(pose.move["root"]?.[1], "the gait's bob survives the crouch intact").toBeCloseTo(bob, 12);
+    expect(pose.move["root"]?.[1], "the gait's bob survives the crouch intact").toBeCloseTo(
+      bob,
+      12,
+    );
   });
 
   it("lets an action win outright when a pose id would claim both", () => {
@@ -487,7 +516,11 @@ describe("ground contact for downward root translations", () => {
     for (const id of ["combat_stagger", "keeper_get_up"]) {
       const authored = actionPose.forOptions(opts(id, { dive_dir: LEFT }))?.move.root?.[1] ?? 0;
       expect(authored, `${id} authors a drop`).toBeLessThan(0);
-      expect(actionPose.apply({ rot: {}, move: {} }, opts(id, { dive_dir: LEFT })).move["root"]?.[1] ?? 0, id).toBe(0);
+      expect(
+        actionPose.apply({ rot: {}, move: {} }, opts(id, { dive_dir: LEFT })).move["root"]?.[1] ??
+          0,
+        id,
+      ).toBe(0);
     }
     // A drop an order of magnitude past the deepest one authored today.
     expect(actionPose.groundedRootY(-2.5)).toBe(0);
@@ -497,22 +530,26 @@ describe("ground contact for downward root translations", () => {
   // re-tune, and #439 rules the re-tune out explicitly. `forOptions` and
   // `attitudeFor` return the geometry as written; only `apply` grounds it.
   it("does not touch the authored constants it grounds", () => {
-    expect(actionPose.attitudeFor(opts("keeper_ready_low"))?.move.root?.[1]).toBeCloseTo(actionPose.metres(-0.32), 12);
-    expect(actionPose.forOptions(opts("combat_stagger"))?.move.root?.[1]).toBeCloseTo(actionPose.metres(-0.28), 12);
-    expect(actionPose.forOptions(opts("keeper_get_up", { dive_dir: LEFT }))?.move.root?.[1]).toBeCloseTo(
-      actionPose.metres(-0.18),
+    expect(actionPose.attitudeFor(opts("keeper_ready_low"))?.move.root?.[1]).toBeCloseTo(
+      actionPose.metres(-0.32),
       12,
     );
+    expect(actionPose.forOptions(opts("combat_stagger"))?.move.root?.[1]).toBeCloseTo(
+      actionPose.metres(-0.28),
+      12,
+    );
+    expect(
+      actionPose.forOptions(opts("keeper_get_up", { dive_dir: LEFT }))?.move.root?.[1],
+    ).toBeCloseTo(actionPose.metres(-0.18), 12);
   });
 
   // A body leaving the ground means to leave it. Nothing here may change.
   it("leaves every upward and lateral travel exactly as authored", () => {
     const lift = (id: string, extra?: Partial<ActionPoseOptions>) =>
       actionPose.apply({ rot: {}, move: {} }, opts(id, { dive_dir: LEFT, ...extra })).move["root"];
-    expect(lift("aerial_bicycle", { aerial: 1, aerial_style: "bicycle", aerial_jump: 1 })?.[1]).toBeCloseTo(
-      actionPose.metres(2.0),
-      12,
-    );
+    expect(
+      lift("aerial_bicycle", { aerial: 1, aerial_style: "bicycle", aerial_jump: 1 })?.[1],
+    ).toBeCloseTo(actionPose.metres(2.0), 12);
     expect(lift("combat_knockback")?.[1]).toBeCloseTo(actionPose.metres(0.45), 12);
     expect(lift("stumble")?.[1]).toBeCloseTo(actionPose.metres(0.12), 12);
     expect(lift("stumble")?.[2]).toBeCloseTo(actionPose.metres(-0.35), 12);

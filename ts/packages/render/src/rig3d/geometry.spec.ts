@@ -180,7 +180,9 @@ describe("rig3d part merge (#337 slice 2)", () => {
   it("rotates normals with an attach and keeps them unit length", () => {
     const part = new PartBuilder();
     tri(part, themes.SLOT_INDEX.skin, 0);
-    const merged = geometry.merge([{ builder: part, bone: 0, attach: mat4.rotationX((37 * Math.PI) / 180) }]);
+    const merged = geometry.merge([
+      { builder: part, bone: 0, attach: mat4.rotationX((37 * Math.PI) / 180) },
+    ]);
     for (const v of merged.verts) {
       const [nx, ny, nz] = v.normal;
       const len = Math.sqrt(nx * nx + ny * ny + nz * nz);

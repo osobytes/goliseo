@@ -63,7 +63,10 @@ export const ARM_R: ReadonlySet<string> = set([
   "socket_hand.R",
 ]);
 
-export const LOWER_BODY: ReadonlySet<string> = merge(set(["hips"]), set(sided(["thigh", "shin", "foot", "toe"])));
+export const LOWER_BODY: ReadonlySet<string> = merge(
+  set(["hips"]),
+  set(sided(["thigh", "shin", "foot", "toe"])),
+);
 
 // Single-leg masks, and the reason the naive upper/lower split is not enough
 // for this game: a PASS or a SHOT is a lower-body action performed while

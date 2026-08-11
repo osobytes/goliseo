@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import * as contract from "./contract.ts";
 import * as transport from "./index.ts";
 import { FakeStarTransport, type FakeStarTransportOptions } from "./fake_star.ts";
-import { BrowserStarTransport, type StarEvalFn } from "./browser_star.ts";
+import { type StarEvalFn } from "./browser_star.ts";
 import type {
   StarTransportAdapter,
   TransportChannel,
@@ -43,7 +43,7 @@ interface BuildStarOptions {
 
 function buildStar(
   count: number,
-  options: BuildStarOptions = {}
+  options: BuildStarOptions = {},
 ): readonly [FakeStarTransport, FakeStarTransport[]] {
   const starOptions: FakeStarTransportOptions = {
     ...(options.queue_limit !== undefined ? { queue_limit: options.queue_limit } : {}),
@@ -102,10 +102,10 @@ describe("star transport contract", () => {
     expect(expectErr(contract.validateChannel("gossip")).code).toBe("channel_mismatch");
 
     expect(expectErr(contract.validateChannelMessage("input", control(1))).code).toBe(
-      "channel_mismatch"
+      "channel_mismatch",
     );
     expect(expectErr(contract.validateChannelMessage("control", input(1, 2))).code).toBe(
-      "channel_mismatch"
+      "channel_mismatch",
     );
   });
 
@@ -113,14 +113,18 @@ describe("star transport contract", () => {
     const [host] = buildStar(2);
     unwrap(host.send("guest_1", "control", control(0, "hello")));
     const original = host.diagnostics();
-    const decoded = unwrap(contract.decodeStarDiagnostics(contract.encodeStarDiagnostics(original)));
+    const decoded = unwrap(
+      contract.decodeStarDiagnostics(contract.encodeStarDiagnostics(original)),
+    );
     expect(decoded.role).toBe(original.role);
     expect(decoded.capacity).toBe(original.capacity);
     expect(decoded.peer_count).toBe(2);
     expect(decoded.peers.length).toBe(2);
     expect(decoded.peers[0]?.peer_id).toBe("guest_1");
     expect(decoded.peers[0]?.slot).toBe(1);
-    expect(decoded.peers[0]?.control.outbound_depth).toBe(original.peers[0]?.control.outbound_depth);
+    expect(decoded.peers[0]?.control.outbound_depth).toBe(
+      original.peers[0]?.control.outbound_depth,
+    );
     expect(decoded.peers[1]?.state).toBe("connected");
   });
 
@@ -373,7 +377,9 @@ describe("fake host-star transport", () => {
     unwrap(host.send("guest_1", "input", input(0, 10)));
     unwrap(host.send("guest_1", "input", input(5, 15)));
     host.pump();
-    expect(peerDiagnostics(guests[0] as FakeStarTransport, contract.HOST_PEER_ID).sequence_gaps).toBe(4);
+    expect(
+      peerDiagnostics(guests[0] as FakeStarTransport, contract.HOST_PEER_ID).sequence_gaps,
+    ).toBe(4);
   });
 
   it("closes one link without disturbing the others", () => {
@@ -411,7 +417,7 @@ describe("fake host-star transport", () => {
     expect(host.pollBatch(8).length).toBe(0);
     for (let index = 1; index <= 7; index += 1) {
       expect((guests[index - 1] as FakeStarTransport).peerState(contract.HOST_PEER_ID)).toBe(
-        "disconnected"
+        "disconnected",
       );
     }
   });
@@ -539,7 +545,9 @@ describe("fake host-star transport", () => {
 
 function starBridge(host: FakeStarTransport): StarEvalFn {
   function unescapeHex(value: string): string {
-    return value.replace(/%([0-9A-Fa-f]{2})/g, (_all, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+    return value.replace(/%([0-9A-Fa-f]{2})/g, (_all, hex: string) =>
+      String.fromCharCode(parseInt(hex, 16)),
+    );
   }
 
   // The real bridge percent-decodes quoted arguments, except for the
@@ -630,9 +638,12 @@ function starBridge(host: FakeStarTransport): StarEvalFn {
       }
       return [`signal|${escapeHex(result.value)}`, null] as const;
     } else if (name === "send") {
-      const addressedResult = contract.decodeAddressed(raw[0] as string);
+      const addressedResult = contract.decodeAddressed(raw[0]);
       if (!addressedResult.ok) {
-        return [bridgeError(addressedResult.error.code, addressedResult.error.message), null] as const;
+        return [
+          bridgeError(addressedResult.error.code, addressedResult.error.message),
+          null,
+        ] as const;
       }
       const addressed = addressedResult.value;
       const result = host.send(addressed.peer_id, addressed.channel, addressed.message);
@@ -659,7 +670,10 @@ function starBridge(host: FakeStarTransport): StarEvalFn {
       if (!entry) {
         return ["", null] as const;
       }
-      return [unwrap(contract.encodeAddressed(entry.peer_id, entry.channel, entry.message)), null] as const;
+      return [
+        unwrap(contract.encodeAddressed(entry.peer_id, entry.channel, entry.message)),
+        null,
+      ] as const;
     } else if (name === "poll_event") {
       const event = host.pollEvent();
       if (!event) {
@@ -817,7 +831,8 @@ describe("browser host-star transport", () => {
             if (/^[A-Za-z0-9\-._~]$/.test(char)) {
               escaped += char;
             } else {
-              escaped += "%" + (blob.charCodeAt(index) & 0xff).toString(16).toUpperCase().padStart(2, "0");
+              escaped +=
+                "%" + (blob.charCodeAt(index) & 0xff).toString(16).toUpperCase().padStart(2, "0");
             }
           }
           return [`signal|${escaped}`, null] as const;
@@ -834,7 +849,7 @@ describe("browser host-star transport", () => {
     // newline that could terminate or extend the command string.
     const quotedMatch = /^'guest_1','([\s\S]*)'$/.exec(captured as unknown as string);
     expect(quotedMatch).not.toBeNull();
-    expect((quotedMatch?.[1] as string).search(/['\,\r\n\\]/)).toBe(-1);
+    expect((quotedMatch?.[1] as string).search(/[',\r\n\\]/)).toBe(-1);
   });
 
   it("keeps a wire payload injection-safe across the eval seam", () => {
@@ -1032,10 +1047,7 @@ describe("browser host-star transport", () => {
 });
 
 describe("transport layering", () => {
-  it.skip(
-    "keeps browser and WebRTC APIs out of core, data, and sim -- no TS equivalent: this scans the Lua source tree's core/data/sim directories via love.filesystem for forbidden identifiers (love.js.eval, RTCPeerConnection, Goliseo*, RTCDataChannel) and for `require(\"game.\")`. There is no analogous Lua directory tree, love.filesystem API, or dynamic `require` in this TS package to scan; the layering it protects (sim never depending on browser/DOM/WebRTC) is enforced here instead by the TypeScript project boundaries (gc-sim is a separate Rust crate that never imports this package, and this package has no dependency back onto it).",
-    () => {
-      // Intentionally empty -- see the skip reason above.
-    }
-  );
+  it.skip('keeps browser and WebRTC APIs out of core, data, and sim -- no TS equivalent: this scans the Lua source tree\'s core/data/sim directories via love.filesystem for forbidden identifiers (love.js.eval, RTCPeerConnection, Goliseo*, RTCDataChannel) and for `require("game.")`. There is no analogous Lua directory tree, love.filesystem API, or dynamic `require` in this TS package to scan; the layering it protects (sim never depending on browser/DOM/WebRTC) is enforced here instead by the TypeScript project boundaries (gc-sim is a separate Rust crate that never imports this package, and this package has no dependency back onto it).', () => {
+    // Intentionally empty -- see the skip reason above.
+  });
 });

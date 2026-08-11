@@ -28,7 +28,11 @@ function buildArchGeometry(columnHeight: number): THREE.BufferGeometry {
   const columnL = column.clone().translate(-archRadius, columnHeight / 2, 0);
   const columnR = column.clone().translate(archRadius, columnHeight / 2, 0);
   column.dispose();
-  const arch = new THREE.TorusGeometry(archRadius, COLUMN_RADIUS * 0.9, 6, 24, Math.PI).translate(0, columnHeight, 0);
+  const arch = new THREE.TorusGeometry(archRadius, COLUMN_RADIUS * 0.9, 6, 24, Math.PI).translate(
+    0,
+    columnHeight,
+    0,
+  );
   const plinth = new THREE.BoxGeometry(PLINTH_SIZE, columnHeight * 0.08, PLINTH_SIZE);
   const plinthL = plinth.clone().translate(-archRadius, columnHeight * 0.04, 0);
   const plinthR = plinth.clone().translate(archRadius, columnHeight * 0.04, 0);
@@ -49,23 +53,32 @@ function buildArchGeometry(columnHeight: number): THREE.BufferGeometry {
 function buildRuinedArchGeometry(columnHeight: number): THREE.BufferGeometry {
   const brokenHeight = columnHeight * 0.5;
   const archRadius = columnHeight * 0.55;
-  const column = new THREE.CylinderGeometry(COLUMN_RADIUS * 0.85, COLUMN_RADIUS * 1.1, brokenHeight, 8).translate(
-    -archRadius * 0.4,
-    brokenHeight / 2,
-    0,
-  );
-  const rubble = new THREE.BoxGeometry(PLINTH_SIZE * 1.6, columnHeight * 0.12, PLINTH_SIZE * 1.3).translate(
-    archRadius * 0.5,
-    columnHeight * 0.06,
-    0,
-  );
+  const column = new THREE.CylinderGeometry(
+    COLUMN_RADIUS * 0.85,
+    COLUMN_RADIUS * 1.1,
+    brokenHeight,
+    8,
+  ).translate(-archRadius * 0.4, brokenHeight / 2, 0);
+  const rubble = new THREE.BoxGeometry(
+    PLINTH_SIZE * 1.6,
+    columnHeight * 0.12,
+    PLINTH_SIZE * 1.3,
+  ).translate(archRadius * 0.5, columnHeight * 0.06, 0);
   const merged = mergeGeometries([column, rubble], false);
   column.dispose();
   rubble.dispose();
   return merged;
 }
 
-function placeInstance(mesh: THREE.InstancedMesh, index: number, x: number, y: number, z: number, yaw: number, scale: number): void {
+function placeInstance(
+  mesh: THREE.InstancedMesh,
+  index: number,
+  x: number,
+  y: number,
+  z: number,
+  yaw: number,
+  scale: number,
+): void {
   const position = new THREE.Vector3(x, y, z);
   const quaternion = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
   const scaleVec = new THREE.Vector3(scale, scale, scale);
@@ -76,7 +89,11 @@ function buildArcade(layout: StadiumLayout, rng: Prng): THREE.Group {
   const group = new THREE.Group();
   group.name = "bowl_arcade";
 
-  const material = new THREE.MeshStandardMaterial({ color: 0x8a7a63, roughness: 0.92, metalness: 0.02 });
+  const material = new THREE.MeshStandardMaterial({
+    color: 0x8a7a63,
+    roughness: 0.92,
+    metalness: 0.02,
+  });
   const intactGeometry = buildArchGeometry(layout.arcadeHeight);
   const ruinedGeometry = buildRuinedArchGeometry(layout.arcadeHeight);
 
@@ -90,7 +107,8 @@ function buildArcade(layout: StadiumLayout, rng: Prng): THREE.Group {
   for (let i = 0; i < layout.arcadeCount; i += 1) {
     const angle = (i / layout.arcadeCount) * Math.PI * 2;
     const [x, z] = ellipsePoint(layout.cx, layout.cz, layout.arcadeRx, layout.arcadeRz, angle);
-    const yaw = ellipseYawFacingCenter(angle, layout.arcadeRx, layout.arcadeRz) + prngRange(rng, -0.02, 0.02);
+    const yaw =
+      ellipseYawFacingCenter(angle, layout.arcadeRx, layout.arcadeRz) + prngRange(rng, -0.02, 0.02);
     const scale = prngRange(rng, 0.94, 1.06);
     const isRuined = i >= layout.ruinedStartIndex && i < ruinedEnd;
     if (isRuined) {
@@ -182,7 +200,12 @@ function buildFasciaBands(layout: StadiumLayout, rng: Prng): THREE.Group {
   for (const g of bandGeometries) {
     g.dispose();
   }
-  const bandMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0.15, side: THREE.DoubleSide });
+  const bandMaterial = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 0.55,
+    metalness: 0.15,
+    side: THREE.DoubleSide,
+  });
   const band = new THREE.Mesh(bandMerged, bandMaterial);
   band.name = "bowl_fascia_band";
   group.add(band);
@@ -193,7 +216,11 @@ function buildFasciaBands(layout: StadiumLayout, rng: Prng): THREE.Group {
   }
   // Below the bloom threshold (0.55) per this module's own file-header rule:
   // a thin accent line, not a second light source.
-  const trimColor = new THREE.Color(FASCIA_TRIM_COLOR[0], FASCIA_TRIM_COLOR[1], FASCIA_TRIM_COLOR[2]);
+  const trimColor = new THREE.Color(
+    FASCIA_TRIM_COLOR[0],
+    FASCIA_TRIM_COLOR[1],
+    FASCIA_TRIM_COLOR[2],
+  );
   const trimMaterial = new THREE.MeshStandardMaterial({
     color: trimColor,
     emissive: trimColor,
@@ -216,7 +243,12 @@ function buildFasciaBands(layout: StadiumLayout, rng: Prng): THREE.Group {
  * than a `{ group, timeUniforms }` pair; `stadium.ts` disposes it generically
  * by traversal, so no separate disposal bookkeeping is needed here either.
  */
-export function buildBowl(layout: StadiumLayout, arena: ArenaColors, quality: StadiumQuality, rng: Prng): THREE.Group {
+export function buildBowl(
+  layout: StadiumLayout,
+  arena: ArenaColors,
+  quality: StadiumQuality,
+  rng: Prng,
+): THREE.Group {
   // `quality` does not change the bowl's own instance/tier counts (only the
   // crowd and arcade angular resolution scale down, both already read from
   // `layout`, which is itself quality-derived) -- kept as a parameter for a
@@ -225,7 +257,12 @@ export function buildBowl(layout: StadiumLayout, arena: ArenaColors, quality: St
   const group = new THREE.Group();
   group.name = "bowl";
 
-  const tierMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0.0, side: THREE.DoubleSide });
+  const tierMaterial = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 0.9,
+    metalness: 0.0,
+    side: THREE.DoubleSide,
+  });
   // Twilight mood (creative brief item 1): dark warm basalt, not the washed-
   // out tan sandstone this bowl started with -- ~#5d5348 family, drifting a
   // touch cooler/paler toward the rim so the upper stands still read as

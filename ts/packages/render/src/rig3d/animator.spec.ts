@@ -18,10 +18,6 @@ import { POSE_ACTIONS } from "./pose_table.ts";
 const RUNNING: AnimatorView = { speed: 260, gait: 0.31 };
 const STANDING: AnimatorView = { speed: 0, gait: 0 };
 
-function opts(overrides: Partial<AnimatorOptions> = {}): AnimatorOptions {
-  return overrides;
-}
-
 function withPose(id: string, overrides: Partial<AnimatorOptions> = {}): AnimatorOptions {
   return { pose: { id }, ...overrides };
 }
@@ -92,7 +88,7 @@ describe("rig3d/animator.poseFor", () => {
     ["tackle", {}],
   ])("gives %s a silhouette of its own instead of plain locomotion", (id, extra) => {
     const plain = poseFor(freshId(), RUNNING, withPose("locomotion"), 3);
-    const posed = poseFor(freshId(), RUNNING, withPose(id, extra as Partial<AnimatorOptions>), 3);
+    const posed = poseFor(freshId(), RUNNING, withPose(id, extra), 3);
     expect(delta(plain, posed)).toBeGreaterThan(0.05);
   });
 
@@ -155,11 +151,14 @@ describe("rig3d/animator.poseFor", () => {
   // separately means the smallest quantity in the table has to clear the floor
   // by itself; `action_pose.spec.ts` then pins its magnitude as an exact ratio
   // against `contain`, which a floor cannot do.
-  it.each([...FORWARD, ...BACKWARD])("gives %s a body attitude instead of plain locomotion", (id) => {
-    const plain = poseFor(freshId(), RUNNING, withPose("locomotion"), 4);
-    const posed = poseFor(freshId(), RUNNING, withPose(id), 4);
-    expect(delta(plain, posed), `${id}: lean`).toBeGreaterThan(0.01);
-  });
+  it.each([...FORWARD, ...BACKWARD])(
+    "gives %s a body attitude instead of plain locomotion",
+    (id) => {
+      const plain = poseFor(freshId(), RUNNING, withPose("locomotion"), 4);
+      const posed = poseFor(freshId(), RUNNING, withPose(id), 4);
+      expect(delta(plain, posed), `${id}: lean`).toBeGreaterThan(0.01);
+    },
+  );
 
   // THE CROUCH HALF, AND WHY IT ASSERTS THE WHOLE DROP AGAIN (#445).
   //
@@ -192,17 +191,22 @@ describe("rig3d/animator.poseFor", () => {
       expect(authored, `${id}: the table must still author a crouch`).toBeGreaterThan(0.03);
       const plain = poseFor(freshId(), RUNNING, withPose("locomotion"), 4);
       const posed = poseFor(freshId(), RUNNING, withPose(id), 4);
-      expect(rootDrop(plain, posed), `${id}: the crouch reaches the root in full`).toBeCloseTo(authored, 12);
+      expect(rootDrop(plain, posed), `${id}: the crouch reaches the root in full`).toBeCloseTo(
+        authored,
+        12,
+      );
       // The limbs that pay for it. Negative x swings a thigh FORWARD and a knee
       // only bends backward, so the two move in opposite directions -- the sign
       // convention `clips.ts` documents and SWING's own lunge keys follow.
       for (const side of ["L", "R"]) {
-        expect(posed.rot[`thigh.${side}`]?.[0] ?? 0, `${id}: thigh.${side} folds forward`).toBeLessThan(
-          plain.rot[`thigh.${side}`]?.[0] ?? 0,
-        );
-        expect(posed.rot[`shin.${side}`]?.[0] ?? 0, `${id}: shin.${side} bends backward`).toBeGreaterThan(
-          plain.rot[`shin.${side}`]?.[0] ?? 0,
-        );
+        expect(
+          posed.rot[`thigh.${side}`]?.[0] ?? 0,
+          `${id}: thigh.${side} folds forward`,
+        ).toBeLessThan(plain.rot[`thigh.${side}`]?.[0] ?? 0);
+        expect(
+          posed.rot[`shin.${side}`]?.[0] ?? 0,
+          `${id}: shin.${side} bends backward`,
+        ).toBeGreaterThan(plain.rot[`shin.${side}`]?.[0] ?? 0);
       }
     },
   );
@@ -242,7 +246,10 @@ describe("rig3d/animator.poseFor", () => {
     // after one frame, all the way there once the fade has run.
     const second = freshId();
     poseFor(second, STANDING, withPose("locomotion"), 0);
-    const partial = rootDrop(tall(0.02), poseFor(second, STANDING, withPose("keeper_ready_low"), 0.02));
+    const partial = rootDrop(
+      tall(0.02),
+      poseFor(second, STANDING, withPose("keeper_ready_low"), 0.02),
+    );
     expect(partial, "not there yet").toBeLessThan(authored);
     expect(partial, "but on the way").toBeGreaterThan(0);
     // Stepped at 20 ms rather than jumped: `MAX_FRAME_DT` deliberately refuses
@@ -273,7 +280,8 @@ describe("rig3d/animator.poseFor", () => {
   });
 
   it("keeps the billboard's ordering: a telegraph commits harder than a follow-through, a contain than a sag", () => {
-    const at = (id: string) => Math.abs(poseFor(freshId(), RUNNING, withPose(id), 4).rot["root"]?.[0] ?? 0);
+    const at = (id: string) =>
+      Math.abs(poseFor(freshId(), RUNNING, withPose(id), 4).rot["root"]?.[0] ?? 0);
     expect(at("run_telegraph")).toBeGreaterThan(at("kick_follow"));
     expect(at("contain")).toBeGreaterThan(at("fatigue"));
   });
@@ -294,7 +302,9 @@ describe("rig3d/animator.poseFor", () => {
 
     const tall = poseFor(freshId(), STANDING, withPose("locomotion"), 4);
     const resolved = (id: string) => rootDrop(tall, poseFor(freshId(), STANDING, withPose(id), 4));
-    expect(resolved(deeper), `${deeper} renders lower than ${shallower}`).toBeGreaterThan(resolved(shallower));
+    expect(resolved(deeper), `${deeper} renders lower than ${shallower}`).toBeGreaterThan(
+      resolved(shallower),
+    );
   });
 
   // The attitude COMPOSES onto the run's vertical bob rather than replacing
@@ -311,7 +321,12 @@ describe("rig3d/animator.poseFor", () => {
 
   it("leaves the root-overlay poses to action_pose.ts, which still reaches the root", () => {
     const grounded = poseFor(freshId(), RUNNING, withPose("locomotion"), 5);
-    const diving = poseFor(freshId(), RUNNING, withPose("keeper_dive", { dive: 1, dive_dir: { x: 0, y: 1 }, facing: { x: 1, y: 0 } }), 5);
+    const diving = poseFor(
+      freshId(),
+      RUNNING,
+      withPose("keeper_dive", { dive: 1, dive_dir: { x: 0, y: 1 }, facing: { x: 1, y: 0 } }),
+      5,
+    );
     expect(diving.rot["root"]).toBeDefined();
     expect(delta(grounded, diving)).toBeGreaterThan(0.05);
   });

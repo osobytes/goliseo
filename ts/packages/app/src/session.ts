@@ -3,7 +3,11 @@
 // the home team's data as an explicit parameter instead of importing it.
 
 import type { Result } from "@gc/core";
-import { matchContract, type ProductMatchRequest, type ProductMatchResult } from "./match_contract.ts";
+import {
+  matchContract,
+  type ProductMatchRequest,
+  type ProductMatchResult,
+} from "./match_contract.ts";
 import type { MatchContractContent, TeamData } from "./content.ts";
 
 export type SetupStep = "squad" | "formation" | "tactic";

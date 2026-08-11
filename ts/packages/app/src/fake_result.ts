@@ -4,7 +4,11 @@
 // `MatchContractContent` it needs as an explicit parameter rather than
 // reading them directly.
 
-import { matchContract, type ProductMatchRequest, type ProductMatchResult } from "./match_contract.ts";
+import {
+  matchContract,
+  type ProductMatchRequest,
+  type ProductMatchResult,
+} from "./match_contract.ts";
 import type { MatchContractContent } from "./content.ts";
 
 function hash(value: string): number {
@@ -21,7 +25,12 @@ export function forRequest(
 ): ProductMatchResult {
   const seed = request.seed ?? 1;
   const value = hash(
-    [request.formation_id, request.tactic_id, String(seed), request.home_starter_ids.join(",")].join(":"),
+    [
+      request.formation_id,
+      request.tactic_id,
+      String(seed),
+      request.home_starter_ids.join(","),
+    ].join(":"),
   );
   const homeScore = value % 4;
   const awayScore = Math.floor(value / 7) % 4;

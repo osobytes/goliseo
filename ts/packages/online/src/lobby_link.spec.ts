@@ -38,7 +38,7 @@ function fakeProtocolNew(
   sessionId: string,
   peerId: string,
   sequence: number,
-  body: Readonly<Record<string, unknown>>
+  body: Readonly<Record<string, unknown>>,
 ): FakeProtocolMessage {
   return { kind, session_id: sessionId, peer_id: peerId, sequence, body };
 }

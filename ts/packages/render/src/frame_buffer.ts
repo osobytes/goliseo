@@ -141,7 +141,9 @@ export const ROSTER_STRING_FIELD_COUNT = 4;
 
 /** Exact word count of a frame block, given its player and event counts. */
 export function frameWords(count: number, eventCount: number): number {
-  return HEADER_WORDS + SCALAR_FIELD_COUNT + PLAYER_FIELD_COUNT * count + EVENT_FIELD_COUNT * eventCount;
+  return (
+    HEADER_WORDS + SCALAR_FIELD_COUNT + PLAYER_FIELD_COUNT * count + EVENT_FIELD_COUNT * eventCount
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -628,7 +630,11 @@ function triState(word: number): boolean | undefined {
 // A closed-set code becomes its member; 0 becomes absent. An unrecognised
 // nonzero code is a protocol violation (the alias grew and this numbering
 // did not), not a value to recover from.
-function optDecode<T>(code: number, fromCode: (code: number) => T | undefined, what: string): T | undefined {
+function optDecode<T>(
+  code: number,
+  fromCode: (code: number) => T | undefined,
+  what: string,
+): T | undefined {
   if (code === 0) {
     return undefined;
   }
@@ -642,7 +648,11 @@ function optDecode<T>(code: number, fromCode: (code: number) => T | undefined, w
 // Same as `optDecode`, but for a field the producer never leaves absent
 // (`hud.controlled_team`, a roster slot's `team`, ...): a 0 there is still a
 // protocol violation, just one `optDecode` alone would swallow as "absent".
-function requireDecode<T>(code: number, fromCode: (code: number) => T | undefined, what: string): T {
+function requireDecode<T>(
+  code: number,
+  fromCode: (code: number) => T | undefined,
+  what: string,
+): T {
   const value = optDecode(code, fromCode, what);
   if (value === undefined) {
     throw new Error(`frame_buffer: missing required ${what} (code 0)`);
@@ -656,7 +666,12 @@ function soaIndex(fieldIndex: number, slotIndex: number, count: number): number 
 
 // Field-major structure-of-arrays column read: `at0` is the first word of
 // the section, `fieldIndex` selects which run of `count` words.
-function column(words: ArrayLike<number>, at0: number, fieldIndex: number, count: number): number[] {
+function column(
+  words: ArrayLike<number>,
+  at0: number,
+  fieldIndex: number,
+  count: number,
+): number[] {
   const start = at0 + soaIndex(fieldIndex, 0, count);
   const out: number[] = [];
   for (let i = 0; i < count; i += 1) {
@@ -692,10 +707,14 @@ export function decode(words: ArrayLike<number>): DecodedRenderFrame {
     throw new Error(`frame_buffer: not a render frame block: magic ${at(words, 0)}`);
   }
   if (at(words, 1) !== LAYOUT_VERSION) {
-    throw new Error(`frame_buffer: frame layout version ${at(words, 1)}; expected ${LAYOUT_VERSION}`);
+    throw new Error(
+      `frame_buffer: frame layout version ${at(words, 1)}; expected ${LAYOUT_VERSION}`,
+    );
   }
   if (at(words, 2) !== RENDER_FRAME_VERSION) {
-    throw new Error(`frame_buffer: render frame version ${at(words, 2)}; expected ${RENDER_FRAME_VERSION}`);
+    throw new Error(
+      `frame_buffer: render frame version ${at(words, 2)}; expected ${RENDER_FRAME_VERSION}`,
+    );
   }
   if (at(words, 4) !== HEADER_WORDS) {
     throw new Error(`frame_buffer: header words ${at(words, 4)}; expected ${HEADER_WORDS}`);
@@ -704,10 +723,14 @@ export function decode(words: ArrayLike<number>): DecodedRenderFrame {
     throw new Error(`frame_buffer: scalar words ${at(words, 5)}; expected ${SCALAR_FIELD_COUNT}`);
   }
   if (at(words, 7) !== PLAYER_FIELD_COUNT) {
-    throw new Error(`frame_buffer: player field count ${at(words, 7)}; expected ${PLAYER_FIELD_COUNT}`);
+    throw new Error(
+      `frame_buffer: player field count ${at(words, 7)}; expected ${PLAYER_FIELD_COUNT}`,
+    );
   }
   if (at(words, 9) !== EVENT_FIELD_COUNT) {
-    throw new Error(`frame_buffer: event field count ${at(words, 9)}; expected ${EVENT_FIELD_COUNT}`);
+    throw new Error(
+      `frame_buffer: event field count ${at(words, 9)}; expected ${EVENT_FIELD_COUNT}`,
+    );
   }
 
   const count = at(words, 6);
@@ -786,9 +809,13 @@ export function decode(words: ArrayLike<number>): DecodedRenderFrame {
     facing_x: column(words, playersAt, 2, count),
     facing_y: column(words, playersAt, 3, count),
     speed: column(words, playersAt, 4, count),
-    pose_id: column(words, playersAt, 5, count).map((code) => optDecode(code, poseIdFromCode, "pose id")),
+    pose_id: column(words, playersAt, 5, count).map((code) =>
+      optDecode(code, poseIdFromCode, "pose id"),
+    ),
     pose_priority: column(words, playersAt, 6, count),
-    pose_source: column(words, playersAt, 7, count).map((code) => optDecode(code, poseSourceFromCode, "pose source")),
+    pose_source: column(words, playersAt, 7, count).map((code) =>
+      optDecode(code, poseSourceFromCode, "pose source"),
+    ),
     controlled: rawControlled.map(decodeBool),
     dashing: rawDashing.map(decodeBool),
     holding: rawHolding.map(decodeBool),
@@ -800,8 +827,12 @@ export function decode(words: ArrayLike<number>): DecodedRenderFrame {
     windup: column(words, playersAt, 16, count),
     aerial: column(words, playersAt, 17, count),
     aerial_jump: column(words, playersAt, 18, count),
-    aerial_style: column(words, playersAt, 19, count).map((code) => optDecode(code, aerialStyleFromCode, "aerial style")),
-    aerial_outcome: column(words, playersAt, 20, count).map((code) => optDecode(code, aerialOutcomeFromCode, "aerial outcome")),
+    aerial_style: column(words, playersAt, 19, count).map((code) =>
+      optDecode(code, aerialStyleFromCode, "aerial style"),
+    ),
+    aerial_outcome: column(words, playersAt, 20, count).map((code) =>
+      optDecode(code, aerialOutcomeFromCode, "aerial outcome"),
+    ),
   };
 
   const eventsAt = playersAt + PLAYER_FIELD_COUNT * count;
@@ -812,17 +843,33 @@ export function decode(words: ArrayLike<number>): DecodedRenderFrame {
   const rawKeeperDepth = column(words, eventsAt, 12, eventCount);
   const events: RenderFrameEvents = {
     count: eventCount,
-    kind: column(words, eventsAt, 0, eventCount).map((code) => requireDecode(code, eventKindFromCode, "event kind")),
+    kind: column(words, eventsAt, 0, eventCount).map((code) =>
+      requireDecode(code, eventKindFromCode, "event kind"),
+    ),
     x: column(words, eventsAt, 1, eventCount),
     y: column(words, eventsAt, 2, eventCount),
     slot: rawSlot.map((raw) => (raw === 0 ? undefined : raw)),
-    save_style: column(words, eventsAt, 4, eventCount).map((code) => optDecode(code, saveStyleFromCode, "save style")),
-    style: column(words, eventsAt, 5, eventCount).map((code) => optDecode(code, aerialStyleFromCode, "aerial style")),
-    outcome: column(words, eventsAt, 6, eventCount).map((code) => optDecode(code, aerialOutcomeFromCode, "aerial outcome")),
-    difficulty: rawHasDifficulty.map((hasIt, index) => (decodeBool(hasIt) ? rawDifficulty[index] : undefined)),
-    shot_type: column(words, eventsAt, 9, eventCount).map((code) => optDecode(code, shotTypeFromCode, "shot type")),
-    keeper_state: column(words, eventsAt, 10, eventCount).map((code) => optDecode(code, keeperStateFromCode, "keeper state")),
-    keeper_depth: rawHasKeeperDepth.map((hasIt, index) => (decodeBool(hasIt) ? rawKeeperDepth[index] : undefined)),
+    save_style: column(words, eventsAt, 4, eventCount).map((code) =>
+      optDecode(code, saveStyleFromCode, "save style"),
+    ),
+    style: column(words, eventsAt, 5, eventCount).map((code) =>
+      optDecode(code, aerialStyleFromCode, "aerial style"),
+    ),
+    outcome: column(words, eventsAt, 6, eventCount).map((code) =>
+      optDecode(code, aerialOutcomeFromCode, "aerial outcome"),
+    ),
+    difficulty: rawHasDifficulty.map((hasIt, index) =>
+      decodeBool(hasIt) ? rawDifficulty[index] : undefined,
+    ),
+    shot_type: column(words, eventsAt, 9, eventCount).map((code) =>
+      optDecode(code, shotTypeFromCode, "shot type"),
+    ),
+    keeper_state: column(words, eventsAt, 10, eventCount).map((code) =>
+      optDecode(code, keeperStateFromCode, "keeper state"),
+    ),
+    keeper_depth: rawHasKeeperDepth.map((hasIt, index) =>
+      decodeBool(hasIt) ? rawKeeperDepth[index] : undefined,
+    ),
     jumping: column(words, eventsAt, 13, eventCount).map(triState),
     on_target: column(words, eventsAt, 14, eventCount).map(triState),
   };
@@ -859,13 +906,19 @@ export function decodeRoster(words: ArrayLike<number>, strings: string): Decoded
     throw new Error(`frame_buffer: not a render roster block: magic ${at(words, 0)}`);
   }
   if (at(words, 1) !== LAYOUT_VERSION) {
-    throw new Error(`frame_buffer: roster layout version ${at(words, 1)}; expected ${LAYOUT_VERSION}`);
+    throw new Error(
+      `frame_buffer: roster layout version ${at(words, 1)}; expected ${LAYOUT_VERSION}`,
+    );
   }
   if (at(words, 2) !== RENDER_FRAME_VERSION) {
-    throw new Error(`frame_buffer: render frame version ${at(words, 2)}; expected ${RENDER_FRAME_VERSION}`);
+    throw new Error(
+      `frame_buffer: render frame version ${at(words, 2)}; expected ${RENDER_FRAME_VERSION}`,
+    );
   }
   if (at(words, 6) !== ROSTER_FIELD_COUNT) {
-    throw new Error(`frame_buffer: roster field count ${at(words, 6)}; expected ${ROSTER_FIELD_COUNT}`);
+    throw new Error(
+      `frame_buffer: roster field count ${at(words, 6)}; expected ${ROSTER_FIELD_COUNT}`,
+    );
   }
 
   const count = at(words, 5);
@@ -891,7 +944,9 @@ export function decodeRoster(words: ArrayLike<number>, strings: string): Decoded
   // empty roster is the day this stops guarding anything.
   const expectedParts = count * ROSTER_STRING_FIELD_COUNT;
   if (parts.length !== expectedParts) {
-    throw new Error(`frame_buffer: roster blob holds ${parts.length} strings; expected ${expectedParts}`);
+    throw new Error(
+      `frame_buffer: roster blob holds ${parts.length} strings; expected ${expectedParts}`,
+    );
   }
 
   const ids: string[] = [];
@@ -944,7 +999,9 @@ export function decodeRoster(words: ArrayLike<number>, strings: string): Decoded
     teams: column(words, at0, 0, count).map((code) => requireDecode(code, teamFromCode, "team")),
     is_keeper: rawIsKeeper.map(decodeBool),
     radius: column(words, at0, 2, count),
-    species_shape: column(words, at0, 3, count).map((code) => requireDecode(code, speciesShapeFromCode, "species shape")),
+    species_shape: column(words, at0, 3, count).map((code) =>
+      requireDecode(code, speciesShapeFromCode, "species shape"),
+    ),
     species_color: speciesColor,
   };
 }

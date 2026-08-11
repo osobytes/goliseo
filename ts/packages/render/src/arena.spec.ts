@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { backdropCommands, frameCommands, type ArenaColors, type ArenaThemeColors } from "./arena.ts";
+import {
+  backdropCommands,
+  frameCommands,
+  type ArenaColors,
+  type ArenaThemeColors,
+} from "./arena.ts";
 
 const colors: ArenaColors = {
   floor_color: [0.025, 0.16, 0.17],
@@ -30,8 +35,12 @@ describe("arena.backdropCommands", () => {
 
   it("draws eight ribbon markers split evenly between rail and highlight colour", () => {
     const commands = backdropCommands(colors, viewport, theme);
-    const rail = commands.filter((c) => c.kind === "rect" && c.color === colors.rail_color && c.rx === 3);
-    const highlight = commands.filter((c) => c.kind === "rect" && c.color === colors.highlight_color && c.rx === 3);
+    const rail = commands.filter(
+      (c) => c.kind === "rect" && c.color === colors.rail_color && c.rx === 3,
+    );
+    const highlight = commands.filter(
+      (c) => c.kind === "rect" && c.color === colors.highlight_color && c.rx === 3,
+    );
     expect(rail).toHaveLength(4);
     expect(highlight).toHaveLength(4);
   });
@@ -43,7 +52,9 @@ describe("arena.frameCommands", () => {
   it("draws four corner brackets, two per colour", () => {
     const commands = frameCommands(colors, corners);
     const rail = commands.filter((c) => c.kind === "line" && c.color === colors.rail_color);
-    const highlight = commands.filter((c) => c.kind === "line" && c.color === colors.highlight_color);
+    const highlight = commands.filter(
+      (c) => c.kind === "line" && c.color === colors.highlight_color,
+    );
     expect(rail).toHaveLength(2);
     expect(highlight).toHaveLength(2);
   });
@@ -53,7 +64,12 @@ describe("arena.frameCommands", () => {
     const pulsing = frameCommands(colors, corners, 1);
     const stillLine = still[0];
     const pulsingLine = pulsing[0];
-    if (stillLine === undefined || pulsingLine === undefined || stillLine.kind !== "line" || pulsingLine.kind !== "line") {
+    if (
+      stillLine === undefined ||
+      pulsingLine === undefined ||
+      stillLine.kind !== "line" ||
+      pulsingLine.kind !== "line"
+    ) {
       throw new Error("expected line commands");
     }
     expect(pulsingLine.alpha ?? 0).toBeGreaterThan(stillLine.alpha ?? 0);

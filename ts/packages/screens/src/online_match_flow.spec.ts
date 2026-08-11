@@ -122,10 +122,38 @@ const TEAM_AWAY: TeamData = {
 // four minimal entries.
 const COMBAT_DATA: CombatPresentationData = {
   action_families: {
-    unarmed: { id: "unarmed", name: "Unarmed", windup_ticks: 1, recovery_ticks: 1, cooldown_ticks: 1, front_arc_degrees: 1 },
-    guard: { id: "guard", name: "Guard", windup_ticks: 1, recovery_ticks: 1, cooldown_ticks: 1, front_arc_degrees: 1 },
-    light_melee: { id: "light_melee", name: "Light Melee", windup_ticks: 1, recovery_ticks: 1, cooldown_ticks: 1, front_arc_degrees: 1 },
-    ranged: { id: "ranged", name: "Ranged", windup_ticks: 1, recovery_ticks: 1, cooldown_ticks: 1, front_arc_degrees: 1 },
+    unarmed: {
+      id: "unarmed",
+      name: "Unarmed",
+      windup_ticks: 1,
+      recovery_ticks: 1,
+      cooldown_ticks: 1,
+      front_arc_degrees: 1,
+    },
+    guard: {
+      id: "guard",
+      name: "Guard",
+      windup_ticks: 1,
+      recovery_ticks: 1,
+      cooldown_ticks: 1,
+      front_arc_degrees: 1,
+    },
+    light_melee: {
+      id: "light_melee",
+      name: "Light Melee",
+      windup_ticks: 1,
+      recovery_ticks: 1,
+      cooldown_ticks: 1,
+      front_arc_degrees: 1,
+    },
+    ranged: {
+      id: "ranged",
+      name: "Ranged",
+      windup_ticks: 1,
+      recovery_ticks: 1,
+      cooldown_ticks: 1,
+      front_arc_degrees: 1,
+    },
   },
   equipment_presentations: {},
   loadouts: {},
@@ -156,7 +184,13 @@ function fakeCoordinatorState(role: "host" | "guest", hostLinkId?: string): Fake
 
 function terminalReasonFor(event: CoordinatorEvent): string {
   if (event["kind"] === "abort") return "local_abort";
-  if (event["kind"] === "link_lost") return String(event["code"] ?? "transport_lost");
+  if (event["kind"] === "link_lost") {
+    // `code` is a `TransportErrorCode` (a string union) on this event; read it
+    // as one rather than stringifying an `unknown`, which would silently
+    // produce "[object Object]" if the shape ever changed.
+    const code = event["code"];
+    return typeof code === "string" ? code : "transport_lost";
+  }
   return "unknown";
 }
 
@@ -207,7 +241,9 @@ function modelPorts(): OnlineMatchModelPorts<FakeCoordinatorState> {
   };
 }
 
-function fakeModelPort(): OnlineMatchModelPort<OnlineMatchModel<FakeCoordinatorState, OnlineMatchRequest>> {
+function fakeModelPort(): OnlineMatchModelPort<
+  OnlineMatchModel<FakeCoordinatorState, OnlineMatchRequest>
+> {
   return {
     command: (model, event: OnlineMatchDispatchEvent) => command(model, modelPorts(), event),
     ended,
@@ -253,7 +289,7 @@ const FAKE_ONLINE_ROSTER: RenderFrameRoster = {};
 
 function fakeMatchDriver(
   state: FakeDriverState,
-  live: Readonly<Record<string, string>>
+  live: Readonly<Record<string, string>>,
 ): MatchDriverPort<FakeDriverState, FakeBatch, unknown, FakeCheckpoint> {
   return {
     create: () => state,
@@ -286,7 +322,12 @@ function fakeMatchDriver(
   };
 }
 
-function fakeMatchPresentation(): MatchPresentationPort<Record<string, never>, FakeDriverState, FakeBatch, FakeBatch> {
+function fakeMatchPresentation(): MatchPresentationPort<
+  Record<string, never>,
+  FakeDriverState,
+  FakeBatch,
+  FakeBatch
+> {
   return {
     create: () => ({}),
     consume: (_presentation, _driver, batch) => batch,
@@ -361,9 +402,9 @@ interface RollbackSourceLike {
 // `match_screen.spec.ts`'s `FakeSimHost` plays for `SimHostPort`.
 function fakeMatchScreen(
   state: OnlineMatchState,
-  rollbackSource: () => unknown
+  rollbackSource: () => unknown,
 ): RealMatchScreenPort<OnlineMatchState, unknown> {
-  const source = rollbackSource() as unknown as RollbackSourceLike;
+  const source = rollbackSource() as RollbackSourceLike;
   let accumulator = 0;
   let tick = 0;
   // `overlayLines` reaches through a private-field cast for `_combat_state`
@@ -429,7 +470,11 @@ type HostOnlineMatch = OnlineMatch<
   OnlineMatchModel<FakeCoordinatorState, OnlineMatchRequest>
 >;
 
-function buildHost(): { readonly match: HostOnlineMatch; readonly driver: FakeDriverState; readonly actions: { readonly go: string }[] } {
+function buildHost(): {
+  readonly match: HostOnlineMatch;
+  readonly driver: FakeDriverState;
+  readonly actions: { readonly go: string }[];
+} {
   const driver: FakeDriverState = { status: "active", tick: 0 };
   const actions: { readonly go: string }[] = [];
   const initialState: OnlineMatchState = {
@@ -461,7 +506,9 @@ function buildHost(): { readonly match: HostOnlineMatch; readonly driver: FakeDr
       actions.push(action);
     },
   };
-  const match = new OnlineMatch(options, fakeModelPort(), (request, coordinator) => newOnlineMatchModel(request, coordinator));
+  const match = new OnlineMatch(options, fakeModelPort(), (request, coordinator) =>
+    newOnlineMatchModel(request, coordinator),
+  );
   return { match, driver, actions };
 }
 
@@ -584,14 +631,30 @@ function realExpectation1v1(sessionId: string) {
 // whole away block -- there is no contiguous-block boundary decision left
 // to make for this specific mode. `assignSlots` independently validates the
 // result.
-function realAssignments1v1(manifest: ReturnType<typeof realManifest1v1>, hostPeerId: string, guestPeerId?: string) {
+function realAssignments1v1(
+  manifest: ReturnType<typeof realManifest1v1>,
+  hostPeerId: string,
+  guestPeerId?: string,
+) {
   return manifest.slots.map((slot, index) => {
     const isHome = index < 4;
     if (isHome) {
-      return { producer_kind: "peer", producer_id: hostPeerId, team: slot.team, slot: slot.slot, player_id: slot.player_id };
+      return {
+        producer_kind: "peer",
+        producer_id: hostPeerId,
+        team: slot.team,
+        slot: slot.slot,
+        player_id: slot.player_id,
+      };
     }
     if (guestPeerId !== undefined) {
-      return { producer_kind: "peer", producer_id: guestPeerId, team: slot.team, slot: slot.slot, player_id: slot.player_id };
+      return {
+        producer_kind: "peer",
+        producer_id: guestPeerId,
+        team: slot.team,
+        slot: slot.slot,
+        player_id: slot.player_id,
+      };
     }
     return {
       producer_kind: "bot",
@@ -639,14 +702,21 @@ function handleOf(state: CoordinatorStateCore): Coordinator {
 function mapAction(raw: Record<string, unknown>): CoordinatorAction {
   const kind = raw["kind"];
   if (kind === "send") {
-    return { kind: "send", message: raw["wire"], targets: raw["targets"] } as unknown as CoordinatorAction;
+    return {
+      kind: "send",
+      message: raw["wire"],
+      targets: raw["targets"],
+    } as unknown as CoordinatorAction;
   }
   if (kind === "close") {
     return { kind: "close", link_id: raw["link_id"] } as unknown as CoordinatorAction;
   }
   if (kind === "terminate") {
     const terminal = raw["terminal"] as Record<string, unknown>;
-    return { kind: "terminate", terminal: { reason: terminal["reason"], detail: terminal["detail"] } } as unknown as CoordinatorAction;
+    return {
+      kind: "terminate",
+      terminal: { reason: terminal["reason"], detail: terminal["detail"] },
+    } as unknown as CoordinatorAction;
   }
   // "start_match" never occurs past the lobby handoff this file's real
   // coordinators are already constructed beyond, but pass it through
@@ -688,7 +758,9 @@ function batchOutcome(json: string): CoordinatorOutcome {
 }
 
 function wiresFrom(json: string): readonly string[] {
-  const parsed = JSON.parse(json) as { readonly outcomes: readonly { readonly actions: readonly Record<string, unknown>[] }[] };
+  const parsed = JSON.parse(json) as {
+    readonly outcomes: readonly { readonly actions: readonly Record<string, unknown>[] }[];
+  };
   const wires: string[] = [];
   for (const outcome of parsed.outcomes) {
     for (const action of outcome.actions) {
@@ -732,7 +804,7 @@ function pump(
   // (`GUEST_LINK_ON_HOST` at every call site below).
   linkOnHostForGuest: string,
   fromHost: readonly string[],
-  fromGuest: readonly string[]
+  fromGuest: readonly string[],
 ): void {
   let toGuest = fromHost;
   let toHost = fromGuest;
@@ -757,7 +829,16 @@ const GUEST_PEER_ID = "guest_1";
 // immediately; see this file's report for the trace).
 function soloHostRunning(sessionId: string): RealOnlineCoordState {
   const host = loadSimHost();
-  const handle = new host.Coordinator("host", sessionId, "host", undefined, undefined, JSON.stringify(REAL_RUNTIME_WIRE), REAL_BUILD_ID, undefined);
+  const handle = new host.Coordinator(
+    "host",
+    sessionId,
+    "host",
+    undefined,
+    undefined,
+    JSON.stringify(REAL_RUNTIME_WIRE),
+    REAL_BUILD_ID,
+    undefined,
+  );
   const manifest = realManifest1v1(sessionId);
   handle.proposeManifest(JSON.stringify(manifest));
   handle.assignSlots(JSON.stringify(realAssignments1v1(manifest, "host")), false);
@@ -770,10 +851,22 @@ function soloHostRunning(sessionId: string): RealOnlineCoordState {
 // `pump()` -- the manual-connect handshake, manifest proposal, ownership,
 // readiness, and the countdown/start barrier, exactly the sequence
 // `gc_netcode::coordinator_driver::Driver::reach_start` drives natively.
-function pairedRunning(sessionId: string): { readonly host: RealOnlineCoordState; readonly guest: RealOnlineCoordState } {
+function pairedRunning(sessionId: string): {
+  readonly host: RealOnlineCoordState;
+  readonly guest: RealOnlineCoordState;
+} {
   const wasm = loadSimHost();
   const manifest = realManifest1v1(sessionId);
-  const hostHandle = new wasm.Coordinator("host", sessionId, "host", undefined, undefined, JSON.stringify(REAL_RUNTIME_WIRE), REAL_BUILD_ID, undefined);
+  const hostHandle = new wasm.Coordinator(
+    "host",
+    sessionId,
+    "host",
+    undefined,
+    undefined,
+    JSON.stringify(REAL_RUNTIME_WIRE),
+    REAL_BUILD_ID,
+    undefined,
+  );
   const guestHandle = new wasm.Coordinator(
     "guest",
     sessionId,
@@ -782,21 +875,61 @@ function pairedRunning(sessionId: string): { readonly host: RealOnlineCoordState
     HOST_LINK_ON_GUEST,
     JSON.stringify(REAL_RUNTIME_WIRE),
     REAL_BUILD_ID,
-    JSON.stringify(realExpectation1v1(sessionId))
+    JSON.stringify(realExpectation1v1(sessionId)),
   );
-  pump(hostHandle, guestHandle, HOST_LINK_ON_GUEST, GUEST_LINK_ON_HOST, [], wiresFrom(guestHandle.connect()));
-  pump(hostHandle, guestHandle, HOST_LINK_ON_GUEST, GUEST_LINK_ON_HOST, wiresFrom(hostHandle.proposeManifest(JSON.stringify(manifest))), []);
   pump(
     hostHandle,
     guestHandle,
     HOST_LINK_ON_GUEST,
     GUEST_LINK_ON_HOST,
-    wiresFrom(hostHandle.assignSlots(JSON.stringify(realAssignments1v1(manifest, "host", GUEST_PEER_ID)), false)),
-    []
+    [],
+    wiresFrom(guestHandle.connect()),
   );
-  pump(hostHandle, guestHandle, HOST_LINK_ON_GUEST, GUEST_LINK_ON_HOST, wiresFrom(hostHandle.setReady(true)), []);
-  pump(hostHandle, guestHandle, HOST_LINK_ON_GUEST, GUEST_LINK_ON_HOST, [], wiresFrom(guestHandle.setReady(true)));
-  pump(hostHandle, guestHandle, HOST_LINK_ON_GUEST, GUEST_LINK_ON_HOST, wiresFrom(hostHandle.beginCountdown("countdown.1", 0, 0)), []);
+  pump(
+    hostHandle,
+    guestHandle,
+    HOST_LINK_ON_GUEST,
+    GUEST_LINK_ON_HOST,
+    wiresFrom(hostHandle.proposeManifest(JSON.stringify(manifest))),
+    [],
+  );
+  pump(
+    hostHandle,
+    guestHandle,
+    HOST_LINK_ON_GUEST,
+    GUEST_LINK_ON_HOST,
+    wiresFrom(
+      hostHandle.assignSlots(
+        JSON.stringify(realAssignments1v1(manifest, "host", GUEST_PEER_ID)),
+        false,
+      ),
+    ),
+    [],
+  );
+  pump(
+    hostHandle,
+    guestHandle,
+    HOST_LINK_ON_GUEST,
+    GUEST_LINK_ON_HOST,
+    wiresFrom(hostHandle.setReady(true)),
+    [],
+  );
+  pump(
+    hostHandle,
+    guestHandle,
+    HOST_LINK_ON_GUEST,
+    GUEST_LINK_ON_HOST,
+    [],
+    wiresFrom(guestHandle.setReady(true)),
+  );
+  pump(
+    hostHandle,
+    guestHandle,
+    HOST_LINK_ON_GUEST,
+    GUEST_LINK_ON_HOST,
+    wiresFrom(hostHandle.beginCountdown("countdown.1", 0, 0)),
+    [],
+  );
   return { host: stateFromHandle(hostHandle), guest: stateFromHandle(guestHandle) };
 }
 
@@ -811,7 +944,7 @@ function realCoordinatorPort(): CoordinatorPort<RealOnlineCoordState> {
             event["phase"] as string,
             event["tick"] as number,
             event["home_score"] as number,
-            event["away_score"] as number
+            event["away_score"] as number,
           );
           break;
         case "hash_report":
@@ -822,11 +955,15 @@ function realCoordinatorPort(): CoordinatorPort<RealOnlineCoordState> {
             event["final_tick"] as number,
             event["home_score"] as number,
             event["away_score"] as number,
-            event["final_hash"] as string
+            event["final_hash"] as string,
           );
           break;
         case "netcode_failure":
-          json = handle.netcodeFailure(event["failure"] as string, undefined, event["detail"] as string | undefined);
+          json = handle.netcodeFailure(
+            event["failure"] as string,
+            undefined,
+            event["detail"] as string | undefined,
+          );
           break;
         case "link_lost":
           // A transport-reported loss is network-originated -- queued, not
@@ -836,7 +973,10 @@ function realCoordinatorPort(): CoordinatorPort<RealOnlineCoordState> {
           json = handle.tick();
           break;
         case "abort":
-          json = handle.abort(event["code"] as string | undefined, event["detail"] as string | undefined);
+          json = handle.abort(
+            event["code"] as string | undefined,
+            event["detail"] as string | undefined,
+          );
           break;
         case "leave":
           json = handle.leave();
@@ -850,7 +990,7 @@ function realCoordinatorPort(): CoordinatorPort<RealOnlineCoordState> {
           break;
         default:
           throw new Error(
-            `realCoordinatorPort: unhandled event kind '${String(event["kind"])}' -- this fixture only wires what the real-coordinator flow cases exercise`
+            `realCoordinatorPort: unhandled event kind '${String(event["kind"])}' -- this fixture only wires what the real-coordinator flow cases exercise`,
           );
       }
       return [stateFromHandle(handle), batchOutcome(json)];
@@ -885,9 +1025,12 @@ function realOnlineModelPorts(): OnlineMatchModelPorts<RealOnlineCoordState> {
   };
 }
 
-function realOnlineModelPort(): OnlineMatchModelPort<OnlineMatchModel<RealOnlineCoordState, OnlineMatchRequest>> {
+function realOnlineModelPort(): OnlineMatchModelPort<
+  OnlineMatchModel<RealOnlineCoordState, OnlineMatchRequest>
+> {
   return {
-    command: (model, event: OnlineMatchDispatchEvent) => command(model, realOnlineModelPorts(), event),
+    command: (model, event: OnlineMatchDispatchEvent) =>
+      command(model, realOnlineModelPorts(), event),
     ended,
     exitRoute,
     ABORT_PROMPT,
@@ -909,8 +1052,15 @@ function buildRealHost(
   coordinator: RealOnlineCoordState,
   request: OnlineMatchRequest = HOST_REQUEST,
   link: MatchLobbyLinkPort = fakeLink(),
-  matchDriverFor?: (driver: FakeDriverState, live: Readonly<Record<string, string>>) => MatchDriverPort<FakeDriverState, FakeBatch, unknown, FakeCheckpoint>
-): { readonly match: RealHostOnlineMatch; readonly driver: FakeDriverState; readonly actions: { readonly go: string }[] } {
+  matchDriverFor?: (
+    driver: FakeDriverState,
+    live: Readonly<Record<string, string>>,
+  ) => MatchDriverPort<FakeDriverState, FakeBatch, unknown, FakeCheckpoint>,
+): {
+  readonly match: RealHostOnlineMatch;
+  readonly driver: FakeDriverState;
+  readonly actions: { readonly go: string }[];
+} {
   const driver: FakeDriverState = { status: "active", tick: 0 };
   const actions: { readonly go: string }[] = [];
   const initialState: OnlineMatchState = {
@@ -931,7 +1081,9 @@ function buildRealHost(
     request,
     coordinator,
     link,
-    matchDriver: (matchDriverFor ?? fakeMatchDriver)(driver, { [request.peer_id]: request.live ?? "" }),
+    matchDriver: (matchDriverFor ?? fakeMatchDriver)(driver, {
+      [request.peer_id]: request.live ?? "",
+    }),
     matchPresentation: fakeMatchPresentation(),
     matchSession: fakeMatchSession(),
     lobbyFraming: fakeLobbyFraming(),
@@ -942,7 +1094,9 @@ function buildRealHost(
       actions.push(action);
     },
   };
-  const match = new OnlineMatch(options, realOnlineModelPort(), (req, coord) => newOnlineMatchModel(req, coord));
+  const match = new OnlineMatch(options, realOnlineModelPort(), (req, coord) =>
+    newOnlineMatchModel(req, coord),
+  );
   return { match, driver, actions };
 }
 
@@ -953,7 +1107,7 @@ function buildRealHost(
 // once, the way a real driver reports its boundary hash as it runs.
 function fakeMatchDriverWithHash(
   driver: FakeDriverState,
-  live: Readonly<Record<string, string>>
+  live: Readonly<Record<string, string>>,
 ): MatchDriverPort<FakeDriverState, FakeBatch, unknown, FakeCheckpoint> {
   const base = fakeMatchDriver(driver, live);
   let reported = false;
@@ -1045,7 +1199,10 @@ interface RealOnlineBatch {
 
 function rosterFromManifest(manifestJson: string): RenderFrameRoster {
   const manifest = JSON.parse(manifestJson) as {
-    readonly teams: readonly { readonly team: "home" | "away"; readonly roster: readonly { readonly player_id: string }[] }[];
+    readonly teams: readonly {
+      readonly team: "home" | "away";
+      readonly roster: readonly { readonly player_id: string }[];
+    }[];
   };
   const ids: string[] = [];
   const teams: ("home" | "away")[] = [];
@@ -1058,13 +1215,22 @@ function rosterFromManifest(manifestJson: string): RenderFrameRoster {
   return { ids, teams };
 }
 
-function realMatchDriverPort(wasm: SimHost): MatchDriverPort<RealOnlineDriver, RealOnlineBatch, unknown, RealOnlineCheckpoint> {
+function realMatchDriverPort(
+  wasm: SimHost,
+): MatchDriverPort<RealOnlineDriver, RealOnlineBatch, unknown, RealOnlineCheckpoint> {
   return {
     create(options) {
       const freezeJson = options.freeze as string;
       const manifestJson = options.manifest as string;
       const session = new wasm.Session("nebula", "orion", 7, 20, 3);
-      const bridge = new wasm.MatchDriverBridge(session, options.role, options.peer_id, freezeJson, manifestJson, undefined);
+      const bridge = new wasm.MatchDriverBridge(
+        session,
+        options.role,
+        options.peer_id,
+        freezeJson,
+        manifestJson,
+        undefined,
+      );
       bridge.initializeTransport();
       return { bridge, session, roster: rosterFromManifest(manifestJson), tickCount: 0 };
     },
@@ -1079,7 +1245,11 @@ function realMatchDriverPort(wasm: SimHost): MatchDriverPort<RealOnlineDriver, R
     currentSnapshot: () => undefined,
     snapshot: (d, boundary) => d.bridge.snapshotLookup(boundary),
     terminal: (d) => {
-      const raw = JSON.parse(d.bridge.terminalJson()) as { readonly status: string; readonly failure?: string; readonly detail?: string } | null;
+      const raw = JSON.parse(d.bridge.terminalJson()) as {
+        readonly status: string;
+        readonly failure?: string;
+        readonly detail?: string;
+      } | null;
       return raw ?? undefined;
     },
     settled: (d) => JSON.parse(d.bridge.statusJson()) !== "active",
@@ -1105,7 +1275,7 @@ function realMatchDriverPort(wasm: SimHost): MatchDriverPort<RealOnlineDriver, R
     batchControl: (b) => b.control,
     batchCheckpoints: (b) => b.checkpoints,
     batchLive: (b) => b.live,
-    frame: (d) => frameBuffer.decode(wasm.buildMatchDriverRenderFrame(d.bridge, 0)) as unknown as RenderFrame,
+    frame: (d) => frameBuffer.decode(wasm.buildMatchDriverRenderFrame(d.bridge, 0)),
     roster: (d) => d.roster,
     tick: (d) => d.tickCount,
     dispose: (d) => {
@@ -1118,7 +1288,12 @@ function realMatchDriverPort(wasm: SimHost): MatchDriverPort<RealOnlineDriver, R
 // passthrough) never actually touches `TDriver`/`TBatch`, but its
 // declared type is hardcoded to `FakeDriverState`/`FakeBatch` -- this is
 // the same passthrough, generic over the real driver/batch types instead.
-function identityMatchPresentation<TDriver, TBatch>(): MatchPresentationPort<Record<string, never>, TDriver, TBatch, TBatch> {
+function identityMatchPresentation<TDriver, TBatch>(): MatchPresentationPort<
+  Record<string, never>,
+  TDriver,
+  TBatch,
+  TBatch
+> {
   return {
     create: () => ({}),
     consume: (_presentation, _driver, batch) => batch,
@@ -1152,7 +1327,9 @@ function realMatchSessionPort(manifestJson: string): MatchSessionPort<OnlineMatc
 }
 
 function fakeKeyboard(down: Readonly<Record<string, boolean>>): KeyboardState {
-  return { isDown: (...keys: readonly string[]): boolean => keys.some((key) => down[key] === true) };
+  return {
+    isDown: (...keys: readonly string[]): boolean => keys.some((key) => down[key] === true),
+  };
 }
 
 type RealDriverOnlineMatch = OnlineMatch<
@@ -1177,7 +1354,7 @@ type RealDriverOnlineMatch = OnlineMatch<
 function buildRealDriverHost(
   mode: "1v1" | "4v4",
   request: OnlineMatchRequest,
-  renderer: RenderPort = { draw: () => {} }
+  renderer: RenderPort = { draw: () => {} },
 ): RealDriverOnlineMatch {
   const wasm = loadSimHost();
   const freezeJson = wasm.matchDriverFixtureFreezeJson(mode, 0, 1);
@@ -1210,8 +1387,11 @@ function buildRealDriverHost(
             renderer,
             keyboard: fakeKeyboard({}),
           },
-          { online: opts.rollbackSource(), ...(opts.combatEnabled !== undefined ? { combat_enabled: opts.combatEnabled } : {}) }
-        )
+          {
+            online: opts.rollbackSource(),
+            ...(opts.combatEnabled !== undefined ? { combat_enabled: opts.combatEnabled } : {}),
+          },
+        ),
       ),
     onAction: () => {},
   };
@@ -1228,7 +1408,12 @@ describe("online match screen flow", () => {
   // for real, through the real reducer, without needing a second peer.
   it("carries a 1v1 session from the lobby to an agreed result", () => {
     const coordinator = soloHostRunning("session.case1");
-    const { match, driver } = buildRealHost(coordinator, HOST_REQUEST, fakeLink(), fakeMatchDriverWithHash);
+    const { match, driver } = buildRealHost(
+      coordinator,
+      HOST_REQUEST,
+      fakeLink(),
+      fakeMatchDriverWithHash,
+    );
     runReal(match, 10);
     expect(ended(match.model)).toBe(false);
 
@@ -1284,20 +1469,29 @@ describe("online match screen flow", () => {
       match.update(TICK_SECONDS);
       const state = match.match.state;
       const player = state.players[state.controlled];
-      expect(player, `tick ${i}: controlled index ${state.controlled} must name a real player`).toBeDefined();
+      expect(
+        player,
+        `tick ${i}: controlled index ${state.controlled} must name a real player`,
+      ).toBeDefined();
       if (player !== undefined) {
-        expect(owned.has(player.id), `tick ${i}: controlled player '${player.id}' left the frozen owned set`).toBe(
-          true
-        );
+        expect(
+          owned.has(player.id),
+          `tick ${i}: controlled player '${player.id}' left the frozen owned set`,
+        ).toBe(true);
         expect(player.id, `tick ${i}: controlled player must never be a keeper`).not.toBe("ozzo");
-        expect(player.id, `tick ${i}: controlled player must never be a keeper`).not.toBe("gax_oru");
+        expect(player.id, `tick ${i}: controlled player must never be a keeper`).not.toBe(
+          "gax_oru",
+        );
         seen.add(player.id);
       }
     }
     // Sustained switching pressure over 90 ticks must have actually moved
     // control at least once within the owned set -- otherwise this proves
     // nothing beyond "the initial slot happens to be legal".
-    expect(seen.size, "sustained switching pressure never actually switched control").toBeGreaterThan(1);
+    expect(
+      seen.size,
+      "sustained switching pressure never actually switched control",
+    ).toBeGreaterThan(1);
   });
 
   // Same real driver/screen wiring as
@@ -1322,7 +1516,9 @@ describe("online match screen flow", () => {
       match.update(TICK_SECONDS);
       const state = match.match.state;
       const player = state.players[state.controlled];
-      expect(player?.id, `tick ${i}: the singleton owned slot must stay controlled`).toBe("zyro_vex");
+      expect(player?.id, `tick ${i}: the singleton owned slot must stay controlled`).toBe(
+        "zyro_vex",
+      );
     }
   });
 
@@ -1378,8 +1574,16 @@ describe("online match screen flow", () => {
       live: "away_1",
       owned: ["away_1", "away_2", "away_3", "away_4"],
     };
-    const { match: hostMatch } = buildRealHost(hostCoordinator, HOST_REQUEST, relayLink(guestHandle, HOST_LINK_ON_GUEST));
-    const { match: guestMatch } = buildRealHost(guestCoordinator, guestRequest, relayLink(hostHandle, GUEST_LINK_ON_HOST));
+    const { match: hostMatch } = buildRealHost(
+      hostCoordinator,
+      HOST_REQUEST,
+      relayLink(guestHandle, HOST_LINK_ON_GUEST),
+    );
+    const { match: guestMatch } = buildRealHost(
+      guestCoordinator,
+      guestRequest,
+      relayLink(hostHandle, GUEST_LINK_ON_HOST),
+    );
     runReal(hostMatch, 5);
     runReal(guestMatch, 5);
 
@@ -1547,7 +1751,9 @@ describe("online match renderer smoke", () => {
     expect(frame.hud.controlled).toBe(state.controlled + 1);
     expect(frame.control?.controlled).toBe(state.controlled + 1);
     expect(frame.players?.controlled[state.controlled]).toBe(true);
-    const otherHighlighted = (frame.players?.controlled ?? []).filter((flag, index) => flag && index !== state.controlled);
+    const otherHighlighted = (frame.players?.controlled ?? []).filter(
+      (flag, index) => flag && index !== state.controlled,
+    );
     expect(otherHighlighted, "exactly one player is highlighted as controlled").toEqual([]);
   });
 });

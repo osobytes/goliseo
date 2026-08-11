@@ -174,7 +174,9 @@ export function buildPitchSurface(field: RenderFrameField, arena: ArenaColors): 
       uCenterSpotRadius: { value: CENTER_SPOT_RADIUS },
       uHexRadius: { value: HEX_TILE_RADIUS },
       uMarkingColor: { value: new THREE.Color(0.85, 0.95, 1.0) },
-      uFloorColor: { value: new THREE.Color(arena.floor_color[0], arena.floor_color[1], arena.floor_color[2]) },
+      uFloorColor: {
+        value: new THREE.Color(arena.floor_color[0], arena.floor_color[1], arena.floor_color[2]),
+      },
     },
     vertexShader: VERTEX_SHADER,
     fragmentShader: FRAGMENT_SHADER,

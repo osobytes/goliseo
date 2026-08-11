@@ -15,8 +15,10 @@ import { MATCH_CONTRACT_CONTENT } from "./test_support/fixtures.ts";
 describe("match adapter", () => {
   it("keeps the fake adapter available for isolated product-flow tests", () => {
     expect(matchAdapter.fake(MATCH_CONTRACT_CONTENT).kind).toBe("fake");
-    expect(matchAdapter.real(() => {
-      throw new Error("not invoked by this test");
-    }).kind).toBe("real");
+    expect(
+      matchAdapter.real(() => {
+        throw new Error("not invoked by this test");
+      }).kind,
+    ).toBe("real");
   });
 });

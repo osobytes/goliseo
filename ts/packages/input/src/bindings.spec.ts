@@ -44,7 +44,14 @@ describe("input bindings", () => {
 
     // An edge bound to nothing but a trigger: unreachable on both devices.
     const triggerOnly = withExtra(
-      { id: "probe" as ControlId, action: "juke", keys: [], buttons: [], axes: ["triggerleft"], edge: true },
+      {
+        id: "probe" as ControlId,
+        action: "juke",
+        keys: [],
+        buttons: [],
+        axes: ["triggerleft"],
+        edge: true,
+      },
       () => bindings.layoutProblems().join("; "),
     );
     expect(triggerOnly.includes("cannot fire one")).toBe(true);

@@ -1,4 +1,4 @@
-import { type Result, err, ok } from "@gc/core";
+import { type Result, err } from "@gc/core";
 
 export interface GameSettings {
   readonly master_volume: number;

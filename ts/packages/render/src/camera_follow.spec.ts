@@ -202,7 +202,7 @@ describe("view_state gait phase", () => {
       expect(g).toBeDefined();
       const gait = g!.gait;
       if (prev !== undefined) {
-        const delta = ((gait - prev) % 1 + 1) % 1;
+        const delta = (((gait - prev) % 1) + 1) % 1;
         worst = Math.max(worst, delta);
       }
       prev = gait;

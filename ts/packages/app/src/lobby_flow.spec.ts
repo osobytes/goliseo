@@ -51,7 +51,11 @@ function clickWidget(app: App, id: string): void {
   if (!widget?.rect) {
     throw new Error(`missing widget ${id}`);
   }
-  const [x, y] = viewport.toActual(app.transform, widget.rect.x + widget.rect.w / 2, widget.rect.y + widget.rect.h / 2);
+  const [x, y] = viewport.toActual(
+    app.transform,
+    widget.rect.x + widget.rect.w / 2,
+    widget.rect.y + widget.rect.h / 2,
+  );
   app.event({ kind: "click", x, y, button: 1 });
 }
 
@@ -59,7 +63,9 @@ function clickWidget(app: App, id: string): void {
 // leaving, which -- mirroring `lobby.ts`'s real `back` handling -- reports
 // itself to `App` as `{ go: "back" }`. See this file's header for why a
 // fuller fake (or the real `OnlineLobby`) is not needed for this case.
-function fakeEmptyLobbyScreen(onAction: (action: { readonly go: string }) => void): OnlineLobbyScreen {
+function fakeEmptyLobbyScreen(
+  onAction: (action: { readonly go: string }) => void,
+): OnlineLobbyScreen {
   return {
     state: { model: {} },
     link: undefined,

@@ -18,11 +18,7 @@
 import type { Vec2 } from "@gc/core";
 
 export type CombatPresentationReadiness =
-  | "unavailable"
-  | "ready"
-  | "cooldown"
-  | "committed"
-  | "forced";
+  "unavailable" | "ready" | "cooldown" | "committed" | "forced";
 
 export type CombatTelegraphKind = "arc" | "guard_arc" | "line";
 
@@ -271,7 +267,7 @@ function readiness(runtime: CombatPlayerState): CombatPresentationReadiness {
 
 function telegraphKind(
   runtime: CombatPlayerState,
-  family: ActionFamilyData | undefined
+  family: ActionFamilyData | undefined,
 ): CombatTelegraphKind | undefined {
   if (family === undefined || runtime.forced_ticks > 0) {
     return undefined;
@@ -293,7 +289,9 @@ function telegraphKind(
 }
 
 /** Drops keys whose value is `undefined`, honestly typed as `Partial<T>`. */
-function definedFields<T extends object>(fields: { [K in keyof T]?: T[K] | undefined }): Partial<T> {
+function definedFields<T extends object>(fields: {
+  [K in keyof T]?: T[K] | undefined;
+}): Partial<T> {
   const result: Partial<T> = {};
   for (const key of Object.keys(fields) as (keyof T)[]) {
     const value = fields[key];
@@ -309,18 +307,18 @@ function definedFields<T extends object>(fields: { [K in keyof T]?: T[K] | undef
 function model(
   state: MatchState,
   combatState: CombatMatchState | null,
-  data: CombatPresentationData
+  data: CombatPresentationData,
 ): CombatPresentationModel {
   if (combatState === null) {
     return { enabled: false, players: [], projectiles: [] };
   }
   invariant(
     combatState.players.length === state.players.length,
-    "combat presentation player count mismatch"
+    "combat presentation player count mismatch",
   );
   invariant(
     combatState.player_ids.length === state.players.length,
-    "combat presentation identity mismatch"
+    "combat presentation identity mismatch",
   );
 
   const players: CombatPlayerPresentation[] = state.players.map((player, i) => {
@@ -330,10 +328,14 @@ function model(
     const runtime = combatState.players[i];
     invariant(runtime !== undefined, "combat presentation runtime is missing");
 
-    const family = runtime.family_id !== undefined ? data.action_families[runtime.family_id] : undefined;
-    const loadout = runtime.loadout_id !== undefined ? data.loadouts[runtime.loadout_id] : undefined;
+    const family =
+      runtime.family_id !== undefined ? data.action_families[runtime.family_id] : undefined;
+    const loadout =
+      runtime.loadout_id !== undefined ? data.loadouts[runtime.loadout_id] : undefined;
     const equipment =
-      loadout !== undefined ? data.equipment_presentations[loadout.equipment_presentation_id] : undefined;
+      loadout !== undefined
+        ? data.equipment_presentations[loadout.equipment_presentation_id]
+        : undefined;
 
     let projectileRangePx: number | undefined;
     if (
@@ -341,7 +343,8 @@ function model(
       family.projectile_speed_px_per_second !== undefined &&
       family.projectile_lifetime_ticks !== undefined
     ) {
-      projectileRangePx = (family.projectile_speed_px_per_second * family.projectile_lifetime_ticks) / 60;
+      projectileRangePx =
+        (family.projectile_speed_px_per_second * family.projectile_lifetime_ticks) / 60;
     }
 
     const cooldownFraction =

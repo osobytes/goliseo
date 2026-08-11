@@ -151,7 +151,10 @@ function observe(
       value.pendingPass = team;
       award(value.involvement, event.player, 1);
     } else if (
-      (event.kind === "shot" || event.kind === "header" || event.kind === "volley" || event.kind === "bicycle") &&
+      (event.kind === "shot" ||
+        event.kind === "header" ||
+        event.kind === "volley" ||
+        event.kind === "bicycle") &&
       team !== undefined &&
       event.player !== undefined &&
       value.keeper.get(event.player) !== true
@@ -206,7 +209,10 @@ function observeConfirmedEvent(value: MatchObserver, event: RollbackWrappedMatch
     value.pendingPass = team;
     award(value.involvement, payload.player, 1);
   } else if (
-    (payload.kind === "shot" || payload.kind === "header" || payload.kind === "volley" || payload.kind === "bicycle") &&
+    (payload.kind === "shot" ||
+      payload.kind === "header" ||
+      payload.kind === "volley" ||
+      payload.kind === "bicycle") &&
     team !== undefined &&
     payload.player !== undefined &&
     value.keeper.get(payload.player) !== true
@@ -230,7 +236,11 @@ function observeConfirmedEvent(value: MatchObserver, event: RollbackWrappedMatch
 
 // Rollback matches publish only newly confirmed, immutable steps. This path is
 // boundary-addressed and idempotent; it never reads the speculative live state.
-function observeConfirmed(value: MatchObserver, step: ObservedConfirmedStep, tickSeconds: number): boolean {
+function observeConfirmed(
+  value: MatchObserver,
+  step: ObservedConfirmedStep,
+  tickSeconds: number,
+): boolean {
   if (step.tick <= value.lastConfirmedTick) {
     return false;
   }
@@ -305,7 +315,9 @@ function finish(value: MatchObserver): ObservedMatchSummary {
       ...(awayCompletion !== undefined ? { pass_completion: awayCompletion } : {}),
     },
     ...(mvp !== undefined ? { mvp_player_id: mvp } : {}),
-    ...(mvp !== undefined ? { mvp_summary: "Recorded the fixture's strongest all-around contribution." } : {}),
+    ...(mvp !== undefined
+      ? { mvp_summary: "Recorded the fixture's strongest all-around contribution." }
+      : {}),
   };
 }
 

@@ -23,7 +23,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type {
-  Coordinator,
   CoordinatorConstructor,
   ControlMessageHeader,
   AiDrivenEvidence,
@@ -88,7 +87,8 @@ const artifactPath = join(here, "..", "dist", "pkg", "gc_wasm.cjs");
  * lobby wire helpers, and the raw per-frame render path in one typed
  * surface. */
 export interface SimHost
-  extends InputFrameBridge,
+  extends
+    InputFrameBridge,
     InputProtocolBridge,
     MatchDriverFixtureBridge,
     MatchSnapshotBridge,
@@ -222,6 +222,17 @@ export function loadSimHost(): SimHost {
   }
 
   const raw = native.__wbg_raw;
+  /* eslint-disable @typescript-eslint/unbound-method -- every name copied off
+     `native` below is a wasm-bindgen FREE FUNCTION or a constructor, not a
+     method: `crates/gc-wasm`'s bridges are `#[wasm_bindgen]` fns bound to no
+     receiver at all, so there is no `this` for a bare reference to lose. The
+     rule cannot see that because `types.ts` declares them with TypeScript's
+     method shorthand, which is how an interface spells "callable member"
+     whether or not a receiver exists. Scoped to this object literal, and
+     re-enabled immediately after it, so a genuine unbound method anywhere else
+     in this file is still reported. Rewriting ~40 declarations in `types.ts` as
+     `this: void` properties is the real fix and is deliberately not folded into
+     the change that introduced this gate. */
   const host: SimHost = {
     Session: native.Session,
     Coordinator: native.Coordinator,
@@ -301,6 +312,7 @@ export function loadSimHost(): SimHost {
       return new Float64Array(raw.memory.buffer, ptr, len);
     },
   };
+  /* eslint-enable @typescript-eslint/unbound-method */
   cached = host;
   return host;
 }

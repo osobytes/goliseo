@@ -25,9 +25,7 @@ const VP = { w: 960, h: 540 };
 // the screen renders what it is handed; it does not prove the screen renders the
 // bindings that actually exist, and it goes stale silently the first time
 // someone rebinds a key.
-const MATCH_REFERENCE: readonly ControlReferenceRow[] = bindings.reference(
-  "match",
-) as readonly ControlReferenceRow[];
+const MATCH_REFERENCE: readonly ControlReferenceRow[] = bindings.reference("match");
 
 function keyboardCardText(reference: readonly ControlReferenceRow[]): string {
   const layout = help.layout(help.newState(VP, reference));

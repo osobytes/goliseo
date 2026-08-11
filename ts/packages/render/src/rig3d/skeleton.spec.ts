@@ -167,4 +167,3 @@ describe("rig3d skeleton: raised", () => {
     }
   });
 });
-

@@ -242,7 +242,13 @@ function wrapPhase(time: number, duration: number, loop: boolean): number {
   return wrapped < 0 ? wrapped + duration : wrapped;
 }
 
-function phaseFor(source: PhaseSource, clip: clips.Clip, view: AnimatorView | undefined, opts: AnimatorOptions, now: number): number {
+function phaseFor(
+  source: PhaseSource,
+  clip: clips.Clip,
+  view: AnimatorView | undefined,
+  opts: AnimatorOptions,
+  now: number,
+): number {
   switch (source) {
     case "clock":
       return wrapPhase(now, clip.duration, true);
@@ -266,7 +272,10 @@ function phaseFor(source: PhaseSource, clip: clips.Clip, view: AnimatorView | un
 // masks every in-flight action was engaged with. Almost always one set (every
 // entry but `keeper_punt` masks to `UPPER_BODY`, and `ARMS` is a subset of it),
 // so the common path returns the recorded set itself rather than a copy.
-function activeMask(state: AnimatorState, weights: Readonly<Record<string, number>>): ReadonlySet<string> {
+function activeMask(
+  state: AnimatorState,
+  weights: Readonly<Record<string, number>>,
+): ReadonlySet<string> {
   const active: ReadonlySet<string>[] = [];
   for (const id of Object.keys(weights)) {
     const mask = state.masksByAction[id];
@@ -390,7 +399,11 @@ export function poseFor(
       // pose. Without the normalisation a half-faded stance would blend
       // halfway toward rest inside the mixer AND halfway toward the base
       // outside it, and land at a quarter strength.
-      stance.set(actionId, phaseFor(poseTable.PHASE_BY_ACTION[actionId], clip, view, opts, now), weight / total);
+      stance.set(
+        actionId,
+        phaseFor(poseTable.PHASE_BY_ACTION[actionId], clip, view, opts, now),
+        weight / total,
+      );
     }
     pose = clips.layer(pose, stance.evaluate(), activeMask(state, state.crossfade.weights), total);
   }

@@ -113,7 +113,11 @@ function buildLighting(field: RenderFrameField): THREE.Group {
   // metal, crowd) sitting right next to them. Dimmer than before (0.8 -> 0.55)
   // so the directional key/rim pair below reads as the dominant contrast,
   // not the flat ambient wash.
-  const hemisphere = new THREE.HemisphereLight(new THREE.Color(0.24, 0.22, 0.42), new THREE.Color(0.08, 0.07, 0.17), 0.55);
+  const hemisphere = new THREE.HemisphereLight(
+    new THREE.Color(0.24, 0.22, 0.42),
+    new THREE.Color(0.08, 0.07, 0.17),
+    0.55,
+  );
   hemisphere.name = "hemisphere";
   group.add(hemisphere);
 
@@ -146,8 +150,11 @@ function buildLighting(field: RenderFrameField): THREE.Group {
 function disposeObjectTree(root: THREE.Object3D): void {
   root.traverse((obj) => {
     if (obj instanceof THREE.Mesh || obj instanceof THREE.Line || obj instanceof THREE.Points) {
-      obj.geometry.dispose();
-      disposeMaterial(obj.material);
+      // See draw2d.ts's `disposeObject`: `instanceof` on three.js's generic
+      // classes narrows their type arguments to `any`. Runtime check unchanged.
+      const owner: THREE.Mesh | THREE.Line | THREE.Points = obj;
+      owner.geometry.dispose();
+      disposeMaterial(owner.material);
       if (obj instanceof THREE.InstancedMesh) {
         obj.dispose();
       }

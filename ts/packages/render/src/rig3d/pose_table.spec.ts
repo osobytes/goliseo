@@ -75,11 +75,22 @@ describe("rig3d/pose_table.POSE_ACTIONS", () => {
     for (const id of WIRE_POSE_IDS) {
       const entry: PoseActionEntry = POSE_ACTIONS[id];
       const hasAction = entry.action !== null;
-      expect(entry.fallback === null, `${id}: action and fallback must be mutually exclusive`).toBe(hasAction);
-      expect(entry.mask !== null, `${id}: mask is meaningful iff there is an action`).toBe(hasAction);
-      expect(entry.phase !== null, `${id}: phase is meaningful iff there is an action`).toBe(hasAction);
-      expect(entry.crossfade > 0, `${id}: crossfade is meaningful iff there is an action`).toBe(hasAction);
-      expect(entry.note.length, `${id}: every entry must say why it reads the way it does`).toBeGreaterThan(0);
+      expect(entry.fallback === null, `${id}: action and fallback must be mutually exclusive`).toBe(
+        hasAction,
+      );
+      expect(entry.mask !== null, `${id}: mask is meaningful iff there is an action`).toBe(
+        hasAction,
+      );
+      expect(entry.phase !== null, `${id}: phase is meaningful iff there is an action`).toBe(
+        hasAction,
+      );
+      expect(entry.crossfade > 0, `${id}: crossfade is meaningful iff there is an action`).toBe(
+        hasAction,
+      );
+      expect(
+        entry.note.length,
+        `${id}: every entry must say why it reads the way it does`,
+      ).toBeGreaterThan(0);
     }
   });
 
@@ -87,7 +98,8 @@ describe("rig3d/pose_table.POSE_ACTIONS", () => {
   // record WHICH of the three unrelated situations it is in. `POSE_CLIP`'s
   // `"idle"` covered all three at once, which is why the third was invisible.
   it("distinguishes the three reasons a pose has no action of its own", () => {
-    const byFallback = (want: string) => WIRE_POSE_IDS.filter((id) => POSE_ACTIONS[id].fallback === want);
+    const byFallback = (want: string) =>
+      WIRE_POSE_IDS.filter((id) => POSE_ACTIONS[id].fallback === want);
     expect(byFallback("root_overlay")).toEqual([
       "keeper_tip",
       "keeper_spread",
@@ -111,7 +123,11 @@ describe("rig3d/pose_table.POSE_ACTIONS", () => {
       "contain",
       "fatigue",
     ]);
-    expect(byFallback("locomotion_base")).toEqual(["keeper_shuffle", "keeper_ready_tall", "locomotion"]);
+    expect(byFallback("locomotion_base")).toEqual([
+      "keeper_shuffle",
+      "keeper_ready_tall",
+      "locomotion",
+    ]);
     // THE REAL GAP, singular since #430. A slide is a whole-body ground action
     // that no root transform approximates, so it is blocked on #423's asset
     // set and #424's pipeline rather than merely unscheduled. If this list
@@ -192,7 +208,10 @@ describe("rig3d/pose_table.locomotionBlend", () => {
   it("reproduces poseFor's walkMix/runMix as three.js's cumulative-weight fractions", () => {
     for (let speed = 0; speed <= viewState.MAX_DISPLAY_SPEED; speed += 13) {
       const walkMix = Math.min(speed / viewState.WALK_SPEED, 1);
-      const runMix = Math.max(0, Math.min((speed - viewState.WALK_SPEED) / (viewState.RUN_SPEED - viewState.WALK_SPEED), 1));
+      const runMix = Math.max(
+        0,
+        Math.min((speed - viewState.WALK_SPEED) / (viewState.RUN_SPEED - viewState.WALK_SPEED), 1),
+      );
       const { idle, walk, run } = locomotionBlend(speed);
       if (idle + walk > 0) {
         expect(walk / (idle + walk)).toBeCloseTo(walkMix, 9);

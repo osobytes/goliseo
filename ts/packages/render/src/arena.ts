@@ -62,13 +62,19 @@ const STARS: readonly (readonly [number, number, number])[] = [
 ];
 
 /** Starfield, planet, orbital rails and ribbon markers. */
-export function backdropCommands(value: ArenaColors, viewport: ArenaViewport, theme: ArenaThemeColors): DrawCommand[] {
+export function backdropCommands(
+  value: ArenaColors,
+  viewport: ArenaViewport,
+  theme: ArenaThemeColors,
+): DrawCommand[] {
   const dl = new DrawList();
 
   dl.rect("fill", 0, 0, viewport.w, viewport.h, theme.void);
 
   for (const star of STARS) {
-    dl.circle("fill", viewport.w * star[0], viewport.h * star[1], star[2], theme.text, { alpha: 0.35 });
+    dl.circle("fill", viewport.w * star[0], viewport.h * star[1], star[2], theme.text, {
+      alpha: 0.35,
+    });
   }
 
   const cx = viewport.w * 0.5;
@@ -110,7 +116,11 @@ export function backdropCommands(value: ArenaColors, viewport: ArenaViewport, th
 }
 
 /** Glowing corner brackets around the pitch's projected trapezoid. */
-export function frameCommands(value: ArenaColors, corners: ArenaCorners, pulse?: number): DrawCommand[] {
+export function frameCommands(
+  value: ArenaColors,
+  corners: ArenaCorners,
+  pulse?: number,
+): DrawCommand[] {
   const dl = new DrawList();
   const p = pulse ?? 0;
   const glow = 0.58 + 0.34 * p;
@@ -137,11 +147,21 @@ export function frameCommands(value: ArenaColors, corners: ArenaCorners, pulse?:
 }
 
 /** Impure: paints the backdrop into `group`. Untested -- see this file's header. */
-export function drawBackdrop(group: THREE.Group, value: ArenaColors, viewport: ArenaViewport, theme: ArenaThemeColors): void {
+export function drawBackdrop(
+  group: THREE.Group,
+  value: ArenaColors,
+  viewport: ArenaViewport,
+  theme: ArenaThemeColors,
+): void {
   paint(group, backdropCommands(value, viewport, theme));
 }
 
 /** Impure: paints the corner frame into `group`. Untested -- see this file's header. */
-export function drawFrame(group: THREE.Group, value: ArenaColors, corners: ArenaCorners, pulse?: number): void {
+export function drawFrame(
+  group: THREE.Group,
+  value: ArenaColors,
+  corners: ArenaCorners,
+  pulse?: number,
+): void {
   paint(group, frameCommands(value, corners, pulse));
 }

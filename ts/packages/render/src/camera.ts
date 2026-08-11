@@ -348,13 +348,7 @@ export const camera = {
   // Deriving the margin from `field / (2 * zoom)` (the previous behaviour)
   // pins the focus to the exact centre of the pitch at zoom 1, so the camera
   // cannot follow anything at all.
-  view(
-    fx: number,
-    fy: number,
-    field: CameraField,
-    zoom = 1,
-    margin?: CameraMargin,
-  ): CameraView {
+  view(fx: number, fy: number, field: CameraField, zoom = 1, margin?: CameraMargin): CameraView {
     const z = Math.max(0.25, zoom);
     let mx = margin !== undefined ? margin.x : field.w / (2 * z);
     let my = margin !== undefined ? margin.y : field.h / (2 * z);

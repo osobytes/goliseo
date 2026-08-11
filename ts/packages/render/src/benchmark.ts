@@ -438,7 +438,10 @@ export class Benchmark {
 
 // Gate evaluation, kept next to the thresholds so a report can never claim a
 // pass the numbers do not support.
-export function evaluate(result: BenchmarkResult): { readonly pass: boolean; readonly failures: readonly string[] } {
+export function evaluate(result: BenchmarkResult): {
+  readonly pass: boolean;
+  readonly failures: readonly string[];
+} {
   const g = GATES;
   const failures: string[] = [];
   const check = (ok: boolean, message: string): void => {
@@ -454,8 +457,14 @@ export function evaluate(result: BenchmarkResult): { readonly pass: boolean; rea
     result.update.max_ms <= g.update_max_ms,
     `update max ${result.update.max_ms.toFixed(2)} ms > ${g.update_max_ms} ms`,
   );
-  check(result.draw.p95_ms <= g.draw_p95_ms, `draw p95 ${result.draw.p95_ms.toFixed(2)} ms > ${g.draw_p95_ms} ms`);
-  check(result.draw.max_ms <= g.draw_max_ms, `draw max ${result.draw.max_ms.toFixed(2)} ms > ${g.draw_max_ms} ms`);
+  check(
+    result.draw.p95_ms <= g.draw_p95_ms,
+    `draw p95 ${result.draw.p95_ms.toFixed(2)} ms > ${g.draw_p95_ms} ms`,
+  );
+  check(
+    result.draw.max_ms <= g.draw_max_ms,
+    `draw max ${result.draw.max_ms.toFixed(2)} ms > ${g.draw_max_ms} ms`,
+  );
   // The pacing gate is written per 60 seconds, so scale it to what we ran
   // rather than comparing a 10-second run against a 60-second allowance.
   const allowance = g.slow_frames_per_60s * Math.max(1, result.measured_seconds / 60);
@@ -526,5 +535,7 @@ export function emit(result: BenchmarkResult): void {
       `GC_BENCH_SAMPLES|renderer=${result.renderer}|kind=${kind}|unit=microseconds|samples=${microseconds(values)}`,
     );
   }
-  console.log(`GC_BENCH_GATE|renderer=${result.renderer}|pass=${String(pass)}|failures=${failures.join("; ")}`);
+  console.log(
+    `GC_BENCH_GATE|renderer=${result.renderer}|pass=${String(pass)}|failures=${failures.join("; ")}`,
+  );
 }

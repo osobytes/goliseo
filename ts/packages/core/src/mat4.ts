@@ -133,7 +133,7 @@ function transform(x: number, y: number, z: number, rx = 0, ry = 0, rz = 0): Mat
 }
 
 function perspective(fovDeg: number, aspect: number, near: number, far: number): Mat4 {
-  const f = 1 / Math.tan(((fovDeg * Math.PI) / 180 / 2));
+  const f = 1 / Math.tan((fovDeg * Math.PI) / 180 / 2);
   const nf = 1 / (near - far);
   // prettier-ignore
   return [
@@ -152,14 +152,7 @@ function normalize(x: number, y: number, z: number): Vec3Tuple {
   return [x / len, y / len, z / len];
 }
 
-function cross(
-  ax: number,
-  ay: number,
-  az: number,
-  bx: number,
-  by: number,
-  bz: number,
-): Vec3Tuple {
+function cross(ax: number, ay: number, az: number, bx: number, by: number, bz: number): Vec3Tuple {
   return [ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx];
 }
 

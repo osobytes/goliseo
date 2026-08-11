@@ -48,15 +48,10 @@ import {
 } from "@gc/screens";
 import type { GamepadState, KeyboardState } from "@gc/input";
 import { matchContract } from "./match_contract.ts";
-import {
-  matchObserver,
-  type MatchObserver,
-  type ObservedMatchEvent,
-} from "./match_observer.ts";
+import { matchObserver, type MatchObserver, type ObservedMatchEvent } from "./match_observer.ts";
 import type { RealMatchFactory } from "./match_adapter.ts";
 import type { ProductMatchRequest } from "./match_contract.ts";
 import type { MatchContractContent } from "./content.ts";
-import type { Screen } from "./screen_stack.ts";
 
 /**
  * Feeds `matchObserver` the real roster, carrier and per-tick events that
@@ -167,6 +162,6 @@ export function createRealMatchFactory(deps: RealMatchFactoryDeps): RealMatchFac
     // Same "cast to the (unparameterized) Screen this package's factories
     // return" pattern `match_adapter.ts`'s own `fake()` uses for `Menu` --
     // see that file's header.
-    return realMatchScreen as unknown as Screen;
+    return realMatchScreen;
   };
 }

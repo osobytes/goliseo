@@ -36,7 +36,8 @@ export interface SquadScreenState {
   readonly message: string;
 }
 
-export type SquadAction = { readonly go: "title" } | { readonly go: "formation"; readonly starterIds: readonly string[] };
+export type SquadAction =
+  { readonly go: "title" } | { readonly go: "formation"; readonly starterIds: readonly string[] };
 
 function contains(ids: readonly string[], id: string): boolean {
   return ids.includes(id);
@@ -133,7 +134,10 @@ function layout(state: SquadScreenState): Layout {
   return widgets;
 }
 
-function update(state: SquadScreenState, event: FocusEvent): readonly [SquadScreenState, SquadAction | undefined] {
+function update(
+  state: SquadScreenState,
+  event: FocusEvent,
+): readonly [SquadScreenState, SquadAction | undefined] {
   const currentLayout = layout(state);
   let next: SquadScreenState = {
     ...state,

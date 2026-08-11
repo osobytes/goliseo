@@ -39,7 +39,14 @@ function mouth(
     const x = (t - 0.5) * width;
     // Zero at the corners, deepest in the middle: a smile.
     const dip = curve * (1 - (2 * t - 1) ** 2);
-    geometry.box(mb, mat4.translation(x, cy - dip, front), (width / steps) * 1.2, thickness, thickness * 0.9, color);
+    geometry.box(
+      mb,
+      mat4.translation(x, cy - dip, front),
+      (width / steps) * 1.2,
+      thickness,
+      thickness * 0.9,
+      color,
+    );
   }
 }
 
@@ -97,7 +104,14 @@ export function build(
     for (const side of [-1, 1]) {
       const z = front(eyeY);
       geometry.sphere(mb, mat4.translation(side * hr * 0.34, eyeY, z), hr * 0.115, 5, 10, ink);
-      geometry.box(mb, mat4.translation(side * hr * 0.34, eyeY + hr * 0.26, z * 0.99), hr * 0.34, hr * 0.075, hr * 0.06, ink);
+      geometry.box(
+        mb,
+        mat4.translation(side * hr * 0.34, eyeY + hr * 0.26, z * 0.99),
+        hr * 0.34,
+        hr * 0.075,
+        hr * 0.06,
+        ink,
+      );
     }
     mouth(mb, eyeY - hr * 0.44, front(eyeY - hr * 0.44), hr * 0.78, hr * 0.16, hr * 0.085, ink);
     return;
@@ -108,11 +122,21 @@ export function build(
   for (const side of [-1, 1]) {
     const z = front(eyeY);
     geometry.sphere(mb, mat4.translation(side * hr * 0.36, eyeY, z), hr * 0.165, 5, 10, sclera);
-    geometry.sphere(mb, mat4.translation(side * hr * 0.36 + side * hr * 0.02, eyeY, z + hr * 0.1), hr * 0.085, 5, 10, ink);
+    geometry.sphere(
+      mb,
+      mat4.translation(side * hr * 0.36 + side * hr * 0.02, eyeY, z + hr * 0.1),
+      hr * 0.085,
+      5,
+      10,
+      ink,
+    );
     // Brow, tilted down toward the nose: determined rather than surprised.
     geometry.box(
       mb,
-      mat4.multiply(mat4.translation(side * hr * 0.36, eyeY + hr * 0.3, z * 0.98), mat4.rotationZ((side * 11 * Math.PI) / 180)),
+      mat4.multiply(
+        mat4.translation(side * hr * 0.36, eyeY + hr * 0.3, z * 0.98),
+        mat4.rotationZ((side * 11 * Math.PI) / 180),
+      ),
       hr * 0.4,
       hr * 0.085,
       hr * 0.07,
@@ -120,6 +144,13 @@ export function build(
     );
   }
   // Nose bridge and a small mouth.
-  geometry.box(mb, mat4.translation(0, eyeY - hr * 0.12, front(eyeY) * 1.02), hr * 0.14, hr * 0.3, hr * 0.12, c.skin);
+  geometry.box(
+    mb,
+    mat4.translation(0, eyeY - hr * 0.12, front(eyeY) * 1.02),
+    hr * 0.14,
+    hr * 0.3,
+    hr * 0.12,
+    c.skin,
+  );
   mouth(mb, eyeY - hr * 0.48, front(eyeY - hr * 0.48), hr * 0.52, hr * 0.11, hr * 0.07, ink);
 }

@@ -26,7 +26,14 @@ export interface HeadGeometry {
 }
 
 // A fin of quads following a half-circle silhouette: plumes and crests.
-function crest(mb: PartBuilder, span: number, height: number, baseY: number, thickness: number, color: number): void {
+function crest(
+  mb: PartBuilder,
+  span: number,
+  height: number,
+  baseY: number,
+  thickness: number,
+  color: number,
+): void {
   const segments = 14;
   for (let i = 0; i < segments; i++) {
     const t0 = i / segments;
@@ -64,12 +71,22 @@ function greatHelm(c: SlotIndex, h: HeadGeometry): readonly [PartBuilder, PartBu
     c.accent,
   );
   // Nasal bar down the centre of the opening.
-  geometry.box(mb, mat4.translation(0, h.eye - r * 0.1, r * 0.92), r * 0.15, r * 0.8, r * 0.16, c.plate);
+  geometry.box(
+    mb,
+    mat4.translation(0, h.eye - r * 0.1, r * 0.92),
+    r * 0.15,
+    r * 0.8,
+    r * 0.16,
+    c.plate,
+  );
   // Cheek plates, leaving the middle of the face clear.
   for (const side of [-1, 1]) {
     geometry.extrude(
       mb,
-      mat4.multiply(mat4.translation(side * r * 0.86, 0, r * 0.1), mat4.rotationZ((-side * 6 * Math.PI) / 180)),
+      mat4.multiply(
+        mat4.translation(side * r * 0.86, 0, r * 0.1),
+        mat4.rotationZ((-side * 6 * Math.PI) / 180),
+      ),
       geometry.boxProfile(0.8, 0.45),
       [
         { y: h.eye - r * 0.72, w: r * 0.26 },
@@ -91,7 +108,15 @@ function visorHelm(c: SlotIndex, h: HeadGeometry): readonly [PartBuilder, PartBu
   const mb = new PartBuilder();
   const r = h.hr;
 
-  geometry.sphere(mb, mat4.translation(0, h.eye + r * 0.42, -r * 0.04), r * 1.12, 7, 14, c.plate, 0.6);
+  geometry.sphere(
+    mb,
+    mat4.translation(0, h.eye + r * 0.42, -r * 0.04),
+    r * 1.12,
+    7,
+    14,
+    c.plate,
+    0.6,
+  );
   geometry.extrude(
     mb,
     null,
@@ -105,14 +130,24 @@ function visorHelm(c: SlotIndex, h: HeadGeometry): readonly [PartBuilder, PartBu
   for (const side of [-1, 1]) {
     geometry.box(
       mb,
-      mat4.multiply(mat4.translation(side * r * 1.02, h.eye + r * 0.3, -r * 0.22), mat4.rotationZ((-side * 14 * Math.PI) / 180)),
+      mat4.multiply(
+        mat4.translation(side * r * 1.02, h.eye + r * 0.3, -r * 0.22),
+        mat4.rotationZ((-side * 14 * Math.PI) / 180),
+      ),
       r * 0.18,
       r * 0.66,
       r * 0.92,
       c.accent,
     );
     // Jaw guard under the cheeks, still clear of the mouth.
-    geometry.box(mb, mat4.translation(side * r * 0.84, h.eye - r * 0.42, r * 0.26), r * 0.24, r * 0.7, r * 0.62, c.accent);
+    geometry.box(
+      mb,
+      mat4.translation(side * r * 0.84, h.eye - r * 0.42, r * 0.26),
+      r * 0.24,
+      r * 0.7,
+      r * 0.62,
+      c.accent,
+    );
   }
 
   const glow = new PartBuilder();
@@ -126,7 +161,14 @@ function visorHelm(c: SlotIndex, h: HeadGeometry): readonly [PartBuilder, PartBu
     const t1 = (i + 1) / segments;
     const lo = h.eye + r * 0.5;
     const hi = h.eye + r * 0.7;
-    glow.quad(null, ring(t0, lo, r * 1.14), ring(t1, lo, r * 1.14), ring(t1, hi, r * 1.08), ring(t0, hi, r * 1.08), c.seam);
+    glow.quad(
+      null,
+      ring(t0, lo, r * 1.14),
+      ring(t1, lo, r * 1.14),
+      ring(t1, hi, r * 1.08),
+      ring(t0, hi, r * 1.08),
+      c.seam,
+    );
   }
   return [mb, glow];
 }
@@ -137,7 +179,15 @@ function figureHelm(c: SlotIndex, h: HeadGeometry): readonly [PartBuilder, PartB
   const mb = new PartBuilder();
   const r = h.hr;
 
-  geometry.sphere(mb, mat4.translation(0, h.eye + r * 0.5, -r * 0.05), r * 1.1, 7, 14, c.plate, 0.56);
+  geometry.sphere(
+    mb,
+    mat4.translation(0, h.eye + r * 0.5, -r * 0.05),
+    r * 1.1,
+    7,
+    14,
+    c.plate,
+    0.56,
+  );
   geometry.extrude(
     mb,
     null,
@@ -150,11 +200,21 @@ function figureHelm(c: SlotIndex, h: HeadGeometry): readonly [PartBuilder, PartB
     c.accent,
   );
   for (const side of [-1, 1]) {
-    geometry.sphere(mb, mat4.translation(side * r * 1.02, h.eye + r * 0.36, 0), r * 0.3, 5, 10, c.accent);
+    geometry.sphere(
+      mb,
+      mat4.translation(side * r * 1.02, h.eye + r * 0.36, 0),
+      r * 0.3,
+      5,
+      10,
+      c.accent,
+    );
   }
 
   // Wind-up key: the Toybox joke in one shape.
-  const keyTf = mat4.multiply(mat4.translation(0, h.eye + r * 0.9, -r * 1.0), mat4.rotationX((-18 * Math.PI) / 180));
+  const keyTf = mat4.multiply(
+    mat4.translation(0, h.eye + r * 0.9, -r * 1.0),
+    mat4.rotationX((-18 * Math.PI) / 180),
+  );
   geometry.extrude(
     mb,
     keyTf,
@@ -181,7 +241,9 @@ function figureHelm(c: SlotIndex, h: HeadGeometry): readonly [PartBuilder, PartB
   return [mb, null];
 }
 
-const BUILDERS: Readonly<Record<string, (c: SlotIndex, h: HeadGeometry) => readonly [PartBuilder, PartBuilder | null]>> = {
+const BUILDERS: Readonly<
+  Record<string, (c: SlotIndex, h: HeadGeometry) => readonly [PartBuilder, PartBuilder | null]>
+> = {
   great_helm: greatHelm,
   visor_helm: visorHelm,
   figure_helm: figureHelm,
@@ -192,7 +254,11 @@ const BUILDERS: Readonly<Record<string, (c: SlotIndex, h: HeadGeometry) => reado
  * Returns [solid, emissive|null] part builders, not merged parts (#337
  * slice 2's split survives the port: only `body.accumulate` folds these in).
  */
-export function build(id: string, c: SlotIndex, head: HeadGeometry): readonly [PartBuilder, PartBuilder | null] {
+export function build(
+  id: string,
+  c: SlotIndex,
+  head: HeadGeometry,
+): readonly [PartBuilder, PartBuilder | null] {
   const fn = BUILDERS[id];
   if (!fn) {
     throw new Error(`unknown headgear id: ${id}`);

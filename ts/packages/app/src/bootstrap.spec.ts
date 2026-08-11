@@ -22,7 +22,14 @@ import { bootstrap } from "./bootstrap.ts";
 import { createRealMatchFactory } from "./real_match_factory.ts";
 import { matchContract } from "./match_contract.ts";
 import { createSimHost } from "./sim_host.ts";
-import { APP_CONTENT, MATCH_CONTRACT_CONTENT, NEBULA, fakeHostFactory, fakeKeyboard, noopRenderPort } from "./test_support/fixtures.ts";
+import {
+  APP_CONTENT,
+  MATCH_CONTRACT_CONTENT,
+  NEBULA,
+  fakeHostFactory,
+  fakeKeyboard,
+  noopRenderPort,
+} from "./test_support/fixtures.ts";
 
 describe("bootstrap", () => {
   it("wires a real-kind match adapter into a fresh App", () => {
@@ -104,11 +111,18 @@ describe("real match adapter", () => {
     // The exact parameters `real_match_factory.ts`'s injected `createHost`
     // closure receives from `request`, threaded the same way
     // `browser_main.ts`'s real call site now does.
-    const host = createSimHost(request.home_team_id, request.away_team_id, request.seed ?? 0, 20, 3, {
-      homeFormation: request.formation_id,
-      tactic: request.tactic_id,
-      homeStarterIds: request.home_starter_ids,
-    });
+    const host = createSimHost(
+      request.home_team_id,
+      request.away_team_id,
+      request.seed ?? 0,
+      20,
+      3,
+      {
+        homeFormation: request.formation_id,
+        tactic: request.tactic_id,
+        homeStarterIds: request.home_starter_ids,
+      },
+    );
     try {
       const raw = host.matchStateJson?.();
       if (raw === undefined) {
@@ -122,22 +136,36 @@ describe("real match adapter", () => {
       expect(state.players[1]?.id).toBe("veil_nyx");
       expect(state.press.home).toBe(2); // press_high
 
-      const sameSeed = createSimHost(request.home_team_id, request.away_team_id, request.seed ?? 0, 20, 3, {
-        homeFormation: request.formation_id,
-        tactic: request.tactic_id,
-        homeStarterIds: request.home_starter_ids,
-      });
+      const sameSeed = createSimHost(
+        request.home_team_id,
+        request.away_team_id,
+        request.seed ?? 0,
+        20,
+        3,
+        {
+          homeFormation: request.formation_id,
+          tactic: request.tactic_id,
+          homeStarterIds: request.home_starter_ids,
+        },
+      );
       try {
         expect(sameSeed.snapshotHash?.()).toBe(host.snapshotHash?.());
       } finally {
         sameSeed.dispose();
       }
 
-      const differentSeed = createSimHost(request.home_team_id, request.away_team_id, (request.seed ?? 0) + 1, 20, 3, {
-        homeFormation: request.formation_id,
-        tactic: request.tactic_id,
-        homeStarterIds: request.home_starter_ids,
-      });
+      const differentSeed = createSimHost(
+        request.home_team_id,
+        request.away_team_id,
+        (request.seed ?? 0) + 1,
+        20,
+        3,
+        {
+          homeFormation: request.formation_id,
+          tactic: request.tactic_id,
+          homeStarterIds: request.home_starter_ids,
+        },
+      );
       try {
         expect(differentSeed.snapshotHash?.()).not.toBe(host.snapshotHash?.());
       } finally {
@@ -245,7 +273,9 @@ describe("real match adapter", () => {
     const plainScreen = factory(withoutCombat.value, callbacks) as unknown as {
       readonly match: { readonly debugCombatEnabled?: boolean };
     };
-    expect(plainScreen.match.debugCombatEnabled, "an ordinary request never opts into combat").toBe(false);
+    expect(plainScreen.match.debugCombatEnabled, "an ordinary request never opts into combat").toBe(
+      false,
+    );
 
     expect(hosts.length, "one host per constructed match").toBe(2);
   });

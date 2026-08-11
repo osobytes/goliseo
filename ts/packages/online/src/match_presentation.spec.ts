@@ -106,7 +106,7 @@ import {
 // ---------------------------------------------------------------------------
 
 function wasmRollbackEventsPort(
-  host: SimHost
+  host: SimHost,
 ): RollbackEventsPort<WasmRollbackEventsTimeline, WasmMatchSnapshot> {
   return {
     create(initialSnapshot, maxUnconfirmedTicks) {
@@ -115,7 +115,9 @@ function wasmRollbackEventsPort(
     apply(timeline, from, through, steps) {
       const outputsJson = JSON.stringify(steps.map((entry) => entry.output));
       const snapshots = steps.map((entry) => entry.snapshot);
-      return JSON.parse(timeline.apply(from, through, outputsJson, snapshots)) as RollbackApplyResult;
+      return JSON.parse(
+        timeline.apply(from, through, outputsJson, snapshots),
+      ) as RollbackApplyResult;
     },
     confirm(timeline, confirmedOutputTick) {
       return JSON.parse(timeline.confirm(confirmedOutputTick)) as readonly RollbackEventStep[];
@@ -172,7 +174,11 @@ interface RealPeer {
 
 interface RealHarness {
   readonly peers: readonly RealPeer[];
-  readonly ports: MatchPresentationPorts<WasmRollbackEventsTimeline, WasmMatchSnapshot, WasmMatchDriverBridge>;
+  readonly ports: MatchPresentationPorts<
+    WasmRollbackEventsTimeline,
+    WasmMatchSnapshot,
+    WasmMatchDriverBridge
+  >;
   readonly firstInputTick: number;
 }
 
@@ -186,15 +192,20 @@ function buildHarness(
   // `MatchDriverBridgeConstructor`'s doc in `packages/wasm/src/types.ts`).
   // Omitted for the plain (non-combat-phase) harness below, which relies on
   // each peer's own `Session.capture_snapshot()` default instead.
-  buildInitialSnapshotOverride?: () => WasmMatchSnapshot
+  buildInitialSnapshotOverride?: () => WasmMatchSnapshot,
 ): RealHarness {
   const freezeJson = host.matchDriverFixtureFreezeJson(mode);
   const manifestJson = host.matchDriverFixtureManifestJson(mode);
-  const firstInputTick = (JSON.parse(freezeJson) as { readonly first_input_tick: number }).first_input_tick;
+  const firstInputTick = (JSON.parse(freezeJson) as { readonly first_input_tick: number })
+    .first_input_tick;
   const peerIds = host.matchDriverFixturePeerIds(mode);
   const rollbackEvents = wasmRollbackEventsPort(host);
   const matchDriver = wasmMatchDriverPort();
-  const ports: MatchPresentationPorts<WasmRollbackEventsTimeline, WasmMatchSnapshot, WasmMatchDriverBridge> = {
+  const ports: MatchPresentationPorts<
+    WasmRollbackEventsTimeline,
+    WasmMatchSnapshot,
+    WasmMatchDriverBridge
+  > = {
     rollbackEvents,
     matchDriver,
   };
@@ -210,20 +221,28 @@ function buildHarness(
       manifestJson,
       undefined,
       undefined,
-      buildInitialSnapshotOverride?.()
+      buildInitialSnapshotOverride?.(),
     );
     driver.initializeTransport();
     // Star topology: the host opens a slot per guest; each guest opens only
     // the host (a guest's transport capacity is fixed at 1 -- see
     // `net_diagnostics.spec.ts`'s harness for the "at peer capacity" this
     // avoids once more than one guest is in play).
-    const others = role === "host" ? peerIds.filter((candidate) => candidate !== peerId) : [peerIds[0] as string];
+    const others =
+      role === "host"
+        ? peerIds.filter((candidate) => candidate !== peerId)
+        : [peerIds[0] as string];
     for (const other of others) {
       driver.openPeer(other);
       driver.setPeerConnected(other);
     }
     const initialSnapshot = driver.initialSnapshotHandle();
-    const presentation = newOnlineMatchPresentation(rollbackEvents, initialSnapshot, firstInputTick, maxUnconfirmedTicks);
+    const presentation = newOnlineMatchPresentation(
+      rollbackEvents,
+      initialSnapshot,
+      firstInputTick,
+      maxUnconfirmedTicks,
+    );
     return {
       peerId,
       driver,
@@ -264,7 +283,9 @@ interface WasmOutboundEnvelope {
 // `match_driver_bridge.rs`'s module doc describes, driven directly rather
 // than through a `StarTransportAdapter` (see the file header).
 function deliverAll(peers: readonly RealPeer[]): void {
-  const drained = peers.map((peer) => JSON.parse(peer.driver.drainOutboundJson()) as WasmOutboundEnvelope[]);
+  const drained = peers.map(
+    (peer) => JSON.parse(peer.driver.drainOutboundJson()) as WasmOutboundEnvelope[],
+  );
   peers.forEach((sender, senderIndex) => {
     for (const envelope of drained[senderIndex] ?? []) {
       const receiver = peers.find((candidate) => candidate.peerId === envelope.peer_id);
@@ -278,7 +299,7 @@ function deliverAll(peers: readonly RealPeer[]): void {
         envelope.message.kind,
         envelope.message.seq,
         envelope.message.tick ?? undefined,
-        payload
+        payload,
       );
     }
   });
@@ -393,7 +414,9 @@ function assertPublishedOnce(peers: readonly RealPeer[]): void {
     for (const id of peer.revoked) {
       expect(peer.confirmed.has(id), `peer ${index} confirmed a revoked event ${id}`).toBe(false);
     }
-    expect(peer.stale, `peer ${index} published a payload a correction had already replaced`).toBe(0);
+    expect(peer.stale, `peer ${index} published a payload a correction had already replaced`).toBe(
+      0,
+    );
     for (let index2 = 1; index2 < peer.confirmedTicks.length; index2 += 1) {
       expect(peer.confirmedTicks[index2]).toBe((peer.confirmedTicks[index2 - 1] as number) + 1);
     }
@@ -441,7 +464,9 @@ describe("online match presentation (real wasm bridges, no combat-phase fixture 
     run(host, harness, 40);
     for (const peer of harness.peers) {
       const timeline = diagnostics(peer.presentation, harness.ports.rollbackEvents);
-      const driverConfirmed = harness.ports.matchDriver.diagnostics(peer.driver).confirmed_output_tick;
+      const driverConfirmed = harness.ports.matchDriver.diagnostics(
+        peer.driver,
+      ).confirmed_output_tick;
       expect(timeline.confirmed_tick + harness.firstInputTick).toBe(driverConfirmed);
       expect(status(peer.presentation)).toBe("active");
     }
@@ -536,14 +561,30 @@ function runPhase(host: SimHost, harness: RealHarness, phaseId: PhaseId): number
         byTick.set(output.tick, output);
       }
       for (const correction of batch.corrections) {
-        for (let tick = correction.corrected_from_tick; tick <= correction.corrected_through_tick; tick += 1) {
+        for (
+          let tick = correction.corrected_from_tick;
+          tick <= correction.corrected_through_tick;
+          tick += 1
+        ) {
           const before = harness.ports.matchDriver.snapshot(peer.driver, tick + first);
           const after = harness.ports.matchDriver.snapshot(peer.driver, tick + 1 + first);
           const beforeRetained = before.status === "present" || before.status === "retained";
           const afterRetained = after.status === "present" || after.status === "retained";
-          if (beforeRetained && before.snapshot !== undefined && afterRetained && after.snapshot !== undefined) {
+          if (
+            beforeRetained &&
+            before.snapshot !== undefined &&
+            afterRetained &&
+            after.snapshot !== undefined
+          ) {
             const combatEventsJson = JSON.stringify(byTick.get(tick)?.combat_events ?? []);
-            if (host.onlineCombatPhaseObserved(phaseId, before.snapshot, after.snapshot, combatEventsJson)) {
+            if (
+              host.onlineCombatPhaseObserved(
+                phaseId,
+                before.snapshot,
+                after.snapshot,
+                combatEventsJson,
+              )
+            ) {
               observed[peerIndex] = (observed[peerIndex] ?? 0) + 1;
             }
           }
@@ -558,7 +599,9 @@ describe("online match presentation combat phases (real wasm bridges + online_co
   for (const phaseId of PHASE_IDS) {
     it(`keeps feedback honest through a correction during ${phaseId}`, () => {
       const host = loadSimHost();
-      const harness = buildHarness(host, "1v1", 30, () => host.onlineCombatPhaseBoundaryZero(phaseId));
+      const harness = buildHarness(host, "1v1", 30, () =>
+        host.onlineCombatPhaseBoundaryZero(phaseId),
+      );
       const observed = runPhase(host, harness, phaseId);
 
       let phaseTicks = 0;
@@ -566,7 +609,10 @@ describe("online match presentation combat phases (real wasm bridges + online_co
       let replaced = 0;
       let added = 0;
       harness.peers.forEach((peer, index) => {
-        expect(status(peer.presentation), `peer ${index}'s timeline gave up during ${phaseId}`).toBe("active");
+        expect(
+          status(peer.presentation),
+          `peer ${index}'s timeline gave up during ${phaseId}`,
+        ).toBe("active");
         phaseTicks += observed[index] ?? 0;
         corrections += peer.corrections;
         replaced += peer.replacedCombat;
@@ -578,7 +624,10 @@ describe("online match presentation combat phases (real wasm bridges + online_co
       // introduced combat cues that presentation then had to reconcile. A
       // run where the corrected tail produced byte-identical feedback would
       // satisfy every assertion above for free.
-      expect(replaced + added > 0, `no combat cue was rewritten or introduced during ${phaseId}`).toBe(true);
+      expect(
+        replaced + added > 0,
+        `no combat cue was rewritten or introduced during ${phaseId}`,
+      ).toBe(true);
       assertPublishedOnce(harness.peers);
       assertConfirmedAgreement(harness.peers);
     });
@@ -591,7 +640,9 @@ describe("online match presentation combat phases (real wasm bridges + online_co
   // contact and a miss.
   it("never publishes a combat cue a correction took away", () => {
     const host = loadSimHost();
-    const harness = buildHarness(host, "1v1", 30, () => host.onlineCombatPhaseBoundaryZero("contact"));
+    const harness = buildHarness(host, "1v1", 30, () =>
+      host.onlineCombatPhaseBoundaryZero("contact"),
+    );
     runPhase(host, harness, "contact");
     const revoked = harness.peers.reduce((sum, peer) => sum + peer.revokedCombat, 0);
     expect(revoked > 0, "the scrum never revoked a speculative combat cue").toBe(true);
@@ -636,7 +687,9 @@ describe("online match presentation combat phases (real wasm bridges + online_co
   // of steps without stalling -- so there is no silent peer to seat around.
   it("publishes the lifecycle exactly once through full time", () => {
     const host = loadSimHost();
-    const harness = buildHarness(host, "1v1", 30, () => host.onlineCombatPhaseBoundaryZero("contact", 4));
+    const harness = buildHarness(host, "1v1", 30, () =>
+      host.onlineCombatPhaseBoundaryZero("contact", 4),
+    );
     run(host, harness, 4 * 60 + 90, { period: 6 });
 
     let restarts = 0;
@@ -665,7 +718,9 @@ describe("online match presentation combat phases (real wasm bridges + online_co
       // never had.
       expect(fullTime, `peer ${index} published full time ${fullTime} times`).toBe(1);
     });
-    expect(restarts, "the scrum fixture scored, so this case now covers more than full time").toBe(0);
+    expect(restarts, "the scrum fixture scored, so this case now covers more than full time").toBe(
+      0,
+    );
     expect(combatRows > 0, "a combat-active run confirmed no combat feedback at all").toBe(true);
     assertPublishedOnce(harness.peers);
     assertConfirmedAgreement(harness.peers);
@@ -688,11 +743,20 @@ interface FakeTimeline {
 function fakeRollbackEvents(): RollbackEventsPort<FakeTimeline, number> {
   return {
     create(_initialSnapshot, maxUnconfirmedTicks): FakeTimeline {
-      return { maxUnconfirmedTicks, applied: [], confirmedTick: -1, status: "active", failNextApply: false };
+      return {
+        maxUnconfirmedTicks,
+        applied: [],
+        confirmedTick: -1,
+        status: "active",
+        failNextApply: false,
+      };
     },
     apply(timeline, from, through, steps): RollbackApplyResult {
       if (timeline.failNextApply) {
-        return { ok: false, error: { message: "fake window exceeded", code: "unconfirmed_window_exceeded" } };
+        return {
+          ok: false,
+          error: { message: "fake window exceeded", code: "unconfirmed_window_exceeded" },
+        };
       }
       timeline.applied.push({ from, through, count: steps.length });
       const diff: RollbackEventDiff = {
@@ -781,7 +845,10 @@ describe("match presentation (pure control flow, fake ports)", () => {
   it("appends forward outputs in order without producing a correction", () => {
     const rollbackEvents = fakeRollbackEvents();
     const matchDriver = fakeMatchDriver();
-    const ports: MatchPresentationPorts<FakeTimeline, number, FakeDriver> = { rollbackEvents, matchDriver };
+    const ports: MatchPresentationPorts<FakeTimeline, number, FakeDriver> = {
+      rollbackEvents,
+      matchDriver,
+    };
     const presentation = newOnlineMatchPresentation(rollbackEvents, 0, 0, 30);
     const driver: FakeDriver = { confirmedOutputTick: -1 };
 
@@ -797,7 +864,10 @@ describe("match presentation (pure control flow, fake ports)", () => {
   it("treats a tick at or below the applied ceiling as a correction and replaces the tail", () => {
     const rollbackEvents = fakeRollbackEvents();
     const matchDriver = fakeMatchDriver();
-    const ports: MatchPresentationPorts<FakeTimeline, number, FakeDriver> = { rollbackEvents, matchDriver };
+    const ports: MatchPresentationPorts<FakeTimeline, number, FakeDriver> = {
+      rollbackEvents,
+      matchDriver,
+    };
     const presentation = newOnlineMatchPresentation(rollbackEvents, 0, 0, 30);
     const driver: FakeDriver = { confirmedOutputTick: -1 };
 
@@ -827,7 +897,10 @@ describe("match presentation (pure control flow, fake ports)", () => {
   it("stops at unconfirmed_window_exceeded and never resumes", () => {
     const rollbackEvents = fakeRollbackEvents();
     const matchDriver = fakeMatchDriver();
-    const ports: MatchPresentationPorts<FakeTimeline, number, FakeDriver> = { rollbackEvents, matchDriver };
+    const ports: MatchPresentationPorts<FakeTimeline, number, FakeDriver> = {
+      rollbackEvents,
+      matchDriver,
+    };
     const presentation = newOnlineMatchPresentation(rollbackEvents, 0, 0, 30);
     const driver: FakeDriver = { confirmedOutputTick: -1 };
     presentation.events.failNextApply = true;
@@ -846,7 +919,10 @@ describe("match presentation (pure control flow, fake ports)", () => {
   it("clamps confirmation to what has actually been applied this batch", () => {
     const rollbackEvents = fakeRollbackEvents();
     const matchDriver = fakeMatchDriver();
-    const ports: MatchPresentationPorts<FakeTimeline, number, FakeDriver> = { rollbackEvents, matchDriver };
+    const ports: MatchPresentationPorts<FakeTimeline, number, FakeDriver> = {
+      rollbackEvents,
+      matchDriver,
+    };
     const presentation = newOnlineMatchPresentation(rollbackEvents, 0, 0, 30);
     // The driver's confirmation ceiling is far ahead of anything presented
     // yet -- confirmation must not claim ticks the timeline never applied.

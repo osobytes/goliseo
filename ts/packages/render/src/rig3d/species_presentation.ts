@@ -88,9 +88,16 @@ export function meshKey(shape?: string): string {
 // Cache key for one resolved PALETTE. Everything that changes a colour
 // belongs here -- the species accent included, because two species can share
 // a shape and differ only by colour (neutral and terran are both `round`).
-export function paletteKey(shape: string | undefined, color: RGB | null, teamKey: string, isKeeper: boolean): string {
+export function paletteKey(
+  shape: string | undefined,
+  color: RGB | null,
+  teamKey: string,
+  isKeeper: boolean,
+): string {
   const cast = casting(shape);
-  const colorPart = color ? `${color[0].toFixed(3)},${color[1].toFixed(3)},${color[2].toFixed(3)}` : "-";
+  const colorPart = color
+    ? `${color[0].toFixed(3)},${color[1].toFixed(3)},${color[2].toFixed(3)}`
+    : "-";
   return [cast.theme, teamKey, isKeeper ? "gk" : "of", colorPart].join("/");
 }
 
@@ -123,7 +130,12 @@ export function dressing(shape?: string): readonly [Theme, Figure] {
 // survives it, which matters because themes.resolvedPalette now THROWS on a
 // missing slot rather than substituting a placeholder. A synthesized theme is
 // exactly the case that check exists for, so this must not drop anything.
-function dress(theme: Theme, team: Team, color: RGB | null, isKeeper: boolean): readonly [Theme, Team] {
+function dress(
+  theme: Theme,
+  team: Team,
+  color: RGB | null,
+  isKeeper: boolean,
+): readonly [Theme, Team] {
   const dressedColor = color ? { ...theme.color, accent: color } : { ...theme.color };
   const dressedTheme: Theme = { ...theme, color: dressedColor };
   const dressedTeam: Team = isKeeper
@@ -136,7 +148,12 @@ function dress(theme: Theme, team: Team, color: RGB | null, isKeeper: boolean): 
 //
 // `themes.resolve` only ever reads `team.main` / `team.trim`, so the keeper's
 // swapped strip needs nothing more than the swapped table `dress` returns.
-export function palette(shape: string | undefined, color: RGB | null, team: Team, isKeeper: boolean): readonly RGBA[] {
+export function palette(
+  shape: string | undefined,
+  color: RGB | null,
+  team: Team,
+  isKeeper: boolean,
+): readonly RGBA[] {
   const theme = themes.byKey(casting(shape).theme);
   const [dressedTheme, dressedTeam] = dress(theme, team, color, isKeeper);
   return themes.resolvedPalette(dressedTheme, dressedTeam);

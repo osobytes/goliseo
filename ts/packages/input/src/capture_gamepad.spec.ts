@@ -48,8 +48,14 @@ describe("GAMEPAD_BUTTON_MAP / GAMEPAD_AXIS_MAP", () => {
 
 describe("BrowserGamepadCapture", () => {
   it("reads held buttons and raw axes after a poll", () => {
-    let current: GamepadLike | null = pad({ buttons: { 0: { pressed: true } }, axes: [0.6, -0.3, 0, 0] });
-    const capture = new BrowserGamepadCapture(0, sourceOf(() => current!));
+    const current: GamepadLike | null = pad({
+      buttons: { 0: { pressed: true } },
+      axes: [0.6, -0.3, 0, 0],
+    });
+    const capture = new BrowserGamepadCapture(
+      0,
+      sourceOf(() => current),
+    );
     capture.poll();
     expect(capture.isGamepadDown("a")).toBe(true);
     expect(capture.isGamepadDown("b")).toBe(false);
@@ -58,8 +64,11 @@ describe("BrowserGamepadCapture", () => {
   });
 
   it("reads a trigger's analog value off buttons[6]/[7], not the axes array", () => {
-    let current: GamepadLike | null = pad({ buttons: { 7: { pressed: true, value: 0.9 } } });
-    const capture = new BrowserGamepadCapture(0, sourceOf(() => current!));
+    const current: GamepadLike | null = pad({ buttons: { 7: { pressed: true, value: 0.9 } } });
+    const capture = new BrowserGamepadCapture(
+      0,
+      sourceOf(() => current),
+    );
     capture.poll();
     expect(capture.getGamepadAxis("triggerright")).toBeCloseTo(0.9);
     expect(capture.getGamepadAxis("triggerleft")).toBe(0);
@@ -67,7 +76,10 @@ describe("BrowserGamepadCapture", () => {
 
   it("queues a press edge and a release edge across two polls", () => {
     let current: GamepadLike | null = pad({});
-    const capture = new BrowserGamepadCapture(0, sourceOf(() => current!));
+    const capture = new BrowserGamepadCapture(
+      0,
+      sourceOf(() => current!),
+    );
     capture.poll();
     expect(capture.drainGamepadEvents()).toEqual([]);
 
@@ -77,12 +89,19 @@ describe("BrowserGamepadCapture", () => {
 
     current = pad({});
     capture.poll();
-    expect(capture.drainGamepadEvents()).toEqual([{ kind: "gamepad", button: "y", pressed: false }]);
+    expect(capture.drainGamepadEvents()).toEqual([
+      { kind: "gamepad", button: "y", pressed: false },
+    ]);
   });
 
   it("releases every held button when the pad disconnects mid-session", () => {
-    let current: GamepadLike | null = pad({ buttons: { 0: { pressed: true }, 1: { pressed: true } } });
-    const capture = new BrowserGamepadCapture(0, sourceOf(() => current!));
+    let current: GamepadLike | null = pad({
+      buttons: { 0: { pressed: true }, 1: { pressed: true } },
+    });
+    const capture = new BrowserGamepadCapture(
+      0,
+      sourceOf(() => current!),
+    );
     capture.poll();
     capture.drainGamepadEvents();
 

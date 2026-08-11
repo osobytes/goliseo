@@ -31,8 +31,6 @@
 // a deliberate line-for-line match with the original: this is the
 // transport CONTRACT (`docs/online/transport_bridge.md`), not a redesign.
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
 const VERSION = 1;
 const MAX_GUESTS = 7;
 const HOST_PEER_ID = "host";
@@ -264,7 +262,13 @@ export function newGoliseoStarTransportBridge(): GoliseoStarTransportBridge {
     peer.last_error = star.last_error;
     countError(code, peer);
     pushEvent(
-      "peer_error|" + peer.id + "|" + (channelName ?? "") + "|" + code + "|" +
+      "peer_error|" +
+        peer.id +
+        "|" +
+        (channelName ?? "") +
+        "|" +
+        code +
+        "|" +
         escapeField(star.last_error),
     );
     return "error|" + code + "|" + escapeField(star.last_error);
@@ -360,7 +364,8 @@ export function newGoliseoStarTransportBridge(): GoliseoStarTransportBridge {
     if (!config[parsed.type as string]) {
       return {
         error: "channel_mismatch",
-        detail: "the " + channelName + " channel does not carry " + String(parsed.type) + " messages",
+        detail:
+          "the " + channelName + " channel does not carry " + String(parsed.type) + " messages",
       };
     }
     return null;
@@ -479,7 +484,7 @@ export function newGoliseoStarTransportBridge(): GoliseoStarTransportBridge {
       peerError(peer, null, "channel_mismatch", "unexpected data channel label");
       return;
     }
-    const channelName = name as ChannelName;
+    const channelName = name;
     const channel = peer.channels[channelName];
     // Exactly two data channels per link, for the life of the link. Either
     // side of an established connection may call `createDataChannel` at any
@@ -492,7 +497,12 @@ export function newGoliseoStarTransportBridge(): GoliseoStarTransportBridge {
       } catch (error) {
         star.last_error = String(error);
       }
-      peerError(peer, channelName, "channel_mismatch", "duplicate " + channelName + " data channel refused");
+      peerError(
+        peer,
+        channelName,
+        "channel_mismatch",
+        "duplicate " + channelName + " data channel refused",
+      );
       return;
     }
     channel.handle = handle;
@@ -533,9 +543,14 @@ export function newGoliseoStarTransportBridge(): GoliseoStarTransportBridge {
     if (peer.pc) {
       return peer.pc;
     }
-    const RTCPeerConnectionCtor = (globalThis as any).RTCPeerConnection as
-      | typeof RTCPeerConnection
-      | undefined;
+    // Present in a browser, absent under Node and in every headless test, so
+    // it is read off `globalThis` as optional rather than through the DOM
+    // lib's non-optional global declaration.
+    const RTCPeerConnectionCtor = (
+      globalThis as typeof globalThis & {
+        readonly RTCPeerConnection?: typeof RTCPeerConnection;
+      }
+    ).RTCPeerConnection;
     if (!RTCPeerConnectionCtor) {
       peerError(peer, null, "bridge_unavailable", "RTCPeerConnection is not available");
       return null;
@@ -574,12 +589,17 @@ export function newGoliseoStarTransportBridge(): GoliseoStarTransportBridge {
 
   // Detach every listener before closing, so a late callback from a closed
   // connection or channel cannot touch a torn-down peer at all.
-  function detach(target: any, names: readonly string[]): void {
+  function detach(target: object | null | undefined, names: readonly string[]): void {
     if (!target) {
       return;
     }
+    // The callers pass DOM objects (`RTCPeerConnection`, `RTCDataChannel`)
+    // and the names are their `on*` handler slots. One assertion here, at the
+    // one place that writes them by name, rather than `any` across the whole
+    // helper.
+    const slots = target as Record<string, unknown>;
     for (const name of names) {
-      target[name] = null;
+      slots[name] = null;
     }
   }
 
@@ -652,7 +672,13 @@ export function newGoliseoStarTransportBridge(): GoliseoStarTransportBridge {
       channel.outbound = [];
       channel.inbound = [];
       if (channel.handle) {
-        detach(channel.handle, ["onopen", "onclose", "onerror", "onmessage", "onbufferedamountlow"]);
+        detach(channel.handle, [
+          "onopen",
+          "onclose",
+          "onerror",
+          "onmessage",
+          "onbufferedamountlow",
+        ]);
         try {
           channel.handle.close();
         } catch (error) {
@@ -986,7 +1012,10 @@ export function newGoliseoStarTransportBridge(): GoliseoStarTransportBridge {
       let delivered = 0;
       for (const id of star.order) {
         const peer = star.peers[id] as PeerState;
-        if (peer.state === "connected" && enqueue(peer, channelName as ChannelName, wire) === "ok") {
+        if (
+          peer.state === "connected" &&
+          enqueue(peer, channelName as ChannelName, wire) === "ok"
+        ) {
           delivered += 1;
         }
       }
@@ -1049,8 +1078,16 @@ export function newGoliseoStarTransportBridge(): GoliseoStarTransportBridge {
       ];
       for (const id of star.order) {
         const peer = star.peers[id] as PeerState;
-        let fields: (string | number)[] = ["peer", peer.id, peer.slot, peer.state, escapeField(peer.ice_state)];
-        fields = fields.concat(channelRecord(peer.channels.control)).concat(channelRecord(peer.channels.input));
+        let fields: (string | number)[] = [
+          "peer",
+          peer.id,
+          peer.slot,
+          peer.state,
+          escapeField(peer.ice_state),
+        ];
+        fields = fields
+          .concat(channelRecord(peer.channels.control))
+          .concat(channelRecord(peer.channels.input));
         fields.push(peer.sequence_gaps);
         fields.push(peer.backpressure);
         fields.push(peer.malformed);
@@ -1090,7 +1127,9 @@ export function installGoliseoStarTransport(
  * the bridge is installed, so a real `eval` call is the whole
  * implementation. `(0, eval)` forces indirect (global) eval so the
  * command cannot see or touch this module's own locals. */
-export function browserStarEval(command: string): readonly [result: string | null, error: string | null] {
+export function browserStarEval(
+  command: string,
+): readonly [result: string | null, error: string | null] {
   try {
     // Indirect eval (calling through a reference rather than the literal
     // `eval(...)` form) runs in global scope, so the command cannot see or
@@ -1101,6 +1140,12 @@ export function browserStarEval(command: string): readonly [result: string | nul
     if (result === undefined || result === null) {
       return [null, "browser star bridge returned no result"];
     }
+    // `result` is whatever the evaluated command returned, and this
+    // stringification IS the transport contract
+    // (docs/online/transport_bridge.md). Narrowing it would change what the
+    // bridge reports for a non-string result -- a contract change, not a lint
+    // fix, so it is deliberately left for its own change.
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string
     return [String(result), null];
   } catch (error) {
     return [null, String(error)];

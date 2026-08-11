@@ -116,7 +116,9 @@ class BrowserWasmSimHost implements SimHostPort {
   private readonly localSlot: number;
   private disposed = false;
   private rosterCache: frameBufferTypes.DecodedRenderFrameRoster | undefined;
-  private frameCache: { readonly tick: number; readonly kickFollowSlots: number; readonly frame: RenderFrame } | undefined;
+  private frameCache:
+    | { readonly tick: number; readonly kickFollowSlots: number; readonly frame: RenderFrame }
+    | undefined;
 
   constructor(
     homeTeamId: string,
@@ -178,7 +180,11 @@ class BrowserWasmSimHost implements SimHostPort {
     // without changing the tick -- see `sim_host.ts`'s `frame()`, which this
     // mirrors exactly.
     const kickFollowSlots = releaseFollow.slotMask(this.rosterInternal().ids);
-    if (this.frameCache !== undefined && this.frameCache.tick === tick && this.frameCache.kickFollowSlots === kickFollowSlots) {
+    if (
+      this.frameCache !== undefined &&
+      this.frameCache.tick === tick &&
+      this.frameCache.kickFollowSlots === kickFollowSlots
+    ) {
       return this.frameCache.frame;
     }
     const raw = gcWasmWeb.__getRawExports();

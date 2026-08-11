@@ -232,7 +232,8 @@ export class FakeRelayTransport implements StarTransportAdapter {
     if (maxPeers !== Math.floor(maxPeers) || maxPeers <= 0 || maxPeers > contract.MAX_GUESTS) {
       throw new Error("fake relay transport max_peers is outside the supported range");
     }
-    const bufferedAmountLimit = options.buffered_amount_limit ?? contract.DEFAULT_BUFFERED_AMOUNT_LIMIT;
+    const bufferedAmountLimit =
+      options.buffered_amount_limit ?? contract.DEFAULT_BUFFERED_AMOUNT_LIMIT;
     if (
       bufferedAmountLimit !== Math.floor(bufferedAmountLimit) ||
       bufferedAmountLimit <= 0 ||
@@ -269,7 +270,7 @@ export class FakeRelayTransport implements StarTransportAdapter {
     code: TransportErrorCode,
     message: string,
     peer?: FakeRelayPeer,
-    channel?: TransportChannel
+    channel?: TransportChannel,
   ): void {
     this._lastError = message;
     if (code === "malformed" || code === "payload_too_large" || code === "channel_mismatch") {
@@ -397,6 +398,14 @@ export class FakeRelayTransport implements StarTransportAdapter {
         return;
       }
       this._addPeer(other._peerId);
+      // The assertion is NOT redundant, whatever eslint says here. The lint
+      // runs on typescript@6 (the last release with a JS compiler API -- see
+      // ts/tools/lint/tseslint.mjs) and the build runs on the pinned
+      // typescript@7, and the two disagree about the control flow through
+      // `_addPeer`: without this, `tsc --build --force` fails with TS18048
+      // three lines below. When they stop disagreeing, delete both this
+      // comment and the directive.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
       peer = this._peers.get(other._peerId) as FakeRelayPeer;
     }
     if (peer.state === "connected") {
@@ -540,7 +549,7 @@ export class FakeRelayTransport implements StarTransportAdapter {
     channelName: TransportChannel,
     message: TransportMessage,
     targets: string[],
-    attributed?: FakeRelayPeer
+    attributed?: FakeRelayPeer,
   ): TransportResult<true> {
     const uplink = this._uplink[channelName];
     if (uplink.units.length >= this._queueLimit) {
@@ -577,7 +586,11 @@ export class FakeRelayTransport implements StarTransportAdapter {
    * Address one member. Any member may address any other: the relay has no
    * privileged direction, which is precisely what removes the sequencer.
    */
-  send(peerId: string, channel: TransportChannel, message: TransportMessage): TransportResult<true> {
+  send(
+    peerId: string,
+    channel: TransportChannel,
+    message: TransportMessage,
+  ): TransportResult<true> {
     const connected = this._requireConnected();
     if (!connected.ok) {
       return connected;
@@ -778,7 +791,7 @@ export class FakeRelayTransport implements StarTransportAdapter {
   private _receive(
     peer: FakeRelayPeer,
     channelName: TransportChannel,
-    addressed: TransportAddressedMessage
+    addressed: TransportAddressedMessage,
   ): void {
     const channel = peer.channels[channelName];
     if (channel.inbound.length >= this._queueLimit) {
@@ -882,7 +895,7 @@ export class FakeRelayTransport implements StarTransportAdapter {
   private static _noSignaling(): TransportResult<never> {
     return failure(
       "signal_error",
-      "a relay endpoint has no manual signaling; the room is the rendezvous"
+      "a relay endpoint has no manual signaling; the room is the rendezvous",
     );
   }
 
@@ -1002,7 +1015,7 @@ export class FakeRelayTransport implements StarTransportAdapter {
    */
   private _channelDiagnostics(
     peer: FakeRelayPeer,
-    channelName: TransportChannel
+    channelName: TransportChannel,
   ): TransportPeerDiagnostics["control"] {
     const channel = peer.channels[channelName];
     const uplink = this._uplink[channelName];
@@ -1065,7 +1078,9 @@ const REQUIRED_METHODS = [
   "diagnostics",
 ] as const;
 for (const name of REQUIRED_METHODS) {
-  if (typeof (FakeRelayTransport.prototype as unknown as Record<string, unknown>)[name] !== "function") {
+  if (
+    typeof (FakeRelayTransport.prototype as unknown as Record<string, unknown>)[name] !== "function"
+  ) {
     throw new Error(`fake relay transport is missing ${name}`);
   }
 }

@@ -110,7 +110,9 @@ export class PartBuilder {
   // alone.
   triangle(tf: Mat4 | null, a: Point3, b: Point3, c: Point3, slot: number): void {
     if (!Number.isFinite(slot)) {
-      throw new Error(`triangle slot must be a palette slot index (a finite number), got ${String(slot)}`);
+      throw new Error(
+        `triangle slot must be a palette slot index (a finite number), got ${String(slot)}`,
+      );
     }
     let [ax, ay, az] = a;
     let [bx, by, bz] = b;
@@ -137,9 +139,27 @@ export class PartBuilder {
     }
     const normal = normalizeVec(nx, ny, nz);
 
-    this.verts.push({ position: [ax, ay, az], normal, paletteSlot: slot, bone: 0, material: MATERIAL.plain });
-    this.verts.push({ position: [bx, by, bz], normal, paletteSlot: slot, bone: 0, material: MATERIAL.plain });
-    this.verts.push({ position: [cx, cy, cz], normal, paletteSlot: slot, bone: 0, material: MATERIAL.plain });
+    this.verts.push({
+      position: [ax, ay, az],
+      normal,
+      paletteSlot: slot,
+      bone: 0,
+      material: MATERIAL.plain,
+    });
+    this.verts.push({
+      position: [bx, by, bz],
+      normal,
+      paletteSlot: slot,
+      bone: 0,
+      material: MATERIAL.plain,
+    });
+    this.verts.push({
+      position: [cx, cy, cz],
+      normal,
+      paletteSlot: slot,
+      bone: 0,
+      material: MATERIAL.plain,
+    });
   }
 
   // Adds a planar quad as two triangles, wound a -> b -> c -> d.
@@ -242,7 +262,13 @@ export function merge(parts: readonly Part[]): PartBuilder {
         // true if an attach ever gains a scale.
         [nx, ny, nz] = normalizeVec(...mat4.transformDirection(tf, nx, ny, nz));
       }
-      out.verts.push({ position: [x, y, z], normal: [nx, ny, nz], paletteSlot: v.paletteSlot, bone, material });
+      out.verts.push({
+        position: [x, y, z],
+        normal: [nx, ny, nz],
+        paletteSlot: v.paletteSlot,
+        bone,
+        material,
+      });
     }
   }
   return out;
@@ -333,9 +359,16 @@ function at<T>(arr: readonly T[], i: number): T {
 // A section with `w = 0` collapses to a point, which is how a sword tip and
 // a sphere pole are produced -- the resulting zero-area triangles are
 // dropped by `PartBuilder.triangle`.
-export function extrude(mb: PartBuilder, tf: Mat4 | null, profile: Profile, sections: readonly Section[], slot: SlotOrFn): void {
+export function extrude(
+  mb: PartBuilder,
+  tf: Mat4 | null,
+  profile: Profile,
+  sections: readonly Section[],
+  slot: SlotOrFn,
+): void {
   const n = profile.length;
-  const slotFor = (i: number, j: number): number => (typeof slot === "function" ? slot(i, j) : slot);
+  const slotFor = (i: number, j: number): number =>
+    typeof slot === "function" ? slot(i, j) : slot;
 
   const point = (section: Section, j: number): Point3 => {
     const p = at(profile, j);
@@ -349,7 +382,14 @@ export function extrude(mb: PartBuilder, tf: Mat4 | null, profile: Profile, sect
     const upper = at(sections, i + 1);
     for (let j = 0; j < n; j++) {
       const k = (j + 1) % n;
-      mb.quad(tf, point(lower, j), point(lower, k), point(upper, k), point(upper, j), slotFor(i + 1, j + 1));
+      mb.quad(
+        tf,
+        point(lower, j),
+        point(lower, k),
+        point(upper, k),
+        point(upper, j),
+        slotFor(i + 1, j + 1),
+      );
     }
   }
 
@@ -360,13 +400,26 @@ export function extrude(mb: PartBuilder, tf: Mat4 | null, profile: Profile, sect
     const last = at(sections, sections.length - 1);
     for (let j = 1; j <= n - 2; j++) {
       mb.triangle(tf, point(first, 0), point(first, j + 1), point(first, j), slotFor(0, j));
-      mb.triangle(tf, point(last, 0), point(last, j), point(last, j + 1), slotFor(sections.length, j));
+      mb.triangle(
+        tf,
+        point(last, 0),
+        point(last, j),
+        point(last, j + 1),
+        slotFor(sections.length, j),
+      );
     }
   }
 }
 
 // An axis-aligned box centred on the local origin.
-export function box(mb: PartBuilder, tf: Mat4 | null, w: number, h: number, d: number, slot: number): void {
+export function box(
+  mb: PartBuilder,
+  tf: Mat4 | null,
+  w: number,
+  h: number,
+  d: number,
+  slot: number,
+): void {
   const x = w / 2;
   const y = h / 2;
   const z = d / 2;
@@ -467,21 +520,56 @@ export function curvedPanel(
     }
 
     // Inside face and the top/bottom rims.
-    mb.quad(tf, [b1[0], -halfH, b1[1]], [b0[0], -halfH, b0[1]], [b0[0], halfH, b0[1]], [b1[0], halfH, b1[1]], edge);
-    mb.quad(tf, [f0[0], halfH, f0[1]], [f1[0], halfH, f1[1]], [b1[0], halfH, b1[1]], [b0[0], halfH, b0[1]], edge);
-    mb.quad(tf, [b0[0], -halfH, b0[1]], [b1[0], -halfH, b1[1]], [f1[0], -halfH, f1[1]], [f0[0], -halfH, f0[1]], edge);
+    mb.quad(
+      tf,
+      [b1[0], -halfH, b1[1]],
+      [b0[0], -halfH, b0[1]],
+      [b0[0], halfH, b0[1]],
+      [b1[0], halfH, b1[1]],
+      edge,
+    );
+    mb.quad(
+      tf,
+      [f0[0], halfH, f0[1]],
+      [f1[0], halfH, f1[1]],
+      [b1[0], halfH, b1[1]],
+      [b0[0], halfH, b0[1]],
+      edge,
+    );
+    mb.quad(
+      tf,
+      [b0[0], -halfH, b0[1]],
+      [b1[0], -halfH, b1[1]],
+      [f1[0], -halfH, f1[1]],
+      [f0[0], -halfH, f0[1]],
+      edge,
+    );
   }
 
   // Left and right vertical rims.
   for (const side of [0, segments]) {
     const f = at(front, side);
     const b = at(back, side);
-    mb.quad(tf, [f[0], -halfH, f[1]], [b[0], -halfH, b[1]], [b[0], halfH, b[1]], [f[0], halfH, f[1]], edge);
+    mb.quad(
+      tf,
+      [f[0], -halfH, f[1]],
+      [b[0], -halfH, b[1]],
+      [b[0], halfH, b[1]],
+      [f[0], halfH, f[1]],
+      edge,
+    );
   }
 }
 
 // A flat horizontal disc on the XZ plane. The arena floor and the drop shadow.
-export function disc(mb: PartBuilder, tf: Mat4 | null, radius: number, rings: number, segments: number, colorAt: ColorAtFn): void {
+export function disc(
+  mb: PartBuilder,
+  tf: Mat4 | null,
+  radius: number,
+  rings: number,
+  segments: number,
+  colorAt: ColorAtFn,
+): void {
   for (let r = 0; r < rings; r++) {
     const r0 = radius * (r / rings);
     const r1 = radius * ((r + 1) / rings);

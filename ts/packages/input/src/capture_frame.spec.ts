@@ -33,10 +33,19 @@ class FakeTarget implements KeyboardEventTarget {
 }
 
 function emptyPad(): GamepadLike {
-  return { connected: true, buttons: new Array(16).fill({ pressed: false, value: 0 }), axes: [0, 0, 0, 0] };
+  return {
+    connected: true,
+    buttons: new Array(16).fill({ pressed: false, value: 0 }),
+    axes: [0, 0, 0, 0],
+  };
 }
 
-function newRig(): { keyboard: BrowserKeyboardCapture; target: FakeTarget; gamepad: BrowserGamepadCapture; capture: InputSampleCapture } {
+function newRig(): {
+  keyboard: BrowserKeyboardCapture;
+  target: FakeTarget;
+  gamepad: BrowserGamepadCapture;
+  capture: InputSampleCapture;
+} {
   const target = new FakeTarget();
   const keyboard = new BrowserKeyboardCapture(target);
   keyboard.attach();

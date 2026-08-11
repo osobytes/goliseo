@@ -2,7 +2,13 @@
 
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
-import { drawMatchHud, matchHudCommands, type MatchHudLayout, type MatchHudModel, type MatchHudTheme } from "./match_hud.ts";
+import {
+  drawMatchHud,
+  matchHudCommands,
+  type MatchHudLayout,
+  type MatchHudModel,
+  type MatchHudTheme,
+} from "./match_hud.ts";
 import type { TextCommand } from "./draw2d.ts";
 
 const rect = (x: number, y: number, w: number, h: number) => ({ x, y, w, h });
@@ -73,15 +79,26 @@ describe("match_hud.matchHudCommands", () => {
 
   it("only draws the combat panel when equipment_label is set", () => {
     const without = matchHudCommands(model(), layout, theme, viewport);
-    const withEquip = matchHudCommands(model({ equipment_label: "SWORD", equipment_state: "READY", equipment_progress: 1 }), layout, theme, viewport);
-    const equipmentText = (cs: typeof without) => cs.filter((c) => c.kind === "text" && c.text.includes("EQUIPMENT"));
+    const withEquip = matchHudCommands(
+      model({ equipment_label: "SWORD", equipment_state: "READY", equipment_progress: 1 }),
+      layout,
+      theme,
+      viewport,
+    );
+    const equipmentText = (cs: typeof without) =>
+      cs.filter((c) => c.kind === "text" && c.text.includes("EQUIPMENT"));
     expect(equipmentText(without)).toHaveLength(0);
     expect(equipmentText(withEquip).length).toBeGreaterThan(0);
   });
 
   it("shows combat feedback text instead of the equipment label, in amber", () => {
     const commands = matchHudCommands(
-      model({ equipment_label: "SWORD", equipment_state: "READY", feedback_text: "CLEAN HIT", feedback_glyph: "cross" }),
+      model({
+        equipment_label: "SWORD",
+        equipment_state: "READY",
+        feedback_text: "CLEAN HIT",
+        feedback_glyph: "cross",
+      }),
       layout,
       theme,
       viewport,
@@ -94,9 +111,20 @@ describe("match_hud.matchHudCommands", () => {
   });
 
   it("dims the whole viewport only for a full_time announcement, not a goal/replay one", () => {
-    const fullTime = matchHudCommands(model({ announcement_title: "FULL TIME", announcement_kind: "full_time" }), layout, theme, viewport);
-    const goal = matchHudCommands(model({ announcement_title: "GOAL", announcement_kind: "goal" }), layout, theme, viewport);
-    const dim = (cs: typeof fullTime) => cs.some((c) => c.kind === "rect" && c.w === viewport.w && c.h === viewport.h);
+    const fullTime = matchHudCommands(
+      model({ announcement_title: "FULL TIME", announcement_kind: "full_time" }),
+      layout,
+      theme,
+      viewport,
+    );
+    const goal = matchHudCommands(
+      model({ announcement_title: "GOAL", announcement_kind: "goal" }),
+      layout,
+      theme,
+      viewport,
+    );
+    const dim = (cs: typeof fullTime) =>
+      cs.some((c) => c.kind === "rect" && c.w === viewport.w && c.h === viewport.h);
     expect(dim(fullTime)).toBe(true);
     expect(dim(goal)).toBe(false);
   });
@@ -105,12 +133,17 @@ describe("match_hud.matchHudCommands", () => {
     // The stamina bar sits at identity.y + 46 (see match_hud.ts's `stamina`
     // helper), well below the scorebug's own cyan/amber possession strip.
     const staminaY = layout.identity.y + 46 * layout.scale;
-    const inStaminaBand = (c: { kind: string; y?: number }): boolean => c.kind === "rect" && "y" in c && Math.abs((c.y ?? 0) - staminaY) < 1e-9;
+    const inStaminaBand = (c: { kind: string; y?: number }): boolean =>
+      c.kind === "rect" && "y" in c && Math.abs((c.y ?? 0) - staminaY) < 1e-9;
 
     const healthy = matchHudCommands(model({ stamina: 0.8 }), layout, theme, viewport);
     const low = matchHudCommands(model({ stamina: 0.1 }), layout, theme, viewport);
-    const healthyFill = healthy.find((c) => inStaminaBand(c) && c.kind === "rect" && c.color === theme.colors.cyan);
-    const lowFill = low.find((c) => inStaminaBand(c) && c.kind === "rect" && c.color === theme.colors.amber);
+    const healthyFill = healthy.find(
+      (c) => inStaminaBand(c) && c.kind === "rect" && c.color === theme.colors.cyan,
+    );
+    const lowFill = low.find(
+      (c) => inStaminaBand(c) && c.kind === "rect" && c.color === theme.colors.amber,
+    );
     expect(healthyFill).toBeDefined();
     expect(lowFill).toBeDefined();
     if (healthyFill?.kind === "rect") {
@@ -166,7 +199,11 @@ describe("match_hud.drawMatchHud (population)", () => {
     expect(first).toBeGreaterThan(0);
 
     // A model with the combat panel active emits strictly more commands.
-    const withEquip = model({ equipment_label: "SWORD", equipment_state: "READY", equipment_progress: 0.5 });
+    const withEquip = model({
+      equipment_label: "SWORD",
+      equipment_state: "READY",
+      equipment_progress: 0.5,
+    });
     drawMatchHud(group, withEquip, layout, theme, viewport, { buildText });
     const expected = matchHudCommands(withEquip, layout, theme, viewport).length;
     expect(group.children).toHaveLength(expected);

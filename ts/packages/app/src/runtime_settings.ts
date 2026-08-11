@@ -40,7 +40,11 @@ export interface RuntimeSettingsPorts {
 }
 
 function toAudioSlice(settings: GameSettings): GameSettingsAudioSlice {
-  return { sfx_volume: settings.sfx_volume, crowd_volume: settings.crowd_volume, muted: settings.muted };
+  return {
+    sfx_volume: settings.sfx_volume,
+    crowd_volume: settings.crowd_volume,
+    muted: settings.muted,
+  };
 }
 
 function apply(ports: RuntimeSettingsPorts, settings: GameSettings): void {

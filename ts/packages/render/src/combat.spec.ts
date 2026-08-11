@@ -2,7 +2,11 @@
 
 import { describe, expect, it } from "vitest";
 import { Vec2 } from "@gc/core";
-import type { ActionFamilyId, CombatPlayerPresentation, CombatProjectilePresentation } from "@gc/presentation";
+import type {
+  ActionFamilyId,
+  CombatPlayerPresentation,
+  CombatProjectilePresentation,
+} from "@gc/presentation";
 import { drawOverCommands, drawUnderCommands, type CombatDrawFrame } from "./combat.ts";
 import type { Project } from "./draw2d.ts";
 
@@ -26,7 +30,10 @@ function player(overrides: Partial<CombatPlayerPresentation>): CombatPlayerPrese
   };
 }
 
-function frameFor(players: readonly CombatPlayerPresentation[], projectiles: readonly CombatProjectilePresentation[] = []): CombatDrawFrame {
+function frameFor(
+  players: readonly CombatPlayerPresentation[],
+  projectiles: readonly CombatProjectilePresentation[] = [],
+): CombatDrawFrame {
   return {
     combat: { enabled: true, players, projectiles },
     players: { x: [100], y: [100] },
@@ -36,12 +43,22 @@ function frameFor(players: readonly CombatPlayerPresentation[], projectiles: rea
 describe("combat.drawUnderCommands", () => {
   it("draws nothing when the combat model is absent or disabled", () => {
     expect(drawUnderCommands({ players: { x: [], y: [] } }, identityProject)).toEqual([]);
-    expect(drawUnderCommands({ combat: { enabled: false, players: [], projectiles: [] }, players: { x: [], y: [] } }, identityProject)).toEqual([]);
+    expect(
+      drawUnderCommands(
+        { combat: { enabled: false, players: [], projectiles: [] }, players: { x: [], y: [] } },
+        identityProject,
+      ),
+    ).toEqual([]);
   });
 
   it("draws an unarmed telegraph as the family's cyan-ish colour", () => {
-    const commands = drawUnderCommands(frameFor([player({ family_id: "unarmed", front_arc_degrees: 90, telegraph_kind: "arc" })]), identityProject);
-    const arcLines = commands.filter((c) => c.kind === "line" && Math.abs((c.lineWidth ?? 0) - 1.8) < 1e-9);
+    const commands = drawUnderCommands(
+      frameFor([player({ family_id: "unarmed", front_arc_degrees: 90, telegraph_kind: "arc" })]),
+      identityProject,
+    );
+    const arcLines = commands.filter(
+      (c) => c.kind === "line" && Math.abs((c.lineWidth ?? 0) - 1.8) < 1e-9,
+    );
     expect(arcLines.length).toBeGreaterThan(0);
     const first = arcLines[0];
     if (first === undefined) {
@@ -51,14 +68,29 @@ describe("combat.drawUnderCommands", () => {
   });
 
   it("draws a guard fan with a thicker line than an unarmed/melee arc", () => {
-    const commands = drawUnderCommands(frameFor([player({ family_id: "guard", front_arc_degrees: 120, telegraph_kind: "guard_arc" })]), identityProject);
-    const guardLines = commands.filter((c) => c.kind === "line" && Math.abs((c.lineWidth ?? 0) - 2.5) < 1e-9);
+    const commands = drawUnderCommands(
+      frameFor([
+        player({ family_id: "guard", front_arc_degrees: 120, telegraph_kind: "guard_arc" }),
+      ]),
+      identityProject,
+    );
+    const guardLines = commands.filter(
+      (c) => c.kind === "line" && Math.abs((c.lineWidth ?? 0) - 2.5) < 1e-9,
+    );
     expect(guardLines.length).toBeGreaterThan(0);
   });
 
   it("draws a ranged telegraph as a straight sightline to the projectile range", () => {
     const commands = drawUnderCommands(
-      frameFor([player({ family_id: "ranged", telegraph_kind: "line", direction: new Vec2(1, 0), projectile_range_px: 300, phase: "active" })]),
+      frameFor([
+        player({
+          family_id: "ranged",
+          telegraph_kind: "line",
+          direction: new Vec2(1, 0),
+          projectile_range_px: 300,
+          phase: "active",
+        }),
+      ]),
       identityProject,
     );
     const main = commands[0];
@@ -72,7 +104,14 @@ describe("combat.drawUnderCommands", () => {
 
   it("throws rather than silently misdrawing when a family_id is unknown", () => {
     const badFamilyId = "not_a_real_family" as unknown as ActionFamilyId;
-    expect(() => drawUnderCommands(frameFor([player({ family_id: badFamilyId, front_arc_degrees: 90, telegraph_kind: "arc" })]), identityProject)).toThrow();
+    expect(() =>
+      drawUnderCommands(
+        frameFor([
+          player({ family_id: badFamilyId, front_arc_degrees: 90, telegraph_kind: "arc" }),
+        ]),
+        identityProject,
+      ),
+    ).toThrow();
   });
 });
 

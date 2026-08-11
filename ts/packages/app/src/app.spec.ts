@@ -51,7 +51,6 @@ import { describe, expect, it } from "vitest";
 import { actions } from "@gc/input";
 import { fakeResult } from "./fake_result.ts";
 import { session } from "./session.ts";
-import { settings } from "./settings.ts";
 import { App } from "./app.ts";
 import { hit, menuLayout, viewport } from "./ui_bridge.ts";
 import { APP_CONTENT, MATCH_CONTRACT_CONTENT } from "./test_support/fixtures.ts";
@@ -65,7 +64,11 @@ function clickWidget(app: App, id: string): void {
   if (!widget?.rect) {
     throw new Error(`missing widget ${id}`);
   }
-  const [x, y] = viewport.toActual(app.transform, widget.rect.x + widget.rect.w / 2, widget.rect.y + widget.rect.h / 2);
+  const [x, y] = viewport.toActual(
+    app.transform,
+    widget.rect.x + widget.rect.w / 2,
+    widget.rect.y + widget.rect.h / 2,
+  );
   app.event({ kind: "click", x, y, button: 1 });
 }
 

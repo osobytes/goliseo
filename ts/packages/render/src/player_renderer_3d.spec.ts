@@ -98,7 +98,11 @@ describe("player_renderer_3d.poseFor", () => {
     // dive_dir must have a nonzero lateral component relative to facing (see
     // rig3d/action_pose.ts's `lateralSign`) or the save overlay is a no-op.
     const grounded = poseFor(idleView, baseOptions(), 1.0);
-    const diving = poseFor(idleView, baseOptions({ dive: 1, dive_dir: new Vec2(0, 1), pose: { id: "keeper_dive" } }), 1.0);
+    const diving = poseFor(
+      idleView,
+      baseOptions({ dive: 1, dive_dir: new Vec2(0, 1), pose: { id: "keeper_dive" } }),
+      1.0,
+    );
     expect(diving.rot["root"]).toBeDefined();
     expect(grounded.rot["root"]).not.toEqual(diving.rot["root"]);
   });
@@ -195,7 +199,12 @@ describe("player_renderer_3d.poseFor lean", () => {
   it("yields the body to a whole-body action: a keeper dive is never also leaned", () => {
     // `facing` is across the dive direction so `lateralSign` is nonzero and
     // the save overlay actually fires (see rig3d/action_pose.ts).
-    const dive = baseOptions({ dive: 1, dive_dir: new Vec2(0, 1), pose: { id: "keeper_dive" }, facing: new Vec2(1, 0) });
+    const dive = baseOptions({
+      dive: 1,
+      dive_dir: new Vec2(0, 1),
+      pose: { id: "keeper_dive" },
+      facing: new Vec2(1, 0),
+    });
     const still = poseFor(running, dive, 1.0);
     const sprinting = poseFor({ ...running, lean: 1 }, dive, 1.0);
     expect(sprinting).toEqual(still);
@@ -262,7 +271,9 @@ describe("player_renderer_3d mixer/procedural parity", () => {
         const v = view(speed, gait);
         const procedural = poseFor(v, baseOptions({ pose: { id: "locomotion" } }), 1.4);
         const mixer = animator.basePose(v, 1.4);
-        expect(delta(procedural, mixer), `speed ${speed}, gait ${gait}`).toBeLessThan(PARITY_TOLERANCE);
+        expect(delta(procedural, mixer), `speed ${speed}, gait ${gait}`).toBeLessThan(
+          PARITY_TOLERANCE,
+        );
       }
     }
   });
@@ -293,23 +304,36 @@ describe("player_renderer_3d mixer/procedural parity", () => {
     resetAnimation();
     const v = view(230, 0.42);
     const opts = baseOptions({ pose: { id } });
-    expect(delta(poseFor(v, opts, 2.6), mixerPoseFor(`parity-${id}`, v, opts, 2.6))).toBeLessThan(PARITY_TOLERANCE);
+    expect(delta(poseFor(v, opts, 2.6), mixerPoseFor(`parity-${id}`, v, opts, 2.6))).toBeLessThan(
+      PARITY_TOLERANCE,
+    );
   });
 
   it("reproduces the keeper's possession overrides, which never went through the pose id", () => {
     resetAnimation();
     const v = view(60, 0.2);
     const gather = baseOptions({ holding: true });
-    expect(delta(poseFor(v, gather, 3.1), mixerPoseFor("parity-gather", v, gather, 3.1))).toBeLessThan(PARITY_TOLERANCE);
+    expect(
+      delta(poseFor(v, gather, 3.1), mixerPoseFor("parity-gather", v, gather, 3.1)),
+    ).toBeLessThan(PARITY_TOLERANCE);
     const sling = baseOptions({ throw: 0.65 });
-    expect(delta(poseFor(v, sling, 3.1), mixerPoseFor("parity-sling", v, sling, 3.1))).toBeLessThan(PARITY_TOLERANCE);
+    expect(delta(poseFor(v, sling, 3.1), mixerPoseFor("parity-sling", v, sling, 3.1))).toBeLessThan(
+      PARITY_TOLERANCE,
+    );
   });
 
   it("reproduces the whole-body root overlay, which stays action_pose.ts's", () => {
     resetAnimation();
     const v = view(180, 0.6);
-    const opts = baseOptions({ pose: { id: "keeper_stretch" }, dive: 0.8, dive_dir: new Vec2(0, 1), facing: new Vec2(1, 0) });
-    expect(delta(poseFor(v, opts, 4.2), mixerPoseFor("parity-dive", v, opts, 4.2))).toBeLessThan(PARITY_TOLERANCE);
+    const opts = baseOptions({
+      pose: { id: "keeper_stretch" },
+      dive: 0.8,
+      dive_dir: new Vec2(0, 1),
+      facing: new Vec2(1, 0),
+    });
+    expect(delta(poseFor(v, opts, 4.2), mixerPoseFor("parity-dive", v, opts, 4.2))).toBeLessThan(
+      PARITY_TOLERANCE,
+    );
   });
 
   // LEAN PARITY. Both paths call #428's `applyLean` under #428's
@@ -326,18 +350,30 @@ describe("player_renderer_3d mixer/procedural parity", () => {
     const leaning = view(240, 0.3, 0.85);
     // It is a real difference, not a no-op that would make the parity below vacuous.
     expect(delta(poseFor(upright, opts, 5.5), poseFor(leaning, opts, 5.5))).toBeGreaterThan(0.01);
-    expect(delta(poseFor(leaning, opts, 5.5), mixerPoseFor("parity-lean", leaning, opts, 5.5))).toBeLessThan(PARITY_TOLERANCE);
+    expect(
+      delta(poseFor(leaning, opts, 5.5), mixerPoseFor("parity-lean", leaning, opts, 5.5)),
+    ).toBeLessThan(PARITY_TOLERANCE);
   });
 
   it("suppresses the lean on both paths while a whole-body action owns the body", () => {
     resetAnimation();
-    const dive = baseOptions({ pose: { id: "keeper_dive" }, dive: 1, dive_dir: new Vec2(0, 1), facing: new Vec2(1, 0) });
+    const dive = baseOptions({
+      pose: { id: "keeper_dive" },
+      dive: 1,
+      dive_dir: new Vec2(0, 1),
+      facing: new Vec2(1, 0),
+    });
     const upright = view(240, 0.3, 0);
     const leaning = view(240, 0.3, 0.85);
     // `forOptions` is non-null here, so lean must make NO difference at all --
     // on either path, and on every bone rather than just `root`.
     expect(delta(poseFor(upright, dive, 6.5), poseFor(leaning, dive, 6.5))).toBe(0);
-    expect(delta(mixerPoseFor("parity-dive-upright", upright, dive, 6.5), mixerPoseFor("parity-dive-leaning", leaning, dive, 6.5))).toBe(0);
+    expect(
+      delta(
+        mixerPoseFor("parity-dive-upright", upright, dive, 6.5),
+        mixerPoseFor("parity-dive-leaning", leaning, dive, 6.5),
+      ),
+    ).toBe(0);
   });
 
   // THE OTHER HALF OF THAT GATE, and the regression #430 was most likely to
@@ -359,7 +395,10 @@ describe("player_renderer_3d mixer/procedural parity", () => {
       expect(actionPose.forOptions(opts), "an attitude must not read as an action").toBeNull();
       expect(delta(poseFor(upright, opts, 7.5), poseFor(leaning, opts, 7.5))).toBeGreaterThan(0.01);
       expect(
-        delta(mixerPoseFor(`attitude-upright-${id}`, upright, opts, 7.5), mixerPoseFor(`attitude-leaning-${id}`, leaning, opts, 7.5)),
+        delta(
+          mixerPoseFor(`attitude-upright-${id}`, upright, opts, 7.5),
+          mixerPoseFor(`attitude-leaning-${id}`, leaning, opts, 7.5),
+        ),
       ).toBeGreaterThan(0.01);
       // ...and the attitude itself is there, so the above is not vacuous.
       // This suite's `delta` spans `move` as well as `rot`.
@@ -552,7 +591,9 @@ describe("player_renderer_3d.renderToSprite", () => {
     if (call === undefined) {
       throw new Error("expected one render call");
     }
-    const lights = call.scene.children.filter((child): child is THREE.Light => (child as { isLight?: boolean }).isLight === true);
+    const lights = call.scene.children.filter(
+      (child): child is THREE.Light => (child as { isLight?: boolean }).isLight === true,
+    );
     expect(lights.length).toBeGreaterThan(0);
   });
 
@@ -568,7 +609,9 @@ describe("player_renderer_3d.renderToSprite", () => {
     if (call === undefined) {
       throw new Error("expected one render call");
     }
-    const mesh = call.scene.children.find((child): child is THREE.SkinnedMesh => child instanceof THREE.SkinnedMesh);
+    const mesh = call.scene.children.find(
+      (child): child is THREE.SkinnedMesh => child instanceof THREE.SkinnedMesh,
+    );
     if (mesh === undefined) {
       throw new Error("expected a SkinnedMesh in the rendered scene");
     }
@@ -607,7 +650,9 @@ describe("player_renderer_3d.renderToSprite", () => {
     if (call === undefined) {
       throw new Error("expected one render call");
     }
-    const mesh = call.scene.children.find((child): child is THREE.SkinnedMesh => child instanceof THREE.SkinnedMesh);
+    const mesh = call.scene.children.find(
+      (child): child is THREE.SkinnedMesh => child instanceof THREE.SkinnedMesh,
+    );
     if (mesh === undefined) {
       throw new Error("expected a SkinnedMesh in the rendered scene");
     }
@@ -653,16 +698,40 @@ describe("player_renderer_3d.renderToSprite", () => {
     // must be read back immediately after each respective call, in the same
     // order production code depends on, rather than read at the end.
     const homeRenderer = stubRenderer();
-    renderToSprite(homeRenderer, 640, 360, 12, 1280, 720, idleView, baseOptions({ team: "home" }), 0);
-    const homeMesh = homeRenderer.renderCalls[0]?.scene.children.find((c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh);
+    renderToSprite(
+      homeRenderer,
+      640,
+      360,
+      12,
+      1280,
+      720,
+      idleView,
+      baseOptions({ team: "home" }),
+      0,
+    );
+    const homeMesh = homeRenderer.renderCalls[0]?.scene.children.find(
+      (c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh,
+    );
     if (homeMesh === undefined) {
       throw new Error("expected a SkinnedMesh in the rendered scene");
     }
     const homeColor = Array.from(homeMesh.geometry.getAttribute("color").array);
 
     const awayRenderer = stubRenderer();
-    renderToSprite(awayRenderer, 640, 360, 12, 1280, 720, idleView, baseOptions({ team: "away" }), 0);
-    const awayMesh = awayRenderer.renderCalls[0]?.scene.children.find((c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh);
+    renderToSprite(
+      awayRenderer,
+      640,
+      360,
+      12,
+      1280,
+      720,
+      idleView,
+      baseOptions({ team: "away" }),
+      0,
+    );
+    const awayMesh = awayRenderer.renderCalls[0]?.scene.children.find(
+      (c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh,
+    );
     if (awayMesh === undefined) {
       throw new Error("expected a SkinnedMesh in the rendered scene");
     }
@@ -708,8 +777,12 @@ describe("player_renderer_3d.characterMesh / ppmForRadius", () => {
     if (gathering === undefined || idle === undefined) {
       throw new Error("expected two meshes");
     }
-    const gatheringBones = (gathering as THREE.SkinnedMesh).skeleton.bones.map((b) => b.matrixWorld.elements.slice());
-    const idleBones = (idle as THREE.SkinnedMesh).skeleton.bones.map((b) => b.matrixWorld.elements.slice());
+    const gatheringBones = (gathering as THREE.SkinnedMesh).skeleton.bones.map((b) =>
+      b.matrixWorld.elements.slice(),
+    );
+    const idleBones = (idle as THREE.SkinnedMesh).skeleton.bones.map((b) =>
+      b.matrixWorld.elements.slice(),
+    );
     expect(gatheringBones).not.toEqual(idleBones);
 
     // Re-posing "outfield" again afterwards must not have picked up
@@ -718,13 +791,25 @@ describe("player_renderer_3d.characterMesh / ppmForRadius", () => {
     // into the CALLER's own pooled bones, so there is no cross-player
     // leakage even though the rig itself is shared.
     const idleAgain = characterMesh("outfield", idleView, baseOptions(), 0);
-    const idleAgainBones = (idleAgain as THREE.SkinnedMesh).skeleton.bones.map((b) => b.matrixWorld.elements.slice());
+    const idleAgainBones = (idleAgain as THREE.SkinnedMesh).skeleton.bones.map((b) =>
+      b.matrixWorld.elements.slice(),
+    );
     expect(idleAgainBones).toEqual(idleBones);
   });
 
   it("bakes different per-vertex colours for the home and away team, on separate geometry objects", () => {
-    const home = characterMesh("home-player", idleView, baseOptions({ team: "home" }), 0) as THREE.SkinnedMesh;
-    const away = characterMesh("away-player", idleView, baseOptions({ team: "away" }), 0) as THREE.SkinnedMesh;
+    const home = characterMesh(
+      "home-player",
+      idleView,
+      baseOptions({ team: "home" }),
+      0,
+    ) as THREE.SkinnedMesh;
+    const away = characterMesh(
+      "away-player",
+      idleView,
+      baseOptions({ team: "away" }),
+      0,
+    ) as THREE.SkinnedMesh;
     expect(home.geometry).not.toBe(away.geometry);
     const homeColor = Array.from(home.geometry.getAttribute("color").array);
     const awayColor = Array.from(away.geometry.getAttribute("color").array);
@@ -740,17 +825,57 @@ describe("player_renderer_3d.characterMesh / ppmForRadius", () => {
   // `build()` no matter what it was handed, so every assertion below would
   // have failed by returning the SAME object.
   it("builds a different geometry per authored presentation, on the same team", () => {
-    const medieval = characterMesh("v-med", idleView, baseOptions({ team: "home", presentation_id: "medieval_rook_emberguard", loadout_id: "loadout_tournament_sword" }), 0) as THREE.SkinnedMesh;
-    const scifi = characterMesh("v-sci", idleView, baseOptions({ team: "home", presentation_id: "scifi_nova_quell", loadout_id: "loadout_tournament_sword" }), 0) as THREE.SkinnedMesh;
+    const medieval = characterMesh(
+      "v-med",
+      idleView,
+      baseOptions({
+        team: "home",
+        presentation_id: "medieval_rook_emberguard",
+        loadout_id: "loadout_tournament_sword",
+      }),
+      0,
+    ) as THREE.SkinnedMesh;
+    const scifi = characterMesh(
+      "v-sci",
+      idleView,
+      baseOptions({
+        team: "home",
+        presentation_id: "scifi_nova_quell",
+        loadout_id: "loadout_tournament_sword",
+      }),
+      0,
+    ) as THREE.SkinnedMesh;
     expect(medieval.geometry).not.toBe(scifi.geometry);
-    expect(medieval.geometry.getAttribute("position").count).not.toBe(scifi.geometry.getAttribute("position").count);
+    expect(medieval.geometry.getAttribute("position").count).not.toBe(
+      scifi.geometry.getAttribute("position").count,
+    );
   });
 
   it("builds a different geometry per authored loadout, within one presentation", () => {
-    const shield = characterMesh("v-shield", idleView, baseOptions({ team: "home", presentation_id: "scifi_axi", loadout_id: "loadout_emberguard_shield" }), 0) as THREE.SkinnedMesh;
-    const blade = characterMesh("v-blade", idleView, baseOptions({ team: "home", presentation_id: "scifi_axi", loadout_id: "loadout_vector_blade" }), 0) as THREE.SkinnedMesh;
+    const shield = characterMesh(
+      "v-shield",
+      idleView,
+      baseOptions({
+        team: "home",
+        presentation_id: "scifi_axi",
+        loadout_id: "loadout_emberguard_shield",
+      }),
+      0,
+    ) as THREE.SkinnedMesh;
+    const blade = characterMesh(
+      "v-blade",
+      idleView,
+      baseOptions({
+        team: "home",
+        presentation_id: "scifi_axi",
+        loadout_id: "loadout_vector_blade",
+      }),
+      0,
+    ) as THREE.SkinnedMesh;
     expect(shield.geometry).not.toBe(blade.geometry);
-    expect(shield.geometry.getAttribute("position").count).not.toBe(blade.geometry.getAttribute("position").count);
+    expect(shield.geometry.getAttribute("position").count).not.toBe(
+      blade.geometry.getAttribute("position").count,
+    );
   });
 
   // THE DEFECT, INVERTED. Same presentation, same team, one with a loadout
@@ -762,10 +887,26 @@ describe("player_renderer_3d.characterMesh / ppmForRadius", () => {
   // `rig3d/presentation_content.spec.ts` makes the stronger claim -- no
   // `socket_*` vertices at all -- against the geometry builder directly.
   it("gives a keeper a strictly smaller mesh than the outfielder sharing their presentation", () => {
-    const keeper = characterMesh("v-ozzo", idleView, baseOptions({ team: "home", is_keeper: true, presentation_id: "scifi_axi" }), 0) as THREE.SkinnedMesh;
-    const outfield = characterMesh("v-sela", idleView, baseOptions({ team: "home", presentation_id: "scifi_axi", loadout_id: "loadout_emberguard_shield" }), 0) as THREE.SkinnedMesh;
+    const keeper = characterMesh(
+      "v-ozzo",
+      idleView,
+      baseOptions({ team: "home", is_keeper: true, presentation_id: "scifi_axi" }),
+      0,
+    ) as THREE.SkinnedMesh;
+    const outfield = characterMesh(
+      "v-sela",
+      idleView,
+      baseOptions({
+        team: "home",
+        presentation_id: "scifi_axi",
+        loadout_id: "loadout_emberguard_shield",
+      }),
+      0,
+    ) as THREE.SkinnedMesh;
     expect(keeper.geometry).not.toBe(outfield.geometry);
-    expect(keeper.geometry.getAttribute("position").count).toBeLessThan(outfield.geometry.getAttribute("position").count);
+    expect(keeper.geometry.getAttribute("position").count).toBeLessThan(
+      outfield.geometry.getAttribute("position").count,
+    );
   });
 
   // Two players who really do share a variant must still SHARE the geometry:
@@ -775,7 +916,11 @@ describe("player_renderer_3d.characterMesh / ppmForRadius", () => {
   // are on opposite teams, so this uses one team to isolate the claim from
   // `geometryForTeam`'s own per-team split.
   it("shares one geometry between two players whose presentation and loadout agree", () => {
-    const opts = { team: "home", presentation_id: "medieval_rook_emberguard", loadout_id: "loadout_emberguard_shield" } as const;
+    const opts = {
+      team: "home",
+      presentation_id: "medieval_rook_emberguard",
+      loadout_id: "loadout_emberguard_shield",
+    } as const;
     const a = characterMesh("v-share-a", idleView, baseOptions(opts), 0) as THREE.SkinnedMesh;
     const b = characterMesh("v-share-b", idleView, baseOptions(opts), 0) as THREE.SkinnedMesh;
     expect(a).not.toBe(b);
@@ -787,19 +932,45 @@ describe("player_renderer_3d.characterMesh / ppmForRadius", () => {
   // eighteen identical `MeshStandardMaterial`s as a side effect of a change
   // about GEOMETRY; this is what says it did not.
   it("shares one material across every variant and both teams", () => {
-    const a = characterMesh("v-mat-a", idleView, baseOptions({ team: "home", presentation_id: "medieval_rook_emberguard", loadout_id: "loadout_tournament_sword" }), 0) as THREE.SkinnedMesh;
-    const b = characterMesh("v-mat-b", idleView, baseOptions({ team: "away", presentation_id: "toy_tock" }), 0) as THREE.SkinnedMesh;
+    const a = characterMesh(
+      "v-mat-a",
+      idleView,
+      baseOptions({
+        team: "home",
+        presentation_id: "medieval_rook_emberguard",
+        loadout_id: "loadout_tournament_sword",
+      }),
+      0,
+    ) as THREE.SkinnedMesh;
+    const b = characterMesh(
+      "v-mat-b",
+      idleView,
+      baseOptions({ team: "away", presentation_id: "toy_tock" }),
+      0,
+    ) as THREE.SkinnedMesh;
     expect(Array.isArray(a.material)).toBe(false);
     expect(a.material).toBe(b.material);
   });
 
   it("refuses a presentation id content never authored instead of quietly drawing the first theme", () => {
-    expect(() => characterMesh("v-bogus", idleView, baseOptions({ presentation_id: "not_a_presentation" }), 0)).toThrow(/no theme for presentation id/);
+    expect(() =>
+      characterMesh("v-bogus", idleView, baseOptions({ presentation_id: "not_a_presentation" }), 0),
+    ).toThrow(/no theme for presentation id/);
   });
 
   it("bakes the facing yaw onto the mesh's own quaternion", () => {
-    const forward = characterMesh("yaw-a", idleView, baseOptions({ facing: new Vec2(0, 1) }), 0) as THREE.SkinnedMesh;
-    const sideways = characterMesh("yaw-b", idleView, baseOptions({ facing: new Vec2(1, 0) }), 0) as THREE.SkinnedMesh;
+    const forward = characterMesh(
+      "yaw-a",
+      idleView,
+      baseOptions({ facing: new Vec2(0, 1) }),
+      0,
+    ) as THREE.SkinnedMesh;
+    const sideways = characterMesh(
+      "yaw-b",
+      idleView,
+      baseOptions({ facing: new Vec2(1, 0) }),
+      0,
+    ) as THREE.SkinnedMesh;
     expect(forward.quaternion.equals(sideways.quaternion)).toBe(false);
   });
 
@@ -829,7 +1000,12 @@ describe("player_renderer_3d.characterMesh / ppmForRadius", () => {
   // actually used by the rig content -- is the fix; any regression back to
   // "one run per part" would push this well past 3 for a real character.
   it("pins the fix: geometry.groups collapses to at most 3 (one per shading family), not one per part", () => {
-    const mesh = characterMesh("group-count-check", idleView, baseOptions(), 0) as THREE.SkinnedMesh;
+    const mesh = characterMesh(
+      "group-count-check",
+      idleView,
+      baseOptions(),
+      0,
+    ) as THREE.SkinnedMesh;
     expect(mesh.geometry.groups.length).toBeGreaterThan(0);
     expect(mesh.geometry.groups.length).toBeLessThanOrEqual(3);
   });
@@ -844,7 +1020,12 @@ describe("player_renderer_3d.characterMesh / ppmForRadius", () => {
   // all, so it would still catch a regression that silently stopped updating
   // the groups while leaving the vertex order broken.
   it("pins the fix a second way: the materialFamily attribute itself has at most 2 value transitions", () => {
-    const mesh = characterMesh("family-contiguity-check", idleView, baseOptions(), 0) as THREE.SkinnedMesh;
+    const mesh = characterMesh(
+      "family-contiguity-check",
+      idleView,
+      baseOptions(),
+      0,
+    ) as THREE.SkinnedMesh;
     const materialFamily = mesh.geometry.getAttribute("materialFamily");
     expect(materialFamily).toBeDefined();
     let transitions = 0;
@@ -870,7 +1051,12 @@ describe("player_renderer_3d.characterMesh / ppmForRadius", () => {
   // ONE draw call regardless of how many groups (fix #1, above) still sit on
   // the geometry.
   it("pins the fix: characterMesh's material is a single Material, never an array, guaranteeing one draw call", () => {
-    const mesh = characterMesh("single-material-check", idleView, baseOptions(), 0) as THREE.SkinnedMesh;
+    const mesh = characterMesh(
+      "single-material-check",
+      idleView,
+      baseOptions(),
+      0,
+    ) as THREE.SkinnedMesh;
     expect(Array.isArray(mesh.material)).toBe(false);
     expect(mesh.material).toBeInstanceOf(THREE.MeshStandardMaterial);
   });

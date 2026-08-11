@@ -197,7 +197,10 @@ describe("tuning presets data", () => {
         const value = Number(match?.[2]);
         const knob = knobsByKey.get(key);
         expect(knob, `${preset.id}: unknown knob ${key}`).toBeDefined();
-        expect(knob !== undefined && value >= knob.min && value <= knob.max, `${preset.id}: ${key} out of range`).toBe(true);
+        expect(
+          knob !== undefined && value >= knob.min && value <= knob.max,
+          `${preset.id}: ${key} out of range`,
+        ).toBe(true);
       }
     }
   });

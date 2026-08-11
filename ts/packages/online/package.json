@@ -4,7 +4,15 @@
   "private": true,
   "type": "module",
   "description": "Lobby, signalling, session coordination, diagnostics.",
-  "exports": { ".": "./src/index.ts" },
-  "scripts": { "typecheck": "tsgo --noEmit -p tsconfig.json" },
-  "dependencies": {"@gc/core":"workspace:*","@gc/transport":"workspace:*","@gc/wasm":"workspace:*"}
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@gc/core": "workspace:*",
+    "@gc/transport": "workspace:*",
+    "@gc/wasm": "workspace:*"
+  }
 }

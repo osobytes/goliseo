@@ -48,8 +48,13 @@ function newState(
 function layout(state: ResultScreenState): Layout {
   const result = state.result;
   const outcome =
-    result.winner === "home" ? "NEBULA FC WIN" : result.winner === "away" ? "ORION MINERS WIN" : "HONORS EVEN";
-  const mvp = result.mvp_player_id !== undefined ? state.content.players[result.mvp_player_id] : undefined;
+    result.winner === "home"
+      ? "NEBULA FC WIN"
+      : result.winner === "away"
+        ? "ORION MINERS WIN"
+        : "HONORS EVEN";
+  const mvp =
+    result.mvp_player_id !== undefined ? state.content.players[result.mvp_player_id] : undefined;
   const mvpName = mvp?.name ?? "No MVP awarded";
   const home: TeamResultStats = result.home_stats;
   const away: TeamResultStats = result.away_stats;
@@ -123,7 +128,10 @@ function layout(state: ResultScreenState): Layout {
   return widgets;
 }
 
-function update(state: ResultScreenState, event: FocusEvent): readonly [ResultScreenState, ResultAction | undefined] {
+function update(
+  state: ResultScreenState,
+  event: FocusEvent,
+): readonly [ResultScreenState, ResultAction | undefined] {
   const currentLayout = layout(state);
   let next: ResultScreenState = {
     ...state,

@@ -36,7 +36,9 @@ export type FormationAction =
   | { readonly go: "squad"; readonly formationId: string; readonly formation: string }
   | { readonly go: "tactic"; readonly formationId: string; readonly formation: string };
 
-function sortedFormationIds(formations: Readonly<Record<string, FormationData>>): readonly string[] {
+function sortedFormationIds(
+  formations: Readonly<Record<string, FormationData>>,
+): readonly string[] {
   return Object.keys(formations).sort();
 }
 

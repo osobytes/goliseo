@@ -98,7 +98,12 @@ function row(label: string): readonly number[] {
 function syntheticRosterBlob(count: number): string {
   const parts: string[] = [];
   for (let i = 0; i < count; i += 1) {
-    parts.push(`player_${i}`, `Player ${i}`, `presentation_${i}`, i % 2 === 0 ? `loadout_${i}` : "");
+    parts.push(
+      `player_${i}`,
+      `Player ${i}`,
+      `presentation_${i}`,
+      i % 2 === 0 ? `loadout_${i}` : "",
+    );
   }
   return parts.join("\n");
 }
@@ -157,7 +162,18 @@ describe("decodeRoster against the Lua reference vector", () => {
       "away",
       "away",
     ]);
-    expect(decoded.is_keeper).toEqual([true, false, false, false, false, true, false, false, false, false]);
+    expect(decoded.is_keeper).toEqual([
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+    ]);
     expect(decoded.radius).toEqual(Array<number>(10).fill(12));
     expect(decoded.species_shape).toEqual([
       "round",
@@ -186,7 +202,18 @@ describe("decodeRoster against the Lua reference vector", () => {
   });
 
   it("round-trips the synthetic id/name blob structurally", () => {
-    expect(decoded.ids).toEqual(["player_0", "player_1", "player_2", "player_3", "player_4", "player_5", "player_6", "player_7", "player_8", "player_9"]);
+    expect(decoded.ids).toEqual([
+      "player_0",
+      "player_1",
+      "player_2",
+      "player_3",
+      "player_4",
+      "player_5",
+      "player_6",
+      "player_7",
+      "player_8",
+      "player_9",
+    ]);
     expect(decoded.names[3]).toBe("Player 3");
   });
 
@@ -196,7 +223,18 @@ describe("decodeRoster against the Lua reference vector", () => {
   // empty string it travelled as. Both branches are asserted, so neither can
   // pass by never occurring.
   it("recovers presentation ids, and a missing loadout as an absence rather than an empty string", () => {
-    expect(decoded.presentation_ids).toEqual(["presentation_0", "presentation_1", "presentation_2", "presentation_3", "presentation_4", "presentation_5", "presentation_6", "presentation_7", "presentation_8", "presentation_9"]);
+    expect(decoded.presentation_ids).toEqual([
+      "presentation_0",
+      "presentation_1",
+      "presentation_2",
+      "presentation_3",
+      "presentation_4",
+      "presentation_5",
+      "presentation_6",
+      "presentation_7",
+      "presentation_8",
+      "presentation_9",
+    ]);
     expect(decoded.loadout_ids[0]).toBe("loadout_0");
     expect(decoded.loadout_ids[1]).toBeUndefined();
     expect(decoded.loadout_ids.filter((id) => id !== undefined)).toHaveLength(5);
@@ -225,7 +263,9 @@ describe("decodeRoster against the Lua reference vector", () => {
     for (let i = 0; i < count; i += 1) {
       parts.push(`player_${i}`, `Player ${i}`, i === 4 ? "" : `presentation_${i}`, "");
     }
-    expect(() => decodeRoster(words, parts.join("\n"))).toThrow(/slot 4 carries an empty presentation id/);
+    expect(() => decodeRoster(words, parts.join("\n"))).toThrow(
+      /slot 4 carries an empty presentation id/,
+    );
 
     // NON-VACUOUS: the same blob with slot 4 filled in decodes cleanly, so
     // the throw is about the empty id rather than about the blob's shape.
@@ -293,9 +333,12 @@ describe("decode against the Lua reference vector: t0 (kickoff)", () => {
     const p = decoded.players;
     expect(p.count).toBe(10);
     expect(p.x).toEqual([
-      57.599999999999994, 268.8, 268.8, 432, 468, 902.4, 710.4, 570, 493.4935513385938, 493.4935513385938,
+      57.599999999999994, 268.8, 268.8, 432, 468, 902.4, 710.4, 570, 493.4935513385938,
+      493.4935513385938,
     ]);
-    expect(p.y).toEqual([270, 162, 378, 270, 270, 270, 270, 270, 158.15943941504452, 381.8405605849555]);
+    expect(p.y).toEqual([
+      270, 162, 378, 270, 270, 270, 270, 270, 158.15943941504452, 381.8405605849555,
+    ]);
     expect(p.facing_x).toEqual([1, 1, 1, 1, 1, -1, -1, -1, -1, -1]);
     expect(p.facing_y).toEqual(Array<number>(10).fill(0));
     expect(p.speed).toEqual(Array<number>(10).fill(0));
@@ -312,8 +355,30 @@ describe("decode against the Lua reference vector: t0 (kickoff)", () => {
       "locomotion",
     ]);
     expect(p.pose_priority).toEqual([13, 0, 0, 0, 0, 13, 0, 0, 0, 0]);
-    expect(p.pose_source).toEqual(["soccer", "locomotion", "locomotion", "locomotion", "locomotion", "soccer", "locomotion", "locomotion", "locomotion", "locomotion"]);
-    expect(p.controlled).toEqual([false, false, false, true, false, false, false, false, false, false]);
+    expect(p.pose_source).toEqual([
+      "soccer",
+      "locomotion",
+      "locomotion",
+      "locomotion",
+      "locomotion",
+      "soccer",
+      "locomotion",
+      "locomotion",
+      "locomotion",
+      "locomotion",
+    ]);
+    expect(p.controlled).toEqual([
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
     expect(p.dashing).toEqual(Array<boolean>(10).fill(false));
     expect(p.holding).toEqual(Array<boolean>(10).fill(false));
     expect(p.dive).toEqual(Array<number>(10).fill(0));
@@ -355,13 +420,24 @@ describe("decode against the Lua reference vector: t37 (after 37 stepped ticks)"
     expect(p.x[0]).toBe(13.842947421854188);
     expect(p.y[0]).toBe(270);
     expect(p.speed).toEqual([
-      11.44229611018636, 64.15351216477657, 64.5659164374206, 0, 173.2085206525491, 11.846289650764119,
-      41.46628655009226, 0, 180, 200.00000000000003,
+      11.44229611018636, 64.15351216477657, 64.5659164374206, 0, 173.2085206525491,
+      11.846289650764119, 41.46628655009226, 0, 180, 200.00000000000003,
     ]);
     // Poses are unchanged from kickoff at this tick.
     expect(p.pose_id[0]).toBe("keeper_ready_tall");
     expect(p.pose_id[5]).toBe("keeper_ready_tall");
-    expect(p.controlled).toEqual([false, false, false, true, false, false, false, false, false, false]);
+    expect(p.controlled).toEqual([
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
   });
 });
 

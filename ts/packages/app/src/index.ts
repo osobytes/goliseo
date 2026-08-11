@@ -122,12 +122,7 @@ export type { CompatibilityFlowApp } from "./compatibility_flow.ts";
 export { CompatibilityMetrics, compatibilityMetrics } from "./compatibility_metrics.ts";
 export type { CompatibilityPendingInput } from "./compatibility_metrics.ts";
 
-export {
-  MAX_HISTORY,
-  MAX_INPUT_BYTES,
-  VERSION,
-  webrtcProof,
-} from "./webrtc_proof.ts";
+export { MAX_HISTORY, MAX_INPUT_BYTES, VERSION, webrtcProof } from "./webrtc_proof.ts";
 export type {
   WebRTCHandshake,
   WebRTCInput,

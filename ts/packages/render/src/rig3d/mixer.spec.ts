@@ -53,8 +53,12 @@ describe("rig3d/mixer.bake", () => {
 
   it("carries one track per authored channel and nothing else", () => {
     const baked = bake(clips.GUARD_STANCE);
-    expect(baked.tracks.filter((t) => t.name.endsWith(".quaternion"))).toHaveLength(clips.GUARD_STANCE.rotBones.size);
-    expect(baked.tracks.filter((t) => t.name.endsWith(".position"))).toHaveLength(clips.GUARD_STANCE.moveBones.size);
+    expect(baked.tracks.filter((t) => t.name.endsWith(".quaternion"))).toHaveLength(
+      clips.GUARD_STANCE.rotBones.size,
+    );
+    expect(baked.tracks.filter((t) => t.name.endsWith(".position"))).toHaveLength(
+      clips.GUARD_STANCE.moveBones.size,
+    );
     expect(baked.duration).toBe(clips.GUARD_STANCE.duration);
   });
 
@@ -69,12 +73,19 @@ describe("rig3d/mixer.bake", () => {
     }
     const n = track.times.length;
     expect(track.times[n - 1]).toBeCloseTo(clips.KEEPER_SLING.duration, 6);
-    const settled = clips.sample(clips.KEEPER_SLING, clips.KEEPER_SLING.duration - 1e-6).rot["upper_arm.R"];
+    const settled = clips.sample(clips.KEEPER_SLING, clips.KEEPER_SLING.duration - 1e-6).rot[
+      "upper_arm.R"
+    ];
     const cocked = clips.sample(clips.KEEPER_SLING, 0).rot["upper_arm.R"];
     if (settled === undefined || cocked === undefined) {
       throw new Error("expected sampled rotations");
     }
-    const last: Quat = [track.values[(n - 1) * 4] ?? 0, track.values[(n - 1) * 4 + 1] ?? 0, track.values[(n - 1) * 4 + 2] ?? 0, track.values[(n - 1) * 4 + 3] ?? 1];
+    const last: Quat = [
+      track.values[(n - 1) * 4] ?? 0,
+      track.values[(n - 1) * 4 + 1] ?? 0,
+      track.values[(n - 1) * 4 + 2] ?? 0,
+      track.values[(n - 1) * 4 + 3] ?? 1,
+    ];
     expect(quatDelta({ q: last }, { q: settled })).toBeLessThan(1e-4);
     expect(quatDelta({ q: last }, { q: cocked })).toBeGreaterThan(0.1);
   });
@@ -99,7 +110,16 @@ describe("rig3d/mixer.MixerLayer", () => {
   // authored smoothstep ease has to be resampled rather than reimplemented).
   // This is the tolerance that claim is worth.
   it("reproduces clips.sample to within the resampling error, on every clip", () => {
-    for (const clip of [clips.IDLE, clips.WALK, clips.RUN, clips.GUARD_STANCE, clips.CHARGE, clips.KEEPER_GATHER, clips.KEEPER_SLING, clips.SWING]) {
+    for (const clip of [
+      clips.IDLE,
+      clips.WALK,
+      clips.RUN,
+      clips.GUARD_STANCE,
+      clips.CHARGE,
+      clips.KEEPER_GATHER,
+      clips.KEEPER_SLING,
+      clips.SWING,
+    ]) {
       const layer = new MixerLayer([{ id: "c", clip }]);
       let worst = 0;
       for (let i = 0; i < 40; i += 1) {
@@ -122,7 +142,12 @@ describe("rig3d/mixer.MixerLayer", () => {
     layer.set("idle", 1.1, 1 - mix);
     layer.set("walk", 0.24, mix);
     const blended = layer.evaluate();
-    const expected = clips.layer(clips.sample(clips.IDLE, 1.1), clips.sample(clips.WALK, 0.24), new Set(layer.rotBones), mix);
+    const expected = clips.layer(
+      clips.sample(clips.IDLE, 1.1),
+      clips.sample(clips.WALK, 0.24),
+      new Set(layer.rotBones),
+      mix,
+    );
     expect(quatDelta(blended.rot, expected.rot)).toBeLessThan(5e-3);
   });
 

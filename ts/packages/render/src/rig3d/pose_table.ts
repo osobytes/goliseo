@@ -197,7 +197,14 @@ export const POSE_ACTIONS: Readonly<Record<PlayerPoseId, PoseActionEntry>> = {
   // than UPPER_BODY so the torso keeps the locomotion lean instead of
   // adopting a thrower's unwind that no kick follows through on. The leg half
   // is #424's.
-  keeper_punt: stance("keeper_sling", masks.ARMS, "throw_timer", SNAP, "clamp", "arms only; the kick itself needs #424"),
+  keeper_punt: stance(
+    "keeper_sling",
+    masks.ARMS,
+    "throw_timer",
+    SNAP,
+    "clamp",
+    "arms only; the kick itself needs #424",
+  ),
 
   // -------------------------------------------------------------------------
   // Keeper, saves and recoveries. All five save families plus the get-up are
@@ -245,17 +252,26 @@ export const POSE_ACTIONS: Readonly<Record<PlayerPoseId, PoseActionEntry>> = {
     "braced arms; the 0.32r crouch that makes it LOW is action_pose.ATTITUDES.keeper_ready_low",
   ),
   // Shuffling along the line IS locomotion -- that is the whole pose.
-  keeper_shuffle: noAction("locomotion_base", "a shuffling keeper is walking; the base layer is the pose"),
+  keeper_shuffle: noAction(
+    "locomotion_base",
+    "a shuffling keeper is walking; the base layer is the pose",
+  ),
   // The tall neutral: hands down, weight even. That is the idle end of the
   // locomotion blend already, so an overlay would only fight it.
-  keeper_ready_tall: noAction("locomotion_base", "the idle end of the locomotion blend already reads as a tall ready"),
+  keeper_ready_tall: noAction(
+    "locomotion_base",
+    "the idle end of the locomotion blend already reads as a tall ready",
+  ),
 
   // -------------------------------------------------------------------------
   // Aerials. `action_pose.aerial` lifts the root and, for a bicycle, rotates
   // it over backwards. The limbs stay on the locomotion blend deliberately:
   // the lift is what reads, and it is timer-driven.
   // -------------------------------------------------------------------------
-  aerial_bicycle: noAction("root_overlay", "action_pose.aerial (lift + 78 degree backward rotation)"),
+  aerial_bicycle: noAction(
+    "root_overlay",
+    "action_pose.aerial (lift + 78 degree backward rotation)",
+  ),
   aerial_action: noAction("root_overlay", "action_pose.aerial (lift only; header/volley/control)"),
 
   // -------------------------------------------------------------------------
@@ -277,11 +293,46 @@ export const POSE_ACTIONS: Readonly<Record<PlayerPoseId, PoseActionEntry>> = {
   // authored for exactly this -- see the dead `"swing"` branch this rewrite
   // deletes from `poseFor`, which no `POSE_CLIP` entry ever reached.
   // -------------------------------------------------------------------------
-  combat_guard: stance("guard_stance", masks.UPPER_BODY, "clock", EASE, "repeat", "parity with POSE_CLIP"),
-  combat_active: stance("charge", masks.UPPER_BODY, "gait", SNAP, "repeat", "parity with POSE_CLIP"),
-  combat_windup: stance("swing", masks.UPPER_BODY, "windup", QUICK, "clamp", "was: guard, indistinguishable from aim/recovery"),
-  combat_aim: stance("guard_stance", masks.UPPER_BODY, "clock", EASE, "repeat", "parity with POSE_CLIP"),
-  combat_recovery: stance("guard_stance", masks.UPPER_BODY, "clock", SETTLE, "repeat", "parity with POSE_CLIP"),
+  combat_guard: stance(
+    "guard_stance",
+    masks.UPPER_BODY,
+    "clock",
+    EASE,
+    "repeat",
+    "parity with POSE_CLIP",
+  ),
+  combat_active: stance(
+    "charge",
+    masks.UPPER_BODY,
+    "gait",
+    SNAP,
+    "repeat",
+    "parity with POSE_CLIP",
+  ),
+  combat_windup: stance(
+    "swing",
+    masks.UPPER_BODY,
+    "windup",
+    QUICK,
+    "clamp",
+    "was: guard, indistinguishable from aim/recovery",
+  ),
+  combat_aim: stance(
+    "guard_stance",
+    masks.UPPER_BODY,
+    "clock",
+    EASE,
+    "repeat",
+    "parity with POSE_CLIP",
+  ),
+  combat_recovery: stance(
+    "guard_stance",
+    masks.UPPER_BODY,
+    "clock",
+    SETTLE,
+    "repeat",
+    "parity with POSE_CLIP",
+  ),
 
   // -------------------------------------------------------------------------
   // Soccer actions.
@@ -296,7 +347,10 @@ export const POSE_ACTIONS: Readonly<Record<PlayerPoseId, PoseActionEntry>> = {
   // root transform approximates it (`action_pose.ts` covers reactions, not
   // committed actions), so this is a real gap and is named as one. The deleted
   // billboard had nothing for it either -- this one has never read distinctly.
-  slide: noAction("unanimated", "no ground/slide clip exists; needs #423's asset set and #424's pipeline"),
+  slide: noAction(
+    "unanimated",
+    "no ground/slide clip exists; needs #423's asset set and #424's pipeline",
+  ),
   // A standing tackle is a committed forward lunge with the arms out for
   // balance, which is what `clips.CHARGE` is (a held attack pose that
   // deliberately says nothing about the legs, so the stride survives). The
@@ -318,18 +372,33 @@ export const POSE_ACTIONS: Readonly<Record<PlayerPoseId, PoseActionEntry>> = {
   // is a velocity-derived balance cue, and a follow-through is not a balance
   // cue. Both now apply, which is the point of keeping attitudes out of
   // `forOptions` -- see `action_pose.ts`.
-  kick_follow: noAction("root_overlay", "action_pose.ATTITUDES.kick_follow (0.28r forward, the follow-through)"),
-  settle: noAction("root_overlay", "action_pose.ATTITUDES.settle (0.3r crouch: a first touch taken low, knee-bent by rig3d/crouch.ts)"),
-  run_telegraph: noAction("root_overlay", "action_pose.ATTITUDES.run_telegraph (0.5r forward: the body commits before the feet)"),
+  kick_follow: noAction(
+    "root_overlay",
+    "action_pose.ATTITUDES.kick_follow (0.28r forward, the follow-through)",
+  ),
+  settle: noAction(
+    "root_overlay",
+    "action_pose.ATTITUDES.settle (0.3r crouch: a first touch taken low, knee-bent by rig3d/crouch.ts)",
+  ),
+  run_telegraph: noAction(
+    "root_overlay",
+    "action_pose.ATTITUDES.run_telegraph (0.5r forward: the body commits before the feet)",
+  ),
   // The negative lean is the whole instruction: contain shepherds, it does not
   // commit. A forward guard stance would have read as an attacking challenge.
-  contain: noAction("root_overlay", "action_pose.ATTITUDES.contain (weight back 0.3r as a root tilt + 0.26r crouch as a knee bend)"),
+  contain: noAction(
+    "root_overlay",
+    "action_pose.ATTITUDES.contain (weight back 0.3r as a root tilt + 0.26r crouch as a knee bend)",
+  ),
   // `POSE_CLIP` mapped this to `"idle"`, which reached no branch in `poseFor`
   // at all -- so on the rigged path it rendered exactly as `locomotion` did,
   // from before #418 until #430. The billboard's extra `slump` (0.24r on the
   // shoulders and head, hips unmoved) is a rounded spine rather than a root
   // transform and is NOT recovered here; see `ATTITUDES`' own note.
-  fatigue: noAction("root_overlay", "action_pose.ATTITUDES.fatigue (sag 0.12r back as a root tilt + 0.16r crouch as a knee bend)"),
+  fatigue: noAction(
+    "root_overlay",
+    "action_pose.ATTITUDES.fatigue (sag 0.12r back as a root tilt + 0.16r crouch as a knee bend)",
+  ),
   locomotion: noAction("locomotion_base", "the fallback every player always has"),
 };
 
@@ -361,7 +430,9 @@ export function actionForPose(poseId?: string): PoseActionEntry {
 
 /** Every pose id that resolves to a stance action, for tests and diagnostics. */
 export function animatedPoseIds(): readonly PlayerPoseId[] {
-  return (Object.keys(POSE_ACTIONS) as PlayerPoseId[]).filter((id) => POSE_ACTIONS[id].action !== null);
+  return (Object.keys(POSE_ACTIONS) as PlayerPoseId[]).filter(
+    (id) => POSE_ACTIONS[id].action !== null,
+  );
 }
 
 // ---------------------------------------------------------------------------

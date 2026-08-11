@@ -61,7 +61,9 @@ function correctedMatch(
   ballDx: number,
 ): CorrectionSmoothingSource {
   const players = state.players.map((p, i) =>
-    i === 0 ? { id: p.id, pos: { x: p.pos.x + playerDx, y: p.pos.y } } : { id: p.id, pos: { ...p.pos } },
+    i === 0
+      ? { id: p.id, pos: { x: p.pos.x + playerDx, y: p.pos.y } }
+      : { id: p.id, pos: { ...p.pos } },
   );
   return { players, ball: { x: state.ball.x + ballDx, y: state.ball.y } };
 }
@@ -120,13 +122,12 @@ describe("render correction smoothing", () => {
     near(after.y, before.y);
     const diagnostics = correctionSmoothing.diagnostics(model);
     expect(diagnostics.active_count).toBe(1);
-    expect(diagnostics.maximum_magnitude < correctionSmoothing.DEFAULT_HARD_SNAP_DISTANCE).toBe(true);
+    expect(diagnostics.maximum_magnitude < correctionSmoothing.DEFAULT_HARD_SNAP_DISTANCE).toBe(
+      true,
+    );
 
     model = correctionSmoothing.advance(model, second, 0.1);
-    near(
-      must(correctionSmoothing.pose(model).players[playerId]).x,
-      must(second.players[0]).pos.x,
-    );
+    near(must(correctionSmoothing.pose(model).players[playerId]).x, must(second.players[0]).pos.x);
     expect(correctionSmoothing.diagnostics(model).active_count).toBe(0);
   });
 
@@ -148,7 +149,9 @@ describe("render correction smoothing", () => {
       expect(pose.ball.x < corrected.ball.x).toBe(true);
       const diagnostics = correctionSmoothing.diagnostics(model);
       expect(diagnostics.active_count).toBe(2);
-      expect(diagnostics.maximum_magnitude < correctionSmoothing.DEFAULT_HARD_SNAP_DISTANCE).toBe(true);
+      expect(diagnostics.maximum_magnitude < correctionSmoothing.DEFAULT_HARD_SNAP_DISTANCE).toBe(
+        true,
+      );
       expect(snapshot(corrected)).toBe(correctedSnapshot);
       previous = pose;
     }
@@ -193,8 +196,14 @@ describe("render correction smoothing", () => {
 
     slow = run(0.05, 2);
     fast = run(0.01, 10);
-    near(must(correctionSmoothing.pose(slow).players[playerId]).x, must(corrected.players[0]).pos.x);
-    near(must(correctionSmoothing.pose(fast).players[playerId]).x, must(corrected.players[0]).pos.x);
+    near(
+      must(correctionSmoothing.pose(slow).players[playerId]).x,
+      must(corrected.players[0]).pos.x,
+    );
+    near(
+      must(correctionSmoothing.pose(fast).players[playerId]).x,
+      must(corrected.players[0]).pos.x,
+    );
   });
 
   it("clears offsets immediately at lifecycle discontinuities", () => {

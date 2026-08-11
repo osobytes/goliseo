@@ -115,5 +115,7 @@ export const RIG_MEDIUM: RigProportions = {
 export function height(rig: RigProportions): number {
   const s = rig.seg;
   const f = rig.form;
-  return s.hips_y + s.spine + s.chest + s.neck + s.head + 0.02 + f.head_r * (2.5 - 0.5 * f.head_round);
+  return (
+    s.hips_y + s.spine + s.chest + s.neck + s.head + 0.02 + f.head_r * (2.5 - 0.5 * f.head_round)
+  );
 }

@@ -25,7 +25,10 @@ describe("rig3d character accumulation (#337 slice 2)", () => {
     expect(FIGURE).toBeDefined();
     if (!THEME || !FIGURE) return;
     const [merged, parts] = body.accumulate(RIG, THEME, FIGURE);
-    expect(parts.length, `the character really is built from many parts: ${parts.length}`).toBeGreaterThan(1);
+    expect(
+      parts.length,
+      `the character really is built from many parts: ${parts.length}`,
+    ).toBeGreaterThan(1);
     let sum = 0;
     for (const part of parts) {
       sum += part.builder.triangleCount();
@@ -112,7 +115,10 @@ describe("rig3d character accumulation (#337 slice 2)", () => {
     for (const theme of themes.LIST) {
       for (const figure of themes.FIGURES) {
         const [merged, parts] = body.accumulate(RIG, theme, figure);
-        expect(merged.triangleCount(), `${theme.key}/${figure.key} produced no geometry`).toBeGreaterThan(0);
+        expect(
+          merged.triangleCount(),
+          `${theme.key}/${figure.key} produced no geometry`,
+        ).toBeGreaterThan(0);
         expect(parts.length, `${theme.key}/${figure.key} produced no parts`).toBeGreaterThan(0);
       }
     }

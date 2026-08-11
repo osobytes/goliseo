@@ -146,7 +146,16 @@ function deterministicUnit(seed: number): readonly [number, number] {
   return [nextSeed, nextSeed / 2147483647];
 }
 
-function combatBurst(x: number, y: number, n: number, speed: number, life: number, size: number, color: RGB, eventId: string): void {
+function combatBurst(
+  x: number,
+  y: number,
+  n: number,
+  speed: number,
+  life: number,
+  size: number,
+  color: RGB,
+  eventId: string,
+): void {
   const count = reducedFlash ? Math.min(2, n) : n;
   let seed = stableSeed(eventId);
   for (let i = 0; i < count; i += 1) {
@@ -159,26 +168,70 @@ function combatBurst(x: number, y: number, n: number, speed: number, life: numbe
     if (reducedMotion) {
       scalar = scalar * 0.25;
     }
-    add(x, y, Math.cos(angle) * scalar, Math.sin(angle) * scalar, reducedFlash ? life * 0.55 : life, size, color, "spark", eventId);
+    add(
+      x,
+      y,
+      Math.cos(angle) * scalar,
+      Math.sin(angle) * scalar,
+      reducedFlash ? life * 0.55 : life,
+      size,
+      color,
+      "spark",
+      eventId,
+    );
   }
 }
 
-function glyphParticle(x: number, y: number, life: number, size: number, color: RGB, eventId: string, glyphName: string): void {
+function glyphParticle(
+  x: number,
+  y: number,
+  life: number,
+  size: number,
+  color: RGB,
+  eventId: string,
+  glyphName: string,
+): void {
   add(x, y, 0, 0, life, size, color, "glyph", eventId, glyphName);
 }
 
 // A radial spray of sparks. Direction is randomized -- presentation-only
 // "juice", never fed back into simulation state, so `Math.random()` is fine
 // here (unlike anything on the determinism path, ARCHITECTURE.md §1).
-function burst(x: number, y: number, n: number, speed: number, life: number, size: number, color: RGB, eventId?: string): void {
+function burst(
+  x: number,
+  y: number,
+  n: number,
+  speed: number,
+  life: number,
+  size: number,
+  color: RGB,
+  eventId?: string,
+): void {
   for (let i = 0; i < n; i += 1) {
     const a = Math.random() * Math.PI * 2;
     const sp = speed * (0.45 + Math.random() * 0.55);
-    add(x, y, Math.cos(a) * sp, Math.sin(a) * sp, life * (0.6 + Math.random() * 0.4), size, color, "spark", eventId);
+    add(
+      x,
+      y,
+      Math.cos(a) * sp,
+      Math.sin(a) * sp,
+      life * (0.6 + Math.random() * 0.4),
+      size,
+      color,
+      "spark",
+      eventId,
+    );
   }
 }
 
-function ring(x: number, y: number, life: number, size: number, color: RGB, eventId?: string): void {
+function ring(
+  x: number,
+  y: number,
+  life: number,
+  size: number,
+  color: RGB,
+  eventId?: string,
+): void {
   add(x, y, 0, 0, life, size, color, "ring", eventId);
 }
 
@@ -192,7 +245,9 @@ const FAMILY_COLORS: Readonly<Record<string, RGB>> = {
 function spawnCombatEvent(event: CombatEvent, eventId: string): void {
   const link = combatFeedback.link(event, eventId);
   const disposition = link.disposition;
-  const color = (event.family_id !== undefined ? FAMILY_COLORS[event.family_id] : undefined) ?? [1, 0.9, 0.55];
+  const color = (event.family_id !== undefined ? FAMILY_COLORS[event.family_id] : undefined) ?? [
+    1, 0.9, 0.55,
+  ];
   const life = reducedFlash ? 0.16 : 0.32;
   const size = reducedFlash ? 8 : 13;
   const glyphName = disposition.glyph;
@@ -320,7 +375,12 @@ function revokeEvent(id: string): void {
 function addSpeculative(event: RollbackWrappedEvent): void {
   const isMatch = event.domain.startsWith("match/");
   const isCombat = event.domain.startsWith("combat/");
-  if ((!isMatch && !isCombat) || speculativeEvents.has(event.id) || suppressedEvents.has(event.id) || confirmedEvents.has(event.id)) {
+  if (
+    (!isMatch && !isCombat) ||
+    speculativeEvents.has(event.id) ||
+    suppressedEvents.has(event.id) ||
+    confirmedEvents.has(event.id)
+  ) {
     return;
   }
   speculativeEvents.add(event.id);
@@ -340,7 +400,8 @@ export const effects = {
       revokeEvent(event.id);
     }
     for (const replacement of diff.replaced) {
-      const wasSuppressed = suppressedEvents.has(replacement.before.id) || suppressedEvents.has(replacement.after.id);
+      const wasSuppressed =
+        suppressedEvents.has(replacement.before.id) || suppressedEvents.has(replacement.after.id);
       revokeEvent(replacement.before.id);
       if (wasSuppressed) {
         suppressedEvents.add(replacement.after.id);
@@ -363,7 +424,10 @@ export const effects = {
     }
     for (const replacement of diff.replaced) {
       revokeEvent(replacement.before.id);
-      if (replacement.after.domain.startsWith("match/") || replacement.after.domain.startsWith("combat/")) {
+      if (
+        replacement.after.domain.startsWith("match/") ||
+        replacement.after.domain.startsWith("combat/")
+      ) {
         suppressedEvents.add(replacement.after.id);
       }
     }
@@ -396,7 +460,10 @@ export const effects = {
     return true;
   },
 
-  consume_combat(events: readonly CombatEvent[], stableId: (event: CombatEvent, ordinal: number) => string): void {
+  consume_combat(
+    events: readonly CombatEvent[],
+    stableId: (event: CombatEvent, ordinal: number) => string,
+  ): void {
     events.forEach((event, zeroBasedIndex) => {
       spawnCombatEvent(event, stableId(event, zeroBasedIndex + 1));
     });
@@ -475,7 +542,12 @@ export const effects = {
 
   /** Observational hook for #148/#150: this reports the currently presented
    * geometry only. It does not create an authoritative outcome or timestamp. */
-  readability_observation(project: Project, ball: { x: number; y: number }, hudRects: readonly Rect[], occluders: readonly Rect[]): ReadabilityObservation {
+  readability_observation(
+    project: Project,
+    ball: { x: number; y: number },
+    hudRects: readonly Rect[],
+    occluders: readonly Rect[],
+  ): ReadabilityObservation {
     const rows: { x: number; y: number; radius: number }[] = [];
     const ids = new Set<string>();
     let nonColorOnly = true;
@@ -497,7 +569,8 @@ export const effects = {
     rows.forEach((row, index) => {
       const dx = row.x - ballX;
       const dy = row.y - ballY;
-      ballMasked = ballMasked || dx * dx + dy * dy <= (row.radius + ballRadius) * (row.radius + ballRadius);
+      ballMasked =
+        ballMasked || dx * dx + dy * dy <= (row.radius + ballRadius) * (row.radius + ballRadius);
       for (const rect of hudRects) {
         hudMasked = hudMasked || circleIntersectsRect(row.x, row.y, row.radius, rect);
       }
@@ -514,7 +587,10 @@ export const effects = {
         }
         const otherDx = row.x - other.x;
         const otherDy = row.y - other.y;
-        if (otherDx * otherDx + otherDy * otherDy <= (row.radius + other.radius) * (row.radius + other.radius)) {
+        if (
+          otherDx * otherDx + otherDy * otherDy <=
+          (row.radius + other.radius) * (row.radius + other.radius)
+        ) {
           overlapPairCount += 1;
         }
       }
@@ -597,7 +673,10 @@ export const effects = {
       if (p.kind === "ring") {
         // Expands as it fades.
         const rad = p.size * scale * (1.0 + (1 - t) * 0.6);
-        dl.circle("line", sx, sy - BALL_LIFT * scale, rad, c, { alpha: t * 0.8, lineWidth: Math.max(1, 2 * scale) });
+        dl.circle("line", sx, sy - BALL_LIFT * scale, rad, c, {
+          alpha: t * 0.8,
+          lineWidth: Math.max(1, 2 * scale),
+        });
       } else if (p.kind === "glyph") {
         const radius = p.size * scale * (0.85 + 0.15 * t);
         const x = sx;
@@ -622,20 +701,38 @@ export const effects = {
   },
 };
 
-function drawGlyph(dl: DrawList, glyphName: string | undefined, x: number, y: number, radius: number, color: RGB, t: number, lineWidth: number): void {
+function drawGlyph(
+  dl: DrawList,
+  glyphName: string | undefined,
+  x: number,
+  y: number,
+  radius: number,
+  color: RGB,
+  t: number,
+  lineWidth: number,
+): void {
   const alpha = t;
   if (glyphName === "chevron") {
     dl.line([x - radius, y + radius * 0.5, x, y - radius * 0.5], color, { alpha, lineWidth });
     dl.line([x, y - radius * 0.5, x + radius, y + radius * 0.5], color, { alpha, lineWidth });
   } else if (glyphName === "diamond" || glyphName === "hollow_diamond") {
-    dl.polygon("line", [x, y - radius, x + radius, y, x, y + radius, x - radius, y], color, { alpha, lineWidth });
+    dl.polygon("line", [x, y - radius, x + radius, y, x, y + radius, x - radius, y], color, {
+      alpha,
+      lineWidth,
+    });
   } else if (glyphName === "shield") {
-    dl.arc("line", x, y, radius, (190 * Math.PI) / 180, (350 * Math.PI) / 180, color, { alpha, lineWidth });
+    dl.arc("line", x, y, radius, (190 * Math.PI) / 180, (350 * Math.PI) / 180, color, {
+      alpha,
+      lineWidth,
+    });
     dl.line([x - radius, y - radius * 0.2, x, y + radius], color, { alpha, lineWidth });
     dl.line([x, y + radius, x + radius, y - radius * 0.2], color, { alpha, lineWidth });
   } else if (glyphName === "broken_ring") {
     dl.arc("line", x, y, radius, 0, (135 * Math.PI) / 180, color, { alpha, lineWidth });
-    dl.arc("line", x, y, radius, (180 * Math.PI) / 180, (315 * Math.PI) / 180, color, { alpha, lineWidth });
+    dl.arc("line", x, y, radius, (180 * Math.PI) / 180, (315 * Math.PI) / 180, color, {
+      alpha,
+      lineWidth,
+    });
   } else if (glyphName === "split") {
     dl.line([x - radius, y - radius, x - radius * 0.2, y], color, { alpha, lineWidth });
     dl.line([x + radius, y + radius, x + radius * 0.2, y], color, { alpha, lineWidth });
@@ -643,7 +740,12 @@ function drawGlyph(dl: DrawList, glyphName: string | undefined, x: number, y: nu
     for (let index = 0; index <= 3; index += 1) {
       const angle = (Math.PI * index) / 2;
       dl.line(
-        [x + Math.cos(angle) * radius * 0.3, y + Math.sin(angle) * radius * 0.3, x + Math.cos(angle) * radius, y + Math.sin(angle) * radius],
+        [
+          x + Math.cos(angle) * radius * 0.3,
+          y + Math.sin(angle) * radius * 0.3,
+          x + Math.cos(angle) * radius,
+          y + Math.sin(angle) * radius,
+        ],
         color,
         { alpha, lineWidth },
       );

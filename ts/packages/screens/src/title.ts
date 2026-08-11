@@ -61,7 +61,10 @@ function layout(state: TitleScreenState): Layout {
   return widgets;
 }
 
-function update(state: TitleScreenState, event: FocusEvent): readonly [TitleScreenState, TitleAction | undefined] {
+function update(
+  state: TitleScreenState,
+  event: FocusEvent,
+): readonly [TitleScreenState, TitleAction | undefined] {
   const currentLayout = layout(state);
   const nextFocus = focus.navigate(currentLayout, state.focus, event) ?? state.focus;
   if (event.kind === "action" && event.action === "back") {

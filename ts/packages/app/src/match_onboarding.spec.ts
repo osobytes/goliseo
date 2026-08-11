@@ -39,7 +39,11 @@ describe("first-match onboarding", () => {
     expect(onboarding.prompt(state)).toBeUndefined();
     state = onboarding.update(state, context({ keeper_holding: true, carrying: true }), 0);
     expect(onboarding.prompt(state)?.id).toBe("keeper");
-    state = onboarding.update(state, context({ keeper_holding: true, carrying: true, shot: true }), 0.1);
+    state = onboarding.update(
+      state,
+      context({ keeper_holding: true, carrying: true, shot: true }),
+      0.1,
+    );
     expect(onboarding.prompt(state)?.id).toBe("possession");
   });
 
@@ -52,7 +56,11 @@ describe("first-match onboarding", () => {
   it("teaches equipment only in the explicit combat prototype", () => {
     let combat = onboarding.new(false, true);
     expect(onboarding.prompt(combat)?.id).toBe("equipment");
-    combat = onboarding.update(combat, context({ equipment_available: true, equipment_used: true }), 0.1);
+    combat = onboarding.update(
+      combat,
+      context({ equipment_available: true, equipment_used: true }),
+      0.1,
+    );
     expect(onboarding.prompt(combat)).toBeUndefined();
 
     let showcase = onboarding.new(false, false);

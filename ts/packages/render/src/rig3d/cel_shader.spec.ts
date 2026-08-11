@@ -19,7 +19,37 @@
 
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
-import { applyCelShading, applyCombinedCelShading, ELEVATION, SHADING_EYE, SHADING_EYE_DISTANCE, SHADING_NORMAL_VARYING, SHADING_WORLD_VARYING, shadingFrameVertexChunk, BAND_HIGH, BAND_HIGH_THRESHOLD, BAND_LOW, BAND_MID, BAND_MID_THRESHOLD, BOUNCE_SCALE, CEL_SHADING_TARGET_INCLUDES, EMISSIVE_BASE, EMISSIVE_FACING_SCALE, LIGHT_DIR, RIM_METAL_MIX_HIGH, RIM_METAL_MIX_LOW, RIM_POWER, RIM_SMOOTH_HIGH, RIM_SMOOTH_LOW, shaderChunkFor, shaderChunkForCombined, SPEC_POWER, SPEC_SCALE, SPEC_SMOOTH_HIGH, SPEC_SMOOTH_LOW } from "./cel_shader.ts";
+import {
+  applyCelShading,
+  applyCombinedCelShading,
+  ELEVATION,
+  SHADING_EYE,
+  SHADING_EYE_DISTANCE,
+  SHADING_NORMAL_VARYING,
+  SHADING_WORLD_VARYING,
+  shadingFrameVertexChunk,
+  BAND_HIGH,
+  BAND_HIGH_THRESHOLD,
+  BAND_LOW,
+  BAND_MID,
+  BAND_MID_THRESHOLD,
+  BOUNCE_SCALE,
+  CEL_SHADING_TARGET_INCLUDES,
+  EMISSIVE_BASE,
+  EMISSIVE_FACING_SCALE,
+  LIGHT_DIR,
+  RIM_METAL_MIX_HIGH,
+  RIM_METAL_MIX_LOW,
+  RIM_POWER,
+  RIM_SMOOTH_HIGH,
+  RIM_SMOOTH_LOW,
+  shaderChunkFor,
+  shaderChunkForCombined,
+  SPEC_POWER,
+  SPEC_SCALE,
+  SPEC_SMOOTH_HIGH,
+  SPEC_SMOOTH_LOW,
+} from "./cel_shader.ts";
 
 // The reference numbers this file's shading constants must match. Kept here
 // as a second, independent statement of the same nine numbers (rather than
@@ -108,7 +138,9 @@ describe("cel_shader.shaderChunkFor", () => {
 
   it("emissive: bypasses the band/rim/specular math entirely", () => {
     const chunk = shaderChunkFor("emissive");
-    expect(chunk).toContain("reflectedLight.directDiffuse = diffuseColor.rgb * ( 1.25 + 0.55 * gcFacing )");
+    expect(chunk).toContain(
+      "reflectedLight.directDiffuse = diffuseColor.rgb * ( 1.25 + 0.55 * gcFacing )",
+    );
     expect(chunk).not.toContain("band");
     expect(chunk).not.toContain("rim");
     expect(chunk).not.toContain("gcSpec");
@@ -138,9 +170,11 @@ describe("cel_shader.applyCelShading", () => {
       defines: {},
     };
     if (shader.fragmentShader === undefined || shader.vertexShader === undefined) {
-      throw new Error("cel_shader.spec.ts: THREE.ShaderLib.standard is missing -- three.js version mismatch?");
+      throw new Error(
+        "cel_shader.spec.ts: THREE.ShaderLib.standard is missing -- three.js version mismatch?",
+      );
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- three.js's `onBeforeCompile(shader, renderer)` takes its own internal shader object and a live WebGLRenderer; this test drives it with a synthetic shader and no renderer on purpose, and neither has a public type to name.
     material.onBeforeCompile(shader as any, undefined as any);
     return { material, fragmentShader: shader.fragmentShader };
   }
@@ -158,7 +192,7 @@ describe("cel_shader.applyCelShading", () => {
     expect(fragmentShader).toContain("gcHalfDir");
   });
 
-  it("sets material.side to DoubleSide, matching rig3d/renderer.lua's setMeshCullMode(\"none\")", () => {
+  it('sets material.side to DoubleSide, matching rig3d/renderer.lua\'s setMeshCullMode("none")', () => {
     const { material } = compileAgainstRealTemplate("plain");
     expect(material.side).toBe(THREE.DoubleSide);
   });
@@ -170,7 +204,11 @@ describe("cel_shader.applyCelShading", () => {
     applyCelShading(metal, "metal");
     const emissive = new THREE.MeshStandardMaterial({ vertexColors: true });
     applyCelShading(emissive, "emissive");
-    const keys = new Set([plain.customProgramCacheKey(), metal.customProgramCacheKey(), emissive.customProgramCacheKey()]);
+    const keys = new Set([
+      plain.customProgramCacheKey(),
+      metal.customProgramCacheKey(),
+      emissive.customProgramCacheKey(),
+    ]);
     expect(keys.size).toBe(3);
   });
 });
@@ -189,7 +227,9 @@ describe("cel_shader.shaderChunkForCombined", () => {
     // this is NOT a hand-duplicated second copy of the ported math, so a
     // future change to celShadingChunk's numbers propagates here for free
     // and this assertion keeps proving that propagation actually happens.
-    expect(combined).toContain("reflectedLight.directDiffuse = diffuseColor.rgb * ( 1.25 + 0.55 * gcFacing )"); // emissive
+    expect(combined).toContain(
+      "reflectedLight.directDiffuse = diffuseColor.rgb * ( 1.25 + 0.55 * gcFacing )",
+    ); // emissive
     expect(combined).toContain("pow( max( dot( gcNormal, gcHalfDir ), 0.0 ), 24.0 )"); // metal specular
     expect(combined).toContain("mix( 0.55, 1.05, 0.0 )"); // plain's rim metal-mix factor
   });
@@ -212,9 +252,11 @@ describe("cel_shader.applyCombinedCelShading", () => {
       defines: {},
     };
     if (shader.fragmentShader === undefined || shader.vertexShader === undefined) {
-      throw new Error("cel_shader.spec.ts: THREE.ShaderLib.standard is missing -- three.js version mismatch?");
+      throw new Error(
+        "cel_shader.spec.ts: THREE.ShaderLib.standard is missing -- three.js version mismatch?",
+      );
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- three.js's `onBeforeCompile(shader, renderer)` takes its own internal shader object and a live WebGLRenderer; this test drives it with a synthetic shader and no renderer on purpose, and neither has a public type to name.
     material.onBeforeCompile(shader as any, undefined as any);
     return { material, fragmentShader: shader.fragmentShader, vertexShader: shader.vertexShader };
   }
@@ -240,7 +282,7 @@ describe("cel_shader.applyCombinedCelShading", () => {
     expect(fragmentShader).toContain("reflectedLight.directDiffuse = gcLit");
   });
 
-  it("sets material.side to DoubleSide, matching rig3d/renderer.lua's setMeshCullMode(\"none\")", () => {
+  it('sets material.side to DoubleSide, matching rig3d/renderer.lua\'s setMeshCullMode("none")', () => {
     const { material } = compileCombinedAgainstRealTemplate();
     expect(material.side).toBe(THREE.DoubleSide);
   });
@@ -268,7 +310,12 @@ describe("cel_shader.applyCombinedCelShading", () => {
 
 describe("cel_shader shading frame", () => {
   it("reads the rebuilt varyings, never three.js's camera-dependent normal/vViewPosition", () => {
-    for (const chunk of [shaderChunkFor("plain"), shaderChunkFor("metal"), shaderChunkFor("emissive"), shaderChunkForCombined()]) {
+    for (const chunk of [
+      shaderChunkFor("plain"),
+      shaderChunkFor("metal"),
+      shaderChunkFor("emissive"),
+      shaderChunkForCombined(),
+    ]) {
       expect(chunk).toContain(SHADING_NORMAL_VARYING);
       expect(chunk).toContain(SHADING_WORLD_VARYING);
       // `vViewPosition` is the fragment-to-eye vector for a PERSPECTIVE
@@ -316,7 +363,7 @@ describe("cel_shader shading frame", () => {
         uniforms: {},
         defines: {},
       };
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- three.js's `onBeforeCompile(shader, renderer)` takes its own internal shader object and a live WebGLRenderer; this test drives it with a synthetic shader and no renderer on purpose, and neither has a public type to name.
       material.onBeforeCompile(shader as any, undefined as any);
       expect(shader.vertexShader).toContain(`varying vec3 ${SHADING_NORMAL_VARYING};`);
       expect(shader.vertexShader).toContain(`varying vec3 ${SHADING_WORLD_VARYING};`);
@@ -357,7 +404,11 @@ describe("cel_shader shading frame", () => {
       .setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw)
       .premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), ELEVATION));
     const modelMatrix = new THREE.Matrix4()
-      .compose(new THREE.Vector3(640, 400, 0.5), new THREE.Quaternion(), new THREE.Vector3(ppm, -ppm, 0.05))
+      .compose(
+        new THREE.Vector3(640, 400, 0.5),
+        new THREE.Quaternion(),
+        new THREE.Vector3(ppm, -ppm, 0.05),
+      )
       .multiply(new THREE.Matrix4().makeRotationFromQuaternion(rotation));
 
     // Ground truth: the yaw alone, which is the shading frame's model.

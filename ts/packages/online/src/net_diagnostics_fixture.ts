@@ -74,7 +74,12 @@
 // audit's scope.
 
 import type { Result } from "@gc/core";
-import { newMessage, type StarTransportAdapter, type TransportMessage, type TransportPeerMessage } from "@gc/transport";
+import {
+  newMessage,
+  type StarTransportAdapter,
+  type TransportMessage,
+  type TransportPeerMessage,
+} from "@gc/transport";
 import {
   newNetDiagnostics,
   recordAnchor,
@@ -128,7 +133,11 @@ export interface MatchDriverFixtureSession {
 
 /** `game.online.match_driver_fixture`. */
 export interface MatchDriverFixturePort {
-  session(mode: MatchMode, template: unknown, humans: number | undefined): MatchDriverFixtureSession;
+  session(
+    mode: MatchMode,
+    template: unknown,
+    humans: number | undefined,
+  ): MatchDriverFixtureSession;
   initialSnapshot(duration: number | undefined, combat: boolean | undefined): unknown;
 }
 
@@ -169,7 +178,7 @@ export interface ProtocolPort extends ProtocolDecoderPort {
     sessionId: string,
     peerId: string,
     sequence: number,
-    body: unknown
+    body: unknown,
   ) => Result<unknown, string>;
   encode(message: unknown): Result<string, string>;
 }
@@ -239,7 +248,11 @@ export const DEFAULT_RETAIN_WIRES = 192;
 // carrying a mapping error next to the anchor.
 export const MAPPING_ERROR_MS = DEFAULT_CLOCK_STEP_MS / 2;
 
-function unwrap<T, E>(result: Result<T, E>, message: string, describe: (error: E) => string = String): T {
+function unwrap<T, E>(
+  result: Result<T, E>,
+  message: string,
+  describe: (error: E) => string = String,
+): T {
   if (!result.ok) {
     throw new Error(`${message}: ${describe(result.error)}`);
   }
@@ -249,7 +262,7 @@ function unwrap<T, E>(result: Result<T, E>, message: string, describe: (error: E
 export function harness(
   env: NetDiagnosticsFixtureEnv,
   mode: MatchMode,
-  options: NetDiagnosticsFixtureOptions = {}
+  options: NetDiagnosticsFixtureOptions = {},
 ): NetDiagnosticsFixtureHarness {
   const session = env.matchDriverFixture.session(mode, undefined, options.humans);
   const snapshot = env.matchDriverFixture.initialSnapshot(options.duration, options.combat);
@@ -270,7 +283,8 @@ export function harness(
       manifest: session.manifest,
       freeze: session.freeze,
       input_delay_ticks: env.inputProtocol.FAIRNESS_DELAY_TICKS,
-      hash_interval_ticks: options.hash_interval_ticks ?? env.matchDriver.DEFAULT_HASH_INTERVAL_TICKS,
+      hash_interval_ticks:
+        options.hash_interval_ticks ?? env.matchDriver.DEFAULT_HASH_INTERVAL_TICKS,
       max_rollback_ticks: options.max_rollback_ticks ?? 0,
       ...(options.limits !== undefined ? { limits: options.limits } : {}),
       export_opt_in: options.export_opt_in !== false,
@@ -293,8 +307,12 @@ export function harness(
       manifest: session.manifest,
       transport: tap,
       initial_snapshot: snapshot,
-      ...(options.hash_interval_ticks !== undefined ? { hash_interval_ticks: options.hash_interval_ticks } : {}),
-      ...(options.max_rollback_ticks !== undefined ? { max_rollback_ticks: options.max_rollback_ticks } : {}),
+      ...(options.hash_interval_ticks !== undefined
+        ? { hash_interval_ticks: options.hash_interval_ticks }
+        : {}),
+      ...(options.max_rollback_ticks !== undefined
+        ? { max_rollback_ticks: options.max_rollback_ticks }
+        : {}),
     });
     state.peers.push({ peer_id: peerId, role, recorder, tap, driver });
   };
@@ -315,12 +333,20 @@ export function harness(
 // step* so a repeated run with the same bias reproduces it -- which is the
 // property the runtime invariant checks lean on, not byte-identity of a
 // real measurement.
-export function quality(state: NetDiagnosticsFixtureHarness): { readonly rtt_ms: number; readonly jitter_ms: number } {
+export function quality(state: NetDiagnosticsFixtureHarness): {
+  readonly rtt_ms: number;
+  readonly jitter_ms: number;
+} {
   const phase = state.step % 5;
   return { rtt_ms: 18 + phase * 2 + state.rtt_bias_ms, jitter_ms: phase * 0.5 };
 }
 
-function fold(state: NetDiagnosticsFixtureHarness, env: NetDiagnosticsFixtureEnv, peer: NetDiagnosticsFixturePeer, batch: MatchDriverBatch): void {
+function fold(
+  state: NetDiagnosticsFixtureHarness,
+  env: NetDiagnosticsFixtureEnv,
+  peer: NetDiagnosticsFixturePeer,
+  batch: MatchDriverBatch,
+): void {
   // Reading driver diagnostics also reads the tap's transport diagnostics,
   // which is what folds the star's counters into the recorder.
   const diagnostics = env.matchDriver.diagnostics(peer.driver);
@@ -354,7 +380,7 @@ export function advance(
   env: NetDiagnosticsFixtureEnv,
   state: NetDiagnosticsFixtureHarness,
   samples?: Readonly<Record<number, unknown>>,
-  deliver = true
+  deliver = true,
 ): MatchDriverBatch[] {
   const batches: MatchDriverBatch[] = [];
   state.peers.forEach((peer, index) => {
@@ -387,7 +413,7 @@ export function run(
   env: NetDiagnosticsFixtureEnv,
   state: NetDiagnosticsFixtureHarness,
   steps: number,
-  samples?: Readonly<Record<number, unknown>>
+  samples?: Readonly<Record<number, unknown>>,
 ): MatchDriverBatch[] {
   let last: MatchDriverBatch[] = [];
   for (let index = 0; index < steps; index += 1) {
@@ -401,14 +427,17 @@ export function runBursty(
   state: NetDiagnosticsFixtureHarness,
   steps: number,
   period: number,
-  samples?: Readonly<Record<number, unknown>>
+  samples?: Readonly<Record<number, unknown>>,
 ): void {
   for (let step = 1; step <= steps; step += 1) {
     advance(env, state, samples, step % period === 0);
   }
 }
 
-export function peer(state: NetDiagnosticsFixtureHarness, peerId: string): NetDiagnosticsFixturePeer {
+export function peer(
+  state: NetDiagnosticsFixtureHarness,
+  peerId: string,
+): NetDiagnosticsFixturePeer {
   const found = state.peers.find((candidate) => candidate.peer_id === peerId);
   if (found === undefined) {
     throw new Error(`no fixture peer named ${peerId}`);
@@ -424,20 +453,20 @@ export function hashReport(
   peerId: string,
   sequence: number,
   tick: number,
-  boundaryHash: string
+  boundaryHash: string,
 ): TransportPeerMessage {
   const message = unwrap(
     env.protocol.new_("hash_report", state.session.manifest.session_id, peerId, sequence, {
       tick,
       boundary_hash: boundaryHash,
     }),
-    "hash report message"
+    "hash report message",
   );
   const payload = unwrap(env.protocol.encode(message), "hash report encode");
   const envelope = unwrap(
     newMessage({ type: "event", seq: sequence, payload }),
     "hash report envelope",
-    (failure) => failure.message
+    (failure) => failure.message,
   );
   return { peer_id: peerId, channel: "control", message: envelope, arrival_seq: sequence };
 }
@@ -454,13 +483,13 @@ export function forgedBundle(
   slotIndex: number,
   sequence: number,
   transportTick: number,
-  edges: number
+  edges: number,
 ): TransportMessage {
   const rows: InputProtocolRow[] = [];
   for (let tick = 0; tick <= env.inputProtocol.HISTORY_ROWS; tick += 1) {
     const sample = unwrap(
       env.inputFrame.newSample({ edges: tick === env.inputProtocol.HISTORY_ROWS ? edges : 0 }),
-      "forged bundle sample"
+      "forged bundle sample",
     );
     rows.push({ tick, slot_index: slotIndex, sample });
   }
@@ -474,12 +503,12 @@ export function forgedBundle(
       first_input_tick: state.session.freeze.first_input_tick,
       rows,
     }),
-    "forged bundle packet"
+    "forged bundle packet",
   );
   const payload = unwrap(env.inputProtocol.encode(packet), "forged bundle encode");
   return unwrap(
     newMessage({ type: "input", seq: packet.sequence, tick: packet.transport_tick, payload }),
     "forged bundle envelope",
-    (failure) => failure.message
+    (failure) => failure.message,
   );
 }

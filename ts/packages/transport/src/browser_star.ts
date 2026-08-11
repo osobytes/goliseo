@@ -26,7 +26,9 @@ const BRIDGE = "window.GoliseoStarTransport.";
  * a `[result, error]` pair so a mock is free to explain a `null` result
  * with a message.
  */
-export type StarEvalFn = (command: string) => readonly [result: string | null, error: string | null];
+export type StarEvalFn = (
+  command: string,
+) => readonly [result: string | null, error: string | null];
 
 export interface BrowserStarTransportOptions {
   readonly role?: TransportRole;
@@ -141,7 +143,7 @@ export class BrowserStarTransport implements StarTransportAdapter {
     this._queueLimit = bounded(
       options.queue_limit ?? contract.DEFAULT_QUEUE_LIMIT,
       "queue_limit",
-      contract.MAX_QUEUE_LIMIT
+      contract.MAX_QUEUE_LIMIT,
     );
     this._maxGuests =
       role === "host"
@@ -150,7 +152,7 @@ export class BrowserStarTransport implements StarTransportAdapter {
     this._bufferedAmountLimit = bounded(
       options.buffered_amount_limit ?? contract.DEFAULT_BUFFERED_AMOUNT_LIMIT,
       "buffered_amount_limit",
-      contract.MAX_BUFFERED_AMOUNT_LIMIT
+      contract.MAX_BUFFERED_AMOUNT_LIMIT,
     );
     this._eval = options.eval ?? defaultEval;
     this._eventLimit = Math.max(2, options.queue_limit ?? contract.DEFAULT_QUEUE_LIMIT);
@@ -163,7 +165,7 @@ export class BrowserStarTransport implements StarTransportAdapter {
     code: TransportErrorCode,
     message: string,
     peerId?: string,
-    channel?: TransportChannel
+    channel?: TransportChannel,
   ): TransportResult<T> {
     this._lastError = message;
     this._localError = true;
@@ -184,7 +186,10 @@ export class BrowserStarTransport implements StarTransportAdapter {
     return failure(code, message);
   }
 
-  private _call(name: string, ...args: readonly string[]): { readonly result: string | null; readonly error?: string } {
+  private _call(
+    name: string,
+    ...args: readonly string[]
+  ): { readonly result: string | null; readonly error?: string } {
     const command = `${BRIDGE}${name}(${args.join(",")})`;
     const [result, evalError] = this._eval(command);
     if (result === null) {
@@ -221,7 +226,7 @@ export class BrowserStarTransport implements StarTransportAdapter {
       quote(this._role),
       String(this._queueLimit),
       String(this._maxGuests),
-      String(this._bufferedAmountLimit)
+      String(this._bufferedAmountLimit),
     );
     if (result === null) {
       return failure("bridge_error", error ?? "browser star bridge is unavailable");
@@ -422,7 +427,11 @@ export class BrowserStarTransport implements StarTransportAdapter {
     return ok(signal);
   }
 
-  send(peerId: string, channel: TransportChannel, message: TransportMessage): TransportResult<true> {
+  send(
+    peerId: string,
+    channel: TransportChannel,
+    message: TransportMessage,
+  ): TransportResult<true> {
     const connected = this._requireConnected();
     if (!connected.ok) {
       return connected;
@@ -442,7 +451,12 @@ export class BrowserStarTransport implements StarTransportAdapter {
       // picks the event's attribution; the returned code is unaffected.
       const openedPeer = this._openedPeer(peerId);
       const knownChannel = contract.CHANNEL_CONFIG[channel] !== undefined ? channel : undefined;
-      return this._recordError(lineResult.error.code, lineResult.error.message, openedPeer, knownChannel);
+      return this._recordError(
+        lineResult.error.code,
+        lineResult.error.message,
+        openedPeer,
+        knownChannel,
+      );
     }
     return this._command("send", `'${lineResult.value}'`);
   }
@@ -472,7 +486,8 @@ export class BrowserStarTransport implements StarTransportAdapter {
       return parsed;
     }
     const fields = parsed.value;
-    const delivered = fields[0] === "delivered" && fields[1] !== undefined ? Number(fields[1]) : NaN;
+    const delivered =
+      fields[0] === "delivered" && fields[1] !== undefined ? Number(fields[1]) : NaN;
     if (!Number.isFinite(delivered)) {
       return failure("bridge_error", "browser star bridge returned an invalid fan-out count");
     }
@@ -558,7 +573,8 @@ export class BrowserStarTransport implements StarTransportAdapter {
     }
     if (tag === "peer_error" && fields[1] !== undefined && fields[3] !== undefined) {
       const code = fields[3] as TransportErrorCode;
-      const channel = fields[2] !== undefined && fields[2] !== "" ? (fields[2] as TransportChannel) : undefined;
+      const channel =
+        fields[2] !== undefined && fields[2] !== "" ? (fields[2] as TransportChannel) : undefined;
       const detail = unescape(fields[4] ?? "");
       this._lastError = detail;
       return {
@@ -641,6 +657,10 @@ export class BrowserStarTransport implements StarTransportAdapter {
       lastError = this._lastError;
       this._localError = false;
     }
-    return { ...diagnostics, event_depth: diagnostics.event_depth + this._events.length, last_error: lastError };
+    return {
+      ...diagnostics,
+      event_depth: diagnostics.event_depth + this._events.length,
+      last_error: lastError,
+    };
   }
 }

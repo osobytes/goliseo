@@ -29,15 +29,27 @@
 // small hand-written fakes for those three ports -- see its header.
 
 import { combatFeedback, matchEventBatch } from "@gc/presentation";
-import type { CombatEvent, CombatFeedbackState, MatchEvent, RollbackEventDiff, RollbackWrappedEvent } from "@gc/presentation";
+import type {
+  CombatEvent,
+  CombatFeedbackState,
+  MatchEvent,
+  RollbackEventDiff,
+  RollbackWrappedEvent,
+} from "@gc/presentation";
 import { Vec2 } from "@gc/core";
-import { cameraFollow, correctionSmoothing, player3dPrewarmCharacters, player3dResetAnimation, releaseFollow, viewState } from "@gc/render";
+import {
+  cameraFollow,
+  correctionSmoothing,
+  player3dPrewarmCharacters,
+  player3dResetAnimation,
+  releaseFollow,
+  viewState,
+} from "@gc/render";
 import type { correctionSmoothingTypes, replayTypes } from "@gc/render";
 import type { LifecyclePayload } from "./online_match_model.ts";
 import type { GameSettings } from "./content.ts";
 import type {
   RealMatchEvent,
-  RealMatchEventKind,
   RealMatchInputEvent,
   RealMatchRosterEntry,
   RealMatchScreenPort,
@@ -90,7 +102,10 @@ export interface EffectsPort {
   resetTrail(): void;
   applyEventDiff(diff: RollbackEventDiff): void;
   discardEventDiff(diff: RollbackEventDiff): void;
-  confirmEvent(event: RollbackWrappedMatchEvent | RollbackWrappedCombatEvent, replayOwnsScreen: boolean): void;
+  confirmEvent(
+    event: RollbackWrappedMatchEvent | RollbackWrappedCombatEvent,
+    replayOwnsScreen: boolean,
+  ): void;
 }
 
 /** Match sound effects for confirmed events, injected -- see this module's header. */
@@ -98,7 +113,7 @@ export interface AudioPort {
   /** @returns whether this event id was newly consumed (dedup), regardless of whether it audibly played. */
   consumeConfirmed(
     event: RollbackWrappedMatchEvent | RollbackWrappedCombatEvent | RollbackWrappedLifecycleEvent,
-    replayOwnsScreen?: boolean
+    replayOwnsScreen?: boolean,
   ): boolean;
 }
 
@@ -174,7 +189,7 @@ export function newMatchRollbackConsumerState(): MatchRollbackConsumerState {
 export function consumeConfirmedLifecycle(
   state: MatchRollbackConsumerState,
   ports: MatchRollbackConsumerPorts,
-  event: RollbackWrappedLifecycleEvent
+  event: RollbackWrappedLifecycleEvent,
 ): boolean {
   if (state.confirmed_lifecycle_ids.has(event.id)) {
     return false;
@@ -209,7 +224,7 @@ export function consumeRollbackEventDiff(
   state: MatchRollbackConsumerState,
   ports: MatchRollbackConsumerPorts,
   hasSource: boolean,
-  diff: RollbackEventDiff
+  diff: RollbackEventDiff,
 ): boolean {
   if (hasSource && ports.replay.active()) {
     ports.effects.discardEventDiff(diff);
@@ -225,7 +240,7 @@ export function consumeRollbackEventDiff(
 export function consumeConfirmedStep(
   state: MatchRollbackConsumerState,
   ports: MatchRollbackConsumerPorts,
-  step: RollbackEventStep
+  step: RollbackEventStep,
 ): number {
   let consumedCount = 0;
   // Lifecycle owns the presentation boundary. A goal confirmed in the same
@@ -265,7 +280,7 @@ export function consumeRollbackPresentation(
   hasSource: boolean,
   frameEvents: MatchEvent[],
   eventDiffs: readonly RollbackEventDiff[],
-  confirmedSteps: readonly RollbackEventStep[]
+  confirmedSteps: readonly RollbackEventStep[],
 ): void {
   for (const event of matchEventBatch.surviving(eventDiffs)) {
     frameEvents.push(event);
@@ -1092,7 +1107,11 @@ export class MatchScreen {
         );
       }
       this.rollbackHost = ports.createRollbackHost();
-      this.rollbackConsumerPorts = { effects: ports.effects, audio: ports.audio, replay: ports.replay };
+      this.rollbackConsumerPorts = {
+        effects: ports.effects,
+        audio: ports.audio,
+        replay: ports.replay,
+      };
       this.validateRollbackCombatCompanion();
     } else {
       this.host = ports.createHost();
@@ -1142,9 +1161,12 @@ export class MatchScreen {
     // guarded: an empty roster is already a documented no-op, and the day the
     // laboratory grows a real one it gets warmed for free instead of needing
     // somebody to remember an exclusion.
-    const host: Pick<SimHostPort, "roster"> | undefined = this.onlineHost ?? this.host ?? this.rollbackHost;
+    const host: Pick<SimHostPort, "roster"> | undefined =
+      this.onlineHost ?? this.host ?? this.rollbackHost;
     if (host === undefined) {
-      throw new Error("match screen: constructed with no host to pre-warm (unreachable -- construction builds exactly one)");
+      throw new Error(
+        "match screen: constructed with no host to pre-warm (unreachable -- construction builds exactly one)",
+      );
     }
     player3dPrewarmCharacters(host.roster());
   }
@@ -1185,7 +1207,9 @@ export class MatchScreen {
   private activeHost(): Pick<SimHostPort, "frame" | "roster" | "tick" | "dispose"> {
     const host = this.rollbackHost ?? this.onlineHost ?? this.host;
     if (host === undefined) {
-      throw new Error("match screen: no active host (unreachable -- constructor always builds one)");
+      throw new Error(
+        "match screen: no active host (unreachable -- constructor always builds one)",
+      );
     }
     return host;
   }
@@ -1213,7 +1237,10 @@ export class MatchScreen {
    * roster is not attributable) -- e.g. `match_screen.spec.ts`'s
    * `FakeSimHost.roster()`, which returns `{}`.
    */
-  get matchObservationState(): { readonly roster?: readonly RealMatchRosterEntry[]; readonly owner?: number } {
+  get matchObservationState(): {
+    readonly roster?: readonly RealMatchRosterEntry[];
+    readonly owner?: number;
+  } {
     const host = this.activeHost();
     const roster = host.roster();
     const ids = roster.ids;
@@ -1264,7 +1291,12 @@ export class MatchScreen {
    * an `OnlineHostPort` whose `frame()`/`roster()` do not carry them is a
    * construction bug, not a recoverable, caller-facing failure.
    */
-  private onlineFrame(): { readonly frame: RenderFrame; readonly players: OnlineRenderFramePlayers; readonly control: OnlineRenderFrameControl; readonly roster: RenderFrameRoster } {
+  private onlineFrame(): {
+    readonly frame: RenderFrame;
+    readonly players: OnlineRenderFramePlayers;
+    readonly control: OnlineRenderFrameControl;
+    readonly roster: RenderFrameRoster;
+  } {
     const onlineHost = this.onlineHost;
     if (onlineHost === undefined) {
       throw new Error("match screen: onlineFrame is only valid in online mode");
@@ -1273,7 +1305,9 @@ export class MatchScreen {
     const players = frame.players;
     const control = frame.control;
     if (players === undefined || control === undefined) {
-      throw new Error("match screen: an online host's frame() must carry players/control -- see OnlineHostPort's doc");
+      throw new Error(
+        "match screen: an online host's frame() must carry players/control -- see OnlineHostPort's doc",
+      );
     }
     return { frame, players, control, roster: onlineHost.roster() };
   }
@@ -1441,8 +1475,11 @@ export class MatchScreen {
   }
 
   /** Render-only correction-smoothing diagnostics for whichever mode this screen is in (base or rollback). `undefined` until this screen has processed at least one correction/authoritative source. Exposed for tests. */
-  get debugRenderSmoothingDiagnostics(): correctionSmoothingTypes.CorrectionSmoothingDiagnostics | undefined {
-    return this.renderSmoothing !== undefined ? correctionSmoothing.diagnostics(this.renderSmoothing) : undefined;
+  get debugRenderSmoothingDiagnostics():
+    correctionSmoothingTypes.CorrectionSmoothingDiagnostics | undefined {
+    return this.renderSmoothing !== undefined
+      ? correctionSmoothing.diagnostics(this.renderSmoothing)
+      : undefined;
   }
 
   /**
@@ -1491,7 +1528,9 @@ export class MatchScreen {
   /** Dispose the current host and build a fresh one from the same factory, resetting every frame-to-frame latch and (in rollback mode) every rollback/presentation-owned field. Never reached in ONLINE mode -- `handleRematchEvent` only fires for `profile === "playtest"`, and construction forces `profile = "online"` whenever {@link MatchScreenOptions.online} is set (see that option's doc). */
   private restart(): void {
     if (this.onlineHost !== undefined) {
-      throw new Error("match screen: restart() is not supported in online mode (unreachable -- see this method's doc)");
+      throw new Error(
+        "match screen: restart() is not supported in online mode (unreachable -- see this method's doc)",
+      );
     }
     if (this.rollbackHost !== undefined) {
       this.rollbackHost.dispose();
@@ -2082,7 +2121,10 @@ export class MatchScreen {
       for (const correction of corrections) {
         this.renderSmoothing =
           this.renderSmoothing === undefined
-            ? correctionSmoothing.correct(correctionSmoothing.new(correction.source), correction.source)
+            ? correctionSmoothing.correct(
+                correctionSmoothing.new(correction.source),
+                correction.source,
+              )
             : correctionSmoothing.correct(this.renderSmoothing, correction.source);
       }
       if (this.renderSmoothing !== undefined && dt > 0) {
@@ -2146,7 +2188,10 @@ export class MatchScreen {
     }
     this.onlineAccumulator += dt;
     let ticks = 0;
-    while (this.onlineAccumulator + ONLINE_CLOCK_EPSILON >= ONLINE_TICK_SECONDS && ticks < MAX_ONLINE_TICKS_PER_UPDATE) {
+    while (
+      this.onlineAccumulator + ONLINE_CLOCK_EPSILON >= ONLINE_TICK_SECONDS &&
+      ticks < MAX_ONLINE_TICKS_PER_UPDATE
+    ) {
       this.onlineAccumulator -= ONLINE_TICK_SECONDS;
       ticks += 1;
     }
@@ -2279,7 +2324,9 @@ export class MatchScreen {
  * (`pressed` is optional there), and `gamepad`/`click` are not part of
  * `RealMatchInputEvent`'s vocabulary at all.
  */
-function toControllerInputEvent(evt: ControllerInputEvent | RealMatchInputEvent): ControllerInputEvent {
+function toControllerInputEvent(
+  evt: ControllerInputEvent | RealMatchInputEvent,
+): ControllerInputEvent {
   if (evt.kind !== "action") {
     return evt;
   }
@@ -2397,7 +2444,10 @@ export class MatchScreenAsRealMatchScreen implements RealMatchScreenPort<RealMat
  * the OMP-3 driver directly, not `sim.rollback_playable_lab`'s local
  * laboratory.
  */
-export class MatchScreenAsOnlineMatchScreen implements RealMatchScreenPort<OnlineMatchState, unknown> {
+export class MatchScreenAsOnlineMatchScreen implements RealMatchScreenPort<
+  OnlineMatchState,
+  unknown
+> {
   private readonly screen: MatchScreen;
 
   constructor(screen: MatchScreen) {

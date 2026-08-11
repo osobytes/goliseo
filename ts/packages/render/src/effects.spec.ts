@@ -21,7 +21,10 @@ import type { Project } from "./draw2d.ts";
 
 const settings: EffectsSettings = { screen_shake: true, bloom: true };
 
-function combatEvent(id: string, overrides: Partial<CombatEvent> = {}): RollbackWrappedEvent<CombatEvent> {
+function combatEvent(
+  id: string,
+  overrides: Partial<CombatEvent> = {},
+): RollbackWrappedEvent<CombatEvent> {
   return {
     id,
     tick: 1,
@@ -56,7 +59,11 @@ describe("effects (combat feedback)", () => {
     effects.apply_event_diff({ added: [a, b], revoked: [], replaced: [] });
     expect(effects.diagnostics().particle_count).toBe(particleCount);
 
-    const immune: RollbackWrappedEvent<CombatEvent> = { ...b, id: `${b.id}/immune`, payload: { ...b.payload, result: "immune" } };
+    const immune: RollbackWrappedEvent<CombatEvent> = {
+      ...b,
+      id: `${b.id}/immune`,
+      payload: { ...b.payload, result: "immune" },
+    };
     effects.apply_event_diff({ added: [], revoked: [], replaced: [{ before: b, after: immune }] });
     const replaced = effects.diagnostics();
     expect(replaced.speculative_ids).toEqual([a.id, immune.id].sort());
@@ -119,13 +126,23 @@ describe("effects.sample_ball / tick", () => {
     expect(effects.diagnostics().trail_count).toBe(1);
     // A slow ball (owned by nobody) does not trail at all.
     effects.reset();
-    effects.sample_ball({ ball: { x: 0, y: 0 }, ball_vel: { length: () => 10 }, ball_z: 0, events: [] });
+    effects.sample_ball({
+      ball: { x: 0, y: 0 },
+      ball_vel: { length: () => 10 },
+      ball_z: 0,
+      events: [],
+    });
     expect(effects.diagnostics().trail_count).toBe(0);
   });
 
   it("ages and removes particles/trail dots as dt accumulates", () => {
     effects.reset();
-    effects.consume({ ball: { x: 0, y: 0 }, ball_vel: { length: () => 0 }, ball_z: 0, events: [{ kind: "touch", x: 1, y: 1 }] });
+    effects.consume({
+      ball: { x: 0, y: 0 },
+      ball_vel: { length: () => 0 },
+      ball_z: 0,
+      events: [{ kind: "touch", x: 1, y: 1 }],
+    });
     expect(effects.diagnostics().particle_count).toBeGreaterThan(0);
     effects.tick(10); // touch particles live ~0.28s
     expect(effects.diagnostics().particle_count).toBe(0);

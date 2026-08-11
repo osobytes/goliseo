@@ -100,7 +100,10 @@ function layout(state: TacticScreenState): Layout {
   return widgets;
 }
 
-function update(state: TacticScreenState, event: FocusEvent): readonly [TacticScreenState, TacticAction | undefined] {
+function update(
+  state: TacticScreenState,
+  event: FocusEvent,
+): readonly [TacticScreenState, TacticAction | undefined] {
   const currentLayout = layout(state);
   let next: TacticScreenState = {
     ...state,

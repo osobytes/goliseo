@@ -113,8 +113,12 @@ export function hashOrderProbe(): string {
 
 function selectRows(
   scenarios: FaultScenariosPort,
-  selector: string | undefined
-): { readonly rows: readonly FaultScenario[]; readonly smokeOnly: boolean; readonly label: string } {
+  selector: string | undefined,
+): {
+  readonly rows: readonly FaultScenario[];
+  readonly smokeOnly: boolean;
+  readonly label: string;
+} {
   if (selector === undefined || selector === "smoke") {
     return { rows: scenarios.select(true), smokeOnly: true, label: "smoke" };
   }
@@ -139,10 +143,12 @@ export interface FaultCampaignOptions {
 // Run the selected rows and print the marker stream. Returns `false` when
 // any non-skipped finding failed.
 export function main(scenarios: FaultScenariosPort, options: FaultCampaignOptions = {}): boolean {
-  const print = options.print ?? ((line: string) => {
-    // eslint-disable-next-line no-console
-    console.log(line);
-  });
+  const print =
+    options.print ??
+    ((line: string) => {
+      // eslint-disable-next-line no-console
+      console.log(line);
+    });
   // A crash escaping unprotected used to hang a headless run rather than
   // fail it, because there was no way to dismiss the runtime's own error
   // screen without a window. Nothing here has that problem, but the same
@@ -160,7 +166,7 @@ export function main(scenarios: FaultScenariosPort, options: FaultCampaignOption
 export function runSelection(
   scenarios: FaultScenariosPort,
   options: FaultCampaignOptions,
-  print: (line: string) => void
+  print: (line: string) => void,
 ): boolean {
   const { rows, smokeOnly, label } = selectRows(scenarios, options.selector);
   const topology = options.topology ?? "star";
@@ -171,7 +177,7 @@ export function runSelection(
     // Logged, never implied: the CI subset is a subset.
     print(
       `note bounded coverage: the smoke selection runs ${rows.length} of ${scenarios.SCENARIOS.length} declared rows; ` +
-        "run `--fault-harness full` for the complete matrix"
+        "run `--fault-harness full` for the complete matrix",
     );
   }
   // Named in every run, selected or not: a gap the campaign already knows

@@ -34,7 +34,9 @@ const UNRECOGNIZED_MODE = "3v3" as unknown as "1v1";
 describe("matchDriverFixture bridge: pure/JSON pieces", () => {
   it("constantsJson reports the fixture's own host peer id", () => {
     const host = loadSimHost();
-    const constants = JSON.parse(host.matchDriverFixtureConstantsJson()) as { host_peer_id: string };
+    const constants = JSON.parse(host.matchDriverFixtureConstantsJson()) as {
+      host_peer_id: string;
+    };
     expect(constants.host_peer_id).toBe("host");
   });
 
@@ -90,7 +92,14 @@ describe("matchDriverFixture bridge: closes the freezeJson/manifestJson gap", ()
       const freezeJson = host.matchDriverFixtureFreezeJson("1v1");
       const manifestJson = host.matchDriverFixtureManifestJson("1v1");
 
-      const bridge = new host.MatchDriverBridge(session, "host", "host", freezeJson, manifestJson, undefined);
+      const bridge = new host.MatchDriverBridge(
+        session,
+        "host",
+        "host",
+        freezeJson,
+        manifestJson,
+        undefined,
+      );
       expect(JSON.parse(bridge.statusJson())).toBe("active");
     } finally {
       session.free();
@@ -188,7 +197,9 @@ describe("matchDriverFixture bridge: the constructor-panic regression", () => {
     const host = loadSimHost();
     const session = newSession(host);
     try {
-      expect(() => new host.MatchDriverBridge(session, "host", "host", "{}", "{}", undefined)).toThrow();
+      expect(
+        () => new host.MatchDriverBridge(session, "host", "host", "{}", "{}", undefined),
+      ).toThrow();
     } finally {
       session.free();
     }
@@ -208,15 +219,24 @@ describe("matchDriverFixture bridge: the constructor-panic regression", () => {
       // "hand-filled every Freeze field and guessed at the assignments
       // shape" scenario the orchestrator described -- but `producer_kind`
       // is not one of the two canonical wire values ("peer"/"bot").
-      const bogusAssignments = (freeze.assignments as Array<Record<string, unknown>>).map((entry, index) => ({
-        ...entry,
-        producer_kind: index === 0 ? "human" : entry.producer_kind,
-      }));
+      const bogusAssignments = (freeze.assignments as Array<Record<string, unknown>>).map(
+        (entry, index) => ({
+          ...entry,
+          producer_kind: index === 0 ? "human" : entry.producer_kind,
+        }),
+      );
       const malformedFreezeJson = JSON.stringify({ ...freeze, assignments: bogusAssignments });
 
       let caught: unknown;
       try {
-        new host.MatchDriverBridge(session, "host", "host", malformedFreezeJson, manifestJson, undefined);
+        new host.MatchDriverBridge(
+          session,
+          "host",
+          "host",
+          malformedFreezeJson,
+          manifestJson,
+          undefined,
+        );
       } catch (error) {
         caught = error;
       }
@@ -251,7 +271,9 @@ describe("matchDriverFixture bridge: the constructor-panic regression", () => {
     try {
       const freezeJson = host.matchDriverFixtureFreezeJson("1v1");
       const manifestJson = host.matchDriverFixtureManifestJson("1v1");
-      expect(() => new host.MatchDriverBridge(session, "host", "", freezeJson, manifestJson, undefined)).toThrow();
+      expect(
+        () => new host.MatchDriverBridge(session, "host", "", freezeJson, manifestJson, undefined),
+      ).toThrow();
     } finally {
       session.free();
     }
@@ -343,7 +365,14 @@ describe("matchDriverFixture bridge: MatchDriverBridge's queueLimit and transpor
     const manifestJson = host.matchDriverFixtureManifestJson("1v1");
     const session = newSession(host);
     try {
-      const bridge = new host.MatchDriverBridge(session, "host", "host", freezeJson, manifestJson, undefined);
+      const bridge = new host.MatchDriverBridge(
+        session,
+        "host",
+        "host",
+        freezeJson,
+        manifestJson,
+        undefined,
+      );
       bridge.initializeTransport();
       bridge.openPeer("guest_1");
       bridge.setPeerConnected("guest_1");
@@ -371,7 +400,14 @@ describe("matchDriverFixture bridge: MatchDriverBridge's observeCheckpoint", () 
     const manifestJson = host.matchDriverFixtureManifestJson("1v1");
     const session = newSession(host);
     try {
-      const bridge = new host.MatchDriverBridge(session, "host", "host", freezeJson, manifestJson, undefined);
+      const bridge = new host.MatchDriverBridge(
+        session,
+        "host",
+        "host",
+        freezeJson,
+        manifestJson,
+        undefined,
+      );
       bridge.initializeTransport();
       bridge.openPeer("guest_1");
       bridge.setPeerConnected("guest_1");
@@ -468,9 +504,10 @@ describe("matchDriverFixture bridge: MatchDriverBridge reaching full time (wasm-
         status = JSON.parse(bridge.statusJson()) as string;
       }
 
-      expect(status, "a one-second match must reach a terminal status within 200 driver steps").not.toBe(
-        "active",
-      );
+      expect(
+        status,
+        "a one-second match must reach a terminal status within 200 driver steps",
+      ).not.toBe("active");
       // A wasm trap poisons the whole instance -- every subsequent call
       // into it fails too, not just the one that hit `unreachable`. Calling
       // back into the bridge after full time proves this was a real,

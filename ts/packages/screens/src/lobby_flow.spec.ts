@@ -133,13 +133,13 @@ const SLOT_ORDER: readonly { readonly id: InputSlotId; readonly team: InputTeam 
 ];
 
 const SLOT_INDEX: Readonly<Record<string, number>> = Object.fromEntries(
-  SLOT_ORDER.map((entry, index) => [entry.id, index + 1])
+  SLOT_ORDER.map((entry, index) => [entry.id, index + 1]),
 );
 
 function teamOfSlot(slot: InputSlotId): InputTeam {
   return must(
     SLOT_ORDER.find((entry) => entry.id === slot),
-    `unknown canonical slot ${slot}`
+    `unknown canonical slot ${slot}`,
   ).team;
 }
 
@@ -419,7 +419,7 @@ const IDENTITY_REASONS: Readonly<Record<string, CoordinatorTerminalReason>> = {
 
 function expectationDifference(
   expectation: CoordinatorManifestExpectation | undefined,
-  manifest: SessionManifest
+  manifest: SessionManifest,
 ): { readonly path: string } | undefined {
   if (!expectation) {
     return undefined;
@@ -438,19 +438,29 @@ function linkTargets(state: FakeCoordState): readonly string[] {
   return state.peers.slice(1).map((peer) => peer.link_id);
 }
 
-function ownedSlotsOf(assignments: readonly SessionSlotProducer[], producerId: string): InputSlotId[] {
-  return assignments.filter((p) => p.producer_kind === "peer" && p.producer_id === producerId).map((p) => p.slot);
+function ownedSlotsOf(
+  assignments: readonly SessionSlotProducer[],
+  producerId: string,
+): InputSlotId[] {
+  return assignments
+    .filter((p) => p.producer_kind === "peer" && p.producer_id === producerId)
+    .map((p) => p.slot);
 }
 
 function ownsSlot(state: FakeCoordState, peerId: string): boolean {
-  return (state.assignments ?? []).some((p) => p.producer_kind === "peer" && p.producer_id === peerId);
+  return (state.assignments ?? []).some(
+    (p) => p.producer_kind === "peer" && p.producer_id === peerId,
+  );
 }
 
 function slotListsEqual(a: readonly InputSlotId[], b: readonly InputSlotId[]): boolean {
   return a.length === b.length && a.every((slot, index) => slot === b[index]);
 }
 
-function assignmentsEqual(a: readonly SessionSlotProducer[] | undefined, b: readonly SessionSlotProducer[]): boolean {
+function assignmentsEqual(
+  a: readonly SessionSlotProducer[] | undefined,
+  b: readonly SessionSlotProducer[],
+): boolean {
   if (!a || a.length !== b.length) {
     return false;
   }
@@ -466,7 +476,9 @@ function assignmentsEqual(a: readonly SessionSlotProducer[] | undefined, b: read
   });
 }
 
-function previewLiveOf(assignments: readonly SessionSlotProducer[] | undefined): Readonly<Record<string, InputSlotId>> {
+function previewLiveOf(
+  assignments: readonly SessionSlotProducer[] | undefined,
+): Readonly<Record<string, InputSlotId>> {
   const live: Record<string, InputSlotId> = {};
   for (const producer of assignments ?? []) {
     if (producer.producer_kind === "peer" && live[producer.producer_id] === undefined) {
@@ -479,7 +491,10 @@ function previewLiveOf(assignments: readonly SessionSlotProducer[] | undefined):
 // Contiguous-block seating: mirrors `coordinator.plan_assignments`. The Nth
 // human in `seating` owns canonical slots `(N-1)*k+1..N*k`; every slot the
 // seating does not reach becomes a bot producer.
-function planAssignments(manifest: SessionManifest, seating: readonly string[]): readonly SessionSlotProducer[] | undefined {
+function planAssignments(
+  manifest: SessionManifest,
+  seating: readonly string[],
+): readonly SessionSlotProducer[] | undefined {
   const shape = matchModeShape(manifest.match_mode);
   if (seating.length > shape.humans) {
     return undefined;
@@ -518,8 +533,11 @@ function planAssignments(manifest: SessionManifest, seating: readonly string[]):
 function reseatClaims(
   shape: SessionMatchModeShape,
   plan: readonly SessionSlotProducer[],
-  peers: readonly FakePeer[]
-): { readonly assignments: SessionSlotProducer[]; readonly retained: Readonly<Record<string, readonly InputSlotId[]>> } {
+  peers: readonly FakePeer[],
+): {
+  readonly assignments: SessionSlotProducer[];
+  readonly retained: Readonly<Record<string, readonly InputSlotId[]>>;
+} {
   const humanIndex = new Map<InputSlotId, number>();
   const humanOrder: number[] = [];
   plan.forEach((producer, index) => {
@@ -579,7 +597,10 @@ function reseatClaims(
     for (const slot of claim) {
       const index = humanIndex.get(slot);
       if (index !== undefined) {
-        reseated[index] = { ...must(reseated[index], "reseat: rebuilt index out of range"), producer_id: peer.peer_id };
+        reseated[index] = {
+          ...must(reseated[index], "reseat: rebuilt index out of range"),
+          producer_id: peer.peer_id,
+        };
       }
     }
   }
@@ -589,7 +610,10 @@ function reseatClaims(
       const slotIndex = free[cursor];
       cursor += 1;
       if (slotIndex !== undefined) {
-        reseated[slotIndex] = { ...must(reseated[slotIndex], "reseat: free index out of range"), producer_id: producerId };
+        reseated[slotIndex] = {
+          ...must(reseated[slotIndex], "reseat: free index out of range"),
+          producer_id: producerId,
+        };
       }
     }
   }
@@ -601,7 +625,7 @@ function reseatClaims(
 function exchangeAssignments(
   assignments: readonly SessionSlotProducer[],
   peerId: string,
-  requested: readonly InputSlotId[]
+  requested: readonly InputSlotId[],
 ): SessionSlotProducer[] {
   const current = ownedSlotsOf(assignments, peerId);
   const requestedSet = new Set(requested);
@@ -621,11 +645,19 @@ function exchangeAssignments(
   return SLOT_ORDER.map((entry, index) => {
     const existing = must(assignments[index], "exchange: assignment index out of range");
     if (requestedSet.has(entry.id)) {
-      return { ...existing, producer_kind: "peer", producer_id: peerId } satisfies SessionSlotProducer;
+      return {
+        ...existing,
+        producer_kind: "peer",
+        producer_id: peerId,
+      } satisfies SessionSlotProducer;
     }
     const returned = returnedTo[entry.id];
     if (returned !== undefined) {
-      return { ...existing, producer_kind: "peer", producer_id: returned } satisfies SessionSlotProducer;
+      return {
+        ...existing,
+        producer_kind: "peer",
+        producer_id: returned,
+      } satisfies SessionSlotProducer;
     }
     return existing;
   });
@@ -639,7 +671,11 @@ interface PreferenceVerdict {
 
 // Mirrors `coordinator.evaluate_preference`'s fixed reason order: frozen ->
 // seated -> shape -> team -> continuity -> claimed.
-function evaluatePreference(state: FakeCoordState, peerId: string, requested: readonly InputSlotId[]): PreferenceVerdict {
+function evaluatePreference(
+  state: FakeCoordState,
+  peerId: string,
+  requested: readonly InputSlotId[],
+): PreferenceVerdict {
   if (state.freeze) {
     return { status: "rejected", reason: "after_freeze" };
   }
@@ -698,7 +734,11 @@ function evaluatePreference(state: FakeCoordState, peerId: string, requested: re
   return { status: "granted", assignments };
 }
 
-function claimsAfter(state: FakeCoordState, peerId: string, slots: readonly InputSlotId[]): Readonly<Record<string, readonly InputSlotId[]>> {
+function claimsAfter(
+  state: FakeCoordState,
+  peerId: string,
+  slots: readonly InputSlotId[],
+): Readonly<Record<string, readonly InputSlotId[]>> {
   const claims: Record<string, readonly InputSlotId[]> = {};
   for (const peer of state.peers) {
     if (peer.pair_choice) {
@@ -722,7 +762,10 @@ function settlePreference(state: FakeCoordState): FakeCoordState {
   if (slotListsEqual(owned, preference.slots)) {
     return state;
   }
-  return { ...state, preference: { slots: preference.slots, status: "rejected", reason: "reseated" } };
+  return {
+    ...state,
+    preference: { slots: preference.slots, status: "rejected", reason: "reseated" },
+  };
 }
 
 function manifestIdOf(manifest: SessionManifest): string {
@@ -737,14 +780,16 @@ function publishOwnership(
   state: FakeCoordState,
   assignments: readonly SessionSlotProducer[],
   retained: Readonly<Record<string, readonly InputSlotId[]>> | undefined,
-  actions: CoordinatorAction[]
+  actions: CoordinatorAction[],
 ): FakeCoordState {
   const epoch = state.assignmentEpoch + 1;
   const assignmentId = assignmentIdOf(assignments, epoch);
   const peers = state.peers.map((peer) => {
     const claim = retained?.[peer.peer_id];
     const { pair_choice: _dropped, ...rest } = peer;
-    return claim !== undefined ? { ...rest, ready: false, pair_choice: claim } : { ...rest, ready: false };
+    return claim !== undefined
+      ? { ...rest, ready: false, pair_choice: claim }
+      : { ...rest, ready: false };
   });
   let next: FakeCoordState = {
     ...state,
@@ -757,7 +802,12 @@ function publishOwnership(
   next = settlePreference(next);
   actions.push({
     kind: "send",
-    message: { kind: "slot_assignment", manifest_id: state.manifest_id, assignment_id: assignmentId, assignments },
+    message: {
+      kind: "slot_assignment",
+      manifest_id: state.manifest_id,
+      assignment_id: assignmentId,
+      assignments,
+    },
     targets: linkTargets(next),
   });
   return next;
@@ -778,19 +828,31 @@ function skewReason(state: FakeCoordState, peer: FakePeer): CoordinatorTerminalR
 
 function terminateFrom(
   state: FakeCoordState,
-  options: { readonly reason: CoordinatorTerminalReason; readonly detail?: string; readonly announce?: boolean; readonly excludeLink?: string }
+  options: {
+    readonly reason: CoordinatorTerminalReason;
+    readonly detail?: string;
+    readonly announce?: boolean;
+    readonly excludeLink?: string;
+  },
 ): readonly [FakeCoordState, CoordinatorOutcome] {
   const actions: CoordinatorAction[] = [];
   if (options.announce) {
     const targets = linkTargets(state).filter((target) => target !== options.excludeLink);
     if (targets.length > 0) {
-      actions.push({ kind: "send", message: { kind: "abort", code: TERMINAL_CODES[options.reason] }, targets });
+      actions.push({
+        kind: "send",
+        message: { kind: "abort", code: TERMINAL_CODES[options.reason] },
+        targets,
+      });
     }
   }
   const next: FakeCoordState = {
     ...state,
     phase: "terminal",
-    terminal: { reason: options.reason, ...(options.detail !== undefined ? { detail: options.detail } : {}) },
+    terminal: {
+      reason: options.reason,
+      ...(options.detail !== undefined ? { detail: options.detail } : {}),
+    },
   };
   return [next, { accepted: true, actions }];
 }
@@ -800,7 +862,7 @@ function dropGuest(
   peer: FakePeer,
   code: string,
   detail: string,
-  reason?: CoordinatorTerminalReason
+  reason?: CoordinatorTerminalReason,
 ): readonly [FakeCoordState, CoordinatorOutcome] {
   const targets = linkTargets(state);
   const departure: CoordinatorDeparture = {
@@ -809,8 +871,12 @@ function dropGuest(
     code,
     detail,
   };
-  const actions: CoordinatorAction[] = [{ kind: "send", message: { kind: "disconnect", target_peer_id: peer.peer_id, code }, targets }];
-  const peers = state.peers.filter((p) => p.peer_id !== peer.peer_id).map((p) => ({ ...p, ready: false }));
+  const actions: CoordinatorAction[] = [
+    { kind: "send", message: { kind: "disconnect", target_peer_id: peer.peer_id, code }, targets },
+  ];
+  const peers = state.peers
+    .filter((p) => p.peer_id !== peer.peer_id)
+    .map((p) => ({ ...p, ready: false }));
   const phase = state.phase === "ready" ? "assigned" : state.phase;
   const wasOwning = ownsSlot(state, peer.peer_id);
   const base: FakeCoordState = { ...state, peers, phase, departure };
@@ -818,7 +884,7 @@ function dropGuest(
     return [base, { accepted: true, actions }];
   }
   const { assignments: _a, assignment_id: _b, ...withoutAssignments } = base;
-  return [withoutAssignments as FakeCoordState, { accepted: true, actions }];
+  return [withoutAssignments, { accepted: true, actions }];
 }
 
 // ---- Local command handlers ----
@@ -829,12 +895,19 @@ function handleConnect(state: FakeCoordState): readonly [FakeCoordState, Coordin
   }
   const next: FakeCoordState = { ...state, phase: "handshake" };
   const actions: CoordinatorAction[] = [
-    { kind: "send", message: { kind: "handshake", role: "guest", build_id: state.buildId }, targets: linkTargets(state) },
+    {
+      kind: "send",
+      message: { kind: "handshake", role: "guest", build_id: state.buildId },
+      targets: linkTargets(state),
+    },
   ];
   return [next, { accepted: true, actions }];
 }
 
-function handleProposeManifest(state: FakeCoordState, event: Readonly<Record<string, unknown>>): readonly [FakeCoordState, CoordinatorOutcome] {
+function handleProposeManifest(
+  state: FakeCoordState,
+  event: Readonly<Record<string, unknown>>,
+): readonly [FakeCoordState, CoordinatorOutcome] {
   if (state.role !== "host") {
     return [state, { accepted: false, reason: "not_permitted", actions: [] }];
   }
@@ -848,16 +921,29 @@ function handleProposeManifest(state: FakeCoordState, event: Readonly<Record<str
   }
   const self = must(state.peers[0], "host has no self peer");
   const peers = [{ ...self, accepted_manifest_id: manifestId }, ...state.peers.slice(1)];
-  const next: FakeCoordState = { ...state, manifest, manifest_id: manifestId, phase: "manifest", peers };
+  const next: FakeCoordState = {
+    ...state,
+    manifest,
+    manifest_id: manifestId,
+    phase: "manifest",
+    peers,
+  };
   const actions: CoordinatorAction[] = [];
   const targets = linkTargets(next);
   if (targets.length > 0) {
-    actions.push({ kind: "send", message: { kind: "manifest_proposal", manifest_id: manifestId, manifest }, targets });
+    actions.push({
+      kind: "send",
+      message: { kind: "manifest_proposal", manifest_id: manifestId, manifest },
+      targets,
+    });
   }
   return [next, { accepted: true, actions }];
 }
 
-function handleAssignSlots(state: FakeCoordState, event: Readonly<Record<string, unknown>>): readonly [FakeCoordState, CoordinatorOutcome] {
+function handleAssignSlots(
+  state: FakeCoordState,
+  event: Readonly<Record<string, unknown>>,
+): readonly [FakeCoordState, CoordinatorOutcome] {
   if (state.role !== "host") {
     return [state, { accepted: false, reason: "not_permitted", actions: [] }];
   }
@@ -872,7 +958,9 @@ function handleAssignSlots(state: FakeCoordState, event: Readonly<Record<string,
   let assignments = event["assignments"] as readonly SessionSlotProducer[];
   let retained: Readonly<Record<string, readonly InputSlotId[]>> | undefined;
   if (event["preserve_claims"] === true) {
-    const shape = matchModeShape(must(state.manifest, "assign_slots requires a manifest").match_mode);
+    const shape = matchModeShape(
+      must(state.manifest, "assign_slots requires a manifest").match_mode,
+    );
     const reseat = reseatClaims(shape, assignments, state.peers);
     assignments = reseat.assignments;
     retained = reseat.retained;
@@ -885,7 +973,10 @@ function handleAssignSlots(state: FakeCoordState, event: Readonly<Record<string,
   return [next, { accepted: true, actions }];
 }
 
-function handlePreferPair(state: FakeCoordState, event: Readonly<Record<string, unknown>>): readonly [FakeCoordState, CoordinatorOutcome] {
+function handlePreferPair(
+  state: FakeCoordState,
+  event: Readonly<Record<string, unknown>>,
+): readonly [FakeCoordState, CoordinatorOutcome] {
   if (state.phase !== "assigned" && state.phase !== "ready") {
     return [state, { accepted: false, reason: "invalid_phase", actions: [] }];
   }
@@ -894,12 +985,22 @@ function handlePreferPair(state: FakeCoordState, event: Readonly<Record<string, 
   }
   const slots = event["slots"] as readonly InputSlotId[];
   if (state.role === "guest") {
-    const preference: FakePreference = { slots, assignment_id: state.assignment_id, status: "pending", deadline: state.clock + PREFERENCE_TIMEOUT_TICKS };
+    const preference: FakePreference = {
+      slots,
+      assignment_id: state.assignment_id,
+      status: "pending",
+      deadline: state.clock + PREFERENCE_TIMEOUT_TICKS,
+    };
     const next: FakeCoordState = { ...state, preference };
     const actions: CoordinatorAction[] = [
       {
         kind: "send",
-        message: { kind: "pair_preference", manifest_id: state.manifest_id, assignment_id: state.assignment_id, slots },
+        message: {
+          kind: "pair_preference",
+          manifest_id: state.manifest_id,
+          assignment_id: state.assignment_id,
+          slots,
+        },
         targets: linkTargets(state),
       },
     ];
@@ -907,9 +1008,21 @@ function handlePreferPair(state: FakeCoordState, event: Readonly<Record<string, 
   }
   const verdict = evaluatePreference(state, state.peer_id, slots);
   const actions: CoordinatorAction[] = [];
-  let next: FakeCoordState = { ...state, preference: { slots, status: verdict.status, ...(verdict.reason !== undefined ? { reason: verdict.reason } : {}) } };
+  let next: FakeCoordState = {
+    ...state,
+    preference: {
+      slots,
+      status: verdict.status,
+      ...(verdict.reason !== undefined ? { reason: verdict.reason } : {}),
+    },
+  };
   if (verdict.status === "granted" && verdict.assignments) {
-    next = publishOwnership(next, verdict.assignments, claimsAfter(state, state.peer_id, slots), actions);
+    next = publishOwnership(
+      next,
+      verdict.assignments,
+      claimsAfter(state, state.peer_id, slots),
+      actions,
+    );
   } else if (verdict.status === "unchanged") {
     const self = must(next.peers[0], "host has no self peer");
     next = { ...next, peers: [{ ...self, pair_choice: slots }, ...next.peers.slice(1)] };
@@ -917,7 +1030,10 @@ function handlePreferPair(state: FakeCoordState, event: Readonly<Record<string, 
   return [next, { accepted: true, actions }];
 }
 
-function handleSetReady(state: FakeCoordState, event: Readonly<Record<string, unknown>>): readonly [FakeCoordState, CoordinatorOutcome] {
+function handleSetReady(
+  state: FakeCoordState,
+  event: Readonly<Record<string, unknown>>,
+): readonly [FakeCoordState, CoordinatorOutcome] {
   const ready = event["ready"];
   if (typeof ready !== "boolean") {
     return [state, { accepted: false, reason: "malformed", actions: [] }];
@@ -941,7 +1057,12 @@ function handleSetReady(state: FakeCoordState, event: Readonly<Record<string, un
   if (state.role === "guest") {
     actions.push({
       kind: "send",
-      message: { kind: "ready", manifest_id: state.manifest_id, assignment_id: state.assignment_id, ready },
+      message: {
+        kind: "ready",
+        manifest_id: state.manifest_id,
+        assignment_id: state.assignment_id,
+        ready,
+      },
       targets: linkTargets(state),
     });
   }
@@ -950,7 +1071,12 @@ function handleSetReady(state: FakeCoordState, event: Readonly<Record<string, un
   return [next, { accepted: true, actions }];
 }
 
-function freezeSession(state: FakeCoordState, manifest: SessionManifest, countdownId: string, firstInputTick: number): FakeFreeze {
+function freezeSession(
+  state: FakeCoordState,
+  manifest: SessionManifest,
+  countdownId: string,
+  firstInputTick: number,
+): FakeFreeze {
   const assignments = must(state.assignments, "freeze requires published assignments");
   const owned: Record<string, readonly InputSlotId[]> = {};
   for (const producer of assignments) {
@@ -974,7 +1100,12 @@ function emitStart(state: FakeCoordState, actions: CoordinatorAction[]): FakeCoo
   const freeze = must(state.freeze, "emit_start requires a freeze");
   actions.push({
     kind: "send",
-    message: { kind: "start", manifest_id: freeze.manifest_id, countdown_id: freeze.countdown_id, first_input_tick: freeze.first_input_tick },
+    message: {
+      kind: "start",
+      manifest_id: freeze.manifest_id,
+      countdown_id: freeze.countdown_id,
+      first_input_tick: freeze.first_input_tick,
+    },
     targets: linkTargets(state),
   });
   let next: FakeCoordState = { ...state, countdown_remaining: 0 };
@@ -986,7 +1117,10 @@ function emitStart(state: FakeCoordState, actions: CoordinatorAction[]): FakeCoo
   return next;
 }
 
-function handleBeginCountdown(state: FakeCoordState, event: Readonly<Record<string, unknown>>): readonly [FakeCoordState, CoordinatorOutcome] {
+function handleBeginCountdown(
+  state: FakeCoordState,
+  event: Readonly<Record<string, unknown>>,
+): readonly [FakeCoordState, CoordinatorOutcome] {
   if (state.role !== "host") {
     return [state, { accepted: false, reason: "not_permitted", actions: [] }];
   }
@@ -998,11 +1132,22 @@ function handleBeginCountdown(state: FakeCoordState, event: Readonly<Record<stri
   const remainingTicks = event["remaining_ticks"] as number;
   const firstInputTick = event["first_input_tick"] as number;
   const freeze = freezeSession(state, manifest, countdownId, firstInputTick);
-  let next: FakeCoordState = { ...state, freeze, countdown_remaining: remainingTicks, phase: "countdown" };
+  let next: FakeCoordState = {
+    ...state,
+    freeze,
+    countdown_remaining: remainingTicks,
+    phase: "countdown",
+  };
   const actions: CoordinatorAction[] = [
     {
       kind: "send",
-      message: { kind: "countdown", manifest_id: freeze.manifest_id, countdown_id: freeze.countdown_id, remaining_ticks: remainingTicks, first_input_tick: freeze.first_input_tick },
+      message: {
+        kind: "countdown",
+        manifest_id: freeze.manifest_id,
+        countdown_id: freeze.countdown_id,
+        remaining_ticks: remainingTicks,
+        first_input_tick: freeze.first_input_tick,
+      },
       targets: linkTargets(next),
     },
   ];
@@ -1021,7 +1166,10 @@ function expirePreference(state: FakeCoordState): FakeCoordState {
   if (deadline === undefined || state.clock <= deadline) {
     return state;
   }
-  return { ...state, preference: { slots: pending.slots, status: "rejected", reason: "no_response" } };
+  return {
+    ...state,
+    preference: { slots: pending.slots, status: "rejected", reason: "no_response" },
+  };
 }
 
 function handleTick(state: FakeCoordState): readonly [FakeCoordState, CoordinatorOutcome] {
@@ -1046,20 +1194,35 @@ function handleTick(state: FakeCoordState): readonly [FakeCoordState, Coordinato
 function handleLeave(state: FakeCoordState): readonly [FakeCoordState, CoordinatorOutcome] {
   const actions: CoordinatorAction[] = [];
   if (state.phase !== "new") {
-    actions.push({ kind: "send", message: { kind: "disconnect", target_peer_id: state.peer_id, code: "peer_left" }, targets: linkTargets(state) });
+    actions.push({
+      kind: "send",
+      message: { kind: "disconnect", target_peer_id: state.peer_id, code: "peer_left" },
+      targets: linkTargets(state),
+    });
   }
   const next: FakeCoordState = { ...state, phase: "terminal", terminal: { reason: "guest_left" } };
   return [next, { accepted: true, actions }];
 }
 
-function handleAbort(state: FakeCoordState, event: Readonly<Record<string, unknown>>): readonly [FakeCoordState, CoordinatorOutcome] {
+function handleAbort(
+  state: FakeCoordState,
+  event: Readonly<Record<string, unknown>>,
+): readonly [FakeCoordState, CoordinatorOutcome] {
   const detail = event["detail"];
-  return terminateFrom(state, { reason: "local_abort", ...(typeof detail === "string" ? { detail } : {}), announce: true });
+  return terminateFrom(state, {
+    reason: "local_abort",
+    ...(typeof detail === "string" ? { detail } : {}),
+    announce: true,
+  });
 }
 
 // ---- Control (wire) message handlers ----
 
-function admitGuest(state: FakeCoordState, linkId: string, message: Readonly<Record<string, unknown>>): readonly [FakeCoordState, CoordinatorOutcome] {
+function admitGuest(
+  state: FakeCoordState,
+  linkId: string,
+  message: Readonly<Record<string, unknown>>,
+): readonly [FakeCoordState, CoordinatorOutcome] {
   if (state.role !== "host") {
     return [state, { accepted: true, actions: [] }];
   }
@@ -1067,25 +1230,48 @@ function admitGuest(state: FakeCoordState, linkId: string, message: Readonly<Rec
     return [state, { accepted: true, actions: [] }];
   }
   const buildId = message["build_id"] as string;
-  const newPeer: FakePeer = { peer_id: linkId, link_id: linkId, role: "guest", build_id: buildId, ready: false, started: false };
+  const newPeer: FakePeer = {
+    peer_id: linkId,
+    link_id: linkId,
+    role: "guest",
+    build_id: buildId,
+    ready: false,
+    started: false,
+  };
   const { departure: _oldDeparture, ...rest } = state;
-  const next: FakeCoordState = { ...(rest as FakeCoordState), peers: [...state.peers, newPeer], phase: "handshake" };
+  const next: FakeCoordState = {
+    ...(rest as FakeCoordState),
+    peers: [...state.peers, newPeer],
+    phase: "handshake",
+  };
   return [next, { accepted: true, actions: [] }];
 }
 
-function applyManifestProposal(state: FakeCoordState, peer: FakePeer, message: Readonly<Record<string, unknown>>): readonly [FakeCoordState, CoordinatorOutcome] {
+function applyManifestProposal(
+  state: FakeCoordState,
+  peer: FakePeer,
+  message: Readonly<Record<string, unknown>>,
+): readonly [FakeCoordState, CoordinatorOutcome] {
   const manifest = message["manifest"] as SessionManifest;
   const manifestId = message["manifest_id"] as string;
   if (state.manifest_id !== undefined) {
     if (state.manifest_id === manifestId) {
       return [state, { accepted: true, actions: [] }];
     }
-    return terminateFrom(state, { reason: "manifest_mismatch", detail: "the manifest is immutable after proposal", announce: true });
+    return terminateFrom(state, {
+      reason: "manifest_mismatch",
+      detail: "the manifest is immutable after proposal",
+      announce: true,
+    });
   }
   const difference = expectationDifference(state.expectation, manifest);
   if (difference) {
     const reason = IDENTITY_REASONS[difference.path] ?? "manifest_mismatch";
-    return terminateFrom(state, { reason, detail: `local identity differs at ${difference.path}`, announce: true });
+    return terminateFrom(state, {
+      reason,
+      detail: `local identity differs at ${difference.path}`,
+      announce: true,
+    });
   }
   const self = must(state.peers[0], "guest has no self peer");
   const next: FakeCoordState = {
@@ -1095,32 +1281,67 @@ function applyManifestProposal(state: FakeCoordState, peer: FakePeer, message: R
     phase: "manifest",
     peers: [{ ...self, accepted_manifest_id: manifestId }, ...state.peers.slice(1)],
   };
-  const actions: CoordinatorAction[] = [{ kind: "send", message: { kind: "manifest_accept", manifest_id: manifestId }, targets: linkTargets(next) }];
+  const actions: CoordinatorAction[] = [
+    {
+      kind: "send",
+      message: { kind: "manifest_accept", manifest_id: manifestId },
+      targets: linkTargets(next),
+    },
+  ];
   return [next, { accepted: true, actions }];
 }
 
-function applyManifestAccept(state: FakeCoordState, peer: FakePeer, message: Readonly<Record<string, unknown>>): readonly [FakeCoordState, CoordinatorOutcome] {
+function applyManifestAccept(
+  state: FakeCoordState,
+  peer: FakePeer,
+  message: Readonly<Record<string, unknown>>,
+): readonly [FakeCoordState, CoordinatorOutcome] {
   const manifestId = message["manifest_id"] as string;
   if (manifestId !== state.manifest_id) {
-    return dropGuest(state, peer, "protocol_error", "a guest accepted a manifest this session never proposed", skewReason(state, peer));
+    return dropGuest(
+      state,
+      peer,
+      "protocol_error",
+      "a guest accepted a manifest this session never proposed",
+      skewReason(state, peer),
+    );
   }
   if (peer.accepted_manifest_id === manifestId) {
     return [state, { accepted: true, actions: [] }];
   }
-  const peers = state.peers.map((p) => (p.peer_id === peer.peer_id ? { ...p, accepted_manifest_id: manifestId } : p));
-  return [{ ...state, peers }, { accepted: true, actions: [] }];
+  const peers = state.peers.map((p) =>
+    p.peer_id === peer.peer_id ? { ...p, accepted_manifest_id: manifestId } : p,
+  );
+  return [
+    { ...state, peers },
+    { accepted: true, actions: [] },
+  ];
 }
 
-function applySlotAssignment(state: FakeCoordState, peer: FakePeer, message: Readonly<Record<string, unknown>>): readonly [FakeCoordState, CoordinatorOutcome] {
+function applySlotAssignment(
+  state: FakeCoordState,
+  peer: FakePeer,
+  message: Readonly<Record<string, unknown>>,
+): readonly [FakeCoordState, CoordinatorOutcome] {
   const assignments = message["assignments"] as readonly SessionSlotProducer[];
   const assignmentId = message["assignment_id"] as string;
   const peers = state.peers.map((p) => ({ ...p, ready: false }));
-  let next: FakeCoordState = { ...state, assignments, assignment_id: assignmentId, phase: "assigned", peers };
+  let next: FakeCoordState = {
+    ...state,
+    assignments,
+    assignment_id: assignmentId,
+    phase: "assigned",
+    peers,
+  };
   next = settlePreference(next);
   return [next, { accepted: true, actions: [] }];
 }
 
-function applyReady(state: FakeCoordState, peer: FakePeer, message: Readonly<Record<string, unknown>>): readonly [FakeCoordState, CoordinatorOutcome] {
+function applyReady(
+  state: FakeCoordState,
+  peer: FakePeer,
+  message: Readonly<Record<string, unknown>>,
+): readonly [FakeCoordState, CoordinatorOutcome] {
   const readyValue = message["ready"] as boolean;
   const assignmentId = message["assignment_id"];
   if (assignmentId !== state.assignment_id) {
@@ -1132,12 +1353,18 @@ function applyReady(state: FakeCoordState, peer: FakePeer, message: Readonly<Rec
   if (peer.ready === readyValue) {
     return [state, { accepted: true, actions: [] }];
   }
-  const peers = state.peers.map((p) => (p.peer_id === peer.peer_id ? { ...p, ready: readyValue } : p));
+  const peers = state.peers.map((p) =>
+    p.peer_id === peer.peer_id ? { ...p, ready: readyValue } : p,
+  );
   const next = refreshReadyPhase({ ...state, peers });
   return [next, { accepted: true, actions: [] }];
 }
 
-function applyPairPreference(state: FakeCoordState, peer: FakePeer, message: Readonly<Record<string, unknown>>): readonly [FakeCoordState, CoordinatorOutcome] {
+function applyPairPreference(
+  state: FakeCoordState,
+  peer: FakePeer,
+  message: Readonly<Record<string, unknown>>,
+): readonly [FakeCoordState, CoordinatorOutcome] {
   const slots = message["slots"] as readonly InputSlotId[];
   const bodyAssignmentId = message["assignment_id"] as string;
   let verdict: PreferenceVerdict;
@@ -1151,9 +1378,16 @@ function applyPairPreference(state: FakeCoordState, peer: FakePeer, message: Rea
   const actions: CoordinatorAction[] = [];
   let next = state;
   if (verdict.status === "granted" && verdict.assignments) {
-    next = publishOwnership(state, verdict.assignments, claimsAfter(state, peer.peer_id, slots), actions);
+    next = publishOwnership(
+      state,
+      verdict.assignments,
+      claimsAfter(state, peer.peer_id, slots),
+      actions,
+    );
   } else if (verdict.status === "unchanged") {
-    const peers = state.peers.map((p) => (p.peer_id === peer.peer_id ? { ...p, pair_choice: slots } : p));
+    const peers = state.peers.map((p) =>
+      p.peer_id === peer.peer_id ? { ...p, pair_choice: slots } : p,
+    );
     next = { ...state, peers };
   }
   actions.push({
@@ -1171,32 +1405,64 @@ function applyPairPreference(state: FakeCoordState, peer: FakePeer, message: Rea
   return [next, { accepted: true, actions }];
 }
 
-function applyPairPreferenceResult(state: FakeCoordState, peer: FakePeer, message: Readonly<Record<string, unknown>>): readonly [FakeCoordState, CoordinatorOutcome] {
+function applyPairPreferenceResult(
+  state: FakeCoordState,
+  peer: FakePeer,
+  message: Readonly<Record<string, unknown>>,
+): readonly [FakeCoordState, CoordinatorOutcome] {
   const pending = state.preference;
   const bodySlots = message["slots"] as readonly InputSlotId[];
   const bodyAssignmentId = message["assignment_id"] as string;
-  if (!pending || pending.status !== "pending" || pending.assignment_id !== bodyAssignmentId || !slotListsEqual(pending.slots, bodySlots)) {
+  if (
+    !pending ||
+    pending.status !== "pending" ||
+    pending.assignment_id !== bodyAssignmentId ||
+    !slotListsEqual(pending.slots, bodySlots)
+  ) {
     return [state, { accepted: true, actions: [] }];
   }
   const status = message["status"] as SessionPreferenceStatus;
   const reason = message["reason"] as SessionPreferenceRejection | undefined;
   const next: FakeCoordState = {
     ...state,
-    preference: { slots: pending.slots, assignment_id: pending.assignment_id, status, ...(reason !== undefined ? { reason } : {}) },
+    preference: {
+      slots: pending.slots,
+      assignment_id: pending.assignment_id,
+      status,
+      ...(reason !== undefined ? { reason } : {}),
+    },
   };
   return [next, { accepted: true, actions: [] }];
 }
 
-function applyCountdown(state: FakeCoordState, peer: FakePeer, message: Readonly<Record<string, unknown>>): readonly [FakeCoordState, CoordinatorOutcome] {
+function applyCountdown(
+  state: FakeCoordState,
+  peer: FakePeer,
+  message: Readonly<Record<string, unknown>>,
+): readonly [FakeCoordState, CoordinatorOutcome] {
   const countdownId = message["countdown_id"] as string;
   const firstInputTick = message["first_input_tick"] as number;
   const remainingTicks = message["remaining_ticks"] as number;
-  const freeze = freezeSession(state, must(state.manifest, "countdown requires a manifest"), countdownId, firstInputTick);
-  const next: FakeCoordState = { ...state, freeze, countdown_remaining: remainingTicks, phase: "countdown" };
+  const freeze = freezeSession(
+    state,
+    must(state.manifest, "countdown requires a manifest"),
+    countdownId,
+    firstInputTick,
+  );
+  const next: FakeCoordState = {
+    ...state,
+    freeze,
+    countdown_remaining: remainingTicks,
+    phase: "countdown",
+  };
   return [next, { accepted: true, actions: [] }];
 }
 
-function applyStart(state: FakeCoordState, peer: FakePeer, _message: Readonly<Record<string, unknown>>): readonly [FakeCoordState, CoordinatorOutcome] {
+function applyStart(
+  state: FakeCoordState,
+  peer: FakePeer,
+  _message: Readonly<Record<string, unknown>>,
+): readonly [FakeCoordState, CoordinatorOutcome] {
   const freeze = must(state.freeze, "start requires a freeze");
   if (state.role === "guest") {
     const self = must(state.peers[0], "guest has no self peer");
@@ -1206,7 +1472,12 @@ function applyStart(state: FakeCoordState, peer: FakePeer, _message: Readonly<Re
     const actions: CoordinatorAction[] = [
       {
         kind: "send",
-        message: { kind: "start", manifest_id: freeze.manifest_id, countdown_id: freeze.countdown_id, first_input_tick: freeze.first_input_tick },
+        message: {
+          kind: "start",
+          manifest_id: freeze.manifest_id,
+          countdown_id: freeze.countdown_id,
+          first_input_tick: freeze.first_input_tick,
+        },
         targets: linkTargets(state),
       },
     ];
@@ -1233,7 +1504,11 @@ function applyStart(state: FakeCoordState, peer: FakePeer, _message: Readonly<Re
   return [next, { accepted: true, actions }];
 }
 
-function applyAbort(state: FakeCoordState, peer: FakePeer, message: Readonly<Record<string, unknown>>): readonly [FakeCoordState, CoordinatorOutcome] {
+function applyAbort(
+  state: FakeCoordState,
+  peer: FakePeer,
+  message: Readonly<Record<string, unknown>>,
+): readonly [FakeCoordState, CoordinatorOutcome] {
   const code = message["code"] as string;
   if (state.role === "host" && !state.freeze) {
     const reason = code === "manifest_mismatch" ? skewReason(state, peer) : undefined;
@@ -1242,7 +1517,11 @@ function applyAbort(state: FakeCoordState, peer: FakePeer, message: Readonly<Rec
   return terminateFrom(state, { reason: "peer_abort", announce: true, excludeLink: peer.link_id });
 }
 
-function applyDisconnect(state: FakeCoordState, peer: FakePeer, message: Readonly<Record<string, unknown>>): readonly [FakeCoordState, CoordinatorOutcome] {
+function applyDisconnect(
+  state: FakeCoordState,
+  peer: FakePeer,
+  message: Readonly<Record<string, unknown>>,
+): readonly [FakeCoordState, CoordinatorOutcome] {
   const code = message["code"] as string;
   const targetPeerId = message["target_peer_id"] as string;
   const reason = DISCONNECT_REASONS[code] ?? "protocol_violation";
@@ -1254,12 +1533,19 @@ function applyDisconnect(state: FakeCoordState, peer: FakePeer, message: Readonl
       }
       const peers = state.peers.map((p) => ({ ...p, ready: false }));
       const phase = state.phase === "ready" ? "assigned" : state.phase;
-      return [{ ...state, peers, phase }, { accepted: true, actions: [] }];
+      return [
+        { ...state, peers, phase },
+        { accepted: true, actions: [] },
+      ];
     }
     return terminateFrom(state, { reason: code === "host_left" ? "host_left" : "removed" });
   }
   if (targetPeerId !== peer.peer_id) {
-    return terminateFrom(state, { reason: "protocol_violation", detail: "a guest cannot disconnect another peer", announce: true });
+    return terminateFrom(state, {
+      reason: "protocol_violation",
+      detail: "a guest cannot disconnect another peer",
+      announce: true,
+    });
   }
   if (state.freeze) {
     return terminateFrom(state, { reason, announce: true, excludeLink: peer.link_id });
@@ -1267,7 +1553,10 @@ function applyDisconnect(state: FakeCoordState, peer: FakePeer, message: Readonl
   return dropGuest(state, peer, code, `a guest announced its own disconnect as ${code}`);
 }
 
-function handleControl(state: FakeCoordState, event: Readonly<Record<string, unknown>>): readonly [FakeCoordState, CoordinatorOutcome] {
+function handleControl(
+  state: FakeCoordState,
+  event: Readonly<Record<string, unknown>>,
+): readonly [FakeCoordState, CoordinatorOutcome] {
   const linkId = event["link_id"] as string;
   const wire = event["wire"] as string;
   const message = JSON.parse(wire) as Readonly<Record<string, unknown>> & { readonly kind: string };
@@ -1304,7 +1593,10 @@ function handleControl(state: FakeCoordState, event: Readonly<Record<string, unk
   }
 }
 
-function stepImpl(rawState: CoordinatorState, event: { readonly kind: string; readonly [key: string]: unknown }): readonly [CoordinatorState, CoordinatorOutcome] {
+function stepImpl(
+  rawState: CoordinatorState,
+  event: { readonly kind: string; readonly [key: string]: unknown },
+): readonly [CoordinatorState, CoordinatorOutcome] {
   const state = toFake(rawState);
   let result: readonly [FakeCoordState, CoordinatorOutcome];
   switch (event.kind) {
@@ -1344,9 +1636,18 @@ function stepImpl(rawState: CoordinatorState, event: { readonly kind: string; re
   return [toPublic(result[0]), result[1]];
 }
 
-function createCoordinator(options: CoordinatorNewHostOptions | CoordinatorNewGuestOptions): CoordinatorState {
+function createCoordinator(
+  options: CoordinatorNewHostOptions | CoordinatorNewGuestOptions,
+): CoordinatorState {
   if (options.role === "host") {
-    const self: FakePeer = { peer_id: options.peer_id, link_id: options.peer_id, role: "host", build_id: options.build_id, ready: false, started: false };
+    const self: FakePeer = {
+      peer_id: options.peer_id,
+      link_id: options.peer_id,
+      role: "host",
+      build_id: options.build_id,
+      ready: false,
+      started: false,
+    };
     const state: FakeCoordState = {
       role: "host",
       peer_id: options.peer_id,
@@ -1359,8 +1660,22 @@ function createCoordinator(options: CoordinatorNewHostOptions | CoordinatorNewGu
     };
     return toPublic(state);
   }
-  const self: FakePeer = { peer_id: options.peer_id, link_id: options.host_link_id, role: "guest", build_id: options.build_id, ready: false, started: false };
-  const hostPlaceholder: FakePeer = { peer_id: options.host_peer_id, link_id: options.host_link_id, role: "host", build_id: "", ready: false, started: false };
+  const self: FakePeer = {
+    peer_id: options.peer_id,
+    link_id: options.host_link_id,
+    role: "guest",
+    build_id: options.build_id,
+    ready: false,
+    started: false,
+  };
+  const hostPlaceholder: FakePeer = {
+    peer_id: options.host_peer_id,
+    link_id: options.host_link_id,
+    role: "host",
+    build_id: "",
+    ready: false,
+    started: false,
+  };
   const state: FakeCoordState = {
     role: "guest",
     peer_id: options.peer_id,
@@ -1417,7 +1732,8 @@ function ports(): LobbyModelPorts {
 // `@gc/online`'s real `lobby_link.ts` / a real star transport.
 // ---------------------------------------------------------------------------
 
-type PendingStage = "requested" | "offer_sent" | "offer_accepted" | "answer_sent" | "connecting" | "connected";
+type PendingStage =
+  "requested" | "offer_sent" | "offer_accepted" | "answer_sent" | "connecting" | "connected";
 
 interface PendingLink {
   stage: PendingStage;
@@ -1441,7 +1757,11 @@ class FakeTransport {
   applyEffect(selfPeerId: string, effect: LobbyEffect): void {
     switch (effect.kind) {
       case "open_peer":
-        this.pending.set(effect.peer_id, { stage: "requested", hostPeerId: selfPeerId, guestPeerId: effect.peer_id });
+        this.pending.set(effect.peer_id, {
+          stage: "requested",
+          hostPeerId: selfPeerId,
+          guestPeerId: effect.peer_id,
+        });
         break;
       case "accept_offer": {
         const link = this.pending.get(selfPeerId);
@@ -1458,7 +1778,11 @@ class FakeTransport {
         break;
       }
       case "send":
-        this.mailbox(effect.link_id).push({ kind: "control", link_id: selfPeerId, wire: effect.wire });
+        this.mailbox(effect.link_id).push({
+          kind: "control",
+          link_id: selfPeerId,
+          wire: effect.wire,
+        });
         break;
       default:
         break;
@@ -1468,10 +1792,18 @@ class FakeTransport {
   pumpOnce(): void {
     for (const link of this.pending.values()) {
       if (link.stage === "requested") {
-        this.mailbox(link.hostPeerId).push({ kind: "signal", peer_id: link.guestPeerId, signal: `offer:${link.guestPeerId}` });
+        this.mailbox(link.hostPeerId).push({
+          kind: "signal",
+          peer_id: link.guestPeerId,
+          signal: `offer:${link.guestPeerId}`,
+        });
         link.stage = "offer_sent";
       } else if (link.stage === "offer_accepted") {
-        this.mailbox(link.guestPeerId).push({ kind: "signal", peer_id: link.hostPeerId, signal: `answer:${link.guestPeerId}` });
+        this.mailbox(link.guestPeerId).push({
+          kind: "signal",
+          peer_id: link.hostPeerId,
+          signal: `answer:${link.guestPeerId}`,
+        });
         link.stage = "answer_sent";
       } else if (link.stage === "connecting") {
         this.mailbox(link.hostPeerId).push({ kind: "peer_connected", peer_id: link.guestPeerId });
@@ -1518,7 +1850,11 @@ class Driver {
     this.modelPorts = modelPorts;
   }
 
-  add(role: LobbyRole, peerId: string, template?: (mode: SessionMatchMode) => SessionManifest): TestPeer {
+  add(
+    role: LobbyRole,
+    peerId: string,
+    template?: (mode: SessionMatchMode) => SessionManifest,
+  ): TestPeer {
     const peer: TestPeer = {
       id: peerId,
       model: newLobbyModel(this.modelPorts, { peer_id: peerId, ...(template ? { template } : {}) }),
@@ -1600,7 +1936,7 @@ class Driver {
 function seatedLobby(
   modelPorts: LobbyModelPorts,
   mode: SessionMatchMode,
-  guestCount: number
+  guestCount: number,
 ): { readonly driver: Driver; readonly host: TestPeer; readonly guests: TestPeer[] } {
   const driver = new Driver(modelPorts);
   const host = driver.add("host", "host");
@@ -1819,7 +2155,10 @@ describe("lobby readiness and countdown", () => {
     driver.tick(180 + 4);
     const freeze = must(host.freeze, "the host never reached the start boundary") as TestFreeze;
     expect(freeze.match_mode).toBe("1v1");
-    const guestFreeze = must(guest.freeze, "the guest never reached the start boundary") as TestFreeze;
+    const guestFreeze = must(
+      guest.freeze,
+      "the guest never reached the start boundary",
+    ) as TestFreeze;
     expect(guestFreeze.manifest_id).toBe(freeze.manifest_id);
     expect(must(freeze.owned["host"], "no owned slots for host").length).toBe(4);
     expect(freeze.live["host"]).toBe("home_1");
@@ -1872,7 +2211,10 @@ describe("lobby pair selection", () => {
     expect(offersPair(modelPorts, chooser, "away_3")).toBe(true);
 
     driver.send(chooser, { kind: "pair", slot: "away_3" });
-    const pending = must(view(modelPorts, chooser).preference, "the request must be visible at once");
+    const pending = must(
+      view(modelPorts, chooser).preference,
+      "the request must be visible at once",
+    );
     expect(pending.status).toBe("pending");
     expect(pending.slots.join(",")).toBe("away_1,away_3");
 
@@ -1898,7 +2240,9 @@ describe("lobby pair selection", () => {
     driver.pump(8);
     expect(view(modelPorts, host).phase).toBe("ready");
     expect(owned(modelPorts, host, "guest_2").join(",")).toBe("away_1,away_3");
-    expect(owned(modelPorts, must(guests[1], "no second guest"), "guest_2").join(",")).toBe("away_1,away_3");
+    expect(owned(modelPorts, must(guests[1], "no second guest"), "guest_2").join(",")).toBe(
+      "away_1,away_3",
+    );
   });
 
   it("shows the typed reason when the host refuses", () => {
@@ -1909,14 +2253,23 @@ describe("lobby pair selection", () => {
 
     driver.send(must(guests[2], "no third guest"), { kind: "pair", slot: "away_3" });
     driver.pump(8);
-    const refused = must(view(modelPorts, must(guests[2], "no third guest")).preference, "no refusal recorded");
+    const refused = must(
+      view(modelPorts, must(guests[2], "no third guest")).preference,
+      "no refusal recorded",
+    );
     expect(refused.status).toBe("rejected");
     expect(refused.reason).toBe("already_taken");
-    expect(owned(modelPorts, must(guests[2], "no third guest"), "guest_3").join(",")).toBe("away_2,away_4");
+    expect(owned(modelPorts, must(guests[2], "no third guest"), "guest_3").join(",")).toBe(
+      "away_2,away_4",
+    );
     expect(owned(modelPorts, host, "guest_2").join(",")).toBe("away_1,away_3");
   });
 
-  function assertPartition(modelPorts: LobbyModelPorts, peer: TestPeer, mode: SessionMatchMode): void {
+  function assertPartition(
+    modelPorts: LobbyModelPorts,
+    peer: TestPeer,
+    mode: SessionMatchMode,
+  ): void {
     const shape = matchModeShape(mode);
     const counts: Record<string, number> = {};
     const rows = view(modelPorts, peer).slots;
@@ -1948,7 +2301,9 @@ describe("lobby pair selection", () => {
 
     expect(owned(modelPorts, host, "guest_1").join(",")).toBe("home_2,home_3");
     expect(owned(modelPorts, guest1, "guest_1").join(",")).toBe("home_2,home_3");
-    expect(must(view(modelPorts, guest1).preference, "no preference for guest_1").status).toBe("granted");
+    expect(must(view(modelPorts, guest1).preference, "no preference for guest_1").status).toBe(
+      "granted",
+    );
 
     const dropped = must(view(modelPorts, guest2).preference, "a dropped pair must still be shown");
     expect(dropped.status).toBe("rejected");
@@ -1973,7 +2328,10 @@ describe("lobby pair selection", () => {
     driver.send(host, { kind: "swap", index: 3 });
     driver.pump(8);
 
-    const taken = must(view(modelPorts, guest2).preference, "a swapped-away pair must still be shown");
+    const taken = must(
+      view(modelPorts, guest2).preference,
+      "a swapped-away pair must still be shown",
+    );
     expect(taken.status).toBe("rejected");
     expect(taken.reason).toBe("reseated");
     expect(owned(modelPorts, guest2, "guest_2").join(",")).toBe("away_3,away_4");
@@ -2009,7 +2367,9 @@ describe("lobby pair selection", () => {
     }
 
     driver.send(chooser, { kind: "pair", slot: "away_3" });
-    expect(must(view(modelPorts, chooser).preference, "no pending preference").status).toBe("pending");
+    expect(must(view(modelPorts, chooser).preference, "no pending preference").status).toBe(
+      "pending",
+    );
     driver.tick(PREFERENCE_TIMEOUT_TICKS + 1);
 
     const givenUp = must(view(modelPorts, chooser).preference, "no preference after timeout");
@@ -2090,7 +2450,9 @@ describe("lobby build skew", () => {
     const terminal = must(state.terminal, "guest has no terminal");
     expect(terminal.reason).toBe("build_mismatch");
     expect(terminal.detail).toBe("local identity differs at manifest.build_id");
-    expect(view(modelPorts, guest).terminal_text).toBe("The peers are running different builds. Install the same build on both.");
+    expect(view(modelPorts, guest).terminal_text).toBe(
+      "The peers are running different builds. Install the same build on both.",
+    );
 
     // `assignment_id` is internal bookkeeping this fake keeps but
     // `CoordinatorState`'s public type does not expose; `assignments`
@@ -2110,13 +2472,17 @@ describe("lobby build skew", () => {
     expect(departure.code).toBe("protocol_error");
     expect(view(modelPorts, host).departure_text).toBe(
       "A guest was dropped: it disagreed about this session's identity, and it " +
-        "declared a different build. Install the same build on both to rule that out."
+        "declared a different build. Install the same build on both to rule that out.",
     );
     expect(view(modelPorts, host).terminal_text).toBeUndefined();
 
     let announced = 0;
     for (const wire of host.sent) {
-      const decoded = JSON.parse(wire) as { readonly kind: string; readonly code?: string; readonly target_peer_id?: string };
+      const decoded = JSON.parse(wire) as {
+        readonly kind: string;
+        readonly code?: string;
+        readonly target_peer_id?: string;
+      };
       if (decoded.kind === "disconnect") {
         announced += 1;
         expect(decoded.code).toBe("protocol_error");
@@ -2185,7 +2551,10 @@ describe("lobby build skew", () => {
     driver.tick(COUNTDOWN_TICKS + 4);
 
     const freeze = must(host.freeze, "the host never reached the start boundary") as TestFreeze;
-    const guestFreeze = must(guest.freeze, "the guest never reached the start boundary") as TestFreeze;
+    const guestFreeze = must(
+      guest.freeze,
+      "the guest never reached the start boundary",
+    ) as TestFreeze;
     expect(guestFreeze.manifest_id).toBe(freeze.manifest_id);
     expect(must(host.model.coordinator, "no host coordinator").terminal).toBeUndefined();
     expect(must(guest.model.coordinator, "no guest coordinator").terminal).toBeUndefined();

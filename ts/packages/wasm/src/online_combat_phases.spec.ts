@@ -94,7 +94,9 @@ describe("onlineCombatPhases bridge: pure/JSON pieces", () => {
 
   it("onlineCombatPhaseLiveSample presses equipment on the host for guard, and holds it thereafter", () => {
     const host = loadSimHost();
-    const pressed = JSON.parse(host.inputFrameDecodeSampleJson(host.onlineCombatPhaseLiveSample("guard", 0, 1))) as {
+    const pressed = JSON.parse(
+      host.inputFrameDecodeSampleJson(host.onlineCombatPhaseLiveSample("guard", 0, 1)),
+    ) as {
       held: number;
       edges: number;
     };
@@ -103,7 +105,9 @@ describe("onlineCombatPhases bridge: pure/JSON pieces", () => {
     expect(pressed.held).toBe(heldBits.equipment);
     expect(pressed.edges).toBe(edgeBits.equipment_pressed);
 
-    const held = JSON.parse(host.inputFrameDecodeSampleJson(host.onlineCombatPhaseLiveSample("guard", 1, 1))) as {
+    const held = JSON.parse(
+      host.inputFrameDecodeSampleJson(host.onlineCombatPhaseLiveSample("guard", 1, 1)),
+    ) as {
       held: number;
       edges: number;
     };
@@ -214,7 +218,9 @@ describe("onlineCombatPhases bridge: observed", () => {
         interruption_ticks: null,
         displacement_px: null,
       };
-      expect(host.onlineCombatPhaseObserved("contact", before, before, JSON.stringify([contactEvent]))).toBe(true);
+      expect(
+        host.onlineCombatPhaseObserved("contact", before, before, JSON.stringify([contactEvent])),
+      ).toBe(true);
       expect(host.onlineCombatPhaseObserved("contact", before, before, "[]")).toBe(false);
     } finally {
       before.free();
@@ -225,7 +231,9 @@ describe("onlineCombatPhases bridge: observed", () => {
     const host = loadSimHost();
     const before = host.onlineCombatPhaseBoundaryZero("contact");
     try {
-      expect(() => host.onlineCombatPhaseObserved(UNRECOGNIZED_PHASE, before, before, "[]")).toThrow();
+      expect(() =>
+        host.onlineCombatPhaseObserved(UNRECOGNIZED_PHASE, before, before, "[]"),
+      ).toThrow();
     } finally {
       before.free();
     }

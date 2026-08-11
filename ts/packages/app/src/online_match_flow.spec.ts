@@ -50,7 +50,13 @@
 // own admission/assignment/readiness logic -- that is Rust's job.
 
 import { describe, expect, it } from "vitest";
-import { App, type OnlineLobbyCoordinatorState, type OnlineLobbyScreen, type OnlineMatchScreen, type OnlinePorts } from "./app.ts";
+import {
+  App,
+  type OnlineLobbyCoordinatorState,
+  type OnlineLobbyScreen,
+  type OnlineMatchScreen,
+  type OnlinePorts,
+} from "./app.ts";
 import { APP_CONTENT } from "./test_support/fixtures.ts";
 
 interface FakeRequest {
@@ -58,7 +64,10 @@ interface FakeRequest {
   readonly owned: readonly string[];
 }
 
-function fakeLobbyScreen(coordinator?: OnlineLobbyCoordinatorState, link?: unknown): OnlineLobbyScreen & { teardownCalls: number } {
+function fakeLobbyScreen(
+  coordinator?: OnlineLobbyCoordinatorState,
+  link?: unknown,
+): OnlineLobbyScreen & { teardownCalls: number } {
   return {
     state: { model: coordinator !== undefined ? { coordinator } : {} },
     link,
@@ -95,7 +104,10 @@ function fakeOnlineMatchScreen(request: FakeRequest): OnlineMatchScreen & {
 function fakeOnlinePorts(
   lobby: OnlineLobbyScreen,
   matchRequest: FakeRequest,
-): { readonly ports: OnlinePorts; readonly matchScreens: ReturnType<typeof fakeOnlineMatchScreen>[] } {
+): {
+  readonly ports: OnlinePorts;
+  readonly matchScreens: ReturnType<typeof fakeOnlineMatchScreen>[];
+} {
   const matchScreens: ReturnType<typeof fakeOnlineMatchScreen>[] = [];
   const ports: OnlinePorts = {
     matchManifestTemplate: undefined,
@@ -112,8 +124,14 @@ function fakeOnlinePorts(
 
 describe("online match app routing", () => {
   it("routes the lobby's synchronized start into the online match", () => {
-    const lobby = fakeLobbyScreen({ role: "host", peer_id: "host", manifest: { match_mode: "2v2" } }, { star: {} });
-    const { ports, matchScreens } = fakeOnlinePorts(lobby, { mode: "2v2", owned: ["home_1", "home_2"] });
+    const lobby = fakeLobbyScreen(
+      { role: "host", peer_id: "host", manifest: { match_mode: "2v2" } },
+      { star: {} },
+    );
+    const { ports, matchScreens } = fakeOnlinePorts(lobby, {
+      mode: "2v2",
+      owned: ["home_1", "home_2"],
+    });
     const app = new App(APP_CONTENT, { online: ports });
 
     app.handleAction({ go: "online_lobby" });

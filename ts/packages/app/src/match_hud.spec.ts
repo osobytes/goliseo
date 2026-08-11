@@ -76,11 +76,7 @@ describe("match HUD model", () => {
   it("authors kickoff, goal, replay, and full-time broadcast phases", () => {
     const phases = ["kickoff", "goal", "replay", "full_time"] as const;
     for (const phase of phases) {
-      const model = hud.model(
-        IDENTITY,
-        scoreboard(),
-        context({ phase, scoring_team: "home" }),
-      );
+      const model = hud.model(IDENTITY, scoreboard(), context({ phase, scoring_team: "home" }));
       expect(model.announcement_title, `${phase} needs a title`).toBeDefined();
       expect(model.announcement_detail, `${phase} needs supporting detail`).toBeDefined();
     }
@@ -111,7 +107,13 @@ describe("match HUD model", () => {
       scoreboard(),
       context({
         combat_enabled: true,
-        combat: { family_name: "spike_launcher", readiness: "committed", cooldown_fraction: 0, phase: "windup", phase_progress: 0.4 },
+        combat: {
+          family_name: "spike_launcher",
+          readiness: "committed",
+          cooldown_fraction: 0,
+          phase: "windup",
+          phase_progress: 0.4,
+        },
         combat_notice: { text: "EQUIPMENT COMMITTED", glyph: "chevron" },
       }),
     );

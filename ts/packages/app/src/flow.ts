@@ -9,7 +9,16 @@
 // package), so `Flow.start` takes a `FlowContent` bundle for the same
 // reason `app.ts` does.
 
-import { Menu, formation, squad, tactic, type FormationContentData, type SquadContentData, type TacticContentData, type Viewport } from "@gc/screens";
+import {
+  Menu,
+  formation,
+  squad,
+  tactic,
+  type FormationContentData,
+  type SquadContentData,
+  type TacticContentData,
+  type Viewport,
+} from "@gc/screens";
 import type { Screen } from "./screen_stack.ts";
 import type { ScreenStack } from "./screen_stack.ts";
 
@@ -27,7 +36,9 @@ export interface FlowChoice {
 /** A concrete match screen constructor, injected -- see this file's header. */
 export type MatchScreenFactory = (choice: FlowChoice) => Screen;
 
-function asScreen<State extends { readonly viewport: Viewport }, Action>(menu: Menu<State, Action>): Screen {
+function asScreen<State extends { readonly viewport: Viewport }, Action>(
+  menu: Menu<State, Action>,
+): Screen {
   // See app.ts's `asMenu` for why this cast is safe: `Menu.draw` needs a
   // `@gc/ui` backend this milestone does not wire up, and nothing in this
   // package's test coverage calls `draw`.
@@ -44,7 +55,9 @@ function start(
 
   const go = (action: { readonly go: string } & Record<string, unknown>): void => {
     if (action.go === "formation") {
-      const menu = new Menu(formation, formation.newState(viewport, content.formation), (a) => go(a));
+      const menu = new Menu(formation, formation.newState(viewport, content.formation), (a) =>
+        go(a),
+      );
       stack.push(asScreen(menu));
     } else if (action.go === "tactic") {
       choice.formation = action.formationId as string;

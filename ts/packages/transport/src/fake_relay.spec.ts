@@ -118,9 +118,9 @@ describe("relay transport adapter", () => {
 
   it("lets any member address any other, which the star forbids", () => {
     const [, members] = buildRoom(3);
-    expect((members[1] as FakeRelayTransport).send("guest_2", "control", control(0, "hello")).ok).toBe(
-      true
-    );
+    expect(
+      (members[1] as FakeRelayTransport).send("guest_2", "control", control(0, "hello")).ok,
+    ).toBe(true);
 
     const star = transport.fakeStar({ role: "guest", peer_id: "guest_1" });
     unwrap(star.initialize());
@@ -159,7 +159,9 @@ describe("relay transport adapter", () => {
     const host = members[0] as FakeRelayTransport;
     unwrap(host.send("guest_1", "control", control(0, "hello")));
     const original = host.diagnostics();
-    const decoded = unwrap(contract.decodeStarDiagnostics(contract.encodeStarDiagnostics(original)));
+    const decoded = unwrap(
+      contract.decodeStarDiagnostics(contract.encodeStarDiagnostics(original)),
+    );
     expect(decoded.peer_count).toBe(2);
     expect(decoded.peers.length).toBe(2);
     expect(decoded.peers[0]?.peer_id).toBe("guest_1");

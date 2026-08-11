@@ -12,7 +12,13 @@ import { App } from "./app.ts";
 import { bootstrap } from "./bootstrap.ts";
 import { CompatibilityFlow } from "./compatibility_flow.ts";
 import { createRealMatchFactory } from "./real_match_factory.ts";
-import { APP_CONTENT, fakeHostFactory, fakeKeyboard, MATCH_CONTRACT_CONTENT, noopRenderPort } from "./test_support/fixtures.ts";
+import {
+  APP_CONTENT,
+  fakeHostFactory,
+  fakeKeyboard,
+  MATCH_CONTRACT_CONTENT,
+  noopRenderPort,
+} from "./test_support/fixtures.ts";
 
 describe("compatibility flow", () => {
   it("drives the complete fake product flow through the normal input seam", () => {

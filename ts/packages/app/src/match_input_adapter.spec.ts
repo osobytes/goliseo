@@ -87,7 +87,10 @@ function input(opts: InputOptions = {}): MatchInput {
 
 describe("offline match input adapter", () => {
   it("holds a release edge through a zero-tick render update and consumes it once", () => {
-    let adapter = matchInputAdapter.sample(matchInputAdapter.new(), input({ shoot: true, lob: true }));
+    let adapter = matchInputAdapter.sample(
+      matchInputAdapter.new(),
+      input({ shoot: true, lob: true }),
+    );
     const clock = newClock();
     const consumed: MatchInput[] = [];
 
@@ -133,7 +136,14 @@ describe("offline match input adapter", () => {
   it("emits edges only on the first catch-up tick while preserving holds", () => {
     const adapter = matchInputAdapter.sample(
       matchInputAdapter.new(),
-      input({ pass: true, pass_held: true, sprint: true, jockey: true, equipment_held: true, equipment_pressed: true }),
+      input({
+        pass: true,
+        pass_held: true,
+        sprint: true,
+        jockey: true,
+        equipment_held: true,
+        equipment_pressed: true,
+      }),
     );
     const [firstState, first] = matchInputAdapter.nextTick(adapter);
     const [, second] = matchInputAdapter.nextTick(firstState);
@@ -157,7 +167,10 @@ describe("offline match input adapter", () => {
     function fold(previousHeld: boolean, samples: readonly MatchInput[]): MatchInput {
       let adapter = matchInputAdapter.new();
       if (previousHeld) {
-        adapter = matchInputAdapter.sample(adapter, input({ equipment_held: true, equipment_pressed: true }));
+        adapter = matchInputAdapter.sample(
+          adapter,
+          input({ equipment_held: true, equipment_pressed: true }),
+        );
         [adapter] = matchInputAdapter.nextTick(adapter);
       }
       for (const s of samples) {

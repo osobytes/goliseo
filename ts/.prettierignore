@@ -1,0 +1,11 @@
+# Machine-written or machine-installed. Nothing here is ours to format, and
+# `dist/pkg*` in particular is wasm-bindgen's generated glue, regenerated from
+# Rust on every gate run (scripts/check.sh's gate_wasm_build).
+node_modules/
+dist/
+dist-app/
+*.tsbuildinfo
+
+# pnpm owns this file's layout; reformatting it would fight
+# `pnpm install --frozen-lockfile`.
+pnpm-lock.yaml

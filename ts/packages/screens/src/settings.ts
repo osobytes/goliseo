@@ -31,12 +31,7 @@ export type SettingsAction =
   | { readonly go: "settings_changed"; readonly settings: GameSettings };
 
 type AdjustableKey =
-  | "master_volume"
-  | "sfx_volume"
-  | "crowd_volume"
-  | "muted"
-  | "fullscreen"
-  | "screen_shake";
+  "master_volume" | "sfx_volume" | "crowd_volume" | "muted" | "fullscreen" | "screen_shake";
 
 function isAdjustableKey(key: string): key is AdjustableKey {
   return (
@@ -117,7 +112,10 @@ function adjust(settings: GameSettings, key: AdjustableKey, delta: number): Game
   return { ...settings, [key]: !settings[key] };
 }
 
-function update(state: SettingsScreenState, event: FocusEvent): readonly [SettingsScreenState, SettingsAction | undefined] {
+function update(
+  state: SettingsScreenState,
+  event: FocusEvent,
+): readonly [SettingsScreenState, SettingsAction | undefined] {
   let next: SettingsScreenState = { ...state };
   const currentLayout = layout(next);
   if (event.kind === "action" && event.action === "back") {
@@ -127,7 +125,10 @@ function update(state: SettingsScreenState, event: FocusEvent): readonly [Settin
     // The action fires even when `focus` is not an adjustable row (e.g.
     // "back") — `adjust` is simply a no-op there.
     if (isAdjustableKey(next.focus)) {
-      next = { ...next, settings: adjust(next.settings, next.focus, event.action === "left" ? -0.1 : 0.1) };
+      next = {
+        ...next,
+        settings: adjust(next.settings, next.focus, event.action === "left" ? -0.1 : 0.1),
+      };
     }
     return [next, { go: "settings_changed", settings: next.settings }];
   }

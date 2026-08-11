@@ -120,7 +120,11 @@ export function buildBraziers(layout: StadiumLayout, rng: Prng): BraziersBuild {
   const uTime: NumberUniform = { value: 0 };
 
   const bowlGeometry = buildBrazierBowlGeometry();
-  const bowlMaterial = new THREE.MeshStandardMaterial({ color: 0x6a5c4c, roughness: 0.9, metalness: 0.05 });
+  const bowlMaterial = new THREE.MeshStandardMaterial({
+    color: 0x6a5c4c,
+    roughness: 0.9,
+    metalness: 0.05,
+  });
   const bowls = new THREE.InstancedMesh(bowlGeometry, bowlMaterial, layout.brazierCount);
   bowls.name = "brazier_bowls";
 
@@ -197,15 +201,28 @@ export function buildFloodlights(layout: StadiumLayout): FloodlightsBuild {
   const pylonHeight = 300;
   const leanRadians = 0.32;
 
-  const pylonMaterial = new THREE.MeshStandardMaterial({ color: 0x2a2f38, roughness: 0.6, metalness: 0.6 });
+  const pylonMaterial = new THREE.MeshStandardMaterial({
+    color: 0x2a2f38,
+    roughness: 0.6,
+    metalness: 0.6,
+  });
   const pylonGeometry = buildPylonBodyGeometry(pylonHeight);
   const pylons = new THREE.InstancedMesh(pylonGeometry, pylonMaterial, layout.pylonCount);
   pylons.name = "floodlight_pylons";
 
-  const lampMaterial = new THREE.MeshStandardMaterial({ color: 0xfff2d0, emissive: 0xfff2d0, emissiveIntensity: 1.5, roughness: 0.4 });
+  const lampMaterial = new THREE.MeshStandardMaterial({
+    color: 0xfff2d0,
+    emissive: 0xfff2d0,
+    emissiveIntensity: 1.5,
+    roughness: 0.4,
+  });
   const lampGeometry = new THREE.PlaneGeometry(7, 4);
   const lampsPerPylon = 6;
-  const lamps = new THREE.InstancedMesh(lampGeometry, lampMaterial, layout.pylonCount * lampsPerPylon);
+  const lamps = new THREE.InstancedMesh(
+    lampGeometry,
+    lampMaterial,
+    layout.pylonCount * lampsPerPylon,
+  );
   lamps.name = "floodlight_lamps";
 
   const coneHeight = pylonHeight * 0.4;
@@ -248,7 +265,7 @@ export function buildFloodlights(layout: StadiumLayout): FloodlightsBuild {
   const pitchCentre = new THREE.Vector3(layout.cx, 0, layout.cz);
 
   for (let i = 0; i < layout.pylonCount; i += 1) {
-    const angle = (Math.PI / 4) + i * (Math.PI / 2);
+    const angle = Math.PI / 4 + i * (Math.PI / 2);
     const [x, z] = ellipsePoint(layout.cx, layout.cz, layout.pylonRx, layout.pylonRz, angle);
     const yaw = ellipseYawFacingCenter(angle, layout.pylonRx, layout.pylonRz);
     const quat = pylonQuaternion(yaw, leanRadians);
@@ -266,7 +283,11 @@ export function buildFloodlights(layout: StadiumLayout): FloodlightsBuild {
     for (let l = 0; l < lampsPerPylon; l += 1) {
       const row = Math.floor(l / 3);
       const col = l % 3;
-      const localOffset = new THREE.Vector3((col - 1) * 8, lampBankLocalY + (row === 0 ? 6 : -6), 5).applyQuaternion(quat);
+      const localOffset = new THREE.Vector3(
+        (col - 1) * 8,
+        lampBankLocalY + (row === 0 ? 6 : -6),
+        5,
+      ).applyQuaternion(quat);
       const lampPos = new THREE.Vector3(x, 0, z).add(localOffset);
       lampDummy.position.copy(lampPos);
       // Lamps face straight at the pitch centre from wherever they end up,
@@ -282,7 +303,9 @@ export function buildFloodlights(layout: StadiumLayout): FloodlightsBuild {
     // ground level. `ConeGeometry` centres its apex at local +height/2, so
     // the mesh origin sits `height/2` back from the apex along the cone's
     // own pointing direction once rotated.
-    const apexWorld = new THREE.Vector3(x, 0, z).add(new THREE.Vector3(0, lampBankLocalY, 0).applyQuaternion(quat));
+    const apexWorld = new THREE.Vector3(x, 0, z).add(
+      new THREE.Vector3(0, lampBankLocalY, 0).applyQuaternion(quat),
+    );
     const aimTarget = new THREE.Vector3(layout.cx, 0, layout.cz);
     const aimDir = aimTarget.clone().sub(apexWorld).normalize();
     const coneQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, -1, 0), aimDir);

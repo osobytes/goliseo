@@ -174,7 +174,11 @@ class FakeSimHost implements SimHostPort {
   }
 
   frame(): RenderFrame {
-    return { hud: this.hud, possession: {}, ...(this.pendingEvents !== undefined ? { events: this.pendingEvents } : {}) };
+    return {
+      hud: this.hud,
+      possession: {},
+      ...(this.pendingEvents !== undefined ? { events: this.pendingEvents } : {}),
+    };
   }
 
   roster(): RenderFrameRoster {
@@ -224,7 +228,14 @@ function fixtureMatchPlayer(id: string, team: "home" | "away", pos: Vec2): repla
     stun_timer: 0,
     settle_timer: 0,
     sprinting: false,
-    outfield_decision: { version: 1, generation: 0, rng_state: 1, remaining: 0, context: "offball", intent: "none" },
+    outfield_decision: {
+      version: 1,
+      generation: 0,
+      rng_state: 1,
+      remaining: 0,
+      context: "offball",
+      intent: "none",
+    },
     dive_timer: 0,
     dive_dir: new Vec2(0, 0),
     keeper_get_up_timer: 0,
@@ -264,7 +275,10 @@ function fixtureMatchStateSource(getHost: () => FakeSimHost): () => replayTypes.
         away: { version: 1, mode: "inactive", reason: "no_trigger" },
       },
       transition: { version: 1, hold: 0, elapsed: 0 },
-      transition_windows: { home: { counterpress: 0, counterattack: 0 }, away: { counterpress: 0, counterattack: 0 } },
+      transition_windows: {
+        home: { counterpress: 0, counterattack: 0 },
+        away: { counterpress: 0, counterattack: 0 },
+      },
       ball: new Vec2(ballX, 270),
       ball_vel: new Vec2(120, 0),
       ball_z: 0,
@@ -278,7 +292,11 @@ function fixtureMatchStateSource(getHost: () => FakeSimHost): () => replayTypes.
 describe("match screen rematch (tier 2)", () => {
   it("R restarts a finished match with the same pre-match choices", () => {
     const { factory, hosts } = makeHostFactory();
-    const screen = new MatchScreen({ createHost: factory, renderer: noopRenderer, keyboard: fakeKeyboard({}) });
+    const screen = new MatchScreen({
+      createHost: factory,
+      renderer: noopRenderer,
+      keyboard: fakeKeyboard({}),
+    });
     nth(hosts, 0).hud.finished = true;
 
     screen.event({ kind: "key", key: "r" });
@@ -293,10 +311,17 @@ describe("match screen rematch (tier 2)", () => {
   // but silently did not rematch.
   it("rematches on every key bound to CONFIRM", () => {
     const confirmKeys = bindings.control("confirm").keys;
-    expect(confirmKeys.length, "this only proves something with more than one confirm key").toBeGreaterThan(1);
+    expect(
+      confirmKeys.length,
+      "this only proves something with more than one confirm key",
+    ).toBeGreaterThan(1);
     for (const key of confirmKeys) {
       const { factory, hosts } = makeHostFactory();
-      const screen = new MatchScreen({ createHost: factory, renderer: noopRenderer, keyboard: fakeKeyboard({}) });
+      const screen = new MatchScreen({
+        createHost: factory,
+        renderer: noopRenderer,
+        keyboard: fakeKeyboard({}),
+      });
       nth(hosts, 0).hud.finished = true;
       screen.event({ kind: "key", key });
       expect(screen.finished, `${key} should trigger the rematch`).toBe(false);
@@ -305,7 +330,11 @@ describe("match screen rematch (tier 2)", () => {
 
   it("ignores the rematch keys while the match is live", () => {
     const { factory, hosts } = makeHostFactory();
-    const screen = new MatchScreen({ createHost: factory, renderer: noopRenderer, keyboard: fakeKeyboard({}) });
+    const screen = new MatchScreen({
+      createHost: factory,
+      renderer: noopRenderer,
+      keyboard: fakeKeyboard({}),
+    });
 
     screen.event({ kind: "key", key: "r" });
 
@@ -314,7 +343,11 @@ describe("match screen rematch (tier 2)", () => {
 
   it("ignores match inputs after full time", () => {
     const { factory, hosts } = makeHostFactory();
-    const screen = new MatchScreen({ createHost: factory, renderer: noopRenderer, keyboard: fakeKeyboard({}) });
+    const screen = new MatchScreen({
+      createHost: factory,
+      renderer: noopRenderer,
+      keyboard: fakeKeyboard({}),
+    });
     nth(hosts, 0).hud.finished = true;
 
     // The meaningful assertion here is that a K press does not buffer a
@@ -344,7 +377,11 @@ describe("match screen rematch (tier 2)", () => {
 describe("match screen fixed simulation clock (tier 2)", () => {
   it("samples render frames but only steps the match at the canonical interval", () => {
     const { factory, hosts } = makeHostFactory();
-    const screen = new MatchScreen({ createHost: factory, renderer: noopRenderer, keyboard: fakeKeyboard({}) });
+    const screen = new MatchScreen({
+      createHost: factory,
+      renderer: noopRenderer,
+      keyboard: fakeKeyboard({}),
+    });
     const host = nth(hosts, 0);
 
     screen.update(1 / 120);
@@ -398,7 +435,9 @@ describe("match screen contextual controls (tier 2)", () => {
       { createHost: onFactory, renderer: noopRenderer, keyboard: fakeKeyboard({}) },
       { combat_enabled: true },
     );
-    expect(onScreen.debugCombatEnabled, "the explicit opt-in is recorded at construction").toBe(true);
+    expect(onScreen.debugCombatEnabled, "the explicit opt-in is recorded at construction").toBe(
+      true,
+    );
 
     const { factory: offFactory } = makeHostFactory();
     const offScreenDefault = new MatchScreen({
@@ -406,9 +445,10 @@ describe("match screen contextual controls (tier 2)", () => {
       renderer: noopRenderer,
       keyboard: fakeKeyboard({}),
     });
-    expect(offScreenDefault.debugCombatEnabled, "omitted defaults to no combat, byte for byte the prior behavior").toBe(
-      false,
-    );
+    expect(
+      offScreenDefault.debugCombatEnabled,
+      "omitted defaults to no combat, byte for byte the prior behavior",
+    ).toBe(false);
 
     const { factory: explicitOffFactory } = makeHostFactory();
     const offScreenExplicit = new MatchScreen(
@@ -424,22 +464,35 @@ describe("match screen contextual controls (tier 2)", () => {
       onScreen.update(1 / 60);
       offScreenDefault.update(1 / 60);
     }
-    expect(onScreen.debugCombatEnabled, "the combat companion must never disappear mid-match").toBe(true);
+    expect(onScreen.debugCombatEnabled, "the combat companion must never disappear mid-match").toBe(
+      true,
+    );
     expect(offScreenDefault.debugCombatEnabled).toBe(false);
   });
 
   it("K never switches while carrying the ball (it charges a pass)", () => {
     const { factory } = makeHostFactory(); // default host: carrying at kickoff
-    const screen = new MatchScreen({ createHost: factory, renderer: noopRenderer, keyboard: fakeKeyboard({}) });
+    const screen = new MatchScreen({
+      createHost: factory,
+      renderer: noopRenderer,
+      keyboard: fakeKeyboard({}),
+    });
 
     screen.event({ kind: "key", key: "k" });
 
-    expect(screen.debugSwitchPending, "on the ball, K is the (polled) pass charge, not a switch").toBe(false);
+    expect(
+      screen.debugSwitchPending,
+      "on the ball, K is the (polled) pass charge, not a switch",
+    ).toBe(false);
   });
 
   it("K switches player when not carrying", () => {
     const { factory, hosts } = makeHostFactory();
-    const screen = new MatchScreen({ createHost: factory, renderer: noopRenderer, keyboard: fakeKeyboard({}) });
+    const screen = new MatchScreen({
+      createHost: factory,
+      renderer: noopRenderer,
+      keyboard: fakeKeyboard({}),
+    });
     nth(hosts, 0).hud.controlled_owns_ball = false;
 
     screen.event({ kind: "key", key: "k" });
@@ -450,7 +503,11 @@ describe("match screen contextual controls (tier 2)", () => {
   it("Space hold = jockey, release = poke (off the ball)", () => {
     const down: Record<string, boolean> = {};
     const { factory, hosts } = makeHostFactory();
-    const screen = new MatchScreen({ createHost: factory, renderer: noopRenderer, keyboard: fakeKeyboard(down) });
+    const screen = new MatchScreen({
+      createHost: factory,
+      renderer: noopRenderer,
+      keyboard: fakeKeyboard(down),
+    });
     nth(hosts, 0).hud.controlled_owns_ball = false;
 
     down.space = true;
@@ -465,28 +522,39 @@ describe("match screen contextual controls (tier 2)", () => {
     down.space = false;
     screen.update(1 / 60); // release
     const edges = screen.debugLastSample?.edges ?? 0;
-    expect((edges & inputSample.packEdges(["dash"])) !== 0, "releasing Space off the ball fires the poke").toBe(
-      true,
-    );
+    expect(
+      (edges & inputSample.packEdges(["dash"])) !== 0,
+      "releasing Space off the ball fires the poke",
+    ).toBe(true);
   });
 
   it("Space never produces a poke while carrying (it charges the shot)", () => {
     const down: Record<string, boolean> = {};
     const { factory } = makeHostFactory(); // default host: carrying
-    const screen = new MatchScreen({ createHost: factory, renderer: noopRenderer, keyboard: fakeKeyboard(down) });
+    const screen = new MatchScreen({
+      createHost: factory,
+      renderer: noopRenderer,
+      keyboard: fakeKeyboard(down),
+    });
 
     down.space = true;
     screen.update(1 / 60); // hold while carrying
     const held = screen.debugLastSample?.held ?? 0;
-    expect((held & inputSample.packHeld(["shoot"])) !== 0, "Space while carrying charges the shot").toBe(true);
-    expect((held & inputSample.packHeld(["jockey"])) !== 0, "not jockey, while carrying").toBe(false);
+    expect(
+      (held & inputSample.packHeld(["shoot"])) !== 0,
+      "Space while carrying charges the shot",
+    ).toBe(true);
+    expect((held & inputSample.packHeld(["jockey"])) !== 0, "not jockey, while carrying").toBe(
+      false,
+    );
 
     down.space = false;
     screen.update(1 / 60); // release while still carrying
     const edges = screen.debugLastSample?.edges ?? 0;
-    expect((edges & inputSample.packEdges(["dash"])) !== 0, "Space release while carrying does not fire a poke").toBe(
-      false,
-    );
+    expect(
+      (edges & inputSample.packEdges(["dash"])) !== 0,
+      "Space release while carrying does not fire a poke",
+    ).toBe(false);
   });
 });
 
@@ -494,7 +562,11 @@ describe("match screen lob latch (tier 2)", () => {
   it("MODIFIER held during a charged pass lofts it even if it lifts early", () => {
     const down: Record<string, boolean> = {};
     const { factory } = makeHostFactory(); // default host: carrying at kickoff
-    const screen = new MatchScreen({ createHost: factory, renderer: noopRenderer, keyboard: fakeKeyboard(down) });
+    const screen = new MatchScreen({
+      createHost: factory,
+      renderer: noopRenderer,
+      keyboard: fakeKeyboard(down),
+    });
 
     down[PLAY_KEY] = true;
     down[MODIFIER_KEY] = true;
@@ -509,15 +581,20 @@ describe("match screen lob latch (tier 2)", () => {
     const edges = sample?.edges ?? 0;
     const held = sample?.held ?? 0;
     expect((edges & inputSample.packEdges(["pass"])) !== 0, "the pass released").toBe(true);
-    expect((held & inputSample.packHeld(["lob"])) !== 0, "and it was lofted: the latch held the modifier for us").toBe(
-      true,
-    );
+    expect(
+      (held & inputSample.packHeld(["lob"])) !== 0,
+      "and it was lofted: the latch held the modifier for us",
+    ).toBe(true);
   });
 
   it("holding PLAY charges the pass range for an outfielder", () => {
     const down: Record<string, boolean> = {};
     const { factory, hosts } = makeHostFactory();
-    const screen = new MatchScreen({ createHost: factory, renderer: noopRenderer, keyboard: fakeKeyboard(down) });
+    const screen = new MatchScreen({
+      createHost: factory,
+      renderer: noopRenderer,
+      keyboard: fakeKeyboard(down),
+    });
 
     down[PLAY_KEY] = true;
     for (let i = 0; i < 20; i += 1) {
@@ -532,8 +609,14 @@ describe("match screen lob latch (tier 2)", () => {
     const host = nth(hosts, 0);
     expect(host.stepCalls.length).toBe(20);
     for (const sample of host.stepCalls) {
-      expect((sample.held & inputSample.packHeld(["pass"])) !== 0, "the pass range charged up").toBe(true);
-      expect((sample.edges & inputSample.packEdges(["pass"])) !== 0, "not fired yet -- still held").toBe(false);
+      expect(
+        (sample.held & inputSample.packHeld(["pass"])) !== 0,
+        "the pass range charged up",
+      ).toBe(true);
+      expect(
+        (sample.edges & inputSample.packEdges(["pass"])) !== 0,
+        "not fired yet -- still held",
+      ).toBe(false);
     }
   });
 });
@@ -604,7 +687,10 @@ describe("MatchScreenAsRealMatchScreen (tier 2)", () => {
     // this is the boundary `toControllerInputEvent` bridges (see match.ts).
     port.event({ kind: "action", action: "confirm" });
 
-    expect(screen.finished, "the bridged event reached the wrapped screen and triggered a rematch").toBe(false);
+    expect(
+      screen.finished,
+      "the bridged event reached the wrapped screen and triggered a rematch",
+    ).toBe(false);
   });
 });
 
@@ -838,7 +924,10 @@ describe("match screen character pre-warm (#447)", () => {
 
     // NON-VACUOUS: the roster really does carry three distinct variants, so
     // "built at construction" is a statement about work that exists.
-    expect(afterConstruction - before, "three players, three distinct variants, all built up front").toBe(3);
+    expect(
+      afterConstruction - before,
+      "three players, three distinct variants, all built up front",
+    ).toBe(3);
 
     // And the frame that follows costs nothing. `noopRenderer` does not reach
     // `pitch.draw`, so this is a weaker statement than the render package's
@@ -890,15 +979,26 @@ describe("match screen character pre-warm (#447)", () => {
     screen.event({ kind: "key", key: "r" });
     const afterRematch = player3dVariantBuildCount();
     expect(created, "the rematch really did build a second host").toBe(2);
-    expect(afterRematch - afterFirst, "the rematch's two new variants are built at restart, not on its first frame").toBe(2);
+    expect(
+      afterRematch - afterFirst,
+      "the rematch's two new variants are built at restart, not on its first frame",
+    ).toBe(2);
 
     screen.draw();
-    expect(player3dVariantBuildCount(), "so the rematch's first frame builds nothing either").toBe(afterRematch);
+    expect(player3dVariantBuildCount(), "so the rematch's first frame builds nothing either").toBe(
+      afterRematch,
+    );
   });
 
   it("is a no-op for the content-free fakes every other case in this file uses", () => {
     const before = player3dVariantBuildCount();
-    new MatchScreen({ createHost: (): SimHostPort => new FakeSimHost(), renderer: noopRenderer, keyboard: fakeKeyboard({}) });
-    expect(player3dVariantBuildCount(), "a roster with no presentation ids builds nothing").toBe(before);
+    new MatchScreen({
+      createHost: (): SimHostPort => new FakeSimHost(),
+      renderer: noopRenderer,
+      keyboard: fakeKeyboard({}),
+    });
+    expect(player3dVariantBuildCount(), "a roster with no presentation ids builds nothing").toBe(
+      before,
+    );
   });
 });

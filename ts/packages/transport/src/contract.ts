@@ -9,12 +9,7 @@ export type TransportState = "new" | "connected" | "disconnected" | "closed" | "
 export type TransportRole = "host" | "guest";
 export type TransportChannel = "control" | "input";
 export type TransportPeerState =
-  | "new"
-  | "connecting"
-  | "connected"
-  | "disconnected"
-  | "closed"
-  | "error";
+  "new" | "connecting" | "connected" | "disconnected" | "closed" | "error";
 export type TransportErrorCode =
   | "not_initialized"
   | "not_connected"
@@ -389,7 +384,7 @@ export function encode(message: TransportMessage): TransportResult<string> {
       String(message.seq),
       message.tick !== undefined ? String(message.tick) : "",
       escape(message.payload),
-    ].join("|")
+    ].join("|"),
   );
 }
 
@@ -467,10 +462,7 @@ export function validateChannel(channel: unknown): TransportResult<true> {
 // Enforces the channel/message-type pairing before anything reaches a data
 // channel, so an input packet can never take the reliable ordered path and a
 // lifecycle message can never take the lossy path.
-export function validateChannelMessage(
-  channel: unknown,
-  message: unknown
-): TransportResult<true> {
+export function validateChannelMessage(channel: unknown, message: unknown): TransportResult<true> {
   const channelResult = validateChannel(channel);
   if (!channelResult.ok) {
     return channelResult;
@@ -484,7 +476,7 @@ export function validateChannelMessage(
   if (!CHANNEL_MESSAGE_TYPES[typedChannel][typedMessage.type]) {
     return failure(
       "channel_mismatch",
-      `transport ${typedChannel} channel does not carry ${typedMessage.type} messages`
+      `transport ${typedChannel} channel does not carry ${typedMessage.type} messages`,
     );
   }
   return ok(true);
@@ -496,7 +488,7 @@ export function validateChannelMessage(
 export function encodeAddressed(
   peerId: string,
   channel: TransportChannel,
-  message: TransportMessage
+  message: TransportMessage,
 ): TransportResult<string> {
   const peerResult = validatePeerId(peerId);
   if (!peerResult.ok) {
@@ -539,7 +531,7 @@ export function decodeAddressed(line: unknown): TransportResult<TransportAddress
   if (!CHANNEL_MESSAGE_TYPES[typedChannel][message.type]) {
     return failure(
       "channel_mismatch",
-      `transport ${typedChannel} channel does not carry ${message.type} messages`
+      `transport ${typedChannel} channel does not carry ${message.type} messages`,
     );
   }
   return ok({ peer_id: peerId, channel: typedChannel, message });
@@ -604,7 +596,10 @@ export function encodeStarDiagnostics(diagnostics: TransportStarDiagnostics): st
 const STAR_FIELDS = 17;
 const PEER_FIELDS = 25;
 
-function parseChannel(fields: readonly string[], offset: number): TransportChannelDiagnostics | null {
+function parseChannel(
+  fields: readonly string[],
+  offset: number,
+): TransportChannelDiagnostics | null {
   const numbers: number[] = [];
   for (let index = 1; index <= 7; index += 1) {
     const raw = fields[offset + index];
@@ -700,7 +695,11 @@ export function decodeStarDiagnostics(text: unknown): TransportResult<TransportS
     if (!Number.isFinite(slot) || control === null || input === null) {
       return failure("bridge_error", "star diagnostics peer channels are invalid");
     }
-    if (!Number.isFinite(sequenceGaps) || !Number.isFinite(backpressure) || !Number.isFinite(malformed)) {
+    if (
+      !Number.isFinite(sequenceGaps) ||
+      !Number.isFinite(backpressure) ||
+      !Number.isFinite(malformed)
+    ) {
       return failure("bridge_error", "star diagnostics peer counters are invalid");
     }
     const peerError = unescape(peer[24] ?? "");

@@ -57,7 +57,11 @@ import {
   type RollbackWrappedLifecycleEvent,
 } from "@gc/screens";
 import { loadSimHost } from "@gc/wasm";
-import type { RollbackEventsTimeline as WasmRollbackEventsTimeline, SimHost, WasmMatchSnapshot } from "@gc/wasm";
+import type {
+  RollbackEventsTimeline as WasmRollbackEventsTimeline,
+  SimHost,
+  WasmMatchSnapshot,
+} from "@gc/wasm";
 import { Audio, type CombatFeedbackPort } from "./audio.ts";
 import type { ObservedMatchState } from "./match_observer.ts";
 import {
@@ -89,7 +93,13 @@ import {
 // --- real `@gc/wasm` fixture for "derives reference identities..." --------
 // See this file's header for why this is now real rather than skipped.
 
-const WASM_FIXTURE = { home: "nebula", away: "orion", seed: 77, duration: 120, maxGoals: 99 } as const;
+const WASM_FIXTURE = {
+  home: "nebula",
+  away: "orion",
+  seed: 77,
+  duration: 120,
+  maxGoals: 99,
+} as const;
 
 /** `crate::match_state_bridge::match_state_to_json`'s shape -- only the fields this fixture reads. */
 interface WasmMatchStateJson {
@@ -97,7 +107,11 @@ interface WasmMatchStateJson {
   readonly time_left: number;
   readonly owner?: number;
   readonly ball: { readonly x: number; readonly y: number };
-  readonly players: readonly { readonly id: string; readonly team: MatchTeam; readonly is_keeper: boolean }[];
+  readonly players: readonly {
+    readonly id: string;
+    readonly team: MatchTeam;
+    readonly is_keeper: boolean;
+  }[];
 }
 
 /** `crate::rollback_events_bridge::raw_match_event_to_json`'s shape -- only the fields this fixture writes. */
@@ -140,7 +154,9 @@ function toObservedState(json: WasmMatchStateJson, overridesJson?: string): Wasm
   };
 }
 
-function wasmMatchSnapshotPort(host: SimHost): MatchSnapshotPort<WasmObservedState, undefined, WasmMatchSnapshot> {
+function wasmMatchSnapshotPort(
+  host: SimHost,
+): MatchSnapshotPort<WasmObservedState, undefined, WasmMatchSnapshot> {
   return {
     capture: (state) =>
       host.matchSnapshotBuild(
@@ -152,13 +168,16 @@ function wasmMatchSnapshotPort(host: SimHost): MatchSnapshotPort<WasmObservedSta
         undefined,
         state.overridesJson,
       ),
-    restore: (snapshot) => toObservedState(JSON.parse(host.matchSnapshotStateJson(snapshot)) as WasmMatchStateJson),
+    restore: (snapshot) =>
+      toObservedState(JSON.parse(host.matchSnapshotStateJson(snapshot)) as WasmMatchStateJson),
     numberBytes: (value) => value.toFixed(6),
   };
 }
 
 /** `sim.rollback_events`, real -- mirrors `match_presentation.spec.ts`'s own `wasmRollbackEventsPort` adapter, narrowed to `rollback_validation.ts`'s `RollbackEventsPort` shape (`create` takes no `maxUnconfirmedTicks`; `apply` returns the decoded `Result` directly rather than a JSON string). */
-function wasmRollbackEventsPort(host: SimHost): RollbackEventsPort<WasmRollbackEventsTimeline, WasmMatchSnapshot> {
+function wasmRollbackEventsPort(
+  host: SimHost,
+): RollbackEventsPort<WasmRollbackEventsTimeline, WasmMatchSnapshot> {
   return {
     create: (initialSnapshot) => host.RollbackEventsTimeline.create(initialSnapshot),
     apply: (timeline, from, through, steps) => {
@@ -209,7 +228,12 @@ describe("rollback validation (cross-boundary integration)", () => {
       throw new Error("fixture roster must carry at least two players");
     }
     const finalTimeLeft = initialJson.time_left - 1 / 60;
-    const shotEvent: RawMatchEventJson = { kind: "shot", x: initialJson.ball.x, y: initialJson.ball.y, player: secondPlayer.id };
+    const shotEvent: RawMatchEventJson = {
+      kind: "shot",
+      x: initialJson.ball.x,
+      y: initialJson.ball.y,
+      player: secondPlayer.id,
+    };
     const finalOverrides = JSON.stringify({
       owner: 2,
       input_tick: 1,
@@ -242,19 +266,29 @@ describe("rollback validation (cross-boundary integration)", () => {
     if (!precomputeApplied.ok) {
       throw new Error(precomputeApplied.error.message);
     }
-    const precomputeConfirmed = JSON.parse(precomputeTimeline.confirm(0)) as readonly RollbackEventStep[];
+    const precomputeConfirmed = JSON.parse(
+      precomputeTimeline.confirm(0),
+    ) as readonly RollbackEventStep[];
     const derived = precomputeConfirmed[0];
     if (derived === undefined) {
       throw new Error("precompute timeline did not confirm the supplied step");
     }
-    const added: readonly RollbackWrappedEvent[] = [...derived.match_events, ...derived.lifecycle_events];
+    const added: readonly RollbackWrappedEvent[] = [
+      ...derived.match_events,
+      ...derived.lifecycle_events,
+    ];
 
     const supplied: RollbackEventStepInput<WasmMatchSnapshot> = {
       output: outputJson,
       snapshot: buildWasmFixtureSnapshot(host, finalOverrides),
     };
 
-    const ports: RollbackValidationPorts<WasmObservedState, undefined, WasmMatchSnapshot, WasmRollbackEventsTimeline> = {
+    const ports: RollbackValidationPorts<
+      WasmObservedState,
+      undefined,
+      WasmMatchSnapshot,
+      WasmRollbackEventsTimeline
+    > = {
       matchSnapshot: wasmMatchSnapshotPort(host),
       rollbackEvents: wasmRollbackEventsPort(host),
       effects: trackingEffectsPort(),
@@ -347,7 +381,9 @@ function fakePorts(): RollbackValidationPorts<FakeState, undefined, FakeState, u
   };
 }
 
-function confirmedState(overrides: Partial<RollbackConfirmedStateView> = {}): RollbackConfirmedStateView {
+function confirmedState(
+  overrides: Partial<RollbackConfirmedStateView> = {},
+): RollbackConfirmedStateView {
   return { score: { home: 0, away: 0 }, ...overrides };
 }
 
@@ -372,17 +408,32 @@ describe("rollback validation's own control flow", () => {
     const ports = fakePorts();
     const audit = newAudit(ports, fakeState(), undefined);
     const added = passEvent("evt-1", 1);
-    applyImpairedDiff(ports.effects, audit, { added: [added], revoked: [], replaced: [] }, ports.matchSnapshot.numberBytes);
+    applyImpairedDiff(
+      ports.effects,
+      audit,
+      { added: [added], revoked: [], replaced: [] },
+      ports.matchSnapshot.numberBytes,
+    );
     expect(audit.events.speculative_added).toBe(1);
     expect(audit.speculativeIds.get("evt-1")).toBeDefined();
 
-    applyImpairedDiff(ports.effects, audit, { added: [], revoked: [added], replaced: [] }, ports.matchSnapshot.numberBytes);
+    applyImpairedDiff(
+      ports.effects,
+      audit,
+      { added: [], revoked: [added], replaced: [] },
+      ports.matchSnapshot.numberBytes,
+    );
     expect(audit.events.speculative_revoked).toBe(1);
     expect(audit.events.speculative_unknown_revoked).toBe(0);
     expect(audit.speculativeIds.has("evt-1")).toBe(false);
 
     // Revoking an id the ledger never saw is flagged, not silently accepted.
-    applyImpairedDiff(ports.effects, audit, { added: [], revoked: [added], replaced: [] }, ports.matchSnapshot.numberBytes);
+    applyImpairedDiff(
+      ports.effects,
+      audit,
+      { added: [], revoked: [added], replaced: [] },
+      ports.matchSnapshot.numberBytes,
+    );
     expect(audit.events.speculative_unknown_revoked).toBe(1);
   });
 
@@ -396,8 +447,17 @@ describe("rollback validation's own control flow", () => {
       lifecycle_events: [],
     };
     observeReferenceStep(ports.matchSnapshot.numberBytes, audit, step);
-    applyImpairedDiff(ports.effects, audit, { added: [passEvent("evt-1", 0)], revoked: [], replaced: [] }, ports.matchSnapshot.numberBytes);
-    observeImpairedStep({ numberBytes: ports.matchSnapshot.numberBytes, effects: ports.effects, audio: ports.audio }, audit, step);
+    applyImpairedDiff(
+      ports.effects,
+      audit,
+      { added: [passEvent("evt-1", 0)], revoked: [], replaced: [] },
+      ports.matchSnapshot.numberBytes,
+    );
+    observeImpairedStep(
+      { numberBytes: ports.matchSnapshot.numberBytes, effects: ports.effects, audio: ports.audio },
+      audit,
+      step,
+    );
 
     const report = finish(ports, audit, { home_team_id: "nebula", away_team_id: "orion" });
     expect(report.passed).toBe(true);
@@ -445,7 +505,7 @@ function trackingEffectsPort(): EffectsPort {
       for (const event of diff.revoked) {
         speculative.delete(event.id);
       }
-      for (const replacement of diff.replaced as readonly RollbackEventReplacement[]) {
+      for (const replacement of diff.replaced) {
         speculative.delete(replacement.before.id);
         speculative.add(replacement.after.id);
       }
@@ -474,10 +534,8 @@ function recordingReplayPort(capacity: number): ReplayPort<FakeState, undefined>
       return capacity;
     },
     truncateFrom(boundary: number): void {
-      let index = buf.findIndex((frame) => frame.boundary >= boundary);
-      if (index === -1) {
-        index = buf.length;
-      } else {
+      const index = buf.findIndex((frame) => frame.boundary >= boundary);
+      if (index !== -1) {
         buf.splice(index);
       }
       port.truncateCount += 1;
@@ -556,7 +614,11 @@ function lifecycleEvent(
     tick,
     domain: `lifecycle/${kind}`,
     ordinal: 1,
-    payload: { kind, team: kind === "goal" ? "home" : undefined, score: { home: homeScore, away: 0 } },
+    payload: {
+      kind,
+      team: kind === "goal" ? "home" : undefined,
+      score: { home: homeScore, away: 0 },
+    },
   };
 }
 
@@ -570,7 +632,10 @@ function step(
 ): RollbackEventStep {
   return {
     tick,
-    state: { score: { home: score, away: 0 }, ...(ownerTeam !== undefined ? { owner_team: ownerTeam } : {}) },
+    state: {
+      score: { home: score, away: 0 },
+      ...(ownerTeam !== undefined ? { owner_team: ownerTeam } : {}),
+    },
     match_events: matchEvents,
     lifecycle_events: lifecycleEvents,
     ...(combatEvents !== undefined ? { combat_events: combatEvents } : {}),
@@ -585,9 +650,14 @@ function diff(
   return { added, revoked: revoked ?? [], replaced: replaced ?? [] };
 }
 
-function integrationPorts(
-  replayCapacity: number,
-): RollbackValidationPorts<FakeState, unknown, FakeState, unknown[]> & { replay: ReturnType<typeof recordingReplayPort> } {
+function integrationPorts(replayCapacity: number): RollbackValidationPorts<
+  FakeState,
+  unknown,
+  FakeState,
+  unknown[]
+> & {
+  replay: ReturnType<typeof recordingReplayPort>;
+} {
   const matchSnapshot: MatchSnapshotPort<FakeState, unknown, FakeState> = {
     capture: (state) => state,
     restore: (snapshot) => snapshot,
@@ -655,7 +725,10 @@ describe("rollback validation (fixture-driven integration -- see this file's hea
       trace.push({ kind: "reference_confirmed", step: value });
     }
     trace.push({ kind: "impaired_diff", diff: diff([staleTackle]) });
-    trace.push({ kind: "impaired_diff", diff: diff([], undefined, [{ before: staleTackle, after: tackle }]) });
+    trace.push({
+      kind: "impaired_diff",
+      diff: diff([], undefined, [{ before: staleTackle, after: tackle }]),
+    });
     trace.push({ kind: "impaired_confirmed", step: confirmed[0]! });
     trace.push({ kind: "impaired_confirmed", step: confirmed[0]! });
     trace.push({ kind: "impaired_diff", diff: diff([revokedShot]) });
@@ -691,7 +764,16 @@ describe("rollback validation (fixture-driven integration -- see this file's hea
         { boundary: 2, ball_x: 102, ball_y: initial.ball.y, score_home: 0, score_away: 0 },
       ],
       expected_replay_truncate_count: 1,
-      required_scenarios: ["possession", "tackle", "shot", "goal", "kickoff", "aerial", "keeper", "full_time"],
+      required_scenarios: [
+        "possession",
+        "tackle",
+        "shot",
+        "goal",
+        "kickoff",
+        "aerial",
+        "keeper",
+        "full_time",
+      ],
     });
 
     expect(report.passed, report.errors.join("; ")).toBe(true);

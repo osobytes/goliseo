@@ -114,20 +114,9 @@ export type NetDiagnosticsRetention = "complete" | "truncated";
 type NetDiagnosticsKeep = "newest" | "oldest";
 export type NetDiagnosticsSignalDirection = "outbound" | "inbound";
 export type NetDiagnosticsPacketDisposition =
-  | "authored"
-  | "sent"
-  | "arrived"
-  | "deferred"
-  | "duplicate"
-  | "rejected";
+  "authored" | "sent" | "arrived" | "deferred" | "duplicate" | "rejected";
 export type NetDiagnosticsEventKind =
-  | "peer_state"
-  | "peer_error"
-  | "star_state"
-  | "star_error"
-  | "signal"
-  | "lifecycle"
-  | "teardown";
+  "peer_state" | "peer_error" | "star_state" | "star_error" | "signal" | "lifecycle" | "teardown";
 
 // ---------------------------------------------------------------------------
 // Cross-layer data this module only reads (Rust-owned; only the fields this
@@ -1298,7 +1287,7 @@ function pruneTickDigests(recorder: NetDiagnostics, floor: number): void {
 export function recordStep(
   recorder: NetDiagnostics,
   diagnostics: MatchDriverDiagnostics,
-  batch: MatchDriverBatch
+  batch: MatchDriverBatch,
 ): Result<true, string> {
   if (!isInteger(diagnostics.present_input_tick) || !isInteger(batch.input_tick)) {
     return reject(recorder, "a driver step must carry finite integer ticks");
@@ -1397,7 +1386,7 @@ export function recordStep(
 
 export function recordCheckpoint(
   recorder: NetDiagnostics,
-  checkpoint: MatchDriverCheckpoint
+  checkpoint: MatchDriverCheckpoint,
 ): Result<true, string> {
   if (!isInteger(checkpoint.tick)) {
     return reject(recorder, "a checkpoint needs a finite integer tick");
@@ -1420,7 +1409,7 @@ export function recordCheckpoint(
 // avoid.
 export function recordMismatch(
   recorder: NetDiagnostics,
-  mismatch: NetDiagnosticsMismatchRecord
+  mismatch: NetDiagnosticsMismatchRecord,
 ): Result<true, string> {
   if (!isInteger(mismatch.tick)) {
     return reject(recorder, "a mismatch needs a finite integer tick");
@@ -1452,7 +1441,7 @@ export interface NetDiagnosticsPacketInput {
 
 export function recordPacket(
   recorder: NetDiagnostics,
-  packet: NetDiagnosticsPacketInput
+  packet: NetDiagnosticsPacketInput,
 ): Result<true, string> {
   const required = [
     packet.sequence,
@@ -1521,7 +1510,7 @@ export function recordPacket(
 // it observes the mail, it does not open it on anyone's behalf.
 export function recordControl(
   recorder: NetDiagnostics,
-  addressed: TransportPeerMessage
+  addressed: TransportPeerMessage,
 ): Result<true, string> {
   const message = recorder.decodeControlMessage(addressed.message.payload);
   if (message === null) {
@@ -1583,7 +1572,7 @@ function optionalDetail(text: unknown): { readonly last_error?: string } {
 
 export function recordTransport(
   recorder: NetDiagnostics,
-  star: TransportStarDiagnostics
+  star: TransportStarDiagnostics,
 ): Result<true, string> {
   recorder.star = {
     role: star.role,
@@ -1645,7 +1634,10 @@ export function recordTransport(
     for (const channel of [peer.control, peer.input]) {
       pressure.peak_outbound_depth = Math.max(pressure.peak_outbound_depth, channel.outbound_depth);
       pressure.peak_inbound_depth = Math.max(pressure.peak_inbound_depth, channel.inbound_depth);
-      pressure.peak_buffered_amount = Math.max(pressure.peak_buffered_amount, channel.buffered_amount);
+      pressure.peak_buffered_amount = Math.max(
+        pressure.peak_buffered_amount,
+        channel.buffered_amount,
+      );
     }
   }
   recorder.pressure = pressure;
@@ -1664,7 +1656,7 @@ export interface NetDiagnosticsRuntimeSample {
 // borrow a tick's vocabulary.
 export function recordRuntimeSample(
   recorder: NetDiagnostics,
-  sample: NetDiagnosticsRuntimeSample
+  sample: NetDiagnosticsRuntimeSample,
 ): Result<true, string> {
   if (!isFinite_(sample.monotonic_ms) || sample.monotonic_ms < 0) {
     return reject(recorder, "a runtime sample needs a finite monotonic observation");
@@ -1689,13 +1681,17 @@ export function recordRuntimeSample(
   entry.monotonic_ms_last = sample.monotonic_ms;
   if (sample.rtt_ms !== undefined) {
     entry.rtt_ms_last = sample.rtt_ms;
-    entry.rtt_ms_min = entry.rtt_ms_min !== undefined ? Math.min(entry.rtt_ms_min, sample.rtt_ms) : sample.rtt_ms;
-    entry.rtt_ms_max = entry.rtt_ms_max !== undefined ? Math.max(entry.rtt_ms_max, sample.rtt_ms) : sample.rtt_ms;
+    entry.rtt_ms_min =
+      entry.rtt_ms_min !== undefined ? Math.min(entry.rtt_ms_min, sample.rtt_ms) : sample.rtt_ms;
+    entry.rtt_ms_max =
+      entry.rtt_ms_max !== undefined ? Math.max(entry.rtt_ms_max, sample.rtt_ms) : sample.rtt_ms;
   }
   if (sample.jitter_ms !== undefined) {
     entry.jitter_ms_last = sample.jitter_ms;
     entry.jitter_ms_max =
-      entry.jitter_ms_max !== undefined ? Math.max(entry.jitter_ms_max, sample.jitter_ms) : sample.jitter_ms;
+      entry.jitter_ms_max !== undefined
+        ? Math.max(entry.jitter_ms_max, sample.jitter_ms)
+        : sample.jitter_ms;
   }
   return ok(true);
 }
@@ -1710,7 +1706,7 @@ export interface NetDiagnosticsAnchorInput {
 // badly they might disagree.
 export function recordAnchor(
   recorder: NetDiagnostics,
-  anchor: NetDiagnosticsAnchorInput
+  anchor: NetDiagnosticsAnchorInput,
 ): Result<true, string> {
   if (!isInteger(anchor.input_tick)) {
     return reject(recorder, "an anchor needs a finite integer input tick");
@@ -1741,7 +1737,7 @@ export interface NetDiagnosticsEventInput {
 
 export function recordEvent(
   recorder: NetDiagnostics,
-  event: NetDiagnosticsEventInput
+  event: NetDiagnosticsEventInput,
 ): Result<true, string> {
   if (!isFinite_(event.monotonic_ms) || event.monotonic_ms < 0) {
     return reject(recorder, "a runtime event needs a finite monotonic observation");
@@ -1770,7 +1766,7 @@ export function recordSignal(
   recorder: NetDiagnostics,
   peerId: string,
   direction: NetDiagnosticsSignalDirection,
-  signal: string
+  signal: string,
 ): Result<true, string> {
   recorder.ordinal += 1;
   ringPush(recorder.signals, {
@@ -1795,7 +1791,7 @@ export interface NetDiagnosticsTeardownInput {
 // after shutdown was requested; residual queue depth is what never drained.
 export function recordTeardown(
   recorder: NetDiagnostics,
-  teardown: NetDiagnosticsTeardownInput
+  teardown: NetDiagnosticsTeardownInput,
 ): Result<true, string> {
   if (!isInteger(teardown.closed_peers)) {
     return reject(recorder, "teardown needs a finite closed peer count");
@@ -1964,14 +1960,14 @@ export function summary(recorder: NetDiagnostics): string[] {
   const star = recorder.star;
   if (star !== null) {
     lines.push(
-      `wire  ${star.state}  peers ${star.peer_count}  dropped ${star.dropped_outbound}/${star.dropped_inbound}  backpressure ${star.backpressure}`
+      `wire  ${star.state}  peers ${star.peer_count}  dropped ${star.dropped_outbound}/${star.dropped_inbound}  backpressure ${star.backpressure}`,
     );
   }
   for (const row of latencyRows(recorder)) {
     lines.push(
       `clock  ${row.peer_id}  rtt ${row.rtt_ms_last !== undefined ? row.rtt_ms_last.toFixed(1) : "n/a"} ms  jitter ${
         row.jitter_ms_last !== undefined ? row.jitter_ms_last.toFixed(1) : "n/a"
-      } ms  (observed, not simulation)`
+      } ms  (observed, not simulation)`,
     );
   }
   const truncated: string[] = [];

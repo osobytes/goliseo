@@ -63,7 +63,9 @@ describe("rig3d/crouch", () => {
   it("folds deeper for a deeper drop, and not at all for none", () => {
     const angles = CROUCHES.map((id) => crouch.angleFor(drop(id)));
     for (let i = 1; i < angles.length; i += 1) {
-      expect(angles[i], `${CROUCHES[i]} is shallower than ${CROUCHES[i - 1]}`).toBeLessThan(angles[i - 1] ?? 0);
+      expect(angles[i], `${CROUCHES[i]} is shallower than ${CROUCHES[i - 1]}`).toBeLessThan(
+        angles[i - 1] ?? 0,
+      );
     }
     expect(crouch.angleFor(0), "no drop, no fold").toBe(0);
     // The deepest crouch in the game, so a reader knows the scale of it: about
@@ -90,11 +92,16 @@ describe("rig3d/crouch", () => {
       // The three sum to zero, which is what keeps the sole parallel to the
       // pitch instead of digging a toe or a heel in.
       expect(
-        degreesOf(pose, `thigh.${side}`) + degreesOf(pose, `shin.${side}`) + degreesOf(pose, `foot.${side}`),
+        degreesOf(pose, `thigh.${side}`) +
+          degreesOf(pose, `shin.${side}`) +
+          degreesOf(pose, `foot.${side}`),
         "the sole stays flat",
       ).toBeCloseTo(0, 9);
     }
-    expect(pose.move["root"]?.[1], "and the root spends exactly the drop").toBeCloseTo(-drop("keeper_ready_low"), 12);
+    expect(pose.move["root"]?.[1], "and the root spends exactly the drop").toBeCloseTo(
+      -drop("keeper_ready_low"),
+      12,
+    );
     expect(Object.keys(pose.rot).sort().concat("root").sort(), "the bones it names").toEqual(
       [...crouch.BONES].sort(),
     );
@@ -117,7 +124,10 @@ describe("rig3d/crouch", () => {
       const rig = skeleton.newRig(RIG);
       skeleton.apply(rig, pose);
       const world = drop(id) * RIG.motion_scale;
-      expect(restHips - skeleton.jointPosition(rig, "hips")[1], `${id}: the pelvis settles`).toBeCloseTo(world, 12);
+      expect(
+        restHips - skeleton.jointPosition(rig, "hips")[1],
+        `${id}: the pelvis settles`,
+      ).toBeCloseTo(world, 12);
       const ankle = skeleton.jointPosition(rig, "foot.R")[1] - restFoot;
       // Within a tenth of a millimetre of where it started, in either
       // direction: what is left is the 2 degree thigh roll the closed form does
@@ -178,7 +188,10 @@ describe("rig3d/crouch", () => {
     );
     // Non-vacuous: the stride really is doing something for the fold to be
     // added to, rather than this being a fold composed onto nothing.
-    expect(Math.abs(degreesOf(striding, "thigh.R")), "the run really swings the leg").toBeGreaterThan(5);
+    expect(
+      Math.abs(degreesOf(striding, "thigh.R")),
+      "the run really swings the leg",
+    ).toBeGreaterThan(5);
 
     // And the bones the crouch says nothing about are the stride's, untouched.
     for (const bone of ["spine", "chest", "upper_arm.R", "forearm.L"]) {

@@ -40,7 +40,13 @@ function resolveBackX(rect: Rect, mouthLineX: number): number {
 
 // Two posts + a crossbar, built once and reused (translated to the right x)
 // for both the bright front frame and the thinner back frame.
-function buildFrameSegment(z0: number, z1: number, x: number, radius: number, barHeight: number): THREE.BufferGeometry {
+function buildFrameSegment(
+  z0: number,
+  z1: number,
+  x: number,
+  radius: number,
+  barHeight: number,
+): THREE.BufferGeometry {
   const postHeight = barHeight;
   const post = new THREE.CylinderGeometry(radius, radius, postHeight, 10);
   const postA = post.clone().translate(x, postHeight / 2, z0);
@@ -61,7 +67,12 @@ function buildFrameSegment(z0: number, z1: number, x: number, radius: number, ba
 
 // Emissive trim rings near the top of the two FRONT posts -- the detail the
 // bloom pass (threshold 0.55) is meant to ignite (creative brief item 9).
-function buildTrimGeometry(z0: number, z1: number, x: number, crossbarH: number): THREE.BufferGeometry {
+function buildTrimGeometry(
+  z0: number,
+  z1: number,
+  x: number,
+  crossbarH: number,
+): THREE.BufferGeometry {
   const ringY = crossbarH * TRIM_HEIGHT_FRAC;
   const ring = new THREE.TorusGeometry(POST_RADIUS + 1.1, 0.9, 8, 16).rotateX(Math.PI / 2);
   const ringA = ring.clone().translate(x, ringY, z0);
@@ -84,7 +95,13 @@ interface Vec3Like {
 // net polygons), with a `sin(pi u) * sin(pi v)` bulge along `sagDir` --
 // zero at every edge, peaking in the middle of the panel, i.e. a static
 // catenary-shaped sag baked directly into the mesh.
-function buildNetPanel(p00: Vec3Like, p10: Vec3Like, p01: Vec3Like, p11: Vec3Like, sagDir: THREE.Vector3): THREE.BufferGeometry {
+function buildNetPanel(
+  p00: Vec3Like,
+  p10: Vec3Like,
+  p01: Vec3Like,
+  p11: Vec3Like,
+  sagDir: THREE.Vector3,
+): THREE.BufferGeometry {
   const positions: number[] = [];
   const uvs: number[] = [];
   const rows = NET_SEGMENTS;
@@ -94,8 +111,16 @@ function buildNetPanel(p00: Vec3Like, p10: Vec3Like, p01: Vec3Like, p11: Vec3Lik
     for (let i = 0; i <= cols; i += 1) {
       const u = i / cols;
       const top = { x: lerp(p00.x, p10.x, u), y: lerp(p00.y, p10.y, u), z: lerp(p00.z, p10.z, u) };
-      const bottom = { x: lerp(p01.x, p11.x, u), y: lerp(p01.y, p11.y, u), z: lerp(p01.z, p11.z, u) };
-      const base = { x: lerp(top.x, bottom.x, v), y: lerp(top.y, bottom.y, v), z: lerp(top.z, bottom.z, v) };
+      const bottom = {
+        x: lerp(p01.x, p11.x, u),
+        y: lerp(p01.y, p11.y, u),
+        z: lerp(p01.z, p11.z, u),
+      };
+      const base = {
+        x: lerp(top.x, bottom.x, v),
+        y: lerp(top.y, bottom.y, v),
+        z: lerp(top.z, bottom.z, v),
+      };
       const sag = NET_SAG * Math.sin(Math.PI * u) * Math.sin(Math.PI * v);
       positions.push(base.x + sagDir.x * sag, base.y + sagDir.y * sag, base.z + sagDir.z * sag);
       uvs.push(u, v);
@@ -167,7 +192,12 @@ const NET_FRAGMENT = /* glsl */ `
  * for the draw-call inventory and the coordinate-contract note on deriving
  * the back x. Caller sets `group.userData["stadiumGoal"]`.
  */
-export function buildGoal(rect: Rect, crossbarH: number, mouthLineX: number, teamColor: RGB): THREE.Group {
+export function buildGoal(
+  rect: Rect,
+  crossbarH: number,
+  mouthLineX: number,
+  teamColor: RGB,
+): THREE.Group {
   const group = new THREE.Group();
   group.name = "goal";
 
@@ -216,7 +246,12 @@ export function buildGoal(rect: Rect, crossbarH: number, mouthLineX: number, tea
   // sit just above threshold for one team would fall BELOW it for the other,
   // and one team's goal would silently stop glowing. 1.0 keeps both clear of
   // it.
-  const trimMaterial = new THREE.MeshStandardMaterial({ color: trimColor, emissive: trimColor, emissiveIntensity: 1.0, roughness: 0.4 });
+  const trimMaterial = new THREE.MeshStandardMaterial({
+    color: trimColor,
+    emissive: trimColor,
+    emissiveIntensity: 1.0,
+    roughness: 0.4,
+  });
   const trim = new THREE.Mesh(trimGeometry, trimMaterial);
   trim.name = "goal_trim";
   group.add(trim);

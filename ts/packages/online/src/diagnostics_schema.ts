@@ -358,7 +358,7 @@ function assertDomain(
   field: DiagnosticsField,
   domain: DiagnosticsDomain,
   path: string,
-  seen: DomainScope
+  seen: DomainScope,
 ): void {
   const name = field.name;
   if (name === undefined) {
@@ -378,12 +378,12 @@ function assertDomain(
   if (domain === "identity" || domain === "canonical") {
     invariant(
       wall === null,
-      `${path} is ${domain} and may not use wall-clock vocabulary (${String(wall)})`
+      `${path} is ${domain} and may not use wall-clock vocabulary (${String(wall)})`,
     );
   } else if (domain === "runtime") {
     invariant(
       simulation === null,
-      `${path} is runtime observation and may not use simulation vocabulary (${String(simulation)})`
+      `${path} is runtime observation and may not use simulation vocabulary (${String(simulation)})`,
     );
   }
 }
@@ -396,7 +396,7 @@ function assertFieldShape(
   field: DiagnosticsField,
   inherited: DiagnosticsDomain | undefined,
   path: string,
-  seen: DomainScope | undefined
+  seen: DomainScope | undefined,
 ): void {
   invariant(typeof field.kind === "string", `${path} shape needs a kind`);
   const domain = field.domain ?? inherited;
@@ -404,7 +404,7 @@ function assertFieldShape(
     invariant(DOMAINS[field.domain] === true, `${path} declares an unknown domain`);
     invariant(
       inherited === undefined || inherited === field.domain,
-      `${path} may not change domain from ${String(inherited)}`
+      `${path} may not change domain from ${String(inherited)}`,
     );
   }
   const enteringAnchor = domain === "anchor" && inherited !== "anchor";
@@ -419,11 +419,14 @@ function assertFieldShape(
     // declare one. A leaf with no domain would escape the vocabulary guard.
     invariant(
       field.kind === "record" || field.kind === "array" || field.kind === "map",
-      `${path} has no domain and none is inherited`
+      `${path} has no domain and none is inherited`,
     );
   }
   if (field.kind === "enum") {
-    invariant(typeof field.values === "object" && field.values !== null, `${path} enum shape needs values`);
+    invariant(
+      typeof field.values === "object" && field.values !== null,
+      `${path} enum shape needs values`,
+    );
     let count = 0;
     for (const member of Object.keys(field.values)) {
       invariant(field.values[member] === true, `${path} enum member is invalid`);
@@ -457,7 +460,7 @@ function assertFieldShape(
 export function record(
   name: string,
   domain: DiagnosticsDomain | undefined,
-  fields: readonly DiagnosticsField[]
+  fields: readonly DiagnosticsField[],
 ): DiagnosticsShape {
   invariant(name !== "", "diagnostic shape needs a name");
   const shape: DiagnosticsShape = {
@@ -502,7 +505,11 @@ function validateString(field: DiagnosticsField, value: unknown, path: string): 
   }
   const max =
     field.max_length ??
-    (field.kind === "text" ? MAX_TEXT_LENGTH : field.kind === "id" ? MAX_ID_LENGTH : MAX_STRING_LENGTH);
+    (field.kind === "text"
+      ? MAX_TEXT_LENGTH
+      : field.kind === "id"
+        ? MAX_ID_LENGTH
+        : MAX_STRING_LENGTH);
   const min = field.min_length ?? (field.kind === "text" ? 0 : 1);
   const length = byteLength(value);
   if (length < min) {
@@ -752,7 +759,7 @@ export function tupleDigest(label: string, parts: readonly string[]): string {
 // preimage and an optimistic assertion.
 export function project(
   shape: DiagnosticsShape,
-  allowed: Readonly<Partial<Record<DiagnosticsDomain, true>>>
+  allowed: Readonly<Partial<Record<DiagnosticsDomain, true>>>,
 ): DiagnosticsShape {
   const kept: DiagnosticsField[] = [];
   const names: string[] = [];
@@ -770,9 +777,15 @@ export function project(
 // Walk a shape and report every declared field path in its domain. Specs use
 // this to assert the separation holds across the *whole* schema rather than
 // at the handful of fields a hand-written test happens to name.
-export function domains(shape: DiagnosticsShape): Readonly<Record<string, DiagnosticsDomain | undefined>> {
+export function domains(
+  shape: DiagnosticsShape,
+): Readonly<Record<string, DiagnosticsDomain | undefined>> {
   const result: Record<string, DiagnosticsDomain | undefined> = {};
-  function walk(field: DiagnosticsField, inherited: DiagnosticsDomain | undefined, path: string): void {
+  function walk(
+    field: DiagnosticsField,
+    inherited: DiagnosticsDomain | undefined,
+    path: string,
+  ): void {
     const domain = field.domain ?? inherited;
     if (field.name !== undefined) {
       result[path] = domain;

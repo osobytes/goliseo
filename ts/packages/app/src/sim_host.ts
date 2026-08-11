@@ -239,7 +239,9 @@ class WasmSimHost implements SimHostPort {
   private readonly localSlot: number;
   private disposed = false;
   private rosterCache: RenderFrameRoster | undefined;
-  private frameCache: { readonly tick: number; readonly kickFollowSlots: number; readonly frame: RenderFrame } | undefined;
+  private frameCache:
+    | { readonly tick: number; readonly kickFollowSlots: number; readonly frame: RenderFrame }
+    | undefined;
 
   constructor(
     homeTeamId: string,
@@ -310,7 +312,11 @@ class WasmSimHost implements SimHostPort {
     // tick, so it is part of the cache key -- keying on `tick` alone would
     // serve a stale pose for as long as the sim stood still.
     const kickFollowSlots = releaseFollow.slotMask(this.roster().ids);
-    if (this.frameCache !== undefined && this.frameCache.tick === tick && this.frameCache.kickFollowSlots === kickFollowSlots) {
+    if (
+      this.frameCache !== undefined &&
+      this.frameCache.tick === tick &&
+      this.frameCache.kickFollowSlots === kickFollowSlots
+    ) {
       return this.frameCache.frame;
     }
     // Fresh every call, never cached across ticks -- see this file's header
