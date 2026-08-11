@@ -78,6 +78,21 @@ pub struct RenderFrameRoster {
     pub ids: Vec<String>,
     /// Display names (the authored presentation name).
     pub names: Vec<String>,
+    /// The authored `gc_data::players::PlayerData::presentation_id` per slot
+    /// — which character presentation, and therefore which theme, the
+    /// renderer builds this player's geometry from (#447). Always present:
+    /// every authored player names one.
+    pub presentation_ids: Vec<String>,
+    /// The authored `gc_data::players::PlayerData::loadout_id` per slot, or
+    /// `None` where the player carries nothing (#447).
+    ///
+    /// `None` IS THE KEEPER RULE, not a missing value. `gc-data` states it
+    /// ("Fixed prototype loadout; keepers have none") and
+    /// `gc-data/tests/players.rs` enforces it in both directions, so a slot
+    /// with no loadout must survive to the renderer as an absence rather
+    /// than being defaulted into whatever the theme happens to carry — which
+    /// is exactly the defect #447 records, keepers diving with a shield.
+    pub loadout_ids: Vec<Option<String>>,
     /// Fixture side per slot.
     pub teams: Vec<Team>,
     /// Whether each slot is the keeper.
@@ -578,14 +593,26 @@ fn to_transition_team(team: Team) -> TransitionTeam {
 /// [`RenderFrameOptions::roster`]: nothing in it can change while a match is
 /// running.
 ///
+/// TWO IDENTITY SYSTEMS COEXIST HERE, DELIBERATELY (#447). [`identity::for_player`]
+/// resolves the OLDER `showcase_player_compatibility` → `species` path, which is
+/// what `species_shape`/`species_color`/`names` come from. `presentation_id` and
+/// `loadout_id` come straight off `gc_data::players`, the newer authored
+/// content, because that is the pair the renderer's character geometry is keyed
+/// on and the pair `gc-data/tests/players.rs` enforces the keeper rule over.
+/// Reconciling or retiring the species path is explicitly out of #447's scope;
+/// it is left working and named here so a follow-up has somewhere to start.
+///
 /// # Panics
 ///
-/// If a player's pitch presentation identity is missing — a content
-/// authoring bug, not a recoverable condition.
+/// If a player's pitch presentation identity is missing, or the player is not
+/// an authored `gc_data::players` record — both content authoring bugs, not
+/// recoverable conditions.
 #[must_use]
 pub fn roster(state: &MatchState) -> RenderFrameRoster {
     let mut ids = Vec::with_capacity(state.players.len());
     let mut names = Vec::with_capacity(state.players.len());
+    let mut presentation_ids = Vec::with_capacity(state.players.len());
+    let mut loadout_ids = Vec::with_capacity(state.players.len());
     let mut teams = Vec::with_capacity(state.players.len());
     let mut is_keeper = Vec::with_capacity(state.players.len());
     let mut radius = Vec::with_capacity(state.players.len());
@@ -595,11 +622,15 @@ pub fn roster(state: &MatchState) -> RenderFrameRoster {
     for player in &state.players {
         let presentation = identity::for_player(&player.id)
             .unwrap_or_else(|| panic!("missing pitch identity for {}", player.id));
+        let authored = gc_data::players::get(&player.id)
+            .unwrap_or_else(|| panic!("missing authored player record for {}", player.id));
         ids.push(player.id.clone());
         // The authored presentation name, not `MatchPlayer.name`: it is the
         // one a HUD actually shows, and it survives a replay frame's
         // partial copy.
         names.push(presentation.name.to_string());
+        presentation_ids.push(authored.presentation_id.to_string());
+        loadout_ids.push(authored.loadout_id.map(str::to_string));
         teams.push(player.team);
         is_keeper.push(player.is_keeper);
         radius.push(player.radius);
@@ -612,6 +643,8 @@ pub fn roster(state: &MatchState) -> RenderFrameRoster {
         count: state.players.len(),
         ids,
         names,
+        presentation_ids,
+        loadout_ids,
         teams,
         is_keeper,
         radius,

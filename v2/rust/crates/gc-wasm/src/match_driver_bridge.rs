@@ -929,11 +929,16 @@ impl MatchDriverBridge {
         frame_buffer::encode_roster(&self.roster).0
     }
 
-    /// Match-constant roster ids and display names —
+    /// Match-constant roster STRING columns —
     /// `gc_render::frame_buffer::encode_roster`'s string half, a
     /// newline-joined blob per that function's documented format. The
     /// string counterpart of [`MatchDriverBridge::roster_numeric`]; see that
     /// method's doc for why this gap existed and what it closes.
+    ///
+    /// Since #447 the blob carries `id`, `name`, `presentation_id` and
+    /// `loadout_id` per slot, so the JS name understates it; see
+    /// [`crate::session::Session::roster_ids_and_names`] for why it was not
+    /// renamed.
     #[wasm_bindgen(js_name = rosterIdsAndNames)]
     #[must_use]
     pub fn roster_ids_and_names(&self) -> String {

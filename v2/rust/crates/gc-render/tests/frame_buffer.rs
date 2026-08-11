@@ -343,6 +343,11 @@ fn crosses_the_roster_once_with_its_ids_and_names() {
         assert_eq!(decoded.ids[index], roster.ids[index]);
         assert_eq!(decoded.names[index], roster.names[index]);
         assert_eq!(
+            decoded.presentation_ids[index],
+            roster.presentation_ids[index]
+        );
+        assert_eq!(decoded.loadout_ids[index], roster.loadout_ids[index]);
+        assert_eq!(
             decoded.fields.team[index],
             frame_buffer::team_code(roster.teams[index])
         );
@@ -365,6 +370,69 @@ fn refuses_a_roster_string_it_could_not_parse_back() {
     assert!(
         std::panic::catch_unwind(|| frame_buffer::encode_roster(&roster)).is_err(),
         "a newline in a roster string would make the blob unparseable"
+    );
+
+    let mut roster = render_frame::roster(&state);
+    roster.loadout_ids[0] = Some("bad\nloadout".to_string());
+    assert!(
+        std::panic::catch_unwind(|| frame_buffer::encode_roster(&roster)).is_err(),
+        "the new #447 string columns are held to the same no-newline rule"
+    );
+
+    let mut roster = render_frame::roster(&state);
+    roster.presentation_ids[0] = String::new();
+    assert!(
+        std::panic::catch_unwind(|| frame_buffer::encode_roster(&roster)).is_err(),
+        "an empty presentation id is how absence is spelt for LOADOUTS only; \
+         a presentation is never absent and must not silently become one"
+    );
+}
+
+/// THE KEEPER RULE, CARRIED HONESTLY ACROSS THE WIRE (#447).
+///
+/// `gc-data` states it and `gc-data/tests/players.rs` enforces it; this is
+/// the assertion that it survives the encode/decode round trip as an ABSENCE
+/// rather than as some stand-in value. Non-vacuous in both directions: the
+/// fixture roster is required to contain at least one keeper and at least one
+/// outfielder, so neither branch can pass by never being reached.
+#[test]
+fn carries_a_keepers_missing_loadout_as_an_absence_not_a_sentinel() {
+    let state = fixture(17.0);
+    let roster = render_frame::roster(&state);
+    let (words, strings) = frame_buffer::encode_roster(&roster);
+    let decoded = frame_buffer::decode_roster(&words, &strings);
+
+    let mut keepers = 0;
+    let mut outfielders = 0;
+    for index in 0..roster.count {
+        let authored = gc_data::players::get(&roster.ids[index]).expect("authored player");
+        assert_eq!(
+            decoded.presentation_ids[index], authored.presentation_id,
+            "slot {index} must carry the presentation gc-data authored"
+        );
+        if roster.is_keeper[index] {
+            keepers += 1;
+            assert_eq!(
+                decoded.loadout_ids[index], None,
+                "a keeper carries nothing, and that must decode as None"
+            );
+        } else {
+            outfielders += 1;
+            assert_eq!(
+                decoded.loadout_ids[index].as_deref(),
+                authored.loadout_id,
+                "an outfielder must carry exactly the loadout gc-data authored"
+            );
+            assert!(
+                decoded.loadout_ids[index].is_some(),
+                "an outfielder's loadout must not decode as an absence"
+            );
+        }
+    }
+    assert!(keepers >= 2, "both fixture teams field a keeper");
+    assert!(
+        outfielders >= 8,
+        "and the rest of both rosters are outfielders"
     );
 }
 
