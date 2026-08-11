@@ -65,7 +65,11 @@ function terminalReasonFor(event: CoordinatorEvent): string {
     return "local_abort";
   }
   if (event["kind"] === "link_lost") {
-    return String(event["code"] ?? "transport_lost");
+    // `code` is a `TransportErrorCode` (a string union) on this event; read it
+    // as one rather than stringifying an `unknown`, which would silently
+    // produce "[object Object]" if the shape ever changed.
+    const code = event["code"];
+    return typeof code === "string" ? code : "transport_lost";
   }
   if (event["kind"] === "netcode_failure") {
     const failure = event["failure"];

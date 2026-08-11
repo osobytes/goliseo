@@ -204,7 +204,8 @@ export interface RollbackPlayableCorrection {
   readonly corrected_through_tick: number;
   readonly old_present_hash: string | null;
   readonly new_present_hash: string | null;
-  readonly first_difference: unknown | null;
+  /** Rust sends `null` when there is none; `unknown` already admits that. */
+  readonly first_difference: unknown;
 }
 
 /** `sim.rollback_playable_lab`'s `RollbackPlayableLabBatch` (Rust-owned shape; produced here). */

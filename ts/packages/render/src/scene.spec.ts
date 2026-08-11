@@ -34,7 +34,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as THREE from "three";
-import { pitch, resetStaticSceneCache, staticSceneBuildCount, type PitchDrawOptions, type RenderFrame } from "./pitch.ts";
+import { resetStaticSceneCache, staticSceneBuildCount, type PitchDrawOptions, type RenderFrame } from "./pitch.ts";
 import { camera, perspectiveRig } from "./camera.ts";
 import { SceneRoot, type WorldLayer } from "./scene.ts";
 import { materialCacheSize, resetMaterialCache } from "./draw2d.ts";

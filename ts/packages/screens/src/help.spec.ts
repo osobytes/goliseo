@@ -27,7 +27,7 @@ const VP = { w: 960, h: 540 };
 // someone rebinds a key.
 const MATCH_REFERENCE: readonly ControlReferenceRow[] = bindings.reference(
   "match",
-) as readonly ControlReferenceRow[];
+);
 
 function keyboardCardText(reference: readonly ControlReferenceRow[]): string {
   const layout = help.layout(help.newState(VP, reference));

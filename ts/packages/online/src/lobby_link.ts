@@ -30,7 +30,6 @@ import {
   HOST_PEER_ID,
   newMessage,
   type StarTransportAdapter,
-  type TransportChannel,
   type TransportErrorCode,
 } from "@gc/transport";
 

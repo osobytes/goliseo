@@ -19,7 +19,7 @@
 
 import { Vec2, type Result } from "@gc/core";
 import { Audio, type CombatFeedbackPort, type RollbackWrappedEvent as AudioWrappedEvent } from "./audio.ts";
-import { matchContract, type ProductMatchResult, type TeamResultStats } from "./match_contract.ts";
+import { matchContract, type ProductMatchResult } from "./match_contract.ts";
 import {
   matchObserver,
   type MatchObserver,
@@ -89,8 +89,12 @@ export interface RollbackEventStepInput<TSnapshot> {
 export interface MatchSnapshotPort<TState, TCombatState, TSnapshot> {
   capture(state: TState, combatState: TCombatState | undefined): TSnapshot;
   restore(snapshot: TSnapshot): TState;
-  /** A canonical, platform-stable byte encoding of a float -- used only for stable digests here. */
-  numberBytes(value: number): string;
+  /** A canonical, platform-stable byte encoding of a float -- used only for stable digests here.
+   * A property, not a method: it is INJECTED and passed around by reference
+   * (`stableValue(value, ports.matchSnapshot.numberBytes)`), so it carries no
+   * `this` and must not be declared as though it did. Same spelling as
+   * `ObserveImpairedStepPorts.numberBytes` below. */
+  readonly numberBytes: (value: number) => string;
 }
 
 export interface RollbackApplyFailure {
@@ -195,7 +199,9 @@ export interface RollbackValidationReport {
   readonly replay_boundaries: readonly number[];
 }
 
-export interface RollbackValidationFinishOptions<TState> {
+// `_TState` is a phantom parameter: unused in the body, kept because the
+// exported type's arity is part of `@gc/app`'s public surface.
+export interface RollbackValidationFinishOptions<_TState> {
   readonly home_team_id: string;
   readonly away_team_id: string;
   readonly reference_final_state?: { readonly score: { readonly home: number; readonly away: number } };
@@ -209,7 +215,8 @@ export interface RollbackValidationFinishOptions<TState> {
   readonly required_scenarios?: readonly RollbackValidationScenario[];
 }
 
-export interface RollbackValidationAudit<TState, TTimeline, TSnapshot> {
+// `_TSnapshot`: phantom, as above -- every caller still passes it positionally.
+export interface RollbackValidationAudit<TState, TTimeline, _TSnapshot> {
   readonly referenceObserver: MatchObserver;
   readonly impairedObserver: MatchObserver;
   readonly referenceTimeline: TTimeline;

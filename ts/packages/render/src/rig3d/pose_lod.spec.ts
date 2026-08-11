@@ -25,7 +25,7 @@ function optsFor(id: string | undefined, extra: Partial<PlayerRenderOptions> = {
     controlled: false,
     ...(id !== undefined ? { pose: { id, priority: 0, source: "test" } } : {}),
     ...extra,
-  } as PlayerRenderOptions;
+  };
 }
 
 describe("pose_lod.interval", () => {

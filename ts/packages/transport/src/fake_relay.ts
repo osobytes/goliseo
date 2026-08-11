@@ -397,6 +397,14 @@ export class FakeRelayTransport implements StarTransportAdapter {
         return;
       }
       this._addPeer(other._peerId);
+      // The assertion is NOT redundant, whatever eslint says here. The lint
+      // runs on typescript@6 (the last release with a JS compiler API -- see
+      // ts/tools/lint/tseslint.mjs) and the build runs on the pinned
+      // typescript@7, and the two disagree about the control flow through
+      // `_addPeer`: without this, `tsc --build --force` fails with TS18048
+      // three lines below. When they stop disagreeing, delete both this
+      // comment and the directive.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
       peer = this._peers.get(other._peerId) as FakeRelayPeer;
     }
     if (peer.state === "connected") {

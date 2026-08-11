@@ -51,7 +51,6 @@ import { describe, expect, it } from "vitest";
 import { actions } from "@gc/input";
 import { fakeResult } from "./fake_result.ts";
 import { session } from "./session.ts";
-import { settings } from "./settings.ts";
 import { App } from "./app.ts";
 import { hit, menuLayout, viewport } from "./ui_bridge.ts";
 import { APP_CONTENT, MATCH_CONTRACT_CONTENT } from "./test_support/fixtures.ts";

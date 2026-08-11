@@ -18,10 +18,6 @@ import { POSE_ACTIONS } from "./pose_table.ts";
 const RUNNING: AnimatorView = { speed: 260, gait: 0.31 };
 const STANDING: AnimatorView = { speed: 0, gait: 0 };
 
-function opts(overrides: Partial<AnimatorOptions> = {}): AnimatorOptions {
-  return overrides;
-}
-
 function withPose(id: string, overrides: Partial<AnimatorOptions> = {}): AnimatorOptions {
   return { pose: { id }, ...overrides };
 }
@@ -92,7 +88,7 @@ describe("rig3d/animator.poseFor", () => {
     ["tackle", {}],
   ])("gives %s a silhouette of its own instead of plain locomotion", (id, extra) => {
     const plain = poseFor(freshId(), RUNNING, withPose("locomotion"), 3);
-    const posed = poseFor(freshId(), RUNNING, withPose(id, extra as Partial<AnimatorOptions>), 3);
+    const posed = poseFor(freshId(), RUNNING, withPose(id, extra), 3);
     expect(delta(plain, posed)).toBeGreaterThan(0.05);
   });
 

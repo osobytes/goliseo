@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import * as contract from "./contract.ts";
 import * as transport from "./index.ts";
 import { FakeStarTransport, type FakeStarTransportOptions } from "./fake_star.ts";
-import { BrowserStarTransport, type StarEvalFn } from "./browser_star.ts";
+import { type StarEvalFn } from "./browser_star.ts";
 import type {
   StarTransportAdapter,
   TransportChannel,
@@ -630,7 +630,7 @@ function starBridge(host: FakeStarTransport): StarEvalFn {
       }
       return [`signal|${escapeHex(result.value)}`, null] as const;
     } else if (name === "send") {
-      const addressedResult = contract.decodeAddressed(raw[0] as string);
+      const addressedResult = contract.decodeAddressed(raw[0]);
       if (!addressedResult.ok) {
         return [bridgeError(addressedResult.error.code, addressedResult.error.message), null] as const;
       }
@@ -834,7 +834,7 @@ describe("browser host-star transport", () => {
     // newline that could terminate or extend the command string.
     const quotedMatch = /^'guest_1','([\s\S]*)'$/.exec(captured as unknown as string);
     expect(quotedMatch).not.toBeNull();
-    expect((quotedMatch?.[1] as string).search(/['\,\r\n\\]/)).toBe(-1);
+    expect((quotedMatch?.[1] as string).search(/[',\r\n\\]/)).toBe(-1);
   });
 
   it("keeps a wire payload injection-safe across the eval seam", () => {

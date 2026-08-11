@@ -35,7 +35,6 @@
 import type {
   StarTransportAdapter,
   TransportChannel,
-  TransportErrorCode,
   TransportMessage,
   TransportPeerEvent,
   TransportPeerMessage,

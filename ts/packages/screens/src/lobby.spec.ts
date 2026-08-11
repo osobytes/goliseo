@@ -66,7 +66,6 @@ import {
   newState,
   layout as lobbyLayout,
   update as lobbyUpdate,
-  type LobbyAction,
   type LobbyScreenEvent,
   type LobbyScreenState,
 } from "./lobby.ts";
@@ -795,9 +794,9 @@ describe("online lobby screen", () => {
   it("leaves on back and on the leave control", () => {
     const state = hosting();
     const [, action] = lobbyUpdate(state, { kind: "action", action: "back" });
-    expect((action as LobbyAction | undefined)?.go).toBe("main_menu");
+    expect((action)?.go).toBe("main_menu");
     const [, clicked] = lobbyUpdate(state, clickOn(lobbyLayout(state), "leave"));
-    expect((clicked as LobbyAction | undefined)?.go).toBe("main_menu");
+    expect((clicked)?.go).toBe("main_menu");
   });
 
   it("moves focus with directional actions", () => {

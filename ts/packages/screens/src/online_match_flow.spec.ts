@@ -156,7 +156,13 @@ function fakeCoordinatorState(role: "host" | "guest", hostLinkId?: string): Fake
 
 function terminalReasonFor(event: CoordinatorEvent): string {
   if (event["kind"] === "abort") return "local_abort";
-  if (event["kind"] === "link_lost") return String(event["code"] ?? "transport_lost");
+  if (event["kind"] === "link_lost") {
+    // `code` is a `TransportErrorCode` (a string union) on this event; read it
+    // as one rather than stringifying an `unknown`, which would silently
+    // produce "[object Object]" if the shape ever changed.
+    const code = event["code"];
+    return typeof code === "string" ? code : "transport_lost";
+  }
   return "unknown";
 }
 
@@ -363,7 +369,7 @@ function fakeMatchScreen(
   state: OnlineMatchState,
   rollbackSource: () => unknown
 ): RealMatchScreenPort<OnlineMatchState, unknown> {
-  const source = rollbackSource() as unknown as RollbackSourceLike;
+  const source = rollbackSource() as RollbackSourceLike;
   let accumulator = 0;
   let tick = 0;
   // `overlayLines` reaches through a private-field cast for `_combat_state`
@@ -1105,7 +1111,7 @@ function realMatchDriverPort(wasm: SimHost): MatchDriverPort<RealOnlineDriver, R
     batchControl: (b) => b.control,
     batchCheckpoints: (b) => b.checkpoints,
     batchLive: (b) => b.live,
-    frame: (d) => frameBuffer.decode(wasm.buildMatchDriverRenderFrame(d.bridge, 0)) as unknown as RenderFrame,
+    frame: (d) => frameBuffer.decode(wasm.buildMatchDriverRenderFrame(d.bridge, 0)),
     roster: (d) => d.roster,
     tick: (d) => d.tickCount,
     dispose: (d) => {

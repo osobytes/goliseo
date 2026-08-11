@@ -875,8 +875,13 @@ export interface PaintOptions {
  */
 export function disposeObject(child: THREE.Object3D): void {
   if (child instanceof THREE.Mesh || child instanceof THREE.Line) {
-    child.geometry.dispose();
-    disposeMaterial(child.material);
+    // Re-bound at the default instantiation on purpose. `instanceof` against
+    // three.js's GENERIC classes narrows to `Mesh<any, any, any>` /
+    // `Line<any, any>`, which switches type-checking off for `.geometry` and
+    // `.material` below. The runtime check is unchanged.
+    const owner: THREE.Mesh | THREE.Line = child;
+    owner.geometry.dispose();
+    disposeMaterial(owner.material);
   } else if (child instanceof THREE.Sprite) {
     disposeMaterial(child.material);
   }
@@ -981,7 +986,10 @@ function applyDepthPlacement(obj: THREE.Object3D, opts?: PaintOptions): void {
     obj.renderOrder = opts.renderOrder;
   }
   if (opts.depthTest !== undefined) {
-    const materialOwner = obj instanceof THREE.Mesh || obj instanceof THREE.Line || obj instanceof THREE.Sprite ? obj : undefined;
+    // Annotated for the same reason as `disposeObject` above: the `instanceof`
+    // narrowing of three.js's generic classes is `any` in its type arguments.
+    const materialOwner: THREE.Mesh | THREE.Line | THREE.Sprite | undefined =
+      obj instanceof THREE.Mesh || obj instanceof THREE.Line || obj instanceof THREE.Sprite ? obj : undefined;
     if (materialOwner !== undefined) {
       const materials = Array.isArray(materialOwner.material) ? materialOwner.material : [materialOwner.material];
       for (const m of materials) {

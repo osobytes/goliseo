@@ -918,7 +918,7 @@ function build(variant: CharacterVariant = defaultVariant()): BuiltCharacter | u
     return character;
   } catch (error) {
     failed = true;
-    // eslint-disable-next-line no-console
+     
     console.warn(`rigged 3D players disabled (build failed, variant ${variant.key}): ${String(error)}`);
     return undefined;
   }
@@ -1071,11 +1071,16 @@ export function prewarmCharacters(roster: PrewarmRoster): PrewarmResult {
   if (!Array.isArray(presentationIds)) {
     return { variants: 0, built: 0, pooled: 0 };
   }
+  // `Array.isArray` is typed `(arg: any) => arg is any[]`, so narrowing
+  // through it discards the declared element type and everything read out of
+  // it below becomes `any`. Re-bind at the declared type; the runtime check
+  // above is the same one, unchanged.
+  const ids: readonly (string | undefined)[] = presentationIds;
   const before = variantBuilds;
   const seen = new Set<string>();
   let pooled = 0;
-  for (let index = 0; index < presentationIds.length; index += 1) {
-    const presentationId = presentationIds[index];
+  for (let index = 0; index < ids.length; index += 1) {
+    const presentationId = ids[index];
     if (presentationId === undefined) {
       continue;
     }
@@ -1507,7 +1512,7 @@ export function draw(
     renderer.render(scene, prepared.cam);
   } catch (error) {
     failed = true;
-    // eslint-disable-next-line no-console
+     
     console.warn(`rigged 3D players disabled (draw failed): ${String(error)}`);
   }
 }
@@ -1636,7 +1641,7 @@ export function renderToSprite(
     return mesh;
   } catch (error) {
     failed = true;
-    // eslint-disable-next-line no-console
+     
     console.warn(`rigged 3D players disabled (renderToSprite failed): ${String(error)}`);
     return undefined;
   }

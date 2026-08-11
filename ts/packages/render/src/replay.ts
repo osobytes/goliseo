@@ -666,7 +666,7 @@ function celebrationFrame(): ReplayFrame {
 /** Goal replays: a bounded, boundary-keyed buffer of lightweight render snapshots. See file header. */
 export const replay = {
   /** Presentation-only replay timing, mirroring the sim's `REPLAY_SECONDS`/`REPLAY_SLOWMO` knobs. */
-  tuning: { ...REPLAY_TUNING_DEFAULTS } as ReplayTuning,
+  tuning: { ...REPLAY_TUNING_DEFAULTS },
 
   resetTuning(): void {
     replay.tuning.replay_seconds = REPLAY_TUNING_DEFAULTS.replay_seconds;

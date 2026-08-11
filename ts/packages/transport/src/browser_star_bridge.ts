@@ -31,8 +31,6 @@
 // a deliberate line-for-line match with the original: this is the
 // transport CONTRACT (`docs/online/transport_bridge.md`), not a redesign.
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
 const VERSION = 1;
 const MAX_GUESTS = 7;
 const HOST_PEER_ID = "host";
@@ -479,7 +477,7 @@ export function newGoliseoStarTransportBridge(): GoliseoStarTransportBridge {
       peerError(peer, null, "channel_mismatch", "unexpected data channel label");
       return;
     }
-    const channelName = name as ChannelName;
+    const channelName = name;
     const channel = peer.channels[channelName];
     // Exactly two data channels per link, for the life of the link. Either
     // side of an established connection may call `createDataChannel` at any
@@ -533,9 +531,14 @@ export function newGoliseoStarTransportBridge(): GoliseoStarTransportBridge {
     if (peer.pc) {
       return peer.pc;
     }
-    const RTCPeerConnectionCtor = (globalThis as any).RTCPeerConnection as
-      | typeof RTCPeerConnection
-      | undefined;
+    // Present in a browser, absent under Node and in every headless test, so
+    // it is read off `globalThis` as optional rather than through the DOM
+    // lib's non-optional global declaration.
+    const RTCPeerConnectionCtor = (
+      globalThis as typeof globalThis & {
+        readonly RTCPeerConnection?: typeof RTCPeerConnection;
+      }
+    ).RTCPeerConnection;
     if (!RTCPeerConnectionCtor) {
       peerError(peer, null, "bridge_unavailable", "RTCPeerConnection is not available");
       return null;
@@ -574,12 +577,17 @@ export function newGoliseoStarTransportBridge(): GoliseoStarTransportBridge {
 
   // Detach every listener before closing, so a late callback from a closed
   // connection or channel cannot touch a torn-down peer at all.
-  function detach(target: any, names: readonly string[]): void {
+  function detach(target: object | null | undefined, names: readonly string[]): void {
     if (!target) {
       return;
     }
+    // The callers pass DOM objects (`RTCPeerConnection`, `RTCDataChannel`)
+    // and the names are their `on*` handler slots. One assertion here, at the
+    // one place that writes them by name, rather than `any` across the whole
+    // helper.
+    const slots = target as Record<string, unknown>;
     for (const name of names) {
-      target[name] = null;
+      slots[name] = null;
     }
   }
 
@@ -1101,6 +1109,12 @@ export function browserStarEval(command: string): readonly [result: string | nul
     if (result === undefined || result === null) {
       return [null, "browser star bridge returned no result"];
     }
+    // `result` is whatever the evaluated command returned, and this
+    // stringification IS the transport contract
+    // (docs/online/transport_bridge.md). Narrowing it would change what the
+    // bridge reports for a non-string result -- a contract change, not a lint
+    // fix, so it is deliberately left for its own change.
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string
     return [String(result), null];
   } catch (error) {
     return [null, String(error)];

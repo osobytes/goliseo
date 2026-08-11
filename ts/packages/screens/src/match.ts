@@ -37,7 +37,6 @@ import type { LifecyclePayload } from "./online_match_model.ts";
 import type { GameSettings } from "./content.ts";
 import type {
   RealMatchEvent,
-  RealMatchEventKind,
   RealMatchInputEvent,
   RealMatchRosterEntry,
   RealMatchScreenPort,

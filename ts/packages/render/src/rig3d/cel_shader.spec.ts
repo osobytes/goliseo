@@ -140,7 +140,7 @@ describe("cel_shader.applyCelShading", () => {
     if (shader.fragmentShader === undefined || shader.vertexShader === undefined) {
       throw new Error("cel_shader.spec.ts: THREE.ShaderLib.standard is missing -- three.js version mismatch?");
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- three.js's `onBeforeCompile(shader, renderer)` takes its own internal shader object and a live WebGLRenderer; this test drives it with a synthetic shader and no renderer on purpose, and neither has a public type to name.
     material.onBeforeCompile(shader as any, undefined as any);
     return { material, fragmentShader: shader.fragmentShader };
   }
@@ -214,7 +214,7 @@ describe("cel_shader.applyCombinedCelShading", () => {
     if (shader.fragmentShader === undefined || shader.vertexShader === undefined) {
       throw new Error("cel_shader.spec.ts: THREE.ShaderLib.standard is missing -- three.js version mismatch?");
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- three.js's `onBeforeCompile(shader, renderer)` takes its own internal shader object and a live WebGLRenderer; this test drives it with a synthetic shader and no renderer on purpose, and neither has a public type to name.
     material.onBeforeCompile(shader as any, undefined as any);
     return { material, fragmentShader: shader.fragmentShader, vertexShader: shader.vertexShader };
   }
@@ -316,7 +316,7 @@ describe("cel_shader shading frame", () => {
         uniforms: {},
         defines: {},
       };
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- three.js's `onBeforeCompile(shader, renderer)` takes its own internal shader object and a live WebGLRenderer; this test drives it with a synthetic shader and no renderer on purpose, and neither has a public type to name.
       material.onBeforeCompile(shader as any, undefined as any);
       expect(shader.vertexShader).toContain(`varying vec3 ${SHADING_NORMAL_VARYING};`);
       expect(shader.vertexShader).toContain(`varying vec3 ${SHADING_WORLD_VARYING};`);

@@ -174,7 +174,7 @@ class FakeAudio implements AudioPort {
   }
 
   private cueFor(event: RollbackWrappedMatchEvent | RollbackWrappedCombatEvent | RollbackWrappedLifecycleEvent): string {
-    const kind = (event.payload as { readonly kind: string }).kind;
+    const kind = (event.payload).kind;
     if (kind === "goal" || kind === "kickoff" || kind === "full_time") {
       return kind;
     }

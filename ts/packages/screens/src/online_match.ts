@@ -24,7 +24,7 @@
 import { combat, type CombatPresentationData, type CombatMatchState } from "@gc/presentation";
 import { theme } from "@gc/ui";
 import type { Vec2 } from "@gc/core";
-import type { GameSettings, ProductMatchResult, TeamData, TeamResultStats } from "./content.ts";
+import type { GameSettings, ProductMatchResult, TeamData } from "./content.ts";
 import type { MatchContractPort, ObservedMatchSummary, RealMatchInputEvent, RealMatchScreenPort, RealMatchState } from "./real_match.ts";
 import type { OnlineHostPort, RenderFrame, RenderFrameRoster } from "./match.ts";
 
@@ -265,50 +265,49 @@ export class OnlineMatch<TDriver, TBatch, TSnapshot, TCheckpoint, TPresentation,
   // `frame`/`roster`/`tick`/`dispose` quartet below is new; every other
   // field was already exactly this shape (verified correct, untouched).
   private driverSource(): OnlineHostPort {
-    const self = this;
     return {
-      needsLocalSample: () => self.ports.matchDriver.status(self.driver) === "active",
+      needsLocalSample: () => this.ports.matchDriver.status(this.driver) === "active",
       advance: (_tick: number, sample: unknown) => {
-        const batch = self.ports.matchDriver.advance(self.driver, sample);
-        for (const entry of self.ports.matchDriver.batchControl(batch)) {
-          self.control.push(entry as (typeof self.control)[number]);
+        const batch = this.ports.matchDriver.advance(this.driver, sample);
+        for (const entry of this.ports.matchDriver.batchControl(batch)) {
+          this.control.push(entry as (typeof this.control)[number]);
         }
-        for (const checkpoint of self.ports.matchDriver.batchCheckpoints(batch)) {
-          self.checkpoints.push(checkpoint);
+        for (const checkpoint of this.ports.matchDriver.batchCheckpoints(batch)) {
+          this.checkpoints.push(checkpoint);
           const hash = (checkpoint as unknown as { readonly hash?: string }).hash;
           if (typeof hash === "string") {
-            self.lastCheckpointHash = hash;
+            this.lastCheckpointHash = hash;
           }
         }
-        self.live = { ...self.ports.matchDriver.batchLive(batch) };
-        const presented = self.ports.matchPresentation.consume(self.presentation, self.driver, batch);
-        for (const step of self.ports.matchPresentation.presentedConfirmedSteps(presented)) {
-          self.confirmed.push(step);
+        this.live = { ...this.ports.matchDriver.batchLive(batch) };
+        const presented = this.ports.matchPresentation.consume(this.presentation, this.driver, batch);
+        for (const step of this.ports.matchPresentation.presentedConfirmedSteps(presented)) {
+          this.confirmed.push(step);
         }
         return presented;
       },
-      currentSnapshot: () => self.ports.matchDriver.currentSnapshot(self.driver),
-      snapshot: (boundary: number) => self.ports.matchDriver.snapshot(self.driver, boundary + self.request.first_input_tick),
-      terminal: () => self.ports.matchDriver.status(self.driver) !== "active",
+      currentSnapshot: () => this.ports.matchDriver.currentSnapshot(this.driver),
+      snapshot: (boundary: number) => this.ports.matchDriver.snapshot(this.driver, boundary + this.request.first_input_tick),
+      terminal: () => this.ports.matchDriver.status(this.driver) !== "active",
       failed: () => {
-        const status = self.ports.matchDriver.status(self.driver);
+        const status = this.ports.matchDriver.status(this.driver);
         return status !== "active" && status !== "completed";
       },
       // The settled boundary, not the tick the simulation stopped on. The
       // driver keeps draining the tail after full time.
-      fullTime: () => self.ports.matchDriver.settled(self.driver),
+      fullTime: () => this.ports.matchDriver.settled(this.driver),
       debugModel: () => undefined,
       controlledPlayer: (state: OnlineMatchState) => {
-        const liveSlot = self.live[self.request.peer_id] ?? self.request.live;
+        const liveSlot = this.live[this.request.peer_id] ?? this.request.live;
         if (liveSlot === undefined) {
           return undefined;
         }
-        return self.ports.matchSession.playerIndex(state, liveSlot);
+        return this.ports.matchSession.playerIndex(state, liveSlot);
       },
-      frame: () => self.ports.matchDriver.frame(self.driver),
-      roster: () => self.ports.matchDriver.roster(self.driver),
-      tick: () => self.ports.matchDriver.tick(self.driver),
-      dispose: () => self.ports.matchDriver.dispose(self.driver),
+      frame: () => this.ports.matchDriver.frame(this.driver),
+      roster: () => this.ports.matchDriver.roster(this.driver),
+      tick: () => this.ports.matchDriver.tick(this.driver),
+      dispose: () => this.ports.matchDriver.dispose(this.driver),
     };
   }
 
@@ -356,7 +355,7 @@ export class OnlineMatch<TDriver, TBatch, TSnapshot, TCheckpoint, TPresentation,
           this.dispatch({ kind: "control", link_id: entry.peer_id, wire });
         } else if (err !== undefined) {
           this.buffers.set(entry.peer_id, this.ports.lobbyFraming.newBuffer());
-          this.model = { ...this.model, error: err } as TModel;
+          this.model = { ...this.model, error: err };
         }
       }
     }
@@ -420,8 +419,8 @@ export class OnlineMatch<TDriver, TBatch, TSnapshot, TCheckpoint, TPresentation,
       away_team_id: this.request.away.id,
       home_score: typedResult.home_score,
       away_score: typedResult.away_score,
-      home_stats: observed.home_stats as TeamResultStats,
-      away_stats: observed.away_stats as TeamResultStats,
+      home_stats: observed.home_stats,
+      away_stats: observed.away_stats,
       ...(this.request.seed !== undefined ? { seed: this.request.seed } : {}),
       ...(observed.mvp_player_id !== undefined ? { mvp_player_id: observed.mvp_player_id } : {}),
       ...(observed.mvp_summary !== undefined ? { mvp_summary: observed.mvp_summary } : {}),

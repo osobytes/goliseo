@@ -248,6 +248,9 @@ async function main(): Promise<void> {
     requestQuit: () => {
       // A browser tab cannot reliably self-close outside a script-opened
       // window -- nothing better to do here than log.
+      // Kept as `console.info` rather than the allowed `console.warn`: this
+      // IS the handler, and a normal, expected no-op is not a warning.
+      // eslint-disable-next-line no-console
       console.info("[goliseo] quit requested (no-op in a browser tab)");
     },
   });

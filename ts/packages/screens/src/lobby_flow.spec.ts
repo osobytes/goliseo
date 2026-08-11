@@ -818,7 +818,7 @@ function dropGuest(
     return [base, { accepted: true, actions }];
   }
   const { assignments: _a, assignment_id: _b, ...withoutAssignments } = base;
-  return [withoutAssignments as FakeCoordState, { accepted: true, actions }];
+  return [withoutAssignments, { accepted: true, actions }];
 }
 
 // ---- Local command handlers ----

@@ -445,7 +445,7 @@ function trackingEffectsPort(): EffectsPort {
       for (const event of diff.revoked) {
         speculative.delete(event.id);
       }
-      for (const replacement of diff.replaced as readonly RollbackEventReplacement[]) {
+      for (const replacement of diff.replaced) {
         speculative.delete(replacement.before.id);
         speculative.add(replacement.after.id);
       }
@@ -474,10 +474,8 @@ function recordingReplayPort(capacity: number): ReplayPort<FakeState, undefined>
       return capacity;
     },
     truncateFrom(boundary: number): void {
-      let index = buf.findIndex((frame) => frame.boundary >= boundary);
-      if (index === -1) {
-        index = buf.length;
-      } else {
+      const index = buf.findIndex((frame) => frame.boundary >= boundary);
+      if (index !== -1) {
         buf.splice(index);
       }
       port.truncateCount += 1;

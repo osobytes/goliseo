@@ -184,7 +184,7 @@ export const cameraFollow = {
 
     margin_x: 0.14,
     margin_y: 0.16,
-  } as CameraFollowConfig,
+  },
 
   // Drops the smoothed state so the next update snaps instead of sweeping
   // across the pitch. Call on kickoff and after a goal.
