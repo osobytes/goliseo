@@ -87,21 +87,29 @@ const ALL_SOURCES = [
   TS_TRANSCRIPT,
 ];
 
-// The seven tuning fields, spelled identically in both languages.
-const PROFILE_FIELDS = [
-  "base_delay_ticks",
-  "jitter_min_ticks",
-  "jitter_max_ticks",
-  "independent_loss_rate",
-  "duplication_rate",
-  "burst_start_rate",
-  "burst_length_ticks",
-];
+// The tuning fields are DERIVED from `gc_data::network_profiles`'s own
+// `NetworkProfile` struct at check time -- never listed here.
+//
+// A hardcoded list was the first version of this file and it was wrong in the
+// one way that matters. Adding an eighth tuning field to the authored profiles
+// is an ordinary future change; with a fixed list, the new field is added to
+// the Rust struct and all four rows, left out of the TypeScript copy
+// entirely, and this gate compares the seven names it knows about, finds them
+// all in agreement, and prints the same "OK (N comparisons)" line it always
+// does. The two tables would have genuinely diverged -- on a value that
+// changes what the browser measures -- with every check green. That is the
+// precise scenario this gate exists to prevent, so the field set cannot be an
+// assumption the gate carries; it has to be read from the source of truth.
+//
+// `name` is excluded: it is the lookup key (a `NetworkProfileName` variant in
+// Rust, the record key in TypeScript), not a tuning value.
+const PROFILE_KEY_FIELD = "name";
 
-// Content may only grow. A parse that silently matched fewer rows than exist
-// must not pass as a clean run.
+// Content may only grow. A parse that silently matched fewer rows or fields
+// than exist must not pass as a clean run.
 const MIN_PROFILES = 4;
-const MIN_SCENARIOS = 4;
+const MIN_PROFILE_FIELDS = 7;
+const MIN_SCENARIOS = 5;
 
 class ParityError extends Error {}
 
@@ -309,8 +317,78 @@ function tsObjectBody(source, name, relPath) {
 // Parsing: the authored profile table
 // ---------------------------------------------------------------------------
 
+// The declared field names of a `pub struct <name> { ... }`, in declaration
+// order. Doc comments, attributes and blank lines are skipped; only lines that
+// declare a `pub <field>:` are taken, which is what rustfmt guarantees for a
+// plain data struct.
+function rustStructFields(source, structName, relPath) {
+  const anchor = new RegExp(`pub struct ${structName}\\s*\\{`).exec(source);
+  if (anchor === null) {
+    fail(`${relPath}: no 'pub struct ${structName}' found`);
+  }
+  const open = anchor.index + anchor[0].length - 1;
+  let depth = 0;
+  let end = -1;
+  for (let i = open; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === "{") {
+      depth += 1;
+    } else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  if (end < 0) {
+    fail(`${relPath}: 'pub struct ${structName}' has unbalanced braces`);
+  }
+  const fields = [];
+  for (const line of source.slice(open + 1, end).split("\n")) {
+    const match = /^\s*pub\s+([a-z_][a-z0-9_]*)\s*:/.exec(line);
+    if (match !== null) {
+      fields.push(match[1]);
+    }
+  }
+  if (fields.length === 0) {
+    fail(
+      `${relPath}: 'pub struct ${structName}' parsed to zero fields -- the parse matched nothing, which is a gate failure, not a pass`,
+    );
+  }
+  return fields;
+}
+
+// The field names present in one struct-literal or object-literal body, taken
+// a line at a time. A key this misses becomes a MISSING field against the
+// derived set, which is a hard error -- never a silent pass.
+function literalFieldNames(body) {
+  const names = [];
+  for (const line of body.split("\n")) {
+    const match = /^\s*([a-z_][a-z0-9_]*)\s*:/.exec(line);
+    if (match !== null) {
+      names.push(match[1]);
+    }
+  }
+  return names;
+}
+
 function rustProfiles(repo) {
   const source = repo.read(RUST_PROFILES);
+
+  // THE FIELD SET IS DERIVED, NEVER ASSUMED -- see PROFILE_KEY_FIELD's comment.
+  const declared = rustStructFields(source, "NetworkProfile", RUST_PROFILES);
+  if (!declared.includes(PROFILE_KEY_FIELD)) {
+    fail(
+      `${RUST_PROFILES}: 'NetworkProfile' declares no '${PROFILE_KEY_FIELD}' field, so this checker cannot tell the lookup key from a tuning value`,
+    );
+  }
+  const fields = declared.filter((field) => field !== PROFILE_KEY_FIELD);
+  if (fields.length < MIN_PROFILE_FIELDS) {
+    fail(
+      `${RUST_PROFILES}: 'NetworkProfile' parsed to only ${fields.length} tuning field(s), fewer than the ${MIN_PROFILE_FIELDS} that exist -- the parse has silently narrowed`,
+    );
+  }
 
   // The enum's variant list, so a variant with no row (or a row with no
   // variant) is caught rather than silently ignored.
@@ -339,8 +417,24 @@ function rustProfiles(repo) {
     if (rows.has(key)) {
       fail(`${RUST_PROFILES}: profile '${key}' is authored twice`);
     }
+    // Every declared field, and nothing but declared fields. Rust would not
+    // compile a row that omitted one, but this checker must not depend on
+    // that: it is what proves the derived set is the set actually compared.
+    const present = literalFieldNames(entry);
+    for (const field of declared) {
+      if (!present.includes(field)) {
+        fail(`${RUST_PROFILES}: profile '${key}' has no '${field}' row field`);
+      }
+    }
+    for (const extra of present) {
+      if (!declared.includes(extra)) {
+        fail(
+          `${RUST_PROFILES}: profile '${key}' sets '${extra}', which 'pub struct NetworkProfile' does not declare`,
+        );
+      }
+    }
     const values = {};
-    for (const field of PROFILE_FIELDS) {
+    for (const field of fields) {
       values[field] = rustNumberField(entry, field, RUST_PROFILES);
     }
     rows.set(key, values);
@@ -356,10 +450,10 @@ function rustProfiles(repo) {
   if (rows.size !== variants.length) {
     fail(`${RUST_PROFILES}: ALL has ${rows.size} rows but the enum declares ${variants.length}`);
   }
-  return { rows, order: order.map((entry) => entry.key) };
+  return { rows, order: order.map((entry) => entry.key), fields };
 }
 
-function tsProfiles(repo) {
+function tsProfiles(repo, fields) {
   const source = repo.read(TS_PROFILES);
 
   const unionMatch = /export type NetworkProfileName\s*=\s*([^;]+);/.exec(source);
@@ -379,6 +473,26 @@ function tsProfiles(repo) {
     );
   }
 
+  // The declared shape, checked alongside the rows: a field renamed here and
+  // in the rows together would still typecheck, and only a cross-language read
+  // can see that gc-data never heard of the new name.
+  const interfaceMatch = /export interface NetworkProfile\s*\{([\s\S]*?)\n\}/.exec(source);
+  if (interfaceMatch === null) {
+    fail(`${TS_PROFILES}: no 'export interface NetworkProfile' found`);
+  }
+  const interfaceFields = [];
+  for (const line of interfaceMatch[1].split("\n")) {
+    const match = /^\s*(?:readonly\s+)?([a-z_][a-z0-9_]*)\s*:/.exec(line);
+    if (match !== null) {
+      interfaceFields.push(match[1]);
+    }
+  }
+  if (interfaceFields.length === 0) {
+    fail(
+      `${TS_PROFILES}: 'interface NetworkProfile' parsed to zero fields -- the parse matched nothing, which is a gate failure, not a pass`,
+    );
+  }
+
   const body = tsObjectBody(source, "NETWORK_PROFILES", TS_PROFILES);
   const rows = new Map();
   const order = [];
@@ -389,11 +503,25 @@ function tsProfiles(repo) {
     if (rows.has(key)) {
       fail(`${TS_PROFILES}: profile '${key}' appears twice in NETWORK_PROFILES`);
     }
+    // EXACTLY the fields gc-data's struct declares -- not "at least". A field
+    // added to the authored profiles and left out here would otherwise be
+    // invisible, and one invented here that gc-data has never heard of would
+    // silently do nothing.
+    const present = literalFieldNames(rowMatch[2]);
+    for (const extra of present) {
+      if (!fields.includes(extra)) {
+        fail(
+          `${TS_PROFILES}: profile '${key}' declares '${extra}', which gc-data's 'pub struct NetworkProfile' does not -- the browser is tuned by a value nothing authors`,
+        );
+      }
+    }
     const values = {};
-    for (const field of PROFILE_FIELDS) {
+    for (const field of fields) {
       const fieldMatch = new RegExp(`${field}\\s*:\\s*(-?[0-9.]+)`).exec(rowMatch[2]);
       if (fieldMatch === null) {
-        fail(`${TS_PROFILES}: profile '${key}' is missing '${field}'`);
+        fail(
+          `${TS_PROFILES}: profile '${key}' has no '${field}' -- gc-data's 'pub struct NetworkProfile' declares it, so the browser's copy has silently diverged from the profiles the native matrix runs`,
+        );
       }
       values[field] = numeric(fieldMatch[1], `${TS_PROFILES}: ${key}.${field}`);
     }
@@ -423,7 +551,7 @@ function tsProfiles(repo) {
       `${TS_PROFILES}: 'NETWORK_PROFILE_NAMES' parsed to zero entries -- the parse matched nothing, which is a gate failure, not a pass`,
     );
   }
-  return { rows, order, union, names };
+  return { rows, order, union, names, interfaceFields };
 }
 
 // ---------------------------------------------------------------------------
@@ -550,8 +678,18 @@ function checkNetworkProfileParity(repo) {
   let compared = 0;
 
   // --- 1 & 2. the authored profiles -------------------------------------
+  // `rust.fields` is read off gc-data's own struct; everything below compares
+  // that set and only that set, on both sides.
   const rust = rustProfiles(repo);
-  const ts = tsProfiles(repo);
+  const ts = tsProfiles(repo, rust.fields);
+
+  const interfaceFields = ts.interfaceFields.join(",");
+  if (interfaceFields !== rust.fields.join(",")) {
+    problems.push(
+      `the browser's 'interface NetworkProfile' declares [${ts.interfaceFields.join(", ")}] but gc-data's 'pub struct NetworkProfile' declares [${rust.fields.join(", ")}] -- the two describe different networks`,
+    );
+  }
+  compared += 1;
 
   for (const key of rust.rows.keys()) {
     if (!ts.rows.has(key)) {
@@ -562,7 +700,7 @@ function checkNetworkProfileParity(repo) {
     }
     const rustRow = rust.rows.get(key);
     const tsRow = ts.rows.get(key);
-    for (const field of PROFILE_FIELDS) {
+    for (const field of rust.fields) {
       if (rustRow[field] !== tsRow[field]) {
         problems.push(
           `network profile '${key}': gc-data authors ${field}=${rustRow[field]} but ${TS_PROFILES} says ${tsRow[field]} -- the browser would impair a differently-shaped link and its evidence could not be compared to the native run`,
@@ -672,6 +810,7 @@ function checkNetworkProfileParity(repo) {
     compared,
     counts: {
       profiles: rust.rows.size,
+      fields: rust.fields.length,
       scenarios: rustSide.scenarios.length,
       transcriptScenarios: counterLines,
     },
@@ -701,6 +840,18 @@ function mutated(files, relPath, from, to) {
     );
   }
   copy.set(relPath, text.replace(from, to));
+  return copy;
+}
+
+// Rewrite every match, not just the first -- used where a scenario has to
+// touch all four authored rows, as adding a tuning field does.
+function mutatedEvery(files, relPath, pattern, replacement) {
+  const copy = new Map(files);
+  const text = copy.get(relPath);
+  if (text === undefined || !pattern.test(text)) {
+    fail(`self-test: ${relPath} does not match this scenario's pattern: ${pattern}`);
+  }
+  copy.set(relPath, text.replace(pattern, replacement));
   return copy;
 }
 
@@ -780,6 +931,41 @@ function selfTest(root) {
       /network profile 'stress': gc-data authors base_delay_ticks=6 but .* says 9/,
     ) && ok;
 
+  // THE ONE A HARDCODED FIELD LIST COULD NOT SEE. An eighth tuning field is
+  // added to gc-data's struct and to all four authored rows, with values that
+  // genuinely change what a link does, and the browser's copy is not touched
+  // at all. A checker carrying its own list of seven field names compares
+  // those seven, finds them in agreement, and prints the same OK line.
+  ok =
+    expectRed(
+      "a tuning field added to gc-data only, with the browser's copy untouched",
+      mutatedEvery(
+        mutated(
+          files,
+          RUST_PROFILES,
+          "    /// Length of a loss burst, in ticks.\n    pub burst_length_ticks: i64,",
+          "    /// Length of a loss burst, in ticks.\n    pub burst_length_ticks: i64,\n    /// Probability a packet arrives corrupted.\n    pub corruption_rate: f64,",
+        ),
+        RUST_PROFILES,
+        /^(        burst_length_ticks: \d+,)$/gm,
+        "$1\n        corruption_rate: 0.9,",
+      ),
+      /profile 'clean' has no 'corruption_rate' -- gc-data's 'pub struct NetworkProfile' declares it/,
+    ) && ok;
+
+  // The mirror image: a tuning value the browser invents and nothing authors.
+  ok =
+    expectRed(
+      "a tuning field the browser declares and gc-data has never heard of",
+      mutatedEvery(
+        files,
+        TS_PROFILES,
+        /^(    burst_length_ticks: \d+,)$/gm,
+        "$1\n    corruption_rate: 0.9,",
+      ),
+      /profile 'clean' declares 'corruption_rate', which gc-data's 'pub struct NetworkProfile' does not/,
+    ) && ok;
+
   ok =
     expectRed(
       "a profile dropped from the TypeScript table",
@@ -838,6 +1024,13 @@ function selfTest(root) {
       "the shared transcript literal removed entirely",
       mutated(files, RUST_TRANSCRIPT, "const EXPECTED_TRANSCRIPT: &str = r\"", "const UNUSED_TRANSCRIPT: &str = r\""),
       /no 'const EXPECTED_TRANSCRIPT: &str = r"\.\.\."' literal found/,
+    ) && ok;
+
+  ok =
+    expectRed(
+      "the authored profile struct renamed out from under the parser",
+      mutated(files, RUST_PROFILES, "pub struct NetworkProfile {", "pub struct NetworkTuning {"),
+      /no 'pub struct NetworkProfile' found/,
     ) && ok;
 
   if (!ok) {
@@ -904,7 +1097,9 @@ function main(argv) {
       );
       return 1;
     }
-    console.log(`ok  ${counts.profiles} authored network profiles agree, field for field`);
+    console.log(
+      `ok  ${counts.profiles} authored network profiles agree on all ${counts.fields} tuning fields gc-data declares (read from the struct, not assumed)`,
+    );
     console.log("ok  the impairment generator's constants agree across Rust and TypeScript");
     console.log(
       `ok  ${counts.scenarios} differential scenarios assert one byte-identical transcript`,

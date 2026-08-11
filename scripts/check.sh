@@ -61,9 +61,13 @@
 #      diverged jitter rule throws NOTHING in either language -- the two
 #      suites simply measure different networks while both stay green, which
 #      is #279's shape exactly. This compares the profile values field for
-#      field, the generator's constants, the five-scenario impairment
-#      transcript both languages assert byte for byte, and that the transcript
-#      still records loss, bursts, duplication and reordering at all. See that
+#      field -- over the field set READ FROM gc-data's own `NetworkProfile`
+#      struct, never a list this checker carries, because an eighth tuning
+#      field added to the authored profiles and left out of the browser's copy
+#      is the cheapest way for the two to diverge with every check green --
+#      plus the generator's constants, the five-scenario impairment transcript
+#      both languages assert byte for byte, and that the transcript still
+#      records loss, bursts, duplication and reordering at all. See that
 #      script's header and self_test()'s network_profile_parity_scenario.
 #      (#472)
 #   1. cargo fmt --all --check                                      (rust)
@@ -282,14 +286,20 @@ MIN_WIRE_ENUMS=11
 # against a narrowed or silenced comparison, not against content growing.
 MIN_PRESENTATION_MAPPINGS=19
 
-# The same shape of floor for gate 0c (#472). Sixty comparisons are made
-# today: four authored network profiles times seven tuning fields, the three
+# The same shape of floor for gate 0c (#472), PINNED EXACTLY to what the
+# checker compares today, the way MIN_WIRE_ENUMS and MIN_PRESENTATION_MAPPINGS
+# are. Sixty-one comparisons are made: four authored network profiles times the
+# seven tuning fields gc-data's struct DECLARES (the checker reads that struct
+# rather than carrying its own list), the two declared shapes, the three
 # profile-name orderings, the impairment generator's two constants, the shared
 # transcript literal, five differential scenarios times five fields, and the
-# assertion that the transcript still records impairment at all. The checker is
-# fail-loud about a parse that matched nothing, so this floor guards against a
-# narrowed or silenced comparison, not against the profile set growing.
-MIN_NETWORK_PROFILE_COMPARISONS=45
+# assertion that the transcript still records impairment at all.
+#
+# Slack here would be a blind spot, not caution: a comparison quietly dropped
+# from the checker lands a few below the real number and slips under a loose
+# floor unnoticed. If this legitimately grows -- another profile, another
+# tuning field, another scenario -- raise it in the same change.
+MIN_NETWORK_PROFILE_COMPARISONS=61
 
 # The same shape of floor for gates 5b and 7b (#471), and the reason they are
 # not just "run the tool and read its exit code".
@@ -1889,6 +1899,37 @@ network_profile_parity_scenario() {
         echo "ok  a drifted loss rate is rejected (the failure mode that throws nothing anywhere)"
     else
         echo "SELF-TEST FAIL: the drifted-profile fixture was rejected, but not for the drift:"
+        sed 's/^/      /' "$log"
+        failures=1
+    fi
+    # Restore the drifted value before the next scenario, so what follows is
+    # rejected for its own reason rather than for this one.
+    sed -i 's/    independent_loss_rate: 0\.003,/    independent_loss_rate: 0.03,/' "$ts_copy"
+
+    # THE GROWTH CASE, and the one an earlier version of this gate could not
+    # see: gc-data gains an EIGHTH tuning field -- struct and all four rows,
+    # with values that genuinely change what a link does -- and the browser's
+    # copy is simply not updated. A checker carrying its own list of seven
+    # field names compares those seven, finds them in agreement, and prints
+    # the same "OK (N comparisons)" line. Adding a tuning field is an entirely
+    # ordinary future change, which is what makes this the cheapest way for
+    # the two tables to diverge with every check green.
+    local rust_copy="$dir/rust/crates/gc-data/src/network_profiles.rs"
+    perl -0pi -e 's/    pub burst_length_ticks: i64,/    pub burst_length_ticks: i64,\n    \/\/\/ Probability a packet arrives corrupted.\n    pub corruption_rate: f64,/' "$rust_copy"
+    perl -0pi -e 's/^(        burst_length_ticks: \d+,)$/$1\n        corruption_rate: 0.9,/gm' "$rust_copy"
+    if ! grep -q '    pub corruption_rate: f64,' "$rust_copy" || [ "$(grep -c '        corruption_rate: 0\.9,' "$rust_copy")" -ne 4 ]; then
+        echo "SELF-TEST FAIL: could not add an eighth tuning field to the fixture copy; the scenario no longer reproduces a grown profile table"
+        failures=1
+    elif grep -q 'corruption_rate' "$dir/ts/packages/transport/src/network_profiles.ts"; then
+        echo "SELF-TEST FAIL: the browser's copy already mentions corruption_rate; the scenario is not testing an un-mirrored field"
+        failures=1
+    elif node "$checker" --repo "$dir" >"$log" 2>&1; then
+        echo "SELF-TEST FAIL: an EIGHTH authored tuning field with no browser counterpart was ACCEPTED -- the two profile tables would have diverged with every check green, which is the whole reason this gate exists"
+        failures=1
+    elif grep -q "has no 'corruption_rate' -- gc-data's 'pub struct NetworkProfile' declares it" "$log"; then
+        echo "ok  a tuning field added to gc-data alone is rejected (the gate reads gc-data's struct rather than carrying its own field list)"
+    else
+        echo "SELF-TEST FAIL: the grown-profile fixture was rejected, but not for the un-mirrored field:"
         sed 's/^/      /' "$log"
         failures=1
     fi

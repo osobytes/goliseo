@@ -432,7 +432,9 @@ It is stricter than the commands above in ways that matter:
   browser suite and the native suite go on measuring different networks while
   both stay green, so a soak that ran a "stress" link at a tenth of the
   authored loss rate reports a clean hour and proves nothing. The gate
-  compares every profile's seven tuning fields, the impairment generator's
+  compares every profile's tuning fields — over the field set read from
+  `gc-data`'s own `NetworkProfile` struct, so a *new* tuning field left out of
+  the browser's copy is caught rather than skipped — the impairment generator's
   `MOD`/`MULT` constants, and the five-scenario impairment transcript that
   `rust/crates/gc-sim/tests/browser_impairment_parity.rs` and
   `ts/packages/transport/src/impairment_parity.spec.ts` each assert — byte
