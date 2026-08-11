@@ -396,6 +396,21 @@ It is stricter than the commands above in ways that matter:
   different *valid* value rather than an error. The gate compares membership
   **and** numeric codes for all eleven enums, and refuses to pass if it finds
   a `*_code`/`*FromCode` pair its registry does not cover (#433).
+- it checks **cross-language presentation-content parity**, also before
+  anything is built (`node scripts/check_presentation_parity.mjs`). Rule 6.7
+  below forbids a TypeScript package importing a Rust crate's content tables,
+  so `packages/render/src/rig3d/presentation_content.ts` restates by hand
+  which theme each `character_presentations` entry belongs to and which
+  equipment each `loadouts` entry carries. That is the same
+  each-side-checked-only-against-itself shape the wire enums had. A renamed
+  presentation throws `no theme for presentation id` in a player's browser the
+  first time that player is drawn; a loadout repointed at different equipment
+  throws **nothing at all** and simply renders the wrong item forever. The
+  gate compares all three tables key-for-key and value-for-value, checks that
+  every equipment id it resolves has a `rig3d/equipment.ts` builder and a
+  `rig3d/body.ts` socket, and compares the duplicated
+  `ROSTER_STRING_FIELD_COUNT` — which, unlike `LAYOUT_VERSION`, is not stamped
+  into the wire, so nothing else can catch it drifting (#447).
 - `cargo clippy -p gc-wasm --target wasm32-unknown-unknown -- -D warnings` runs
   as an **explicit, separate** step from the workspace clippy run. The native
   workspace run never compiles `gc-wasm`'s wasm-only code paths at all, so a

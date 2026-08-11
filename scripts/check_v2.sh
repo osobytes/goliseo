@@ -40,6 +40,21 @@
 #      through requireDecode, where a shifted code is a different VALID
 #      value, not an error. See that script's header and self_test()'s
 #      wire_enum_parity_scenario. (#433)
+#   0b. node scripts/check_presentation_parity.mjs
+#      -- the same shape of check for CONTENT rather than enums, and it runs
+#      beside gate 0 for the same reason: no toolchain, no build, seconds.
+#      gc-data authors which theme each character presentation belongs to and
+#      which equipment each fixed loadout carries; the renderer restates both
+#      by hand in packages/render/src/rig3d/presentation_content.ts, because
+#      v2/README.md forbids a TS package reading a Rust crate's source. A
+#      renamed presentation throws in a player's browser the first time that
+#      player is drawn; a loadout pointed at the wrong equipment throws
+#      NOTHING and simply draws the wrong item forever. The duplicated
+#      ROSTER_STRING_FIELD_COUNT is compared here too -- unlike
+#      LAYOUT_VERSION it is not stamped into the wire, so nothing else can
+#      catch it drifting. Numbered 0b rather than renumbering every step
+#      below, which this file and its scenarios refer to by name. See that
+#      script's header and self_test()'s presentation_parity_scenario. (#447)
 #   1. cargo fmt --all --check                                   (v2/rust)
 #   2. cargo clippy --workspace --all-targets -- -D warnings
 #   3. cargo test --workspace
@@ -168,6 +183,14 @@ MIN_TS_TESTS_PASSED=300
 # boundary growing.
 MIN_WIRE_ENUMS=11
 
+# The same shape of floor for gate 0b (#447). Nineteen mappings are compared
+# today: six character presentations onto rig3d themes, six fixed loadouts
+# onto equipment presentations, six equipment presentations onto rig3d
+# builders/sockets, and the duplicated ROSTER_STRING_FIELD_COUNT. The checker
+# is fail-loud about a parse that matched nothing, so this floor guards
+# against a narrowed or silenced comparison, not against content growing.
+MIN_PRESENTATION_MAPPINGS=19
+
 # ---------------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------------
@@ -289,6 +312,39 @@ gate_wire_enum_parity() {
         return 1
     fi
     echo "    $counted wire enums agree across Rust and TypeScript, numeric codes included"
+    return 0
+}
+
+# Gate 0b. Cross-language parity for the character-presentation content
+# mapping (#447). Same cost and same shape as gate 0, so it runs beside it.
+gate_presentation_parity() {
+    step "v2: presentation content parity (gc-data authored ids <-> rig3d themes, loadouts and equipment)"
+    local log
+    log="$(mktemp)"
+    run_in "$project_root" node scripts/check_presentation_parity.mjs 2>&1 | tee "$log"
+    local status=$?
+
+    # NEVER TRUST ONE SIGNAL, same reasoning as gate 0: a checker whose parse
+    # matched nothing would find no disagreement and exit 0. The script is
+    # fail-loud about that internally; this reads its summary line back
+    # independently and requires a floor on the count.
+    local counted
+    counted="$(strip_ansi <"$log" | sed -n 's/^presentation parity: OK (\([0-9]\+\) mappings)$/\1/p' | tail -n 1)"
+    rm -f "$log"
+
+    if [ "$status" -ne 0 ]; then
+        fail_msg "presentation parity check exited $status"
+        return 1
+    fi
+    if [ -z "$counted" ]; then
+        fail_msg "presentation parity exited 0 but printed no 'presentation parity: OK (N mappings)' summary -- treating that as a failure, not a pass"
+        return 1
+    fi
+    if [ "$counted" -lt "$MIN_PRESENTATION_MAPPINGS" ]; then
+        fail_msg "presentation parity compared only $counted mapping(s) (want >= $MIN_PRESENTATION_MAPPINGS) -- the check has been narrowed or silenced"
+        return 1
+    fi
+    echo "    $counted content mappings agree across gc-data and the rig3d renderer"
     return 0
 }
 
@@ -1021,6 +1077,70 @@ wire_enum_parity_scenario() {
     return "$failures"
 }
 
+# The same two-track demonstration for gate 0b (#447): the checker's own
+# in-memory red demonstration, then the REAL check driven through --repo over
+# mutated file COPIES, so the on-disk path the gate actually uses is the one
+# proved able to go red.
+presentation_parity_scenario() {
+    local dir="$1"
+    local failures=0
+    local checker="$project_root/scripts/check_presentation_parity.mjs"
+    local log
+    log="$(mktemp)"
+
+    if node "$checker" --self-test >"$log" 2>&1; then
+        sed 's/^/      /' "$log"
+        echo "ok  the presentation parity checker's own self-test passes (it goes red on every drift shape it claims to catch)"
+    else
+        echo "SELF-TEST FAIL: node scripts/check_presentation_parity.mjs --self-test failed:"
+        sed 's/^/      /' "$log"
+        failures=1
+    fi
+
+    local rel
+    while IFS= read -r rel; do
+        mkdir -p "$dir/$(dirname "$rel")"
+        cp "$project_root/$rel" "$dir/$rel"
+    done < <(node "$checker" --list-sources)
+
+    if [ ! -f "$dir/v2/ts/packages/render/src/rig3d/presentation_content.ts" ]; then
+        echo "SELF-TEST FAIL: --list-sources did not name the renderer's content mapping; the fixture copy is empty"
+        rm -f "$log"
+        return 1
+    fi
+
+    if node "$checker" --repo "$dir" >"$log" 2>&1; then
+        echo "ok  an untouched copy of the real sources is accepted"
+    else
+        echo "SELF-TEST FAIL: an untouched COPY of the real sources was REJECTED:"
+        sed 's/^/      /' "$log"
+        failures=1
+    fi
+
+    # THE SILENT ONE: a loadout repointed at equipment gc-data does not carry.
+    # Nothing throws at runtime -- the player just renders the wrong item, for
+    # every match, forever. This is the failure only a cross-language read can
+    # see.
+    local ts_copy="$dir/v2/ts/packages/render/src/rig3d/presentation_content.ts"
+    sed -i 's/loadout_emberguard_shield: "medieval_heater_shield"/loadout_emberguard_shield: "medieval_tournament_sword"/' "$ts_copy"
+    if ! grep -q 'loadout_emberguard_shield: "medieval_tournament_sword"' "$ts_copy"; then
+        echo "SELF-TEST FAIL: could not repoint a loadout in the fixture copy; the scenario no longer reproduces content drift"
+        failures=1
+    elif node "$checker" --repo "$dir" >"$log" 2>&1; then
+        echo "SELF-TEST FAIL: a loadout carrying the WRONG equipment was ACCEPTED -- keepers-and-kit drift is exactly #447, and the gate would not catch it"
+        failures=1
+    elif grep -q "loadout 'loadout_emberguard_shield': gc-data carries 'medieval_heater_shield'" "$log"; then
+        echo "ok  a loadout pointed at equipment gc-data does not author is rejected (the failure mode that throws nothing anywhere)"
+    else
+        echo "SELF-TEST FAIL: the repointed-loadout fixture was rejected, but not for the repointing:"
+        sed 's/^/      /' "$log"
+        failures=1
+    fi
+
+    rm -f "$log"
+    return "$failures"
+}
+
 self_test() {
     if ! v2_toolchain_present; then
         echo "   ! cargo/node/pnpm not fully installed -- skipping v2 gate self-test"
@@ -1038,6 +1158,10 @@ self_test() {
     echo "==> v2 gate self-test: wire enum parity, Rust <-> TypeScript (gate 0)"
     mkdir -p "$work/wire_enum_parity"
     wire_enum_parity_scenario "$work/wire_enum_parity" || failures=1
+
+    echo "==> v2 gate self-test: presentation content parity, gc-data <-> rig3d (gate 0b)"
+    mkdir -p "$work/presentation_parity"
+    presentation_parity_scenario "$work/presentation_parity" || failures=1
 
     echo "==> v2 gate self-test: determinism digest comparison logic"
     digest_drift_scenario || failures=1
@@ -1086,6 +1210,9 @@ main() {
     # Gate 0 first: it needs nothing built or installed, and enum drift is the
     # one failure here that reaches a player's browser rather than a console.
     gate_wire_enum_parity || fail=1
+    # Gate 0b, beside it: same cost, same failure shape, different vocabulary
+    # (#447).
+    gate_presentation_parity || fail=1
 
     gate_rust_fmt || fail=1
     gate_rust_clippy_workspace || fail=1
