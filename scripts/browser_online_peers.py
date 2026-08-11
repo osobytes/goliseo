@@ -9,13 +9,13 @@ wasm instance. None of them can prove the netcode's actual premise: that two
 INDEPENDENT instances, each with its own real `RTCDataChannel` delivering
 bytes on its own callback at its own arbitrary moment relative to its own
 tick loop, derive byte-identical state from that traffic. This script is the
-first thing in the v2 tree that drives two such independent instances and
+first thing in this repository that drives two such independent instances and
 diffs what they each, independently, computed.
 
-`v2/tools/browser_online_match/web/online_peer.ts` is the page each peer
+`tools/browser_online_match/web/online_peer.ts` is the page each peer
 runs: it opens a real `RTCPeerConnection` (via `@gc/transport`'s
 `BrowserStarTransport`, backed by a real `window.GoliseoStarTransport` --
-see `v2/ts/packages/transport/src/browser_star_bridge.ts`), then drives a
+see `ts/packages/transport/src/browser_star_bridge.ts`), then drives a
 real `MatchDriverBridge` (`@gc/wasm`) for a fixed tick count, accumulating
 its own `(tick, hash)` checkpoint sequence purely from whatever its own
 transport delivered. This script's only job, after getting both pages
@@ -34,22 +34,20 @@ dependency, and precisely as invisible to the property under test as a
 lobby server would be in production: once `acceptAnswer` returns, this
 script never touches the connection again.
 
-## Mirrors scripts/browser_determinism.py's structure
+## Shares its launch/teardown plumbing with the other browser harnesses
 
 Same pinned-asset resolution (`browser_matrix.resolve_assets`), same Chrome/
 Firefox launch options and bounded teardown (imported from
-`browser_determinism`, not reimplemented) -- see that file and
-`.github/workflows/ci.yml`'s `browser_determinism` job for the precedent
-this follows, per this task's brief ("mirror that structure rather than
-inventing a new one").
+`scripts/browser_launch.py`, not reimplemented) that
+`scripts/browser_match_harness.py` and `scripts/browser_render_bench.py`
+also use, so the three cannot drift apart on how a browser process is
+started and torn down.
 
-## Not wired into CI by this script
+## Wired into CI
 
-This task's file ownership excludes `.github/workflows/ci.yml` and
-`scripts/check.sh` -- another concurrent agent owns wiring the v2 gate into
-both. See this file's `--self-test`-adjacent module docstring tail (bottom
-of `main`'s `--help`) for the CI job this script proposes; it is a proposal
-only.
+`.github/workflows/ci.yml`'s gate job runs this script as "Prove two real
+browser peers agree bit for bit", after installing the pinned browser
+evidence dependencies from `scripts/browser_matrix-requirements.txt`.
 """
 
 from __future__ import annotations
@@ -67,7 +65,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from browser_determinism import (  # noqa: E402
+from browser_launch import (  # noqa: E402
     bounded_log_tail,
     launch,
     quit_browser_bounded,
@@ -77,10 +75,10 @@ from web_serve import ArtifactHandler  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
-V2_TS = ROOT / "v2" / "ts"
-HARNESS_DIR = ROOT / "v2" / "tools" / "browser_online_match"
+TS = ROOT / "ts"
+HARNESS_DIR = ROOT / "tools" / "browser_online_match"
 HARNESS_DIST = HARNESS_DIR / "dist"
-WASM_BUILD_SCRIPT = V2_TS / "packages" / "wasm" / "scripts" / "build_web.mjs"
+WASM_BUILD_SCRIPT = TS / "packages" / "wasm" / "scripts" / "build_web.mjs"
 HARNESS_VITE_CONFIG = HARNESS_DIR / "vite.config.ts"
 
 DEFAULT_TICKS = 150
@@ -108,15 +106,15 @@ def build_harness(skip_wasm_build: bool) -> None:
         print("[browser_online_peers] node packages/wasm/scripts/build_web.mjs")
         subprocess.run(
             ["node", str(WASM_BUILD_SCRIPT)],
-            cwd=V2_TS,
+            cwd=TS,
             check=True,
         )
-    elif not (V2_TS / "packages" / "wasm" / "dist" / "pkg-web" / "gc_wasm.js").is_file():
+    elif not (TS / "packages" / "wasm" / "dist" / "pkg-web" / "gc_wasm.js").is_file():
         raise RuntimeError("--skip-wasm-build was given but dist/pkg-web/gc_wasm.js is missing")
     print("[browser_online_peers] pnpm exec vite build (harness)")
     subprocess.run(
         ["pnpm", "exec", "vite", "build", "--config", str(HARNESS_VITE_CONFIG)],
-        cwd=V2_TS,
+        cwd=TS,
         check=True,
         env={"VITE_CONFIG_NATIVE_IGNORE_WARNING": "true", **_inherited_env()},
     )

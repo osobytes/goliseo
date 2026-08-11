@@ -3,8 +3,8 @@
 // (#433).
 //
 // WHAT BREAKS WITHOUT THIS. A `RenderFrame` block is produced by Rust
-// (`v2/rust/crates/gc-render/src/frame_buffer.rs`) and consumed by TypeScript
-// (`v2/ts/packages/render/src/frame_buffer.ts`). Every closed set on that
+// (`rust/crates/gc-render/src/frame_buffer.rs`) and consumed by TypeScript
+// (`ts/packages/render/src/frame_buffer.ts`). Every closed set on that
 // boundary is defined TWICE -- once as a Rust enum with a `*_code` numbering,
 // once as a TypeScript union with a `*FromCode` numbering -- and nothing but
 // convention kept the two in step. Rust is self-consistent (`*_code` is an
@@ -100,7 +100,7 @@
 //     with `_`. Two independent backstops sit behind it anyway: the
 //     enum-vs-arms cross-check refuses any enum whose declared variants and
 //     `*_code` arms disagree, and `cargo fmt --all --check` (gate 1 of
-//     check_v2.sh, the same CI job) expands multi-arm matches one per line
+//     check.sh, the same CI job) expands multi-arm matches one per line
 //     before any of this is read.
 //
 //   node scripts/check_wire_enum_parity.mjs                 -- check this repo
@@ -114,7 +114,7 @@
 // membership, a wildcard match arm in each of its three shapes (bare,
 // or-pattern alternative, compact one-line match), a decoder that lost a
 // `case`, and a parse that matched nothing.
-// `scripts/check_v2.sh --self-test` runs the same
+// `scripts/check.sh --self-test` runs the same
 // demonstration a second, independent way: against mutated file COPIES under
 // `mktemp -d`, through `--repo`.
 
@@ -130,8 +130,8 @@ import { fileURLToPath } from "node:url";
 // name the same thing. Coverage check 6 below is what keeps this list honest.
 // ---------------------------------------------------------------------------
 
-const RUST_FRAME_BUFFER = "v2/rust/crates/gc-render/src/frame_buffer.rs";
-const TS_FRAME_BUFFER = "v2/ts/packages/render/src/frame_buffer.ts";
+const RUST_FRAME_BUFFER = "rust/crates/gc-render/src/frame_buffer.rs";
+const TS_FRAME_BUFFER = "ts/packages/render/src/frame_buffer.ts";
 
 const WIRE_ENUMS = [
   { label: "team", rustFn: "team_code", tsFn: "teamFromCode" },
@@ -162,15 +162,15 @@ const NAME_EXCEPTIONS = new Map();
 // has nothing to do with parity. Listing the whole workspace costs three
 // lines and removes that trap.
 const CRATE_DIRS = new Map([
-  ["gc_core", "v2/rust/crates/gc-core/src"],
-  ["gc_data", "v2/rust/crates/gc-data/src"],
-  ["gc_netcode", "v2/rust/crates/gc-netcode/src"],
-  ["gc_render", "v2/rust/crates/gc-render/src"],
-  ["gc_sim", "v2/rust/crates/gc-sim/src"],
+  ["gc_core", "rust/crates/gc-core/src"],
+  ["gc_data", "rust/crates/gc-data/src"],
+  ["gc_netcode", "rust/crates/gc-netcode/src"],
+  ["gc_render", "rust/crates/gc-render/src"],
+  ["gc_sim", "rust/crates/gc-sim/src"],
 ]);
 
 // The crate the codec itself lives in, for `use crate::...` paths.
-const RUST_CODEC_CRATE_DIR = "v2/rust/crates/gc-render/src";
+const RUST_CODEC_CRATE_DIR = "rust/crates/gc-render/src";
 
 // Name methods a Rust enum may declare for its own wire spelling.
 const NAME_METHODS = new Set(["wire_name", "wire_str", "as_str"]);
@@ -849,8 +849,8 @@ function selfTest(root) {
       "a Rust variant TypeScript has never heard of",
       mutate(
         mutate(
-          mutate(files, "v2/rust/crates/gc-render/src/player_pose.rs", "    Locomotion,\n}", "    Locomotion,\n    /// A newly added pose.\n    Sprint,\n}"),
-          "v2/rust/crates/gc-render/src/player_pose.rs",
+          mutate(files, "rust/crates/gc-render/src/player_pose.rs", "    Locomotion,\n}", "    Locomotion,\n    /// A newly added pose.\n    Sprint,\n}"),
+          "rust/crates/gc-render/src/player_pose.rs",
           'Self::Locomotion => "locomotion",',
           'Self::Locomotion => "locomotion",\n            Self::Sprint => "sprint",',
         ),

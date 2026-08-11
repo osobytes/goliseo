@@ -1,0 +1,877 @@
+// New tests for player_renderer_3d.ts's pure half: pose selection and the
+// metres-per-world-unit conversion. Most of the GPU-adjacent mesh/skeleton/
+// camera half is untested EXCEPT `renderToSprite`'s and `characterMesh`'s
+// object-graph shape (below), which
+// need only a stub renderer (or no renderer at all, for `characterMesh`),
+// not a live GL context, to verify (the same boundary scene.spec.ts's
+// `stubRenderer()` and pitch.spec.ts's rigged-compositing suite draw);
+// `build()` itself only constructs plain three.js geometry/skeleton objects
+// with no GL calls, so it genuinely succeeds under this workspace's "node"
+// vitest environment.
+
+import { describe, expect, it } from "vitest";
+import * as THREE from "three";
+import { Vec2, type Quat } from "@gc/core";
+import {
+  available,
+  characterCameraParams,
+  characterMesh,
+  clipFor,
+  leanTilt,
+  metresPerWorldUnit,
+  mixerPoseFor,
+  poseFor,
+  ppmForRadius,
+  renderToSprite,
+  resetAnimation,
+  DEFAULT_PLAYER_RADIUS,
+} from "./player_renderer_3d.ts";
+import * as animator from "./rig3d/animator.ts";
+import * as actionPose from "./rig3d/action_pose.ts";
+import type { MutablePose } from "./rig3d/action_pose.ts";
+import type { PlayerRenderOptions } from "./player_render_options.ts";
+import type { PlayerView } from "./view_state.ts";
+
+function baseOptions(overrides: Partial<PlayerRenderOptions> = {}): PlayerRenderOptions {
+  return { is_keeper: false, controlled: false, ...overrides };
+}
+
+describe("player_renderer_3d.clipFor", () => {
+  it("maps stances/gaits onto their limb clip", () => {
+    expect(clipFor("locomotion")).toBe("locomotion");
+    expect(clipFor("contain")).toBe("locomotion");
+    expect(clipFor("keeper_shuffle")).toBe("locomotion");
+    expect(clipFor("combat_guard")).toBe("guard");
+    expect(clipFor("combat_windup")).toBe("guard");
+    expect(clipFor("combat_active")).toBe("charge");
+    expect(clipFor("combat_recovery")).toBe("guard");
+    expect(clipFor("combat_aim")).toBe("guard");
+    expect(clipFor("fatigue")).toBe("idle");
+  });
+
+  it("falls back to idle for an unmapped or missing pose id (e.g. whole-body actions owned by action_pose.ts)", () => {
+    expect(clipFor(undefined)).toBe("idle");
+    expect(clipFor("aerial_bicycle")).toBe("idle");
+    expect(clipFor("keeper_dive")).toBe("idle");
+  });
+});
+
+describe("player_renderer_3d.metresPerWorldUnit", () => {
+  it("is size-independent of depth: converting the same world distance at any scale gives the same metres", () => {
+    // The conversion itself does not take a `scale`/`radius` argument -- it
+    // is a fixed ratio derived once from the rig's height -- so this checks
+    // that two different rig heights produce their own distinct, stable ratios.
+    const short = metresPerWorldUnit(1.6);
+    const tall = metresPerWorldUnit(2.0);
+    expect(tall).toBeGreaterThan(short);
+    expect(metresPerWorldUnit(1.6)).toBe(short);
+  });
+
+  it("uses sim/match.lua's PLAYER_RADIUS (12) as its default divisor", () => {
+    const height = 1.8;
+    expect(metresPerWorldUnit(height)).toBe(height / (DEFAULT_PLAYER_RADIUS * 3.0 * 2));
+  });
+});
+
+describe("player_renderer_3d.poseFor", () => {
+  const idleView: PlayerView = { px: 0, py: 0, speed: 0, phase: 0, gait: 0, lean: 0 };
+
+  it("produces a pose with a root-adjacent sparse rotation/move map, deterministic for the same `now`", () => {
+    const a = poseFor(idleView, baseOptions(), 1.23);
+    const b = poseFor(idleView, baseOptions(), 1.23);
+    expect(a).toEqual(b);
+  });
+
+  it("differs when the pose id selects the charge overlay vs plain idle", () => {
+    const idle = poseFor(idleView, baseOptions(), 1.0);
+    const charging = poseFor(idleView, baseOptions({ pose: { id: "combat_active" } }), 1.0);
+    expect(idle).not.toEqual(charging);
+  });
+
+  it("layers the keeper sling overlay while throw_timer counts down toward zero", () => {
+    const midThrow = poseFor(idleView, baseOptions({ throw: 0.5 }), 1.0);
+    const noThrow = poseFor(idleView, baseOptions({ throw: 0 }), 1.0);
+    expect(midThrow).not.toEqual(noThrow);
+  });
+
+  it("applies a whole-body action (e.g. a keeper dive) on top of the gait/stance pose", () => {
+    // dive_dir must have a nonzero lateral component relative to facing (see
+    // rig3d/action_pose.ts's `lateralSign`) or the save overlay is a no-op.
+    const grounded = poseFor(idleView, baseOptions(), 1.0);
+    const diving = poseFor(idleView, baseOptions({ dive: 1, dive_dir: new Vec2(0, 1), pose: { id: "keeper_dive" } }), 1.0);
+    expect(diving.rot["root"]).toBeDefined();
+    expect(grounded.rot["root"]).not.toEqual(diving.rot["root"]);
+  });
+});
+
+// THE GAP THIS SUITE USED TO PIN, now closed (#430).
+//
+// #428 made `kick_follow` REACHABLE in a live match (`gc_render::player_pose::
+// select` emits it, and a browser run of `tools/browser_match_harness`
+// observed it on a real roster slot at tick 600) without making it VISIBLE:
+// `POSE_CLIP` mapped it onto the `locomotion` clip and nothing in
+// `action_pose.ts` claimed the id, so the rig drew a follow-through exactly as
+// it drew a run. The assertion here was that equality, kept as a stated fact
+// with a test behind it and a note that whoever closed it should flip it.
+//
+// It is flipped. The CLIP mapping is deliberately still `locomotion` -- the
+// follow-through is a root attitude, not limb animation, so there was never a
+// clip to change -- and the leg half of a kick remains #101/#424's.
+describe("player_renderer_3d.poseFor kick_follow", () => {
+  it("no longer renders identically to locomotion: the follow-through carries the mass past the ball", () => {
+    const view: PlayerView = { px: 0, py: 0, speed: 300, phase: 1, gait: 0.3, lean: 0.5 };
+    const opts = { is_keeper: false, controlled: false, facing: new Vec2(1, 0) };
+    // Unchanged, and not an oversight: the difference is a root transform.
+    expect(clipFor("kick_follow")).toBe(clipFor("locomotion"));
+    const follow = poseFor(view, { ...opts, pose: { id: "kick_follow" } }, 1);
+    const running = poseFor(view, { ...opts, pose: { id: "locomotion" } }, 1);
+    expect(follow).not.toEqual(running);
+    // Forward, which is a positive rotation about the character's own x axis.
+    expect(follow.rot["root"]?.[0] ?? 0).toBeGreaterThan(0);
+    expect(running.rot["root"]).toBeUndefined();
+  });
+});
+
+describe("player_renderer_3d.leanTilt", () => {
+  it("is nothing at all for a player with no lean", () => {
+    expect(leanTilt(0, new Vec2(0, 1))).toBeUndefined();
+    expect(leanTilt(Number.NaN, new Vec2(0, 1))).toBeUndefined();
+  });
+
+  it("is a pure ROLL for a player facing across world-X, and a pure PITCH for one facing along it", () => {
+    // Local +X is `(facing.y, -facing.x)` and local +Z is `(facing.x,
+    // facing.y)`, so world +X resolves entirely onto one axis or the other
+    // at these two facings.
+    const across = leanTilt(1, new Vec2(0, 1));
+    expect(across?.x).toBeCloseTo(0, 10);
+    expect(across?.z).toBeCloseTo(-1, 10);
+
+    const along = leanTilt(1, new Vec2(1, 0));
+    expect(along?.x).toBeCloseTo(1, 10);
+    expect(along?.z).toBeCloseTo(0, 10);
+  });
+
+  it("falls back to the unyawed frame -- a pure roll -- when there is no facing to resolve against", () => {
+    // Matches what `characterMesh` actually draws with no facing (`yaw = 0`),
+    // whose local +X IS pitch +x.
+    expect(leanTilt(1, undefined)).toEqual({ x: 0, z: -1 });
+  });
+
+  it("mirrors sign with the lean and clamps beyond the signal's own [-1, 1] range", () => {
+    expect(leanTilt(-1, new Vec2(0, 1))?.z).toBeCloseTo(1, 10);
+    expect(leanTilt(4, new Vec2(0, 1))?.z).toBeCloseTo(-1, 10);
+  });
+});
+
+describe("player_renderer_3d.poseFor lean", () => {
+  const running: PlayerView = { px: 0, py: 0, speed: 300, phase: 0, gait: 0.25, lean: 0 };
+
+  it("tilts the TORSO when a player leans, leaving the root to action_pose.ts", () => {
+    const upright = poseFor(running, baseOptions({ facing: new Vec2(0, 1) }), 1.0);
+    const leaning = poseFor({ ...running, lean: 1 }, baseOptions({ facing: new Vec2(0, 1) }), 1.0);
+    expect(leaning.rot["spine"]).not.toEqual(upright.rot["spine"]);
+    expect(leaning.rot["chest"]).not.toEqual(upright.rot["chest"]);
+    expect(leaning.rot["root"]).toEqual(upright.rot["root"]);
+    // Legs stay exactly where the locomotion clip planted them -- this rig
+    // has no IK to put a slid foot back.
+    expect(leaning.rot["thigh.L"]).toEqual(upright.rot["thigh.L"]);
+    expect(leaning.rot["foot.R"]).toEqual(upright.rot["foot.R"]);
+  });
+
+  it("leans the opposite way for the opposite sign, and not at all at zero", () => {
+    const left = poseFor({ ...running, lean: 1 }, baseOptions({ facing: new Vec2(0, 1) }), 1.0);
+    const right = poseFor({ ...running, lean: -1 }, baseOptions({ facing: new Vec2(0, 1) }), 1.0);
+    const none = poseFor(running, baseOptions({ facing: new Vec2(0, 1) }), 1.0);
+    expect(left.rot["spine"]).not.toEqual(right.rot["spine"]);
+    expect(none.rot["spine"]).not.toEqual(left.rot["spine"]);
+  });
+
+  it("resolves the world-X lean into the character's own frame, so facing changes what leaning looks like", () => {
+    const across = poseFor({ ...running, lean: 1 }, baseOptions({ facing: new Vec2(0, 1) }), 1.0);
+    const along = poseFor({ ...running, lean: 1 }, baseOptions({ facing: new Vec2(1, 0) }), 1.0);
+    expect(across.rot["spine"]).not.toEqual(along.rot["spine"]);
+  });
+
+  it("yields the body to a whole-body action: a keeper dive is never also leaned", () => {
+    // `facing` is across the dive direction so `lateralSign` is nonzero and
+    // the save overlay actually fires (see rig3d/action_pose.ts).
+    const dive = baseOptions({ dive: 1, dive_dir: new Vec2(0, 1), pose: { id: "keeper_dive" }, facing: new Vec2(1, 0) });
+    const still = poseFor(running, dive, 1.0);
+    const sprinting = poseFor({ ...running, lean: 1 }, dive, 1.0);
+    expect(sprinting).toEqual(still);
+  });
+
+  it("is derived per call, never accumulated across frames", () => {
+    const opts = baseOptions({ facing: new Vec2(0, 1) });
+    const first = poseFor({ ...running, lean: 0.7 }, opts, 1.0);
+    const second = poseFor({ ...running, lean: 0.7 }, opts, 1.0);
+    expect(second).toEqual(first);
+  });
+});
+
+// A/B PARITY: the `THREE.AnimationMixer` path (#425) against the procedural
+// sampler it replaces on pitch.ts's call path.
+//
+// This is the assertion the whole rewrite rests on. `poseFor` stays in the
+// file purely to be the reference half of these tests until the visual pass
+// signs off on removing it (#425's last task); if the mixer path drifts from
+// it for a pose whose mapping did NOT change, that is a regression and not a
+// re-tune, and this suite is what says so.
+//
+// The tolerance is the resampling error `rig3d/mixer.ts` documents (the mixer
+// plays clips baked from `clips.sample` at `BAKE_FPS`, because three.js will
+// not cubic-interpolate a quaternion track), widened once for the blend the
+// two layers compose through.
+describe("player_renderer_3d mixer/procedural parity", () => {
+  const PARITY_TOLERANCE = 5e-3;
+
+  function delta(a: MutablePose, b: MutablePose): number {
+    let worst = 0;
+    for (const bone of new Set([...Object.keys(a.rot), ...Object.keys(b.rot)])) {
+      const qa: Quat = a.rot[bone] ?? [0, 0, 0, 1];
+      const qb: Quat = b.rot[bone] ?? [0, 0, 0, 1];
+      const dot = qa[0] * qb[0] + qa[1] * qb[1] + qa[2] * qb[2] + qa[3] * qb[3];
+      const sign = dot < 0 ? -1 : 1;
+      for (let i = 0; i < 4; i += 1) {
+        worst = Math.max(worst, Math.abs((qa[i] ?? 0) - sign * (qb[i] ?? 0)));
+      }
+    }
+    for (const bone of new Set([...Object.keys(a.move), ...Object.keys(b.move)])) {
+      const ma = a.move[bone] ?? [0, 0, 0];
+      const mb = b.move[bone] ?? [0, 0, 0];
+      for (let i = 0; i < 3; i += 1) {
+        worst = Math.max(worst, Math.abs((ma[i] ?? 0) - (mb[i] ?? 0)));
+      }
+    }
+    return worst;
+  }
+
+  function view(speed: number, gait: number, lean = 0): PlayerView {
+    // `animator.basePose` is the clip blend alone, so the sweep below compares
+    // it upright; the whole-pipeline cases pass a real `lean`, which both
+    // paths now route through the same `applyLean` (#428's).
+    return { px: 0, py: 0, speed, phase: 0, gait, lean };
+  }
+
+  // The idle/walk/run blend, which is where three.js's cumulative-weight
+  // accumulation has to reproduce `poseFor`'s two nested `clips.layer` calls
+  // exactly. Swept across the whole speed range, including both thresholds.
+  it("reproduces the locomotion blend at every speed, including both thresholds", () => {
+    for (const speed of [0, 40, 149, 150, 151, 220, 300, 399, 400, 480]) {
+      for (const gait of [0, 0.17, 0.5, 0.83]) {
+        const v = view(speed, gait);
+        const procedural = poseFor(v, baseOptions({ pose: { id: "locomotion" } }), 1.4);
+        const mixer = animator.basePose(v, 1.4);
+        expect(delta(procedural, mixer), `speed ${speed}, gait ${gait}`).toBeLessThan(PARITY_TOLERANCE);
+      }
+    }
+  });
+
+  // Every pose id whose CLIP mapping `rig3d/pose_table.ts` deliberately left
+  // unchanged from `POSE_CLIP`. A difference here means the rewrite moved
+  // something it said it would not.
+  //
+  // Five of them (`contain`, `run_telegraph`, `fatigue`, `settle`,
+  // `kick_follow`) gained a root body attitude in #430, which does not weaken
+  // this: attitudes live in `action_pose.ts`, which both paths call as their
+  // last step, so parity here is the check that they do -- the mixer path is
+  // production and `poseFor` is the oracle, and neither is allowed to be the
+  // only one showing a follow-through.
+  it.each([
+    "locomotion",
+    "contain",
+    "run_telegraph",
+    "fatigue",
+    "keeper_shuffle",
+    "settle",
+    "kick_follow",
+    "combat_guard",
+    "combat_active",
+    "combat_recovery",
+    "combat_aim",
+  ])("reproduces the procedural pose for %s, whose mapping did not change", (id) => {
+    resetAnimation();
+    const v = view(230, 0.42);
+    const opts = baseOptions({ pose: { id } });
+    expect(delta(poseFor(v, opts, 2.6), mixerPoseFor(`parity-${id}`, v, opts, 2.6))).toBeLessThan(PARITY_TOLERANCE);
+  });
+
+  it("reproduces the keeper's possession overrides, which never went through the pose id", () => {
+    resetAnimation();
+    const v = view(60, 0.2);
+    const gather = baseOptions({ holding: true });
+    expect(delta(poseFor(v, gather, 3.1), mixerPoseFor("parity-gather", v, gather, 3.1))).toBeLessThan(PARITY_TOLERANCE);
+    const sling = baseOptions({ throw: 0.65 });
+    expect(delta(poseFor(v, sling, 3.1), mixerPoseFor("parity-sling", v, sling, 3.1))).toBeLessThan(PARITY_TOLERANCE);
+  });
+
+  it("reproduces the whole-body root overlay, which stays action_pose.ts's", () => {
+    resetAnimation();
+    const v = view(180, 0.6);
+    const opts = baseOptions({ pose: { id: "keeper_stretch" }, dive: 0.8, dive_dir: new Vec2(0, 1), facing: new Vec2(1, 0) });
+    expect(delta(poseFor(v, opts, 4.2), mixerPoseFor("parity-dive", v, opts, 4.2))).toBeLessThan(PARITY_TOLERANCE);
+  });
+
+  // LEAN PARITY. Both paths call #428's `applyLean` under #428's
+  // `forOptions` gate -- one implementation, not two tunings that have to
+  // agree. Before this rebase the mixer path had its own root-roll lean, which
+  // #428's review showed left a spine counter-rotation stranded during a dive
+  // (`action_pose.apply` assigns `root`, so the roll was discarded but the
+  // counter survived). Deleting it in favour of #428's spine/chest treatment
+  // is what these two tests pin.
+  it("leans identically on both paths, and the lean actually reaches the pose", () => {
+    resetAnimation();
+    const opts = baseOptions({ pose: { id: "locomotion" }, facing: new Vec2(0.6, 0.8) });
+    const upright = view(240, 0.3, 0);
+    const leaning = view(240, 0.3, 0.85);
+    // It is a real difference, not a no-op that would make the parity below vacuous.
+    expect(delta(poseFor(upright, opts, 5.5), poseFor(leaning, opts, 5.5))).toBeGreaterThan(0.01);
+    expect(delta(poseFor(leaning, opts, 5.5), mixerPoseFor("parity-lean", leaning, opts, 5.5))).toBeLessThan(PARITY_TOLERANCE);
+  });
+
+  it("suppresses the lean on both paths while a whole-body action owns the body", () => {
+    resetAnimation();
+    const dive = baseOptions({ pose: { id: "keeper_dive" }, dive: 1, dive_dir: new Vec2(0, 1), facing: new Vec2(1, 0) });
+    const upright = view(240, 0.3, 0);
+    const leaning = view(240, 0.3, 0.85);
+    // `forOptions` is non-null here, so lean must make NO difference at all --
+    // on either path, and on every bone rather than just `root`.
+    expect(delta(poseFor(upright, dive, 6.5), poseFor(leaning, dive, 6.5))).toBe(0);
+    expect(delta(mixerPoseFor("parity-dive-upright", upright, dive, 6.5), mixerPoseFor("parity-dive-leaning", leaning, dive, 6.5))).toBe(0);
+  });
+
+  // THE OTHER HALF OF THAT GATE, and the regression #430 was most likely to
+  // introduce. `contain`, `fatigue`, `run_telegraph`, `kick_follow` and
+  // `settle` are HELD postures on a player who is still running, not actions
+  // that own the body. If they had been folded into `forOptions` to get their
+  // root transform applied, the test above would have started passing for them
+  // too -- silently switching the balance lean off for five of the commonest
+  // poses on the pitch, in exactly the situation (a defender containing at
+  // speed) where a lean is most visible. So: the attitude reaches the pose AND
+  // the lean survives, on both paths.
+  it.each(["contain", "fatigue", "run_telegraph", "kick_follow", "settle"])(
+    "keeps the balance lean for a running player who is %s -- an attitude is not an action",
+    (id) => {
+      resetAnimation();
+      const opts = baseOptions({ pose: { id }, facing: new Vec2(0.6, 0.8) });
+      const upright = view(240, 0.3, 0);
+      const leaning = view(240, 0.3, 0.85);
+      expect(actionPose.forOptions(opts), "an attitude must not read as an action").toBeNull();
+      expect(delta(poseFor(upright, opts, 7.5), poseFor(leaning, opts, 7.5))).toBeGreaterThan(0.01);
+      expect(
+        delta(mixerPoseFor(`attitude-upright-${id}`, upright, opts, 7.5), mixerPoseFor(`attitude-leaning-${id}`, leaning, opts, 7.5)),
+      ).toBeGreaterThan(0.01);
+      // ...and the attitude itself is there, so the above is not vacuous.
+      // This suite's `delta` spans `move` as well as `rot`.
+      //
+      // `settle` USED TO BE THE EXCEPTION HERE, and the history is the reason
+      // this comment is longer than the assertion. Its whole reading is a root
+      // translation -- a 6.9 cm drop on a rig with no IK and no ground
+      // clearance, which is 6.9 cm of the character's ankles under the turf and
+      // not a crouch at all -- so #439/#444 grounded it and this line asserted
+      // `toBe(0)`: a `settle` that resolved bit-identically to plain
+      // locomotion, with the disclosure written down rather than hidden.
+      // #445 pays for the drop with a knee bend (`rig3d/crouch.ts`), so the
+      // special case is gone and every id here clears the same floor.
+      const plain = baseOptions({ pose: { id: "locomotion" }, facing: new Vec2(0.6, 0.8) });
+      const fromPlain = delta(poseFor(leaning, opts, 7.5), poseFor(leaning, plain, 7.5));
+      expect(fromPlain, `${id} must differ from plain locomotion`).toBeGreaterThan(0.01);
+    },
+  );
+
+  // The `"swing"` branch `poseFor` used to carry was unreachable: no
+  // `POSE_CLIP` entry ever returned it. Removing it is part of #425, and this
+  // pins that no caller regressed into depending on it.
+  it("confirms the removed `swing` branch was unreachable from clipFor", () => {
+    for (const id of Object.keys(POSE_CLIP_IDS)) {
+      expect(clipFor(id)).not.toBe("swing");
+    }
+    expect(clipFor(undefined)).not.toBe("swing");
+  });
+});
+
+// The 12 ids `POSE_CLIP` actually mapped, for the reachability check above.
+const POSE_CLIP_IDS: Readonly<Record<string, true>> = {
+  locomotion: true,
+  contain: true,
+  run_telegraph: true,
+  fatigue: true,
+  keeper_shuffle: true,
+  settle: true,
+  kick_follow: true,
+  combat_guard: true,
+  combat_windup: true,
+  combat_active: true,
+  combat_recovery: true,
+  combat_aim: true,
+};
+
+describe("player_renderer_3d.characterCameraParams", () => {
+  it("centres the frustum so the character lands at the requested screen point", () => {
+    const params = characterCameraParams(640, 360, 40, 1280, 720, (17 * Math.PI) / 180, 1.8);
+    // left/right straddle 0 at sx == vw/2, and similarly for top/bottom at sy == vh/2.
+    expect(params.left + params.right).toBeCloseTo(0, 9);
+    expect(params.top + params.bottom).toBeCloseTo(0, 9);
+  });
+
+  it("shifts the frustum bounds as the requested screen point moves toward the left edge", () => {
+    // left = -sx/ppm, right = (vw-sx)/ppm: moving sx toward 0 pushes both
+    // bounds up (left toward/through 0, right further positive), which is
+    // what re-centres a character drawn nearer the screen's left edge.
+    const centered = characterCameraParams(640, 360, 40, 1280, 720, 0, 1.8);
+    const left = characterCameraParams(100, 360, 40, 1280, 720, 0, 1.8);
+    expect(left.left).toBeGreaterThan(centered.left);
+    expect(left.right).toBeGreaterThan(centered.right);
+  });
+
+  it("elevates the eye above the character's mid-height and looks back down at it", () => {
+    const params = characterCameraParams(640, 360, 40, 1280, 720, Math.PI / 6, 1.8);
+    expect(params.eye[1]).toBeGreaterThan(params.target[1]);
+    expect(params.target).toEqual([0, 0.9, 0]);
+  });
+});
+
+// RENDERTOSPRITE (defect #1's fix, see pitch.ts's file header and scene.ts's
+// class doc comment). A minimal renderer stub is enough to verify this
+// function's OWN contract -- it builds a viewport-sized quad with an owned
+// off-screen render target, and it restores the renderer's prior
+// target/clear state -- without needing a live GL context. What is NOT
+// verified here (or anywhere in this package) is the actual pixel content
+// the off-screen render produces.
+describe("player_renderer_3d.renderToSprite", () => {
+  interface RenderCall {
+    readonly scene: THREE.Scene;
+    readonly camera: THREE.Camera;
+  }
+
+  interface StubRenderer {
+    autoClear: boolean;
+    readonly setRenderTargetCalls: (THREE.WebGLRenderTarget | null)[];
+    readonly renderCalls: RenderCall[];
+    getRenderTarget(): THREE.WebGLRenderTarget | null;
+    setRenderTarget(t: THREE.WebGLRenderTarget | null): void;
+    getClearColor(target: THREE.Color): THREE.Color;
+    getClearAlpha(): number;
+    setClearColor(color: THREE.ColorRepresentation, alpha?: number): void;
+    clear(): void;
+    render(scene: THREE.Scene, camera: THREE.Camera): void;
+  }
+
+  function stubRenderer(): THREE.WebGLRenderer & StubRenderer {
+    let current: THREE.WebGLRenderTarget | null = null;
+    const setRenderTargetCalls: (THREE.WebGLRenderTarget | null)[] = [];
+    const renderCalls: RenderCall[] = [];
+    const stub: StubRenderer = {
+      autoClear: true,
+      setRenderTargetCalls,
+      renderCalls,
+      getRenderTarget: () => current,
+      setRenderTarget: (t) => {
+        current = t;
+        setRenderTargetCalls.push(t);
+      },
+      getClearColor: (target) => target.set(0, 0, 0),
+      getClearAlpha: () => 1,
+      setClearColor: () => {},
+      clear: () => {},
+      // NOT a WebGL mock (see this file's own header and scene.spec.ts's):
+      // this never rasterises anything. It only lets tests below inspect the
+      // EXACT `THREE.Scene`/`THREE.Camera` `renderToSprite` was about to hand
+      // a real renderer -- the same interception-point pattern
+      // scene.spec.ts's `stubRenderer()` uses for `setSize`/`setPixelRatio`.
+      render: (scene, camera) => {
+        renderCalls.push({ scene, camera });
+      },
+    };
+    return stub as unknown as THREE.WebGLRenderer & StubRenderer;
+  }
+
+  const idleView: PlayerView = { px: 0, py: 0, speed: 0, phase: 0, gait: 0, lean: 0 };
+
+  it("skips this environment's assertions if the rigged pass genuinely could not build", () => {
+    // Documents the precondition the rest of this describe block assumes,
+    // rather than silently no-op-ing if a future change to rig3d content
+    // makes `build()` start failing under vitest's "node" environment.
+    expect(available()).toBe(true);
+  });
+
+  it("returns a viewport-sized mesh positioned at the viewport's centre, tagged with its owned render target", () => {
+    const renderer = stubRenderer();
+    const mesh = renderToSprite(renderer, 640, 360, 12, 1280, 720, idleView, baseOptions(), 0);
+    expect(mesh).toBeInstanceOf(THREE.Mesh);
+    if (mesh === undefined) {
+      throw new Error("expected a mesh");
+    }
+    expect(mesh.position.x).toBeCloseTo(640, 9);
+    expect(mesh.position.y).toBeCloseTo(360, 9);
+    expect(mesh.userData["ownedRenderTarget"]).toBeInstanceOf(THREE.WebGLRenderTarget);
+  });
+
+  it("renders into a private off-screen target, never the renderer's own bound target", () => {
+    const renderer = stubRenderer();
+    renderToSprite(renderer, 640, 360, 12, 1280, 720, idleView, baseOptions(), 0);
+    expect(renderer.setRenderTargetCalls.length).toBeGreaterThanOrEqual(2);
+    const offscreenCall = renderer.setRenderTargetCalls[0];
+    expect(offscreenCall).toBeInstanceOf(THREE.WebGLRenderTarget);
+  });
+
+  it("restores the renderer's prior target once done", () => {
+    const renderer = stubRenderer();
+    renderToSprite(renderer, 640, 360, 12, 1280, 720, idleView, baseOptions(), 0);
+    expect(renderer.getRenderTarget()).toBeNull();
+  });
+
+  it("restores the renderer's prior autoClear value once done", () => {
+    const renderer = stubRenderer();
+    renderer.autoClear = false;
+    renderToSprite(renderer, 640, 360, 12, 1280, 720, idleView, baseOptions(), 0);
+    expect(renderer.autoClear).toBe(false);
+  });
+
+  // REGRESSION, found live: players rendered as solid black
+  // silhouettes with no team-colour distinction in a real browser --
+  // invisible to every test above, which never inspects WHAT is inside the
+  // scene `renderToSprite` hands a renderer, only how the renderer is
+  // called. `stubRenderer().render` above now captures its `scene` argument
+  // (a plain object-graph read, no GL touched), which is enough to assert
+  // the two structural facts that were actually broken: a `THREE.Light` was
+  // missing from the scene a `THREE.MeshStandardMaterial` character was
+  // rendered into (PBR materials shade pure black with none), and the two
+  // teams' materials carried only ONE flat colour each instead of a
+  // per-vertex palette (see `materialsForTeam`'s doc comment). This does NOT
+  // prove the rendered pixels are non-black or team-distinguishable --
+  // three.js's actual lighting math is a live-GL question this suite
+  // structurally cannot answer (see file header) -- but a scene with no
+  // light and a material needing one is a defect this test WOULD have
+  // caught before it ever reached a browser.
+  it("renders the character into a scene containing at least one THREE.Light", () => {
+    const renderer = stubRenderer();
+    renderToSprite(renderer, 640, 360, 12, 1280, 720, idleView, baseOptions(), 0);
+    expect(renderer.renderCalls).toHaveLength(1);
+    const call = renderer.renderCalls[0];
+    if (call === undefined) {
+      throw new Error("expected one render call");
+    }
+    const lights = call.scene.children.filter((child): child is THREE.Light => (child as { isLight?: boolean }).isLight === true);
+    expect(lights.length).toBeGreaterThan(0);
+  });
+
+  // The materials stay `MeshStandardMaterial` (a lit, PBR material) rather
+  // than switching to an unlit material as a workaround for the missing
+  // light above -- see player_renderer_3d.ts's LIGHTING comment for why that
+  // is the correct call given the toon-shaded, lit-by-a-directional-key-light
+  // intent (ARCHITECTURE.md §5: "Rendering and materials -- WebGLRenderer, MeshStandardMaterial.").
+  it("shades the character with MeshStandardMaterial, not an unlit material standing in for the missing light", () => {
+    const renderer = stubRenderer();
+    renderToSprite(renderer, 640, 360, 12, 1280, 720, idleView, baseOptions(), 0);
+    const call = renderer.renderCalls[0];
+    if (call === undefined) {
+      throw new Error("expected one render call");
+    }
+    const mesh = call.scene.children.find((child): child is THREE.SkinnedMesh => child instanceof THREE.SkinnedMesh);
+    if (mesh === undefined) {
+      throw new Error("expected a SkinnedMesh in the rendered scene");
+    }
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    expect(materials.length).toBeGreaterThan(0);
+    for (const material of materials) {
+      expect(material).toBeInstanceOf(THREE.MeshStandardMaterial);
+    }
+  });
+
+  // REGRESSION target: the toon shading itself (hand-written GLSL -- bands,
+  // bounce, rim, metal specular, emissive-past-white) was missing before this
+  // change; `materialsForTeam` built plain `MeshStandardMaterial`s with tuned
+  // `roughness`/`metalness` numbers and a fixed emissive accent colour, which
+  // is generic PBR, not this game's look. This suite cannot rasterise a pixel
+  // (see file header), so it checks the one thing it CAN from here: that the
+  // ONE material `renderToSprite` puts into the scene actually has
+  // `rig3d/cel_shader.ts`'s `applyCombinedCelShading` wired onto it (a real,
+  // non-default `onBeforeCompile` and `side === THREE.DoubleSide`, i.e. no
+  // back-face culling) rather than being plain, untouched
+  // `MeshStandardMaterial` relying on PBR defaults. See
+  // rig3d/cel_shader.spec.ts for what the injected shading itself contains.
+  //
+  // Also pins the DRAW-CALL FIX itself (#save-batch): `mesh.material` is a
+  // single `THREE.Material`, never an array. Three.js's `WebGLRenderer` only
+  // iterates `geometry.groups` -- and therefore only issues more than one
+  // draw call for one mesh -- when `.material` is an ARRAY
+  // (`Array.isArray(material)` in `WebGLRenderer.js`'s `projectObject`), so
+  // this one assertion is what actually guarantees one draw call per
+  // character; nothing else in this headless suite can observe a real GPU
+  // draw-call count (no WebGL context here).
+  it("wires rig3d/cel_shader.ts's combined toon shading onto a SINGLE material, not stock MeshStandardMaterial defaults or a per-family array", () => {
+    const renderer = stubRenderer();
+    renderToSprite(renderer, 640, 360, 12, 1280, 720, idleView, baseOptions(), 0);
+    const call = renderer.renderCalls[0];
+    if (call === undefined) {
+      throw new Error("expected one render call");
+    }
+    const mesh = call.scene.children.find((child): child is THREE.SkinnedMesh => child instanceof THREE.SkinnedMesh);
+    if (mesh === undefined) {
+      throw new Error("expected a SkinnedMesh in the rendered scene");
+    }
+    expect(Array.isArray(mesh.material)).toBe(false);
+    const material = mesh.material;
+    if (!(material instanceof THREE.MeshStandardMaterial)) {
+      throw new Error("expected a MeshStandardMaterial");
+    }
+    // Every stock `THREE.Material` has a no-op `onBeforeCompile` by default;
+    // a real hook was assigned only if this one differs from a freshly-
+    // constructed material's own default.
+    expect(material.onBeforeCompile).not.toBe(new THREE.MeshStandardMaterial().onBeforeCompile);
+    expect(material.side).toBe(THREE.DoubleSide);
+  });
+
+  // REGRESSION: the offscreen composite's camera frustum alignment was fine
+  // (verified live-GL), but the returned sprite
+  // rendered upside down under `SceneRoot`'s Y-inverted 2D camera --
+  // `target.texture.flipY` (the line the code previously pointed at) turned
+  // out to be a no-op for render-target textures. The actual fix is
+  // `scale.y = -1` on the returned mesh; this pins that regression
+  // structurally without needing a live GL context to see the pixels.
+  it("flips the returned sprite vertically to counter SceneRoot's Y-inverted camera", () => {
+    const renderer = stubRenderer();
+    const mesh = renderToSprite(renderer, 640, 360, 12, 1280, 720, idleView, baseOptions(), 0);
+    if (mesh === undefined) {
+      throw new Error("expected a mesh");
+    }
+    expect(mesh.scale.y).toBe(-1);
+  });
+
+  // REGRESSION: both teams' rigged characters rendered with the exact same
+  // flat colour (`materialsForTeam` used to read only `palette[0]`, the
+  // "skin" slot, which no theme ever maps to "team" -- see themes.ts's
+  // `SLOTS`/`ColorSlot`). Baking a per-vertex colour attribute from each
+  // team's resolved palette (the fix for this) means the two teams' baked
+  // colour buffers must differ once real team-owned surfaces (cloth, in the
+  // medieval theme fixture content) are included.
+  it("bakes different per-vertex colours for the home and away team", () => {
+    // Both draws share the SAME geometry object (one shared character mesh,
+    // see player_renderer_3d.ts's `build()` doc comment) -- its `color`
+    // attribute is swapped in per draw call by `materialsForTeam`, so it
+    // must be read back immediately after each respective call, in the same
+    // order production code depends on, rather than read at the end.
+    const homeRenderer = stubRenderer();
+    renderToSprite(homeRenderer, 640, 360, 12, 1280, 720, idleView, baseOptions({ team: "home" }), 0);
+    const homeMesh = homeRenderer.renderCalls[0]?.scene.children.find((c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh);
+    if (homeMesh === undefined) {
+      throw new Error("expected a SkinnedMesh in the rendered scene");
+    }
+    const homeColor = Array.from(homeMesh.geometry.getAttribute("color").array);
+
+    const awayRenderer = stubRenderer();
+    renderToSprite(awayRenderer, 640, 360, 12, 1280, 720, idleView, baseOptions({ team: "away" }), 0);
+    const awayMesh = awayRenderer.renderCalls[0]?.scene.children.find((c): c is THREE.SkinnedMesh => c instanceof THREE.SkinnedMesh);
+    if (awayMesh === undefined) {
+      throw new Error("expected a SkinnedMesh in the rendered scene");
+    }
+    const awayColor = Array.from(awayMesh.geometry.getAttribute("color").array);
+
+    expect(awayColor).not.toEqual(homeColor);
+  });
+});
+
+// CHARACTERMESH / PPMFORRADIUS (pitch.ts's single-pass compositing -- see
+// that file's "ONE PASS, ONE DEPTH BUFFER" header section). `characterMesh`
+// replaces `renderToSprite` on pitch.ts's call path: no renderer, no render
+// target, just a posed/coloured/yawed `THREE.SkinnedMesh` in local metre
+// space, pooled per `playerId`. Same GPU-adjacent-but-GL-free testability
+// boundary as the `renderToSprite` suite above.
+describe("player_renderer_3d.characterMesh / ppmForRadius", () => {
+  const idleView: PlayerView = { px: 0, py: 0, speed: 0, phase: 0, gait: 0, lean: 0 };
+
+  it("skips this environment's assertions if the rigged pass genuinely could not build", () => {
+    expect(available()).toBe(true);
+  });
+
+  it("returns a SkinnedMesh, needing no renderer at all", () => {
+    const mesh = characterMesh("p1", idleView, baseOptions(), 0);
+    expect(mesh).toBeInstanceOf(THREE.SkinnedMesh);
+  });
+
+  it("pools the SAME mesh instance for the same playerId across calls, a DIFFERENT instance for a different playerId", () => {
+    const a1 = characterMesh("player-a", idleView, baseOptions(), 0);
+    const a2 = characterMesh("player-a", idleView, baseOptions(), 1);
+    const b1 = characterMesh("player-b", idleView, baseOptions(), 0);
+    expect(a1).toBe(a2);
+    expect(a1).not.toBe(b1);
+  });
+
+  it("poses two different playerIds' meshes independently -- posing one does not clobber the other's skeleton", () => {
+    // A keeper gathering the ball is a strong pose (overrides the upper
+    // body), easy to tell apart from an idle stance by eye in `poseFor`'s own
+    // suite above; here it is enough that the two pooled meshes' bone
+    // matrices end up different when only one player is given that pose.
+    const gathering = characterMesh("keeper", idleView, baseOptions({ holding: true }), 0);
+    const idle = characterMesh("outfield", idleView, baseOptions(), 0);
+    if (gathering === undefined || idle === undefined) {
+      throw new Error("expected two meshes");
+    }
+    const gatheringBones = (gathering as THREE.SkinnedMesh).skeleton.bones.map((b) => b.matrixWorld.elements.slice());
+    const idleBones = (idle as THREE.SkinnedMesh).skeleton.bones.map((b) => b.matrixWorld.elements.slice());
+    expect(gatheringBones).not.toEqual(idleBones);
+
+    // Re-posing "outfield" again afterwards must not have picked up
+    // "keeper"'s gather pose -- each call repositions the SHARED pose-
+    // evaluation rig (`character.rig`) and immediately copies the result
+    // into the CALLER's own pooled bones, so there is no cross-player
+    // leakage even though the rig itself is shared.
+    const idleAgain = characterMesh("outfield", idleView, baseOptions(), 0);
+    const idleAgainBones = (idleAgain as THREE.SkinnedMesh).skeleton.bones.map((b) => b.matrixWorld.elements.slice());
+    expect(idleAgainBones).toEqual(idleBones);
+  });
+
+  it("bakes different per-vertex colours for the home and away team, on separate geometry objects", () => {
+    const home = characterMesh("home-player", idleView, baseOptions({ team: "home" }), 0) as THREE.SkinnedMesh;
+    const away = characterMesh("away-player", idleView, baseOptions({ team: "away" }), 0) as THREE.SkinnedMesh;
+    expect(home.geometry).not.toBe(away.geometry);
+    const homeColor = Array.from(home.geometry.getAttribute("color").array);
+    const awayColor = Array.from(away.geometry.getAttribute("color").array);
+    expect(awayColor).not.toEqual(homeColor);
+  });
+
+  // -------------------------------------------------------------------
+  // CHARACTER VARIANTS (#447)
+  // -------------------------------------------------------------------
+  //
+  // The whole of #447 at this layer, stated as what a caller can observe.
+  // `characterMesh` used to return geometry from one memoised, argument-free
+  // `build()` no matter what it was handed, so every assertion below would
+  // have failed by returning the SAME object.
+  it("builds a different geometry per authored presentation, on the same team", () => {
+    const medieval = characterMesh("v-med", idleView, baseOptions({ team: "home", presentation_id: "medieval_rook_emberguard", loadout_id: "loadout_tournament_sword" }), 0) as THREE.SkinnedMesh;
+    const scifi = characterMesh("v-sci", idleView, baseOptions({ team: "home", presentation_id: "scifi_nova_quell", loadout_id: "loadout_tournament_sword" }), 0) as THREE.SkinnedMesh;
+    expect(medieval.geometry).not.toBe(scifi.geometry);
+    expect(medieval.geometry.getAttribute("position").count).not.toBe(scifi.geometry.getAttribute("position").count);
+  });
+
+  it("builds a different geometry per authored loadout, within one presentation", () => {
+    const shield = characterMesh("v-shield", idleView, baseOptions({ team: "home", presentation_id: "scifi_axi", loadout_id: "loadout_emberguard_shield" }), 0) as THREE.SkinnedMesh;
+    const blade = characterMesh("v-blade", idleView, baseOptions({ team: "home", presentation_id: "scifi_axi", loadout_id: "loadout_vector_blade" }), 0) as THREE.SkinnedMesh;
+    expect(shield.geometry).not.toBe(blade.geometry);
+    expect(shield.geometry.getAttribute("position").count).not.toBe(blade.geometry.getAttribute("position").count);
+  });
+
+  // THE DEFECT, INVERTED. Same presentation, same team, one with a loadout
+  // and one without -- which is exactly the two `scifi_axi` players `gc-data`
+  // authors (`sela_dwin` carries a shield, `ozzo` keeps goal). The keeper's
+  // mesh must be the smaller one, and the assertion is on the vertex count
+  // rather than on object identity so "returned a different object that
+  // happens to be identical" cannot pass it.
+  // `rig3d/presentation_content.spec.ts` makes the stronger claim -- no
+  // `socket_*` vertices at all -- against the geometry builder directly.
+  it("gives a keeper a strictly smaller mesh than the outfielder sharing their presentation", () => {
+    const keeper = characterMesh("v-ozzo", idleView, baseOptions({ team: "home", is_keeper: true, presentation_id: "scifi_axi" }), 0) as THREE.SkinnedMesh;
+    const outfield = characterMesh("v-sela", idleView, baseOptions({ team: "home", presentation_id: "scifi_axi", loadout_id: "loadout_emberguard_shield" }), 0) as THREE.SkinnedMesh;
+    expect(keeper.geometry).not.toBe(outfield.geometry);
+    expect(keeper.geometry.getAttribute("position").count).toBeLessThan(outfield.geometry.getAttribute("position").count);
+  });
+
+  // Two players who really do share a variant must still SHARE the geometry:
+  // the cache is keyed by the variant, not by the player, and losing that
+  // would mean one expensive geometry per player on the pitch instead of one
+  // per distinct kit. `brakka` and `drell` are that pair in `gc-data`; they
+  // are on opposite teams, so this uses one team to isolate the claim from
+  // `geometryForTeam`'s own per-team split.
+  it("shares one geometry between two players whose presentation and loadout agree", () => {
+    const opts = { team: "home", presentation_id: "medieval_rook_emberguard", loadout_id: "loadout_emberguard_shield" } as const;
+    const a = characterMesh("v-share-a", idleView, baseOptions(opts), 0) as THREE.SkinnedMesh;
+    const b = characterMesh("v-share-b", idleView, baseOptions(opts), 0) as THREE.SkinnedMesh;
+    expect(a).not.toBe(b);
+    expect(a.geometry).toBe(b.geometry);
+  });
+
+  // ONE MATERIAL FOR EVERY CHARACTER (see `sharedMaterial`). Keying the
+  // materials cache by variant as well as team would have produced up to
+  // eighteen identical `MeshStandardMaterial`s as a side effect of a change
+  // about GEOMETRY; this is what says it did not.
+  it("shares one material across every variant and both teams", () => {
+    const a = characterMesh("v-mat-a", idleView, baseOptions({ team: "home", presentation_id: "medieval_rook_emberguard", loadout_id: "loadout_tournament_sword" }), 0) as THREE.SkinnedMesh;
+    const b = characterMesh("v-mat-b", idleView, baseOptions({ team: "away", presentation_id: "toy_tock" }), 0) as THREE.SkinnedMesh;
+    expect(Array.isArray(a.material)).toBe(false);
+    expect(a.material).toBe(b.material);
+  });
+
+  it("refuses a presentation id content never authored instead of quietly drawing the first theme", () => {
+    expect(() => characterMesh("v-bogus", idleView, baseOptions({ presentation_id: "not_a_presentation" }), 0)).toThrow(/no theme for presentation id/);
+  });
+
+  it("bakes the facing yaw onto the mesh's own quaternion", () => {
+    const forward = characterMesh("yaw-a", idleView, baseOptions({ facing: new Vec2(0, 1) }), 0) as THREE.SkinnedMesh;
+    const sideways = characterMesh("yaw-b", idleView, baseOptions({ facing: new Vec2(1, 0) }), 0) as THREE.SkinnedMesh;
+    expect(forward.quaternion.equals(sideways.quaternion)).toBe(false);
+  });
+
+  it("ppmForRadius scales linearly with the requested on-screen radius", () => {
+    const small = ppmForRadius(10);
+    const large = ppmForRadius(20);
+    expect(small).toBeDefined();
+    expect(large).toBeDefined();
+    if (small === undefined || large === undefined) {
+      throw new Error("expected both to be defined");
+    }
+    expect(large).toBeCloseTo(small * 2);
+  });
+
+  // DRAW-CALL FIX #1: `build()` used to write vertices in
+  // `geometry.merge`'s own order -- one contiguous run per PART, not per
+  // shading family. `body.ts`'s buildBody/buildKit/buildLoadout interleave
+  // plain/metal/emissive parts (a plain visor next to a metal band next to
+  // an emissive seam), so the geometry-group boundary fired on every
+  // material TRANSITION rather than once per family: dozens of groups for a
+  // ~28-part character. This is invisible without a live GPU --
+  // `THREE.WebGLRenderer.info.render.calls` needs an actual context
+  // -- so this test pins the one structural fact a headless suite CAN see:
+  // `geometry.groups`, three.js's own record of what would have been drawn
+  // per material if this material were ever an array (see the next test for
+  // why it now is not). At most 3 groups -- one per `geometry.MATERIAL` id
+  // actually used by the rig content -- is the fix; any regression back to
+  // "one run per part" would push this well past 3 for a real character.
+  it("pins the fix: geometry.groups collapses to at most 3 (one per shading family), not one per part", () => {
+    const mesh = characterMesh("group-count-check", idleView, baseOptions(), 0) as THREE.SkinnedMesh;
+    expect(mesh.geometry.groups.length).toBeGreaterThan(0);
+    expect(mesh.geometry.groups.length).toBeLessThanOrEqual(3);
+  });
+
+  // Same fix, checked a second, implementation-independent way: read the
+  // actual per-vertex `materialFamily` attribute `applyCombinedCelShading`'s
+  // injected shader branches on (draw-call fix #2, below) and count how many
+  // times the family value CHANGES across the vertex stream. Contiguous
+  // grouping means at most 2 transitions (plain -> metal -> emissive); the
+  // pre-fix interleaved-parts order produced dozens. This does not depend on
+  // `geometry.groups` bookkeeping staying in sync with the vertex data at
+  // all, so it would still catch a regression that silently stopped updating
+  // the groups while leaving the vertex order broken.
+  it("pins the fix a second way: the materialFamily attribute itself has at most 2 value transitions", () => {
+    const mesh = characterMesh("family-contiguity-check", idleView, baseOptions(), 0) as THREE.SkinnedMesh;
+    const materialFamily = mesh.geometry.getAttribute("materialFamily");
+    expect(materialFamily).toBeDefined();
+    let transitions = 0;
+    let previous: number | undefined;
+    for (let i = 0; i < materialFamily.count; i += 1) {
+      const value = materialFamily.getX(i);
+      if (previous !== undefined && value !== previous) {
+        transitions += 1;
+      }
+      previous = value;
+    }
+    expect(transitions).toBeLessThanOrEqual(2);
+  });
+
+  // DRAW-CALL FIX #2: even 3 contiguous groups is still up to 3
+  // draw calls per character, because three.js only iterates
+  // `geometry.groups` -- and therefore only issues more than one draw call
+  // for one mesh -- when `.material` is an ARRAY (`Array.isArray(material)`
+  // in `WebGLRenderer.js`'s `projectObject`). `characterMesh` is the actual
+  // hot path `pitch.ts` calls every frame for every rigged player (unlike
+  // `renderToSprite`/`draw`, kept for parity only), so this is the assertion
+  // that matters for the real defect: a single `THREE.Material`, guaranteeing
+  // ONE draw call regardless of how many groups (fix #1, above) still sit on
+  // the geometry.
+  it("pins the fix: characterMesh's material is a single Material, never an array, guaranteeing one draw call", () => {
+    const mesh = characterMesh("single-material-check", idleView, baseOptions(), 0) as THREE.SkinnedMesh;
+    expect(Array.isArray(mesh.material)).toBe(false);
+    expect(mesh.material).toBeInstanceOf(THREE.MeshStandardMaterial);
+  });
+});

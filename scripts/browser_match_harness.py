@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic screenshot driver for `v2/tools/browser_match_harness`.
+"""Deterministic screenshot driver for `tools/browser_match_harness`.
 
 ## Why this is committed rather than rewritten each time
 
@@ -206,11 +206,11 @@ instrumentation.
 
 Browser lifecycle is not reimplemented here. `serve_dist`, `wait_until`,
 `launch` (and the `bounded_launch` it wraps), `probe_gpu`,
-`resolve_binary_pair` and `build_v2_harness` come from
+`resolve_binary_pair` and `build_harness` come from
 `scripts/browser_render_bench.py`; `quit_browser_bounded` and
-`bounded_log_tail` come from `scripts/browser_determinism.py` through it.
+`bounded_log_tail` come from `scripts/browser_launch.py` through it.
 That is the same import direction those two files already use between
-themselves. `build_v2_harness` grew three defaulted parameters so this file
+themselves. `build_harness` grew three defaulted parameters so this file
 can point it at a different harness directory; its existing call site is
 unchanged.
 """
@@ -231,11 +231,11 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from browser_determinism import bounded_log_tail, quit_browser_bounded  # noqa: E402
+from browser_launch import bounded_log_tail, quit_browser_bounded  # noqa: E402
 from browser_render_bench import (  # noqa: E402
     CONNECT_TIMEOUT_SECONDS,
     GPU_MODES,
-    build_v2_harness,
+    build_harness,
     launch,
     probe_gpu,
     resolve_binary_pair,
@@ -244,12 +244,12 @@ from browser_render_bench import (  # noqa: E402
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-V2_TS = ROOT / "v2" / "ts"
-HARNESS_DIR = ROOT / "v2" / "tools" / "browser_match_harness"
+TS = ROOT / "ts"
+HARNESS_DIR = ROOT / "tools" / "browser_match_harness"
 HARNESS_DIST = HARNESS_DIR / "dist"
 HARNESS_VITE_CONFIG = HARNESS_DIR / "vite.config.ts"
-FRAME_BUFFER_TS = V2_TS / "packages" / "render" / "src" / "frame_buffer.ts"
-ACTION_POSE_TS = V2_TS / "packages" / "render" / "src" / "rig3d" / "action_pose.ts"
+FRAME_BUFFER_TS = TS / "packages" / "render" / "src" / "frame_buffer.ts"
+ACTION_POSE_TS = TS / "packages" / "render" / "src" / "rig3d" / "action_pose.ts"
 
 CANVAS_SELECTOR = "#gl-canvas"
 
@@ -278,7 +278,7 @@ DEFAULT_BOT_SEED = 11
 FRAME_MS = 1000.0 / 60.0 + 1e-9
 
 # Wire-carried closed set, mirroring `PlayerPoseId` in
-# `v2/ts/packages/render/src/frame_buffer.ts` (itself numbered exactly as
+# `ts/packages/render/src/frame_buffer.ts` (itself numbered exactly as
 # `render/player_pose.lua`). Held here so `--pose`/`search` can reject a typo
 # instead of silently scanning for a pose that cannot occur; `--self-test`
 # re-derives the list from that file and fails if the two have drifted.
@@ -1789,7 +1789,7 @@ class BrowserSlot:
     """One browser process, torn down on the way out.
 
     Launch and teardown are `browser_render_bench.launch` and
-    `browser_determinism.quit_browser_bounded` unchanged -- this only holds
+    `browser_launch.quit_browser_bounded` unchanged -- this only holds
     them together so a `with` block cannot leak a driver on an exception.
     """
 
@@ -2100,11 +2100,11 @@ def print_guard(name: str, verdict: dict[str, Any]) -> None:
 
 
 def build_here(skip_wasm_build: bool) -> Path:
-    build_v2_harness(
+    build_harness(
         skip_wasm_build,
         vite_config=HARNESS_VITE_CONFIG,
         dist=HARNESS_DIST,
-        label="v2 live-match harness",
+        label="live-match harness",
     )
     return HARNESS_DIST
 
@@ -2116,6 +2116,15 @@ def build_revision(revision: str, skip_wasm_build: bool, work_root: Path) -> Pat
     and a driver that could only compare two seeds would not answer it.
     Kept out of the way under `build/`, and reused if already present so a
     repeated A/B does not rebuild wasm every time.
+
+    DECISION (repository layout): this hardcodes the current `rust/`/`ts/`/
+    `tools/` layout at the repository root, not the pre-promotion `v2/rust`/
+    `v2/ts`/`v2/tools` layout that existed before the Rust + TypeScript tree
+    was promoted out of `v2/`. `--rev` against a revision from before that
+    promotion will fail here (no `ts/` at the worktree root) rather than
+    silently building the wrong, stale layout. Old pre-promotion A/B
+    baselines are not expected to be re-run against the current harness; if
+    that changes, branch on `(tree / "v2").is_dir()` here instead.
     """
     work_root.mkdir(parents=True, exist_ok=True)
     slug = re.sub(r"[^A-Za-z0-9_.-]", "_", revision)
@@ -2123,16 +2132,21 @@ def build_revision(revision: str, skip_wasm_build: bool, work_root: Path) -> Pat
     if not (tree / ".git").exists():
         print(f"[browser_match_harness] git worktree add --detach {tree} {revision}")
         subprocess.run(["git", "worktree", "add", "--detach", str(tree), revision], cwd=ROOT, check=True)
-    ts = tree / "v2" / "ts"
+    ts = tree / "ts"
+    if not ts.is_dir():
+        raise RuntimeError(
+            f"{revision} has no ts/ at its worktree root -- it predates the Rust + TypeScript "
+            f"tree's promotion out of v2/, which this function does not support (see its own doc)"
+        )
     print(f"[browser_match_harness] pnpm install --frozen-lockfile ({slug})")
     subprocess.run(["pnpm", "install", "--frozen-lockfile"], cwd=ts, check=True)
     if not skip_wasm_build:
         print(f"[browser_match_harness] node packages/wasm/scripts/build_web.mjs ({slug})")
         subprocess.run(["node", str(ts / "packages" / "wasm" / "scripts" / "build_web.mjs")], cwd=ts, check=True)
-    config = tree / "v2" / "tools" / "browser_match_harness" / "vite.config.ts"
+    config = tree / "tools" / "browser_match_harness" / "vite.config.ts"
     print(f"[browser_match_harness] pnpm exec vite build ({slug})")
     subprocess.run(["pnpm", "exec", "vite", "build", "--config", str(config)], cwd=ts, check=True)
-    dist = tree / "v2" / "tools" / "browser_match_harness" / "dist"
+    dist = tree / "tools" / "browser_match_harness" / "dist"
     if not (dist / "index.html").is_file():
         raise RuntimeError(f"building {revision} did not produce {dist / 'index.html'}")
     return dist
@@ -2966,7 +2980,7 @@ def self_test() -> int:
             copy = build / source.relative_to(ROOT)
             copy.parent.mkdir(parents=True, exist_ok=True)
             copy.write_bytes(source.read_bytes())
-        dist = build / "v2" / "tools" / "browser_match_harness" / "dist"
+        dist = build / "tools" / "browser_match_harness" / "dist"
         dist.mkdir(parents=True, exist_ok=True)
         same = mirrored_source_verdict(dist, tree_root=ROOT)
         check("mirrored-source guard passes when the counted build matches this tree", same["ok"], str(same))

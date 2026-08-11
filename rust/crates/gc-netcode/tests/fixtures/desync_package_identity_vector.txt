@@ -1,0 +1,86 @@
+# Cross-language vector for game/online/net_diagnostics.lua's session
+# identity, as it appears in game.online.desync_package.build's
+# `package.session`.
+#
+# In the real Lua, `desync_package.build` takes a live `recorder` and calls
+# `net_diagnostics.export(recorder)` itself, then does
+# `package.session = diagnostics.session` verbatim (desync_package.lua:293,
+# where `diagnostics = net_diagnostics.export(recorder)`; that field is
+# `copy_session(recorder)` in net_diagnostics.lua -- a pure shallow copy of
+# `recorder._session`, which `net_diagnostics.new` builds field-for-field
+# from its `manifest`/`freeze`/`role`/`peer_id` options and never mutates
+# afterward). The Lua spec's "keeps the export and the package agreeing on
+# identity" case (spec/game/online_desync_package_spec.lua) calls
+# `net_diagnostics.export` a second time on the same recorder and checks the
+# package's session agrees with it field by field.
+#
+# `game.online.net_diagnostics` is TypeScript-owned with no Rust port (see
+# ARCHITECTURE.md §1.1), so crates/gc-netcode/src/desync_package.rs's `build`
+# takes an already-exported `Diagnostics` directly (see that module's own
+# doc comment) instead of a recorder -- there is no second `export` call to
+# disagree with in this port, by construction (`session: diagnostics.session`
+# is a straight move, gc-netcode/src/desync_package.rs:910). What a
+# cross-language vector *can* still check, and what this one does check, is
+# the part that is not structural: whether the field-by-field mapping from a
+# manifest+freeze to a session identity, ported independently into
+# `gc_netcode::protocol_fixture`/`gc_netcode::match_driver_fixture`, agrees
+# with what the real Lua's `net_diagnostics.new` actually produces for the
+# same fixture.
+#
+# Captured from the real Lua (`love .` against a scratch copy of core/,
+# sim/, data/, game/ -- see tools/lua_reference/README.md for the
+# harness) for the "2v2" fixture:
+#   local manifest = require("game.online.protocol_fixture").manifest("2v2")
+#   local freeze = require("game.online.match_driver_fixture").freeze("2v2")
+#   local recorder = require("game.online.net_diagnostics").new({
+#       role = "host", peer_id = "host",
+#       manifest = manifest, freeze = freeze,
+#       export_opt_in = true,
+#   })
+#   local session = require("game.online.net_diagnostics").export(recorder).session
+# with every other `net_diagnostics.new` option left at its default
+# (`network_profile_digest = nil` in particular).
+#
+# Asserted by crates/gc-netcode/tests/desync_package.rs's
+# `keeps_the_export_and_the_package_agreeing_on_identity`, which builds the
+# equivalent `SessionIdentity` in Rust from `gc_netcode::protocol_fixture`
+# and `gc_netcode::match_driver_fixture` -- both already-ported,
+# field-for-field mirrors of the Lua modules that produced this vector --
+# passes it through `desync_package::build`, and checks the resulting
+# `Package.session` against every line below.
+#
+# Format: one field per non-comment, non-blank line, tab-separated:
+#   field_name<TAB>value
+# `nil` denotes a field the Lua exported as `nil` (`network_profile_digest`,
+# here, since this fixture never negotiates a network profile). Every other
+# value is the field's Lua `tostring()`, except numbers, which are printed
+# with `%.17g` (round-trips to the identical f64/i64 exactly); every numeric
+# field this record actually carries is integral.
+
+session_id	session_alpha
+peer_id	host
+role	host
+match_mode	2v2
+combat_status	provisional_114
+manifest_id	848243acdeb8de5a
+assignment_id	2e7d7b52c4b1b726
+countdown_id	countdown.1
+build_id	build.97b60ea
+source_id	source.97b60ea
+content_id	content.omp3.v1
+tuning_id	tuning.omp3.v1
+match_config_id	match_config.direct_host.v1
+fixture_id	fixture.default_mixed.v1
+arena_id	arena.goliseo
+combat_rules_id	combat_interaction.accepted_2026_07_23
+gameplay_ai_policy_id	gameplay_ai.combat.v1
+network_profile_digest	nil
+protocol_version	1
+input_version	2
+snapshot_version	13
+tape_version	2
+combat_schema_version	3
+seed	20001
+tick_rate	60
+duration_ticks	7200
+max_goals	99
