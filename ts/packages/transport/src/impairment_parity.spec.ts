@@ -16,6 +16,21 @@
 // early -- each of which makes browser evidence disagree with the native
 // matrix while both look green.
 //
+//
+// ## WHAT THIS DIFFERENTIAL IS NOT
+//
+// The two implementations are checked against ONE SHARED GOLDEN LITERAL that
+// is duplicated in both files -- not against each other's live output. Both
+// sides really do the work to reproduce it and gate 0c keeps the two copies
+// byte-identical, so drift after the golden was captured is caught. But a bug
+// present in BOTH implementations at the moment the golden was captured would
+// be baked into the golden and invisible here forever.
+//
+// That residual risk is covered by reading the native source directly, not by
+// this file. Do not let the word "differential" imply more than it delivers:
+// if the two implementations are ever changed together, re-derive the golden
+// from the Rust side and re-read `network_conditions.rs` while doing it.
+////
 // See the Rust file's header for the transcript's grammar.
 
 import { describe, expect, it } from "vitest";
@@ -160,6 +175,10 @@ function runSingleSlot(scenario: ScenarioSpec): string {
   release(drainTick(scenario));
 
   expect(link.pendingCount()).toBe(0);
+  // The scripted loop opens every tick it sends on, so the transcript's send
+  // ticks mean what they say. A nonzero count here would mean the transcript
+  // was captured against a clock running behind the loop that drove it.
+  expect(link.impairmentCounters().unclocked_sends).toBe(0);
   return transcriptFor(scenario, sends, deliveries, { ...link.impairmentCounters() });
 }
 
@@ -220,6 +239,7 @@ function runTwoSlots(scenario: ScenarioSpec): string {
   release(drainTick(scenario));
 
   expect(link.pendingCount()).toBe(0);
+  expect(link.impairmentCounters().unclocked_sends).toBe(0);
   return transcriptFor(scenario, sends, deliveries, { ...link.impairmentCounters() });
 }
 

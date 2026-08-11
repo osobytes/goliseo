@@ -33,6 +33,18 @@
 //! A `deliveries` entry is the delivered packet's sequence, suffixed `d`
 //! when it is the impairment-created duplicate copy.
 //!
+//! ## What this differential is not
+//!
+//! The two implementations are checked against ONE SHARED GOLDEN LITERAL that
+//! is duplicated in both files -- not against each other's live output. Both
+//! sides really do the work to reproduce it, and gate 0c keeps the two copies
+//! byte-identical, so drift after the golden was captured is caught. But a bug
+//! present in BOTH implementations at the moment the golden was captured would
+//! be baked into the golden and invisible here forever. That residual risk is
+//! covered by reading this module against `network_conditions.rs` directly,
+//! not by this test: if the two implementations are ever changed together,
+//! re-derive the golden from this side and re-read the source while doing it.
+//!
 //! Run `cargo test -p gc-sim --test browser_impairment_parity -- --nocapture`
 //! to print the transcript this scenario set produces.
 
