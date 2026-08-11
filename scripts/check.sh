@@ -110,6 +110,29 @@
 #      is the thing that was tested". See self_test()'s
 #      stale_web_artifact_scenario.
 #
+# WHAT THIS DELIBERATELY DOES NOT GATE, AND WHERE THAT RUNS INSTEAD.
+# Stated here rather than left to be discovered, because AGENTS.md §9's
+# mirror rule only means anything if the exceptions are visible from both
+# sides:
+#   - scripts/check_rollback_native.sh -- the COMPLETE OMP-2 native rollback
+#     validation matrix and the soak matrix (#469). Native is 66 cases, four
+#     network profiles x three seeds, including twelve 7,201-tick
+#     complete-fixture runs; measured at 325.9s in a debug build, 310.2s of
+#     which is those twelve. Soak is ten more cases, 140.7s.
+#     54 of Native's 66 DO run inside gate 3 below, as ordinary un-ignored
+#     tests, for 12.3s of wall clock: the 42-case scenario layer (all nine
+#     authored game moments, the combat fixture and the four combat-load
+#     fixtures, at the stress profile, on all three seeds) and the 12
+#     `combat-{profile}-{seed}` cases covering the combat fixture's
+#     network-profile dimension. Only the twelve complete-fixture cases, and
+#     the ten soak cases, are deferred -- to .github/workflows/ci.yml's
+#     `rollback-native-matrix` job (workflow_dispatch; there is no
+#     `schedule:` trigger in this repository yet -- that is #472's). That
+#     deferred set is COMPUTED and asserted by the native test itself rather
+#     than only described here, because this paragraph had the count wrong
+#     once already. Run it locally with
+#     `./scripts/check_rollback_native.sh`.
+#
 # `./scripts/check.sh`              -- run every gate above
 # `./scripts/check.sh --self-test`  -- prove this script can go red
 #

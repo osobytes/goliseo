@@ -2,20 +2,40 @@
 //! adapter. Runtime clocks, process memory, browser identity, and
 //! game-layer consumers remain outside this module.
 //!
-//! ## Scope note
+//! ## Which suites are executed, and by what (#469)
 //!
-//! This module's own campaign machinery (`new_campaign`/`step_campaign`) is
-//! complete — every suite ("native", "browser-full", "browser-stress",
-//! "late-window", "soak") builds its case list from
-//! `crate::determinism_evidence::fixture_tape`, `crate::rollback_lab`, and
-//! `gc_data::omp2_rollback_validation`, all available. What is not exercised
-//! by the test suite is the expensive suites themselves
-//! (`plan_cases("native" | "soak")` alone builds dozens of multi-hundred-tick
-//! cases): `tests/rollback_validation.rs` only runs the cheap, fully
-//! self-contained assertions (`config()`, `profile_digest()`) plus the
-//! two-case `"late-window"` suite that `new_campaign`/`step_campaign` use
-//! for their own case. Report this precisely — the module is complete, the
-//! expensive suites are unverified by that test run, not "blocked".
+//! This module's campaign machinery (`new_campaign`/`step_campaign`) is
+//! complete — every suite ([`RollbackValidationSuite::Native`],
+//! `BrowserFull`, `BrowserStress`, `LateWindow`, `Soak`) builds its case
+//! list from `crate::determinism_evidence::fixture_tape`,
+//! `crate::rollback_lab`, and `gc_data::omp2_rollback_validation`. Building
+//! a plan is not running it, so track the two separately:
+//!
+//! - `LateWindow`, `BrowserStress` and `CombatProfiles` are **executed on
+//!   every PR** by `tests/rollback_validation.rs`, inside
+//!   `cargo test --workspace`. `BrowserStress`'s plan is pure CPU despite
+//!   its name, and is exactly the scenario layer `Native` embeds once per
+//!   authored network seed; `CombatProfiles` is exactly `Native`'s twelve
+//!   `combat-{profile}-{seed}` cases. Together, 54 of `Native`'s 66 cases.
+//! - `Native` is **executed in full** by an `#[ignore]`d test in the same
+//!   file, driven by `scripts/check_rollback_native.sh` and
+//!   `.github/workflows/ci.yml`'s on-demand `rollback-native-matrix` job.
+//!   Count its arms rather than eyeballing them: the first loop pushes
+//!   **two** cases per (profile, seed) — `full-…` *and* `combat-…` — so it
+//!   is 4 x 3 x 2 = 24, not 12, and the second loop adds 3 x 14 = 42. The
+//!   twelve `combat-{profile}-{seed}` cases in that 24 are what
+//!   `CombatProfiles` now covers per PR, which leaves the twelve 7,201-tick
+//!   `complete_fixture` cases as the only thing this suite adds.
+//! - `Soak` is executed by the same on-demand job. Note what that does and
+//!   does not mean: its ten cases converge, but the property the name
+//!   promises — retained memory not growing across forced-GC checkpoints —
+//!   is a runtime measurement this crate cannot take. `soak_samples` reaches
+//!   a completed case as a label; nothing here weighs anything. #472 owns
+//!   the real soak.
+//! - `BrowserFull`'s plan is a strict subset of `Native`'s
+//!   (`full-{profile}-{seed}` plus `combat-{profile}-{seed}`), so those
+//!   cases are covered by the run above; what is *not* covered is executing
+//!   them in a browser, which is #472's.
 //!
 //! ## No manual deep-copy helpers, as elsewhere
 //!
@@ -52,6 +72,23 @@ pub const SCHEMA: i64 = 1;
 pub enum RollbackValidationSuite {
     /// The full local/CI matrix.
     Native,
+    /// The combat determinism fixture across every authored full-suite
+    /// network profile and seed — the profile dimension of
+    /// [`Native`](RollbackValidationSuite::Native)'s
+    /// `combat-{profile}-{seed}` cases, and nothing else.
+    ///
+    /// Extracted as its own suite by #469 so it can gate every PR. `Native`
+    /// pairs each of those combat cases with a 7,201-tick
+    /// `complete_fixture` case in the same loop, and it is only that
+    /// pairing that made them expensive to run: the combat fixture itself
+    /// is 80 ticks. Before this existed, the combat fixture ran under
+    /// `stress` on every PR and under `clean`, `omp0_parity` and
+    /// `playable` only when a human dispatched the on-demand matrix — and
+    /// those are not slower versions of one another. Per
+    /// `gc_data::network_profiles`, `clean` is zero-delay, a
+    /// near-degenerate rollback path, so it exercises different code, not
+    /// the same code more slowly.
+    CombatProfiles,
     /// One profile/seed pair, sharded for a browser run.
     BrowserFull,
     /// The stress-profile scenario matrix, sharded for a browser run.
@@ -777,6 +814,27 @@ fn scenario_cases(
     cases
 }
 
+/// One `combat-{profile}-{seed}` case.
+///
+/// Shared by the `Native` and `CombatProfiles` arms of [`plan_cases`] so the
+/// case a PR runs and the case the on-demand matrix runs are the same case,
+/// by construction, rather than two hand-mirrored copies that could drift
+/// into asserting different things under the same id.
+fn combat_profile_case(
+    combat_tape: &InputTape,
+    profile_name: &str,
+    network_seed: i64,
+) -> RollbackValidationCaseSpec {
+    case_spec(
+        format!("combat-{profile_name}-{network_seed}"),
+        "combat",
+        clone_tape(combat_tape),
+        lab_options(profile_name, network_seed, None),
+        false,
+        None,
+    )
+}
+
 fn combat_load_cases(network_seed: i64, tune: &Tuning) -> Vec<RollbackValidationCaseSpec> {
     let stress_profile = omp2_rollback_validation::DATA.stress_profile;
     omp2_rollback_validation::DATA
@@ -799,8 +857,8 @@ fn combat_load_cases(network_seed: i64, tune: &Tuning) -> Vec<RollbackValidation
 }
 
 /// Build the complete case plan for `suite`. Every suite's case list is
-/// complete; see the module doc comment for which ones
-/// `tests/rollback_validation.rs` actually exercises.
+/// complete; see the module doc comment for which ones are actually
+/// executed, and where.
 ///
 /// # Panics
 ///
@@ -827,13 +885,10 @@ fn plan_cases(
                         false,
                         None,
                     ));
-                    cases.push(case_spec(
-                        format!("combat-{profile_name}-{network_seed}"),
-                        "combat",
-                        clone_tape(&combat_tape),
-                        lab_options(profile_name, network_seed, None),
-                        false,
-                        None,
+                    cases.push(combat_profile_case(
+                        &combat_tape,
+                        profile_name,
+                        network_seed,
                     ));
                 }
             }
@@ -856,6 +911,18 @@ fn plan_cases(
                     None,
                 ));
                 cases.extend(combat_load_cases(network_seed, tune));
+            }
+        }
+        RollbackValidationSuite::CombatProfiles => {
+            let combat_tape = combat_validation_tape(&omp2_rollback_validation::DATA, tune);
+            for profile_name in omp2_rollback_validation::DATA.full_profiles {
+                for &network_seed in omp2_rollback_validation::DATA.network_seeds {
+                    cases.push(combat_profile_case(
+                        &combat_tape,
+                        profile_name,
+                        network_seed,
+                    ));
+                }
             }
         }
         RollbackValidationSuite::BrowserFull => {
@@ -1123,8 +1190,7 @@ fn complete_case(
 /// Panics if `suite` requires `options.profile_name`/`.network_seed` and
 /// they are missing, or if `suite`'s case plan is empty (producer
 /// invariants, ARCHITECTURE.md §3 rule 5). Every suite builds its full case plan; see
-/// the module doc comment for which ones `tests/rollback_validation.rs`
-/// actually exercises within this pass's time budget.
+/// the module doc comment for which ones are actually executed, and where.
 #[must_use]
 pub fn new_campaign(
     suite: RollbackValidationSuite,
