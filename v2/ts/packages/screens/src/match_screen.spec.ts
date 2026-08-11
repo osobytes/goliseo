@@ -48,7 +48,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Vec2 } from "@gc/core";
 import { bindings, inputSample } from "@gc/input";
 import type { KeyboardState } from "@gc/input";
-import { cameraFollow, releaseFollow, replay } from "@gc/render";
+import { cameraFollow, player3dVariantBuildCount, releaseFollow, replay } from "@gc/render";
 import type { replayTypes } from "@gc/render";
 import { MatchScreen, MatchScreenAsRealMatchScreen } from "./match.ts";
 import type {
@@ -806,5 +806,112 @@ describe("match screen release follow-through (tier 3)", () => {
     screen.update(1 / 60);
 
     expect(releaseFollow.windows()).toEqual({});
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CHARACTER PRE-WARM WIRING (#447 follow-up)
+// ---------------------------------------------------------------------------
+//
+// `player_renderer_3d_prewarm.spec.ts` (in `@gc/render`) proves the MECHANISM:
+// given a roster, `prewarmCharacters` builds its variants and a subsequent
+// draw builds none. That suite cannot prove anything about the CALL SITE, and
+// the call site is the half that regresses -- deleting
+// `MatchScreen.prewarmCharacters()` leaves every assertion over there green
+// while every real match goes back to building nine geometries inside its
+// first drawn frame.
+//
+// So this block asserts the wiring, and only the wiring: constructing a
+// `MatchScreen` over a host with real content ids builds geometry, and does so
+// BEFORE `draw()` is ever called.
+describe("match screen character pre-warm (#447)", () => {
+  // Two `scifi_axi` slots -- one a keeper carrying nothing, one an outfielder
+  // with a shield -- plus a medieval slot: three distinct variants from three
+  // players, mirroring `gc-data`'s own authored content.
+  class ContentfulHost extends FakeSimHost {
+    override roster(): RenderFrameRoster {
+      return {
+        ids: ["ozzo", "sela_dwin", "brakka"],
+        teams: ["home", "home", "away"],
+        is_keeper: [true, false, false],
+        presentation_ids: ["scifi_axi", "scifi_axi", "medieval_rook_emberguard"],
+        loadout_ids: [undefined, "loadout_emberguard_shield", "loadout_emberguard_shield"],
+      };
+    }
+  }
+
+  it("builds this match's character geometry at construction, before any frame is drawn", () => {
+    const before = player3dVariantBuildCount();
+    const screen = new MatchScreen({
+      createHost: (): SimHostPort => new ContentfulHost(),
+      renderer: noopRenderer,
+      keyboard: fakeKeyboard({}),
+    });
+    const afterConstruction = player3dVariantBuildCount();
+
+    // NON-VACUOUS: the roster really does carry three distinct variants, so
+    // "built at construction" is a statement about work that exists.
+    expect(afterConstruction - before, "three players, three distinct variants, all built up front").toBe(3);
+
+    // And the frame that follows costs nothing. `noopRenderer` does not reach
+    // `pitch.draw`, so this is a weaker statement than the render package's
+    // own suite makes -- it is here to pin the ORDER (construction first,
+    // draw after), which is the property this call site owns.
+    screen.draw();
+    expect(player3dVariantBuildCount(), "and drawing adds none").toBe(afterConstruction);
+  });
+
+  // A REMATCH DECODES A NEW ROSTER, so the pre-warm has to run again. Driven
+  // through the public "R" path (`restart` itself is private), with a factory
+  // that hands out a DIFFERENT roster the second time -- so the assertion is
+  // about geometry that genuinely did not exist before, not about a call that
+  // could be deleted without any number changing.
+  it("re-warms on a rematch, whose roster may not be the one already built", () => {
+    class SecondMatchHost extends FakeSimHost {
+      override roster(): RenderFrameRoster {
+        return {
+          ids: ["mika_olu", "krag"],
+          teams: ["home", "away"],
+          is_keeper: [false, false],
+          presentation_ids: ["toy_tock", "toy_moxie_modular"],
+          loadout_ids: ["loadout_foam_champion", "loadout_pulse_blaster"],
+        };
+      }
+    }
+    let created = 0;
+    let first: ContentfulHost | undefined;
+    const screen = new MatchScreen({
+      createHost: (): SimHostPort => {
+        created += 1;
+        if (created === 1) {
+          first = new ContentfulHost();
+          return first;
+        }
+        return new SecondMatchHost();
+      },
+      renderer: noopRenderer,
+      keyboard: fakeKeyboard({}),
+    });
+    const afterFirst = player3dVariantBuildCount();
+
+    // "R" only rematches once the match is over, same precondition every
+    // other restart case in this file uses.
+    if (first === undefined) {
+      throw new Error("expected the first host to have been created");
+    }
+    first.hud.finished = true;
+    screen.event({ kind: "key", key: "r" });
+    const afterRematch = player3dVariantBuildCount();
+    expect(created, "the rematch really did build a second host").toBe(2);
+    expect(afterRematch - afterFirst, "the rematch's two new variants are built at restart, not on its first frame").toBe(2);
+
+    screen.draw();
+    expect(player3dVariantBuildCount(), "so the rematch's first frame builds nothing either").toBe(afterRematch);
+  });
+
+  it("is a no-op for the content-free fakes every other case in this file uses", () => {
+    const before = player3dVariantBuildCount();
+    new MatchScreen({ createHost: (): SimHostPort => new FakeSimHost(), renderer: noopRenderer, keyboard: fakeKeyboard({}) });
+    expect(player3dVariantBuildCount(), "a roster with no presentation ids builds nothing").toBe(before);
   });
 });

@@ -52,6 +52,11 @@ function frame(overrides: Partial<RenderFrame> = {}): RenderFrame {
         [1, 1, 1],
       ],
       ids: ["home-1", "away-1"],
+      // #447: real authored content ids, so this fixture drives the same
+      // path a live roster does -- an outfielder carrying a loadout and a
+      // player carrying none.
+      presentation_ids: ["medieval_rook_emberguard", "scifi_axi"],
+      loadout_ids: ["loadout_emberguard_shield", undefined],
     },
     players: emptyPlayers(2),
     ball: { x: 480, y: 270, z: 0, visible: true },
@@ -613,6 +618,22 @@ function luaDifferentialFrame(): RenderFrame {
         [0.9, 0.5, 0.2],
       ],
       ids: ["home-1", "away-kp", "home-2"],
+      // #447, AND THE ONE PLACE THE LUA DIVERGENCE SURFACES IN A TEST.
+      // `render/frame.lua`'s roster has no presentation or loadout columns at
+      // all -- that divergence is deliberate and is the whole point of #447
+      // being v2-only -- so the Lua capture this frame is compared against
+      // could not have consumed these two fields, and the assertion loop
+      // below does not compare them. Every field it DOES compare is
+      // unaffected by what is written here.
+      //
+      // Real ids rather than empty strings, because an empty
+      // `presentation_id` is now a hard error at three separate layers
+      // (`encode_roster`, `decodeRoster`, `variantFor`), precisely so it can
+      // never resolve to the preview default's sword and shield. A fixture
+      // relying on the old "empty means unwired" behaviour would be encoding
+      // the defect into the differential.
+      presentation_ids: ["medieval_rook_emberguard", "scifi_axi", "toy_tock"],
+      loadout_ids: ["loadout_tournament_sword", undefined, "loadout_pulse_blaster"],
     },
     players: {
       count: 3,

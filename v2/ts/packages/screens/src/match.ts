@@ -32,7 +32,7 @@
 import { combatFeedback, matchEventBatch } from "@gc/presentation";
 import type { CombatEvent, CombatFeedbackState, MatchEvent, RollbackEventDiff, RollbackWrappedEvent } from "@gc/presentation";
 import { Vec2 } from "@gc/core";
-import { cameraFollow, correctionSmoothing, player3dResetAnimation, releaseFollow, viewState } from "@gc/render";
+import { cameraFollow, correctionSmoothing, player3dPrewarmCharacters, player3dResetAnimation, releaseFollow, viewState } from "@gc/render";
 import type { correctionSmoothingTypes, replayTypes } from "@gc/render";
 import type { LifecyclePayload } from "./online_match_model.ts";
 import type { GameSettings } from "./content.ts";
@@ -1114,6 +1114,55 @@ export class MatchScreen {
       this.host = ports.createHost();
     }
     this.capture = this.newCapture();
+    // #447: build this match's character geometry HERE, not on frame 1.
+    //
+    // A roster crosses the wire ONCE PER MATCH and both sim hosts memoise the
+    // decode, so the complete set of distinct `(theme, figure, loadout)`
+    // variants is knowable the instant a host exists. Left to the renderer's
+    // own laziness it is discovered inside `pitch.draw`'s depth-sorted loop
+    // instead, which calls `characterMesh` -- and therefore `build()` --
+    // synchronously for every rostered player on every frame: the first frame
+    // of a match paid for the whole starting roster's geometry back to back,
+    // measured at ~58 ms across the two fixture teams' nine variants, on the
+    // very frame the pitch appears.
+    //
+    // Doing it at construction puts that cost in the screen transition, where
+    // a pause is expected and invisible. Deliberately NOT wrapped in a
+    // try/catch: unknown content should fail here, at match setup, rather
+    // than mid-match on the frame that player first appears.
+    this.prewarmCharacters();
+  }
+
+  /**
+   * Build the character geometry this match's roster will ask for, before any
+   * frame is drawn. See the call in the constructor for why this is not left
+   * to the renderer's own laziness.
+   *
+   * A no-op for a host whose roster carries no presentation ids -- the fake
+   * hosts throughout this package's own suites return `{}` -- so it costs
+   * nothing outside a real match.
+   */
+  private prewarmCharacters(): void {
+    // ALL THREE HOST KINDS, with no exclusion to justify. `SimHostPort`,
+    // `OnlineHostPort` and `RollbackHostPort` each declare `roster()`, so
+    // this needs no special case -- and an earlier revision of this method
+    // asserted, wrongly, that `RollbackHostPort` had no such method and
+    // skipped the laboratory on that basis. It declares `roster()` beside its
+    // `frame()`, exactly as the other two ports do.
+    //
+    // The laboratory's roster IS degenerate today: every `RollbackHostPort`
+    // implementation in the tree -- this package's own fakes and `@gc/app`'s
+    // `RealRollbackHost` over the real wasm `RollbackPlayableLab` -- returns
+    // `{}`, which `prewarmCharacters` treats as "nothing to warm". So this
+    // call does nothing there right now. It is made anyway rather than
+    // guarded: an empty roster is already a documented no-op, and the day the
+    // laboratory grows a real one it gets warmed for free instead of needing
+    // somebody to remember an exclusion.
+    const host: Pick<SimHostPort, "roster"> | undefined = this.onlineHost ?? this.host ?? this.rollbackHost;
+    if (host === undefined) {
+      throw new Error("match screen: constructed with no host to pre-warm (unreachable -- construction builds exactly one)");
+    }
+    player3dPrewarmCharacters(host.roster());
   }
 
   // `rollback_playable_lab`'s own combat-companion invariant, enforced at
@@ -1479,6 +1528,15 @@ export class MatchScreen {
       this.lastScore = 0;
       this.lastHome = 0;
     }
+    // A restart builds a NEW host and therefore a new roster decode, so the
+    // pre-warm runs again (#447) -- outside the branch, so the rollback
+    // laboratory is covered on the same terms as everything else (see
+    // `prewarmCharacters`). Idempotent when the roster is unchanged: every
+    // variant is already cached and this builds nothing. The case that
+    // matters is when it is NOT unchanged -- a rematch with different teams
+    // would otherwise rediscover its geometry inside the first drawn frame,
+    // exactly as a cold start used to.
+    this.prewarmCharacters();
     this.replayState = undefined;
     this.renderSmoothing = undefined;
     viewState.reset();

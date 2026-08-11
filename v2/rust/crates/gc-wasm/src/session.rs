@@ -706,9 +706,17 @@ impl Session {
         self.with_entry(|entry| frame_buffer::encode_roster(&entry.roster).0)
     }
 
-    /// Match-constant roster ids and display names
+    /// Match-constant roster STRING columns
     /// (`gc_render::frame_buffer::encode_roster`'s string half, a
     /// newline-joined blob per that function's documented format).
+    ///
+    /// THE JS NAME UNDERSTATES THE BLOB SINCE #447: it carries `id`, `name`,
+    /// `presentation_id` and `loadout_id` per slot
+    /// (`gc_render::frame_buffer::ROSTER_STRING_FIELD_COUNT`), not two
+    /// strings. Deliberately not renamed — every browser host and both dev
+    /// tools call this accessor, and `decodeRoster` on the far side is the
+    /// authority on the layout, with a producer/reader disagreement failing
+    /// loudly on the part count rather than mis-parsing.
     #[wasm_bindgen(js_name = rosterIdsAndNames)]
     pub fn roster_ids_and_names(&self) -> String {
         self.with_entry(|entry| frame_buffer::encode_roster(&entry.roster).1)

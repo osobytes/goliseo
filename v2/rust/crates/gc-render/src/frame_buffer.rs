@@ -43,8 +43,10 @@
 //!    roster lookups of an index that is already in the block
 //!    (`hud_controlled`, the event's `slot`). They are dropped from the
 //!    frame block and recovered from the roster, which crosses once.
-//!    [`RenderFrameRoster`]'s own `ids` and `names` cross once too, as a
-//!    newline-joined blob beside its numeric block.
+//!    [`RenderFrameRoster`]'s own string columns — `ids`, `names`,
+//!    `presentation_ids` and `loadout_ids` — cross once too, as a
+//!    newline-joined blob beside its numeric block. See
+//!    [`ROSTER_STRING_FIELD_COUNT`].
 //!
 //! WHAT IS NOT CARRIED: [`RenderFrame::combat`]. It is the one disclosed
 //! nested exception in [`crate::frame`] — a combat telegraph model with
@@ -117,9 +119,40 @@ pub const EVENT_FIELD_COUNT: usize = 15;
 /// Roster block header word count.
 pub const ROSTER_HEADER_WORDS: usize = 7;
 
-/// Roster block per-slot field count. Its `ids`/`names` travel as a
-/// separate newline-joined blob, not in this numeric block.
+/// Roster block per-slot field count. Its string fields travel as a
+/// separate newline-joined blob, not in this numeric block — see
+/// [`ROSTER_STRING_FIELD_COUNT`].
 pub const ROSTER_FIELD_COUNT: usize = 7;
+
+/// Per-slot string count in the roster's newline-joined blob, in the order
+/// [`encode_roster`] writes them: `id`, `name`, `presentation_id`,
+/// `loadout_id`.
+///
+/// SEPARATE FROM [`ROSTER_FIELD_COUNT`], AND SEPARATELY VERSIONED IN
+/// PRACTICE. `ROSTER_FIELD_COUNT` is stamped into the numeric block (word
+/// index 6) and hard-asserted by [`decode_roster`]; this count is not
+/// stamped anywhere, because the blob has no header of its own — its length
+/// is checked against `count * ROSTER_STRING_FIELD_COUNT` instead, which is
+/// the same protection by a different route (a producer and reader that
+/// disagree fail loudly on the part count, they do not mis-parse).
+///
+/// WHY THE NEW #447 FIELDS WENT HERE AND NOT INTO THE NUMERIC BLOCK.
+/// `presentation_id` and `loadout_id` are strings; the numeric block holds
+/// doubles only, so carrying them there would mean inventing a second
+/// enum numbering for content ids that `gc-data` already keys by string.
+/// It would also break the one differential test that pins this wire
+/// against the real Lua (`tests/frame_buffer_differential.rs`), which
+/// compares the numeric block word for word against a captured fixture and
+/// whose first assertion is a word-count equality. The blob is discarded by
+/// that test (`let (roster_words, _digest) = ...`) by explicit, documented
+/// design, so growing it changes nothing the fixture pins.
+///
+/// [`LAYOUT_VERSION`] IS DELIBERATELY NOT BUMPED FOR THIS. It is stamped as
+/// word index 1 of both blocks and is therefore itself part of what that
+/// fixture compares, so bumping it would fail the differential — and the
+/// thing `LAYOUT_VERSION` guards, the numeric layout, is byte-for-byte
+/// unchanged here. See this module's VERSIONING note.
+pub const ROSTER_STRING_FIELD_COUNT: usize = 4;
 
 fn bw(value: bool) -> f64 {
     if value { 1.0 } else { 0.0 }
@@ -620,19 +653,29 @@ pub fn encode(frame: &RenderFrame, words: &mut Vec<f64>) {
 }
 
 /// Serialise the match-constant roster. Two return values because it has two
-/// halves with different shapes: a numeric block and the id/name strings.
+/// halves with different shapes: a numeric block and the string fields.
 /// Both cross once per match, which is why the strings are affordable here
 /// and nowhere else.
 ///
-/// The blob is newline-joined `id`, `name`, `id`, `name`, ... in slot order.
-/// Newlines in either would make it unparseable, so they are rejected rather
-/// than escaped: no authored id or presentation name contains one, and a
-/// scheme with no escapes has no escaping bug.
+/// The blob is newline-joined `id`, `name`, `presentation_id`, `loadout_id`
+/// per slot, in slot order — [`ROSTER_STRING_FIELD_COUNT`] parts each.
+/// Newlines in any of them would make it unparseable, so they are rejected
+/// rather than escaped: no authored id, presentation name or content id
+/// contains one, and a scheme with no escapes has no escaping bug.
+///
+/// ABSENCE IS THE EMPTY STRING, AND ONLY FOR `loadout_id`. A keeper carries
+/// nothing, so `loadout_ids[i]` is `None` and the blob holds an empty part
+/// there; [`decode_roster`] maps it straight back to `None`. That is a real
+/// encoding of absence rather than a sentinel standing in for a value: no
+/// authored loadout id is the empty string, nothing downstream may treat
+/// `""` as a loadout, and `presentation_id` — which is never absent — is
+/// asserted non-empty here so the two cannot be confused.
 ///
 /// # Panics
 ///
-/// If `roster.version` does not match [`crate::frame::VERSION`], or any id
-/// or name contains a newline.
+/// If `roster.version` does not match [`crate::frame::VERSION`], if the
+/// string columns are not all `count` long, if any string contains a
+/// newline, or if a `presentation_id` is empty.
 #[must_use]
 pub fn encode_roster(roster: &RenderFrameRoster) -> (Vec<f64>, String) {
     assert!(
@@ -665,10 +708,21 @@ pub fn encode_roster(roster: &RenderFrameRoster) -> (Vec<f64>, String) {
         words[at + soa_at(6, i, count)] = roster.species_color[i][2];
     }
 
-    let mut parts = Vec::with_capacity(count * 2);
+    assert!(
+        roster.presentation_ids.len() == count && roster.loadout_ids.len() == count,
+        "roster string columns must all be {} long; presentation_ids is {}, loadout_ids is {}",
+        count,
+        roster.presentation_ids.len(),
+        roster.loadout_ids.len()
+    );
+
+    let mut parts = Vec::with_capacity(count * ROSTER_STRING_FIELD_COUNT);
     for index in 0..count {
         let id = &roster.ids[index];
         let name = &roster.names[index];
+        let presentation_id = &roster.presentation_ids[index];
+        // `None` is the keeper rule; the empty string is how it crosses.
+        let loadout_id = roster.loadout_ids[index].as_deref().unwrap_or("");
         assert!(
             !id.contains('\n'),
             "roster id must not contain a newline: {id}"
@@ -677,8 +731,22 @@ pub fn encode_roster(roster: &RenderFrameRoster) -> (Vec<f64>, String) {
             !name.contains('\n'),
             "roster name must not contain a newline: {name}"
         );
+        assert!(
+            !presentation_id.is_empty(),
+            "roster presentation id must not be empty (slot {index}): every authored player names one"
+        );
+        assert!(
+            !presentation_id.contains('\n'),
+            "roster presentation id must not contain a newline: {presentation_id}"
+        );
+        assert!(
+            !loadout_id.contains('\n'),
+            "roster loadout id must not contain a newline: {loadout_id}"
+        );
         parts.push(id.as_str());
         parts.push(name.as_str());
+        parts.push(presentation_id.as_str());
+        parts.push(loadout_id);
     }
     (words, parts.join("\n"))
 }
@@ -966,6 +1034,11 @@ pub struct DecodedRenderFrameRoster {
     pub ids: Vec<String>,
     /// Presentation names, recovered from the string blob.
     pub names: Vec<String>,
+    /// Authored character presentation ids, recovered from the string blob.
+    pub presentation_ids: Vec<String>,
+    /// Authored loadout ids, recovered from the string blob; `None` where
+    /// the slot carries nothing (see [`encode_roster`] on absence).
+    pub loadout_ids: Vec<Option<String>>,
     /// Per-slot structure-of-arrays.
     pub fields: DecodedRosterFields,
 }
@@ -977,7 +1050,7 @@ pub struct DecodedRenderFrameRoster {
 ///
 /// On a bad magic word, a layout/version mismatch, a field count that
 /// disagrees with [`ROSTER_FIELD_COUNT`], or a string blob that does not
-/// hold exactly `2 * count` newline-delimited parts.
+/// hold exactly `ROSTER_STRING_FIELD_COUNT * count` newline-delimited parts.
 #[must_use]
 pub fn decode_roster(words: &[f64], strings: &str) -> DecodedRenderFrameRoster {
     assert!(
@@ -1005,30 +1078,60 @@ pub fn decode_roster(words: &[f64], strings: &str) -> DecodedRenderFrameRoster {
     );
 
     let count = words[5] as usize;
-    // `strings` is `id\nname\nid\nname\n...\nid\nname` (no trailing
+    // `strings` is `id\nname\npresentation_id\nloadout_id\n...` (no trailing
     // newline); appending one and splitting on it recovers exactly the
-    // `count * 2` parts `encode_roster` joined, matching
-    // `render/frame_buffer.lua`'s `(strings .. "\n"):gmatch("([^\n]*)\n")`.
+    // `count * ROSTER_STRING_FIELD_COUNT` parts `encode_roster` joined.
     // `split` on the newline-terminated blob always yields one trailing
-    // empty element past the last delimiter; `gmatch`'s pattern requires a
-    // literal `\n` after each capture, so it never produces that trailing
-    // element, and it is dropped here to match.
+    // empty element past the last delimiter, and it is dropped here.
+    //
+    // DIVERGENCE FROM `render/frame_buffer.lua` (#447). The Lua producer
+    // still writes two parts per slot; this reads four. That is deliberate
+    // and it is the first place in this port where the Lua is allowed to
+    // fall behind rather than being mirrored — v2 is replacing the Lua tree,
+    // and #447 is a v2-only fix (see the PR). Nothing feeds a Lua-produced
+    // blob into this decoder: the one test that compares the two
+    // (`tests/frame_buffer_differential.rs`) discards the blob entirely, so
+    // this is a divergence in a lane the differential does not run in. A
+    // mismatched producer/reader pair fails on the part-count assertion
+    // below rather than mis-parsing.
     let mut blob = strings.to_string();
     blob.push('\n');
     let mut parts: Vec<&str> = blob.split('\n').collect();
     parts.pop();
+    // THIS ASSERTION CARRIES THE BLOB'S ENTIRE SHAPE-VERSIONING BURDEN,
+    // because [`LAYOUT_VERSION`] cannot be bumped for a blob change (it is
+    // stamped into the numeric block, which is pinned word-for-word against a
+    // captured Lua fixture — see [`ROSTER_STRING_FIELD_COUNT`]). And it
+    // DEGENERATES TO A NO-OP at `count == 0`: `0 == 0` holds for any field
+    // count, so a producer and a reader that disagreed would agree vacuously
+    // on an empty roster. Harmless today — a match always fields two teams,
+    // and an empty roster draws nothing whatever it decoded — but recorded
+    // rather than left to be rediscovered, because the day something
+    // legitimately decodes an empty roster is the day this stops guarding
+    // anything.
+    let expected_parts = count * ROSTER_STRING_FIELD_COUNT;
     assert!(
-        parts.len() == count * 2,
+        parts.len() == expected_parts,
         "roster blob holds {} strings; expected {}",
         parts.len(),
-        count * 2
+        expected_parts
     );
 
     let mut ids = Vec::with_capacity(count);
     let mut names = Vec::with_capacity(count);
+    let mut presentation_ids = Vec::with_capacity(count);
+    let mut loadout_ids = Vec::with_capacity(count);
     for index in 0..count {
-        ids.push(parts[index * 2].to_string());
-        names.push(parts[index * 2 + 1].to_string());
+        let at = index * ROSTER_STRING_FIELD_COUNT;
+        ids.push(parts[at].to_string());
+        names.push(parts[at + 1].to_string());
+        presentation_ids.push(parts[at + 2].to_string());
+        let loadout = parts[at + 3];
+        loadout_ids.push(if loadout.is_empty() {
+            None
+        } else {
+            Some(loadout.to_string())
+        });
     }
 
     DecodedRenderFrameRoster {
@@ -1037,6 +1140,8 @@ pub fn decode_roster(words: &[f64], strings: &str) -> DecodedRenderFrameRoster {
         count,
         ids,
         names,
+        presentation_ids,
+        loadout_ids,
         fields: decode_roster_fields(words, ROSTER_HEADER_WORDS, count),
     }
 }

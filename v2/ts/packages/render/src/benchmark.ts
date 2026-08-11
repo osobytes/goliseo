@@ -26,6 +26,22 @@
 //   * Warm-up is discarded. Shader compilation, mesh generation and the
 //     first GC cycle are startup costs, and #100 wants them measured
 //     separately from steady state.
+//
+//     WHAT THIS HARNESS THEREFORE CANNOT SEE (#447). `warmup_frames` defaults
+//     to 300 -- five seconds at 60 Hz -- and every character geometry a match
+//     needs is built and discarded inside it, long before `drawSamples` or
+//     `over_16_67` count anything. That was a safe assumption while mesh
+//     generation was ONE sub-millisecond singleton build. It stopped being
+//     safe when character geometry started varying per presentation and
+//     loadout: a match's builds now scale with roster diversity (nine
+//     variants, ~58 ms, across the two fixture teams) and land on the FIRST
+//     drawn frame, where a real player has no five-second grace period.
+//     Nothing in this file can report that, by construction. The property is
+//     gated instead by `player_renderer_3d_prewarm.spec.ts`, which pins a
+//     BUILD COUNT of zero inside the draw loop once the roster is known --
+//     deterministic where a wall clock here would be flaky, and it names the
+//     cause rather than a slow frame. Do not add a mesh-generation
+//     measurement here expecting it to cover that; extend the count instead.
 //   * Update and draw are timed separately, because the gates are separate.
 //   * The simulation hash is captured at the end. Presentation must not
 //     reach the simulation, and a matching hash across renderer choices is
