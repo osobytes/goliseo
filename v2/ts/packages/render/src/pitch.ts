@@ -580,11 +580,20 @@ function playerOptions(frame: RenderFrame, index: number): PlayerRenderOptions {
     // state, and both reach `player_renderer_3d.characterMesh` through
     // exactly this payload -- it is the only channel between the wire and
     // the mesh builder, which is why neither could be honoured before.
-    // An EMPTY presentation id is dropped rather than forwarded: the
-    // renderer treats "no presentation" as "not on the product path" and
-    // falls back to its preview default, so passing `""` through would turn
-    // a wiring failure into a silently plausible character.
-    ...(roster.presentation_ids[index] ? { presentation_id: roster.presentation_ids[index] } : {}),
+    //
+    // FORWARDED WHENEVER THE COLUMN HAS AN ENTRY, INCLUDING AN EMPTY ONE.
+    // An earlier revision of this line dropped `""`, reasoning that the
+    // renderer reads a missing `presentation_id` as "not on the product
+    // path". That reasoning WAS the bug: the renderer answers "not on the
+    // product path" with `themes.LIST[0]` and its full sword-and-shield
+    // loadout, so dropping an empty id would turn a broken roster into a
+    // keeper silently rendered armed -- the exact defect #447 removes, and
+    // the exact silent substitution `player_renderer_3d.ts`'s header and
+    // #415 forbid. `variantFor` refuses `""` outright; passing it through is
+    // what lets it. `decodeRoster` refuses it a step earlier and
+    // `encode_roster` a step before that, so this is one of three
+    // independent checks rather than the only one.
+    ...(roster.presentation_ids[index] !== undefined ? { presentation_id: roster.presentation_ids[index] } : {}),
     ...(roster.loadout_ids[index] !== undefined ? { loadout_id: roster.loadout_ids[index] } : {}),
     ...(combatModel !== undefined && combatModel.players[index] !== undefined ? { combat: combatModel.players[index] } : {}),
     pose: {
@@ -1148,10 +1157,20 @@ export const pitch = {
         const anchor = playerAnchor(frame, index, project);
         const v = viewState.get(anchor.player_id);
         const mesh = playerRenderer3d.characterMesh(anchor.player_id, v, anchor.options, now);
-        // FAIL LOUD (#415, AGENTS.md §7). `characterMesh` declines only when
-        // `player_renderer_3d.build()` failed, and `build()` fails on an
-        // invalid vertex index or missing rig3d content -- programmer errors,
-        // not environment conditions. This used to drop the player to a
+        // FAIL LOUD (#415, AGENTS.md §7). `characterMesh` returns `undefined`
+        // only when `player_renderer_3d.build()` failed, and `build()` fails
+        // on an invalid vertex index or missing rig3d content -- programmer
+        // errors, not environment conditions.
+        //
+        // It can also THROW outright, before ever reaching `build()` (#447):
+        // `characterMesh` resolves the character variant first, via
+        // `variantFor`, and that refuses an empty `presentation_id` and an
+        // id `rig3d/presentation_content.ts` has no theme or loadout for.
+        // Those propagate past this branch entirely rather than arriving as
+        // `undefined` -- still fail-loud, just louder and with the offending
+        // content id in the message, which is why nothing here catches them.
+        //
+        // This used to drop the player to a
         // procedural billboard, re-checked PER PLAYER, so half a roster could
         // quietly downgrade mid-frame and the match still looked like a match.
         // During #403 "the reporter may have been on the fallback without

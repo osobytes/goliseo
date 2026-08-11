@@ -210,6 +210,26 @@ describe("decodeRoster against the Lua reference vector", () => {
   it("rejects a string blob with the wrong part count", () => {
     expect(() => decodeRoster(words, "only_one_part")).toThrow(/roster blob holds/);
   });
+
+  // THE CONSUMER HALF OF THE NON-EMPTY GUARANTEE (#447). `encode_roster`
+  // asserts a non-empty presentation id on the producer side; without the
+  // same check here the whole guarantee would rest on one assert written in
+  // the other language, and what an empty id costs downstream is specific --
+  // `variantFor` would once have read it as "nothing was wired" and handed
+  // the player `themes.LIST[0]`'s sword and shield, keeper included.
+  it("rejects an empty presentation id, which downstream would read as an unwired player", () => {
+    const parts: string[] = [];
+    for (let i = 0; i < count; i += 1) {
+      parts.push(`player_${i}`, `Player ${i}`, i === 4 ? "" : `presentation_${i}`, "");
+    }
+    expect(() => decodeRoster(words, parts.join("\n"))).toThrow(/slot 4 carries an empty presentation id/);
+
+    // NON-VACUOUS: the same blob with slot 4 filled in decodes cleanly, so
+    // the throw is about the empty id rather than about the blob's shape.
+    const fixed = parts.slice();
+    fixed[4 * ROSTER_STRING_FIELD_COUNT + 2] = "presentation_4";
+    expect(() => decodeRoster(words, fixed.join("\n"))).not.toThrow();
+  });
 });
 
 describe("decode against the Lua reference vector: t0 (kickoff)", () => {

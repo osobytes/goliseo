@@ -621,6 +621,16 @@ interface CharacterVariant {
  * cases are separated on `presentation_id` precisely so a keeper (authored to
  * carry nothing) can never be confused with an unwired caller (nothing
  * authored at all); collapsing them is how the defect would come back.
+ *
+ * AN EMPTY STRING IS NOT "UNWIRED", AND IS REFUSED. `""` reaching here would
+ * take the preview branch and hand the player `themes.LIST[0]`'s full
+ * sword-and-shield loadout -- a keeper silently armed again, which is the
+ * exact defect #447 exists to remove and the exact silent substitution this
+ * file's header and #415 forbid. `encode_roster` asserts the id non-empty and
+ * `decodeRoster` refuses an empty one, so this is the third of three
+ * independent checks rather than the only one; it is here because it is the
+ * last place before the geometry, and the one a hand-built frame that never
+ * crossed the wire still passes through.
  */
 function variantFor(opts: PlayerRenderOptions): CharacterVariant {
   const figure = themes.FIGURES[0];
@@ -628,6 +638,12 @@ function variantFor(opts: PlayerRenderOptions): CharacterVariant {
     throw new Error("player_renderer_3d.ts: no rig3d figure content available");
   }
   const presentationId = opts.presentation_id;
+  if (presentationId === "") {
+    throw new Error(
+      "player_renderer_3d.ts: empty presentation_id -- an empty id is a broken roster, not an " +
+        "unwired caller, and must not resolve to the preview default's sword and shield (#447)",
+    );
+  }
   const theme = presentationId === undefined ? themes.LIST[0] : presentationContent.themeFor(presentationId);
   if (theme === undefined) {
     throw new Error("player_renderer_3d.ts: no rig3d theme content available");

@@ -618,16 +618,22 @@ function luaDifferentialFrame(): RenderFrame {
         [0.9, 0.5, 0.2],
       ],
       ids: ["home-1", "away-kp", "home-2"],
-      // EMPTY / ABSENT ON PURPOSE (#447). This frame must stay the one the
-      // Lua capture consumed, and `render/frame.lua`'s roster has no
-      // presentation or loadout columns at all -- that divergence is the
-      // whole point of #447 being v2-only. Empty ids and absent loadouts are
-      // what `playerOptions` reads as "not wired", so it emits neither key
-      // and the per-player payload compared below is byte-identical to the
-      // one the Lua produced. Putting real content ids here would be
-      // comparing TypeScript against a Lua run that never saw them.
-      presentation_ids: ["", "", ""],
-      loadout_ids: [undefined, undefined, undefined],
+      // #447, AND THE ONE PLACE THE LUA DIVERGENCE SURFACES IN A TEST.
+      // `render/frame.lua`'s roster has no presentation or loadout columns at
+      // all -- that divergence is deliberate and is the whole point of #447
+      // being v2-only -- so the Lua capture this frame is compared against
+      // could not have consumed these two fields, and the assertion loop
+      // below does not compare them. Every field it DOES compare is
+      // unaffected by what is written here.
+      //
+      // Real ids rather than empty strings, because an empty
+      // `presentation_id` is now a hard error at three separate layers
+      // (`encode_roster`, `decodeRoster`, `variantFor`), precisely so it can
+      // never resolve to the preview default's sword and shield. A fixture
+      // relying on the old "empty means unwired" behaviour would be encoding
+      // the defect into the differential.
+      presentation_ids: ["medieval_rook_emberguard", "scifi_axi", "toy_tock"],
+      loadout_ids: ["loadout_tournament_sword", undefined, "loadout_pulse_blaster"],
     },
     players: {
       count: 3,

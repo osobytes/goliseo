@@ -886,6 +886,16 @@ export function decodeRoster(words: ArrayLike<number>, strings: string): Decoded
   const blob = `${strings}\n`;
   const parts = blob.split("\n");
   parts.pop();
+  // THIS ASSERTION CARRIES THE BLOB'S ENTIRE SHAPE-VERSIONING BURDEN, because
+  // `LAYOUT_VERSION` cannot be bumped for a blob change (it is stamped into
+  // the numeric block, which is pinned word-for-word against a captured Lua
+  // fixture -- see `ROSTER_STRING_FIELD_COUNT`). And it DEGENERATES TO A
+  // NO-OP at `count === 0`: `0 === 0` holds for any field count, so a
+  // producer and reader that disagreed would agree vacuously on an empty
+  // roster. Harmless today -- a match always fields two teams, and an empty
+  // roster draws nothing whatever it decoded -- but recorded rather than left
+  // to be rediscovered, because the day something legitimately decodes an
+  // empty roster is the day this stops guarding anything.
   const expectedParts = count * ROSTER_STRING_FIELD_COUNT;
   if (parts.length !== expectedParts) {
     throw new Error(`frame_buffer: roster blob holds ${parts.length} strings; expected ${expectedParts}`);
@@ -902,7 +912,20 @@ export function decodeRoster(words: ArrayLike<number>, strings: string): Decoded
     const at = index * ROSTER_STRING_FIELD_COUNT;
     ids.push(at2(parts, at));
     names.push(at2(parts, at + 1));
-    presentationIds.push(at2(parts, at + 2));
+    const presentationId = at2(parts, at + 2);
+    // DEFENCE IN DEPTH, AND THE CONSUMER HALF OF IT (#447). `encode_roster`
+    // already asserts this non-empty on the producer side; without the same
+    // check here the whole guarantee rests on one assert written in the other
+    // language. The cost of an empty id is specific rather than vague: a
+    // reader that treated it as "nothing was wired" would fall back to
+    // `themes.LIST[0]`'s sword and shield, which is a keeper silently armed
+    // again -- the exact defect #447 removes. Fail here, naming the slot.
+    if (presentationId === "") {
+      throw new Error(
+        `frame_buffer: roster slot ${index} carries an empty presentation id; every authored player names one`,
+      );
+    }
+    presentationIds.push(presentationId);
     const loadout = at2(parts, at + 3);
     loadoutIds.push(loadout === "" ? undefined : loadout);
   }
