@@ -9,16 +9,18 @@
 //! degenerate into that, for three independent reasons:
 //!
 //! 1. **The two sides share no code.** The asserted side is a literal in
-//!    `gc_data::omp2_rollback_validation::DATA.budgets`, a crate `gc-data`
-//!    with no dependencies at all. The measured side is produced by
-//!    building a real `MatchState` from authored teams, running real
+//!    `gc_data::omp2_rollback_validation::DATA.budgets`; `gc-data` depends
+//!    on nothing in this workspace — no `gc-sim`, no encoder (its only
+//!    dependencies are `serde`/`serde_json`). The measured side is produced
+//!    by building a real `MatchState` from authored teams, running real
 //!    `rollback_session::step` ticks until the retention ring is full, and
-//!    reading `rollback_snapshot_history`/`rollback_input_history`'s own
-//!    byte accounting — which counts the exact canonical wire bytes of each
-//!    retained snapshot via `match_snapshot::encoded_size_canonical`. For
-//!    the measurement to equal the budget by construction, the simulation's
-//!    canonical encoder would have to start reading a `gc-data` budget
-//!    table, which it does not and cannot without an obvious diff.
+//!    reading `rollback_snapshot_history`/`rollback_input_history`/
+//!    `rollback_events`' own byte accounting — which counts the exact
+//!    canonical wire bytes of each retained snapshot via
+//!    `match_snapshot::encoded_size_canonical`. For the measurement to equal
+//!    the budget by construction, the simulation's canonical encoder would
+//!    have to start reading a `gc-data` budget table, which it does not and
+//!    cannot without an obvious diff.
 //!
 //! 2. **Adding a simulation field moves the measured side and not the
 //!    asserted side.** That is the whole point: this test exists to notice
@@ -48,6 +50,20 @@
 //! are single-band (fail only) and both are tied to their own fixtures.
 //! This file is the cheap, general, two-band reading: one real session,
 //! stepped past a full ring, in well under a second.
+//!
+//! `history_bytes` here means what it means in `rollback_lab` and in
+//! `tests/combat_load_fixtures.rs` — session accounting **plus** the
+//! retained speculative event timeline. See `measure`'s doc comment for why
+//! the narrower session-only figure would be the wrong thing to gate on.
+//!
+//! The snapshot reading can be compared against `tests/match_snapshot.rs`'s
+//! synthetic window as a **corroboration, not an independent check**: both
+//! sides build the same `nebula`/`orion` fixture through the same
+//! construction path and size it with the same
+//! `encoded_size_canonical` encoder. What differs is the method — one
+//! multiplies a single tick-zero boundary by 31, the other accumulates a
+//! real 48-tick run — so agreement says the estimate's *arithmetic* holds
+//! up, not that two unrelated instruments agree.
 
 use gc_data::omp2_rollback_validation;
 use gc_data::teams;
@@ -55,6 +71,7 @@ use gc_sim::combat;
 use gc_sim::input_frame;
 use gc_sim::r#match::{self as sim_match, NewMatchOptions};
 use gc_sim::match_snapshot::{self, MatchState, PitchSize};
+use gc_sim::rollback_events;
 use gc_sim::rollback_input_history::RollbackInputSource;
 use gc_sim::rollback_session;
 use gc_sim::rollback_snapshot_history;
@@ -107,12 +124,70 @@ struct Measurement {
     peak_boundaries: i64,
     peak_snapshot_bytes: i64,
     boundary_bytes: i64,
-    total_history_bytes: i64,
+    /// Peak of `session accounting total + retained event-timeline bytes`,
+    /// which is what `budgets.history_bytes` means everywhere else in this
+    /// tree (see `measure`'s comment on the event timeline).
+    peak_history_bytes: i64,
+    /// The event timeline's own contribution at the same peak.
+    peak_event_bytes: i64,
+    retained_event_steps: i64,
+}
+
+/// Translate a session tick output into the event timeline's own input row.
+/// `rollback_session` and `rollback_events` each declare their own
+/// `RollbackOutputStateView`, so the fields are copied across rather than
+/// passed through — the same thing `rollback_lab::event_tick_output` does.
+fn event_tick_output(
+    output: &rollback_session::RollbackTickOutput,
+) -> rollback_events::RollbackEventTickOutput {
+    rollback_events::RollbackEventTickOutput {
+        tick: output.tick,
+        start_boundary: output.start_boundary,
+        end_boundary: output.end_boundary,
+        events: output.events.clone(),
+        combat_events: output.combat_events.clone(),
+        state: rollback_events::RollbackOutputStateView {
+            score: output.state.score,
+            time_left: output.state.time_left,
+            finished: output.state.finished,
+        },
+        finished: output.finished,
+    }
 }
 
 /// Build a real session — combat companion included when `combat` is set,
 /// because a combat-active match is the expensive case the budget is sized
 /// for — step it past a full ring, and read the retained accounting.
+///
+/// ## Why an event timeline is driven alongside the session
+///
+/// `budgets.history_bytes` bounds the *whole* retained client footprint.
+/// `rollback_session::accounting().total_bytes` is only input + output +
+/// snapshots; it structurally omits the retained speculative event
+/// timeline. `rollback_lab` has always defined its `history_bytes` peak as
+/// `accounting.total_bytes + rollback_events::accounting().total_bytes`,
+/// and `tests/combat_load_fixtures.rs` compares *that* combined figure to
+/// this same budget. Gating on the narrower quantity would leave retained
+/// event encoding — a new `CombatEvent`/`MatchEvent` field, a wider
+/// retention window — growing with nothing complaining, which is the exact
+/// shape of the defect this file exists to fix. And the timeline is not a
+/// lab-only artifact: `gc-wasm`'s `rollback_events_bridge` exposes it to
+/// the browser, so it is real retained client memory.
+///
+/// The confirmation schedule below holds the speculative window at its
+/// maximum (`max_unconfirmed_ticks`) rather than confirming eagerly.
+/// Confirming as fast as possible would drain the timeline to near-nothing
+/// and reduce its contribution to noise — an under-measurement dressed up
+/// as headroom. A client whose confirmations are lagging by the full window
+/// is both reachable and the case the budget has to bound.
+///
+/// Honest limit: a neutral-input match produces few events, so the
+/// timeline's contribution here is a full *window* of genuinely sparse
+/// ticks, not a worst-case event load. Event-heavy retention is what
+/// `tests/combat_load_fixtures.rs` exercises against the same budget. What
+/// this reading guarantees is that the component is present and accounted
+/// for, so growth in per-event encoding shows up here instead of being
+/// structurally invisible.
 fn measure(combat_active: bool) -> Measurement {
     let mut state = new_state();
     let combat_state = if combat_active {
@@ -123,7 +198,11 @@ fn measure(combat_active: bool) -> Measurement {
     let boundary_zero = match_snapshot::capture_owned(&state, combat_state.as_ref());
     let boundary_bytes = match_snapshot::encoded_size_canonical(&boundary_zero) as i64;
     let mut session = rollback_session::new(&boundary_zero, sources(), None, None);
+    let mut timeline = rollback_events::new(&boundary_zero, None);
+    let max_unconfirmed = timeline.max_unconfirmed_ticks;
 
+    let mut peak_history_bytes = 0;
+    let mut peak_event_bytes = 0;
     for tick in 0..STEPPED_TICKS {
         // Real authoritative input for every slot, so the input history is
         // genuinely populated rather than left as bare predictions.
@@ -136,7 +215,33 @@ fn measure(combat_active: bool) -> Measurement {
             )
             .expect("an in-window authoritative row is accepted");
         }
-        rollback_session::step(&mut session).expect("the session steps inside its duration");
+        let output =
+            rollback_session::step(&mut session).expect("the session steps inside its duration");
+
+        // Confirm exactly late enough to keep the speculative window full:
+        // after applying tick `t`, the timeline retains `t - confirmed`
+        // steps, so confirming through `t - max_unconfirmed` pins that at
+        // `max_unconfirmed`.
+        if tick >= max_unconfirmed {
+            rollback_events::confirm(&mut timeline, tick - max_unconfirmed);
+        }
+        let lookup = rollback_session::snapshot(&session, output.end_boundary);
+        let step_input = rollback_events::RollbackEventStepInput {
+            output: event_tick_output(&output),
+            snapshot: lookup
+                .snapshot
+                .expect("the just-produced end boundary is retained"),
+        };
+        rollback_events::apply(&mut timeline, tick, tick, &[step_input])
+            .expect("a contiguous speculative step inside the unconfirmed window is accepted");
+
+        let accounting = rollback_session::accounting(&mut session);
+        let event_bytes = rollback_events::accounting(&timeline).total_bytes;
+        let combined = accounting.total_bytes + event_bytes;
+        if combined > peak_history_bytes {
+            peak_history_bytes = combined;
+            peak_event_bytes = event_bytes;
+        }
     }
 
     let diagnostics = rollback_snapshot_history::diagnostics(&session.snapshot_history);
@@ -145,12 +250,19 @@ fn measure(combat_active: bool) -> Measurement {
         accounting.snapshot_bytes, diagnostics.canonical_bytes,
         "the session and the snapshot ring must agree on retained snapshot bytes"
     );
+    let event_diagnostics = rollback_events::diagnostics(&timeline);
+    assert_eq!(
+        event_diagnostics.retained_step_count, max_unconfirmed,
+        "the speculative event window must end full, or its contribution is an under-measurement"
+    );
     Measurement {
         retained_boundaries: diagnostics.retained_boundary_count,
         peak_boundaries: diagnostics.peak_retained_boundary_count,
         peak_snapshot_bytes: diagnostics.peak_canonical_bytes,
         boundary_bytes,
-        total_history_bytes: accounting.total_bytes,
+        peak_history_bytes,
+        peak_event_bytes,
+        retained_event_steps: event_diagnostics.retained_step_count,
     }
 }
 
@@ -204,21 +316,41 @@ fn a_real_combat_session_retains_a_window_inside_the_authored_snapshot_and_histo
     report(&snapshot);
     snapshot_headroom::enforce(&snapshot);
 
+    // The same combined definition `rollback_lab` uses and
+    // `tests/combat_load_fixtures.rs` compares: session accounting (input +
+    // output + snapshots) plus the retained speculative event timeline.
     let history = snapshot_headroom::read(
         "retained_history_bytes",
-        measurement.total_history_bytes,
-        // History retention is snapshots plus inputs plus outputs, so it
-        // can never be smaller than the snapshot floor.
+        measurement.peak_history_bytes,
+        // History retention includes the snapshot ring, so it can never be
+        // smaller than the snapshot floor.
         snapshot_bytes_floor(&measurement),
         budgets.history_bytes,
         WARN_MARGIN,
     );
     report(&history);
     snapshot_headroom::enforce(&history);
+    println!(
+        "GC_SNAPSHOT_HEADROOM|retained_history_components|total={}|event_timeline={}|event_steps={}",
+        measurement.peak_history_bytes,
+        measurement.peak_event_bytes,
+        measurement.retained_event_steps
+    );
 
     assert!(
-        measurement.total_history_bytes > measurement.peak_snapshot_bytes,
+        measurement.peak_history_bytes > measurement.peak_snapshot_bytes,
         "retained history must strictly exceed its snapshot component"
+    );
+    // Each of the two non-snapshot components must actually be present, so
+    // neither can silently drop out of the total and leave the reading
+    // looking comfortable.
+    assert_eq!(
+        measurement.retained_event_steps, 30,
+        "the speculative event window must be held full"
+    );
+    assert!(
+        measurement.peak_event_bytes > 0,
+        "the event timeline must contribute retained bytes to the history total"
     );
 }
 

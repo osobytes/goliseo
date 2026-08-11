@@ -299,8 +299,11 @@ Three different numbers describe the margin and they are **not** interchangeable
   and 29,567 when #209 was filed. It is a hand-multiplied estimate, not a retained window.
 - a **real retained window** from a live `rollback_session` stepped past a full ring, measured by
   `rust/crates/gc-sim/tests/snapshot_headroom.rs`: 760,126 bytes, 157,378 of headroom. This is the
-  cheap per-PR reading, and the closeness to the synthetic figure above is a useful cross-check
-  that the estimate was not far off.
+  cheap per-PR reading. Its closeness to the synthetic figure above corroborates that estimate's
+  arithmetic, but the two are not independent instruments — both build the same `nebula`/`orion`
+  fixture through the same construction path and size it with the same `encoded_size_canonical`
+  encoder. What differs is method: one multiplies a tick-zero boundary by 31, the other accumulates
+  a real 48-tick run.
 - the rollback lab's **campaign peak** — the high-water mark across a full impaired run, which is
   the quantity the campaign gate compares and the largest of the three. It is reported per case as
   `peak_snapshot_bytes`, and `rust/crates/gc-sim/tests/combat_load_fixtures.rs` compares it to the
@@ -473,9 +476,10 @@ against `Omp2RollbackBudgets` at all — the surviving Rust test compared the au
 their own literals ([#470](https://github.com/osobytes/goliseo/issues/470)).
 
 `rust/crates/gc-sim/tests/snapshot_headroom.rs` now carries the two-band reading. It builds a real
-`MatchState`, runs a real `rollback_session` past a full 31-boundary ring, and reads the retention
-ring's own byte accounting — so the measured side is produced by the simulation's canonical
-encoder and the asserted side is a `gc-data` literal, with no code in common. Three budgets are
+`MatchState`, runs a real `rollback_session` past a full 31-boundary ring alongside a
+`rollback_events` timeline held at its full unconfirmed window, and reads their own byte
+accounting — so the measured side is produced by the simulation's canonical encoder and the
+asserted side is a `gc-data` literal, with no code in common. Three budgets are
 enforced: `snapshot_count` (an equality — a ring that under-fills makes the byte readings an
 under-measurement), `snapshot_bytes` and `history_bytes` (ceilings, warning at 32 KiB of remaining
 headroom, failing above the budget). `gc_sim::snapshot_headroom` holds the band classification, and
@@ -484,12 +488,24 @@ comfortable possible result. It runs in hundredths of a second under `cargo test
 is step 3 of `scripts/check.sh` — and CI's only Rust job runs `./scripts/check.sh`, so the gate is
 mirrored on both sides by construction rather than by hand (AGENTS.md §9).
 
+`history_bytes` there means what it means in `rollback_lab` and in
+`rust/crates/gc-sim/tests/combat_load_fixtures.rs`: session accounting (input + output + snapshots)
+**plus** the retained speculative event timeline. The session-only figure would omit event
+retention entirely, and since `gc-wasm`'s `rollback_events_bridge` exposes that timeline to the
+browser it is real retained client memory — gating on the narrower quantity would let per-event
+encoding grow with nothing complaining.
+
 The measured readings at the time of writing, for a combat-active session:
 
 | Quantity | Measured | Budget | Headroom |
 | --- | ---: | ---: | ---: |
 | retained snapshot bytes | 760,126 | 917,504 | 157,378 |
-| retained history bytes | 813,581 | 1,179,648 | 366,067 |
+| retained history bytes | 822,481 | 1,179,648 | 357,167 |
+
+Of that history total, 8,900 bytes are the event timeline across a full 30-tick unconfirmed window.
+That is a full *window* of a neutral-input match, which produces few events per tick — it is not a
+worst-case event load, and the event-heavy case is what the combat load fixtures exercise against
+the same budget. What this reading guarantees is that the component is present and accounted for.
 
 Three budget fields stay authored-but-unmeasured, deliberately. `p95_work_ms` and
 `rollback_p999_ms` are wall-clock percentiles: a per-PR timing assertion on a shared runner measures
