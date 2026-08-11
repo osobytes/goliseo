@@ -529,6 +529,22 @@ the runner. `memory_growth_ratio` only means anything over a long run, and a sec
 it would be the same defect #470 was about; long-duration soak evidence is owned by
 [#472](https://github.com/osobytes/goliseo/issues/472).
 
+The browser side of that soak evidence now has something to sample. `MatchDriverBridge`'s
+`retainedHistoryAccountingJson` (`rust/crates/gc-wasm/src/match_driver_bridge.rs`) reports one
+`gc_sim::retained_history::sample` — the same combined `history_bytes` figure defined above, its
+session and event components, and the occupancy counts (`retained_boundary_count`,
+`retained_step_count`, `retained_event_count`) that say whether a sample measured anything at all.
+Before it, the only retained-byte reading a browser peer could take was the event timeline alone,
+about one percent of the total. Sampling costs ~0.27 ms natively and ~0.37 ms through wasm under
+node on a full ring; no snapshot is re-encoded. Sampling `performance.memory` instead is not an
+alternative: it excludes wasm linear memory, which never shrinks, so it cannot attribute growth to
+retention.
+
+What that leaves for the soak itself is the verdict, not the instrument: a growth ceiling needs a
+FLOOR as well (a sample whose occupancy counts read empty must fail rather than pass on its bytes —
+the `Collapsed` band above), and `memory_growth_ratio` needs a steady-state peak compared against an
+early-match baseline over a long run.
+
 #209 suggested 20,000 bytes against the 768-KiB ceiling; that had to be re-derived, because the
 combat window's headroom at 768 KiB was already 19,337 and a threshold expressed against the old
 ceiling would have fired on the merge that raised it.
