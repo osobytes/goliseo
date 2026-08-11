@@ -63,6 +63,7 @@ pub mod rollback_session;
 pub mod rollback_snapshot_history;
 pub mod rollback_validation;
 pub mod slot_input;
+pub mod snapshot_headroom;
 pub mod species;
 pub mod stats;
 pub mod sweep;
