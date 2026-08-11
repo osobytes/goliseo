@@ -80,12 +80,48 @@ interface Checkpoint {
   readonly hash: string;
 }
 
+// One periodic read of what this peer is RETAINING, taken from the driver
+// itself rather than from anything the browser reports about the process.
+//
+// `retainedStepBytes`/`totalBytes` come from `rollbackAccountingJson`, which
+// `gc_sim::rollback_events::accounting` documents as "exact logical bytes
+// retained in the speculative event window" -- the unconfirmed rollback
+// steps this peer is still holding. `snapshotCaptures`, `retainedFloorTick`
+// and `confirmedOutputTick` come from `diagnosticsJson` and say how far the
+// driver's own retention floor has advanced.
+//
+// This is deliberately NOT a whole-page or whole-process memory reading.
+// `performance.memory` measures the JS heap (not wasm linear memory), and
+// wasm linear memory never shrinks, so neither can honestly stand in for
+// "the retained rollback history is bounded". What is sampled here is the
+// retained history itself, exactly; everything else about this page's
+// footprint is left unmeasured rather than approximated.
+interface RetentionSample {
+  readonly iteration: number;
+  readonly elapsedMs: number;
+  readonly retainedStepBytes: number;
+  readonly totalBytes: number;
+  readonly snapshotCaptures: number;
+  readonly retainedFloorTick: number;
+  readonly confirmedOutputTick: number;
+}
+
 interface Report {
   readonly role: "host" | "guest";
   readonly selfPeerId: string;
   readonly counterpartPeerId: string;
   readonly tickCount: number;
+  // What the driver ASKED for and what this page actually completed. The
+  // Python driver requires these to match: a soak that quietly stopped at
+  // iteration 300 of 36,000 must not be able to report a pass just because
+  // the boundaries it did reach happened to agree (AGENTS.md §9 -- never
+  // trust one signal).
+  readonly requestedTicks: number;
+  readonly loopIterations: number;
+  readonly stoppedEarly: boolean;
+  readonly durationSeconds: number;
   readonly checkpoints: readonly Checkpoint[];
+  readonly samples: readonly RetentionSample[];
   readonly errors: readonly string[];
   readonly finalStatus: unknown;
   readonly terminal: unknown;
@@ -178,6 +214,15 @@ async function main(): Promise<void> {
   const role = params.get("role") === "guest" ? "guest" : "host";
   const tickCount = Number(params.get("ticks") ?? "150");
   const tickSleepMs = Number(params.get("tick_sleep_ms") ?? "50");
+  // The fixture match's own length, in simulated seconds. The default is
+  // the 20s this page has always built, so the PR gate's 150-iteration run
+  // is unchanged. A long-duration run MUST raise it: one loop iteration
+  // advances one 60Hz tick, so a 20-second match reaches full time after
+  // 1,200 iterations and every iteration after that would be measuring a
+  // finished match rather than a live rollback session.
+  const durationSeconds = Number(params.get("duration_seconds") ?? "20");
+  // Iterations between retention samples; 0 disables sampling entirely.
+  const sampleEvery = Number(params.get("sample_every") ?? "0");
 
   const state: PeerControlState = {
     status: "booting",
@@ -273,7 +318,7 @@ async function main(): Promise<void> {
     // derive them from the same pure fixture functions, exactly the
     // property `MatchDriverBridge`'s constructor doc requires ("every peer
     // sharing one session must be built from the SAME boundary zero").
-    const session = new Session("nebula", "orion", 7, 20, 3);
+    const session = new Session("nebula", "orion", 7, durationSeconds, 3);
     const freezeJson = matchDriverFixtureFreezeJson("1v1");
     const manifestJson = matchDriverFixtureManifestJson("1v1");
     // `queueLimit` (the driver's own internal `WasmStarTransport` inbound
@@ -311,8 +356,37 @@ async function main(): Promise<void> {
     console.log(marker("running", { role, ticks: tickCount }));
 
     const checkpoints: Checkpoint[] = [];
+    const samples: RetentionSample[] = [];
+    const startedAtMs = Date.now();
+
+    function sampleRetention(iteration: number): void {
+      const accounting = JSON.parse(bridge.rollbackAccountingJson()) as {
+        retained_step_bytes?: number;
+        total_bytes?: number;
+      };
+      const diagnostics = JSON.parse(bridge.diagnosticsJson()) as {
+        snapshot_captures?: number;
+        retained_floor_tick?: number;
+        confirmed_output_tick?: number;
+      };
+      samples.push({
+        iteration,
+        elapsedMs: Date.now() - startedAtMs,
+        retainedStepBytes: accounting.retained_step_bytes ?? -1,
+        totalBytes: accounting.total_bytes ?? -1,
+        snapshotCaptures: diagnostics.snapshot_captures ?? -1,
+        retainedFloorTick: diagnostics.retained_floor_tick ?? -1,
+        confirmedOutputTick: diagnostics.confirmed_output_tick ?? -1,
+      });
+    }
+
     let stoppedEarly = false;
+    let loopIterations = 0;
     for (let tick = 0; tick < tickCount; tick += 1) {
+      loopIterations = tick + 1;
+      if (sampleEvery > 0 && tick % sampleEvery === 0) {
+        sampleRetention(tick);
+      }
       // Drain whatever the REAL data channel's onmessage callback has
       // already delivered by this point in this event-loop turn -- see
       // this file's header: this is the exact seam
@@ -395,9 +469,58 @@ async function main(): Promise<void> {
         break;
       }
 
+      // Pace against an ABSOLUTE deadline, not `sleep(tickSleepMs)` after
+      // the work.
+      //
+      // `await sleep(50)` makes each iteration cost 50ms PLUS that
+      // iteration's own work, so each page free-runs at its own slightly
+      // different period and the two pages drift apart without bound. They
+      // do not have to drift far: `match_driver` retains roughly 30 ticks,
+      // and once the guest's transport tick leads the host's by more than
+      // that, the host rejects the guest's next input ("guest input arrival
+      // is outside this transport batch") and the guest stalls waiting for
+      // a confirmation that can no longer come. Measured on this
+      // repository's reference machine, that took about 4% of drift and
+      // about 684 iterations -- roughly eleven simulated seconds. The PR
+      // gate's 150-iteration run never gets close enough to see it, which
+      // is exactly why a long-duration run is worth having.
+      //
+      // Both pages run in the same machine's wall clock, so an absolute
+      // per-iteration deadline holds them to the same 20Hz cadence: a slow
+      // iteration eats its own sleep instead of pushing every later
+      // iteration back, and jitter stops accumulating. This is harness
+      // PACING -- the same class of fix as this file's start barrier, the
+      // same shape as `gc_netcode::fixed_clock`'s accumulate-real-time
+      // discipline, and the same discipline the real client already uses
+      // (`packages/screens/src/match.ts`'s `updateOnline` paces off
+      // measured rAF `dt` through an accumulator). It is not a change to
+      // the property under test.
+      //
+      // What this harness CANNOT say anything about, before or after the
+      // fix: real cross-machine clock drift. Both peers are launched by one
+      // Python process on one machine and read the same OS clock, so an
+      // oscillator difference between two players' devices is structurally
+      // unobservable here -- not "unmeasured", impossible. The divergence
+      // this fix removed was about 4% over roughly eleven simulated
+      // seconds, two to three orders of magnitude larger than real hardware
+      // skew (tens to hundreds of ppm); it was scheduling contention
+      // between two Chrome processes sharing one machine, and the
+      // sleep-after-work loop modelled neither that skew nor the real
+      // client's pacing.
       if (tickSleepMs > 0) {
-        await sleep(tickSleepMs);
+        const remaining = startedAtMs + (tick + 1) * tickSleepMs - Date.now();
+        if (remaining > 0) {
+          await sleep(remaining);
+        }
       }
+    }
+
+    // The final retention reading, taken at the end of the run whatever the
+    // sample interval divided into: a growth check whose last data point
+    // was up to `sample_every` iterations before the end would be reporting
+    // on a window it never actually saw the end of.
+    if (sampleEvery > 0) {
+      sampleRetention(loopIterations);
     }
 
     // A short drain window after the tick loop: the last few ticks' worth
@@ -430,7 +553,12 @@ async function main(): Promise<void> {
       selfPeerId,
       counterpartPeerId,
       tickCount: stoppedEarly ? checkpoints.length : tickCount,
+      requestedTicks: tickCount,
+      loopIterations,
+      stoppedEarly,
+      durationSeconds,
       checkpoints,
+      samples,
       errors,
       finalStatus: JSON.parse(bridge.statusJson()) as unknown,
       terminal: JSON.parse(bridge.terminalJson()) as unknown,
@@ -441,6 +569,8 @@ async function main(): Promise<void> {
       marker("done", {
         role,
         checkpoints: checkpoints.length,
+        iterations: loopIterations,
+        samples: samples.length,
         errors: errors.length,
         status: JSON.parse(bridge.statusJson()) as string,
       }),
