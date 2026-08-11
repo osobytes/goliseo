@@ -257,6 +257,21 @@ fn retained_window_of_empty_wrappers_is_visible_as_such() {
         wrappers.history_bytes > 0,
         "and the combined total stays comfortably nonzero"
     );
+    // Nonzero is not the claim. The claim is that the two figures are of the
+    // same ORDER -- a gate reading only bytes would see nothing suspicious
+    // about the scaffolding run -- and that claim is what makes the counters
+    // load-bearing rather than decorative. Measured at ~89% (822,481 against
+    // 927,304); asserted loosely at half, because the point is to catch a
+    // collapse that would quietly turn this file's argument into an
+    // anecdote, not to pin a ratio that legitimately drifts as the encoders
+    // change.
+    assert!(
+        wrappers.history_bytes > real.history_bytes / 2,
+        "the scaffolding-only window ({}) must stay within an order of the real one ({}), \
+         or the bytes would in fact distinguish them and this test's premise is stale",
+        wrappers.history_bytes,
+        real.history_bytes
+    );
 
     // The counter is what separates them.
     assert_eq!(

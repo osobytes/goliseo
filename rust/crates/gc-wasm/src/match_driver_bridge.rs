@@ -1166,13 +1166,16 @@ impl MatchDriverBridge {
     ///
     /// Cost: O(retained input rows + retained outputs + retained events),
     /// with the snapshot component read from a counter the ring maintains
-    /// incrementally (no snapshot is re-encoded). Measured at ~0.27 ms per
-    /// call in a native release build on a full 31-boundary ring with a full
-    /// 30-step speculative window (`gc-sim`'s `tests/retained_history.rs`
-    /// prints it), and ~0.37 ms through this bridge under node
-    /// (`packages/wasm/src/retained_history.spec.ts` prints that one).
-    /// Cheap enough to sample every tick for hours; still not something to
-    /// call per entity.
+    /// incrementally (no snapshot is re-encoded). On a full 31-boundary ring
+    /// with a full 30-step speculative window: 0.27 ms and 0.38 ms per call
+    /// in native release builds on two different machines (`gc-sim`'s
+    /// `tests/retained_history.rs` prints it), and 0.37-0.42 ms through
+    /// this bridge under node, on both machines
+    /// (`packages/wasm/src/retained_history.spec.ts` prints that one). Those
+    /// are one machine's observations each, not a bound — sub-millisecond is
+    /// the claim, and neither number is a budget to assert against. Cheap
+    /// enough to sample every tick for hours; still not something to call
+    /// per entity.
     ///
     /// Takes `&mut self` because `gc_sim::rollback_session::accounting` does
     /// (it re-derives retained output bytes through the session's own

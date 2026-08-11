@@ -669,10 +669,13 @@ export interface MatchDriverBridge {
    *
    * Cost: O(retained input rows + retained outputs + retained events), with
    * the snapshot component read from a counter the ring maintains
-   * incrementally — no snapshot is re-encoded. ~0.27 ms per call natively
-   * (release) and ~0.37 ms through wasm under node, on a full 31-boundary
-   * ring with a full 30-step window. Cheap enough to sample every tick for
-   * hours; still not something to call per entity. */
+   * incrementally — no snapshot is re-encoded. On a full 31-boundary ring
+   * with a full 30-step window: 0.27 ms and 0.38 ms per call in native
+   * release builds on two different machines, and 0.37-0.42 ms through wasm
+   * under node on both. Those are observations on the machines that took them, not
+   * a bound — sub-millisecond is the claim, and neither figure is a budget
+   * to assert against. Cheap enough to sample every tick for hours; still
+   * not something to call per entity. */
   retainedHistoryAccountingJson(): string;
   retainedRollbackStepsJson(): string;
   /** This driver's own boundary-zero snapshot, as an opaque handle — for

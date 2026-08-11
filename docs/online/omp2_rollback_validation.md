@@ -534,9 +534,16 @@ The browser side of that soak evidence now has something to sample. `MatchDriver
 `gc_sim::retained_history::sample` — the same combined `history_bytes` figure defined above, its
 session and event components, and the occupancy counts (`retained_boundary_count`,
 `retained_step_count`, `retained_event_count`) that say whether a sample measured anything at all.
-Before it, the only retained-byte reading a browser peer could take was the event timeline alone,
-about one percent of the total. Sampling costs ~0.27 ms natively and ~0.37 ms through wasm under
-node on a full ring; no snapshot is re-encoded. Sampling `performance.memory` instead is not an
+Before it, the only retained-byte reading a browser peer could take was the event timeline alone:
+measured at 1.1–1.3% of the total on a lightly-lagged connection, and 2.7% under the deeper
+unconfirmed window `packages/wasm/src/retained_history.spec.ts` holds open deliberately. In every
+case measured the session half — snapshot ring, input history, retained outputs — is the dominant
+term and was the invisible one. Sampling has been measured at 0.27 ms and 0.38 ms per call in
+native release builds on two different machines, and 0.37-0.42 ms through wasm under node on both,
+on a full ring; no snapshot is re-encoded. Those are observations rather than a bound: sub-millisecond
+is the claim, and no figure here should be treated as a budget to assert against (which is why the
+cost test prints rather than asserts — on a shared runner a wall-clock assertion measures the
+runner). Sampling `performance.memory` instead is not an
 alternative: it excludes wasm linear memory, which never shrinks, so it cannot attribute growth to
 retention.
 

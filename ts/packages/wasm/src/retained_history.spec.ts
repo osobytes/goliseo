@@ -19,7 +19,9 @@
 //    must equal what the pre-existing `rollbackAccountingJson` reports on
 //    its own — the surface that used to be the only retained-byte reading a
 //    browser peer could take, and which omits the snapshot ring, the input
-//    history and the retained outputs (together ~99% of the number).
+//    history and the retained outputs (measured at 97.3% of the number under
+//    this file's own deliberately deep unconfirmed window, and 98.7-98.9%
+//    with a lightly-lagged one -- the dominant term either way).
 // 3. **The sample is real, not scaffolding.** Retained step wrappers holding
 //    no events still report a plausible nonzero byte total that no per-event
 //    encoder contributed to, so the occupancy counts are asserted alongside
@@ -216,8 +218,9 @@ describe("MatchDriverBridge.retainedHistoryAccountingJson", () => {
 
       // The event half is exactly what the pre-existing surface reports on
       // its own -- and it is a small fraction of the whole, which is the
-      // point: a peer sampling only that one was watching about a percent of
-      // its own retained memory.
+      // point: a peer sampling only that one was watching 2.7% of its own
+      // retained memory here, and nearer 1% on a lighter connection whose
+      // unconfirmed window is shallower.
       const eventOnly = JSON.parse(peer.driver.rollbackAccountingJson()) as {
         readonly total_bytes: number;
       };

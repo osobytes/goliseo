@@ -45,11 +45,14 @@
 //! incrementally, so no snapshot is re-encoded. It allocates short-lived
 //! strings while re-deriving the input history's canonical encoding
 //! ([`crate::rollback_input_history::accounting`]), which dominates. On a
-//! full 31-boundary ring with a full 30-step speculative window this is
-//! measured at roughly 0.3 ms per call natively (see
-//! `tests/retained_history.rs`) — cheap enough to sample once per second,
-//! or even once per tick, for hours; not something to call inside a
-//! per-entity loop.
+//! full 31-boundary ring with a full 30-step speculative window this has
+//! been measured at 0.27 ms and 0.38 ms per call in native release builds
+//! on two different machines (`tests/retained_history.rs` prints whatever
+//! the machine running it manages). Those are observations, not a bound:
+//! treat them as the order of magnitude — sub-millisecond, so cheap enough
+//! to sample once per second or even once per tick for hours — and not as a
+//! budget anything should be asserted against. It is still not something to
+//! call inside a per-entity loop.
 
 use crate::rollback_events::{self, RollbackEventTimeline, RollbackEventsAccounting};
 use crate::rollback_session::{self, RollbackSession, RollbackSessionAccounting};
