@@ -41,6 +41,14 @@ export {
   poseFor,
   mixerPoseFor as player3dMixerPoseFor,
   resetAnimation as player3dResetAnimation,
+  // #447. `@gc/screens`' `MatchScreen` calls the pre-warm when a match's host
+  // is created, so the distinct character variants a roster asks for are
+  // built during the screen transition rather than all at once inside the
+  // first drawn frame. `player3dVariantBuildCount` is the gate instrument
+  // that pins it -- the same shape as `staticSceneBuildCount` above, and for
+  // the same reason: a count is deterministic where a wall clock is flaky.
+  prewarmCharacters as player3dPrewarmCharacters,
+  variantBuildCount as player3dVariantBuildCount,
   characterCameraParams,
   ppmForRadius as player3dPpmForRadius,
   characterMesh as player3dCharacterMesh,

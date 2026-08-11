@@ -725,6 +725,27 @@ function sharedMaterial(): THREE.MeshStandardMaterial {
 const builtByVariant = new Map<string, BuiltCharacter>();
 let failed = false;
 
+// How many variant geometries this process has actually BUILT (not looked
+// up). Monotonic, never reset.
+//
+// EXPORTED AS A GATE INSTRUMENT, not as a diagnostic. The cost this counts is
+// invisible to `benchmark.ts`: that harness discards 300 warm-up frames
+// (`warmup_frames`, 5 s at 60 Hz) and its header states outright that "mesh
+// generation ... [is a] startup cost" measured separately -- an assumption
+// that was correct when mesh generation was ONE sub-millisecond singleton
+// build and stopped being correct the moment it started scaling with roster
+// diversity. In production there is no five-second grace period: frame 1 is
+// what the user sees when the pitch appears. A wall-clock bound would be
+// flaky on CI; a COUNT is deterministic, and "no variant is built inside the
+// draw loop once the roster is known" is the property that actually matters.
+// See `player_renderer_3d_prewarm.spec.ts`.
+let variantBuilds = 0;
+
+/** How many distinct character geometries this process has built. Monotonic. */
+export function variantBuildCount(): number {
+  return variantBuilds;
+}
+
 function mat4ToThree(m: Mat4): THREE.Matrix4 {
   const out = new THREE.Matrix4();
   // `.set()` takes row-major arguments; `Mat4` is stored row-major (see
@@ -895,6 +916,7 @@ function build(variant: CharacterVariant = defaultVariant()): BuiltCharacter | u
       groundProbes,
     };
     builtByVariant.set(variant.key, character);
+    variantBuilds += 1;
     return character;
   } catch (error) {
     failed = true;
@@ -971,6 +993,129 @@ function materialsForTeam(character: BuiltCharacter, variant: CharacterVariant, 
  */
 export function available(): boolean {
   return build() !== undefined;
+}
+
+// ---------------------------------------------------------------------------
+// PRE-WARM (#447 follow-up)
+// ---------------------------------------------------------------------------
+//
+// WHY THIS EXISTS. `build()` is lazy, and laziness alone is not a schedule.
+// `pitch.draw` calls `characterMesh` synchronously for every rostered player
+// on every rendered frame, and `characterMesh` calls `build(variant)` inline,
+// so the FIRST frame of a match discovers all of the starting roster's
+// distinct variants back to back in one synchronous call stack. Measured on
+// the two fixture teams that is nine builds and ~58 ms -- about 3.5x the
+// 60 fps budget and 1.7x `benchmark.ts`'s own `slow_frame_ms: 33` -- landing
+// on the frame the user sees when the pitch appears.
+//
+// WHY PRE-WARMING AND NOT STAGGERING. The roster crosses the wire ONCE PER
+// MATCH, not per frame (`crates/gc-render/src/frame_buffer.rs`'s
+// `encode_roster` and `gc-wasm`'s `rosterNumeric`/`rosterIdsAndNames`
+// accessors both say so, and both sim hosts memoise the decode). So the full
+// set of distinct variants is knowable the moment a match's host exists,
+// before any frame is drawn. Capping builds at one per frame would only
+// spread the stutter over nine frames instead of removing it, and would leave
+// a later first-sighting landing during live play regardless. Building them
+// where the match is set up puts the cost in the screen transition, where a
+// pause is expected and invisible.
+//
+// THE LAZY PATH STAYS, as the correctness backstop: a variant this never saw
+// still builds on demand rather than failing to draw. The gate is that the
+// common case never reaches it -- see
+// `player_renderer_3d_prewarm.spec.ts`, which pins zero builds inside the
+// draw loop once the roster is known.
+
+/**
+ * The slice of a decoded roster this needs. Declared structurally rather than
+ * imported from `pitch.ts`, which imports THIS module -- and every field is
+ * optional so a caller holding a roster that carries none of them (the fake
+ * hosts in `@gc/screens`' own suites return `{}`) is a no-op rather than an
+ * error.
+ */
+export interface PrewarmRoster {
+  readonly ids?: readonly (string | undefined)[];
+  readonly presentation_ids?: readonly (string | undefined)[];
+  readonly loadout_ids?: readonly (string | undefined)[];
+  readonly teams?: readonly ("home" | "away")[];
+}
+
+/** What one `prewarmCharacters` call did, for tests and diagnostics. */
+export interface PrewarmResult {
+  /** Distinct `(variant, team)` pairs the roster asked for. */
+  readonly variants: number;
+  /** How many variant geometries had to be built (the rest were cached). */
+  readonly built: number;
+  /** How many per-player pooled meshes were created. */
+  readonly pooled: number;
+}
+
+/**
+ * Impure: builds every distinct character variant a roster will ask for, plus
+ * each one's per-team geometry and baked palette, so the first drawn frame
+ * finds all of them cached.
+ *
+ * Call this when a match's roster becomes known and BEFORE the first
+ * `pitch.draw` — `@gc/screens`' `MatchScreen` does it at construction and at
+ * every restart. Idempotent and cheap to repeat: everything it touches is
+ * memoised, so a second call on the same roster builds nothing.
+ *
+ * Throws on content ids the renderer does not know, exactly as the draw path
+ * would — better here, at match setup, than mid-match on the frame that
+ * player first appears.
+ */
+export function prewarmCharacters(roster: PrewarmRoster): PrewarmResult {
+  const presentationIds = roster.presentation_ids;
+  // `Array.isArray`, not just an `undefined` check: `@gc/screens`' own
+  // `RenderFrameRoster` is `Readonly<Record<string, unknown>>` so every fake
+  // host in that package satisfies it, and `MatchScreen` pre-warms
+  // unconditionally at construction. A roster that carries this key as
+  // something other than an array is a fixture, not a match, and must be a
+  // no-op rather than a crash in a hundred unrelated tests.
+  if (!Array.isArray(presentationIds)) {
+    return { variants: 0, built: 0, pooled: 0 };
+  }
+  const before = variantBuilds;
+  const seen = new Set<string>();
+  let pooled = 0;
+  for (let index = 0; index < presentationIds.length; index += 1) {
+    const presentationId = presentationIds[index];
+    if (presentationId === undefined) {
+      continue;
+    }
+    const team = roster.teams?.[index] ?? "home";
+    const loadoutId = roster.loadout_ids?.[index];
+    const variant = variantFor({
+      is_keeper: false,
+      controlled: false,
+      presentation_id: presentationId,
+      ...(loadoutId !== undefined ? { loadout_id: loadoutId } : {}),
+    });
+    seen.add(`${variant.key}|${team}`);
+    const character = build(variant);
+    if (character === undefined) {
+      // `build` already logged and latched `failed`; there is nothing to warm
+      // and `characterMesh` will decline for the same reason.
+      break;
+    }
+    // The per-(variant, team) colour bake is the OTHER cost the first frame
+    // used to pay — one `Float32Array(vertCount * 3)` filled per slot — so it
+    // is warmed here too rather than left for `characterMesh` to discover.
+    geometryForTeam(character, variant, team);
+    // AND THE PER-PLAYER MESH, which is the rest of what the first frame
+    // used to pay for. `pooledCharacter` allocates a fresh `THREE.Bone` list,
+    // a `THREE.Skeleton` and a `SkinnedMesh` wrapper per player id — cheap
+    // next to a geometry build, but ten of them still measured ~19 ms on the
+    // first frame once the geometry was warm, which is most of a 60 Hz
+    // budget on its own. Warmed only when the roster names its players; a
+    // roster without `ids` still gets its geometry warmed and pays this on
+    // first sight.
+    const playerId = roster.ids?.[index];
+    if (playerId !== undefined && playerId !== "") {
+      pooledCharacter(playerId, character, variant, team);
+      pooled += 1;
+    }
+  }
+  return { variants: seen.size, built: variantBuilds - before, pooled };
 }
 
 // ---------------------------------------------------------------------------
