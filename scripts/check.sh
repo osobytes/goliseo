@@ -62,6 +62,18 @@
 #      wasm_clippy_scenario for a demonstration that a native-only run misses
 #      exactly this shape.
 #   5. pnpm install --frozen-lockfile                                 (ts)
+#   5b. pnpm exec prettier --check .
+#      -- TypeScript had NO formatting gate at all between #467 (which deleted
+#      Lua, and with it `stylua --check`) and #471. Numbered 5b rather than
+#      renumbering every step below, which this file and its scenarios refer
+#      to by name. Runs here, immediately after the install, because it needs
+#      nothing built: a formatting failure is reported in seconds instead of
+#      after the wasm build and the typecheck. prettier prints "All matched
+#      files use Prettier code style!" and exits 0 EVEN WHEN EVERY FILE IT WAS
+#      HANDED WAS IGNORED, so its own success line is not evidence; this step
+#      separately asks prettier's own `getFileInfo` API how many tracked files
+#      it would really format and requires a floor. See self_test()'s
+#      ts_format_scenario.
 #   6. build both gc-wasm artifacts (see 7) -- BEFORE the typecheck, because
 #      `@gc/wasm`'s `web` subpath resolves to a wasm-bindgen-GENERATED
 #      `.d.ts` under the gitignored `dist/`, so a clean checkout cannot type-
@@ -74,6 +86,25 @@
 #      source that is not. That exact shape passed for several successive
 #      changes before a forced build caught what an incremental one had
 #      been silently missing. See self_test()'s tsc_force_scenario.
+#   7b. pnpm exec eslint . --max-warnings 0
+#      -- TypeScript had NO lint gate at all, of any kind, until #471: no
+#      eslint, no biome, no oxlint, nothing. `tsc` is strict here
+#      (`noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`) but sets
+#      neither `noUnusedLocals` nor `noUnusedParameters`, and no type-checker
+#      catches a FLOATING PROMISE. In packages/render/src/rig3d/** an
+#      unawaited promise is the shape of defect that reaches a frame.
+#      Runs AFTER the typecheck for the same reason the typecheck runs after
+#      the wasm build: `no-floating-promises` is type-aware, and without
+#      `@gc/wasm`'s wasm-bindgen-GENERATED `.d.ts` on disk everything
+#      downstream of it resolves to an error type -- which does not fail the
+#      lint, it just quietly stops finding anything. Measured: 34 findings in
+#      packages/app alone appear and disappear purely on whether dist/ exists.
+#      Two independent guards, because a type-aware lint that has silently
+#      lost its type information still exits 0: a floor on the number of files
+#      the run actually reported on, and an `eslint --print-config` assertion
+#      that no-floating-promises / no-explicit-any / no-unused-vars are still
+#      at error severity for a real renderer source file. See self_test()'s
+#      ts_lint_scenario.
 #   7. build the gc-wasm wasm artifact:
 #      node ts/packages/wasm/scripts/build.mjs
 #      -- dist/pkg/ is gitignored (see .gitignore), so nothing already on disk
@@ -185,6 +216,27 @@ MIN_WIRE_ENUMS=11
 # is fail-loud about a parse that matched nothing, so this floor guards
 # against a narrowed or silenced comparison, not against content growing.
 MIN_PRESENTATION_MAPPINGS=19
+
+# The same shape of floor for gates 5b and 7b (#471), and the reason they are
+# not just "run the tool and read its exit code".
+#
+# eslint exits 0 over an empty file set. prettier exits 0 -- and prints "All
+# matched files use Prettier code style!" -- when every file it was handed was
+# ignored; that was verified by hand against prettier 3.9.6, not assumed. One
+# over-broad line in ts/.prettierignore, or one stray `ignores` entry in
+# ts/eslint.config.mjs, therefore turns either gate into a no-op that reads as
+# green. These floors are what makes that fail instead.
+#
+# Comfortably below the counts when this gate was written: eslint reported on
+# 265 files, and prettier's own getFileInfo API says 288 of the 289 tracked
+# formattable files under ts/ are covered (pnpm-lock.yaml is the one ignored).
+MIN_TS_LINT_FILES=240
+MIN_TS_FORMAT_FILES=240
+
+# The file gate 7b asks `eslint --print-config` about. Deliberately one under
+# packages/render/src/rig3d/: #471 names that directory as where an unawaited
+# promise reaches a frame, so it is the place the rule most needs to be on.
+ESLINT_RULE_PROBE_FILE="packages/render/src/rig3d/skeleton.ts"
 
 # ---------------------------------------------------------------------------
 # Small helpers
@@ -398,6 +450,241 @@ gate_ts_install() {
 gate_ts_typecheck() {
     step "ts: pnpm exec tsc --build --force"
     run_in "$ts_dir" pnpm exec tsc --build --force
+}
+
+# ---------------------------------------------------------------------------
+# Gates 5b and 7b: the TypeScript formatting and lint gates (#471)
+#
+# Read the header entries for 5b and 7b first. The short version: neither tool
+# fails when it processes nothing, so neither gate may be built out of an exit
+# code alone.
+# ---------------------------------------------------------------------------
+
+# How many tracked files under ts/ prettier would ACTUALLY format. Asked of
+# prettier's own `getFileInfo` API -- the same resolution its CLI performs, so
+# a file this reports as `ignored`, or with no `inferredParser`, is precisely a
+# file `prettier --check` silently skips.
+#
+# Prints one integer on stdout, or nothing at all if the probe failed. Callers
+# must treat an empty result as a failure and never as a benign zero.
+count_prettier_covered() {
+    local files=()
+    mapfile -t files < <(run_in "$ts_dir" git ls-files -- \
+        '*.ts' '*.tsx' '*.mjs' '*.cjs' '*.js' '*.jsx' \
+        '*.json' '*.md' '*.yaml' '*.yml' '*.html' '*.css' 2>/dev/null)
+    if [ "${#files[@]}" -eq 0 ]; then
+        return 1
+    fi
+    run_in "$ts_dir" node --input-type=module -e '
+import { getFileInfo } from "prettier";
+let covered = 0;
+for (const file of process.argv.slice(1)) {
+  const info = await getFileInfo(file, {
+    ignorePath: ".prettierignore",
+    resolveConfig: true,
+  });
+  if (!info.ignored && info.inferredParser) {
+    covered += 1;
+  }
+}
+console.log(covered);
+' "${files[@]}"
+}
+
+gate_ts_format() {
+    step "ts: pnpm exec prettier --check . (formatting)"
+    run_in "$ts_dir" pnpm exec prettier --check .
+    local status=$?
+
+    if [ "$status" -ne 0 ]; then
+        fail_msg "pnpm exec prettier --check . exited $status"
+        echo "    fix with: (cd ts && pnpm exec prettier --write .)"
+        return 1
+    fi
+
+    # NEVER TRUST ONE SIGNAL. Everything above is satisfied by a run that
+    # checked nothing at all -- see MIN_TS_FORMAT_FILES.
+    local covered
+    covered="$(count_prettier_covered)"
+    check_min_count "prettier" "files formatted-checked" "$covered" "$MIN_TS_FORMAT_FILES" || return 1
+    return 0
+}
+
+# Shared by both gates and by their self-test scenarios, so the floor the gate
+# enforces and the floor the self-test proves can go red are the same code
+# rather than two hand-mirrored copies (AGENTS.md §9).
+#
+# An EMPTY count is a failure, not a zero: it means the probe that was supposed
+# to produce the number did not run, and absent evidence is not a pass.
+check_min_count() {
+    local tool="$1"
+    local noun="$2"
+    local counted="$3"
+    local minimum="$4"
+
+    if [ -z "$counted" ]; then
+        fail_msg "$tool produced no count of $noun -- absent evidence is not a pass"
+        return 1
+    fi
+    case "$counted" in
+        '' | *[!0-9]*)
+            fail_msg "$tool reported a non-numeric count of $noun ('$counted')"
+            return 1
+            ;;
+    esac
+    if [ "$counted" -lt "$minimum" ]; then
+        fail_msg "$tool covered only $counted $noun (want >= $minimum) -- the file set has been narrowed or silenced, so a green result here means nothing"
+        return 1
+    fi
+    echo "    $counted $noun"
+    return 0
+}
+
+# Parses the one machine-readable line render_eslint_report() prints. Pure
+# logic, no eslint involved, so self_test() can feed it fabricated lines.
+check_eslint_terminator() {
+    local terminator="$1"
+
+    if [ -z "$terminator" ]; then
+        fail_msg "eslint produced no GC_ESLINT terminator -- absent evidence is not a pass"
+        return 1
+    fi
+
+    local files errors warnings
+    files="$(printf '%s' "$terminator" | grep -o 'files=[^|]*' | cut -d= -f2)"
+    errors="$(printf '%s' "$terminator" | grep -o 'errors=[^|]*' | cut -d= -f2)"
+    warnings="$(printf '%s' "$terminator" | grep -o 'warnings=[^|]*' | cut -d= -f2)"
+
+    if [ -z "$errors" ] || [ -z "$warnings" ]; then
+        fail_msg "eslint terminator is malformed: '$terminator'"
+        return 1
+    fi
+    if [ "$errors" -ne 0 ] || [ "$warnings" -ne 0 ]; then
+        fail_msg "eslint reported $errors error(s) and $warnings warning(s)"
+        return 1
+    fi
+    check_min_count "eslint" "files linted" "$files" "$MIN_TS_LINT_FILES" || return 1
+    return 0
+}
+
+# Turns eslint's JSON report into a human-readable log plus one GC_ESLINT
+# terminator. The gate runs eslint with `--format json --output-file` (so the
+# report is a parseable artifact rather than scraped console text) and this is
+# what puts the findings back in front of whoever is reading the CI log.
+render_eslint_report() {
+    local report="$1"
+    node --input-type=module -e '
+import { readFileSync } from "node:fs";
+const results = JSON.parse(readFileSync(process.argv[1], "utf8"));
+let errors = 0;
+let warnings = 0;
+for (const result of results) {
+  for (const message of result.messages) {
+    if (message.severity === 2) {
+      errors += 1;
+    } else {
+      warnings += 1;
+    }
+    const where = `${result.filePath}:${message.line}:${message.column}`;
+    const rule = message.ruleId ?? "(fatal)";
+    console.log(`    ${where} [${rule}] ${message.message}`);
+  }
+}
+console.log(
+  `GC_ESLINT|files=${results.length}|errors=${errors}|warnings=${warnings}`,
+);
+' "$report"
+}
+
+# The second, independent guard on gate 7b, and the one that matters most.
+#
+# A type-aware lint run that has quietly lost its type information does not
+# fail -- `no-floating-promises` simply stops finding anything, and the gate
+# goes green over a codebase nobody is checking. So do not infer that the rules
+# are on from a clean run: ask eslint what configuration it will actually apply
+# to a real renderer source file, and require the three rules #471 names to be
+# at severity 2 (error). `--print-config` is eslint's own answer, resolved
+# through the same config cascade the run uses.
+check_eslint_rules_enabled() {
+    local probe="$ts_dir/$ESLINT_RULE_PROBE_FILE"
+    if [ ! -f "$probe" ]; then
+        fail_msg "$ESLINT_RULE_PROBE_FILE is missing; gate 7b cannot confirm its rules are enabled"
+        echo "      (if the file was renamed, point ESLINT_RULE_PROBE_FILE at another"
+        echo "       packages/render/src/rig3d/ source -- do not delete this check)"
+        return 1
+    fi
+
+    local printed
+    printed="$(run_in "$ts_dir" pnpm exec eslint --print-config "$ESLINT_RULE_PROBE_FILE" 2>/dev/null)"
+    if [ -z "$printed" ]; then
+        fail_msg "eslint --print-config $ESLINT_RULE_PROBE_FILE produced nothing"
+        return 1
+    fi
+
+    local verdict
+    verdict="$(printf '%s' "$printed" | node --input-type=module -e '
+const required = [
+  "@typescript-eslint/no-floating-promises",
+  "@typescript-eslint/no-explicit-any",
+  "@typescript-eslint/no-unused-vars",
+];
+let raw = "";
+process.stdin.setEncoding("utf8");
+for await (const chunk of process.stdin) {
+  raw += chunk;
+}
+const rules = JSON.parse(raw).rules ?? {};
+const off = required.filter((name) => {
+  const entry = rules[name];
+  const severity = Array.isArray(entry) ? entry[0] : entry;
+  return severity !== 2 && severity !== "error";
+});
+console.log(off.length === 0 ? "GC_ESLINT_RULES|ok" : `GC_ESLINT_RULES|off=${off.join(",")}`);
+')"
+
+    if [ "$verdict" != "GC_ESLINT_RULES|ok" ]; then
+        fail_msg "the rules #471 exists for are not at error severity for $ESLINT_RULE_PROBE_FILE: $verdict"
+        return 1
+    fi
+    echo "    no-floating-promises, no-explicit-any and no-unused-vars are all at error severity for $ESLINT_RULE_PROBE_FILE"
+    return 0
+}
+
+gate_ts_lint() {
+    step "ts: pnpm exec eslint . --max-warnings 0 (type-aware)"
+
+    local report
+    report="$(mktemp)"
+    run_in "$ts_dir" pnpm exec eslint . --max-warnings 0 --format json --output-file "$report"
+    local status=$?
+
+    if [ ! -s "$report" ]; then
+        rm -f "$report"
+        fail_msg "eslint exited $status and wrote no JSON report -- treat that as a configuration failure, not a pass"
+        return 1
+    fi
+
+    local rendered terminator
+    rendered="$(render_eslint_report "$report")"
+    rm -f "$report"
+    printf '%s\n' "$rendered"
+    terminator="$(printf '%s' "$rendered" | grep -o 'GC_ESLINT|.*' | tail -n 1)"
+
+    local failures=0
+    # The exit code is checked, but it is the weakest of the three signals
+    # here: it is also 0 for a run that linted nothing.
+    if [ "$status" -ne 0 ]; then
+        fail_msg "pnpm exec eslint . --max-warnings 0 exited $status"
+        failures=1
+    fi
+    check_eslint_terminator "$terminator" || failures=1
+    check_eslint_rules_enabled || failures=1
+
+    if [ "$failures" -ne 0 ]; then
+        echo "    fix with: (cd ts && pnpm exec eslint . --fix), then fix the rest by hand"
+        return 1
+    fi
+    return 0
 }
 
 gate_wasm_build() {
@@ -1136,6 +1423,200 @@ presentation_parity_scenario() {
     return "$failures"
 }
 
+# Both #471 scenarios need real eslint/prettier binaries, and `--self-test`
+# deliberately runs BEFORE the gate -- so on a fresh clone or a CI runner
+# nothing has installed them yet. Same reasoning, and same frozen-lockfile
+# install, as tsc_force_scenario: requiring a prior install is how a self-test
+# passes on the machine that wrote it and fails on the machine that matters.
+ensure_ts_dependencies() {
+    local probe="$1"
+    if [ ! -x "$probe" ]; then
+        echo "    (self-test: installing ts dependencies, none present yet)"
+        if ! (cd "$ts_dir" && pnpm install --frozen-lockfile) >/dev/null 2>&1; then
+            echo "SELF-TEST FAIL: pnpm install --frozen-lockfile failed in $ts_dir"
+            return 1
+        fi
+    fi
+    if [ ! -x "$probe" ]; then
+        echo "SELF-TEST FAIL: $probe still absent after pnpm install"
+        return 1
+    fi
+    return 0
+}
+
+# Scenario: gate 7b (#471), in a hermetic fixture under mktemp -- never the
+# real ts tree, which this script does not own and which may legitimately be
+# mid-edit by another agent while this runs.
+#
+# The fixture's floating promise is the point. `no-floating-promises` is not a
+# syntactic rule: it asks a real TypeScript program whether an expression is
+# Promise-like. So this scenario is simultaneously the red demonstration for
+# gate 7b AND the only automated proof that the type-aware machinery is wired
+# up at all -- including the fragile part of it, ts/tools/lint/'s separate
+# typescript@6 (the root's pinned typescript@7 ships no JS compiler API, so a
+# setup that resolved the wrong one would leave the rule silently finding
+# nothing rather than erroring). See ts/tools/lint/tseslint.mjs.
+#
+# Pinned to the rule's own message, not merely a nonzero exit: a scenario that
+# goes red for the wrong reason is indistinguishable from one that works, right
+# up until the day the guard it names actually breaks.
+ts_lint_scenario() {
+    local dir="$1"
+    local failures=0
+
+    local eslint_bin="$ts_dir/node_modules/.bin/eslint"
+    ensure_ts_dependencies "$eslint_bin" || return 1
+
+    cat >"$dir/tsconfig.json" <<'EOF'
+{
+  "compilerOptions": {
+    "strict": true,
+    "target": "es2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["es2023"],
+    "noEmit": true
+  },
+  "include": ["probe.ts"]
+}
+EOF
+
+    cat >"$dir/eslint.config.mjs" <<EOF
+import tseslint from "$ts_dir/tools/lint/tseslint.mjs";
+
+export default tseslint.config(tseslint.configs.base, {
+  // ESLint only lints .js/.mjs/.cjs unless a config claims the extension.
+  files: ["**/*.ts"],
+  languageOptions: {
+    parserOptions: {
+      projectService: true,
+      tsconfigRootDir: "$dir",
+    },
+  },
+  rules: { "@typescript-eslint/no-floating-promises": "error" },
+});
+EOF
+
+    # Clean first: the same file with the promise awaited must be ACCEPTED, so
+    # a scenario that goes red because the fixture never parses at all cannot
+    # masquerade as a working guard.
+    cat >"$dir/probe.ts" <<'EOF'
+async function load(): Promise<number> {
+  return 1;
+}
+
+export async function run(): Promise<void> {
+  await load();
+}
+EOF
+    local log
+    log="$(mktemp)"
+    if (cd "$dir" && "$eslint_bin" --config eslint.config.mjs probe.ts) >"$log" 2>&1; then
+        echo "ok  a fixture whose promise IS awaited is accepted"
+    else
+        echo "SELF-TEST FAIL: the clean fixture was REJECTED; the scenario proves nothing about the rule:"
+        sed 's/^/      /' "$log" | tail -20
+        rm -f "$log"
+        return 1
+    fi
+
+    # Now drop the `await`. Nothing about the SYNTAX changed shape; only the
+    # type of the discarded expression did, which is exactly why a
+    # type-checker never catches this and a text-matching linter cannot.
+    cat >"$dir/probe.ts" <<'EOF'
+async function load(): Promise<number> {
+  return 1;
+}
+
+export function run(): void {
+  load();
+}
+EOF
+    if (cd "$dir" && "$eslint_bin" --config eslint.config.mjs probe.ts) >"$log" 2>&1; then
+        echo "SELF-TEST FAIL: a FLOATING PROMISE was ACCEPTED -- gate 7b's type-aware linting is not actually running, and #471's central rule finds nothing"
+        sed 's/^/      /' "$log" | tail -20
+        failures=1
+    elif grep -q "no-floating-promises" "$log"; then
+        echo "ok  an unawaited promise is rejected, by name, with real type information"
+    else
+        echo "SELF-TEST FAIL: the floating-promise fixture was rejected, but not for the floating promise:"
+        sed 's/^/      /' "$log" | tail -20
+        failures=1
+    fi
+    rm -f "$log"
+
+    # The counting logic gate 7b wraps the tool in, fed fabricated terminators
+    # -- no eslint involved. A lint run that reported on nothing still exits 0.
+    expect_fail "an eslint run with errors is rejected" \
+        check_eslint_terminator "GC_ESLINT|files=265|errors=3|warnings=0" \
+        || failures=1
+    expect_fail "an eslint run with warnings is rejected (--max-warnings 0 is not decoration)" \
+        check_eslint_terminator "GC_ESLINT|files=265|errors=0|warnings=1" \
+        || failures=1
+    expect_fail "a clean eslint run that linted almost nothing is rejected" \
+        check_eslint_terminator "GC_ESLINT|files=3|errors=0|warnings=0" \
+        || failures=1
+    expect_fail "an absent eslint terminator is rejected, not treated as a pass" \
+        check_eslint_terminator "" \
+        || failures=1
+    expect_pass "a clean run over the whole tree is accepted" \
+        check_eslint_terminator "GC_ESLINT|files=265|errors=0|warnings=0" \
+        || failures=1
+
+    return "$failures"
+}
+
+# Scenario: gate 5b (#471). Same construction, and the second half is the
+# specific hole this gate would otherwise have: prettier prints "All matched
+# files use Prettier code style!" and exits 0 when every file it was handed was
+# ignored, so the gate's floor -- not prettier's own verdict -- is what makes
+# an emptied .prettierignore fail.
+ts_format_scenario() {
+    local dir="$1"
+    local failures=0
+
+    local prettier_bin="$ts_dir/node_modules/.bin/prettier"
+    ensure_ts_dependencies "$prettier_bin" || return 1
+
+    # The real project config, so this proves the settings the tree is actually
+    # held to -- not prettier's defaults.
+    cp "$ts_dir/.prettierrc.json" "$dir/.prettierrc.json"
+
+    printf 'export const value = {a:1,   b:2};\n' >"$dir/drift.ts"
+    local log
+    log="$(mktemp)"
+    if (cd "$dir" && "$prettier_bin" --check drift.ts) >"$log" 2>&1; then
+        echo "SELF-TEST FAIL: prettier --check ACCEPTED a file that does not match the project's own .prettierrc.json"
+        sed 's/^/      /' "$log" | tail -10
+        failures=1
+    else
+        echo "ok  prettier --check rejects formatting drift under the real project config"
+    fi
+
+    if (cd "$dir" && "$prettier_bin" --write drift.ts) >"$log" 2>&1 &&
+        (cd "$dir" && "$prettier_bin" --check drift.ts) >"$log" 2>&1; then
+        echo "ok  the same file is accepted once prettier has formatted it"
+    else
+        echo "SELF-TEST FAIL: prettier --check REJECTED a file prettier itself had just written:"
+        sed 's/^/      /' "$log" | tail -10
+        failures=1
+    fi
+    rm -f "$log"
+
+    # The hole prettier's exit code leaves open, and the floor that closes it.
+    expect_fail "a coverage count of zero is rejected (prettier exits 0 over an entirely ignored tree)" \
+        check_min_count "prettier" "files formatted-checked" "0" "$MIN_TS_FORMAT_FILES" \
+        || failures=1
+    expect_fail "an absent coverage count is rejected, not read as zero-is-fine" \
+        check_min_count "prettier" "files formatted-checked" "" "$MIN_TS_FORMAT_FILES" \
+        || failures=1
+    expect_pass "a coverage count over the whole tree is accepted" \
+        check_min_count "prettier" "files formatted-checked" "$MIN_TS_FORMAT_FILES" "$MIN_TS_FORMAT_FILES" \
+        || failures=1
+
+    return "$failures"
+}
+
 self_test() {
     if ! toolchain_present; then
         echo "   ! cargo/node/pnpm not fully installed -- skipping self-test"
@@ -1172,6 +1653,14 @@ self_test() {
     echo "==> self-test: tsc --build --force (gate 6)"
     mkdir -p "$work/tsc_force"
     tsc_force_scenario "$work/tsc_force" || failures=1
+
+    echo "==> self-test: prettier formatting (gate 5b)"
+    mkdir -p "$work/ts_format"
+    ts_format_scenario "$work/ts_format" || failures=1
+
+    echo "==> self-test: type-aware eslint, floating promise (gate 7b)"
+    mkdir -p "$work/ts_lint"
+    ts_lint_scenario "$work/ts_lint" || failures=1
 
     echo "==> self-test: vitest summary extraction (gate 8)"
     vitest_summary_scenario || failures=1
@@ -1215,6 +1704,9 @@ main() {
     gate_rust_clippy_wasm || fail=1
 
     gate_ts_install || fail=1
+    # Formatting needs nothing built, so it runs straight after the install and
+    # reports in seconds rather than after the wasm build (#471).
+    gate_ts_format || fail=1
     # The wasm build comes BEFORE the typecheck, not after. `@gc/wasm`'s `web`
     # subpath resolves to `dist/pkg-web/gc_wasm.d.ts`, which wasm-bindgen
     # GENERATES -- and `dist/` is gitignored, so on a clean checkout it does not
@@ -1224,6 +1716,11 @@ main() {
     # exactly how it passed locally for everyone and failed every CI run.
     gate_wasm_build || fail=1
     gate_ts_typecheck || fail=1
+    # The lint is type-aware, so it runs after the wasm build and the typecheck
+    # for exactly the reason the typecheck does: without `@gc/wasm`'s GENERATED
+    # .d.ts on disk, everything downstream of it is an error type and the rules
+    # that matter quietly find nothing (#471).
+    gate_ts_lint || fail=1
     gate_ts_test || fail=1
     gate_determinism || fail=1
     gate_app_bundle || fail=1

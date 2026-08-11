@@ -1,0 +1,14 @@
+{
+  "name": "@gc/lint-toolchain",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "typescript-eslint and the TypeScript 6 compiler API it needs. See README.md -- this package exists because typescript@7 ships no JS compiler API.",
+  "exports": {
+    "./tseslint": "./tseslint.mjs"
+  },
+  "dependencies": {
+    "typescript": "6.0.3",
+    "typescript-eslint": "^8.67.0"
+  }
+}

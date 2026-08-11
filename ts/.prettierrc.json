@@ -1,0 +1,16 @@
+{
+  "printWidth": 100,
+  "tabWidth": 2,
+  "semi": true,
+  "singleQuote": false,
+  "trailingComma": "all",
+  "arrowParens": "always",
+  "endOfLine": "lf",
+  "overrides": [
+    {
+      "comment": "tsconfig files are JSONC -- tsconfig.eslint.json carries comments, and prettier only infers the jsonc parser for the exact name tsconfig.json. trailingComma is forced off here: TypeScript tolerates them, but these files are also read by hand and by tools that use a plain JSON.parse, and a formatter is not worth that risk.",
+      "files": ["tsconfig*.json"],
+      "options": { "parser": "jsonc", "trailingComma": "none" }
+    }
+  ]
+}

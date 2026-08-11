@@ -205,6 +205,13 @@ ts/
    narrow properly. `unknown` plus a type guard where input is genuinely
    untyped.
 
+   The `any` half of this rule is now **enforced** rather than merely
+   written down: `@typescript-eslint/no-explicit-any` runs at error severity
+   in gate 7b (#471). The non-null-assertion half is still prose only —
+   `no-non-null-assertion` reports 94 existing uses, far too many to fold
+   into the change that introduced the gate, so it is deliberately deferred
+   rather than silently dropped.
+
 2. **Relative imports carry the `.ts` extension** (`./foo.ts`).
    `rewriteRelativeImportExtensions` is on. Cross-package imports use the
    package name (`@gc/core`).
@@ -336,7 +343,11 @@ cd rust && cargo fmt --all --check
 cd ts && pnpm install
 cd ts && pnpm test             # vitest
 cd ts && pnpm typecheck        # tsc --build
+cd ts && pnpm lint             # eslint, type-aware
+cd ts && pnpm format:check     # prettier --check
 ```
+
+`pnpm lint:fix` and `pnpm format` are the writing halves of the last two.
 
 Use **pnpm**, never npm.
 
@@ -388,6 +399,25 @@ It is stricter than the commands above in ways that matter:
   native workspace run never compiles `gc-wasm`'s wasm-only code paths at
   all, so a lint that only exists under `#[cfg(target_arch = "wasm32")]`, or
   inside wasm-bindgen's own codegen for that target, is invisible to it.
+- it **lints and format-checks TypeScript** (`pnpm exec prettier --check .`,
+  gate 5b; `pnpm exec eslint . --max-warnings 0`, gate 7b). Between #467 —
+  which deleted Lua, and with it `stylua --check` and
+  `lua-language-server --check` — and #471 there was no lint or formatting
+  gate for TypeScript at all, of any kind, while TypeScript became roughly
+  half the codebase. `tsc` is strict here but sets neither `noUnusedLocals`
+  nor `noUnusedParameters`, and no type-checker catches a **floating
+  promise**; in `packages/render/src/rig3d/**` an unawaited promise is the
+  shape of defect that reaches a frame. So the lint is **type-aware**, which
+  has two consequences worth knowing: it runs after the wasm build and the
+  typecheck (without `@gc/wasm`'s generated `.d.ts` on disk, everything
+  downstream of it resolves to an error type and the rules quietly find
+  less), and neither gate may be built out of an exit code alone — eslint
+  exits 0 over an empty file set, and prettier exits 0 *and prints its
+  success line* when every file it was handed was ignored. Both gates
+  therefore also require a floor on the number of files they really covered,
+  and gate 7b additionally asserts through `eslint --print-config` that
+  `no-floating-promises`, `no-explicit-any` and `no-unused-vars` are still at
+  error severity for a real `rig3d/` source file.
 - `pnpm exec tsc --build --force`, never plain `--build`. An incremental
   build reuses `.tsbuildinfo` and can report clean over source that changed
   but whose mtime was not newer than the recorded build (the normal outcome
@@ -426,6 +456,17 @@ Toolchain pins this gate enforces: the Rust channel and components in
 checks its generated glue against the crate's schema version exactly, not
 semver); Node >= 22; pnpm exactly `11.1.2` (`ts/package.json`'s
 `"packageManager"`).
+
+One toolchain oddity, because it will otherwise look like a mistake: the
+workspace builds with `typescript@7`, whose npm package deliberately ships
+**no JavaScript compiler API** (its whole entry point exports `version` and
+`versionMajorMinor`). typescript-eslint's type-aware rules need that API, and
+its peer range says so (`>=4.8.4 <6.1.0`). So `ts/tools/lint/` is a tiny
+workspace package that exists only to carry its own `typescript@6.0.3` — the
+last JS-API release, and the same language as 7.0 — which pnpm's isolated
+`node_modules` hands to typescript-eslint without the root ever seeing it.
+`ts/eslint.config.mjs` reaches it through `ts/tools/lint/tseslint.mjs`, which
+documents the whole arrangement and says when to delete it.
 
 ---
 

@@ -1,4 +1,8 @@
 packages:
   - "packages/*"
+  # Not a game package: the lint toolchain, isolated so it can carry its own
+  # typescript@6 (the last release with a JS compiler API) without the root's
+  # pinned typescript@7 ever seeing it. See tools/lint/tseslint.mjs.
+  - "tools/lint"
 allowBuilds:
   esbuild: set this to true or false
