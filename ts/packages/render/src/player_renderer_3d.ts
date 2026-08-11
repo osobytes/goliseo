@@ -77,6 +77,7 @@ import * as skeleton from "./rig3d/skeleton.ts";
 import * as proportions from "./rig3d/proportions.ts";
 import * as clips from "./rig3d/clips.ts";
 import * as masks from "./rig3d/masks.ts";
+import * as crouch from "./rig3d/crouch.ts";
 import * as actionPose from "./rig3d/action_pose.ts";
 import * as animator from "./rig3d/animator.ts";
 import * as themes from "./rig3d/themes.ts";
@@ -425,6 +426,16 @@ export function poseFor(view: PlayerView | undefined, opts: PlayerRenderOptions,
     pose = clips.layer(pose, clips.sample(sling, (1 - Math.min(throwAmount, 1)) * sling.duration), masks.UPPER_BODY, 1);
   } else if (opts.holding === true) {
     pose = clips.layer(pose, clips.sample(clips.KEEPER_GATHER, now), masks.UPPER_BODY, 1);
+  }
+
+  // The knee bend under a settling body (#445), on the same seam and in the
+  // same order the mixer path applies it. Stateless here, where the mixer path
+  // eases the depth in: this sampler has no notion of a previous frame (it
+  // cannot crossfade either), so what it produces is what the mixer produces on
+  // a character's FIRST frame -- which is what the parity suite compares.
+  const settling = crouch.poseFor(actionPose.attitudeDrop(opts));
+  if (settling !== null) {
+    pose = clips.compose(pose, settling);
   }
 
   // Whole-body actions last: they move the root, so they ride on top of

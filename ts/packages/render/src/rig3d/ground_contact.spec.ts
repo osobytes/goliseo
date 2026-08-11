@@ -250,6 +250,24 @@ const DROP_POSES = [
   "fatigue",
 ] as const;
 
+/**
+ * The five `ATTITUDES` entries whose drop is a CROUCH, and which #445 pays for
+ * with a knee bend instead of leaving floored to nothing.
+ *
+ * The split matters to the assertions below. A floored root drop is not there
+ * at all, so it can be checked by removing the translation channel and
+ * confirming nothing moved. A crouch's translation IS there -- the limbs raised
+ * the feet by exactly as much first -- so the same removal would leave a figure
+ * standing on air, and the honest check is the one #445 is actually about:
+ * the pelvis went down by the authored amount and the soles did not.
+ */
+const CROUCH_POSES = ["keeper_ready_low", "settle", "contain", "keeper_set", "fatigue"] as const;
+
+/** The drops that are still root-only, and still floored away: `TIPS`'. */
+const FLOORED_DROP_POSES = DROP_POSES.filter(
+  (id) => !(CROUCH_POSES as readonly string[]).includes(id),
+);
+
 /** Poses whose root overlay carries a rotation as well as (or instead of) a drop. */
 const ROTATING = new Set(["combat_stagger", "keeper_get_up", "contain", "fatigue"]);
 
@@ -310,9 +328,25 @@ describe("ground contact: downward root translations (#439)", () => {
   // is none. Measured against the same frame with the overlay's translation
   // removed, so the pose's own rotation (which this fix deliberately does not
   // correct) cannot mask a regression in the translation.
+  //
+  // NARROWED TO THE STILL-FLOORED DROPS BY #445, and the narrowing is the
+  // point rather than a retreat from it. This baseline -- "the same frame with
+  // `move.root.y` zeroed" -- is only a baseline while the translation is the
+  // ONLY thing delivering the drop. A crouch's translation is paid for by a
+  // knee bend that has already raised the feet by the same amount, so zeroing
+  // it leaves a figure standing on air, and "with the translation is not lower
+  // than without it" would be asserting the opposite of the fix. The five
+  // crouches get the stronger, absolute property instead, two blocks below:
+  // the pelvis drops by exactly what `ATTITUDES` authors and the soles stay on
+  // the turf. `TIPS`' two drops are still root-only and still floored to
+  // nothing, and they are what this measures.
   it("costs the character no depth it did not already have, in every pose and at every phase", () => {
     const rig = skeleton.newRig(RIG);
-    for (const id of DROP_POSES) {
+    expect(FLOORED_DROP_POSES, "`TIPS`' two drops, or this loop measures nothing").toEqual([
+      "combat_stagger",
+      "keeper_get_up",
+    ]);
+    for (const id of FLOORED_DROP_POSES) {
       for (const frame of frames()) {
         const posed = poseOnRig(rig, id, frame);
         const withTranslation = lowestRendered(rig).y;
@@ -352,24 +386,57 @@ describe("ground contact: downward root translations (#439)", () => {
     }
   });
 
-  // THE COST, PINNED RATHER THAN DESCRIBED. `pose_table.ts` says
-  // `keeper_ready_low` "is LOW because of the attitude -- without it the two
-  // stances differed only in crossfade duration", and grounding the drop takes
-  // exactly that attitude away. So the two keeper stances now resolve to the
-  // same held pose, and this says so in the suite instead of in a comment
-  // nobody re-reads: it is the disclosure, and it goes red the moment a knee
-  // bend gives `keeper_ready_low` its silhouette back -- which is the point at
-  // which someone should be looking at this again.
-  it("collapses keeper_set and keeper_ready_low into the same held pose", () => {
+  // THE COST, PAID OFF (#445). This test used to assert the opposite, and the
+  // history is the point of keeping it here rather than writing a new one
+  // elsewhere.
+  //
+  // `pose_table.ts` says `keeper_ready_low` "is LOW because of the attitude --
+  // without it the two stances differed only in crossfade duration", and #444's
+  // floor took exactly that attitude away: from #444 to #445 the two keeper
+  // stances resolved to DEEP-EQUAL poses and rendered to the same millimetre.
+  // That equality was pinned deliberately, as a disclosure that would go red
+  // the day a knee bend gave `keeper_ready_low` its silhouette back. This is
+  // that day, so the equality is replaced by its opposite -- with a MAGNITUDE,
+  // because "not equal" would also be satisfied by a micron.
+  //
+  // The second half is unchanged and is what keeps either version honest: it
+  // says the difference comes from `ATTITUDES` still authoring one crouch
+  // deeper than the other, not from the table having stopped distinguishing
+  // them.
+  it("renders keeper_set and keeper_ready_low at visibly different heights", () => {
     const standing = { speed: 0, gait: 0, now: 0 };
     const rigA = skeleton.newRig(RIG);
     const rigB = skeleton.newRig(RIG);
-    const set = poseOnRig(rigA, "keeper_set", standing);
-    const readyLow = poseOnRig(rigB, "keeper_ready_low", standing);
-    expect(readyLow, "the two stances differ only in the drop, which is now floored").toEqual(set);
-    expect(lowestRendered(rigB).y, "and they render identically").toBeCloseTo(lowestRendered(rigA).y, 9);
-    // Not a claim that the TABLE stopped distinguishing them: it still does,
-    // and the day the rig can absorb a crouch they part again.
+    poseOnRig(rigA, "keeper_set", standing);
+    poseOnRig(rigB, "keeper_ready_low", standing);
+
+    const setHips = skeleton.jointPosition(rigA, "hips")[1];
+    const lowHips = skeleton.jointPosition(rigB, "hips")[1];
+    const setHead = skeleton.jointPosition(rigA, "head")[1];
+    const lowHead = skeleton.jointPosition(rigB, "head")[1];
+
+    // 32 mm of pelvis, on a 1.57 m figure drawn ~26 px tall at match camera:
+    // about half a pixel of separation between two stances that were the same
+    // pose a release ago. The whole upper body carries it, so the head parts by
+    // the same amount rather than the difference being a detail of the legs.
+    expect(lowHips, "the LOW ready stance is the lower of the two").toBeLessThan(setHips);
+    expect(setHips - lowHips, "and by tens of millimetres, not by a micron").toBeGreaterThan(30 * MM);
+    expect(setHead - lowHead, "the head drops with the pelvis, so the silhouette differs").toBeCloseTo(
+      setHips - lowHips,
+      9,
+    );
+
+    // The separation is exactly what the table authors, not an artefact of the
+    // fold: `crouch.ts` derives its angle FROM `attitudeDrop`, so a re-tune of
+    // either entry moves this by the same amount.
+    const authoredGap =
+      (actionPose.attitudeDrop({ pose: { id: "keeper_ready_low" } }) -
+        actionPose.attitudeDrop({ pose: { id: "keeper_set" } })) *
+      RIG.motion_scale;
+    expect(setHips - lowHips, "and it is the authored gap, in world metres").toBeCloseTo(authoredGap, 9);
+
+    // Not a claim that the difference is the RIG's: it is the table's, and it
+    // was the table's throughout the release in which nothing showed it.
     const authored = actionPose.attitudeFor({ pose: { id: "keeper_ready_low" } })?.move.root?.[1] ?? 0;
     const authoredSet = actionPose.attitudeFor({ pose: { id: "keeper_set" } })?.move.root?.[1] ?? 0;
     expect(authored, "ATTITUDES still authors the deeper crouch").toBeLessThan(authoredSet);
@@ -427,6 +494,300 @@ describe("ground contact: downward root translations (#439)", () => {
       lowest = Math.min(lowest, lowestRendered(rig).y);
     }
     expect(lowest, "a swing's lunge stays on the pitch on its own merits").toBeGreaterThan(-2 * MM);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE KNEE BEND (#445)
+// ---------------------------------------------------------------------------
+//
+// #444 grounded the drop and disclosed, in this file, that five poses lost
+// their crouch as a result -- because a root translation moves the feet with
+// the body and this rig has no IK to plant them again. The fix is not a bigger
+// translation and not a smaller floor: it is limb work, exactly the pattern
+// SWING already demonstrates two tests above.
+//
+// So the property to measure is the one a player sees: THE PELVIS GOES DOWN AND
+// THE SOLES DO NOT. Both halves are measured through the real geometry, and
+// each is what makes the other non-vacuous -- a fold that raised the feet
+// without dropping the hips is a player standing on tiptoe, and a drop without
+// the fold is #439 again.
+describe("ground contact: the crouch is limb work (#445)", () => {
+  const standing = { speed: 0, gait: 0, now: 0 };
+
+  /** The soles and the pelvis of a character doing nothing at all. */
+  const rest = (): { sole: number; hips: number } => {
+    const rig = skeleton.newRig(RIG);
+    return { sole: lowestRendered(rig).y, hips: skeleton.jointPosition(rig, "hips")[1] };
+  };
+
+  // The three crouches that carry no lean, so the drop is the whole overlay and
+  // the arithmetic is exact rather than "within the tilt".
+  const PLUMB_CROUCHES = CROUCH_POSES.filter((id) => !ROTATING.has(id));
+
+  it("settles the pelvis by exactly the drop ATTITUDES authors", () => {
+    expect(PLUMB_CROUCHES, "the drop-only crouches, or this measures nothing").toEqual([
+      "keeper_ready_low",
+      "settle",
+      "keeper_set",
+    ]);
+    const base = rest();
+    for (const id of PLUMB_CROUCHES) {
+      const rig = skeleton.newRig(RIG);
+      poseOnRig(rig, id, standing);
+      // The authored magnitude, converted the one way `skeleton.apply` converts
+      // it. Not a copied decimal: re-tune `ATTITUDES` and this follows.
+      const authored = actionPose.attitudeDrop({ pose: { id } }) * RIG.motion_scale;
+      expect(authored, `${id} authors a crouch worth seeing`).toBeGreaterThan(30 * MM);
+      expect(
+        base.hips - skeleton.jointPosition(rig, "hips")[1],
+        `${id}'s pelvis settles by its authored drop`,
+      ).toBeCloseTo(authored, 9);
+    }
+  });
+
+  it("leaves the soles on the turf while it does it", () => {
+    const base = rest();
+    for (const id of PLUMB_CROUCHES) {
+      const rig = skeleton.newRig(RIG);
+      poseOnRig(rig, id, standing);
+      const sole = lowestRendered(rig);
+      expect(sole.bone, `${id}'s lowest point is still a boot`).toMatch(/^(foot|toe)\./);
+      // NEVER BELOW where a standing character's sole is: the fold is derived
+      // from the drop rather than tuned against it, so the residue is the 2
+      // degree rest roll on the thigh that the closed form does not model --
+      // 0.06% of the drop, and in the direction of clearance.
+      expect(sole.y, `${id} must not push a sole below where standing puts it`).toBeGreaterThanOrEqual(base.sole);
+      expect(sole.y - base.sole, `${id}'s residue is a fraction of a millimetre`).toBeLessThan(0.2 * MM);
+    }
+  });
+
+  // THE OTHER HALF, and the reason the two above are not satisfied by a pose
+  // that does nothing. Remove the crouch's own root translation and the figure
+  // must FLOAT by the drop -- which is precisely the measurement that says the
+  // limbs, not the pitch, paid for it. It is also the exact baseline the #439
+  // block deliberately no longer uses for these five poses, kept here with its
+  // sign the right way round.
+  it("floats the figure by the whole drop when its root translation is removed", () => {
+    const base = rest();
+    for (const id of PLUMB_CROUCHES) {
+      const rig = skeleton.newRig(RIG);
+      const posed = poseOnRig(rig, id, standing);
+      const root = posed.move["root"];
+      posed.move["root"] = [root?.[0] ?? 0, 0, root?.[2] ?? 0];
+      skeleton.apply(rig, posed);
+      const authored = actionPose.attitudeDrop({ pose: { id } }) * RIG.motion_scale;
+      const float = lowestRendered(rig).y - base.sole;
+      expect(
+        float,
+        `${id}'s fold raises the feet by at least the drop its root translation spends`,
+      ).toBeGreaterThanOrEqual(authored);
+      expect(float, `${id}'s fold overshoots by the 2 degree rest roll and no more`).toBeLessThan(
+        authored + 0.2 * MM,
+      );
+    }
+  });
+
+  // The two crouches that ALSO lean. The lean is a root tilt, so the pelvis
+  // travels a little further than the drop alone and the exact equality above
+  // does not apply -- but the crouch must still be all there, and the tilt's
+  // own residual must not have grown. Both figures are the ones `RESIDUAL_MM`
+  // pins below, so the two blocks cannot drift apart.
+  it("keeps the crouch under a leaning pose without deepening its tilt", () => {
+    const base = rest();
+    for (const id of ["contain", "fatigue"] as const) {
+      const rig = skeleton.newRig(RIG);
+      poseOnRig(rig, id, standing);
+      const authored = actionPose.attitudeDrop({ pose: { id } }) * RIG.motion_scale;
+      expect(authored, `${id} authors a crouch`).toBeGreaterThan(30 * MM);
+      expect(
+        base.hips - skeleton.jointPosition(rig, "hips")[1],
+        `${id}'s pelvis settles at least its authored drop`,
+      ).toBeGreaterThan(authored - TOLERANCE);
+      expect(
+        base.hips - skeleton.jointPosition(rig, "hips")[1],
+        `${id}'s lean adds a few more millimetres and no more`,
+      ).toBeLessThan(authored + 10 * MM);
+    }
+  });
+
+  // THE COST PROPERTY, as a count rather than a depth -- the same shape as
+  // "costs an idle, walking or running character no second skeleton
+  // evaluation", and for the same reason. A crouch is a HELD posture, so a
+  // per-frame lift on one would track the gait's own vertical bob and read as a
+  // wobble at stride frequency; `action_pose.ts`'s GROUND CLEARANCE note
+  // rejects a per-frame budget for exactly that. A keeper is the figure to
+  // measure it on: keepers hold both of the deepest crouches and, since #447,
+  // carry nothing.
+  it("costs a crouching keeper no per-frame lift, at any phase or speed", () => {
+    const rig = skeleton.raised(skeleton.newRig(RIG), KEEPER_PROBES.restLift);
+    let lifted = 0;
+    let samples = 0;
+    for (const id of ["keeper_set", "keeper_ready_low"] as const) {
+      for (const frame of frames()) {
+        samples += 1;
+        if (groundedOnRig(rig, id, frame, undefined, KEEPER_PROBES).lift > 0) {
+          lifted += 1;
+        }
+      }
+    }
+    expect(samples, "72 frames each of two stances").toBe(144);
+    expect(lifted, "a crouching keeper never needs the pitch to move for them").toBe(0);
+  });
+
+  // THE SAME PROPERTY FOR THE TWO CROUCHES THAT ALSO LEAN, which the block
+  // above deliberately cannot cover: `contain` and `fatigue` carry a root tilt,
+  // and a tilt DOES need a few millimetres of lift at a standstill -- 4 mm and
+  // 2 mm, pinned by `RESIDUAL_MM` below, and not this fix's doing.
+  //
+  // A MOVING one needs none, and that is the claim worth having, because a
+  // containing defender is a moving player and `contain` is the commonest pose
+  // in the table. If the crouch ever started costing them a per-frame
+  // correction, it would arrive as a wobble at stride frequency on the pose
+  // that shows up most.
+  it("costs a moving contain or fatigue no per-frame lift either", () => {
+    const rig = groundedRig();
+    let lifted = 0;
+    let samples = 0;
+    for (const id of ["contain", "fatigue"] as const) {
+      for (const frame of frames()) {
+        if (frame.speed === 0) {
+          continue;
+        }
+        samples += 1;
+        if (groundedOnRig(rig, id, frame).lift > 0) {
+          lifted += 1;
+        }
+      }
+    }
+    expect(samples, "48 moving frames each of two poses").toBe(96);
+    expect(lifted, "a moving lean-and-crouch never needs the pitch to move either").toBe(0);
+  });
+
+  // PARTIAL DEPTH, ON THE REAL MESH. Everything else in this file -- including
+  // the ~7000-assertion sweep -- samples a character on their FIRST observed
+  // frame, because every helper here uses a fresh player id and the animator
+  // commits to its crouch outright on that frame. So every one of those
+  // measurements is taken at FULL depth, and the ease-in is measured nowhere on
+  // real geometry.
+  //
+  // Mid-transition is precisely where a weight-blended implementation sinks the
+  // feet: a fold of `w * c` raises the foot by `L * (1 - cos(w * c))`, which is
+  // QUADRATIC in `w`, while `w * drop` lowers it linearly, so any partial weight
+  // under such a scheme puts the soles through the turf and the deficit peaks
+  // near the middle of the ramp. `clips.compose` takes no weight and
+  // `crouch.poseFor` re-derives the angle from the ramped DEPTH for exactly this
+  // reason -- which is an argument until something measures it.
+  //
+  // Driven through one persistent player id at 60 fps, which is the only way to
+  // reach a partial depth at all, and measured at a STANDSTILL: a moving figure
+  // floats tens of millimetres clear (pinned at the top of this file) and would
+  // absorb the failure this is looking for.
+  // MEASURED AGAINST THE SAME INSTANT, NOT AGAINST THE REST POSE, and the first
+  // version of this test got that wrong in a way worth recording: the idle clip
+  // writes its own weight shift to `move.root`, so once `now` advances the
+  // standing figure is no longer at rest height either. Comparing a crouch at
+  // t = 0.33 s against a rest pose at t = 0 folds half a millimetre of idle bob
+  // into a measurement whose whole subject is a tenth of one. The baseline has
+  // to be the same character, at the same instant, not crouching.
+  it("keeps the soles on the turf at every depth the ease-in passes through", () => {
+    const rig = skeleton.newRig(RIG);
+    const tallRig = skeleton.newRig(RIG);
+    const base = rest();
+    const authored = actionPose.attitudeDrop({ pose: { id: "keeper_ready_low" } });
+    const player = "gc_ramp";
+    // One frame of plain locomotion first, so the crouch has somewhere to ease
+    // FROM. Without it the animator's first-frame commit skips the ramp
+    // entirely and this measures the same full depth as everything else.
+    animator.poseFor(player, { speed: 0, gait: 0 }, {}, 0);
+
+    let partialSamples = 0;
+    let deepest = 0;
+    for (let i = 1; i <= 20; i += 1) {
+      const now = i / 60;
+      const pose = animator.poseFor(player, { speed: 0, gait: 0 }, { pose: { id: "keeper_ready_low" } }, now);
+      const tall = animator.poseFor(`gc_tall_${String(i)}`, { speed: 0, gait: 0 }, {}, now);
+      const depth = (tall.move["root"]?.[1] ?? 0) - (pose.move["root"]?.[1] ?? 0);
+      skeleton.apply(rig, pose);
+      skeleton.apply(tallRig, tall);
+      const sole = lowestRendered(rig).y;
+      const tallSole = lowestRendered(tallRig).y;
+      const at = `${(1000 * depth).toFixed(1)} mm of ${(1000 * authored).toFixed(1)} mm`;
+      expect(sole, `at ${at}, a sole is below where standing puts it`).toBeGreaterThanOrEqual(tallSole);
+      expect(sole - tallSole, `at ${at}, a sole has lifted off`).toBeLessThan(0.2 * MM);
+      // And in absolute terms, against the pitch itself.
+      expect(sole, `at ${at}, a sole is through the turf`).toBeGreaterThanOrEqual(base.sole);
+      // A sample genuinely in the middle of the ramp, where the quadratic
+      // deficit a weight blend would produce is largest.
+      if (depth > 0.2 * authored && depth < 0.8 * authored) {
+        partialSamples += 1;
+      }
+      deepest = Math.max(deepest, depth);
+    }
+    // NON-VACUOUS IN BOTH DIRECTIONS: the ramp really passed through the middle
+    // rather than snapping, and it really did arrive.
+    expect(partialSamples, "the ease-in must actually be sampled part-way down").toBeGreaterThan(2);
+    expect(deepest, "and must reach the authored depth by the end of it").toBeCloseTo(authored, 9);
+  });
+
+  // THE ONE PLACE IT DOES COST SOMETHING, disclosed with its size rather than
+  // left to be found. A crouch lowers the WHOLE body, including anything a
+  // player is carrying, and an outfielder's held weapon swings low at one phase
+  // of a walk. Settling at a walk therefore dips the weapon under the turf and
+  // #446's lift raises it -- a lift that varies across the stride, which is the
+  // wobble shape the test above rules out for the body.
+  //
+  // It is bounded and it is small: 13 mm at its worst, on a 1.5676 m figure
+  // drawn ~26 px tall at match camera, which is 0.22 px. The BODY is nowhere
+  // near the plane at that phase, so nothing anatomical is being corrected.
+  //
+  // OVER EVERY LOADOUT, NOT THE ONE THAT HAPPENS TO DIP. Measured, only
+  // `loadout_tournament_sword` reaches the turf at all -- `loadout_vector_blade`
+  // is a nearly identical length (0.82 m against 0.84 m) and never touches it.
+  // So a single hardcoded id would pin the ceiling against the one item that
+  // exercises it and hold by luck for the rest: a longer polearm authored
+  // tomorrow could sail past 13 mm with nothing to catch it. The loop is over
+  // `LOADOUT_EQUIPMENT` itself, so a new loadout is under the ceiling by
+  // construction rather than by somebody remembering. That matters more since
+  // #460 made loadouts per-player.
+  it("keeps every loadout's held item within a fifth of a pixel of the turf while settling", () => {
+    const ids = Object.keys(presentationContent.LOADOUT_EQUIPMENT);
+    expect(ids.length, "every authored loadout, or this sweep means nothing").toBeGreaterThanOrEqual(6);
+
+    let deepestDip = 0;
+    let dippingLoadouts = 0;
+    for (const loadoutId of ids) {
+      const figure = body.accumulate(RIG, THEME, FIGURE, presentationContent.loadoutFor(loadoutId))[0];
+      if (figure === undefined) {
+        throw new Error(`ground_contact.spec.ts: ${loadoutId} must build a figure`);
+      }
+      const probes = ground.probesFrom(RIG, figure.verts, BONE_ORDER);
+      const rig = skeleton.raised(skeleton.newRig(RIG), probes.restLift);
+      let maxLift = 0;
+      let bodyLowest = Infinity;
+      for (const frame of frames()) {
+        maxLift = Math.max(maxLift, groundedOnRig(rig, "settle", frame, undefined, probes).lift);
+        bodyLowest = Math.min(bodyLowest, lowestRendered(rig, PROP, figure.verts).y);
+      }
+      expect(
+        maxLift,
+        `${loadoutId}: a fifth of a pixel at match camera, not a boot's depth`,
+      ).toBeLessThan(15 * MM);
+      expect(
+        bodyLowest,
+        `${loadoutId}: the player's own body is never what is being lifted`,
+      ).toBeGreaterThan(-TOLERANCE);
+      if (maxLift > 0) {
+        dippingLoadouts += 1;
+      }
+      deepestDip = Math.max(deepestDip, maxLift);
+    }
+
+    // NON-VACUOUS, and this is what a ceiling on its own cannot give: at least
+    // one loadout has to actually reach the turf, or every bound above passes
+    // on a sweep that is measuring nothing. The sword is that one today.
+    expect(dippingLoadouts, "at least one authored loadout really does dip").toBeGreaterThan(0);
+    expect(deepestDip, "and by millimetres, so the ceiling is a bound and not a formality").toBeGreaterThan(5 * MM);
   });
 });
 
@@ -891,11 +1252,17 @@ describe("ground contact: what the lift is, exactly", () => {
 // the posed rig every frame, and the posed rig's own height varies by more
 // than a crouch is worth -- the run floats the whole figure between +21 mm and
 // +137 mm (pinned at the top of this file). Delete the floor and a settling
-// runner's 69 mm drop is absorbed at the top of the stride and lifted back at
-// the bottom, which is a vertical wobble at stride frequency applied to poses
+// player's 69 mm drop is absorbed at one phase of the stride and lifted back at
+// another, which is a vertical wobble at stride frequency applied to poses
 // whose entire job is to read as a held posture. That is the exact failure
 // `action_pose.ts`'s GROUND CLEARANCE note rejects a per-frame budget for, and
 // the test below drives it rather than describing it.
+//
+// #445 SHARPENED THIS RATHER THAN RETIRING IT. `rig3d/crouch.ts` now delivers
+// the same authored drop as limb work, and the overlay's copy of it is still
+// floored -- so what the floor prevents today is the drop arriving TWICE, once
+// paid for by a knee bend and once not. The unfloored figure the test measures
+// is exactly that second, unpaid copy.
 describe("ground contact: #444's floor and #446's lift compose", () => {
   it("clears the plane for every drop pose, at every phase and speed", () => {
     const rig = groundedRig();
@@ -911,8 +1278,15 @@ describe("ground contact: #444's floor and #446's lift compose", () => {
   });
 
   it("is why the floor is still load-bearing: without it the lift tracks the stride", () => {
-    const rig = groundedRig();
-    // `settle`'s crouch as ATTITUDES authors it, which `apply` floors to zero.
+    // Measured on a KEEPER's figure, which since #447 carries nothing: this
+    // test is about what the RIG does under a doubled drop, and an outfielder's
+    // held weapon has its own, separately pinned, 13 mm dip at one phase of a
+    // settling walk (see the #445 block above). Letting that in here would put
+    // a prop's depth inside a measurement of the body's.
+    const rig = skeleton.raised(skeleton.newRig(RIG), KEEPER_PROBES.restLift);
+    // `settle`'s crouch as ATTITUDES authors it, which `apply` floors to zero
+    // on the overlay -- `rig3d/crouch.ts` is what delivers it, with the limbs
+    // paying for it first.
     const authoredDrop = actionPose.attitudeFor({ pose: { id: "settle" } })?.move.root?.[1] ?? 0;
     expect(authoredDrop, "settle authors a real drop for the floor to remove").toBeLessThan(-50 * MM);
 
@@ -920,25 +1294,23 @@ describe("ground contact: #444's floor and #446's lift compose", () => {
     let unflooredMin = Infinity;
     let unflooredMax = 0;
     for (const frame of frames()) {
-      if (frame.speed !== RUN_SPEED) {
-        continue;
-      }
-      flooredMax = Math.max(flooredMax, groundedOnRig(rig, "settle", frame).lift);
+      flooredMax = Math.max(flooredMax, groundedOnRig(rig, "settle", frame, undefined, KEEPER_PROBES).lift);
 
       // The same frame with the floor undone: the authored drop added back on
-      // top of whatever the locomotion blend wrote.
-      const pose = animator.poseFor(`gc_unfloored_${String(frame.gait)}`, { speed: frame.speed, gait: frame.gait }, { pose: { id: "settle" } }, frame.now);
+      // top of the crouch that has already spent it, which is the second,
+      // unpaid copy the floor exists to refuse.
+      const pose = animator.poseFor(`gc_unfloored_${String(frame.speed)}_${String(frame.gait)}`, { speed: frame.speed, gait: frame.gait }, { pose: { id: "settle" } }, frame.now);
       const root = pose.move["root"] ?? [0, 0, 0];
       pose.move["root"] = [root[0] ?? 0, (root[1] ?? 0) + authoredDrop, root[2] ?? 0];
-      const lift = ground.poseAndGround(rig, pose, PROBES);
+      const lift = ground.poseAndGround(rig, pose, KEEPER_PROBES);
       unflooredMin = Math.min(unflooredMin, lift);
       unflooredMax = Math.max(unflooredMax, lift);
     }
 
-    expect(flooredMax, "with the floor, a settling runner never needs a lift at all").toBeLessThan(TOLERANCE);
+    expect(flooredMax, "with the floor, a settling character never needs a lift at all").toBeLessThan(TOLERANCE);
     expect(
       unflooredMax - unflooredMin,
-      "without it, the lift swings by tens of millimetres across one stride -- a wobble, not a posture",
+      "without it, the lift swings by tens of millimetres across the gait -- a wobble, not a posture",
     ).toBeGreaterThan(20 * MM);
   });
 

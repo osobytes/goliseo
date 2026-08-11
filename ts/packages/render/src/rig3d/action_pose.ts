@@ -1,17 +1,15 @@
 // Whole-body action poses, as a sparse overlay on the rig root.
 //
-// These are the poses the 2.5D renderer expressed as transforms of the whole
-// billboard rather than as limb animation: a keeper's dive, a bicycle kick, a
-// knockback, a stumble. It is worth being precise about why they are ported as
-// ROOT TRANSFORMS and not as clips.
+// These are whole-body poses -- a keeper's dive, a bicycle kick, a knockback, a
+// stumble -- and it is worth being precise about why they are ROOT TRANSFORMS
+// and not clips.
 //
 // Every one of them is continuous. A dive is not a fixed silhouette played
 // back; it is the body rotating through an angle as `dive` runs 0 -> 1 against
 // the simulation's own timer. The same is true of the aerial lift, the wind-up
 // and the tip. A keyframe clip would have to re-derive that ramp and would
 // then disagree with the timer driving it, whereas a parameterised transform
-// reads the timer directly -- which is what the 2.5D renderer did, and why its
-// poses stayed in step with the sim.
+// reads the timer directly, and so stays in step with the sim.
 //
 // So the numbers below are not new. They are the constants the 2.5D renderer
 // already had, tuned against the real game, moved onto the rig. Authored clips
@@ -249,30 +247,31 @@ const LEAN_REFERENCE_HEIGHT = proportions.RIG_MEDIUM.seg.hips_y;
 //     rig, it is limb work, and clamping it would flatten a pose that is
 //     already correct. Measured and pinned too.
 //
-// WHAT IT COSTS THE POSES, stated plainly because it is the point a reader
-// will care about: on RIG_MEDIUM the budget below is ZERO, so a grounded drop
-// is no drop. `settle`, `keeper_ready_low` and `keeper_set` are drop-only
-// poses, so they no longer change the silhouette at all; `contain` and
-// `fatigue` keep their lean and lose their crouch. That is not a re-tune and
-// not a deletion -- the constants stay exactly as `ATTITUDES` and `TIPS`
-// author them, and they become live the moment the rig can absorb them. The
-// thing that would absorb them is a knee bend, which is limb work and which
-// `attitudeFor` has said belongs with the clip set since #430.
+// WHAT IT COST THE POSES, AND WHO PAYS IT NOW (#445). On RIG_MEDIUM the budget
+// below is ZERO, so a grounded drop is no drop, and between #444 and #445 that
+// meant `settle`, `keeper_ready_low` and `keeper_set` changed no silhouette at
+// all while `contain` and `fatigue` kept their lean and lost their crouch --
+// two collisions with it, both pinned as equalities in the specs rather than
+// left as prose: `keeper_set` and `keeper_ready_low` became THE SAME HELD POSE
+// (`pose_table.ts`: `keeper_ready_low` "is LOW because of the attitude"), and
+// `settle` became plain locomotion (its own entry calls the drop "the whole
+// read").
 //
-// TWO COLLISIONS COME WITH THAT, and they are the reason the sentence above is
-// not the whole cost:
+// That was never a re-tune and never a deletion. The constants in `ATTITUDES`
+// are unchanged, and the thing that absorbs them is a knee bend -- limb work,
+// which `attitudeFor` has said belongs with the clip set since #430, and which
+// `rig3d/crouch.ts` now supplies. A crouching pose folds the thigh, knee and
+// ankle so the pelvis settles by exactly the authored drop while the soles stay
+// on the turf, measured through the real geometry at under a tenth of a
+// millimetre of residue.
 //
-//   * `keeper_set` and `keeper_ready_low` become THE SAME HELD POSE.
-//     `pose_table.ts` says `keeper_ready_low` "is LOW because of the attitude
-//     -- without it the two stances differed only in crossfade duration", and
-//     the drop was that attitude entire. Grounded, the only thing left telling
-//     the two apart is how long each takes to blend in.
-//   * `settle` becomes plain locomotion. Its own entry calls the drop "the
-//     whole read, and it is what separated a settle from plain running".
-//
-// Both are pinned as equalities in the specs rather than left as prose, so
-// they read as deliberate and go red the moment a knee bend gives either one
-// its silhouette back.
+// THE FLOOR BELOW IS STILL LOAD-BEARING, and is not made redundant by that.
+// The two write to the same channel from opposite ends and mean different
+// things: this floor removes a root translation that would drag the feet down,
+// and `crouch.ts` adds one that the limbs have already paid for. Delete the
+// floor and the authored drop arrives TWICE -- once as the crouch's own,
+// grounded, `move.root`, and once as an ungrounded overlay on top of it, which
+// is the original sink with a knee bend in front of it.
 //
 // The ground clearance a downward root translation may spend, in metres of
 // world travel. Zero for RIG_MEDIUM, and not a placeholder: the rig plants at
@@ -691,14 +690,52 @@ export function attitudeFor(opts: ActionPoseOptions): RootPose | null {
     // the size of it mis-stated by a factor of twenty, which is why half of
     // #439 stayed invisible after being written down. The authored magnitude
     // is unchanged and correct; what was missing was the ground contact, and
-    // `apply` now floors this against the rig's clearance (see GROUND CONTACT
-    // above). A knee-bent crouch is still limb work and still belongs with the
-    // clip set -- and now that the drop is grounded, it is the ONLY thing that
-    // will make these poses read as a crouch again.
+    // `apply` floors this against the rig's clearance (see GROUND CONTACT
+    // above).
+    //
+    // WHAT MAKES THE MAGNITUDE LIVE AGAIN is `rig3d/crouch.ts` (#445), which
+    // reads the same number through `attitudeDrop` below and folds the legs
+    // under it. So this branch keeps authoring the geometry the billboard had,
+    // `apply` keeps refusing to let a root translation deliver it, and the
+    // crouch layer delivers it as limb work -- one magnitude, authored once,
+    // in this table.
     pose.move.root = [0, -metres(drop), 0];
   }
   return pose;
 }
+
+/**
+ * How far one pose id's attitude settles the body, in `move` units (metres
+ * BEFORE `skeleton.apply` multiplies by motion_scale). Zero for every pose that
+ * authors no crouch.
+ *
+ * WHY THIS EXISTS SEPARATELY FROM `attitudeFor` (#445). The drop is the ONE
+ * quantity in this table that a root translation cannot deliver: it moves the
+ * feet with the body, so `apply` floors it to the rig's ground clearance, which
+ * is zero. `rig3d/crouch.ts` delivers it instead, as a knee bend that lowers the
+ * pelvis by exactly this while the soles stay on the turf, and `animator.ts`
+ * reads it from here so that `ATTITUDES` stays the single place the magnitude
+ * is authored. Positive means down, which is the sign a caller sizing a crouch
+ * wants; `attitudeFor` keeps reporting the same number as a negative `move.root`
+ * y, because that is the geometry it is authored as.
+ */
+export function attitudeDrop(opts: ActionPoseOptions): number {
+  return metres(ATTITUDES[opts.pose?.id ?? ""]?.drop ?? 0);
+}
+
+/**
+ * The deepest crouch any attitude authors, in `move` units.
+ *
+ * Derived from the table rather than written down, so it cannot fall out of
+ * step with it. `animator.ts` uses it to set the rate a crouch eases in at, so
+ * that the deepest one takes the stated time and shallower ones take
+ * proportionally less -- the same linear-ramp reasoning `advanceCrossfade`
+ * gives for stance weights.
+ */
+export const DEEPEST_ATTITUDE_DROP: number = Object.values(ATTITUDES).reduce(
+  (deepest, spec) => Math.max(deepest, metres(spec.drop ?? 0)),
+  0,
+);
 
 // The root overlay for one player's action, or null when they are simply
 // running and the locomotion blend is the whole story.

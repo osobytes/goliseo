@@ -16,7 +16,15 @@
 //      `poseFor` always had it: arms wrapped around a ball beat whatever else
 //      the keeper is doing.
 //
-// Then `action_pose.apply` for the whole-body root overlay.
+// Then a fourth layer that is NOT a mixer layer, and then `action_pose.apply`
+// for the whole-body root overlay:
+//
+//   4. CROUCH -- `rig3d/crouch.ts`'s knee bend, sized by the drop
+//      `action_pose.ATTITUDES` authors for this pose id (#445). It is composed
+//      ADDITIVELY rather than layered through a mask, because a crouch is a
+//      modifier on a body that is still running: an override would have to
+//      restate the stride to keep it. See the block in `poseFor` for why it is
+//      driven off the pose id rather than through `POSE_ACTIONS`.
 //
 // LEAN IS NOT HERE, deliberately. `view.lean` becomes a torso tilt in
 // `player_renderer_3d.ts` (#428's `leanTilt`/`applyLean`), applied to the pose
@@ -57,6 +65,7 @@
 // `action_pose`, and no longer builds quaternions of its own -- see the header
 // note on where the torso lean lives.)
 import * as clips from "./clips.ts";
+import * as crouch from "./crouch.ts";
 import * as masks from "./masks.ts";
 import * as actionPose from "./action_pose.ts";
 import { MixerLayer, type LayerClip } from "./mixer.ts";
@@ -84,10 +93,9 @@ export interface AnimatorOptions extends actionPose.ActionPoseOptions {
   readonly windup?: number;
 }
 
-// Playback rate for the idle clip, in clip-seconds per real second. Ported
-// verbatim from `poseFor`'s `clips.sample(idle, now * 0.35)` -- breathing and
-// a weight shift have no ground-speed meaning, so idle is the one action here
-// that runs off the wall clock.
+// Playback rate for the idle clip, in clip-seconds per real second. Breathing
+// and a weight shift have no ground-speed meaning, so idle is the one action
+// here that runs off the wall clock rather than off distance travelled.
 const IDLE_RATE = 0.35;
 
 // How long a stance takes to fade OUT when the pose it belonged to is replaced
@@ -108,6 +116,21 @@ const DEFAULT_FADE_SECONDS = 0.16;
 // longest crossfade in `POSE_ACTIONS` (0.24s), or the clamp would let a single
 // long frame complete any fade and would not be a clamp at all.
 const MAX_FRAME_DT = 0.1;
+
+// How long the DEEPEST authored crouch takes to settle in or out (#445).
+//
+// A crouch is a held posture, not a committed action, so it eases like a stance
+// rather than snapping like a throw -- 0.16 s is `pose_table.ts`'s own EASE,
+// the duration it gives a held stance. It is a rate rather than a duration for
+// each pose, so a shallow crouch reaches its depth proportionally sooner
+// instead of every pose taking the same time to travel a different distance;
+// same linear-ramp argument `advanceCrossfade` makes for stance weights.
+//
+// NOT read from `POSE_ACTIONS[id].crossfade`, which would look tidier and would
+// snap: three of the five crouching poses (`settle`, `contain`, `fatigue`) have
+// no stance action at all, so their entry's crossfade is 0 by construction.
+const CROUCH_FADE_SECONDS = 0.16;
+const CROUCH_RATE = actionPose.DEEPEST_ATTITUDE_DROP / CROUCH_FADE_SECONDS;
 
 const BASE_CLIPS: readonly LayerClip[] = [
   // Construction order is playback order is accumulation order: three.js
@@ -169,6 +192,8 @@ interface AnimatorState {
   masksByAction: Record<string, ReadonlySet<string>>;
   /** The crossfade duration of the last engaged action, used for its fade-out. */
   fadeSeconds: number;
+  /** How deep this character is currently crouched, in `move` units (#445). */
+  crouch: number;
   lastNow: number;
 }
 
@@ -188,6 +213,14 @@ export function reset(): void {
 
 function clamp(x: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, x));
+}
+
+// Steps `current` toward `goal` by at most `step`, never overshooting. The
+// scalar twin of `pose_table.advanceCrossfade`'s own inner helper, which is not
+// exported because a crossfade's ramp is that module's business; this one
+// carries the crouch depth, which is metres rather than a weight.
+function moveToward(current: number, goal: number, step: number): number {
+  return current < goal ? Math.min(goal, current + step) : Math.max(goal, current - step);
 }
 
 // Playback phase, wrapped into the clip for a looping action and clamped into
@@ -304,16 +337,20 @@ export function poseFor(
   // --- Stance layer -------------------------------------------------------
   const entry = poseTable.actionForPose(opts.pose?.id);
   const target = entry.action;
+  // The crouch this pose id authors, which the crouch layer below eases toward.
+  const crouchTarget = actionPose.attitudeDrop(opts);
   const previous = states.get(playerId);
   let state: AnimatorState;
   if (previous === undefined) {
     // A character's first observed frame commits to its stance outright.
     // Fading in from nothing would make every player on the pitch ease into
     // their stance at kickoff, and after a rollback re-seed, for no reason.
+    // The crouch commits on the same frame and for the same reason.
     state = {
       crossfade: poseTable.snapCrossfade(target),
       masksByAction: {},
       fadeSeconds: target !== null ? entry.crossfade : DEFAULT_FADE_SECONDS,
+      crouch: crouchTarget,
       lastNow: now,
     };
   } else {
@@ -323,6 +360,7 @@ export function poseFor(
       crossfade: poseTable.advanceCrossfade(previous.crossfade, target, dt, fadeSeconds),
       masksByAction: previous.masksByAction,
       fadeSeconds,
+      crouch: moveToward(previous.crouch, crouchTarget, dt * CROUCH_RATE),
       lastNow: now,
     };
   }
@@ -369,6 +407,25 @@ export function poseFor(
     possession.silence();
     possession.set("keeper_gather", phaseFor("clock", clips.KEEPER_GATHER, view, opts, now), 1);
     pose = clips.layer(pose, possession.evaluate(), masks.UPPER_BODY, 1);
+  }
+
+  // --- Crouch layer (#445) ------------------------------------------------
+  // The knee bend under a settling body. Driven off the POSE ID rather than
+  // through `POSE_ACTIONS`, which is what lets it run alongside a stance
+  // instead of competing for the one action slot: `keeper_set` and
+  // `keeper_ready_low` have already spent theirs on `guard_stance`'s braced
+  // arms, and those arms and this crouch are the two halves of one reading.
+  //
+  // COMPOSED, NOT LAYERED, and that is the reason it is not a fourth
+  // `MixerLayer`. `clips.layer`'s override semantics would have to own every
+  // leg bone to write any of them, which deletes the stride -- and the stride
+  // is exactly what `pose_table.ts` says these poses keep ("a defender
+  // containing mid-stride keeps the stride"). `clips.compose` adds the fold to
+  // whatever the gait resolved instead. See its own note for why it takes no
+  // weight, and `crouch.ts` for why the fold and the drop cancel exactly.
+  const crouchPose = crouch.poseFor(state.crouch);
+  if (crouchPose !== null) {
+    pose = clips.compose(pose, crouchPose);
   }
 
   // Whole-body actions last: they move the root, so they ride on top of
