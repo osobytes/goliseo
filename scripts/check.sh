@@ -633,7 +633,18 @@ process.stdin.setEncoding("utf8");
 for await (const chunk of process.stdin) {
   raw += chunk;
 }
-const rules = JSON.parse(raw).rules ?? {};
+// `eslint --print-config` prints the literal text "undefined" for a file the
+// config IGNORES -- which is exactly the sabotage this check exists to catch,
+// so it must produce a readable verdict here rather than a JSON.parse stack
+// trace on top of the real failure.
+let config;
+try {
+  config = JSON.parse(raw);
+} catch {
+  console.log("GC_ESLINT_RULES|unparseable (eslint printed no configuration for this file; is it ignored?)");
+  process.exit(0);
+}
+const rules = config.rules ?? {};
 const off = required.filter((name) => {
   const entry = rules[name];
   const severity = Array.isArray(entry) ? entry[0] : entry;
