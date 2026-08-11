@@ -204,7 +204,87 @@ describe("impaired transport", () => {
       burst_lost: 0,
       duplicated: 0,
       reordered: 0,
+      unclocked_sends: 0,
     });
+  });
+
+  // The footgun this counter exists for: `TransportAdapter.send` carries no
+  // tick, so a loop that forgets `setTransportTick` attributes every send to
+  // the PREVIOUS tick -- silently, forever, with delays that look plausible.
+  it("counts sends attributed to a tick the caller never opened", () => {
+    const inner = connectedFake();
+    const link = impaired(inner, { profile: networkProfile("omp0_parity"), seed: 12345 });
+    const arrivals: [number, number][] = [];
+    // The broken loop: advanceTo moves the clock, and nothing else does.
+    for (let tick = 0; tick < 20; tick += 1) {
+      unwrap(link.send(packet(tick + 1)));
+      unwrap(link.advanceTo(tick));
+      for (const seq of drain(inner)) {
+        arrivals.push([seq, tick]);
+      }
+    }
+    for (let tick = 20; link.pendingCount() > 0; tick += 1) {
+      unwrap(link.advanceTo(tick));
+      for (const seq of drain(inner)) {
+        arrivals.push([seq, tick]);
+      }
+    }
+    expect(link.impairmentCounters().unclocked_sends).toBe(20);
+    // And the damage the counter reports is real, in the direction that is
+    // hardest to notice: the impairment clock runs a tick BEHIND the loop, so
+    // omp0_parity's authored three-tick delay is measured as TWO. Every
+    // packet lands one tick earlier than the profile says it should.
+    // (Sequence 1 is the exception: the clock starts at tick 0 either way.)
+    expect(arrivals.length).toBe(20);
+    for (const [seq, arrivedTick] of arrivals) {
+      const loopTickThatSentIt = seq - 1;
+      expect(arrivedTick).toBe(loopTickThatSentIt + (seq === 1 ? 3 : 2));
+    }
+  });
+
+  it("counts nothing when the tick loop opens each tick", () => {
+    const inner = connectedFake();
+    const link = impaired(inner, { profile: networkProfile("stress"), seed: 99 });
+    for (let tick = 0; tick < 20; tick += 1) {
+      link.setTransportTick(tick);
+      unwrap(link.send(packet(tick + 1)));
+      unwrap(link.send(packet(tick + 1)));
+      unwrap(link.advanceTo(tick));
+      drain(inner);
+    }
+    expect(link.impairmentCounters().unclocked_sends).toBe(0);
+    expect(link.impairmentCounters().sent).toBe(40);
+  });
+
+  it("throws on the first unclocked send under strict_clock", () => {
+    const inner = connectedFake();
+    const link = impaired(inner, {
+      profile: networkProfile("clean"),
+      seed: 1,
+      strict_clock: true,
+    });
+    link.setTransportTick(0);
+    unwrap(link.send(packet(1)));
+    unwrap(link.advanceTo(1));
+    // Tick 1 was reached by a delivery, not opened by the caller.
+    expect(() => link.send(packet(2))).toThrow(/never opened with setTransportTick/);
+    link.setTransportTick(1);
+    unwrap(link.send(packet(2)));
+  });
+
+  it("counts an unclocked send on a star link too", () => {
+    const host = new FakeStarTransport();
+    unwrap(host.initialize());
+    unwrap(host.openPeer("guest_1"));
+    const guest = new FakeStarTransport({ role: "guest", peer_id: "guest_1" });
+    unwrap(guest.initialize());
+    unwrap(host.link(guest));
+    const link = impairedStar(host, { profile: networkProfile("clean"), seed: 1 });
+    unwrap(link.send("guest_1", "input", packet(1)));
+    expect(link.impairmentCounters().unclocked_sends).toBe(1);
+    link.setTransportTick(0);
+    unwrap(link.send("guest_1", "input", packet(2)));
+    expect(link.impairmentCounters().unclocked_sends).toBe(1);
   });
 
   it("replays exactly from a seed, and diverges from a different one", () => {

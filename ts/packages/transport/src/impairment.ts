@@ -42,7 +42,7 @@
 //     Reordering is not simulated separately -- it EMERGES from jitter, which
 //     is why `playable` and `stress` reorder and `omp0_parity` never does.
 //
-// ## What is deliberately NOT mirrored
+// ## What is deliberately NOT mirrored -- AND WHAT THAT COSTS
 //
 // The native module also carries redundant input history on every packet,
 // keeps an authoritative-record ledger per slot, and offers `resend`/`drain`
@@ -50,6 +50,21 @@
 // protocol, one layer above this one: here a message is opaque bytes the
 // transport contract already validated. `history_recovered` therefore has no
 // counterpart in `ImpairmentCounters`.
+//
+// The exclusion is sound for what the differential compares --
+// `rollback_lab`'s per-tick loop calls only `send`/`poll`, and `drain` runs
+// once in `finish_campaign` after that loop, as one-time recovery rather than
+// ongoing network behaviour. But it has a consequence worth stating plainly,
+// because it is invisible to whoever wires this up next:
+//
+//   **THIS MODULE HAS NO EQUIVALENT OF GUARANTEED EVENTUAL DELIVERY.** A loss
+//   the native protocol resends its way past is a PERMANENT loss here. If the
+//   harness that drives this does not build an equivalent recovery layer --
+//   redundant history on the packet, or a resend path above the transport --
+//   the browser and native suites diverge again, one layer up from where this
+//   PR just pinned them: the native run recovers the input and continues, the
+//   browser run never sees it and desyncs, and the difference is the harness,
+//   not the netcode. Decide that deliberately; do not inherit it by accident.
 //
 // The two implementations are pinned against each other by a shared
 // transcript -- see `impairment_parity.spec.ts` and
@@ -59,13 +74,20 @@
 //
 // This module is the mechanism only. No harness constructs it today, so no
 // browser evidence is impaired yet and #472 stays open. Wiring it up means:
-// choosing the profile per run in `tools/browser_online_match`'s peer page,
-// advancing the transport clock from the peer's own tick loop (one
-// `setTransportTick(t)` before that tick's sends, one `advanceTo(t)` after
-// them), reporting `impairmentCounters()` in the run's evidence so a run that
-// impaired nothing is visibly not a clean run, and naming the profile in the
-// artifact so a browser result can be read beside the native matrix row it
-// corresponds to.
+//
+//   1. choosing the profile per run in `tools/browser_online_match`'s peer
+//      page, and naming it in the artifact so a browser result can be read
+//      beside the native matrix row it corresponds to;
+//   2. advancing the transport clock from the peer's own tick loop -- one
+//      `setTransportTick(t)` before that tick's sends, one `advanceTo(t)`
+//      after them -- and passing `strict_clock: true`, so a loop that skips
+//      step one fails on its first tick instead of silently attributing every
+//      send to the previous tick for an hour (see `unclocked_sends`);
+//   3. reporting `impairmentCounters()` in the run's evidence, so a run that
+//      impaired nothing is visibly not a clean run;
+//   4. deciding what happens to a permanently lost input -- see the cost
+//      stated above. This is the one that is easy to skip and expensive to
+//      discover.
 
 import { ok, err } from "@gc/core";
 import * as contract from "./contract.ts";
@@ -117,6 +139,27 @@ export interface ImpairmentCounters {
   readonly duplicated: number;
   /** Non-duplicate envelopes released after a higher sequence already was. */
   readonly reordered: number;
+  /**
+   * Sends attributed to a transport tick the caller never opened with
+   * `setTransportTick`.
+   *
+   * WHY THIS IS A COUNTER AND NOT A COMMENT. `TransportAdapter.send` carries
+   * no tick, so a decorated send is attributed to whatever tick the link was
+   * last told about -- and `advanceTo` moves that clock too. A caller whose
+   * loop forgets `setTransportTick(t)` therefore has every send that tick
+   * attributed to the PREVIOUS tick: no exception, no failure, just an
+   * off-by-one between the impairment clock and the real tick loop, running
+   * silently through a whole soak and producing delays that look plausible
+   * and are wrong. A number in the run's evidence is what catches that at
+   * 3am; a doc comment is not.
+   *
+   * Nonzero does not always mean a bug -- a caller with no tick loop at all
+   * reports every send here, and that is the honest reading of a run whose
+   * delays are not tick-attributed to anything. Evidence gathered for
+   * comparison against the native matrix should expect zero, and
+   * `strict_clock` turns the same detection into an immediate throw.
+   */
+  readonly unclocked_sends: number;
 }
 
 export interface ImpairmentOptions {
@@ -124,6 +167,15 @@ export interface ImpairmentOptions {
   readonly profile: NetworkProfile;
   /** Impairment seed. The same seed and profile replay exactly. */
   readonly seed: number;
+  /**
+   * Throw instead of counting when a send is attributed to a tick the caller
+   * never opened with `setTransportTick`. Off by default, because a caller
+   * with no tick loop is a legitimate (if unmeasured) use; a harness
+   * gathering evidence for comparison against the native matrix should turn
+   * it on, so a mis-clocked loop fails on its first tick instead of
+   * producing a plausible-looking hour of wrong delays.
+   */
+  readonly strict_clock?: boolean;
 }
 
 /** One envelope released into the wrapped adapter, in delivery order. */
@@ -148,6 +200,7 @@ const ZERO_COUNTERS: ImpairmentCounters = {
   burst_lost: 0,
   duplicated: 0,
   reordered: 0,
+  unclocked_sends: 0,
 };
 
 // Authoring invariants, not runtime conditions: a profile that violates one
@@ -210,9 +263,12 @@ interface PendingEnvelope<T> {
 export class ImpairmentLink<T> {
   private readonly _profile: NetworkProfile;
   private readonly _seed: number;
+  private readonly _strictClock: boolean;
   private _rngState: number;
   private _sequence = 0;
   private _clockTick = -1;
+  /** The last tick the CALLER named, as opposed to one a delivery moved us to. */
+  private _openedTick: number | null = null;
   private _pending: PendingEnvelope<T>[] = [];
   /** Tick each source's active burst runs until; absent when none. */
   private _burstUntil = new Map<number, number>();
@@ -223,6 +279,7 @@ export class ImpairmentLink<T> {
     assertProfile(options.profile);
     this._profile = options.profile;
     this._seed = options.seed;
+    this._strictClock = options.strict_clock ?? false;
     this._rngState = rngSeed(options.seed);
   }
 
@@ -278,6 +335,39 @@ export class ImpairmentLink<T> {
     if (sendTick < this._clockTick) {
       throw new Error("impairment send tick must be monotonic");
     }
+    // Naming the tick IS opening it: a caller that passes an explicit tick
+    // cannot be off by one about which tick it meant.
+    this._openedTick = sendTick;
+    return this._schedule(sourceSlot, sendTick, payload);
+  }
+
+  /**
+   * Schedule at whatever tick the link is currently on -- the entry point the
+   * decorators use, because `TransportAdapter.send` carries no tick.
+   *
+   * This is the only path on which the tick can be WRONG rather than merely
+   * old, so it is the only path that checks: if the current tick is not one
+   * the caller opened with `setTick`, the send is counted in
+   * `unclocked_sends` (or thrown on, under `strict_clock`).
+   */
+  scheduleAtCurrentTick(sourceSlot: number, payload: T): ImpairmentReceipt {
+    const sendTick = Math.max(this._clockTick, 0);
+    if (this._openedTick !== sendTick) {
+      if (this._strictClock) {
+        throw new Error(
+          `impairment send at tick ${sendTick}, which the caller never opened with setTransportTick -- ` +
+            "the impairment clock is behind the caller's tick loop and every delay this run would be wrong",
+        );
+      }
+      this._counters = {
+        ...this._counters,
+        unclocked_sends: this._counters.unclocked_sends + 1,
+      };
+    }
+    return this._schedule(sourceSlot, sendTick, payload);
+  }
+
+  private _schedule(sourceSlot: number, sendTick: number, payload: T): ImpairmentReceipt {
     this._clockTick = sendTick;
     this._sequence += 1;
     const sequence = this._sequence;
@@ -400,6 +490,7 @@ export class ImpairmentLink<T> {
       throw new Error("impairment transport tick must be monotonic");
     }
     this._clockTick = tick;
+    this._openedTick = tick;
   }
 
   /**
@@ -458,7 +549,14 @@ export class ImpairedTransport implements TransportAdapter {
     return this._link.transportTick();
   }
 
-  /** Move the transport clock without releasing anything. See `ImpairmentLink.setTick`. */
+  /**
+   * Open a transport tick: move the clock without releasing anything. Call it
+   * before that tick's sends, and `advanceTo(tick)` after them.
+   *
+   * Skipping it does not fail -- it attributes those sends to the previous
+   * tick and counts them in `unclocked_sends`. See that counter, and
+   * `strict_clock`.
+   */
   setTransportTick(tick: number): void {
     this._link.setTick(tick);
   }
@@ -515,11 +613,7 @@ export class ImpairedTransport implements TransportAdapter {
     if (state !== "connected") {
       return err({ message: "transport is not connected", code: "not_connected" });
     }
-    this._lastReceipt = this._link.schedule(
-      1,
-      Math.max(this._link.transportTick(), 0),
-      contract.copy(message),
-    );
+    this._lastReceipt = this._link.scheduleAtCurrentTick(1, contract.copy(message));
     return ok(true);
   }
 
@@ -590,7 +684,14 @@ export class ImpairedStarTransport implements StarTransportAdapter {
     return this._link.transportTick();
   }
 
-  /** Move the transport clock without releasing anything. See `ImpairmentLink.setTick`. */
+  /**
+   * Open a transport tick: move the clock without releasing anything. Call it
+   * before that tick's sends, and `advanceTo(tick)` after them.
+   *
+   * Skipping it does not fail -- it attributes those sends to the previous
+   * tick and counts them in `unclocked_sends`. See that counter, and
+   * `strict_clock`.
+   */
   setTransportTick(tick: number): void {
     this._link.setTick(tick);
   }
@@ -713,11 +814,11 @@ export class ImpairedStarTransport implements StarTransportAdapter {
     if (this._inner.peerState(peerId) === null) {
       return err({ message: "transport peer is not open", code: "unknown_peer" });
     }
-    this._lastReceipt = this._link.schedule(
-      this._slotFor(peerId),
-      Math.max(this._link.transportTick(), 0),
-      { peer_id: peerId, channel, message: contract.copy(message) },
-    );
+    this._lastReceipt = this._link.scheduleAtCurrentTick(this._slotFor(peerId), {
+      peer_id: peerId,
+      channel,
+      message: contract.copy(message),
+    });
     return ok(true);
   }
 
