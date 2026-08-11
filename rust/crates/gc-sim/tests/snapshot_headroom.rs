@@ -56,19 +56,21 @@
 //! retained speculative event timeline. See `measure`'s doc comment for why
 //! the narrower session-only figure would be the wrong thing to gate on.
 //!
-//! The snapshot reading can be compared against `tests/match_snapshot.rs`'s
-//! synthetic window as a **corroboration, not an independent check**: both
-//! sides build the same `nebula`/`orion` fixture through the same
-//! construction path and size it with the same
-//! `encoded_size_canonical` encoder. What differs is the method — one
-//! multiplies a single tick-zero boundary by 31, the other accumulates a
-//! real 48-tick run — so agreement says the estimate's *arithmetic* holds
-//! up, not that two unrelated instruments agree.
+//! The snapshot reading sits **above** `tests/match_snapshot.rs`'s
+//! synthetic `(base + delta) * 31` window (831,694 measured here against
+//! 767,095 synthetic), and that ordering is expected rather than a
+//! contradiction: the synthetic figure multiplies a single tick-zero
+//! boundary, where most per-player state is still at its construction
+//! default, while a ring filled by contested play retains 31 boundaries of
+//! populated decision, press and combat state. The two are not independent
+//! instruments in any case — same `nebula`/`orion` fixture, same
+//! construction path, same `encoded_size_canonical` encoder — so this is a
+//! statement about which state each one prices, not a cross-validation.
 
 use gc_data::omp2_rollback_validation;
 use gc_data::teams;
 use gc_sim::combat;
-use gc_sim::input_frame;
+use gc_sim::input_frame::{self, EdgeAction, HeldAction, InputSample, InputSampleOptions};
 use gc_sim::r#match::{self as sim_match, NewMatchOptions};
 use gc_sim::match_snapshot::{self, MatchState, PitchSize};
 use gc_sim::rollback_events;
@@ -88,6 +90,50 @@ const WARN_MARGIN: i64 = 32 * 1024;
 /// 31-boundary ring and evict past it, so the reading is a steady-state
 /// retained window rather than a partially-warmed one.
 const STEPPED_TICKS: i64 = 48;
+
+/// Scripted input for every slot on every tick.
+///
+/// **This must generate real events, and that is not incidental.** The
+/// obvious fixture — `input_frame::neutral_sample()` on every slot — plays
+/// out as ten players standing still, and measurably produces *zero*
+/// `MatchEvent`s and *zero* `CombatEvent`s across the whole run. A retained
+/// event window built from it is 30 steps of pure wrapper scaffolding
+/// (`tick`, boundaries, `state`, and three empty arrays): a nonzero byte
+/// count that prices none of the per-event encoders. A new field on
+/// `MatchEvent`, `CombatEvent` or a lifecycle payload would move that
+/// number by exactly nothing — a budget-compared figure measuring none of
+/// the thing it names, which is the defect this whole file exists to
+/// prevent.
+///
+/// So instead: both sides converge on the ball at a sprint, hold the
+/// equipment action (the combat trigger) throughout, press a combat request
+/// every sixth tick and dash on the third. The vertical split by slot
+/// parity keeps the ten players from collapsing onto one point. That
+/// produces real contact and real event traffic, so `wrapped_event_len`,
+/// `match_event_len` and `combat_event_len` are genuinely entered and
+/// priced.
+fn scripted_sample(tick: i64, slot_index: i64) -> InputSample {
+    let toward_opponent = if slot_index <= input_frame::HOME_SLOT_COUNT {
+        1
+    } else {
+        -1
+    };
+    let held = HeldAction::Equipment.bit() | HeldAction::Sprint.bit();
+    let edges = if tick % 6 == 0 {
+        EdgeAction::EquipmentPressed.bit()
+    } else if tick % 6 == 3 {
+        EdgeAction::Dash.bit()
+    } else {
+        0
+    };
+    input_frame::new_sample(InputSampleOptions {
+        move_x: Some(toward_opponent * 100),
+        move_y: Some(if slot_index % 2 == 0 { 40 } else { -40 }),
+        held: Some(held),
+        edges: Some(edges),
+    })
+    .expect("the scripted sample is a valid input sample")
+}
 
 fn new_state() -> MatchState {
     let home = teams::get("nebula").expect("nebula is authored");
@@ -130,7 +176,14 @@ struct Measurement {
     peak_history_bytes: i64,
     /// The event timeline's own contribution at the same peak.
     peak_event_bytes: i64,
+    /// Retained *events* at the same peak — not steps. A window of 30 steps
+    /// holding no events at all is what the first revision of this file
+    /// measured; this is the field that catches it.
+    peak_event_count: i64,
     retained_event_steps: i64,
+    /// Every event the simulation produced across the whole run, summed as
+    /// it was produced rather than read back off the timeline.
+    raw_events_produced: i64,
 }
 
 /// Translate a session tick output into the event timeline's own input row.
@@ -181,13 +234,19 @@ fn event_tick_output(
 /// as headroom. A client whose confirmations are lagging by the full window
 /// is both reachable and the case the budget has to bound.
 ///
-/// Honest limit: a neutral-input match produces few events, so the
-/// timeline's contribution here is a full *window* of genuinely sparse
-/// ticks, not a worst-case event load. Event-heavy retention is what
-/// `tests/combat_load_fixtures.rs` exercises against the same budget. What
-/// this reading guarantees is that the component is present and accounted
-/// for, so growth in per-event encoding shows up here instead of being
-/// structurally invisible.
+/// Honest limit on what the event side covers. The scripted fixture
+/// retains 41 real events across its 30-step window at the measured peak —
+/// 40 `CombatEvent`s and one `MatchEvent`, from 66 produced across the run
+/// — so the wrapped-event, match-event and combat-event encoders are all
+/// entered and priced, and a field added to either row moves this number.
+/// Two gaps remain, and neither is papered over: **lifecycle payloads are
+/// not exercised** (this fixture scores no goal and reaches no full time
+/// inside 48 ticks, so `lifecycle_events` stays empty), and 41 events over
+/// 30 ticks is ordinary contested play, not the adversarial 51-rows-per-tick
+/// case `docs/online/omp2_rollback_validation.md` prices. Worst-case event
+/// load is what `tests/combat_load_fixtures.rs` exercises against the same
+/// budget. This reading is the cheap early warning that per-event encoding
+/// growth is visible at all.
 fn measure(combat_active: bool) -> Measurement {
     let mut state = new_state();
     let combat_state = if combat_active {
@@ -203,20 +262,29 @@ fn measure(combat_active: bool) -> Measurement {
 
     let mut peak_history_bytes = 0;
     let mut peak_event_bytes = 0;
+    let mut peak_event_count = 0;
+    let mut raw_events_produced = 0;
     for tick in 0..STEPPED_TICKS {
         // Real authoritative input for every slot, so the input history is
-        // genuinely populated rather than left as bare predictions.
+        // genuinely populated rather than left as bare predictions — and
+        // scripted rather than neutral, so the run produces real events
+        // (see `scripted_sample`).
         for slot_index in 1..=input_frame::SLOT_COUNT {
             rollback_session::add_authoritative(
                 &mut session,
                 tick,
                 slot_index,
-                input_frame::neutral_sample(),
+                scripted_sample(tick, slot_index),
             )
             .expect("an in-window authoritative row is accepted");
         }
         let output =
             rollback_session::step(&mut session).expect("the session steps inside its duration");
+        raw_events_produced += output.events.len() as i64
+            + output
+                .combat_events
+                .as_ref()
+                .map_or(0, |events| events.len() as i64);
 
         // Confirm exactly late enough to keep the speculative window full:
         // after applying tick `t`, the timeline retains `t - confirmed`
@@ -241,6 +309,10 @@ fn measure(combat_active: bool) -> Measurement {
         if combined > peak_history_bytes {
             peak_history_bytes = combined;
             peak_event_bytes = event_bytes;
+            // Sampled at the peak, not at end of run: the peak is the tick
+            // whose number is compared to the budget, so it is the tick
+            // whose event content has to be non-empty.
+            peak_event_count = rollback_events::diagnostics(&timeline).retained_event_count;
         }
     }
 
@@ -262,7 +334,9 @@ fn measure(combat_active: bool) -> Measurement {
         boundary_bytes,
         peak_history_bytes,
         peak_event_bytes,
+        peak_event_count,
         retained_event_steps: event_diagnostics.retained_step_count,
+        raw_events_produced,
     }
 }
 
@@ -331,22 +405,39 @@ fn a_real_combat_session_retains_a_window_inside_the_authored_snapshot_and_histo
     report(&history);
     snapshot_headroom::enforce(&history);
     println!(
-        "GC_SNAPSHOT_HEADROOM|retained_history_components|total={}|event_timeline={}|event_steps={}",
+        "GC_SNAPSHOT_HEADROOM|retained_history_components|total={}|event_timeline={}\
+         |event_steps={}|events_at_peak={}|events_produced={}",
         measurement.peak_history_bytes,
         measurement.peak_event_bytes,
-        measurement.retained_event_steps
+        measurement.retained_event_steps,
+        measurement.peak_event_count,
+        measurement.raw_events_produced
     );
 
     assert!(
         measurement.peak_history_bytes > measurement.peak_snapshot_bytes,
         "retained history must strictly exceed its snapshot component"
     );
-    // Each of the two non-snapshot components must actually be present, so
-    // neither can silently drop out of the total and leave the reading
-    // looking comfortable.
+    // The event component must be present *and* non-empty. Occupancy alone
+    // is not enough: 30 retained steps holding zero events is 30 wrappers
+    // of metadata, a nonzero byte count that prices none of the per-event
+    // encoders and would not move if `MatchEvent` or `CombatEvent` grew a
+    // field. Asserting at the peak — the tick whose number is compared to
+    // the budget — rather than at end of run is the point.
     assert_eq!(
         measurement.retained_event_steps, 30,
         "the speculative event window must be held full"
+    );
+    assert!(
+        measurement.peak_event_count > 0,
+        "the retained event window must hold real events at the measured peak, \
+         not just {} empty step wrappers -- otherwise the history reading prices \
+         none of the per-event encoders",
+        measurement.retained_event_steps
+    );
+    assert!(
+        measurement.raw_events_produced > 0,
+        "the fixture must actually generate events"
     );
     assert!(
         measurement.peak_event_bytes > 0,

@@ -297,13 +297,14 @@ Three different numbers describe the margin and they are **not** interchangeable
   deleted `scripts/check_snapshot_headroom.sh`). It reads `combat_window=767095`,
   `combat_headroom=150409` against the 896-KiB gate — the same window that left 19,337 at 768 KiB
   and 29,567 when #209 was filed. It is a hand-multiplied estimate, not a retained window.
-- a **real retained window** from a live `rollback_session` stepped past a full ring, measured by
-  `rust/crates/gc-sim/tests/snapshot_headroom.rs`: 760,126 bytes, 157,378 of headroom. This is the
-  cheap per-PR reading. Its closeness to the synthetic figure above corroborates that estimate's
-  arithmetic, but the two are not independent instruments — both build the same `nebula`/`orion`
-  fixture through the same construction path and size it with the same `encoded_size_canonical`
-  encoder. What differs is method: one multiplies a tick-zero boundary by 31, the other accumulates
-  a real 48-tick run.
+- a **real retained window** from a live `rollback_session` driven by scripted contested play past a
+  full ring, measured by `rust/crates/gc-sim/tests/snapshot_headroom.rs`: 831,694 bytes, 85,810 of
+  headroom. This is the cheap per-PR reading, and it sits *above* the synthetic figure — expected
+  rather than contradictory, because the synthetic one multiplies a tick-zero boundary where most
+  per-player state is still at its construction default, while a ring filled by contested play
+  retains 31 boundaries of populated decision, press and combat state. The two are not independent
+  instruments in any case: same `nebula`/`orion` fixture, same construction path, same
+  `encoded_size_canonical` encoder.
 - the rollback lab's **campaign peak** — the high-water mark across a full impaired run, which is
   the quantity the campaign gate compares and the largest of the three. It is reported per case as
   `peak_snapshot_bytes`, and `rust/crates/gc-sim/tests/combat_load_fixtures.rs` compares it to the
@@ -479,7 +480,9 @@ their own literals ([#470](https://github.com/osobytes/goliseo/issues/470)).
 `MatchState`, runs a real `rollback_session` past a full 31-boundary ring alongside a
 `rollback_events` timeline held at its full unconfirmed window, and reads their own byte
 accounting — so the measured side is produced by the simulation's canonical encoder and the
-asserted side is a `gc-data` literal, with no code in common. Three budgets are
+asserted side is a `gc-data` literal, with no code in common. Its input is **scripted contested
+play**, not neutral samples: ten idle players produce literally zero events, which would leave the
+event half of the reading pricing 30 empty step wrappers and nothing else. Three budgets are
 enforced: `snapshot_count` (an equality — a ring that under-fills makes the byte readings an
 under-measurement), `snapshot_bytes` and `history_bytes` (ceilings, warning at 32 KiB of remaining
 headroom, failing above the budget). `gc_sim::snapshot_headroom` holds the band classification, and
@@ -499,13 +502,26 @@ The measured readings at the time of writing, for a combat-active session:
 
 | Quantity | Measured | Budget | Headroom |
 | --- | ---: | ---: | ---: |
-| retained snapshot bytes | 760,126 | 917,504 | 157,378 |
-| retained history bytes | 822,481 | 1,179,648 | 357,167 |
+| retained snapshot bytes | 831,694 | 917,504 | 85,810 |
+| retained history bytes | 928,883 | 1,179,648 | 250,765 |
 
-Of that history total, 8,900 bytes are the event timeline across a full 30-tick unconfirmed window.
-That is a full *window* of a neutral-input match, which produces few events per tick — it is not a
-worst-case event load, and the event-heavy case is what the combat load fixtures exercise against
-the same budget. What this reading guarantees is that the component is present and accounted for.
+Of that history total, 24,833 bytes are the event timeline: 41 retained events across a full 30-tick
+unconfirmed window (40 `CombatEvent`s and one `MatchEvent`, from 66 produced across the run), so the
+wrapped-event, match-event and combat-event encoders are all entered and priced, and a field added
+to either row moves this number.
+
+Two gaps in that event coverage, stated rather than papered over. **Lifecycle payloads are not
+exercised**: the fixture scores no goal and reaches no full time inside 48 ticks, so
+`lifecycle_events` stays empty. And 41 events over 30 ticks is ordinary contested play, not the
+adversarial 51-rows-per-tick case priced under "The retained-storage cost model" above. Worst-case
+event load is what the combat load fixtures cover against the same budget; this reading is the cheap
+early warning that per-event encoding growth is visible at all.
+
+The 85,810 bytes of snapshot headroom is the tighter of the two margins and the one to watch — it is
+9.4% of the gate. It is also markedly smaller than the same reading taken with idle players
+(157,378), which is the point: ten players standing still is a cheaper retained state than a
+contested one, and pricing the budget against the cheap case is how a margin looks healthy right up
+until it is not.
 
 Three budget fields stay authored-but-unmeasured, deliberately. `p95_work_ms` and
 `rollback_p999_ms` are wall-clock percentiles: a per-PR timing assertion on a shared runner measures
