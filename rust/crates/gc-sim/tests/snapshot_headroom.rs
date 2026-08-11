@@ -241,7 +241,10 @@ fn event_tick_output(
 /// entered and priced, and a field added to either row moves this number.
 /// Two gaps remain, and neither is papered over: **lifecycle payloads are
 /// not exercised** (this fixture scores no goal and reaches no full time
-/// inside 48 ticks, so `lifecycle_events` stays empty), and 41 events over
+/// inside 48 ticks, so `lifecycle_events` stays empty; an armed-shot variant
+/// was tried and produced *fewer* events, not more, so closing this gap means
+/// a longer or differently-shaped fixture, which would cost the cheapness
+/// that is this test's whole point), and 41 events over
 /// 30 ticks is ordinary contested play, not the adversarial 51-rows-per-tick
 /// case `docs/online/omp2_rollback_validation.md` prices. Worst-case event
 /// load is what `tests/combat_load_fixtures.rs` exercises against the same
