@@ -99,12 +99,38 @@
 #      downstream of it resolves to an error type -- which does not fail the
 #      lint, it just quietly stops finding anything. Measured: 34 findings in
 #      packages/app alone appear and disappear purely on whether dist/ exists.
-#      Two independent guards, because a type-aware lint that has silently
-#      lost its type information still exits 0: a floor on the number of files
-#      the run actually reported on, and an `eslint --print-config` assertion
-#      that no-floating-promises / no-explicit-any / no-unused-vars are still
-#      at error severity for a real renderer source file. See self_test()'s
-#      ts_lint_scenario.
+#
+#      A clean run is NOT the evidence. A type-aware lint that lost its type
+#      information exits 0, and so does one whose config switched the rules
+#      off: "no errors" is exactly what "no rule" looks like. So four separate
+#      guards sit on top of the exit code:
+#        (i)   a floor on the number of files the run actually reported on
+#              (MIN_TS_LINT_FILES), so a run over nothing cannot pass;
+#        (ii)  THE guarantee -- an assertion, through ESLint's own
+#              `calculateConfigForFile` API, that every one of
+#              ESLINT_REQUIRED_RULES is at ERROR severity for EVERY file the
+#              run reported on, naming the package that lost a rule. Per-file
+#              because per-run was bypassable: a reviewer showed that one
+#              `ignores` block switching a rule off everywhere EXCEPT the one
+#              probed directory left the file count unchanged, the probe
+#              answering "ok", the gate green, and the rule dead for 221 of
+#              259 files. See check_eslint_rules_enabled() and self_test()'s
+#              ts_lint_narrowing_scenario;
+#        (iii) the older `eslint --print-config` check on one rig3d source,
+#              kept and DEMOTED TO A CANARY. One file was never the
+#              guarantee -- see (ii) -- but it exercises eslint's CLI rather
+#              than its API, so a defect in either path cannot silence both;
+#        (iv)  check_tseslint_peer(), an expiry tripwire rather than a
+#              correctness check: ts/tools/lint/ carries a second TypeScript
+#              only because typescript-eslint's declared peer range excludes
+#              the typescript@7 this workspace builds with, and the day
+#              upstream widens that range the workaround is deletable and
+#              nothing else would say so. See self_test()'s
+#              tseslint_peer_scenario.
+#      Red demonstrations for all of it: self_test()'s ts_lint_scenario (a
+#      floating promise, which also proves the type-aware machinery is really
+#      wired up), ts_lint_narrowing_scenario (the bypass above) and
+#      tseslint_peer_scenario.
 #   7. build the gc-wasm wasm artifact:
 #      node ts/packages/wasm/scripts/build.mjs
 #      -- dist/pkg/ is gitignored (see .gitignore), so nothing already on disk
@@ -559,6 +585,30 @@ gate_ts_format() {
 #
 # An EMPTY count is a failure, not a zero: it means the probe that was supposed
 # to produce the number did not run, and absent evidence is not a pass.
+# True only if EVERY argument is a non-empty string of digits.
+#
+# This exists because of a defect a reviewer found in this file, and the defect
+# is worth stating: bash's `[ "$x" -ne 0 ]` on a non-numeric `$x` writes
+# "integer expression expected" to STDERR and evaluates FALSE. A count of "NaN"
+# therefore read as "not non-zero", every guard below it fell through, and
+# check_eslint_rules_terminator printed its success line over a terminator it
+# had not understood -- a gate reporting that it checked everything, on input
+# it could not parse. That is the exact failure AGENTS.md §9 exists to prevent,
+# aimed at the gate's own plumbing rather than at the code under test.
+#
+# So: every field that will be compared numerically goes through here FIRST,
+# and a field that is not a count is a named failure, exactly as an absent one
+# already was. See self_test()'s malformed-terminator scenarios.
+all_integers() {
+    local value
+    for value in "$@"; do
+        case "$value" in
+            '' | *[!0-9]*) return 1 ;;
+        esac
+    done
+    return 0
+}
+
 check_min_count() {
     local tool="$1"
     local noun="$2"
@@ -569,12 +619,10 @@ check_min_count() {
         fail_msg "$tool produced no count of $noun -- absent evidence is not a pass"
         return 1
     fi
-    case "$counted" in
-        '' | *[!0-9]*)
-            fail_msg "$tool reported a non-numeric count of $noun ('$counted')"
-            return 1
-            ;;
-    esac
+    if ! all_integers "$counted"; then
+        fail_msg "$tool reported a non-numeric count of $noun ('$counted')"
+        return 1
+    fi
     if [ "$counted" -lt "$minimum" ]; then
         fail_msg "$tool covered only $counted $noun (want >= $minimum) -- the file set has been narrowed or silenced, so a green result here means nothing"
         return 1
@@ -598,8 +646,10 @@ check_eslint_terminator() {
     errors="$(printf '%s' "$terminator" | grep -o 'errors=[^|]*' | cut -d= -f2)"
     warnings="$(printf '%s' "$terminator" | grep -o 'warnings=[^|]*' | cut -d= -f2)"
 
-    if [ -z "$errors" ] || [ -z "$warnings" ]; then
-        fail_msg "eslint terminator is malformed: '$terminator'"
+    # See all_integers(): a non-numeric count would make `-ne 0` evaluate FALSE
+    # and fall through to a pass. Every field, before any of them is compared.
+    if ! all_integers "$files" "$errors" "$warnings"; then
+        fail_msg "eslint terminator is malformed (files='$files' errors='$errors' warnings='$warnings'): '$terminator'"
         return 1
     fi
     if [ "$errors" -ne 0 ] || [ "$warnings" -ne 0 ]; then
@@ -792,10 +842,14 @@ check_eslint_rules_terminator() {
     off="$(printf '%s' "$terminator" | grep -o 'off=[^|]*' | cut -d= -f2)"
     detail="$(printf '%s' "$terminator" | grep -o 'detail=.*' | cut -d= -f2-)"
 
-    if [ -z "$off" ]; then
-        fail_msg "the exhaustive rule probe's terminator is malformed: '$terminator'"
+    # BOTH fields, before either is compared -- see all_integers(). `probed` is
+    # guarded here as well as inside check_min_count so the guarantee does not
+    # depend on which comparison happens to run first.
+    if ! all_integers "$probed" "$off"; then
+        fail_msg "the exhaustive rule probe's terminator is malformed (probed='$probed' off='$off'): '$terminator'"
         return 1
     fi
+
     if [ "$off" -ne 0 ]; then
         fail_msg "$off file/rule pair(s) have one of #471's rules below error severity -- the rule is off where nobody is looking, which is the whole failure this gate exists to prevent"
         echo "      by package: $detail"
@@ -811,10 +865,17 @@ check_eslint_rules_terminator() {
 # The expiry tripwire for ts/tools/lint/. See
 # EXPECTED_TSESLINT_TYPESCRIPT_PEER, and that package's tseslint.mjs for what
 # the workaround is and why it exists.
+#
+# $1 is the manifest to read, defaulting to the real installed one -- the same
+# shape as run_determinism_probe($1), and for the same reason: it lets
+# self_test() drive THIS function over throwaway fixtures under mktemp rather
+# than a hand-mirrored copy of it. A tripwire nobody has watched go red is a
+# tripwire taken on trust, and AGENTS.md §9 does not exempt tripwires.
+# See self_test()'s tseslint_peer_scenario.
 check_tseslint_peer() {
-    local manifest="$ts_dir/tools/lint/node_modules/typescript-eslint/package.json"
+    local manifest="${1:-$ts_dir/tools/lint/node_modules/typescript-eslint/package.json}"
     if [ ! -f "$manifest" ]; then
-        fail_msg "ts/tools/lint/node_modules/typescript-eslint is not installed; the lint gate cannot be running the compiler API it claims to"
+        fail_msg "typescript-eslint's manifest is missing at $manifest; the lint gate cannot be running the compiler API it claims to"
         return 1
     fi
 
@@ -1995,11 +2056,99 @@ EOF
     expect_fail "an absent terminator is rejected" \
         check_eslint_rules_terminator "" \
         || failures=1
+
+    # THE FALSE PASS A REVIEWER FOUND, in both terminator readers. `[ NaN -ne
+    # 0 ]` writes to stderr and evaluates FALSE, so a count bash cannot parse
+    # used to fall through every guard below it and reach the success line --
+    # the gate announcing it had checked everything, over input it had not
+    # understood. See all_integers().
+    expect_fail "a non-numeric off= is rejected, not fallen through to a pass" \
+        check_eslint_rules_terminator "GC_ESLINT_RULES_ALL|probed=265|off=NaN" \
+        || failures=1
+    expect_fail "a non-numeric probed= is rejected" \
+        check_eslint_rules_terminator "GC_ESLINT_RULES_ALL|probed=NaN|off=0" \
+        || failures=1
+    expect_fail "an empty off= is rejected" \
+        check_eslint_rules_terminator "GC_ESLINT_RULES_ALL|probed=265|off=" \
+        || failures=1
+    expect_fail "a negative off= is rejected (a count is never negative)" \
+        check_eslint_rules_terminator "GC_ESLINT_RULES_ALL|probed=265|off=-1" \
+        || failures=1
+    expect_fail "the SAME hole in the lint terminator reader is closed too" \
+        check_eslint_terminator "GC_ESLINT|files=265|errors=NaN|warnings=0" \
+        || failures=1
+    expect_fail "...and for its warnings field" \
+        check_eslint_terminator "GC_ESLINT|files=265|errors=0|warnings=NaN" \
+        || failures=1
     expect_pass "a clean, whole-tree probe is accepted" \
         check_eslint_rules_terminator "GC_ESLINT_RULES_ALL|probed=$MIN_TS_LINT_FILES|off=0" \
         || failures=1
 
     rm -f "$log"
+    return "$failures"
+}
+
+# Scenario: the expiry tripwire on ts/tools/lint/ (#471).
+#
+# That package exists only because typescript-eslint's declared `typescript`
+# peer range excludes the typescript@7 this workspace builds with. When
+# upstream widens that range the workaround becomes deletable -- and nothing
+# would otherwise say so, because everything keeps working. check_tseslint_peer
+# is what says so, which makes it a check whose whole value is that it fires
+# ONCE, years from now, in a situation nobody can produce today.
+#
+# A check like that is exactly the kind that quietly stops working. So it is
+# driven here over throwaway manifests under mktemp -- the real function, over
+# the real on-disk read path, never the installed package -- against the range
+# it was written for, a widened one, a missing file, a manifest with no
+# peerDependencies at all, and one that is not JSON.
+tseslint_peer_scenario() {
+    local dir="$1"
+    local failures=0
+
+    # The range as shipped: accepted.
+    printf '%s\n' '{"name":"typescript-eslint","peerDependencies":{"typescript":">=4.8.4 <6.1.0"}}' \
+        >"$dir/as_shipped.json"
+    expect_pass "the peer range ts/tools/lint/ was written against is accepted" \
+        check_tseslint_peer "$dir/as_shipped.json" \
+        || failures=1
+
+    # Upstream widens it to admit typescript@7: the whole point of the
+    # tripwire, and the day ts/tools/lint/ should be deleted.
+    printf '%s\n' '{"name":"typescript-eslint","peerDependencies":{"typescript":">=4.8.4 <8.0.0"}}' \
+        >"$dir/widened.json"
+    expect_fail "a widened peer range is rejected, so nobody has to remember to come back and check" \
+        check_tseslint_peer "$dir/widened.json" \
+        || failures=1
+
+    # A narrowed or merely different range must also fire: the tripwire's claim
+    # is "this is still the range the workaround was justified by", not "the
+    # range is still too narrow".
+    printf '%s\n' '{"name":"typescript-eslint","peerDependencies":{"typescript":">=5.0.0 <6.1.0"}}' \
+        >"$dir/narrowed.json"
+    expect_fail "any other range is rejected too, not just a widened one" \
+        check_tseslint_peer "$dir/narrowed.json" \
+        || failures=1
+
+    # Not installed at all. The lint gate would then not be running the
+    # compiler API it claims to, so this is a failure, never a skip.
+    expect_fail "a missing manifest is rejected, not skipped" \
+        check_tseslint_peer "$dir/does_not_exist.json" \
+        || failures=1
+
+    # Present, parseable, but declaring no peer at all -- absent evidence.
+    printf '%s\n' '{"name":"typescript-eslint"}' >"$dir/no_peer.json"
+    expect_fail "a manifest declaring no typescript peer is rejected" \
+        check_tseslint_peer "$dir/no_peer.json" \
+        || failures=1
+
+    # Present but unreadable: node throws, the read yields nothing, and nothing
+    # is not a pass.
+    printf '%s\n' 'this is not json' >"$dir/broken.json"
+    expect_fail "a manifest that does not parse is rejected" \
+        check_tseslint_peer "$dir/broken.json" \
+        || failures=1
+
     return "$failures"
 }
 
@@ -2102,6 +2251,10 @@ self_test() {
     echo "==> self-test: a rule NARROWED away from everywhere but the probed directory (gate 7b)"
     mkdir -p "$work/ts_lint_narrowing"
     ts_lint_narrowing_scenario "$work/ts_lint_narrowing" || failures=1
+
+    echo "==> self-test: the ts/tools/lint/ expiry tripwire (gate 7b)"
+    mkdir -p "$work/tseslint_peer"
+    tseslint_peer_scenario "$work/tseslint_peer" || failures=1
 
     echo "==> self-test: vitest summary extraction (gate 8)"
     vitest_summary_scenario || failures=1
