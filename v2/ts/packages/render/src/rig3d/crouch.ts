@@ -114,9 +114,11 @@ export const BONES: readonly string[] = [
  * `action_pose.attitudeDrop`. The knee takes twice this and the ankle takes it
  * back again, so the sole stays parallel to the pitch (see the header).
  *
- * Clamped at the point the leg folds flat, which no authored attitude comes
- * near -- the deepest is 27 degrees against a 180 degree limit -- but which
- * keeps `acos` in domain for a drop nobody has authored yet.
+ * The clamp is domain protection and nothing else: a drop deeper than the leg
+ * is long has no fold that pays for it, and `acos` would return NaN rather than
+ * saying so. No authored attitude is near it -- the deepest is 73.6 mm against
+ * a 660 mm leg -- so the clamp has never been reached and the pose it would
+ * produce (a leg folded flat) is not a shape anything here intends.
  */
 export function angleFor(drop: number): number {
   const world = drop * MOTION_SCALE;
