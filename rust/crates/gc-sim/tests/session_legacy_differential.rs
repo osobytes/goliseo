@@ -15,10 +15,25 @@
 //! `match_differential.rs` -- which steps
 //! `StepInput::Legacy(MatchInput::default())` constructed directly in Rust,
 //! with `human_controlled: Some(false)` so no player takes the human-input
-//! branch at all -- does not exercise at ALL. This test is the only thing in
-//! the workspace that covers it under an ordinary match, and it is the reason
-//! this file was not simply deleted when its Lua-parity claim was retired
-//! (#500).
+//! branch at all -- does not exercise at ALL.
+//!
+//! THIS IS NOT THE ONLY TEST COVERING THAT LAYER TODAY, AND SAYING SO WOULD
+//! BE FALSE. `session_ai_driven_differential.rs` drives the identical
+//! pipeline over a full ordinary match with real bot-authored, non-neutral,
+//! quantization-lossy input, and it currently passes. An earlier draft of
+//! this doc claimed uniqueness; a reviewer was right to reject it, and
+//! `tools/lua_reference/README.md`'s own catalogue contradicted it in the
+//! same change.
+//!
+//! What justifies keeping this file is narrower and more durable:
+//! `session_ai_driven_differential.rs` asserts against a Lua-captured
+//! BEHAVIORAL vector. It is listed in that README's retirement catalogue, and
+//! it will diverge under #488/#489/#490/#491 exactly as this file's vector
+//! did, at which point it faces this same decision. A test that must be
+//! renegotiated every time the game changes is not a durable home for a wire
+//! guarantee. The assertions below are built to survive deliberate gameplay
+//! change instead -- so the honest claim is not "the only coverage today", it
+//! is "the coverage that outlives the next four reworks".
 //!
 //! It reproduces `Session::new`/`Session::step`'s LIVE-state construction and
 //! per-tick stepping using `gc-sim`'s own public API directly (this crate
@@ -32,7 +47,7 @@
 //! pattern after parsing, not by printed text: a divergence that
 //! self-corrects a tick later is still a desync.
 //!
-//! THREE ASSERTIONS, AND ONLY ONE OF THEM MOVES.
+//! FOUR ASSERTIONS, AND ONLY ONE OF THEM MOVES.
 //!
 //! The split matters, because a frozen per-tick trajectory is broken by any
 //! deliberate gameplay change BY CONSTRUCTION -- that is what happened to the
@@ -48,13 +63,16 @@
 //!   2. `..._is_bit_reproducible_across_two_independent_runs` -- the same
 //!      match stepped twice must agree bit-for-bit. IMMUNE to gameplay
 //!      change: both runs move together.
-//!   3. `..._agrees_with_a_directly_constructed_neutral_input` -- the wire
-//!      round trip is transparent, over a full match, against the direct
-//!      `MatchInput` construction `match_differential.rs` uses. IMMUNE for
-//!      the same reason. **This is the assertion that carries the unique
-//!      coverage described above**, and it keeps gating unconditionally
-//!      through every rework in #488-#491 without anyone re-recording
-//!      anything.
+//!   3. `..._agrees_with_an_independently_specified_non_neutral_input` -- the
+//!      wire round trip is transparent, over a full match, under per-slot-
+//!      distinct non-neutral input, against an oracle that never calls
+//!      `dequantize_axis`. IMMUNE for the same reason. **This is the
+//!      assertion that carries the durable coverage described above**, and it
+//!      keeps gating through every rework in #488-#491 without anyone
+//!      re-recording anything.
+//!   4. `wire_round_trip_preserves_every_slot_at_its_own_index` -- encode ->
+//!      decode -> validate returns all eight distinct slots unpermuted.
+//!      IMMUNE; it never steps the simulation at all.
 //!
 //! So a gameplay rework re-records one fixture and loses no wire coverage,
 //! and a quantization or slot-indexing defect still fails the gate even in a
@@ -85,10 +103,11 @@
 //!     one cannot. Nothing else in the workspace replaces that coverage,
 //!     because there is no second implementation left to disagree with.
 //!
-//! Assertions 2 and 3 are not weakened this way -- they compare two live runs
-//! against each other rather than against a record, so they need no oracle.
-//! But neither is a substitute for the lost coverage: they prove the path is
-//! self-consistent, which a uniformly wrong implementation also is.
+//! Assertions 2-4 are not weakened this way -- they compare live runs against
+//! each other, or against an oracle stated independently of the code under
+//! test, rather than against a record. But none is a substitute for the lost
+//! coverage: they prove the wire layer is faithful and the path is
+//! self-consistent, not that the simulation it feeds is right.
 //!
 //! Do not read a pass here as "the simulation is correct". Read it as "the
 //! simulation is the same one we recorded, and the wire layer is not adding
@@ -118,9 +137,10 @@
 //! a rename would cost that thread more than the name is worth. What it is
 //! now is stated above, not in the filename.
 
+use gc_core::vec2::Vec2;
 use gc_sim::input_frame;
 use gc_sim::r#match::{self as sim_match, NewMatchOptions, StepInput};
-use gc_sim::match_snapshot::{MatchInput, MatchState, PitchSize};
+use gc_sim::match_snapshot::{MatchState, PitchSize};
 use gc_sim::slot_input;
 use gc_sim::tuning::Tuning;
 
@@ -200,9 +220,67 @@ fn neutral_local_match_input(tick: i64) -> gc_sim::match_snapshot::MatchInput {
     let wire = input_frame::encode(&frame).expect("a valid frame always encodes");
     let decoded = input_frame::decode(&wire).expect("a wire this test just encoded always decodes");
     input_frame::validate(&decoded).expect("a freshly encoded neutral frame is always valid");
-    // Index 0 is the canonical `home_1` slot -- `LOCAL_SLOT_ZERO_INDEX` in
-    // `crates/gc-wasm/src/session.rs`.
-    slot_input::to_match_input(&decoded.slots[0])
+    slot_input::to_match_input(&local_slot(&decoded))
+}
+
+/// The canonical `home_1` slot index -- `LOCAL_SLOT_ZERO_INDEX` in
+/// `crates/gc-wasm/src/session.rs`.
+const LOCAL_SLOT_ZERO_INDEX: usize = 0;
+
+/// Reads the local player's sample out of a decoded frame.
+///
+/// Deliberately the SINGLE place this file selects a slot, shared by the
+/// neutral baseline path and by the non-degenerate transparency assertion
+/// below. Selecting a slot in two places would let a slot-selection mutation
+/// hide in whichever copy the degenerate scenario feeds; with one place, the
+/// transparency assertion covers the whole file's slot handling.
+fn local_slot(decoded: &input_frame::InputFrame) -> input_frame::InputSample {
+    decoded.slots[LOCAL_SLOT_ZERO_INDEX]
+}
+
+/// The quantized axis scale, **deliberately duplicated** from
+/// `input_frame::MOVE_SCALE` rather than imported.
+///
+/// This is the independent oracle for the wire contract. Importing the
+/// constant would make the expectation move whenever the implementation moved,
+/// which is precisely the failure the transparency assertion below exists to
+/// catch: a change to the dequantization scale would then alter both sides
+/// equally and the test would stay green while every browser client started
+/// reading a different stick deflection off the same bytes.
+const ORACLE_MOVE_SCALE: f64 = 127.0;
+
+/// A per-slot, per-tick sample chosen so that **no two slots are ever equal**
+/// and slot 0's move axes are **never both zero**.
+///
+/// Both properties are load-bearing. The previous version of the transparency
+/// assertion drove the wire with `input_frame::new(tick, None)` -- eight
+/// identical `InputSample::default()`s with zero axes -- which made it
+/// vacuous for the two defect classes it advertised: reading the wrong slot
+/// index selected an identical value, and any change to the dequantization
+/// scale multiplied zero by something and got zero. Both mutations were
+/// confirmed to leave that assertion green.
+///
+/// `slot * 31` and `slot * 47` offsets are coprime-ish with the 255 modulus
+/// and differ across every pair of slots at every tick, so the sample for
+/// slot 0 differs from the sample for every other slot on every tick, not
+/// merely on average.
+fn distinctive_sample(slot: usize, tick: i64) -> input_frame::InputSample {
+    let slot = slot as i64;
+    input_frame::InputSample {
+        move_x: (slot * 31 + tick * 7).rem_euclid(255) - 127,
+        move_y: (slot * 47 + tick * 13).rem_euclid(255) - 127,
+        held: 0,
+        edges: 0,
+    }
+}
+
+/// All eight slots for one tick, each distinct.
+fn distinctive_slots(tick: i64) -> [input_frame::InputSample; 8] {
+    let mut slots = [input_frame::InputSample::default(); 8];
+    for (i, slot) in slots.iter_mut().enumerate() {
+        *slot = distinctive_sample(i, tick);
+    }
+    slots
 }
 
 /// Mirrors `crates/gc-wasm/src/session.rs`'s `Session::new` construction of
@@ -336,41 +414,133 @@ fn wire_driven_session_legacy_step_is_bit_reproducible_across_two_independent_ru
     }
 }
 
+/// `encode` -> `decode` -> `validate` returns every slot unchanged AT ITS OWN
+/// INDEX, for a frame whose eight slots are all different.
+///
+/// Sharp and cheap, and it localizes a failure the session-level assertion
+/// below would only report as "the match diverged at tick 1": if slot order
+/// is permuted or a field is dropped on the wire, this names the slot and the
+/// field.
+#[test]
+fn wire_round_trip_preserves_every_slot_at_its_own_index() {
+    for tick in [0, 1, 743, TICKS] {
+        let slots = distinctive_slots(tick);
+        let frame = input_frame::new(tick, Some(slots)).expect("a distinctive frame is valid");
+        let wire = input_frame::encode(&frame).expect("a valid frame always encodes");
+        let decoded = input_frame::decode(&wire).expect("a wire just encoded always decodes");
+        input_frame::validate(&decoded).expect("a freshly encoded frame is always valid");
+
+        assert_eq!(decoded.tick, tick, "the tick survives the round trip");
+        for (i, expected) in slots.iter().enumerate() {
+            assert_eq!(
+                decoded.slots[i], *expected,
+                "tick {tick} slot {i}: the wire round trip did not return this slot unchanged \
+                 at its own index"
+            );
+        }
+        // Guards the guard: if these ever stop differing, every slot-selection
+        // assertion in this file silently becomes vacuous again.
+        for i in 1..8 {
+            assert_ne!(
+                slots[0], slots[i],
+                "tick {tick}: slot 0 and slot {i} must differ, or slot selection is untestable"
+            );
+        }
+    }
+}
+
 /// The wire round trip is TRANSPARENT: driving the session through the full
 /// encode -> decode -> validate -> dequantize pipeline gives bit-identical
-/// results to constructing the `MatchInput` directly, for all 7,201 ticks.
+/// results to a session driven by the SAME input specified independently, for
+/// all 7,200 ticks -- under **non-neutral, per-slot-distinct** input.
 ///
 /// This is the coverage that justified keeping this file when its Lua-parity
-/// claim was retired (#500). `match_differential.rs` takes the direct-
-/// construction side only and can say nothing about the pipeline;
-/// `gc-wasm`'s `Session::step` takes the wire side only. A quantization,
-/// validation or slot-indexing defect that made the two disagree would show
-/// up in a real browser match and in neither test alone.
+/// claim was retired (#500), and the non-degeneracy is what makes it real.
+/// The expectation side never calls `dequantize_axis`: it computes the axis
+/// from [`ORACLE_MOVE_SCALE`], a deliberately duplicated constant, so the two
+/// sides agree only if the wire format still means what it meant. That closes
+/// both holes a reviewer demonstrated in the neutral version of this test:
 ///
-/// Immune to deliberate gameplay change for the same reason as the test
-/// above: a sim change moves both sides identically.
+///   * reading the wrong slot index off the decoded frame now selects a
+///     different sample, because [`distinctive_sample`] makes every slot
+///     differ on every tick; and
+///   * changing the dequantization scale now moves the wire side away from
+///     the oracle, because the axes are non-zero.
+///
+/// Both mutations were re-run against this version and both fail it.
+///
+/// `match_differential.rs` takes the direct-construction side only and can
+/// say nothing about the pipeline; `gc-wasm`'s `Session::step` takes the wire
+/// side only. Immune to deliberate gameplay change: a sim change moves both
+/// sides identically.
 #[test]
-fn wire_driven_session_legacy_step_agrees_with_a_directly_constructed_neutral_input() {
+fn wire_driven_session_legacy_step_agrees_with_an_independently_specified_non_neutral_input() {
     let tune = Tuning::new();
     let mut wire_driven = new_ordinary_session();
-    let mut direct = new_ordinary_session();
+    let mut expected = new_ordinary_session();
 
     for tick in 1..=TICKS {
-        step_one_tick(&mut wire_driven, tick, &tune);
+        let slots = distinctive_slots(tick - 1);
+
+        // Wire side: exactly what `Session::step` does, but with a frame that
+        // is not all-neutral and whose slots are not all identical.
+        let frame = input_frame::new(tick - 1, Some(slots)).expect("a distinctive frame is valid");
+        let wire = input_frame::encode(&frame).expect("a valid frame always encodes");
+        let decoded = input_frame::decode(&wire).expect("a wire just encoded always decodes");
+        input_frame::validate(&decoded).expect("a freshly encoded frame is always valid");
+        let from_wire = slot_input::to_match_input(&local_slot(&decoded));
+
+        // Oracle side: the same slot-0 input, specified without the wire and
+        // without `dequantize_axis`.
+        let mut oracle = slot_input::to_match_input(&input_frame::InputSample::default());
+        // Literal 0, deliberately NOT `LOCAL_SLOT_ZERO_INDEX`: the oracle
+        // must assert which slot the local player's input comes from, not
+        // inherit that answer from the code under test. Using the constant
+        // here made a 0 -> 3 mutation of it move both sides together and the
+        // assertion stayed green -- verified, and the reason this line is
+        // spelled this way.
+        let local = distinctive_sample(0, tick - 1);
+        oracle.r#move = Vec2::new(
+            local.move_x as f64 / ORACLE_MOVE_SCALE,
+            local.move_y as f64 / ORACLE_MOVE_SCALE,
+        );
+
+        // Assert the DEQUANTIZED INPUT, not merely the state it produces.
+        //
+        // `match::step` normalizes `input.move` before using it, so a uniform
+        // change to the dequantization scale is invisible in the resulting
+        // simulation state -- halving `dequantize_axis` leaves the direction,
+        // and therefore every downstream float, identical. Verified: with that
+        // mutation live, the session comparison below stays green and only
+        // this assertion catches it. A wire contract has to be checked at the
+        // boundary; it cannot be inferred from sim state on the far side of a
+        // normalization.
+        assert_eq!(
+            from_wire, oracle,
+            "tick {tick}: the wire round trip did not reproduce the local slot's input"
+        );
+        assert_eq!(
+            (from_wire.r#move.x.to_bits(), from_wire.r#move.y.to_bits()),
+            (oracle.r#move.x.to_bits(), oracle.r#move.y.to_bits()),
+            "tick {tick}: dequantized move axes differ in bit pattern (PartialEq would let \
+             -0.0 pass for 0.0 here)"
+        );
+
         sim_match::step(
-            &mut direct,
+            &mut wire_driven,
             DT,
-            StepInput::Legacy(MatchInput::default()),
+            StepInput::Legacy(from_wire),
             None,
             &tune,
         );
+        sim_match::step(&mut expected, DT, StepInput::Legacy(oracle), None, &tune);
+
         assert_eq!(
             baseline_row(tick, &wire_driven),
-            baseline_row(tick, &direct),
-            "tick {tick}: the wire round trip is not transparent -- a session \
-             driven through input_frame encode/decode/validate and \
-             slot_input::to_match_input diverged from one given the same input \
-             directly"
+            baseline_row(tick, &expected),
+            "tick {tick}: the wire round trip is not transparent -- a session driven through \
+             input_frame encode/decode/validate and slot_input::to_match_input diverged from \
+             one given the same slot-0 input specified independently of the wire"
         );
     }
 }

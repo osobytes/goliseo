@@ -150,10 +150,13 @@ red output, you are answering the wrong question in the wrong order.
 
 That is the complete list. The old vector diverged at `tick 743: rng state
 mismatch`; the test that read it, `gc-sim/tests/session_legacy_differential.rs`,
-was **converted rather than deleted**, because it is the only thing in the
-workspace exercising `input_frame::encode`/`decode`/`validate` plus
-`slot_input::to_match_input` into the live-state path `gc-wasm`'s
-`Session::step` actually runs. The re-recorded baseline is bit-identical to
+was **converted rather than deleted**, because it exercises
+`input_frame::encode`/`decode`/`validate` plus `slot_input::to_match_input`
+into the live-state path `gc-wasm`'s `Session::step` actually runs. It is not
+the only test covering that pipeline today — `session_ai_driven_differential`
+does too — but that one reads a behavioral vector listed below and will face
+this same decision under #488–#491, so it is not a durable home for a wire
+guarantee. The re-recorded baseline is bit-identical to
 the retired Lua vector across all 7,201 × 31 fields, so that conversion moved
 the claim and not one value.
 
