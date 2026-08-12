@@ -123,7 +123,16 @@ vector.** Only then, and only with the paperwork:
    Convert the test to assert against a baseline recorded from the current
    Rust build, keep the scenario and the bit-exact comparison, and state in
    its module doc what it now proves and what it no longer proves.
-5. **Say out loud that the replacement is weaker.** A self-recorded baseline
+5. **Then ask what the test was actually for, and get that out of the frozen
+   part.** Re-recording in Rust makes a fixture *regenerable*; it does not
+   make it *immune*. A per-tick trajectory recorded from build X still breaks
+   on any deliberate gameplay change in build X+1 — so a test whose real
+   subject is a wire format, a round trip, or determinism itself should
+   assert that directly, by comparing two live runs against each other rather
+   than against a record. Those assertions survive every rework untouched.
+   Retiring a vector without doing this leaves the next rework facing the
+   same wall with a longer diff.
+6. **Say out loud that the replacement is weaker.** A self-recorded baseline
    detects change; it cannot detect "wrong but consistently wrong". Nothing
    in this repository replaces the cross-implementation coverage, because
    there is no second implementation left to disagree with. A converted test
@@ -147,6 +156,17 @@ workspace exercising `input_frame::encode`/`decode`/`validate` plus
 `Session::step` actually runs. The re-recorded baseline is bit-identical to
 the retired Lua vector across all 7,201 × 31 fields, so that conversion moved
 the claim and not one value.
+
+Rule 5 above was learned here, and the transcript is worth keeping: with the
+#490 keeper commits cherry-picked on top of the *converted* test, it still
+failed at the same `tick 743`. A Rust-recorded trajectory is regenerable, not
+immune. So that test now also carries two assertions that compare live runs
+against each other instead of against a record — the same match stepped twice
+must agree bit-for-bit, and the wire-driven session must agree bit-for-bit
+with one stepped from a directly constructed `MatchInput`. Both pass
+unchanged under the keeper change. The wire coverage, which is the reason the
+file survives at all, therefore keeps gating through every rework in
+#488–#491 with nothing to re-record; only the trajectory baseline moves.
 
 ### The remaining behavioral fixtures
 
