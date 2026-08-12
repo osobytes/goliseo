@@ -55,6 +55,7 @@ pub mod research_schema;
 pub mod research_session;
 pub mod research_timeline;
 pub mod research_trace;
+pub mod retained_history;
 pub mod rollback_events;
 pub mod rollback_input_history;
 pub mod rollback_lab;

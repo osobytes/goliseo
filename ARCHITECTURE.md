@@ -106,7 +106,7 @@ Two boundaries worth restating because they are easy to get backwards:
 
 ### 1.2 Modules that must exist in both languages
 
-Three so far, for two different reasons.
+Four so far, for two different reasons.
 
 **`vec2`** — a 54-line immutable value type. Cheaper to keep twice than to
 marshal across the wasm boundary. Divergence is implausible and harmless.
@@ -126,6 +126,20 @@ file — a list of inputs and their expected hex digests, checked into
 `tools/lua_reference/` and asserted by a test in each language (see that
 directory's README). A duplicate without shared vectors is not acceptable
 here.
+
+**`rng` / `network_conditions`' impairment half** — the same category as
+`fnv1a64`, for the same reason. `gc-sim`'s `network_conditions` impairs the
+native rollback matrix; `packages/transport/src/impairment.ts` impairs
+browser evidence, and `packages/transport/src/impairment_rng.ts` ports
+`gc-core`'s minstd generator so the two consume identical rolls from
+identical seeds. Evidence gathered under one is compared against evidence
+gathered under the other, so they **must agree** — and a disagreement throws
+nothing anywhere, it just makes two green suites mean different things.
+Therefore: both implementations are pinned by a shared transcript literal
+asserted by a test in each language, and by gate 0c
+(`scripts/check_network_profile_parity.mjs`), which requires the two literals
+to be byte-identical. Only the impairment half is duplicated; the redundant
+input history, the authoritative ledger and `drain` stay Rust-only.
 
 ---
 
@@ -273,6 +287,20 @@ ts/
    cross-language assertion, wired into the gate, landing with the
    duplicate — or not taken.
 
+   **A second carve-out, taken on exactly those terms (#472).**
+   `packages/transport/src/network_profiles.ts` restates `gc-data`'s four
+   authored network profiles, because the impairment decorator must run in a
+   plain vitest process with no wasm module loaded, and nothing in `gc-wasm`
+   exports the profile table today. The duplicate is not trusted either: it
+   is asserted against the Rust source by
+   `scripts/check_network_profile_parity.mjs`, run as gate 0c — and that gate
+   goes further than the other two, because a drifted profile value throws
+   nowhere at all. It also pins the impairment generator's constants and the
+   shared five-scenario impairment transcript both languages assert. Reading
+   the table through the wasm bridge instead, which would make the duplicate
+   impossible rather than merely detectable, remains the better long-term
+   answer.
+
 7. **Prefer `readonly` and immutable updates in pure code.** Use in-place
    mutation only where a module already does so deliberately (a
    performance-sensitive hot path, an established call-site convention) —
@@ -394,6 +422,26 @@ It is stricter than the commands above in ways that matter:
   the duplicated `ROSTER_STRING_FIELD_COUNT` — which, unlike
   `LAYOUT_VERSION`, is not stamped into the wire, so nothing else can catch
   it drifting (#447).
+- it checks **cross-language network-impairment parity**, beside the other
+  two (`node scripts/check_network_profile_parity.mjs`, gate 0c). `gc-data`
+  authors four network profiles — `clean`, `omp0_parity`, `playable`,
+  `stress` — and the native rollback matrix drives every scenario through
+  `gc-sim`'s `network_conditions` under them. Browser evidence now drives the
+  same profiles through `packages/transport/src/impairment.ts`. If the two
+  impair traffic differently, **nothing throws in either language**: the
+  browser suite and the native suite go on measuring different networks while
+  both stay green, so a soak that ran a "stress" link at a tenth of the
+  authored loss rate reports a clean hour and proves nothing. The gate
+  compares every profile's tuning fields — over the field set read from
+  `gc-data`'s own `NetworkProfile` struct, so a *new* tuning field left out of
+  the browser's copy is caught rather than skipped — the impairment generator's
+  `MOD`/`MULT` constants, and the five-scenario impairment transcript that
+  `rust/crates/gc-sim/tests/browser_impairment_parity.rs` and
+  `ts/packages/transport/src/impairment_parity.spec.ts` each assert — byte
+  for byte, so a drift is caught even when only one language's tests run. It
+  additionally requires that transcript to still record a loss, a burst, a
+  duplicate and a reordering: two identical literals prove nothing if both
+  sides quietly became a pass-through (#472).
 - `cargo clippy -p gc-wasm --target wasm32-unknown-unknown -- -D warnings`
   runs as an **explicit, separate** step from the workspace clippy run. The
   native workspace run never compiles `gc-wasm`'s wasm-only code paths at
