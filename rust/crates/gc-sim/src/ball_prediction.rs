@@ -29,9 +29,17 @@
 //! - **No live mutation.** Every query takes `&MatchState`. The borrow
 //!   checker is the proof: a query cannot write simulation state, so query
 //!   history cannot enter a snapshot, a state hash, or a peer comparison.
-//! - **Nothing retained across a rollback.** The cache key carries a
-//!   monotonic tick sequence that never repeats, so a buffer built on a
-//!   mispredicted timeline can never be served on the corrected one.
+//! - **Nothing retained across a rollback.** The load-bearing invariant is
+//!   *fingerprint purity*: a prediction is a pure function of the ball state
+//!   and the arena, and the cache is keyed on a bit-exact fingerprint of
+//!   exactly those inputs. A restore rewinds the ball, the fingerprint moves,
+//!   and the buffer is rebuilt — so a buffer built on a mispredicted timeline
+//!   cannot be served on the corrected one even if the corrected timeline
+//!   re-enters the same tick number. `tick_seq` does *not* carry that
+//!   argument; it bounds the per-tick budget window, and forcing a rebuild at
+//!   each tick boundary is a consequence of that rather than the safety
+//!   property. Purity is what makes the cache correct; `tick_seq` is what
+//!   makes the budget mean "per tick".
 //!
 //! ## The sample buffer is derived data
 //!
@@ -60,9 +68,10 @@
 //! answer.
 //!
 //! `tick_seq` is bumped by [`BallPredictor::begin_tick`], called once per
-//! live tick by whoever owns the predictor. It gives the per-tick step
-//! budget its boundary, and it forces the first query of each tick to
-//! rebuild.
+//! live tick by whoever owns the predictor. Its job is the per-tick step
+//! budget's boundary; forcing the first query of each tick to rebuild falls
+//! out of that. It is not what makes a post-rollback query safe — the
+//! fingerprint is (see "Determinism" above).
 //!
 //! ## Budget, horizon, and the fallback
 //!
@@ -164,8 +173,10 @@ pub struct BallPredictionConfig {
     pub sample_stride: i64,
     /// Whether the closed-form fallback ignores the bounce.
     pub fallback_gravity_only: bool,
-    /// The fixed tick the scratch world steps with. Must equal the live
-    /// sim's `dt` for sample points to be bit-exact.
+    /// The fixed tick the scratch world steps with. Must equal
+    /// [`crate::fixed_clock::TICK_SECONDS`] — [`BallPredictor::new`] asserts
+    /// it — because sample points are contractually bit-exact against the
+    /// live sim, which only holds when both step the same tick length.
     pub dt: f64,
 }
 
@@ -352,11 +363,20 @@ impl BallPredictor {
     ///
     /// # Panics
     ///
-    /// Panics on a non-positive `dt` or `sample_stride`, or a negative
-    /// horizon or budget — producer invariants, not recoverable input.
+    /// Panics when `dt` is not [`crate::fixed_clock::TICK_SECONDS`], when
+    /// `sample_stride` is below one tick, or when the horizon or budget is
+    /// negative — producer invariants, not recoverable input.
     #[must_use]
     pub fn new(config: BallPredictionConfig) -> Self {
-        assert!(config.dt > 0.0, "prediction dt must be positive");
+        // Not merely "positive". Sample points are contractually bit-exact
+        // against the live sim, and that is only true when the scratch world
+        // steps the *same* tick length the live sim does. A predictor
+        // configured with any other `dt` would keep answering, silently, with
+        // samples that no live tick will ever land on.
+        assert!(
+            config.dt == fixed_clock::TICK_SECONDS,
+            "prediction dt must be the canonical fixed tick"
+        );
         assert!(
             config.sample_stride >= 1,
             "prediction sample stride must be at least one tick"
@@ -797,6 +817,25 @@ fn axis_value(sample: &BallSample, axis: BallAxis) -> f64 {
 /// A bit-exact fingerprint of everything the scratch world clones: the ball,
 /// the arena, and the owner (a possession pickup is a ball mutation even on
 /// the tick it does not move the ball).
+///
+/// # This must cover every input the scratch step reads
+///
+/// The cache is correct because a prediction is a pure function of the values
+/// hashed here. That holds today only because every *other* input to
+/// [`crate::ball_flight::step`] — friction, air drag, gravity, restitution,
+/// spin decay, the settle threshold, the cage ceiling, the net damping — is a
+/// hardcoded `const`, and a constant cannot change mid-match.
+///
+/// **A requirement on whoever migrates those constants to the declarative
+/// tunable registry:** the moment any of them becomes registry-backed sim
+/// state, its live value must be folded into this fingerprint. Otherwise a
+/// mid-match tuning change leaves the ball itself bit-identical, the
+/// fingerprint unmoved, and the buffer serving samples produced under the old
+/// physics — a silent wrong answer with no failing test, because the ball
+/// state the fingerprint watches genuinely did not change. The knobs this
+/// service owns (horizon, budget, stride, fallback flavor) do not need
+/// hashing: they change what the buffer *covers*, not what the physics
+/// computes, and [`BallPredictor::set_config`] already discards the buffer.
 fn ball_fingerprint(state: &MatchState) -> u64 {
     let mut hasher = Fnv1a64State::new();
     for value in [

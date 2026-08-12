@@ -30,6 +30,13 @@ simulation's own ball update function**. That is `ball_flight::step`, which
 `match::update_ball` calls for the live loose ball and the predictor calls for
 its scratch ticks. Extracted, not copied — the extraction is the design.
 
+The ball's physical constants moved with it, to their natural home rather than
+into exclusive ownership: `BALL_RADIUS`, `FRICTION`, `AIR_FRICTION`, `GRAVITY`
+and `GROUND_GRAB_HEIGHT` (and the `in_mouth` helper) are still read by
+`match.rs` for dribble friction, throw and lob arcs, hold-position clamps and
+goal-line crossing, and are imported back from `ball_flight`. One definition,
+one value, two readers.
+
 `tests/ball_prediction.rs::the_scratch_world_reproduces_the_live_sims_own_ball_path_bit_for_bit`
 is what keeps that true. It predicts a whole trajectory from one live state,
 then steps the *live simulation* through the same ticks and requires the two
@@ -100,10 +107,37 @@ enumerated table of mutation shapes, and a real 900-tick match that requires
 the generation to move *whenever* the live ball moved, over whatever paths
 that match happened to exercise.
 
-`tick_seq` bumps once per live tick via `begin_tick`. It is monotonic and
-never rewinds, so a buffer built on a mispredicted timeline can never be
-served on the corrected one — the first query after a rollback restore always
-rebuilds.
+**The rollback-correctness argument is fingerprint purity, not `tick_seq`.**
+A prediction is a pure function of the ball state and the arena, and the cache
+is keyed on a bit-exact fingerprint of exactly those inputs. A restore rewinds
+the ball, the fingerprint moves, and the buffer is rebuilt — so a buffer built
+on a mispredicted timeline cannot be served on the corrected one even if the
+corrected timeline re-enters the same tick number. `tick_seq` bumps once per
+live tick via `begin_tick`, and its job is to bound the per-tick budget
+window; the rebuild it forces at each tick boundary is a consequence of that,
+not the safety property. Purity is what makes the cache correct; `tick_seq` is
+what makes the budget mean "per tick".
+
+### A requirement on the tunable registry migration
+
+The fingerprint is complete today *because* every input to `ball_flight::step`
+other than the ball and the arena — friction, air drag, gravity, restitution,
+spin decay, the settle threshold, the cage ceiling, the net damping — is a
+hardcoded `const`, and a constant cannot change mid-match.
+
+The moment any of those constants becomes registry-backed sim state, its live
+value **must** be folded into `ball_fingerprint`. Otherwise a mid-match tuning
+change leaves the ball itself bit-identical, the fingerprint unmoved, and the
+buffer serving samples produced under the old physics — a silent wrong answer
+with no failing test, because the ball state the fingerprint watches genuinely
+did not change. This is a requirement on whoever performs that migration, not
+a suggestion; the note is repeated at `ball_fingerprint` and at
+`ball_flight.rs`'s constants block so it is in front of whoever touches
+either.
+
+The knobs this service owns (horizon, budget, stride, fallback flavor) do not
+need hashing: they change what the buffer *covers*, not what the physics
+computes, and `set_config` already discards the buffer.
 
 The sample buffer is derived data and lives on the service, not on
 `MatchState`. It is therefore excluded from snapshots and from the state hash

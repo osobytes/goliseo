@@ -28,6 +28,20 @@
 use crate::match_snapshot::{MatchState, PitchSize, Rect};
 use gc_core::vec2::Vec2;
 
+// The ball's physical constants, relocated here from `crate::r#match` because
+// this is where the physics that reads them now lives. Several of them are
+// *shared* rather than exclusive to this module — `crate::r#match` imports
+// `BALL_RADIUS`, `FRICTION`, `AIR_FRICTION`, `GRAVITY` and
+// `GROUND_GRAB_HEIGHT` (and `in_mouth`) back for dribble friction, throw and
+// lob arcs, hold-position clamps and goal-line crossing. That is the point:
+// one definition, one value, two readers — not a copy each.
+//
+// They are `const` and not sim state, which is load-bearing beyond this
+// module: `crate::ball_prediction`'s cache is keyed on a fingerprint of the
+// ball and the arena, and that key is only complete because nothing else the
+// step below reads can change mid-match. Migrating any of these to the
+// declarative tunable registry requires folding the live value into that
+// fingerprint — see `ball_prediction::ball_fingerprint`'s doc comment.
 pub(crate) const BALL_RADIUS: f64 = 6.0;
 pub(crate) const FRICTION: f64 = 1.2;
 pub(crate) const NET_DAMP: f64 = 0.3;
