@@ -411,6 +411,101 @@ Sim changes move the baseline; re-run `love . --sim 100` after touching
 `sim/match.lua` and log meaningful shifts here (this is the manual tripwire
 until phase 4 automates it).
 
+- **2026-08-11 — the keeper's dive-timing/contact-point query replaces a
+  gravity-only quadratic with a real sampled trajectory (#486, sliced from
+  #490).** `crates/gc-sim/src/match.rs`'s `attempt_save` used to compute the
+  ball's height at the keeper's line as
+  `s.ball_z + s.ball_vz * tz - 0.5 * GRAVITY * tz * tz` — a closed form that
+  never modeled the ground bounce, air drag, or the cage ceiling, and (for a
+  ball that has already landed) is not even bounded below zero. It now asks
+  `ball_prediction::BallPredictor::position_at_time`, an authoritative query
+  against the same `ball_flight::step` the live ball actually runs. A query
+  that cannot resolve inside `predict.max_horizon` (2.0s) — only reachable
+  for a shot decaying so close to `keeper::travel_time`'s own dead-ball
+  cutoff that `eta` is technically `Some` but implausibly large — defers the
+  commit rather than guessing; `attempt_save` runs every live tick and `tz`
+  only shrinks as the ball closes in, so the shot still resolves once it's
+  inside the horizon (`crates/gc-sim/tests/keeper_prediction.rs`).
+
+  This moved the `combat_disabled_control_a` baseline
+  (`gc_sim::outfield_ai_baseline`, seeds 20001..20060, n=60, paired: same
+  seeds, same fixture, before/after this change only):
+
+  | metric | before (v1) | after (v2) | delta |
+  | --- | --- | --- | --- |
+  | fun | 0.291774 | 0.283436 | -0.008338 |
+  | goals_total | 1.916667 | 1.750000 | -0.166667 |
+  | goals_home | 0.633333 | 0.633333 | +0.000000 |
+  | goals_away | 1.283333 | 1.116667 | -0.166667 |
+  | shots | 31.766667 | 32.200000 | +0.433333 |
+  | shots_per_goal | 19.656918 | 21.732390 | +2.075472 |
+  | save_rate | 0.892550 | 0.910569 | +0.018019 |
+  | passes | 32.633333 | 33.966667 | +1.333333 |
+  | pass_completion | 0.583350 | 0.570084 | -0.013266 |
+  | turnovers_per_min | 8.222948 | 8.258094 | +0.035146 |
+  | possession_balance | 0.544171 | 0.542468 | -0.001703 |
+  | longest_drought_s | 11.483333 | 11.718056 | +0.234722 |
+  | decided_late | 0.647152 | 0.596003 | -0.051148 |
+  | lead_changes | 0.100000 | 0.083333 | -0.016667 |
+  | margin | 1.116667 | 1.083333 | -0.033333 |
+  | duration | 113.612778 | 116.696667 | +3.083889 |
+
+  (`ai_dribble_*` and `ai_jukes` also moved; omitted here as noise
+  downstream of the same shots/possession shift, not evidence about the
+  keeper itself.)
+
+  **The direction is not what #487 wants, and that is reported here rather
+  than hidden.** #487 records `save_rate` at 0.82-0.89 against a healthy
+  band of 0.45-0.75 — already far too high — and asks a physically honest
+  keeper to plausibly move it. It did move, materially (+0.018, about 2% of
+  its own value), but *up*, away from the band, not down; `goals_total` fell
+  in step (-0.17) and `shots_per_goal` rose (+2.08). Balance tuning itself is
+  explicitly out of scope for this change (owned in parallel by #493's
+  tunable-registry work), so nothing here was adjusted to chase the band —
+  but the direction deserves an honest account rather than a shrug.
+
+  The most likely mechanism, traced from the code rather than guessed: the
+  deleted formula was *unconditionally* on-target-eligible for a grounded or
+  already-landed ball — for `ball_z <= 0, ball_vz <= 0` it is a strictly
+  decreasing, unbounded-below parabola, so both `z_cross < CROSSBAR` and
+  `z_cross <= KEEPER_AIR_GRAB` were satisfied by construction, however far
+  out `tz` actually was. Combined with `keeper::travel_time`'s own cutoff
+  (`ratio < 0.95`, which alone permits `eta` up to roughly 2.5s for a
+  ground shot under `FRICTION = 1.2`), the old code would commit
+  `save_pending` — and arm a multi-second `dive_delay` — against a shot that
+  was still seconds away and barely moving. Nothing in `attempt_save`'s
+  eligibility gate (`dive_timer <= 0 && dive_delay <= 0 &&
+  save_pending.is_none()`) lets a keeper attend to a second, genuinely
+  live shot while committed like that; a concurrent or immediately
+  following real chance could go unaddressed by this code path until the
+  stale commitment times out (`resolve_pending_save`'s `DEAD_SHOT_SPEED`
+  drop-out, or `save_timer`). The predictor-backed version cannot make that
+  mistake: it has nothing authoritative to say about a moment 2+ seconds
+  out, so it defers instead of committing, which plausibly frees the keeper
+  to resolve real chances it used to be spuriously locked out of — read
+  *up* in `save_rate` here, not down. This is offered as the best
+  explanation traced from the code, not a proven root cause; if a reviewer
+  wants to confirm it directly (e.g. by instrumenting how often
+  `attempt_save` used to commit against a `tz` beyond 2.0s in this fixture),
+  that instrumentation does not exist yet.
+
+  A second, smaller, unrelated-direction effect is also real: for a ball
+  already in flight, the deleted formula and the live step function agree
+  exactly on ballistic height *except* for the discretization gap between a
+  continuous quadratic and the 60Hz semi-implicit Euler `ball_flight::step`
+  actually runs (before any bounce), which is a `+0.5 * GRAVITY * dt * t`
+  systematic *upward* bias in the live/predicted height relative to the old
+  formula. That makes some genuinely-in-flight shots read as *less*
+  reachable now (correctly), which pushes in the *other* direction from the
+  effect above and does not explain the net move by itself.
+
+  Re-frozen as `baseline_version = 2`
+  (`crates/gc-data/src/outfield_ai_baseline.rs`), measured with
+  `gc_sim::outfield_ai_baseline::measure(&MeasureOpts { baseline_version:
+  Some(2), ..MeasureOpts::default() })` and pasted via `::serialize` per
+  that module's own re-freeze protocol (this repository still has no runner
+  that drives the re-run automatically).
+
 - **2026-08-10 — a keeper's dive ends when it takes possession (#450).**
   `dive_timer` used to outlive the catch, so on the tick a keeper released the
   ball the off-ball dive branch took it back over: it was dragged toward a
