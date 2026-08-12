@@ -1,9 +1,9 @@
 # Controls
 
-Every binding below lives in `game/input/bindings.lua` and nowhere else. The
-menu action layer, the match's per-frame polling, and the in-game help card all
-read that one table, so this page describes a single source rather than
-shadowing three.
+Every binding below lives in `ts/packages/input/src/bindings.ts` and nowhere
+else. The menu action layer, the match's per-frame polling, and the in-game
+help card all read that one table, so this page describes a single source
+rather than shadowing three.
 
 ## Match
 
