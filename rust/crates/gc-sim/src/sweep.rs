@@ -29,6 +29,7 @@
 
 use crate::headless;
 use crate::metrics::MetricStats;
+use crate::tunable_registry;
 use crate::tuning::{self, Knob};
 use indexmap::IndexMap;
 
@@ -74,7 +75,7 @@ fn format_g(value: f64) -> String {
 fn blob_of(overrides: &IndexMap<&'static str, f64>) -> String {
     let mut lines = Vec::new();
     // Registry order: stable blobs.
-    for k in tuning::KNOBS {
+    for k in tuning::KNOBS.iter() {
         if let Some(&v) = overrides.get(k.key)
             && v != k.default
         {
@@ -226,7 +227,12 @@ pub fn sensitivity(
     let keys: &[&'static str] = match opts.keys {
         Some(k) => k,
         None => {
-            owned_keys = tuning::KNOBS.iter().map(|k| k.key).collect();
+            // Enumerated from the registry, never a list kept here: a knob a
+            // feature registers is swept without an edit to this file, and
+            // `sweepable_ids` is tier-1 only and id-sorted, so the sweep can
+            // neither reach a presentation value nor depend on the order
+            // features happened to register in.
+            owned_keys = tunable_registry::shipped().sweepable_ids();
             &owned_keys
         }
     };
