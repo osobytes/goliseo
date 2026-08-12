@@ -24,4 +24,5 @@ pub mod showcase_player_compatibility;
 pub mod species;
 pub mod tactics;
 pub mod teams;
+pub mod tunables;
 pub mod tuning_presets;

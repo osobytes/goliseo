@@ -298,7 +298,7 @@ pub fn content_hash() -> String {
 #[must_use]
 pub fn tuning_hash() -> String {
     let mut parts = String::from("GCOAT;1;");
-    for knob in tuning::KNOBS {
+    for knob in tuning::KNOBS.iter() {
         append_str(&mut parts, knob.key);
         append_num(&mut parts, knob.default);
     }

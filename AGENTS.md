@@ -292,6 +292,53 @@ breaking every online match passed nine green checks (#279). So:
 
 `docs/online/fault_harness.md` records the full case.
 
+### A knob that cannot move its metric is not wired
+
+The balance counterpart of the rule above, and it exists for the same reason: a
+green signal that cannot go red tells you nothing. A sweep over dead knobs
+produces confident nonsense.
+
+> **Every feature ships a test asserting that moving its knob moves its
+> metric.** Run the harness at the default and at a perturbed value; assert the
+> registered metric moves in the documented direction by more than the
+> *measured* noise floor. A knob that cannot shift its own metric is not wired —
+> it is decoration, and it fails review.
+
+Three things make that enforceable rather than aspirational:
+
+- **Knobs are registered, not hand-listed.** A tier-1 tunable is authored in
+  `gc_data::tunables::SIM_TUNABLES` and assembled by
+  `gc_sim::tunable_registry`. The sweep, the F1 panel and the config hash all
+  enumerate the registry, so a knob nobody wired still shows up — which is the
+  only reason its emptiness is discoverable at all.
+- **Metrics are registered too.** `gc_sim::metric_registry` owns each
+  measurement's band and its extraction function, so a new metric folds into the
+  fun score without a harness edit, and there is exactly one band table.
+- **The noise floor is measured, not assumed.**
+  `gc_sim::knob_contract::noise_floor` runs the metric at defaults on the
+  caller's own seed set, and both entry points refuse a seed set below
+  `knob_contract::MIN_SEEDS` — under that a lucky small standard error passes a
+  shift nobody could reproduce.
+- **The direction is declared and enforced, not checked by hand.**
+  `KnobMoveOpts::expect` is where "the documented direction" above is
+  documented, and `assert_moves` fails a shift that clears the noise floor with
+  the opposite sign. A knob wired backwards passes any magnitude-only test, so
+  this is not a nicety: it is the difference between a contract and a
+  formality. Keep it distinct from `MetricDirection`, which is the metric's own
+  desirability slope rather than a knob's causal claim.
+
+`gc-sim`'s own `tests/knob_contract.rs` is the worked example: one passing case
+(`AI_SHOOT_RANGE` shortens `longest_drought_s`) and **two** red demonstrations,
+because this gate has two distinct ways to be broken — a knob that moves nothing
+(`REPLAY_SLOWMO`, registered and swept and read by no simulation code) and a
+knob whose metric moves the wrong way.
+
+The tiers matter to this rule: only **tier 1** (sim-affecting scalars) and
+**tier 3** (versioned AI membership band-sets, substituted whole) can move a
+metric at all. **Tier 2** (presentation) lives in `gc-render`, which `gc-sim`
+cannot depend on, so it is structurally incapable of moving one — see
+`gc_data::tunables`'s module doc.
+
 ---
 
 ## 10. Workflow

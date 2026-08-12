@@ -31,7 +31,7 @@
 //! exercised indirectly wherever a caller builds a manifest.
 
 use gc_core::fnv1a64;
-use gc_sim::{combat_policy, fixed_clock, input_frame, r#match as sim_match, tuning};
+use gc_sim::{combat_policy, fixed_clock, input_frame, r#match as sim_match, tunable_registry};
 
 use crate::protocol::{self, MatchMode, Value};
 
@@ -197,12 +197,25 @@ pub fn content_id(home: &TeamContent, away: &TeamContent, arena_id: &str) -> Str
     format!("content.{}", digest(&joined))
 }
 
-/// `match_manifest.tuning_id`: tuning is already serialisable for the OMP-1
-/// determinism fixture, so the identity is the same string that campaign
-/// pins rather than a second one.
+/// `match_manifest.tuning_id`: the tunable registry's config hash — one digest
+/// over every tier-1 value and every tier-3 band edge this build ships, so a
+/// peer whose balance differs by a single knob fails at manifest agreement
+/// instead of desyncing at the first divergent read.
+///
+/// It used to be `digest(Tuning::default().serialize())`, and that was a
+/// defect, not a simplification: `serialize` emits only NON-default knobs, so
+/// a fresh `Tuning` serializes to the empty string and the id was the digest
+/// of `""` — a constant. Changing a knob's default, adding a knob, or removing
+/// one did not move it, which is precisely the divergence a handshake id
+/// exists to catch. `Registry::config_hash` hashes ids and values, sorted by
+/// id, so all three move it. `crates/gc-sim/tests/tunable_registry.rs` checks
+/// both directions.
 #[must_use]
 pub fn tuning_id() -> String {
-    format!("tuning.{}", digest(&tuning::Tuning::default().serialize()))
+    format!(
+        "tuning.{}",
+        digest(&tunable_registry::shipped().config_hash())
+    )
 }
 
 /// `match_manifest.build_id`: folds `protocol::vocabulary_id()` into the
@@ -410,6 +423,17 @@ pub fn resolve(
     arena_id: &str,
 ) -> std::result::Result<OnlineMatchContent, String> {
     protocol::validate_manifest(manifest).map_err(|err| err.message)?;
+    // The config hash, enforced at match start (#487). A peer whose tier-1
+    // knob values or tier-3 band edges differ by one number computes a
+    // different `tuning_id` and fails HERE, at the same gate that already
+    // rejects a team or a player this build does not have — rather than
+    // playing on and desyncing at the first tick that reads the divergent
+    // value, where the evidence points at the rollback layer instead of at
+    // the balance edit that caused it.
+    let declared_tuning = manifest.get("tuning_id").and_then(Value::as_str);
+    if declared_tuning != Some(tuning_id().as_str()) {
+        return Err("the manifest declares a tuning config this build does not have".to_string());
+    }
     let manifest_teams = manifest.get("teams").ok_or("manifest has no teams")?;
     let home_team_id = manifest_teams
         .get_index(1)

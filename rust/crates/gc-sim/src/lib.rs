@@ -31,12 +31,14 @@ pub mod headless;
 pub mod input_frame;
 pub mod input_tape;
 pub mod keeper;
+pub mod knob_contract;
 pub mod lever_metrics;
 // `match` is a Rust keyword, so the module needs a raw identifier. Refer to
 // it as `gc_sim::r#match` or bring it into scope with
 // `use gc_sim::r#match as sim_match;`.
 pub mod r#match;
 pub mod match_snapshot;
+pub mod metric_registry;
 pub mod metrics;
 pub mod network_conditions;
 pub mod offball_runs;
@@ -71,4 +73,5 @@ pub mod species;
 pub mod stats;
 pub mod sweep;
 pub mod tripwire;
+pub mod tunable_registry;
 pub mod tuning;

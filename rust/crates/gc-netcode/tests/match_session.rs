@@ -434,6 +434,56 @@ fn content_derived_online_manifest_describes_rosters_the_protocol_and_the_simula
 }
 
 #[test]
+fn content_derived_online_manifest_refuses_a_manifest_whose_tuning_config_this_build_does_not_have()
+{
+    // #487's headline: a peer whose tier-1 knob values or tier-3 band edges
+    // differ by a single number computes a different `tuning_id` and must fail
+    // HERE, at the same gate that already rejects an unknown team, arena or
+    // player — not play on and desync at the first tick that reads the
+    // divergent value.
+    let home = fixture_team("home");
+    let away = fixture_team("away");
+    let identity = fixture_identity();
+
+    // The matching case resolves: this build agrees with its own manifest.
+    let agreeing = match_manifest::template(
+        &home,
+        &away,
+        ARENA_ID,
+        Some(MatchMode::FourVFour),
+        &identity,
+    );
+    assert_eq!(
+        agreeing.get("tuning_id").and_then(Value::as_str),
+        Some(match_manifest::tuning_id().as_str()),
+        "the template must carry this build's own config hash"
+    );
+    match_manifest::resolve(&agreeing, &home, &away, ARENA_ID)
+        .expect("a manifest this build agrees with must resolve");
+
+    // A peer one knob away: same manifest, different config hash.
+    let mut divergent = agreeing.clone();
+    let peer_tuning_id = format!("{}x", match_manifest::tuning_id());
+    divergent.set("tuning_id", Value::str(peer_tuning_id));
+    let err = match_manifest::resolve(&divergent, &home, &away, ARENA_ID)
+        .expect_err("a divergent tuning config must fail manifest agreement");
+    assert!(
+        err.contains("tuning config"),
+        "the refusal must name what disagreed, so a lobby can say so: {err}"
+    );
+
+    // A manifest with no tuning_id at all is refused too, rather than treated
+    // as "no opinion" — an absent config hash is exactly the shape a peer that
+    // predates the check would send.
+    let mut missing = agreeing.clone();
+    missing.set("tuning_id", Value::str(""));
+    assert!(
+        match_manifest::resolve(&missing, &home, &away, ARENA_ID).is_err(),
+        "an empty tuning_id must not pass as agreement"
+    );
+}
+
+#[test]
 fn content_derived_online_manifest_refuses_a_manifest_naming_content_this_build_does_not_have() {
     let home = fixture_team("home");
     let away = fixture_team("away");
