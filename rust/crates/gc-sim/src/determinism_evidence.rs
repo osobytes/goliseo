@@ -35,16 +35,38 @@
 //! active configuration takes `&Tuning` explicitly instead of reading a
 //! global.
 //!
-//! ## What this module does not do: regenerate the fixture
+//! ## What this module can and cannot regenerate
 //!
-//! [`record`] replays the frozen frames and folds the result into an
-//! [`Omp1Recording`], but this module has no function that writes a new
-//! fixture back out — [`gc_data::omp1_determinism`]'s frozen JSON is
-//! sourced by a one-time conversion script (see that module's doc), not by
-//! anything here. Regenerating the fixture from a live match run is not
-//! something this crate can do at all: the implementation this fixture was
-//! originally captured from no longer exists in this repository, so the
-//! checked-in fixture is frozen, permanent evidence, not a value to refresh.
+//! Half the fixture, and precisely which half matters. Until #503 this
+//! section said the fixture could not be regenerated at all; that was true
+//! of the recorded input and false of the hashes derived from it, and the
+//! difference is what blocked every queued gameplay rework.
+//!
+//! **Never, by anything:** the recorded input. The `frame_wires`,
+//! `identity`, `source_seeds` and `windows` in
+//! [`gc_data::omp1_determinism`] came from source bots that no longer exist
+//! in this repository. Nothing here can produce a match from a live bot
+//! policy and call it that recording — bot policy is never allowed to
+//! rewrite the authoritative input contract, which is the first sentence of
+//! this doc.
+//!
+//! **Under a deliberate, reviewed change:** the derived hashes.
+//! [`record`] replays those frozen frames and recomputes every
+//! `boundary_hashes` entry, [`sequence_digest`] folds them into the pinned
+//! digest, and `gc_data::omp1_determinism::rerecorded_json` writes the
+//! result back into the fixture's byte format with the frozen half copied
+//! verbatim and verified. The command is `record_omp1_derived_baseline` in
+//! this crate's `tests/determinism_evidence.rs`; it is `#[ignore]`d and
+//! never runs in a gate, because a recorder that refreshed its own baseline
+//! during `cargo test` would turn a determinism regression into a no-op.
+//!
+//! A drifted boundary hash is therefore a **finding first**: an unintended
+//! one is a desync between a client built before the change and one built
+//! after. Re-record only for a change that is deliberate and reviewed, and
+//! record the decision, the superseding change, and the last commit where
+//! the previous baseline held. See [`gc_data::omp1_determinism`]'s module
+//! doc for the full split, and for what a green campaign stops proving once
+//! its baseline is self-recorded.
 
 use crate::fixed_clock;
 use crate::input_frame::{
@@ -342,6 +364,31 @@ fn state_hash(state: &MatchState) -> String {
     match_snapshot::hash(&match_snapshot::capture(state, None))
 }
 
+/// Fold one boundary hash into a running sequence digest. The single
+/// definition of how a boundary enters that digest: a campaign folds
+/// boundaries in as it reaches them, [`sequence_digest`] folds a finished
+/// vector, and a re-record that disagreed with the campaign here would pin a
+/// digest the gate could never reproduce.
+fn fold_boundary_hash(sequence: &mut Fnv1a64State, hash: &str) {
+    sequence.update(format!("{hash}\n").as_bytes());
+}
+
+/// The FNV-1a-64 digest over `boundary_hashes` in sequence — the value the
+/// fixture pins as `expected_sequence_digest`, computed from a complete
+/// vector rather than incrementally.
+///
+/// Exists for the re-record path (see [`record`]): a campaign builds this
+/// digest one boundary at a time, but a recorder has the whole vector at
+/// once. Both go through [`fold_boundary_hash`], so there is one rule.
+#[must_use]
+pub fn sequence_digest(boundary_hashes: &[String]) -> String {
+    let mut sequence = Fnv1a64State::new();
+    for hash in boundary_hashes {
+        fold_boundary_hash(&mut sequence, hash);
+    }
+    sequence.hex()
+}
+
 fn has_event(state: &MatchState, kind: MatchEventKind) -> bool {
     state.events.iter().any(|e| e.kind == kind)
 }
@@ -521,7 +568,7 @@ pub fn new_campaign(compare_fresh: bool, tune: &Tuning) -> Result<DeterminismCam
     }
 
     let mut sequence = Fnv1a64State::new();
-    sequence.update(format!("{initial_hash}\n").as_bytes());
+    fold_boundary_hash(&mut sequence, &initial_hash);
     let boundary_count = expected_hashes.len();
     let mut snapshots: Vec<Option<MatchSnapshot>> = vec![None; boundary_count];
     let mut window_starts = vec![false; boundary_count];
@@ -684,9 +731,7 @@ pub fn step_campaign(
                 index + 1
             ));
         }
-        campaign
-            .sequence
-            .update(format!("{reference_hash}\n").as_bytes());
+        fold_boundary_hash(&mut campaign.sequence, &reference_hash);
         let boundary_number = (index + 1) as usize;
         if campaign.window_starts[boundary_number] {
             campaign.snapshots[boundary_number] =
@@ -742,8 +787,17 @@ pub fn verify(tune: &Tuning) -> Result<DeterminismEvidenceResult, String> {
 
 /// Replay the frozen fixture frames from scratch, confirming each one
 /// still encodes canonically, and fold the result into an
-/// [`Omp1Recording`]. See the module doc for why this module has no
-/// function that writes a new fixture back out.
+/// [`Omp1Recording`].
+///
+/// This is the derivation half of a re-record: the returned
+/// `boundary_hashes` are what the current simulation reaches from the frozen
+/// input, and it never compares them against the pinned baseline (that is
+/// [`verify`]'s job — a recorder that refused to record a drifted hash could
+/// not record the only case anyone needs it for). The write-back is
+/// `gc_data::omp1_determinism::rerecorded_json`, and the human-run command
+/// is `record_omp1_derived_baseline` in `tests/determinism_evidence.rs`.
+/// Read the module doc's "What this module can and cannot regenerate"
+/// before running it.
 ///
 /// # Errors
 ///
