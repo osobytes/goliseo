@@ -8,6 +8,7 @@ pub mod aerial;
 pub mod ai;
 pub mod ai_driven_evidence;
 pub mod ball_flight;
+pub mod ball_prediction;
 pub mod bot;
 pub mod brain;
 pub mod combat;
