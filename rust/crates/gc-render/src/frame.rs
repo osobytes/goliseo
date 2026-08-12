@@ -520,16 +520,17 @@ pub struct RenderFrameOptions {
     pub combat: Option<FrameCombatModel>,
 }
 
-// Pose-timer normalisers. These are presentation eases, not simulation
-// durations: they only decide how fast a pose relaxes back to neutral.
-const DIVE_EASE: f64 = 0.3;
-const GRAB_EASE: f64 = 0.25;
-const THROW_EASE: f64 = 0.25;
-const WINDUP_EASE: f64 = 0.15;
-const AERIAL_EASE: f64 = 0.22;
-const AERIAL_EASE_BICYCLE: f64 = 0.6;
-const AERIAL_EASE_JUMP: f64 = 0.35;
-const AERIAL_EASE_CONTROL: f64 = 0.18;
+// Pose-timer normalisers and the reticle window are TIER 2 of the tunable
+// registry: presentation eases, not simulation durations — they only decide
+// how fast a pose relaxes back to neutral, and how long a predicted fall has
+// to be before a landing reticle is worth drawing. They are authored in
+// `crate::presentation_tunables` (see that module for why tier 2 lives in this
+// crate rather than `gc-data`) and read through the registry here, so nothing
+// in this file is a raw number the simulation might one day be tempted to
+// read.
+fn tier2(id: &str) -> f64 {
+    crate::presentation_tunables::shipped().value(id)
+}
 
 // Loose-ball ballistics for the landing reticle. The solve is presentation
 // (where will this cross come down?), so it lives here rather than making
@@ -537,9 +538,6 @@ const AERIAL_EASE_CONTROL: f64 = 0.18;
 // simulation's own gravity, read from `gc_sim::r#match`, so the two can
 // never drift apart.
 const BALL_GRAVITY: f64 = sim_match::GRAVITY_PX;
-const RETICLE_MIN_HEIGHT: f64 = 20.0;
-const RETICLE_MIN_TIME: f64 = 0.05;
-const RETICLE_MAX_TIME: f64 = 3.0;
 
 // Absent, false and true have to survive the crossing as three distinct
 // values.
@@ -560,16 +558,16 @@ fn eased(timer: f64, ease: f64) -> f64 {
 
 fn aerial_ease(player: &gc_sim::match_snapshot::MatchPlayer) -> f64 {
     if player.aerial_style == Some(AerialStyle::Bicycle) {
-        AERIAL_EASE_BICYCLE
+        tier2("presentation.aerial_ease_bicycle")
     } else if player.aerial_jump > 0.0 {
-        AERIAL_EASE_JUMP
+        tier2("presentation.aerial_ease_jump")
     } else if matches!(
         player.aerial_style,
         Some(AerialStyle::LegControl) | Some(AerialStyle::ChestControl)
     ) {
-        AERIAL_EASE_CONTROL
+        tier2("presentation.aerial_ease_control")
     } else {
-        AERIAL_EASE
+        tier2("presentation.aerial_ease")
     }
 }
 
@@ -779,12 +777,14 @@ fn build_events(events: &[MatchEvent], roster: &RenderFrameRoster) -> RenderFram
 // the pitch inside a readable window.
 fn landing_point(state: &MatchState, ball_x: f64, ball_y: f64) -> (Option<f64>, Option<f64>) {
     let height = state.ball_z;
-    if state.owner.is_some() || height <= RETICLE_MIN_HEIGHT {
+    if state.owner.is_some() || height <= tier2("presentation.reticle_min_height") {
         return (None, None);
     }
     let vz = state.ball_vz;
     let fall = (vz + (vz * vz + 2.0 * BALL_GRAVITY * height).sqrt()) / BALL_GRAVITY;
-    if fall <= RETICLE_MIN_TIME || fall >= RETICLE_MAX_TIME {
+    if fall <= tier2("presentation.reticle_min_time")
+        || fall >= tier2("presentation.reticle_max_time")
+    {
         return (None, None);
     }
     let x = ball_x + state.ball_vel.x * fall;
@@ -1066,15 +1066,21 @@ pub fn build(state: &MatchState, opts: &RenderFrameOptions) -> RenderFrame {
         players
             .holding
             .push(Some(index) == state.owner && player.is_keeper && !player.feet_ball);
-        players.dive.push(eased(player.dive_timer, DIVE_EASE));
+        players
+            .dive
+            .push(eased(player.dive_timer, tier2("presentation.dive_ease")));
         players.dive_dir_x.push(dive_dir_x);
         players.dive_dir_y.push(dive_dir_y);
-        players.grab.push(eased(player.grab_timer, GRAB_EASE));
-        players.throw.push(eased(player.throw_timer, THROW_EASE));
+        players
+            .grab
+            .push(eased(player.grab_timer, tier2("presentation.grab_ease")));
+        players
+            .throw
+            .push(eased(player.throw_timer, tier2("presentation.throw_ease")));
         // The wind-up back-swing is deliberately unclamped: 0 = no windup,
         // 1 = just committed, and a long charge reads above 1.
         players.windup.push(if player.windup_timer > 0.0 {
-            player.windup_timer / WINDUP_EASE
+            player.windup_timer / tier2("presentation.windup_ease")
         } else {
             0.0
         });
