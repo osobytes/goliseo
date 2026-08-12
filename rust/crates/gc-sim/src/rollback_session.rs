@@ -996,6 +996,19 @@ pub fn apply_authoritative_batch(
     })
 }
 
+/// A **read-only** borrow of the session's live simulation state.
+///
+/// For read-only consumers that must run against the state the local sim
+/// actually holds rather than a copy of it — `crate::ball_prediction`'s
+/// query entry points are the motivating case, and a render-layer overlay
+/// wanting pass travel times is the other. The shared borrow is the
+/// contract: a consumer reached through this cannot mutate the session, so
+/// it cannot enter a snapshot, a state hash, or a peer comparison.
+#[must_use]
+pub fn state(session: &RollbackSession) -> &MatchState {
+    &session.state
+}
+
 /// An independent capture of the session's current live boundary.
 #[must_use]
 pub fn current_snapshot(session: &RollbackSession) -> MatchSnapshot {
